@@ -4,7 +4,7 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 to K4 are done. K5 (sockets and network) has had four runs and is not complete: what is left
+K0 to K4 are done. K5 (sockets and network) has had five runs and is not complete: what is left
 is under Next. The fuller run-by-run record of K4 and of K5's first two runs is in this file at
 commit fdf7001 (git history); what they built is summarised here.
 
@@ -65,8 +65,7 @@ K5 built (all four runs):
     to the file's owner (`send_urgent_signal`) and a chosen signal with POLL_PRI.
   - I/O signals from local sockets with O_ASYNC (`wake_async`): data, room after a send found
     none, a peer's shutdown and close, a connection on a listener; none for data while a reader
-    waits. Internet and netlink sockets accept FASYNC and send none, counted "socket i/o signals
-    not built".
+    waits (internet and netlink sockets' since the fifth run).
   - SO_PEERPIDFD, SO_PASSPIDFD with SCM_PIDFD (a process reaped since gets a descriptor that
     names it gone), SO_PASSRIGHTS (EPERM to senders of descriptors), SO_INQ with SCM_INQ;
     SO_PASSCRED, SO_PASSPIDFD and SO_PASSRIGHTS refused on internet sockets as Linux. A message
@@ -105,11 +104,61 @@ K5 built (all four runs):
     checks and control messages, IPv6, TCP and UDP options take a negative length as unsigned,
     and an empty IPv4 option value is 0 (IP_TTL's is EINVAL).
 
+- Fifth run (each against the reference):
+  - I/O signals from internet and netlink sockets with O_ASYNC (`wake_async` for every family):
+    data (`sock_def_readable`; TCP's only while the receiver's buffer had room, as bytes past it
+    are still on their way under Linux's window), a TCP FIN (`tcp_fin`'s POLL_IN or POLL_HUP,
+    then the data wake), a finished connect (POLL_OUT), a connection on a listener, errors and
+    resets (`sock_def_error_report`, POLL_ERR), room after a send found none
+    (`sk_stream_write_space`, `sock_def_write_space`), netlink replies, the name server's answers
+    and the outside's bytes, ends, refusals and room. A waiting TCP reader's data sends none
+    (`sk_wait_data`). The counter "socket i/o signals not built" is gone.
+  - Netlink dumps come a part at a time (`netlink_dump`): the first at the request, the next
+    once a read leaves the queue at most half full (a peek too); a second dump while one runs is
+    EBUSY; a read that faults still takes its message; MSG_OOB on a read is EOPNOTSUPP; poll
+    has EPOLLWRBAND.
+  - `mmap` of a TCP socket (`tcp_mmap`): read only (EPERM for writing or running, and mprotect
+    can never add them), no pages, so a touch is SIGBUS; never locked or grown (EFAULT),
+    `mincore` shows nothing resident, msync with MS_SYNC of a shared one is EINVAL (sockfs has
+    no fsync); `/proc/<pid>/maps` names it `socket:[inode]`. Other sockets stay ENODEV.
+  - UDP's error queue under IP_RECVERR and IPV6_RECVERR: a datagram to a port nothing holds
+    queues a port unreachable error (520 bytes of it over IPv4, 1184 over IPv6, measured) and
+    sets the socket's error, connected or not; MSG_ERRQUEUE reads take it (a peek too), name its
+    destination, give the error message's own control messages (packet information with no
+    local address, TTL 64 and TOS 0xc0, or hop limit 64 and class 0) and then the extended error
+    with its offender; the socket's error becomes the next queued one's or none; poll shows
+    EPOLLERR while any is queued; turning the option off empties the queue. An IPv6 socket
+    sending to an IPv4 address goes by IP_RECVERR. A refusal from outside to such a socket sets
+    its error but queues nothing, counted "outside datagram error not queued" (the host does
+    not say what the datagram held).
+  - IPv4 packet information is kept for a datagram only if its receiver asked for it when it
+    came (`ipv4_pktinfo_prepare`): asked for later, it names no interface or local address.
+  - Local sockets passed over themselves: when a local socket is released, cycles of local
+    sockets that only the queues of such sockets hold are collected (`unix_gc`) and what their
+    queues carry is let go; releases cascade within one call (a socket's queue, a collected
+    cycle). A user with more descriptors in flight than its RLIMIT_NOFILE sends no more
+    (ETOOMANYREFS, `too_many_unix_fds`), unless it has CAP_SYS_RESOURCE or CAP_SYS_ADMIN.
+  - Layer 1 found (fixed, measured): MSG_OOB reads on netlink sockets, a mapping of a TCP
+    socket, netlink's EPOLLWRBAND, packet information asked for after a datagram came.
+
 Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
 call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
 and those calls are at its end. The third run's claim that seed 5050003 had them among its calls
 was wrong. At K4's end the list had 257 entries, so only its last (timerfd_gettime) was never
 made. The kind is now a `u16`; seeds made before this make different sequences now.
+
+Tests added in the fifth run (each against the reference):
+- tests/inet.rs `io_signals_match_reference` (guest/inetasync.c: TCP connect, listener, data,
+  filling and draining, shut, reset, refused, chosen signals, a waiting reader; UDP data and
+  refusals; netlink dump parts, a second dump, a faulting read), `socket_mappings_match_reference`
+  (guest/tcpmap.c), `error_queue_matches_reference` (guest/recverr.c).
+- tests/unixsock.rs `cycles_are_collected_as_linux` (guest/unixgc.c: a socket in its own queue,
+  two pairs in each other's, a cycle reached from an open socket, ETOOMANYREFS at a limit of 16).
+  Linux collects on a work queue at the release of any local socket on the whole machine (other
+  containers' too), so the test shows only states after the program released one, waiting up to
+  10 s for the pipe's end.
+- guest/udpcontrol.c: packet information asked for after datagrams came; guest/pollmask.c:
+  fresh netlink, UDP and TCP sockets.
 
 Tests added in the fourth run (each against the reference):
 - tests/unixsock.rs `urgent_bytes_and_io_signals_match_reference` (guest/unixoob.c: the mark,
@@ -1265,6 +1314,11 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K5, fifth run, layer 1 at 20000 sequences each: on 3063305 (the fourth run's end) 5050423
+  passed, 5050422 and 5050424 found netlink's MSG_OOB read; on 5a254ef 5050422, 5050424 and
+  5050425 failed (netlink's MSG_OOB, then the late packet information); on f9509e3 5050424 and
+  5050426 passed (338 s and 339 s, three side by side, load 65 to 52), 5050425 found netlink's
+  EPOLLWRBAND.
 - K5, fourth run: whole suite at ebf9420 (the third run's end; `RUST_TEST_THREADS=3 cargo test
   --no-fail-fast -j 4 -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy in
   scratch with its own build): 169 passed, 0 failed, 5 ignored, 10 min 7 s with the build, load
@@ -1449,6 +1503,15 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- K5, fifth run: Linux collects cycles of local sockets on a work queue when any local socket on
+  the machine is released (other containers' too), so when a cycle goes depends on the whole
+  machine; here it goes at once when a local socket of the container is released, which is
+  what a quiet Linux does. A TCP sender's data is told to the receiver's I/O signal only while
+  the receiver's queue holds less than its receive buffer (Linux's window keeps the rest on its
+  way and tells of it as it comes, which depends on timing). Netlink dumps are split into the
+  answers and NLMSG_DONE, where Linux splits by its own message sizes (ours carry fewer
+  attributes), so a dump takes two reads here and may take more on Linux.
 
 - K5, second run, the made-up network (plan section 15 allows it; these are its choices): lo
   (1) and eth0 (2) only, where the reference's kernel (Docker Desktop's linuxkit) also shows
@@ -1733,9 +1796,8 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   messages to another socket's port (ECONNREFUSED); detail family times 2^32 plus kind times 2^16
   plus protocol.
 - "socket option not built": socket options not built (detail: level times 2^32 plus option;
-  ENOPROTOOPT), among them TCP_INFO, IP_PKTINFO and the other IP and IPv6 options that add
-  control messages, and since K5's second run SO_PASSPIDFD and the SO_TIMESTAMP* options (their
-  control messages are not built; before, they were kept and did nothing).
+  ENOPROTOOPT), among them TCP_INFO, TCP_ZEROCOPY_RECEIVE, SO_TIMESTAMPING and the internet send
+  control messages listed under Where things stand.
 - "netlink request not built": rtnetlink requests other than RTM_GETLINK, RTM_GETADDR and
   RTM_GETROUTE dumps and RTM_GETLINK of one link (EOPNOTSUPP; detail the type plus 2^16 for a
   dump), such as `ip route get`, neighbours, rules and queue disciplines.
@@ -1744,7 +1806,8 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   so EPERM as in the reference).
 Notices the backend sends that Linux refuses are counted "backend notice refused" (not a
 refusal of the guest).
-Approximations that are not refusals have their own counters: "tcp room modelled", "tcp
+Approximations that are not refusals have their own counters: "outside datagram error not
+queued", "tcp room modelled", "tcp
 connect waits for backlog room", "interface counters not kept", "name query not answered",
 "recvmmsg returned early", "listening outside failed" (a host that cannot accept from outside
 or whose port is taken), "outside datagram header made up",
@@ -1757,6 +1820,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K5, fifth run: none.
 - K5, fourth run: none.
 - K5, third run (host.rs): documentation only. `Host::listen` now says its port is the
   container's TCP port, that `ConnectionReady` comes on the listener once after the call and again
@@ -1904,19 +1968,21 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K5, in this order (what the four runs built is under Where things stand):
-1. Layer 1 now reaches sockets, epoll, eventfd and inotify for the first time (see Where things
-   stand). Run fresh seeds (5050414 and up) at 5000 to 20000 until they pass, fixing what they
-   find; then the three end-of-milestone seeds of 20000 (`LAYER1_CASES=20000 LAYER1_SEED=<n>`,
-   one command each, see Layer 1) and the whole suite.
-2. Not built, counted "socket option not built": SO_TIMESTAMPING (old and new), TCP_INFO, and the
-   internet send control messages listed under Where things stand. TCP's urgent data (a send
-   with MSG_OOB and bytes is refused, counted). I/O signals of internet and netlink sockets
-   (counted "socket i/o signals not built").
-3. Local sockets left: collecting sockets passed over themselves (such a cycle stays open here),
-   a socket's `/proc/<pid>/fdinfo` (fdinfo is not built at all). A SCM_PIDFD or SO_PEERPIDFD for a
-   reaped process whose number was given again would name the new one (numbers are kept, not
-   Linux's `struct pid`).
+K5, in this order (what the five runs built is under Where things stand):
+1. Layer 1: run fresh seeds (5050430 and up) at 20000 until three in a row pass with every fix
+   in, fixing what they find (`LAYER1_CASES=20000 LAYER1_SEED=<n>`, one command each, see Layer
+   1); then the whole suite.
+2. Not built, counted "socket option not built": TCP_INFO (Linux 7.0 gives 280 bytes, measured;
+   about half its fields are timings and rates of real segments this TCP does not have, so a
+   model needs a decision on what to give for them), TCP_ZEROCOPY_RECEIVE, SO_TIMESTAMPING (old
+   and new), and the internet send control messages listed under Where things stand. TCP's
+   urgent data (a send with MSG_OOB and bytes is refused, counted).
+3. Local sockets left: a socket's `/proc/<pid>/fdinfo` (fdinfo is not built at all). A SCM_PIDFD
+   or SO_PEERPIDFD for a reaped process whose number was given again would name the new one
+   (numbers are kept, not Linux's `struct pid`). ETOOMANYREFS is checked just before the
+   message is queued, where Linux checks it right after the buffer is made (before the bytes
+   are copied in and, for datagrams, before the receiver is found); an order difference only
+   with more descriptors in flight than RLIMIT_NOFILE.
 4. /proc/net's other files (netstat, snmp, sockstat, protocols, packet, raw and the rest) are
    counted "proc entry not built". fanotify_mark is still "system call not implemented"
    (fanotify_init is refused by Docker's profile, so no group can exist; Linux's flag checks come
@@ -1944,6 +2010,6 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002, 5050401 to 5050420 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050429 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
