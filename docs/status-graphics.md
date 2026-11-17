@@ -77,6 +77,35 @@ branches into it at the start and end of every run.
   more rules of the interface found unchecked by a reading of its docs, now checked. The other
   branches had nothing new at the start; at the end direct3d-12, shaders and rig were merged without
   conflict and without touching the interface, the suite or the plan. The whole workspace checks.
+- G1, run 9 (2026-11-17): the three findings of G1's seventh independent check settled (below).
+  The other branches had nothing new at the start.
+
+## G1's seventh check, and how each finding was settled (run 9)
+
+- Binding numbers (blocking): `create_shader` now refuses (`GpuError::Invalid`) a shader whose entry
+  point pairs a texture with a sampler (naga's `sampling_set`, through function calls) at a binding
+  outside `SlotKind::Texture`'s range, 32 to 159, which the WebGPU back end's layout key needs. A
+  texture only loaded may lie anywhere (the helper set's target copies and early-test depth lie
+  below 32). Test: `textures_paired_with_samplers_lie_in_the_sampled_texture_range` (fragment
+  pairs at 5 through a called function, 31 and 160 refused; 32 and 159 made, in sets 0 and 1;
+  textures at 5 and 160 only loaded made; a vertex pair at 5 refused, at 32 made). The other kinds'
+  ranges are not made rules: no back end relies on them (webgl maps uniform blocks and texture
+  units by the program's own names and slots; webgpu reads only the paired textures' numbers), and
+  the helper set's own bindings lie outside them by design (a uniform block at 12, a storage
+  buffer at 11, textures at 1 to 10). The interface now says so
+  (`BindingEntry::binding`, plan 4.5); Departures.
+- Stages a binding names (minor): binding set entries now keep their stages, and each draw refuses
+  an entry that leaves out a stage whose entry point uses the binding (naming more is allowed). The
+  per-stage limit counts, made from the same stages, are so made honest. Interface docs
+  (`BindingEntry::stages`, plan 4.5) state it. Test: `binding_entries_name_every_stage_that_reads_them`
+  (a sampled texture or its sampler named vertex-only for a fragment reader refused; a uniform the
+  vertex program reads named fragment-only refused; exact and wider stage sets drawn).
+- `clear_rects` scissors (minor): `DrawCall::scissors` now says a scissor may reach past the pass's
+  attachments and is clipped to them, a back end whose API refuses that cutting it (the webgpu back
+  end does, WebGL 2's `glScissor` takes any rectangle). The `clear_rects` default and plan 4.3 point
+  to it. The default does not know the view's size, so it cannot clip the rectangles itself; the
+  recorder already clips, and `clear_rects_draws_one_triangle_per_rectangle_in_one_pass` covers a
+  rectangle past the view.
 
 ## G1's sixth check, and how each finding was settled (run 8)
 
@@ -367,7 +396,7 @@ branches into it at the start and end of every run.
   the `if` checks, since run 5 also the checks written as a helper call ending in `?`, since run 6
   also each top-level `||` operand of a condition and each slice range refused by `ok_or`
   (Measurements); refusals of other forms are asserted by message (run 6's audit). A sweep cannot
-  find a rule with no check. Rules found without one were added by the checks of runs 3 to 8 and by
+  find a rule with no check. Rules found without one were added by the checks of runs 3 to 9 and by
   this file's audits (run 6: `ok_or` refusals; run 8: the interface's docs and plan 4.1 to 4.11
   searched for rule wording). Those audits are by wording, not a reading of every sentence, so a
   rule stated another way may still lack a check; each one found is a gap in this item.
@@ -488,6 +517,10 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   texture's uses; no-overwrite keeps off texels unfinished commands and ordered writes use),
   buffer-texture copies' row pitches and offsets in whole blocks of the aspect moved, and query
   results resolved to multiples of 8 bytes (G1's sixth check, above);
+- since run 9: textures a shader pairs with a sampler at bindings 32 to 159
+  (`textures_paired_with_samplers_lie_in_the_sampled_texture_range`), and binding entries naming
+  every stage that reads them (`binding_entries_name_every_stage_that_reads_them`) (G1's seventh
+  check, above);
 - multisampled textures 2D, one level and layer, no storage
   (`a_multisampled_texture_is_2d_with_one_level_and_layer_and_no_storage`); their bytes moved only by
   draws, resolves and whole copies between equal sample counts
@@ -498,6 +531,18 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   when its texture is multisampled (an error of the draw).
 
 ## Interface changes
+
+- G1 run 9:
+  - 4a8f7a7 ("interface: stated that textures paired with samplers lie at bindings 32 to 159, ..."):
+    documentation only. `BindingEntry::binding`: a texture the program pairs with a sampler lies in
+    `SlotKind::Texture`'s range, 32 to 159 (its bit in `BindingLayoutKey`); the other kinds' ranges
+    are the fronts' numbering, which no back end relies on. `BindingEntry::stages`: every stage
+    whose program reads the binding, and perhaps more. `DrawCall::scissors`: a scissor may reach
+    past the pass's attachments and is clipped to them; a back end whose API refuses that cuts it
+    (the `clear_rects` default relies on it). Plan 4.3, 4.4 and 4.5 say the same. For the other
+    tracks: the webgpu back end already clamps scissors and keys paired textures by binding minus
+    32; the shaders crate already numbers sampled textures from 32. A front that names fewer stages
+    than read a binding is now refused by the recording back end.
 
 - G1 run 8:
   - 6c89a04 ("interface: stated that texture writes take the write modes by texel ..."):
@@ -653,7 +698,7 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 
 ## Next
 
-- The independent check of G1 (run 8's fixes).
+- The independent check of G1 (run 9's fixes).
 - The webgpu and webgl hosts run the whole suite through `suite!`, so they take the three newest
   tests (`a_stream_of_stride_zero_reads_its_first_element`,
   `comparison_samplers_compare_with_the_stored_depth`, `resolves_average_in_the_format_named`)
@@ -715,6 +760,8 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     the resolve's format, the generator): `g1r8/faults.py`. Started detached over ssh, these need
     `export PATH=$HOME/.cargo/bin:$PATH` first (without it every fault reads as caught with no test
     named: cargo was not found).
+  - run 9's sweep of its two new sites: `g1r9/sweep.py` (run 8's, unchanged), run the same way
+    with the site names `recorder.rs:1397 draw.rs:778` (as `list` prints them on 046bce6).
   - run 5's faults (the counter's instance split, the discard, the colour byte measure):
     `g1r5/faults.py`, run the same way (`python3 -I faults.py <tree> <target dir>`); run 7's (the
     sampler kind, the filter rule, unchecked ends, stride zero): `g1r7/faults.py`, `faults2.py`
@@ -914,6 +961,12 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 - Earlier: `naga` 30.0.2, `blake3` 1, `half` 2 (MIT OR Apache-2.0, CC0-1.0 OR Apache-2.0); plan 3.
 
 ## Departures from the plan
+
+- G1 run 9: section 11 lists "binding numbers" among the rules the recording back end checks. Only
+  one binding number rule is checked: a texture a shader pairs with a sampler lies at 32 to 159.
+  The kinds' other ranges (4.5, `SlotKind`) describe how fronts number API slots; no back end
+  depends on them and the helper set's bindings lie outside them, so refusing them would refuse
+  correct programs. The interface and plan 4.5 now say this.
 
 - G1 run 5: the end merges brought a break between two other tracks: the rig made the tolerance
   file's allowance optional (an unrepeatable frame has none) and the webgl track's scene example
