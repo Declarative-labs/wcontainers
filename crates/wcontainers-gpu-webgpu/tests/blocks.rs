@@ -5,7 +5,8 @@
 //! texture whose texels are the blocks.
 //!
 //! Needs a GPU with BC (the RTX 3080 has it); `WEBGPU_API` as in tests/scenes.rs; `WEBGPU_SEED`
-//! picks the blocks.
+//! picks the blocks and `WEBGPU_CASES` how many textures of seeded blocks each test makes per format
+//! (default 1).
 
 #[path = "../../wcontainers-graphics-test/src/scene.rs"]
 #[allow(dead_code)]
@@ -245,6 +246,13 @@ fn exact(format: Format) -> bool {
     )
 }
 
+fn seed_and_cases(seed: u64) -> (u64, usize) {
+    let seed = std::env::var("WEBGPU_SEED").map_or(seed, |s| s.parse().expect("a seed"));
+    let cases = std::env::var("WEBGPU_CASES").map_or(1, |s| s.parse().expect("a count"));
+    eprintln!("seed {seed}, {cases} textures per format");
+    (seed, cases)
+}
+
 #[test]
 fn bc_textures_read_back_as_written_and_bc6h_and_bc7_sample_exactly() {
     sample_and_read_back(exact);
@@ -265,8 +273,7 @@ fn bc1_to_bc5_sample_alike_natively_and_decoded() {
 /// checks each level reads back as written on both, and that the texels loaded on both agree within
 /// [`tolerance`] for the formats `checked` names (the others' differences are printed).
 fn sample_and_read_back(checked: fn(Format) -> bool) {
-    let seed: u64 = std::env::var("WEBGPU_SEED").map_or(0xbc, |s| s.parse().expect("a seed"));
-    eprintln!("seed {seed}");
+    let (seed, cases) = seed_and_cases(0xbc);
     let mut native = device_without(wgpu::Features::empty());
     let mut decoded = device_without(wgpu::Features::TEXTURE_COMPRESSION_BC);
     assert!(native.caps().has(Features::BLOCK_COMPRESSION));
@@ -280,54 +287,56 @@ fn sample_and_read_back(checked: fn(Format) -> bool) {
             FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT,
             "{format:?}"
         );
-        let levels: Vec<Vec<u8>> = (0..LEVELS)
-            .map(|mip| (0..level_bytes(format, mip)).map(|_| rng.u8(..)).collect())
-            .collect();
-        let mut loaded = Vec::new();
-        for b in [&mut native, &mut decoded] {
-            let t = bc_texture(b, format, LEVELS);
-            for (mip, blocks) in levels.iter().enumerate() {
-                let pitch = blocks_extent(mip as u32).width / 4 * format.block().2;
-                b.write_texture(
-                    &region(&t, mip as u32),
-                    blocks_extent(mip as u32),
-                    blocks,
-                    pitch,
-                    blocks_extent(mip as u32).height / 4,
-                    WriteMode::Ordered,
-                );
+        for case in 0..cases {
+            let levels: Vec<Vec<u8>> = (0..LEVELS)
+                .map(|mip| (0..level_bytes(format, mip)).map(|_| rng.u8(..)).collect())
+                .collect();
+            let mut loaded = Vec::new();
+            for b in [&mut native, &mut decoded] {
+                let t = bc_texture(b, format, LEVELS);
+                for (mip, blocks) in levels.iter().enumerate() {
+                    let pitch = blocks_extent(mip as u32).width / 4 * format.block().2;
+                    b.write_texture(
+                        &region(&t, mip as u32),
+                        blocks_extent(mip as u32),
+                        blocks,
+                        pitch,
+                        blocks_extent(mip as u32).height / 4,
+                        WriteMode::Ordered,
+                    );
+                }
+                let mut texels = Vec::new();
+                for (mip, blocks) in levels.iter().enumerate() {
+                    assert_eq!(
+                        &read_level(b, &t, format, mip as u32),
+                        blocks,
+                        "{format:?} level {mip} read back"
+                    );
+                    texels.push(load_level(b, &t, format, mip as u32));
+                }
+                assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
+                loaded.push(texels);
             }
-            let mut texels = Vec::new();
-            for (mip, blocks) in levels.iter().enumerate() {
-                assert_eq!(
-                    &read_level(b, &t, format, mip as u32),
-                    blocks,
-                    "{format:?} level {mip} read back"
-                );
-                texels.push(load_level(b, &t, format, mip as u32));
-            }
-            assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
-            loaded.push(texels);
-        }
-        let (mut worst, mut at) = (0f32, (0, 0, 0.0, 0.0));
-        for (mip, (n, d)) in loaded[0].iter().zip(&loaded[1]).enumerate() {
-            for (i, (x, y)) in n.iter().zip(d).enumerate() {
-                let diff = if x.is_nan() && y.is_nan() {
-                    0.0
-                } else {
-                    (x - y).abs() / x.abs().max(1.0)
-                };
-                if diff > worst {
-                    (worst, at) = (diff, (mip, i, *x, *y));
+            let (mut worst, mut at) = (0f32, (0, 0, 0.0, 0.0));
+            for (mip, (n, d)) in loaded[0].iter().zip(&loaded[1]).enumerate() {
+                for (i, (x, y)) in n.iter().zip(d).enumerate() {
+                    let diff = if x.is_nan() && y.is_nan() {
+                        0.0
+                    } else {
+                        (x - y).abs() / x.abs().max(1.0)
+                    };
+                    if diff > worst {
+                        (worst, at) = (diff, (mip, i, *x, *y));
+                    }
                 }
             }
-        }
-        eprintln!(
-            "{format:?}: decoded differs from the GPU's decoder by up to {worst:e} (level {}, value {} of the level: {} natively, {} decoded)",
-            at.0, at.1, at.2, at.3
-        );
-        if checked(format) && worst > tolerance(format) {
-            beyond.push(format!("{format:?}: {worst:e}"));
+            eprintln!(
+                "{format:?} texture {case}: decoded differs from the GPU's decoder by up to {worst:e} (level {}, value {} of the level: {} natively, {} decoded)",
+                at.0, at.1, at.2, at.3
+            );
+            if checked(format) && worst > tolerance(format) {
+                beyond.push(format!("{format:?} texture {case}: {worst:e}"));
+            }
         }
     }
     assert!(beyond.is_empty(), "beyond the tolerance: {beyond:?}");
@@ -338,132 +347,135 @@ fn sample_and_read_back(checked: fn(Format) -> bool) {
 #[test]
 fn bc_copies_keep_the_blocks_natively_and_decoded() {
     let format = Format::Bc3RgbaUnorm;
-    let mut rng = fastrand::Rng::with_seed(0xc0b1);
-    let blocks: Vec<u8> = (0..level_bytes(format, 0)).map(|_| rng.u8(..)).collect();
+    let (seed, cases) = seed_and_cases(0xc0b1);
+    let mut rng = fastrand::Rng::with_seed(seed);
     let pitch = blocks_extent(0).width / 4 * 16;
     let rows = blocks_extent(0).height / 4;
-    for (route, features) in [
-        ("natively", wgpu::Features::empty()),
-        ("decoded", wgpu::Features::TEXTURE_COMPRESSION_BC),
-    ] {
-        let mut b = device_without(features);
-        let b = &mut b;
-        let a = bc_texture(b, format, 1);
-        b.write_texture(
-            &region(&a, 0),
-            blocks_extent(0),
-            &blocks,
-            pitch,
-            rows,
-            WriteMode::Ordered,
-        );
-        // Texture to texture.
-        let copy = bc_texture(b, format, 1);
-        b.copy_texture(&region(&a, 0), &region(&copy, 0), blocks_extent(0));
-        assert_eq!(read_level(b, &copy, format, 0), blocks, "{route}: copy");
-        // Into a buffer at a pitch of 256, and back from it into a third texture.
-        let buffer = b
-            .create_buffer(&BufferDesc {
-                size: 256 * u64::from(rows),
-                usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
-                intent: MapIntent::Rarely,
-            })
-            .unwrap();
-        let at = CopyBufferTexture {
-            buffer: &buffer,
-            offset: 0,
-            row_pitch: 256,
-            rows_per_layer: rows,
-        };
-        b.copy_texture_to_buffer(&region(&copy, 0), &at, blocks_extent(0));
-        let from_buffer = bc_texture(b, format, 1);
-        b.copy_buffer_to_texture(&at, &region(&from_buffer, 0), blocks_extent(0));
-        assert_eq!(
-            read_level(b, &from_buffer, format, 0),
-            blocks,
-            "{route}: through a buffer"
-        );
-        let row = pitch as usize;
-        let in_buffer = read(
-            b,
-            &ReadSource::Buffer {
+    for case in 0..cases {
+        let blocks: Vec<u8> = (0..level_bytes(format, 0)).map(|_| rng.u8(..)).collect();
+        for (route, features) in [
+            ("natively", wgpu::Features::empty()),
+            ("decoded", wgpu::Features::TEXTURE_COMPRESSION_BC),
+        ] {
+            let mut b = device_without(features);
+            let b = &mut b;
+            let a = bc_texture(b, format, 1);
+            b.write_texture(
+                &region(&a, 0),
+                blocks_extent(0),
+                &blocks,
+                pitch,
+                rows,
+                WriteMode::Ordered,
+            );
+            // Texture to texture.
+            let copy = bc_texture(b, format, 1);
+            b.copy_texture(&region(&a, 0), &region(&copy, 0), blocks_extent(0));
+            assert_eq!(read_level(b, &copy, format, 0), blocks, "{route}: copy");
+            // Into a buffer at a pitch of 256, and back from it into a third texture.
+            let buffer = b
+                .create_buffer(&BufferDesc {
+                    size: 256 * u64::from(rows),
+                    usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                    intent: MapIntent::Rarely,
+                })
+                .unwrap();
+            let at = CopyBufferTexture {
                 buffer: &buffer,
                 offset: 0,
-                size: 256 * u64::from(rows),
-            },
-            256 * rows as usize,
-        );
-        for r in 0..rows as usize {
+                row_pitch: 256,
+                rows_per_layer: rows,
+            };
+            b.copy_texture_to_buffer(&region(&copy, 0), &at, blocks_extent(0));
+            let from_buffer = bc_texture(b, format, 1);
+            b.copy_buffer_to_texture(&at, &region(&from_buffer, 0), blocks_extent(0));
             assert_eq!(
-                &in_buffer[r * 256..r * 256 + row],
-                &blocks[r * row..(r + 1) * row],
-                "{route}: buffer row {r}"
+                read_level(b, &from_buffer, format, 0),
+                blocks,
+                "{route}: through a buffer"
             );
-        }
-        // From an uncompressed texture whose texels are the blocks, and back into one.
-        let (texels, _) = draw::texture_2d(
-            b,
-            Format::Rgba32Uint,
-            SIZE.0 / 4,
-            SIZE.1 / 4,
-            TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
-        )
-        .unwrap();
-        b.write_texture(
-            &region(&texels, 0),
-            Extent {
+            let row = pitch as usize;
+            let in_buffer = read(
+                b,
+                &ReadSource::Buffer {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: 256 * u64::from(rows),
+                },
+                256 * rows as usize,
+            );
+            for r in 0..rows as usize {
+                assert_eq!(
+                    &in_buffer[r * 256..r * 256 + row],
+                    &blocks[r * row..(r + 1) * row],
+                    "{route}: buffer row {r}"
+                );
+            }
+            // From an uncompressed texture whose texels are the blocks, and back into one.
+            let (texels, _) = draw::texture_2d(
+                b,
+                Format::Rgba32Uint,
+                SIZE.0 / 4,
+                SIZE.1 / 4,
+                TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            )
+            .unwrap();
+            b.write_texture(
+                &region(&texels, 0),
+                Extent {
+                    width: SIZE.0 / 4,
+                    height: SIZE.1 / 4,
+                    depth_or_layers: 1,
+                },
+                &blocks,
+                pitch,
+                rows,
+                WriteMode::Ordered,
+            );
+            let from_texels = bc_texture(b, format, 1);
+            let texel_extent = Extent {
                 width: SIZE.0 / 4,
                 height: SIZE.1 / 4,
                 depth_or_layers: 1,
-            },
-            &blocks,
-            pitch,
-            rows,
-            WriteMode::Ordered,
-        );
-        let from_texels = bc_texture(b, format, 1);
-        let texel_extent = Extent {
-            width: SIZE.0 / 4,
-            height: SIZE.1 / 4,
-            depth_or_layers: 1,
-        };
-        b.copy_texture(&region(&texels, 0), &region(&from_texels, 0), texel_extent);
-        assert_eq!(
-            read_level(b, &from_texels, format, 0),
-            blocks,
-            "{route}: from uncompressed texels"
-        );
-        let (back, _) = draw::texture_2d(
-            b,
-            Format::Rgba32Uint,
-            SIZE.0 / 4,
-            SIZE.1 / 4,
-            TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
-        )
-        .unwrap();
-        b.copy_texture(
-            &region(&from_texels, 0),
-            &region(&back, 0),
-            blocks_extent(0),
-        );
-        let src = ReadSource::Texture {
-            region: region(&back, 0),
-            extent: texel_extent,
-        };
-        assert_eq!(
-            read(b, &src, blocks.len()),
-            blocks,
-            "{route}: into uncompressed texels"
-        );
-        // The decoded copies sample as the source does.
-        assert_eq!(
-            load_level(b, &from_texels, format, 0),
-            load_level(b, &a, format, 0),
-            "{route}: sampled"
-        );
-        assert_eq!(b.status(), DeviceStatus::Ok, "{route}");
-        let host = b.slow_paths().count(SlowPath::HostCopyReadBack);
-        eprintln!("{route}: HostCopyReadBack {host}");
-        assert_eq!(host > 0, route == "decoded");
+            };
+            b.copy_texture(&region(&texels, 0), &region(&from_texels, 0), texel_extent);
+            assert_eq!(
+                read_level(b, &from_texels, format, 0),
+                blocks,
+                "{route}: from uncompressed texels"
+            );
+            let (back, _) = draw::texture_2d(
+                b,
+                Format::Rgba32Uint,
+                SIZE.0 / 4,
+                SIZE.1 / 4,
+                TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            )
+            .unwrap();
+            b.copy_texture(
+                &region(&from_texels, 0),
+                &region(&back, 0),
+                blocks_extent(0),
+            );
+            let src = ReadSource::Texture {
+                region: region(&back, 0),
+                extent: texel_extent,
+            };
+            assert_eq!(
+                read(b, &src, blocks.len()),
+                blocks,
+                "{route}: into uncompressed texels"
+            );
+            // The decoded copies sample as the source does.
+            assert_eq!(
+                load_level(b, &from_texels, format, 0),
+                load_level(b, &a, format, 0),
+                "{route}: sampled"
+            );
+            assert_eq!(b.status(), DeviceStatus::Ok, "{route}");
+            let host = b.slow_paths().count(SlowPath::HostCopyReadBack);
+            eprintln!("{route} texture {case}: HostCopyReadBack {host}");
+            assert_eq!(host > 0, route == "decoded");
+        }
     }
 }
