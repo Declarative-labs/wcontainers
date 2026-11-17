@@ -41,9 +41,11 @@ branches into it at the start and end of every run.
   - The direct3d-12 branch merged at the start (the others had nothing new); at the end webgpu,
     webgl and direct3d-12 had new work and were merged, with no conflict.
 
-- G1, run 3 (2026-11-17): the seven findings of G1's independent check fixed (below). The start
-  merges brought webgl, direct3d-11, direct3d-12 and shaders in without conflict; the shaders track
-  added `VariantKey::output_interpolation` (kept: it serves every front).
+- G1, run 3 (2026-11-17), done and pushed: the seven findings of G1's independent check fixed
+  (below). The start merges brought webgl, direct3d-11, direct3d-12 and shaders in without
+  conflict; the shaders track added `VariantKey::output_interpolation` (kept: it serves every
+  front). The end merges brought webgpu, webgl, direct3d-11 and direct3d-12 in without conflict; the
+  webgpu track added `SlowPath::IntegerClearByDraw` (kept: a named slow path).
 
 ## G1's check, and how each finding was settled (run 3)
 
@@ -299,6 +301,21 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 - On the Mac only formatting: `nix develop -c cargo fmt -p wcontainers-gpu -p wcontainers-gpu-test`.
 
 ## Measurements
+
+- G1 run 3, all on the Linux laptop (i7-8750H), on the final code after the end merges (b9a51ce):
+  - Random sequences (scratch `g1r3/sequences-100k-final.log`, `--release`), each 100,000 asked and
+    run, recorded with no rule broken and replayed identically, 35.0 to 35.1 s each, load 0.7 to
+    0.9: seed 0x5eed, 4,556,023 calls (19,994 multisampled passes, 28,344 depth-stencil passes,
+    42,632 indexed draws, 28,105 queries, 21,258 scissored draws, 7,507 tinted draws, 10,085
+    no-overwrite writes without a wait); seed 0xc0ffee, 4,555,910 calls; seed 0x7a11ed (new),
+    4,567,456 calls. The same three on the code before the view checks gave the same counts
+    (`g1r3/sequences-100k.log`).
+  - Suite on the recording back end 24 of 24; rules 45 of 45; helpers 13 of 13; fast paths 10 of
+    10; `tests/recorder.rs` 30 of 30 (its 6 rule tests and the suite); `wcontainers-gpu` 32 of 32.
+  - Faults checked by hand this run: the counter's restore of the saved depth removed (the halves
+    test gives 0, not 12,004); the generator never waiting before a no-overwrite write (the
+    recorder refuses it in the first sequences run).
+  - The whole workspace checks (`cargo check --workspace --all-targets`) after the end merges.
 
 - G1 run 2, all on the Linux laptop (i7-8750H):
   - Random sequences on the final recorder (scratch `g1r2/sequences-100k.log`, `--release`):
