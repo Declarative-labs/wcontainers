@@ -54,6 +54,9 @@ struct Out { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> }
 @vertex fn vs_out(@location(0) v: vec2<f32>) -> Out {
     return Out(vec4<f32>(v, 0.5, 1.0), vec4<f32>(1.0));
 }
+@vertex fn vs_reads(@location(0) v: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(v, p.c.z, 1.0);
+}
 ";
 
 fn buffer(r: &mut Recorder, size: u64, usage: BufferUsage) -> Id {
@@ -4291,4 +4294,137 @@ fn ranges_ending_past_the_largest_offset_are_refused() {
         c.vertex_buffers = streams
     });
     d.refused("a vertex past the buffer's end");
+}
+
+#[test]
+fn textures_paired_with_samplers_lie_in_the_sampled_texture_range() {
+    // Textures at the edges of 32..160 and outside it, sampled through a sampler (directly or in a
+    // function the entry point calls) or only loaded.
+    let source = "
+@group(0) @binding(16) var s: sampler;
+@group(3) @binding(5) var low: texture_2d<f32>;
+@group(0) @binding(31) var below: texture_2d<f32>;
+@group(0) @binding(32) var first: texture_2d<f32>;
+@group(1) @binding(159) var last: texture_2d<f32>;
+@group(0) @binding(160) var past: texture_2d<f32>;
+fn sample_low() -> vec4<f32> {
+    return textureSampleLevel(low, s, vec2<f32>(0.5), 0.0);
+}
+@fragment fn pairs_5() -> @location(0) vec4<f32> { return sample_low(); }
+@fragment fn pairs_31() -> @location(0) vec4<f32> {
+    return textureSampleLevel(below, s, vec2<f32>(0.5), 0.0);
+}
+@fragment fn pairs_32() -> @location(0) vec4<f32> {
+    return textureSampleLevel(first, s, vec2<f32>(0.5), 0.0);
+}
+@fragment fn pairs_159() -> @location(0) vec4<f32> {
+    return textureSampleLevel(last, s, vec2<f32>(0.5), 0.0);
+}
+@fragment fn pairs_160() -> @location(0) vec4<f32> {
+    return textureSampleLevel(past, s, vec2<f32>(0.5), 0.0);
+}
+@fragment fn loads_5() -> @location(0) vec4<f32> {
+    return textureLoad(low, vec2<i32>(0, 0), 0) + textureLoad(past, vec2<i32>(0, 0), 0);
+}
+@vertex fn vs_pairs_5() -> @builtin(position) vec4<f32> {
+    return textureSampleLevel(low, s, vec2<f32>(0.5), 0.0);
+}
+@vertex fn vs_pairs_32() -> @builtin(position) vec4<f32> {
+    return textureSampleLevel(first, s, vec2<f32>(0.5), 0.0);
+}
+";
+    let module = naga::front::wgsl::parse_str(source).unwrap();
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .unwrap();
+    let mut r = Recorder::new();
+    let outside = Err(GpuError::Invalid(
+        "a texture paired with a sampler outside the sampled-texture bindings",
+    ));
+    for (entry, stage, made) in [
+        ("pairs_5", ShaderStage::Fragment, false),
+        ("pairs_31", ShaderStage::Fragment, false),
+        ("pairs_32", ShaderStage::Fragment, true),
+        ("pairs_159", ShaderStage::Fragment, true),
+        ("pairs_160", ShaderStage::Fragment, false),
+        ("loads_5", ShaderStage::Fragment, true),
+        ("vs_pairs_5", ShaderStage::Vertex, false),
+        ("vs_pairs_32", ShaderStage::Vertex, true),
+    ] {
+        let got = r
+            .create_shader(&ShaderModule {
+                module: module.clone(),
+                info: info.clone(),
+                entry_point: entry.into(),
+                stage,
+                key: *blake3::hash(entry.as_bytes()).as_bytes(),
+            })
+            .map(|_| ());
+        if made {
+            assert_eq!(got, Ok(()), "{entry}");
+        } else {
+            assert_eq!(got, outside, "{entry}");
+        }
+    }
+}
+
+#[test]
+fn binding_entries_name_every_stage_that_reads_them() {
+    // A texture and sampler the fragment program samples, and a uniform the vertex program reads,
+    // each made for the stages given; naming a stage that does not read is allowed.
+    let f = StageSet::FRAGMENT;
+    let v = StageSet::VERTEX;
+    let both = v | f;
+    let fragment_left_out = "a binding the fragment stage reads whose entry leaves that stage out";
+    let vertex_left_out = "a binding the vertex stage reads whose entry leaves that stage out";
+    type Case<'a> = (&'a str, &'a str, [StageSet; 3], Option<&'a str>);
+    let cases: [Case; 7] = [
+        ("vs", "sampled", [f, f, f], None),
+        ("vs", "sampled", [both, both, both], None),
+        ("vs", "sampled", [v, f, f], Some(fragment_left_out)),
+        ("vs", "sampled", [f, v, f], Some(fragment_left_out)),
+        ("vs_reads", "plain", [f, f, v], None),
+        ("vs_reads", "plain", [f, f, both], None),
+        ("vs_reads", "plain", [f, f, f], Some(vertex_left_out)),
+    ];
+    for (vs, fs, [texture_stages, sampler_stages, uniform_stages], violation) in cases {
+        let mut d = Drawing::new();
+        let t = texture(&mut d.r, Format::Rgba8Unorm, 2, TextureUsage::SAMPLE);
+        let tv = view(&mut d.r, &t, Format::Rgba8Unorm);
+        let s = sampler_of(&mut d.r, [Filter::Nearest; 3], None);
+        let u = buffer(&mut d.r, 16, BufferUsage::UNIFORM);
+        let set =
+            d.r.create_binding_set(&[
+                BindingEntry {
+                    binding: 32,
+                    stages: texture_stages,
+                    resource: BindingResource::Texture(&tv),
+                },
+                BindingEntry {
+                    binding: 16,
+                    stages: sampler_stages,
+                    resource: BindingResource::Sampler(&s),
+                },
+                BindingEntry {
+                    binding: 0,
+                    stages: uniform_stages,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &u,
+                        offset: 0,
+                        size: 16,
+                    }),
+                },
+            ])
+            .unwrap();
+        let p = d.program_of(vs, fs);
+        d.begin();
+        d.draw(&p, Some(&set), Topology::TriangleList, false);
+        match violation {
+            Some(violation) => d.refused(violation),
+            None => assert!(d.r.violations.is_empty(), "{vs} {fs}: {:?}", d.r.violations),
+        }
+    }
 }

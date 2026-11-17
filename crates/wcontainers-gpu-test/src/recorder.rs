@@ -58,6 +58,9 @@ pub(crate) struct ProgramObj {
     pub fragment: Option<Rc<ShaderModule>>,
 }
 
+/// A binding set's entries: binding number, the stages named, and what is bound.
+pub(crate) type Entries = Vec<(u32, StageSet, Bound)>;
+
 pub(crate) enum Obj {
     Buffer(BufferObj),
     Texture(TextureObj),
@@ -69,7 +72,7 @@ pub(crate) enum Obj {
     DepthStencil(DepthStencilDesc),
     Raster(RasterDesc),
     VertexLayout(Box<VertexLayoutDesc>),
-    BindingSet(Vec<(u32, Bound)>, StageCounts),
+    BindingSet(Entries, StageCounts),
     QuerySet {
         kind: QueryKind,
         results: Vec<u64>,
@@ -1372,14 +1375,28 @@ impl Backend for Recorder {
                 ShaderStage::Fragment => naga::ShaderStage::Fragment,
                 ShaderStage::Compute => naga::ShaderStage::Compute,
             };
-            if !module
+            let Some(at) = module
                 .module
                 .entry_points
                 .iter()
-                .any(|e| e.name == module.entry_point && e.stage == stage)
-            {
+                .position(|e| e.name == module.entry_point && e.stage == stage)
+            else {
                 return Err(GpuError::Invalid(
                     "a shader naming an entry point of its stage its module lacks",
+                ));
+            };
+            let textures = SlotKind::Texture.first_binding()
+                ..SlotKind::Texture.first_binding() + SlotKind::Texture.slots();
+            let outside = |image: naga::Handle<naga::GlobalVariable>| {
+                module.module.global_variables[image]
+                    .binding
+                    .as_ref()
+                    .is_some_and(|b| !textures.contains(&b.binding))
+            };
+            let paired = &module.info.get_entry_point(at).sampling_set;
+            if paired.iter().any(|k| outside(k.image)) {
+                return Err(GpuError::Invalid(
+                    "a texture paired with a sampler outside the sampled-texture bindings",
                 ));
             }
             let id = self.add(Obj::Shader(Rc::new(module.clone())));
@@ -1730,7 +1747,7 @@ impl Backend for Recorder {
                         return Err(GpuError::Absent(Features::RESOURCE_TABLES));
                     }
                 };
-                if set.iter().any(|(b, _)| *b == e.binding) {
+                if set.iter().any(|(b, _, _)| *b == e.binding) {
                     return Err(GpuError::Invalid("two entries at one binding"));
                 }
                 let kind = match e.resource {
@@ -1747,7 +1764,7 @@ impl Backend for Recorder {
                         c[kind] += 1;
                     }
                 }
-                set.push((e.binding, bound));
+                set.push((e.binding, e.stages, bound));
             }
             let id = self.add(Obj::BindingSet(set, counts));
             Ok(id)
