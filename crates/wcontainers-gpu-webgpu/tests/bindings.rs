@@ -13,11 +13,12 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor,
-    BlendOp, BufferDesc, BufferRange, BufferUsage, ColorAttachment, CompareFn, DepthAttachment,
-    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, Format, FormatUse, LoadOp,
-    MapIntent, Origin, PassDesc, Program, ReadSource, ShaderStage, StageSet, StoreOp,
-    TextureRegion, TextureUsage, TextureViewDesc, Topology, ViewDimension, Viewport, WriteMode,
+    AddressMode, AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc,
+    BlendFactor, BlendOp, BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment,
+    CompareFn, DepthAttachment, DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent,
+    Filter, Format, FormatUse, LoadOp, MapIntent, Origin, PassDesc, Program, ReadSource,
+    SamplerDesc, ShaderStage, StageSet, StoreOp, TextureRegion, TextureUsage, TextureViewDesc,
+    Topology, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -649,4 +650,170 @@ fn helper_blocks_of_each_stage_read_their_own_values() {
     let got = finish(&mut b, &k, 4);
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert_eq!(got, [0, 0, 0, 0, 10, 20, 30, 255]);
+}
+
+/// Samples a 2 by 1 texture between its two texels: 0.5 filtered linearly, the right texel's value
+/// at a point, written to an `r32float` target.
+const SAMPLE_MIDDLE_WGSL: &str = r#"
+@group(1) @binding(16) var s: sampler;
+@group(1) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn ps() -> @location(0) vec4f {
+    return vec4f(textureSampleLevel(t, s, vec2f(0.5, 0.5), 0.0).x, 0.0, 0.0, 1.0);
+}
+"#;
+
+fn sampler(b: &mut WebGpu, filter: Filter) -> <WebGpu as Backend>::Sampler {
+    b.create_sampler(&SamplerDesc {
+        min: filter,
+        mag: filter,
+        mip: Filter::Nearest,
+        address: [AddressMode::Clamp; 3],
+        lod_range: [0, f32::MAX.to_bits()],
+        anisotropy: 1,
+        compare: None,
+        border: BorderColor::TransparentBlack,
+    })
+    .unwrap()
+}
+
+/// A 2 by 1 texture of `format` holding 0 and 1 (`depth32float` written through the depth draw).
+fn zero_one(b: &mut WebGpu, format: Format) -> <WebGpu as Backend>::TextureView {
+    let (texture, view) = draw::texture_2d(
+        b,
+        format,
+        2,
+        1,
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+    )
+    .unwrap();
+    let bytes: Vec<u8> = match format {
+        Format::Rgba8Unorm => vec![0, 0, 0, 0, 255, 255, 255, 255],
+        _ => [0.0f32, 1.0].iter().flat_map(|v| v.to_le_bytes()).collect(),
+    };
+    b.write_texture(
+        &TextureRegion {
+            texture: &texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        },
+        Extent {
+            width: 2,
+            height: 1,
+            depth_or_layers: 1,
+        },
+        &bytes,
+        bytes.len() as u32,
+        1,
+        WriteMode::Ordered,
+    );
+    view
+}
+
+/// Draws the middle sample of `view` through `sampler` and returns it.
+fn sample_middle(
+    b: &mut WebGpu,
+    k: &Kit,
+    view: &<WebGpu as Backend>::TextureView,
+    sampler: &<WebGpu as Backend>::Sampler,
+) -> f32 {
+    let set = b
+        .create_binding_set(&[
+            BindingEntry {
+                binding: 16,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Sampler(sampler),
+            },
+            BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(view),
+            },
+        ])
+        .unwrap();
+    begin(b, k, [0.0; 4]);
+    b.draw(&draw_call(k, [None, Some(&set), None, None], &whole(1)));
+    f32::from_le_bytes(finish(b, k, 4).try_into().unwrap())
+}
+
+/// Linear filtering halfway between 0 and 1, within the filter weights' precision (Direct3D asks
+/// for at least 8 fractional bits; the RTX 3080 gives 0.5000076).
+fn halfway(v: f32) -> bool {
+    (v - 0.5).abs() < 1.0 / 256.0
+}
+
+/// Layouts follow plan 4.5: a filterable view takes a filtering sampler slot, which also takes a
+/// point sampler, so one program bound with a point and then a linear sampler is one pipeline; a
+/// depth view and an `r32float` view on a device made without `float32-filterable` take
+/// unfilterable slots and are sampled at points, and refuse a linear sampler loudly; with
+/// `float32-filterable`, `r32float` filters.
+#[test]
+fn layouts_follow_each_views_filterability() {
+    for float32_filterable in [true, false] {
+        let without = if float32_filterable {
+            wgpu::Features::empty()
+        } else {
+            // As in a browser: natively the adapter's own format features would filter anyway.
+            wgpu::Features::FLOAT32_FILTERABLE
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        };
+        let backends = match std::env::var("WEBGPU_API").as_deref() {
+            Ok("dx12") => wgpu::Backends::DX12,
+            Ok("vulkan") => wgpu::Backends::VULKAN,
+            Ok("metal") => wgpu::Backends::METAL,
+            _ => wgpu::Backends::PRIMARY,
+        };
+        let mut b = pollster::block_on(draw::device_without(&draw::instance(backends), without))
+            .unwrap()
+            .0;
+        let filters = b
+            .caps()
+            .formats
+            .get(Format::R32Float)
+            .contains(FormatUse::FILTER);
+        if float32_filterable && !filters {
+            eprintln!("this adapter has no float32-filterable");
+            continue;
+        }
+        assert_eq!(filters, float32_filterable);
+        let k = Kit {
+            program: draw::program(&mut b, SAMPLE_MIDDLE_WGSL).unwrap(),
+            ..kit(&mut b, Format::R32Float, 1, &draw::opaque())
+        };
+        let (point, linear) = (
+            sampler(&mut b, Filter::Nearest),
+            sampler(&mut b, Filter::Linear),
+        );
+        let rgba8 = zero_one(&mut b, Format::Rgba8Unorm);
+        let before = b.counters().pipelines;
+        assert_eq!(sample_middle(&mut b, &k, &rgba8, &point), 1.0);
+        assert!(halfway(sample_middle(&mut b, &k, &rgba8, &linear)));
+        assert_eq!(
+            b.counters().pipelines - before,
+            1,
+            "point then linear: one pipeline"
+        );
+        for format in [Format::R32Float, Format::Depth32Float] {
+            let view = zero_one(&mut b, format);
+            assert_eq!(sample_middle(&mut b, &k, &view, &point), 1.0, "{format:?}");
+            assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
+        }
+        let r32 = zero_one(&mut b, Format::R32Float);
+        if filters {
+            assert!(halfway(sample_middle(&mut b, &k, &r32, &linear)));
+            assert_eq!(b.status(), DeviceStatus::Ok);
+        } else {
+            sample_middle(&mut b, &k, &r32, &linear);
+            assert_ne!(
+                b.status(),
+                DeviceStatus::Ok,
+                "a linear sampler on an unfilterable view"
+            );
+        }
+    }
 }

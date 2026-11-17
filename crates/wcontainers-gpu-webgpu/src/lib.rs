@@ -175,6 +175,8 @@ struct ViewObj {
 struct SamplerObj {
     id: u64,
     raw: wgpu::Sampler,
+    /// Any of its filters is linear.
+    filtering: bool,
 }
 
 #[derive(Debug)]
@@ -939,7 +941,11 @@ impl Backend for WebGpu {
             },
             border_color: None,
         });
-        Ok(Sampler(Rc::new(SamplerObj { id: self.id(), raw })))
+        Ok(Sampler(Rc::new(SamplerObj {
+            id: self.id(),
+            raw,
+            filtering: [desc.min, desc.mag, desc.mip].contains(&Filter::Linear),
+        })))
     }
 
     fn create_shader(&mut self, module: &ShaderModule) -> Result<Shader, GpuError> {

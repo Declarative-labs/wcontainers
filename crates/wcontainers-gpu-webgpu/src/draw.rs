@@ -570,7 +570,17 @@ impl WebGpu {
                     })
                 }
                 SetRes::View(v) => wgpu::BindingResource::TextureView(&v.0.read),
-                SetRes::Sampler(s) => wgpu::BindingResource::Sampler(&s.0.raw),
+                SetRes::Sampler(s) => {
+                    if s.0.filtering
+                        && le.ty
+                            == wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering)
+                    {
+                        return Err(
+                            "a filtering sampler with a texture this device cannot filter; fronts filter in the program (FilterInShader)",
+                        );
+                    }
+                    wgpu::BindingResource::Sampler(&s.0.raw)
+                }
             };
             entries.push(wgpu::BindGroupEntry {
                 binding: le.binding,
