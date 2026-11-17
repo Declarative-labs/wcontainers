@@ -2638,6 +2638,8 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-webgpu",
  "wgpu",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]
