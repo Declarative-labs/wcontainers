@@ -824,6 +824,16 @@ impl WebGpu {
         if !call.immediates.is_empty() {
             return Err("immediates are not built yet (limit 0)");
         }
+        if call.viewports.len() > 1 || call.scissors.len() > 1 {
+            return Err(
+                "one viewport and scissor per draw; fronts split the others (MultiViewportSplit)",
+            );
+        }
+        if call.stencil_reference[0] != call.stencil_reference[1] {
+            return Err(
+                "one stencil reference per draw without STENCIL_PER_FACE (StencilFacesSplit)",
+            );
+        }
         let strip = matches!(
             topology,
             wgpu::PrimitiveTopology::LineStrip | wgpu::PrimitiveTopology::TriangleStrip

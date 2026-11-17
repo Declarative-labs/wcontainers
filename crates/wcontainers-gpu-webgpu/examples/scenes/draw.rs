@@ -244,7 +244,7 @@ pub struct Prepared {
     depth_stencil: <B as Backend>::DepthStencil,
     raster: <B as Backend>::Raster,
     vertex_layout: <B as Backend>::VertexLayout,
-    vertices: <B as Backend>::Buffer,
+    pub vertices: <B as Backend>::Buffer,
     index: Option<<B as Backend>::Buffer>,
     sets: [Option<<B as Backend>::BindingSet>; 4],
     range: (u32, u32, bool),
