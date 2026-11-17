@@ -3,19 +3,26 @@
 <title>WebGPU back end scenes</title>
 <script type="module">
 // The scenes example built for WebAssembly, as wasm-bindgen writes it into ./pkg.
-import init, { draw_scene, adapter } from './pkg/scenes.js';
+import init, { draw_scene, draw_viewports, adapter } from './pkg/scenes.js';
 const ready = init();
+
+const dataUrl = (png) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(new Blob([png], { type: 'image/png' }));
+});
+
+// The eight-viewport scene, with its viewports at half pixels or moved to whole ones.
+window.drawViewports = async (rounded) => {
+  await ready;
+  return await dataUrl(await draw_viewports(rounded));
+};
 
 // One scene, drawn through the back end on this browser's WebGPU, as a PNG data URL.
 window.drawScene = async (name, twist) => {
   await ready;
-  const png = await draw_scene(name, twist);
-  return await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(new Blob([png], { type: 'image/png' }));
-  });
+  return await dataUrl(await draw_scene(name, twist));
 };
 
 // The adapter a high-performance request gets, as the browser and as the back end describe it.

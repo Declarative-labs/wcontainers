@@ -19,6 +19,8 @@ naga = { version = "30.0.2", default-features = false }
 # naga 30.0.2 as published, plus our changes (listed in docs/status-graphics-shaders.md), until upstream has them.
 [patch.crates-io]
 naga = { path = "third_party/naga" }
+# wgpu 30.0.2 with its browser back end passing a render pass's occlusion query set to WebGPU.
+wgpu = { path = "third_party/wgpu" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

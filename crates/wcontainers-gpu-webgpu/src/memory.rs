@@ -132,7 +132,7 @@ where
     if region.stencil {
         Format::Stencil8
     } else {
-        texture.desc.format
+        texture.held
     }
 }
 
@@ -348,6 +348,23 @@ impl WebGpu {
         rows_per_layer: u32,
         mode: WriteMode,
     ) {
+        if region.texture.0.blocks.is_some() {
+            self.write_blocks(region, extent, data, row_pitch, rows_per_layer, mode);
+        } else {
+            self.write_texels(region, extent, data, row_pitch, rows_per_layer, mode);
+        }
+    }
+
+    /// Writes texels in the format the texture holds.
+    pub(crate) fn write_texels(
+        &mut self,
+        region: &TextureRegion<'_, Self>,
+        extent: Extent,
+        data: &[u8],
+        row_pitch: u32,
+        rows_per_layer: u32,
+        mode: WriteMode,
+    ) {
         let t = &region.texture.0;
         if !region.stencil && filled_by_draw(t.desc.format) {
             let Some((staged, sf, how)) = self.depth_staging(t.desc.format, extent) else {
@@ -362,7 +379,7 @@ impl WebGpu {
                 stencil: false,
             };
             // A new texture: written straight from the queue.
-            self.write_texture_impl(&at, extent, data, row_pitch, rows_per_layer, mode);
+            self.write_texels(&at, extent, data, row_pitch, rows_per_layer, mode);
             let (tex, mip, layer, origin) = (
                 region.texture.clone(),
                 region.mip,
@@ -495,6 +512,10 @@ impl WebGpu {
             self.fail("copy_texture inside a pass");
             return;
         }
+        if src.texture.0.blocks.is_some() || dst.texture.0.blocks.is_some() {
+            self.copy_blocks(src, dst, extent);
+            return;
+        }
         let (s, d) = (&src.texture.0, &dst.texture.0);
         s.used_in.set(self.serial);
         d.used_in.set(self.serial);
@@ -535,8 +556,16 @@ impl WebGpu {
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor::default())
                 })
                 .copy_texture_to_texture(from, to, extent3d(extent));
-        } else if sf.block() == df.block() && !df.is_depth_stencil() {
+        } else if sf.block().2 == df.block().2 && !df.is_depth_stencil() {
+            // Typeless twins, or a block-compressed format and an uncompressed one whose texels are
+            // its blocks: the destination's extent covers the same blocks.
             self.slow.hit(SlowPath::CopyThroughBuffer);
+            let ((sbw, sbh, _), (dbw, dbh, _)) = (sf.block(), df.block());
+            let into = Extent {
+                width: extent.width.div_ceil(sbw) * dbw,
+                height: extent.height.div_ceil(sbh) * dbh,
+                depth_or_layers: extent.depth_or_layers,
+            };
             let (row, rows) = row_bytes(sf, extent.width, extent.height);
             let pitch = row.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
             let temp = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -559,7 +588,7 @@ impl WebGpu {
                 layout,
             };
             e.copy_texture_to_buffer(from, info, extent3d(extent));
-            e.copy_buffer_to_texture(info, to, extent3d(extent));
+            e.copy_buffer_to_texture(info, to, extent3d(into));
         } else {
             self.fail("a copy between formats of different block sizes");
         }
@@ -641,6 +670,10 @@ impl WebGpu {
     ) {
         if self.pass.is_some() {
             self.fail("buffer and texture copies inside a pass");
+            return;
+        }
+        if region.texture.0.blocks.is_some() {
+            self.copy_buffer_blocks(buffer, region, extent, to_texture);
             return;
         }
         let t = &region.texture.0;
@@ -813,7 +846,8 @@ impl WebGpu {
         rows: u64,
     ) -> Readback {
         let rb = Readback(Rc::new(ReadbackObj {
-            buffer,
+            buffer: Some(buffer),
+            host: Vec::new(),
             state: Arc::new(AtomicU8::new(MAP_PENDING)),
             serial: self.serial,
             skip,
@@ -823,6 +857,21 @@ impl WebGpu {
         }));
         self.to_map.push(rb.clone());
         rb
+    }
+
+    /// A read back the host answers at once.
+    pub(crate) fn host_readback(&mut self, bytes: Vec<u8>) -> Readback {
+        let len = bytes.len() as u64;
+        Readback(Rc::new(ReadbackObj {
+            buffer: None,
+            host: bytes,
+            state: Arc::new(AtomicU8::new(MAP_READY)),
+            serial: self.serial,
+            skip: 0,
+            row: len,
+            pitch: len,
+            rows: 1,
+        }))
     }
 
     pub(crate) fn read_back_impl(
@@ -853,6 +902,11 @@ impl WebGpu {
                 Ok(self.readback(target, offset - start, *size, *size, 1))
             }
             ReadSource::Texture { region, extent } => {
+                if region.texture.0.blocks.is_some() {
+                    return self.read_blocks(region, *extent).ok_or(GpuError::Invalid(
+                        "a read back outside the texture's blocks",
+                    ));
+                }
                 let t = &region.texture.0;
                 t.used_in.set(self.serial);
                 let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
@@ -948,8 +1002,12 @@ impl WebGpu {
             self.fail("finish_read into fewer bytes than the read back holds");
             return;
         }
+        let Some(buffer) = &o.buffer else {
+            dst[..o.host.len()].copy_from_slice(&o.host);
+            return;
+        };
         {
-            let Ok(data) = o.buffer.slice(..).get_mapped_range() else {
+            let Ok(data) = buffer.slice(..).get_mapped_range() else {
                 self.fail("a ready read back could not be mapped");
                 return;
             };
@@ -959,7 +1017,7 @@ impl WebGpu {
                 dst[to..to + o.row as usize].copy_from_slice(&data[from..from + o.row as usize]);
             }
         }
-        o.buffer.unmap();
-        o.buffer.destroy();
+        buffer.unmap();
+        buffer.destroy();
     }
 }
