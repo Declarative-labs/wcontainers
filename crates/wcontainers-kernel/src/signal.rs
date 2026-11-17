@@ -197,6 +197,15 @@ impl Kernel {
         let _ = self.send_queued(cx, target, signal, info, true);
     }
 
+    /// Whether a timer's signal to one thread or (with none) the process would be dropped as
+    /// ignored (`prepare_signal` failing in `posixtimer_send_sigqueue`).
+    pub(crate) fn timer_signal_ignored(&self, thread: Option<Tid>, pid: Pid, signal: u32) -> bool {
+        let Some(tid) = thread.or_else(|| self.processes[&pid].threads.first().copied()) else {
+            return false;
+        };
+        self.threads[&tid].signal_mask & bit(signal) == 0 && self.dropped(pid, signal)
+    }
+
     /// Linux's `posixtimer_init_sigqueue`: a place in the calling user's count for a new timer's
     /// signal, or none (EAGAIN) when the count is at the caller's RLIMIT_SIGPENDING.
     pub(crate) fn timer_charge(&mut self, tid: Tid) -> Option<crate::process::Charge> {
