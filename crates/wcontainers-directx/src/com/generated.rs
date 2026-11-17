@@ -8,6 +8,80 @@ use windows::Win32::Graphics::Dxgi::*;
 
 use super::*;
 
+impl ID3D11Device1_Impl for Device_Impl {
+    fn GetImmediateContext1(
+        &self,
+        ppimmediatecontext: windows::core::OutRef<ID3D11DeviceContext1>,
+    ) {
+        let _call = self.call();
+        self.get_immediate_context1(ppimmediatecontext)
+    }
+    fn CreateDeferredContext1(
+        &self,
+        contextflags: u32,
+        ppdeferredcontext: windows::core::OutRef<ID3D11DeviceContext1>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppdeferredcontext, |ppdeferredcontext| {
+            Err(missing("ID3D11Device1::CreateDeferredContext1"))
+        })
+    }
+    fn CreateBlendState1(
+        &self,
+        pblendstatedesc: *const D3D11_BLEND_DESC1,
+        ppblendstate: windows::core::OutRef<ID3D11BlendState1>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppblendstate, |ppblendstate| {
+            self.create_blend_state1(pblendstatedesc, ppblendstate)
+        })
+    }
+    fn CreateRasterizerState1(
+        &self,
+        prasterizerdesc: *const D3D11_RASTERIZER_DESC1,
+        pprasterizerstate: windows::core::OutRef<ID3D11RasterizerState1>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(pprasterizerstate, |pprasterizerstate| {
+            self.create_rasterizer_state1(prasterizerdesc, pprasterizerstate)
+        })
+    }
+    fn CreateDeviceContextState(
+        &self,
+        flags: u32,
+        pfeaturelevels: *const windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL,
+        featurelevels: u32,
+        sdkversion: u32,
+        emulatedinterface: *const windows::core::GUID,
+        pchosenfeaturelevel: *mut windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL,
+        ppcontextstate: windows::core::OutRef<ID3DDeviceContextState>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppcontextstate, |ppcontextstate| {
+            Err(missing("ID3D11Device1::CreateDeviceContextState"))
+        })
+    }
+    fn OpenSharedResource1(
+        &self,
+        hresource: windows::Win32::Foundation::HANDLE,
+        returnedinterface: *const windows::core::GUID,
+        ppresource: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        Err(missing("ID3D11Device1::OpenSharedResource1"))
+    }
+    fn OpenSharedResourceByName(
+        &self,
+        lpname: &windows::core::PCWSTR,
+        dwdesiredaccess: u32,
+        returnedinterface: *const windows::core::GUID,
+        ppresource: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        Err(missing("ID3D11Device1::OpenSharedResourceByName"))
+    }
+}
+
 impl ID3D11Device_Impl for Device_Impl {
     fn CreateBuffer(
         &self,
@@ -16,7 +90,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppbuffer: windows::core::OutRef<ID3D11Buffer>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_buffer(pdesc, pinitialdata, ppbuffer)
+        creating(ppbuffer, |ppbuffer| {
+            self.create_buffer(pdesc, pinitialdata, ppbuffer)
+        })
     }
     fn CreateTexture1D(
         &self,
@@ -25,7 +101,9 @@ impl ID3D11Device_Impl for Device_Impl {
         pptexture1d: windows::core::OutRef<ID3D11Texture1D>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_texture1_d(pdesc, pinitialdata, pptexture1d)
+        creating(pptexture1d, |pptexture1d| {
+            self.create_texture1_d(pdesc, pinitialdata, pptexture1d)
+        })
     }
     fn CreateTexture2D(
         &self,
@@ -34,7 +112,9 @@ impl ID3D11Device_Impl for Device_Impl {
         pptexture2d: windows::core::OutRef<ID3D11Texture2D>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_texture2_d(pdesc, pinitialdata, pptexture2d)
+        creating(pptexture2d, |pptexture2d| {
+            self.create_texture2_d(pdesc, pinitialdata, pptexture2d)
+        })
     }
     fn CreateTexture3D(
         &self,
@@ -43,7 +123,9 @@ impl ID3D11Device_Impl for Device_Impl {
         pptexture3d: windows::core::OutRef<ID3D11Texture3D>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_texture3_d(pdesc, pinitialdata, pptexture3d)
+        creating(pptexture3d, |pptexture3d| {
+            self.create_texture3_d(pdesc, pinitialdata, pptexture3d)
+        })
     }
     fn CreateShaderResourceView(
         &self,
@@ -52,7 +134,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppsrview: windows::core::OutRef<ID3D11ShaderResourceView>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_shader_resource_view(presource, pdesc, ppsrview)
+        creating(ppsrview, |ppsrview| {
+            self.create_shader_resource_view(presource, pdesc, ppsrview)
+        })
     }
     fn CreateUnorderedAccessView(
         &self,
@@ -61,7 +145,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppuaview: windows::core::OutRef<ID3D11UnorderedAccessView>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CreateUnorderedAccessView"))
+        creating(ppuaview, |ppuaview| {
+            Err(missing("ID3D11Device::CreateUnorderedAccessView"))
+        })
     }
     fn CreateRenderTargetView(
         &self,
@@ -70,7 +156,9 @@ impl ID3D11Device_Impl for Device_Impl {
         pprtview: windows::core::OutRef<ID3D11RenderTargetView>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_render_target_view(presource, pdesc, pprtview)
+        creating(pprtview, |pprtview| {
+            self.create_render_target_view(presource, pdesc, pprtview)
+        })
     }
     fn CreateDepthStencilView(
         &self,
@@ -79,7 +167,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppdepthstencilview: windows::core::OutRef<ID3D11DepthStencilView>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_depth_stencil_view(presource, pdesc, ppdepthstencilview)
+        creating(ppdepthstencilview, |ppdepthstencilview| {
+            self.create_depth_stencil_view(presource, pdesc, ppdepthstencilview)
+        })
     }
     fn CreateInputLayout(
         &self,
@@ -90,13 +180,15 @@ impl ID3D11Device_Impl for Device_Impl {
         ppinputlayout: windows::core::OutRef<ID3D11InputLayout>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_input_layout(
-            pinputelementdescs,
-            numelements,
-            pshaderbytecodewithinputsignature,
-            bytecodelength,
-            ppinputlayout,
-        )
+        creating(ppinputlayout, |ppinputlayout| {
+            self.create_input_layout(
+                pinputelementdescs,
+                numelements,
+                pshaderbytecodewithinputsignature,
+                bytecodelength,
+                ppinputlayout,
+            )
+        })
     }
     fn CreateVertexShader(
         &self,
@@ -106,12 +198,14 @@ impl ID3D11Device_Impl for Device_Impl {
         ppvertexshader: windows::core::OutRef<ID3D11VertexShader>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_vertex_shader(
-            pshaderbytecode,
-            bytecodelength,
-            pclasslinkage,
-            ppvertexshader,
-        )
+        creating(ppvertexshader, |ppvertexshader| {
+            self.create_vertex_shader(
+                pshaderbytecode,
+                bytecodelength,
+                pclasslinkage,
+                ppvertexshader,
+            )
+        })
     }
     fn CreateGeometryShader(
         &self,
@@ -121,7 +215,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppgeometryshader: windows::core::OutRef<ID3D11GeometryShader>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CreateGeometryShader"))
+        creating(ppgeometryshader, |ppgeometryshader| {
+            Err(missing("ID3D11Device::CreateGeometryShader"))
+        })
     }
     fn CreateGeometryShaderWithStreamOutput(
         &self,
@@ -136,9 +232,11 @@ impl ID3D11Device_Impl for Device_Impl {
         ppgeometryshader: windows::core::OutRef<ID3D11GeometryShader>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing(
-            "ID3D11Device::CreateGeometryShaderWithStreamOutput",
-        ))
+        creating(ppgeometryshader, |ppgeometryshader| {
+            Err(missing(
+                "ID3D11Device::CreateGeometryShaderWithStreamOutput",
+            ))
+        })
     }
     fn CreatePixelShader(
         &self,
@@ -148,12 +246,14 @@ impl ID3D11Device_Impl for Device_Impl {
         pppixelshader: windows::core::OutRef<ID3D11PixelShader>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_pixel_shader(
-            pshaderbytecode,
-            bytecodelength,
-            pclasslinkage,
-            pppixelshader,
-        )
+        creating(pppixelshader, |pppixelshader| {
+            self.create_pixel_shader(
+                pshaderbytecode,
+                bytecodelength,
+                pclasslinkage,
+                pppixelshader,
+            )
+        })
     }
     fn CreateHullShader(
         &self,
@@ -163,7 +263,9 @@ impl ID3D11Device_Impl for Device_Impl {
         pphullshader: windows::core::OutRef<ID3D11HullShader>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CreateHullShader"))
+        creating(pphullshader, |pphullshader| {
+            Err(missing("ID3D11Device::CreateHullShader"))
+        })
     }
     fn CreateDomainShader(
         &self,
@@ -173,7 +275,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppdomainshader: windows::core::OutRef<ID3D11DomainShader>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CreateDomainShader"))
+        creating(ppdomainshader, |ppdomainshader| {
+            Err(missing("ID3D11Device::CreateDomainShader"))
+        })
     }
     fn CreateComputeShader(
         &self,
@@ -183,7 +287,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppcomputeshader: windows::core::OutRef<ID3D11ComputeShader>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CreateComputeShader"))
+        creating(ppcomputeshader, |ppcomputeshader| {
+            Err(missing("ID3D11Device::CreateComputeShader"))
+        })
     }
     fn CreateClassLinkage(&self) -> windows::core::Result<ID3D11ClassLinkage> {
         let _call = self.call();
@@ -195,7 +301,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppblendstate: windows::core::OutRef<ID3D11BlendState>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_blend_state(pblendstatedesc, ppblendstate)
+        creating(ppblendstate, |ppblendstate| {
+            self.create_blend_state(pblendstatedesc, ppblendstate)
+        })
     }
     fn CreateDepthStencilState(
         &self,
@@ -203,7 +311,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppdepthstencilstate: windows::core::OutRef<ID3D11DepthStencilState>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_depth_stencil_state(pdepthstencildesc, ppdepthstencilstate)
+        creating(ppdepthstencilstate, |ppdepthstencilstate| {
+            self.create_depth_stencil_state(pdepthstencildesc, ppdepthstencilstate)
+        })
     }
     fn CreateRasterizerState(
         &self,
@@ -211,7 +321,9 @@ impl ID3D11Device_Impl for Device_Impl {
         pprasterizerstate: windows::core::OutRef<ID3D11RasterizerState>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_rasterizer_state(prasterizerdesc, pprasterizerstate)
+        creating(pprasterizerstate, |pprasterizerstate| {
+            self.create_rasterizer_state(prasterizerdesc, pprasterizerstate)
+        })
     }
     fn CreateSamplerState(
         &self,
@@ -219,7 +331,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppsamplerstate: windows::core::OutRef<ID3D11SamplerState>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_sampler_state(psamplerdesc, ppsamplerstate)
+        creating(ppsamplerstate, |ppsamplerstate| {
+            self.create_sampler_state(psamplerdesc, ppsamplerstate)
+        })
     }
     fn CreateQuery(
         &self,
@@ -227,7 +341,7 @@ impl ID3D11Device_Impl for Device_Impl {
         ppquery: windows::core::OutRef<ID3D11Query>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_query(pquerydesc, ppquery)
+        creating(ppquery, |ppquery| self.create_query(pquerydesc, ppquery))
     }
     fn CreatePredicate(
         &self,
@@ -235,7 +349,9 @@ impl ID3D11Device_Impl for Device_Impl {
         pppredicate: windows::core::OutRef<ID3D11Predicate>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        self.create_predicate(ppredicatedesc, pppredicate)
+        creating(pppredicate, |pppredicate| {
+            self.create_predicate(ppredicatedesc, pppredicate)
+        })
     }
     fn CreateCounter(
         &self,
@@ -243,7 +359,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppcounter: windows::core::OutRef<ID3D11Counter>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CreateCounter"))
+        creating(ppcounter, |ppcounter| {
+            Err(missing("ID3D11Device::CreateCounter"))
+        })
     }
     fn CreateDeferredContext(
         &self,
@@ -251,7 +369,9 @@ impl ID3D11Device_Impl for Device_Impl {
         ppdeferredcontext: windows::core::OutRef<ID3D11DeviceContext>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CreateDeferredContext"))
+        creating(ppdeferredcontext, |ppdeferredcontext| {
+            Err(missing("ID3D11Device::CreateDeferredContext"))
+        })
     }
     fn OpenSharedResource(
         &self,
@@ -357,6 +477,17 @@ impl ID3D11Device_Impl for Device_Impl {
     }
 }
 
+impl IDXGIDevice1_Impl for Device_Impl {
+    fn SetMaximumFrameLatency(&self, maxlatency: u32) -> windows::core::Result<()> {
+        let _call = self.call();
+        self.set_maximum_frame_latency(maxlatency)
+    }
+    fn GetMaximumFrameLatency(&self) -> windows::core::Result<u32> {
+        let _call = self.call();
+        self.get_maximum_frame_latency()
+    }
+}
+
 impl IDXGIDevice_Impl for Device_Impl {
     fn GetAdapter(&self) -> windows::core::Result<IDXGIAdapter> {
         let _call = self.call();
@@ -426,6 +557,258 @@ impl IDXGIObject_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         self.get_parent(riid, ppparent)
+    }
+}
+
+impl ID3D11DeviceContext1_Impl for Context_Impl {
+    fn CopySubresourceRegion1(
+        &self,
+        pdstresource: windows::core::Ref<ID3D11Resource>,
+        dstsubresource: u32,
+        dstx: u32,
+        dsty: u32,
+        dstz: u32,
+        psrcresource: windows::core::Ref<ID3D11Resource>,
+        srcsubresource: u32,
+        psrcbox: *const D3D11_BOX,
+        copyflags: u32,
+    ) {
+        let _call = self.call();
+        self.copy_subresource_region1(
+            pdstresource,
+            dstsubresource,
+            dstx,
+            dsty,
+            dstz,
+            psrcresource,
+            srcsubresource,
+            psrcbox,
+            copyflags,
+        )
+    }
+    fn UpdateSubresource1(
+        &self,
+        pdstresource: windows::core::Ref<ID3D11Resource>,
+        dstsubresource: u32,
+        pdstbox: *const D3D11_BOX,
+        psrcdata: *const core::ffi::c_void,
+        srcrowpitch: u32,
+        srcdepthpitch: u32,
+        copyflags: u32,
+    ) {
+        let _call = self.call();
+        self.update_subresource1(
+            pdstresource,
+            dstsubresource,
+            pdstbox,
+            psrcdata,
+            srcrowpitch,
+            srcdepthpitch,
+            copyflags,
+        )
+    }
+    fn DiscardResource(&self, presource: windows::core::Ref<ID3D11Resource>) {
+        let _call = self.call();
+        self.discard_resource(presource)
+    }
+    fn DiscardView(&self, presourceview: windows::core::Ref<ID3D11View>) {
+        let _call = self.call();
+        self.discard_view(presourceview)
+    }
+    fn VSSetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *const Option<ID3D11Buffer>,
+        pfirstconstant: *const u32,
+        pnumconstants: *const u32,
+    ) {
+        let _call = self.call();
+        self.vs_set_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
+        )
+    }
+    fn HSSetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *const Option<ID3D11Buffer>,
+        pfirstconstant: *const u32,
+        pnumconstants: *const u32,
+    ) {
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext1::HSSetConstantBuffers1",
+            super::context::binds(ppconstantbuffers, numbuffers),
+        )
+    }
+    fn DSSetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *const Option<ID3D11Buffer>,
+        pfirstconstant: *const u32,
+        pnumconstants: *const u32,
+    ) {
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext1::DSSetConstantBuffers1",
+            super::context::binds(ppconstantbuffers, numbuffers),
+        )
+    }
+    fn GSSetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *const Option<ID3D11Buffer>,
+        pfirstconstant: *const u32,
+        pnumconstants: *const u32,
+    ) {
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext1::GSSetConstantBuffers1",
+            super::context::binds(ppconstantbuffers, numbuffers),
+        )
+    }
+    fn PSSetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *const Option<ID3D11Buffer>,
+        pfirstconstant: *const u32,
+        pnumconstants: *const u32,
+    ) {
+        let _call = self.call();
+        self.ps_set_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
+        )
+    }
+    fn CSSetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *const Option<ID3D11Buffer>,
+        pfirstconstant: *const u32,
+        pnumconstants: *const u32,
+    ) {
+        let _call = self.call();
+        self.only_unbinding(
+            "ID3D11DeviceContext1::CSSetConstantBuffers1",
+            super::context::binds(ppconstantbuffers, numbuffers),
+        )
+    }
+    fn VSGetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: windows::core::OutRef<ID3D11Buffer>,
+        pfirstconstant: *mut u32,
+        pnumconstants: *mut u32,
+    ) {
+        let _call = self.call();
+        self.vs_get_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
+        )
+    }
+    fn HSGetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: windows::core::OutRef<ID3D11Buffer>,
+        pfirstconstant: *mut u32,
+        pnumconstants: *mut u32,
+    ) {
+        let _call = self.call();
+        super::context::nothing_bound(super::context::out_array(ppconstantbuffers), numbuffers)
+    }
+    fn DSGetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: windows::core::OutRef<ID3D11Buffer>,
+        pfirstconstant: *mut u32,
+        pnumconstants: *mut u32,
+    ) {
+        let _call = self.call();
+        super::context::nothing_bound(super::context::out_array(ppconstantbuffers), numbuffers)
+    }
+    fn GSGetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: windows::core::OutRef<ID3D11Buffer>,
+        pfirstconstant: *mut u32,
+        pnumconstants: *mut u32,
+    ) {
+        let _call = self.call();
+        super::context::nothing_bound(super::context::out_array(ppconstantbuffers), numbuffers)
+    }
+    fn PSGetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: windows::core::OutRef<ID3D11Buffer>,
+        pfirstconstant: *mut u32,
+        pnumconstants: *mut u32,
+    ) {
+        let _call = self.call();
+        self.ps_get_constant_buffers1(
+            startslot,
+            numbuffers,
+            ppconstantbuffers,
+            pfirstconstant,
+            pnumconstants,
+        )
+    }
+    fn CSGetConstantBuffers1(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: windows::core::OutRef<ID3D11Buffer>,
+        pfirstconstant: *mut u32,
+        pnumconstants: *mut u32,
+    ) {
+        let _call = self.call();
+        super::context::nothing_bound(super::context::out_array(ppconstantbuffers), numbuffers)
+    }
+    fn SwapDeviceContextState(
+        &self,
+        pstate: windows::core::Ref<ID3DDeviceContextState>,
+        pppreviousstate: windows::core::OutRef<ID3DDeviceContextState>,
+    ) {
+        let _call = self.call();
+        self.unserved("ID3D11DeviceContext1::SwapDeviceContextState")
+    }
+    fn ClearView(
+        &self,
+        pview: windows::core::Ref<ID3D11View>,
+        color: *const f32,
+        prect: *const windows::Win32::Foundation::RECT,
+        numrects: u32,
+    ) {
+        let _call = self.call();
+        self.clear_view(pview, color, prect, numrects)
+    }
+    fn DiscardView1(
+        &self,
+        presourceview: windows::core::Ref<ID3D11View>,
+        prects: *const windows::Win32::Foundation::RECT,
+        numrects: u32,
+    ) {
+        let _call = self.call();
+        self.discard_view1(presourceview, prects, numrects)
     }
 }
 
@@ -1418,6 +1801,44 @@ impl ID3D11DeviceChild_Impl for Context_Impl {
     }
 }
 
+impl ID3D11Multithread_Impl for Context_Impl {
+    fn Enter(&self) {
+        let _call = self.call();
+        self.enter()
+    }
+    fn Leave(&self) {
+        let _call = self.call();
+        self.leave()
+    }
+    fn SetMultithreadProtected(&self, bmtprotect: windows::core::BOOL) -> windows::core::BOOL {
+        let _call = self.call();
+        self.set_multithread_protected(bmtprotect)
+    }
+    fn GetMultithreadProtected(&self) -> windows::core::BOOL {
+        let _call = self.call();
+        self.get_multithread_protected()
+    }
+}
+
+impl ID3DUserDefinedAnnotation_Impl for Context_Impl {
+    fn BeginEvent(&self, name: &windows::core::PCWSTR) -> i32 {
+        let _call = self.call();
+        self.begin_event(name)
+    }
+    fn EndEvent(&self) -> i32 {
+        let _call = self.call();
+        self.end_event()
+    }
+    fn SetMarker(&self, name: &windows::core::PCWSTR) {
+        let _call = self.call();
+        self.set_marker(name)
+    }
+    fn GetStatus(&self) -> windows::core::BOOL {
+        let _call = self.call();
+        self.get_status()
+    }
+}
+
 impl IDXGIAdapter1_Impl for Adapter_Impl {
     fn GetDesc1(&self) -> windows::core::Result<DXGI_ADAPTER_DESC1> {
         let _lock = lock();
@@ -1876,6 +2297,133 @@ impl ID3D11DeviceChild_Impl for Buffer_Impl {
     }
 }
 
+impl IDXGIResource1_Impl for Buffer_Impl {
+    fn CreateSubresourceSurface(&self, index: u32) -> windows::core::Result<IDXGISurface2> {
+        let _lock = lock();
+        Err(missing("IDXGIResource1::CreateSubresourceSurface"))
+    }
+    fn CreateSharedHandle(
+        &self,
+        pattributes: *const windows::Win32::Security::SECURITY_ATTRIBUTES,
+        dwaccess: u32,
+        lpname: &windows::core::PCWSTR,
+    ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+        let _lock = lock();
+        Err(missing("IDXGIResource1::CreateSharedHandle"))
+    }
+}
+
+impl IDXGIResource_Impl for Buffer_Impl {
+    fn GetSharedHandle(&self) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+        let _lock = lock();
+        Err(missing("IDXGIResource::GetSharedHandle"))
+    }
+    fn GetUsage(&self) -> windows::core::Result<DXGI_USAGE> {
+        let _lock = lock();
+        self.get_usage()
+    }
+    fn SetEvictionPriority(
+        &self,
+        evictionpriority: DXGI_RESOURCE_PRIORITY,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        {
+            self.set_eviction_priority(evictionpriority.0);
+            Ok(())
+        }
+    }
+    fn GetEvictionPriority(&self) -> windows::core::Result<DXGI_RESOURCE_PRIORITY> {
+        let _lock = lock();
+        Ok(DXGI_RESOURCE_PRIORITY(self.get_eviction_priority()))
+    }
+}
+
+impl IDXGIDeviceSubObject_Impl for Buffer_Impl {
+    fn GetDevice(
+        &self,
+        riid: *const windows::core::GUID,
+        ppdevice: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.query_device(riid, ppdevice)
+    }
+}
+
+impl IDXGIObject_Impl for Buffer_Impl {
+    fn SetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.private.set_private_data(name, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        name: *const windows::core::GUID,
+        punknown: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child
+            .private
+            .set_private_data_interface(name, punknown)
+    }
+    fn GetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.private.get_private_data(name, pdatasize, pdata)
+    }
+    fn GetParent(
+        &self,
+        riid: *const windows::core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.query_device(riid, ppparent)
+    }
+}
+
+impl IDXGISurface1_Impl for Buffer_Impl {
+    fn GetDC(
+        &self,
+        discard: windows::core::BOOL,
+    ) -> windows::core::Result<windows::Win32::Graphics::Gdi::HDC> {
+        let _lock = lock();
+        Err(missing("IDXGISurface1::GetDC"))
+    }
+    fn ReleaseDC(
+        &self,
+        pdirtyrect: *const windows::Win32::Foundation::RECT,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISurface1::ReleaseDC"))
+    }
+}
+
+impl IDXGISurface_Impl for Buffer_Impl {
+    fn GetDesc(&self) -> windows::core::Result<DXGI_SURFACE_DESC> {
+        let _lock = lock();
+        self.get_desc_dxgi()
+    }
+    fn Map(
+        &self,
+        plockedrect: *mut DXGI_MAPPED_RECT,
+        mapflags: DXGI_MAP_FLAGS,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISurface::Map"))
+    }
+    fn Unmap(&self) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISurface::Unmap"))
+    }
+}
+
 impl ID3D11Texture1D_Impl for Texture1D_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_TEXTURE1D_DESC) {
         let _lock = lock();
@@ -1928,6 +2476,133 @@ impl ID3D11DeviceChild_Impl for Texture1D_Impl {
     ) -> windows::core::Result<()> {
         let _lock = lock();
         self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl IDXGIResource1_Impl for Texture1D_Impl {
+    fn CreateSubresourceSurface(&self, index: u32) -> windows::core::Result<IDXGISurface2> {
+        let _lock = lock();
+        Err(missing("IDXGIResource1::CreateSubresourceSurface"))
+    }
+    fn CreateSharedHandle(
+        &self,
+        pattributes: *const windows::Win32::Security::SECURITY_ATTRIBUTES,
+        dwaccess: u32,
+        lpname: &windows::core::PCWSTR,
+    ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+        let _lock = lock();
+        Err(missing("IDXGIResource1::CreateSharedHandle"))
+    }
+}
+
+impl IDXGIResource_Impl for Texture1D_Impl {
+    fn GetSharedHandle(&self) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+        let _lock = lock();
+        Err(missing("IDXGIResource::GetSharedHandle"))
+    }
+    fn GetUsage(&self) -> windows::core::Result<DXGI_USAGE> {
+        let _lock = lock();
+        self.get_usage()
+    }
+    fn SetEvictionPriority(
+        &self,
+        evictionpriority: DXGI_RESOURCE_PRIORITY,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        {
+            self.set_eviction_priority(evictionpriority.0);
+            Ok(())
+        }
+    }
+    fn GetEvictionPriority(&self) -> windows::core::Result<DXGI_RESOURCE_PRIORITY> {
+        let _lock = lock();
+        Ok(DXGI_RESOURCE_PRIORITY(self.get_eviction_priority()))
+    }
+}
+
+impl IDXGIDeviceSubObject_Impl for Texture1D_Impl {
+    fn GetDevice(
+        &self,
+        riid: *const windows::core::GUID,
+        ppdevice: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.query_device(riid, ppdevice)
+    }
+}
+
+impl IDXGIObject_Impl for Texture1D_Impl {
+    fn SetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.private.set_private_data(name, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        name: *const windows::core::GUID,
+        punknown: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child
+            .private
+            .set_private_data_interface(name, punknown)
+    }
+    fn GetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.private.get_private_data(name, pdatasize, pdata)
+    }
+    fn GetParent(
+        &self,
+        riid: *const windows::core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.query_device(riid, ppparent)
+    }
+}
+
+impl IDXGISurface1_Impl for Texture1D_Impl {
+    fn GetDC(
+        &self,
+        discard: windows::core::BOOL,
+    ) -> windows::core::Result<windows::Win32::Graphics::Gdi::HDC> {
+        let _lock = lock();
+        Err(missing("IDXGISurface1::GetDC"))
+    }
+    fn ReleaseDC(
+        &self,
+        pdirtyrect: *const windows::Win32::Foundation::RECT,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISurface1::ReleaseDC"))
+    }
+}
+
+impl IDXGISurface_Impl for Texture1D_Impl {
+    fn GetDesc(&self) -> windows::core::Result<DXGI_SURFACE_DESC> {
+        let _lock = lock();
+        self.get_desc_dxgi()
+    }
+    fn Map(
+        &self,
+        plockedrect: *mut DXGI_MAPPED_RECT,
+        mapflags: DXGI_MAP_FLAGS,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISurface::Map"))
+    }
+    fn Unmap(&self) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISurface::Unmap"))
     }
 }
 
@@ -1986,6 +2661,133 @@ impl ID3D11DeviceChild_Impl for Texture2D_Impl {
     }
 }
 
+impl IDXGIResource1_Impl for Texture2D_Impl {
+    fn CreateSubresourceSurface(&self, index: u32) -> windows::core::Result<IDXGISurface2> {
+        let _lock = lock();
+        Err(missing("IDXGIResource1::CreateSubresourceSurface"))
+    }
+    fn CreateSharedHandle(
+        &self,
+        pattributes: *const windows::Win32::Security::SECURITY_ATTRIBUTES,
+        dwaccess: u32,
+        lpname: &windows::core::PCWSTR,
+    ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+        let _lock = lock();
+        Err(missing("IDXGIResource1::CreateSharedHandle"))
+    }
+}
+
+impl IDXGIResource_Impl for Texture2D_Impl {
+    fn GetSharedHandle(&self) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+        let _lock = lock();
+        Err(missing("IDXGIResource::GetSharedHandle"))
+    }
+    fn GetUsage(&self) -> windows::core::Result<DXGI_USAGE> {
+        let _lock = lock();
+        self.get_usage()
+    }
+    fn SetEvictionPriority(
+        &self,
+        evictionpriority: DXGI_RESOURCE_PRIORITY,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        {
+            self.set_eviction_priority(evictionpriority.0);
+            Ok(())
+        }
+    }
+    fn GetEvictionPriority(&self) -> windows::core::Result<DXGI_RESOURCE_PRIORITY> {
+        let _lock = lock();
+        Ok(DXGI_RESOURCE_PRIORITY(self.get_eviction_priority()))
+    }
+}
+
+impl IDXGIDeviceSubObject_Impl for Texture2D_Impl {
+    fn GetDevice(
+        &self,
+        riid: *const windows::core::GUID,
+        ppdevice: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.query_device(riid, ppdevice)
+    }
+}
+
+impl IDXGIObject_Impl for Texture2D_Impl {
+    fn SetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.private.set_private_data(name, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        name: *const windows::core::GUID,
+        punknown: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child
+            .private
+            .set_private_data_interface(name, punknown)
+    }
+    fn GetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.private.get_private_data(name, pdatasize, pdata)
+    }
+    fn GetParent(
+        &self,
+        riid: *const windows::core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.query_device(riid, ppparent)
+    }
+}
+
+impl IDXGISurface1_Impl for Texture2D_Impl {
+    fn GetDC(
+        &self,
+        discard: windows::core::BOOL,
+    ) -> windows::core::Result<windows::Win32::Graphics::Gdi::HDC> {
+        let _lock = lock();
+        Err(missing("IDXGISurface1::GetDC"))
+    }
+    fn ReleaseDC(
+        &self,
+        pdirtyrect: *const windows::Win32::Foundation::RECT,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISurface1::ReleaseDC"))
+    }
+}
+
+impl IDXGISurface_Impl for Texture2D_Impl {
+    fn GetDesc(&self) -> windows::core::Result<DXGI_SURFACE_DESC> {
+        let _lock = lock();
+        self.get_desc_dxgi()
+    }
+    fn Map(
+        &self,
+        plockedrect: *mut DXGI_MAPPED_RECT,
+        mapflags: DXGI_MAP_FLAGS,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISurface::Map"))
+    }
+    fn Unmap(&self) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISurface::Unmap"))
+    }
+}
+
 impl ID3D11Texture3D_Impl for Texture3D_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_TEXTURE3D_DESC) {
         let _lock = lock();
@@ -2038,6 +2840,97 @@ impl ID3D11DeviceChild_Impl for Texture3D_Impl {
     ) -> windows::core::Result<()> {
         let _lock = lock();
         self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl IDXGIResource1_Impl for Texture3D_Impl {
+    fn CreateSubresourceSurface(&self, index: u32) -> windows::core::Result<IDXGISurface2> {
+        let _lock = lock();
+        Err(missing("IDXGIResource1::CreateSubresourceSurface"))
+    }
+    fn CreateSharedHandle(
+        &self,
+        pattributes: *const windows::Win32::Security::SECURITY_ATTRIBUTES,
+        dwaccess: u32,
+        lpname: &windows::core::PCWSTR,
+    ) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+        let _lock = lock();
+        Err(missing("IDXGIResource1::CreateSharedHandle"))
+    }
+}
+
+impl IDXGIResource_Impl for Texture3D_Impl {
+    fn GetSharedHandle(&self) -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
+        let _lock = lock();
+        Err(missing("IDXGIResource::GetSharedHandle"))
+    }
+    fn GetUsage(&self) -> windows::core::Result<DXGI_USAGE> {
+        let _lock = lock();
+        self.get_usage()
+    }
+    fn SetEvictionPriority(
+        &self,
+        evictionpriority: DXGI_RESOURCE_PRIORITY,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        {
+            self.set_eviction_priority(evictionpriority.0);
+            Ok(())
+        }
+    }
+    fn GetEvictionPriority(&self) -> windows::core::Result<DXGI_RESOURCE_PRIORITY> {
+        let _lock = lock();
+        Ok(DXGI_RESOURCE_PRIORITY(self.get_eviction_priority()))
+    }
+}
+
+impl IDXGIDeviceSubObject_Impl for Texture3D_Impl {
+    fn GetDevice(
+        &self,
+        riid: *const windows::core::GUID,
+        ppdevice: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.query_device(riid, ppdevice)
+    }
+}
+
+impl IDXGIObject_Impl for Texture3D_Impl {
+    fn SetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.private.set_private_data(name, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        name: *const windows::core::GUID,
+        punknown: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child
+            .private
+            .set_private_data_interface(name, punknown)
+    }
+    fn GetPrivateData(
+        &self,
+        name: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.private.get_private_data(name, pdatasize, pdata)
+    }
+    fn GetParent(
+        &self,
+        riid: *const windows::core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.query_device(riid, ppparent)
     }
 }
 
@@ -2222,6 +3115,13 @@ impl ID3D11DeviceChild_Impl for SamplerState_Impl {
     }
 }
 
+impl ID3D11BlendState1_Impl for BlendState_Impl {
+    fn GetDesc1(&self, pdesc: *mut D3D11_BLEND_DESC1) {
+        let _lock = lock();
+        self.get_desc1(pdesc)
+    }
+}
+
 impl ID3D11BlendState_Impl for BlendState_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_BLEND_DESC) {
         let _lock = lock();
@@ -2299,6 +3199,13 @@ impl ID3D11DeviceChild_Impl for DepthStencilState_Impl {
     ) -> windows::core::Result<()> {
         let _lock = lock();
         self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11RasterizerState1_Impl for RasterizerState_Impl {
+    fn GetDesc1(&self, pdesc: *mut D3D11_RASTERIZER_DESC1) {
+        let _lock = lock();
+        self.get_desc1(pdesc)
     }
 }
 

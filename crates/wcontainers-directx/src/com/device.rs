@@ -1,4 +1,4 @@
-//! The device: `ID3D11Device` and `IDXGIDevice` on one object.
+//! The device: `ID3D11Device1` and `IDXGIDevice1` on one object.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -9,7 +9,7 @@ use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
-use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIAdapter1, IDXGIDevice};
+use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIAdapter1, IDXGIDevice1};
 use windows::core::{
     ComObjectInner, ComObjectInterface, GUID, IUnknownImpl, Interface, OutRef, Ref, Result,
     implement,
@@ -22,7 +22,7 @@ use wcontainers_gpu::SourceStage;
 use super::counted::{Counted, Held};
 use super::*;
 
-#[implement(ID3D11Device, IDXGIDevice)]
+#[implement(ID3D11Device1, IDXGIDevice1)]
 pub struct Device {
     pub front: Locked<Shared>,
     pub(super) private: Private,
@@ -31,6 +31,8 @@ pub struct Device {
     adapter: IDXGIAdapter1,
     flags: u32,
     exception_mode: Cell<u32>,
+    /// DXGI's limit of frames queued for presenting, as the program set it.
+    frame_latency: Cell<u32>,
     /// The live state objects by description: Direct3D hands out the existing object for a
     /// description equal to a live one's.
     states: States,
@@ -122,18 +124,19 @@ pub fn create_device(
     let front = Front::new(backend, levels).map_err(hresult)?;
     let adapter = Adapter::new(wcontainers_gpu::Backend::caps(&front.backend));
     let level = front.feature_level();
-    let device: ID3D11Device = Device {
+    let device: ID3D11Device1 = Device {
         front: Locked::new(Rc::new(RefCell::new(front))),
         private: Private::default(),
         context: Locked::new(Rc::new(Cell::new(std::ptr::null_mut()))),
         adapter: adapter.into(),
         flags,
         exception_mode: Cell::new(0),
+        frame_latency: Cell::new(3),
         states: States::default(),
     }
     .into();
     let context = unsafe { device.GetImmediateContext() }?;
-    Ok((device, context, level))
+    Ok((device.into(), context, level))
 }
 
 /// Writes `object` to an out parameter, or reports that the call only checks (a null out pointer).
@@ -146,7 +149,7 @@ fn give<I: windows::core::Type<I, Default = Option<I>>>(out: OutRef<I>, object: 
 
 impl Device_Impl {
     fn me(&self) -> ID3D11Device {
-        self.to_interface()
+        self.to_interface::<ID3D11Device1>().into()
     }
 
     pub(super) fn call(&self) -> Call<'_> {
@@ -411,14 +414,42 @@ impl Device_Impl {
         desc: *const D3D11_BLEND_DESC,
         out: OutRef<ID3D11BlendState>,
     ) -> Result<()> {
-        let d = &convert::blend_stored(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
-        shared_state::<BlendState, _>(&self.states.blend, blend_key(d), out, || {
+        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        self.blend_state(d, [(false.into(), D3D11_LOGIC_OP_NOOP); 8], out)
+    }
+
+    pub(super) fn create_blend_state1(
+        &self,
+        desc: *const D3D11_BLEND_DESC1,
+        out: OutRef<ID3D11BlendState1>,
+    ) -> Result<()> {
+        let (d, logic) = convert::blend_split(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
+        if logic.iter().any(|l| l.0.as_bool()) {
+            return Err(missing("logic operations"));
+        }
+        self.blend_state(&d, logic, out)
+    }
+
+    fn blend_state<I>(
+        &self,
+        d: &D3D11_BLEND_DESC,
+        logic: convert::LogicOps,
+        out: OutRef<I>,
+    ) -> Result<()>
+    where
+        BlendState_Impl: ComObjectInterface<I>,
+        I: Interface + windows::core::Type<I, Default = Option<I>> + From<BlendState>,
+    {
+        let d = &convert::blend_stored(d);
+        let mut key = blend_key(d);
+        key.extend(logic.iter().flat_map(|l| [l.0.0 as u32, l.1.0 as u32]));
+        shared_state::<BlendState, _>(&self.states.blend, key, out, || {
             let state = self
                 .front
                 .borrow_mut()
                 .create_blend_state(&convert::blend(d))
                 .map_err(hresult)?;
-            Ok(BlendState::new(state, *d, self.me()).into())
+            Ok(BlendState::new(state, *d, logic, self.me()).into())
         })
     }
 
@@ -449,6 +480,26 @@ impl Device_Impl {
         out: OutRef<ID3D11RasterizerState>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        self.rasterizer_state(d, out)
+    }
+
+    pub(super) fn create_rasterizer_state1(
+        &self,
+        desc: *const D3D11_RASTERIZER_DESC1,
+        out: OutRef<ID3D11RasterizerState1>,
+    ) -> Result<()> {
+        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        if d.ForcedSampleCount != 0 {
+            return Err(missing("forced sample counts"));
+        }
+        self.rasterizer_state(&convert::rasterizer_of1(d), out)
+    }
+
+    fn rasterizer_state<I>(&self, d: &D3D11_RASTERIZER_DESC, out: OutRef<I>) -> Result<()>
+    where
+        RasterizerState_Impl: ComObjectInterface<I>,
+        I: Interface + windows::core::Type<I, Default = Option<I>> + From<RasterizerState>,
+    {
         shared_state::<RasterizerState, _>(&self.states.raster, words(d), out, || {
             let state = self
                 .front
@@ -594,8 +645,13 @@ impl Device_Impl {
             return Ok(());
         }
         unsafe { std::ptr::write_bytes(data.cast::<u8>(), 0, want) };
-        // From 10_0 every device has textures of any size and instancing; the rest is absent.
+        // From 10_0 every device has textures of any size and instancing; constant buffers bind at
+        // offsets (`*SetConstantBuffers1`); the rest is absent.
         match feature {
+            D3D11_FEATURE_D3D11_OPTIONS => unsafe {
+                (*data.cast::<D3D11_FEATURE_DATA_D3D11_OPTIONS>()).ConstantBufferOffsetting =
+                    true.into();
+            },
             D3D11_FEATURE_D3D9_OPTIONS => unsafe {
                 (*data.cast::<D3D11_FEATURE_DATA_D3D9_OPTIONS>()).FullNonPow2TextureSupport =
                     true.into();
@@ -622,18 +678,40 @@ impl Device_Impl {
     }
 
     pub(super) fn get_immediate_context(&self, out: OutRef<ID3D11DeviceContext>) {
+        let _ = out.write(Some(self.immediate().into()));
+    }
+
+    pub(super) fn get_immediate_context1(&self, out: OutRef<ID3D11DeviceContext1>) {
+        let _ = out.write(Some(self.immediate()));
+    }
+
+    /// The immediate context, made at the first call.
+    fn immediate(&self) -> ID3D11DeviceContext1 {
         let raw = self.context.get();
-        let context: ID3D11DeviceContext = if raw.is_null() {
-            let c: ID3D11DeviceContext =
+        if raw.is_null() {
+            let c: ID3D11DeviceContext1 =
                 Context::new(self.front.clone(), self.me(), self.context.clone()).into();
             self.context.set(c.as_raw());
             c
         } else {
-            unsafe { ID3D11DeviceContext::from_raw_borrowed(&raw) }
+            unsafe { ID3D11DeviceContext1::from_raw_borrowed(&raw) }
                 .cloned()
                 .expect("the context lives")
-        };
-        let _ = out.write(Some(context));
+        }
+    }
+
+    /// DXGI's frame latency, kept and reported; presents queue at most wgpu's two frames whatever
+    /// it is.
+    pub(super) fn set_maximum_frame_latency(&self, n: u32) -> Result<()> {
+        if n > 16 {
+            return Err(windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.into());
+        }
+        self.frame_latency.set(n);
+        Ok(())
+    }
+
+    pub(super) fn get_maximum_frame_latency(&self) -> Result<u32> {
+        Ok(self.frame_latency.get())
     }
 
     pub(super) fn set_exception_mode(&self, flags: u32) -> Result<()> {

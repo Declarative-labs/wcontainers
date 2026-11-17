@@ -1,5 +1,5 @@
 //! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges`,
-//! `own_depth_copy`, `own_swap_chain`, `own_volumes`, `own_queries` and
+//! `own_depth_copy`, `own_swap_chain`, `own_volumes`, `own_queries`, `own_interfaces` and
 //! `lifetimes`) run as ordinary
 //! programs, once beside the system's d3d11.dll and once with our forwarding d3d11.dll and library
 //! beside them, and what each printed compared.
@@ -126,6 +126,18 @@ fn queries_answer_as_direct3d_does() {
 }
 
 #[test]
+fn interfaces_answer_as_direct3d_does() {
+    let (code, want) = run("own_interfaces", &place("interfaces-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_interfaces", &place("interfaces-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
 fn a_swap_chain_presents_and_resizes_as_direct3d_does() {
     let (code, want) = run("own_swap_chain", &place("swap-chain-system", false));
     assert_eq!(code, 0, "{want}");
@@ -138,7 +150,6 @@ fn a_swap_chain_presents_and_resizes_as_direct3d_does() {
 }
 
 #[test]
-#[ignore = "known failure: the WebGPU back end copies one aspect of depth with stencil, which WebGPU refuses"]
 fn depth_with_stencil_copies_as_direct3d_does() {
     let (code, want) = run("own_depth_copy", &place("depth-copy-system", false));
     assert_eq!(code, 0, "{want}");
