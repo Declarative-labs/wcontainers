@@ -1,7 +1,8 @@
-//! Draws the rig's three reference scenes through the WebGPU back end and saves them as PNG files.
+//! Draws the rig's three reference scenes (and the quads again on depth and stencil, `draw::PICTURES`)
+//! through the WebGPU back end and saves them as PNG files.
 //!
 //! Natively: `scenes <dx12|vulkan|metal> <out-dir> [none|blend-factor|depth-function]` writes
-//! `webgpu-<api>-<scene>.png`. Built for WebAssembly, the page (web/scenes.html) calls `draw_scene`
+//! `webgpu-<api>-<picture>.png`. Built for WebAssembly, the page (web/scenes.html) calls `draw_scene`
 //! and `adapter` and saves what they return.
 
 #[path = "../../../wcontainers-graphics-test/src/scene.rs"]
@@ -28,8 +29,8 @@ fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(out)?;
     let (mut b, adapter) = pollster::block_on(draw::device(backends))?;
     println!("adapter: {adapter}");
-    for which in scene::Scene::ALL {
-        let rb = draw::render(&mut b, which, twist)?;
+    for (name, which, depth) in draw::PICTURES {
+        let rb = draw::render_on(&mut b, which, twist, depth)?;
         b.wait_read(&rb);
         let mut rgba = vec![0; (scene::WIDTH * scene::HEIGHT * 4) as usize];
         b.finish_read(rb, &mut rgba);
@@ -38,7 +39,7 @@ fn main() -> anyhow::Result<()> {
             "device lost: {:?}",
             b.status()
         );
-        let path = std::path::Path::new(out).join(format!("webgpu-{api}-{}.png", which.name()));
+        let path = std::path::Path::new(out).join(format!("webgpu-{api}-{name}.png"));
         std::fs::write(&path, draw::png(&rgba)?)?;
         println!("{}", path.display());
     }
@@ -80,15 +81,18 @@ mod web {
             .1)
     }
 
-    /// Draws one scene on the browser's WebGPU and returns it as a PNG file.
+    /// Draws one picture of `draw::PICTURES` on the browser's WebGPU and returns it as a PNG file.
     #[wasm_bindgen]
     pub async fn draw_scene(name: String, twist: String) -> Result<Vec<u8>, JsValue> {
-        let which = scene::Scene::from_name(&name).ok_or_else(|| js("unknown scene"))?;
+        let (_, which, depth) = draw::PICTURES
+            .into_iter()
+            .find(|p| p.0 == name)
+            .ok_or_else(|| js("unknown picture"))?;
         let twist = draw::Twist::parse(&twist).map_err(js)?;
         let (mut b, _) = draw::device(wgpu::Backends::BROWSER_WEBGPU)
             .await
             .map_err(js)?;
-        let rb = draw::render(&mut b, which, twist).map_err(js)?;
+        let rb = draw::render_on(&mut b, which, twist, depth).map_err(js)?;
         // In-page polling; the device thread's own wait is the JSPI suspension of plan section 4.8.
         while b.read_state(&rb) == ReadState::Pending {
             if b.status() != DeviceStatus::Ok {

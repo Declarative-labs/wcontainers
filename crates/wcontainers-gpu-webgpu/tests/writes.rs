@@ -83,7 +83,7 @@ fn writes_take_effect_in_command_order() {
 fn ordered_write_in_a_pass_splits_it() {
     let mut b = device();
     let p = draw::prepare(&mut b, scene::Scene::Triangle, draw::Twist::None).unwrap();
-    let t = draw::targets(&mut b, false).unwrap();
+    let t = draw::targets(&mut b, None).unwrap();
     draw::begin(&mut b, &t, true);
     draw::draw(&mut b, &p);
     let vertices: Vec<u8> = bytemuck::cast_slice(&scene::TRIANGLE).to_vec();
@@ -460,7 +460,7 @@ fn writes_of_any_length_keep_their_order() {
 fn writes_ahead_of_a_pass_do_not_split_it() {
     let mut b = device();
     let p = draw::prepare(&mut b, scene::Scene::Triangle, draw::Twist::None).unwrap();
-    let t = draw::targets(&mut b, false).unwrap();
+    let t = draw::targets(&mut b, None).unwrap();
     let other = buffer(&mut b, 16, BufferUsage::empty(), MapIntent::Rarely);
     let queries = b.create_query_set(QueryKind::OcclusionAny, 1).unwrap();
     let mut pass = PassDesc {

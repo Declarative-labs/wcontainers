@@ -28,6 +28,9 @@ G2a (the first slice) is done, run 1, 2026-11-17:
   on Vulkan, and built for WebAssembly in Chrome 157's WebGPU. Tolerance 0 (see Measurements).
 - The quads with the colour source factor changed to one, or the depth test changed to greater,
   fail the comparison both natively and in Chrome.
+- Since run 4 the quads also equal Direct3D's picture drawn on `depth24plus-stencil8` (natively and
+  in Chrome) and on every other depth format of 24 bits or more (natively), and the whole shared
+  suite runs here, present included (Vulkan 21 of 21; Direct3D 12 20 of 21, the known clear).
 - Writes keep command order (test `writes_take_effect_in_command_order`: copies between an
   ordered write that stages, a second one, and a renaming discard each read the bytes written just
   before them), and an ordered write of a vertex buffer the open pass drew with splits the pass
@@ -124,6 +127,44 @@ Run 3, 2026-11-17 (fixes from the independent check of run 2):
   bindings.rs `load_only_textures_keep_one_pipeline_for_any_view` (an `rgba8unorm` view, then a
   `depth32float` view, whose key differs: one pipeline, both pixels right).
 
+Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phase-2-graphics at
+2684d97, a fast-forward):
+- Views of textures with depth and stencil (`depth24plus-stencil8`, `depth32float-stencil8`) were
+  invalid: a depth-only view kept the combined format, so any pass or binding with one lost the
+  device. Each view now holds two wgpu views where they differ: every aspect in the texture's
+  format, which passes draw into, and the aspect `stencil` names in that aspect's own format
+  (`depth24plus`, `depth32float`, `stencil8`), which bindings read. A stencil view of a format
+  without stencil is `Invalid`.
+- The shared suite runs whole (`suite!(Native)`), so tests added to it run here at once.
+  `present_shows_the_frame` runs too: the test window is a 4 by 4 popup, and `shown` reads what
+  the compositor holds for it after two DWM compositions (`PrintWindow` with
+  `PW_RENDERFULLCONTENT`, which includes swap chain contents also on the rig's hidden desktop,
+  where reading the screen gave black; alpha set opaque, since a window holds none).
+- `current_texture` no longer answers every surface state but success as `DeviceLost`. Outdated:
+  configure again as last configured and try once more. Timeout, occluded, or still outdated: the
+  frame is drawn into a texture of the configured size and `present` shows nothing, as a real
+  swap chain does for an occluded window. Lost and validation failures mark the device lost with
+  the reason, so `status()` agrees with the error.
+- The device asks for `texture-adapter-specific-format-features` where the adapter has it
+  (natively; browsers do not), so format caps carry the adapter's own sample counts, storage,
+  filter and blend bits instead of WebGPU's guaranteed set. Copy usages still follow WebGPU's
+  rules (wgpu's native table would offer copies of `depth24plus`, which WebGPU refuses).
+- The binding-set table is pruned like the bind-group table: at each submit, once it has doubled
+  since the last pruning, entries no set holds are dropped.
+- A vertex format WebGPU lacks (three-component 8 and 16-bit, `Float16x3`, `Uint10_10_10_2`,
+  `Float11_11_10`) now marks the device lost with "not built yet" instead of `Invalid` (a front
+  bug): the interface and plan 5.7 give the conversion to the back end. Listed below.
+- The shared test crate now brings proptest (getrandom, which needs a feature to build for
+  WebAssembly), so it is a dev-dependency only off WebAssembly and tests/suite.rs is native only.
+- `web/check` also draws the quads on `depth24plus-stencil8` (picture `quads-d24s8`) with wgpu on
+  Direct3D 12 and Vulkan and in Chrome, compares it with Direct3D 11's quads at tolerance 0, and
+  requires its twisted versions to differ.
+- New tests: bindings.rs `combined_depth_stencil_views_draw_and_read_each_aspect` (both combined
+  formats: cleared to depth 0.25 and stencil 7 through one view, then that view and a stencil
+  view read by a program, [64, 7, 0, 255]); scenes.rs `quads_match_direct3d_on_every_depth_format`
+  (`depth24plus`, `depth24plus-stencil8`, `depth32float`, `depth32float-stencil8`, stencil cleared
+  where present, each equal to Direct3D's picture at tolerance 0).
+
 ## How another track builds and uses the back end
 
 - Depend on it: `wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }` (and `wgpu =
@@ -135,6 +176,9 @@ Run 3, 2026-11-17 (fixes from the independent check of run 2):
   pattern, with an adapter that must be a GPU, is `device()` in
   crates/wcontainers-gpu-webgpu/examples/scenes/draw.rs, which also shows a draw end to end
   (shaders from WGSL through naga, blocks, a binding set, a pass, a draw, a read back).
+- Views of `depth24plus-stencil8` and `depth32float-stencil8` work both as depth attachments and
+  as bindings; `stencil: true` reads the stencil as unsigned integers (`texture_2d<u32>`), the
+  depth as `texture_2d<f32>` or `texture_depth_2d`.
 - Binding numbers follow 6.4: uniform buffers from 0, samplers from 16, textures from 32, storage
   from 160; group = binding set (vertex-only set 0, fragment-only set 1, both 2, helpers 3).
 - Natively `wait_read` and `wait_fence` block on the device. In the browser they cannot block
@@ -169,16 +213,32 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   wasm32-unknown-unknown --examples` for the WebAssembly build.
 - Both ways against Direct3D, one command: `crates/wcontainers-gpu-webgpu/web/check [dir]`. One
   GPU job builds the scenes example natively and for WebAssembly, gt-compare and the rig's page
-  driver packages, then (web/check.cmd) runs wasm-bindgen, draws the three scenes with wgpu on
-  Direct3D 12 and on Vulkan, draws them in Chrome (web/draw.mjs, web/scenes.html), compares all
-  nine with references/d3d11 at tolerance 0, and draws the quads with each twist both ways and
-  requires them to differ. Prints Chrome's WebGPU adapter and fails unless it is a GPU, not a
+  driver packages, then (web/check.cmd) runs wasm-bindgen, draws the three scenes and the quads on
+  `depth24plus-stencil8` with wgpu on Direct3D 12 and on Vulkan, draws them in Chrome
+  (web/draw.mjs, web/scenes.html), compares all twelve with references/d3d11 at tolerance 0, and
+  draws both quads pictures with each twist both ways and requires them to differ. Prints Chrome's WebGPU adapter and fails unless it is a GPU, not a
   fallback. With a directory, the pictures are copied there. About 7 minutes cold, the job itself
   5 s.
 - One renderer by hand, on the desktop: `scenes <dx12|vulkan|metal> <dir> [none|blend-factor|
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 4 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
+CPU load 4 % sampled right after; Mac load average 27 to 50):
+- All tests on Vulkan: 41 of 41 (bindings 5 in 0.58 s, scenes 4 in 0.57 s, suite 21 in 2.31 s,
+  present among them, writes 11 in 1.08 s). On Direct3D 12: 40 of 41, the known
+  `clears_fill_exactly` failure (bindings 2.08 s, scenes 1.80 s, suite 8.90 s, writes 4.41 s).
+  The shared `stencil_operations_and_tests`, which lost the device before, passes on both.
+- Before the fix of `shown`, reading the screen gave black on the rig's hidden desktop, and
+  `present_shows_the_frame` failed with all texels [0, 0, 0, 255]; with `PrintWindow` it passes on
+  both APIs.
+- `web/check`: all twelve pictures (three scenes and `quads-d24s8`, each by wgpu on Direct3D 12,
+  on Vulkan, and in Chrome 157.0.8103.78) equal Direct3D 11's at tolerance 0; the twists differ as
+  before (blend factor 16384 pixels by up to 92, depth function 25016 by up to 204), on
+  `quads-d24s8` too; Chrome's WebGPU adapter is "NVIDIA GeForce RTX 3080", D3D12, discrete GPU,
+  not a fallback. Clippy with warnings denied passes; the WebAssembly build checks.
+- The random byte test was not run again: nothing it exercises changed.
 
 Run 3 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs; Mac
 load average 26 to 30):
@@ -227,6 +287,12 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 ## Not carried out yet (each marks the device lost with its reason, or is declared absent)
 
 - Integer colour clears past 2^24 under wgpu's native Direct3D 12 (above).
+- Vertex formats WebGPU lacks (`VertexFormatConverted`): three-component 8 and 16-bit formats,
+  `Float16x3`, `Uint10_10_10_2`, `Float11_11_10`. `create_vertex_layout` marks the device lost.
+  The plan's route: widen the streams that use them into a shadow buffer by a compute pass at draw
+  time, cached until the buffer is written.
+- A surface wgpu reports lost (the window's surface must be made again from the instance, which
+  the back end does not hold).
 - Copies into depth formats (`DepthWrittenByDraw`).
 - Immediates: `immediate_bytes` is 0, so fronts spill them.
 - A program without a fragment shader drawing into colour targets.
@@ -240,7 +306,6 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   textures on `Discard` (staged instead), and freeing cached layouts and pipelines of destroyed
   programs.
 - Arena slices of buffers dropped without `destroy` are not reused until the arena is replaced.
-- The present test of the shared suite: this host cannot read a presented swap chain's texels.
 
 ## Next (G2)
 
@@ -272,8 +337,16 @@ blocks, naga validation with WebGPU's core capabilities).
   since both live in one GPU buffer.
 - Anisotropy is set to one unless all three filters are linear, as WebGPU requires and Direct3D
   does.
+- A frame the window cannot take (occluded, timed out, outdated after configuring again) is drawn
+  into a texture of its own and not shown, with no error: the interface has no word for an
+  unshown frame, and DXGI answers it with a success code (`DXGI_STATUS_OCCLUDED`).
 
 ## Interface changes
+
+Gaps found for the interface track (not changed here): no capability tells a front which vertex
+formats a back end converts itself or that instance step rates other than one are refused
+(`StepMode::Instance(n != 1)` is `Invalid` here, as the interface's doc has the program fetch
+them, `InstanceRateInShader`).
 
 - db9e0d8 `interface: made no-overwrite writes promise that no unfinished command or ordered write
   touches their bytes`: the doc of `WriteMode::NoOverwrite` and the plan's 4.6 entry. The promise
@@ -286,7 +359,7 @@ blocks, naga validation with WebGPU's core capabilities).
 ## Licences
 
 Confirmed in each crate's Cargo.toml on 2026-11-17: wgpu 30.0.2 and wgpu-naga-bridge 30.0.2 MIT OR
-Apache-2.0 (dependencies). Test-only: windows-sys 0.61.2 MIT OR Apache-2.0 (the suite's window, already
+Apache-2.0 (dependencies). Test-only: windows-sys 0.61.2 MIT OR Apache-2.0 (the suite's window and reading the screen, already
 in the lock file); wcontainers-gpu-test (ours); png 0.18.1, anyhow 1.0.104, wasm-bindgen 0.2.130,
 wasm-bindgen-futures 0.4.80, js-sys 0.3.107 MIT OR Apache-2.0; pollster 1.0.1 Apache-2.0/MIT;
 bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT; fastrand 2.5.0 Apache-2.0 OR MIT (the random test). Tool: wasm-bindgen-cli 0.2.130 MIT OR Apache-2.0.

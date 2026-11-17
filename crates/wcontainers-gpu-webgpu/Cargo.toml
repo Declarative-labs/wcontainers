@@ -19,13 +19,14 @@ bytemuck = "1.25.2"
 fastrand = "2.5.0"
 naga = { workspace = true, features = ["wgsl-in"] }
 png = "0.18.1"
-wcontainers-gpu-test = { path = "../wcontainers-gpu-test" }
 
+# The shared suite runs natively only.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 pollster = "1.0.1"
+wcontainers-gpu-test = { path = "../wcontainers-gpu-test" }
 
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_System_LibraryLoader", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 js-sys = "0.3.107"
