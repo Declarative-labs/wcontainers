@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use wcontainers_direct3d_11::desc::*;
-use wcontainers_direct3d_11::object::{Buffer, Resource, Texture, View};
+use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, View};
 use wcontainers_direct3d_11::record::Recorder;
 use wcontainers_direct3d_11::{Device, Error, PIXEL, Removal, VERTEX, shader};
 use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
@@ -316,8 +316,8 @@ fn quads_scene() {
     solid(&mut dev);
     dev.ia_set_primitive_topology(topology::TRIANGLELIST);
     dev.ia_set_index_buffer(Some(indices), 57, 0).unwrap();
-    dev.set_shader_resources(PIXEL, 0, &[Some(view.clone())])
-        .unwrap();
+    let srv = Rc::new(ShaderView::Texture(view.clone()));
+    dev.set_shader_resources(PIXEL, 0, &[Some(srv)]).unwrap();
     dev.set_samplers(PIXEL, 0, &[Some(sampler.clone())])
         .unwrap();
     dev.om_set_blend_state(Some(blend), None, u32::MAX);
@@ -1111,6 +1111,7 @@ fn a_view_of_a_target_is_unbound_and_cannot_be_bound() {
     d.mip_levels = 2;
     let t = dev.create_texture(&d, &[]).unwrap();
     let srv = dev.create_view(&t, None, bind::SHADER_RESOURCE).unwrap();
+    let srv = Rc::new(ShaderView::Texture(srv));
     let rtv = dev.create_view(&t, None, bind::RENDER_TARGET).unwrap();
     dev.set_shader_resources(PIXEL, 3, &[Some(srv.clone())])
         .unwrap();

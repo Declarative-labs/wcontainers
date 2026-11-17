@@ -310,9 +310,11 @@ impl DepthStencilView {
     }
 }
 
-/// A view: the front view and the resource it views (held with a library reference).
+/// A view: the front view, its description and the resource it views (held with a library
+/// reference).
 pub struct ShaderResourceView {
-    pub front: Locked<Rc<front::View<Chosen>>>,
+    pub front: Locked<Rc<front::ShaderView<Chosen>>>,
+    desc: D3D11_SHADER_RESOURCE_VIEW_DESC,
     resource: HeldResource,
     pub(super) child: Child,
 }
@@ -321,12 +323,14 @@ counted!(ShaderResourceView => ShaderResourceView_Impl { main: ID3D11ShaderResou
 
 impl ShaderResourceView {
     pub fn new(
-        front: Rc<front::View<Chosen>>,
+        front: Rc<front::ShaderView<Chosen>>,
+        desc: D3D11_SHADER_RESOURCE_VIEW_DESC,
         resource: HeldResource,
         device: ID3D11Device,
     ) -> Self {
         ShaderResourceView {
             front: Locked::new(front),
+            desc,
             resource,
             child: Child::new(device),
         }
@@ -334,7 +338,43 @@ impl ShaderResourceView {
 
     pub(super) fn get_desc(&self, out: *mut D3D11_SHADER_RESOURCE_VIEW_DESC) {
         if let Some(out) = unsafe { out.as_mut() } {
-            *out = convert::srv_back(&self.front.desc);
+            *out = self.desc;
+        }
+    }
+
+    pub(super) fn get_resource(&self, out: OutRef<ID3D11Resource>) {
+        let _ = out.write(Some(self.resource.public()));
+    }
+}
+
+/// An unordered access view: the front view, its description and the resource it views.
+pub struct UnorderedAccessView {
+    pub front: Locked<Rc<front::ShaderView<Chosen>>>,
+    desc: D3D11_UNORDERED_ACCESS_VIEW_DESC,
+    resource: HeldResource,
+    pub(super) child: Child,
+}
+
+counted!(UnorderedAccessView => UnorderedAccessView_Impl { main: ID3D11UnorderedAccessView, ID3D11UnorderedAccessView_Vtbl });
+
+impl UnorderedAccessView {
+    pub fn new(
+        front: Rc<front::ShaderView<Chosen>>,
+        desc: D3D11_UNORDERED_ACCESS_VIEW_DESC,
+        resource: HeldResource,
+        device: ID3D11Device,
+    ) -> Self {
+        UnorderedAccessView {
+            front: Locked::new(front),
+            desc,
+            resource,
+            child: Child::new(device),
+        }
+    }
+
+    pub(super) fn get_desc(&self, out: *mut D3D11_UNORDERED_ACCESS_VIEW_DESC) {
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = self.desc;
         }
     }
 
@@ -529,6 +569,22 @@ counted!(PixelShader => PixelShader_Impl { main: ID3D11PixelShader, ID3D11PixelS
 impl PixelShader {
     pub fn new(front: Rc<front::Shader<Chosen>>, device: ID3D11Device) -> Self {
         PixelShader {
+            front: Locked::new(front),
+            child: Child::new(device),
+        }
+    }
+}
+
+pub struct ComputeShader {
+    pub front: Locked<Rc<front::Shader<Chosen>>>,
+    pub(super) child: Child,
+}
+
+counted!(ComputeShader => ComputeShader_Impl { main: ID3D11ComputeShader, ID3D11ComputeShader_Vtbl });
+
+impl ComputeShader {
+    pub fn new(front: Rc<front::Shader<Chosen>>, device: ID3D11Device) -> Self {
+        ComputeShader {
             front: Locked::new(front),
             child: Child::new(device),
         }

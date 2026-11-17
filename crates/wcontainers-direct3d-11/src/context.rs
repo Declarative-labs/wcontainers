@@ -4,23 +4,35 @@ use std::rc::Rc;
 
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
-    DepthAttachment, DrawCall, DrawRange, Extent, FormatKind, IndexBinding, IndexFormat, LoadOp,
-    MAX_BINDING_SETS, Object, Origin, PassDesc, Program, ReadSource, ReadState, ScissorRect,
-    SlotKind, SlowPath, StageSet, StepMode, StoreOp, SystemValue, Topology, VertexAttribute,
-    VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
+    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, FormatKind,
+    IndexBinding, IndexFormat, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc, Program,
+    ReadSource, ReadState, ScissorRect, SlotKind, SlowPath, StageSet, StepMode, StoreOp,
+    SystemValue, TextureUsage, Topology, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, Viewport as GpuViewport, WriteMode,
 };
 
 use crate::desc::{
     self, Box3, SubresourceData, TexDim, TextureDesc, Viewport, map, topology, usage,
 };
-use crate::device::{Device, gpu_buffer, integer_format};
+use crate::device::{Device, ZERO_BYTES, gpu_buffer, integer_format};
 use crate::error::{Error, Result, not_implemented};
 use crate::format;
 use crate::object::*;
 
-/// The shader stages whose slots this context keeps: vertex (set 0) and pixel (set 1).
+/// The shader stages whose slots this context keeps: vertex (set 0), pixel (set 1) and compute
+/// (set 0 of its own programs).
 pub const VERTEX: usize = 0;
 pub const PIXEL: usize = 1;
+pub const COMPUTE: usize = 2;
+const STAGES: usize = 3;
+
+/// Unordered access slots of the pixel and compute stages at feature level 11_0.
+pub const UAV_SLOTS: usize = 8;
+
+/// The binding set a stage's program reads its slots from.
+fn set_of(stage: usize) -> u32 {
+    if stage == PIXEL { 1 } else { 0 }
+}
 
 /// A vertex buffer slot: buffer, stride, offset.
 type VertexSlot<B> = (Rc<Buffer<B>>, u32, u32);
@@ -45,16 +57,19 @@ pub struct Mapped {
 pub struct ContextState<B: Backend> {
     vs: Option<Rc<Shader<B>>>,
     ps: Option<Rc<Shader<B>>>,
+    cs: Option<Rc<Shader<B>>>,
     layout: Option<Rc<InputLayout>>,
     topology: u32,
     vertex_buffers: Vec<Option<VertexSlot<B>>>,
     index: Option<(Rc<Buffer<B>>, IndexFormat, u32)>,
-    constant_buffers: [Vec<Option<Rc<Buffer<B>>>>; 2],
+    constant_buffers: [Vec<Option<Rc<Buffer<B>>>>; STAGES],
     /// Per constant buffer slot, the range bound (first constant, constants), or none for the
     /// whole buffer.
-    constant_ranges: [Vec<Option<(u32, u32)>>; 2],
-    resources: [Vec<Option<Rc<View<B>>>>; 2],
-    samplers: [Vec<Option<Rc<Sampler<B>>>>; 2],
+    constant_ranges: [Vec<Option<(u32, u32)>>; STAGES],
+    resources: [Vec<Option<Rc<ShaderView<B>>>>; STAGES],
+    samplers: [Vec<Option<Rc<Sampler<B>>>>; STAGES],
+    /// Per stage, the unordered access views bound (none for the vertex stage).
+    uavs: [Vec<Option<Rc<ShaderView<B>>>>; STAGES],
     targets: Vec<Option<Rc<View<B>>>>,
     depth: Option<Rc<View<B>>>,
     blend: Option<Rc<Blend<B>>>,
@@ -65,8 +80,8 @@ pub struct ContextState<B: Backend> {
     raster: Option<Rc<Rasterizer<B>>>,
     viewports: Vec<Viewport>,
     scissors: Vec<ScissorRect>,
-    sets: [Option<Kept<B, B::BindingSet>>; 2],
-    sets_dirty: [bool; 2],
+    sets: [Option<Kept<B, B::BindingSet>>; STAGES],
+    sets_dirty: [bool; STAGES],
     pass_open: bool,
     clears: Vec<PendingClear<B>>,
     /// Mapped subresources: the resource's address, subresource, map type.
@@ -78,14 +93,16 @@ impl<B: Backend> ContextState<B> {
         ContextState {
             vs: None,
             ps: None,
+            cs: None,
             layout: None,
             topology: topology::UNDEFINED,
             vertex_buffers: vec![None; VERTEX_SLOTS],
             index: None,
-            constant_buffers: [vec![None; 14], vec![None; 14]],
-            constant_ranges: [vec![None; 14], vec![None; 14]],
-            resources: [vec![None; 128], vec![None; 128]],
-            samplers: [vec![None; 16], vec![None; 16]],
+            constant_buffers: std::array::from_fn(|_| vec![None; 14]),
+            constant_ranges: std::array::from_fn(|_| vec![None; 14]),
+            resources: std::array::from_fn(|_| vec![None; 128]),
+            samplers: std::array::from_fn(|_| vec![None; 16]),
+            uavs: [Vec::new(), vec![None; UAV_SLOTS], vec![None; UAV_SLOTS]],
             targets: vec![None; 8],
             depth: None,
             blend: None,
@@ -96,8 +113,8 @@ impl<B: Backend> ContextState<B> {
             raster: None,
             viewports: Vec::new(),
             scissors: Vec::new(),
-            sets: [None, None],
-            sets_dirty: [true; 2],
+            sets: [None, None, None],
+            sets_dirty: [true; STAGES],
             pass_open: false,
             clears: Vec::new(),
             mapped: Vec::new(),
@@ -217,6 +234,8 @@ enum Zero<B: Backend> {
     Buffer(B::Buffer, u64),
     View(B::TextureView),
     Sampler(B::Sampler),
+    /// The zero buffer read as a structured or raw buffer.
+    Storage(B::Buffer),
 }
 
 /// How a draw names its range before the front picks the interface's form.
@@ -239,6 +258,56 @@ impl<B: Backend> Device<B> {
             self.ctx.ps = shader;
             self.ctx.sets_dirty[PIXEL] = true;
         }
+    }
+
+    pub fn cs_set_shader(&mut self, shader: Option<Rc<Shader<B>>>) {
+        if !same(&self.ctx.cs, &shader) {
+            self.ctx.cs = shader;
+            self.ctx.sets_dirty[COMPUTE] = true;
+        }
+    }
+
+    /// Binds unordered access views to `stage` (pixel or compute) from `start`, setting the hidden
+    /// counters of those given an initial count (`u32::MAX` keeps a counter as it is).
+    pub fn set_uavs(
+        &mut self,
+        stage: usize,
+        start: u32,
+        views: &[Option<Rc<ShaderView<B>>>],
+        counts: Option<&[u32]>,
+    ) -> Result<()> {
+        if put_rc(&mut self.ctx.uavs[stage], start, views)? {
+            self.ctx.sets_dirty[stage] = true;
+            // What a pipeline writes it no longer reads: the pixel stage's views are bound with the
+            // targets, for every stage.
+            if stage == COMPUTE {
+                self.unbind_written(&[COMPUTE]);
+            } else {
+                self.unbind_written(&[VERTEX, PIXEL, COMPUTE]);
+            }
+        }
+        for (i, v) in views.iter().enumerate() {
+            let count = counts.and_then(|c| c.get(i)).copied().unwrap_or(u32::MAX);
+            if let (Some(ShaderView::Buffer(span)), true) = (v.as_deref(), count != u32::MAX)
+                && let Some(counter) = &span.counter
+            {
+                self.end_pass();
+                self.backend.write_buffer(
+                    &counter.handle,
+                    0,
+                    &count.to_le_bytes(),
+                    WriteMode::Ordered,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a view is bound to unordered access slot `slot` of `stage`.
+    pub fn uav_bound(&self, stage: usize, slot: u32) -> bool {
+        self.ctx.uavs[stage]
+            .get(slot as usize)
+            .is_some_and(Option::is_some)
     }
 
     pub fn ia_set_input_layout(&mut self, layout: Option<Rc<InputLayout>>) {
@@ -312,12 +381,12 @@ impl<B: Backend> Device<B> {
         &mut self,
         stage: usize,
         start: u32,
-        v: &[Option<Rc<View<B>>>],
+        v: &[Option<Rc<ShaderView<B>>>],
     ) -> Result<()> {
-        // A view of a subresource bound as a target is bound as none, as Direct3D binds it.
+        // A view of a subresource the pipeline writes is bound as none, as Direct3D binds it.
         let v: Vec<_> = v
             .iter()
-            .map(|v| v.clone().filter(|v| !self.bound_as_target(v)))
+            .map(|v| v.clone().filter(|v| !self.written(stage, v)))
             .collect();
         if put_rc(&mut self.ctx.resources[stage], start, &v)? {
             self.ctx.sets_dirty[stage] = true;
@@ -330,6 +399,31 @@ impl<B: Backend> Device<B> {
         self.ctx.resources[stage]
             .get(slot as usize)
             .is_some_and(Option::is_some)
+    }
+
+    /// Whether `stage`'s pipeline writes a subresource of `view`: through a target, or an unordered
+    /// access view of the pixel stage (graphics stages) or of the compute stage.
+    fn written(&self, stage: usize, view: &ShaderView<B>) -> bool {
+        let writer = if stage == COMPUTE { COMPUTE } else { PIXEL };
+        view.texture().is_some_and(|t| self.bound_as_target(t))
+            || self.ctx.uavs[writer]
+                .iter()
+                .flatten()
+                .any(|u| u.overlaps(view))
+    }
+
+    /// Unbinds the shader resource views of `stages` that name what their pipeline writes.
+    fn unbind_written(&mut self, stages: &[usize]) {
+        for &stage in stages {
+            let mut resources = std::mem::take(&mut self.ctx.resources[stage]);
+            for slot in &mut resources {
+                if slot.as_ref().is_some_and(|v| self.written(stage, v)) {
+                    *slot = None;
+                    self.ctx.sets_dirty[stage] = true;
+                }
+            }
+            self.ctx.resources[stage] = resources;
+        }
     }
 
     fn bound_as_target(&self, view: &View<B>) -> bool {
@@ -370,16 +464,7 @@ impl<B: Backend> Device<B> {
             self.ctx.targets = new;
             self.ctx.depth = depth;
             // Binding a subresource as a target unbinds its shader resource views, as in Direct3D.
-            for stage in [VERTEX, PIXEL] {
-                let mut resources = std::mem::take(&mut self.ctx.resources[stage]);
-                for slot in &mut resources {
-                    if slot.as_ref().is_some_and(|v| self.bound_as_target(v)) {
-                        *slot = None;
-                        self.ctx.sets_dirty[stage] = true;
-                    }
-                }
-                self.ctx.resources[stage] = resources;
-            }
+            self.unbind_written(&[VERTEX, PIXEL, COMPUTE]);
         }
         Ok(())
     }
@@ -703,12 +788,8 @@ impl<B: Backend> Device<B> {
     /// is made again.
     fn grow_constants(&mut self) -> Result<()> {
         let mut small = Vec::new();
-        for stage in [VERTEX, PIXEL] {
-            let shader = if stage == VERTEX {
-                &self.ctx.vs
-            } else {
-                &self.ctx.ps
-            };
+        for stage in [VERTEX, PIXEL, COMPUTE] {
+            let shader = self.stage_shader(stage);
             let Some(shader) = shader.as_ref().filter(|_| self.ctx.sets_dirty[stage]) else {
                 continue;
             };
@@ -719,7 +800,7 @@ impl<B: Backend> Device<B> {
                     .is_some_and(Option::is_none);
                 if let (SlotKind::Uniform, Some(Some(c))) = (b.kind, bound)
                     && whole
-                    && b.set as usize == stage
+                    && b.set == set_of(stage)
                     && let Some(&(_, declared)) =
                         shader.constant_sizes.iter().find(|(n, _)| *n == b.binding)
                     && declared > c.size.get()
@@ -734,7 +815,7 @@ impl<B: Backend> Device<B> {
             }
         }
         if !small.is_empty() {
-            self.ctx.sets_dirty = [true; 2];
+            self.ctx.sets_dirty = [true; STAGES];
         }
         Ok(())
     }
@@ -759,22 +840,147 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
+    /// The shader bound to `stage`.
+    fn stage_shader(&self, stage: usize) -> &Option<Rc<Shader<B>>> {
+        match stage {
+            VERTEX => &self.ctx.vs,
+            PIXEL => &self.ctx.ps,
+            _ => &self.ctx.cs,
+        }
+    }
+
+    /// `Dispatch` and `DispatchIndirect`; one this front cannot serve removes the device.
+    pub fn dispatch(&mut self, groups: [u32; 3], indirect: Option<(&Rc<Buffer<B>>, u32)>) {
+        if let Err(e) = self.try_dispatch(groups, indirect) {
+            self.lose(e);
+        }
+    }
+
+    fn try_dispatch(
+        &mut self,
+        groups: [u32; 3],
+        indirect: Option<(&Rc<Buffer<B>>, u32)>,
+    ) -> Result<()> {
+        if self.removed.is_some() {
+            return Ok(());
+        }
+        self.bury();
+        // Without a compute shader Direct3D runs nothing.
+        let Some(cs) = self.ctx.cs.clone() else {
+            return Ok(());
+        };
+        self.settle();
+        self.grow_constants()?;
+        self.update_set(COMPUTE)?;
+        let key = (cs.gpu.id, 0);
+        let program = match self.programs.get(&key) {
+            Some(p) => p.handle.clone(),
+            None => {
+                let p = self
+                    .backend
+                    .create_program(&Program::Compute(&cs.gpu.handle));
+                let p = self.gpu(p)?;
+                let id = self.id();
+                self.programs.insert(
+                    key,
+                    Kept::new(p.clone(), id, Object::Program, &self.graveyard),
+                );
+                p
+            }
+        };
+        let args = indirect.map(|(b, offset)| (b.gpu.borrow(), offset));
+        let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
+        bindings[0] = self.ctx.sets[COMPUTE].as_ref().map(|k| &k.handle);
+        let call = DispatchCall {
+            program: &program,
+            bindings,
+            immediates: &[],
+            groups: match &args {
+                None => DispatchGroups::Direct(groups),
+                Some((b, offset)) => DispatchGroups::Indirect {
+                    args: &b.handle,
+                    offset: u64::from(*offset),
+                },
+            },
+        };
+        let r = self.backend.dispatch(&call);
+        drop(args);
+        self.gpu(r)
+    }
+
+    /// `CopyStructureCount`: the hidden counter of a buffer view, written into `dst` at `offset`.
+    pub fn copy_structure_count(
+        &mut self,
+        dst: &Buffer<B>,
+        offset: u32,
+        view: &ShaderView<B>,
+    ) -> Result<()> {
+        let ShaderView::Buffer(BufferSpan {
+            counter: Some(c), ..
+        }) = view
+        else {
+            return Err(Error::InvalidArg("a view without a counter"));
+        };
+        if !offset.is_multiple_of(4) || u64::from(offset) + 4 > u64::from(dst.desc.byte_width) {
+            return Err(Error::InvalidArg("a count written past the buffer"));
+        }
+        self.settle();
+        self.backend
+            .copy_buffer(&c.handle, 0, &dst.handle(), u64::from(offset), 4);
+        Ok(())
+    }
+
+    /// `ClearUnorderedAccessViewUint` (`float` false) and `Float`: buffer views take the first value
+    /// for each 32-bit word; texture views each texel, as raw bits of the view's format.
+    pub fn clear_uav(&mut self, view: &ShaderView<B>, values: [u32; 4], float: bool) -> Result<()> {
+        self.settle();
+        match view {
+            ShaderView::Buffer(span) => {
+                if float {
+                    return not_implemented("a float clear of a buffer view");
+                }
+                self.backend.clear_buffer(
+                    &span.buffer.handle(),
+                    span.offset,
+                    span.size,
+                    &values[0].to_le_bytes(),
+                );
+                Ok(())
+            }
+            ShaderView::Texture(v) => {
+                if !v.texture.gpu_desc.usage.contains(TextureUsage::RENDER) {
+                    return not_implemented(
+                        "a clear of an unordered access view of a format no pass draws into",
+                    );
+                }
+                let integer = matches!(v.format.kind(), FormatKind::Uint | FormatKind::Sint);
+                if integer == float {
+                    return not_implemented(
+                        "a clear of an unordered access view converting between float and integer",
+                    );
+                }
+                let r = self.backend.clear_texture(
+                    &v.texture.gpu.handle,
+                    &v.texture.gpu_desc,
+                    v.format,
+                    v.desc.first_mip..v.desc.first_mip + 1,
+                    v.desc.first_layer..v.desc.first_layer + v.desc.layer_count,
+                    ClearValue::Color(values),
+                );
+                self.gpu(r)
+            }
+        }
+    }
+
     /// Makes the binding set of `stage` from its slots and its shader's reflection, when it changed.
     fn update_set(&mut self, stage: usize) -> Result<()> {
         if !self.ctx.sets_dirty[stage] {
             return Ok(());
         }
-        let shader = if stage == VERTEX {
-            self.ctx.vs.clone()
-        } else {
-            self.ctx.ps.clone()
-        };
-        let Some(shader) = shader.filter(|s| {
-            s.reflection
-                .bindings
-                .iter()
-                .any(|b| b.set as usize == stage)
-        }) else {
+        let set = set_of(stage);
+        let shader = self.stage_shader(stage).clone();
+        let Some(shader) = shader.filter(|s| s.reflection.bindings.iter().any(|b| b.set == set))
+        else {
             self.ctx.sets[stage] = None;
             self.ctx.sets_dirty[stage] = false;
             return Ok(());
@@ -784,13 +990,22 @@ impl<B: Backend> Device<B> {
                 .reflection
                 .bindings
                 .iter()
-                .filter(move |b| b.set as usize == stage)
+                .filter(move |b| b.set == set)
         };
-        let stages = if stage == VERTEX {
-            StageSet::VERTEX
-        } else {
-            StageSet::FRAGMENT
+        let stages = match stage {
+            VERTEX => StageSet::VERTEX,
+            PIXEL => StageSet::FRAGMENT,
+            _ => StageSet::COMPUTE,
         };
+        let stand_in = |n| {
+            shader
+                .stand_ins
+                .iter()
+                .find(|(b, _)| *b == n)
+                .and_then(|s| s.1)
+        };
+        // Whether a shader resource binding reads a structured or raw buffer, not a texture.
+        let reads_buffer = |n| matches!(stand_in(n), Some(StandIn::ZeroBuffer));
         // What stands in for each empty slot the shader reads, by binding number.
         let mut empty: Vec<(u32, Zero<B>)> = Vec::new();
         for b in wanted() {
@@ -799,24 +1014,46 @@ impl<B: Backend> Device<B> {
                 SlotKind::Uniform => self.ctx.constant_buffers[stage]
                     .get(slot)
                     .is_some_and(Option::is_some),
-                SlotKind::Texture => self.ctx.resources[stage]
-                    .get(slot)
-                    .is_some_and(Option::is_some),
+                // A view of the other kind (a texture where a buffer is read) reads as none.
+                SlotKind::Texture => {
+                    match self.ctx.resources[stage]
+                        .get(slot)
+                        .and_then(Option::as_deref)
+                    {
+                        Some(ShaderView::Texture(_)) => !reads_buffer(b.binding),
+                        Some(ShaderView::Buffer(_)) => reads_buffer(b.binding),
+                        None => false,
+                    }
+                }
                 SlotKind::Sampler => self.ctx.samplers[stage]
                     .get(slot)
                     .is_some_and(Option::is_some),
-                _ => return not_implemented("storage views"),
+                SlotKind::Storage => match self.ctx.uavs[stage].get(slot) {
+                    Some(Some(_)) => true,
+                    _ => return not_implemented("an empty unordered access slot a shader uses"),
+                },
+                SlotKind::Counter => match self.ctx.uavs[stage].get(slot) {
+                    Some(Some(u))
+                        if matches!(
+                            &**u,
+                            ShaderView::Buffer(BufferSpan {
+                                counter: Some(_),
+                                ..
+                            })
+                        ) =>
+                    {
+                        true
+                    }
+                    _ => {
+                        return Err(Error::InvalidArg(
+                            "a shader counts with a view that has no counter",
+                        ));
+                    }
+                },
             };
             if filled {
                 continue;
             }
-            let stand_in = |n| {
-                shader
-                    .stand_ins
-                    .iter()
-                    .find(|(b, _)| *b == n)
-                    .and_then(|s| s.1)
-            };
             let zero = match (b.kind, stand_in(b.binding)) {
                 (SlotKind::Uniform, _) => {
                     let declared = shader
@@ -830,6 +1067,7 @@ impl<B: Backend> Device<B> {
                     Zero::View(self.zero_view(dimension, kind)?)
                 }
                 (_, Some(StandIn::DefaultSampler)) => Zero::Sampler(self.default_sampler()?),
+                (_, Some(StandIn::ZeroBuffer)) => Zero::Storage(self.zero_storage()?),
                 (_, None) => {
                     return not_implemented(
                         "an empty slot read as a multisampled or depth texture, or a comparison sampler",
@@ -873,6 +1111,22 @@ impl<B: Backend> Device<B> {
                 );
             }
         }
+        // The back-end buffers of the buffer views bound for unordered access.
+        let spans: Vec<_> = self.ctx.uavs[stage]
+            .iter()
+            .map(|u| match u.as_deref() {
+                Some(ShaderView::Buffer(span)) => Some((span.buffer.gpu.borrow(), span)),
+                _ => None,
+            })
+            .collect();
+        let srvs: Vec<_> = self.ctx.resources[stage]
+            .iter()
+            .map(|v| match v.as_deref() {
+                Some(ShaderView::Buffer(span)) => Some((span.buffer.gpu.borrow(), span)),
+                _ => None,
+            })
+            .collect();
+        let uavs = &self.ctx.uavs[stage];
         let views = &self.ctx.resources[stage];
         let samplers = &self.ctx.samplers[stage];
         let mut entries = Vec::new();
@@ -890,15 +1144,60 @@ impl<B: Backend> Device<B> {
                             })
                         })
                 }
-                SlotKind::Texture => views
-                    .get(slot)
-                    .and_then(Option::as_ref)
-                    .map(|v| BindingResource::Texture(&v.gpu.handle)),
+                SlotKind::Texture => match (
+                    views.get(slot).and_then(Option::as_deref),
+                    srvs.get(slot).and_then(Option::as_ref),
+                ) {
+                    (Some(ShaderView::Texture(v)), _) if !reads_buffer(b.binding) => {
+                        Some(BindingResource::Texture(&v.gpu.handle))
+                    }
+                    (_, Some((buffer, span))) if reads_buffer(b.binding) => {
+                        Some(BindingResource::StorageBuffer {
+                            range: BufferRange {
+                                buffer: &buffer.handle,
+                                offset: span.offset,
+                                size: span.size,
+                            },
+                            writable: false,
+                        })
+                    }
+                    _ => None,
+                },
                 SlotKind::Sampler => samplers
                     .get(slot)
                     .and_then(Option::as_ref)
                     .map(|s| BindingResource::Sampler(&s.gpu.handle)),
-                _ => return not_implemented("storage views"),
+                SlotKind::Storage => match (uavs[slot].as_deref(), &spans[slot]) {
+                    (Some(ShaderView::Texture(v)), _) => Some(BindingResource::StorageTexture {
+                        view: &v.gpu.handle,
+                        writable: true,
+                    }),
+                    (_, Some((buffer, span))) => Some(BindingResource::StorageBuffer {
+                        range: BufferRange {
+                            buffer: &buffer.handle,
+                            offset: span.offset,
+                            size: span.size,
+                        },
+                        writable: true,
+                    }),
+                    _ => None,
+                },
+                SlotKind::Counter => match &spans[slot] {
+                    Some((
+                        _,
+                        BufferSpan {
+                            counter: Some(c), ..
+                        },
+                    )) => Some(BindingResource::StorageBuffer {
+                        range: BufferRange {
+                            buffer: &c.handle,
+                            offset: 0,
+                            size: 4,
+                        },
+                        writable: true,
+                    }),
+                    _ => None,
+                },
             };
             let resource = match resource {
                 Some(r) => r,
@@ -914,6 +1213,14 @@ impl<B: Backend> Device<B> {
                         size: *size,
                     }),
                     Zero::View(view) => BindingResource::Texture(view),
+                    Zero::Storage(buffer) => BindingResource::StorageBuffer {
+                        range: BufferRange {
+                            buffer,
+                            offset: 0,
+                            size: ZERO_BYTES,
+                        },
+                        writable: false,
+                    },
                     Zero::Sampler(sampler) => BindingResource::Sampler(sampler),
                 },
             };
@@ -926,6 +1233,8 @@ impl<B: Backend> Device<B> {
         let set = self.backend.create_binding_set(&entries);
         drop(entries);
         drop(cbs);
+        drop(spans);
+        drop(srvs);
         let set = self.gpu(set)?;
         let id = self.id();
         self.ctx.sets[stage] = Some(Kept::new(set, id, Object::BindingSet, &self.graveyard));

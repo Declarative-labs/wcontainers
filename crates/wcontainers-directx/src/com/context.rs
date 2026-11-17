@@ -15,7 +15,7 @@ use windows::core::{
 
 use wcontainers_direct3d_11::desc::{Box3, Viewport};
 use wcontainers_direct3d_11::object::Resource;
-use wcontainers_direct3d_11::{PIXEL, VERTEX, format};
+use wcontainers_direct3d_11::{COMPUTE, PIXEL, UAV_SLOTS, VERTEX, format};
 
 use super::counted::{Counted, Held};
 use super::*;
@@ -38,12 +38,14 @@ pub struct Context {
 struct Bound {
     vs: Option<Held<VertexShader_Impl>>,
     ps: Option<Held<PixelShader_Impl>>,
-    /// Per stage (vertex, pixel), per slot.
-    constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; 2],
+    cs: Option<Held<ComputeShader_Impl>>,
+    /// Per stage (vertex, pixel, compute), per slot.
+    constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; 3],
     /// Per stage and slot, the constants bound (first, count); none for the whole buffer.
-    constant_ranges: [Vec<Option<(u32, u32)>>; 2],
-    resources: [Vec<Option<Held<ShaderResourceView_Impl>>>; 2],
-    samplers: [Vec<Option<Held<SamplerState_Impl>>>; 2],
+    constant_ranges: [Vec<Option<(u32, u32)>>; 3],
+    resources: [Vec<Option<Held<ShaderResourceView_Impl>>>; 3],
+    samplers: [Vec<Option<Held<SamplerState_Impl>>>; 3],
+    uavs: [Vec<Option<Held<UnorderedAccessView_Impl>>>; 3],
     layout: Option<Held<InputLayout_Impl>>,
     /// Per slot: buffer, stride and offset.
     vertex_buffers: Vec<(Option<Held<Buffer_Impl>>, u32, u32)>,
@@ -63,10 +65,12 @@ impl Default for Bound {
         Bound {
             vs: None,
             ps: None,
+            cs: None,
             constant_buffers: Default::default(),
             constant_ranges: Default::default(),
             resources: Default::default(),
             samplers: Default::default(),
+            uavs: Default::default(),
             layout: None,
             vertex_buffers: Vec::new(),
             index: (None, DXGI_FORMAT(0), 0),
@@ -257,11 +261,23 @@ impl Context {
     ) {
         let h = held::<_, Buffer>(list, n);
         let b = fronts(&h, |b| &*b.front);
-        let ranges: Vec<_> = if first.is_null() || count.is_null() || list.is_null() {
+        // Without either array the buffers are bound whole; without one of them, that half of
+        // each slot's range stays as it was.
+        let ranges: Vec<_> = if (first.is_null() && count.is_null()) || list.is_null() {
             vec![None; h.len()]
         } else {
+            let bound = self.bound.borrow();
             (0..h.len())
-                .map(|i| Some(unsafe { (*first.add(i), *count.add(i)) }))
+                .map(|i| {
+                    let was = bound.constant_ranges[stage]
+                        .get(start as usize + i)
+                        .copied()
+                        .flatten()
+                        .unwrap_or((0, 4096));
+                    let f = unsafe { first.as_ref().map_or(was.0, |_| *first.add(i)) };
+                    let c = unsafe { count.as_ref().map_or(was.1, |_| *count.add(i)) };
+                    Some((f, c))
+                })
                 .collect()
         };
         let r = self
@@ -456,7 +472,7 @@ impl Context {
         {
             let front = self.front.borrow();
             let mut bound = self.bound.borrow_mut();
-            for stage in [VERTEX, PIXEL] {
+            for stage in [VERTEX, PIXEL, COMPUTE] {
                 for (slot, h) in bound.resources[stage].iter_mut().enumerate() {
                     if h.is_some() && !front.shader_resource_bound(stage, slot as u32) {
                         gone.push(h.take());
@@ -641,8 +657,11 @@ impl Context {
     }
 
     pub(super) fn generate_mips(&self, view: Ref<ID3D11ShaderResourceView>) {
-        if let Some(v) = front_of(&view, |v: &ShaderResourceView| &*v.front) {
-            self.front.borrow_mut().generate_mips(&v);
+        // A view of a buffer has no levels; Direct3D drops the call.
+        if let Some(v) = front_of(&view, |v: &ShaderResourceView| &*v.front)
+            && let Some(v) = v.texture()
+        {
+            self.front.borrow_mut().generate_mips(v);
         }
     }
 
@@ -984,6 +1003,254 @@ impl Context {
 
     pub(super) fn flush(&self) {
         self.front.borrow_mut().flush();
+    }
+
+    pub(super) fn cs_set_shader(
+        &self,
+        shader: Ref<ID3D11ComputeShader>,
+        _c: *const Option<ID3D11ClassInstance>,
+        _n: u32,
+    ) {
+        let h = held_one::<_, ComputeShader>(&shader);
+        self.front
+            .borrow_mut()
+            .cs_set_shader(h.as_ref().map(|s| (*s.front).clone()));
+        self.bound.borrow_mut().cs = h;
+    }
+
+    pub(super) fn cs_get_shader(
+        &self,
+        out: OutRef<ID3D11ComputeShader>,
+        _c: OutRef<ID3D11ClassInstance>,
+        count: *mut u32,
+    ) {
+        no_instances(count);
+        let _ = out.write(public(&self.bound.borrow().cs));
+    }
+
+    pub(super) fn cs_set_constant_buffers(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11Buffer>,
+    ) {
+        self.set_constant_buffers(COMPUTE, start, n, list, std::ptr::null(), std::ptr::null());
+    }
+
+    pub(super) fn cs_set_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11Buffer>,
+        first: *const u32,
+        count: *const u32,
+    ) {
+        self.set_constant_buffers(COMPUTE, start, n, list, first, count);
+    }
+
+    pub(super) fn cs_get_constant_buffers(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11Buffer>,
+    ) {
+        load(
+            &self.bound.borrow().constant_buffers[COMPUTE],
+            start,
+            n,
+            out,
+        );
+    }
+
+    pub(super) fn cs_get_constant_buffers1(
+        &self,
+        start: u32,
+        n: u32,
+        out: OutRef<ID3D11Buffer>,
+        first: *mut u32,
+        count: *mut u32,
+    ) {
+        load(
+            &self.bound.borrow().constant_buffers[COMPUTE],
+            start,
+            n,
+            out_array(out),
+        );
+        self.get_constant_ranges(COMPUTE, start, n, first, count);
+    }
+
+    pub(super) fn cs_set_shader_resources(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11ShaderResourceView>,
+    ) {
+        self.set_shader_resources(COMPUTE, start, n, list);
+    }
+
+    pub(super) fn cs_get_shader_resources(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11ShaderResourceView>,
+    ) {
+        load(&self.bound.borrow().resources[COMPUTE], start, n, out);
+    }
+
+    pub(super) fn cs_set_samplers(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11SamplerState>,
+    ) {
+        self.set_samplers(COMPUTE, start, n, list);
+    }
+
+    pub(super) fn cs_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
+        load(&self.bound.borrow().samplers[COMPUTE], start, n, out);
+    }
+
+    /// Binds unordered access views to `stage` from `start`, with the counters' initial counts.
+    fn set_uavs(
+        &self,
+        stage: usize,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11UnorderedAccessView>,
+        counts: *const u32,
+    ) {
+        let h = held::<_, UnorderedAccessView>(list, n);
+        let v = fronts(&h, |v| &*v.front);
+        let counts =
+            (!counts.is_null()).then(|| unsafe { std::slice::from_raw_parts(counts, h.len()) });
+        let r = self.front.borrow_mut().set_uavs(stage, start, &v, counts);
+        if self.quiet("SetUnorderedAccessViews", r) {
+            store(&mut self.bound.borrow_mut().uavs[stage], start, h);
+        }
+    }
+
+    pub(super) fn cs_set_unordered_access_views(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11UnorderedAccessView>,
+        counts: *const u32,
+    ) {
+        self.set_uavs(COMPUTE, start, n, list, counts);
+    }
+
+    pub(super) fn cs_get_unordered_access_views(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11UnorderedAccessView>,
+    ) {
+        load(&self.bound.borrow().uavs[COMPUTE], start, n, out);
+    }
+
+    /// Targets (unless `n` is `D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL`) and the pixel
+    /// stage's unordered access views from `uav_start` (unless `uav_n` is
+    /// `D3D11_KEEP_UNORDERED_ACCESS_VIEWS`), the slots outside them unbound.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn om_set_render_targets_and_unordered_access_views(
+        &self,
+        n: u32,
+        targets: *const Option<ID3D11RenderTargetView>,
+        depth: Ref<ID3D11DepthStencilView>,
+        uav_start: u32,
+        uav_n: u32,
+        uavs: *const Option<ID3D11UnorderedAccessView>,
+        counts: *const u32,
+    ) {
+        const KEEP: u32 = u32::MAX;
+        if n != KEEP {
+            self.om_set_render_targets(n, targets, depth);
+        }
+        if uav_n != KEEP {
+            if (uav_start as usize).saturating_add(uav_n as usize) > UAV_SLOTS {
+                eprintln!(
+                    "wcontainers direct3d 11: OMSetRenderTargetsAndUnorderedAccessViews dropped: slots past the last"
+                );
+                return;
+            }
+            let none: [Option<ID3D11UnorderedAccessView>; UAV_SLOTS] = Default::default();
+            self.set_uavs(PIXEL, 0, UAV_SLOTS as u32, none.as_ptr(), std::ptr::null());
+            if uav_n > 0 {
+                self.set_uavs(PIXEL, uav_start, uav_n, uavs, counts);
+            }
+        }
+    }
+
+    pub(super) fn om_get_render_targets_and_unordered_access_views(
+        &self,
+        n: u32,
+        targets: *mut Option<ID3D11RenderTargetView>,
+        depth: OutRef<ID3D11DepthStencilView>,
+        uav_start: u32,
+        uav_n: u32,
+        uavs: *mut Option<ID3D11UnorderedAccessView>,
+    ) {
+        self.om_get_render_targets(n, targets, depth);
+        load(&self.bound.borrow().uavs[PIXEL], uav_start, uav_n, uavs);
+    }
+
+    pub(super) fn dispatch(&self, x: u32, y: u32, z: u32) {
+        self.front.borrow_mut().dispatch([x, y, z], None);
+    }
+
+    pub(super) fn dispatch_indirect(&self, args: Ref<ID3D11Buffer>, offset: u32) {
+        let Some(b) = front_of(&args, |b: &Buffer| &*b.front) else {
+            return;
+        };
+        self.front.borrow_mut().dispatch([0; 3], Some((&b, offset)));
+    }
+
+    pub(super) fn clear_unordered_access_view_uint(
+        &self,
+        view: Ref<ID3D11UnorderedAccessView>,
+        values: *const u32,
+    ) {
+        let Some(v) = front_of(&view, |v: &UnorderedAccessView| &*v.front) else {
+            return;
+        };
+        if values.is_null() {
+            return;
+        }
+        let values = unsafe { *values.cast::<[u32; 4]>() };
+        let r = self.front.borrow_mut().clear_uav(&v, values, false);
+        self.quiet("ClearUnorderedAccessViewUint", r);
+    }
+
+    pub(super) fn clear_unordered_access_view_float(
+        &self,
+        view: Ref<ID3D11UnorderedAccessView>,
+        values: *const f32,
+    ) {
+        let Some(v) = front_of(&view, |v: &UnorderedAccessView| &*v.front) else {
+            return;
+        };
+        if values.is_null() {
+            return;
+        }
+        let values = unsafe { *values.cast::<[f32; 4]>() }.map(f32::to_bits);
+        let r = self.front.borrow_mut().clear_uav(&v, values, true);
+        self.quiet("ClearUnorderedAccessViewFloat", r);
+    }
+
+    pub(super) fn copy_structure_count(
+        &self,
+        dst: Ref<ID3D11Buffer>,
+        offset: u32,
+        view: Ref<ID3D11UnorderedAccessView>,
+    ) {
+        let (Some(b), Some(v)) = (
+            front_of(&dst, |b: &Buffer| &*b.front),
+            front_of(&view, |v: &UnorderedAccessView| &*v.front),
+        ) else {
+            return;
+        };
+        let r = self.front.borrow_mut().copy_structure_count(&b, offset, &v);
+        self.quiet("CopyStructureCount", r);
     }
 
     pub(super) fn vs_get_shader(

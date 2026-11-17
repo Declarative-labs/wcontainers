@@ -209,10 +209,10 @@ pub fn hresult(e: wcontainers_direct3d_11::Error) -> Error {
     }
 }
 
-/// One stored private datum: bytes, or an interface held with a reference.
+/// One stored private datum: bytes, or an interface held with a reference (or none).
 enum Datum {
     Bytes(Vec<u8>),
-    Interface(IUnknown),
+    Interface(Option<IUnknown>),
 }
 
 /// Private data of an object (`SetPrivateData` and friends).
@@ -239,7 +239,9 @@ impl Private {
         };
         let bytes: Vec<u8> = match datum {
             Datum::Bytes(b) => b.clone(),
-            Datum::Interface(i) => (i.as_raw() as usize).to_ne_bytes().to_vec(),
+            Datum::Interface(i) => (i.as_ref().map_or(0, |i| i.as_raw() as usize))
+                .to_ne_bytes()
+                .to_vec(),
         };
         let room = unsafe { *size } as usize;
         unsafe { *size = bytes.len() as u32 };
@@ -249,7 +251,7 @@ impl Private {
         if room < bytes.len() {
             return Err(DXGI_ERROR_MORE_DATA.into());
         }
-        if let Datum::Interface(i) = datum {
+        if let Datum::Interface(Some(i)) = datum {
             std::mem::forget(i.clone());
         }
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), data.cast(), bytes.len()) };
@@ -267,11 +269,17 @@ impl Private {
         }
         let guid = unsafe { *guid };
         let mut store = self.data.borrow_mut();
+        let had = store.len();
         store.retain(|(g, _)| *g != guid);
-        if !data.is_null() {
-            let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size as usize) };
-            store.push((guid, Datum::Bytes(bytes.to_vec())));
+        if data.is_null() {
+            // No data removes the entry; with none to remove Direct3D answers S_FALSE.
+            if store.len() == had {
+                return Err(windows::Win32::Foundation::S_FALSE.into());
+            }
+            return Ok(());
         }
+        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size as usize) };
+        store.push((guid, Datum::Bytes(bytes.to_vec())));
         Ok(())
     }
 
@@ -286,9 +294,8 @@ impl Private {
         let guid = unsafe { *guid };
         let mut store = self.data.borrow_mut();
         store.retain(|(g, _)| *g != guid);
-        if let Some(object) = object.as_ref() {
-            store.push((guid, Datum::Interface(object.clone())));
-        }
+        // A null interface is kept too, and read back as a null pointer.
+        store.push((guid, Datum::Interface(object.as_ref().cloned())));
         Ok(())
     }
 }

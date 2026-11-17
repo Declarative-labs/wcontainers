@@ -19,7 +19,7 @@ CHILD = ["ID3D11DeviceChild"]
 # What DXGI offers on every resource, and on buffers and textures of one subresource.
 DXGI_RESOURCE = ["IDXGIResource1", "IDXGIResource", "IDXGIDeviceSubObject", "IDXGIObject"]
 DXGI_SURFACE = ["IDXGISurface1", "IDXGISurface"]
-for empty in ("ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11Predicate"):
+for empty in ("ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11ComputeShader", "ID3D11Predicate"):
     traits[empty] = []
 structs = {
     "Device": ["ID3D11Device1", "ID3D11Device", "IDXGIDevice1", "IDXGIDevice", "IDXGIObject"],
@@ -35,6 +35,7 @@ structs = {
     "RenderTargetView": ["ID3D11RenderTargetView", "ID3D11View"] + CHILD,
     "DepthStencilView": ["ID3D11DepthStencilView", "ID3D11View"] + CHILD,
     "ShaderResourceView": ["ID3D11ShaderResourceView", "ID3D11View"] + CHILD,
+    "UnorderedAccessView": ["ID3D11UnorderedAccessView", "ID3D11View"] + CHILD,
     "SamplerState": ["ID3D11SamplerState"] + CHILD,
     "BlendState": ["ID3D11BlendState1", "ID3D11BlendState"] + CHILD,
     "DepthStencilState": ["ID3D11DepthStencilState"] + CHILD,
@@ -44,13 +45,14 @@ structs = {
     "Predicate": ["ID3D11Predicate", "ID3D11Query", "ID3D11Asynchronous"] + CHILD,
     "VertexShader": ["ID3D11VertexShader"] + CHILD,
     "PixelShader": ["ID3D11PixelShader"] + CHILD,
+    "ComputeShader": ["ID3D11ComputeShader"] + CHILD,
 }
 
 hand = {
-    "ID3D11Device": "CreateBuffer CreateTexture1D CreateTexture2D CreateTexture3D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CreateQuery CreatePredicate CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
+    "ID3D11Device": "CreateBuffer CreateTexture1D CreateTexture2D CreateTexture3D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CreateQuery CreatePredicate CreateUnorderedAccessView CreateComputeShader CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
     "ID3D11Device1": "GetImmediateContext1 CreateBlendState1 CreateRasterizerState1",
     "IDXGIDevice1": "SetMaximumFrameLatency GetMaximumFrameLatency",
-    "ID3D11DeviceContext1": "CopySubresourceRegion1 UpdateSubresource1 DiscardResource DiscardView DiscardView1 VSSetConstantBuffers1 PSSetConstantBuffers1 VSGetConstantBuffers1 PSGetConstantBuffers1 ClearView",
+    "ID3D11DeviceContext1": "CopySubresourceRegion1 UpdateSubresource1 DiscardResource DiscardView DiscardView1 VSSetConstantBuffers1 PSSetConstantBuffers1 VSGetConstantBuffers1 PSGetConstantBuffers1 CSSetConstantBuffers1 CSGetConstantBuffers1 ClearView",
     "ID3D11Multithread": "Enter Leave SetMultithreadProtected GetMultithreadProtected",
     "ID3DUserDefinedAnnotation": "BeginEvent EndEvent SetMarker GetStatus",
     "IDXGIResource": "GetUsage",
@@ -66,13 +68,13 @@ hand = {
     "IDXGIDeviceSubObject": "GetDevice",
     "IDXGISwapChain": "Present GetBuffer SetFullscreenState GetFullscreenState GetDesc ResizeBuffers GetLastPresentCount",
     "IDXGISwapChain1": "GetDesc1 GetHwnd Present1",
-    "ID3D11DeviceContext": "VSSetConstantBuffers PSSetShaderResources PSSetShader PSSetSamplers VSSetShader DrawIndexed Draw Map Unmap PSSetConstantBuffers IASetInputLayout IASetVertexBuffers IASetIndexBuffer DrawIndexedInstanced DrawInstanced IASetPrimitiveTopology VSSetShaderResources VSSetSamplers OMSetRenderTargets OMSetBlendState OMSetDepthStencilState RSSetState RSSetViewports RSSetScissorRects CopySubresourceRegion CopyResource UpdateSubresource ClearRenderTargetView ClearDepthStencilView GenerateMips Begin End GetData ClearState Flush GetType GetContextFlags VSGetShader PSGetShader VSGetConstantBuffers PSGetConstantBuffers VSGetShaderResources PSGetShaderResources VSGetSamplers PSGetSamplers IAGetInputLayout IAGetVertexBuffers IAGetIndexBuffer IAGetPrimitiveTopology OMGetRenderTargets OMGetBlendState OMGetDepthStencilState RSGetState RSGetViewports RSGetScissorRects",
+    "ID3D11DeviceContext": "VSSetConstantBuffers PSSetShaderResources PSSetShader PSSetSamplers VSSetShader DrawIndexed Draw Map Unmap PSSetConstantBuffers IASetInputLayout IASetVertexBuffers IASetIndexBuffer DrawIndexedInstanced DrawInstanced IASetPrimitiveTopology VSSetShaderResources VSSetSamplers OMSetRenderTargets OMSetBlendState OMSetDepthStencilState RSSetState RSSetViewports RSSetScissorRects CopySubresourceRegion CopyResource UpdateSubresource ClearRenderTargetView ClearDepthStencilView GenerateMips Begin End GetData ClearState Flush GetType GetContextFlags VSGetShader PSGetShader VSGetConstantBuffers PSGetConstantBuffers VSGetShaderResources PSGetShaderResources VSGetSamplers PSGetSamplers IAGetInputLayout IAGetVertexBuffers IAGetIndexBuffer IAGetPrimitiveTopology OMGetRenderTargets OMGetBlendState OMGetDepthStencilState RSGetState RSGetViewports RSGetScissorRects CSSetShader CSGetShader CSSetConstantBuffers CSGetConstantBuffers CSSetShaderResources CSGetShaderResources CSSetSamplers CSGetSamplers CSSetUnorderedAccessViews CSGetUnorderedAccessViews Dispatch DispatchIndirect ClearUnorderedAccessViewUint ClearUnorderedAccessViewFloat CopyStructureCount OMSetRenderTargetsAndUnorderedAccessViews OMGetRenderTargetsAndUnorderedAccessViews",
     "ID3D11Resource": "GetType SetEvictionPriority GetEvictionPriority",
     "ID3D11View": "GetResource",
     "ID3D11Asynchronous": "GetDataSize",
     "ID3D11Query": "GetDesc",
 }
-for t in ["ID3D11Buffer", "ID3D11Texture1D", "ID3D11Texture2D", "ID3D11Texture3D", "ID3D11RenderTargetView", "ID3D11DepthStencilView", "ID3D11ShaderResourceView", "ID3D11SamplerState", "ID3D11BlendState", "ID3D11DepthStencilState", "ID3D11RasterizerState"]:
+for t in ["ID3D11Buffer", "ID3D11Texture1D", "ID3D11Texture2D", "ID3D11Texture3D", "ID3D11RenderTargetView", "ID3D11DepthStencilView", "ID3D11ShaderResourceView", "ID3D11UnorderedAccessView", "ID3D11SamplerState", "ID3D11BlendState", "ID3D11DepthStencilState", "ID3D11RasterizerState"]:
     hand[t] = "GetDesc"
 private = {"GetPrivateData", "SetPrivateData", "SetPrivateDataInterface"}
 # DXGI's calls on resources that Direct3D 11's own calls or the child's serve.
@@ -89,19 +91,19 @@ removes = {"Device", "Context"}
 
 def unused_stage(name, p, what):
     """The body of a context method on a stage or feature not served: served while it binds nothing."""
-    if re.fullmatch(r"(GS|HS|DS|CS)SetShader|SetPredication", name):
+    if re.fullmatch(r"(GS|HS|DS)SetShader|SetPredication", name):
         return f'self.only_unbinding("{what}", !{p[0]}.is_null())'
-    if re.fullmatch(r"(GS|HS|DS|CS)Set(ConstantBuffers1?|ShaderResources|Samplers)|CSSetUnorderedAccessViews", name):
+    if re.fullmatch(r"(GS|HS|DS)Set(ConstantBuffers1?|ShaderResources|Samplers)", name):
         return f'self.only_unbinding("{what}", super::context::binds({p[2]}, {p[1]}))'
     if name == "SOSetTargets":
         return f'self.only_unbinding("{what}", super::context::binds({p[1]}, {p[0]}))'
-    if re.fullmatch(r"(GS|HS|DS|CS)GetConstantBuffers1", name):
+    if re.fullmatch(r"(GS|HS|DS)GetConstantBuffers1", name):
         return f"super::context::nothing_bound(super::context::out_array({p[2]}), {p[1]})"
-    if re.fullmatch(r"(GS|HS|DS|CS)Get(ConstantBuffers|ShaderResources|Samplers)|CSGetUnorderedAccessViews", name):
+    if re.fullmatch(r"(GS|HS|DS)Get(ConstantBuffers|ShaderResources|Samplers)", name):
         return f"super::context::nothing_bound({p[2]}, {p[1]})"
     if name == "SOGetTargets":
         return f"super::context::nothing_bound({p[1]}, {p[0]})"
-    if re.fullmatch(r"(GS|HS|DS|CS)GetShader", name):
+    if re.fullmatch(r"(GS|HS|DS)GetShader", name):
         return f"super::context::no_instances({p[2]}); let _ = {p[0]}.write(None);"
     if name == "GetPredication":
         return (f"let _ = {p[0]}.write(None); "

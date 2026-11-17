@@ -13,7 +13,7 @@ pub mod query;
 pub mod record;
 pub mod shader;
 
-pub use context::{Mapped, PIXEL, VERTEX};
+pub use context::{COMPUTE, Mapped, PIXEL, UAV_SLOTS, VERTEX};
 pub use device::{Device, Removal, top_level};
 pub use error::{Error, Result};
 pub use present::Chain;

@@ -204,6 +204,41 @@ impl<B: Backend> View<B> {
     }
 }
 
+/// A view a shader reads (a shader resource view) or writes (an unordered access view): of a
+/// texture, or of a range of a buffer.
+pub enum ShaderView<B: Backend> {
+    Texture(Rc<View<B>>),
+    Buffer(BufferSpan<B>),
+}
+
+impl<B: Backend> ShaderView<B> {
+    /// The texture view, for a view of a texture.
+    pub fn texture(&self) -> Option<&Rc<View<B>>> {
+        match self {
+            ShaderView::Texture(v) => Some(v),
+            ShaderView::Buffer(_) => None,
+        }
+    }
+
+    /// Whether the two views share a subresource of a texture, or any of one buffer.
+    pub fn overlaps(&self, other: &ShaderView<B>) -> bool {
+        match (self, other) {
+            (ShaderView::Texture(a), ShaderView::Texture(b)) => a.overlaps(b),
+            (ShaderView::Buffer(a), ShaderView::Buffer(b)) => Rc::ptr_eq(&a.buffer, &b.buffer),
+            _ => false,
+        }
+    }
+}
+
+/// A range of a buffer a view reads or writes, with the hidden counter of an append, consume or
+/// counter view.
+pub struct BufferSpan<B: Backend> {
+    pub buffer: Rc<Buffer<B>>,
+    pub offset: u64,
+    pub size: u64,
+    pub counter: Option<Kept<B, B::Buffer>>,
+}
+
 pub struct Sampler<B: Backend> {
     pub desc: SamplerDesc,
     pub gpu: Kept<B, B::Sampler>,
@@ -258,4 +293,6 @@ pub enum StandIn {
     Zeros(ViewDimension, FormatKind),
     /// Direct3D's default sampler state.
     DefaultSampler,
+    /// A buffer of zeros read as a structured or raw buffer.
+    ZeroBuffer,
 }
