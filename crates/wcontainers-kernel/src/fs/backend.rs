@@ -683,6 +683,7 @@ impl Client {
                 xattrs: BTreeMap::new(),
                 fsflags: 0,
                 write_hint: 0,
+                watches: Vec::new(),
             }));
             self.state
                 .borrow_mut()

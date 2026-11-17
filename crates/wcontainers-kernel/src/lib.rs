@@ -189,6 +189,8 @@ pub struct Kernel {
     boot: Time,
     boot_monotonic: u64,
     boot_id: [u8; 16],
+    /// The last cookie that ties a rename's two inotify events together.
+    move_cookie: u32,
 }
 
 impl Default for Kernel {
@@ -274,6 +276,7 @@ impl Kernel {
             boot: Time::default(),
             boot_monotonic: 0,
             boot_id: [0; 16],
+            move_cookie: 0,
         }
     }
 

@@ -9,6 +9,7 @@ pub(crate) mod eventfd;
 mod files;
 pub(crate) mod futex;
 mod handle;
+pub(crate) mod inotify;
 mod io;
 mod ioctl;
 pub(crate) mod ipc;
@@ -159,6 +160,9 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_eventfd2, S(eventfd::eventfd2)),
         (__NR_socket, S(socket::socket)),
         (__NR_socketpair, S(socket::socketpair)),
+        (__NR_inotify_init1, S(inotify::inotify_init1)),
+        (__NR_inotify_add_watch, S(inotify::inotify_add_watch)),
+        (__NR_inotify_rm_watch, S(inotify::inotify_rm_watch)),
         (__NR_sendmmsg, S(socket::sendmmsg)),
         (__NR_recvmmsg, S(socket::recvmmsg)),
         (__NR_bind, S(socket::bind)),

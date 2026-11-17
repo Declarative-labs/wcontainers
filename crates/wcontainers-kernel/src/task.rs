@@ -1014,6 +1014,30 @@ impl Kernel {
             }
         }
         crate::syscall::socket::flush_outside(self, cx);
+        // An open file's last close (`__fput`): inotify's close event, and an instance lets go of
+        // its watches.
+        for file in &files {
+            if alloc::rc::Rc::strong_count(file) != 1 {
+                continue;
+            }
+            let instance = crate::syscall::inotify::of_file(file);
+            match instance {
+                Some(instance) => crate::syscall::inotify::released(&instance),
+                None => {
+                    let writer = file.borrow().flags & O_ACCMODE != O_RDONLY;
+                    let path = file.borrow().flags & O_PATH != 0;
+                    if !path {
+                        let mask = if writer {
+                            IN_CLOSE_WRITE
+                        } else {
+                            IN_CLOSE_NOWRITE
+                        };
+                        crate::syscall::inotify::file_changed(self, file, mask);
+                    }
+                    crate::syscall::inotify::closed(self, file);
+                }
+            }
+        }
         crate::syscall::pipe::released(self, cx, files);
         // An open file's last close lets go of its record and flock locks.
         for node in nodes {

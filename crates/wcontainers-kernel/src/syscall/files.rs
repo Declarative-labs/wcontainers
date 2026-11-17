@@ -211,7 +211,9 @@ pub(super) fn create(
         other => other,
     };
     if crate::fs::backend::remote(directory).is_some() {
-        return create_on_backend(kernel, tid, directory, name, mode, rdev, content);
+        let node = create_on_backend(kernel, tid, directory, name, mode, rdev, content)?;
+        super::inotify::created(kernel, directory, name, &node);
+        return Ok(node);
     }
     let now = kernel.now(cx);
     let (uid, gid, inherit) = new_owner(directory, credentials(kernel, tid));
@@ -237,6 +239,7 @@ pub(super) fn create(
         content,
     )?;
     touch_directory(directory, now);
+    super::inotify::created(kernel, directory, name, &node);
     Ok(node)
 }
 
@@ -720,6 +723,20 @@ pub(super) fn open(
     );
     file.borrow_mut().created = created;
     file.borrow_mut().backend = handle;
+    // The name it was opened by, if it was not reached through a link.
+    let named = !parent.name.is_empty()
+        && parent
+            .directory
+            .borrow()
+            .directory()
+            .and_then(|entries| entries.get(&parent.name))
+            .is_some_and(|found| Rc::ptr_eq(&found, &node));
+    if named {
+        file.borrow_mut().dentry = Some((Rc::downgrade(&parent.directory), parent.name.clone()));
+    }
+    if flags & O_PATH == 0 {
+        super::inotify::file_changed(kernel, &file, IN_OPEN);
+    }
     if let Some(device) = terminal {
         super::tty::open(kernel, cx, tid, &file, device, flags)?;
         return named_opened(kernel, cx, tid, file, flags);
@@ -1084,8 +1101,10 @@ pub(super) fn linkat(
         .borrow_mut()
         .directory_mut()
         .expect("directory")
-        .insert(&parent.name, node);
+        .insert(&parent.name, node.clone());
     touch_directory(&parent.directory, now);
+    super::inotify::inode_changed(kernel, &node, IN_ATTRIB);
+    super::inotify::created(kernel, &parent.directory, &parent.name, &node);
     Ok(0)
 }
 
@@ -1156,6 +1175,7 @@ pub(super) fn unlinkat(
     if crate::fs::backend::remote(&parent.directory).is_some() {
         crate::fs::backend::remove(&parent.directory, &parent.name, true)?;
         node.borrow_mut().nlink = 0;
+        super::inotify::removed(kernel, &parent.directory, &parent.name, &node);
         return Ok(0);
     }
     let now = kernel.now(cx);
@@ -1169,6 +1189,7 @@ pub(super) fn unlinkat(
     node.borrow_mut().nlink = 0;
     parent.directory.borrow_mut().nlink -= 1;
     node.borrow_mut().ctime = now;
+    super::inotify::removed(kernel, &parent.directory, &parent.name, &node);
     Ok(0)
 }
 
@@ -1196,6 +1217,8 @@ pub(super) fn remove_from(
         crate::fs::backend::remove(directory, name, false)?;
         let mut inode = node.borrow_mut();
         inode.nlink = inode.nlink.saturating_sub(1);
+        drop(inode);
+        super::inotify::removed(kernel, directory, name, node);
         return Ok(());
     }
     let now = kernel.now(cx);
@@ -1209,6 +1232,8 @@ pub(super) fn remove_from(
     give_back_link(&inode);
     inode.nlink -= 1;
     inode.ctime = now;
+    drop(inode);
+    super::inotify::removed(kernel, directory, name, node);
     Ok(())
 }
 
@@ -1442,7 +1467,7 @@ fn rename(
         }
     };
     if flags & RENAME_EXCHANGE != 0 {
-        let target = target.expect("checked");
+        let target = target.clone().expect("checked");
         entries(&from.directory)(&mut |d| d.replace(&from.name, target.clone()));
         entries(&to.directory)(&mut |d| d.replace(&to.name, source.clone()));
         set_place(&target, &from.directory, &from.name);
@@ -1507,6 +1532,18 @@ fn rename(
     }
     touch_directory(&from.directory, now);
     touch_directory(&to.directory, now);
+    super::inotify::moved(
+        kernel,
+        (&from.directory, &from.name),
+        (&to.directory, &to.name),
+        &source,
+    );
+    if let Some(target) = &target {
+        let gone = target.borrow().nlink == 0;
+        if gone {
+            super::inotify::ended(kernel, target);
+        }
+    }
     Ok(0)
 }
 
@@ -1886,7 +1923,22 @@ fn access(
 }
 
 /// Changes an inode's permission bits as `chmod` does.
+/// As [`change_mode_unwatched`], telling the inode's inotify watches.
 fn change_mode(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    node: &Node,
+    mode: u32,
+) -> Result<u64, Errno> {
+    let result = change_mode_unwatched(kernel, cx, tid, node, mode);
+    if result.is_ok() {
+        super::inotify::changed(kernel, node, None, IN_ATTRIB);
+    }
+    result
+}
+
+fn change_mode_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -2004,7 +2056,23 @@ pub(super) fn fchmodat2(
 }
 
 /// Changes an inode's owner and group as `chown` does; `u32::MAX` leaves one as it is.
+/// As [`change_owner_unwatched`], telling the inode's inotify watches.
 fn change_owner(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    node: &Node,
+    uid: u32,
+    gid: u32,
+) -> Result<u64, Errno> {
+    let result = change_owner_unwatched(kernel, cx, tid, node, uid, gid);
+    if result.is_ok() {
+        super::inotify::changed(kernel, node, None, IN_ATTRIB);
+    }
+    result
+}
+
+fn change_owner_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -2239,6 +2307,7 @@ pub(super) fn utimensat(
             ..Default::default()
         };
         crate::fs::backend::setattr(&node, change)?;
+        super::inotify::changed(kernel, &node, None, IN_ATTRIB);
         return Ok(0);
     }
     let pick = |time: Option<&__kernel_timespec>, old: Time| match time {
@@ -2262,10 +2331,26 @@ pub(super) fn utimensat(
     inode.ctime = now;
     drop(inode);
     keep_proc(kernel, &node);
+    super::inotify::changed(kernel, &node, None, IN_ATTRIB);
     Ok(0)
 }
 
+/// As [`truncate_node_unwatched`], telling the inode's inotify watches.
 fn truncate_node(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    node: &Node,
+    length: u64,
+) -> Result<u64, Errno> {
+    let result = truncate_node_unwatched(kernel, cx, tid, node, length);
+    if result.is_ok() {
+        super::inotify::changed(kernel, node, None, IN_MODIFY);
+    }
+    result
+}
+
+fn truncate_node_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,

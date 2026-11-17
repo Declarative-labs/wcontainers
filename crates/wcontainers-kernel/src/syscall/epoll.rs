@@ -144,6 +144,9 @@ fn queue_of(kernel: &Kernel, tid: Tid, file: &FileRef) -> Result<Option<Queue>, 
     if let Some(counter) = super::eventfd::of(&open) {
         return object(super::eventfd::channel(&counter));
     }
+    if let Some(instance) = super::inotify::of(&open) {
+        return object(super::inotify::channel(&instance));
+    }
     if let Some(epoll) = of(&open) {
         return Ok(Some(Queue::Object(self::object(&epoll))));
     }

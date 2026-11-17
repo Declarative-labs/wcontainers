@@ -695,7 +695,34 @@ fn appends(file: &FileRef) -> bool {
     clippy::too_many_arguments,
     reason = "one call shape for every vectored read and write"
 )]
+/// As [`vectored_unwatched`], telling the file's inotify watches.
 fn vectored(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    parts: &[(u64, u64)],
+    offset: Option<u64>,
+    writing: Option<bool>,
+) -> Result<u64, Errno> {
+    let result = vectored_unwatched(kernel, cx, tid, file, parts, offset, writing);
+    if let Ok(count) = result
+        && count > 0
+    {
+        super::inotify::file_changed(
+            kernel,
+            file,
+            if writing.is_some() {
+                IN_MODIFY
+            } else {
+                IN_ACCESS
+            },
+        );
+    }
+    result
+}
+
+fn vectored_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -731,6 +758,9 @@ fn vectored(
     }
     if writing.is_none() && super::signalfd::mask_of(&file.borrow()).is_some() {
         return super::signalfd::read(kernel, cx, tid, file, parts);
+    }
+    if writing.is_none() && super::inotify::of(&file.borrow()).is_some() {
+        return super::inotify::read(kernel, cx, tid, file, parts);
     }
     if super::eventfd::of(&file.borrow()).is_some() {
         return match writing {
@@ -969,7 +999,26 @@ pub(super) fn copy_to_segments(
 }
 
 /// Reads up to `count` bytes into the guest at the file's position, or at `at` without moving it.
+/// As [`read_at_unwatched`], telling the file's inotify watches of a read.
 pub(super) fn read_at(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    buffer: u64,
+    count: u64,
+    at: Option<u64>,
+) -> Result<u64, Errno> {
+    let result = read_at_unwatched(kernel, cx, tid, file, buffer, count, at);
+    if let Ok(count) = result
+        && count > 0
+    {
+        super::inotify::file_changed(kernel, file, IN_ACCESS);
+    }
+    result
+}
+
+fn read_at_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -995,6 +1044,9 @@ pub(super) fn read_at(
     }
     if super::eventfd::of(&file.borrow()).is_some() {
         return super::eventfd::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
+    if super::inotify::of(&file.borrow()).is_some() {
+        return super::inotify::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
     // The zero devices clear the buffer in place and keep no position. `/dev/zero` stops at the first
     // short clear (Linux's `read_zero`); `/dev/full` clears again from where it stopped until nothing
@@ -1212,7 +1264,31 @@ pub(super) fn lock_position(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Re
 /// Writes up to `count` bytes from the guest at the file's position, or at `at` without moving it, or
 /// at the file's end if `append`.
 #[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
+/// As [`write_at_unwatched`], telling the file's inotify watches of a write.
 pub(super) fn write_at(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    buffer: u64,
+    count: u64,
+    at: Option<u64>,
+    append: bool,
+) -> Result<u64, Errno> {
+    let result = write_at_unwatched(kernel, cx, tid, file, buffer, count, at, append);
+    if let Ok(count) = result
+        && count > 0
+    {
+        super::inotify::file_changed(kernel, file, IN_MODIFY);
+    }
+    result
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a write names its bytes, where they go and how"
+)]
+fn write_at_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -2872,6 +2948,7 @@ pub(super) fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
             Some(crate::file::Anon::Signals(mask)) => super::signalfd::poll(kernel, tid, *mask),
             Some(crate::file::Anon::Timer(timer)) => super::timer::poll(kernel, *timer),
             Some(crate::file::Anon::Event(counter)) => super::eventfd::poll(&counter.borrow()),
+            Some(crate::file::Anon::Inotify(instance)) => super::inotify::poll(&instance.borrow()),
             Some(crate::file::Anon::Epoll(epoll)) => {
                 let epoll = epoll.clone();
                 drop(node);
