@@ -6,8 +6,9 @@
 //! 1/128 of a float one), and the pixels allowed beyond it are those WARP has beyond it, counted in
 //! each 16 by 16 tile on its own, so that WARP's freedom in one part of a picture allows nothing in
 //! another. Texts must match exactly. A real program's frames have no WARP picture; their allowance
-//! comes from repeated runs on the GPU instead (`Allowance::from_repeats`); a frame that more than
-//! a twentieth of whose tiles changed from run to run is recorded as unrepeatable and not compared.
+//! comes from repeated runs on the GPU instead (`Allowance::from_repeats`); a program one of whose
+//! frames had more than a twentieth of its tiles changed from run to run has all its frames
+//! recorded as unrepeatable, and they are not compared.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;

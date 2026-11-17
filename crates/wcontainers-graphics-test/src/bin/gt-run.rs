@@ -339,6 +339,7 @@ fn frames(args: &[String]) -> Result<bool> {
             let mut tolerances = String::from(
                 "# <frame> <channel tolerance> <pixels allowed beyond it> warp 0 0 [tiles <tile>:<pixels>,...], from repeated runs\n",
             );
+            let mut frames = Vec::new();
             for name in &names {
                 let first = load(&Path::new(&runs[0]).join(name))?;
                 let others = runs[1..]
@@ -347,23 +348,27 @@ fn frames(args: &[String]) -> Result<bool> {
                     .collect::<Result<Vec<_>>>()?;
                 let allowance = Allowance::from_repeats(&first, &others, &ignored)?;
                 let none = compare::compare(&first, &first, 0.0)?;
-                let unrepeatable = check::unrepeatable(&allowance, none.tiles.len());
                 println!(
-                    "{name}: {} of {} tiles drew differently from run to run{}",
+                    "{name}: {} of {} tiles drew differently from run to run",
                     allowance.tiles.len(),
-                    none.tiles.len(),
-                    if unrepeatable {
-                        ", so it is not compared"
-                    } else {
-                        ""
-                    }
+                    none.tiles.len()
                 );
-                tolerances.push_str(&if unrepeatable {
+                let unrepeatable = check::unrepeatable(&allowance, none.tiles.len());
+                frames.push((name, allowance, none, unrepeatable));
+                std::fs::copy(Path::new(&runs[0]).join(name), reference.join(name))?;
+            }
+            // A program that draws one frame differently on every run drifts from its start, so
+            // none of its frames can be trusted to repeat.
+            let drifts = frames.iter().any(|(_, _, _, unrepeatable)| *unrepeatable);
+            if drifts {
+                println!("so no frame is compared: the program draws differently on every run");
+            }
+            for (name, allowance, none, _) in &frames {
+                tolerances.push_str(&if drifts {
                     check::unrepeatable_line(name)
                 } else {
-                    check::tolerance_line(name, &allowance, &none)
+                    check::tolerance_line(name, allowance, none)
                 });
-                std::fs::copy(Path::new(&runs[0]).join(name), reference.join(name))?;
             }
             std::fs::write(reference.join(TOLERANCES), tolerances)?;
             Ok(true)
