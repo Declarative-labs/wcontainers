@@ -11,7 +11,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   the ninth's in run 10, the same day (below).
 - X1 (the interface, with ARM64 moved onto it): run 1 moved ARM64 and the translator onto the interface;
   run 2 (2026-11-17) fixed what the independent check of X1 found, above all building the whole of section
-  3 with the translator's side of every item. See "X1, run 2" for where it stands.
+  3 with the translator's side of every item. Every part of the pass bar holds (see "X1, run 2"). Next:
+  X2, the shared test harness (plan section 9).
 
 ## X1, run 2 (2026-11-17)
 
@@ -67,6 +68,24 @@ The check's findings and what was done about each:
 - zerocopy's licence recorded below.
 - `TrapPc::After` and the `no_std` cores: the test guest's break leaves pc after it; `tests/no_std.rs` in the
   test crate builds both cores for `wasm32v1-none` with `translate` off.
+
+Proof after run 2 (machine: the Mac, Apple M5; loads as given):
+- Byte for byte against 2274314 (before the move), with the widened `same-output.sh` (every look-ahead,
+  and each kind of start alone at full and bounded), at the tree of 46143f4: bench 127 modules, busybox 34,
+  musl 30, python 34, rg 34, git 34, java 40, go 28, node 62 (alone, 8 minutes), bun 74 (alone, 13
+  minutes): all the same (load 39 to 79). The later commits change only the runner and documents.
+- The intentional ARM64 output changes stay at X3 and X6 (see Departures), so there is one comparison.
+- Suite at 46143f4's tree (before the last runner changes): 74 passed, 0 failed, 8 ignored, 26 test
+  binaries, Chrome and Docker included. After them: smoke, programs, checks, no_std, the translator's
+  tests and the browser lint passed. The whole suite again at c6949d5 (the final code): 78 passed, 0
+  failed, 9 ignored (the measuring ones), 29 test binaries (load 31 at start, 44 at end).
+- Clippy with `-D warnings` on the four crates (tests and bins) and the browser crate for wasm32: clean.
+- Benchmark run times, wasmtime, every check, old (2274314's copy) and new alternating, best of 5 (load
+  35 to 57): fib 2.504 / 2.402 s, sieve 0.670 / 0.686, hash 0.584 / 0.584, sort 1.246 / 1.269, interpret
+  0.661 / 0.650, matrix 0.294 / 0.285, walk 2.305 / 2.340, search 0.257 / 0.242 (old / new); new over old
+  0.94 to 1.02, the modules being the same bytes.
+- origin/phase-1-translator had nothing new at the end of run 2 (fetched; already merged at 9626b63).
+- Not done: Chrome timings (as in run 1); the float hook's last 1 to 4 percent (above).
 
 ## X1, run 1 (2026-11-17)
 
