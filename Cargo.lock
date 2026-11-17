@@ -305,6 +305,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
 dependencies = [
  "find-msvc-tools",
+ "jobserver",
+ "libc",
  "shlex 2.0.1",
 ]
 
@@ -1111,6 +1113,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "jobserver"
+version = "0.1.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+dependencies = [
+ "getrandom 0.4.3",
+ "libc",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1274,8 +1286,6 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "30.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd0dd362bf26c0ffdd143df6da66a25d287e196eff482f117771010b207ad163"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -2752,6 +2762,16 @@ dependencies = [
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-kernel",
+]
+
+[[package]]
+name = "wcontainers-shaders"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "cc",
+ "naga",
+ "wcontainers-gpu",
 ]
 
 [[package]]
