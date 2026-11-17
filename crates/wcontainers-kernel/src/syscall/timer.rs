@@ -184,8 +184,8 @@ impl Timers {
     }
 
     fn descriptor(&self, file: &FileRef) -> Option<u64> {
-        match file.borrow().anon {
-            Some(Anon::Timer(id)) => Some(id),
+        match &file.borrow().anon {
+            Some(Anon::Timer(id)) => Some(*id),
             _ => None,
         }
     }
@@ -1220,8 +1220,8 @@ pub(super) fn timerfd_gettime(
 
 /// The descriptor's timer, if the file is one.
 pub(super) fn of(file: &OpenFile) -> Option<u64> {
-    match file.anon {
-        Some(Anon::Timer(id)) => Some(id),
+    match &file.anon {
+        Some(Anon::Timer(id)) => Some(*id),
         _ => None,
     }
 }

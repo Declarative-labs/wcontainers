@@ -175,6 +175,8 @@ pub struct Kernel {
     futexes: syscall::futex::Futexes,
     /// Every timer.
     timers: syscall::timer::Timers,
+    /// The epoll items watching each file's readiness.
+    poll_watches: syscall::epoll::Watches,
     machine: Machine,
     hostname: Vec<u8>,
     domainname: Vec<u8>,
@@ -231,6 +233,7 @@ impl Kernel {
             ipc: Default::default(),
             futexes: Default::default(),
             timers: Default::default(),
+            poll_watches: Default::default(),
             signal_users: BTreeMap::new(),
             files: Files {
                 numbers,

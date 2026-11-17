@@ -4,6 +4,8 @@
 //! `ENOSYS`, is counted and warns. So does a number Linux does not have.
 
 mod clone;
+pub(crate) mod epoll;
+pub(crate) mod eventfd;
 mod files;
 pub(crate) mod futex;
 mod handle;
@@ -153,6 +155,11 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_pidfd_send_signal, S(pidfd::pidfd_send_signal)),
         (__NR_process_mrelease, S(pidfd::process_mrelease)),
         (__NR_signalfd4, S(signalfd::signalfd4)),
+        (__NR_eventfd2, S(eventfd::eventfd2)),
+        (__NR_epoll_create1, S(epoll::epoll_create1)),
+        (__NR_epoll_ctl, S(epoll::epoll_ctl)),
+        (__NR_epoll_pwait, F(epoll::epoll_pwait)),
+        (__NR_epoll_pwait2, F(epoll::epoll_pwait2)),
         (__NR_openat, S(files::openat)),
         (__NR_openat2, S(files::openat2)),
         (__NR_flock, F(files::flock)),

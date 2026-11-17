@@ -440,9 +440,18 @@ impl Kernel {
     /// Wakes every thread parked on `channel`, and for a change to an object also those waiting on
     /// any file's readiness.
     pub(crate) fn wake(&mut self, channel: Channel) {
+        self.wake_poll(channel, 0);
+    }
+
+    /// As [`Kernel::wake`] for a change to an object's readiness with the events in `key` (0 for
+    /// any), which epoll items watching it take (`wake_up_poll`).
+    pub(crate) fn wake_poll(&mut self, channel: Channel, key: u32) {
         let readiness = matches!(channel, Channel::Object(_)).then_some(Channel::Readiness);
         for tid in self.parked.on_either(channel, readiness) {
             self.wake_thread(tid);
+        }
+        if let Channel::Object(object) = channel {
+            syscall::epoll::notify(self, syscall::epoll::Queue::Object(object), key);
         }
     }
 
@@ -457,6 +466,7 @@ impl Kernel {
                 self.wake_thread(tid);
             }
         }
+        syscall::epoll::notify(self, syscall::epoll::Queue::Signals(pid), 0);
     }
 
     /// Wakes the threads of `pid`'s process parked on its children.

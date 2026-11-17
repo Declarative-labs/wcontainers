@@ -468,10 +468,14 @@ pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let inode = file.node.borrow();
     let no_write = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.writing() == Writing::None);
-    // A signal descriptor only reads; a process descriptor does neither.
-    let anon_write = writing && matches!(inode.content, Content::Anon | Content::Mqueue(_));
+    // A signal or timer descriptor only reads, an event descriptor does both, an epoll instance
+    // and a process descriptor neither.
+    let anon_write = writing
+        && matches!(inode.content, Content::Anon | Content::Mqueue(_))
+        && super::eventfd::of(&file).is_none();
+    let epoll = super::epoll::of(&file).is_some();
     let pidfd = matches!(inode.content, Content::Pidfd(..));
-    if inode.is_secret() || (writing && no_write) || anon_write || pidfd {
+    if inode.is_secret() || (writing && no_write) || anon_write || pidfd || epoll {
         return Err(Errno::EINVAL);
     }
     Ok(())
@@ -719,6 +723,12 @@ fn vectored(
     }
     if writing.is_none() && super::signalfd::mask_of(&file.borrow()).is_some() {
         return super::signalfd::read(kernel, cx, tid, file, parts);
+    }
+    if super::eventfd::of(&file.borrow()).is_some() {
+        return match writing {
+            Some(_) => super::eventfd::write(kernel, cx, tid, file, parts),
+            None => super::eventfd::read(kernel, cx, tid, file, parts),
+        };
     }
     if writing.is_none() && super::timer::of(&file.borrow()).is_some() {
         return super::timer::read(kernel, cx, tid, file, parts);
@@ -968,6 +978,9 @@ pub(super) fn read_at(
     if super::timer::of(&file.borrow()).is_some() {
         return super::timer::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
+    if super::eventfd::of(&file.borrow()).is_some() {
+        return super::eventfd::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     // The zero devices clear the buffer in place and keep no position. `/dev/zero` stops at the first
     // short clear (Linux's `read_zero`); `/dev/full` clears again from where it stopped until nothing
     // more is cleared (`read_iter_zero`).
@@ -1202,6 +1215,9 @@ pub(super) fn write_at(
         return super::pipe::write(kernel, cx, tid, file, &[(buffer, count)]);
     }
     moves_bytes(file, true)?;
+    if super::eventfd::of(&file.borrow()).is_some() {
+        return super::eventfd::write(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     let entry = match &node.borrow().content {
         Content::Proc(entry) => Some(*entry),
         _ => None,
@@ -2800,7 +2816,7 @@ pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Resu
 
 /// What `poll` reports for an open file: Linux's `DEFAULT_POLLMASK` for files without a poll operation,
 /// or what the file's own says. The host's pipes always have room.
-fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
+pub(super) fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
     use crate::fs::proc::{Entry, ProcessFile};
     if super::tty::end(file).is_some() {
         return super::tty::poll(file);
@@ -2823,17 +2839,24 @@ fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
             super::pidfd::poll(kernel, &file)
         }
         Content::Mqueue(queue) => queue.poll(),
-        Content::Anon => match (super::signalfd::mask_of(&file), super::timer::of(&file)) {
-            (Some(mask), _) => super::signalfd::poll(kernel, tid, mask),
-            (_, Some(timer)) => super::timer::poll(kernel, timer),
-            _ => 0,
+        Content::Anon => match &file.anon {
+            Some(crate::file::Anon::Signals(mask)) => super::signalfd::poll(kernel, tid, *mask),
+            Some(crate::file::Anon::Timer(timer)) => super::timer::poll(kernel, *timer),
+            Some(crate::file::Anon::Event(counter)) => super::eventfd::poll(&counter.borrow()),
+            Some(crate::file::Anon::Epoll(epoll)) => {
+                let epoll = epoll.clone();
+                drop(node);
+                drop(file);
+                super::epoll::poll(kernel, tid, &epoll)
+            }
+            None => 0,
         },
         _ => (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16,
     }
 }
 
 /// A wait's timeout as `poll_select_set_timeout` checks it: its length.
-fn read_timeout(
+pub(super) fn read_timeout(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -2856,7 +2879,7 @@ fn read_timeout(
 /// The first run of `ppoll` or `pselect6`: when the wait ends (kept in the call's slot as the time
 /// asked for, and with `select_estimate_accuracy`'s slack as when the thread is woken), then the
 /// temporary signal mask (`set_user_sigmask`).
-fn start_wait(
+pub(super) fn start_wait(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,

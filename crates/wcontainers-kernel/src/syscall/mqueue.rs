@@ -448,7 +448,7 @@ fn tell(kernel: &mut Kernel, cx: &mut Context<'_>, notify: Notify, pid: Pid, uid
 }
 
 /// Pollers of a queue wait on its inode.
-fn channel(node: &Node) -> Channel {
+pub(super) fn channel(node: &Node) -> Channel {
     Channel::Object(Rc::as_ptr(node) as *const u8 as usize)
 }
 

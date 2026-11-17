@@ -510,6 +510,8 @@ pub(crate) enum Channel {
     /// A lock that another call holds while it waits (the address of what it guards); no signal
     /// ends this wait, as none ends Linux's `mutex_lock`.
     Held(usize),
+    /// An event for an epoll instance (its address), which wakes one waiter at a time.
+    Epoll(usize),
 }
 
 /// What `restart_syscall` runs again.

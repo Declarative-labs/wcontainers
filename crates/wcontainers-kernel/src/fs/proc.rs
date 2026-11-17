@@ -346,6 +346,16 @@ pub(crate) fn root_links(processes: usize) -> u32 {
 }
 
 /// Whether a global entry is the `/proc/sys` directory itself.
+/// Whether a file of the tree has a poll (`file_can_poll`): the mount tables (`mounts_poll`) and
+/// sysctls (`proc_sys_poll`).
+pub(crate) fn polls(entry: &Entry) -> bool {
+    match entry {
+        Entry::ProcessFile(_, ProcessFile::Mounts) => true,
+        Entry::Global(index) => GLOBAL[*index].0.starts_with("sys/"),
+        _ => false,
+    }
+}
+
 pub(crate) fn is_sysctl_root(index: usize) -> bool {
     GLOBAL[index].0 == "sys"
 }

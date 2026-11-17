@@ -48,12 +48,16 @@ pub(crate) struct OpenFile {
 }
 
 /// The state of a file on the shared anonymous inode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) enum Anon {
     /// A signal descriptor and the signals it reads.
     Signals(u64),
     /// A timer descriptor and its timer.
     Timer(u64),
+    /// An event counter (`eventfd`).
+    Event(Rc<RefCell<crate::syscall::eventfd::Counter>>),
+    /// An epoll instance.
+    Epoll(crate::syscall::epoll::EpollRef),
 }
 
 /// The terminal side an open file reads and writes, and whether a hangup cut the file off.

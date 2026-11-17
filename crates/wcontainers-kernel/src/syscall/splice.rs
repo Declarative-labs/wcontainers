@@ -48,14 +48,14 @@ fn park(kernel: &mut Kernel, tid: Tid, pipe: &FileRef) -> Errno {
 /// After bytes went into a pipe: its readers wake and hear of them (`wakeup_pipe_readers`).
 fn readers_woken(kernel: &mut Kernel, cx: &mut Context<'_>, pipe: &FileRef) {
     let node = pipe.borrow().node.clone();
-    kernel.wake(channel(&node));
+    kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
     signal_ends(kernel, cx, &node, true);
 }
 
 /// After a pipe's slots went: its writers wake and hear of the room (`wakeup_pipe_writers`).
 fn writers_woken(kernel: &mut Kernel, cx: &mut Context<'_>, pipe: &FileRef) {
     let node = pipe.borrow().node.clone();
-    kernel.wake(channel(&node));
+    kernel.wake_poll(channel(&node), EPOLLOUT | EPOLLWRNORM);
     signal_ends(kernel, cx, &node, false);
 }
 
