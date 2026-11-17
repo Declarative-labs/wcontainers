@@ -2255,9 +2255,9 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             labels.push(label);
         }
         // A target that is not a multiple of the alignment past the lowest case turns into a huge index. The
-        // index is worked out from the register as it is, not as the guest's slow path makes it (an ARM64
-        // tagged address is far from every case, so it goes to the lookup, which untags it), and the engine
-        // can see through `adr` plus an entry.
+        // index is worked out from the register as it is, not as `Guest::branch_target` makes it: such an
+        // address is far from every case, so it goes to the lookup, and the engine can see through the
+        // address the code built plus an entry.
         let FlowKind::JumpThrough(Through::Register(rn)) =
             G::flow(&self.decoded().instruction).kind
         else {

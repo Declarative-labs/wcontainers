@@ -53,7 +53,7 @@ pub struct Omit {
     /// The stop check at jumps back and at piece entries (not the one after a system call, which is how the
     /// kernel stops a thread).
     pub stop: bool,
-    /// The page permission check, and with it the untagging of data addresses, which it does.
+    /// The page permission check, and with it `Guest::data_address`, which it makes.
     pub permissions: bool,
     /// The check that a return goes where the caller expects.
     pub returns: bool,

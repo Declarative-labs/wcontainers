@@ -46,8 +46,31 @@ Done:
   `--no-default-features`; the control (interface with `translate`) fails on `can't find crate for std`.
 
 Proof so far (machine: the Mac, Apple M5; load 18 to 42 while it ran):
-- Byte for byte: `same-output.sh 2274314` gives "the same" for bench (37 modules), busybox, musl, python,
-  rg, git, java, go (4 modules each). Node and Bun: see below.
+- Byte for byte, at 7178588 (the move) against 2274314 (before it): `same-output.sh` gives "the same" for
+  bench (37 modules: thread module, whole program and 8 workloads, full and bounded, speed and size),
+  busybox, musl, python, rg, git, java, go (4 modules each), node (6) and bun (8); Node and Bun each alone.
+  Each side of the "before" was also compared with itself first (same lists), so the output is
+  deterministic. After merging origin/phase-1-translator again (9626b63, which changed only
+  docs/status-translator.md) bench, busybox, musl and python were compared again: the same. The other
+  binaries were not run again, as no input of the translator changed.
+- No intentional change of ARM64's output in X1 (the stop check's raised branch changes at X6), so there is
+  one comparison, across the whole move.
+- Suite: `cargo test -p wcontainers-guest-cpu -p wcontainers-arm64 -p wcontainers-translator -p
+  wcontainers-translator-test` at the tree of 7178588: 74 passed, 0 failed, 8 ignored (the measuring ones),
+  22 test binaries, Chrome tests included (load 17.4 at start, 22.4 at end). Clippy with `-D warnings` on
+  the four crates (tests and bins) and on the browser crate for wasm32: clean.
+- `cargo tree -p wcontainers-translator`: wcontainers-abi and wcontainers-guest-cpu only.
+- Run time, wasmtime, every check, best of 5 with old (2274314's copy) and new (the checkout) alternating
+  one run each (scratch `x1/bench-alternate.sh 5`, outputs in `x1/bench/`; Mac load 16 to 27): fib 2.307 /
+  2.170 s, sieve 0.640 / 0.642, hash 0.580 / 0.578, sort 1.107 / 1.081, interpret 0.530 / 0.535, matrix
+  0.238 / 0.233, walk 2.262 / 2.240, search 0.245 / 0.232 (old / new). New over old 0.94 to 1.01; the
+  modules are the same bytes, so these differences are the machine's noise.
+- The move landed as one commit (7178588) after the comparison tool's own commit: the translator could not
+  be made generic piece by piece and still build, so the steps were checked in the working tree (byte for
+  byte on bench, busybox and musl as soon as it built) rather than committed one by one.
+
+Left for X1: nothing of the pass bar. Not done, from the plan's X1 text: Chrome timings (the task asked for
+wasmtime only). Next: X2, the shared test harness (plan section 9).
 
 Done:
 - Wrote the plan from the brief and the seam map. Appendix A maps every kind b and c place of the seam
