@@ -1,0 +1,13 @@
+ps_depth.dxbc	ok
+ps_flat.dxbc	ok
+ps_integer.dxbc	ok-wgsl glsl-compile
+ps_local.dxbc	ok
+ps_loop.dxbc	ok
+ps_shade.dxbc	ok-wgsl glsl-write
+ps_size.dxbc	ok
+ps_spaces.dxbc	unsupported RegisterSpace
+ps_textured.dxbc	ok
+ps_window.dxbc	ok
+vs_fullscreen.dxbc	ok-wgsl glsl-compile
+vs_shade.dxbc	ok
+vs_transform.dxbc	ok

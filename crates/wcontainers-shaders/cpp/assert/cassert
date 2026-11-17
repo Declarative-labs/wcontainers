@@ -1,0 +1,3 @@
+// Stands in for the C++ library's <cassert> in the converters' builds; see assert.h beside it.
+
+#include "assert.h"
