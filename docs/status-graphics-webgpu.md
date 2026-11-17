@@ -51,6 +51,14 @@ Run 5 = G2 run 1, 2026-11-17 (fixes from the independent check of run 4, then pa
   the back end keeps that validation's info, not the front's.
 - `prepare` builds the combination's pipeline into the cache, keyed as the draw will key it, so
   the first draw builds nothing (counted). `BACKGROUND_PREPARE` is declared only in the browser.
+- `FRACTIONAL_VIEWPORT` is declared natively: the rig's eight-viewport scene (four viewports start
+  half a pixel down; drawn here once per viewport with the first instance as the viewport number,
+  in place of its geometry shader) equals Direct3D 11's `raster-viewports.png` in every pixel on
+  both APIs, and the same viewports moved to whole pixels differ (tests/raster.rs). In the browser
+  the bit stays clear until the same check runs in Chrome.
+- A pass fitted by the shared pass tracker with four-sample colour targets of 2 by 2 and 3 by 3
+  draws right on the GPU, sample by sample (tests/fitted.rs, ported from the shared helpers test
+  that runs on the recording back end): `AttachmentsFitted` once, no `MultisampleCopyResolved`.
 - New tests: tests/copies.rs (buffers at a 36-byte pitch and writes into all four depth formats;
   `r32float`, `r32uint` and `depth32float` into part of 32-bit depth and 24-bit into part of
   24-bit depth; seven typeless group copies of colour formats, through a buffer or native for sRGB
@@ -298,9 +306,20 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 
 Run 5 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs; Mac
 load average 24 to 51):
-- All tests on Vulkan: 54 of 54 (bindings 10 in 1.38 s, copies 3 in 0.43 s, depth 2 in 0.30 s,
-  scenes 4 in 0.51 s, suite 24 in 2.71 s, writes 11 in 1.26 s); on Direct3D 12: 54 of 54 (4.47 s,
-  1.15 s, 0.71 s, 1.46 s, 9.12 s, 4.29 s). prepare.rs ran on its own (below).
+- Last full run, all tests at 72cb445 on Vulkan: 57 of 57 (bindings 10 in 2.01 s, copies 3 in
+  0.49 s, depth 2 in 0.26 s, fitted 1, prepare 1, raster 1, scenes 4 in 0.69 s, suite 24 in 3.48 s,
+  writes 11 in 1.55 s); on Direct3D 12: 57 of 57 (5.12 s, 1.28 s, 0.83 s, scenes 1.74 s, suite
+  10.33 s, writes 5.43 s).
+- This Mac (Apple M5 Max, wgpu on Metal; one job at 6471d88's code, Mac load average 42 to 50, build
+  1 min 54 s at `-j 2`): bindings 10 of 10, copies 3 of 3, depth 2 of 2 (the probe answers
+  `Float(0.10000001)`: `depth24plus` is 32-bit float there, `DEPTH24_UNORM` clear, the bias
+  picture not drawn), prepare 1 of 1 (16 first draws unprepared median 27.6 ms, longest 80.4 ms;
+  after 427 ms of prepares median 0.54 µs, longest 6.5 µs), suite 23 of 24 (present: the host has
+  no macOS window), scenes 2 of 4 and writes 9 of 11: `scenes_match_direct3d` (triangle and quads),
+  `quads_match_direct3d_on_every_depth_format` (2455 pixels on `depth24plus`),
+  `ordered_write_in_a_pass_splits_it` and `writes_ahead_of_a_pass_do_not_split_it` compare with
+  the RTX 3080's references at tolerance 0 and differ; how far was not printed. fitted.rs and
+  raster.rs were not yet written then.
 - `web/check`: all twelve pictures equal Direct3D 11's at tolerance 0; every twist differs natively
   on Direct3D 12 and on Vulkan and in Chrome (blend factor 16384 pixels by up to 92, depth function
   25016 by up to 204, on `quads` and `quads-d24s8` alike); Chrome's WebGPU adapter "NVIDIA GeForce
@@ -388,8 +407,10 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 - An ordered write that splits a pass with a running occlusion query.
 - Formats WebGPU lacks are declared without bits (no `FormatConverted`, `BlockDecoded`,
   packed-pair conversion yet), though 5.7 has the back end convert them.
-- Declared absent until built or measured: `TIMESTAMPS`, `FRACTIONAL_VIEWPORT` (needs the
-  half-pixel test against Direct3D), `DEPTH24_UNORM` in the browser (the probe needs waiting).
+- Declared absent until built or measured: `TIMESTAMPS`; in the browser `FRACTIONAL_VIEWPORT`
+  (not yet checked in Chrome) and `DEPTH24_UNORM` (the probe needs waiting).
+- On macOS the suite's `present_shows_the_frame` fails: the test host (tests/suite.rs) opens
+  windows only on Windows.
 - Waiting in the browser (JSPI, 4.8).
 - Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), renaming
   textures on `Discard` (staged instead), and freeing cached layouts and pipelines of destroyed
@@ -405,18 +426,18 @@ The pass bar items still open, in the order to take them:
 - References from real Direct3D for the bar items the rig has no picture of: `generate_mips` of
   `r32float` (on a device made without `float32-filterable` and adapter-specific features, as in
   `layouts_follow_each_views_filterability`) and of `rgba16uint` holding `rgba16unorm` values; a
-  viewport at a half-pixel offset (`FRACTIONAL_VIEWPORT`); a multisampled `Rgba8Unorm` texture made
+  multisampled `Rgba8Unorm` texture made
   with `reinterpret` resolved in `Rgba8UnormSrgb`. Either the rig track adds these scenes, or a
   Windows-only test here draws them with real Direct3D 11 through the `windows` crate (test-only).
 - BC textures decoded with `bcdec_rs` where the device has no `texture-compression-bc`
   (`BlockDecoded`, host blocks for read backs and copies, `HostCopyReadBack`), tested on a device
   made without it against the native route; both read back as the blocks written.
-- A pass fitted by `AttachmentsFitted` with multisampled attachments (the shared pass tracker,
-  drawn here).
-- `prepare` in Chrome (time of first draws on the page).
+- In Chrome: the half-pixel viewport scene (then declare `FRACTIONAL_VIEWPORT` there, or record
+  that Chrome rounds) and `prepare`'s first-draw times, through the scenes page.
 - The rest of "Not carried out yet".
-- This Mac's GPU: one Metal run was started at the end of run 5 (see Measurements); repeat it only
-  as a single job.
+- This Mac's GPU: a window for the suite's present test on macOS; why the triangle and quads, and
+  the two writes.rs tests comparing with the triangle, differ from the RTX 3080's references there
+  (print the largest difference; the rig's WARP allowance is 1). Run it only as single jobs.
 
 ## Departures from the plan
 
