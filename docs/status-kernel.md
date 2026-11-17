@@ -1513,6 +1513,12 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K5, eighth run, end of the milestone's layer 1 bar: at 090feaf (every fix of the run in) the
+  fresh seeds 5050459, 5050460 and 5050461 passed 20000 sequences each (326 s each, three side
+  by side beside the whole suite's build, load 38.6 at the start and 67.0 at the end). Before
+  that, seed 5050458 found the SCM_PIDFD order (the first 3000 run, 38.6 s) and passed 3000
+  with it fixed (47.1 s, load about 33).
+
 - K5, seventh run: whole suite at 187f214 (the run's last code; same command, clean copy, own
   build): 184 passed, 1 failed, 5 ignored, 21 min 51 s with the build (ten of them a hung
   reference), load 24.8 at the start and 29.4 at the end. The failure is terminal's
@@ -2310,8 +2316,12 @@ stand), in this order:
    container can unmount (umount needs CAP_SYS_ADMIN).
 6. IPv6 multicast (IPV6_JOIN_GROUP and the rest are counted; a send to an IPv6 group is
    ENETUNREACH, as eth0 has no IPv6).
-7. The per-milestone layer 1 bar was met at the seventh run's end (seeds 5050453, 5050456,
-   5050457). Fresh seeds start at 5050458.
+7. The per-milestone layer 1 bar was met again at the eighth run's end (seeds 5050459, 5050460,
+   5050461, with sendmmsg, recvmmsg and epoll_pwait2 now generated). Fresh seeds start at
+   5050462.
+8. Left from the eighth run: a client whose held request went with its listener sends its
+   FIN (shutdown or close) without drawing the reset Linux's FIN draws; neighbour entries for
+   eth0 traffic (counted); TCP_QUICKACK's timing (a departure); busybox `su` not rerun.
 
 K4's parts are built, the check's findings are fixed, and the fifth run's end-of-milestone seeds
 found and fixed two more (Built in K4's fifth run). Left, none of it blocking:
@@ -2332,6 +2342,6 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002, 5050401 to 5050457 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050461 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.

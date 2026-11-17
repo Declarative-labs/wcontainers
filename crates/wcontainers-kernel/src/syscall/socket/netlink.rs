@@ -706,8 +706,7 @@ fn neighbours(
         u32::from_le_bytes(bytes.try_into().expect("4 bytes"))
     });
     let proxies = field(10, 1).is_some_and(|flags| u32::from(flags[0]) & NTF_PROXY != 0);
-    let table = &kernel.sockets.inet.neighbours;
-    if table.ethernet && !proxies && family != AF_INET6 {
+    if kernel.sockets.inet.neighbours.ethernet && !proxies && family != AF_INET6 {
         kernel
             .counters
             .count(cx.host, crate::reason::NEIGHBOURS_NOT_BUILT, 0);
