@@ -162,10 +162,19 @@ impl SlowPath {
 }
 
 /// Counters for every slow path, and the warnings not yet handed to the host.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SlowPaths {
     counts: [u64; SlowPath::ALL.len()],
     unwarned: Vec<SlowPath>,
+}
+
+impl Default for SlowPaths {
+    fn default() -> Self {
+        SlowPaths {
+            counts: [0; SlowPath::ALL.len()],
+            unwarned: Vec::new(),
+        }
+    }
 }
 
 impl SlowPaths {
