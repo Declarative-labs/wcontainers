@@ -149,7 +149,7 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
     draw once grown; guest indices are walked in place.
   - The Chrome compile tool now enables every WebGL extension before compiling; the corpus's GLSL ES
     verdicts were rerun (80 of 95 compile; plan 6.3). dxil-spirv's `bc` attribution corrected.
-  - 79 slow path reasons. 31 tests.
+  - 79 slow path reasons. 28 tests (three new: query resolve default, separate rings, 8-bit indices).
 
 ## Partly done
 
@@ -164,7 +164,7 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 
 ## How to run
 
-- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (31 tests) and
+- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (28 tests) and
   `nix develop -c cargo clippy -p wcontainers-gpu --all-targets -- -D warnings`, and
   `RUSTDOCFLAGS="-D warnings" nix develop -c cargo doc -p wcontainers-gpu --no-deps`. It also builds for
   `wasm32-unknown-unknown`.
