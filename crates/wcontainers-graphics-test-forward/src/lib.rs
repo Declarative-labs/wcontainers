@@ -184,21 +184,37 @@ extern "C" fn resolve(index: u32) -> usize {
     function as usize
 }
 
-/// The system's library, loaded by its full path: by name alone, Windows would hand back this one.
+/// The library calls go to, loaded by its full path (by name alone, Windows would hand back this
+/// one): the system's, or the replacement at the path in WC_D3D11, so a census and frame capture
+/// can sit in front of a replacement.
 fn system_library() -> HMODULE {
     static MODULE: OnceLock<usize> = OnceLock::new();
     *MODULE.get_or_init(|| {
-        let mut dir = [0u16; 260];
-        let length = unsafe { GetSystemDirectoryW(dir.as_mut_ptr(), dir.len() as u32) } as usize;
-        assert!(length > 0 && length < dir.len(), "GetSystemDirectoryW");
-        let path: Vec<u16> = String::from_utf16_lossy(&dir[..length])
-            .encode_utf16()
-            .chain(format!("\\{LIBRARY}.dll").encode_utf16())
-            .chain([0])
-            .collect();
-        let module = unsafe { LoadLibraryW(path.as_ptr()) };
+        // The variables are this library's alone: the library it loads, which may be another
+        // copy of it, must not see them.
+        census::configure();
+        let target = std::env::var("WC_D3D11");
+        for name in ["WC_OUT", "WC_CAPTURE", "WC_D3D11"] {
+            // Read and removed once, on the program's first call into Direct3D 11.
+            unsafe { std::env::remove_var(name) };
+        }
+        let path = match target {
+            Ok(path) => path,
+            Err(_) => {
+                let mut dir = [0u16; 260];
+                let length =
+                    unsafe { GetSystemDirectoryW(dir.as_mut_ptr(), dir.len() as u32) } as usize;
+                assert!(length > 0 && length < dir.len(), "GetSystemDirectoryW");
+                format!(
+                    "{}\\{LIBRARY}.dll",
+                    String::from_utf16_lossy(&dir[..length])
+                )
+            }
+        };
+        let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
+        let module = unsafe { LoadLibraryW(wide.as_ptr()) };
         if module.is_null() {
-            eprintln!("{LIBRARY} forward: cannot load the system {LIBRARY}.dll");
+            eprintln!("{LIBRARY} forward: cannot load {path}");
             std::process::abort();
         }
         module as usize

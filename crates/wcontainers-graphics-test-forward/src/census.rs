@@ -125,6 +125,11 @@ struct Config {
     capture: Vec<u64>,
 }
 
+/// Reads the census's settings, before the library calls go to is loaded.
+pub fn configure() {
+    config();
+}
+
 fn config() -> Option<&'static Config> {
     static CONFIG: OnceLock<Option<Config>> = OnceLock::new();
     CONFIG
@@ -341,7 +346,10 @@ fn typed(table: Table, name: &str) -> Option<usize> {
 
 unsafe extern "system" fn present(this: *mut c_void, interval: u32, flags: u32) -> HRESULT {
     let original = enter(this, "Present");
-    frame(this);
+    // A test present shows nothing, so it is no frame.
+    if flags & DXGI_PRESENT_TEST.0 == 0 {
+        frame(this);
+    }
     let original: unsafe extern "system" fn(*mut c_void, u32, u32) -> HRESULT =
         unsafe { std::mem::transmute(original) };
     unsafe { original(this, interval, flags) }
@@ -354,7 +362,10 @@ unsafe extern "system" fn present1(
     parameters: *const c_void,
 ) -> HRESULT {
     let original = enter(this, "Present1");
-    frame(this);
+    // A test present shows nothing, so it is no frame.
+    if flags & DXGI_PRESENT_TEST.0 == 0 {
+        frame(this);
+    }
     let original: unsafe extern "system" fn(*mut c_void, u32, u32, *const c_void) -> HRESULT =
         unsafe { std::mem::transmute(original) };
     unsafe { original(this, interval, flags, parameters) }
