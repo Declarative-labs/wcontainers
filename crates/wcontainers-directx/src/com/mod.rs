@@ -7,6 +7,7 @@ mod convert;
 pub mod counted;
 mod device;
 mod dxgi;
+mod factory;
 mod generated;
 mod objects;
 mod swapchain;
