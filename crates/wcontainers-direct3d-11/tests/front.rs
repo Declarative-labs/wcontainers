@@ -1291,7 +1291,12 @@ fn binding_the_same_objects_again_makes_no_new_binding_set() {
             .filter(|l| l.starts_with("create_binding_set"))
             .count()
     };
-    assert_eq!(sets(&mut dev, Some(&cb)), 1, "the first draw makes it");
+    // The vertex program reads SV_InstanceID: its helper block's set is made once as well.
+    assert_eq!(
+        sets(&mut dev, Some(&cb)),
+        2,
+        "the first draw makes the stage's set and the helper block's"
+    );
     assert_eq!(sets(&mut dev, Some(&cb)), 0, "rebinding the same buffer");
     let other = dev.create_buffer(&desc, None).unwrap();
     assert_eq!(sets(&mut dev, Some(&other)), 1, "a different buffer");
@@ -1601,6 +1606,8 @@ fn a_pass_without_targets_is_as_large_as_the_viewports_it_draws_through() {
         }]);
     };
     viewport(&mut dev, 40.0, 24.5);
+    // The target's pending clear runs first, in a pass of its own.
+    dev.flush();
     let from = dev.backend.log.len();
     dev.draw(3, 0);
     // A smaller viewport draws in the same pass; a larger one opens another.
