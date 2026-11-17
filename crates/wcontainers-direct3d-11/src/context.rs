@@ -4,9 +4,9 @@ use std::rc::Rc;
 
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
-    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, FormatKind,
-    IndexBinding, IndexFormat, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc, Program,
-    ReadSource, ReadState, ScissorRect, SlotKind, SlowPath, StageSet, StepMode, StoreOp,
+    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features, Format,
+    FormatKind, IndexBinding, IndexFormat, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc,
+    Program, ReadSource, ReadState, ScissorRect, SlotKind, SlowPath, StageSet, StepMode, StoreOp,
     SystemValue, TextureUsage, Topology, VertexAttribute, VertexBinding, VertexLayoutDesc,
     VertexStream, Viewport as GpuViewport, WriteMode,
 };
@@ -1355,6 +1355,21 @@ impl<B: Backend> Device<B> {
             && (raster.multisample || raster.antialiased_lines)
         {
             return not_implemented("lines drawn by the quadrilateral or alpha-antialiased rule");
+        }
+        // The back ends bias triangles only, and move 24-bit depth by Direct3D's steps only where
+        // they store it as such.
+        if raster.depth_bias != 0 || raster.slope_scaled_depth_bias != 0.0 {
+            if !matches!(topology, Topology::TriangleList | Topology::TriangleStrip) {
+                return not_implemented("depth bias on lines and points");
+            }
+            if raster.depth_bias != 0
+                && self.ctx.depth.as_ref().is_some_and(|d| {
+                    matches!(d.format, Format::Depth24Plus | Format::Depth24PlusStencil8)
+                })
+                && !self.backend.caps().has(Features::DEPTH24_UNORM)
+            {
+                return not_implemented("a constant depth bias on 24-bit depth stored as float");
+            }
         }
         let nothing = matches!(
             gpu_range,

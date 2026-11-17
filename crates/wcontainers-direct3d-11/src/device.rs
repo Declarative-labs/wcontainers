@@ -1204,8 +1204,8 @@ impl<B: Backend> Device<B> {
         if d.fill == 2 && !caps.has(Features::POLYGON_MODE) {
             return not_implemented("wireframe without the back end's polygon mode");
         }
-        if d.depth_bias != 0 || d.slope_scaled_depth_bias != 0.0 || d.depth_bias_clamp != 0.0 {
-            return not_implemented("depth bias");
+        if d.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP) {
+            return not_implemented("a depth bias clamp without the back end's");
         }
         if !d.depth_clip && !caps.has(Features::DEPTH_CLAMP) {
             return not_implemented("depth clamping without the back end's depth clamp");
@@ -1291,8 +1291,12 @@ impl<B: Backend> Device<B> {
             };
             next_offset[slot] = offset + format::vertex_size(vf);
             let step = e.per_instance.then_some(e.step_rate);
-            if step.is_some_and(|r| r != 1) {
-                return not_implemented("instance step rates other than one");
+            if step.is_some_and(|r| r != 1)
+                && !self.backend.caps().has(Features::INSTANCE_STEP_RATE)
+            {
+                return not_implemented(
+                    "instance step rates other than one without the back end's",
+                );
             }
             if resolved.iter().any(|r: &LayoutElement| r.slot == e.slot)
                 && instance_steps[slot] != step
@@ -1618,9 +1622,9 @@ pub(crate) fn raster_block(d: &RasterizerDesc) -> RasterDesc {
         } else {
             FrontFace::Clockwise
         },
-        depth_bias: 0,
-        depth_bias_slope: 0,
-        depth_bias_clamp: 0,
+        depth_bias: (d.depth_bias as f32).to_bits(),
+        depth_bias_slope: d.slope_scaled_depth_bias.to_bits(),
+        depth_bias_clamp: d.depth_bias_clamp.to_bits(),
         depth_clip: d.depth_clip,
         scissor: d.scissor,
         line_width: 1.0f32.to_bits(),
