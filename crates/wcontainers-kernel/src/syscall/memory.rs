@@ -264,6 +264,14 @@ pub(super) fn do_mmap(
             }
             let zero = matches!(inode.content, Content::Special)
                 && Device::from_number(inode.rdev) == Some(Device::Zero);
+            if matches!(inode.content, Content::Backend(_)) {
+                return Err(kernel.counters.refuse(
+                    cx.host,
+                    reason::BACKEND_MAPPING_NOT_BUILT,
+                    inode.ino,
+                    Errno::ENODEV,
+                ));
+            }
             if !zero && !matches!(inode.content, Content::Regular(_)) {
                 return Err(Errno::ENODEV);
             }

@@ -196,12 +196,28 @@ pub(crate) fn program_of(
     if !inode.permits(credentials, X_OK, true) {
         return Err(Errno::EACCES);
     }
-    let bytes = match &inode.content {
-        Content::Regular(file) => file.bytes(cpu),
+    let readable = inode.permits(credentials, R_OK, true);
+    let size = match &inode.content {
+        Content::Backend(remote) => Some(remote.size.get()),
+        _ => None,
+    };
+    let bytes = match (&inode.content, size) {
+        (Content::Regular(file), _) => {
+            let bytes = file.bytes(cpu);
+            drop(inode);
+            bytes
+        }
+        // A program on the backend is opened there and read whole (`do_open_execat`).
+        (Content::Backend(_), Some(size)) => {
+            drop(inode);
+            let handle = crate::fs::backend::open(
+                &node,
+                crate::linux::general::O_RDONLY | crate::linux::general::O_LARGEFILE,
+            )?;
+            crate::fs::backend::read(&handle, 0, size)?
+        }
         _ => return Err(Errno::EACCES),
     };
-    let readable = inode.permits(credentials, R_OK, true);
-    drop(inode);
     Ok(Program {
         node,
         path,
@@ -764,6 +780,21 @@ fn place_elf(
                 cx.cpu
                     .write(memory, last_page, &bytes[page_offset as usize..to as usize])
                     .map_err(errno::from_cpu)?;
+            }
+            // A program on the backend has no block of shared pages to show: each of its pages is
+            // the process's own copy, read with the program, with the zeroed data after it cleared.
+            if crate::fs::backend::remote(&program.node).is_some() {
+                let end = from + available;
+                cx.cpu
+                    .write(memory, start, &bytes[from as usize..end as usize])
+                    .map_err(errno::from_cpu)?;
+                copied.extend(from / PAGE_SIZE..end.div_ceil(PAGE_SIZE));
+                if segment_memory > segment_file && file_end != file_pages_end {
+                    let zeros = alloc::vec![0; (file_pages_end - file_end) as usize];
+                    cx.cpu
+                        .write(memory, file_end, &zeros)
+                        .map_err(errno::from_cpu)?;
+                }
             }
             // The file's pages are shown once every segment is placed.
             map.insert(

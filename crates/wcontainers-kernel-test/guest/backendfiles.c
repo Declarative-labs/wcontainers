@@ -60,8 +60,41 @@ static void list(const char *path) {
     free(names);
 }
 
-int main(void) {
+/// Copies this program onto the backend and runs it from there, as a program and through a script.
+static void run_from_backend(void) {
+    int in = open("/proc/self/exe", O_RDONLY);
+    int out = open("prog", O_CREAT | O_WRONLY | O_TRUNC, 0755);
+    char block[65536];
+    ssize_t n;
+    while ((n = read(in, block, sizeof block)) > 0) write(out, block, n);
+    close(in);
+    close(out);
+    int script = open("script", O_CREAT | O_WRONLY | O_TRUNC, 0755);
+    const char *text = "#!./prog from-script\n";
+    write(script, text, strlen(text));
+    close(script);
+    for (int i = 0; i < 2; i++) {
+        pid_t child = fork();
+        if (child == 0) {
+            char *argv[] = {i ? "./script" : "./prog", "exec", 0};
+            execv(argv[0], argv);
+            printf("exec: %s\n", strerror(errno));
+            _exit(1);
+        }
+        int status;
+        waitpid(child, &status, 0);
+        printf("ran from the backend: status %d\n", WEXITSTATUS(status));
+    }
+}
+
+int main(int argc, char **argv) {
     setvbuf(stdout, 0, _IONBF, 0);
+    if (argc > 1) {
+        printf("running from the backend:");
+        for (int i = 1; i < argc; i++) printf(" %s", argv[i]);
+        printf("\n");
+        return 3;
+    }
     umask(022);
     char buffer[8192];
 
@@ -194,5 +227,6 @@ int main(void) {
     }
     wait(0);
     list(".");
+    run_from_backend();
     return 0;
 }

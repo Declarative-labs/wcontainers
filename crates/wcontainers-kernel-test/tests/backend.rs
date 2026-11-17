@@ -10,7 +10,7 @@ const AT: &str = "/data";
 
 /// Runs a guest program in a container with the backend at [`AT`], on our kernel under each
 /// schedule seed and in the reference, and checks that both print the same and end the same way.
-fn same_on_backend(name: &str) -> Vec<driver::Run> {
+fn same_on_backend(name: &str, injections: driver::Injections) -> Vec<driver::Run> {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     let program = guest::build(name, &[], &out);
     let theirs = backend::reference_run(&backend::out(), &program, AT, &[]);
@@ -30,7 +30,8 @@ fn same_on_backend(name: &str) -> Vec<driver::Run> {
             working_directory: AT,
             volume: Some(AT),
         };
-        let ours = driver::run(&container, seed).expect("an outcome on our kernel");
+        let ours =
+            driver::run_injected(&container, seed, injections).expect("an outcome on our kernel");
         let ours_text = String::from_utf8_lossy(&ours.outcome.stdout).into_owned();
         let theirs_text = String::from_utf8_lossy(&theirs.stdout).into_owned();
         let differences: Vec<String> = ours_text
@@ -48,7 +49,7 @@ fn same_on_backend(name: &str) -> Vec<driver::Run> {
 
 #[test]
 fn file_calls_match_reference() {
-    for run in same_on_backend("backendfiles") {
+    for run in same_on_backend("backendfiles", driver::Injections::default()) {
         assert!(run.warnings.is_empty(), "{:?}", run.warnings);
         let messages: u64 = run
             .counters
@@ -57,5 +58,28 @@ fn file_calls_match_reference() {
             .map(|counter| counter.count)
             .sum();
         assert!(messages > 0, "no message reached the backend");
+    }
+}
+
+/// Private and shared mappings of backend files.
+#[test]
+#[ignore = "mappings of backend files are not built yet: counted \"backend file mapping not built\", ENODEV"]
+fn file_mappings_match_reference() {
+    for run in same_on_backend("backendmap", driver::Injections::default()) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}
+
+/// Saved and brought back at moments drawn from each seed, with files open on the backend and
+/// answers from it on their way: the backend and what it owes go on with the copy.
+#[test]
+fn file_calls_survive_saves() {
+    let injections = driver::Injections {
+        saves: 12,
+        ..Default::default()
+    };
+    for run in same_on_backend("backendfiles", injections) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+        assert!(run.saved > 0);
     }
 }
