@@ -110,6 +110,10 @@ pub mod reason {
     /// handshake, segment counts and the like come from this TCP's model (every segment arrives
     /// and is acknowledged at once), where Linux's depend on timing. Detail: none.
     pub const TCP_INFO_MODELLED: &str = "tcp info modelled";
+    /// A UDP datagram to a multicast group or a broadcast address left by eth0: the container's
+    /// own sockets were given it, but the host carries no multicast or broadcast, so the network
+    /// outside never sees it (plan section 15). Detail: none.
+    pub const MULTICAST_NOT_SENT_OUT: &str = "multicast or broadcast not sent outside";
     /// A TCP connect found the listener's backlog full: it waits for room and completes when an
     /// accept makes some, where Linux drops the handshake and retries after 1, 3, 7 seconds and so
     /// on. Detail: none.

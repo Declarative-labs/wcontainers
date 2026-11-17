@@ -15,6 +15,7 @@ impl Errno {
     pub const EADDRINUSE: Self = Self(errno::EADDRINUSE);
     pub const ECONNREFUSED: Self = Self(errno::ECONNREFUSED);
     pub const EPROTOTYPE: Self = Self(errno::EPROTOTYPE);
+    pub const EPROTO: Self = Self(errno::EPROTO);
     pub const EISCONN: Self = Self(errno::EISCONN);
     pub const ENOTCONN: Self = Self(errno::ENOTCONN);
     pub const EDESTADDRREQ: Self = Self(errno::EDESTADDRREQ);

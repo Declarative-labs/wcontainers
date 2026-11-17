@@ -3182,7 +3182,8 @@ pub(super) fn setsockopt(
         return Err(Errno::EINVAL);
     }
     if socket.borrow().inet.is_some() {
-        let bytes = guest(kernel, cx, tid).read(value, (length as u64).min(64))?;
+        // The longest value an internet socket reads is `struct group_req`'s.
+        let bytes = guest(kernel, cx, tid).read(value, (length as u64).min(136))?;
         if let Some(answer) = inet::set_option(kernel, cx, tid, &socket, level, name, &bytes) {
             return answer;
         }

@@ -99,3 +99,9 @@ fn timestamping_matches_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "timestamping", &[]);
 }
+
+#[test]
+fn multicast_and_broadcast_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "multicast", &[]);
+}

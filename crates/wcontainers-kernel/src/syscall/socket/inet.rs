@@ -162,6 +162,8 @@ pub(crate) struct Inet {
     pub cork: Option<Corked>,
     /// What TCP_INFO tells of a connection's traffic.
     pub traffic: Traffic,
+    /// The IPv4 multicast groups it joined, each on an interface (`mc_list`).
+    pub groups: Vec<([u8; 4], u32)>,
 }
 
 /// A UDP datagram's port unreachable error, as `ip_icmp_error` and `ipv6_icmp_error` queue it.
@@ -202,6 +204,7 @@ impl Inet {
             errors: VecDeque::new(),
             cork: None,
             traffic: Traffic::default(),
+            groups: Vec::new(),
         }
     }
 }
@@ -2572,6 +2575,19 @@ fn udp_send(
         from.address = LOOPBACK6;
     }
     let route = route(&to, &sent)?;
+    // `udp_sendmsg`: a broadcast route wants SO_BROADCAST.
+    let broadcast = v4_of(&to.address).is_some_and(|v4| v4 == [255; 4] || v4 == network::BROADCAST);
+    if broadcast && !flag(&socket.borrow(), SOL_SOCKET, SO_BROADCAST) {
+        return Err(Errno::EACCES);
+    }
+    // Multicast leaves by its interface, from that interface's address.
+    let group = v4_of(&to.address).is_some_and(multicast);
+    let through = sent
+        .interface
+        .unwrap_or_else(|| multicast_interface(socket));
+    if group && !inet_ref(socket).address_chosen && through == network::LOOPBACK_INDEX {
+        from.address = LOOPBACK4;
+    }
     if let Some(source) = sent.source {
         from.address = source;
     }
@@ -2590,6 +2606,225 @@ fn udp_send(
     }
     udp_deliver(kernel, cx, tid, socket, to, from, data, sent)?;
     Ok(total)
+}
+
+/// Whether an IPv4 address is a multicast group.
+fn multicast(address: [u8; 4]) -> bool {
+    address[0] & 0xf0 == 0xe0
+}
+
+/// The interface an IPv4 address belongs to, if it is the container's own (`__ip_dev_find`).
+fn interface_of(address: [u8; 4]) -> Option<u32> {
+    match address {
+        [127, ..] => Some(network::LOOPBACK_INDEX),
+        own if own == network::ADDRESS => Some(network::ETHERNET_INDEX),
+        _ => None,
+    }
+}
+
+/// `ip_mc_find_dev`: the interface a membership names by number, else by address, else the one
+/// the route to the group leaves by (eth0).
+fn membership_interface(index: u32, address: [u8; 4]) -> Option<u32> {
+    if index != 0 {
+        return interface_known(index).then_some(index);
+    }
+    if address != [0; 4] {
+        return interface_of(address);
+    }
+    Some(network::ETHERNET_INDEX)
+}
+
+/// IP_ADD_MEMBERSHIP and IP_DROP_MEMBERSHIP (`ip_mreq` or `ip_mreqn`), and MCAST_JOIN_GROUP and
+/// MCAST_LEAVE_GROUP (`group_req`), as `ip_mc_join_group` and `ip_mc_leave_group`.
+fn membership(socket: &SocketRef, name: u32, bytes: &[u8]) -> Result<u64, Errno> {
+    if inet_ref(socket).protocol == Protocol::Tcp {
+        return Err(Errno::EPROTO);
+    }
+    let word = |at: usize| -> [u8; 4] { bytes[at..at + 4].try_into().expect("4 bytes") };
+    let (group, index, address, join) = match name {
+        IP_ADD_MEMBERSHIP | IP_DROP_MEMBERSHIP => {
+            if bytes.len() < 8 {
+                return Err(Errno::EINVAL);
+            }
+            let index = if bytes.len() >= 12 {
+                u32::from_le_bytes(word(8))
+            } else {
+                0
+            };
+            (word(0), index, word(4), name == IP_ADD_MEMBERSHIP)
+        }
+        _ => {
+            // `struct group_req`: the interface, then a socket address that must be IPv4's.
+            if bytes.len() < 136 {
+                return Err(Errno::EINVAL);
+            }
+            if u16::from_le_bytes([bytes[8], bytes[9]]) as u32 != AF_INET {
+                return Err(Errno::EINVAL);
+            }
+            (
+                word(12),
+                u32::from_le_bytes(word(0)),
+                [0; 4],
+                name == MCAST_JOIN_GROUP,
+            )
+        }
+    };
+    if !multicast(group) {
+        return Err(Errno::EINVAL);
+    }
+    let interface = membership_interface(index, address);
+    let mut own = inet(socket);
+    if join {
+        let interface = interface.ok_or(Errno::ENODEV)?;
+        if own.groups.contains(&(group, interface)) {
+            return Err(Errno::EADDRINUSE);
+        }
+        // `sysctl_igmp_max_memberships` (measured 20).
+        if own.groups.len() >= 20 {
+            return Err(Errno::ENOBUFS);
+        }
+        own.groups.push((group, interface));
+        return Ok(0);
+    }
+    if index == 0 && address == [0; 4] && interface.is_none() {
+        return Err(Errno::ENODEV);
+    }
+    let position = own.groups.iter().position(|&(joined, on)| {
+        joined == group && (index == 0 && address == [0; 4] || Some(on) == interface)
+    });
+    let position = position.ok_or(Errno::EADDRNOTAVAIL)?;
+    own.groups.remove(position);
+    Ok(0)
+}
+
+/// A datagram to a multicast group or a broadcast address, given to every socket of the
+/// container that takes it (`__udp4_lib_mcast_deliver`): a group's only when it leaves by an
+/// interface where some socket joined it and the sender loops multicast back, and to a socket
+/// bound to the any address or the destination, connected to none or the sender, that joined
+/// the group there or takes every group (IP_MULTICAST_ALL). Its copy to the network outside is
+/// not sent: the host carries no multicast or broadcast.
+#[allow(clippy::too_many_arguments, reason = "a datagram's parts")]
+fn deliver_many(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    to: Endpoint,
+    from: Endpoint,
+    data: &[u8],
+    sent: SentControl,
+    interface: u32,
+) {
+    let group = v4_of(&to.address).filter(|&address| multicast(address));
+    if interface == network::ETHERNET_INDEX {
+        kernel
+            .counters
+            .count(cx.host, crate::reason::MULTICAST_NOT_SENT_OUT, 0);
+    }
+    let looped = !flag_or(&socket.borrow(), SOL_IP, IP_MULTICAST_LOOP, true);
+    if group.is_some() && looped {
+        return;
+    }
+    // The interface is a member of the group while some socket joined it there (`ip_check_mc_rcu`).
+    if let Some(group) = group {
+        let joined = |other: &SocketRef| {
+            other
+                .borrow()
+                .inet
+                .as_deref()
+                .is_some_and(|inet| inet.groups.contains(&(group, interface)))
+        };
+        let member = joined(socket)
+            || kernel
+                .sockets
+                .inet
+                .bound
+                .values()
+                .flatten()
+                .filter_map(Weak::upgrade)
+                .any(|other| joined(&other));
+        if !member {
+            return;
+        }
+    }
+    let receivers = kernel.sockets.inet.holders(Protocol::Udp, to.port);
+    for receiver in receivers {
+        let takes = {
+            let own = receiver.borrow();
+            let inet = own.inet.as_deref().unwrap();
+            let bound = is_any(&inet.local.address) || inet.local.address == to.address;
+            let connected = inet
+                .remote
+                .filter(|_| own.state == State::Connected)
+                .is_none_or(|remote| remote == from);
+            let allowed = match group {
+                Some(group) => {
+                    inet.groups.contains(&(group, interface))
+                        || flag_or(&own, SOL_IP, IP_MULTICAST_ALL, true)
+                }
+                None => true,
+            };
+            family_takes(own.family, inet.v6only, &to.address) && bound && connected && allowed
+        };
+        if !takes {
+            continue;
+        }
+        let held: u64 = receiver
+            .borrow()
+            .queue
+            .iter()
+            .map(|packet| packet.truesize)
+            .sum();
+        if held > receiver.borrow().rcvbuf {
+            continue;
+        }
+        let mut arrival = arrival_from(socket, &to, sent);
+        arrival.index = interface;
+        if group.is_some() && sent.ttl.is_none() {
+            arrival.ttl = option_or(&socket.borrow(), SOL_IP, IP_MULTICAST_TTL, 1) as u8;
+        }
+        let packet = Packet {
+            data: data.to_vec(),
+            consumed: 0,
+            files: Vec::new(),
+            cred: super::own_cred(kernel, tid),
+            sender: Weak::new(),
+            truesize: datagram_truesize(data.len() as u64),
+            source: Some(from),
+            arrival: Some(prepared(&receiver, arrival)),
+            time: super::stamp(kernel, cx, &receiver),
+            urgent: false,
+            owner: 0,
+        };
+        receiver.borrow_mut().queue.push_back(packet);
+        super::data_ready(kernel, cx, &receiver, EPOLLIN | EPOLLRDNORM);
+    }
+}
+
+/// A flag option's value, or its default when never set.
+fn flag_or(socket: &Socket, level: u32, name: u32, default: bool) -> bool {
+    socket
+        .options
+        .get(&(level, name))
+        .map_or(default, |value| value.iter().any(|&byte| byte != 0))
+}
+
+/// An int option's value, or its default when never set.
+fn option_or(socket: &Socket, level: u32, name: u32, default: i32) -> i32 {
+    socket.options.get(&(level, name)).map_or(default, |value| {
+        i32::from_le_bytes(value[..4].try_into().expect("4 bytes"))
+    })
+}
+
+/// The interface multicast leaves a socket by: IP_MULTICAST_IF's, else eth0.
+fn multicast_interface(socket: &SocketRef) -> u32 {
+    let own = socket.borrow();
+    match own.options.get(&(SOL_IP, IP_MULTICAST_IF)) {
+        Some(value) if value.len() >= 8 => {
+            u32::from_le_bytes(value[4..8].try_into().expect("4 bytes"))
+        }
+        _ => network::ETHERNET_INDEX,
+    }
 }
 
 /// Where a datagram goes by the interface and source its packet information name.
@@ -2738,6 +2973,20 @@ fn udp_deliver(
             None => alloc::vec![data.to_vec()],
         }
     };
+    if let Some(v4) = v4_of(&to.address)
+        && !unicast(&to.address)
+    {
+        let interface = if multicast(v4) {
+            sent.interface
+                .unwrap_or_else(|| multicast_interface(socket))
+        } else {
+            network::ETHERNET_INDEX
+        };
+        for piece in pieces(&data) {
+            deliver_many(kernel, cx, tid, socket, to, from, &piece, sent, interface);
+        }
+        return Ok(());
+    }
     // Through lo every destination is the container's own.
     if !is_own(&to.address) && sent.interface != Some(network::LOOPBACK_INDEX) {
         if !unicast(&to.address) {
@@ -3502,6 +3751,42 @@ pub(super) fn set_option(
             if name == IP_HDRINCL {
                 return Some(Err(Errno::ENOPROTOOPT));
             }
+            if matches!(
+                name,
+                IP_ADD_MEMBERSHIP | IP_DROP_MEMBERSHIP | MCAST_JOIN_GROUP | MCAST_LEAVE_GROUP
+            ) {
+                return Some(membership(socket, name, bytes));
+            }
+            // `ip_mreqn`, `ip_mreq` or an address: the interface multicast leaves by.
+            if name == IP_MULTICAST_IF {
+                if protocol == Protocol::Tcp || bytes.len() < 4 {
+                    return Some(Err(Errno::EINVAL));
+                }
+                let word =
+                    |at: usize| -> [u8; 4] { bytes[at..at + 4].try_into().expect("4 bytes") };
+                let address = if bytes.len() >= 8 { word(4) } else { word(0) };
+                let index = if bytes.len() >= 12 {
+                    u32::from_le_bytes(word(8))
+                } else {
+                    0
+                };
+                if index == 0 && address == [0; 4] {
+                    socket.borrow_mut().options.remove(&(level, name));
+                    return Some(Ok(0));
+                }
+                let index = if index == 0 {
+                    interface_of(address)
+                } else {
+                    interface_known(index).then_some(index)
+                };
+                let Some(index) = index else {
+                    return Some(Err(Errno::EADDRNOTAVAIL));
+                };
+                let mut kept = address.to_vec();
+                kept.extend_from_slice(&index.to_le_bytes());
+                socket.borrow_mut().options.insert((level, name), kept);
+                return Some(Ok(0));
+            }
             let value = match int_value(bytes, level) {
                 Ok(value) => value,
                 Err(error) => return Some(Err(error)),
@@ -3764,6 +4049,14 @@ pub(super) fn get_option(
                 int(ROUTE_MTU)
             }
             IP_OPTIONS => Some(Ok(Vec::new())),
+            IP_MULTICAST_IF => {
+                let own = socket.borrow();
+                let kept = own.options.get(&(level, name));
+                Some(Ok(kept.map_or_else(
+                    || alloc::vec![0; 4],
+                    |value| value[..4].to_vec(),
+                )))
+            }
             IP_HDRINCL => kept(0),
             _ => not_built(kernel, cx),
         },
