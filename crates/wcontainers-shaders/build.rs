@@ -107,8 +107,8 @@ fn main() {
         dxil.join("third_party/spirv-headers/include").exists(),
         "dxil-spirv is missing: run `git submodule update --init --recursive crates/wcontainers-shaders/dxil-spirv`"
     );
-    // Everything that makes the C++ objects: its sources (dxil-spirv's top directory alone, its
-    // subdirectories are listed), this script, and the SDK for WebAssembly.
+    // The C++ sources (dxil-spirv's top directory alone, its subdirectories are listed) and this
+    // script; the objects also depend on the SDK for WebAssembly, which the module does not.
     let cpp = [
         (root.join("dxbc"), true),
         (root.join("ir"), true),
@@ -127,8 +127,11 @@ fn main() {
         (PathBuf::from("cpp"), true),
         (PathBuf::from("build.rs"), false),
     ];
+    let mut sources = blake3::Hasher::new();
+    hash_files(&mut sources, &cpp);
+    let sources = sources.finalize().to_hex().to_string();
     let mut objects = blake3::Hasher::new();
-    hash_files(&mut objects, &cpp);
+    objects.update(sources.as_bytes());
     objects.update(
         std::env::var("WASI_SDK_PATH")
             .unwrap_or_default()
@@ -181,7 +184,7 @@ fn main() {
     // workspace, whose readers and writers make the module.
     let naga = Path::new("../../third_party/naga/src");
     let mut converter = blake3::Hasher::new();
-    converter.update(objects.as_bytes());
+    converter.update(sources.as_bytes());
     hash_files(
         &mut converter,
         &[(PathBuf::from("src"), true), (naga.into(), true)],
