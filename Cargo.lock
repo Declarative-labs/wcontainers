@@ -2647,7 +2647,10 @@ dependencies = [
 name = "wcontainers-graphics-test-forward"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "object 0.41.0",
+ "png",
+ "windows",
  "windows-sys",
 ]
 
