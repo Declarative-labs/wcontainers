@@ -139,3 +139,60 @@ fn wgsl_literals_near_the_largest_f32_stay_in_range() {
     );
     assert!(out.contains("0.1f"), "{out}");
 }
+
+// `continuing` reads the body's `v` after the body has changed `a`, which `v` was read from.
+const CONTINUING: &str = "
+@fragment fn main(@location(0) x: f32) -> @location(0) vec4f {
+    var a = x;
+    var i = 0u;
+    loop {
+        let v = a * 2.0;
+        a = a + 1.0;
+        if i >= 3u { break; }
+        continuing {
+            a = v;
+            i = i + 1u;
+        }
+    }
+    return vec4f(a);
+}";
+
+/// The text of the first `if (!loop_init..) { .. }` block, which holds `continuing`.
+fn continuing_block(out: &str) -> &str {
+    let start = out.find("if (!loop_init").expect("gate");
+    let end = start + out[start..].find("\n        }").expect("end of gate");
+    &out[start..end]
+}
+
+#[test]
+fn glsl_continuing_reads_the_body_values_of_its_iteration() {
+    let out = write_glsl(
+        CONTINUING,
+        naga::ShaderStage::Fragment,
+        glsl::WriterFlags::empty(),
+    );
+    let block = continuing_block(&out);
+    assert!(block.contains("a = loop_value;"), "{out}");
+    assert!(!block.contains('*'), "{out}");
+    assert!(out.contains("float loop_value;\n"), "{out}");
+    let body = &out[out.find("loop_init = false;").expect("body")..];
+    assert!(body.contains("loop_value = "), "{out}");
+}
+
+#[test]
+fn hlsl_continuing_reads_the_body_values_of_its_iteration() {
+    use naga::back::hlsl;
+    let module = naga::front::wgsl::parse_str(CONTINUING).expect("parse");
+    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        .validate(&module)
+        .expect("validate");
+    let options = hlsl::Options::default();
+    let mut out = String::new();
+    hlsl::Writer::new(&mut out, &options, &hlsl::PipelineOptions::default())
+        .write(&module, &info, None)
+        .expect("write");
+    let block = continuing_block(&out);
+    assert!(block.contains("a = loop_value;"), "{out}");
+    assert!(!block.contains('*'), "{out}");
+    assert!(out.contains("float loop_value = (float)0;"), "{out}");
+}
