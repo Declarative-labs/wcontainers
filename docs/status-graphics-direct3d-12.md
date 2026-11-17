@@ -55,8 +55,10 @@ and the same pointer for the version serialized, the 64-dword root cost limit, s
 `UNKNOWN` and null render target views as slots with no target, pipelines with no depth format
 testing a bound depth view with their depth state, clears waiting for views a pass does not draw
 into done before it opens (draws read them), new placed resources inheriting bytes written while
-nothing was noted, and stencil views refused by name (wrong component). vkd3d-d3d12: 94 of 174
-(run 10: 87), none lost. G5 is not complete: see "Test files", "Gap list" and "Next".
+nothing was noted, and stencil views refused by name (wrong component). Then (a0c973f) buffers
+are stored in whole 256-byte blocks, so a constant buffer view may declare more than a short
+buffer holds (conditional_rendering: 1 failure left of 244 checks). vkd3d-d3d12: 94 of 174
+(run 10: 87), none lost, in both full runs. G5 is not complete: see "Test files", "Gap list" and "Next".
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
@@ -227,6 +229,9 @@ at cc6079b), tests passing on real Direct3D 12 that pass through ours:
   the first component, Direct3D in the second); such views are now refused, so the test stops
   there (crash after the device is removed).
 - create_pipeline_state: 1 of 38 fails, test 2 (stream output, G6).
+- Second full run after a0c973f (run11/full2.log): the same 94, 7, 1 and 8; conditional_rendering
+  now fails 1 of 244 checks (before: device removed at "a constant buffer view past its buffer's
+  end").
 What the 80 failing vkd3d-d3d12 tests stop at first (run11/fail-reasons.txt):
 - The converter (G6), 34; geometry, hull and domain stages and stream output (G6's stage
   helper), 11 (4 at `SOSetTargets`, 7 at a pipeline the stage refused); timestamps (G2), 3,
@@ -516,11 +521,14 @@ those tracks.
    vertex shaders, buffer images, storage images of no format). Merge the shaders branch when it
    has them and run it again (command under "Real program"); then compare its frames with the
    rig's references. Also try godot-platformer-3d-d3d12.
-2. The "still to find" tests (Test files, run 11): conditional_rendering first (a predicated
-   `ResolveSubresource` of a cleared multisampled target leaves zeros; then a predicated
-   dispatch; run it alone and look at the predicate's read back and the pending clear), then
-   clear_unordered_access_view_image/buffer, srv_component_mapping (needs the view swizzle),
-   unused_interpolated_input.
+2. The "still to find" tests (Test files, run 11): conditional_rendering first (its one failure,
+   line 35692: a `ResolveSubresource` under a `NOT_EQUAL_ZERO` predicate of value 0 leaves the
+   destination all zeros, where it held uploaded bytes before; the source is a multisampled
+   target cleared by a whole `ClearRenderTargetView` in an earlier list; find whether the clear,
+   the resolve or the read back loses it), then clear_unordered_access_view_buffer (typed buffer
+   clears of some formats), clear_unordered_access_view_image (1D UAVs: one-dimensional textures,
+   Next 5), unused_interpolated_input (1 check: an output the pixel stage declares and does not
+   read; likely the converter's interpolation, G6).
 3. A waitable-object case in `check_d3d12 cases` against real DXGI.
 4. The stencil view and component mapping route once the interface has a view swizzle (Gap list).
 5. Slow paths for what WebGPU lacks, or honest refusals: instance step rates and zero strides,

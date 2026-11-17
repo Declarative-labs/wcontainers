@@ -444,7 +444,8 @@ impl<B: Backend> Device<B> {
             .find(address)
             .ok_or(Error::Invalid("a constant buffer view of no buffer"))?;
         let size = size.max(16);
-        if offset + size > self.resources[id.0 as usize].desc.width {
+        let width = self.resources[id.0 as usize].desc.width;
+        if offset + size > super::stored_size(width, self.backend.caps().limits.max_buffer_size) {
             return Err(Error::NotImplemented(
                 "a constant buffer view past its buffer's end",
             ));
