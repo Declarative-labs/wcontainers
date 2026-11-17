@@ -18,7 +18,7 @@ use windows::core::{Interface, s};
 
 use super::{Gpu, bytecode, element, footprint_location, tex2d_desc, texture_location, transition};
 use crate::d3d11::scenes::blend::{self, CONSTANT, no_blend};
-use crate::d3d11::scenes::depth::FUNCS;
+use crate::d3d11::scenes::depth::{self, FUNCS};
 use crate::d3d11::scenes::formats::{FORMATS, Kind};
 use crate::d3d11::scenes::samplers;
 use crate::d3d11::scenes::stencil::{op, stencil, triangle};
@@ -494,8 +494,9 @@ const GREEN: [f32; 4] = [0.2, 0.85, 0.3, 1.0];
 const BLUE: [f32; 4] = [0.2, 0.4, 0.95, 1.0];
 const YELLOW: [f32; 4] = [0.95, 0.85, 0.2, 1.0];
 
-/// Direct3D 11's depth scene: every comparison function, depth bias on a 24-bit buffer, clipping
-/// against clamping and a narrowed depth range, and depth written by the pixel shader.
+/// Direct3D 11's depth scene: every comparison function, depth bias on a 24-bit buffer (its depth
+/// read back too), clipping against clamping and a narrowed depth range, depth written by the pixel
+/// shader, and each depth format written and read back.
 pub fn depth(gpu: &Gpu) -> Result<Vec<Output>> {
     let mut im = Immediate::new(gpu)?;
     let mut outputs = Vec::new();
@@ -524,13 +525,7 @@ pub fn depth(gpu: &Gpu) -> Result<Vec<Output>> {
         256,
         64,
     );
-    let biases = [
-        (0, 0.0, 0.0),
-        (-3, 0.0, 0.0),
-        (0, -1.5, 0.0),
-        (-3000, -1.5, -0.00002),
-    ];
-    for (i, (bias, slope, clamp)) in biases.into_iter().enumerate() {
+    for (i, (bias, slope, clamp)) in depth::BIASES.into_iter().enumerate() {
         im.viewport(cell(i as u32, 4, 64.0));
         im.raster = solid();
         im.depth = depth_test(D3D11_COMPARISON_LESS, true);
@@ -544,6 +539,10 @@ pub fn depth(gpu: &Gpu) -> Result<Vec<Output>> {
         im.draw_colored(&quad(-0.8, -0.8, 0.8, 0.8, 0.2, 0.8, YELLOW))?;
     }
     outputs.push(Output::picture("bias", gpu.read(&target, 0, RT)?));
+    outputs.push(Output::picture(
+        "bias_depth",
+        gpu.read_depth_stencil(&depth, DEPTH)?,
+    ));
 
     let (target, rtv) = gpu.target(192, 64, DXGI_FORMAT_R8G8B8A8_UNORM)?;
     let (depth, dsv) = im.depth_target(192, 64, DXGI_FORMAT_D32_FLOAT)?;
@@ -585,6 +584,31 @@ pub fn depth(gpu: &Gpu) -> Result<Vec<Output>> {
     }
     outputs.push(Output::picture("shader", gpu.read(&target, 0, RT)?));
     outputs.push(Output::picture("shader_depth", gpu.read(&depth, 0, DEPTH)?));
+
+    // Each depth format, cleared with a stencil value, then a slope drawn into it without colour.
+    im.ps = dxil!("common.ps_color");
+    im.depth = depth_test(D3D11_COMPARISON_LESS, true);
+    for (name, format) in depth::FORMATS {
+        let (depth, dsv) = im.depth_target(64, 64, format)?;
+        gpu.keep(&depth);
+        im.begin(None, Some(&dsv), format, 64, 64);
+        unsafe {
+            gpu.list.ClearDepthStencilView(
+                gpu.cpu(&dsv, 0),
+                D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
+                0.75,
+                0x5a,
+                None,
+            )
+        };
+        im.draw_colored(&quad(-0.9, -0.6, 0.9, 0.6, 0.0, 1.0, GREEN))?;
+        let picture = if matches!(name, "d24s8" | "d32s8") {
+            gpu.read_depth_stencil(&depth, DEPTH)?
+        } else {
+            gpu.read(&depth, 0, DEPTH)?
+        };
+        outputs.push(Output::picture(&format!("format_{name}"), picture));
+    }
     Ok(outputs)
 }
 
@@ -980,7 +1004,29 @@ pub fn samplers_scene(gpu: &Gpu) -> Result<Vec<Output>> {
     im.vs = dxil!("common.vs_full");
     im.colored = false;
     let mut outputs = Vec::new();
-    for (part, ps, texture, columns, size, table) in [
+    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS::default();
+    unsafe {
+        gpu.device.CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS,
+            (&mut options as *mut D3D12_FEATURE_DATA_D3D12_OPTIONS).cast(),
+            size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS>() as u32,
+        )?
+    };
+    // Reduction filters come with the second tier of tiled resources.
+    let reducing = options.TiledResourcesTier.0 >= D3D12_TILED_RESOURCES_TIER_2.0;
+    outputs.push(Output::text(
+        "reduction_support",
+        format!("minimum and maximum filtering {reducing}\n"),
+    ));
+    let reduction = (
+        "reduction",
+        dxil!("samplers.ps_sample"),
+        0,
+        4,
+        64,
+        samplers::reduction(),
+    );
+    let parts = [
         (
             "filters",
             dxil!("samplers.ps_sample"),
@@ -1021,7 +1067,10 @@ pub fn samplers_scene(gpu: &Gpu) -> Result<Vec<Output>> {
             48,
             samplers::compare(),
         ),
-    ] {
+    ];
+    for (part, ps, texture, columns, size, table) in
+        parts.into_iter().chain(reducing.then_some(reduction))
+    {
         // Each cell's sampler in both of its table's slots (s0 and s1).
         let heap = gpu.descriptor_heap(
             D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,

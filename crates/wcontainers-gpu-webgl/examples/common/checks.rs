@@ -1276,6 +1276,22 @@ struct Ix {
 @fragment fn fs_indices(i: Ix) -> @location(0) vec4<f32> {
     return vec4<f32>(f32(i.n), 0.0, 0.0, 1.0);
 }
+struct Num {
+    @builtin(position) p: vec4<f32>,
+    @location(0) @interpolate(flat) v: u32,
+    @location(1) @interpolate(flat) i: u32,
+}
+@vertex fn vs_numbers(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> Num {
+    var o: Num;
+    let corner = vec2<f32>(f32(v % 3u == 1u), f32(v % 3u == 2u));
+    o.p = vec4<f32>(corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0);
+    o.v = v;
+    o.i = i;
+    return o;
+}
+@fragment fn fs_numbers(i: Num) -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+}
 ";
 
 /// A buffer of `size` zero bytes with `usage`, for captures.
@@ -1877,5 +1893,240 @@ pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
             }
         }
     }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Strips, fans, loops and indexed draws are captured as the lists they draw, each primitive's
+/// vertices in an order that keeps the raster block's provoking vertex where it was, restarting at the
+/// largest index value, instance after instance, interleaved and separate, with and without drawing.
+pub fn strips_fans_loops_and_indexed_draws_captured_in_list_order<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+        return;
+    }
+    let first = b.caps().has(Features::PROVOKING_VERTEX_FIRST);
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, CAPTURED, "vs_numbers", "fs_numbers");
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    // (vertex_index, instance_index) of each vertex captured.
+    let pairs = |vertices: &[u32], instances: std::ops::Range<u32>| -> Vec<(u32, u32)> {
+        instances
+            .flat_map(|i| vertices.iter().map(move |&v| (v, i)))
+            .collect()
+    };
+    let interleaved = |pairs: &[(u32, u32)]| -> Vec<u8> {
+        words(&pairs.iter().flat_map(|&(v, i)| [v, i]).collect::<Vec<_>>())
+    };
+    let index_buffer = |b: &mut H::Backend, bytes: &[u8]| buffer(b, BufferUsage::INDEX, bytes);
+    let u16s = |v: &[u16]| -> Vec<u8> { v.iter().flat_map(|i| i.to_le_bytes()).collect() };
+    struct Case {
+        name: &'static str,
+        topology: Topology,
+        /// Index bytes and their format, or none for a draw without indices.
+        indices: Option<(Vec<u8>, IndexFormat)>,
+        range: (u32, u32, i32, u32, u32),
+        want: Vec<(u32, u32)>,
+    }
+    let cases = [
+        Case {
+            name: "triangle strip from vertex 2, two instances from 1",
+            topology: Topology::TriangleStrip,
+            indices: None,
+            range: (2, 5, 0, 1, 2),
+            want: pairs(
+                &if first {
+                    [2, 3, 4, 3, 5, 4, 4, 5, 6]
+                } else {
+                    [2, 3, 4, 4, 3, 5, 4, 5, 6]
+                },
+                1..3,
+            ),
+        },
+        Case {
+            name: "triangle fan",
+            topology: Topology::TriangleFan,
+            indices: None,
+            range: (0, 4, 0, 0, 1),
+            want: pairs(
+                &if first {
+                    [1, 2, 0, 2, 3, 0]
+                } else {
+                    [0, 1, 2, 0, 2, 3]
+                },
+                0..1,
+            ),
+        },
+        Case {
+            name: "line loop",
+            topology: Topology::LineLoop,
+            indices: None,
+            range: (0, 3, 0, 0, 1),
+            want: pairs(&[0, 1, 1, 2, 2, 0], 0..1),
+        },
+        Case {
+            name: "line strip",
+            topology: Topology::LineStrip,
+            indices: None,
+            range: (0, 3, 0, 0, 1),
+            want: pairs(&[0, 1, 1, 2], 0..1),
+        },
+        Case {
+            name: "16-bit indexed triangle list from index 1 with base vertex 10",
+            topology: Topology::TriangleList,
+            indices: Some((u16s(&[9, 7, 3, 9, 3, 4, 5]), IndexFormat::U16)),
+            range: (1, 6, 10, 0, 1),
+            want: pairs(&[17, 13, 19, 13, 14, 15], 0..1),
+        },
+        Case {
+            name: "8-bit indexed triangle strip with base vertex 1 and a restart",
+            topology: Topology::TriangleStrip,
+            indices: Some((vec![0, 1, 2, 3, 0xff, 5, 6, 7], IndexFormat::U8)),
+            range: (0, 8, 1, 3, 1),
+            want: pairs(
+                &if first {
+                    [1, 2, 3, 2, 4, 3, 6, 7, 8]
+                } else {
+                    [1, 2, 3, 3, 2, 4, 6, 7, 8]
+                },
+                3..4,
+            ),
+        },
+        Case {
+            name: "32-bit indexed points",
+            topology: Topology::PointList,
+            indices: Some((words(&[4, 0, 70000]), IndexFormat::U32)),
+            range: (0, 3, 0, 0, 2),
+            want: pairs(&[4, 0, 70000], 0..2),
+        },
+    ];
+    for case in &cases {
+        let (start, count, base_vertex, first_instance, instances) = case.range;
+        let ib = case
+            .indices
+            .as_ref()
+            .map(|(bytes, format)| (index_buffer(&mut b, bytes), *format));
+        let mut call = kit::call(&k, &program, None, &whole, case.topology, count);
+        call.range = match &ib {
+            None => DrawRange::Vertices {
+                first: start,
+                count,
+                first_instance,
+                instances,
+            },
+            Some(_) => DrawRange::Indexed {
+                first: start,
+                count,
+                base_vertex,
+                first_instance,
+                instances,
+            },
+        };
+        call.index = ib.as_ref().map(|(buffer, format)| IndexBinding {
+            buffer,
+            offset: 0,
+            format: *format,
+        });
+        call.restart = ib.is_some();
+        let n = case.want.len();
+        // Interleaved, with room for one vertex more that must stay zero.
+        let one = zeros(&mut b, BufferUsage::VERTEX, (n + 1) * 8);
+        let targets = [BufferRange {
+            buffer: &one,
+            offset: 0,
+            size: (n as u64 + 1) * 8,
+        }];
+        b.capture_vertices(&call, &targets, false)
+            .unwrap_or_else(|e| panic!("{}: capture_vertices: {e:?}", case.name));
+        let got = read_buffer(&mut b, &one, (n + 1) * 8);
+        assert_eq!(
+            &got[..n * 8],
+            &interleaved(&case.want)[..],
+            "{}: interleaved",
+            case.name
+        );
+        assert_eq!(&got[n * 8..], &[0; 8], "{}: past the vertices", case.name);
+        // Separate.
+        let (v, i) = (
+            zeros(&mut b, BufferUsage::VERTEX, n * 4),
+            zeros(&mut b, BufferUsage::VERTEX, n * 4),
+        );
+        let targets = [
+            BufferRange {
+                buffer: &v,
+                offset: 0,
+                size: n as u64 * 4,
+            },
+            BufferRange {
+                buffer: &i,
+                offset: 0,
+                size: n as u64 * 4,
+            },
+        ];
+        b.capture_vertices(&call, &targets, false)
+            .unwrap_or_else(|e| panic!("{}: capture_vertices: {e:?}", case.name));
+        let (want_v, want_i): (Vec<u32>, Vec<u32>) = case.want.iter().copied().unzip();
+        assert_eq!(
+            read_buffer(&mut b, &v, n * 4),
+            words(&want_v),
+            "{}: vertex numbers",
+            case.name
+        );
+        assert_eq!(
+            read_buffer(&mut b, &i, n * 4),
+            words(&want_i),
+            "{}: instance numbers",
+            case.name
+        );
+    }
+    // Drawing too: an indexed strip whose first triangle covers the top left texel.
+    let f = Format::Rgba8Unorm;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+    let view = kit::target(&mut b, &t, f, 0, 0);
+    let ib = index_buffer(&mut b, &u16s(&[0, 1, 2, 1]));
+    let mut call = kit::call(&k, &program, None, &whole, Topology::TriangleStrip, 4);
+    call.range = DrawRange::Indexed {
+        first: 0,
+        count: 4,
+        base_vertex: 0,
+        first_instance: 0,
+        instances: 1,
+    };
+    call.index = Some(IndexBinding {
+        buffer: &ib,
+        offset: 0,
+        format: IndexFormat::U16,
+    });
+    let drawn = zeros(&mut b, BufferUsage::VERTEX, 6 * 8);
+    let targets = [BufferRange {
+        buffer: &drawn,
+        offset: 0,
+        size: 6 * 8,
+    }];
+    b.begin_pass(&kit::pass(&view, [0; 4], None));
+    b.capture_vertices(&call, &targets, true)
+        .expect("capture_vertices while drawing");
+    b.end_pass();
+    let want = pairs(
+        &if first {
+            [0, 1, 2, 1, 1, 2]
+        } else {
+            [0, 1, 2, 2, 1, 1]
+        },
+        0..1,
+    );
+    assert_eq!(
+        read_buffer(&mut b, &drawn, 6 * 8),
+        interleaved(&want),
+        "capture while drawing"
+    );
+    let picture = kit::read(&mut b, &t, 0, 0, [4, 4, 1], 4, false);
+    assert_eq!(&picture[..4], &[255, 0, 0, 255], "the top left texel drawn");
+    assert_eq!(
+        &picture[60..],
+        &[0, 0, 0, 0],
+        "the bottom right texel not drawn"
+    );
     assert_eq!(b.status(), DeviceStatus::Ok);
 }

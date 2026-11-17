@@ -104,6 +104,8 @@ pub(crate) struct Pass {
     pub occlusion: Option<Id>,
     /// The running occlusion query and whether any sample passed.
     pub query: Option<(u32, u64)>,
+    /// The query indices begun in this pass.
+    pub begun: Vec<u32>,
     /// Buffers the pass's draws bound as writable storage, and those they used any other way.
     pub written: Vec<Id>,
     pub other: Vec<Id>,
@@ -226,6 +228,7 @@ impl Recorder {
                     | Features::INDEX_U8
                     | Features::DEPTH24_UNORM
                     | Features::BASE_VERTEX_INSTANCE
+                    | Features::INSTANCE_STEP_RATE
                     | Features::CLIP_DEPTH_ZERO_ONE
                     | Features::FRAGMENT_STORAGE_WRITE,
                 limits,
@@ -586,7 +589,7 @@ impl Recorder {
         let mut resolves = Vec::new();
         // Every (texture, subresource, slice) attached, to find one attached twice.
         let mut attached = Vec::new();
-        let mut bytes = 0;
+        let mut formats = Vec::new();
         for (i, c) in pass.colors.iter().enumerate() {
             let Some(c) = c else { continue };
             if i >= self.caps.limits.color_targets as usize {
@@ -598,7 +601,7 @@ impl Recorder {
             if format.is_depth_stencil() {
                 return Err("a depth format as a colour attachment".into());
             }
-            bytes += format.block().2;
+            formats.push(format);
             let (texture, sub, slice) = self.attachment(*c.view, c.depth_slice)?;
             attached.push((texture, sub, slice));
             let samples = self.texture(texture)?.desc.samples;
@@ -642,6 +645,8 @@ impl Recorder {
             same_samples(self.texture(texture)?.desc.samples)?;
             depth = Some((*d.view, d.depth, d.stencil));
         }
+        let bytes = color_target_bytes(formats)
+            .ok_or("a colour attachment of a format that cannot be a colour target")?;
         if bytes > self.caps.limits.color_bytes_per_sample {
             return Err("colour attachments of more bytes a sample than the limit".into());
         }
@@ -709,6 +714,7 @@ impl Recorder {
             samples,
             occlusion: pass.occlusion.copied(),
             query: None,
+            begun: Vec::new(),
             written: Vec::new(),
             other: Vec::new(),
         });
@@ -1431,6 +1437,15 @@ impl Backend for Recorder {
             {
                 return Err(GpuError::Invalid("a vertex stride past the limit"));
             }
+            if !self.caps.has(Features::INSTANCE_STEP_RATE)
+                && desc
+                    .streams
+                    .iter()
+                    .flatten()
+                    .any(|s| matches!(s.step, StepMode::Instance(n) if n != 1))
+            {
+                return Err(GpuError::Absent(Features::INSTANCE_STEP_RATE));
+            }
             let id = self.add(Obj::VertexLayout(Box::new(*desc)));
             Ok(id)
         })();
@@ -1566,7 +1581,7 @@ impl Backend for Recorder {
                         ));
                     }
                     BindingResource::TexelBuffer { .. } => {
-                        return Err(GpuError::Invalid("typed texel buffers are fronts' routes"));
+                        return Err(GpuError::Absent(Features::TEXEL_BUFFERS));
                     }
                     BindingResource::Table(_) => {
                         return Err(GpuError::Absent(Features::RESOURCE_TABLES));
@@ -1670,8 +1685,16 @@ impl Backend for Recorder {
                     buffer.0
                 ));
             }
-            if mode == WriteMode::Ordered {
-                r.touch(*buffer, offset, end);
+            match mode {
+                WriteMode::Ordered => r.touch(*buffer, offset, end),
+                // Fresh storage: earlier commands keep the old bytes, and the rest is undefined.
+                WriteMode::Discard => {
+                    r.touched.retain(|t| t.0 != *buffer);
+                    if end <= r.buffer(*buffer)?.bytes.len() as u64 {
+                        r.buffer_mut(*buffer)?.bytes.fill(GARBAGE);
+                    }
+                }
+                WriteMode::NoOverwrite => {}
             }
             let b = r.buffer_mut(*buffer)?;
             let end = offset as usize + data.len();
@@ -1733,6 +1756,10 @@ impl Backend for Recorder {
             if pass.query.replace((index, 0)).is_some() {
                 return Err("begin_query while a query runs".into());
             }
+            if pass.begun.contains(&index) {
+                return Err(format!("query {index} begun twice in one pass"));
+            }
+            pass.begun.push(index);
             Ok(())
         });
     }

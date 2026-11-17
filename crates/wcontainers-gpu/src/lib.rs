@@ -54,9 +54,9 @@ pub use draw::{
     VertexBinding, Viewport,
 };
 pub use error::{DeviceStatus, GpuError, LossReason};
-pub use format::{Format, FormatKind};
+pub use format::{Format, FormatKind, color_target_bytes};
 pub use helpers::Helpers;
-pub use occlusion::OcclusionCounter;
+pub use occlusion::{CountedDraw, OcclusionCounter};
 pub use passes::{ColorTarget, PassOps, PassTargets, PassTracker, ScopeUse, Target, cut_scissors};
 pub use reflect::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource,

@@ -11,6 +11,8 @@ mod scene;
 #[path = "../examples/scenes/draw.rs"]
 mod draw;
 
+mod allowance;
+
 use draw::Twist;
 use scene::Scene;
 use wcontainers_gpu::{Backend, DeviceStatus};
@@ -63,7 +65,7 @@ fn scenes_match_direct3d() {
     let mut failed = Vec::new();
     for which in Scene::ALL {
         let (drawn, expected) = (render(&mut b, which, Twist::None), reference(which));
-        if !draw::within(&drawn, &expected, &format!("{}.png", which.name())) {
+        if !allowance::within(&drawn, &expected, &format!("{}.png", which.name())) {
             failed.push(which.name());
         }
     }
@@ -74,10 +76,10 @@ fn scenes_match_direct3d() {
 fn changed_blend_factor_and_depth_function_fail() {
     let mut b = device();
     let reference = reference(Scene::Quads);
-    let (tolerance, pixels) = draw::allowance("quads.png");
+    let (tolerance, pixels) = allowance::allowance("quads.png");
     for twist in [Twist::BlendFactor, Twist::DepthFunction] {
         let (beyond, worst) =
-            draw::beyond(&render(&mut b, Scene::Quads, twist), &reference, tolerance);
+            allowance::beyond(&render(&mut b, Scene::Quads, twist), &reference, tolerance);
         eprintln!(
             "quads with {twist:?}: {beyond} pixels beyond {tolerance}, largest difference {worst}"
         );
@@ -114,7 +116,7 @@ fn quads_match_direct3d_on_every_depth_format() {
         assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
         eprint!("on {format:?}: ");
         assert!(
-            draw::within(&rgba, &reference, "quads.png"),
+            allowance::within(&rgba, &reference, "quads.png"),
             "quads on {format:?} differ from Direct3D"
         );
     }

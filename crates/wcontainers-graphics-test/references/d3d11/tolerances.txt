@@ -67,21 +67,21 @@ mips-rgba16f_1.exr 0.001953125 0 warp 717 0.001953125
 mips-rgba16f_2.exr 0.00390625 0 warp 192 0.00390625
 mips-rgba16f_3.exr 0.00390625 0 warp 48 0.00390625
 mips-rgba16f_4.exr 0.00390625 0 warp 12 0.00390625
-mips-rgba16f_5.exr 0.0078125 2 warp 2 0.53759765625
-mips-rgba16f_6.exr 0.0078125 1 warp 1 0.531494140625
+mips-rgba16f_5.exr 0.0078125 2 warp 2 0.53759765625 tiles 0:2
+mips-rgba16f_6.exr 0.0078125 1 warp 1 0.531494140625 tiles 0:1
 mips-rgba8_1.png 1 0 warp 262 1
 mips-rgba8_2.png 1 0 warp 116 1
 mips-rgba8_3.png 1 0 warp 36 1
 mips-rgba8_4.png 1 0 warp 12 1
-mips-rgba8_5.png 8 2 warp 2 33
-mips-rgba8_6.png 8 1 warp 1 32
+mips-rgba8_5.png 8 2 warp 2 33 tiles 0:2
+mips-rgba8_6.png 8 1 warp 1 32 tiles 0:1
 mips-srgb_1.png 1 0 warp 249 1
 mips-srgb_2.png 1 0 warp 103 1
 mips-srgb_3.png 1 0 warp 34 1
 mips-srgb_4.png 1 0 warp 9 1
-mips-srgb_5.png 8 2 warp 2 26
-mips-srgb_6.png 8 1 warp 1 26
-msaa-alpha_to_coverage.png 8 2580 warp 9396 108
+mips-srgb_5.png 8 2 warp 2 26 tiles 0:2
+mips-srgb_6.png 8 1 warp 1 26 tiles 0:1
+msaa-alpha_to_coverage.png 8 2580 warp 9396 108 tiles 0:6,1:54,2:35,3:49,4:40,5:21,6:38,7:12,8:12,9:76,10:36,11:56,12:54,13:32,14:62,15:18,16:12,17:76,18:36,19:56,20:54,21:32,22:62,23:18,24:12,25:76,26:36,27:56,28:54,29:32,30:62,31:18,32:12,33:76,34:36,35:56,36:54,37:32,38:62,39:18,40:12,41:76,42:36,43:56,44:54,45:32,46:62,47:18,48:12,49:76,50:36,51:56,52:54,53:32,54:62,55:18,56:8,57:53,58:38,59:43,60:46,61:16,62:36,63:9
 msaa-edges2.png 1 0 warp 724 1
 msaa-edges4.png 1 0 warp 842 1
 msaa-edges8.png 1 0 warp 539 1
@@ -97,10 +97,12 @@ raster-fill.png 1 0 warp 1921 1
 raster-scissor.png 1 0 warp 126 1
 raster-viewports.png 1 0 warp 494 1
 samplers-address.png 2 0 warp 26857 2
-samplers-compare.png 1 0 warp 17880 1
-samplers-compare_zero.png 1 0 warp 396 1
-samplers-filters.png 8 6074 warp 29706 179
+samplers-compare.png 1 0 warp 35208 1
+samplers-compare_zero.png 1 0 warp 1188 1
+samplers-filters.png 8 6074 warp 29706 179 tiles 32:16,33:16,34:16,35:16,36:16,37:16,38:16,39:16,40:16,41:16,42:16,43:16,44:16,45:16,46:16,47:16,128:28,129:26,130:28,131:26,132:117,133:100,134:117,135:102,144:134,145:134,146:134,147:134,148:155,149:160,150:155,151:159,160:163,161:163,162:163,163:163,164:188,165:187,166:188,167:186,176:189,177:191,178:189,179:191,180:228,181:238,182:228,183:238,204:60,205:60,206:60,207:60,220:60,221:60,222:60,223:60,236:60,237:60,238:60,239:60,252:74,253:74,254:74,255:74
 samplers-gather.png 0 0 warp 0 0
+samplers-reduction.png 8 226 warp 226 179 tiles 12:3,13:5,14:3,15:5,24:2,26:2,28:4,29:8,30:4,31:8,32:16,33:16,34:16,35:16,76:5,77:3,78:5,79:3,89:2,91:2,92:8,93:4,94:8,95:4,96:16,97:16,98:16,99:16,104:1,105:1,106:1,107:1,108:2,109:1,110:2,111:1
+samplers-reduction_support.txt exact warp same
 stencil-values.exr 0 0 warp 0 0
 stencil.png 1 0 warp 4448 1
 streamout-buffer.exr 0.000000014901161193847656 0 warp 5 0.000000014901161193847656
@@ -120,7 +122,7 @@ textures-1d.png 2 0 warp 2663 2
 textures-1d_array.png 0 0 warp 0 0
 textures-2d_array.png 1 0 warp 2144 1
 textures-3d.png 2 0 warp 2276 2
-textures-bc.exr 0.0078125 2310 warp 8645 0.05166783928871155
+textures-bc.exr 0.0078125 2310 warp 8645 0.05166783928871155 tiles 0:26,1:20,2:24,3:29,4:45,5:53,6:67,7:71,8:37,9:28,10:16,11:43,12:52,13:71,14:97,15:79,16:68,17:67,18:26,19:39,20:66,21:72,22:73,23:41,24:85,25:68,26:37,27:22,28:74,29:59,30:59,31:49,32:123,33:96,40:106,41:115,50:76,51:38,58:52,59:41
 textures-cube.png 2 0 warp 2402 2
 textures-cube_array.png 2 0 warp 2540 2
 textures-mips.png 2 0 warp 5514 2

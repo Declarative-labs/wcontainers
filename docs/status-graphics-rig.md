@@ -6,41 +6,30 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 ## Where things stand
 
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done and checked.
-R1 (the Direct3D reference library) is done, waiting for the orchestrator's check. Its first run (2026-11-17) fixed R0's findings
-and built the scenes; its second run (2026-11-17) did this:
-- Jobs that present now run on a hidden desktop ("wc-rig") in the session of the user logged in
-  at the console (`gpu-job --desktop`, see How to run): windows and swap chains work there and
-  nothing shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
-- Part 1, scenes: done. 27 Direct3D 11 scenes (130 outputs) and 9 Direct3D 12 scenes (21 outputs),
-  now with swap chains (D3D11 flip and blit models, D3D12 flip model with resizing). Each ran on the
-  RTX 3080 twice and on WARP with the debug layer; `scenes` checks them, through replacement
-  libraries if given. (The third and fourth runs added the Direct3D 12 twins of the Direct3D 11
-  scenes.)
-- Part 2, Wine's Direct3D tests: done. Each test of the d3d11, d3d10core, dxgi and d3d12 files runs
-  in its own process, chosen by name; 19 tests that would change the owner's screen are never run
-  (wine-excluded.txt). Baseline on the RTX 3080 and WARP in tools/graphics-rig/wine-baseline (see
-  Measurements). vkd3d's own Direct3D 12 tests are not built (Departures).
-- Part 3, real programs: done for 11 programs (5 DirectX SDK tutorials, 6 bgfx examples on its
-  Direct3D 11 renderer), each run for 120 frames through the forwarding library, which now takes
-  a census of device, context, swap chain and factory calls and saves frames 10, 60 and 120. The
-  census files are in tools/graphics-rig/census. Only two sources of programs, both samples and
-  demos; no game yet (Next).
-- Third run (2026-11-17): two open-source games added to the real programs (Chocolate Doom
-  playing Freedoom's first demo through SDL's Direct3D 11 renderer, and Godot 4.7.2 running its
-  2D and 3D platformer demo games on Direct3D 11, through ANGLE, and on Direct3D 12), 16 programs
-  in all; vkd3d's Direct3D 12 conformance tests and its shader runner built and baselined beside
-  Wine's (Part 2 now has 8 test files); the blending, depth, stencil, render target format and
-  sampler scenes drawn through Direct3D 12 pipeline state objects and descriptor tables (now 14
-  D3D12 scenes, 62 outputs; 27 Direct3D 11 scenes, 130 outputs), every picture equal to Direct3D
-  11's but 202 pixels of mip filtering; and the milestone's check run from a fresh checkout (see
-  Measurements).
-- Fourth run (2026-11-17): the textures, raster, msaa, targets, topology, geometry,
-  tessellation, streamout, draws, constants and views scenes drawn through Direct3D 12 as well
-  (now 25 D3D12 scenes, 104 outputs; Direct3D 11 still 27 scenes, 130 outputs). Every one of
-  their 42 Direct3D 12 outputs equals Direct3D 11's GPU output exactly (the stream output text
-  differs by design). So every Direct3D 11 scene of drawing ground now has a Direct3D 12 twin; the
-  ones without are listed under Departures. Then the milestone's check was run again from a fresh
-  clone (see Measurements). Part 1 is done.
+R1 (the Direct3D reference library) is done, waiting for the orchestrator's check (fifth run,
+2026-11-17, fixed the findings of the fourth check; see "Fifth run" under Measurements). Its parts:
+- Jobs that present run on a hidden desktop ("wc-rig") in the session of the user logged in at the
+  console (`gpu-job --desktop`, see How to run): windows and swap chains work there and nothing
+  shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
+- Part 1, scenes: 27 Direct3D 11 scenes (133 outputs) and 25 Direct3D 12 scenes (112 outputs).
+  Every Direct3D 11 scene of drawing ground has a Direct3D 12 twin drawn from the same tables
+  (the ones without are under Departures). Each output is recorded on the RTX 3080 twice and on
+  WARP with the debug layer; `scenes` checks them, through replacement libraries if given. A
+  picture passes when, in every 16 by 16 tile, it has no more pixels beyond the tolerance than WARP
+  has there (How a picture passes).
+- Part 2, conformance tests: Wine's d3d11, d3d10core, dxgi and d3d12 test files and vkd3d's
+  d3d12, d3d12_invalid_usage, hlsl_d3d12 tests and shader runner (8 files), each test in its own
+  process, chosen by name; 19 Wine tests that would change the owner's screen are never run
+  (wine-excluded.txt). Baselines on the RTX 3080 and WARP in tools/graphics-rig/wine-baseline. A
+  test passes only if it has no failure and runs at least as many checks, and skips no more, than
+  on real Direct3D.
+- Part 3, real programs: 16 (5 DirectX SDK tutorials, 6 bgfx examples, Chocolate Doom playing a
+  Freedoom demo, Godot's 2D and 3D platformer demos on Direct3D 11 through ANGLE and on Direct3D
+  12), each run for 120 frames; frames 10, 60 and 120 are compared with references recorded on
+  real Direct3D (kept on the desktop, their SHA-256 and allowances in the repository). Direct3D 11
+  programs run through the forwarding library, which takes the call census
+  (tools/graphics-rig/census) and gives them a clock that moves by frames, so programs animated
+  by the clock draw the same frames every run.
 
 The plan document, docs/phase-2-graphics.md, is on branch phase-2-graphics and not in this checkout;
 its sections 10 to 12 (one source two builds, testing, milestones G4 and G5) were read for this run.
@@ -99,11 +88,16 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   (paths on the desktop, relative to its checkout; `%CARGO_TARGET_DIR%` works), runs every scene (or
   the named ones) in its own process with a 120 s limit, and checks every output against
   crates/wcontainers-graphics-test/references/<api>. Prints `pass` or `FAIL` and the numbers for each
-  output, a FAIL for a scene that crashed, hung, has no references, or did not load a replacement
-  library from that directory, whether the stored shader corpus matches the build, and a count.
-  Exits 1 on any FAIL. Pointing it at our own Direct3D: `scenes --build "cargo build -p <crate>"
-  --dll d3d11.dll=%CARGO_TARGET_DIR%\debug\<its dll> --dll dxgi.dll=...`. The scene programs do not
-  ask for the debug layer when checking, so a replacement need not provide it.
+  output, a FAIL for a scene that crashed, hung or has no references, for a scene whose program
+  loaded d3d11.dll, d3d12.dll or dxgi.dll from anywhere but that directory when a replacement of
+  that name was given (each program prints where it loaded all three from; a library it did not
+  load is not held against it, and a replacement no scene loaded gets a note), and for a scene name
+  that no scene program has; then whether the stored shader corpus matches the build, and a
+  count. Exits 1 on any FAIL. Pointing it at our own Direct3D, both APIs in one command:
+  `scenes --build "cargo build -p <crates>" --dll d3d11.dll=%CARGO_TARGET_DIR%\debug\<dll>
+  --dll d3d12.dll=... --dll dxgi.dll=...`. Libraries of other names are only copied beside the
+  programs. The scene programs do not ask for the debug layer when checking, so a replacement need
+  not provide it.
 - `tools/graphics-rig/scenes --record`: runs every scene with the debug layer on the GPU twice and on
   WARP; fails if the two GPU runs differ anywhere or the debug layer reports an error; then copies
   the GPU's outputs and references/<api>/tolerances.txt (each picture's allowance and how far WARP
@@ -112,10 +106,15 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
 - How a picture passes: it is compared at its own depth (8-bit, 16-bit or float) with the GPU's;
   with L the largest channel difference WARP had from the GPU, the tolerance is L capped at 8 steps
   of an 8-bit channel (2056 of a 16-bit one, 1/128 of a float one), and the pixels allowed beyond it
-  are as many as WARP had beyond it: a replacement passes when it is at least as close to the GPU as
-  WARP is. Texts (query counts, read-back bytes, answers to capability questions) must match exactly
-  and hold only facts every correct implementation shares (timestamps are recorded as facts: in
-  order, not disjoint; pixel shader invocations as "at least the covered pixels").
+  are counted in each 16 by 16 tile: a tile may have as many as WARP had beyond it in that tile, so
+  a replacement passes when it is at least as close to the GPU as WARP is, everywhere in the
+  picture (WARP's freedom in one cell allows nothing in another). tolerances.txt lists each
+  picture's tolerance, its total allowance, WARP's raw numbers and the tiles that allow any
+  pixels (`tiles <index>:<pixels>`, index row by row). A failing picture's line names how many
+  tiles went beyond WARP's count and the worst. Texts (query counts, read-back bytes, answers to
+  capability questions) must match exactly and hold only facts every correct implementation
+  shares (timestamps as "in order or disjoint"; pixel shader invocations as "at least the covered
+  pixels").
 - Scenes are listed by `gt-d3d11 list` and `gt-d3d12 list`; a scene alone, on the desktop:
   `gt-d3d11 <scene>... <hardware|warp> <dir> [--debug]` writes `<scene>[-<part>].<png|exr|txt>`.
   The scene sources are crates/wcontainers-graphics-test/src/d3d11/scenes/*.rs and
@@ -146,6 +145,12 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   from llvm-mingw's widl; config.h is empty; the copy of vkd3d_test.h built picks a test by exact
   name (VKD3D_TEST_FILTER) instead of by substring. About 25 s for everything.
 - `tools/graphics-rig/wine-tests list <file>`: the names of a file's tests.
+- `gt-launch <report> <library>,...|- <program> [<argument>...]` (crate wcontainers-graphics-test):
+  runs a program as its debugger until every named library has loaded, then lets it go, and writes
+  where each was loaded from ("not loaded" if never). Exceptions go to the program as without a
+  debugger and the debug heap stays off. `wine-tests run` and `programs run` start every test and
+  program through it, so a replacement Windows passed over (a wrong name, a program that limits its
+  search) is a FAIL rather than real Direct3D's result under the replacement's name.
 - `tools/graphics-rig/wine-tests run [--warp] [--record] [--dll <name>=<path>]...
   [<file>[:<test>/<test>...]]...`: one GPU job on the hidden desktop (desktop/wine-run.ps1) running
   every test of the named files (all eight by default), or only the named tests, each in its own
@@ -153,8 +158,12 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   programs if given (and the Windows SDK's dxcompiler.dll and dxil.dll, for vkd3d's shader model 6
   tests). Tests listed in tools/graphics-rig/wine-excluded.txt never run. Each test
   gets a verdict (pass, fail, crash, timeout) from Wine's summary line and exit code, compared with
-  tools/graphics-rig/wine-baseline/<file>-<driver>.txt: "pass", "FAIL, passes on real Direct3D",
-  or "known, <verdict> on real Direct3D" for tests that fail on the real thing (not counted).
+  tools/graphics-rig/wine-baseline/<file>-<driver>.txt: "pass" (no failure, and at least as many
+  checks run and no more skipped as on real Direct3D), "FAIL, passes on real Direct3D", "FAIL, ran
+  <n> checks (real Direct3D <m>) and skipped <k> (real Direct3D <j>)", "FAIL, did not load the
+  replacement" (gt-launch saw it load one from elsewhere), or "known, <verdict> on real Direct3D"
+  for tests that fail on the real thing (not counted). With replacements it ends with how many tests
+  loaded each from the test directory. The job builds the rig first (for gt-launch).
   Exits 1 on any FAIL. `--record` runs real Direct3D and copies the results into wine-baseline.
   Logs: C:\wc\out\<branch>\wine\logs, copied to the scratch directory (wine-logs). Example:
   `wine-tests run d3d11:test_blend_state/test_texture` or
@@ -172,20 +181,47 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   ANGLE's Direct3D 11, `--fixed-fps 60`); godot-platformer-3d-d3d12 and godot-platformer-2d-d3d12
   (Godot's Forward+ renderer on Direct3D 12, writing its own frames with `--write-movie` and quitting
   after the last). Nobody plays the games: Doom replays its demo, Godot's demos stand idle.
-- `tools/graphics-rig/programs run [--census] [--capture <frames>] [--dll <name>=<path>]...
+- `tools/graphics-rig/programs run [--census] [--record] [--capture <frames>] [--dll <name>=<path>]...
   [<program>...]`: one GPU job on the hidden desktop running each program (copied to
-  C:\wc\out\<branch>\programs\<program>\bin, in its own working directory) with the forwarding
-  library as d3d11.dll, which saves the frames listed (default 10,60,120) and ends the program at
-  the last. A replacement d3d11.dll given with --dll sits behind the forwarding one (WC_D3D11);
-  other --dll libraries go beside the program. Prints pass (presented the last frame, every frame
-  saved) or FAIL per program, exits 1 on any FAIL; frames and census to the scratch directory
-  (programs/<program>). `--census` (real Direct3D only) also copies each census into
-  tools/graphics-rig/census/<program>.txt. Direct3D 12 programs run without the forwarding library
-  (it is Direct3D 11 only), so they have no census; they pass when they exit with 0 after writing
-  every frame, and a replacement d3d12.dll or dxgi.dll given with --dll goes beside them. Every
-  program gets APPDATA and LOCALAPPDATA in its output directory, so Godot's settings, logs and
-  shader caches stay under C:\wc. The whole directory of each program's executable is copied (SDL
-  and Godot's console wrapper load files beside it).
+  C:\wc\out\<branch>\programs\<program>\bin, in its own working directory, started through
+  gt-launch) with the forwarding library as d3d11.dll, which saves the frames listed (default
+  10,60,120), ends the program at the last, and gives it a clock that moves only by frames and
+  sleeps (clock.rs, below). A replacement d3d11.dll given with --dll sits behind the forwarding one
+  (WC_D3D11); other --dll libraries go beside the program, and a program that loads one of them
+  from elsewhere fails. Each program that ran to its last frame then has its frames compared with
+  its references (`gt-run frames`, the scenes' rule with the tolerance at the cap of 8 steps and,
+  per tile, only the pixels its own repeated runs on real Direct3D changed): prints `pass` or
+  `FAIL` per frame and per program and exits 1 on any FAIL. The references are on the desktop
+  (C:\wc\programs\reference\<program>: the frames and tolerances.txt; a copy in the scratch
+  directory, program-references), since the frames show the programs' own art under their own
+  licences; tools/graphics-rig/program-references/<program> in the repository holds
+  tolerances.txt and frames.sha256, and a program whose desktop references do not have those
+  hashes fails ("run programs run --record"). `--record` (real Direct3D only) runs each program
+  three times, keeps the first run's frames, writes the tiles the other runs changed as allowed
+  (when a frame had more than a twentieth of its tiles changed, the program drifts, and all its
+  frames are written "unrepeatable" and reported as "not compared"), leaves out the tiles meeting a program's `ignore` rectangle (bgfx's GPU
+  memory readout, see programs.ps1), and copies tolerances.txt and frames.sha256 into the
+  checkout, to be committed. Frames and
+  census go to the scratch directory (programs/<program>); `--census` (real Direct3D only) also
+  copies each census into tools/graphics-rig/census/<program>.txt. Direct3D 12 programs run
+  without the forwarding library (it is Direct3D 11 only), so they have no census and no frame
+  clock (Godot's movie writer runs on fixed time anyway); they must exit with 0 after writing every
+  frame, and a replacement d3d12.dll or dxgi.dll given with --dll goes beside them. Every program
+  gets APPDATA and LOCALAPPDATA in its output directory, so Godot's settings, logs and shader
+  caches stay under C:\wc. The whole directory of each program's executable is copied (SDL and
+  Godot's console wrapper load files beside it).
+- The frame clock (crates/wcontainers-graphics-test-forward/src/clock.rs), on when WC_CAPTURE is
+  set, started in the forwarding library's DllMain: it starts at the next whole second of the real
+  clocks and moves by 1/60 s at each presented frame and by the time asked at each Sleep or
+  SleepEx (which still sleep for real). ntdll's RtlQueryPerformanceCounter, GetTickCount,
+  GetTickCount64, GetSystemTimeAsFileTime, GetSystemTimePreciseAsFileTime and winmm's timeGetTime
+  (if loaded then) are detoured to it with the retour crate, so every caller in the process sees it.
+  A program that waits for the clock to pass a time without sleeping or presenting would wait
+  forever (the 120 s limit then fails it); none of the 16 does. While it runs, the forwarding
+  library also answers Direct3D 11 timestamp and timestamp-disjoint queries at once from it (10
+  MHz ticks, never disjoint), so GPU timings and query latency a program prints are fixed too. bgfx is built with
+  BGFX_CONFIG_MULTITHREADED=0 (`programs build`, through MSVC's CL variable), so its examples draw
+  on the thread that reads the clock and their frames follow it exactly.
 - The census (crates/wcontainers-graphics-test-forward/src/census.rs), on when WC_OUT names a
   directory: the typed D3D11CreateDevice and D3D11CreateDeviceAndSwapChain exports patch the method
   tables of the device, swap chain and DXGI factory with counting thunks (names read from the
@@ -210,8 +246,9 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   (steps of a channel, or a float value). Prints pixel count, how many differ in any channel by more
   than the tolerance, the largest channel difference and the first differing pixel. Exit 0 when
   none differ beyond the tolerance, 1 when some do, 2 on error.
-- Tests: `cargo test -p wcontainers-graphics-test -p wcontainers-graphics-test-forward` (6 unit tests:
-  comparison at each depth, NaN, the WARP allowance) on the Mac or through `remote`; clippy with `-D warnings` on both machines,
+- Tests: `cargo test -p wcontainers-graphics-test -p wcontainers-graphics-test-forward` (9 unit tests:
+  comparison at each depth, NaN, counting per tile, the WARP allowance per tile, the allowance from
+  repeated runs) on the Mac or through `remote`; clippy with `-D warnings` on both machines,
   since most of the code is Windows-only; `shellcheck -x tools/graphics-rig/*` (minus the .cmd) for
   the Mac scripts.
 - The Mac scripts share tools/graphics-rig/common.sh: every ssh and scp to the desktop goes through one
@@ -497,7 +534,8 @@ console, Mac load average 38 to 51):
   game; the 2D one differed in 3 lines (CreateBuffer 112 against 92, Map and Unmap 21206 against
   21186, VSSetConstantBuffers 1430 against 1424). Godot's ANGLE back buffer is R10G10B10A2, now
   saved as a 16-bit PNG (each 10-bit value widened by repeating its top bits). All 16 programs
-  pass in one `programs run` (1 min 49 s for the job).
+  pass in one `programs run` (1 min 49 s for the job). (Later found wrong for Doom: in the fourth
+  check, 1 run in 4 differed at frames 60 and 120; the frame clock of the fifth run fixed it.)
 - vkd3d's tests, baseline (two GPU runs gave the same verdict for every test):
   vkd3d-d3d12: 176 tests, 174 pass on the GPU (2488098 checks, 45 s), 175 on WARP (2488043 checks,
   8 s). vkd3d-d3d12_invalid_usage: 3 of 3 on both (56 and 59 checks). vkd3d-hlsl_d3d12: 9 of 9 on
@@ -578,6 +616,50 @@ console, Mac load average 17 to 25):
 - SSH to the desktop refused new connections once more, for about 8 minutes (05:59 to 06:07
   Mac time), cutting off a `scenes --record` (exit 255); run again after, it passed.
 
+Fifth run (2026-11-17; desktop CPU load 1 to 5 % before each run, owner logged in at the console,
+other graphics tracks' GPU jobs running beside ours at times; Mac load average 37 to 45). It fixed
+the fourth check's findings:
+- Conformance bar: with a d3d11.dll whose 51 exports all return E_FAIL (built in the scratch
+  directory, stub/make-stub.ps1, into C:\wc\out\stub), `wine-tests run --dll
+  d3d11.dll=C:\wc\out\stub\d3d11.dll d3d11` now gives "162 tests counted, 162 FAIL" (each "ran 16
+  checks (real Direct3D 166) and skipped 7 (real Direct3D 0)" and the like; it gave 1 FAIL
+  before); with such a d3d12.dll (18 exports), `vkd3d-d3d12 d3d12` gives "181 tests counted, 181
+  FAIL". On real Direct3D all eight files, all tests: 784 counted, 0 FAIL (7 min 0 s for the job),
+  so the check and skip counts of the baseline held on a new run.
+- Allowance per tile: the checker's breaks, made again in this checkout: MIN_MAG_MIP_LINEAR
+  changed to MIN_MAG_LINEAR_MIP_POINT in the filter cells now fails samplers-filters on both APIs
+  ("3718 of 65536 pixels beyond 8 (WARP 6074) ... 16 tiles of 16 by 16 beyond WARP's count, the
+  worst at 240,64: 256 pixels, WARP 0"); BC4_SNORM read as BC4_UNORM fails textures-bc on both
+  ("4 tiles ... beyond WARP's count, the worst at 80,48: 248 pixels, WARP 59"); the bias clamp set
+  to 0 fails depth-bias_depth on both (2704 pixels, 16 tiles). WARP's own differences in
+  samplers-filters were measured per 64 by 64 cell: 64 pixels beyond 8 in each of the four point
+  cells (one row), 2056 and 2746 in the two anisotropic cells, 1016 in the MaxLOD-0 cell, none
+  beyond 2 steps in the trilinear cell.
+- Direct3D 12 depth scene: bias_depth and format_d16, d24s8, d32 and d32s8 added (depth and
+  stencil planes read back and laid out as Direct3D 11 reads them); all five equal Direct3D 11's
+  references exactly. The bias and format tables are now one, in the Direct3D 11 depth scene.
+- Samplers: reduction filters (minimum and maximum of point, linear and anisotropic, new output
+  samplers-reduction, with samplers-reduction_support.txt saying the device has them: true on the
+  GPU and WARP, both APIs) and comparison filters with linear mips and anisotropy (compare and
+  compare_zero now 32 cells). WARP: reduction differs in 226 of 32768 pixels, up to 179 (the
+  anisotropic cells), the comparison cells by at most 1.
+- queries-results.txt now says "in order or disjoint" for timestamps.
+- `scenes` with `--dll d3d11.dll=<forwarding library> --dll dxgi.dll=C:\Windows\System32\dxgi.dll
+  triangle blend heaps blnd` (no --api): 12 outputs pass on both APIs (d3d12 heaps printed
+  "d3d11.dll from not loaded, d3d12.dll from C:\Windows\SYSTEM32\d3d12.dll, dxgi.dll from
+  C:\wc\out\phase-2-graphics-rig\scenes\bin\dxgi.dll"), and "FAIL blnd: no such scene", exit 1.
+- `scenes --record`: 245 outputs (133 D3D11, 112 D3D12), 31 s for the job; the outputs other than
+  the new and changed ones were byte-identical to the stored ones.
+- Real programs on the frame clock: all 16 run, and on three recording runs every frame of the
+  tutorials, Doom, Godot (both APIs) and five bgfx examples was the same in every tile. The bgfx
+  examples showed real GPU timings, GPU query latency and GPU memory in their overlay until
+  timestamp queries were answered from the clock (until then 2 to 10 tiles a frame changed and
+  later runs changed others: 10 of 16 programs passed a check). bgfx-24-nbody's simulation
+  drifts on the GPU itself: 623 to 632 of 3600 tiles of frame 120 and 227 to 231 of frame 60
+  changed between runs, and in one of four checks one pixel of frame 10 was 9 steps off, so all
+  its frames are recorded as unrepeatable and not compared. In the fourth check, chocolate-doom differed at frames 60 and 120 in 1 run of 4; on the
+  clock, its frames were identical in all 3 recording runs and the checks below.
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -646,8 +728,11 @@ There is no plan document in this checkout; these depart from the task or brief 
 - The forwarding DLL is a second crate, crates/wcontainers-graphics-test-forward, since a crate has one
   library and this one must be a cdylib with its own exports.
 - The references are drawn with the Direct3D debug layer on, and any error it reports fails the run.
-- The reference pictures are kept in the repository (three PNGs, 41 KB) so the loop catches a change
-  that affects every renderer alike.
+- The scenes' reference pictures are kept in the repository (245 outputs of both APIs) so a change
+  that affects every renderer alike is caught. The real programs' reference frames are not: they
+  show the programs' own art (bgfx's example assets, Freedoom, Godot's demo projects) under those
+  projects' licences, so they stay on the desktop and in the scratch directory, and the repository
+  pins them by SHA-256.
 - Only the triangle is drawn by wgpu and Chrome, as R0 asked.
 - The allowance for a replacement's picture is derived from WARP (as close to the GPU as WARP is,
   tolerance capped at 8 steps) rather than chosen per scene by hand, so every scene gets one rule;
@@ -674,12 +759,15 @@ There is no plan document in this checkout; these depart from the task or brief 
   d3dukmdt.h, dxcore.h, dxcore_interface.h); ARRAY_SIZE and DECLSPEC_EXPORT come from Wine's
   winnt.h, so they are defined on the command line, and an import library for d3d10_1.dll is made
   with llvm-dlltool. Wine's other headers are not used: half of them are generated from .idl files
-  by Wine's build and clash with mingw-w64's. vkd3d's own Direct3D 12 tests are not built; Wine's
-  dlls/d3d12/tests is.
+  by Wine's build and clash with mingw-w64's.
 - Jobs that present run on a hidden desktop in the owner's session (the earlier blocker, which
   the first run left for the owner): it keeps everything off his screen and uses only a scheduled
   task with an interactive logon, which changes nothing in Windows' settings. Windows of a desktop
   nobody sees are occluded, which costs the eight Wine tests and the program named in Known issues.
+- A Wine or vkd3d test counts as passing only if it also runs at least as many checks, and skips
+  no more, than on real Direct3D: a library that refuses to make a device skips nearly everything
+  without a failure. A replacement that honestly reports a feature absent therefore shows as
+  differing in the tests that skip for it; the line says by how much.
 - Wine's tests run one test per process rather than one file per process, so a crash loses one
   test; Wine's framework has no way to pick a test, so the build rewrites START_TEST in its copy.
 - Nineteen Wine tests that would change the owner's display are excluded, found by searching each
@@ -699,9 +787,17 @@ There is no plan document in this checkout; these depart from the task or brief 
   SDL 2's Direct3D 11 renderer, a native one. Chocolate Doom is GPL-2.0: it is downloaded as its
   released build and run for testing only, never part of the repository or any crate.
 - Direct3D 12 programs save their own frames (Godot's movie writer) rather than through a capture
-  hook, and have no call census: the forwarding library is Direct3D 11 only.
+  hook, and have no call census: the forwarding library is Direct3D 11 only (Known issues).
+- Programs are made repeatable by the rig, not by changing them: the forwarding library detours
+  the process's clock functions to a clock that moves by frames (rather than a fixed camera per
+  program, which would be shaped around each one), and bgfx is built single-threaded with a
+  compiler define (its render thread would read frames against a clock moved by another thread).
+- A real program's frame has no WARP picture, so its allowance comes from three runs on the GPU:
+  tolerance 8 steps (the scenes' cap), and the tiles the program draws differently from run to run
+  (a timer or GPU timing printed on screen) are left out. tolerances.txt says how many.
 - The Direct3D 12 state scenes take their cells from the Direct3D 11 scenes' own tables (blend
-  descriptions, comparison functions, formats, samplers) and convert each description by value
+  descriptions, comparison functions, depth biases and formats, formats, samplers) and convert
+  each description by value
   (the enumerations have the same values), so both APIs are tested on the same ground and their
   pictures can be compared with each other as well as with WARP.
 - The DirectX SDK samples built on DXUT are not used: DXUT needs Microsoft's D3DX NuGet package,
@@ -718,8 +814,9 @@ There is no plan document in this checkout; these depart from the task or brief 
 - WARP's Direct3D 12 isolines take other colours than the GPU's (the isoline cell of the D3D12
   tessellation picture); its Direct3D 11 ones do not, and the GPU's D3D12 picture equals its D3D11
   one exactly, so it is WARP's DXIL path. As the allowance comes from WARP, the D3D12
-  tessellation picture allows 464 pixels beyond 8 steps (D3D11's: none beyond 4), loose enough
-  that a replacement could get the isoline colours wrong and still pass there. The D3D11 picture
+  tessellation picture allows 464 pixels beyond 8 steps (D3D11's: none beyond 4), all in the
+  tiles of the isoline cell, loose enough that a replacement could get the isoline colours wrong
+  and still pass there. The D3D11 picture
   still checks them tightly.
 
 - Jobs that present need someone logged in at the desktop's console (the owner normally is): the
@@ -739,11 +836,25 @@ There is no plan document in this checkout; these depart from the task or brief 
   A program that gets a context other than through D3D11CreateDevice(AndSwapChain),
   GetImmediateContext* or CreateDeferredContext* would not be counted on it.
 - Godot's 3D platformer on Direct3D 12 differs from run to run in under 80 pixels by 1 (see
-  Measurements); its Direct3D 11 frames, Doom's and the 2D game's do not.
+  Measurements), within the frame tolerance; its Direct3D 11 frames, Doom's and the 2D game's do
+  not.
+- bgfx-24-nbody's frames are not compared: its particles drift differently on every run on the
+  RTX 3080 itself (about 230 and 630 of 3600 tiles at frames 60 and 120, and at frame 10 one
+  pixel by 9 steps in one check of four), so it is run for its census, its presents and the
+  libraries it loads only.
+- The bgfx examples' GPU memory readout (one line of their overlay) is not compared: it changed
+  between runs of real Direct3D, and a replacement reports its own memory. Other readouts of the
+  overlay (frame time, GPU time, latency) are fixed by the frame clock and are compared.
 - Godot's 3D game on ANGLE takes about 30 s, most of it compiling shaders, as each run starts with
   empty caches.
-- Frames of programs animated by the clock differ from run to run, so a replacement's frames are
-  for looking at, not for comparing; `programs run` passes a program that presents every frame.
+- The frame clock covers Direct3D 11 programs only (it lives in the forwarding library). The
+  Direct3D 12 programs are Godot's, whose movie writer runs on fixed time; a Direct3D 12 program
+  animated by the real clock could not be compared yet.
+- No Microsoft Direct3D 12 sample (DirectX-Graphics-Samples) and no DirectXTK sample is among the
+  programs: the rig has no way yet to save a Direct3D 12 program's frames or count its calls (the
+  forwarding library is a d3d11.dll), and those samples neither save frames nor stop by themselves.
+  So the Direct3D 12 programs are Godot's two demos alone. Next step: a forwarding dxgi.dll (or
+  d3d12.dll) with the same census and capture, then D3D12HelloWorld and the DirectXTK samples.
 
 - SSH to the desktop has refused new connections (reset right after key exchange) for about 9 to 10
   minutes at a time and then recovered by itself, with no reboot and nothing in the OpenSSH or System
@@ -753,6 +864,12 @@ There is no plan document in this checkout; these depart from the task or brief 
   connection count alone; other users of the machine may be the cause. Cause unknown; sshd_config sets
   no limits of its own. The scripts share one connection and wait up to 20 minutes for it (see How
   to run); in the third run the first connection was refused once and came up 15 s later.
+- On 2026-11-17 at about 09:20 Pacific time the desktop's clock went back about 8 hours (job
+  times printed 17:14 and then 09:22; not done by anything of ours, cause not looked into, as the
+  machine's settings are not ours to touch). Cargo decides what to rebuild by file times, so
+  builds after that kept artifacts from before it (stamped hours in the future) and ran old code
+  of changed files until `cargo clean -p wcontainers-graphics-test -p
+  wcontainers-graphics-test-forward` through `remote`. If the clock jumps back again, do the same.
 - A job without `--build` runs whatever the build directory holds, which can be a build of an earlier
   tree; `--build` closes this. A `--build` job is still fooled if, between its build and its start,
   two other runs of the same branch build a different tree and send this one back (the second
@@ -794,6 +911,12 @@ C++/Direct3D11/Tutorials fetched), bgfx at 3aab3201, bx at 365db1e2 and bimg at 
 (BSD-2-Clause each, per GitHub's licence detection of their LICENSE files). In R1's second run
 the forwarding crate gained png 0.18.1 (MIT OR Apache-2.0, already in the lock file), anyhow and
 windows (MIT OR Apache-2.0).
+In R1's fifth run the forwarding crate gained retour 0.3.1 (BSD-2-Clause, read on crates.io and
+its repository on 2026-11-17), for the frame clock's detours, with libudis86-sys 0.2.1 (MIT; it
+builds udis86, BSD-2-Clause), mmap-fixed-fixed 0.1.3 (MIT), region 3.0.2 (MIT), slice-pool2 0.4.3
+(MIT), generic-array 0.14.7 (MIT), typenum (MIT OR Apache-2.0), bitflags 1.3.2, winapi 0.3.9,
+windows-sys 0.52, libc, cfg-if and once_cell (all MIT OR Apache-2.0), all test tooling, never
+shipped. No new program was added.
 In R1's third run (read at the source on 2026-11-17): Godot 4.7.2's official build (MIT; it
 contains ANGLE, BSD-3-Clause, and the other libraries its COPYRIGHT.txt lists) and
 godot-demo-projects at b761b4cd (MIT, LICENSE.md); Chocolate Doom 3.1.1's released build (GPL-2.0,
@@ -807,6 +930,9 @@ under Microsoft's licence terms, Chrome for Testing under Google's terms.
 ## Next
 
 R1 is complete as far as this track can tell; its next step is the orchestrator's independent
-check. After that, R2 as the plan says. Open points left for later, none blocking: the D3D12
-tessellation picture's loose allowance (Known issues), and the 19 Wine tests that need a display
-nobody uses.
+check. After that, R2 as the plan says. Open points left for later, none blocking:
+- A forwarding dxgi.dll (or d3d12.dll) with the census, frame capture and frame clock, so that
+  Direct3D 12 programs get a census and Microsoft's Direct3D 12 samples (DirectX-Graphics-Samples,
+  MIT) and DirectXTK's samples can join the real programs (Known issues).
+- The D3D12 tessellation picture's loose allowance, and the 19 Wine tests that need a display
+  nobody uses (Known issues).

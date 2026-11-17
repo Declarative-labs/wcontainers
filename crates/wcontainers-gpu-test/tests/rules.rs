@@ -332,6 +332,13 @@ fn draws_happen_inside_a_pass() {
     let p = d.program("plain");
     d.draw(&p, None, Topology::TriangleList, false);
     d.refused("draw outside a pass");
+    // Before any other rule the draw breaks.
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
+        c.viewports = &[]
+    });
+    d.refused("draw outside a pass");
 }
 
 #[test]
@@ -362,6 +369,45 @@ fn texture_copies_and_buffer_clears_happen_outside_a_pass() {
         d.r.violations,
         ["copy_texture inside a pass", "clear_buffer inside a pass"]
     );
+
+    // Copies between buffers and textures, and resolves, each alone.
+    let side = |b| CopyBufferTexture {
+        buffer: b,
+        offset: 0,
+        row_pitch: 256,
+        rows_per_layer: 0,
+    };
+    let mut d = Drawing::new();
+    let other = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
+    let b = buffer(&mut d.r, 1024, COPIES);
+    d.begin();
+    d.r.copy_buffer_to_texture(&side(&b), &region(&other), extent(2));
+    d.refused("copy_buffer_to_texture inside a pass");
+    let mut d = Drawing::new();
+    let other = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
+    let b = buffer(&mut d.r, 1024, COPIES);
+    d.begin();
+    d.r.copy_texture_to_buffer(&region(&other), &side(&b), extent(2));
+    d.refused("copy_texture_to_buffer inside a pass");
+    let mut d = Drawing::new();
+    let many =
+        d.r.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: 2,
+            height: 2,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 4,
+            usage: TextureUsage::RENDER,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let other = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
+    d.begin();
+    d.r.resolve(&region(&many), &region(&other), Format::Rgba8Unorm);
+    d.refused("resolve inside a pass");
 }
 
 #[test]
@@ -428,6 +474,87 @@ fn a_query_index_lies_inside_its_set() {
     d.r.begin_query(1);
     d.r.end_query();
     d.refused("query index past the set");
+}
+
+/// Step rates other than one, and typed texel buffers, are reported absent where their features
+/// are, so fronts take their routes in the program.
+#[test]
+fn step_rates_and_texel_buffers_need_their_features() {
+    let layout = |step| {
+        let mut desc = VertexLayoutDesc {
+            streams: [None; MAX_VERTEX_STREAMS],
+            attributes: [None; MAX_VERTEX_STREAMS],
+        };
+        desc.streams[0] = Some(VertexStream { stride: 8, step });
+        desc
+    };
+    let mut r = Recorder::new();
+    for step in [StepMode::Instance(0), StepMode::Instance(2)] {
+        assert!(r.create_vertex_layout(&layout(step)).is_ok());
+    }
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::INSTANCE_STEP_RATE));
+    for step in [StepMode::Vertex, StepMode::Instance(1)] {
+        assert!(r.create_vertex_layout(&layout(step)).is_ok());
+    }
+    for step in [StepMode::Instance(0), StepMode::Instance(2)] {
+        assert_eq!(
+            r.create_vertex_layout(&layout(step)),
+            Err(GpuError::Absent(Features::INSTANCE_STEP_RATE))
+        );
+    }
+
+    let mut r = Recorder::new();
+    let b = buffer(&mut r, 64, BufferUsage::STORAGE);
+    assert_eq!(
+        r.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::TexelBuffer {
+                range: BufferRange {
+                    buffer: &b,
+                    offset: 0,
+                    size: 64,
+                },
+                format: Format::R32Float,
+                writable: false,
+            },
+        }]),
+        Err(GpuError::Absent(Features::TEXEL_BUFFERS))
+    );
+}
+
+#[test]
+fn a_query_index_is_begun_once_in_a_pass() {
+    let mut d = Drawing::new();
+    let set = d.r.create_query_set(QueryKind::OcclusionAny, 2).unwrap();
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: None,
+        empty: None,
+        occlusion: Some(&set),
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &d.target_view,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Load,
+        store: StoreOp::Store,
+    });
+    // Once in each of two passes is fine.
+    for _ in 0..2 {
+        d.r.begin_pass(&pass);
+        d.r.begin_query(0);
+        d.r.end_query();
+        d.r.begin_query(1);
+        d.r.end_query();
+        d.r.end_pass();
+    }
+    assert!(d.r.violations.is_empty(), "{:?}", d.r.violations);
+    d.r.begin_pass(&pass);
+    d.r.begin_query(0);
+    d.r.end_query();
+    d.r.begin_query(0);
+    d.refused("query 0 begun twice in one pass");
 }
 
 #[test]
@@ -610,6 +737,279 @@ fn buffers_and_textures_are_used_only_as_made() {
     ));
 }
 
+/// An object's number as the recording back end names it.
+fn n(id: &Id) -> String {
+    format!("{id:?}")
+        .trim_start_matches("Id(")
+        .trim_end_matches(')')
+        .into()
+}
+
+/// Every other call that reads or writes a buffer or texture, each with an object made without
+/// the one usage that call needs.
+#[test]
+fn each_use_needs_its_usage_flag() {
+    let all = COPIES | BufferUsage::VERTEX | BufferUsage::INDEX | BufferUsage::INDIRECT;
+    let refused = |r: &Recorder, what: &str, kind: &str, id: &Id, flag: String| {
+        assert_eq!(
+            r.violations,
+            [format!("{what} of {kind} {} made without {flag}", n(id))]
+        );
+    };
+    let buffer_flag = |u: BufferUsage| format!("{u:?}");
+    let texture_flag = |u: TextureUsage| format!("{u:?}");
+    let side = |b| CopyBufferTexture {
+        buffer: b,
+        offset: 0,
+        row_pitch: 256,
+        rows_per_layer: 0,
+    };
+
+    let mut r = Recorder::new();
+    let b = buffer(&mut r, 64, all.difference(BufferUsage::COPY_SRC));
+    let _ = r.read_back(&ReadSource::Buffer {
+        buffer: &b,
+        offset: 0,
+        size: 4,
+    });
+    refused(
+        &r,
+        "a read back",
+        "buffer",
+        &b,
+        buffer_flag(BufferUsage::COPY_SRC),
+    );
+
+    let mut r = Recorder::new();
+    let b = buffer(&mut r, 64, all);
+    let less = buffer(&mut r, 64, all.difference(BufferUsage::COPY_SRC));
+    r.copy_buffer(&less, 0, &b, 0, 4);
+    refused(
+        &r,
+        "copy_buffer",
+        "buffer",
+        &less,
+        buffer_flag(BufferUsage::COPY_SRC),
+    );
+    let mut r = Recorder::new();
+    let b = buffer(&mut r, 64, all);
+    let less = buffer(&mut r, 64, all.difference(BufferUsage::COPY_DST));
+    r.copy_buffer(&b, 0, &less, 0, 4);
+    refused(
+        &r,
+        "copy_buffer",
+        "buffer",
+        &less,
+        buffer_flag(BufferUsage::COPY_DST),
+    );
+
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let less = buffer(&mut r, 1024, all.difference(BufferUsage::COPY_SRC));
+    r.copy_buffer_to_texture(&side(&less), &region(&t), extent(2));
+    refused(
+        &r,
+        "copy_buffer_to_texture",
+        "buffer",
+        &less,
+        buffer_flag(BufferUsage::COPY_SRC),
+    );
+    let mut r = Recorder::new();
+    let t = texture(
+        &mut r,
+        Format::Rgba8Unorm,
+        2,
+        ALL.difference(TextureUsage::COPY_DST),
+    );
+    let b = buffer(&mut r, 1024, all);
+    r.copy_buffer_to_texture(&side(&b), &region(&t), extent(2));
+    refused(
+        &r,
+        "copy_buffer_to_texture",
+        "texture",
+        &t,
+        texture_flag(TextureUsage::COPY_DST),
+    );
+
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let less = buffer(&mut r, 1024, all.difference(BufferUsage::COPY_DST));
+    r.copy_texture_to_buffer(&region(&t), &side(&less), extent(2));
+    refused(
+        &r,
+        "copy_texture_to_buffer",
+        "buffer",
+        &less,
+        buffer_flag(BufferUsage::COPY_DST),
+    );
+    let mut r = Recorder::new();
+    let t = texture(
+        &mut r,
+        Format::Rgba8Unorm,
+        2,
+        ALL.difference(TextureUsage::COPY_SRC),
+    );
+    let b = buffer(&mut r, 1024, all);
+    r.copy_texture_to_buffer(&region(&t), &side(&b), extent(2));
+    refused(
+        &r,
+        "copy_texture_to_buffer",
+        "texture",
+        &t,
+        texture_flag(TextureUsage::COPY_SRC),
+    );
+
+    let mut r = Recorder::new();
+    let less = buffer(&mut r, 64, all.difference(BufferUsage::COPY_DST));
+    r.clear_buffer(&less, 0, 4, &[0]);
+    refused(
+        &r,
+        "clear_buffer",
+        "buffer",
+        &less,
+        buffer_flag(BufferUsage::COPY_DST),
+    );
+
+    let mut r = Recorder::new();
+    let t = texture(
+        &mut r,
+        Format::Rgba8Unorm,
+        2,
+        ALL.difference(TextureUsage::COPY_DST),
+    );
+    r.write_texture(&region(&t), extent(2), &[0; 16], 8, 2, WriteMode::Ordered);
+    refused(
+        &r,
+        "write_texture",
+        "texture",
+        &t,
+        texture_flag(TextureUsage::COPY_DST),
+    );
+
+    let mut r = Recorder::new();
+    let less = texture(
+        &mut r,
+        Format::Rgba8Unorm,
+        2,
+        ALL.difference(TextureUsage::COPY_SRC),
+    );
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    r.copy_texture(&region(&less), &region(&t), extent(2));
+    refused(
+        &r,
+        "copy_texture",
+        "texture",
+        &less,
+        texture_flag(TextureUsage::COPY_SRC),
+    );
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let less = texture(
+        &mut r,
+        Format::Rgba8Unorm,
+        2,
+        ALL.difference(TextureUsage::COPY_DST),
+    );
+    r.copy_texture(&region(&t), &region(&less), extent(2));
+    refused(
+        &r,
+        "copy_texture",
+        "texture",
+        &less,
+        texture_flag(TextureUsage::COPY_DST),
+    );
+
+    // Both sides of a resolve are render targets.
+    let many = |r: &mut Recorder, usage| {
+        r.create_texture(&TextureDesc {
+            samples: 4,
+            usage,
+            ..TextureDesc {
+                dimension: TextureDimension::D2,
+                format: Format::Rgba8Unorm,
+                width: 2,
+                height: 2,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage,
+                cube: false,
+                reinterpret: false,
+            }
+        })
+        .unwrap()
+    };
+    let mut r = Recorder::new();
+    let src = many(&mut r, TextureUsage::SAMPLE);
+    let dst = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    r.resolve(&region(&src), &region(&dst), Format::Rgba8Unorm);
+    refused(
+        &r,
+        "resolve",
+        "texture",
+        &src,
+        texture_flag(TextureUsage::RENDER),
+    );
+    let mut r = Recorder::new();
+    let src = many(&mut r, TextureUsage::RENDER);
+    let dst = texture(
+        &mut r,
+        Format::Rgba8Unorm,
+        2,
+        ALL.difference(TextureUsage::RENDER),
+    );
+    r.resolve(&region(&src), &region(&dst), Format::Rgba8Unorm);
+    refused(
+        &r,
+        "resolve",
+        "texture",
+        &dst,
+        texture_flag(TextureUsage::RENDER),
+    );
+
+    // A draw's index binding and indirect arguments.
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.spare = buffer(&mut d.r, 8, all.difference(BufferUsage::INDEX));
+    let spare = d.spare;
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, spare| {
+        c.index = Some(IndexBinding {
+            buffer: spare,
+            offset: 0,
+            format: IndexFormat::U16,
+        });
+        c.range = DrawRange::Indexed {
+            first: 0,
+            count: 3,
+            base_vertex: 0,
+            first_instance: 0,
+            instances: 1,
+        };
+    });
+    d.refused(&format!(
+        "an index binding of buffer {} made without {}",
+        n(&spare),
+        buffer_flag(BufferUsage::INDEX)
+    ));
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.spare = buffer(&mut d.r, 32, all.difference(BufferUsage::INDIRECT));
+    let spare = d.spare;
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, spare| {
+        c.range = DrawRange::Indirect {
+            args: spare,
+            offset: 0,
+        }
+    });
+    d.refused(&format!(
+        "indirect arguments of buffer {} made without {}",
+        n(&spare),
+        buffer_flag(BufferUsage::INDIRECT)
+    ));
+}
+
 #[test]
 fn texture_copies_stay_in_one_typeless_group() {
     let mut r = Recorder::new();
@@ -750,6 +1150,37 @@ fn no_overwrite_writes_touch_nothing_unfinished_reads() {
     // An ordered write not yet waited for counts as unfinished too.
     d.r.write_buffer(&vertices, 0, &[0; 4], WriteMode::Ordered);
     d.r.write_buffer(&vertices, 2, &[0; 4], WriteMode::NoOverwrite);
+    assert_eq!(d.r.violations.len(), 1);
+}
+
+#[test]
+fn a_discard_write_gives_the_buffer_fresh_contents() {
+    // After a discard, earlier commands keep the old bytes, so no-overwrite writes may follow over
+    // the bytes they read; the bytes the discard did not write are undefined.
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw(&p, None, Topology::TriangleList, false);
+    d.r.end_pass();
+    let vertices = d.vertices;
+    d.r.write_buffer(&vertices, 0, &[7; 4], WriteMode::Ordered);
+    d.r.write_buffer(&vertices, 4, &[1; 4], WriteMode::Discard);
+    d.r.write_buffer(&vertices, 0, &[2; 4], WriteMode::NoOverwrite);
+    d.r.write_buffer(&vertices, 8, &[3; 8], WriteMode::NoOverwrite);
+    assert!(d.r.violations.is_empty(), "{:?}", d.r.violations);
+    let at: usize = n(&vertices).parse().unwrap();
+    let got = d.r.contents().0[at].clone().unwrap();
+    assert_eq!(got[..16], [2, 2, 2, 2, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3]);
+    assert_eq!(
+        got[16..],
+        [0xcd; 8],
+        "bytes no write since the discard made"
+    );
+    // A draw after the discard counts again.
+    d.begin();
+    d.draw(&p, None, Topology::TriangleList, false);
+    d.r.end_pass();
+    d.r.write_buffer(&vertices, 20, &[0; 4], WriteMode::NoOverwrite);
     assert_eq!(d.r.violations.len(), 1);
 }
 
@@ -953,6 +1384,36 @@ fn attachments_share_one_sample_count() {
             store: StoreOp::Store,
         });
     }
+    r.begin_pass(&pass);
+    assert_eq!(r.violations, ["attachments of different sample counts"]);
+
+    // The depth attachment too.
+    let mut r = Recorder::new();
+    let ms = multisampled(&mut r, Format::Depth32Float, 2).unwrap();
+    let ms = view(&mut r, &ms, Format::Depth32Float);
+    let single = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let single = view(&mut r, &single, Format::Rgba8Unorm);
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: Some(DepthAttachment {
+            view: &ms,
+            depth: Some(AspectOps {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+                read_only: false,
+            }),
+            stencil: None,
+        }),
+        empty: None,
+        occlusion: None,
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &single,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Load,
+        store: StoreOp::Store,
+    });
     r.begin_pass(&pass);
     assert_eq!(r.violations, ["attachments of different sample counts"]);
 }
@@ -1550,6 +2011,19 @@ fn resolves_and_copies_out_need_the_formats_uses() {
         },
         extent(2),
     );
+    assert_eq!(
+        r.violations,
+        ["Rgba8Unorm copied out, which this back end does not declare"]
+    );
+    // A read back copies out too.
+    let mut r = Recorder::with_caps(|c| {
+        c.formats.uses[Format::Rgba8Unorm.index()].remove(FormatUse::COPY_OUT)
+    });
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let _ = r.read_back(&ReadSource::Texture {
+        region: region(&t),
+        extent: extent(2),
+    });
     assert_eq!(
         r.violations,
         ["Rgba8Unorm copied out, which this back end does not declare"]
@@ -2218,12 +2692,27 @@ fn passes_stay_within_the_colour_target_limits() {
     d.r.begin_pass(&pass_of([color(&v), color(&other)]));
     d.refused("a colour attachment past the limit");
 
-    let mut d = Drawing::with_caps(|c| c.limits.color_bytes_per_sample = 7);
-    let other = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
-    let other = view(&mut d.r, &other, Format::Rgba8Unorm);
-    let v = d.target_view;
-    d.r.begin_pass(&pass_of([color(&v), color(&other)]));
-    d.refused("colour attachments of more bytes a sample than the limit");
+    // Bytes a sample counted as `color_target_bytes` counts them: `rgba8unorm` as 8, and
+    // `r32float` from a multiple of 4 after `r8unorm`'s 1.
+    for (pair, limit) in [
+        ([Format::Rgba8Unorm, Format::Rgba8Unorm], 16),
+        ([Format::R8Unorm, Format::R32Float], 8),
+    ] {
+        assert_eq!(color_target_bytes(pair), Some(limit));
+        for (limit, fits) in [(limit - 1, false), (limit, true)] {
+            let mut d = Drawing::with_caps(|c| c.limits.color_bytes_per_sample = limit);
+            let [a, b] = pair.map(|f| {
+                let t = texture(&mut d.r, f, 2, ALL);
+                view(&mut d.r, &t, f)
+            });
+            d.r.begin_pass(&pass_of([color(&a), color(&b)]));
+            if fits {
+                assert!(d.r.violations.is_empty(), "{:?}", d.r.violations);
+            } else {
+                d.refused("colour attachments of more bytes a sample than the limit");
+            }
+        }
+    }
 }
 
 #[test]

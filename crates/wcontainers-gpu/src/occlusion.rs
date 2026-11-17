@@ -24,7 +24,7 @@ use crate::state::{
     BlendComponent, BlendDesc, BlendFactor, BlendOp, ColorWrites, IndexFormat, RenderTargetBlend,
     Topology,
 };
-use crate::{FormatUse, MAX_COLOR_TARGETS};
+use crate::{Features, FormatUse, MAX_COLOR_TARGETS};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -65,6 +65,24 @@ struct Kept<B: Backend> {
     stencil_reference: [u8; 2],
     immediates: Vec<u8>,
     range: Range<B>,
+    instances_step_by_one: bool,
+}
+
+/// What the occlusion counter needs of a counted draw that its call does not say; the front, which
+/// made the draw's blocks, knows it.
+#[derive(Debug)]
+pub struct CountedDraw<'a, B: Backend> {
+    /// The draw's counting program.
+    pub counting: &'a B::Program,
+    /// The blend block's alpha to coverage.
+    pub alpha_to_coverage: bool,
+    /// The depth-stencil block writes depth or stencil. The first such draw since the last count
+    /// copies the depth-stencil target first, so the target must have [`TextureUsage::COPY_SRC`].
+    pub writes_depth_stencil: bool,
+    /// Every per-instance stream of the vertex layout steps by one instance
+    /// ([`crate::StepMode::Instance`] of 1), so the draw's instances can be counted in parts by
+    /// raising the first instance.
+    pub instances_step_by_one: bool,
 }
 
 impl<B: Backend> Clone for Range<B> {
@@ -119,6 +137,7 @@ impl<B: Backend> Clone for Kept<B> {
             stencil_reference: self.stencil_reference,
             immediates: self.immediates.clone(),
             range: self.range.clone(),
+            instances_step_by_one: self.instances_step_by_one,
         }
     }
 }
@@ -182,20 +201,14 @@ impl<B: Backend> OcclusionCounter<B> {
         Ok(())
     }
 
-    /// Keeps a draw of the running query, called before the front draws it. `counting` is the draw's
-    /// counting program; `alpha_to_coverage` is its blend block's; `writes_depth_stencil` says whether
-    /// its depth-stencil block writes either aspect, in which case the first such draw since the last
-    /// count copies the depth-stencil target first (the target must have
-    /// [`TextureUsage::COPY_SRC`]). The targets must be the ones the kept draws were drawn on:
-    /// [`OcclusionCounter::flush`] comes before any change of them.
+    /// Keeps a draw of the running query, called before the front draws it. The targets must be the
+    /// ones the kept draws were drawn on: [`OcclusionCounter::flush`] comes before any change of them.
     pub fn draw(
         &mut self,
         b: &mut B,
         passes: &mut PassTracker<B>,
         call: &DrawCall<'_, B>,
-        counting: &B::Program,
-        alpha_to_coverage: bool,
-        writes_depth_stencil: bool,
+        counted: &CountedDraw<'_, B>,
     ) -> Result<(), GpuError> {
         if !self.running {
             return Ok(());
@@ -215,12 +228,13 @@ impl<B: Backend> OcclusionCounter<B> {
                 self.segment = Some((targets, passes.generation()));
             }
         }
-        if writes_depth_stencil && !self.copied {
+        if counted.writes_depth_stencil && !self.copied {
             self.copy_depth(b, passes)?;
         }
         self.draws.push(Kept {
-            program: counting.clone(),
-            alpha_to_coverage,
+            program: counted.counting.clone(),
+            alpha_to_coverage: counted.alpha_to_coverage,
+            instances_step_by_one: counted.instances_step_by_one,
             depth_stencil: call.depth_stencil.clone(),
             raster: call.raster.clone(),
             vertex_layout: call.vertex_layout.clone(),
@@ -595,8 +609,9 @@ impl<B: Backend> OcclusionCounter<B> {
         if !full {
             return Ok(sum as u64);
         }
-        let [a, c] = halves(draws).ok_or(GpuError::Invalid(
-            "a draw reaching the counting format's bound at a pixel that cannot be split: a fan, a strip with restart or an indirect draw",
+        let bases = b.caps().has(Features::BASE_VERTEX_INSTANCE);
+        let [a, c] = halves(draws, bases).ok_or(GpuError::Invalid(
+            "a draw reaching the counting format's bound at a pixel that cannot be split: a fan, a strip with restart, an indirect draw, or one primitive's instances where the first instance cannot be raised",
         ))?;
         if saving {
             let (copy, saved) = (
@@ -660,9 +675,10 @@ fn primitives<B: Backend>(draws: &[Kept<B>]) -> u64 {
         .fold(0u64, u64::saturating_add)
 }
 
-/// The draws split into two halves; one draw into its halves of instances, or of primitives for a
-/// list.
-fn halves<B: Backend>(draws: &[Kept<B>]) -> Option<[Vec<Kept<B>>; 2]> {
+/// The draws split into two halves; one draw into its halves of instances where the first instance
+/// can be raised without changing what any instance reads (`bases` is [`Features::BASE_VERTEX_INSTANCE`]),
+/// otherwise into its halves of primitives, each drawn for every instance.
+fn halves<B: Backend>(draws: &[Kept<B>], bases: bool) -> Option<[Vec<Kept<B>>; 2]> {
     if draws.len() > 1 {
         let (a, c) = draws.split_at(draws.len() / 2);
         return Some([a.to_vec(), c.to_vec()]);
@@ -684,6 +700,7 @@ fn halves<B: Backend>(draws: &[Kept<B>]) -> Option<[Vec<Kept<B>>; 2]> {
         if even { k - k % 2 } else { k }
     };
     let (mut a, mut c) = (k.clone(), k.clone());
+    let by_instance = bases && k.instances_step_by_one;
     match (&mut a.range, &mut c.range) {
         (
             Range::Vertices { instances: ia, .. },
@@ -700,7 +717,7 @@ fn halves<B: Backend>(draws: &[Kept<B>]) -> Option<[Vec<Kept<B>>; 2]> {
                 instances: ic,
                 ..
             },
-        ) if *ia > 1 => {
+        ) if by_instance && *ia > 1 => {
             let half = *ia / 2;
             *ia = half;
             *fc += half;

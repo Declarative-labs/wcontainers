@@ -31,7 +31,10 @@ impl Depth {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// The side of the square tiles a picture's differences are counted in.
+pub const TILE: u32 = 16;
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Difference {
     pub depth: Depth,
     pub pixels: u64,
@@ -42,6 +45,16 @@ pub struct Difference {
     pub largest: f64,
     /// The first differing pixel, x and y from the top left.
     pub first: Option<(u32, u32)>,
+    /// Differing pixels in each `TILE` by `TILE` tile, row by row from the top left; tiles at the
+    /// right and bottom edges may be smaller.
+    pub tiles: Vec<u32>,
+}
+
+impl Difference {
+    /// How many tiles make one row of the picture.
+    pub fn tile_columns(width: u32) -> u32 {
+        width.div_ceil(TILE)
+    }
 }
 
 /// Compares two pictures channel by channel at their own depth; a pixel differs when any of its
@@ -93,12 +106,14 @@ pub fn compare(a: &DynamicImage, b: &DynamicImage, tolerance: f64) -> anyhow::Re
                 .collect(),
         ),
     };
+    let columns = Difference::tile_columns(a.width());
     let mut difference = Difference {
         depth,
         pixels: 0,
         differing: 0,
         largest: 0.0,
         first: None,
+        tiles: vec![0; (columns * a.height().div_ceil(TILE)) as usize],
     };
     for (i, (pa, pb)) in ca
         .as_chunks::<4>()
@@ -117,9 +132,9 @@ pub fn compare(a: &DynamicImage, b: &DynamicImage, tolerance: f64) -> anyhow::Re
         if largest > tolerance {
             difference.differing += 1;
             let i = i as u32;
-            difference
-                .first
-                .get_or_insert((i % a.width(), i / a.width()));
+            let (x, y) = (i % a.width(), i / a.width());
+            difference.first.get_or_insert((x, y));
+            difference.tiles[(y / TILE * columns + x / TILE) as usize] += 1;
         }
     }
     Ok(difference)
@@ -158,6 +173,17 @@ mod tests {
         assert_eq!((d.differing, d.largest, d.first), (1, 3.0, Some((1, 2))));
         let d = compare(&a, &b, 3.0).unwrap();
         assert_eq!((d.differing, d.first), (0, None));
+    }
+
+    #[test]
+    fn counts_each_tile() {
+        let a = RgbaImage::from_pixel(40, 20, Rgba([0, 0, 0, 255]));
+        let mut b = a.clone();
+        for (x, y) in [(0, 0), (15, 15), (16, 0), (39, 19), (39, 18)] {
+            b.put_pixel(x, y, Rgba([9, 0, 0, 255]));
+        }
+        let d = compare(&a.into(), &b.into(), 0.0).unwrap();
+        assert_eq!(d.tiles, vec![2, 1, 0, 0, 0, 2]);
     }
 
     #[test]

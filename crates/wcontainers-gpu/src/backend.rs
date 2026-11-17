@@ -210,7 +210,7 @@ pub trait Backend: Sized {
     /// Draws lists, strips and points. Inside a pass.
     fn draw(&mut self, call: &DrawCall<'_, Self>);
     /// Starts counting into query `index` of the pass's occlusion set. Inside a pass, one query at a
-    /// time: a front whose API lets queries overlap ends the running query at every begin and end of
+    /// time, and each index at most once in a pass (as WebGPU requires): a front whose API lets queries overlap ends the running query at every begin and end of
     /// its own, starts the next, and adds each stretch's result to every guest query open during it
     /// (slow path [`crate::SlowPath::QueriesSegmented`]).
     fn begin_query(&mut self, index: u32);

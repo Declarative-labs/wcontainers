@@ -6,8 +6,14 @@
 //! replacement d3d11.dll there), runs every scene (or the named ones) in its own process, and checks
 //! each output against the stored references (crates/wcontainers-graphics-test/references/<api>)
 //! within its allowance (see check.rs). It prints one line per output, `pass` or `FAIL`, then a
-//! count, and exits 1 if any fails. It also fails a run whose program did not load a replacement
-//! library from `<out-dir>\bin`, and reports whether the stored shader corpus matches this build.
+//! count, and exits 1 if any fails. It also fails a scene whose program loaded a library of a
+//! replacement's name from anywhere but `<out-dir>\bin`, and a scene name no program has, notes a
+//! replacement no scene loaded (other libraries given are only copied), and reports whether the stored shader corpus matches this build.
+//!
+//! `gt-run frames <reference-dir> <run-dir>` checks a real program's frames (frame-<n>.png) against
+//! its references within their allowances; `gt-run frames --record [--ignore <x>,<y>,<w>,<h>]...
+//! <reference-dir> <run-dir>...` stores the first run's frames as the references, with allowances
+//! from the other runs and the rectangles left out (see `Allowance::from_repeats`).
 //!
 //! `gt-run record <out-dir>` runs every scene with the debug layer on the GPU twice (the two runs
 //! must agree exactly) and on WARP, and writes the GPU's outputs and their allowances to
@@ -20,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use wcontainers_graphics_test::check::{self, Allowance, TOLERANCES};
-use wcontainers_graphics_test::{compare, load};
+use wcontainers_graphics_test::{LIBRARIES, compare, load};
 
 const APIS: [&str; 2] = ["d3d11", "d3d12"];
 /// How long one scene may run before it counts as hung.
@@ -51,8 +57,11 @@ struct Options {
 
 fn run() -> Result<bool> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: gt-run check <out-dir> [--api d3d11|d3d12] [--driver hardware|warp] [--dll <name>=<path>]... [<scene>...] | gt-run record <out-dir>";
+    let usage = "usage: gt-run check <out-dir> [--api d3d11|d3d12] [--driver hardware|warp] [--dll <name>=<path>]... [<scene>...] | gt-run record <out-dir> | gt-run frames [--record] <reference-dir> <run-dir>...";
     let (mode, rest) = args.split_first().context(usage)?;
+    if mode == "frames" {
+        return frames(rest);
+    }
     let (out, rest) = rest.split_first().context(usage)?;
     let mut options = Options {
         out: PathBuf::from(out),
@@ -197,13 +206,29 @@ fn check_mode(options: &Options) -> Result<bool> {
             println!("FAIL {line}");
         }
     };
-    for api in &options.apis {
+    let lists: Vec<Vec<String>> = options
+        .apis
+        .iter()
+        .map(|api| list(&bin, api))
+        .collect::<Result<_>>()?;
+    for scene in &options.scenes {
+        if !lists.iter().any(|l| l.contains(scene)) {
+            report(
+                false,
+                format!(
+                    "{scene}: no such scene in {}; see gt-d3d11 list and gt-d3d12 list",
+                    options.apis.join(" or ")
+                ),
+            );
+        }
+    }
+    let mut loaded = vec![false; options.dlls.len()];
+    for (api, all) in options.apis.iter().zip(&lists) {
         let dir = options.out.join(api);
         if dir.exists() {
             std::fs::remove_dir_all(&dir)?;
         }
-        let all = list(&bin, api)?;
-        let scenes = if options.scenes.is_empty() {
+        let scenes: Vec<String> = if options.scenes.is_empty() {
             all.clone()
         } else {
             options
@@ -220,9 +245,17 @@ fn check_mode(options: &Options) -> Result<bool> {
                 report(false, format!("{api} {scene}: {failure}"));
                 continue;
             }
-            for (name, _) in &options.dlls {
-                let want = format!("{name} from {}", bin.join(name).display()).to_lowercase();
-                if !printed.to_lowercase().contains(&want) {
+            let printed = printed.to_lowercase();
+            for ((name, _), loaded) in options.dlls.iter().zip(&mut loaded) {
+                let name = name.to_lowercase();
+                if !LIBRARIES.contains(&name.as_str())
+                    || printed.contains(&format!("{name} from not loaded"))
+                {
+                    continue;
+                }
+                *loaded = true;
+                let want = format!("{name} from {}", bin.join(&name).display()).to_lowercase();
+                if !printed.contains(&want) {
                     report(
                         false,
                         format!(
@@ -248,6 +281,13 @@ fn check_mode(options: &Options) -> Result<bool> {
             report(v.pass, format!("{api} {}: {}", v.file, v.detail));
         }
     }
+    for ((name, _), loaded) in options.dlls.iter().zip(&loaded) {
+        if !loaded && LIBRARIES.contains(&name.to_lowercase().as_str()) {
+            println!(
+                "note: no scene run loaded a library named {name}, so its replacement was not used"
+            );
+        }
+    }
     match corpus_differences() {
         Ok(differences) if differences.is_empty() => {
             println!("shader corpus: the stored bytecode matches this build")
@@ -261,6 +301,93 @@ fn check_mode(options: &Options) -> Result<bool> {
     }
     println!("{passed} passed, {failed} failed");
     Ok(failed == 0)
+}
+
+fn frames(args: &[String]) -> Result<bool> {
+    let usage = "usage: gt-run frames <reference-dir> <run-dir> | gt-run frames --record [--ignore <x>,<y>,<w>,<h>]... <reference-dir> <run-dir>...";
+    match args {
+        [record, rest @ ..] if record == "--record" => {
+            let mut rest = rest;
+            let mut ignored = Vec::new();
+            while let [flag, rect, more @ ..] = rest
+                && flag == "--ignore"
+            {
+                let numbers: Vec<u32> = rect
+                    .split(',')
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()
+                    .context("--ignore takes <x>,<y>,<w>,<h>")?;
+                ignored.push(
+                    <[u32; 4]>::try_from(numbers)
+                        .ok()
+                        .context("--ignore takes four numbers")?,
+                );
+                rest = more;
+            }
+            let [reference, runs @ ..] = rest else {
+                bail!("{usage}")
+            };
+            anyhow::ensure!(!runs.is_empty(), "{usage}");
+            let reference = Path::new(reference);
+            std::fs::create_dir_all(reference)?;
+            let mut names: Vec<String> = std::fs::read_dir(&runs[0])?
+                .map(|e| Ok(e?.file_name().to_string_lossy().into_owned()))
+                .collect::<Result<_>>()?;
+            names.retain(|n| n.starts_with("frame-") && n.ends_with(".png"));
+            names.sort();
+            anyhow::ensure!(!names.is_empty(), "no frames in {}", runs[0]);
+            let mut tolerances = String::from(
+                "# <frame> <channel tolerance> <pixels allowed beyond it> warp 0 0 [tiles <tile>:<pixels>,...], from repeated runs\n",
+            );
+            let mut frames = Vec::new();
+            for name in &names {
+                let first = load(&Path::new(&runs[0]).join(name))?;
+                let others = runs[1..]
+                    .iter()
+                    .map(|r| load(&Path::new(r).join(name)))
+                    .collect::<Result<Vec<_>>>()?;
+                let allowance = Allowance::from_repeats(&first, &others, &ignored)?;
+                let none = compare::compare(&first, &first, 0.0)?;
+                println!(
+                    "{name}: {} of {} tiles drew differently from run to run",
+                    allowance.tiles.len(),
+                    none.tiles.len()
+                );
+                let unrepeatable = check::unrepeatable(&allowance, none.tiles.len());
+                frames.push((name, allowance, none, unrepeatable));
+                std::fs::copy(Path::new(&runs[0]).join(name), reference.join(name))?;
+            }
+            // A program that draws one frame differently on every run drifts from its start, so
+            // none of its frames can be trusted to repeat.
+            let drifts = frames.iter().any(|(_, _, _, unrepeatable)| *unrepeatable);
+            if drifts {
+                println!("so no frame is compared: the program draws differently on every run");
+            }
+            for (name, allowance, none, _) in &frames {
+                tolerances.push_str(&if drifts {
+                    check::unrepeatable_line(name)
+                } else {
+                    check::tolerance_line(name, allowance, none)
+                });
+            }
+            std::fs::write(reference.join(TOLERANCES), tolerances)?;
+            Ok(true)
+        }
+        [reference, run] => {
+            let mut ok = true;
+            for v in check::check_dir(Path::new(reference), Path::new(run))? {
+                println!(
+                    "{} {}: {}",
+                    if v.pass { "pass" } else { "FAIL" },
+                    v.file,
+                    v.detail
+                );
+                ok &= v.pass;
+            }
+            Ok(ok)
+        }
+        _ => bail!("{usage}"),
+    }
 }
 
 /// The compiled shaders that differ between this build and the stored corpus, either way.
@@ -359,7 +486,7 @@ fn record_mode(options: &Options) -> Result<bool> {
                     allowance.pixels,
                     allowance.tolerance
                 );
-                tolerances.push_str(&check::tolerance_line(file, allowance, &exact));
+                tolerances.push_str(&check::tolerance_line(file, &allowance, &exact));
             }
             std::fs::copy(&gpu, references.join(file))?;
         }

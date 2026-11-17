@@ -48,8 +48,8 @@ done
 [ ${#dlls[@]} -eq 0 ] || options+=" -Dlls \"$(IFS=';'; echo "${dlls[*]}")\""
 out="C:\\wc\\out\\$name\\wine"
 set +e
-"$here/remote" "exit 0" >/dev/null
-"$here/gpu-job" --desktop -- "$script\\wine-run.ps1 -Out $out -Baseline tools\\graphics-rig\\wine-baseline$options"
+"$here/gpu-job" --desktop --build "cargo build -q -p wcontainers-graphics-test" -- \
+    "$script\\wine-run.ps1 -Out $out -Baseline tools\\graphics-rig\\wine-baseline -Launch %CARGO_TARGET_DIR%\\debug\\gt-launch.exe$options"
 code=$?
 set -e
 logs=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/wine-logs
