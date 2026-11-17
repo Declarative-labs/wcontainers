@@ -255,3 +255,28 @@ fn srgb_views_of_block_compressed_textures() {
 fn bgra_textures_keep_their_byte_order() {
     checks::bgra_textures_keep_their_byte_order::<Angle>();
 }
+
+#[test]
+fn sampled_views_are_whole_textures_of_one_mip_range() {
+    checks::sampled_views_are_whole_textures_of_one_mip_range::<Angle>();
+}
+
+#[test]
+fn generate_mipmap_equals_the_draws() {
+    checks::generate_mipmap_equals_the_draws::<Angle>();
+}
+
+#[test]
+fn sixteen_bit_normalised_formats_follow_their_extension() {
+    checks::sixteen_bit_normalised_formats_follow_their_extension::<Angle>();
+}
+
+#[test]
+fn bgra_surfaces_present() {
+    checks::bgra_surfaces_present::<Angle>();
+}
+
+#[test]
+fn signed_normalised_formats_follow_their_extension() {
+    checks::signed_normalised_formats_follow_their_extension::<Angle>();
+}

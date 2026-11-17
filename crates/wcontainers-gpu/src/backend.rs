@@ -610,7 +610,8 @@ pub trait Backend: Sized {
     /// [`Features::TEXTURE_VIEWS`]; the one exception is a cube read by integer loads, which no
     /// language has for cubes, read through a 2D array view, or without [`Features::TEXTURE_VIEWS`] from
     /// a copy of the level above ([`SlowPath::ReinterpretCopy`]). WebGL 2 overrides it with
-    /// generateMipmap where the format allows and uses the default otherwise.
+    /// generateMipmap where the format allows and uses the default otherwise, through
+    /// [`generate_mips_by_draws`], which holds the default's body.
     fn generate_mips(
         &mut self,
         texture: &Self::Texture,
@@ -619,191 +620,7 @@ pub trait Backend: Sized {
         mips: Range<u32>,
         layers: Range<u32>,
     ) -> Result<(), GpuError> {
-        let own = desc.own_view();
-        let three_d = own == ViewDimension::D3;
-        let layers = if three_d {
-            0..1
-        } else {
-            layers.start..layers.end.min(desc.depth_or_layers)
-        };
-        let mips = mips.start.max(1)..mips.end.min(desc.mip_levels);
-        if mips.is_empty() || layers.is_empty() {
-            return Ok(());
-        }
-        let b = helpers::builtins(self)?;
-        let decoded = norm_twin(values, desc.format)?;
-        // The views read and write the texels as their values: the sRGB twin is a view every back end
-        // makes, so filtering happens in linear light.
-        let seen = if decoded.is_some() {
-            desc.format
-        } else {
-            values
-        };
-        let read = match decoded {
-            Some((_, false)) => MipRead::Unorm,
-            Some((_, true)) => MipRead::Snorm,
-            None if self.caps().formats.get(seen).contains(FormatUse::FILTER) => MipRead::Filtered,
-            None => MipRead::Unfiltered,
-        };
-        let cube = matches!(own, ViewDimension::Cube | ViewDimension::CubeArray);
-        let read_dim = if decoded.is_some() && cube {
-            ViewDimension::D2Array
-        } else {
-            own
-        };
-        let copied = read_dim != own && !self.caps().has(Features::TEXTURE_VIEWS);
-        let which = Builtin::Mip(read_dim, read);
-        let program = helpers::program(self, which)?;
-        for mip in mips {
-            let size = |n: u32| (n >> mip).max(1);
-            let (width, height) = (size(desc.width), size(desc.height));
-            let slices = if three_d {
-                size(desc.depth_or_layers)
-            } else {
-                1
-            };
-            let viewport = [full_viewport(width, height)];
-            let scissor = [ScissorRect {
-                x: 0,
-                y: 0,
-                width,
-                height,
-            }];
-            let all = if three_d { 1 } else { desc.depth_or_layers };
-            let mut source_view = TextureViewDesc {
-                format: seen,
-                dimension: read_dim,
-                base_mip: mip - 1,
-                mip_count: 1,
-                base_layer: 0,
-                layer_count: all,
-                stencil: false,
-            };
-            // A cube read by loads without views: the level above copied into a 2D array first.
-            let copy = if copied {
-                self.slow_paths().hit(SlowPath::ReinterpretCopy);
-                let above = |n: u32| (n >> (mip - 1)).max(1);
-                let extent = Extent {
-                    width: above(desc.width),
-                    height: above(desc.height),
-                    depth_or_layers: all,
-                };
-                let scratch = self.create_texture(&TextureDesc {
-                    dimension: TextureDimension::D2,
-                    format: desc.format,
-                    width: extent.width,
-                    height: extent.height,
-                    depth_or_layers: all,
-                    mip_levels: 1,
-                    samples: 1,
-                    usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
-                    reinterpret: false,
-                    cube: false,
-                })?;
-                let region = |texture, mip| TextureRegion {
-                    texture,
-                    mip,
-                    layer: 0,
-                    origin: Origin { x: 0, y: 0, z: 0 },
-                    stencil: false,
-                };
-                self.copy_texture(&region(texture, mip - 1), &region(&scratch, 0), extent);
-                source_view.base_mip = 0;
-                Some(scratch)
-            } else {
-                None
-            };
-            let src = self.create_view(copy.as_ref().unwrap_or(texture), &source_view)?;
-            for layer in layers.clone() {
-                let dst = self.create_view(
-                    texture,
-                    &TextureViewDesc {
-                        format: seen,
-                        dimension: if three_d {
-                            ViewDimension::D3
-                        } else {
-                            ViewDimension::D2
-                        },
-                        base_mip: mip,
-                        mip_count: 1,
-                        base_layer: layer,
-                        layer_count: 1,
-                        stencil: false,
-                    },
-                )?;
-                for slice in 0..slices {
-                    if read != MipRead::Filtered {
-                        self.slow_paths().hit(SlowPath::FilterInShader);
-                    }
-                    let ring;
-                    let mut entries = alloc::vec![BindingEntry {
-                        binding: 32,
-                        stages: StageSet::FRAGMENT,
-                        resource: BindingResource::Texture(&src),
-                    }];
-                    if which.uses_sampler() {
-                        let sampler = match read {
-                            MipRead::Filtered => &b.linear,
-                            _ => &b.nearest,
-                        };
-                        entries.push(BindingEntry {
-                            binding: 16,
-                            stages: StageSet::FRAGMENT,
-                            resource: BindingResource::Sampler(sampler),
-                        });
-                    }
-                    if which.uses_params() {
-                        let mut params = [0u8; PARAMS_SIZE];
-                        let scale = decoded.map_or(0, |(scale, _)| scale);
-                        params[0..4].copy_from_slice(&scale.to_le_bytes());
-                        let w = (slice as f32 + 0.5) / slices as f32;
-                        params[16..20].copy_from_slice(&w.to_bits().to_le_bytes());
-                        params[24..28].copy_from_slice(&layer.to_le_bytes());
-                        let align = self.caps().limits.min_uniform_offset_alignment;
-                        let mut offset = [0];
-                        ring =
-                            self.write_buffer_ring(RingKind::Data, &[&params], align, &mut offset)?;
-                        entries.push(BindingEntry {
-                            binding: 0,
-                            stages: StageSet::FRAGMENT,
-                            resource: BindingResource::UniformBuffer(BufferRange {
-                                buffer: &ring,
-                                offset: offset[0],
-                                size: PARAMS_SIZE as u64,
-                            }),
-                        });
-                    }
-                    let set = self.create_binding_set(&entries)?;
-                    let mut pass = PassDesc {
-                        colors: Default::default(),
-                        depth: None,
-                        empty: None,
-                        occlusion: None,
-                    };
-                    pass.colors[0] = Some(ColorAttachment {
-                        view: &dst,
-                        depth_slice: slice,
-                        resolve: None,
-                        load: LoadOp::DontCare,
-                        store: StoreOp::Store,
-                    });
-                    self.begin_pass(&pass);
-                    self.draw(&DrawCall {
-                        bindings: [Some(&set), None, None, None],
-                        scissors: &scissor,
-                        ..builtin_draw(&b, &program, &viewport)
-                    });
-                    self.end_pass();
-                    self.destroy(Object::BindingSet(set));
-                }
-                self.destroy(Object::TextureView(dst));
-            }
-            self.destroy(Object::TextureView(src));
-            if let Some(copy) = copy {
-                self.destroy(Object::Texture(copy));
-            }
-        }
-        Ok(())
+        generate_mips_by_draws(self, texture, desc, values, mips, layers)
     }
 
     /// Writes the data one draw needs (Direct3D 9's vertices and indices from user memory, OpenGL's
@@ -985,6 +802,201 @@ pub trait Backend: Sized {
     fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
         Err(GpuError::Absent(Features::TIMESTAMPS))
     }
+}
+
+/// The default of [`Backend::generate_mips`], for a back end whose override takes only some cases.
+pub fn generate_mips_by_draws<B: Backend>(
+    b: &mut B,
+    texture: &B::Texture,
+    desc: &TextureDesc,
+    values: Format,
+    mips: Range<u32>,
+    layers: Range<u32>,
+) -> Result<(), GpuError> {
+    let own = desc.own_view();
+    let three_d = own == ViewDimension::D3;
+    let layers = if three_d {
+        0..1
+    } else {
+        layers.start..layers.end.min(desc.depth_or_layers)
+    };
+    let mips = mips.start.max(1)..mips.end.min(desc.mip_levels);
+    if mips.is_empty() || layers.is_empty() {
+        return Ok(());
+    }
+    let built = helpers::builtins(b)?;
+    let decoded = norm_twin(values, desc.format)?;
+    // The views read and write the texels as their values: the sRGB twin is a view every back end
+    // makes, so filtering happens in linear light.
+    let seen = if decoded.is_some() {
+        desc.format
+    } else {
+        values
+    };
+    let read = match decoded {
+        Some((_, false)) => MipRead::Unorm,
+        Some((_, true)) => MipRead::Snorm,
+        None if b.caps().formats.get(seen).contains(FormatUse::FILTER) => MipRead::Filtered,
+        None => MipRead::Unfiltered,
+    };
+    let cube = matches!(own, ViewDimension::Cube | ViewDimension::CubeArray);
+    let read_dim = if decoded.is_some() && cube {
+        ViewDimension::D2Array
+    } else {
+        own
+    };
+    let copied = read_dim != own && !b.caps().has(Features::TEXTURE_VIEWS);
+    let which = Builtin::Mip(read_dim, read);
+    let program = helpers::program(b, which)?;
+    for mip in mips {
+        let size = |n: u32| (n >> mip).max(1);
+        let (width, height) = (size(desc.width), size(desc.height));
+        let slices = if three_d {
+            size(desc.depth_or_layers)
+        } else {
+            1
+        };
+        let viewport = [full_viewport(width, height)];
+        let scissor = [ScissorRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }];
+        let all = if three_d { 1 } else { desc.depth_or_layers };
+        let mut source_view = TextureViewDesc {
+            format: seen,
+            dimension: read_dim,
+            base_mip: mip - 1,
+            mip_count: 1,
+            base_layer: 0,
+            layer_count: all,
+            stencil: false,
+        };
+        // A cube read by loads without views: the level above copied into a 2D array first.
+        let copy = if copied {
+            b.slow_paths().hit(SlowPath::ReinterpretCopy);
+            let above = |n: u32| (n >> (mip - 1)).max(1);
+            let extent = Extent {
+                width: above(desc.width),
+                height: above(desc.height),
+                depth_or_layers: all,
+            };
+            let scratch = b.create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format: desc.format,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: all,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+                reinterpret: false,
+                cube: false,
+            })?;
+            let region = |texture, mip| TextureRegion {
+                texture,
+                mip,
+                layer: 0,
+                origin: Origin { x: 0, y: 0, z: 0 },
+                stencil: false,
+            };
+            b.copy_texture(&region(texture, mip - 1), &region(&scratch, 0), extent);
+            source_view.base_mip = 0;
+            Some(scratch)
+        } else {
+            None
+        };
+        let src = b.create_view(copy.as_ref().unwrap_or(texture), &source_view)?;
+        for layer in layers.clone() {
+            let dst = b.create_view(
+                texture,
+                &TextureViewDesc {
+                    format: seen,
+                    dimension: if three_d {
+                        ViewDimension::D3
+                    } else {
+                        ViewDimension::D2
+                    },
+                    base_mip: mip,
+                    mip_count: 1,
+                    base_layer: layer,
+                    layer_count: 1,
+                    stencil: false,
+                },
+            )?;
+            for slice in 0..slices {
+                if read != MipRead::Filtered {
+                    b.slow_paths().hit(SlowPath::FilterInShader);
+                }
+                let ring;
+                let mut entries = alloc::vec![BindingEntry {
+                    binding: 32,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(&src),
+                }];
+                if which.uses_sampler() {
+                    let sampler = match read {
+                        MipRead::Filtered => &built.linear,
+                        _ => &built.nearest,
+                    };
+                    entries.push(BindingEntry {
+                        binding: 16,
+                        stages: StageSet::FRAGMENT,
+                        resource: BindingResource::Sampler(sampler),
+                    });
+                }
+                if which.uses_params() {
+                    let mut params = [0u8; PARAMS_SIZE];
+                    let scale = decoded.map_or(0, |(scale, _)| scale);
+                    params[0..4].copy_from_slice(&scale.to_le_bytes());
+                    let w = (slice as f32 + 0.5) / slices as f32;
+                    params[16..20].copy_from_slice(&w.to_bits().to_le_bytes());
+                    params[24..28].copy_from_slice(&layer.to_le_bytes());
+                    let align = b.caps().limits.min_uniform_offset_alignment;
+                    let mut offset = [0];
+                    ring = b.write_buffer_ring(RingKind::Data, &[&params], align, &mut offset)?;
+                    entries.push(BindingEntry {
+                        binding: 0,
+                        stages: StageSet::FRAGMENT,
+                        resource: BindingResource::UniformBuffer(BufferRange {
+                            buffer: &ring,
+                            offset: offset[0],
+                            size: PARAMS_SIZE as u64,
+                        }),
+                    });
+                }
+                let set = b.create_binding_set(&entries)?;
+                let mut pass = PassDesc {
+                    colors: Default::default(),
+                    depth: None,
+                    empty: None,
+                    occlusion: None,
+                };
+                pass.colors[0] = Some(ColorAttachment {
+                    view: &dst,
+                    depth_slice: slice,
+                    resolve: None,
+                    load: LoadOp::DontCare,
+                    store: StoreOp::Store,
+                });
+                b.begin_pass(&pass);
+                b.draw(&DrawCall {
+                    bindings: [Some(&set), None, None, None],
+                    scissors: &scissor,
+                    ..builtin_draw(&built, &program, &viewport)
+                });
+                b.end_pass();
+                b.destroy(Object::BindingSet(set));
+            }
+            b.destroy(Object::TextureView(dst));
+        }
+        b.destroy(Object::TextureView(src));
+        if let Some(copy) = copy {
+            b.destroy(Object::Texture(copy));
+        }
+    }
+    Ok(())
 }
 
 /// Which aspects a depth-stencil format has: depth, stencil.

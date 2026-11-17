@@ -45,7 +45,10 @@ mod shader;
 mod slow;
 mod state;
 
-pub use backend::{Backend, ClearValue, FanOrLoop, IndexSource, Object, PrepareDesc, RingKind};
+pub use backend::{
+    Backend, ClearValue, FanOrLoop, IndexSource, Object, PrepareDesc, RingKind,
+    generate_mips_by_draws,
+};
 pub use caps::{AdapterInfo, Caps, Features, FormatCaps, FormatUse, Limits};
 pub use combinations::{Combination, CombinationTracker};
 pub use draw::{
