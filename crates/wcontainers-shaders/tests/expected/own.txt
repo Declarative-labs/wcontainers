@@ -3,15 +3,18 @@ ps_clip.dxbc	ok
 ps_coarse.dxbc	ok
 ps_depth.dxbc	ok
 ps_deriv.dxbc	ok-wgsl glsl-write
+ps_dual.dxbc	ok
 ps_flat.dxbc	ok
 ps_ftoi.dxbc	ok
 ps_integer.dxbc	ok-wgsl glsl-compile
+ps_levels.dxbc	ok-wgsl glsl-write
 ps_local.dxbc	ok
 ps_loop.dxbc	ok
 ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok
 ps_rows.dxbc	ok
+ps_samples.dxbc	unsupported SampleCount
 ps_shade.dxbc	ok-wgsl glsl-write
 ps_signed.dxbc	ok
 ps_size.dxbc	ok

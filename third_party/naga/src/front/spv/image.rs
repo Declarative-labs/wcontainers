@@ -80,17 +80,18 @@ fn extract_image_coordinates(
     };
 
     let required_size = image_dim.required_coordinate_size();
+    // `parse_type_image` makes the float vector; integer coordinates (texel loads) need their own.
     let required_ty = required_size.map(|size| {
-        ctx.module
-            .types
-            .get(&crate::Type {
+        ctx.module.types.insert(
+            crate::Type {
                 name: None,
                 inner: crate::TypeInner::Vector {
                     size,
                     scalar: Scalar { kind, width: 4 },
                 },
-            })
-            .expect("Required coordinate type should have been set up by `parse_type_image`!")
+            },
+            crate::Span::UNDEFINED,
+        )
     });
     let extra_expr = crate::Expression::AccessIndex {
         base,

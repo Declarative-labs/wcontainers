@@ -1,0 +1,880 @@
+//! What the drawing tests share: the own shaders' inputs, one draw through a back end, and comparing
+//! pictures.
+
+#![allow(dead_code)]
+
+use std::path::Path;
+use wcontainers_gpu::{
+    Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc, BufferRange,
+    BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange,
+    Extent, FillMode, Filter, Format, FrontFace, Interpolation, MapIntent, Origin, PassDesc,
+    Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc, SlotKind,
+    StageSet, StepMode, StoreOp, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
+    TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding, VertexFormat,
+    VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,
+};
+use wcontainers_graphics_test::d3d11::{self, Gpu};
+use wcontainers_shaders::{Source, convert};
+use windows::Win32::Graphics::Direct3D::*;
+use windows::Win32::Graphics::Direct3D11::*;
+use windows::Win32::Graphics::Dxgi::Common::*;
+use windows::core::{Interface, s};
+
+pub const SIZE: u32 = 64;
+pub const TEXTURE_SIZE: u32 = 8;
+
+pub fn bytecode(name: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/own/{name}"));
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// A 4 by 4 grid of quads over the target, two triangles each: position (x, y, 0) and a texture
+/// coordinate reaching past [0, 1] so the clamp shows.
+pub fn grid() -> Vec<f32> {
+    let mut v = Vec::new();
+    let n = 4;
+    let at = |i: u32, j: u32| {
+        let (x, y) = (
+            i as f32 / n as f32 * 2.0 - 1.0,
+            1.0 - j as f32 / n as f32 * 2.0,
+        );
+        [x, y, 0.0, (x + 1.0) * 0.75 - 0.25, (1.0 - y) * 0.75 - 0.25]
+    };
+    for j in 0..n {
+        for i in 0..n {
+            for (di, dj) in [(0, 0), (1, 0), (0, 1), (1, 0), (1, 1), (0, 1)] {
+                v.extend(at(i + di, j + dj));
+            }
+        }
+    }
+    v
+}
+
+/// The constant buffer: `mul(float4(p, 1), m)` with the matrix stored column by column (HLSL's default
+/// packing), so register j holds what output component j is a dot product with. w varies with x, so
+/// interpolation is perspective-correct or visibly not.
+pub fn constants(tint: [f32; 4]) -> Vec<u8> {
+    let columns: [[f32; 4]; 4] = [
+        [0.75, -0.2, 0.0, 0.05],
+        [0.2, 0.75, 0.0, -0.05],
+        [0.0, 0.0, 0.25, 0.5],
+        [0.25, 0.0, 0.0, 1.0],
+    ];
+    columns
+        .iter()
+        .flatten()
+        .chain(tint.iter())
+        .flat_map(|f| f.to_le_bytes())
+        .collect()
+}
+
+/// An 8 by 8 RGBA8 texture whose alpha crosses `ps_textured`'s clip threshold.
+pub fn texels() -> Vec<u8> {
+    let mut t = Vec::new();
+    for y in 0..TEXTURE_SIZE {
+        for x in 0..TEXTURE_SIZE {
+            t.extend([
+                (x * 36) as u8,
+                (y * 36) as u8,
+                ((x ^ y) * 36) as u8,
+                ((x + y) % 3 * 110) as u8,
+            ]);
+        }
+    }
+    t
+}
+
+pub const CLEAR: [f32; 4] = [0.125, 0.25, 0.5, 1.0];
+
+pub fn dxgi(format: Format) -> DXGI_FORMAT {
+    match format {
+        Format::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
+        Format::Rgba32Uint => DXGI_FORMAT_R32G32B32A32_UINT,
+        Format::Depth32Float => DXGI_FORMAT_D32_FLOAT,
+        f => panic!("no case draws into {f:?}"),
+    }
+}
+
+/// What a Direct3D 11 reference draw changes from the plain one.
+#[derive(Default)]
+pub struct Reference {
+    /// Levels of the sampled texture as [`level_texels`] makes them (one when zero).
+    pub levels: u32,
+    /// The sampler's MipLODBias.
+    pub lod_bias: f32,
+    /// Target 0's blending.
+    pub blend: Option<D3D11_RENDER_TARGET_BLEND_DESC>,
+    /// Counts the samples that pass, with an occlusion query.
+    pub count: bool,
+    /// With a D32_FLOAT depth buffer cleared to 1 and written by every fragment, and this viewport
+    /// depth range: the depth buffer's texels are returned instead of the target's.
+    pub depth: Option<[f32; 2]>,
+}
+
+/// Draws the own shaders `vs` and `ps` (fxc's builds) with real Direct3D 11 as the drawing tests bind
+/// them; returns the target's texels, rows tightly packed, and the query's count.
+pub fn direct3d_11(
+    gpu: &Gpu,
+    vs: &str,
+    ps: &str,
+    format: Format,
+    tint: [f32; 4],
+    grid_drawn: bool,
+    reference: &Reference,
+) -> (Vec<u8>, Option<u64>) {
+    let (vs, ps) = (
+        bytecode(&format!("{vs}.dxbc")),
+        bytecode(&format!("{ps}.dxbc")),
+    );
+    let elements = if grid_drawn {
+        vec![
+            d3d11::element(s!("POSITION"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, 0),
+            d3d11::element(s!("TEXCOORD"), 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, 0),
+        ]
+    } else {
+        Vec::new()
+    };
+    gpu.program(&vs, &ps, &elements).unwrap();
+    let vertices = grid();
+    let _buffer = grid_drawn.then(|| gpu.vertices(0, bytes_of(&vertices), 20).unwrap());
+    let constants = gpu
+        .immutable(&constants(tint), D3D11_BIND_CONSTANT_BUFFER)
+        .unwrap();
+    let levels = reference.levels.max(1);
+    let level_data: Vec<Vec<u8>> = (0..levels).map(level_texels).collect();
+    let mut desc = d3d11::tex2d(
+        TEXTURE_SIZE,
+        TEXTURE_SIZE,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        D3D11_BIND_SHADER_RESOURCE,
+    );
+    desc.MipLevels = levels;
+    let data: Vec<_> = level_data
+        .iter()
+        .enumerate()
+        .map(|(n, t)| d3d11::data(t, (TEXTURE_SIZE >> n).max(1) * 4, 0))
+        .collect();
+    let texture = gpu.texture2d(&desc, &data).unwrap();
+    let view = gpu.srv(&texture.cast().unwrap(), None).unwrap();
+    let sampler = gpu
+        .sampler(&D3D11_SAMPLER_DESC {
+            Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+            MipLODBias: reference.lod_bias,
+            MaxAnisotropy: 1,
+            ComparisonFunc: D3D11_COMPARISON_NEVER,
+            MaxLOD: f32::MAX,
+            ..Default::default()
+        })
+        .unwrap();
+    let raster = gpu.rasterizer(&d3d11::solid()).unwrap();
+    let (target, rtv) = gpu.target(SIZE, SIZE, dxgi(format)).unwrap();
+    let blend = reference.blend.map(|target| {
+        let mut desc = D3D11_BLEND_DESC::default();
+        desc.RenderTarget[0] = target;
+        gpu.blend(&desc).unwrap()
+    });
+    let query = reference.count.then(|| {
+        let desc = D3D11_QUERY_DESC {
+            Query: D3D11_QUERY_OCCLUSION,
+            MiscFlags: 0,
+        };
+        d3d11::made(|q| unsafe { gpu.device.CreateQuery(&desc, Some(q)) }).unwrap()
+    });
+    let depth = reference.depth.map(|_| {
+        let (texture, view) = gpu.depth(SIZE, SIZE, DXGI_FORMAT_D32_FLOAT).unwrap();
+        let state = gpu
+            .depth_stencil(&D3D11_DEPTH_STENCIL_DESC {
+                DepthEnable: true.into(),
+                DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
+                DepthFunc: D3D11_COMPARISON_ALWAYS,
+                ..Default::default()
+            })
+            .unwrap();
+        (texture, view, state)
+    });
+    let mut count = None;
+    unsafe {
+        let c = &gpu.context;
+        c.VSSetConstantBuffers(0, Some(&[Some(constants.clone())]));
+        c.PSSetConstantBuffers(0, Some(&[Some(constants.clone())]));
+        c.PSSetShaderResources(0, Some(&[Some(view)]));
+        c.PSSetSamplers(0, Some(&[Some(sampler)]));
+        c.RSSetState(&raster);
+        c.OMSetBlendState(blend.as_ref(), Some(&[0.0; 4]), !0);
+        c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        if format == Format::Rgba32Uint {
+            c.ClearRenderTargetView(&rtv, &[0.0; 4]);
+        } else {
+            c.ClearRenderTargetView(&rtv, &CLEAR);
+        }
+        c.OMSetRenderTargets(Some(&[Some(rtv)]), depth.as_ref().map(|d| &d.1));
+        gpu.viewport(SIZE, SIZE);
+        if let (Some((_, view, state)), Some([near, far])) = (&depth, reference.depth) {
+            c.ClearDepthStencilView(view, D3D11_CLEAR_DEPTH.0, 1.0, 0);
+            c.OMSetDepthStencilState(state, 0);
+            c.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: SIZE as f32,
+                Height: SIZE as f32,
+                MinDepth: near,
+                MaxDepth: far,
+            }]));
+        }
+        if let Some(q) = &query {
+            c.Begin(q);
+        }
+        c.Draw(if grid_drawn { 96 } else { 3 }, 0);
+        if let Some(q) = &query {
+            c.End(q);
+            let mut n = 0u64;
+            loop {
+                // The raw call: its S_FALSE (not ready yet) is a success the wrapper hides.
+                let hr = (Interface::vtable(c).GetData)(
+                    Interface::as_raw(c),
+                    Interface::as_raw(q),
+                    (&mut n as *mut u64).cast(),
+                    8,
+                    0,
+                );
+                if hr == windows::Win32::Foundation::S_OK {
+                    break;
+                }
+                hr.ok().unwrap();
+            }
+            count = Some(n);
+        }
+        c.OMSetBlendState(None, None, !0);
+        c.OMSetDepthStencilState(None, 0);
+    }
+    if let Some((texture, _, _)) = &depth {
+        return (read(gpu, texture, Format::Depth32Float), count);
+    }
+    (read(gpu, &target, format), count)
+}
+
+/// Reads a target back through a staging texture.
+pub fn read(gpu: &Gpu, texture: &ID3D11Texture2D, format: Format) -> Vec<u8> {
+    let row = (SIZE * format.block().2) as usize;
+    let mut desc = d3d11::tex2d(SIZE, SIZE, dxgi(format), D3D11_BIND_FLAG(0));
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+    let staging = gpu.texture2d(&desc, &[]).unwrap();
+    let mut out = Vec::with_capacity(row * SIZE as usize);
+    unsafe {
+        gpu.context.CopyResource(&staging, texture);
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        gpu.context
+            .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+            .unwrap();
+        for y in 0..SIZE as usize {
+            let start = mapped.pData.cast::<u8>().add(y * mapped.RowPitch as usize);
+            out.extend_from_slice(std::slice::from_raw_parts(start, row));
+        }
+        gpu.context.Unmap(&staging, 0);
+    }
+    out
+}
+
+pub fn bytes_of(v: &[f32]) -> &[u8] {
+    // SAFETY: f32 has no padding and every byte pattern is a valid u8.
+    unsafe { std::slice::from_raw_parts(v.as_ptr().cast(), std::mem::size_of_val(v)) }
+}
+
+pub fn buffer<B: Backend>(b: &mut B, data: &[u8], usage: BufferUsage) -> B::Buffer {
+    let buf = b
+        .create_buffer(&BufferDesc {
+            size: data.len() as u64,
+            usage: usage | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    b.write_buffer(&buf, 0, data, WriteMode::Ordered);
+    buf
+}
+
+pub fn texture<B: Backend>(
+    b: &mut B,
+    format: Format,
+    size: u32,
+    usage: TextureUsage,
+) -> (B::Texture, B::TextureView) {
+    let t = b
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width: size,
+            height: size,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let v = b
+        .create_view(
+            &t,
+            &TextureViewDesc {
+                format,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        )
+        .unwrap();
+    (t, v)
+}
+
+/// A 2D texture of `levels` levels and `samples` samples, and a view of all of it.
+pub fn texture_levels<B: Backend>(
+    b: &mut B,
+    format: Format,
+    size: u32,
+    levels: u32,
+    samples: u32,
+    usage: TextureUsage,
+) -> (B::Texture, B::TextureView) {
+    let t = b
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width: size,
+            height: size,
+            depth_or_layers: 1,
+            mip_levels: levels,
+            samples,
+            usage,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let v = b
+        .create_view(
+            &t,
+            &TextureViewDesc {
+                format,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: levels,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        )
+        .unwrap();
+    (t, v)
+}
+
+/// One draw through a back end: the shaders, the vertices and the target.
+#[derive(Clone)]
+pub struct Draw<'a> {
+    pub vs: Source<'a>,
+    pub ps: Source<'a>,
+    pub format: Format,
+    pub size: u32,
+    /// Vertices of `stride` bytes; an input of the vertex shader finds its offset and format by
+    /// semantic in `attributes`.
+    pub vertices: &'a [f32],
+    pub stride: u32,
+    pub attributes: &'a [(&'a str, u32, VertexFormat)],
+    pub count: u32,
+    pub constants: Vec<u8>,
+    pub clear: [u32; 4],
+    pub setup: Setup,
+}
+
+/// What a draw changes from the plain one, for the variant tests.
+#[derive(Clone)]
+pub struct Setup {
+    /// The keys `ours` asks for each stage (it adds the interpolation that links them).
+    pub vs_key: VariantKey,
+    pub ps_key: VariantKey,
+    /// Each stage's helper block (vertex, fragment), bound in set 3 where not empty.
+    pub helpers: [Vec<u8>; 2],
+    /// x, y, width and height in pixels, then the depth range.
+    pub viewport: [f32; 6],
+    /// The target's sample count; a multisampled target is resolved for reading.
+    pub samples: u32,
+    pub sample_mask: u32,
+    /// With a Depth32Float target cleared to 1 and written by every fragment: `ours` returns its
+    /// texels instead of the colour target's.
+    pub depth: bool,
+    pub depth_minus_one: bool,
+    pub blend: Option<(
+        wcontainers_gpu::BlendComponent,
+        wcontainers_gpu::BlendComponent,
+    )>,
+    pub blend_constant: [f32; 4],
+    /// Levels of the sampled texture: level 0 is [`texels`], level n the solid [`level_colour`].
+    pub levels: u32,
+}
+
+impl Setup {
+    pub fn plain(size: u32) -> Setup {
+        Setup {
+            vs_key: VariantKey::default(),
+            ps_key: VariantKey::default(),
+            helpers: [Vec::new(), Vec::new()],
+            viewport: [0.0, 0.0, size as f32, size as f32, 0.0, 1.0],
+            samples: 1,
+            sample_mask: !0,
+            depth: false,
+            depth_minus_one: false,
+            blend: None,
+            blend_constant: [0.0; 4],
+            levels: 1,
+        }
+    }
+}
+
+/// The colour of texture level n past 0.
+pub fn level_colour(n: u32) -> [u8; 4] {
+    [
+        (n * 70 % 256) as u8,
+        (255 - n * 60) as u8,
+        (n * 110 % 256) as u8,
+        255,
+    ]
+}
+
+/// The texels of level `n` of the sampled texture.
+pub fn level_texels(n: u32) -> Vec<u8> {
+    if n == 0 {
+        return texels();
+    }
+    let size = (TEXTURE_SIZE >> n).max(1);
+    level_colour(n).repeat((size * size) as usize)
+}
+
+/// Draws through a back end with the converted shaders, binding by their reflection (every slot is
+/// register 0: the constants, the texture of [`texels`] and a linear clamping sampler); returns the
+/// target's texels. `provoking` is the back end's own (it only decides `ps_integer`'s value).
+pub fn ours<B: Backend + 'static>(
+    b: &mut B,
+    draw: &Draw<'_>,
+    provoking: ProvokingVertex,
+) -> Vec<u8> {
+    // As a front links the stages: the vertex program writes each output as the pixel program reads it.
+    let setup = &draw.setup;
+    let ps = convert(draw.ps, &setup.ps_key, None).unwrap();
+    let key = VariantKey {
+        output_interpolation: ps
+            .reflection
+            .inputs
+            .iter()
+            .filter(|v| v.system.is_none() && v.interpolation != Interpolation::Perspective)
+            .map(|v| (v.location, v.interpolation))
+            .collect(),
+        ..setup.vs_key.clone()
+    };
+    let vs = convert(draw.vs, &key, None).unwrap();
+    let vertex = b.create_shader(&vs.modules[0]).unwrap();
+    let fragment = b.create_shader(&ps.modules[0]).unwrap();
+    let program = b
+        .create_program(&Program::Render {
+            vertex: &vertex,
+            fragment: Some(&fragment),
+        })
+        .unwrap();
+
+    let constants = buffer(b, &draw.constants, BufferUsage::UNIFORM);
+    let (texture_object, view) = texture_levels(
+        b,
+        Format::Rgba8Unorm,
+        TEXTURE_SIZE,
+        setup.levels,
+        1,
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+    );
+    for level in 0..setup.levels {
+        let size = (TEXTURE_SIZE >> level).max(1);
+        b.write_texture(
+            &TextureRegion {
+                texture: &texture_object,
+                mip: level,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            Extent {
+                width: size,
+                height: size,
+                depth_or_layers: 1,
+            },
+            &level_texels(level),
+            size * 4,
+            size,
+            WriteMode::Ordered,
+        );
+    }
+    let sampler = b
+        .create_sampler(&SamplerDesc {
+            min: Filter::Linear,
+            mag: Filter::Linear,
+            mip: Filter::Linear,
+            address: [wcontainers_gpu::AddressMode::Clamp; 3],
+            lod_range: [0, f32::MAX.to_bits()],
+            anisotropy: 1,
+            compare: None,
+            border: BorderColor::TransparentBlack,
+        })
+        .unwrap();
+
+    // Each stage's slots, from its reflection: vertex slots in set 0, pixel slots in set 1.
+    let mut sets: [Vec<BindingEntry<'_, B>>; 2] = [Vec::new(), Vec::new()];
+    for (reflection, stages) in [
+        (&vs.reflection, StageSet::VERTEX),
+        (&ps.reflection, StageSet::FRAGMENT),
+    ] {
+        for r in &reflection.bindings {
+            assert_eq!(r.register, 0, "{r:?}");
+            let resource = match r.kind {
+                SlotKind::Uniform => BindingResource::UniformBuffer(BufferRange {
+                    buffer: &constants,
+                    offset: 0,
+                    size: draw.constants.len() as u64,
+                }),
+                SlotKind::Storage => BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: &constants,
+                        offset: 0,
+                        size: draw.constants.len() as u64,
+                    },
+                    writable: false,
+                },
+                SlotKind::Texture => BindingResource::Texture(&view),
+                SlotKind::Sampler => BindingResource::Sampler(&sampler),
+                k => panic!("no case binds {k:?}"),
+            };
+            sets[r.set as usize].push(BindingEntry {
+                binding: r.binding,
+                stages,
+                resource,
+            });
+        }
+    }
+    let sets =
+        sets.map(|entries| (!entries.is_empty()).then(|| b.create_binding_set(&entries).unwrap()));
+    // The helper blocks, in set 3.
+    let mut helper_buffers = Vec::new();
+    for (bytes, reflection, stage) in [
+        (
+            &setup.helpers[0],
+            &vs.reflection,
+            wcontainers_gpu::ShaderStage::Vertex,
+        ),
+        (
+            &setup.helpers[1],
+            &ps.reflection,
+            wcontainers_gpu::ShaderStage::Fragment,
+        ),
+    ] {
+        assert!(
+            bytes.len() >= reflection.helper_size as usize,
+            "{:?}",
+            reflection.helpers
+        );
+        if !bytes.is_empty() {
+            helper_buffers.push((buffer(b, bytes, BufferUsage::UNIFORM), bytes.len(), stage));
+        }
+    }
+    let helper_entries: Vec<BindingEntry<'_, B>> = helper_buffers
+        .iter()
+        .map(|(buffer, len, stage)| BindingEntry {
+            binding: wcontainers_gpu::helper_binding(*stage),
+            stages: match stage {
+                wcontainers_gpu::ShaderStage::Vertex => StageSet::VERTEX,
+                _ => StageSet::FRAGMENT,
+            },
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer,
+                offset: 0,
+                size: *len as u64,
+            }),
+        })
+        .collect();
+    let helper_set =
+        (!helper_entries.is_empty()).then(|| b.create_binding_set(&helper_entries).unwrap());
+
+    // The vertex layout: each input of the vertex shader at its location, by semantic.
+    let mut layout = VertexLayoutDesc {
+        streams: [None; 32],
+        attributes: [None; 32],
+    };
+    if !draw.vertices.is_empty() {
+        layout.streams[0] = Some(VertexStream {
+            stride: draw.stride,
+            step: StepMode::Vertex,
+        });
+        for input in vs.reflection.inputs.iter().filter(|i| i.system.is_none()) {
+            let &(_, offset, format) = draw
+                .attributes
+                .iter()
+                .find(|a| a.0 == input.semantic)
+                .unwrap_or_else(|| panic!("no vertex data for {}", input.semantic));
+            layout.attributes[input.location as usize] = Some(VertexAttribute {
+                location: input.location,
+                stream: 0,
+                offset,
+                format,
+            });
+        }
+    }
+    let vertex_layout = b.create_vertex_layout(&layout).unwrap();
+    let vertex_buffer = (!draw.vertices.is_empty())
+        .then(|| buffer(b, bytes_of(draw.vertices), BufferUsage::VERTEX));
+    let blend = b
+        .create_blend(&BlendDesc {
+            targets: [RenderTargetBlend {
+                blend: setup.blend,
+                writes: ColorWrites::all(),
+            }; 8],
+            same_for_all: true,
+            alpha_to_coverage: false,
+            logic_op: None,
+        })
+        .unwrap();
+    let depth_stencil = b
+        .create_depth_stencil(&DepthStencilDesc {
+            depth_compare: setup.depth.then_some(wcontainers_gpu::CompareFn::Always),
+            depth_write: setup.depth,
+            stencil: None,
+            stencil_read_mask: [0xff; 2],
+            stencil_write_mask: [0xff; 2],
+            depth_bounds: None,
+        })
+        .unwrap();
+    let raster = b
+        .create_raster(&RasterDesc {
+            fill: FillMode::Solid,
+            cull: CullMode::None,
+            front: FrontFace::Clockwise,
+            depth_bias: 0,
+            depth_bias_slope: 0,
+            depth_bias_clamp: 0,
+            depth_clip: true,
+            scissor: false,
+            line_width: 1.0f32.to_bits(),
+            provoking,
+            depth_minus_one: setup.depth_minus_one,
+            sample_mask: setup.sample_mask,
+        })
+        .unwrap();
+
+    let samples = setup.samples;
+    let (target, target_view) = texture_levels(
+        b,
+        draw.format,
+        draw.size,
+        1,
+        samples,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    );
+    let resolved = (samples > 1).then(|| {
+        texture(
+            b,
+            draw.format,
+            draw.size,
+            TextureUsage::RENDER | TextureUsage::COPY_SRC,
+        )
+    });
+    let depth = setup.depth.then(|| {
+        texture_levels(
+            b,
+            Format::Depth32Float,
+            draw.size,
+            1,
+            samples,
+            TextureUsage::RENDER | TextureUsage::COPY_SRC,
+        )
+    });
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: depth
+            .as_ref()
+            .map(|(_, view)| wcontainers_gpu::DepthAttachment {
+                view,
+                depth: Some(wcontainers_gpu::AspectOps {
+                    load: wcontainers_gpu::LoadOp::Clear(1.0f32.to_bits()),
+                    store: StoreOp::Store,
+                    read_only: false,
+                }),
+                stencil: None,
+            }),
+        empty: None,
+        occlusion: None,
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &target_view,
+        depth_slice: 0,
+        resolve: resolved.as_ref().map(|(_, view)| view),
+        load: wcontainers_gpu::LoadOp::Clear(draw.clear),
+        store: StoreOp::Store,
+    });
+    b.begin_pass(&pass);
+    let streams: Vec<_> = vertex_buffer
+        .iter()
+        .map(|buffer| Some(VertexBinding { buffer, offset: 0 }))
+        .collect();
+    let [x, y, width, height, min_depth, max_depth] = setup.viewport.map(f32::to_bits);
+    b.draw(&DrawCall {
+        program: &program,
+        blend: &blend,
+        depth_stencil: &depth_stencil,
+        raster: &raster,
+        vertex_layout: &vertex_layout,
+        bindings: [
+            sets[0].as_ref(),
+            sets[1].as_ref(),
+            None,
+            helper_set.as_ref(),
+        ],
+        vertex_buffers: &streams,
+        index: None,
+        topology: Topology::TriangleList,
+        restart: false,
+        viewports: &[Viewport {
+            x,
+            y,
+            width,
+            height,
+            min_depth,
+            max_depth,
+        }],
+        scissors: &[],
+        blend_constant: setup.blend_constant.map(f32::to_bits),
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Vertices {
+            first: 0,
+            count: draw.count,
+            first_instance: 0,
+            instances: 1,
+        },
+    });
+    b.end_pass();
+    let (target, format) = match (&depth, &resolved) {
+        (Some((depth, _)), _) => (depth, Format::Depth32Float),
+        (None, Some((resolved, _))) => (resolved, draw.format),
+        (None, None) => (&target, draw.format),
+    };
+    let mut out = vec![0; (draw.size * draw.size * format.block().2) as usize];
+    b.read_back_now(
+        &ReadSource::Texture {
+            region: TextureRegion {
+                texture: target,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            extent: Extent {
+                width: draw.size,
+                height: draw.size,
+                depth_or_layers: 1,
+            },
+        },
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(
+        b.status(),
+        wcontainers_gpu::DeviceStatus::Ok,
+        "{}vertex {:?}, pixel {:?}, {} samples, depth {}, viewport {:?}, format {:?}",
+        (b as &dyn std::any::Any)
+            .downcast_ref::<wcontainers_gpu_webgl::WebGl>()
+            .map(|gl| format!("{}: ", gl.last_log()))
+            .unwrap_or_default(),
+        setup.vs_key.flags,
+        setup.ps_key,
+        setup.samples,
+        setup.depth,
+        setup.viewport,
+        draw.format
+    );
+    out
+}
+
+/// How many texels differ, and the largest difference of any channel (8-bit channels, or 32-bit
+/// integers).
+pub fn differ(a: &[u8], b: &[u8], format: Format) -> (usize, u64) {
+    let (channel, texel) = match format {
+        Format::Rgba32Uint => (4, 16),
+        // Positive f32 bits count steps apart.
+        Format::Depth32Float => (4, 4),
+        _ => (1, 4),
+    };
+    let mut count = 0;
+    let mut largest = 0;
+    for (x, y) in a.chunks(texel).zip(b.chunks(texel)) {
+        let d = x
+            .chunks(channel)
+            .zip(y.chunks(channel))
+            .map(|(p, q)| {
+                let v = |c: &[u8]| c.iter().rev().fold(0u64, |n, b| n << 8 | *b as u64);
+                v(p).abs_diff(v(q))
+            })
+            .max()
+            .unwrap();
+        if d > 0 {
+            count += 1;
+            largest = largest.max(d);
+        }
+    }
+    (count, largest)
+}
+
+pub fn webgpu() -> wcontainers_gpu_webgpu::WebGpu {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = wgpu::Backends::DX12;
+    let instance = wgpu::Instance::new(desc);
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .expect("a Direct3D 12 adapter");
+    let info = adapter.get_info();
+    assert_ne!(info.device_type, wgpu::DeviceType::Cpu, "{}", info.name);
+    eprintln!("webgpu: {} ({:?})", info.name, info.backend);
+    let (device, queue) = pollster::block_on(
+        adapter.request_device(&wcontainers_gpu_webgpu::WebGpu::device_descriptor(&adapter)),
+    )
+    .unwrap();
+    wcontainers_gpu_webgpu::WebGpu::new(&adapter, device, queue)
+}
+
+pub fn webgl() -> wcontainers_gpu_webgl::WebGl {
+    webgl_without(&[])
+}
+
+/// The WebGL 2 back end made with the WebGL extensions `off` switched off.
+pub fn webgl_without(off: &[&str]) -> wcontainers_gpu_webgl::WebGl {
+    let dir = std::env::var("WCONTAINERS_ANGLE")
+        .unwrap_or_else(|_| r"C:\wc\tools\angle-mozangle-0.7.1".into());
+    let gl = wcontainers_gpu_webgl::WebGl::on_angle(Path::new(&dir), off).unwrap();
+    eprintln!("webgl: {}", gl.renderer());
+    gl
+}
+
+/// Saves a picture for looking at when `WCONTAINERS_SHADERS_OUT` names a directory.
+pub fn keep(name: &str, texels: &[u8], format: Format) {
+    let Ok(dir) = std::env::var("WCONTAINERS_SHADERS_OUT") else {
+        return;
+    };
+    let dir = Path::new(&dir).join("draw");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ext = if format == Format::Rgba32Uint {
+        "rgba32ui"
+    } else {
+        "rgba"
+    };
+    std::fs::write(dir.join(format!("{name}.{ext}")), texels).unwrap();
+}
