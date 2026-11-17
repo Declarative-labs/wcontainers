@@ -403,10 +403,12 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   wcontainers-gpu-webgpu --no-fail-fast -- --test-threads 1"`. Keep `--no-fail-fast`, so one
   failing file does not hide the others, and `--locked`, so a stale lock file fails instead of
   being rewritten (which makes the tree differ and gpu-job refuse it).
-- When a result is recorded, start the build command with `cargo clean -p wcontainers-gpu-webgpu &&`
-  (incremental builds on the desktop once kept a stale library), and before `web/check` run
-  `tools/graphics-rig/remote "cargo clean -p wcontainers-gpu-webgpu & cargo clean -p
-  wcontainers-gpu-webgpu --target wasm32-unknown-unknown"`.
+- When a result is recorded, start the build command with `cargo clean -p wcontainers-gpu-webgpu
+  -p wcontainers-gpu-test &&` (incremental builds on the desktop have kept stale libraries of path
+  crates changed by a merge), and before `web/check` run `tools/graphics-rig/remote "cargo clean -p
+  wcontainers-gpu-webgpu -p naga -p wcontainers-gpu -p wcontainers-gpu-test --target
+  wasm32-unknown-unknown & cargo clean -p wcontainers-gpu-webgpu -p naga -p wcontainers-gpu -p
+  wcontainers-gpu-test"`.
 - The BC comparison with Direct3D and WARP with other blocks: `set WEBGPU_SEED=<n>&& set
   WEBGPU_CASES=<textures per format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test
   direct3d bc_ -- --nocapture` as the job's command (prints each format's distances).
@@ -444,6 +446,26 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 8 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
+load not sampled; Mac load average 21 to 79):
+- All tests after the merges and a clean build of this crate and `wcontainers-gpu-test`, at
+  8f7db1b's code plus the present change (the macOS host's later edits do not build on Windows):
+  Vulkan 64 of 64 and Direct3D 12 64 of 64, one ignored on each (the old BC one-step comparison):
+  bindings 10, blocks 2, copies 4, depth 2, direct3d 4, fitted 1, prepare 1, raster 1, scenes 4,
+  suite 24 (present among them, so windows that take `rgba8unorm` are unchanged), writes 11;
+  tests/present.rs has no tests there. Clippy with warnings denied passes natively on Windows and
+  macOS and for WebAssembly.
+- `web/check` at 4feccfa (after cleaning this crate, naga, `wcontainers-gpu` and
+  `wcontainers-gpu-test` on both targets: a stale naga library failed the WebAssembly link before):
+  all twelve pictures equal Direct3D 11's at tolerance 0, the twists differ as before, the
+  viewports as before, the suite in Chrome 24 of 24 (present among them), Chrome's adapter the RTX
+  3080 (D3D12, discrete, not a fallback). `prepare` in Chrome: unprepared frame of 16 first draws
+  220.5 ms, 16 pipelines built while drawing; after 0.5 ms of `prepare` calls and 207.7 ms waiting
+  for the compiles, the frame 3.8 ms with none built. Job 2 min 11 s.
+- This Mac (Apple M5 Max, Metal), single jobs: the suite's other 23 tests pass under the new host;
+  present fails as the known failure (window occluded, state 0x2000). The ScreenCaptureKit probe:
+  256 of 256 colours read exactly (about 0.25 s a capture).
 
 Run 7 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
 load not sampled; Mac load average 18 to 64):
