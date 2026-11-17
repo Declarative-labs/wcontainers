@@ -22,7 +22,7 @@ DXGI_SURFACE = ["IDXGISurface1", "IDXGISurface"]
 for empty in ("ID3DDeviceContextState", "ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11ComputeShader", "ID3D11Predicate"):
     traits[empty] = []
 structs = {
-    "Device": ["ID3D11Device1", "ID3D11Device", "IDXGIDevice1", "IDXGIDevice", "IDXGIObject"],
+    "Device": ["ID3D11Device1", "ID3D11Device", "IDXGIDevice3", "IDXGIDevice2", "IDXGIDevice1", "IDXGIDevice", "IDXGIObject"],
     "Context": ["ID3D11DeviceContext1", "ID3D11DeviceContext"] + CHILD
     + ["ID3D11Multithread", "ID3DUserDefinedAnnotation"],
     "Adapter": ["IDXGIAdapter1", "IDXGIAdapter", "IDXGIObject"],
@@ -55,6 +55,8 @@ hand = {
     "ID3D11Device": "CreateBuffer CreateTexture1D CreateTexture2D CreateTexture3D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CreateQuery CreatePredicate CreateUnorderedAccessView CreateComputeShader CreateDeferredContext CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
     "ID3D11Device1": "GetImmediateContext1 CreateDeferredContext1 CreateDeviceContextState CreateBlendState1 CreateRasterizerState1",
     "IDXGIDevice1": "SetMaximumFrameLatency GetMaximumFrameLatency",
+    "IDXGIDevice2": "OfferResources ReclaimResources",
+    "IDXGIDevice3": "Trim",
     "ID3D11DeviceContext1": "SwapDeviceContextState CopySubresourceRegion1 UpdateSubresource1 DiscardResource DiscardView DiscardView1 VSSetConstantBuffers1 PSSetConstantBuffers1 VSGetConstantBuffers1 PSGetConstantBuffers1 CSSetConstantBuffers1 CSGetConstantBuffers1 ClearView",
     "ID3D11Multithread": "Enter Leave SetMultithreadProtected GetMultithreadProtected",
     "ID3DUserDefinedAnnotation": "BeginEvent EndEvent SetMarker GetStatus",
@@ -63,7 +65,7 @@ hand = {
     "ID3D11RasterizerState1": "GetDesc1",
     "IDXGIObject": "GetParent",
     "IDXGIDevice": "GetAdapter",
-    "IDXGIAdapter": "GetDesc EnumOutputs",
+    "IDXGIAdapter": "GetDesc EnumOutputs CheckInterfaceSupport",
     "IDXGIAdapter1": "GetDesc1",
     "IDXGIOutput": "GetDesc GetDisplayModeList FindClosestMatchingMode",
     "IDXGIFactory": "EnumAdapters MakeWindowAssociation GetWindowAssociation CreateSwapChain",
@@ -98,7 +100,11 @@ def unused_stage(name, p, what):
     """The body of a context method on a stage or feature not served: served while it binds nothing."""
     if re.fullmatch(r"(GS|HS|DS)SetShader|SetPredication", name):
         return f'self.only_unbinding("{what}", !{p[0]}.is_null())'
-    if re.fullmatch(r"(GS|HS|DS)Set(ConstantBuffers1?|ShaderResources|Samplers)", name):
+    if re.fullmatch(r"(GS|HS|DS)Set(ConstantBuffers1?|Samplers)", name):
+        return f"self.{snake(name)}({', '.join(p)})"
+    if re.fullmatch(r"(GS|HS|DS)Get(ConstantBuffers1?|Samplers)", name):
+        return f"self.{snake(name)}({', '.join(p)})"
+    if re.fullmatch(r"(GS|HS|DS)SetShaderResources", name):
         return f'self.only_unbinding("{what}", super::context::binds({p[2]}, {p[1]}))'
     if name == "SOSetTargets":
         return f'self.only_unbinding("{what}", super::context::binds({p[1]}, {p[0]}))'

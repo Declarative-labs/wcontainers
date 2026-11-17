@@ -4,13 +4,13 @@ use std::rc::Rc;
 
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
-    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, EmptyPass, Extent,
-    Features, Filter, Format, FormatKind, FormatUse, HELPER_SET, HelperValue, IndexBinding,
-    IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc, Program,
-    ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderStage, SlotKind,
-    SlowPath, SourceStage, StageSet, StepMode, StoreOp, TextureUsage, Topology, VariantKey,
-    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport,
-    WriteMode, helper_binding,
+    ColorTarget, CountedDraw, DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange,
+    EmptyPass, Extent, Features, Filter, Format, FormatKind, FormatUse, HELPER_SET, HelperValue,
+    IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc,
+    PassTargets, Program, ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect,
+    ShaderStage, SlotKind, SlowPath, SourceStage, StageSet, StepMode, StoreOp, Target,
+    TextureUsage, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, Viewport as GpuViewport, WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -90,6 +90,10 @@ pub struct ContextState<B: Backend> {
     clears: Vec<PendingClear<B>>,
     /// Mapped subresources: the resource's address, subresource, map type.
     mapped: Vec<(usize, u32, u32)>,
+    /// The targets last set into the pass tracker for counted occlusion queries, by view address,
+    /// and whether the counter has copied the depth its segment's draws began from.
+    counted_targets: Vec<usize>,
+    counted_copy: bool,
 }
 
 impl<B: Backend> ContextState<B> {
@@ -123,6 +127,8 @@ impl<B: Backend> ContextState<B> {
             empty_pass: None,
             clears: Vec::new(),
             mapped: Vec::new(),
+            counted_targets: Vec::new(),
+            counted_copy: false,
         }
     }
 }
@@ -615,6 +621,8 @@ impl<B: Backend> Device<B> {
         });
     }
 
+    /// Ends the open pass. While counted occlusion queries run, the counter then counts the draws
+    /// it kept, before anything changes what they read or drew on.
     pub(crate) fn end_pass(&mut self) {
         if self.ctx.pass_open {
             self.close_stretch(false);
@@ -622,6 +630,135 @@ impl<B: Backend> Device<B> {
             self.ctx.pass_open = false;
             self.queries.pass_set = None;
         }
+        if !self.queries.counted.is_empty() {
+            let r = self.counter.flush(&mut self.backend, &mut self.passes);
+            if let Err(e) = r {
+                let _ = self.gpu::<()>(Err(e));
+            }
+            self.ctx.counted_copy = false;
+        }
+    }
+
+    /// Before a resource is written while counted occlusion queries run: the draws kept read it as
+    /// it was.
+    fn before_write(&mut self) {
+        if !self.queries.counted.is_empty() {
+            self.end_pass();
+        }
+    }
+
+    /// Before a draw while counted occlusion queries run: the targets set into the pass tracker,
+    /// pending clears run where the counter must copy the depth the draw begins from, and the
+    /// draw's counting program, with whether it writes depth or stencil.
+    fn prepare_counted(
+        &mut self,
+        vs: &Rc<Shader<B>>,
+        ps: Option<&Rc<Shader<B>>>,
+    ) -> Result<(B::Program, bool)> {
+        let program = self.counting_program(vs, ps)?;
+        let ds = &self
+            .ctx
+            .depth_stencil
+            .as_ref()
+            .unwrap_or(&self.defaults.depth_stencil)
+            .desc;
+        let writes = self.ctx.depth.is_some()
+            && ((ds.depth_enable && ds.depth_write)
+                || (ds.stencil_enable && ds.stencil_write_mask != 0));
+        let key: Vec<usize> = self
+            .ctx
+            .targets
+            .iter()
+            .chain([&self.ctx.depth])
+            .map(|v| v.as_ref().map_or(0, |v| Rc::as_ptr(v) as usize))
+            .collect();
+        if self.ctx.counted_targets != key {
+            self.end_pass();
+            let targets = self.pass_targets();
+            let r = self.passes.set_targets(&mut self.backend, targets);
+            self.gpu(r)?;
+            self.ctx.counted_targets = key;
+        }
+        if writes && !self.ctx.counted_copy {
+            if !self.ctx.clears.is_empty() {
+                self.open_pass();
+            }
+            self.end_pass();
+            self.ctx.counted_copy = true;
+        }
+        Ok((program, writes))
+    }
+
+    /// The bound targets as the pass tracker takes them.
+    fn pass_targets(&self) -> PassTargets<B> {
+        let target = |v: &Rc<View<B>>| {
+            let t = &v.texture;
+            let mip = v.desc.first_mip;
+            let d3 = t.desc.dimension == TexDim::D3;
+            Target {
+                view: v.gpu.handle.clone(),
+                texture: t.gpu.handle.clone(),
+                format: v.format,
+                mip,
+                layer: if d3 { 0 } else { v.desc.first_layer },
+                depth_slice: if d3 { v.desc.first_layer } else { 0 },
+                width: (t.desc.width >> mip).max(1),
+                height: (t.desc.height >> mip).max(1),
+                samples: t.desc.sample_count,
+            }
+        };
+        let empty = (self.ctx.targets.iter().all(Option::is_none) && self.ctx.depth.is_none())
+            .then(|| self.empty_size());
+        PassTargets {
+            colors: std::array::from_fn(|i| {
+                self.ctx.targets[i].as_ref().map(|v| ColorTarget {
+                    target: target(v),
+                    resolve: None,
+                })
+            }),
+            depth: self.ctx.depth.as_ref().map(target),
+            empty,
+        }
+    }
+
+    /// The counting program of a vertex and pixel shader pair, made at its first counted draw.
+    fn counting_program(
+        &mut self,
+        vs: &Rc<Shader<B>>,
+        ps: Option<&Rc<Shader<B>>>,
+    ) -> Result<B::Program> {
+        let key = (vs.gpu.id, ps.map_or(0, |p| p.gpu.id));
+        if let Some(p) = self.counting.get(&key) {
+            return Ok(p.handle.clone());
+        }
+        // Made after the pair's own program, so the vertex shader converted for its interpolation
+        // is there.
+        self.program(vs, ps)?;
+        let module = match ps {
+            Some(p) => {
+                let mut c = crate::shader::convert(&p.bytecode, SourceStage::Pixel)?;
+                crate::counting::from_pixel_shader(&c.modules.pop().expect("one module"))?
+            }
+            None => crate::counting::without_pixel_shader()?,
+        };
+        let fragment = self.backend.create_shader(&module);
+        let fragment = self.gpu(fragment)?;
+        let vertex = self
+            .interpolated
+            .get(&key)
+            .map_or(&vs.gpu.handle, |s| &s.handle);
+        let program = self.backend.create_program(&Program::Render {
+            vertex,
+            fragment: Some(&fragment),
+        });
+        self.backend.destroy(Object::Shader(fragment));
+        let program = self.gpu(program)?;
+        let id = self.id();
+        self.counting.insert(
+            key,
+            Kept::new(program.clone(), id, Object::Program, &self.graveyard),
+        );
+        Ok(program)
     }
 
     pub(crate) fn ctx_pass_open(&self) -> bool {
@@ -1767,6 +1904,141 @@ impl<B: Backend> Device<B> {
                 self.end_pass();
             }
         }
+        let counting = if self.queries.counted.is_empty() {
+            None
+        } else {
+            Some(self.prepare_counted(&vs, ps.as_ref())?)
+        };
+        self.count_combination(&vs, ps.as_ref(), topology, samples);
+        let alpha_to_coverage = self
+            .ctx
+            .blend
+            .as_ref()
+            .is_some_and(|b| b.desc.alpha_to_coverage);
+        let instances_step_by_one = self
+            .ctx
+            .layout
+            .as_ref()
+            .is_none_or(|l| l.instance_steps.iter().flatten().all(|&s| s == 1));
+
+        // Builds the draw's call and gives it to `$then`: once to the occlusion counter, which
+        // keeps a counted draw before its pass opens, and once to the back end.
+        macro_rules! with_call {
+            ($call:ident => $then:expr) => {{
+                let ctx = &self.ctx;
+                // Fixed arrays: no allocation per draw (Direct3D has 32 vertex slots).
+                let vertex_handles: [_; VERTEX_SLOTS] = std::array::from_fn(|slot| {
+                    ctx.vertex_buffers[slot]
+                        .as_ref()
+                        .map(|(b, _, offset)| (b.gpu.borrow(), *offset))
+                });
+                let read = |slot: usize| {
+                    ctx.layout
+                        .as_ref()
+                        .is_some_and(|l| l.elements.iter().any(|e| e.slot as usize == slot))
+                };
+                let vertex_buffers: [Option<VertexBinding<'_, B>>; VERTEX_SLOTS] =
+                    std::array::from_fn(|slot| match (&vertex_handles[slot], &zero_stream) {
+                        (Some((b, offset)), _) => Some(VertexBinding {
+                            buffer: &b.handle,
+                            offset: u64::from(*offset),
+                        }),
+                        (None, Some(zero)) if read(slot) => Some(VertexBinding {
+                            buffer: zero,
+                            offset: 0,
+                        }),
+                        _ => None,
+                    });
+                let index_handle = ctx.index.as_ref().map(|(b, _, _)| b.gpu.borrow());
+                let used = vertex_buffers
+                    .iter()
+                    .rposition(Option::is_some)
+                    .map_or(0, |i| i + 1);
+                let index = match (&generated, &ctx.index) {
+                    (Some(ring), _) => Some(IndexBinding {
+                        buffer: ring,
+                        offset: 0,
+                        format: IndexFormat::U32,
+                    }),
+                    (None, Some((_, f, offset))) if indexed => Some(IndexBinding {
+                        buffer: &index_handle.as_ref().expect("an index buffer").handle,
+                        offset: u64::from(*offset),
+                        format: *f,
+                    }),
+                    _ => None,
+                };
+                // Without a shader choosing one (none is served), Direct3D draws through the first viewport
+                // and scissor rectangle; with no rectangle set, the scissor test passes nothing.
+                let v = ctx.viewports[0];
+                let viewport = GpuViewport {
+                    x: v.x.to_bits(),
+                    y: v.y.to_bits(),
+                    width: v.width.to_bits(),
+                    height: v.height.to_bits(),
+                    min_depth: v.min_depth.to_bits(),
+                    max_depth: v.max_depth.to_bits(),
+                };
+                let blend = ctx.blend.as_ref().unwrap_or(&self.defaults.blend);
+                let depth_stencil = ctx
+                    .depth_stencil
+                    .as_ref()
+                    .unwrap_or(&self.defaults.depth_stencil);
+                let raster = ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
+                let no_rect = [ScissorRect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                }];
+                let scissors: &[ScissorRect] = match ctx.scissors.first() {
+                    _ if !raster.desc.scissor => &[],
+                    Some(rect) => std::slice::from_ref(rect),
+                    None => &no_rect,
+                };
+                let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
+                bindings[0] = ctx.sets[VERTEX].as_ref().map(|k| &k.handle);
+                bindings[1] = ctx.sets[PIXEL].as_ref().map(|k| &k.handle);
+                if reads_bases {
+                    bindings[HELPER_SET as usize] = self.draw_base.as_ref().map(|(_, k)| &k.handle);
+                }
+                let strip = matches!(topology, Topology::LineStrip | Topology::TriangleStrip);
+                let call = DrawCall {
+                    program: &program,
+                    blend: &blend.gpu.handle,
+                    depth_stencil: &depth_stencil.gpu.handle,
+                    raster: masked.as_ref().unwrap_or(&raster.gpu.handle),
+                    vertex_layout: &vertex_layout,
+                    bindings,
+                    vertex_buffers: &vertex_buffers[..used],
+                    index,
+                    topology,
+                    restart: strip && indexed,
+                    viewports: std::slice::from_ref(&viewport),
+                    scissors,
+                    blend_constant: ctx.blend_factor.map(f32::to_bits),
+                    stencil_reference: [ctx.stencil_ref as u8; 2],
+                    immediates: &[],
+                    range: same_range(&gpu_range),
+                };
+                let $call = call;
+                $then
+            }};
+        }
+        if let Some((counting, writes)) = &counting {
+            let counted = CountedDraw {
+                counting,
+                alpha_to_coverage,
+                writes_depth_stencil: *writes,
+                instances_step_by_one,
+            };
+            let kept = with_call!(call => self.counter.draw(
+                &mut self.backend,
+                &mut self.passes,
+                &call,
+                &counted,
+            ));
+            self.gpu(kept)?;
+        }
         self.open_pass();
         if !self.open_stretch() {
             // The pass's occlusion set has no slot left: the draw opens the next pass on another.
@@ -1774,104 +2046,7 @@ impl<B: Backend> Device<B> {
             self.open_pass();
             self.open_stretch();
         }
-
-        self.count_combination(&vs, ps.as_ref(), topology, samples);
-        let ctx = &self.ctx;
-        // Fixed arrays: no allocation per draw (Direct3D has 32 vertex slots).
-        let vertex_handles: [_; VERTEX_SLOTS] = std::array::from_fn(|slot| {
-            ctx.vertex_buffers[slot]
-                .as_ref()
-                .map(|(b, _, offset)| (b.gpu.borrow(), *offset))
-        });
-        let read = |slot: usize| {
-            ctx.layout
-                .as_ref()
-                .is_some_and(|l| l.elements.iter().any(|e| e.slot as usize == slot))
-        };
-        let vertex_buffers: [Option<VertexBinding<'_, B>>; VERTEX_SLOTS] =
-            std::array::from_fn(|slot| match (&vertex_handles[slot], &zero_stream) {
-                (Some((b, offset)), _) => Some(VertexBinding {
-                    buffer: &b.handle,
-                    offset: u64::from(*offset),
-                }),
-                (None, Some(zero)) if read(slot) => Some(VertexBinding {
-                    buffer: zero,
-                    offset: 0,
-                }),
-                _ => None,
-            });
-        let index_handle = ctx.index.as_ref().map(|(b, _, _)| b.gpu.borrow());
-        let used = vertex_buffers
-            .iter()
-            .rposition(Option::is_some)
-            .map_or(0, |i| i + 1);
-        let index = match (&generated, &ctx.index) {
-            (Some(ring), _) => Some(IndexBinding {
-                buffer: ring,
-                offset: 0,
-                format: IndexFormat::U32,
-            }),
-            (None, Some((_, f, offset))) if indexed => Some(IndexBinding {
-                buffer: &index_handle.as_ref().expect("an index buffer").handle,
-                offset: u64::from(*offset),
-                format: *f,
-            }),
-            _ => None,
-        };
-        // Without a shader choosing one (none is served), Direct3D draws through the first viewport
-        // and scissor rectangle; with no rectangle set, the scissor test passes nothing.
-        let v = ctx.viewports[0];
-        let viewport = GpuViewport {
-            x: v.x.to_bits(),
-            y: v.y.to_bits(),
-            width: v.width.to_bits(),
-            height: v.height.to_bits(),
-            min_depth: v.min_depth.to_bits(),
-            max_depth: v.max_depth.to_bits(),
-        };
-        let blend = ctx.blend.as_ref().unwrap_or(&self.defaults.blend);
-        let depth_stencil = ctx
-            .depth_stencil
-            .as_ref()
-            .unwrap_or(&self.defaults.depth_stencil);
-        let raster = ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
-        let no_rect = [ScissorRect {
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-        }];
-        let scissors: &[ScissorRect] = match ctx.scissors.first() {
-            _ if !raster.desc.scissor => &[],
-            Some(rect) => std::slice::from_ref(rect),
-            None => &no_rect,
-        };
-        let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
-        bindings[0] = ctx.sets[VERTEX].as_ref().map(|k| &k.handle);
-        bindings[1] = ctx.sets[PIXEL].as_ref().map(|k| &k.handle);
-        if reads_bases {
-            bindings[HELPER_SET as usize] = self.draw_base.as_ref().map(|(_, k)| &k.handle);
-        }
-        let strip = matches!(topology, Topology::LineStrip | Topology::TriangleStrip);
-        let call = DrawCall {
-            program: &program,
-            blend: &blend.gpu.handle,
-            depth_stencil: &depth_stencil.gpu.handle,
-            raster: masked.as_ref().unwrap_or(&raster.gpu.handle),
-            vertex_layout: &vertex_layout,
-            bindings,
-            vertex_buffers: &vertex_buffers[..used],
-            index,
-            topology,
-            restart: strip && indexed,
-            viewports: std::slice::from_ref(&viewport),
-            scissors,
-            blend_constant: ctx.blend_factor.map(f32::to_bits),
-            stencil_reference: [ctx.stencil_ref as u8; 2],
-            immediates: &[],
-            range: gpu_range,
-        };
-        self.backend.draw(&call);
+        with_call!(call => self.backend.draw(&call));
         Ok(())
     }
 
@@ -2074,6 +2249,7 @@ impl<B: Backend> Device<B> {
         row_pitch: u32,
         slice_pitch: u32,
     ) -> Result<()> {
+        self.before_write();
         match dst {
             Resource::Buffer(b) => {
                 if b.desc.usage != usage::DEFAULT {
@@ -2398,6 +2574,7 @@ impl<B: Backend> Device<B> {
         if kind == map::READ {
             return;
         }
+        self.before_write();
         self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
         match resource {
             Resource::Buffer(b) => {
@@ -2490,5 +2667,37 @@ impl<B: Backend> Device<B> {
         let fence = self.backend.submit();
         self.submitted(fence);
         self.poll_removed();
+    }
+}
+
+/// The same range again, for a draw's call built twice.
+fn same_range<'a, B: Backend>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
+    match *r {
+        DrawRange::Vertices {
+            first,
+            count,
+            first_instance,
+            instances,
+        } => DrawRange::Vertices {
+            first,
+            count,
+            first_instance,
+            instances,
+        },
+        DrawRange::Indexed {
+            first,
+            count,
+            base_vertex,
+            first_instance,
+            instances,
+        } => DrawRange::Indexed {
+            first,
+            count,
+            base_vertex,
+            first_instance,
+            instances,
+        },
+        DrawRange::Indirect { args, offset } => DrawRange::Indirect { args, offset },
+        DrawRange::IndexedIndirect { args, offset } => DrawRange::IndexedIndirect { args, offset },
     }
 }

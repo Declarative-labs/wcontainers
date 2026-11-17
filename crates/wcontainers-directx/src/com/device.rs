@@ -1,4 +1,4 @@
-//! The device: `ID3D11Device1` and `IDXGIDevice1` on one object.
+//! The device: `ID3D11Device1` and `IDXGIDevice3` on one object.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -9,7 +9,9 @@ use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
-use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIAdapter1, IDXGIDevice1};
+use windows::Win32::Graphics::Dxgi::{
+    DXGI_OFFER_RESOURCE_PRIORITY, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice3, IDXGIResource,
+};
 use windows::core::{
     ComObjectInner, ComObjectInterface, GUID, IUnknownImpl, Interface, OutRef, Ref, Result,
     implement,
@@ -22,7 +24,7 @@ use wcontainers_gpu::SourceStage;
 use super::counted::{Counted, Held};
 use super::*;
 
-#[implement(ID3D11Device1, IDXGIDevice1)]
+#[implement(ID3D11Device1, IDXGIDevice3)]
 pub struct Device {
     pub front: Locked<Shared>,
     pub(super) private: Private,
@@ -943,7 +945,50 @@ impl Device_Impl {
         unsafe { self.adapter.query(riid, parent).ok() }
     }
 
+    /// `OfferResources`: the contents are kept, which DXGI allows (it may discard them).
+    pub(super) fn offer_resources(
+        &self,
+        count: u32,
+        resources: *const Option<IDXGIResource>,
+        priority: DXGI_OFFER_RESOURCE_PRIORITY,
+    ) -> Result<()> {
+        if !(1..=3).contains(&priority.0) || !all_given(count, resources) {
+            return Err(E_INVALIDARG.into());
+        }
+        Ok(())
+    }
+
+    /// `ReclaimResources`: offered resources were never discarded.
+    pub(super) fn reclaim_resources(
+        &self,
+        count: u32,
+        resources: *const Option<IDXGIResource>,
+        discarded: *mut windows::core::BOOL,
+    ) -> Result<()> {
+        if !all_given(count, resources) {
+            return Err(E_INVALIDARG.into());
+        }
+        if !discarded.is_null() {
+            for i in 0..count as usize {
+                unsafe { *discarded.add(i) = false.into() };
+            }
+        }
+        Ok(())
+    }
+
+    /// `Trim`: the front keeps no temporary memory a hint could free.
+    pub(super) fn trim(&self) {}
+
     pub(super) fn get_adapter(&self) -> Result<IDXGIAdapter> {
         self.adapter.cast()
     }
+}
+
+/// Whether `resources` holds `count` resources, none of them null.
+fn all_given(count: u32, resources: *const Option<IDXGIResource>) -> bool {
+    count > 0
+        && !resources.is_null()
+        && unsafe { std::slice::from_raw_parts(resources, count as usize) }
+            .iter()
+            .all(Option::is_some)
 }
