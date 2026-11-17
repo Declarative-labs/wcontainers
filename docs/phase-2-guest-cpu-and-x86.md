@@ -474,10 +474,11 @@ pub fn thread_module<G: Guest>() -> Vec<u8>;
 
 `translate_omitting` and `translate_in_modules` take the same type parameter and the same `host` and `offer`
 arguments. Every use is monomorphised; nothing of a guest is reached through `dyn`, so nothing is looked
-up at run time. At translate time ARM64 retires as many instructions as before the move (within the 1
-percent its runs vary) but took 1 to 3 percent more cycles when measured at X1, with its small per-instruction
-queries marked `#[inline]` so they inline across the crate boundary (5 percent without); the output is
-the same bytes, so the guest's run time is untouched. (The loop-proof
+up at run time. ARM64's small per-instruction queries are marked `#[inline]` so they inline across the
+crate boundary (release builds have no LTO), and the translator walks only the flag states a set holds, not
+every bit of the `u128`; measured at X1, ARM64 then translates in no more cycles than before the move and
+about 2 percent fewer instructions, and the output is the same bytes, so the guest's run time is untouched.
+(The loop-proof
 module passes a few of its own closures as `&dyn Fn` while it plans, as before the move: translate time only,
 nothing of the guest, nothing in the output.) The translator crate
 depends on `wcontainers-guest-cpu` only, never on a CPU crate (a test in the translator crate fails if its
@@ -649,7 +650,8 @@ pub trait Guest: Personality {
     // --- the host side of this CPU's own hooks ---
     /// What the runner does when a piece calls a hook whose `HookType::body` is `Cpu`: the work, on the
     /// bytes of the thread's state its `HookType::state` names (`state[0]` is the byte at `state.at`), with
-    /// the hook's arguments. The runner copies only those bytes, so the hook costs no more than the work.
+    /// the hook's arguments. The runner hands over only those bytes (in place where it can), so the hook
+    /// costs no more than the work.
     /// ARM64's float hook is `exact::run` behind it; x86's float and x87 hooks likewise. Every runner (the
     /// host runner, the browser's cdylib) calls this and nothing CPU-named. Hooks are a runner's job,
     /// never the kernel's: the runner owns the WebAssembly instance whose imports they are.
@@ -1148,10 +1150,14 @@ browser's cdylib then exports one function, `cpu_hook(hook, a, b, c, d)`, over a
 into which the JavaScript runner copies the hook's `state` bytes of the thread's state before the call and
 from which it copies them back after, with `cpu_hook_result(i)` and `cpu_hook_reason()` for the results and
 the reason. The hook is a slow path, but a program that sets a rounding mode takes it on every floating point
-operation, so it must cost no more than its work: each runner copies only the bytes `HookType::state` names
-(ARM64's float hook: FPSR and FPCR through FPSR tracking, 36 bytes), and the host runner registers the hook
-with wasmtime's raw-value form (`func_new_unchecked`) with the arguments in a fixed array, so nothing is
-allocated per call. The buffer is found as `input` and `output` are today: an export `cpu_state() -> *mut
+operation, so it must cost no more than its work: `run_hook` gets only the bytes `HookType::state` names
+(ARM64's float hook: FPSR and FPCR through FPSR tracking, 36 bytes), which the browser copies and the host
+runner hands over in place, as a slice of the thread's state memory (the guest thread is in the hook, so
+nothing else touches them); the host runner registers each hook with wasmtime's raw-value form
+(`func_new_unchecked`) through a closure made for the hook's index at compile time, so the hook's types and
+state range are constants there and its arguments go into a fixed array with no lookup, and nothing is
+allocated per call. Measured at X1: the float hook program retires no more instructions than before the
+move. The buffer is found as `input` and `output` are today: an export `cpu_state() -> *mut
 u8` returns its address, a buffer of the contract's `threadStateSize` bytes and `maxLength` more that the
 cdylib allocates once on the first call and never frees or moves, so runner.js reads the address once after
 instantiating the cdylib (and, as for `output`, makes its byte view of the cdylib's memory afresh after the

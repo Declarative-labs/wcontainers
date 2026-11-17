@@ -14,8 +14,59 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   3 with the translator's side of every item; run 3 (the same day) fixed what the second check found: a CPU
   without flags, grouping through a segment base, a test guest that now runs, the browser's hook path;
   run 4 (the same day) fixed what the third check found: overlapping instruction streams that meet again,
-  the translate time the move added, an alias of the abi crate. Every part of the pass bar holds (see "X1,
-  run 4"). Next: X2, the shared test harness (plan section 9).
+  half the translate time the move added, an alias of the abi crate. Run 4 said every part of the pass bar
+  held, but the float hook program was still slower in wasmtime (never timed again after run 2); run 5 (the
+  same day) found both causes of that and of the rest of the translate time, and removed them (see "X1, run
+  5"). Next: X2, the shared test harness (plan section 9).
+
+## X1, run 5 (2026-11-17)
+
+The fourth check of X1 found one blocking problem and one smaller one. Both were measured first, by
+instructions retired (`/usr/bin/time -l`), which barely move between runs, with times beside them.
+- Blocking, the float hook program slower in wasmtime. Scratch `x1/run5/float-count.sh` runs the float hook
+  test binary of the old tree (2274314) and of the checkout, `WC_FLOAT_RUNS=5`, alternating. Old 313.0 to
+  313.4 G instructions, HEAD 321.1 to 321.5 G. With `WC_FLOAT_STEPS=1` both are 192.9 G, so all 8 G is in the
+  hook calls (about 6 percent of their instructions). Variants built only to measure, then dropped:
+  - the old hook body put back in the new runner: 313 G, so nothing outside the hook path costs more;
+  - typed `func_wrap` with `run_hook` and the 36-byte copies: 319 G;
+  - no copies, the bytes handed in place: HEAD's path 315.8 G and typed 313.1 G;
+  - in place with the arguments read with the types written out: 313.9 G.
+  So the copies of the state bytes cost 6 G and the per-call loop over the hook's types about 2 G.
+  Fixed so: the host runner hands `run_hook` the hook's bytes in place, as a slice of the state memory (no
+  copy and no `Arc` clone). Each hook's closure is `cpu_hook::<I>` for its index, made at compile time from
+  `REGISTER_CPU_HOOK`, so the hook's types and range are constants there. Result 312.6 to 313.7 G against
+  old 313.0 to 313.1 G (`float-count-final.log`). Times, old against new alternating, order flipped each
+  round, best of 3 a run, 8 rounds (`float-alt2.log`, load 21.7 to 28.6):
+  - none: best old 0.6719 s, new 0.6597 s;
+  - full: best old 0.9330 s, new 0.9221 s;
+  - new was faster in 4 of the 8 pairs at each look-ahead.
+  (With the copies gone but the closure not yet per index, 10 rounds of one run each, `float-alt1.log`, were
+  too noisy at that load to read.) The browser's path copies the bytes, as it must. It was already equal in
+  Chrome (run 3) and is unchanged.
+- Translate time: the rest was found. Run 3 made the flag-state sets `u128`, and two loops
+  (`write_back_flags`, `push_flag`) tested all 128 bits where they had tested 32. Now `state_ids` walks only
+  the set bits. Scratch `x1/run5/count.sh`, python and busybox at full, bounded 256 and bounded 4096, one
+  thread, 3 rounds of old, HEAD before this and new (load 17.4 to 26.5):
+  - instructions: old 471.7 to 472.5 G, HEAD 468.9 to 470.1 G, new 459.6 to 460.2 G;
+  - best cycles: old 128.68 G, HEAD 132.84 G (1.032), new 128.34 G (0.997).
+  So the move now costs ARM64 nothing measurable at translate time, and about 2.6 percent fewer
+  instructions. The plan (3.1, 3.4 Hooks) says so.
+
+Proof after run 5 (machine: the Mac, Apple M5; loads as given):
+- Byte for byte against 2274314 with `same-output.sh` at 34bfa5c (`x1/run5/same-small.log`, `same-big.log`):
+  bench 127 modules, busybox 34, musl 30, python 34, rg 34, git 34, java 40, go 28, all the same (load 23.1 at
+  the end); node 62 modules (alone, 13:46 to 13:51, load 20.7 to 46.5) and bun 74 (alone, 13:51 to
+  13:57, load 46.5 to 28.2), the same.
+- Suite: `cargo test -p wcontainers-guest-cpu -p wcontainers-arm64 -p wcontainers-translator -p
+  wcontainers-translator-test` at 34bfa5c (`x1/run5/suite.log`): 92 passed, 0 failed, 10 ignored (the
+  measuring ones), 29 result lines, Chrome and Docker included, 25 minutes (load 26.2 at start, 23.0 at end).
+- Clippy with `-D warnings` on the four crates (tests and bins) and on the browser crate for wasm32, and
+  `cargo fmt --check`: clean.
+- Benchmark run times: not timed again. The modules are the same bytes, and the runner's change touches only
+  a hook of the guest's own, which the benchmarks never call (they run in the default rounding mode), so run
+  2's figures stand.
+- origin/phase-1-translator: fetched at the end of the run, nothing new (its last commit, 11:05 the same
+  day, is already merged).
 
 ## X1, run 4 (2026-11-17)
 
@@ -127,6 +178,11 @@ Proof after run 3 (machine: the Mac, Apple M5; loads as given):
   crate for wasm32, and `cargo fmt --check`: clean.
 - Benchmark run times: not timed again. The modules are the same bytes as before the move and the host
   runner (`src/`) and the ARM64 crate are unchanged since run 2's timing, so run 2's figures stand.
+- The float hook's instructions and times, old against new: build the float hook test binary in both trees
+  (`cargo test --release --no-run -p wcontainers-translator-test --test float_hook`), copy each into scratch
+  `x1/run5/`, then `SIDES="old=<old binary> new=<new binary>" nix develop -c <scratch>/x1/run5/float-count.sh
+  <rounds>` (instructions retired, cycles, best times; `WC_FLOAT_RUNS`, `WC_FLOAT_STEPS` as for the test) or
+  `.../float-alt.sh <rounds>` (times, order flipped each round). The side named `old` runs in the old tree.
 - The float hook in Chrome: old and new equal (above); in wasmtime it is run 2's figure (the host path is
   unchanged).
 - origin/phase-1-translator had nothing new to merge (fetched at the end of the run; last commit there
@@ -642,7 +698,7 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   -p wcontainers-translator -p wcontainers-translator-test` (Chrome and Docker needed), and the browser
   crate's lint as in docs/status-translator.md.
 - Translate time, old against new: build both sides' `tests/output.rs` (the comparison does), then
-  `<scratch>/x1/run4/translate-time.sh <rounds>` (wall and user seconds) or `<scratch>/x1/run4/count.sh
+  `<scratch>/x1/run4/translate-time.sh <rounds>` (wall and user seconds) or `<scratch>/x1/run5/count.sh
   <rounds>` (instructions retired and cycles from `/usr/bin/time -l`; edit the binaries' paths at its top).
 - The no-std check is `tests/no_std.rs` of the test crate (part of the suite); by hand: `nix develop -c
   cargo build -p wcontainers-guest-cpu -p wcontainers-arm64 --no-default-features --target wasm32v1-none
@@ -734,7 +790,7 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 ## Measurements
 
 All in the run sections above (X0 runs 9 and 10 timed nothing; X1's benchmark times are in run 2, the
-float hook's in runs 2 and 3, translate time in run 4).
+float hook's in runs 2, 3 and 5, translate time in runs 4 and 5).
 
 ## Licences of what this track uses
 
@@ -813,8 +869,10 @@ X1 (each also written into the plan's text in the same commit):
 - `ReturnAddress::Register` has no register bit (the plan had `Register(u32)`): nothing reads it, since a
   call's meaning writes the link register itself (plan 3.2).
 - The test guest runs at the comparison's look-aheads and bounded 5 (plan 9).
-- The move is not free at translate time: about 1 to 3 percent more cycles for ARM64, measured (run 4);
-  the plan said nothing beyond today's cost (plan 3.1).
+- The host runner hands a hook of the guest's own its state bytes in place, not a copy, and makes each such
+  hook's closure for its index at compile time. The plan had the runner copy the named bytes; the copies
+  and the per-call lookup of the hook's types cost the float hook program 8 G instructions (run 5; plan 3.4
+  Hooks).
 - No intentional change of ARM64's output at X1: the stop check's raised branch changes at X6 (plan 5.1),
   so the whole move is compared byte for byte against one "before".
 
