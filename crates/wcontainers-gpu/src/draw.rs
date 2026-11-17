@@ -50,8 +50,11 @@ pub struct DepthAttachment<'a, B: Backend> {
     pub depth_store: StoreOp,
     pub stencil_load: LoadOp<u8>,
     pub stencil_store: StoreOp,
-    /// The pass only reads depth and stencil, so they may also be sampled during it.
-    pub read_only: bool,
+    /// The pass only reads depth, so it may also be sampled during the pass (Direct3D's read-only
+    /// depth view).
+    pub depth_read_only: bool,
+    /// The pass only reads stencil, likewise.
+    pub stencil_read_only: bool,
 }
 
 /// A pass to begin.
@@ -148,7 +151,10 @@ pub struct DrawCall<'a, B: Backend> {
     pub scissors: &'a [ScissorRect],
     /// Blend constant as f32 bits.
     pub blend_constant: [u32; 4],
-    pub stencil_reference: u8,
+    /// Stencil reference for front and back faces. They differ only with
+    /// [`crate::Features::STENCIL_PER_FACE`]; otherwise a front draws twice, culling one face each time
+    /// (slow path [`crate::SlowPath::StencilFacesSplit`]).
+    pub stencil_reference: [u8; 2],
     /// Small constants the program reads directly (root constants, push constants, plain uniforms),
     /// up to [`crate::Limits::immediate_bytes`].
     pub immediates: &'a [u8],

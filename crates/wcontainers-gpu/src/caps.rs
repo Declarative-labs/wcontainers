@@ -93,6 +93,10 @@ bitflags! {
         const SPARSE = 1 << 39;
         /// [`crate::Backend::prepare`] builds a state combination in the background.
         const BACKGROUND_PREPARE = 1 << 40;
+        /// The depth bounds test of [`crate::DepthStencilDesc::depth_bounds`].
+        const DEPTH_BOUNDS = 1 << 41;
+        /// A different stencil reference and masks for front and back faces in one draw.
+        const STENCIL_PER_FACE = 1 << 42;
     }
 }
 

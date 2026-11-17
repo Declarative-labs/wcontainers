@@ -361,7 +361,8 @@ pub trait Backend: Sized {
                         LoadOp::Load
                     },
                     stencil_store: StoreOp::Store,
-                    read_only: false,
+                    depth_read_only: false,
+                    stencil_read_only: false,
                 });
             }
         }

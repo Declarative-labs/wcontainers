@@ -131,9 +131,12 @@ pub struct DepthStencilDesc {
     pub depth_write: bool,
     /// None turns the stencil test off.
     pub stencil: Option<(StencilFace, StencilFace)>,
-    pub stencil_read_mask: u8,
-    pub stencil_write_mask: u8,
-    /// Depth bounds test (Direct3D 12, Vulkan), as f32 bits of the low and high bound.
+    /// Read and write masks for front and back faces; they differ only with
+    /// [`crate::Features::STENCIL_PER_FACE`].
+    pub stencil_read_mask: [u8; 2],
+    pub stencil_write_mask: [u8; 2],
+    /// Depth bounds test (Direct3D 12, Vulkan), as f32 bits of the low and high bound. Present only with
+    /// [`crate::Features::DEPTH_BOUNDS`].
     pub depth_bounds: Option<[u32; 2]>,
 }
 

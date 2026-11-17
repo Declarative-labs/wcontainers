@@ -263,7 +263,7 @@ fn call<'a>(viewports: &'a [Viewport]) -> DrawCall<'a, Recorder> {
         viewports,
         scissors: &[],
         blend_constant: [0; 4],
-        stencil_reference: 0,
+        stencil_reference: [0; 2],
         immediates: &[],
         range: DrawRange::Vertices {
             first: 0,

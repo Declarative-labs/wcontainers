@@ -180,6 +180,9 @@ Fast paths added by milestone G1 (designed now, so fronts can plan on them):
 - `generate_mips(&texture, levels)`. Default: one pass per level drawing a full-screen triangle that
   samples the level above with a linear sampler, using a program built once from WGSL through naga's WGSL
   reader. WebGL 2 overrides it with `generateMipmap` where the format allows it.
+- `clear_rects(&view, value, &[ScissorRect])`: Direct3D 11.1 `ClearView` and Direct3D 12 clears with
+  rectangles. Default: inside a pass, one draw per rectangle of a built-in program writing the value, with
+  the scissor set to the rectangle. WebGL 2 overrides it with scissored `clearBuffer*`.
 - `write_buffer_ring(&[u8]) -> BufferRange`: a place for per-draw data (Direct3D 9 user pointers, OpenGL
   client arrays, spilled immediates). Default: suballocate a ring buffer made with `create_buffer` and
   write with `WriteMode::NoOverwrite`, waiting on the fence of the frame that last used each part. No back
@@ -373,16 +376,17 @@ the adapter):
   `VERTEX_STORAGE_WRITE`, `TRANSFORM_FEEDBACK`, `READ_BACK_NOW`, `FAN_AND_LOOP`, `POLYGON_MODE`,
   `PROVOKING_VERTEX_LAST`, `CLIP_DEPTH_MINUS_ONE`, `CULL_DISTANCE`, `LOGIC_OP`, `WIDE_LINES`,
   `POINT_SIZE`, `OCCLUSION_COUNT`, `RESTART_SWITCH`, `FORMAT_REINTERPRET`, `SHADER_I64`, `SHADER_F64`,
-  `RESOURCE_TABLES`, `PERSISTENT_MAPPING`, `BORDER_COLOR`, `SPARSE`. Sample counts 1 and 4 only.
+  `RESOURCE_TABLES`, `PERSISTENT_MAPPING`, `BORDER_COLOR`, `SPARSE`, `DEPTH_BOUNDS`,
+  `STENCIL_PER_FACE`. Sample counts 1 and 4 only.
 - WebGL 2: `TRANSFORM_FEEDBACK`, `READ_BACK_NOW`, `FAN_AND_LOOP`, `PROVOKING_VERTEX_LAST`,
-  `CLIP_DEPTH_MINUS_ONE`, `POINT_SIZE` (up to the device's range), and by extension where present:
+  `CLIP_DEPTH_MINUS_ONE`, `POINT_SIZE` (up to the device's range), `STENCIL_PER_FACE`, and by extension where present:
   `POLYGON_MODE` (WEBGL_polygon_mode), `PROVOKING_VERTEX_FIRST` (WEBGL_provoking_vertex),
   `CLIP_DISTANCE` and `CULL_DISTANCE` (WEBGL_clip_cull_distance), `DEPTH_CLAMP` (EXT_depth_clamp),
   `DUAL_SOURCE_BLEND` (WEBGL_blend_func_extended), `INDEPENDENT_BLEND` (OES_draw_buffers_indexed),
   `TIMESTAMPS` (EXT_disjoint_timer_query_webgl2). Absent: everything that needs compute or storage,
   `INDIRECT`, `BASE_VERTEX_INSTANCE` (the extension is at 0.21%), `TEXTURE_VIEWS`, `SEPARATE_SAMPLERS`,
   `MULTISAMPLE_READ`, `SUBGROUPS`, `LOGIC_OP`, `WIDE_LINES`, `OCCLUSION_COUNT` (GLES 3.0 has only
-  any-samples queries), `RESTART_SWITCH`, `BORDER_COLOR`.
+  any-samples queries), `RESTART_SWITCH`, `BORDER_COLOR`, `DEPTH_BOUNDS`.
 
 Neither list is reduced to the other: each back end declares what it has and runs at its best.
 
@@ -406,6 +410,15 @@ These were looked for on purpose. Each is either reported absent through the API
 - Floating point modes. Direct3D 11 requires 32-bit denormals flushed in shaders; WGSL and GLSL ES leave
   denormal handling to the implementation. Listed as a loss; pictures are compared with tolerance.
 - Format reinterpretation through views is absent in both; fronts copy (`ReinterpretCopy`). Exact, slow.
+- Predicated drawing (Direct3D `SetPredication` without the hint flag, Vulkan conditional rendering)
+  has no GPU-side form in either API. The front waits for the query's answer on the device thread and
+  skips or keeps the draws (`PredicationWait`). Exact, slow; with the hint flag the draws are kept.
+- Depth and stencil read back: WebGPU cannot copy `depth24plus` out. The back end draws the depth into a
+  color texture and reads that (`DepthReadByDraw`); exact for 16 and 32-bit depth, and for 24-bit depth
+  as stored.
+- Different stencil reference or masks per face (Vulkan, OpenGL, newer Direct3D 12): WebGPU has one of
+  each; the front draws twice, culling one face each time (`StencilFacesSplit`). Exact.
+- Depth bounds test (optional in Direct3D 12 and Vulkan): absent in both, reported absent.
 
 ### 4.13 Compile-time resolution
 

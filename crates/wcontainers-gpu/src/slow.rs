@@ -77,11 +77,17 @@ pub enum SlowPath {
     PointsAsQuads,
     /// 64-bit float arithmetic emulated with 32-bit operations.
     F64Emulated,
+    /// A predicated draw waited for its query's answer on the device thread.
+    PredicationWait,
+    /// Depth or stencil read back by drawing it into a color texture first.
+    DepthReadByDraw,
+    /// A draw with different stencil values per face drawn once per face.
+    StencilFacesSplit,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 35] = [
+    pub const ALL: [SlowPath; 38] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -117,6 +123,9 @@ impl SlowPath {
         SlowPath::MultiViewportSplit,
         SlowPath::PointsAsQuads,
         SlowPath::F64Emulated,
+        SlowPath::PredicationWait,
+        SlowPath::DepthReadByDraw,
+        SlowPath::StencilFacesSplit,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -157,6 +166,9 @@ impl SlowPath {
             SlowPath::MultiViewportSplit => "draw split per viewport",
             SlowPath::PointsAsQuads => "large points drawn as quads",
             SlowPath::F64Emulated => "64-bit floats emulated",
+            SlowPath::PredicationWait => "predicated draw waited for its query",
+            SlowPath::DepthReadByDraw => "depth read back through a draw",
+            SlowPath::StencilFacesSplit => "draw split per stencil face",
         }
     }
 }
