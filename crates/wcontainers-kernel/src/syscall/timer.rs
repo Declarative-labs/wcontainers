@@ -1023,7 +1023,7 @@ pub(super) fn timerfd_create(
 }
 
 fn timer_descriptor(kernel: &Kernel, tid: Tid, fd: u64) -> Result<u64, Errno> {
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = super::io::open_file(kernel, tid, fd)?;
     kernel.timers.descriptor(&file).ok_or(Errno::EINVAL)
 }
 

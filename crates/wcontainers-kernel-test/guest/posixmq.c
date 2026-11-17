@@ -554,5 +554,14 @@ int main(void) {
     waits();
     notifications();
     limits();
+    // A queue an open makes is not truncated by O_TRUNC; one that exists is.
+    struct stat st;
+    int made = open("/dev/mqueue/truncated", O_CREAT | O_TRUNC | O_RDWR, 0600);
+    fstat(made, &st);
+    printf("made with O_TRUNC: size %lld\n", (long long)st.st_size);
+    int again = open("/dev/mqueue/truncated", O_TRUNC | O_RDWR);
+    fstat(again, &st);
+    printf("opened again with O_TRUNC: size %lld\n", (long long)st.st_size);
+    syscall(SYS_mq_unlink, "truncated");
     return 0;
 }

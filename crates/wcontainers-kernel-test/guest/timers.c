@@ -277,6 +277,10 @@ int main(void) {
     p("settime bad time", timerfd_settime(fd, 0, &bad_spec, NULL));
     p("settime not a timer", timerfd_settime(0, 0, &spec, NULL));
     p("gettime bad descriptor", timerfd_gettime(999, &before));
+    int path_only = open("/", O_PATH);
+    p("settime path only", timerfd_settime(path_only, 0, &spec, NULL));
+    p("gettime path only", timerfd_gettime(path_only, &before));
+    close(path_only);
     struct itimerspec every = {{0, 10000000}, {0, 10000000}};
     p("settime periodic", timerfd_settime(fd, 0, &every, NULL));
     struct pollfd poller = {fd, POLLIN, 0};

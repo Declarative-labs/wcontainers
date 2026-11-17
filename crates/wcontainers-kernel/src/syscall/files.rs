@@ -581,7 +581,9 @@ pub(super) fn open(
         {
             return Err(Errno::EINVAL);
         }
-        if flags & O_TRUNC != 0 && file_type == S_IFREG {
+        // A file this open made is not truncated (`do_open`'s `FMODE_CREATED`): a new queue keeps
+        // the size it shows.
+        if flags & O_TRUNC != 0 && file_type == S_IFREG && !created {
             let now = kernel.now(cx);
             let mut inode = node.borrow_mut();
             match &mut inode.content {

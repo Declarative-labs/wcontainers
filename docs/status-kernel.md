@@ -36,6 +36,10 @@ Built in K3's fifth run (the K3 check's findings):
   addresses only (unlock with null and kernel ones only, since it reads the word first), and
   FUTEX_WAIT_REQUEUE_PI and FUTEX_CMP_REQUEUE_PI with any words (a sequence never has a waiter, so
   they write nothing).
+- sendfile from a timer or signal descriptor (which seek, `noop_llseek`) moves nothing and answers
+  0 for a count of 0, EINVAL otherwise; a process descriptor or secret memory (which cannot seek)
+  is EINVAL even for 0 (measured; tests/splice.rs `sending_from_anonymous_files_matches_reference`,
+  guest/sendanon.c). Found by layer 1 seed 3015.
 - jobs.c's hangup job waits for both SIGHUP and SIGCONT with them blocked outside `sigsuspend`; the
   reference could run the job between the two (the check's whole-suite failure).
 - The repeatable test clock charges each turn 0.5 to 1.5 ns an instruction, drawn per turn from the

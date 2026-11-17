@@ -211,17 +211,15 @@ impl Kind {
         }
     }
 
-    /// The largest file the file system has (`s_maxbytes`): tmpfs's and pidfs's `MAX_LFS_FILESIZE`
-    /// (measured for pidfs), and for the rest `MAX_NON_LFS`, which `alloc_super` sets and they keep.
+    /// The largest file the file system has (`s_maxbytes`): tmpfs's and the pseudo file systems'
+    /// (`pseudo_fs_fill_super`) `MAX_LFS_FILESIZE` (measured for pidfs, pipes, timer descriptors and
+    /// secret memory), and for the rest `MAX_NON_LFS`, which `alloc_super` sets and they keep.
     pub fn max_bytes(self) -> u64 {
         match self {
-            Kind::Tmpfs | Kind::Pidfs => i64::MAX as u64,
-            Kind::Devpts
-            | Kind::Proc
-            | Kind::Pipe
-            | Kind::Secretmem
-            | Kind::Anon
-            | Kind::Mqueue => i32::MAX as u64,
+            Kind::Tmpfs | Kind::Pidfs | Kind::Pipe | Kind::Secretmem | Kind::Anon => {
+                i64::MAX as u64
+            }
+            Kind::Devpts | Kind::Proc | Kind::Mqueue => i32::MAX as u64,
         }
     }
 

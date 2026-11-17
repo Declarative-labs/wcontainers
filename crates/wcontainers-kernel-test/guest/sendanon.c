@@ -32,6 +32,14 @@ int main(void) {
         snprintf(b, sizeof b, "%s to file 0 offset", what[i]); p(b, sendfile(file, names[i], &o, 0));
         snprintf(b, sizeof b, "%s lseek", what[i]); p(b, lseek(names[i], 0, SEEK_CUR));
     }
+    // Pipes and timer descriptors are on pseudo file systems, whose largest file is the 64-bit one.
+    int zero = open("/dev/zero", O_RDONLY);
+    int ends[2];
+    pipe(ends);
+    off_t far = 0x80000000LL;
+    p("zero to pipe at 2 GiB", sendfile(ends[1], zero, &far, 1));
+    far = 0x80000000LL;
+    p("zero to timerfd at 2 GiB", sendfile(t, zero, &far, 1));
     p("file to timerfd 0", sendfile(t, file, NULL, 0));
     p("file to timerfd 1", sendfile(t, file, NULL, 1));
     return 0;
