@@ -671,19 +671,18 @@ fn pause(caller: &mut Caller<'_, Host>, at: Pause) {
 }
 
 fn write_shared(memory: &SharedMemory, at: usize, bytes: &[u8]) {
-    let data = memory.data();
-    assert!(at + bytes.len() <= data.len());
-    for (i, &byte) in bytes.iter().enumerate() {
-        // The guest thread is not running, so nothing else touches these bytes.
-        unsafe { *data[at + i].get() = byte };
-    }
+    let data = &memory.data()[at..at + bytes.len()];
+    // SAFETY: the range is inside the memory, and the guest thread is not running, so nothing else
+    // touches these bytes.
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), data.as_ptr() as *mut u8, bytes.len()) };
 }
 
 fn read_shared(memory: &SharedMemory, at: usize, into: &mut [u8]) {
-    let data = memory.data();
-    for (i, byte) in into.iter_mut().enumerate() {
-        *byte = unsafe { *data[at + i].get() };
-    }
+    let data = &memory.data()[at..at + into.len()];
+    // SAFETY: as for `write_shared`.
+    unsafe {
+        std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, into.as_mut_ptr(), into.len())
+    };
 }
 
 /// The registers, from the thread block, where they all are whenever a hook runs or the thread has left.
@@ -740,17 +739,21 @@ fn cpu_hook(caller: &mut Caller<'_, Host>, index: usize, values: &mut [MaybeUnin
     }
 }
 
-/// The most arguments, and bytes of thread state, a guest's own hook has.
+/// The most arguments a guest's own hook has.
 const MAX_HOOK_ARGS: usize = 8;
-const MAX_HOOK_STATE: usize = 1024;
-const _: () = {
+/// The most bytes of thread state a guest's own hook works on.
+const MAX_HOOK_STATE: usize = {
+    let mut most = 0;
     let mut i = 0;
     while i < Arm64::HOOKS.len() {
         let hook = &Arm64::HOOKS[i];
         assert!(hook.params.len() <= MAX_HOOK_ARGS && hook.results.len() <= 2);
-        assert!(hook.state.len as usize <= MAX_HOOK_STATE);
+        if hook.state.len as usize > most {
+            most = hook.state.len as usize;
+        }
         i += 1;
     }
+    most
 };
 
 /// The guest's bytes from `pc`, as many as an instruction may take and the memory has.
