@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-ieee-apsqrt = "0.1.1"
 rustc_apfloat = "0.2.3"
 wasm-encoder = "0.263.0"
 yaxpeax-arch = { version = "0.3.3", default-features = false }

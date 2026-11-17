@@ -2,8 +2,9 @@
 //! zero or default not-a-number, or asked for the cumulative exception flags, and for fused multiply-add on
 //! hosts whose engine does not fuse. It runs on the host behind [`crate::Hook::Float`].
 //!
-//! The arithmetic is `rustc_apfloat`'s (and `ieee-apsqrt`'s square root); what is Arm's own is here: which
-//! not-a-number comes out, flushing to zero, when underflow is raised, and the estimate instructions.
+//! The arithmetic is `rustc_apfloat`'s (the square root is the host's, rounded as asked by the remainder's
+//! sign); what is Arm's own is here: which not-a-number comes out, flushing to zero, when underflow is
+//! raised, and the estimate instructions.
 
 use crate::instruction::Rounding;
 use rustc_apfloat::ieee::{Double, Half, Single};
@@ -231,11 +232,25 @@ trait Bits: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Dou
     fn default_nan() -> u128 {
         (Self::mask() >> 1) & !(Self::fraction_mask() >> 1)
     }
+    /// A double rounded to nearest in this format.
+    fn from_double(d: Double) -> Self;
 }
 
-impl Bits for Half {}
-impl Bits for Single {}
-impl Bits for Double {}
+impl Bits for Half {
+    fn from_double(d: Double) -> Self {
+        d.convert(&mut false).value
+    }
+}
+impl Bits for Single {
+    fn from_double(d: Double) -> Self {
+        d.convert(&mut false).value
+    }
+}
+impl Bits for Double {
+    fn from_double(d: Double) -> Self {
+        d
+    }
+}
 
 fn zero<F: Bits>(negative: bool) -> F {
     if negative { -F::ZERO } else { F::ZERO }
@@ -519,6 +534,8 @@ impl Context {
                     x
                 } else if x.is_negative() {
                     self.default_nan()
+                } else if x.is_infinite() {
+                    x
                 } else {
                     self.finish(|round, _| sqrt::<F>(x, round))
                 }
@@ -796,21 +813,34 @@ impl Context {
     }
 }
 
+/// The square root of a positive, finite, non-zero x, rounded as asked. The host's root is correctly
+/// rounded to nearest; the sign of the remainder m - r * r, exact in one fused step for m in 1 to 4, tells
+/// which way the true root lies for the directed modes. A root is never halfway, so ties need nothing.
 fn sqrt<F: Bits>(x: F, round: Round) -> StatusAnd<F> {
-    // `ieee-apsqrt` rounds some denormal inputs wrongly away from nearest: take the root of x * 2^64, a
-    // normal number, and scale it back, both exact.
-    if x.is_denormal() {
-        return sqrt(x.scalbn(64), round).map(|v| v.scalbn(-32));
-    }
-    let raw = x.to_bits();
-    if F::BITS == 32 {
-        ieee_apsqrt::sqrt_accurate(raw as u32, round)
-            .0
-            .map(|v| F::from_bits(v.into()))
-    } else {
-        ieee_apsqrt::sqrt_accurate(raw as u64, round)
-            .0
-            .map(|v| F::from_bits(v.into()))
+    let half_exponent = x.ilogb().div_euclid(2);
+    let m = x.scalbn(-2 * half_exponent);
+    let wide: Double = m.convert(&mut false).value;
+    let host = Double::from_bits(
+        f64::from_bits(wide.to_bits() as u64)
+            .sqrt()
+            .to_bits()
+            .into(),
+    );
+    // Rounding the double's root again gives a narrower format's correctly rounded root: 53 bits is more
+    // than twice its bits and two.
+    let r = F::from_double(host);
+    let remainder = (-r).mul_add(r, m).value;
+    let (status, value) = match round {
+        _ if remainder.is_zero() => (Status::OK, r),
+        Round::TowardPositive if !remainder.is_negative() => (Status::INEXACT, r.next_up().value),
+        Round::TowardNegative | Round::TowardZero if remainder.is_negative() => {
+            (Status::INEXACT, r.next_down().value)
+        }
+        _ => (Status::INEXACT, r),
+    };
+    StatusAnd {
+        status,
+        value: value.scalbn(half_exponent),
     }
 }
 
