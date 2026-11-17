@@ -1,8 +1,8 @@
 # wcontainers, phase two: one guest CPU interface, and x86-64
 
 Status: plan written 2026-11-17 from the owner's brief (decisions of 2026-11-16) and the map of today's
-ARM64 assumptions, and revised the same day after each of the two independent checks of X0. Nothing of it is built
-yet. The research and the two experiments of milestone X0 are done; what they found is in section 2.
+ARM64 assumptions, and revised the same day after each of the two independent checks of X0. Nothing of
+it is built yet. The research and the two experiments of milestone X0 are done; what they found is in section 2.
 
 Words used here (phase one's words still hold: guest, host, engine, look-ahead, piece):
 - **guest CPU**: the kind of processor whose machine code is translated: ARM64 today, x86-64 next, RV64GC
@@ -231,8 +231,8 @@ pub fn thread_module<G: Guest>() -> Vec<u8>;
 
 `translate_omitting` and `translate_in_modules` take the same type parameter and the same `host` and
 `offer` arguments. Every use is monomorphised; there is no `dyn` anywhere in the translator, so nothing is
-looked up at run time and nothing is paid at translate time either beyond what ARM64 pays today. The translator crate
-depends on `wcontainers-guest-cpu` only, never on a CPU crate. The program that ships (the browser's
+looked up at run time and nothing is paid at translate time either beyond what ARM64 pays today. The
+translator crate depends on `wcontainers-guest-cpu` only, never on a CPU crate. The program that ships (the browser's
 cdylib, the host runner) names the one guest it is built for. The kernel never depends on a CPU crate
 (section 6): it stays `no_std` and CPU-free, and what it needs of a CPU is its own architecture personality.
 
@@ -624,8 +624,8 @@ popped value, so each CPU makes the value impossible before the compare, in the 
   the CPU faults at the branch, not at the target: once the target reaches the lookup (`F_DISPATCH` sets
   pc to it) the branch's address is gone. A canonical value is never i64::MIN, so `UNREACHABLE_RETURN`
   i64::MIN cannot match. Cost: four WebAssembly operations and a branch never taken on every `ret` and
-  every jump or call through a register or memory (ARM64 already pays ten for its untag on the same branches; x86's cost is measured at X4,
-  section 12). The check also serves the mismatch path, which needs no second one. A direct jump or call
+  every jump or call through a register or memory (ARM64 already pays ten for its untag on the same
+  branches; x86's cost is measured at X4, section 12). The check also serves the mismatch path, which needs no second one. A direct jump or call
   whose target is not canonical (possible only within 2 GiB of the top of the lower half) is known at
   translation and translates to the same fault, a direct call's after its push (seen on the reference
   with code mapped at 0x7fffffff8000, section 2).
