@@ -330,6 +330,7 @@ impl<B: Backend> Device<B> {
             size: Cell::new(size),
             grown: Cell::new(false),
             shadow: RefCell::new(shadow),
+            staged: RefCell::new(Staged::Current),
         }))
     }
 
@@ -491,6 +492,7 @@ impl<B: Backend> Device<B> {
             format,
             gpu_desc,
             gpu: Kept::new(gpu, id, Object::Texture, &self.graveyard),
+            staged: RefCell::new((0..shadow.len()).map(|_| Staged::Current).collect()),
             shadow: RefCell::new(shadow),
         }))
     }

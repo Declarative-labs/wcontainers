@@ -62,6 +62,18 @@ pub struct Buffer<B: Backend> {
     /// The latest contents of a dynamic or staging buffer, which a map hands out; for a grown dynamic
     /// buffer, all of its bytes.
     pub shadow: RefCell<Vec<u8>>,
+    /// A staging buffer's shadow against the GPU's bytes.
+    pub staged: RefCell<Staged<B>>,
+}
+
+/// A staging subresource's shadow against the GPU's copy of it.
+pub enum Staged<B: Backend> {
+    /// The shadow holds the GPU's bytes.
+    Current,
+    /// The GPU wrote it since the shadow was filled; no read back started.
+    Written,
+    /// The GPU wrote it, and the read back started after that write.
+    Reading(B::Readback),
 }
 
 impl<B: Backend> Buffer<B> {
@@ -79,6 +91,8 @@ pub struct Texture2D<B: Backend> {
     pub gpu: Kept<B, B::Texture>,
     /// Per subresource of a staging texture, tightly packed rows a map hands out.
     pub shadow: RefCell<Vec<Vec<u8>>>,
+    /// Per subresource of a staging texture, its shadow against the GPU's copy.
+    pub staged: RefCell<Vec<Staged<B>>>,
 }
 
 impl<B: Backend> Texture2D<B> {
