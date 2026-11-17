@@ -3,11 +3,18 @@
 
 use glow::HasContext;
 use std::collections::BTreeSet;
-use wcontainers_gpu::{AdapterInfo, Caps, Features, Format, FormatCaps, FormatUse, Limits};
+use wcontainers_gpu::{
+    AdapterInfo, Caps, Features, Format, FormatCaps, FormatKind, FormatUse, Limits,
+};
 
 use crate::format::{self, FormatExtensions};
 
-pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>, renderer: &str) -> Caps {
+pub fn caps(
+    gl: &glow::Context,
+    platform: &crate::platform::Platform,
+    ext: &BTreeSet<&'static str>,
+    renderer: &str,
+) -> Caps {
     // SAFETY: plain queries of the current context.
     let get = |name| unsafe { gl.get_parameter_i32(name) }.max(0) as u32;
     let range = |name| {
@@ -24,8 +31,10 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>, renderer: &str) ->
         // GL's own clip depth; with EXT_clip_control set per raster block.
         | Features::CLIP_DEPTH_MINUS_ONE
         | Features::INDEX_U8
-        // polygonOffset takes float units.
-        | Features::FRACTIONAL_DEPTH_BIAS
+        // Transform feedback is GLES 3.0 core.
+        | Features::TRANSFORM_FEEDBACK
+        // FRACTIONAL_DEPTH_BIAS: polygonOffset takes float units, but GL may round them; set by the
+        // back end's probe.
         | Features::BLEND_CONSTANT_ALPHA;
     features.set(
         Features::CLIP_DEPTH_ZERO_ONE,
@@ -34,6 +43,17 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>, renderer: &str) ->
     features.set(
         Features::PROVOKING_VERTEX_FIRST,
         ext.contains("WEBGL_provoking_vertex"),
+    );
+    features.set(
+        Features::BLOCK_COMPRESSION,
+        [
+            "WEBGL_compressed_texture_s3tc",
+            "WEBGL_compressed_texture_s3tc_srgb",
+            "EXT_texture_compression_rgtc",
+            "EXT_texture_compression_bptc",
+        ]
+        .iter()
+        .all(|e| ext.contains(e)),
     );
     let anisotropic = ext.contains("EXT_texture_filter_anisotropic");
     let units_vertex = get(glow::MAX_VERTEX_TEXTURE_IMAGE_UNITS);
@@ -81,20 +101,35 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>, renderer: &str) ->
         } else {
             1
         },
-        capture_buffers: 0,
+        capture_buffers: get(glow::MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS),
     };
     let format_ext = FormatExtensions::found(ext);
     let mut formats = FormatCaps {
         uses: [FormatUse::empty(); Format::COUNT],
-        // Multisampled targets (renderbuffers) are not built yet: one sample only.
         samples: [0; Format::COUNT],
     };
     for i in 0..Format::COUNT {
         // SAFETY: every index below COUNT is a Format, which is repr(u16) and fieldless.
         let format: Format = unsafe { core::mem::transmute(i as u16) };
         formats.uses[i] = format::uses(format, format_ext);
-        if !formats.uses[i].is_empty() {
-            formats.samples[i] = 1;
+        if formats.uses[i].is_empty() {
+            continue;
+        }
+        formats.samples[i] = 1;
+        let targets = FormatUse::RENDER | FormatUse::DEPTH_STENCIL;
+        if let (true, Some(g)) = (
+            formats.uses[i].intersects(targets),
+            format::gl_format(format),
+        ) {
+            formats.samples[i] |= platform
+                .sample_counts(gl, g.internal)
+                .into_iter()
+                .filter(|c| (2..=128).contains(c) && (*c as u32).is_power_of_two())
+                .fold(0, |bits, c| bits | c as u8);
+            // Blits average the samples of colour formats that are not integers.
+            if formats.samples[i] > 1 && format.kind() == FormatKind::Float {
+                formats.uses[i] |= FormatUse::RESOLVE;
+            }
         }
     }
     // WebGL names the GPU only in its renderer string; the software renderers say so in it.

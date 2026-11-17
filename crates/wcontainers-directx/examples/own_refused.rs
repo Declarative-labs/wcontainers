@@ -1,5 +1,5 @@
 //! A small Direct3D 11 program asking for what the front does not serve yet: a geometry shader, a 3D
-//! texture, a structured buffer, and a draw blending with the pixel shader's second output. Prints what each call answered, as `<call> <hresult>`, and the device's
+//! texture, a structured buffer, a texture of 4 samples, and a draw blending with the pixel shader's second output. Prints what each call answered, as `<call> <hresult>`, and the device's
 //! removal reason after the draw; real Direct3D answers 0 to all of them.
 
 #[cfg(windows)]
@@ -39,19 +39,18 @@ fn main() -> windows::core::Result<()> {
     let r = unsafe { device.CreateGeometryShader(GS, None, Some(&mut gs)) };
     println!("CreateGeometryShader {:#010x}", code(r));
 
-    let desc = D3D11_TEXTURE3D_DESC {
-        Width: 4,
-        Height: 4,
-        Depth: 4,
-        MipLevels: 1,
-        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-        Usage: D3D11_USAGE_DEFAULT,
-        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-        ..Default::default()
-    };
-    let mut volume = None;
-    let r = unsafe { device.CreateTexture3D(&desc, None, Some(&mut volume)) };
-    println!("CreateTexture3D {:#010x}", code(r));
+    for (name, kind) in [
+        ("occlusion", D3D11_QUERY_OCCLUSION),
+        ("timestamp", D3D11_QUERY_TIMESTAMP),
+    ] {
+        let mut q = None;
+        let desc = D3D11_QUERY_DESC {
+            Query: kind,
+            MiscFlags: 0,
+        };
+        let r = unsafe { device.CreateQuery(&desc, Some(&mut q)) };
+        println!("CreateQuery({name}) {:#010x}", code(r));
+    }
 
     let desc = D3D11_BUFFER_DESC {
         ByteWidth: 64,
@@ -64,6 +63,35 @@ fn main() -> windows::core::Result<()> {
     let mut structured = None;
     let r = unsafe { device.CreateBuffer(&desc, None, Some(&mut structured)) };
     println!("CreateBuffer(structured) {:#010x}", code(r));
+    let mut view = None;
+    let r = unsafe {
+        device.CreateShaderResourceView(structured.as_ref().unwrap(), None, Some(&mut view))
+    };
+    println!("CreateShaderResourceView(structured) {:#010x}", code(r));
+
+    let r = unsafe { device.CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM, 4) };
+    let levels = r.as_ref().map_or(0, |l| *l);
+    println!(
+        "CheckMultisampleQualityLevels(4) {:#010x} {levels}",
+        code(r.map(|_| ()))
+    );
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: 16,
+        Height: 16,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 4,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+        ..Default::default()
+    };
+    let mut multisampled = None;
+    let r = unsafe { device.CreateTexture2D(&desc, None, Some(&mut multisampled)) };
+    println!("CreateTexture2D(4 samples) {:#010x}", code(r));
 
     let desc = D3D11_TEXTURE2D_DESC {
         Width: 16,

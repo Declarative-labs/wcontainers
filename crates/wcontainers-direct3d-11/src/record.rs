@@ -218,13 +218,14 @@ impl Backend for Recorder {
         let id = self.id();
         self.views.insert(id, (*texture, *desc));
         self.record(format!(
-            "create_view {id} of {texture} {:?} {:?} mips {}+{} layers {}+{}",
+            "create_view {id} of {texture} {:?} {:?} mips {}+{} layers {}+{}{}",
             desc.format,
             desc.dimension,
             desc.base_mip,
             desc.mip_count,
             desc.base_layer,
-            desc.layer_count
+            desc.layer_count,
+            if desc.stencil { " stencil" } else { "" }
         ));
         Ok(id)
     }
@@ -466,6 +467,10 @@ impl Backend for Recorder {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
+        assert!(
+            !src.stencil && !dst.stencil,
+            "copy_texture copies both aspects and names none"
+        );
         let rows = self.textures.get(src.texture).map(|t| {
             let (start, pitch, row, rows) = Self::rows(t, src.mip, src.origin, extent);
             let sub = &t.subresources[Self::subresource(t, src.mip, src.layer)];

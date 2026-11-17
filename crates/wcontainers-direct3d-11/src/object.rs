@@ -5,11 +5,12 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    Backend, Format, FormatKind, Object, Reflection, TextureDesc, VertexFormat, ViewDimension,
+    Backend, Extent, Format, FormatKind, Object, Origin, Reflection, TextureDesc as GpuTexture,
+    TextureRegion, VertexFormat, ViewDimension,
 };
 
 use crate::desc::{
-    BlendDesc, BufferDesc, DepthStencilDesc, RasterizerDesc, SamplerDesc, Texture2DDesc, ViewDesc,
+    BlendDesc, BufferDesc, DepthStencilDesc, RasterizerDesc, SamplerDesc, TextureDesc, ViewDesc,
 };
 
 /// Handles whose last front reference went, and the ids of the front objects that held them.
@@ -24,7 +25,9 @@ pub type SharedGraveyard<B> = Rc<RefCell<Graveyard<B>>>;
 pub struct Kept<B: Backend, H: Clone> {
     pub handle: H,
     pub id: u64,
-    wrap: fn(H) -> Object<B>,
+    /// How the handle is destroyed; `None` for a handle another owner destroys (a swap chain's
+    /// back buffers).
+    wrap: Option<fn(H) -> Object<B>>,
     graveyard: SharedGraveyard<B>,
 }
 
@@ -38,7 +41,17 @@ impl<B: Backend, H: Clone> Kept<B, H> {
         Kept {
             handle,
             id,
-            wrap,
+            wrap: Some(wrap),
+            graveyard: graveyard.clone(),
+        }
+    }
+
+    /// A handle this object uses but another owner destroys.
+    pub fn borrowed(handle: H, id: u64, graveyard: &SharedGraveyard<B>) -> Self {
+        Kept {
+            handle,
+            id,
+            wrap: None,
             graveyard: graveyard.clone(),
         }
     }
@@ -47,7 +60,9 @@ impl<B: Backend, H: Clone> Kept<B, H> {
 impl<B: Backend, H: Clone> Drop for Kept<B, H> {
     fn drop(&mut self) {
         let mut g = self.graveyard.borrow_mut();
-        g.objects.push((self.wrap)(self.handle.clone()));
+        if let Some(wrap) = self.wrap {
+            g.objects.push(wrap(self.handle.clone()));
+        }
         g.ids.push(self.id);
     }
 }
@@ -85,46 +100,82 @@ impl<B: Backend> Buffer<B> {
     }
 }
 
-pub struct Texture2D<B: Backend> {
+/// A 1D, 2D or 3D texture. A 1D texture is a 2D one of height 1 on the back end, as converted DXBC
+/// reads it.
+pub struct Texture<B: Backend> {
     /// The description as created, with `mip_levels` resolved.
-    pub desc: Texture2DDesc,
+    pub desc: TextureDesc,
     pub format: Format,
-    pub gpu_desc: TextureDesc,
+    pub gpu_desc: GpuTexture,
     pub gpu: Kept<B, B::Texture>,
-    /// Per subresource of a staging texture, tightly packed rows a map hands out.
+    /// Per subresource of a staging texture, tightly packed rows and slices a map hands out.
     pub shadow: RefCell<Vec<Vec<u8>>>,
     /// Per subresource of a staging texture, its shadow against the GPU's copy.
     pub staged: RefCell<Vec<Staged<B>>>,
 }
 
-impl<B: Backend> Texture2D<B> {
-    /// Width and height of mip `mip`.
-    pub fn mip_size(&self, mip: u32) -> (u32, u32) {
-        (
-            (self.desc.width >> mip).max(1),
-            (self.desc.height >> mip).max(1),
-        )
+impl<B: Backend> Texture<B> {
+    /// Width, height and depth of mip `mip`.
+    pub fn mip_extent(&self, mip: u32) -> Extent {
+        Extent {
+            width: (self.desc.width >> mip).max(1),
+            height: (self.desc.height >> mip).max(1),
+            depth_or_layers: (self.desc.depth >> mip).max(1),
+        }
+    }
+
+    /// The mip and layer of subresource `sub`, or none past the texture.
+    pub fn subresource(&self, sub: u32) -> Option<(u32, u32)> {
+        let mips = self.desc.mip_levels;
+        (sub < mips * self.desc.array_size).then_some((sub % mips, sub / mips))
+    }
+
+    /// The back end's region of `mip` and `layer` at `origin`.
+    pub fn region(&self, mip: u32, layer: u32, origin: Origin) -> TextureRegion<'_, B> {
+        TextureRegion {
+            texture: &self.gpu.handle,
+            mip,
+            layer,
+            origin,
+            stencil: false,
+        }
+    }
+
+    /// Subresource `sub` whole: its region and extent.
+    pub fn whole(&self, sub: u32) -> Option<(TextureRegion<'_, B>, Extent)> {
+        let (mip, layer) = self.subresource(sub)?;
+        Some((
+            self.region(mip, layer, Origin { x: 0, y: 0, z: 0 }),
+            self.mip_extent(mip),
+        ))
+    }
+
+    /// Bytes of a row, rows of a slice, and slices of mip `mip`, tightly packed.
+    pub fn packed(&self, mip: u32) -> (u32, u32, u32) {
+        let e = self.mip_extent(mip);
+        let (row, rows) = crate::format::row_bytes(self.format, e.width, e.height);
+        (row, rows, e.depth_or_layers)
     }
 }
 
 /// The resources a view or a copy may name.
 pub enum Resource<B: Backend> {
     Buffer(Rc<Buffer<B>>),
-    Texture2D(Rc<Texture2D<B>>),
+    Texture(Rc<Texture<B>>),
 }
 
 impl<B: Backend> Clone for Resource<B> {
     fn clone(&self) -> Self {
         match self {
             Resource::Buffer(b) => Resource::Buffer(b.clone()),
-            Resource::Texture2D(t) => Resource::Texture2D(t.clone()),
+            Resource::Texture(t) => Resource::Texture(t.clone()),
         }
     }
 }
 
 /// A render target, depth-stencil or shader resource view of a 2D texture.
 pub struct View<B: Backend> {
-    pub texture: Rc<Texture2D<B>>,
+    pub texture: Rc<Texture<B>>,
     /// The description, with defaults resolved.
     pub desc: ViewDesc,
     pub format: Format,

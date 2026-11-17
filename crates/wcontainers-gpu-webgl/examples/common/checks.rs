@@ -936,3 +936,946 @@ pub fn fractional_viewports_are_refused<H: Host>() {
     b.end_pass();
     assert_eq!(b.status(), DeviceStatus::Lost(LossReason::Error));
 }
+
+/// With `TIMESTAMPS`, two timestamps around a draw read back in order (unless the GPU reports a
+/// disjoint stretch, which reading clears), and an occlusion set still counts beside them. Without
+/// it, timestamp sets, writes and the disjoint flag all answer `Absent(TIMESTAMPS)`.
+pub fn timestamps_and_their_disjoint_flag<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let absent = Err(GpuError::Absent(Features::TIMESTAMPS));
+    if !b.caps().has(Features::TIMESTAMPS) {
+        assert_eq!(
+            b.create_query_set(QueryKind::Timestamp, 2).err(),
+            absent.err()
+        );
+        assert_eq!(b.timestamps_disjoint(), absent);
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, WRITE_ONE, "vs", "fs");
+    let f = Format::R32Uint;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        f,
+        [64, 64, 1],
+        1,
+        usage,
+        false,
+    );
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 64.0, 64.0)];
+    let set = b
+        .create_query_set(QueryKind::Timestamp, 2)
+        .expect("create_query_set");
+    let _ = b.timestamps_disjoint().expect("timestamps_disjoint");
+    b.write_timestamp(&set, 0).expect("write_timestamp");
+    b.begin_pass(&kit::pass(&v, [0; 4], None));
+    for _ in 0..16 {
+        b.draw(&kit::call(
+            &k,
+            &program,
+            None,
+            &whole,
+            Topology::TriangleList,
+            3,
+        ));
+    }
+    b.end_pass();
+    b.write_timestamp(&set, 1).expect("write_timestamp");
+    let rb = b.read_queries(&set, 0, 2).expect("read_queries");
+    b.submit();
+    b.wait_read(&rb);
+    let mut out = [0u8; 16];
+    b.finish_read(rb, &mut out);
+    let [t0, t1] = [0, 8].map(|i| u64::from_le_bytes(out[i..i + 8].try_into().unwrap()));
+    let disjoint = b.timestamps_disjoint().expect("timestamps_disjoint");
+    assert!(
+        disjoint || (t0 > 0 && t1 >= t0),
+        "timestamps {t0} then {t1}, not disjoint"
+    );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Half of a 4 by 4 target, cut by its diagonal through pixel centres, so the pixels on it are partly
+/// covered.
+const HALF: &str = "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, -1.0));
+    return vec4<f32>(p[v], 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.5, 0.25, 1.0);
+}
+";
+
+/// A whole copy between two four-sample `rgba8unorm` textures (`MultisampleCopyResolved` where
+/// programs cannot read samples) resolves to the same texels as its source, with some pixels on the
+/// diagonal partly covered; resolved at a pass's end and by `resolve`, alike.
+pub fn multisampled_copies_resolve_as_their_source<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let f = Format::Rgba8Unorm;
+    if !b.caps().formats.takes_samples(f, 4) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, HALF, "vs", "fs");
+    let samples = |b: &mut H::Backend| {
+        b.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: f,
+            width: 4,
+            height: 4,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 4,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .expect("create_texture")
+    };
+    let (ms, copy) = (samples(&mut b), samples(&mut b));
+    let ms_view = kit::target(&mut b, &ms, f, 0, 0);
+    let single = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let [at_end, of_source, of_copy] =
+        [0; 3].map(|_| kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, single, false));
+    let end_view = kit::target(&mut b, &at_end, f, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    let mut pass = kit::pass(&ms_view, [0; 4], None);
+    if let Some(c) = &mut pass.colors[0] {
+        c.resolve = Some(&end_view);
+    }
+    b.begin_pass(&pass);
+    b.draw(&kit::call(
+        &k,
+        &program,
+        None,
+        &whole,
+        Topology::TriangleList,
+        3,
+    ));
+    b.end_pass();
+    let region = |t| TextureRegion {
+        texture: t,
+        mip: 0,
+        layer: 0,
+        origin: Origin::default(),
+        stencil: false,
+    };
+    let extent = Extent {
+        width: 4,
+        height: 4,
+        depth_or_layers: 1,
+    };
+    let before = b.slow_paths().count(SlowPath::MultisampleCopyResolved);
+    b.copy_texture(&region(&ms), &region(&copy), extent);
+    let counted = b.slow_paths().count(SlowPath::MultisampleCopyResolved) - before;
+    b.resolve(&region(&ms), &region(&of_source), f);
+    b.resolve(&region(&copy), &region(&of_copy), f);
+    let [end, source, copied] =
+        [&at_end, &of_source, &of_copy].map(|t| kit::read(&mut b, t, 0, 0, [4, 4, 1], 4, false));
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(end, source, "resolved at the pass's end and by resolve");
+    assert_eq!(copied, source, "the copy's resolve and the source's");
+    let partial = source
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|t| t[0] != 0 && t[0] != 255)
+        .count();
+    assert!(partial > 0, "no pixel on the diagonal is partly covered");
+    let reads = b
+        .caps()
+        .has(Features::MULTISAMPLE_READ | Features::SAMPLE_SHADING);
+    assert_eq!(
+        counted,
+        u64::from(!reads),
+        "MultisampleCopyResolved counted"
+    );
+}
+
+/// Writes one into an `r32uint` target over the whole of it, at the depth `z` in window space, given
+/// in clip space for the back end's convention.
+fn at_depth(z: f64, minus_one: bool) -> String {
+    let clip = if minus_one { 2.0 * z - 1.0 } else { z };
+    format!(
+        "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {{
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, {clip:.12}, 1.0);
+}}
+@fragment fn fs() -> @location(0) vec4<u32> {{
+    return vec4<u32>(1u);
+}}
+"
+    )
+}
+
+/// With `FRACTIONAL_DEPTH_BIAS`, a constant bias of 0.1 units on a `depth16unorm` depth 0.45 of a
+/// step above step 1000 takes it past the half step, so it stores 1001 where no bias stores 1000.
+/// Without it, a raster block with a fractional bias is refused as absent.
+pub fn fractional_depth_bias<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if !b.caps().has(Features::FRACTIONAL_DEPTH_BIAS) {
+        let desc = RasterDesc {
+            fill: FillMode::Solid,
+            cull: CullMode::None,
+            front: FrontFace::Clockwise,
+            depth_bias: 0.1f32.to_bits(),
+            depth_bias_slope: 0,
+            depth_bias_clamp: 0,
+            depth_clip: true,
+            scissor: false,
+            line_width: 1.0f32.to_bits(),
+            provoking: ProvokingVertex::Last,
+            depth_minus_one: !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE),
+            sample_mask: u32::MAX,
+        };
+        assert_eq!(
+            b.create_raster(&desc).err(),
+            Some(GpuError::Absent(Features::FRACTIONAL_DEPTH_BIAS))
+        );
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let minus_one = !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE);
+    let program = kit::program(&mut b, &at_depth(1000.45 / 65535.0, minus_one), "vs", "fs");
+    let always = kit::depth_stencil(&mut b, Some(CompareFn::Always), true, None);
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let c = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        Format::R32Uint,
+        [4, 4, 1],
+        1,
+        usage,
+        false,
+    );
+    let cv = kit::target(&mut b, &c, Format::R32Uint, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    let mut stored = Vec::new();
+    for bias in [0.0, 0.1] {
+        let raster = kit::raster(&mut b, CullMode::None, FrontFace::Clockwise, bias, 0.0);
+        let f = Format::Depth16Unorm;
+        let d = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+        let dv = kit::target(&mut b, &d, f, 0, 0);
+        b.begin_pass(&kit::pass(&cv, [0; 4], Some((&dv, 0.0, false))));
+        b.draw(&DrawCall {
+            depth_stencil: &always,
+            raster: &raster,
+            ..kit::call(&k, &program, None, &whole, Topology::TriangleList, 3)
+        });
+        b.end_pass();
+        let got = kit::read(&mut b, &d, 0, 0, [4, 4, 1], 2, false);
+        stored.push(u16::from_le_bytes([got[0], got[1]]));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(
+        stored,
+        [1000, 1001],
+        "depth stored without and with a bias of 0.1 units"
+    );
+}
+
+/// The constant alpha blend factor drawn natively: white scaled by a constant alpha of 0.5 gives 128
+/// in every channel of an `rgba8unorm` target. A blend using the constant colour and the constant
+/// alpha together, which WebGL forbids, is refused as absent.
+pub fn constant_alpha_blends<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if !b.caps().has(Features::BLEND_CONSTANT_ALPHA) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, HALF, "vs", "fs");
+    let both = |b: &mut H::Backend, colour: BlendFactor| {
+        let c = BlendComponent {
+            src: BlendFactor::ConstantAlpha,
+            dst: colour,
+            op: BlendOp::Add,
+        };
+        b.create_blend(&BlendDesc {
+            targets: [RenderTargetBlend {
+                blend: Some((c, c)),
+                writes: ColorWrites::all(),
+            }; MAX_COLOR_TARGETS],
+            same_for_all: true,
+            alpha_to_coverage: false,
+            logic_op: None,
+        })
+    };
+    if let Err(e) = both(&mut b, BlendFactor::Constant) {
+        assert_eq!(e, GpuError::Absent(Features::BLEND_CONSTANT_ALPHA));
+    }
+    let blend = both(&mut b, BlendFactor::Zero).expect("create_blend");
+    let f = Format::Rgba8Unorm;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    for alpha in [0.5f32, 0.25] {
+        b.begin_pass(&kit::pass(&v, [0; 4], None));
+        b.draw(&DrawCall {
+            blend: &blend,
+            // The constant colour is not used; only its alpha is.
+            blend_constant: [1.0f32, 1.0, 1.0, alpha].map(f32::to_bits),
+            ..kit::call(&k, &program, None, &whole, Topology::TriangleList, 3)
+        });
+        b.end_pass();
+        let got = kit::read(&mut b, &t, 0, 0, [4, 4, 1], 4, false);
+        assert_eq!(b.status(), DeviceStatus::Ok);
+        // The top left texel is wholly inside HALF's triangle: (1, 0.5, 0.25, 1) scaled by alpha,
+        // within one step (the GPU's blend rounds 127.5 either way).
+        let want = [1.0f32, 0.5, 0.25, 1.0].map(|c| c * alpha * 255.0);
+        let close = got[..4]
+            .iter()
+            .zip(want)
+            .all(|(g, w)| (f32::from(*g) - w).abs() <= 1.0);
+        assert!(
+            close,
+            "the top left texel at alpha {alpha}: {:?}, want {want:?}",
+            &got[..4]
+        );
+    }
+}
+
+/// Vertex `v` writes its numbers to locations 0 and 1, and its position makes triangles over the top
+/// left half of the target, drawn red.
+const CAPTURED: &str = "
+struct Cap {
+    @builtin(position) p: vec4<f32>,
+    @location(0) a: vec4<f32>,
+    @location(1) @interpolate(flat) n: u32,
+}
+@vertex fn vs(@builtin(vertex_index) v: u32) -> Cap {
+    var o: Cap;
+    let corner = vec2<f32>(f32(v % 3u == 1u), f32(v % 3u == 2u));
+    o.p = vec4<f32>(corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0);
+    o.a = vec4<f32>(f32(v), f32(v) * 0.5, 1.0, -2.0);
+    o.n = 10u + v;
+    return o;
+}
+@fragment fn fs(i: Cap) -> @location(0) vec4<f32> {
+    return vec4<f32>(i.a.z, 0.0, 0.0, 1.0);
+}
+struct Ix {
+    @builtin(position) p: vec4<f32>,
+    @location(0) @interpolate(flat) n: u32,
+}
+@vertex fn vs_indices(@builtin(vertex_index) v: u32) -> Ix {
+    var indices = array<u32, 4>(3u, 0u, 5u, 1u);
+    var o: Ix;
+    o.p = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    o.n = indices[v];
+    return o;
+}
+@fragment fn fs_indices(i: Ix) -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(i.n), 0.0, 0.0, 1.0);
+}
+";
+
+/// A buffer of `size` zero bytes with `usage`, for captures.
+fn zeros<B: Backend>(b: &mut B, usage: BufferUsage, size: usize) -> B::Buffer {
+    buffer(b, usage | BufferUsage::CAPTURE, &vec![0; size])
+}
+
+fn read_buffer<B: Backend>(b: &mut B, buffer: &B::Buffer, size: usize) -> Vec<u8> {
+    let mut got = vec![0; size];
+    b.read_back_now(
+        &ReadSource::Buffer {
+            buffer,
+            offset: 0,
+            size: size as u64,
+        },
+        &mut got,
+    )
+    .expect("read_back_now");
+    got
+}
+
+/// What CAPTURED's vertex `v` writes to location 0 and location 1.
+fn captured(v: u32) -> (Vec<u8>, Vec<u8>) {
+    let a = [v as f32, v as f32 * 0.5, 1.0, -2.0];
+    (
+        a.iter().flat_map(|c| c.to_le_bytes()).collect(),
+        (10 + v).to_le_bytes().to_vec(),
+    )
+}
+
+/// `capture_vertices` writes the location outputs of every vertex of a list draw: interleaved into one
+/// target, or one output per target, without drawing outside a pass and drawing inside one; a draw
+/// that leaves out the last part of a primitive captures whole primitives only.
+pub fn vertices_captured_with_and_without_rasterising<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+        return;
+    }
+    assert!(b.caps().limits.capture_buffers >= 2);
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, CAPTURED, "vs", "fs");
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    let interleaved: Vec<u8> = (0..6)
+        .flat_map(|v| {
+            let (a, n) = captured(v);
+            [a, n].concat()
+        })
+        .collect();
+    // Interleaved, outside a pass; 7 vertices make 2 whole triangles.
+    let one = zeros(&mut b, BufferUsage::VERTEX, 6 * 20 + 8);
+    let call = kit::call(&k, &program, None, &whole, Topology::TriangleList, 7);
+    let targets = [BufferRange {
+        buffer: &one,
+        offset: 0,
+        size: 6 * 20 + 8,
+    }];
+    b.capture_vertices(&call, &targets, false)
+        .expect("capture_vertices");
+    let got = read_buffer(&mut b, &one, 6 * 20 + 8);
+    assert_eq!(&got[..6 * 20], &interleaved[..], "interleaved capture");
+    assert_eq!(&got[6 * 20..], &[0; 8], "bytes past the whole primitives");
+    // Separate, outside a pass, at an offset into the second target.
+    let (a, n) = (
+        zeros(&mut b, BufferUsage::VERTEX, 6 * 16),
+        zeros(&mut b, BufferUsage::VERTEX, 8 + 6 * 4),
+    );
+    let call = kit::call(&k, &program, None, &whole, Topology::TriangleList, 6);
+    let targets = [
+        BufferRange {
+            buffer: &a,
+            offset: 0,
+            size: 6 * 16,
+        },
+        BufferRange {
+            buffer: &n,
+            offset: 8,
+            size: 6 * 4,
+        },
+    ];
+    b.capture_vertices(&call, &targets, false)
+        .expect("capture_vertices");
+    let (want_a, want_n): (Vec<_>, Vec<_>) = (0..6).map(captured).unzip();
+    assert_eq!(
+        read_buffer(&mut b, &a, 6 * 16),
+        want_a.concat(),
+        "location 0"
+    );
+    assert_eq!(
+        read_buffer(&mut b, &n, 8 + 6 * 4),
+        [vec![0; 8], want_n.concat()].concat(),
+        "location 1 at offset 8"
+    );
+    // Interleaved, drawing too.
+    let f = Format::Rgba8Unorm;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let drawn = zeros(&mut b, BufferUsage::VERTEX, 6 * 20);
+    let call = kit::call(&k, &program, None, &whole, Topology::TriangleList, 6);
+    let targets = [BufferRange {
+        buffer: &drawn,
+        offset: 0,
+        size: 6 * 20,
+    }];
+    b.begin_pass(&kit::pass(&v, [0; 4], None));
+    b.capture_vertices(&call, &targets, true)
+        .expect("capture_vertices");
+    b.end_pass();
+    assert_eq!(
+        read_buffer(&mut b, &drawn, 6 * 20),
+        interleaved,
+        "capture while drawing"
+    );
+    let picture = kit::read(&mut b, &t, 0, 0, [4, 4, 1], 4, false);
+    assert_eq!(&picture[..4], &[255, 0, 0, 255], "the top left texel drawn");
+    assert_eq!(
+        &picture[60..],
+        &[0, 0, 0, 0],
+        "the bottom right texel not drawn"
+    );
+    // Drawing while capturing outside a pass breaks the interface's rule.
+    let call = kit::call(&k, &program, None, &whole, Topology::TriangleList, 6);
+    assert!(matches!(
+        b.capture_vertices(&call, &targets, true),
+        Err(GpuError::Invalid(_))
+    ));
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// A buffer holding indices and vertex data written by `capture_vertices` reads the captured values
+/// both as indices and as a vertex stream (on WebGL 2 the index twin is refreshed first,
+/// `IndexTwinReadBack`).
+pub fn captured_indices_drawn_both_ways<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let capture = kit::program(&mut b, CAPTURED, "vs_indices", "fs_indices");
+    let both = zeros(&mut b, BufferUsage::INDEX | BufferUsage::VERTEX, 16);
+    // Written by the host first, so both of WebGL's GL buffers hold old values.
+    b.write_buffer(&both, 0, &words(&[7, 7, 7, 7]), WriteMode::Ordered);
+    let whole = [kit::viewport(0.0, 0.0, 8.0, 4.0)];
+    let call = kit::call(&k, &capture, None, &whole, Topology::PointList, 4);
+    let targets = [BufferRange {
+        buffer: &both,
+        offset: 0,
+        size: 16,
+    }];
+    b.capture_vertices(&call, &targets, false)
+        .expect("capture_vertices");
+    let vs = b
+        .create_shader(&module("vs", ShaderStage::Vertex))
+        .expect("create_shader");
+    let fs = b
+        .create_shader(&module("fs", ShaderStage::Fragment))
+        .expect("create_shader");
+    let numbers = b
+        .create_program(&Program::Render {
+            vertex: &vs,
+            fragment: Some(&fs),
+        })
+        .expect("create_program");
+    let mut layout = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    for (i, step) in [StepMode::Vertex, StepMode::Instance(1)]
+        .into_iter()
+        .enumerate()
+    {
+        layout.streams[i] = Some(VertexStream { stride: 4, step });
+        layout.attributes[i] = Some(VertexAttribute {
+            location: 1 + i as u32,
+            stream: i as u8,
+            offset: 0,
+            format: VertexFormat::Uint32x1,
+        });
+    }
+    let layout = b
+        .create_vertex_layout(&layout)
+        .expect("create_vertex_layout");
+    let per_vertex = buffer(
+        &mut b,
+        BufferUsage::VERTEX,
+        &words(&(0..8).collect::<Vec<_>>()),
+    );
+    let per_instance = buffer(&mut b, BufferUsage::VERTEX, &words(&[100]));
+    let f = Format::Rgba32Uint;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [8, 4, 1], 1, usage, false);
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let captured = [3u32, 0, 5, 1];
+    for as_indices in [true, false] {
+        let first = if as_indices { &per_vertex } else { &both };
+        let streams = [
+            Some(VertexBinding {
+                buffer: first,
+                offset: 0,
+            }),
+            Some(VertexBinding {
+                buffer: &per_instance,
+                offset: 0,
+            }),
+        ];
+        let before = b.slow_paths().count(SlowPath::IndexTwinReadBack);
+        b.begin_pass(&kit::pass(&v, [u32::MAX; 4], None));
+        b.draw(&DrawCall {
+            vertex_layout: &layout,
+            vertex_buffers: &streams,
+            index: as_indices.then_some(IndexBinding {
+                buffer: &both,
+                offset: 0,
+                format: IndexFormat::U32,
+            }),
+            range: if as_indices {
+                DrawRange::Indexed {
+                    first: 0,
+                    count: 4,
+                    base_vertex: 0,
+                    first_instance: 0,
+                    instances: 1,
+                }
+            } else {
+                DrawRange::Vertices {
+                    first: 0,
+                    count: 4,
+                    first_instance: 0,
+                    instances: 1,
+                }
+            },
+            ..kit::call(&k, &numbers, None, &whole, Topology::PointList, 4)
+        });
+        b.end_pass();
+        let refreshed = b.slow_paths().count(SlowPath::IndexTwinReadBack) - before;
+        let got = kit::read(&mut b, &t, 0, 0, [8, 4, 1], 16, false);
+        let texel = |p: usize| -> [u32; 4] {
+            core::array::from_fn(|c| {
+                u32::from_le_bytes(got[p * 16 + c * 4..p * 16 + c * 4 + 4].try_into().unwrap())
+            })
+        };
+        let want: Vec<(usize, [u32; 4])> = if as_indices {
+            captured
+                .iter()
+                .map(|i| (*i as usize, [*i, 0, *i, 100]))
+                .collect()
+        } else {
+            (0..4)
+                .map(|i| (i as usize, [i, 0, captured[i as usize], 100]))
+                .collect()
+        };
+        for (pixel, numbers) in &want {
+            assert_eq!(
+                texel(*pixel),
+                *numbers,
+                "as indices {as_indices}: pixel {pixel}"
+            );
+        }
+        for p in (0..32).filter(|p| want.iter().all(|(w, _)| w != p)) {
+            assert_eq!(
+                texel(p),
+                [u32::MAX; 4],
+                "as indices {as_indices}: pixel {p}"
+            );
+        }
+        if as_indices && b.slow_paths().count(SlowPath::IndexBufferTwin) > 0 {
+            assert_eq!(refreshed, 1, "the index twin refreshed once");
+        }
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Loads texel (0, 0) of level 0.
+const LOAD_CORNER: &str = "
+@group(0) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return textureLoad(t, vec2<i32>(0, 0), 0);
+}
+";
+
+/// RGB9E5 and every block-compressed format the back end serves read back exactly as written (on
+/// WebGL 2 from the host copy, `HostCopyKept`): two layers of three levels of an 8 by 8 texture, the
+/// last level smaller than a block, then one block of level 0 written again, read back now and
+/// later. A solid BC1 block and an RGB9E5 texel load as their colour, whichever way the back end
+/// stores them (natively, or decoded: `BlockDecoded`).
+pub fn block_compressed_and_shared_exponent_textures_read_back_as_written<H: Host>() {
+    use crate::kit::{self, Kit};
+    use Format as F;
+    let mut b = H::make();
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, LOAD_CORNER, "vs", "fs");
+    let out_format = F::Rgba8Unorm;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        out_format,
+        [1, 1, 1],
+        1,
+        usage,
+        false,
+    );
+    let out_view = kit::target(&mut b, &out, out_format, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
+    let formats = [
+        F::Rgb9e5Float,
+        F::Bc1RgbaUnorm,
+        F::Bc1RgbaUnormSrgb,
+        F::Bc2RgbaUnorm,
+        F::Bc2RgbaUnormSrgb,
+        F::Bc3RgbaUnorm,
+        F::Bc3RgbaUnormSrgb,
+        F::Bc4RUnorm,
+        F::Bc4RSnorm,
+        F::Bc5RgUnorm,
+        F::Bc5RgSnorm,
+        F::Bc6hRgbUfloat,
+        F::Bc6hRgbFloat,
+        F::Bc7RgbaUnorm,
+        F::Bc7RgbaUnormSrgb,
+    ];
+    let mut served = 0;
+    for (n, format) in formats.into_iter().enumerate() {
+        let want = FormatUse::SAMPLE | FormatUse::COPY_OUT;
+        if !b.caps().formats.get(format).contains(want) {
+            continue;
+        }
+        served += 1;
+        let (bw, bh, bytes) = format.block();
+        let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::COPY_SRC;
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [8, 8, 2],
+            3,
+            usage,
+            false,
+        );
+        // Each level's two layers, as rows of blocks.
+        let mut kept = Vec::new();
+        for mip in 0..3u32 {
+            let size = (8 >> mip) as u32;
+            let row = (size.div_ceil(bw) * bytes) as usize;
+            let rows = size.div_ceil(bh) as usize;
+            let mut level = pattern(row * rows * 2, 0x9e37 + n as u32 * 7 + mip);
+            if mip == 0 {
+                // Block (0, 0) of layer 0 solid: red in BC1, (1, 0, 0.25) in RGB9E5 (exponent 16), whose
+                // unorm values (255, 0, 63.75) round without a tie.
+                match format {
+                    F::Bc1RgbaUnorm => level[..8].copy_from_slice(&[0, 0xf8, 0, 0xf8, 0, 0, 0, 0]),
+                    F::Rgb9e5Float => {
+                        let texel: u32 = 256 | (64 << 18) | (16 << 27);
+                        level[..4].copy_from_slice(&texel.to_le_bytes());
+                    }
+                    _ => {}
+                }
+            }
+            b.write_texture(
+                &TextureRegion {
+                    texture: &t,
+                    mip,
+                    layer: 0,
+                    origin: Origin::default(),
+                    stencil: false,
+                },
+                Extent {
+                    width: size,
+                    height: size,
+                    depth_or_layers: 2,
+                },
+                &level,
+                row as u32,
+                rows as u32,
+                WriteMode::Ordered,
+            );
+            kept.push((row, rows, level));
+        }
+        // One block of layer 1 of level 0 again, at the second column and row of blocks.
+        let again = pattern(bytes as usize, 0x51ed + n as u32);
+        b.write_texture(
+            &TextureRegion {
+                texture: &t,
+                mip: 0,
+                layer: 1,
+                origin: Origin { x: bw, y: bh, z: 0 },
+                stencil: false,
+            },
+            Extent {
+                width: bw,
+                height: bh,
+                depth_or_layers: 1,
+            },
+            &again,
+            bytes,
+            1,
+            WriteMode::Ordered,
+        );
+        let (row, rows, level) = &mut kept[0];
+        let at = *row * *rows + *row + bytes as usize;
+        level[at..at + bytes as usize].copy_from_slice(&again);
+        for (mip, (row, rows, level)) in kept.iter().enumerate() {
+            let size = (8 >> mip) as u32;
+            let mut got = vec![0; row * rows * 2];
+            b.read_back_now(
+                &ReadSource::Texture {
+                    region: TextureRegion {
+                        texture: &t,
+                        mip: mip as u32,
+                        layer: 0,
+                        origin: Origin::default(),
+                        stencil: false,
+                    },
+                    extent: Extent {
+                        width: size,
+                        height: size,
+                        depth_or_layers: 2,
+                    },
+                },
+                &mut got,
+            )
+            .expect("read_back_now");
+            assert_eq!(&got, level, "{format:?} level {mip}, read back now");
+        }
+        // Level 1 again through a read back waited for.
+        let (row, rows, level) = &kept[1];
+        let rb = b
+            .read_back(&ReadSource::Texture {
+                region: TextureRegion {
+                    texture: &t,
+                    mip: 1,
+                    layer: 0,
+                    origin: Origin::default(),
+                    stencil: false,
+                },
+                extent: Extent {
+                    width: 4,
+                    height: 4,
+                    depth_or_layers: 2,
+                },
+            })
+            .expect("read_back");
+        b.wait_read(&rb);
+        let mut got = vec![0; row * rows * 2];
+        b.finish_read(rb, &mut got);
+        assert_eq!(&got, level, "{format:?} level 1, read back later");
+        let expected: Option<[u8; 4]> = match format {
+            F::Bc1RgbaUnorm => Some([255, 0, 0, 255]),
+            F::Rgb9e5Float => Some([255, 0, 64, 255]),
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            let flat = kit::texture(
+                &mut b,
+                TextureDimension::D2,
+                format,
+                [8, 8, 1],
+                1,
+                usage,
+                false,
+            );
+            let (row, rows, level) = &kept[0];
+            b.write_texture(
+                &TextureRegion {
+                    texture: &flat,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin::default(),
+                    stencil: false,
+                },
+                Extent {
+                    width: 8,
+                    height: 8,
+                    depth_or_layers: 1,
+                },
+                &level[..row * rows],
+                *row as u32,
+                *rows as u32,
+                WriteMode::Ordered,
+            );
+            let flat_view = kit::view(&mut b, &flat, format, ViewDimension::D2, 0, 1, 0, 1);
+            let set = b
+                .create_binding_set(&[BindingEntry {
+                    binding: 32,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(&flat_view),
+                }])
+                .expect("create_binding_set");
+            b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+            b.draw(&kit::call(
+                &k,
+                &program,
+                Some(&set),
+                &vp,
+                Topology::TriangleList,
+                3,
+            ));
+            b.end_pass();
+            let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 4, false);
+            assert_eq!(got, expected, "{format:?}: texel (0, 0) loaded");
+        }
+    }
+    assert!(
+        served > 0
+            || !b
+                .caps()
+                .formats
+                .get(F::Rgb9e5Float)
+                .contains(FormatUse::SAMPLE)
+    );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// A triangle over the target at clip z 0.5, writing its fragments' window z.
+const FRAGMENT_Z: &str = "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.5, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return vec4<f32>(p.z, 0.0, 0.0, 1.0);
+}
+";
+
+/// The fragment's window z (WGSL's position z) and the depth stored are clip z mapped by the raster
+/// block's convention: 0.5 from zero to one, 0.75 from minus one to one.
+pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let colour = Format::R32Float;
+    let wanted = FormatUse::RENDER | FormatUse::COPY_OUT;
+    if !b.caps().formats.get(colour).contains(wanted) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, FRAGMENT_Z, "vs", "fs");
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        colour,
+        [2, 2, 1],
+        1,
+        usage,
+        false,
+    );
+    let v = kit::target(&mut b, &t, colour, 0, 0);
+    let depth = Format::Depth32Float;
+    let d = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        depth,
+        [2, 2, 1],
+        1,
+        usage,
+        false,
+    );
+    let dv = kit::target(&mut b, &d, depth, 0, 0);
+    let ds = kit::depth_stencil(&mut b, Some(CompareFn::Always), true, None);
+    let whole = [kit::viewport(0.0, 0.0, 2.0, 2.0)];
+    let mut conventions = vec![(true, 0.75f32)];
+    if b.caps().has(Features::CLIP_DEPTH_ZERO_ONE) {
+        conventions.push((false, 0.5));
+    }
+    for (minus_one, want) in conventions {
+        let raster = b
+            .create_raster(&RasterDesc {
+                fill: FillMode::Solid,
+                cull: CullMode::None,
+                front: FrontFace::Clockwise,
+                depth_bias: 0,
+                depth_bias_slope: 0,
+                depth_bias_clamp: 0,
+                depth_clip: true,
+                scissor: false,
+                line_width: 1.0f32.to_bits(),
+                provoking: ProvokingVertex::Last,
+                depth_minus_one: minus_one,
+                sample_mask: u32::MAX,
+            })
+            .expect("create_raster");
+        b.begin_pass(&kit::pass(&v, [0; 4], Some((&dv, 1.0, false))));
+        b.draw(&DrawCall {
+            raster: &raster,
+            depth_stencil: &ds,
+            ..kit::call(&k, &program, None, &whole, Topology::TriangleList, 3)
+        });
+        b.end_pass();
+        let got = kit::read(&mut b, &t, 0, 0, [2, 2, 1], 4, false);
+        let stored = kit::read(&mut b, &d, 0, 0, [2, 2, 1], 4, false);
+        for (what, bytes) in [("position z", &got), ("stored depth", &stored)] {
+            for texel in bytes.as_chunks::<4>().0 {
+                let z = f32::from_le_bytes(*texel);
+                assert_eq!(z, want, "{what} with depth_minus_one {minus_one}");
+            }
+        }
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}

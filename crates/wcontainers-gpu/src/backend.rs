@@ -234,7 +234,9 @@ pub trait Backend: Sized {
     /// copies only equal formats copies the others through a buffer
     /// ([`crate::SlowPath::CopyThroughBuffer`]); into a depth format its API cannot write by a copy, by a
     /// draw writing depth ([`crate::SlowPath::DepthWrittenByDraw`]); and into a texture whose bytes it
-    /// keeps on the host, through that copy ([`crate::SlowPath::HostCopyReadBack`]).
+    /// keeps on the host, through that copy ([`crate::SlowPath::HostCopyReadBack`]). A combined
+    /// depth-stencil format is copied whole, both aspects in one call (Direct3D's copies; WebGPU
+    /// copies such textures only so).
     fn copy_texture(
         &mut self,
         src: &TextureRegion<'_, Self>,
@@ -912,6 +914,14 @@ pub trait Backend: Sized {
     /// false nothing is drawn and the call comes outside a pass; with it true the primitives are also
     /// drawn, inside a pass, in the same run of the vertex work (Direct3D's rasterized stream, OpenGL's
     /// transform feedback without rasterizer discard). Needs [`Features::TRANSFORM_FEEDBACK`].
+    ///
+    /// What is written: the vertex stage's location outputs in location order, each as its 32-bit
+    /// components with no padding; built-ins such as the position are not captured (a program whose
+    /// position is captured writes it to a location too). With one target every output of a vertex is
+    /// written one after another, vertex after vertex; with more, output n goes to target n alone and
+    /// there are as many targets as outputs, at most [`crate::Limits::capture_buffers`]. Vertices are
+    /// written once per vertex of each primitive (strips as the lists they draw), in draw order,
+    /// instance after instance, and the targets hold every vertex the draw makes.
     fn capture_vertices(
         &mut self,
         call: &DrawCall<'_, Self>,

@@ -82,3 +82,43 @@ fn loads_count_levels_from_the_view() {
 fn fractional_viewports_are_refused() {
     checks::fractional_viewports_are_refused::<Angle>();
 }
+
+#[test]
+fn timestamps_and_their_disjoint_flag() {
+    checks::timestamps_and_their_disjoint_flag::<Angle>();
+}
+
+#[test]
+fn multisampled_copies_resolve_as_their_source() {
+    checks::multisampled_copies_resolve_as_their_source::<Angle>();
+}
+
+#[test]
+fn fractional_depth_bias() {
+    checks::fractional_depth_bias::<Angle>();
+}
+
+#[test]
+fn constant_alpha_blends() {
+    checks::constant_alpha_blends::<Angle>();
+}
+
+#[test]
+fn vertices_captured_with_and_without_rasterising() {
+    checks::vertices_captured_with_and_without_rasterising::<Angle>();
+}
+
+#[test]
+fn block_compressed_and_shared_exponent_textures_read_back_as_written() {
+    checks::block_compressed_and_shared_exponent_textures_read_back_as_written::<Angle>();
+}
+
+#[test]
+fn fragment_depth_follows_the_clip_convention() {
+    checks::fragment_depth_follows_the_clip_convention::<Angle>();
+}
+
+#[test]
+fn captured_indices_drawn_both_ways() {
+    checks::captured_indices_drawn_both_ways::<Angle>();
+}

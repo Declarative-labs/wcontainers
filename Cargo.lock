@@ -86,6 +86,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "bcdec_rs"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d521509f38a9ab0fce76656a0416161ee5d42c1eab6672b958391e2ac7a0e31"
+
+[[package]]
 name = "bindgen"
 version = "0.71.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2658,6 +2664,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "naga",
+ "wcontainers-directx-graphics-infrastructure",
  "wcontainers-gpu",
  "wcontainers-shaders",
 ]
@@ -2730,6 +2737,7 @@ name = "wcontainers-gpu-webgl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bcdec_rs",
  "getrandom 0.4.3",
  "glow 0.18.0",
  "js-sys",
@@ -2737,6 +2745,7 @@ dependencies = [
  "naga",
  "pollster",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wcontainers-gpu",
  "wcontainers-gpu-test",
  "wcontainers-gpu-webgpu",
@@ -2750,18 +2759,24 @@ name = "wcontainers-gpu-webgpu"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bcdec_rs",
  "bytemuck",
  "fastrand",
+ "getrandom 0.4.3",
+ "half",
+ "image",
  "js-sys",
  "naga",
  "png",
  "pollster",
  "wasm-bindgen",
- "wasm-bindgen-futures",
  "wcontainers-gpu",
  "wcontainers-gpu-test",
+ "wcontainers-graphics-test",
+ "web-sys",
  "wgpu",
  "wgpu-naga-bridge",
+ "windows",
  "windows-sys",
 ]
 
@@ -2882,8 +2897,6 @@ dependencies = [
 [[package]]
 name = "wgpu"
 version = "30.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "146fc3d654250e6207921a66c87534c621bc886c70df83dcf466c1d66813810e"
 dependencies = [
  "arrayvec",
  "bitflags",

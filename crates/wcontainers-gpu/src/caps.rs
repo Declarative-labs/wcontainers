@@ -203,7 +203,8 @@ pub struct Limits {
     pub max_line_width: f32,
     /// Largest anisotropy a sampler may ask for.
     pub max_anisotropy: u16,
-    /// Transform feedback buffers, when [`Features::TRANSFORM_FEEDBACK`] is set.
+    /// Targets of one [`crate::Backend::capture_vertices`] (and outputs it may write to separate
+    /// targets), when [`Features::TRANSFORM_FEEDBACK`] is set.
     pub capture_buffers: u32,
 }
 

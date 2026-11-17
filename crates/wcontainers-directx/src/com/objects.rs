@@ -14,19 +14,16 @@ use super::*;
 
 /// The front resource behind a resource of ours; none for a foreign object.
 pub fn resource_of(r: &ID3D11Resource) -> Option<front::Resource<Chosen>> {
-    if let Ok(b) = r.cast_object_ref::<Buffer>() {
-        return Some(front::Resource::Buffer(b.front.clone()));
-    }
-    r.cast_object_ref::<Texture2D>()
-        .ok()
-        .map(|t| front::Resource::Texture2D(t.front.clone()))
+    HeldResource::of(r).map(|h| h.front())
 }
 
 /// A resource of ours, held with a library reference.
 #[derive(Clone)]
 pub enum HeldResource {
     Buffer(Held<Buffer_Impl>),
+    Texture1D(Held<Texture1D_Impl>),
     Texture2D(Held<Texture2D_Impl>),
+    Texture3D(Held<Texture3D_Impl>),
 }
 
 impl HeldResource {
@@ -35,15 +32,23 @@ impl HeldResource {
         if let Ok(b) = r.cast_object_ref::<Buffer>() {
             return Some(HeldResource::Buffer(Held::new(b)));
         }
-        r.cast_object_ref::<Texture2D>()
+        if let Ok(t) = r.cast_object_ref::<Texture2D>() {
+            return Some(HeldResource::Texture2D(Held::new(t)));
+        }
+        if let Ok(t) = r.cast_object_ref::<Texture1D>() {
+            return Some(HeldResource::Texture1D(Held::new(t)));
+        }
+        r.cast_object_ref::<Texture3D>()
             .ok()
-            .map(|t| HeldResource::Texture2D(Held::new(t)))
+            .map(|t| HeldResource::Texture3D(Held::new(t)))
     }
 
     pub fn front(&self) -> front::Resource<Chosen> {
         match self {
             HeldResource::Buffer(b) => front::Resource::Buffer(b.front.clone()),
-            HeldResource::Texture2D(t) => front::Resource::Texture2D(t.front.clone()),
+            HeldResource::Texture1D(t) => front::Resource::Texture(t.front.clone()),
+            HeldResource::Texture2D(t) => front::Resource::Texture(t.front.clone()),
+            HeldResource::Texture3D(t) => front::Resource::Texture(t.front.clone()),
         }
     }
 
@@ -51,7 +56,9 @@ impl HeldResource {
     pub fn public(&self) -> ID3D11Resource {
         match self {
             HeldResource::Buffer(b) => b.public::<ID3D11Buffer>().into(),
+            HeldResource::Texture1D(t) => t.public::<ID3D11Texture1D>().into(),
             HeldResource::Texture2D(t) => t.public::<ID3D11Texture2D>().into(),
+            HeldResource::Texture3D(t) => t.public::<ID3D11Texture3D>().into(),
         }
     }
 }
@@ -94,43 +101,76 @@ impl Buffer {
     }
 }
 
-pub struct Texture2D {
-    pub front: Locked<Rc<front::Texture2D<Chosen>>>,
-    pub(super) child: Child,
-    priority: Cell<u32>,
+/// A texture of one dimension: its interface, description structure, conversion and resource type.
+macro_rules! texture {
+    ($name:ident, $imp:ident, $iface:ident, $vtbl:ident, $desc:ident, $back:path, $dim:ident) => {
+        pub struct $name {
+            pub front: Locked<Rc<front::Texture<Chosen>>>,
+            pub(super) child: Child,
+            priority: Cell<u32>,
+        }
+
+        counted!($name => $imp { main: $iface, $vtbl });
+
+        impl $name {
+            pub fn new(front: Rc<front::Texture<Chosen>>, device: ID3D11Device) -> Self {
+                $name {
+                    front: Locked::new(front),
+                    child: Child::new(device),
+                    priority: Cell::new(0),
+                }
+            }
+
+            pub(super) fn get_desc(&self, out: *mut $desc) {
+                if let Some(out) = unsafe { out.as_mut() } {
+                    *out = $back(&self.front.desc);
+                }
+            }
+
+            pub(super) fn get_type(&self, out: *mut D3D11_RESOURCE_DIMENSION) {
+                if let Some(out) = unsafe { out.as_mut() } {
+                    *out = $dim;
+                }
+            }
+
+            pub(super) fn set_eviction_priority(&self, p: u32) {
+                self.priority.set(p);
+            }
+
+            pub(super) fn get_eviction_priority(&self) -> u32 {
+                self.priority.get()
+            }
+        }
+    };
 }
 
-counted!(Texture2D => Texture2D_Impl { main: ID3D11Texture2D, ID3D11Texture2D_Vtbl });
-
-impl Texture2D {
-    pub fn new(front: Rc<front::Texture2D<Chosen>>, device: ID3D11Device) -> Self {
-        Texture2D {
-            front: Locked::new(front),
-            child: Child::new(device),
-            priority: Cell::new(0),
-        }
-    }
-
-    pub(super) fn get_desc(&self, out: *mut D3D11_TEXTURE2D_DESC) {
-        if let Some(out) = unsafe { out.as_mut() } {
-            *out = convert::texture2d_back(&self.front.desc);
-        }
-    }
-
-    pub(super) fn get_type(&self, out: *mut D3D11_RESOURCE_DIMENSION) {
-        if let Some(out) = unsafe { out.as_mut() } {
-            *out = D3D11_RESOURCE_DIMENSION_TEXTURE2D;
-        }
-    }
-
-    pub(super) fn set_eviction_priority(&self, p: u32) {
-        self.priority.set(p);
-    }
-
-    pub(super) fn get_eviction_priority(&self) -> u32 {
-        self.priority.get()
-    }
-}
+texture!(
+    Texture1D,
+    Texture1D_Impl,
+    ID3D11Texture1D,
+    ID3D11Texture1D_Vtbl,
+    D3D11_TEXTURE1D_DESC,
+    convert::texture1d_back,
+    D3D11_RESOURCE_DIMENSION_TEXTURE1D
+);
+texture!(
+    Texture2D,
+    Texture2D_Impl,
+    ID3D11Texture2D,
+    ID3D11Texture2D_Vtbl,
+    D3D11_TEXTURE2D_DESC,
+    convert::texture2d_back,
+    D3D11_RESOURCE_DIMENSION_TEXTURE2D
+);
+texture!(
+    Texture3D,
+    Texture3D_Impl,
+    ID3D11Texture3D,
+    ID3D11Texture3D_Vtbl,
+    D3D11_TEXTURE3D_DESC,
+    convert::texture3d_back,
+    D3D11_RESOURCE_DIMENSION_TEXTURE3D
+);
 
 /// A view: the front view and the resource it views (held with a library reference).
 pub struct RenderTargetView {
@@ -393,4 +433,62 @@ impl PixelShader {
             child: Child::new(device),
         }
     }
+}
+
+/// A query or predicate: its interface, and whether `QueryInterface` answers `ID3D11Predicate`.
+macro_rules! asynchronous {
+    ($name:ident, $imp:ident, $iface:ident, $vtbl:ident) => {
+        pub struct $name {
+            pub front: Locked<Rc<wcontainers_direct3d_11::query::Query<Chosen>>>,
+            pub(super) child: Child,
+        }
+
+        counted!($name => $imp { main: $iface, $vtbl });
+
+        impl $name {
+            pub fn new(
+                front: Rc<wcontainers_direct3d_11::query::Query<Chosen>>,
+                device: ID3D11Device,
+            ) -> Self {
+                $name {
+                    front: Locked::new(front),
+                    child: Child::new(device),
+                }
+            }
+
+            pub(super) fn get_desc(&self, out: *mut D3D11_QUERY_DESC) {
+                if let Some(out) = unsafe { out.as_mut() } {
+                    *out = D3D11_QUERY_DESC {
+                        Query: D3D11_QUERY(self.front.kind as i32),
+                        MiscFlags: self.front.misc,
+                    };
+                }
+            }
+
+            pub(super) fn get_data_size(&self) -> u32 {
+                wcontainers_direct3d_11::query::data_size(self.front.kind).unwrap_or(0)
+            }
+        }
+    };
+}
+
+asynchronous!(Query, Query_Impl, ID3D11Query, ID3D11Query_Vtbl);
+asynchronous!(
+    Predicate,
+    Predicate_Impl,
+    ID3D11Predicate,
+    ID3D11Predicate_Vtbl
+);
+
+/// The front query behind a query or predicate of ours.
+pub fn query_of(
+    a: Option<&ID3D11Asynchronous>,
+) -> Option<Rc<wcontainers_direct3d_11::query::Query<Chosen>>> {
+    let a = a?;
+    if let Ok(q) = a.cast_object_ref::<Query>() {
+        return Some(q.front.clone());
+    }
+    a.cast_object_ref::<Predicate>()
+        .ok()
+        .map(|p| p.front.clone())
 }

@@ -815,7 +815,7 @@ fn the_occlusion_counter_counts_exactly() {
     k.healthy();
 }
 
-/// Where a sample of the counting target reaches the counting format's exact bound (2048 in
+/// Where a pixel of the counting target reaches the counting format's exact bound (2048 in
 /// `r16float`, which a back end without blendable `r32float` counts in), the draws are counted again
 /// in halves: of the draws, of one draw's instances, or of one list's primitives.
 #[test]
@@ -971,8 +971,12 @@ fn counted_draw(
 
 /// A colour target and a depth target of `size` squared, the depth cleared to `depth`.
 fn depth_targets(k: &mut Kit, size: u32, depth: f32) -> PassTargets<Recorder> {
-    let mut targets = colors(k.target(size, size, Format::Rgba8Unorm));
-    targets.depth = Some(k.target(size, size, Format::Depth32Float));
+    depth_targets_of(k, size, depth, 1)
+}
+
+fn depth_targets_of(k: &mut Kit, size: u32, depth: f32, samples: u32) -> PassTargets<Recorder> {
+    let mut targets = colors(k.target_of(size, size, Format::Rgba8Unorm, samples));
+    targets.depth = Some(k.target_of(size, size, Format::Depth32Float, samples));
     let mut clear = PassTracker::default();
     clear.set_targets(&mut k.r, targets.clone()).unwrap();
     clear
@@ -1193,6 +1197,44 @@ fn the_occlusion_counter_counts_halves_from_the_depth_they_began_with() {
     k.healthy();
 }
 
+/// On four samples a pixel reaches the bound at 512 fragments a sample, so the depth the whole began
+/// with is kept from there: 600 instances of a quad at 0.5 writing depth with `LessEqual` over 1.0
+/// (all 16 samples pass, 9,600), then a quad at 0.3 writing it with `Less` (16).
+#[test]
+fn the_occlusion_counter_keeps_the_starting_depth_for_halves_on_four_samples() {
+    let mut k = Kit::on(Recorder::with_caps(|c| {
+        let at = Format::R32Float.index();
+        c.formats.uses[at].remove(FormatUse::BLEND);
+    }));
+    let mut passes = PassTracker::default();
+    let mut counter = OcclusionCounter::default();
+    let p = k.program("color");
+    let counting = k.program("counting");
+    let programs = (&p, &counting);
+    let writes = k.depth(Some(CompareFn::LessEqual), true);
+    let nearer = k.depth(Some(CompareFn::Less), true);
+    let targets = depth_targets_of(&mut k, 2, 1.0, 4);
+    passes.set_targets(&mut k.r, targets).unwrap();
+    let near = k.params(0, [1.0; 4], 0.5);
+    let front = k.params(1, [1.0; 4], 0.3);
+    counter.begin(&mut k.r, &mut passes).unwrap();
+    for (depth, params, instances) in [(&writes, &near, 600), (&nearer, &front, 1)] {
+        counted_draw(
+            &mut k,
+            &mut passes,
+            &mut counter,
+            programs,
+            (depth, true),
+            params,
+            2.0,
+            (None, 4, instances),
+        )
+        .unwrap();
+    }
+    assert_eq!(counter.end(&mut k.r, &mut passes).unwrap(), 9_616);
+    k.healthy();
+}
+
 /// On a four-sample target the counter counts samples: a rectangle whose right edge crosses pixel 1
 /// at x = 1.25 covers its sample 2 alone (the standard positions), so two rows hold 4 + 1 samples
 /// each.
@@ -1302,4 +1344,10 @@ fn the_combination_tracker_picks_the_tuples_drawn() {
     // Preparing a combination again counts it once.
     t.pick(&'a', &('a', 'z'), |_| true);
     assert_eq!(t.prepared_use(), (2, 3));
+    // A pairing drawn before it is prepared counts as drawn only once a draw follows.
+    assert_eq!(t.pick(&'a', &('a', 'x'), |_| true), [10, 20]);
+    assert_eq!(t.prepared_use(), (2, 5));
+    let ax10 = t.combination(&'a', &('a', 'x'), &10);
+    t.drawn(ax10);
+    assert_eq!(t.prepared_use(), (3, 4));
 }

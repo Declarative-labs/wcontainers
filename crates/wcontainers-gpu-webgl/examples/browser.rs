@@ -129,6 +129,9 @@ suite!(
     instances_start_at_the_first_instance,
     indexed_strips_restart_and_add_the_base_vertex,
     fragments_write_storage_buffers,
+    multisampled_targets_cover_their_samples_and_resolve,
+    programs_run_per_sample_and_read_samples,
+    occlusion_queries_answer_whether_samples_passed,
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,
@@ -137,10 +140,22 @@ suite!(
     copies_within_a_typeless_group,
     loads_count_levels_from_the_view,
     fractional_viewports_are_refused,
+    timestamps_and_their_disjoint_flag,
+    multisampled_copies_resolve_as_their_source,
+    fractional_depth_bias,
+    constant_alpha_blends,
+    vertices_captured_with_and_without_rasterising,
+    captured_indices_drawn_both_ways,
+    block_compressed_and_shared_exponent_textures_read_back_as_written,
+    fragment_depth_follows_the_clip_convention,
 );
 
-/// Runs the suite test `name` with `off` (extensions to treat as missing, separated by spaces). A
-/// failing test panics: the page gets the message through `window.panicked` and the module traps.
+thread_local! {
+    /// The test `suite_test` chose, which `suite_run` runs.
+    static CHOSEN: core::cell::Cell<Option<fn()>> = const { core::cell::Cell::new(None) };
+}
+
+/// Chooses the suite test `name`, with `off` (extensions to treat as missing, separated by spaces).
 #[wasm_bindgen]
 pub fn suite_test(name: &str, off: &str) -> Result<(), JsError> {
     std::panic::set_hook(Box::new(|info| panicked(&info.to_string())));
@@ -149,6 +164,16 @@ pub fn suite_test(name: &str, off: &str) -> Result<(), JsError> {
         .find(|(n, _)| *n == name)
         .ok_or_else(|| JsError::new(&format!("the browser host has no suite test {name}")))?;
     OFF.set(off.to_string());
-    test();
+    CHOSEN.set(Some(*test));
     Ok(())
+}
+
+/// Runs the chosen test. A plain export, which the page calls through `WebAssembly.promising` so the
+/// back end's waits can suspend it. A failing test panics: the page gets the message through
+/// `window.panicked` and the module traps.
+#[unsafe(no_mangle)]
+pub extern "C" fn suite_run() {
+    if let Some(test) = CHOSEN.take() {
+        test();
+    }
 }

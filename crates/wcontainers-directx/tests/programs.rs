@@ -1,4 +1,6 @@
-//! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges` and `lifetimes`) run as ordinary
+//! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges`,
+//! `own_depth_copy`, `own_swap_chain`, `own_volumes`, `own_queries` and
+//! `lifetimes`) run as ordinary
 //! programs, once beside the system's d3d11.dll and once with our forwarding d3d11.dll and library
 //! beside them, and what each printed compared.
 #![cfg(windows)]
@@ -70,16 +72,20 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     assert_eq!(code, 0, "{text}");
     assert_eq!(
         text,
-        "CreateGeometryShader 0x00000000\nCreateTexture3D 0x00000000\n\
-         CreateBuffer(structured) 0x00000000\nGetDeviceRemovedReason 0x00000000\n"
+        "CreateGeometryShader 0x00000000\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
+         CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x00000000\nCheckMultisampleQualityLevels(4) 0x00000000 1\n\
+         CreateTexture2D(4 samples) 0x00000000\nGetDeviceRemovedReason 0x00000000\n"
     );
     let (code, ours) = run("own_refused", &place("refused-ours", true));
     assert_eq!(code, 0, "{ours}");
-    // E_NOTIMPL for each creation, and the unservable draw removes the device (DXGI_ERROR_DRIVER_INTERNAL_ERROR).
+    // E_NOTIMPL for each creation; no multisampling, so no quality level and E_INVALIDARG for a
+    // texture of 4 samples, as Direct3D answers a count it reports none for; and the unservable draw
+    // removes the device (DXGI_ERROR_DRIVER_INTERNAL_ERROR).
     assert_eq!(
         ours,
-        "CreateGeometryShader 0x80004001\nCreateTexture3D 0x80004001\n\
-         CreateBuffer(structured) 0x80004001\nGetDeviceRemovedReason 0x887a0020\n"
+        "CreateGeometryShader 0x80004001\nCreateQuery(occlusion) 0x80004001\nCreateQuery(timestamp) 0x80004001\n\
+         CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x80004001\nCheckMultisampleQualityLevels(4) 0x00000000 0\n\
+         CreateTexture2D(4 samples) 0x80070057\nGetDeviceRemovedReason 0x887a0020\n"
     );
 }
 
@@ -93,6 +99,52 @@ fn own_edges_read_and_copy_as_direct3d_does() {
         assert_eq!(w, g, "the first line that differs");
     }
     assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn one_and_three_dimensional_textures_as_direct3d_does() {
+    let (code, want) = run("own_volumes", &place("volumes-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_volumes", &place("volumes-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn queries_answer_as_direct3d_does() {
+    let (code, want) = run("own_queries", &place("queries-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_queries", &place("queries-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn a_swap_chain_presents_and_resizes_as_direct3d_does() {
+    let (code, want) = run("own_swap_chain", &place("swap-chain-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_swap_chain", &place("swap-chain-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+#[ignore = "known failure: the WebGPU back end copies one aspect of depth with stencil, which WebGPU refuses"]
+fn depth_with_stencil_copies_as_direct3d_does() {
+    let (code, want) = run("own_depth_copy", &place("depth-copy-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_depth_copy", &place("depth-copy-ours", true));
+    assert_eq!(code, 0, "{got}");
+    assert_eq!(want, got);
 }
 
 /// Seeds and steps of the `lifetimes` runs: `WC_LIFETIMES=<first seed>,<seeds>,<steps>`.

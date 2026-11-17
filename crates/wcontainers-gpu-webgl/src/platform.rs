@@ -16,7 +16,7 @@ pub const FIRST_VERTEX: u32 = 0x8E4D;
 pub const LAST_VERTEX: u32 = 0x8E4E;
 
 /// The WebGL extension names, with the GL names ANGLE reports for each natively.
-const EXTENSIONS: [(&str, &str); 8] = [
+const EXTENSIONS: [(&str, &str); 13] = [
     ("EXT_clip_control", "GL_EXT_clip_control"),
     ("WEBGL_provoking_vertex", "GL_ANGLE_provoking_vertex"),
     ("EXT_color_buffer_float", "GL_EXT_color_buffer_float"),
@@ -31,7 +31,33 @@ const EXTENSIONS: [(&str, &str); 8] = [
         "GL_EXT_texture_filter_anisotropic",
     ),
     ("WEBGL_stencil_texturing", "GL_ANGLE_stencil_texturing"),
+    (
+        "EXT_disjoint_timer_query_webgl2",
+        "GL_EXT_disjoint_timer_query",
+    ),
+    // ANGLE reports DXT1, DXT3 and DXT5 apart; WebGL's extension needs all three.
+    (
+        "WEBGL_compressed_texture_s3tc",
+        "GL_ANGLE_texture_compression_dxt5",
+    ),
+    (
+        "WEBGL_compressed_texture_s3tc_srgb",
+        "GL_EXT_texture_compression_s3tc_srgb",
+    ),
+    (
+        "EXT_texture_compression_rgtc",
+        "GL_EXT_texture_compression_rgtc",
+    ),
+    (
+        "EXT_texture_compression_bptc",
+        "GL_EXT_texture_compression_bptc",
+    ),
 ];
+
+/// GL_TIMESTAMP_EXT, GL_QUERY_COUNTER_BITS_EXT and GL_GPU_DISJOINT_EXT.
+pub const TIMESTAMP: u32 = 0x8E28;
+const QUERY_COUNTER_BITS: u32 = 0x8864;
+pub const GPU_DISJOINT: u32 = 0x8FBB;
 
 /// The extensions the back end uses that the context has, by WebGL name, less those switched off.
 pub fn extensions(gl: &glow::Context, off: &[&str]) -> BTreeSet<&'static str> {
@@ -58,11 +84,13 @@ mod native {
 
     type ClipControl = unsafe extern "system" fn(u32, u32);
     type ProvokingVertex = unsafe extern "system" fn(u32);
+    type GetQueryiv = unsafe extern "system" fn(u32, u32, *mut i32);
 
     /// The calls past glow, and the EGL objects the context lives in.
     pub struct Platform {
         clip_control: Option<ClipControl>,
         provoking_vertex: Option<ProvokingVertex>,
+        get_queryiv: Option<GetQueryiv>,
         egl: Option<Egl>,
     }
 
@@ -107,6 +135,43 @@ mod native {
                 unsafe { f(mode) };
             }
         }
+
+        /// How many bits the GPU's timestamps have; zero where it writes none.
+        pub fn timestamp_bits(&self, _gl: &glow::Context) -> u32 {
+            let mut bits = 0;
+            if let Some(f) = self.get_queryiv {
+                // SAFETY: the pointer was loaded for this context's glGetQueryivEXT.
+                unsafe { f(TIMESTAMP, QUERY_COUNTER_BITS, &mut bits) };
+            }
+            bits.max(0) as u32
+        }
+
+        /// The sample counts GL takes for a renderbuffer of `internal`.
+        pub fn sample_counts(&self, gl: &glow::Context, internal: u32) -> Vec<i32> {
+            let mut n = [0];
+            // SAFETY: plain queries; the second gets as many values as the first says there are.
+            unsafe {
+                gl.get_internal_format_i32_slice(
+                    glow::RENDERBUFFER,
+                    internal,
+                    glow::NUM_SAMPLE_COUNTS,
+                    &mut n,
+                );
+                let mut counts = vec![0; n[0].max(0) as usize];
+                if !counts.is_empty() {
+                    gl.get_internal_format_i32_slice(
+                        glow::RENDERBUFFER,
+                        internal,
+                        glow::SAMPLES,
+                        &mut counts,
+                    );
+                }
+                counts
+            }
+        }
+
+        /// Natively query results arrive without the thread giving way, so nothing is done.
+        pub fn next_task(&self) {}
 
         /// Gives the default framebuffer, which surfaces present into, this size: a new off-screen
         /// surface made current in place of the old one.
@@ -228,9 +293,17 @@ mod native {
         .then(|| unsafe {
             core::mem::transmute::<*const core::ffi::c_void, ProvokingVertex>(provoking)
         });
+        let queryiv = load("glGetQueryivEXT");
+        let get_queryiv = (!queryiv.is_null()
+            && gl
+                .supported_extensions()
+                .contains("GL_EXT_disjoint_timer_query"))
+        // SAFETY: glGetQueryivEXT takes two GLenums and a pointer to one GLint.
+        .then(|| unsafe { core::mem::transmute::<*const core::ffi::c_void, GetQueryiv>(queryiv) });
         let platform = Platform {
             clip_control,
             provoking_vertex,
+            get_queryiv,
             egl: Some(Egl {
                 instance,
                 display,
@@ -306,6 +379,47 @@ mod web {
             }
         }
 
+        /// How many bits the GPU's timestamps have; zero where it writes none.
+        pub fn timestamp_bits(&self, gl: &glow::Context) -> u32 {
+            if !gl
+                .supported_extensions()
+                .contains("EXT_disjoint_timer_query_webgl2")
+            {
+                return 0;
+            }
+            let Ok(f) = js_sys::Reflect::get(&self.context, &JsValue::from_str("getQuery"))
+                .and_then(|f| f.dyn_into::<js_sys::Function>())
+            else {
+                return 0;
+            };
+            f.call2(
+                &self.context,
+                &JsValue::from(TIMESTAMP),
+                &JsValue::from(QUERY_COUNTER_BITS),
+            )
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as u32
+        }
+
+        /// The sample counts WebGL takes for a renderbuffer of `internal` (WebGL 2 answers `SAMPLES`
+        /// with the whole list, and has no `NUM_SAMPLE_COUNTS`).
+        pub fn sample_counts(&self, _gl: &glow::Context, internal: u32) -> Vec<i32> {
+            self.context
+                .get_internalformat_parameter(glow::RENDERBUFFER, internal, glow::SAMPLES)
+                .ok()
+                .and_then(|v| v.dyn_into::<js_sys::Int32Array>().ok())
+                .map_or_else(Vec::new, |a| a.to_vec())
+        }
+
+        /// Suspends the device thread until the browser's next task (plan section 4.8), through the
+        /// host's JSPI import `next_task` of module `wcontainers-device`: WebGL hands out query
+        /// results only between tasks.
+        pub fn next_task(&self) {
+            // SAFETY: the import takes and returns nothing; the host suspends this stack in it.
+            unsafe { next_task() }
+        }
+
         /// Gives the canvas's drawing buffer, which surfaces present into, this size. Err when the
         /// browser made it smaller (WebGL may, under memory pressure or past its largest size).
         pub fn resize(
@@ -334,6 +448,11 @@ mod web {
             }
             Ok(())
         }
+    }
+
+    #[link(wasm_import_module = "wcontainers-device")]
+    unsafe extern "C" {
+        fn next_task();
     }
 
     /// The extension object `name` and its function `call`, enabled on the context.
@@ -373,6 +492,14 @@ mod web {
             extension_call(&context, "WEBGL_provoking_vertex", "provokingVertexWEBGL");
         // Enabled here since glow does not know it; its calls are plain texture parameters.
         let _ = context.get_extension("WEBGL_stencil_texturing");
+        for compressed in [
+            "WEBGL_compressed_texture_s3tc",
+            "WEBGL_compressed_texture_s3tc_srgb",
+            "EXT_texture_compression_rgtc",
+            "EXT_texture_compression_bptc",
+        ] {
+            let _ = context.get_extension(compressed);
+        }
         let canvas = js_sys::Reflect::get(&context, &JsValue::from_str("canvas"))
             .unwrap_or(JsValue::UNDEFINED);
         (

@@ -13,18 +13,118 @@ pub const R32_UINT: u32 = 42;
 /// no DXGI format, `NotImplemented` for a DXGI format this front does not serve (typeless formats,
 /// among others).
 pub fn texture_format_of(dxgi: u32) -> Result<Format> {
-    match texture_format(dxgi) {
-        Some(f) => Ok(f),
-        // Defined DXGI formats: 1 to 132, the sampler feedback formats 189 and 190, and 191.
-        None if matches!(dxgi, 1..=132 | 189..=191) => {
-            not_implemented("a DXGI format this front does not serve (typeless formats among them)")
-        }
-        None => Err(Error::InvalidArg("unknown format")),
+    texture_format(dxgi).map_or_else(|| unserved(dxgi), Ok)
+}
+
+/// Not served for a defined DXGI format, invalid for others.
+fn unserved<T>(dxgi: u32) -> Result<T> {
+    // Defined DXGI formats: 1 to 132, the sampler feedback formats 189 and 190, and 191.
+    if matches!(dxgi, 1..=132 | 189..=191) {
+        not_implemented("a DXGI format this front does not serve")
+    } else {
+        Err(Error::InvalidArg("unknown format"))
     }
 }
 
-/// The interface format a DXGI format is stored as, for the formats this front serves. Typeless
-/// formats are not served yet.
+/// The interface format a texture of DXGI format `dxgi` is stored as. A typeless texture is stored
+/// as a member of its group: the depth format where it is bound for depth (or the group holds only
+/// depth with stencil), otherwise a colour format whose views as itself and its sRGB twin need no
+/// reinterpreting.
+pub fn storage_format(dxgi: u32, depth_bound: bool) -> Result<Format> {
+    use Format::*;
+    let typeless = match (dxgi, depth_bound) {
+        (1, _) => Rgba32Float,
+        (9, _) => Rgba16Float,
+        (15, _) => Rg32Float,
+        (19, _) => Depth32FloatStencil8,
+        (23, _) => Rgb10a2Unorm,
+        (27, _) => Rgba8Unorm,
+        (33, _) => Rg16Float,
+        (39, true) => Depth32Float,
+        (39, false) => R32Float,
+        (44, _) => Depth24PlusStencil8,
+        (48, _) => Rg8Unorm,
+        (53, true) => Depth16Unorm,
+        (53, false) => R16Float,
+        (60, _) => R8Unorm,
+        (70, _) => Bc1RgbaUnorm,
+        (73, _) => Bc2RgbaUnorm,
+        (76, _) => Bc3RgbaUnorm,
+        (79, _) => Bc4RUnorm,
+        (82, _) => Bc5RgUnorm,
+        (90, _) => Bgra8Unorm,
+        (92, _) => Bgrx8Unorm,
+        (94, _) => Bc6hRgbUfloat,
+        (97, _) => Bc7RgbaUnorm,
+        _ => return texture_format_of(dxgi),
+    };
+    Ok(typeless)
+}
+
+/// The interface format and aspect (true for stencil) of a view of DXGI format `view` of a texture
+/// stored as `storage` with DXGI format `texture`. A typed texture is viewed as its own format; a
+/// typeless one as any member of its group, and Direct3D's depth views (`R24_UNORM_X8_TYPELESS`,
+/// `X24_TYPELESS_G8_UINT`, `R32_FLOAT` of `R32_TYPELESS` and the like) read one aspect of the depth
+/// format. Members whose bits another format of the group would have to reinterpret are not served
+/// (the back ends keep no copy for it yet, `ReinterpretCopy`).
+pub fn view_format(view: u32, texture: u32, storage: Format) -> Result<(Format, bool)> {
+    use Format::*;
+    if is_typeless(view) {
+        return Err(Error::InvalidArg("a typeless view format"));
+    }
+    if view != texture && typeless_group(view) != texture {
+        return Err(Error::InvalidArg(
+            "a view format outside the texture's own or its typeless group",
+        ));
+    }
+    let aspect = match (storage, view) {
+        (Depth32FloatStencil8, 20 | 21) => Some(false),
+        (Depth32FloatStencil8, 22) => Some(true),
+        (Depth32Float, 40 | 41) | (Depth16Unorm, 55 | 56) => Some(false),
+        (Depth24PlusStencil8, 45 | 46) => Some(false),
+        (Depth24PlusStencil8, 47) => Some(true),
+        _ => None,
+    };
+    if let Some(stencil) = aspect {
+        return Ok((storage, stencil));
+    }
+    let format = texture_format(view).map_or_else(|| unserved(view), Ok)?;
+    if format.linear() == storage.linear() {
+        Ok((format, false))
+    } else {
+        not_implemented("a view reinterpreting a typeless texture's bits as another format")
+    }
+}
+
+/// Whether `dxgi` is the typeless format heading a group.
+pub fn is_typeless(dxgi: u32) -> bool {
+    matches!(
+        dxgi,
+        1 | 5
+            | 9
+            | 15
+            | 19
+            | 23
+            | 27
+            | 33
+            | 39
+            | 44
+            | 48
+            | 53
+            | 60
+            | 70
+            | 73
+            | 76
+            | 79
+            | 82
+            | 90
+            | 92
+            | 94
+            | 97
+    )
+}
+
+/// The interface format a DXGI format is stored as, for the typed formats this front serves.
 pub fn texture_format(dxgi: u32) -> Option<Format> {
     use Format::*;
     Some(match dxgi {

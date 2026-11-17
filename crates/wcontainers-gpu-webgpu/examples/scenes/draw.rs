@@ -589,8 +589,13 @@ pub fn render_on(
 
 /// RGBA8 rows as a PNG file.
 pub fn png(rgba: &[u8]) -> Result<Vec<u8>> {
+    png_of(rgba, WIDTH, HEIGHT)
+}
+
+/// An RGBA picture of `width` by `height` as a PNG file.
+pub fn png_of(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    let mut e = png::Encoder::new(&mut out, WIDTH, HEIGHT);
+    let mut e = png::Encoder::new(&mut out, width, height);
     e.set_color(png::ColorType::Rgba);
     e.set_depth(png::BitDepth::Eight);
     e.write_header()?.write_image_data(rgba)?;
