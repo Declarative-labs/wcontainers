@@ -2655,6 +2655,7 @@ name = "wcontainers-direct3d-11"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "naga",
  "wcontainers-gpu",
  "wcontainers-shaders",
 ]
@@ -2683,6 +2684,7 @@ dependencies = [
  "parking_lot",
  "pollster",
  "wcontainers-direct3d-11",
+ "wcontainers-directx-graphics-infrastructure",
  "wcontainers-gpu",
  "wcontainers-gpu-webgpu",
  "wgpu",
@@ -2694,8 +2696,6 @@ dependencies = [
 name = "wcontainers-directx-graphics-infrastructure"
 version = "0.1.0"
 dependencies = [
- "blake3",
- "naga",
  "wcontainers-gpu",
 ]
 
