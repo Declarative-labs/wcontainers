@@ -490,6 +490,10 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
   `own_handled` now also writes and copies a buffer at unaligned byte ranges and checks every byte.
 - Last full run: 2026-11-17, G4 run 2, on the desktop from this tree after a clean rebuild of our
   crates: front 22 passed; library 14 + 9 passed and 1 ignored (the known failure); lint clean.
+  The clean rebuild showed that a front test (`creation_checks_refuse_what_direct3d_refuses`)
+  claimed Direct3D refuses zero factors on an independent target that does not blend; Wine's
+  test_independent_blend and test_color_mask show real Direct3D accepts them, so the test now
+  checks that and refuses only a target that blends with them.
 - Before it: 2026-11-17, G4 run 1, on the desktop from this tree: front 22 passed; library
   14 + 7 passed and 1 ignored (the known failure, run alone with `--ignored`: fails as described);
   lint clean.
