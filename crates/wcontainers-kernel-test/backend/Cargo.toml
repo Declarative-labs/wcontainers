@@ -1,0 +1,18 @@
+[package]
+name = "wc-backend"
+description = "The first file backend for tests: fuse-backend-rs's passthrough server, built for ARM64 Linux."
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Built apart for ARM64 Linux, where it runs in the test containers.
+[workspace]
+
+[dependencies]
+fuse-backend-rs = { version = "0.14.0", features = ["fusedev"] }
+caps = "0.5"
+libc = "0.2"
+
+[profile.release]
+debug = false
