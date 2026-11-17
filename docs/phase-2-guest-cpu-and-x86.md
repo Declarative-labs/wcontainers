@@ -861,7 +861,7 @@ pub enum StepAt { Stop(u64), Kernel }
 /// (SIGTRAP, `TRAP_TRACE`), before any other reason the flag was raised for.
 pub enum Step { Off, Run, Exact, Trap }
 pub enum StackMove { None, By { delta: i64, before_access: bool }, Unknown }
-pub enum ReturnAddress { Register(u32 /* bit */), Stack { bytes: u8 } }
+pub enum ReturnAddress { Register, Stack { bytes: u8 } }
 pub struct SyscallRegisters<R> { pub number: R, pub args: [R; 6], pub result: R }
 pub enum CodeChanges { Announced, Detected }
 pub enum TrapDetail { Instruction, Local(u32), Const(i64) }
@@ -974,7 +974,9 @@ of its instruction offsets in order; "next" is offset + length, "last" is the la
 "previous" is the one before in the list, and two blocks join when `p + length(p) == offset`. Alignment
 checks use `G::ALIGN`; with `ALIGN == 1` they compile to nothing. x86 code may jump into the middle of
 another instruction: the body of a function is a set of offsets, so two overlapping instruction streams are
-simply two sets of offsets. The bottom loop gives an alignment fault for an address not a multiple of
+simply two sets of offsets. Where they meet again (both fall into one offset, as after x86's `je 1f; lock;
+1: cmpxchg`), that offset leads a block of its own, and the walk back (`before`) stops there as at a jump
+target; ARM64's instructions never overlap, so its blocks are cut as before. The bottom loop gives an alignment fault for an address not a multiple of
 `ALIGN` that has no piece; no other code tests it. ARM64 faults so (bit 0 or 1 set); x86 never reaches the
 test (`ALIGN` 1); RV64GC never gives it either, because no address it goes to can be odd: `jalr` clears bit
 0 in its meaning, and branch and jump offsets are even. So the CPU's own meanings, not an interface item,
@@ -1261,7 +1263,7 @@ ARM64 (`wcontainers_arm64::Arm64`, everything as today):
 - Hooks: Float `(i32, i64, i64, i64) -> i64` (body `Cpu`: `run_hook` reads FPCR and FPSR from the state,
   calls `exact::run`, writes FPSR back and names the reason, today's code in runner.rs and the browser's
   lib.rs moved into the CPU crate), Clock `() -> i64`, CodeChanged `(i64)`.
-- RETURN_ADDRESS `Register(30)`; RED_ZONE 0; SP_ALIGNMENT_CHECKED true; data_address and branch_target
+- RETURN_ADDRESS `Register` (x30, written by the meaning of `bl` and `blr`); RED_ZONE 0; SP_ALIGNMENT_CHECKED true; data_address and branch_target
   untag (bit 55 rule), as the branch meanings already do; UNREACHABLE_RETURN i64::MIN; Offer `()`; SYSCALL
   x8, x0 to x5, x0; CODE_CHANGES Announced; memory_fault always `Page`.
 
@@ -1301,8 +1303,8 @@ is special, 4-byte instructions or a special stack pointer):
 - Controls: fcsr (frm and fflags), the LR/SC reservation (the Exclusive* shape again).
 - Hooks: Float (fcsr; RISC-V instructions may also carry a static rounding mode, so `float_slow` may be
   answered per instruction), Clock (rdtime), CodeChanged with an "everything" form for `fence.i`.
-- RETURN_ADDRESS `Register(1)` (ra, by convention; `jalr` may link to any register, and a call is
-  recognised by `FlowKind`, not by the register); RED_ZONE 0; SP_ALIGNMENT_CHECKED false; no untag;
+- RETURN_ADDRESS `Register` (ra by convention, but `jalr` may link to any register: the meaning writes
+  it, and a call is recognised by `FlowKind`, so the interface names no register); RED_ZONE 0; SP_ALIGNMENT_CHECKED false; no untag;
   UNREACHABLE_RETURN 1 (no `jalr` target has bit 0 set); Offer `()`; SYSCALL a7, a0 to a5, a0;
   CODE_CHANGES Announced; memory_fault always `Page`. Its branches compare two registers, so `branch_comparison` reads them at the branch.
 
@@ -2719,9 +2721,11 @@ Measured throughout, recorded with machine and load: translation speed, output s
   (byte-aligned variable-length instructions, a return address on the stack, a red zone, different
   registers passed in and out, partial flag setters, a segment base, a trap that leaves pc after it, its
   own slow path and hook registers), and a variant of it without flags the way RV64GC does; their
-  translations at every look-ahead validate, and programs of each run in wasmtime at every look-ahead in
-  both settings and end with the registers, pc, memory and hook calls their meanings give (among them two
-  accesses of one segment group that fault exactly, and the groups' exact checks gone at full look-ahead); the benchmarks in wasmtime are
+  translations at every look-ahead validate, and programs of each run in wasmtime at every look-ahead (the
+  comparison's list, and bounded 5, which cuts these small programs part way) in both settings and end with
+  the registers, pc, memory and hook calls their meanings give (among them two accesses of one segment group
+  that fault exactly, the groups' exact checks gone at full look-ahead, and two instruction streams through
+  one instruction that meet again); the benchmarks in wasmtime are
   unchanged within noise (old and new alternating, best of 5 each, load recorded), and so is a program that
   takes the float hook on every operation. The move is done on this branch's copy of the
   translator; fixes the translator track makes later come in by a merge the orchestrator names, and are

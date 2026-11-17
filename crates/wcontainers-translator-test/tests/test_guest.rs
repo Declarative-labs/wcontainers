@@ -795,11 +795,15 @@ fn validate(wasm: &[u8]) {
     }
 }
 
-const LOOK_AHEADS: [LookAhead; 5] = [
+/// The comparison's look-aheads, and bounded 5, which cuts these small programs part way.
+const LOOK_AHEADS: [LookAhead; 8] = [
     LookAhead::None,
     LookAhead::Bounded(1),
     LookAhead::Bounded(5),
+    LookAhead::Bounded(17),
+    LookAhead::Bounded(64),
     LookAhead::Bounded(256),
+    LookAhead::Bounded(4096),
     LookAhead::Full,
 ];
 
@@ -1457,6 +1461,57 @@ fn a_jump_into_the_middle_of_an_instruction_runs_what_it_finds() {
         assert_eq!(ran.last(), breakpoint(LOAD + 9));
         assert_eq!(ran.reg(0), 0);
     });
+}
+
+/// Two streams that meet again: a jump into `inc r0`'s register byte, a nop, ends where the `inc` ends.
+#[test]
+fn two_streams_through_one_instruction_meet_again() {
+    let code = [
+        0x01, 1, 0xff, // 0: add r1, -1
+        0x03, 3, // 3: jz to 6
+        0x02, 0,    // 5: inc r0; at 6 a nop
+        0x0b, // 7: break
+    ];
+    // r1 = 1: Z set (flags) and r0 zero (no flags), so the jump is taken.
+    let taken = Start {
+        registers: vec![(1, 1)],
+        ..Start::default()
+    };
+    both(&code, &[0], &taken, |ran, _, _| {
+        assert_eq!(ran.last(), breakpoint(LOAD + 8));
+        assert_eq!(ran.reg(0), 0);
+    });
+    let not_taken = Start {
+        registers: vec![(1, 5)],
+        ..Start::default()
+    };
+    each::<true>(&code, &[0], &not_taken, |ran, _| {
+        assert_eq!(ran.last(), breakpoint(LOAD + 8));
+        assert_eq!(ran.reg(0), 1);
+    });
+}
+
+/// A jump past an instruction's first byte into the rest of it, as x86's `je 1f; lock; 1: cmpxchg`: both
+/// streams go on from the same offset.
+#[test]
+fn a_jump_past_an_instructions_first_byte_meets_it_at_its_end() {
+    let code = [
+        0x01, 1, 0xff, // 0: add r1, -1
+        0x03, 3, // 3: jz to 6
+        0x01, 0, 0x00, // 5: add r0, 0; at 6 and 7 nops
+        0x01, 0, 7,    // 8: add r0, 7
+        0x0b, // 11: break
+    ];
+    for r1 in [1, 5] {
+        let start = Start {
+            registers: vec![(1, r1)],
+            ..Start::default()
+        };
+        both(&code, &[0], &start, |ran, _, _| {
+            assert_eq!(ran.last(), breakpoint(LOAD + 12));
+            assert_eq!(ran.reg(0), 7);
+        });
+    }
 }
 
 /// Loads through the FS base: two from one base register, two from the segment base alone.

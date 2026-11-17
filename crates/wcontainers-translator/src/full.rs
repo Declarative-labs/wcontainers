@@ -496,11 +496,15 @@ impl<G: Guest> Finder<'_, G> {
         let mut blocks: Vec<Block> = Vec::new();
         let mut offsets = Vec::with_capacity(body.len());
         let mut previous: Option<(u64, u64)> = None;
+        // The furthest end of the instructions before `previous`: only past it can another end where it does.
+        let mut furthest = 0;
         for (&offset, &length) in &body {
             let joined = previous.is_some_and(|(p, n)| {
                 p + n == offset
                     && !leaders.contains(&offset)
                     && !ends_block::<G>(&self.get(p).instruction)
+                    // Where two overlapping streams meet again, the offset leads a block of its own.
+                    && (furthest < offset || ending_at::<G>(&body, offset).nth(1).is_none())
             });
             offsets.push(offset);
             if joined {
@@ -515,6 +519,9 @@ impl<G: Guest> Finder<'_, G> {
                     succs: Vec::new(),
                     table: None,
                 });
+            }
+            if let Some((p, n)) = previous {
+                furthest = furthest.max(p + n);
             }
             previous = Some((offset, length));
         }
@@ -557,7 +564,7 @@ impl<G: Guest> Finder<'_, G> {
     }
 
     /// The instruction of the walk so far that falls through into `offset`, with its offset; `None` when
-    /// none does or a jump is known to enter there.
+    /// none does, two do or a jump is known to enter there.
     fn before(
         &self,
         body: &BTreeMap<u64, u64>,
@@ -567,10 +574,11 @@ impl<G: Guest> Finder<'_, G> {
         if leaders.contains(&offset) {
             return None;
         }
-        // Instructions may overlap, so the one ending here need not be the last to start before it.
-        let p = (offset.saturating_sub(G::MAX_LENGTH)..offset)
-            .rev()
-            .find(|p| body.get(p).is_some_and(|&n| p + n == offset))?;
+        let mut ending = ending_at::<G>(body, offset);
+        let p = ending.next()?;
+        if ending.next().is_some() {
+            return None;
+        }
         let instruction = self.get(p).instruction;
         (G::flow(&instruction).falls_through && !ends_block::<G>(&instruction))
             .then_some((p, instruction))
@@ -590,6 +598,14 @@ impl<G: Guest> Finder<'_, G> {
             .all(|&t| self.code.inside(t))
             .then_some(targets)
     }
+}
+
+/// The instructions of `body` that end at `offset`, nearest first. Instructions may overlap, so the one
+/// ending there need not be the last to start before it.
+fn ending_at<G: Guest>(body: &BTreeMap<u64, u64>, offset: u64) -> impl Iterator<Item = u64> + '_ {
+    (offset.saturating_sub(G::MAX_LENGTH)..offset)
+        .rev()
+        .filter(move |p| body.get(p).is_some_and(|&n| p + n == offset))
 }
 
 /// Offsets that cut a function in `parts`: the places control passes from one run of its instructions to
