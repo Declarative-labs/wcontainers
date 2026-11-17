@@ -573,7 +573,7 @@ context states), empty input layouts (test_create_input_layout), staging depth w
 After G4 run 6, first, once the desktop answers again: `resume.sh g4r7` from this tree (lint of
 both builds, front tests, library tests, every Direct3D 11 scene, Wine's d3d11 file, every scene
 through the WebGL 2 build). The code commits from b1d136f through c3918dd and b37e2ec have never
-been built on Windows; fix what fails, then push (the branch is about 118 commits ahead of
+been built on Windows; fix what fails, then push (the branch is 128 commits ahead of
 origin). Then:
 - Wine's d3d11 file: update the table of files and confirm or correct each line of the gap list
   draft (Wine's Direct3D 11 tests through ours). test_update_subresource's refused write was most
