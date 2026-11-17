@@ -1,13 +1,20 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: three on G4a, the first slice.
+Runs so far: four on G4a, the first slice.
 
 ## Where things stand
 
 G4a (the rig's three Direct3D 11 scenes drawn through our own d3d11.dll) is done:
+- Run 4 merged origin/phase-2-graphics (the pass tracker, occlusion counter and combination tracker
+  in the interface; G1's recording back end crate), -webgl (its conflict is settled on its side
+  now), -shaders and -rig, and checked everything again on the RTX 3080. The shaders track's
+  explicit level-zero sampling makes the rig's dynamic scene match exactly; its exact sizes of
+  dynamically indexed constant buffers meant the front test of a grown constant buffer now binds a
+  buffer of one register (the instanced scene's own buffer is no longer smaller than declared).
 - The three scene programs, unchanged, run with our library beside them and match real Direct3D 11
-  exactly on the RTX 3080 (tolerance 0, largest difference 0): triangle, quads and topology. Their
+  exactly on the RTX 3080 (tolerance 0, largest difference 0): triangle, quads and topology; so do
+  the rig's instanced, dynamic and targets scenes. Their
   DXBC is converted by the shaders crate (`wcontainers_shaders::convert`, merged from
   origin/phase-2-graphics-shaders); the hand-written WGSL stand-ins are gone.
 - They match both ways the library can be placed: the library itself copied in as d3d11.dll, and
@@ -72,8 +79,8 @@ topology; adjacency topologies without a geometry shader through `AdjacencyDropp
   its aspect's format. Test `own_handled_draws_the_same_through_ours_with_depth_and_stencil`
   (tests/programs.rs) is marked ignored with this reason; run with `--include-ignored` it fails with
   0x887A0005. With D32_FLOAT the same program matches. The rig's depth and stencil scenes stop here.
-- The rig's dynamic scene: wgpu's Direct3D 12 path compiles the converted pixel shader with FXC,
-  which refuses naga's `SampleLevelZero` (X3088); the device is removed.
+  Still so in run 4 (origin/phase-2-graphics-webgpu had nothing new): the back end's `raw_view`
+  takes the aspect from `stencil` for every view.
 
 ## What comes next (G4b and on)
 
@@ -89,6 +96,15 @@ topology; adjacency topologies without a geometry shader through `AdjacencyDropp
    solve this: our library draws through wgpu on Direct3D 12, which loads d3d12.dll and dxgi.dll by
    name, so forwarders with those names in the program's folder would load our own library again.
 6. The call buffer and device thread (section 4.8); today calls run on the caller's thread.
+7. Move the context onto the interface's `PassTracker` (now on the branch) in place of its own
+   pass opening and pending clears (context.rs `open_pass`, `add_clear`, `settle`). The tracker
+   takes clears of bound targets only, so a clear of a view bound later must still become a pass
+   load, not an extra `clear_texture`: keep that or add it to the tracker as an interface change.
+   Then the `CombinationTracker` for building ahead (4.4).
+8. Move the front's tests onto G1's recording back end (crates/wcontainers-gpu-test), which runs
+   draws on the CPU and checks the interface's rules, and delete src/record.rs. Two things stand in
+   the way: it declares no `COMPUTE`, so the front makes 10_0 devices on it, not 11_0; and a test
+   cannot lose its device on purpose (the front test of a loss at the next wait sets `lost`).
 
 ## How to run
 
@@ -166,17 +182,19 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 - crates/wcontainers-directx/tests/programs.rs, 3 tests and 1 ignored: our two programs, system and
   ours; `own_handled` with a D32_FLOAT depth-stencil view; the D24_UNORM_S8_UINT one (known failure).
   `own_handled` now also writes and copies a buffer at unaligned byte ranges and checks every byte.
-- Last full run: 2026-11-17, run 3, on the desktop from this tree: 16 + 11 + 3 passed, 1 ignored (the
-  known failure, which run with `--include-ignored` fails as described); lint clean.
+- Last full run: 2026-11-17, run 4, on the desktop from this tree after the merges: 16 + 11 + 3
+  passed, and the known failure run with `--include-ignored` fails as described (0x887A0005); lint
+  clean.
 
 ## Departures from the plan
 
 - No call buffer or device thread yet: COM calls run the front on the calling thread under one
   re-entrant lock (section 4.8 puts the channel in the second batch).
-- The recording back end is in the front crate (`record.rs`), not G1's wcontainers-gpu-test, which is
-  on no branch yet. It stays for the front's tests until G1's lands.
-- No pass tracker or combination tracker from G1 yet; the front opens a pass at the first draw after
-  its targets change and ends it before copies, maps and clears.
+- The recording back end is in the front crate (`record.rs`), not G1's wcontainers-gpu-test, which
+  landed in run 4; moving over is item 8 of what comes next.
+- The front does not use G1's pass tracker or combination tracker yet (they landed in run 4; item 7
+  of what comes next); it opens a pass at the first draw after its targets change and ends it before
+  copies, maps and clears.
 - Buffers are padded to the back end's copy granule (4 bytes on WebGPU); the program sees its own
   `ByteWidth`.
 - The feature level is 11_0 at most; 11_1's requirements have not been checked.
@@ -184,8 +202,6 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 - The adapter reports zero for its memory sizes (the infrastructure crate's rule; no browser API
   reports them). Programs that budget by `DedicatedVideoMemory` see none; whether to report a stated
   estimate instead is the owner's call.
-- Not merged this run: origin/phase-2-graphics-webgl (4 commits). Its merge conflicts in
-  crates/wcontainers-gpu-webgl (another track's code, which this track does not use), so it was left.
 - `D3D11CreateDevice` with an adapter uses ours whatever is passed; the debug flag answers
   `DXGI_ERROR_SDK_COMPONENT_MISSING`; software, WARP, reference and null drivers `DXGI_ERROR_UNSUPPORTED`.
 - Only d3d11.dll is a forwarder (section 10 names d3d12.dll and dxgi.dll too): the library exports
@@ -206,6 +222,12 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Measurements
 
+- 2026-11-17, run 4, after the merges, every Direct3D 11 rig scene through our library copied in as
+  d3d11.dll (through the queue, not alone; desktop CPU load 23 % sampled after; Mac load average
+  42): 9 pictures match exactly (largest difference 0): triangle, quads, topology, instanced,
+  dynamic (new) and the four targets outputs. The other scenes stop with the same error codes as in
+  run 3, except dynamic. The five matching scenes match the same through our forwarder and through
+  the rig's own forwarding library (5 of 5).
 - 2026-11-17, run 3, every Direct3D 11 rig scene through our library copied in as d3d11.dll (desktop
   CPU load 12 % sampled after; Mac load average 40): matching exactly (largest difference 0) are
   triangle, quads, topology, instanced (new: the grown constant buffer) and the four targets
