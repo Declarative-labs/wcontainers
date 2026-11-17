@@ -95,12 +95,11 @@ pub(super) const EPHEMERAL: core::ops::RangeInclusive<u16> = 32768..=60999;
 const TIME_WAIT: u64 = 60_000_000_000;
 
 /// `tcp_wmem` and `tcp_rmem`'s defaults, a connection's send buffer on loopback
-/// (`tcp_sndbuf_expand` for its MSS), and the MSS before and after connecting (all measured).
+/// (`tcp_sndbuf_expand` for its MSS), and the MSS before connecting (all measured).
 const TCP_SNDBUF: u64 = 16384;
 const TCP_RCVBUF: u64 = 131072;
 const TCP_CONNECTED_SNDBUF: u64 = 2_626_560;
 const TCP_MSS_UNCONNECTED: i32 = 536;
-const TCP_MSS_LOOPBACK: i32 = 32741;
 /// What `IP_MTU` gives on a connection inside the container (measured).
 const ROUTE_MTU: i32 = 65535;
 /// The largest UDP payloads (measured).
@@ -161,6 +160,8 @@ pub(crate) struct Inet {
     pub errors: VecDeque<QueuedError>,
     /// A UDP datagram being corked.
     pub cork: Option<Corked>,
+    /// What TCP_INFO tells of a connection's traffic.
+    pub traffic: Traffic,
 }
 
 /// A UDP datagram's port unreachable error, as `ip_icmp_error` and `ipv6_icmp_error` queue it.
@@ -200,8 +201,360 @@ impl Inet {
             fin_read: false,
             errors: VecDeque::new(),
             cork: None,
+            traffic: Traffic::default(),
         }
     }
+}
+
+/// A TCP connection's traffic as TCP_INFO tells it, in this TCP's model: every segment arrives
+/// at once, a send goes in segments of the sender's MSS, and each data segment and FIN draws one
+/// acknowledgement at once. The handshake's numbers are Linux's on loopback (measured).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Traffic {
+    /// It was connected, and whether it made the connection (sent the SYN) or was accepted.
+    made: bool,
+    connector: bool,
+    /// A segment came after the handshake, which shows a connector the other end's full window.
+    heard: bool,
+    sent_fin: bool,
+    /// When it last sent data, last received data, and last had a segment acknowledged, on the
+    /// monotonic clock.
+    sent_at: u64,
+    received_at: u64,
+    acked_at: u64,
+    bytes_sent: u64,
+    bytes_acked: u64,
+    bytes_received: u64,
+    segs_out: u32,
+    segs_in: u32,
+    data_segs_out: u32,
+    data_segs_in: u32,
+    delivered: u32,
+    /// The largest data segment received.
+    largest: u32,
+}
+
+/// The MSS a connection advertises (`tcp_mss_clamp` of the route's MTU less the headers and
+/// timestamps), the window the other end offers past the handshake, and the route's MTU, on
+/// loopback (measured).
+const TCP_ADVMSS4: u32 = 65483;
+const TCP_ADVMSS6: u32 = 65464;
+const TCP_WINDOW: u32 = 65536;
+const PMTU4: u32 = 65535;
+const PMTU6: u32 = 65536;
+/// The model's smoothed round trip and its variation, in microseconds.
+const MODEL_RTT: u32 = 10;
+const MODEL_RTTVAR: u32 = 5;
+/// The size of Linux 7.0's `struct tcp_info` (measured), whose accurate ECN counters past
+/// linux-raw-sys's layout stay zero: ECN is never used here.
+const TCP_INFO_SIZE: usize = 280;
+const _: () = assert!(core::mem::size_of::<tcp_info>() == 248);
+
+impl Traffic {
+    /// A connection just made: the connector sent the SYN and the ACK and had the SYN-ACK
+    /// acknowledged; the accepted end had the SYN and the ACK.
+    fn made(connector: bool, now: u64) -> Self {
+        Self {
+            made: true,
+            connector,
+            sent_at: now,
+            received_at: now,
+            acked_at: now,
+            bytes_acked: u64::from(connector),
+            segs_out: if connector { 2 } else { 0 },
+            segs_in: if connector { 1 } else { 2 },
+            delivered: 1,
+            ..Self::default()
+        }
+    }
+}
+
+fn advmss(family: u32) -> u32 {
+    if family == AF_INET6 {
+        TCP_ADVMSS6
+    } else {
+        TCP_ADVMSS4
+    }
+}
+
+/// The MSS a connection sends with (`mss_cache`): half the largest window the other end has
+/// offered (`tcp_bound_to_half_wnd`), which for a connector is that end's MSS until a segment
+/// after the handshake offers the full window.
+fn send_mss(family: u32, traffic: &Traffic) -> u32 {
+    if traffic.connector && !traffic.heard {
+        advmss(family) / 2
+    } else {
+        TCP_WINDOW / 2
+    }
+}
+
+/// Data (`size` bytes) or a FIN going from one end of a connection to the other, either of
+/// which may be outside the container (`None`).
+fn carry(
+    from: Option<&mut Traffic>,
+    to: Option<&mut Traffic>,
+    family: u32,
+    size: u64,
+    fin: bool,
+    now: u64,
+) {
+    let mss = from
+        .as_deref()
+        .map_or(TCP_WINDOW / 2, |from| send_mss(family, from));
+    let segments = if fin {
+        1
+    } else {
+        size.div_ceil(u64::from(mss)) as u32
+    };
+    let data = u32::from(!fin) * segments;
+    if let Some(from) = from {
+        from.bytes_sent += size;
+        from.bytes_acked += size + u64::from(fin);
+        from.segs_out += segments;
+        from.data_segs_out += data;
+        from.segs_in += segments;
+        from.delivered += segments;
+        from.heard = true;
+        from.acked_at = now;
+        if fin {
+            from.sent_fin = true;
+        } else {
+            from.sent_at = now;
+        }
+    }
+    if let Some(to) = to {
+        to.bytes_received += size + u64::from(fin);
+        to.segs_in += segments;
+        to.data_segs_in += data;
+        to.segs_out += segments;
+        to.heard = true;
+        to.acked_at = now;
+        if !fin {
+            to.received_at = now;
+            to.largest = to.largest.max(size.min(u64::from(mss)) as u32);
+        }
+    }
+}
+
+/// Data or a FIN between two of the container's own connected sockets.
+fn carry_between(kernel: &Kernel, from: &SocketRef, to: &SocketRef, size: u64, fin: bool) {
+    let family = from.borrow().family;
+    let mut sender = inet(from);
+    let mut receiver = to.borrow_mut();
+    let receiver = receiver.inet.as_deref_mut().map(|inet| &mut inet.traffic);
+    carry(
+        Some(&mut sender.traffic),
+        receiver,
+        family,
+        size,
+        fin,
+        kernel.entry_now,
+    );
+}
+
+/// Data or a FIN between a connection's socket and the outside, `sent` by the socket or
+/// received.
+pub(super) fn carry_outside(kernel: &Kernel, socket: &SocketRef, size: u64, fin: bool, sent: bool) {
+    let family = socket.borrow().family;
+    let mut own = inet(socket);
+    let (from, to) = if sent {
+        (Some(&mut own.traffic), None)
+    } else {
+        (None, Some(&mut own.traffic))
+    };
+    carry(from, to, family, size, fin, kernel.entry_now);
+}
+
+/// A connection to or from the outside was made.
+pub(super) fn made_outside(kernel: &Kernel, socket: &SocketRef, connector: bool) {
+    inet(socket).traffic = Traffic::made(connector, kernel.entry_now);
+}
+
+/// The TCP state Linux shows for a socket (`sk_state`).
+pub(super) fn tcp_state(own: &Socket) -> u8 {
+    use crate::linux_extra::{TCP_CLOSE_WAIT, TCP_FIN_WAIT2};
+    let inet = own.inet.as_deref().unwrap();
+    match own.state {
+        State::Listening => crate::linux_extra::TCP_LISTEN,
+        _ if inet.connecting.is_some() => crate::linux_extra::TCP_SYN_SENT,
+        State::Connected => {
+            let sent_fin = own.shutdown & SEND_SHUTDOWN != 0;
+            match (sent_fin, inet.done && own.shutdown & RCV_SHUTDOWN != 0) {
+                (true, false) => TCP_FIN_WAIT2,
+                (false, true) => TCP_CLOSE_WAIT,
+                _ => crate::linux_extra::TCP_ESTABLISHED,
+            }
+        }
+        State::Closed => crate::linux_extra::TCP_CLOSE,
+    }
+}
+
+/// `tcp_get_info` for a TCP socket, from the model in [`Traffic`].
+fn tcp_info(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) -> Vec<u8> {
+    let own = socket.borrow();
+    let inet = own.inet.as_deref().unwrap();
+    let traffic = inet.traffic;
+    let state = tcp_state(&own);
+    let family = own.family;
+    let now = kernel.entry_now;
+    // `tcp_jiffies32` in milliseconds (HZ is 1000 on the reference, measured), which starts
+    // five minutes before zero (`INITIAL_JIFFIES`).
+    let jiffies = (now / 1_000_000).wrapping_sub(300_000) as u32;
+    let since = |at: u64| (now.saturating_sub(at) / 1_000_000) as u32;
+    let mut out = Vec::with_capacity(TCP_INFO_SIZE);
+    let u32s = |out: &mut Vec<u8>, values: &[u32]| {
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    };
+    let u64s = |out: &mut Vec<u8>, values: &[u64]| {
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    };
+    if state == crate::linux_extra::TCP_LISTEN {
+        // A listener tells only its pacing, window and backlog (`tcpi_unacked` and `tcpi_sacked`
+        // are its queue and its limit).
+        out.extend_from_slice(&[state, 0, 0, 0, 0, 0, 0, 0]);
+        u32s(&mut out, &[0; 4]);
+        u32s(&mut out, &[own.backlog.len() as u32, own.max_backlog]);
+        u32s(&mut out, &[0; 12]);
+        u32s(&mut out, &[10, 0, 3, 0, 0, 0]);
+        u64s(&mut out, &[u64::MAX, u64::MAX]);
+        out.resize(TCP_INFO_SIZE, 0);
+        return out;
+    }
+    if !traffic.made {
+        // Never connected (`tcp_init_sock`'s values); a connect waiting for a backlog's room has
+        // sent its SYN.
+        let syn_sent = state == crate::linux_extra::TCP_SYN_SENT;
+        out.extend_from_slice(&[state, 0, 0, 0, 0, 0, 0, 1]);
+        u32s(&mut out, &[1_000_000, 0]);
+        if syn_sent {
+            u32s(&mut out, &[524, 88]);
+        } else {
+            u32s(&mut out, &[TCP_MSS_UNCONNECTED as u32, 0]);
+        }
+        u32s(&mut out, &[0; 5]);
+        u32s(&mut out, &[jiffies, 0, jiffies, jiffies]);
+        let (pmtu, window) = if syn_sent {
+            (PMTU4, advmss(family) + 12)
+        } else {
+            (0, 0)
+        };
+        u32s(
+            &mut out,
+            &[
+                pmtu,
+                window,
+                0,
+                250_000,
+                0x7fff_ffff,
+                10,
+                window,
+                3,
+                0,
+                0,
+                0,
+            ],
+        );
+        u64s(&mut out, &[u64::MAX, u64::MAX, 0, 0]);
+        u32s(&mut out, &[u32::from(syn_sent), 0, 0, u32::MAX, 0, 0]);
+        u64s(&mut out, &[0; 4]);
+        u32s(&mut out, &[0; 2]);
+        u64s(&mut out, &[0; 2]);
+        u32s(&mut out, &[0, 0, 0, 0, window, 0]);
+        out.resize(TCP_INFO_SIZE, 0);
+        return out;
+    }
+    drop(own);
+    kernel
+        .counters
+        .count(cx.host, crate::reason::TCP_INFO_MODELLED, 0);
+    let mss = send_mss(family, &traffic);
+    let advmss = advmss(family);
+    // A connector's first window is what its SYN offered: the MTU less the IP and TCP headers.
+    let first = if traffic.connector {
+        advmss + 12
+    } else {
+        advmss
+    };
+    let app_limited = !traffic.sent_fin && traffic.data_segs_out <= 1;
+    let options = (TCPI_OPT_TIMESTAMPS | TCPI_OPT_SACK | TCPI_OPT_WSCALE) as u8;
+    // Window scale 10 both ways, as Linux's default buffers give (measured).
+    out.extend_from_slice(&[state, 0, 0, 0, 0, options, 0xaa, u8::from(app_limited)]);
+    let ato = if traffic.data_segs_in > 0 { 40_000 } else { 0 };
+    let rcv_mss = traffic.largest.max(TCP_MSS_UNCONNECTED as u32);
+    u32s(&mut out, &[201_000, ato, mss, rcv_mss, 0, 0, 0, 0, 0]);
+    u32s(
+        &mut out,
+        &[
+            since(traffic.sent_at),
+            0,
+            since(traffic.received_at),
+            since(traffic.acked_at),
+        ],
+    );
+    let pmtu = if family == AF_INET6 { PMTU6 } else { PMTU4 };
+    u32s(
+        &mut out,
+        &[
+            pmtu,
+            first,
+            MODEL_RTT,
+            MODEL_RTTVAR,
+            0x7fff_ffff,
+            10,
+            advmss,
+            3,
+            0,
+            first,
+            0,
+        ],
+    );
+    // `tcp_update_pacing_rate`: twice the window per round trip while in slow start.
+    let pacing = u64::from(mss) * 10 * 2_000_000 / u64::from(MODEL_RTT);
+    u64s(
+        &mut out,
+        &[
+            pacing,
+            u64::MAX,
+            traffic.bytes_acked,
+            traffic.bytes_received,
+        ],
+    );
+    u32s(
+        &mut out,
+        &[
+            traffic.segs_out,
+            traffic.segs_in,
+            0,
+            MODEL_RTT,
+            traffic.data_segs_in,
+            traffic.data_segs_out,
+        ],
+    );
+    let delivery = if traffic.data_segs_out > 0 {
+        u64::from(mss) * 1_000_000 / u64::from(MODEL_RTT)
+    } else {
+        0
+    };
+    u64s(&mut out, &[delivery, 0, 0, 0]);
+    u32s(&mut out, &[traffic.delivered, 0]);
+    u64s(&mut out, &[traffic.bytes_sent, 0]);
+    let snd_wnd = if traffic.connector && !traffic.heard {
+        advmss
+    } else {
+        TCP_WINDOW
+    };
+    let rcv_wnd = if traffic.connector || traffic.data_segs_in > 0 {
+        TCP_WINDOW
+    } else {
+        advmss
+    };
+    u32s(&mut out, &[0, 0, 0, snd_wnd, rcv_wnd, 0]);
+    out.resize(TCP_INFO_SIZE, 0);
+    out
 }
 
 /// A closed TCP connection holding its port a while.
@@ -1077,6 +1430,8 @@ fn join(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, listener:
         }
         client.inet.as_deref_mut().unwrap().connecting = None;
     }
+    inet(socket).traffic = Traffic::made(true, kernel.entry_now);
+    inet(&embryo).traffic = Traffic::made(false, kernel.entry_now);
     listener.borrow_mut().backlog.push_back(embryo);
     super::data_ready(kernel, cx, listener, EPOLLIN | EPOLLRDNORM);
     kernel.wake_poll(channel(socket), EPOLLOUT | EPOLLWRNORM);
@@ -1255,7 +1610,10 @@ pub(super) fn shutdown(
             if protocol == Protocol::Tcp && mode & SEND_SHUTDOWN != 0 && !already {
                 let outside = inet_ref(socket).outside;
                 match outside {
-                    Some(id) => super::outside::finish(cx, id),
+                    Some(id) => {
+                        carry_outside(kernel, socket, 0, true, true);
+                        super::outside::finish(cx, id);
+                    }
                     None => send_fin(kernel, cx, socket),
                 }
             }
@@ -1276,6 +1634,7 @@ fn send_fin(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
     if !other_done {
         inet(socket).closed_first = true;
     }
+    carry_between(kernel, socket, &peer, 0, true);
     if !peer.borrow().dead {
         let mut other = peer.borrow_mut();
         other.shutdown |= RCV_SHUTDOWN;
@@ -1568,7 +1927,10 @@ fn tcp_send(
             let size = (total - sent).min(TCP_PIECE);
             let data = gather(kernel, cx, tid, message.data, sent, size)?;
             match super::outside::send(kernel, cx, socket, id, &data) {
-                Ok(count) => sent += count as u64,
+                Ok(count) => {
+                    carry_outside(kernel, socket, count as u64, false, true);
+                    sent += count as u64;
+                }
                 Err(_) if sent > 0 => return Ok(sent),
                 Err(error) => return Err(error),
             }
@@ -1657,6 +2019,13 @@ fn tcp_send(
                 kernel.wake_poll(channel(&peer), EPOLLIN | EPOLLRDNORM);
             }
         }
+        carry_between(
+            kernel,
+            socket,
+            &peer,
+            size + u64::from(last.is_some()),
+            false,
+        );
         sent += size;
         if let Some(byte) = last {
             urgent_arrives(kernel, cx, tid, socket, &peer, byte);
@@ -3014,9 +3383,10 @@ pub(super) fn get_option(
                     .get(&(level, name))
                     .map(|bytes| i32::from_le_bytes(bytes[..4].try_into().expect("4 bytes")))
                     .filter(|&value| value != 0);
+                let mss = send_mss(family, &inet_ref(socket).traffic) as i32;
                 int(match (connected, set) {
-                    (true, Some(value)) => value.min(TCP_MSS_LOOPBACK),
-                    (true, None) => TCP_MSS_LOOPBACK,
+                    (true, Some(value)) => value.min(mss),
+                    (true, None) => mss,
                     (false, Some(value)) => value,
                     (false, None) => TCP_MSS_UNCONNECTED,
                 })
@@ -3031,6 +3401,7 @@ pub(super) fn get_option(
                 name.resize(16, 0);
                 Some(Ok(name))
             }
+            TCP_INFO => Some(Ok(tcp_info(kernel, cx, socket))),
             _ => not_built(kernel, cx),
         },
         SOL_UDP if protocol == Protocol::Udp => {

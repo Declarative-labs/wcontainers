@@ -106,6 +106,10 @@ pub mod reason {
     /// SO_SNDBUF of unread bytes), where Linux's depends on timing (window and buffer growth).
     /// Detail: none.
     pub const TCP_ROOM_MODELLED: &str = "tcp room modelled";
+    /// TCP_INFO was read of a connection: its round trip times, rates, windows past the
+    /// handshake, segment counts and the like come from this TCP's model (every segment arrives
+    /// and is acknowledged at once), where Linux's depend on timing. Detail: none.
+    pub const TCP_INFO_MODELLED: &str = "tcp info modelled";
     /// A TCP connect found the listener's backlog full: it waits for room and completes when an
     /// accept makes some, where Linux drops the handshake and retries after 1, 3, 7 seconds and so
     /// on. Detail: none.

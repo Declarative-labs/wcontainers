@@ -209,6 +209,7 @@ pub(super) fn take(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketR
             inet.outside = Some(id);
             inet.room = true;
         }
+        super::inet::made_outside(kernel, &embryo, false);
         kernel
             .sockets
             .inet
@@ -257,6 +258,7 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
         let mut buffer = alloc::vec![0u8; size];
         match cx.host.receive(ConnectionId(id), &mut buffer) {
             Ok(0) if stream => {
+                super::inet::carry_outside(kernel, socket, 0, true, false);
                 let mut own = socket.borrow_mut();
                 own.shutdown |= RCV_SHUTDOWN;
                 if let Some(inet) = own.inet.as_deref_mut() {
@@ -299,6 +301,9 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
                     urgent: false,
                     owner: 0,
                 };
+                if stream {
+                    super::inet::carry_outside(kernel, socket, count as u64, false, false);
+                }
                 let mut own = socket.borrow_mut();
                 if let Some(inet) = own.inet.as_deref_mut() {
                     inet.received = true;
@@ -508,6 +513,7 @@ pub(crate) fn event(
                 inet.connecting = None;
                 inet.room = true;
                 drop(own);
+                super::inet::made_outside(kernel, &socket, true);
                 kernel.wake_poll(channel(&socket), EPOLLOUT | EPOLLWRNORM);
                 super::wake_async(kernel, cx, &socket, super::Wake::Io, POLL_OUT);
             } else {

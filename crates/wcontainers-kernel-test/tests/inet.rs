@@ -75,3 +75,9 @@ fn orders_of_checks_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "sockorder", &[]);
 }
+
+#[test]
+fn tcp_info_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "tcpinfo", &[]);
+}

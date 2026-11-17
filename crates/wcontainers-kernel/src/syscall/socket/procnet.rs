@@ -9,13 +9,10 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 
 use super::inet::{Endpoint, Protocol, v4_of};
-use super::{RCV_SHUTDOWN, SEND_SHUTDOWN, SocketRef, State};
+use super::{SocketRef, State};
 use crate::fs::proc::NetFile;
 use crate::linux::net::{AF_INET, AF_INET6, AF_UNIX};
-use crate::linux_extra::{
-    TCP_CLOSE, TCP_CLOSE_WAIT, TCP_ESTABLISHED, TCP_FIN_WAIT2, TCP_LISTEN, TCP_SYN_SENT,
-    TCP_TIME_WAIT,
-};
+use crate::linux_extra::{TCP_CLOSE, TCP_ESTABLISHED, TCP_LISTEN, TCP_SYN_SENT, TCP_TIME_WAIT};
 use crate::{Context, Kernel, network};
 
 /// `TMPSZ`: the width IPv4 TCP lines are padded to, less one.
@@ -199,12 +196,7 @@ fn tcp(kernel: &Kernel, family: u32) -> String {
         } else if inet.connecting.is_some() {
             (TCP_SYN_SENT, 0, String::from("100 0 0 10 -1"))
         } else if own.state == State::Connected {
-            let sent_fin = own.shutdown & SEND_SHUTDOWN != 0;
-            let state = match (sent_fin, inet.done && own.shutdown & RCV_SHUTDOWN != 0) {
-                (true, false) => TCP_FIN_WAIT2,
-                (false, true) => TCP_CLOSE_WAIT,
-                _ => TCP_ESTABLISHED,
-            };
+            let state = super::inet::tcp_state(&own);
             // A FIN that came counts as one byte until the program reads the end.
             let fin = u64::from(inet.done && !inet.fin_read);
             let ato = if inet.received || inet.done { 4 } else { 0 };
