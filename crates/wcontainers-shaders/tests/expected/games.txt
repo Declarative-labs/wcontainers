@@ -1,0 +1,529 @@
+008bdfe08a58f80a.dxbc	ok
+012b4acbc15546b9.dxbc	ok
+01415c5ae94af27e.dxbc	ok
+02668bdc57d5d534.dxbc	unsupported RenderTargetArrayIndex
+027cd4be396c94e4.dxbc	ok
+02871ba4bfb2b0b1.dxbc	unsupported StorageImage
+0303d8c24699f50b.dxbc	ok
+03c9bf8a899a07f7.dxbc	unsupported RenderTargetArrayIndex
+05440c0a6ac449e8.dxbc	ok
+05e413cdb94327cc.dxbc	ok
+06489d638d4abe90.dxbc	ok
+074cf24bcf826fbb.dxbc	ok
+074ddc03b9ee313c.dxbc	ok
+080d57c01712fa18.dxbc	ok
+095e67f891d760a7.dxbc	unsupported StorageImage
+0963e97a05af28c2.dxbc	ok
+0a186a1023683faf.dxbc	ok
+0a8483e0b200a429.dxbc	ok
+0a9ab7ac30d9da93.dxbc	ok
+0ae03f1406f4a0eb.dxbc	ok
+0b3b7a1e86434c51.dxbc	ok
+0d4467d92fea5e3c.dxbc	ok
+0d530043b518cd67.dxbc	ok
+0df2f7c02b6b27b2.dxbc	ok
+0df9ec31ce8734cd.dxbc	ok
+0e1adda2d9961b05.dxbc	ok
+0e7f4e21c31fd3e7.dxbc	ok
+0ed13ec7e200b7b3.dxbc	ok
+0f2a8f44bbb387ef.dxbc	unsupported StorageImage
+0f88fb04b077b025.dxbc	ok
+0fe5b394fdfc104e.dxbc	unsupported TypedBuffer
+10442468fed32dec.dxbc	ok
+10b67eabe8d67160.dxbc	ok
+11f120fd5b63b765.dxbc	ok
+1280103dab5ea5d2.dxbc	unsupported StorageImage
+1356c3a56ebacc06.dxbc	ok
+148558cecc141083.dxbc	ok
+14b77a76af0e6d5d.dxbc	ok
+15067d53e6e0eccf.dxbc	unsupported TypedBuffer
+159e61a7590bad67.dxbc	unsupported TypedBuffer
+1619e502ddcac10c.dxbc	unsupported StorageImage
+1723d517afa6cc78.dxbc	unsupported TypedBuffer
+191fba7bc23a119e.dxbc	unsupported TypedBuffer
+19421bced7311ed0.dxbc	ok
+19537f71dc7803cd.dxbc	unsupported StorageImage
+19582755dd11b40b.dxbc	ok
+19bbd3eb10a33f04.dxbc	ok
+1a6f4186a93b8470.dxbc	ok
+1a89182aeaaf77d9.dxbc	ok
+1aaa30be816f795a.dxbc	unsupported TypedBuffer
+1b969924dd484fda.dxbc	ok
+1c110faf672a2f8a.dxbc	unsupported RenderTargetArrayIndex
+1c259f4366732767.dxbc	ok
+1cbf096ebb9e9eed.dxbc	ok
+1d6c602c1104c953.dxbc	ok
+1e86164aad2889a7.dxbc	ok
+1ea526a5bb636445.dxbc	ok
+1eaa48173c681e34.dxbc	unsupported RenderTargetArrayIndex
+1f95d3230fb0a9b9.dxbc	ok
+1ff60fd8b72e61fd.dxbc	ok
+2030e77a96c6a025.dxbc	unsupported GeometryShader
+2156b61ce0ee81c3.dxbc	ok
+2181ceabe60a6693.dxbc	unsupported StorageImage
+21aebcddcf029a7d.dxbc	ok
+23236d2bc657df55.dxbc	ok
+23877fc6b97a7f08.dxbc	ok
+23a018f914368152.dxbc	ok
+23ae34980887e85e.dxbc	ok
+247b6c62d3507436.dxbc	ok
+24a29df7661c3d67.dxbc	ok
+25518b0efecd5cf7.dxbc	ok
+25bdf804274b4098.dxbc	ok
+264eee4097c8cefd.dxbc	ok
+26cdfcc61466216d.dxbc	ok
+26e30f6400c0e293.dxbc	ok
+26f59baa26b655b5.dxbc	ok
+27be5bf63379ed24.dxbc	ok
+28030b0fe7214748.dxbc	ok
+2860a90bc866cfb4.dxbc	ok
+29018c5fbfff5f0b.dxbc	ok
+2b0dd3857ed9b0f6.dxbc	ok
+2b9ac9ad60f880ee.dxbc	ok
+2bdeeb601dd4c25c.dxbc	unsupported RenderTargetArrayIndex
+2d4cc26de070f31e.dxbc	ok
+2db30da80b73aa85.dxbc	ok
+2e1ee16c2846c1a1.dxbc	ok
+2eb18e731f6e5a45.dxbc	ok
+30e4f85db207f1d4.dxbc	ok
+31a57f107f7a4ad0.dxbc	unsupported TypedBuffer
+31aeff0b3cb1b1b6.dxbc	unsupported TypedBuffer
+31c2fc5c0ffd34ac.dxbc	ok
+31c6b54f700ef73e.dxbc	ok
+31f7442a72674d50.dxbc	unsupported RenderTargetArrayIndex
+3205d5dd3a7a5656.dxbc	ok
+32d1edb5b8d287e6.dxbc	ok
+32e93bb893c3b73d.dxbc	ok
+347a894c4cb3b71b.dxbc	ok
+34be364cfe03b5e0.dxbc	ok
+35a9ce991541571b.dxbc	ok
+3669defe3877d907.dxbc	ok
+3713d5c8ae21b3e5.dxbc	ok
+377fc137004567ec.dxbc	ok
+37d591be2e59fd10.dxbc	unsupported GeometryShader
+38907416088349fb.dxbc	ok
+3967691f78eb3239.dxbc	unsupported RenderTargetArrayIndex
+39734a1374390f82.dxbc	unsupported RenderTargetArrayIndex
+3a09f1221d48ddfd.dxbc	ok
+3aac6c0f239ee06c.dxbc	ok
+3b335ba0697d2924.dxbc	ok
+3b5831bb4fd3ae88.dxbc	ok
+3bced048fe01bbe3.dxbc	ok
+3d32a03234f53a1e.dxbc	ok
+3dd58beb05ffe034.dxbc	ok
+3eebeaa1201039b7.dxbc	unsupported StorageImage
+4075800976691b11.dxbc	ok
+40d6d15fa30a597f.dxbc	ok
+41475c1eb7d8a331.dxbc	ok
+41739849e4acb5e4.dxbc	unsupported RenderTargetArrayIndex
+41e7fc21a6a59cf3.dxbc	ok
+41eab1b6a8704720.dxbc	unsupported RenderTargetArrayIndex
+42ce2fa30ab18daf.dxbc	unsupported RenderTargetArrayIndex
+445acf916bfcc321.dxbc	ok
+447c44a1c4c93a94.dxbc	ok
+447f09d2dfa6331e.dxbc	ok
+45029738331a22e7.dxbc	ok
+45bcd93f6517dfdb.dxbc	ok
+461d17b68c137365.dxbc	ok
+46f4a53b2634d117.dxbc	ok
+4724587d26a6de8a.dxbc	ok
+487875f25ee100de.dxbc	ok
+4882bbf4b7e22657.dxbc	ok
+48b568c5ad9e65c9.dxbc	unsupported RenderTargetArrayIndex
+48c5de7c837f0327.dxbc	ok
+48da00fe8eea0161.dxbc	ok
+4abf31a03e284723.dxbc	ok
+4ad2cda8bf972e9d.dxbc	unsupported RenderTargetArrayIndex
+4affbe44e6c7b4a7.dxbc	ok
+4be614254b0c542c.dxbc	unsupported RenderTargetArrayIndex
+4c2e3dea759a8540.dxbc	unsupported StorageImage
+4c305e342a76d3da.dxbc	ok
+4cc0ed0b533833b6.dxbc	ok
+4dc6b291b85181c1.dxbc	ok
+4dded91c6f13311a.dxbc	ok
+4ddfeca04e211128.dxbc	ok
+4e37a163ae78b905.dxbc	ok
+4e5ec950c23054a3.dxbc	unsupported RenderTargetArrayIndex
+4ee60264ab9e0fcc.dxbc	ok
+4f32b619f2c04e3c.dxbc	ok
+4f77e6b321b736b7.dxbc	ok
+4fefdf4051a16fe7.dxbc	unsupported StorageImage
+5015ccb915ab88f7.dxbc	unsupported RenderTargetArrayIndex
+5075b50a9b03e3e7.dxbc	ok
+5220c30b9439f42e.dxbc	ok
+5361699065f87b83.dxbc	ok
+543c306b2a70f6cd.dxbc	ok
+547cf8477e495115.dxbc	ok
+5586b09e1563e239.dxbc	ok
+57001084442fb486.dxbc	ok
+57b325b5c5e5dc0e.dxbc	ok
+57e7ef148b5972eb.dxbc	ok
+5826720e5aca22cd.dxbc	ok
+589822d7d2376fec.dxbc	ok
+59224c6e13f4db3a.dxbc	ok
+5971f56ecf1ccf8c.dxbc	unsupported StorageImage
+59ec9a7b2bcd6606.dxbc	ok
+5a7027f958cf15e1.dxbc	unsupported RenderTargetArrayIndex
+5b972204d059de7a.dxbc	ok
+5bae97ab1023a6f7.dxbc	ok-wgsl glsl-compile
+5bb2d0cfb148a57f.dxbc	ok
+5be527de5bdf82de.dxbc	ok
+5c32b4c746957b52.dxbc	ok-wgsl glsl-write
+5cd39c5f32bea809.dxbc	ok
+5d0b8394f1f7c2ec.dxbc	ok
+5da1b5b1255b7abb.dxbc	unsupported StorageImage
+5dd8406c5ede37a4.dxbc	ok
+5e23c90065f0b801.dxbc	ok
+5e68eeb1d8441961.dxbc	ok
+5e70a1a530793186.dxbc	ok
+5e94d66e31bf6f5a.dxbc	ok
+5ebdc4ccd0fff123.dxbc	unsupported RenderTargetArrayIndex
+5ef0bbc5df5289b6.dxbc	ok
+5faa9fc4ce774b63.dxbc	unsupported TypedBuffer
+5fe5d6dff361ad92.dxbc	ok
+603a6950a9f4db8b.dxbc	ok
+605faa3448fe6500.dxbc	unsupported RenderTargetArrayIndex
+614404bd352cca39.dxbc	ok
+61a507ff960eaede.dxbc	ok
+628f83039c55be07.dxbc	unsupported RenderTargetArrayIndex
+629ec075c0286bc5.dxbc	unsupported StorageImage
+64188fe8fc17b511.dxbc	ok
+645d4901cb8d48ab.dxbc	ok
+649bcfb246daa6f1.dxbc	ok
+64d5d8574b42ad87.dxbc	ok
+65e01ca781653a61.dxbc	ok
+6655a226ee932b9c.dxbc	unsupported StorageImage
+66c4e3f71f00470d.dxbc	ok
+679b4832db937ffe.dxbc	ok
+67afcd83e9486c05.dxbc	ok
+67ef344a10b711c9.dxbc	ok
+682f22216ae3c1dd.dxbc	ok
+6830954d3bf8a2da.dxbc	ok
+693d4a2af1399a3e.dxbc	ok
+694128225c6dfc32.dxbc	ok
+6a50b239e42dd956.dxbc	ok
+6a6f4acff544f3d1.dxbc	unsupported StorageImage
+6b1eb5701bb3193e.dxbc	ok
+6b422d4ad74f329a.dxbc	ok-wgsl glsl-compile
+6b7f5f1d8d56953d.dxbc	ok
+6b9b668c704a0374.dxbc	ok
+6bb37ba6e53bb0ed.dxbc	ok
+6be6d92c64943f51.dxbc	ok
+6bed1f8e908247c3.dxbc	ok
+6c0d49551c615438.dxbc	ok
+6cf521a48938c9da.dxbc	ok
+6da7218e90812fca.dxbc	ok
+7025db6fa176ecbf.dxbc	ok
+71707a54d09aeac4.dxbc	ok
+7178c17302809191.dxbc	ok
+717c855897ab7c2a.dxbc	unsupported RenderTargetArrayIndex
+7229e764d23a3cf5.dxbc	unsupported RenderTargetArrayIndex
+7258ff6be4ec19fe.dxbc	ok
+729175bc95dbe324.dxbc	ok
+733d60e4427608a8.dxbc	ok
+73b76404ff169b48.dxbc	ok
+73df5f14f16723c0.dxbc	ok
+744698f88c13ea1c.dxbc	ok
+74d58744bd19152f.dxbc	ok
+74e51e8f95ef0074.dxbc	ok
+75848fbb4bab8c25.dxbc	unsupported RenderTargetArrayIndex
+7600a99b00813253.dxbc	ok
+763f7011c0fdf024.dxbc	ok
+764c854255dfc84e.dxbc	ok
+76687913f4ba1343.dxbc	unsupported StorageImage
+76831689fe0b3cd7.dxbc	ok
+76b8edbfc74b9b3f.dxbc	ok
+76f9b85c7348f2c8.dxbc	ok
+78c210d7a1688bc3.dxbc	unsupported StorageImage
+795a908b64306b4e.dxbc	ok
+7a0fb69542059fc1.dxbc	ok
+7b3fc59b533d5625.dxbc	unsupported RenderTargetArrayIndex
+7b9fd9e77fb32e62.dxbc	ok
+7be9dcf17c69b275.dxbc	ok
+7c31079893eb8cf5.dxbc	ok
+7c73506740fc68d3.dxbc	ok
+7c94652e714f6a76.dxbc	ok
+7ceffc485c2d57d0.dxbc	unsupported RenderTargetArrayIndex
+7d2dbcb998025778.dxbc	ok
+7d68b17c384e6591.dxbc	unsupported RenderTargetArrayIndex
+7e3047d354182f3b.dxbc	ok
+7ec30d2fb4e7e915.dxbc	ok
+7f9080e423997b58.dxbc	ok
+80249f2878d91ae1.dxbc	ok
+80d25721ef05dc05.dxbc	ok
+8160fe7aaf2498ce.dxbc	unsupported StorageImage
+81c9f54eb7634287.dxbc	ok
+824acbe53f3da598.dxbc	ok-wgsl glsl-compile
+833f6e61c79fcadd.dxbc	ok
+83d814729fb9b2be.dxbc	ok
+84f06ca622671518.dxbc	unsupported TypedBuffer
+850aba17e3aea6bf.dxbc	ok
+855bf5b93c7221cd.dxbc	ok
+855fc1b466397cef.dxbc	ok
+85d44a7b71878920.dxbc	ok
+86a1dd62b4352d20.dxbc	ok
+876a622c7f81b394.dxbc	unsupported StorageImage
+880497215bd15d2d.dxbc	ok
+88975bf56204ea76.dxbc	ok
+88a47056729cb2a2.dxbc	ok-wgsl glsl-compile
+89d0b4d20c56fb06.dxbc	ok
+8a2b4372c48454c1.dxbc	ok
+8acd4e1c373d79df.dxbc	ok
+8af40315436108b5.dxbc	unsupported RenderTargetArrayIndex
+8b1fd096a2e50281.dxbc	ok
+8b81793155045934.dxbc	unsupported RenderTargetArrayIndex
+8bfc96724defee84.dxbc	ok
+8d0a6e84ac4ab059.dxbc	ok
+8d1a5452ed3866fa.dxbc	unsupported TypedBuffer
+8d455e9f1bfa4044.dxbc	unsupported RenderTargetArrayIndex
+8e08a8985ffa76c9.dxbc	ok
+8ecd424d8fbb4d7b.dxbc	ok
+8f1952630642b208.dxbc	unsupported StorageImage
+90101382679477ce.dxbc	unsupported RenderTargetArrayIndex
+901ba3f2436f2708.dxbc	ok
+908dc63985e2e8b9.dxbc	ok
+909f08afaf230802.dxbc	ok
+90e539a3f1af12c6.dxbc	ok
+90ef91410bbf8ab5.dxbc	ok
+91221faf2d5f968e.dxbc	unsupported StorageImage
+9151eadede7d0cfb.dxbc	ok
+916ff09164ce450e.dxbc	ok
+917bba4f30c2eea3.dxbc	ok
+91d51a1e1eba09ec.dxbc	ok
+9219efaea3aa0984.dxbc	ok
+9266505962c5f49b.dxbc	ok
+92ceee00b783ff13.dxbc	ok
+93d20a5319197c76.dxbc	ok
+941e18786b31b33b.dxbc	ok
+94ab779679733fde.dxbc	ok
+9524c26707570e12.dxbc	unsupported TypedBuffer
+954a44d0bc5a9adb.dxbc	ok
+95bf6ad464f24849.dxbc	unsupported RenderTargetArrayIndex
+95cc59c4f6f9af1a.dxbc	ok
+96167f2d1d4de040.dxbc	ok
+966b040ce1d2f8c9.dxbc	ok
+9682628897118ed4.dxbc	unsupported TypedBuffer
+97c72733370fc70c.dxbc	ok
+983db97998af0908.dxbc	ok
+9949838bfee0af93.dxbc	unsupported StorageImage
+9966155abf6ba42d.dxbc	ok
+997852ef673d2962.dxbc	ok
+99af577e4780c4a0.dxbc	ok
+9a68044dbb73996a.dxbc	unsupported RenderTargetArrayIndex
+9aa3190f5cd9e823.dxbc	unsupported RenderTargetArrayIndex
+9ac060709b89ba25.dxbc	ok
+9bda02882d7231ea.dxbc	ok
+9c7d3e2dd8a9f050.dxbc	ok
+9d53af433414d8a1.dxbc	ok
+9d6de50b49d2a298.dxbc	ok
+9ee1b9e9842d0443.dxbc	ok
+9f5cce6606f68d23.dxbc	ok
+9fa816d46cd99e46.dxbc	ok
+9fadff1082ea893c.dxbc	ok
+a00be9c0bb5d1201.dxbc	ok
+a05cc281c5f5356b.dxbc	ok
+a0726f19c680b76e.dxbc	ok
+a1398b1550d098cf.dxbc	ok
+a1472e1f071ff506.dxbc	ok
+a32a8df4766f2309.dxbc	ok
+a3d5a09583b7b929.dxbc	ok
+a3edc1a247bf8ef4.dxbc	ok
+a409396b6bb844bb.dxbc	ok
+a475ef0c156a8150.dxbc	ok
+a49e3b68aefcbb7c.dxbc	ok
+a4ccfb0843cb731a.dxbc	ok
+a69f167085a976d1.dxbc	ok
+a6a6469ef30eca0a.dxbc	ok
+a6e1e84d4f9430c0.dxbc	ok
+a70bb60fe5e09223.dxbc	unsupported StorageImage
+a717e00b28ac2453.dxbc	ok
+a786156cb85ab030.dxbc	unsupported RenderTargetArrayIndex
+a7c7a82999e99312.dxbc	ok
+a87dcd6470610964.dxbc	ok
+a9b6b33b82ff7db2.dxbc	ok
+a9cc922ca947c5ee.dxbc	ok
+aa82b7f663c88946.dxbc	unsupported StorageImage
+ab94d4f3f1b4fc87.dxbc	ok-wgsl glsl-compile
+abb33b57eba884ae.dxbc	ok
+acbf2ac87f6d02d1.dxbc	ok
+acf8a8a6f0f162b7.dxbc	unsupported StorageImage
+ad48c775b3a0f26b.dxbc	ok
+ad7d704981349a2d.dxbc	unsupported RenderTargetArrayIndex
+adbfdcd71409e8c0.dxbc	unsupported RenderTargetArrayIndex
+add3365140a7555b.dxbc	unsupported RenderTargetArrayIndex
+ae552291e012f3b7.dxbc	ok
+af0b2ffea65135c4.dxbc	ok
+af2ccdec0bdc59fc.dxbc	ok
+af5f6342b845c207.dxbc	ok
+af84c39288dd68eb.dxbc	ok
+afaf8b39011c2b3c.dxbc	ok
+b073824f2e4c67a6.dxbc	ok
+b122268a3c379a20.dxbc	ok
+b16401cdf5506514.dxbc	ok
+b346347ac0314199.dxbc	ok
+b3d5d45845af65f7.dxbc	ok
+b4122a13365fba30.dxbc	unsupported StorageImage
+b4acbde1d3ced599.dxbc	ok
+b4e24f3a164abb5b.dxbc	unsupported RenderTargetArrayIndex
+b4f84e0f4f805d87.dxbc	ok
+b5fca4ee058228bf.dxbc	ok
+b6f88738d915a128.dxbc	unsupported StorageImage
+b792655e54724884.dxbc	ok
+b7d70a7068930c3e.dxbc	ok
+b87d0d0c7965ce4c.dxbc	ok
+b8a482f97e6c6f12.dxbc	ok
+b96507c03fea91e2.dxbc	ok
+ba10d92ed61e8d12.dxbc	ok-wgsl glsl-compile
+ba27967aac306839.dxbc	ok
+ba6a1c3a4f241514.dxbc	ok
+bbd00d2a49fe703e.dxbc	ok
+bd54c6070ed52775.dxbc	unsupported StorageImage
+be08aae7b6b79e3c.dxbc	ok
+be5cad385d72cb84.dxbc	ok
+bed64dd5644c03b4.dxbc	ok
+bedee97239a96db3.dxbc	ok
+bf4b9f4770dfd7ca.dxbc	ok-wgsl glsl-compile
+bfa45b98c14fa486.dxbc	unsupported TypedBuffer
+bfeac1f423972114.dxbc	ok
+c0a18f157915389d.dxbc	ok-wgsl glsl-compile
+c159440f562b4a23.dxbc	ok
+c21666c660ab74d6.dxbc	unsupported RenderTargetArrayIndex
+c2d583b9a684321e.dxbc	ok
+c2fcf160e2b5eb6b.dxbc	ok
+c329e9094ebceb0f.dxbc	ok
+c356f9c60849d609.dxbc	ok
+c3825b81b42479a5.dxbc	ok
+c3aae17fe6441351.dxbc	ok
+c3c7eaafb8f60b3d.dxbc	ok-wgsl glsl-write
+c4098ad14d0228a5.dxbc	unsupported StorageImage
+c4817a3d8743232b.dxbc	ok
+c48fdb58ce69fbfa.dxbc	ok
+c4c36224684cce42.dxbc	unsupported RenderTargetArrayIndex
+c504e9b094550a46.dxbc	ok-wgsl glsl-compile
+c50dcea9a0f1ba35.dxbc	unsupported StorageImage
+c52d931c3a8dc076.dxbc	ok
+c5db65cbebe1a0b1.dxbc	ok
+c5e1b6d3497d9b8f.dxbc	ok
+c6bd97bd40024c3d.dxbc	ok
+c6c501e464a17388.dxbc	ok
+c75b78a2fd7f8ae5.dxbc	unsupported StorageImage
+c795122f85702407.dxbc	ok
+c841091366b61008.dxbc	ok
+ca4077910c587f53.dxbc	ok
+ca484c92b2d56ff0.dxbc	ok
+cafd10650ec1016b.dxbc	ok
+cc97d9216fe9d74e.dxbc	ok
+ce0c3350c3bc8696.dxbc	ok
+ce0cf1eabb8d74b4.dxbc	unsupported StorageImage
+ce6ef53db8c1f63e.dxbc	unsupported TypedBuffer
+cee0ad2c20a40b1c.dxbc	ok
+cf323ae9e3407c46.dxbc	unsupported TypedBuffer
+d07773fb8588d7a2.dxbc	ok
+d0ad377bb488a0fb.dxbc	ok
+d0d65c2b21d07e43.dxbc	ok
+d0ed760bde8a9abb.dxbc	ok
+d293c04ee2e38226.dxbc	ok
+d306deb6338168c6.dxbc	ok
+d36015352bc230ff.dxbc	ok
+d39f1dea1384be6b.dxbc	unsupported RenderTargetArrayIndex
+d493865b03f16e2f.dxbc	ok
+d4cc93b1f96218e8.dxbc	ok
+d4efc86314d18be1.dxbc	ok
+d507f57029a510e1.dxbc	ok
+d599fbc7efa911be.dxbc	ok
+d60d137b5904b7eb.dxbc	unsupported TypedBuffer
+d71ce4837272e6eb.dxbc	ok
+d79351b05e80c816.dxbc	unsupported TypedBuffer
+d8259b97b06f7a88.dxbc	ok
+d9f44718278554a3.dxbc	ok
+da2f0968e2d089b0.dxbc	ok
+dab43c537a940a7f.dxbc	unsupported RenderTargetArrayIndex
+dc842d382de372f9.dxbc	ok
+ddad8e506eb33b38.dxbc	unsupported MultisampledArrayTexture
+ddad9508c0e6cdf2.dxbc	unsupported StorageImage
+ddceeefdb679dab0.dxbc	ok
+dddda1b9cb6b9c8d.dxbc	unsupported GeometryShader
+de72e785abb239b5.dxbc	ok
+df2ec9f1a8b14394.dxbc	ok
+dff055a294f9dc3b.dxbc	unsupported RenderTargetArrayIndex
+e0bc77c192dd1730.dxbc	unsupported TypedBuffer
+e10ecbce28758284.dxbc	ok
+e15960d476c736fd.dxbc	ok
+e259fac63117465a.dxbc	ok
+e263341cc6936309.dxbc	ok
+e32a8f0932e151e8.dxbc	ok
+e33c393f9c784db9.dxbc	ok
+e3d6a99f4f7d56d1.dxbc	ok
+e43ef1739830f204.dxbc	unsupported RenderTargetArrayIndex
+e4485bb71d61106b.dxbc	ok
+e510ad1e1ec03093.dxbc	ok
+e5728f8e2292d811.dxbc	ok
+e5a4163e75ccb63d.dxbc	ok
+e5a677fa63cb306a.dxbc	ok
+e63c09582a7c2023.dxbc	ok
+e66aeaaa29a3effa.dxbc	ok
+e682738ac57b3889.dxbc	ok
+e6efb686123ec29c.dxbc	ok
+e797183f2c8a1d44.dxbc	ok
+e7dca3c8e0104652.dxbc	ok
+e952c3a7c4d97371.dxbc	ok
+e965eff67f0eda30.dxbc	ok
+e9756a8a2c1846e4.dxbc	ok
+e994add0c8aa3a67.dxbc	unsupported StorageImage
+e9c241bd7730703c.dxbc	ok
+e9cef6d8719ec32e.dxbc	ok
+e9f9bf5f9c82a045.dxbc	ok
+ea66f0bf7a47ac1a.dxbc	ok
+eac3bf9e27e924ab.dxbc	ok
+eb7db1c6379c82f7.dxbc	ok
+eb7dcbe8c47ce37a.dxbc	ok
+ec0f853f8e2846a2.dxbc	ok
+ec2216227a05fbbf.dxbc	ok
+ec9ca17af7adc9d8.dxbc	unsupported RenderTargetArrayIndex
+ed2b6ade76f8505e.dxbc	unsupported StorageImage
+ee051c4a2ac419ec.dxbc	ok
+ef399ec3e74c0e04.dxbc	ok
+efabecf387b6e1b3.dxbc	ok
+efe2732ebe174ca5.dxbc	ok
+f070a477de414bc7.dxbc	ok
+f08836a482e4fabc.dxbc	ok
+f092830b5c83e017.dxbc	unsupported TypedBuffer
+f09923aa6dd9bf59.dxbc	ok
+f0a33e2d3a8cc6b9.dxbc	ok
+f0acbb1a5174f8c3.dxbc	ok
+f10b8fbd4864ec42.dxbc	ok
+f1f9e2be9c7e250f.dxbc	unsupported StorageImage
+f215089e352a5c08.dxbc	unsupported StorageImage
+f287e98fcf64d4cc.dxbc	ok
+f3004d4c16e0db98.dxbc	unsupported StorageImage
+f302e8aa4b62aaf5.dxbc	unsupported StorageImage
+f36c179c9e958444.dxbc	ok
+f3f69f6d4205bbb4.dxbc	ok
+f4065419d047b525.dxbc	ok-wgsl glsl-compile
+f48debbf6a31e182.dxbc	ok
+f4b4615417276d4b.dxbc	unsupported RenderTargetArrayIndex
+f4beaa36dea496bd.dxbc	ok
+f509637d316f9e90.dxbc	ok
+f6b2b64ad1358b0a.dxbc	ok
+f7066be6219426a8.dxbc	ok
+f7a366c7e922479f.dxbc	ok
+f85c97430ddfffbf.dxbc	ok
+f8af169093906187.dxbc	ok
+fa22897e28a2b649.dxbc	ok
+fa3758054298f72a.dxbc	ok
+faa0ad39e3db0935.dxbc	unsupported TypedBuffer
+faf730d92ccb80df.dxbc	ok
+fb1edd3f0ffb2e66.dxbc	ok
+fb59f15f2e6503a9.dxbc	ok
+fb72bdb3513382bc.dxbc	ok
+fc0f8ca2c0d4d16e.dxbc	ok
+fc3ade9331ea4b83.dxbc	ok
+fd670892669245f1.dxbc	ok
+fd7042573c166b58.dxbc	ok
+fda1c7737571cbdc.dxbc	ok
+fda54321747e6f6b.dxbc	ok
+fe5905e59f3362fc.dxbc	ok
+fe704cd5a1a1259d.dxbc	ok
+ff0980cce31f1de8.dxbc	unsupported RenderTargetArrayIndex
+ff960ec506348efb.dxbc	ok
+ffc4e20b3bd70c9d.dxbc	ok

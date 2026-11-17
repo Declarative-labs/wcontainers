@@ -282,6 +282,18 @@ fn corpus_gives_its_recorded_verdicts() {
     assert_eq!(counts.values().sum::<usize>(), 191);
 }
 
+/// The shaders real programs carry (DXBC and DXIL found in the rig's real programs by
+/// `examples/containers.rs`), kept outside the repository like the plan's corpus.
+#[test]
+#[ignore = "needs WCONTAINERS_GAME_SHADERS, the real programs' shaders, kept outside the repository"]
+fn game_shaders_give_their_recorded_verdicts() {
+    let dir = std::env::var_os("WCONTAINERS_GAME_SHADERS")
+        .expect("WCONTAINERS_GAME_SHADERS must name the directory of the real programs' shaders");
+    let dxbc = run(Path::new(&dir), "dxbc", "games");
+    let dxil = run(Path::new(&dir), "dxil", "games-dxil");
+    assert!(dxbc.values().sum::<usize>() > 0 && dxil.values().sum::<usize>() > 0);
+}
+
 #[test]
 fn rig_dxil_shaders_give_their_recorded_verdicts() {
     let dir =
