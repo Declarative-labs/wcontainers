@@ -84,10 +84,48 @@ branches into it at the start and end of every run.
   tests on the recording back end pass with its new rules: direct3d-11 `front` 31, direct3d-12
   `device` 10, infrastructure `swapchain` 9. This run also added the generator's dispatch, capture
   and timestamp steps.
+- G1, run 11 (2026-11-17): the five findings of G1's ninth check settled (below). The start merge
+  brought webgl in (the others had nothing new), with one interface commit of its own, kept
+  (Interface changes). This run's own interface change adds a limit, `capture_components`, so it
+  also filled that field in the four other crates that build `Limits` (Interface changes).
 - G1, run 9 (2026-11-17): the three findings of G1's seventh independent check settled (below).
   The other branches had nothing new at the start. At the end webgpu, direct3d-11 and direct3d-12
   were merged without conflict (webgl, shaders and rig had nothing new); webgpu brought two
   interface commits of its own (below), kept. The whole workspace checks.
+
+## G1's ninth check, and how each finding was settled (run 11)
+
+- `clear_rects` past 2^32 (blocking): run 10's entry below said the `clear_rects` default had been
+  fixed and that "before the fix each of these panicked". That was wrong for `clear_rects`: no test
+  ran it with such a rectangle, and it still panicked. The default saturated the rectangles' ends
+  but then built a viewport of `u32::MAX` square, and the recorder's triangle setup overflowed. Now
+  the default cuts its viewport to `max_texture_2d` (no view is larger), and the recorder refuses a
+  viewport past its bounds (next item), so the overflow cannot be reached by a call it draws.
+  Tests: `clear_rects_reaching_past_the_largest_offset_clear_to_the_views_edges`
+  (`tests/fast_paths.rs`), and a new suite test, `clear_rects_clear_each_rectangle_clipped_to_the_view`,
+  which holds the webgpu default and the webgl override to it too.
+- Viewport bounds (minor): the interface now states WebGPU's bounds (`Viewport` docs, plan 4.4): with
+  `m` the back end's `max_texture_2d`, width and height 0 to `m`, x and y at least `-2m`, x + width
+  and y + height at most `2m - 1`, depths 0 to 1. A front whose API allows a larger viewport
+  (Direct3D's edges reach -32768 and 32767) takes `ViewportInShader`, as for a fractional one: a
+  viewport within the bounds covering the attachments, the positions moved in the program (plan
+  4.12). The recorder checks it. Test: `viewports_keep_within_their_bounds` (`tests/rules.rs`: four
+  edge viewports taken, eight past the bounds and two depth ranges refused).
+- Depth-stencil texture copies (minor): `copies_of_depth_and_stencil_move_the_aspect_named` now
+  copies a whole `depth24plus-stencil8` texture over one holding other depth and stencil and reads
+  both aspects back. A new suite test, `copies_between_depth_stencil_textures_move_both_aspects`,
+  holds every back end to it (it checks the copy by depth and stencil tests, as WebGPU cannot read
+  `depth24plus` back). Suite: 30 tests.
+- Capture components (minor): new limit `Limits::capture_components`, the 32-bit components one
+  interleaved capture target takes per vertex (WebGL 2's `MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS`).
+  The recorder declares 64 and refuses more. `capture_vertices` now also states that the program
+  writes at least one location output, all of 32-bit components, which the webgl back end already
+  required; the recorder refuses a program with none. (It declares no `SHADER_F16`, so a 16-bit
+  output never reaches it.) Tests in `captures_keep_to_their_rules`: no outputs refused, 17 vec4
+  outputs into one target refused, 16 taken.
+- Sequence counters (minor): the multisampled and depth-stencil counts are now counted from
+  `begin_pass` (a pass with a multisampled colour attachment, a pass with a depth attachment),
+  helper passes included, not from created textures.
 
 ## G1's eighth check, and how each finding was settled (run 10)
 
@@ -133,7 +171,8 @@ branches into it at the start and end of every run.
   rasteriser now saturate the scissor's end. Tests: `scissors_reaching_past_the_largest_offset_are_cut_to_the_area`
   (`tests/helpers.rs`), and a new suite test, `a_scissor_past_the_target_is_clipped_to_it` (a
   scissor from (1, 2) of `u32::MAX` square; suite 28). Before the fix each of these panicked, as
-  the check showed.
+  the check showed. (Wrong for `clear_rects`, which no test ran and which still panicked: fixed in
+  run 11, above.)
 - 32 or more levels (minor): refused by the full-chain check, and `level_size` no longer shifts past
   31 bits. Tested above with 40 levels.
 - The shaders merge (minor): merged at the start of this run. Its two interface commits give the
@@ -505,6 +544,8 @@ branches into it at the start and end of every run.
   checks, 0x5eed, 0xc0ffee and 0x5a3d7 (new), 100,000 each; in run 8, on the generator with texture
   writes of every mode and padded pitch, 0x5eed, 0xc0ffee and 0x7e8a (new), 100,000 each; in run 9,
   on the recorder with the binding number and stage checks, 0x5eed, 0xc0ffee and 0xb1d5 (new),
+  100,000 each; in run 10, with dispatches, captures and timestamps, 0x5eed, 0xc0ffee and 0xd15ba7
+  (new); in run 11, with the viewport and capture checks, 0x5eed, 0xc0ffee and 0x7e11c5 (new),
   100,000 each (Measurements).
 
 ## G1a's second check, and how each finding was settled
@@ -591,6 +632,10 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   (`textures_paired_with_samplers_lie_in_the_sampled_texture_range`), and binding entries naming
   every stage that reads them (`binding_entries_name_every_stage_that_reads_them`) (G1's seventh
   check, above);
+- since run 11: viewports within WebGPU's bounds (`viewports_keep_within_their_bounds`), captures
+  of programs with location outputs and at most `capture_components` into one target
+  (`captures_keep_to_their_rules`), and copies between depth-stencil textures moving both aspects,
+  read back (`copies_of_depth_and_stencil_move_the_aspect_named`);
 - since run 10 (`tests/compute.rs` unless named): dispatches outside a pass, of compute programs,
   within `max_dispatch`, with entries naming the compute stage, one usage scope each; workgroups and
   workgroup variables within the compute limits; captures outside a pass without rasterising and
@@ -609,6 +654,21 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 
 ## Interface changes
 
+- G1 run 11:
+  - 637bad9 ("interface: stated webgpu's viewport bounds, ..."): `Viewport` states WebGPU's bounds
+    by `max_texture_2d` (sizes to it, edges within twice it, depths 0 to 1), and a front whose API
+    allows more takes `ViewportInShader` (its docs and `HelperValue::ViewportAdjust`'s widened to
+    say so); a new limit, `Limits::capture_components`; `capture_vertices` states at least one
+    location output, all of 32-bit components. Plan 4.3, 4.4 and 4.12. The new limit is a field,
+    so every `Limits` literal needed it: 5e7fadd fills it in the direct3d-11 recorder (0), the
+    infrastructure's test recorder (0), the webgpu back end (0, it does not capture) and the webgl
+    back end (`MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS`). For the other tracks: the webgl
+    back end should refuse an interleaved capture past it, and the Direct3D fronts must keep
+    viewports within the bounds (Direct3D's -32768 to 32767 reach past them) through
+    `ViewportInShader`; the recording back end now refuses a viewport past them.
+  - From the webgl track (4e98cf5, merged at the start): the `generate_mips` default's body is a
+    public function, `generate_mips_by_draws`, so an override can keep it for the cases it does not
+    take. Kept: it is the default made callable, in the interface's style, and it adds no path.
 - G1 run 10 (each documentation only, touching only `crates/wcontainers-gpu` and the plan):
   - d7d4ca4: plan section 3 names `serde` among the interface's dependencies (the shaders track's
     derives, kept; above).
@@ -793,7 +853,11 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 
 ## Next
 
-- The independent check of G1 (run 10's fixes).
+- The independent check of G1 (run 11's fixes).
+- The webgpu and webgl hosts take the two new suite tests when they merge:
+  `clear_rects_clear_each_rectangle_clipped_to_the_view` (the webgpu default with a rectangle of
+  `u32::MAX`, the webgl scissored clears) and
+  `copies_between_depth_stencil_textures_move_both_aspects`. Neither has run on a GPU yet.
 - The webgpu and webgl hosts take the new suite test `a_scissor_past_the_target_is_clipped_to_it`
   when they merge. WebGL 2's `glScissor` takes signed sizes, so that back end must cut a scissor of
   `u32::MAX` to the target. Nobody has run the test on a GPU yet.
@@ -857,6 +921,11 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     the resolve's format, the generator): `g1r8/faults.py`. Started detached over ssh, these need
     `export PATH=$HOME/.cargo/bin:$PATH` first (without it every fault reads as caught with no test
     named: cargo was not found).
+  - run 11's faults: copy `g1r11/faults.py` to `~/wcontainers-graphics/g1r11` on the laptop and
+    run `python3 -I faults.py <tree> <work dir> <target dir> [names]` (it copies the tree with
+    fresh file times, changes one place, runs the tests named with `--no-fail-fast`, and keeps
+    each output as `<name>.out`). `g1r11/long.sh` runs the three 100,000-sequence seeds and then
+    the fronts' tests on the recording back end, detached (`nohup ./long.sh &` there).
   - run 10's sweep of its new sites: `g1r10/sweep.py` (run 9's, also over `src/compute.rs`, with
     `feature`, `binding_limits`, `stream_usages`, `workgroup_limits` and `touch_bound` among the
     helpers, and refusals written `Err(Ok(..))` counted as sites), run with the names in
@@ -875,6 +944,29 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 - On the Mac only formatting: `nix develop -c cargo fmt -p wcontainers-gpu -p wcontainers-gpu-test`.
 
 ## Measurements
+
+- G1 run 11, all on the Linux laptop (i7-8750H):
+  - Random sequences on 992584e (scratch `g1r11/sequences-100k.log`, `--release`, 4 jobs, nothing
+    else of ours running, another track's build beside them at the end). Each seed had 100,000
+    cases asked and run, recorded with no rule broken (the new viewport and capture rules
+    included) and replayed identically:
+    - seed 0x5eed: 5,223,851 calls, 15,122 multisampled passes, 21,699 depth-stencil passes (now
+      counted by `begin_pass`, helper passes included), 42,596 dispatches, 35,310 captures, 114,375
+      timestamps; 87.4 s with the build, load 2.0 at the start;
+    - seed 0xc0ffee: 5,219,824 calls; 64.2 s, load 2.4;
+    - seed 0x7e11c5 (new): 5,194,255 calls, 14,801 multisampled passes, 21,216 depth-stencil
+      passes, 31,941 indexed draws, 21,138 queries, 7,549 no-overwrite buffer writes and 8,674
+      no-overwrite texture writes without a wait, 14,148 discarding texture writes, 42,247
+      dispatches, 35,562 captures, 114,052 timestamps; 63.6 s, load 2.1.
+    The generator did not change, so the first two give run 10's call counts.
+  - Faults of this run's fixes (scratch `g1r11/faults.py`, `faults2.log`; load about 2): 7 of 7
+    caught, each by the test written for it: the `clear_rects` viewport left uncut, the viewport
+    bounds and the depth range unchecked, a texture copy dropping the stencil byte or the depth
+    bytes of `depth24plus-stencil8` (each caught by the rules test and the new suite test), and
+    the two capture checks off. A first run of the script was wrong: it copied the tree keeping
+    file times, so cargo kept the first fault's build of `wcontainers-gpu` in the later faults,
+    and it stopped at the first failing test binary. The script now copies with fresh times and
+    runs `--no-fail-fast`.
 
 - G1 run 10, all on the Linux laptop (i7-8750H), on b8a34f0:
   - Random sequences (scratch `g1r10/sequences-100k.log`, `--release`, 4 jobs, nothing else of
