@@ -307,7 +307,8 @@ Fast paths, all in the crate with their defaults:
   edges where the hardware's seamless filter reads the next face; this differs only for cubes of odd
   size, and Direct3D does not define GenerateMips' filter. WebGL 2 overrides it with `generateMipmap`
   where the format is colour-renderable and filterable and `values` is the texture's own format, and
-  keeps the default otherwise.
+  keeps the default otherwise, calling `generate_mips_by_draws`, the default's body as a public
+  function.
 - `write_buffer_ring(RingKind, &[&[u8]], align, &mut offsets) -> Buffer`: a place for the data one draw
   needs (Direct3D 9 user pointers, OpenGL client arrays, converted fans, widened 8-bit indices, spilled
   immediates, helper constants), written in one call and valid for commands recorded before the next
@@ -343,7 +344,9 @@ Present or absent, with no cheap default:
   inside a pass and also draws the primitives in the same run of the vertex work, as Direct3D's
   `RasterizedStream` naming the captured stream and OpenGL's transform feedback without discard do.
   It writes the vertex stage's location outputs in location order as packed 32-bit components (no
-  built-ins): with one target interleaved, vertex after vertex; with more, output n into target n
+  built-ins; the program has at least one, all of 32-bit components): with one target interleaved,
+  vertex after vertex, at most `Limits::capture_components` components a vertex (WebGL 2's
+  `MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS`, 64 or more); with more, output n into target n
   (OpenGL's interleaved and separate modes), once per vertex of each primitive, strips as the lists
   they draw (odd triangles `(i, i + 2, i + 1)`, or `(i + 1, i, i + 2)` with the last vertex
   provoking). At most `Limits::capture_buffers` targets, each a range with `BufferUsage::CAPTURE`
@@ -373,7 +376,9 @@ A draw names (`DrawCall`): a program, a blend block, a depth-stencil block, a ra
 layout block, up to four binding sets, the vertex streams and index buffer (buffer plus offset, plain data),
 the topology, whether strips restart, one viewport and at most one scissor (one where the raster block
 scissors, clipped to the pass's attachments, which a back end whose API refuses a scissor past them
-cuts; several viewports are split into one draw each, `MultiViewportSplit`, 4.12), blend constant,
+cuts; several viewports are split into one draw each, `MultiViewportSplit`, 4.12; the viewport within
+WebGPU's bounds, width and height at most `Limits::max_texture_2d` and edges within twice it, depths 0
+to 1, a front whose API allows a larger one taking `ViewportInShader`, 4.12), blend constant,
 stencil reference, small immediate constants, and the range (direct, indexed, or indirect from a
 buffer). In every back end the
 program's `vertex_index` and `instance_index` include the range's first or base vertex and first
@@ -1341,7 +1346,11 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   multisampled targets, samples of the edge pixels that lie outside the fractional viewport while their
   pixel's centre is inside are covered where the API would not cover them: a listed loss, at most part
   of one pixel row or column on each edge: edge samples on the other side of the fractional edge from
-  their pixel's centre are drawn or left as the centre is, not as the sample is.
+  their pixel's centre are drawn or left as the centre is, not as the sample is. A viewport past
+  `Viewport`'s bounds (Direct3D bounds both edges by -32768 and 32767, so its widths reach past
+  `max_texture_2d`) takes the same route: the whole-pixel viewport is one within the bounds that covers the
+  attachments, and the adjustment puts positions where the API's viewport does. Exact, as the
+  viewport clips nothing the attachments hold.
 - Targets of more bytes per sample than `color_bytes_per_sample` (every back end counts them as WebGPU
   does, by `color_target_bytes`: each target from a multiple of its alignment, `rgba8unorm` as 8 bytes,
   so a front sizes the groups once for all back ends): each draw runs once per group of

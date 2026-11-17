@@ -294,7 +294,8 @@ pub enum HelperValue {
     /// the view's level count (u32): loads and gathers of a level below the clamp's whole part, and every
     /// access when the clamp passes the last level, read zero.
     MinLod { texture: u32 },
-    /// The fractional viewport within the whole-pixel one the back end draws with: scale and offset of
+    /// The viewport a front's API gives (fractional, or past [`crate::Viewport`]'s bounds) within the
+    /// whole-pixel one the back end draws with: scale and offset of
     /// clip x and y (four f32), applied to the last vertex stage's position.
     ViewportAdjust,
     /// The draw's bases as the API counts them, for [`DrawBaseSource::Helpers`]: base vertex (i32: the

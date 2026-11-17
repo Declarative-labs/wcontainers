@@ -108,6 +108,12 @@ pub struct PassDesc<'a, B: Backend> {
 /// and WebGL 2 require; a front whose API allows the reverse (Vulkan, OpenGL's `glDepthRange`) passes the
 /// range swapped and binds the program variant that writes `w - z` as clip depth, which gives the same
 /// depth values (slow path [`crate::SlowPath::ViewportDepthFlip`]).
+///
+/// The bounds are WebGPU's, with `m` the back end's [`crate::Limits::max_texture_2d`]: width and
+/// height 0 to `m`, x and y at least `-2m`, x + width and y + height at most `2m - 1`, depths 0 to 1.
+/// A front whose API allows a larger viewport sets one within the bounds that covers the
+/// attachments and moves positions where the larger one puts them in the program, as for a
+/// fractional one ([`crate::SlowPath::ViewportInShader`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Viewport {
     pub x: u32,

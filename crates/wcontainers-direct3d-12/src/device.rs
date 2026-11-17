@@ -178,6 +178,9 @@ struct Pipeline<B: Backend> {
 struct Render<B: Backend> {
     blend: B::Blend,
     depth_stencil: B::DepthStencil,
+    /// For a pipeline made with no depth-stencil format: the block its draws take while a
+    /// depth-stencil view is bound, which Direct3D 12 tests and writes with the pipeline's state.
+    depth_stencil_bound: Option<B::DepthStencil>,
     raster: B::Raster,
     /// Each input element and the program location it feeds.
     inputs: Vec<(InputElement, u32)>,
@@ -389,7 +392,7 @@ impl<B: Backend> Device<B> {
                 HeapType::Readback => READBACK_BUFFER,
             };
             let buffer = self.backend.create_buffer(&BufferDesc {
-                size: desc.width.next_multiple_of(4),
+                size: stored_size(desc.width, self.backend.caps().limits.max_buffer_size),
                 usage,
                 intent: if heap == HeapType::Upload {
                     MapIntent::Often
@@ -817,8 +820,9 @@ impl<B: Backend> Device<B> {
             )
         });
         let mut colors = [None; MAX_COLOR_TARGETS];
+        // A slot of format UNKNOWN has no target: its writes are dropped.
         for (slot, f) in colors.iter_mut().zip(&desc.rtv_formats) {
-            *slot = Some(dxgi(*f)?);
+            *slot = (*f != 0).then(|| dxgi(*f)).transpose()?;
         }
         let targets = TargetLayout {
             colors,
@@ -842,16 +846,25 @@ impl<B: Backend> Device<B> {
             desc.topology_type == 3,
         )?;
         let depth_stencil = desc.depth_stencil.block(targets.depth_stencil.is_some())?;
+        let depth_stencil_bound = match targets.depth_stencil {
+            None => Some(desc.depth_stencil.block(true)?),
+            Some(_) => None,
+        };
+        // With no topology type (`UNDEFINED`) the draws' topologies decide, and nothing is built
+        // ahead.
         let topology = match desc.topology_type {
-            1 => Topology::PointList,
-            2 => Topology::LineList,
-            3 => Topology::TriangleList,
+            0 => None,
+            1 => Some(Topology::PointList),
+            2 => Some(Topology::LineList),
+            3 => Some(Topology::TriangleList),
             4 => return Err(Error::NotImplemented("patch topologies")),
-            _ => return Err(Error::Invalid("a pipeline needs a topology type")),
+            _ => return Err(Error::Invalid("unknown primitive topology type")),
         };
         // Alpha-antialiased lines need the stage helper's covered rectangles
         // (`AntialiasedLinesAsQuads`), which the front does not route yet.
-        let draws_lines = topology == Topology::LineList || desc.raster.fill == 2;
+        let draws_lines = topology != Some(Topology::TriangleList)
+            && topology != Some(Topology::PointList)
+            || desc.raster.fill == 2;
         if draws_lines && desc.raster.antialiased_line && !desc.raster.multisample {
             return Err(Error::NotImplemented("alpha-antialiased lines"));
         }
@@ -878,6 +891,9 @@ impl<B: Backend> Device<B> {
         let render = Render {
             blend: self.backend.create_blend(&blend)?,
             depth_stencil: self.backend.create_depth_stencil(&depth_stencil)?,
+            depth_stencil_bound: depth_stencil_bound
+                .map(|d| self.backend.create_depth_stencil(&d))
+                .transpose()?,
             raster: self.backend.create_raster(&raster)?,
             inputs,
             targets,
@@ -886,16 +902,18 @@ impl<B: Backend> Device<B> {
         };
         let packed = packed_strides(&render.inputs);
         let layout = self.vertex_layout(&render.inputs, &packed)?;
-        self.backend.prepare(&PrepareDesc {
-            program: &program,
-            blend: &render.blend,
-            depth_stencil: &render.depth_stencil,
-            raster: &render.raster,
-            vertex_layout: &layout,
-            targets,
-            topology,
-            layouts: Default::default(),
-        });
+        if let Some(topology) = topology {
+            self.backend.prepare(&PrepareDesc {
+                program: &program,
+                blend: &render.blend,
+                depth_stencil: &render.depth_stencil,
+                raster: &render.raster,
+                vertex_layout: &layout,
+                targets,
+                topology,
+                layouts: Default::default(),
+            });
+        }
         Ok(PipelineId(self.pipelines.insert(Pipeline {
             program,
             render: Some(render),
@@ -986,6 +1004,9 @@ impl<B: Backend> Device<B> {
             if let Some(r) = p.render {
                 self.backend.destroy(Object::Blend(r.blend));
                 self.backend.destroy(Object::DepthStencil(r.depth_stencil));
+                if let Some(d) = r.depth_stencil_bound {
+                    self.backend.destroy(Object::DepthStencil(d));
+                }
                 self.backend.destroy(Object::Raster(r.raster));
             }
         }
@@ -1935,7 +1956,26 @@ impl<B: Backend> Replay<B> {
     /// Ends any pass and does the clears still waiting, so copies see them.
     fn settle(&mut self, d: &mut Device<B>) -> Result<(), Error> {
         self.end_pass(d);
-        for (v, value) in std::mem::take(&mut self.clears) {
+        let clears = std::mem::take(&mut self.clears);
+        Self::clear_now(d, clears)
+    }
+
+    /// Before a pass opens, does the clears waiting for views it does not draw into, so its draws
+    /// read them; the pass's own targets take theirs as it opens.
+    fn settle_unbound(&mut self, d: &mut Device<B>) -> Result<(), Error> {
+        let (colors, depth) = (&self.colors, &self.depth);
+        let bound = |v: &TargetView| {
+            colors
+                .iter()
+                .any(|c| matches!(c, Descriptor::RenderTarget(t) if t == v))
+                || matches!(depth, Some(Descriptor::DepthStencil { view, .. }) if view == v)
+        };
+        let others: Vec<_> = self.clears.extract_if(.., |(v, _)| !bound(v)).collect();
+        Self::clear_now(d, others)
+    }
+
+    fn clear_now(d: &mut Device<B>, clears: Vec<(TargetView, ClearValue)>) -> Result<(), Error> {
+        for (v, value) in clears {
             let (texture, desc) = d.texture(v.resource)?;
             let (texture, desc) = (texture.clone(), *desc);
             d.backend.clear_texture(
@@ -2510,6 +2550,9 @@ impl<B: Backend> Replay<B> {
             },
             (None, range) => range,
         };
+        if !self.pass_open {
+            self.settle_unbound(d)?;
+        }
         let sets = d.binding_sets(&self.graphics, pid)?;
         if d.aliased != 0 {
             self.note_draw(
@@ -2538,12 +2581,21 @@ impl<B: Backend> Replay<B> {
             let mut views = Vec::with_capacity(self.colors.len());
             let mut loads = Vec::with_capacity(self.colors.len());
             for c in &self.colors {
-                let Descriptor::RenderTarget(v) = c else {
-                    return Err(Error::Invalid(
-                        "a render target slot holds no render target view",
-                    ));
+                let v = match c {
+                    Descriptor::RenderTarget(v) => v,
+                    // A null view: the slot has no target and its writes are dropped.
+                    Descriptor::Empty => {
+                        views.push(None);
+                        loads.push(LoadOp::Load);
+                        continue;
+                    }
+                    _ => {
+                        return Err(Error::Invalid(
+                            "a render target slot holds no render target view",
+                        ));
+                    }
                 };
-                views.push(d.view(v)?);
+                views.push(Some(d.view(v)?));
                 let clear = self.clears.iter().position(|(k, _)| k == v);
                 loads.push(match clear {
                     Some(i) => match self.clears.swap_remove(i).1 {
@@ -2595,7 +2647,7 @@ impl<B: Backend> Replay<B> {
                 occlusion: occlusion.as_ref().map(|(_, set)| set),
             };
             for (i, (view, load)) in views.iter().zip(loads).enumerate() {
-                pass.colors[i] = Some(ColorAttachment {
+                pass.colors[i] = view.as_ref().map(|view| ColorAttachment {
                     view,
                     depth_slice: 0,
                     resolve: None,
@@ -2603,7 +2655,7 @@ impl<B: Backend> Replay<B> {
                     store: StoreOp::Store,
                 });
             }
-            if views.is_empty() && depth.is_none() {
+            if views.iter().all(Option::is_none) && depth.is_none() {
                 // No targets: the pass covers the viewports, at the pipeline's sample count.
                 let end = |at: u32, size: u32| (f32::from_bits(at) + f32::from_bits(size)).ceil();
                 let (width, height) = self.viewports.iter().fold((1, 1), |(w, h), v| {
@@ -2701,10 +2753,14 @@ impl<B: Backend> Replay<B> {
         let restart = p.strip_cut != 0;
         let p = &d.pipelines[pid.0 as usize];
         let r = p.render.as_ref().expect("a graphics pipeline");
+        let depth_stencil = match (&r.depth_stencil_bound, bound_depth) {
+            (Some(d), Some(_)) => d,
+            _ => &r.depth_stencil,
+        };
         let call = DrawCall {
             program: &p.program,
             blend: &r.blend,
-            depth_stencil: &r.depth_stencil,
+            depth_stencil,
             raster: &r.raster,
             vertex_layout: &layout,
             bindings: sets.each_ref().map(Option::as_ref),
@@ -3058,4 +3114,13 @@ fn copy_texture<B: Backend>(
         _ => return Err(Error::Invalid("a copy between two buffer footprints")),
     }
     Ok(())
+}
+
+/// The bytes a buffer of `width` is stored in: whole blocks of 256 (Direct3D's constant buffer
+/// alignment), zero past `width`, so a constant buffer view may declare more than the buffer's
+/// last bytes hold, which Direct3D 12 reads from the buffer's page.
+pub(crate) fn stored_size(width: u64, max: u64) -> u64 {
+    width
+        .next_multiple_of(256)
+        .min(max.max(width.next_multiple_of(4)))
 }

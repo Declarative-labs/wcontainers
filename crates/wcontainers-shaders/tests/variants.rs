@@ -1,7 +1,10 @@
 //! What `convert` refuses and what a variant changes.
 
 use std::path::Path;
-use wcontainers_gpu::{Interpolation, VariantFlags, VariantKey};
+use wcontainers_gpu::{
+    AddedBinding, DrawBaseSource, HelperSlot, HelperValue, Interpolation, SlotKind, VariantFlags,
+    VariantKey,
+};
 use wcontainers_shaders::{ConvertError, Source, convert};
 
 fn read(path: &str) -> Vec<u8> {
@@ -27,10 +30,17 @@ fn unbuilt_variants_are_refused_by_name() {
     let cases: Vec<(VariantKey, &str)> = vec![
         (
             VariantKey {
-                flags: VariantFlags::CLIP_DEPTH_REWRITE,
+                flags: VariantFlags::DEPTH_BIAS,
                 ..Default::default()
             },
-            "VariantFlags",
+            "DepthBiasInShader",
+        ),
+        (
+            VariantKey {
+                flags: VariantFlags::EARLY_TESTS | VariantFlags::CLIP_DEPTH_REWRITE,
+                ..Default::default()
+            },
+            "EarlyTestsInShader",
         ),
         (
             VariantKey {
@@ -41,17 +51,10 @@ fn unbuilt_variants_are_refused_by_name() {
         ),
         (
             VariantKey {
-                lod_bias: 1,
+                constants_as_texture: 1,
                 ..Default::default()
             },
-            "LodBiasInShader",
-        ),
-        (
-            VariantKey {
-                constants_as_storage: 1,
-                ..Default::default()
-            },
-            "ConstantsAsStorage",
+            "ConstantsAsTexture",
         ),
         (
             VariantKey {
@@ -62,10 +65,10 @@ fn unbuilt_variants_are_refused_by_name() {
         ),
         (
             VariantKey {
-                samples: 4,
+                storage_packed: 1,
                 ..Default::default()
             },
-            "SampleCount",
+            "StoragePacked",
         ),
         (
             VariantKey {
@@ -166,4 +169,173 @@ fn vertex_outputs_take_the_pixel_programs_interpolation() {
         text.contains("@location(1) @interpolate(linear, centroid)"),
         "{text}"
     );
+}
+
+fn own_pair(name: &str) -> [Vec<u8>; 2] {
+    [
+        read(&format!("tests/own/{name}.dxbc")),
+        read(&format!("tests/own/{name}.dxil")),
+    ]
+}
+
+/// Converts by both routes under `key`; returns each route's result.
+fn both(code: &[Vec<u8>; 2], key: &VariantKey) -> [wcontainers_shaders::Converted; 2] {
+    [
+        convert(Source::Dxbc(&code[0]), key, None).unwrap(),
+        convert(Source::Dxil(&code[1]), key, None).unwrap(),
+    ]
+}
+
+fn slot(value: HelperValue, offset: u32) -> HelperSlot {
+    HelperSlot { value, offset }
+}
+
+/// The last vertex stage's rewrites: the viewport adjustment's helper follows the draw's bases in one
+/// block, and clip depth is rewritten.
+#[test]
+fn vertex_variants_extend_the_helper_block_on_both_routes() {
+    let vs = own_pair("vs_transform");
+    let key = VariantKey {
+        flags: VariantFlags::VIEWPORT_ADJUST
+            | VariantFlags::VIEWPORT_DEPTH_FLIP
+            | VariantFlags::CLIP_DEPTH_REWRITE,
+        draw_base: DrawBaseSource::Helpers,
+        ..Default::default()
+    };
+    for c in both(&vs, &key) {
+        assert_eq!(
+            c.reflection.helpers,
+            [
+                slot(HelperValue::DrawBase, 0),
+                slot(HelperValue::ViewportAdjust, 16)
+            ]
+        );
+        assert_eq!(c.reflection.helper_size, 32);
+        let text = wgsl(&c);
+        assert!(text.contains("viewport: vec4<f32>"), "{text}");
+        assert!(text.contains("2f *"), "{text}");
+    }
+    let key = VariantKey {
+        flags: VariantFlags::VIEWPORT_ADJUST,
+        ..Default::default()
+    };
+    for c in both(&vs, &key) {
+        assert_eq!(c.reflection.helpers, [slot(HelperValue::ViewportAdjust, 0)]);
+        assert_eq!(c.reflection.helper_size, 16);
+    }
+}
+
+/// The pixel stage's rewrites on both routes: the sample mask, counting, dual-source outputs, the
+/// level-of-detail bias and level counts from the helper block.
+#[test]
+fn pixel_variants_convert_on_both_routes() {
+    let textured = own_pair("ps_textured");
+    let key = VariantKey {
+        flags: VariantFlags::SAMPLE_MASK,
+        ..Default::default()
+    };
+    for c in both(&textured, &key) {
+        assert_eq!(c.reflection.helpers, [slot(HelperValue::SampleMask, 0)]);
+        assert!(wgsl(&c).contains("@builtin(sample_mask)"));
+    }
+    let key = VariantKey {
+        flags: VariantFlags::COUNTING,
+        ..Default::default()
+    };
+    for c in both(&textured, &key) {
+        let text = wgsl(&c);
+        assert!(text.contains("vec4<f32>(1f, 1f, 1f, "), "{text}");
+        // The entry point writes location 0 alone.
+        let m = &c.modules[0].module;
+        let result = m.entry_points[0].function.result.as_ref().unwrap();
+        let naga::TypeInner::Struct { members, .. } = &m.types[result.ty].inner else {
+            panic!("{text}")
+        };
+        let bindings: Vec<_> = members.iter().map(|m| m.binding.clone()).collect();
+        assert!(
+            matches!(
+                &bindings[..],
+                [Some(naga::Binding::Location { location: 0, .. })]
+            ),
+            "{text}"
+        );
+    }
+    let key = VariantKey {
+        lod_bias: 1,
+        ..Default::default()
+    };
+    for c in both(&textured, &key) {
+        assert_eq!(
+            c.reflection.helpers,
+            [slot(HelperValue::LodBias { sampler: 0 }, 0)]
+        );
+        let text = wgsl(&c);
+        assert!(text.contains("textureSampleBias("), "{text}");
+    }
+    let key = VariantKey {
+        flags: VariantFlags::DUAL_SOURCE,
+        ..Default::default()
+    };
+    for c in both(&own_pair("ps_dual"), &key) {
+        let text = wgsl(&c);
+        assert!(text.contains("@blend_src(1)"), "{text}");
+    }
+    assert_eq!(
+        convert(Source::Dxbc(&textured[0]), &key, None).map(|_| ()),
+        Err(ConvertError::Unsupported("DualSourceWithoutTwoTargets"))
+    );
+    let key = VariantKey {
+        flags: VariantFlags::TEXTURE_INFO,
+        ..Default::default()
+    };
+    for c in both(&own_pair("ps_levels"), &key) {
+        assert_eq!(
+            c.reflection.helpers,
+            [slot(HelperValue::TextureLevels { texture: 0 }, 0)]
+        );
+        let text = wgsl(&c);
+        assert!(!text.contains("textureNumLevels"), "{text}");
+    }
+}
+
+/// Constant buffers read as storage move to the storage range, named as added.
+#[test]
+fn constants_read_as_storage_are_added_bindings() {
+    let key = VariantKey {
+        constants_as_storage: 1,
+        ..Default::default()
+    };
+    for c in both(&own_pair("vs_transform"), &key) {
+        let b = c
+            .reflection
+            .bindings
+            .iter()
+            .find(|b| b.added.is_some())
+            .unwrap();
+        assert_eq!(b.kind, SlotKind::Storage);
+        assert_eq!(b.binding, SlotKind::Storage.first_binding());
+        assert_eq!(b.added, Some(AddedBinding::ConstantsAsStorage(0)));
+        assert!(wgsl(&c).contains("var<storage>"), "{}", wgsl(&c));
+    }
+}
+
+/// The targets' sample count is read only where the variant fixes it, on both routes.
+#[test]
+fn the_sample_count_comes_from_the_variant() {
+    let code = own_pair("ps_samples");
+    let key = VariantKey {
+        samples: 4,
+        ..Default::default()
+    };
+    for (source, fixed) in [
+        (Source::Dxbc(&code[0]), Source::Dxbc(&code[0])),
+        (Source::Dxil(&code[1]), Source::Dxil(&code[1])),
+    ] {
+        assert_eq!(
+            convert(source, &VariantKey::default(), None).map(|_| ()),
+            Err(ConvertError::Unsupported("SampleCount"))
+        );
+        let text = wgsl(&convert(fixed, &key, None).unwrap());
+        assert!(text.contains("4u"), "{text}");
+    }
 }

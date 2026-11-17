@@ -29,6 +29,8 @@ fn bits(format: Format) -> Option<(Kind, [u32; 4])> {
         F::R16Uint | F::Rg16Uint | F::Rgba16Uint => n(Uint, 16),
         F::R16Sint | F::Rg16Sint | F::Rgba16Sint => n(Sint, 16),
         F::R16Float | F::Rg16Float | F::Rgba16Float => n(Half, 16),
+        F::R16Unorm | F::Rg16Unorm | F::Rgba16Unorm => n(Unorm, 16),
+        F::R16Snorm | F::Rg16Snorm | F::Rgba16Snorm => n(Snorm, 16),
         F::R32Uint | F::Rg32Uint | F::Rgba32Uint => n(Uint, 32),
         F::R32Sint | F::Rg32Sint | F::Rgba32Sint => n(Sint, 32),
         F::R32Float | F::Rg32Float | F::Rgba32Float => n(Single, 32),

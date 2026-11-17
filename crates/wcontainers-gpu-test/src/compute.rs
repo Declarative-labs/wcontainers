@@ -169,12 +169,24 @@ impl Recorder {
             for (buffer, start, end) in self.draw_reads(call, &state).map_err(Ok)? {
                 self.touch(buffer, start, end);
             }
-            self.touch_bound(&state.sets).map_err(Ok)?;
+            // The bound buffers are among the reads; the bound textures are not.
+            for (texture, sub) in self.bound_subresources(&state.sets).map_err(Ok)? {
+                self.touch_in(texture, sub, 0, u64::MAX);
+            }
         }
         let outputs = varyings(&state.vertex);
-        if targets.len() > 1 && targets.len() != outputs {
+        if outputs.is_empty() {
+            return Err(Ok("a capture of a program with no location outputs".into()));
+        }
+        if targets.len() > 1 && targets.len() != outputs.len() {
             return Err(Ok(
                 "several capture targets, not one for each output the program writes".into(),
+            ));
+        }
+        if targets.len() == 1 && outputs.iter().sum::<u32>() > self.caps().limits.capture_components
+        {
+            return Err(Ok(
+                "a capture into one target of more components than capture_components".into(),
             ));
         }
         let (list, first_instance, instances) = self.vertex_list(call).map_err(Ok)?;

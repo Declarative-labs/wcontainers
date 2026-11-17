@@ -137,12 +137,16 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     let type_lookup = self.lookup_type.lookup(type_id)?;
                     let ty = type_lookup.handle;
 
+                    // A zero value is never emitted: the running emit range ends before it.
+                    block.extend(emitter.finish(ctx.expressions));
+                    let handle = ctx
+                        .expressions
+                        .append(crate::Expression::ZeroValue(ty), span);
+                    emitter.start(ctx.expressions);
                     self.lookup_expression.insert(
                         id,
                         LookupExpression {
-                            handle: ctx
-                                .expressions
-                                .append(crate::Expression::ZeroValue(ty), span),
+                            handle,
                             type_id,
                             block_id,
                         },

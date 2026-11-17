@@ -53,11 +53,7 @@ use objects::{Blob, Device, Factory};
 ///
 /// # Safety
 /// `riid` and `out` are the caller's, as COM passes them.
-unsafe fn hand_out(
-    object: &windows::core::IUnknown,
-    riid: *const GUID,
-    out: *mut *mut c_void,
-) -> HRESULT {
+unsafe fn hand_out<I: Interface>(object: &I, riid: *const GUID, out: *mut *mut c_void) -> HRESULT {
     if out.is_null() || riid.is_null() {
         return E_POINTER;
     }
@@ -110,7 +106,7 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory2(
     }
     let factory: IDXGIFactory4 = Factory::new(flags).into();
     // SAFETY: as the caller passed them.
-    unsafe { hand_out(&factory.cast().unwrap(), riid, out) }
+    unsafe { hand_out(&factory, riid, out) }
 }
 
 /// # Safety
@@ -173,7 +169,7 @@ pub unsafe extern "system" fn wc_D3D12CreateDevice(
         device
     });
     // SAFETY: as the caller passed them.
-    unsafe { hand_out(&device.cast().unwrap(), riid, out) }
+    unsafe { hand_out(&device, riid, out) }
 }
 
 /// # Safety
@@ -425,9 +421,9 @@ pub unsafe extern "system" fn wc_D3D12CreateRootSignatureDeserializer(
     // SAFETY: the caller's bytes.
     match unsafe { read_root(data, length) } {
         Ok(desc) => {
-            let d: ID3D12RootSignatureDeserializer = rootsig::Deserializer::new(&desc).into();
+            let d = rootsig::deserializer(&desc);
             // SAFETY: the caller's pointers.
-            unsafe { hand_out(&d.cast().unwrap(), riid, out) }
+            unsafe { hand_out(&d, riid, out) }
         }
         Err(e) => e,
     }
@@ -449,10 +445,9 @@ pub unsafe extern "system" fn wc_D3D12CreateVersionedRootSignatureDeserializer(
     // SAFETY: the caller's bytes.
     match unsafe { read_root(data, length) } {
         Ok(desc) => {
-            let d: ID3D12VersionedRootSignatureDeserializer =
-                rootsig::VersionedDeserializer::new(&desc).into();
+            let d = rootsig::versioned_deserializer(&desc);
             // SAFETY: the caller's pointers.
-            unsafe { hand_out(&d.cast().unwrap(), riid, out) }
+            unsafe { hand_out(&d, riid, out) }
         }
         Err(e) => e,
     }

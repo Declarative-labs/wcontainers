@@ -99,6 +99,7 @@ pub fn caps(
             1
         },
         capture_buffers: get(glow::MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS),
+        capture_components: get(glow::MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS),
     };
     let format_ext = FormatExtensions::found(ext);
     let mut formats = FormatCaps {
@@ -114,9 +115,12 @@ pub fn caps(
         }
         formats.samples[i] = 1;
         let targets = FormatUse::RENDER | FormatUse::DEPTH_STENCIL;
+        // WebGL's getInternalformatParameter refuses the signed normalised formats even with
+        // EXT_render_snorm, so they take one sample.
+        let snorm = format::Class::Norm { render: false };
         if let (true, Some(g)) = (
             formats.uses[i].intersects(targets),
-            format::gl_format(format),
+            format::gl_format(format).filter(|g| g.class != snorm),
         ) {
             formats.samples[i] |= platform
                 .sample_counts(gl, g.internal)

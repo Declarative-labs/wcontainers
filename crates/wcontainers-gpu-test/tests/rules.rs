@@ -2456,6 +2456,56 @@ fn viewports_keep_min_depth_at_most_max_depth() {
     d.refused("a viewport whose min_depth is above its max_depth");
 }
 
+/// WebGPU's bounds with the recorder's `max_texture_2d` of 16384: sizes to 16384, edges from -32768
+/// to 32767, depths 0 to 1.
+#[test]
+fn viewports_keep_within_their_bounds() {
+    let vp = |x: f32, y: f32, width: f32, height: f32, depths: [f32; 2]| Viewport {
+        x: x.to_bits(),
+        y: y.to_bits(),
+        width: width.to_bits(),
+        height: height.to_bits(),
+        min_depth: depths[0].to_bits(),
+        max_depth: depths[1].to_bits(),
+    };
+    let run = |v: Viewport| {
+        let mut d = Drawing::new();
+        let p = d.program("plain");
+        d.begin();
+        // The draw's changes take borrows of any lifetime; one viewport a case is leaked.
+        let one: &'static [Viewport] = Box::leak(Box::new([v]));
+        d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
+            c.viewports = one
+        });
+        d
+    };
+    let unit = [0.0, 1.0];
+    for v in [
+        vp(0.0, 0.0, 16384.0, 16384.0, unit),
+        vp(16383.0, 16383.0, 16384.0, 16384.0, unit),
+        vp(-32768.0, -32768.0, 16384.0, 16384.0, unit),
+        vp(0.0, 0.0, 0.0, 0.0, [0.5, 0.5]),
+    ] {
+        let d = run(v);
+        assert!(d.r.violations.is_empty(), "{v:?}: {:?}", d.r.violations);
+    }
+    for v in [
+        vp(0.0, 0.0, 16385.0, 4.0, unit),
+        vp(0.0, 0.0, 4.0, 16385.0, unit),
+        vp(16384.0, 0.0, 16384.0, 4.0, unit),
+        vp(0.0, 16384.0, 4.0, 16384.0, unit),
+        vp(-32769.0, 0.0, 4.0, 4.0, unit),
+        vp(0.0, -32769.0, 4.0, 4.0, unit),
+        vp(0.0, 0.0, -1.0, 4.0, unit),
+        vp(0.0, 0.0, f32::NAN, 4.0, unit),
+    ] {
+        run(v).refused("a viewport past its bounds, by max_texture_2d");
+    }
+    for depths in [[-0.5, 1.0], [0.0, 1.5]] {
+        run(vp(0.0, 0.0, 4.0, 4.0, depths)).refused("a viewport depth outside 0 to 1");
+    }
+}
+
 #[test]
 fn fractional_viewports_need_fractional_viewport() {
     const HALF: [Viewport; 1] = [Viewport {
@@ -2696,6 +2746,40 @@ fn copies_of_depth_and_stencil_move_the_aspect_named() {
     let mut got = [0u8; 16];
     r.finish_read(rb, &mut got);
     assert_eq!(got.to_vec(), depth);
+    assert!(r.violations.is_empty(), "{:?}", r.violations);
+
+    // A copy between textures moves both aspects, over a copy holding other values.
+    let copy = texture(&mut r, Format::Depth24PlusStencil8, 2, ALL);
+    let copy_stencil = TextureRegion {
+        stencil: true,
+        ..region(&copy)
+    };
+    r.write_texture(&copy_stencil, extent(2), &[9; 4], 2, 0, WriteMode::Ordered);
+    let other_depth = [0x77, 0x77, 0x77, 0].repeat(4);
+    r.write_texture(
+        &region(&copy),
+        extent(2),
+        &other_depth,
+        8,
+        0,
+        WriteMode::Ordered,
+    );
+    r.copy_texture(&region(&t), &region(&copy), extent(2));
+    let mut read = |region, len| {
+        let rb = r
+            .read_back(&ReadSource::Texture {
+                region,
+                extent: extent(2),
+            })
+            .unwrap();
+        r.submit();
+        r.wait_read(&rb);
+        let mut got = vec![0u8; len];
+        r.finish_read(rb, &mut got);
+        got
+    };
+    assert_eq!(read(copy_stencil, 4), [1, 2, 3, 4]);
+    assert_eq!(read(region(&copy), 16), depth);
     assert!(r.violations.is_empty(), "{:?}", r.violations);
 
     let other = texture(&mut r, Format::Depth24PlusStencil8, 2, ALL);
