@@ -485,8 +485,8 @@ load not sampled; Mac load average 29 to 75):
   the vertex work): Vulkan 65 of 65 and Direct3D 12 65 of 65, one ignored on each (the old BC
   one-step comparison): bindings 11, blocks 2, copies 4, depth 2, direct3d 4, fitted 1, prepare 1,
   raster 1, scenes 4, suite 24, writes 11.
-- With the vertex work (e5be2a5's code), on both APIs: vertices 1 of 1, bindings 11, writes 11,
-  suite 24. tests/vertices.rs: seed 188 at 64 vertices per format (both APIs), seed 7 at 1000
+- Last full run, at cf2f03c after a clean build of this crate and `wcontainers-gpu-test`: Vulkan
+  66 of 66 and Direct3D 12 66 of 66, one ignored on each (as above, plus vertices 1). tests/vertices.rs: seed 188 at 64 vertices per format (both APIs), seed 7 at 1000
   (Vulkan) and seed 99 at 1000 (Direct3D 12), every one of the 11 formats, three frames each:
   every component as the format means (integers and 16-bit or smaller floats exact, normalised
   within 1e-6), the float beside it exact, one shadow made at the first frame, none at the second,
