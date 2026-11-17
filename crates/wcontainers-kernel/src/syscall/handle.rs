@@ -44,14 +44,24 @@ fn encode(kernel: &Kernel, inode: &Inode, identifier: bool) -> Result<(i32, Vec<
             let nodeid = crate::fs::backend::remote_number(inode);
             Ok((0x81, alloc::vec![(nodeid >> 32) as u32, nodeid as u32, 0]))
         }
-        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem | Kind::Anon | Kind::Mqueue
+        Kind::Proc
+        | Kind::Devpts
+        | Kind::Pipe
+        | Kind::Secretmem
+        | Kind::Anon
+        | Kind::Mqueue
+        | Kind::Sockfs
             if identifier =>
         {
             Ok((FILEID_INO64_GEN, alloc::vec![ino[0], ino[1], 0]))
         }
-        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem | Kind::Anon | Kind::Mqueue => {
-            Err(Errno::EOPNOTSUPP)
-        }
+        Kind::Proc
+        | Kind::Devpts
+        | Kind::Pipe
+        | Kind::Secretmem
+        | Kind::Anon
+        | Kind::Mqueue
+        | Kind::Sockfs => Err(Errno::EOPNOTSUPP),
     }
 }
 

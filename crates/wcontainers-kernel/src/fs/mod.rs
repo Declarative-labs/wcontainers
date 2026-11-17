@@ -179,7 +179,12 @@ impl FileSystem {
         self.flags & crate::linux_extra::ST_NOEXEC != 0
             || matches!(
                 self.kind,
-                Kind::Secretmem | Kind::Pipe | Kind::Pidfs | Kind::Anon | Kind::Mqueue
+                Kind::Secretmem
+                    | Kind::Pipe
+                    | Kind::Pidfs
+                    | Kind::Anon
+                    | Kind::Mqueue
+                    | Kind::Sockfs
             )
     }
 }
@@ -202,6 +207,8 @@ pub(crate) enum Kind {
     Mqueue,
     /// A file system outside the kernel, reached with FUSE messages.
     Fuse,
+    /// Sockets, an inode each.
+    Sockfs,
 }
 
 impl Kind {
@@ -219,9 +226,13 @@ impl Kind {
     /// secret memory), and for the rest `MAX_NON_LFS`, which `alloc_super` sets and they keep.
     pub fn max_bytes(self) -> u64 {
         match self {
-            Kind::Tmpfs | Kind::Pidfs | Kind::Pipe | Kind::Secretmem | Kind::Anon | Kind::Fuse => {
-                i64::MAX as u64
-            }
+            Kind::Tmpfs
+            | Kind::Pidfs
+            | Kind::Pipe
+            | Kind::Secretmem
+            | Kind::Anon
+            | Kind::Fuse
+            | Kind::Sockfs => i64::MAX as u64,
             Kind::Devpts | Kind::Proc | Kind::Mqueue => i32::MAX as u64,
         }
     }
@@ -238,6 +249,7 @@ impl Kind {
             Kind::Anon => ANON_INODE_FS_MAGIC.into(),
             Kind::Mqueue => crate::linux_extra::MQUEUE_MAGIC.into(),
             Kind::Fuse => FUSE_SUPER_MAGIC.into(),
+            Kind::Sockfs => SOCKFS_MAGIC.into(),
         }
     }
 }
@@ -318,6 +330,8 @@ pub(crate) enum Content {
     Mqueue(alloc::boxed::Box<crate::syscall::mqueue::MessageQueue>),
     /// An inode of a file system outside the kernel, whatever its type.
     Backend(backend::Remote),
+    /// A socket's own inode.
+    Socket(crate::syscall::socket::SocketRef),
 }
 
 /// A regular file's bytes, which pages have been written (holes take no space), and tmpfs's seals.
@@ -798,7 +812,11 @@ impl Inode {
             Content::Proc(entry) => entry.size(),
             Content::Mqueue(queue) => queue.size,
             Content::Backend(remote) => remote.size.get(),
-            Content::Special | Content::Pipe(_) | Content::Pidfd(..) | Content::Anon => 0,
+            Content::Special
+            | Content::Pipe(_)
+            | Content::Pidfd(..)
+            | Content::Anon
+            | Content::Socket(_) => 0,
         }
     }
 

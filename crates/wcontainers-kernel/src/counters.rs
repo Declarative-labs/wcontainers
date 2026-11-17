@@ -81,6 +81,10 @@ pub mod reason {
     /// do not cover): that answer and the ones after it were dropped and the question sent, so the
     /// backend may have done an earlier one's work too. Detail: the FUSE opcode.
     pub const BACKEND_ASKED_AGAIN: &str = "backend question asked again";
+    /// A socket of an address family that is not built. Detail: the family.
+    pub const FAMILY_NOT_BUILT: &str = "socket family not built";
+    /// A socket option that is not built. Detail: the level times 2^32 plus the option.
+    pub const OPTION_NOT_BUILT: &str = "socket option not built";
     /// A notice from the backend that Linux refuses, with nothing done: a body of the wrong size,
     /// or a DELETE whose parent and name are not the child's. Linux answers the backend's write of
     /// it with the error; no hook carries that back. Detail: the notice's code times 2^32 plus the
@@ -113,6 +117,8 @@ pub mod reason {
         PROC_ENTRY_NOT_BUILT,
         SECCOMP_LISTENER_NOT_IMPLEMENTED,
         CROSS_PROCESS_NOT_BUILT,
+        FAMILY_NOT_BUILT,
+        OPTION_NOT_BUILT,
     ];
 }
 

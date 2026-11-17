@@ -24,6 +24,7 @@ mod seccomp;
 pub(crate) mod sem;
 mod signalfd;
 mod signals;
+pub(crate) mod socket;
 mod splice;
 mod system;
 mod time;
@@ -156,6 +157,22 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_process_mrelease, S(pidfd::process_mrelease)),
         (__NR_signalfd4, S(signalfd::signalfd4)),
         (__NR_eventfd2, S(eventfd::eventfd2)),
+        (__NR_socket, S(socket::socket)),
+        (__NR_socketpair, S(socket::socketpair)),
+        (__NR_bind, S(socket::bind)),
+        (__NR_listen, S(socket::listen)),
+        (__NR_accept, S(socket::accept)),
+        (__NR_accept4, S(socket::accept4)),
+        (__NR_connect, S(socket::connect)),
+        (__NR_getsockname, S(socket::getsockname)),
+        (__NR_getpeername, S(socket::getpeername)),
+        (__NR_sendto, S(socket::sendto)),
+        (__NR_recvfrom, S(socket::recvfrom)),
+        (__NR_sendmsg, S(socket::sendmsg)),
+        (__NR_recvmsg, S(socket::recvmsg)),
+        (__NR_shutdown, S(socket::shutdown)),
+        (__NR_setsockopt, S(socket::setsockopt)),
+        (__NR_getsockopt, S(socket::getsockopt)),
         (__NR_epoll_create1, S(epoll::epoll_create1)),
         (__NR_epoll_ctl, S(epoll::epoll_ctl)),
         (__NR_epoll_pwait, F(epoll::epoll_pwait)),

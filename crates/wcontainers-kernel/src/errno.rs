@@ -9,6 +9,25 @@ use crate::linux::errno;
 pub struct Errno(pub u32);
 
 impl Errno {
+    pub const EPROTONOSUPPORT: Self = Self(errno::EPROTONOSUPPORT);
+    pub const ESOCKTNOSUPPORT: Self = Self(errno::ESOCKTNOSUPPORT);
+    pub const EAFNOSUPPORT: Self = Self(errno::EAFNOSUPPORT);
+    pub const EADDRINUSE: Self = Self(errno::EADDRINUSE);
+    pub const ECONNREFUSED: Self = Self(errno::ECONNREFUSED);
+    pub const EPROTOTYPE: Self = Self(errno::EPROTOTYPE);
+    pub const EISCONN: Self = Self(errno::EISCONN);
+    pub const ENOTCONN: Self = Self(errno::ENOTCONN);
+    pub const EDESTADDRREQ: Self = Self(errno::EDESTADDRREQ);
+    pub const ENOBUFS: Self = Self(errno::ENOBUFS);
+    pub const ENOPROTOOPT: Self = Self(errno::ENOPROTOOPT);
+    pub const ECONNRESET: Self = Self(errno::ECONNRESET);
+    pub const EDOM: Self = Self(errno::EDOM);
+    pub const EADDRNOTAVAIL: Self = Self(errno::EADDRNOTAVAIL);
+    pub const ENETUNREACH: Self = Self(errno::ENETUNREACH);
+    pub const EHOSTUNREACH: Self = Self(errno::EHOSTUNREACH);
+    pub const EINPROGRESS: Self = Self(errno::EINPROGRESS);
+    pub const EALREADY: Self = Self(errno::EALREADY);
+    pub const ETOOMANYREFS: Self = Self(errno::ETOOMANYREFS);
     pub const E2BIG: Self = Self(errno::E2BIG);
     pub const EACCES: Self = Self(errno::EACCES);
     pub const EAGAIN: Self = Self(errno::EAGAIN);

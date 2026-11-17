@@ -936,6 +936,49 @@ pub(super) fn mknodat(
     Ok(0)
 }
 
+/// Makes a node at a path the kernel holds, as `mknodat` would with that path (a local socket's
+/// `bind`): EEXIST if the name is taken.
+pub(super) fn make_node(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    path: &[u8],
+    mode: u32,
+) -> Result<Node, Errno> {
+    let at = start(kernel, tid, AT_FDCWD as u64, path)?;
+    let parent = kernel.with_walk(tid, |walk, _| walk.parent(&at, path))?;
+    if parent.name.is_empty() {
+        return Err(Errno::EEXIST);
+    }
+    check_absent(kernel, tid, &parent)?;
+    if parent.trailing_slash {
+        return Err(Errno::ENOENT);
+    }
+    may_change(kernel, tid, &parent.directory)?;
+    changes_names(&parent.directory)?;
+    create(
+        kernel,
+        cx,
+        tid,
+        &parent.directory,
+        &parent.name,
+        mode,
+        0,
+        Content::Special,
+    )
+}
+
+/// The node at a path the kernel holds, links followed (a local socket's `connect`).
+pub(super) fn lookup_path(
+    kernel: &mut Kernel,
+    _: &mut Context<'_>,
+    tid: Tid,
+    path: &[u8],
+) -> Result<Node, Errno> {
+    let at = start(kernel, tid, AT_FDCWD as u64, path)?;
+    kernel.with_walk(tid, |walk, _| walk.resolve(&at, path, true))
+}
+
 pub(super) fn symlinkat(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,

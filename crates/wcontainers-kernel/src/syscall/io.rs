@@ -451,8 +451,10 @@ pub(super) fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let sequence = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.style() == Style::Sequence);
     // Terminals are opened unseekable (`nonseekable_open`).
-    if matches!(inode.content, Content::Pipe(_) | Content::Anon)
-        || inode.is_secret()
+    if matches!(
+        inode.content,
+        Content::Pipe(_) | Content::Anon | Content::Socket(_)
+    ) || inode.is_secret()
         || (writing && sequence)
         || file.terminal.is_some()
     {
@@ -714,6 +716,12 @@ fn vectored(
             None => super::tty::read(kernel, cx, tid, file, parts),
         };
     }
+    if super::socket::of(file).is_some() {
+        return match writing {
+            Some(_) => super::socket::write(kernel, cx, tid, file, parts),
+            None => super::socket::read(kernel, cx, tid, file, parts),
+        };
+    }
     // A pipe takes or gives the whole vector in one go (`pipe_read`, `pipe_write`).
     if super::pipe::is_pipe(file) {
         return match writing {
@@ -832,7 +840,11 @@ pub(super) fn file_bytes(
             }
             _ => return Err(Errno::ENXIO),
         },
-        Content::Pipe(_) | Content::Symlink(_) | Content::Pidfd(..) | Content::Anon => {
+        Content::Pipe(_)
+        | Content::Symlink(_)
+        | Content::Pidfd(..)
+        | Content::Anon
+        | Content::Socket(_) => {
             return Err(Errno::EINVAL);
         }
         // `mqueue_read_file`: the queue's size and request, which a read that returns bytes marks
@@ -971,6 +983,9 @@ pub(super) fn read_at(
     }
     if super::pipe::is_pipe(file) {
         return super::pipe::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
+    if super::socket::of(file).is_some() {
+        return super::socket::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
     if super::signalfd::mask_of(&file.borrow()).is_some() {
         return super::signalfd::read(kernel, cx, tid, file, &[(buffer, count)]);
@@ -1214,6 +1229,9 @@ pub(super) fn write_at(
     if super::pipe::is_pipe(file) {
         return super::pipe::write(kernel, cx, tid, file, &[(buffer, count)]);
     }
+    if super::socket::of(file).is_some() {
+        return super::socket::write(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     moves_bytes(file, true)?;
     if super::eventfd::of(&file.borrow()).is_some() {
         return super::eventfd::write(kernel, cx, tid, file, &[(buffer, count)]);
@@ -1358,6 +1376,7 @@ pub(super) fn write_bytes(
         | Content::Symlink(_)
         | Content::Pidfd(..)
         | Content::Anon
+        | Content::Socket(_)
         | Content::Mqueue(_) => {
             return Err(Errno::EINVAL);
         }
@@ -1702,7 +1721,7 @@ pub(super) fn lseek(
     let inode = file.node.borrow();
     let mut sequence = None;
     let new = match &inode.content {
-        Content::Pipe(_) | Content::Pidfd(..) => return Err(Errno::ESPIPE),
+        Content::Pipe(_) | Content::Pidfd(..) | Content::Socket(_) => return Err(Errno::ESPIPE),
         // Signal descriptors keep their position at 0 (`noop_llseek`).
         Content::Anon => file.offset as i64,
         // A queue seeks as `default_llseek` does over the size it shows.
@@ -2828,6 +2847,7 @@ pub(super) fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
     let node = file.node.borrow();
     match &node.content {
         Content::Pipe(pipe) => crate::pipe::poll(pipe, &file),
+        Content::Socket(socket) => super::socket::poll(socket),
         // `random_poll`: the generator is ready from the start here. `/dev/urandom` has no poll.
         Content::Special if Device::from_number(node.rdev) == Some(Device::Random) => {
             (POLLIN | POLLRDNORM) as u16

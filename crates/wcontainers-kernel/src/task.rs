@@ -1005,6 +1005,14 @@ impl Kernel {
             .iter()
             .map(|file| file.borrow().node.clone())
             .collect();
+        // A socket whose last file went is released (`sock_close`).
+        for file in &files {
+            if alloc::rc::Rc::strong_count(file) == 1
+                && let Some(socket) = crate::syscall::socket::of(file)
+            {
+                crate::syscall::socket::released(self, &socket);
+            }
+        }
         crate::syscall::pipe::released(self, cx, files);
         // An open file's last close lets go of its record and flock locks.
         for node in nodes {

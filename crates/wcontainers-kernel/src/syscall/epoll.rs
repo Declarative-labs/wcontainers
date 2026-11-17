@@ -159,6 +159,7 @@ fn queue_of(kernel: &Kernel, tid: Tid, file: &FileRef) -> Result<Option<Queue>, 
         Content::Pipe(_) => object(super::pipe::channel(&node)),
         Content::Pidfd(..) => object(super::pidfd::channel(&node)),
         Content::Mqueue(_) => object(super::mqueue::channel(&node)),
+        Content::Socket(socket) => Ok(Some(Queue::Object(super::socket::object(socket)))),
         // `fuse_file_poll`: a backend that does not answer POLL leaves the default mask.
         Content::Backend(_) if !inode.is_directory() => Ok(None),
         Content::Special

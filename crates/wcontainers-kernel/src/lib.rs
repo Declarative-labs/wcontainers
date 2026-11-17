@@ -101,6 +101,8 @@ pub(crate) struct Files {
     pub pidfs: Option<FileSystem>,
     /// The anonymous inode, once a file needs it.
     pub anon: Option<crate::fs::Node>,
+    /// The file system sockets are on, once one is made.
+    pub sockfs: Option<FileSystem>,
     /// Files whose bytes are partly in a block of shared pages, while a mapping shares them.
     pub shared: Vec<Node>,
     /// The key tmpfs inodes' generation numbers are made from, as Linux draws each at random.
@@ -177,6 +179,8 @@ pub struct Kernel {
     timers: syscall::timer::Timers,
     /// The epoll items watching each file's readiness.
     poll_watches: syscall::epoll::Watches,
+    /// The names local sockets are bound to.
+    sockets: syscall::socket::Names,
     machine: Machine,
     hostname: Vec<u8>,
     domainname: Vec<u8>,
@@ -234,6 +238,7 @@ impl Kernel {
             futexes: Default::default(),
             timers: Default::default(),
             poll_watches: Default::default(),
+            sockets: Default::default(),
             signal_users: BTreeMap::new(),
             files: Files {
                 numbers,
@@ -249,6 +254,7 @@ impl Kernel {
                 secretmem_fs: None,
                 pidfs: None,
                 anon: None,
+                sockfs: None,
                 shared: Vec::new(),
                 generation_key: [0; 16],
                 proc_kept: BTreeMap::new(),
