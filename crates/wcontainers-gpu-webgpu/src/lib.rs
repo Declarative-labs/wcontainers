@@ -964,6 +964,18 @@ impl Backend for WebGpu {
             .iter()
             .position(|e| e.name == module.entry_point && e.stage == stage)
             .ok_or(GpuError::Invalid("the module has no such entry point"))?;
+        // Checked against what WebGPU's core language and this device's features allow (plan 6.3),
+        // so a program the browser would refuse is refused here too, natively as well.
+        let info = wgpu_naga_bridge::create_validator(
+            self.device.features(),
+            wgpu::DownlevelFlags::compliant(),
+            naga::valid::ValidationFlags::all(),
+        )
+        .validate(&module.module)
+        .map_err(|e| {
+            eprintln!("webgpu: program refused: {}", e.as_inner());
+            GpuError::Invalid("a program WebGPU's language and this device's features do not allow")
+        })?;
         let raw = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -972,8 +984,8 @@ impl Backend for WebGpu {
             });
         Ok(Shader(Rc::new(ShaderObj {
             module: module.module.clone(),
-            info: module.info.clone(),
-            paired: layout::paired(&module.module, module.info.get_entry_point(entry_index)),
+            paired: layout::paired(&module.module, info.get_entry_point(entry_index)),
+            info,
             entry_index,
             entry: module.entry_point.clone(),
             stage,

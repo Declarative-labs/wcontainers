@@ -16,9 +16,9 @@ use wcontainers_gpu::{
     AddressMode, AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc,
     BlendFactor, BlendOp, BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment,
     CompareFn, DepthAttachment, DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent,
-    Filter, Format, FormatUse, LoadOp, MapIntent, Origin, PassDesc, Program, ReadSource,
-    SamplerDesc, ShaderStage, StageSet, StoreOp, TextureRegion, TextureUsage, TextureViewDesc,
-    Topology, ViewDimension, Viewport, WriteMode,
+    Filter, Format, FormatUse, GpuError, LoadOp, MapIntent, Origin, PassDesc, Program, ReadSource,
+    SamplerDesc, ShaderModule, ShaderStage, StageSet, StoreOp, TextureRegion, TextureUsage,
+    TextureViewDesc, Topology, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -878,4 +878,41 @@ fn tier1_formats_are_declared_only_with_it() {
             );
         }
     }
+}
+
+/// Programs are validated with what WebGPU's core language gives (plan 6.3), never with nothing: a
+/// fragment program reading its sample index is taken, one using 64-bit floats is refused, even
+/// where the front validated it with every capability.
+#[test]
+fn programs_are_validated_with_webgpus_core_language() {
+    let mut b = device();
+    let module = |source: &str, entry: &str, stage| {
+        let module = naga::front::wgsl::parse_str(source).unwrap();
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+        ShaderModule {
+            module,
+            info,
+            entry_point: entry.into(),
+            stage,
+            key: [0; 32],
+        }
+    };
+    let sample = module(
+        "@fragment fn ps(@builtin(sample_index) i: u32) -> @location(0) vec4f { return vec4f(f32(i)); }",
+        "ps",
+        ShaderStage::Fragment,
+    );
+    assert!(b.create_shader(&sample).is_ok());
+    let wide = module(
+        "@fragment fn ps() -> @location(0) vec4f { let x: f64 = 1.0lf; return vec4f(f32(x)); }",
+        "ps",
+        ShaderStage::Fragment,
+    );
+    assert!(matches!(b.create_shader(&wide), Err(GpuError::Invalid(_))));
+    assert_eq!(b.status(), DeviceStatus::Ok);
 }
