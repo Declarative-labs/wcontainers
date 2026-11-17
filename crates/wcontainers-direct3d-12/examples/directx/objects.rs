@@ -14,7 +14,8 @@ use wcontainers_direct3d_12::state::{
     Blend, DepthStencil, InputElement, Raster, StencilOps, TargetBlend,
 };
 use wcontainers_direct3d_12::{
-    Error, FenceId, GraphicsPipelineDesc, HeapId, PipelineId, ResourceId, RootId, features,
+    Error, FenceId, GraphicsPipelineDesc, HeapId, MemoryId, PipelineId, QueryHeapId, QueueId,
+    ResourceId, RootId, features,
 };
 use wcontainers_directx_graphics_infrastructure::{AdapterDesc, format_support, plane_count};
 use wcontainers_gpu::Backend;
@@ -73,6 +74,8 @@ not_implemented!(
     Resource,
     RootSignature,
     PipelineState,
+    QueryHeap,
+    Heap,
     DescriptorHeap,
     Blob
 );
@@ -264,7 +267,7 @@ macro_rules! based {
 }
 based!(
     Device => base, Queue => 1, Allocator => 1, Fence => base, Resource => base,
-    RootSignature => 1, PipelineState => 1, DescriptorHeap => base, List => base
+    RootSignature => 1, PipelineState => 1, QueryHeap => 1, Heap => 2, DescriptorHeap => base, List => base
 );
 
 /// The front's description of a resource.
@@ -288,6 +291,11 @@ fn resource_desc(d: &D3D12_RESOURCE_DESC) -> ResourceDesc {
 ///
 /// # Safety
 /// The bytecode points to `BytecodeLength` readable bytes, as the API requires.
+/// Buffers take no optimised clear value.
+fn is_buffer(d: &D3D12_RESOURCE_DESC) -> bool {
+    d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER
+}
+
 unsafe fn code(b: &D3D12_SHADER_BYTECODE) -> Vec<u8> {
     if b.pShaderBytecode.is_null() {
         return Vec::new();
@@ -368,8 +376,9 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let desc = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let id = gpu::call(|d| d.create_queue());
         give::<ID3D12CommandQueue>(
-            crate::abi::fixed(Queue(*desc, Base::child()).into()),
+            crate::abi::fixed(Queue(*desc, Base::child(), id).into()),
             riid,
             out,
         )
@@ -578,6 +587,37 @@ impl Device {
             })
         })
         .map_err(hr)?;
+        give::<ID3D12PipelineState>(PipelineState(id, Base::child()).into(), riid, out)
+    }
+
+    pub fn CreateQueryHeap(
+        &self,
+        pdesc: *const D3D12_QUERY_HEAP_DESC,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: the API requires a description.
+        let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let (kind, count) = (d.Type.0 as u32, d.Count);
+        let id = gpu::call(move |dev| dev.create_query_heap(kind, count)).map_err(hr)?;
+        give::<ID3D12QueryHeap>(QueryHeap(id, Base::child()).into(), riid, out)
+    }
+
+    pub fn CreateComputePipelineState(
+        &self,
+        pdesc: *const D3D12_COMPUTE_PIPELINE_STATE_DESC,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: the API requires a description.
+        let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let root = d.pRootSignature.as_ref().map(|r| {
+            // SAFETY: root signatures come from this library.
+            unsafe { r.as_impl() }.0
+        });
+        // SAFETY: the API requires valid bytecode.
+        let cs = unsafe { code(&d.CS) };
+        let id = gpu::call(move |dev| dev.create_compute_pipeline(root, &cs)).map_err(hr)?;
         give::<ID3D12PipelineState>(PipelineState(id, Base::child()).into(), riid, out)
     }
 
@@ -835,6 +875,84 @@ impl Device {
         }
     }
 
+    pub fn CreateHeap(
+        &self,
+        pdesc: *const D3D12_HEAP_DESC,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: the API requires a description.
+        let mut desc = *unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let kind = HeapType::from_d3d12(desc.Properties.Type.0 as u32).map_err(hr)?;
+        // Zeros read as the defaults: the one node, and 64 KiB alignment.
+        let p = &mut desc.Properties;
+        p.CreationNodeMask = p.CreationNodeMask.max(1);
+        p.VisibleNodeMask = p.VisibleNodeMask.max(1);
+        if desc.Alignment == 0 {
+            desc.Alignment = 64 << 10;
+        }
+        let (size, flags) = (desc.SizeInBytes, desc.Flags.0 as u32);
+        let id = gpu::call(move |d| d.create_heap(size, kind, flags)).map_err(hr)?;
+        give::<ID3D12Heap>(
+            crate::abi::fixed(Heap(desc, id, Base::child()).into()),
+            riid,
+            out,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn CreatePlacedResource(
+        &self,
+        heap: Ref<ID3D12Heap>,
+        offset: u64,
+        pdesc: *const D3D12_RESOURCE_DESC,
+        _state: D3D12_RESOURCE_STATES,
+        clear: *const D3D12_CLEAR_VALUE,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: an optional pointer the API defines.
+        if !clear.is_null() && unsafe { pdesc.as_ref() }.is_some_and(is_buffer) {
+            return Err(E_INVALIDARG.into());
+        }
+        // SAFETY: heaps come from this library; the API requires a description.
+        let (heap, desc) = unsafe { (heap.ok()?.as_impl(), *pdesc.as_ref().ok_or(E_INVALIDARG)?) };
+        let (memory, heap_desc) = (heap.1, heap.0);
+        let kind = HeapType::from_d3d12(heap_desc.Properties.Type.0 as u32).map_err(hr)?;
+        let front = resource_desc(&desc);
+        let (id, address, host) = gpu::call(move |d| {
+            let id = d.create_placed(memory, offset, &front)?;
+            let host = if kind == HeapType::Default {
+                0
+            } else {
+                d.map(id)? as usize
+            };
+            Ok::<_, Error>((id, d.address(id), host))
+        })
+        .map_err(hr)?;
+        let mut desc = desc;
+        if desc.MipLevels == 0 {
+            desc.MipLevels = front.mips() as u16;
+        }
+        give::<ID3D12Resource>(
+            crate::abi::fixed(
+                Resource {
+                    id,
+                    desc,
+                    address,
+                    host,
+                    back_buffer: false,
+                    heap: heap_desc.Properties.Type,
+                    heap_flags: heap_desc.Flags,
+                    base: Base::child(),
+                }
+                .into(),
+            ),
+            riid,
+            out,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn CreateCommittedResource(
         &self,
@@ -843,10 +961,14 @@ impl Device {
         pdesc: *const D3D12_RESOURCE_DESC,
         // The initial state and the optimised clear value change nothing this front does.
         _state: D3D12_RESOURCE_STATES,
-        _clear: *const D3D12_CLEAR_VALUE,
+        clear: *const D3D12_CLEAR_VALUE,
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        // SAFETY: an optional pointer the API defines.
+        if !clear.is_null() && unsafe { pdesc.as_ref() }.is_some_and(is_buffer) {
+            return Err(E_INVALIDARG.into());
+        }
         wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32, true).map_err(hr)?;
         // SAFETY: the API requires both.
         let (heap, desc) = unsafe {
@@ -1156,7 +1278,14 @@ impl Device {
 // ---- Queues, allocators, fences ----
 
 #[implement(ID3D12CommandQueue)]
-pub struct Queue(D3D12_COMMAND_QUEUE_DESC, Base);
+pub struct Queue(D3D12_COMMAND_QUEUE_DESC, Base, QueueId);
+
+impl Drop for Queue {
+    fn drop(&mut self) {
+        let id = self.2;
+        gpu::call(move |d| d.destroy_queue(id));
+    }
+}
 
 impl Queue {
     pub fn GetDesc(&self) -> D3D12_COMMAND_QUEUE_DESC {
@@ -1185,7 +1314,8 @@ impl Queue {
                 }
             }
         }
-        if let Err(e) = gpu::call(move |d| d.execute(&commands)) {
+        let queue = self.2;
+        if let Err(e) = gpu::call(move |d| d.execute(queue, &commands)) {
             eprintln!(
                 "wcontainers: the device was removed: {:?}",
                 gpu::call(|d| d.removed()).unwrap_or("?")
@@ -1197,8 +1327,28 @@ impl Queue {
     pub fn Signal(&self, fence: Ref<ID3D12Fence>, value: u64) -> Result<()> {
         // SAFETY: fences come from this library.
         let fence = unsafe { fence.ok()?.as_impl() };
-        let id = fence.id;
-        gpu::call(move |d| d.queue_signal(id, value)).map_err(hr)
+        let (queue, id) = (self.2, fence.id);
+        gpu::call(move |d| d.queue_signal(queue, id, value)).map_err(hr)
+    }
+
+    /// Timestamps count nanoseconds where the back end has them.
+    pub fn GetTimestampFrequency(&self) -> Result<u64> {
+        if gpu::call(|d| {
+            d.backend()
+                .caps()
+                .has(wcontainers_gpu::Features::TIMESTAMPS)
+        }) {
+            Ok(1_000_000_000)
+        } else {
+            Err(E_FAIL.into())
+        }
+    }
+
+    pub fn Wait(&self, fence: Ref<ID3D12Fence>, value: u64) -> Result<()> {
+        // SAFETY: fences come from this library.
+        let fence = unsafe { fence.ok()?.as_impl() };
+        let (queue, id) = (self.2, fence.id);
+        gpu::call(move |d| d.queue_wait(queue, id, value)).map_err(hr)
     }
 }
 
@@ -1245,13 +1395,31 @@ impl Fence {
             return Ok(());
         }
         let token = event.0 as usize as u64;
-        gpu::call(move |d| d.add_waiter(id, value, token));
+        // A value already reached sets the event before the call returns.
+        gpu::call(move |d| {
+            d.add_waiter(id, value, token);
+            for event in d.reached_events() {
+                // SAFETY: the event the program gave `SetEventOnCompletion`.
+                let _ = unsafe {
+                    windows::Win32::System::Threading::SetEvent(HANDLE(event as usize as *mut _))
+                };
+            }
+        });
         Ok(())
     }
 
+    /// Events this value reaches are set before the call returns, as Direct3D 12 does.
     pub fn Signal(&self, value: u64) -> Result<()> {
         let id = self.id;
-        gpu::call(move |d| d.cpu_signal(id, value));
+        gpu::call(move |d| {
+            d.cpu_signal(id, value);
+            for event in d.reached_events() {
+                // SAFETY: the event the program gave `SetEventOnCompletion`.
+                let _ = unsafe {
+                    windows::Win32::System::Threading::SetEvent(HANDLE(event as usize as *mut _))
+                };
+            }
+        });
         Ok(())
     }
 }
@@ -1370,6 +1538,33 @@ impl Drop for RootSignature {
     fn drop(&mut self) {
         let id = self.0;
         gpu::call(move |d| d.destroy_root_signature(id));
+    }
+}
+
+/// A heap of `CreateHeap`: its description and the front's heap.
+#[implement(ID3D12Heap)]
+pub struct Heap(D3D12_HEAP_DESC, MemoryId, Base);
+
+impl Heap {
+    pub fn GetDesc(&self) -> D3D12_HEAP_DESC {
+        self.0
+    }
+}
+
+impl Drop for Heap {
+    fn drop(&mut self) {
+        let id = self.1;
+        gpu::call(move |d| d.destroy_heap(id));
+    }
+}
+
+#[implement(ID3D12QueryHeap)]
+pub struct QueryHeap(pub QueryHeapId, Base);
+
+impl Drop for QueryHeap {
+    fn drop(&mut self) {
+        let id = self.0;
+        gpu::call(move |d| d.destroy_query_heap(id));
     }
 }
 
@@ -1772,6 +1967,138 @@ impl List {
                 .map(|r| [r.left, r.top, r.right, r.bottom])
                 .collect(),
         });
+    }
+
+    pub fn BeginQuery(&self, heap: Ref<ID3D12QueryHeap>, kind: D3D12_QUERY_TYPE, index: u32) {
+        let Some(h) = heap.as_ref() else {
+            return self
+                .rec
+                .lock()
+                .unwrap()
+                .fail(Error::Invalid("BeginQuery with no heap"));
+        };
+        // SAFETY: query heaps come from this library.
+        let heap = unsafe { h.as_impl() }.0;
+        self.record(Command::BeginQuery {
+            heap,
+            kind: kind.0 as u32,
+            index,
+        });
+    }
+
+    pub fn EndQuery(&self, heap: Ref<ID3D12QueryHeap>, kind: D3D12_QUERY_TYPE, index: u32) {
+        let Some(h) = heap.as_ref() else {
+            return self
+                .rec
+                .lock()
+                .unwrap()
+                .fail(Error::Invalid("EndQuery with no heap"));
+        };
+        // SAFETY: query heaps come from this library.
+        let heap = unsafe { h.as_impl() }.0;
+        self.record(Command::EndQuery {
+            heap,
+            kind: kind.0 as u32,
+            index,
+        });
+    }
+
+    pub fn ResolveQueryData(
+        &self,
+        heap: Ref<ID3D12QueryHeap>,
+        kind: D3D12_QUERY_TYPE,
+        first: u32,
+        count: u32,
+        dst: Ref<ID3D12Resource>,
+        offset: u64,
+    ) {
+        let (Some(h), Some(dst)) = (heap.as_ref(), id(&dst)) else {
+            return self
+                .rec
+                .lock()
+                .unwrap()
+                .fail(Error::Invalid("ResolveQueryData with no heap or buffer"));
+        };
+        // SAFETY: query heaps come from this library.
+        let heap = unsafe { h.as_impl() }.0;
+        self.record(Command::ResolveQueries {
+            heap,
+            kind: kind.0 as u32,
+            first,
+            count,
+            dst,
+            offset,
+        });
+    }
+
+    pub fn SetPredication(
+        &self,
+        buffer: Ref<ID3D12Resource>,
+        offset: u64,
+        op: D3D12_PREDICATION_OP,
+    ) {
+        self.record(Command::Predication(
+            id(&buffer).map(|b| (b, offset, op.0 as u32)),
+        ));
+    }
+
+    pub fn Dispatch(&self, x: u32, y: u32, z: u32) {
+        self.record(Command::Dispatch([x, y, z]));
+    }
+
+    /// A storage view clear; the view is read from its CPU handle when recorded.
+    fn clear_storage(
+        &self,
+        cpu: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        values: [u32; 4],
+        float: bool,
+        count: u32,
+        rects: *const RECT,
+    ) {
+        // SAFETY: a handle of this library's heaps and `count` rectangles.
+        let (view, rects) = unsafe { (descriptor(*cpu), many(rects, count)) };
+        let Descriptor::UnorderedAccess(view) = view else {
+            return self.rec.lock().unwrap().fail(Error::Invalid(
+                "clearing a descriptor that is no unordered access view",
+            ));
+        };
+        self.record(Command::ClearStorage {
+            view,
+            values,
+            float,
+            rects: rects
+                .iter()
+                .map(|r| [r.left, r.top, r.right, r.bottom])
+                .collect(),
+        });
+    }
+
+    pub fn ClearUnorderedAccessViewUint(
+        &self,
+        _gpu: &D3D12_GPU_DESCRIPTOR_HANDLE,
+        cpu: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        _resource: Ref<ID3D12Resource>,
+        values: *const u32,
+        count: u32,
+        rects: *const RECT,
+    ) {
+        // SAFETY: the API passes four values.
+        let values = unsafe { *(values as *const [u32; 4]) };
+        self.clear_storage(cpu, values, false, count, rects);
+    }
+
+    pub fn ClearUnorderedAccessViewFloat(
+        &self,
+        _gpu: &D3D12_GPU_DESCRIPTOR_HANDLE,
+        cpu: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        _resource: Ref<ID3D12Resource>,
+        values: *const f32,
+        count: u32,
+        rects: *const RECT,
+    ) {
+        // SAFETY: the API passes four values.
+        let values = unsafe { *(values as *const [f32; 4]) }.map(f32::to_bits);
+        self.clear_storage(cpu, values, true, count, rects);
     }
 
     pub fn DrawInstanced(

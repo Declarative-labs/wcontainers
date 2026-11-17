@@ -10,7 +10,10 @@ pub mod resource;
 pub mod root;
 pub mod state;
 
-pub use device::{Device, FenceId, GraphicsPipelineDesc, HeapId, PipelineId, ResourceId, RootId};
+pub use device::{
+    Device, FenceId, GraphicsPipelineDesc, HeapId, MemoryId, PipelineId, QueryHeapId, QueueId,
+    ResourceId, RootId,
+};
 
 /// Why a call failed, as the shells turn it into an `HRESULT`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
