@@ -58,6 +58,19 @@ fn main() -> windows::core::Result<()> {
     let r = unsafe { device.CreateTexture2D(&desc, None, Some(&mut dynamic)) };
     println!("CreateTexture2D(dynamic) {:#010x}", code(r));
 
+    for (name, kind) in [
+        ("occlusion", D3D11_QUERY_OCCLUSION),
+        ("timestamp", D3D11_QUERY_TIMESTAMP),
+    ] {
+        let mut q = None;
+        let desc = D3D11_QUERY_DESC {
+            Query: kind,
+            MiscFlags: 0,
+        };
+        let r = unsafe { device.CreateQuery(&desc, Some(&mut q)) };
+        println!("CreateQuery({name}) {:#010x}", code(r));
+    }
+
     let desc = D3D11_BUFFER_DESC {
         ByteWidth: 64,
         Usage: D3D11_USAGE_DEFAULT,
