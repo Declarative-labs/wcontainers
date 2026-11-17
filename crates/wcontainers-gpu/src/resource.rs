@@ -53,6 +53,9 @@ pub struct BufferDesc {
 
 /// What a write promises about the bytes already in the buffer. This is how the mapping rules of
 /// Direct3D, OpenGL and Vulkan reach a back end without any buffer being mapped across the boundary.
+/// A texture write ([`crate::Backend::write_texture`]) takes the same modes: the whole texture for the
+/// whole buffer (every level and layer), its texels for bytes (both aspects of a depth and stencil
+/// format).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WriteMode {
     /// The write takes effect between the commands recorded before it and those after it, exactly as
@@ -345,10 +348,14 @@ pub struct TextureRegion<'a, B: Backend> {
     pub stencil: bool,
 }
 
-/// The buffer side of a copy between a buffer and a texture.
+/// The buffer side of a copy between a buffer and a texture. A block's size here is that of the
+/// aspect moved for a format with depth and stencil (one byte of stencil, four of depth).
 #[derive(Debug)]
 pub struct CopyBufferTexture<'a, B: Backend> {
     pub buffer: &'a B::Buffer,
+    /// Where the first block is, any multiple of the block size (as Vulkan and WebGPU require). A
+    /// back end whose API needs more (WebGPU: multiples of 4 for depth and stencil) copies the rows
+    /// through a buffer ([`crate::SlowPath::RowsRepacked`]).
     pub offset: u64,
     /// Bytes from one row of blocks to the next, any multiple of the block size. A back end whose API
     /// needs larger pitches (WebGPU: multiples of 256) copies the rows through a buffer at its own pitch

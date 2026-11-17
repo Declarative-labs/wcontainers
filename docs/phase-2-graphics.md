@@ -201,7 +201,9 @@ Recording:
   any row pitch that is a whole number of blocks (Vulkan's tightly packed `bufferRowLength` 0, OpenGL's
   pixel buffer uploads); WebGPU needs multiples of 256, so its back end copies such rows through a
   staging buffer at its own pitch, one buffer copy per row (`RowsRepacked`); Direct3D 12's own 256-byte
-  pitch rule never meets it. WebGPU cannot copy a buffer into `depth24plus` or `depth32float`: its back
+  pitch rule never meets it. The buffer offset is a whole number of blocks too, as Vulkan and WebGPU
+  require (a block of the aspect moved: one byte of stencil, four of depth); WebGPU's multiple of 4
+  for depth and stencil goes the same `RowsRepacked` way. WebGPU cannot copy a buffer into `depth24plus` or `depth32float`: its back
   end copies the buffer into a colour texture and draws the depth from it (`DepthWrittenByDraw`): for
   `depth32float` an `r32float` texture whose texels are the depth; for `depth24plus` an `r32uint`
   texture, since the bytes a front hands over for it are 24-bit unorm depth in the low bits of a 32-bit
@@ -607,9 +609,10 @@ Read back later and now:
 - Now is a fast path (4.3): WebGL 2 answers inside the call. On WebGPU the device thread waits (section
   4.8), so the guest thread is paused, counted.
 
-Dynamic textures: `write_texture` with `Discard` drops the whole texture's old contents, so the WebGPU
-back end renames the texture from a pool, as for buffers, instead of splitting a pass for an ordered
-write.
+Dynamic textures: `write_texture` with `Discard` drops the whole texture's old contents (every level
+and layer; texels not written are undefined), so the WebGPU back end renames the texture from a pool,
+as for buffers, instead of splitting a pass for an ordered write. `NoOverwrite` promises of the texels
+written (both aspects of depth and stencil) what it promises of a buffer's bytes.
 
 Buffers that hold both indices and other data on WebGL 2. A WebGL buffer takes a type when it is first
 bound (element array for `ELEMENT_ARRAY_BUFFER`, other data for every other target but the two copy
