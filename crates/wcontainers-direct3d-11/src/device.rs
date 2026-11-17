@@ -571,11 +571,20 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
-        // A count and quality the device reports no level for is invalid, as in Direct3D.
-        if d.sample_quality >= self.multisample_quality_levels(d.format, d.sample_count) {
-            return Err(Error::InvalidArg(
-                "a sample count and quality the device reports no level for",
-            ));
+        // A count and quality the device reports no level for is invalid, as in Direct3D. The
+        // standard pattern is the back end's own; the centred one it cannot place.
+        let levels = self.multisample_quality_levels(d.format, d.sample_count);
+        match d.sample_quality {
+            STANDARD_MULTISAMPLE_PATTERN if levels > 0 => {}
+            CENTER_MULTISAMPLE_PATTERN if levels > 0 => {
+                return not_implemented("samples all at the pixel's centre");
+            }
+            q if q < levels => {}
+            _ => {
+                return Err(Error::InvalidArg(
+                    "a sample count and quality the device reports no level for",
+                ));
+            }
         }
         if d.sample_count > 1
             && (d.dimension != TexDim::D2
@@ -900,7 +909,8 @@ impl<B: Backend> Device<B> {
             v.dimension,
             ViewDim::Texture2DMS | ViewDim::Texture2DMSArray
         );
-        if of != t.dimension || ms_view != multisampled {
+        // Direct3D takes a multisampled view of a single-sampled texture: its first level.
+        if of != t.dimension || (multisampled && !ms_view) {
             return Err(Error::InvalidArg(
                 "a view of a dimension the texture does not have",
             ));
