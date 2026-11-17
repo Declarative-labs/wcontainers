@@ -1,9 +1,39 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice.
+Runs so far: six on G4a, the first slice; then run 1 of G4 as a whole (2026-11-17).
 
 ## Where things stand
+
+G4 run 1 merged origin/phase-2-graphics-webgpu, -webgl and -direct3d-12 (cleanly) and fixed what the
+independent check of G4a run 6 found:
+- Copies of depth with stencil: the interface's `copy_texture` could not say "both aspects", which
+  is the only texture copy WebGPU allows for those formats. Interface change c8a7be9 says a copy
+  between two textures of a combined format copies both aspects in one call (`stencil` false on
+  both sides). The front now makes one call, and drops a part of a depth-stencil subresource (a box
+  or an offset), as Direct3D does. The recording back end asserts no aspect is named. The WebGPU
+  back end still copies the depth aspect only, so the real-device test is a known failure (below).
+- The documentation of empty one-dimensional slots: converted DXBC reads a 1D texture as 2D, so the
+  2D stand-in serves it (no removal, no warning). Corrected in device.rs and What comes next.
+- `CreateTexture2D` with a sample count the device reports no quality level for (any count above
+  one) answers `E_INVALIDARG`, as Direct3D does, with a "not served: multisampled textures"
+  warning; `own_refused` checks both answers against real Direct3D.
+- The forwarder placement in the rig's scenes: dropped from How to run. The rig's programs print
+  where d3d11.dll and dxgi.dll came from, so its replacement check cannot see the library behind
+  a forwarder; the forwarder is checked by `own_handled` (programs.rs), which prints where
+  `D3D11CreateDevice` resolved. Asked of the rig track (Asked of other tracks).
+- Draws allocate nothing on the heap: vertex bindings and viewports are fixed arrays (32 slots,
+  16 viewports; `RSSetViewports` with more is dropped), and a binding set rebuild no longer clones
+  the stage's slots.
+Then, new in G4:
+- Typeless textures: stored as a member of their group (the depth format where bound for depth or
+  where the group is depth with stencil, otherwise a colour member), viewed through members whose
+  bits need no reinterpreting: the D formats for depth-stencil views, `R24_UNORM_X8_TYPELESS`,
+  `X24_TYPELESS_G8_UINT`, `R32_FLOAT`, `R16_UNORM` and the like for one aspect of depth, and a colour
+  member or its sRGB twin. A view reinterpreting bits (an `R8G8B8A8_UINT` view of an
+  `R8G8B8A8_TYPELESS` texture) is `E_NOTIMPL`: WebGPU lacks `FORMAT_REINTERPRET`, and the front keeps
+  no reinterpreting copy yet (`ReinterpretCopy`). `CheckFormatSupport` reports a typeless format's
+  texture uses only.
 
 G4a (the rig's three Direct3D 11 scenes drawn through our own d3d11.dll) is done:
 - Run 6 merged origin/phase-2-graphics (which carried -webgpu and -direct3d-12) and -shaders,
@@ -134,13 +164,13 @@ topology; adjacency topologies without a geometry shader through `AdjacencyDropp
 
 ## Known failures
 
-- None marked in the tests. The former one (depth with stencil views) was fixed by the WebGPU back
-  end in run 6.
-- Back-end gap, not ours to fix (crates/wcontainers-gpu-webgpu): a texture copy of one aspect of a
-  combined depth-stencil format, which the interface's `copy_texture` takes (`TextureRegion::stencil`)
-  and WebGPU forbids ("Copy source aspects must refer to all aspects of the source texture format").
-  wgpu loses the device and the front reports the generic reason "the back end lost it (Error)".
-  The rig's stencil scene stops here (reading its depth-stencil target back through a staging copy).
+- `depth_with_stencil_copies_as_direct3d_does` (programs.rs, ignored with its reason): the example
+  `own_depth_copy` clears an `R24G8_TYPELESS` depth-stencil texture, copies it by `CopyResource` and
+  `CopySubresourceRegion`, and loads the copy's depth. Real Direct3D: no removal, depth 0.25 read
+  back. Ours: removed (0x887A0020) with "Copy source aspects must refer to all aspects of the source
+  texture format": the WebGPU back end (crates/wcontainers-gpu-webgpu, memory.rs `copy_texture_impl`,
+  through `convert::aspect`) still copies the depth aspect alone. It passes once that back end
+  follows interface change c8a7be9 (a copy between textures of a combined format names no aspect).
 
 ## What comes next (G4b and on)
 
@@ -157,8 +187,9 @@ topology; adjacency topologies without a geometry shader through `AdjacencyDropp
 2. The helper constants (set 3): SV_VertexID and SV_InstanceID with non-zero start or base locations
    (now refused at the draw), sampler LOD bias, and the other variant fields of 6.4; choose the
    `VariantKey` per draw instead of the default.
-3. Empty slots still not served (the draw removes the device, named): a one-dimensional,
-   multisampled or depth texture slot, and a comparison sampler slot.
+3. Empty slots still not served (the draw removes the device, named): a multisampled or depth
+   texture slot, and a comparison sampler slot. (A one-dimensional slot is served: converted DXBC
+   reads 1D textures as 2D, so the 2D stand-in is bound.)
 4. The swap chain and presenting through the Direct3D 12 track's infrastructure crate (merged, not
    used yet: the three scenes save their pictures by reading back).
 5. d3d12.dll and dxgi.dll forwarders, once the library exports their entry points. Before that,
@@ -192,11 +223,14 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 - Lint: `tools/graphics-rig/remote "git submodule update --init --recursive -q && cargo clippy -q -j 3 -p wcontainers-directx -p wcontainers-direct3d-11 --all-targets -- -D warnings"`.
 - The scenes through our library copied in as d3d11.dll:
   `tools/graphics-rig/scenes --build "git submodule update --init --recursive -q && cargo build -q -j 3 -p wcontainers-directx" --dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll' --api d3d11 triangle quads topology`.
-- Through the forwarder: the same with
-  `--dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\d3d11.dll' --dll 'wcontainers_directx.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll'`.
-  The pictures are checked as usual, but the rig also prints one "did not load the replacement
-  wcontainers_directx.dll" FAIL per scene: its programs report only where d3d11.dll and dxgi.dll came
-  from, so it cannot see the library the forwarder reaches. Read the picture lines.
+- The forwarder placement is checked by the library tests (`own_handled` through our d3d11.dll
+  beside wcontainers_directx.dll), not by the scenes command: the rig's replacement check fails any
+  `--dll` library its programs do not report, and they report only d3d11.dll and dxgi.dll.
+- Wine's Direct3D 11 tests through our library (one GPU job; build the library first):
+  `tools/graphics-rig/remote "git submodule update --init --recursive -q && cargo build -q -j 3 -p wcontainers-directx"`,
+  then `tools/graphics-rig/wine-tests run --dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll' d3d11`
+  (or `d3d11:test_a/test_b` for some). Logs land in pyro-parked/wcontainers-scratch/graphics-rig/wine-logs
+  (the rig's script copies them there); this track keeps its own copies in logs/.
 - The rig's own forwarding library (the control): `--build "cargo build -q -j 3 -p wcontainers-graphics-test-forward"`
   and `--dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll'`.
 - Logs on the desktop in C:\wc\out\phase-2-graphics-direct3d-11\scenes\d3d11\<scene>.log and .stdout.
@@ -327,6 +361,10 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Interface changes
 
+- c8a7be9 "interface: copied combined depth-stencil textures whole in copy_texture": the
+  documentation of `copy_texture` and `TextureRegion::stencil`, and the plan's sentence in 4.2: a copy
+  between two textures of a combined depth-stencil format copies both aspects in one call, naming
+  none; copies to and from buffers name one aspect.
 - 7f73347 "interface: named the slow path of a constant buffer grown to its shader's declared size,
   and said a depth attachment holds both aspects": `SlowPath::ConstantBufferGrown`, and one sentence
   on `TextureViewDesc::stencil` (a combined-format view a pass draws into holds both aspects), with
@@ -391,6 +429,13 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   change and destroyed when replaced. The input-signature map is never pruned (small, one entry per
   distinct vertex shader).
 - The rig's replacement check cannot see wcontainers_directx.dll behind the forwarder (above).
+
+## Asked of other tracks
+
+- WebGPU back end: follow interface change c8a7be9 (copy both aspects of a combined depth-stencil
+  format in `copy_texture`, with `wgpu::TextureAspect::All`).
+- Rig: let the scene programs report where every `--dll` library came from (they print d3d11.dll and
+  dxgi.dll only), so the forwarder placement can be checked by the scenes command.
 
 ## Licences
 
