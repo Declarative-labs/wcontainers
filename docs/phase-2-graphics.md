@@ -939,11 +939,15 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
      the sample count). The query's count is the sum over its counting passes. If any pixel's sum over
      its samples reached the counting format's exact bound (2^24 for `r32float`, 2048 for `r16float`;
      below it the resolved average keeps every count exact), the replay runs
-     again with the draws split into halves (of the draws, of one draw's instances, or of one list's
-     or strip's primitives, a triangle strip at an even triangle), the second half after the first and
+     again with the draws split into halves (of the draws; of one draw's instances, by raising the
+     first instance, where the back end has `BASE_VERTEX_INSTANCE` and the front says every
+     per-instance stream steps by one, so each instance reads what it read; otherwise of one list's
+     or strip's primitives, each drawn for every instance, a triangle strip at an even triangle), the
+     second half after the first and
      both from the depth the whole began with (kept by one more copy, made only where the draws'
      primitives times the sample count reach the bound), and the halves added, so the answer stays
-     exact. A single fan, strip with restart or indirect draw reaching the bound cannot be split: the
+     exact. A single fan, strip with restart or indirect draw reaching the bound cannot be split, nor
+     can one primitive's instances where the first instance cannot be raised: the
      helper refuses it (`GpuError::Invalid`), a known gap that needs, from one such draw on a back end
      without blendable `r32float`, a pixel whose samples together pass 2048 fragments (2048 at its one
      sample on a single-sampled target, 512 a sample on average on four samples). A program reading the primitive index sees it
