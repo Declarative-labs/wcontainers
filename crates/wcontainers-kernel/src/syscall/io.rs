@@ -1262,15 +1262,24 @@ fn send(
         if output.borrow().flags & O_APPEND != 0 {
             return Err(Errno::EINVAL);
         }
-        // A pipe or a terminal as input cannot seek (`FMODE_LSEEK`); secret memory, process and
-        // signal descriptors cannot be read at all, even for nothing (measured; into a pipe nothing
-        // is moved without asking it).
-        if matches!(input_node.borrow().content, Content::Pipe(_))
-            || super::tty::end(&input).is_some()
+        // A pipe, a terminal, secret memory and a process descriptor as input cannot seek
+        // (`FMODE_LSEEK`), even for nothing; timer and signal descriptors can, but have no
+        // `splice_read`, so only nothing is moved from them (measured; into a pipe nothing is
+        // moved without asking it).
+        if matches!(
+            input_node.borrow().content,
+            Content::Pipe(_) | Content::Pidfd(..)
+        ) || super::tty::end(&input).is_some()
             || input_node.borrow().is_secret()
-            || input_node.borrow().is_anonymous()
         {
             return Err(Errno::EINVAL);
+        }
+        if input_node.borrow().is_anonymous() {
+            return if count == 0 {
+                Ok(0)
+            } else {
+                Err(Errno::EINVAL)
+            };
         }
     }
     // Into a pipe: `splice_file_to_pipe`, which waits for room unless the pipe's descriptor is
