@@ -1621,3 +1621,81 @@ fn a_pass_without_targets_is_as_large_as_the_viewports_it_draws_through() {
         ]
     );
 }
+
+#[test]
+fn constants_rewritten_between_draws_make_no_binding_set_and_split_no_pass() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "dynamic.ps_tint",
+        &elements,
+        28,
+    );
+    let dynamic = BufferDesc {
+        byte_width: 16,
+        usage: usage::DYNAMIC,
+        bind_flags: bind::CONSTANT_BUFFER,
+        cpu_access_flags: cpu::WRITE,
+        ..Default::default()
+    };
+    let dynamic = dev.create_buffer(&dynamic, None).unwrap();
+    let default = BufferDesc {
+        byte_width: 16,
+        usage: usage::DEFAULT,
+        bind_flags: bind::CONSTANT_BUFFER,
+        ..Default::default()
+    };
+    let default = dev.create_buffer(&default, Some(&[0; 16])).unwrap();
+    let from = dev.backend.log.len();
+    // Map(WRITE_DISCARD) before each draw.
+    dev.set_constant_buffers(PIXEL, 0, &[Some(dynamic.clone())])
+        .unwrap();
+    let r = Resource::Buffer(dynamic);
+    for i in 0..3 {
+        let m = dev.map(&r, 0, map::WRITE_DISCARD, 0).unwrap();
+        unsafe { std::ptr::write_bytes(m.data, i, 16) };
+        dev.unmap(&r, 0);
+        dev.draw(3, 0);
+    }
+    // UpdateSubresource, whole and in part, before each draw.
+    dev.set_constant_buffers(PIXEL, 0, &[Some(default.clone())])
+        .unwrap();
+    let d = Resource::Buffer(default);
+    dev.update_subresource(&d, 0, None, &[1; 16], 0, 0).unwrap();
+    dev.draw(3, 0);
+    let part = Box3 {
+        left: 4,
+        right: 8,
+        bottom: 1,
+        back: 1,
+        ..Default::default()
+    };
+    dev.update_subresource(&d, 0, Some(&part), &[2; 4], 0, 0)
+        .unwrap();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    let count = |p: &str| log.iter().filter(|l| l.starts_with(p)).count();
+    assert_eq!(count("draw "), 5, "{log:#?}");
+    assert_eq!(count("begin_pass"), 1, "{log:#?}");
+    assert_eq!(count("end_pass"), 0, "{log:#?}");
+    // One binding set for each buffer bound, none for a draw.
+    assert_eq!(count("create_binding_set"), 2, "{log:#?}");
+    let writes: Vec<_> = log
+        .iter()
+        .filter(|l| l.starts_with("write_buffer"))
+        .collect();
+    assert_eq!(writes.len(), 5, "{log:#?}");
+    assert!(
+        writes[..4]
+            .iter()
+            .all(|w| w.ends_with("at 0 16 bytes Discard")),
+        "{writes:#?}"
+    );
+    assert!(writes[4].ends_with("at 4 4 bytes Ordered"), "{writes:#?}");
+}
