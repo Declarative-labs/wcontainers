@@ -664,8 +664,7 @@ X1 (each also written into the plan's text in the same commit):
 - Signatures changed while building, to keep ARM64's bytes: `trap_kind` returns `TrapPc` too;
   `temporaries(flags)` added (logic takes no temporaries today); `run_hook` takes the hook's index;
   `data_address` and `branch_target` push rather than work in place; `branch_comparison` gets each path
-  instruction's effects and the branch's offset; `loaded_max(i)` returns the register and the bound;
-  `built_address` and `jump_table` get no `before` walk until x86 needs it (X4). The runtime's `Reason`
+  instruction's effects and the branch's offset; `loaded_max(i)` returns the register and the bound. The runtime's `Reason`
   list moved into the interface (the contract re-exports it and `TrapKind`).
 - The comparison is one command (`same-output.sh`) writing lengths and BLAKE3 hashes of every module, not
   the `WC_BENCH_DUMP` knob and stored files: Bun alone is about 4 GB a variant, and the lists cover full and
@@ -674,8 +673,16 @@ X1 (each also written into the plan's text in the same commit):
   translator has no dependency on a CPU crate at all, dev-dependencies included (X0 finding).
 - Run times: wasmtime only, old and new alternating, best of 5 (the orchestrator's X1 task), not wasmtime
   and Chrome best of 3 as the plan had.
-- The X1 pass bar gains a test guest (`tests/test_guest.rs`), the `no_std` build as a test, the float hook
-  timing and the wider comparison (plan 9).
+- The X1 pass bar gains a test guest, the `no_std` build as a test, the float hook timing and the wider
+  comparison (plan 9). The test guest lives in the test crate (`tests/test_guest.rs`), not the translator's
+  tests, since run 3 makes it run its translations in wasmtime, which the test crate already has; it has a
+  variant without flags shaped like RV64GC.
+- No interface item says whether a misaligned jump target faults: the bottom loop tests `ALIGN` as before,
+  and RV64GC's own meanings never make an odd target (`jalr` clears bit 0), so such an item would have no
+  CPU that needs it (plan 3.4).
+- The translator's flag states are bits of a `u128`, so a CPU has at most 126 shapes, checked at compile
+  time (plan 3.4).
+- A segment access with no base or index (`fs:[d]`) groups under the segment alone (plan 3.4).
 - No intentional change of ARM64's output at X1: the stop check's raised branch changes at X6 (plan 5.1),
   so the whole move is compared byte for byte against one "before".
 

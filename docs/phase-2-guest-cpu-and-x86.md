@@ -473,8 +473,10 @@ pub fn thread_module<G: Guest>() -> Vec<u8>;
 ```
 
 `translate_omitting` and `translate_in_modules` take the same type parameter and the same `host` and `offer`
-arguments. Every use is monomorphised; there is no `dyn` anywhere in the translator, so nothing is looked up
-at run time and nothing is paid at translate time either beyond what ARM64 pays today. The translator crate
+arguments. Every use is monomorphised; nothing of a guest is reached through `dyn`, so nothing is looked
+up at run time and nothing is paid at translate time either beyond what ARM64 pays today. (The loop-proof
+module passes a few of its own closures as `&dyn Fn` while it plans, as before the move: translate time only,
+nothing of the guest, nothing in the output.) The translator crate
 depends on `wcontainers-guest-cpu` only, never on a CPU crate (a test in the translator crate fails if its
 manifest or sources name one). The program that ships (the browser's cdylib, the host runner) names the one
 guest it is built for.
@@ -972,8 +974,12 @@ of its instruction offsets in order; "next" is offset + length, "last" is the la
 "previous" is the one before in the list, and two blocks join when `p + length(p) == offset`. Alignment
 checks use `G::ALIGN`; with `ALIGN == 1` they compile to nothing. x86 code may jump into the middle of
 another instruction: the body of a function is a set of offsets, so two overlapping instruction streams are
-simply two sets of offsets. A jump target not a multiple of `ALIGN` is an alignment fault only where the
-CPU faults: ARM64 yes (bit 0 or 1 set), x86 never, RV64GC never (jalr clears bit 0).
+simply two sets of offsets. The bottom loop gives an alignment fault for an address not a multiple of
+`ALIGN` that has no piece; no other code tests it. ARM64 faults so (bit 0 or 1 set); x86 never reaches the
+test (`ALIGN` 1); RV64GC never gives it either, because no address it goes to can be odd: `jalr` clears bit
+0 in its meaning, and branch and jump offsets are even. So the CPU's own meanings, not an interface item,
+decide whether a misaligned target can arise; an item saying "misaligned targets fault" would have no CPU
+that needs it today.
 
 Registers. `BITS` replaces the hard-coded layout of `Registers` (x0 to x30 at bits 0 to 30, sp 31, NZCV 32
 to 35, v0 to v31 at 64 to 95: T3) and `Slot::of_bit` (T21). The translator asks the bit's class, type and
@@ -1026,7 +1032,11 @@ put the word together from `flag_value` of each flag of `FLAGS`, shifted to its 
 (today's `push_word`); the calls to them push `locals_of(flags)`. A CPU with no flags (RISC-V) has empty
 `FLAGS` and `SHAPES`, its meanings never call `set_flags`, `flag` or `condition`, its `Cond` is an empty
 enum, and `FLAGS_WANTED` is 0, so the flag locals, the flag state and the flags-word functions are never
-made. The flag locals are a fixed array of at most 8 (x86 has 6).
+made (`FLAGS_WORDS` is 0), and a return compares its target with the expected return address without
+masking. The test crate's test guest has a variant without flags whose translations are run (section 9,
+X1). The flag locals are a fixed array of at most 8 (x86 has 6). Where the flags are is a set of states, bits
+of a `u128`: in locals, in the block, then one for each shape a function uses, so `SHAPES` may hold at most
+126 shapes, checked at compile time (x86's shapes at four widths are about 30, section 5.1).
 
 Flags wanted (T13). Bit 0 of the expected return address is free on ARM64 because returns are 4-aligned;
 on x86 returns can be odd. The CPU names the bit: ARM64 1 (unchanged), x86 bit 62 (no canonical user
@@ -1192,10 +1202,13 @@ write or both. Check plans are keyed by
 `ReadWrite`, checked once for writing before anything changes. The base key of the check analysis becomes
 the pair (segment, base), so all `fs:[...]` accesses of a function with the same base group under the FS
 base, which no instruction in the function changes unless it writes the FS base's register bit (`wrfsbase`,
-and the loads of FS, section 5.5). ARM64's segment is
-always `None`, so its keys, and its output, stay as today. The check analysis and the loop proofs use an
+and the loads of FS, section 5.5), and so do all `fs:[d]` accesses with no base or index (the commonest
+thread-local form), keyed by the segment alone. ARM64's segment is
+always `None`, so its keys, and its output, stay as today. The check analysis uses an
 access only when its index is `None` or `Index::Register` with `from_bits` 32 or 64 and its bytes are
-`Fixed`, exactly the accesses ARM64 has today; every other access (a `BitOffset` or `Lanes` index, an
+`Fixed` (`MemoryAccess::plain`), with or without a segment; the loop proofs only such accesses without a
+segment, exactly the accesses ARM64 has today (a proof bounds the base register's values, not the segment
+base's); every other access (a `BitOffset` or `Lanes` index, an
 8- or 16-bit index, `Counted` or `Masked` bytes, a 32-bit address) is checked by its own meaning every
 time it runs and is covered by no group and no proof, so nothing can skip a check those accesses need.
 They are rare in hot code, so this costs little; the cost is measured at X5 and X8.
@@ -2698,10 +2711,13 @@ Measured throughout, recorded with machine and load: translation speed, output s
   sides run the current tree's `tests/output.rs`); the whole test suite of the interface, ARM64, translator
   and test crates passes, and the browser crate builds and lints; the cores of the interface and of
   `wcontainers-arm64` build for `wasm32v1-none`, a target without the standard library, with `translate`
-  off, checked by a test; a test guest in the translator's tests fills in the interface the way x86-64 does
+  off, checked by a test; a test guest in the test crate's tests fills in the interface the way x86-64 does
   (byte-aligned variable-length instructions, a return address on the stack, a red zone, different
-  registers passed in and out, partial flag setters, a trap that leaves pc after it, its own slow path and
-  hook registers) and its translations at every look-ahead validate; the benchmarks in wasmtime are
+  registers passed in and out, partial flag setters, a segment base, a trap that leaves pc after it, its
+  own slow path and hook registers), and a variant of it without flags the way RV64GC does; their
+  translations at every look-ahead validate, and programs of each run in wasmtime at every look-ahead in
+  both settings and end with the registers, pc, memory and hook calls their meanings give (among them two
+  accesses of one segment group that fault exactly, and the groups' exact checks gone at full look-ahead); the benchmarks in wasmtime are
   unchanged within noise (old and new alternating, best of 5 each, load recorded), and so is a program that
   takes the float hook on every operation. The move is done on this branch's copy of the
   translator; fixes the translator track makes later come in by a merge the orchestrator names, and are

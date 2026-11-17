@@ -1409,6 +1409,14 @@ pub(crate) fn pop_return_address<G: Guest>(s: &mut InstructionSink<'_>) {
     }
 }
 
+/// Push the return address the caller expects, without the flags-wanted bit.
+pub(crate) fn push_expected_return<G: Guest>(s: &mut InstructionSink<'_>) {
+    s.local_get(G::L_RETURN);
+    if G::FLAGS_WANTED != 0 {
+        s.i64_const(!G::FLAGS_WANTED).i64_and();
+    }
+}
+
 /// Push a trap's detail.
 pub(crate) fn trap_detail(s: &mut InstructionSink<'_>, detail: TrapDetail, instruction: i64) {
     match detail {
@@ -1611,12 +1619,9 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
     fn ret(&mut self, target: u32) {
         let mut s = self.sink();
         pop_return_address::<G>(&mut s);
-        s.local_get(target)
-            .local_get(G::L_RETURN)
-            .i64_const(!G::FLAGS_WANTED)
-            .i64_and()
-            .i64_eq()
-            .if_(BlockType::Empty);
+        s.local_get(target);
+        push_expected_return::<G>(&mut s);
+        s.i64_eq().if_(BlockType::Empty);
         push_results::<G>(&mut s, BLOCK);
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.

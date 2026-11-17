@@ -268,6 +268,9 @@ fn flags_word_function<G: Guest>(shape: G::Shape) -> u32 {
 /// order from its kept locals. Out of line, as such a write back is rare and the same everywhere.
 pub(crate) fn flags_word_functions<G: Guest>() -> Vec<(Vec<ValType>, wasm_encoder::Function)> {
     let mut functions = Vec::new();
+    if G::FLAGS.is_empty() {
+        return functions;
+    }
     let mut f = wasm_encoder::Function::new([]);
     let mut s = f.instructions();
     push_word::<G>(&mut s, |s, flag| {
@@ -676,8 +679,9 @@ fn tracked<G: Guest>() -> Registers {
     G::TRACKED
 }
 
-/// Where the flags are known to be at a point: a set of [`FlagState`] bits, one bit when it is known which.
-type FlagStates = u32;
+/// Where the flags are known to be at a point: a set of flag state bits, one bit when it is known which:
+/// [`FLAGS_IN_LOCALS`], [`FLAGS_IN_BLOCK`], then one for each shape a function uses (at most 126).
+type FlagStates = u128;
 /// The flags are in the piece's flag locals.
 const FLAGS_IN_LOCALS: u32 = 0;
 /// The flags are in the thread block, which is up to date.
@@ -914,6 +918,12 @@ impl<G: Guest> Plan<G> {
         let instructions = |b: usize| function.instructions(b).iter().copied();
 
         // Flag setting shapes, numbered after the two fixed states.
+        const {
+            assert!(
+                G::SHAPES.len() + 2 <= FlagStates::BITS as usize,
+                "too many shapes"
+            )
+        };
         let mut shapes: Vec<G::Shape> = Vec::new();
         for d in function_instructions(function).map(|o| &decoded[&o]) {
             if let Some(shape) = d.effects.flags.and_then(G::shape)
@@ -1119,7 +1129,12 @@ impl<G: Guest> Plan<G> {
                     if let (Some(CheckPlan::Exact), Some(access)) =
                         (checks.get(&(o, 0)), only_access(&decoded[&o]))
                     {
-                        let key = (h, access.base, access.kind != AccessKind::Read);
+                        let key = (
+                            h,
+                            access.segment,
+                            access.base,
+                            access.kind != AccessKind::Read,
+                        );
                         let number = match keys.iter().position(|k| *k == key) {
                             Some(number) => number,
                             None => {
@@ -1282,9 +1297,9 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
         let mut frame = frame;
         // Per base register: how far its value has moved from where its current groups are measured.
         let mut moved: FxHashMap<u32, i64> = FxHashMap::default();
-        // Open groups by segment base, base register and write: first access, its start, and the bytes
-        // covered.
-        let mut open: FxHashMap<(Option<u32>, u32, bool), usize> = FxHashMap::default();
+        // Open groups by segment base, base register (none for a segment base alone) and write: first
+        // access, its start, and the bytes covered.
+        let mut open: FxHashMap<(Option<u32>, Option<u32>, bool), usize> = FxHashMap::default();
         let mut groups: Vec<(AccessAt, i64, i64, i64, u32)> = Vec::new();
         for &o in function.instructions(b) {
             let d = &decoded[&o];
@@ -1321,8 +1336,20 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                     WriteBack::Before(by) | WriteBack::After(by) => by,
                     WriteBack::None => 0,
                 };
-                let plan = match base {
-                    Some(bit) if bit == G::SP_BIT && segment.is_none() => {
+                // What a group is measured from: a general register other than the stack pointer, or a
+                // segment base alone.
+                let grouped = match base {
+                    Some(n) if G::GENERAL_BUT_SP.has_bit(n) => Some(Some(n)),
+                    None if segment.is_some()
+                        && access.base.is_none()
+                        && access.index.is_none() =>
+                    {
+                        Some(None)
+                    }
+                    _ => None,
+                };
+                let plan = match (base, grouped) {
+                    (Some(bit), _) if bit == G::SP_BIT && segment.is_none() => {
                         let at = access.displacement;
                         let known = match movement {
                             StackMove::By {
@@ -1337,12 +1364,14 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                             CheckPlan::Exact
                         }
                     }
-                    Some(n) if G::GENERAL_BUT_SP.has_bit(n) => {
-                        let m = *moved.get(&n).unwrap_or(&0);
+                    (_, Some(register)) => {
+                        let m = register.and_then(|n| moved.get(&n).copied()).unwrap_or(0);
                         let (start, after) = (m + access.displacement + ahead, m + behind);
                         let end = start + i64::from(bytes);
-                        moved.insert(n, after);
-                        let key = (segment, n, access.kind != AccessKind::Read);
+                        if let Some(n) = register {
+                            moved.insert(n, after);
+                        }
+                        let key = (segment, register, access.kind != AccessKind::Read);
                         match open.get(&key).map(|&g| (g, groups[g])) {
                             Some((g, (first, first_start, lo, hi, count)))
                                 if hi.max(end) - lo.min(start) <= 4096 =>
@@ -1372,7 +1401,7 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
             for bit in d.effects.defs.intersect(G::GENERAL_BUT_SP).bits() {
                 if !written_back.contains(&bit) {
                     moved.remove(&bit);
-                    open.retain(|&(_, base, _), _| base != bit);
+                    open.retain(|&(_, base, _), _| base != Some(bit));
                 }
             }
             for bit in d.effects.defs.intersect(G::SEGMENT_BITS).bits() {
@@ -1565,7 +1594,9 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         for i in 0..G::FLAGS.len() {
             e.flag_locals[i] = e.new_local(ValType::I32);
         }
-        e.flag_state = e.new_local(ValType::I32);
+        if !G::FLAGS.is_empty() {
+            e.flag_state = e.new_local(ValType::I32);
+        }
         for shape in plan.shapes.clone() {
             let flags = e.canonical_flags(shape);
             e.canonical.push(flags);
@@ -1930,7 +1961,9 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         }
         let block = self.fixed(G_THREAD_BLOCK);
         block.push(&mut self.sink());
-        let ids: Vec<u32> = (0..32).filter(|i| states >> i & 1 == 1).collect();
+        let ids: Vec<u32> = (0..FlagStates::BITS)
+            .filter(|i| states >> i & 1 == 1)
+            .collect();
         for (k, &id) in ids.iter().enumerate() {
             if k + 1 < ids.len() {
                 let state = self.flag_state;
@@ -2223,7 +2256,9 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             return;
         }
         // Known only at run time: choose by the state local.
-        let ids: Vec<u32> = (0..32).filter(|i| states >> i & 1 == 1).collect();
+        let ids: Vec<u32> = (0..FlagStates::BITS)
+            .filter(|i| states >> i & 1 == 1)
+            .collect();
         for (k, &id) in ids.iter().enumerate() {
             if k + 1 < ids.len() {
                 let state = self.flag_state;
@@ -2826,12 +2861,9 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             return;
         }
         let mut s = self.sink();
-        s.local_get(target)
-            .local_get(G::L_RETURN)
-            .i64_const(!G::FLAGS_WANTED)
-            .i64_and()
-            .i64_eq()
-            .if_(BlockType::Empty);
+        s.local_get(target);
+        crate::code::push_expected_return::<G>(&mut s);
+        s.i64_eq().if_(BlockType::Empty);
         wanted(self);
         let mut s = self.sink();
         push_results::<G>(&mut s, block);

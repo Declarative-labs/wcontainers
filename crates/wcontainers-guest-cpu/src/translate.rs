@@ -398,12 +398,11 @@ pub struct MemoryAccess<R> {
 }
 
 impl<R> MemoryAccess<R> {
-    /// Base plus a 32- or 64-bit index plus displacement, a fixed size, 64-bit addresses and no segment: the
-    /// accesses the check analysis and the loop proofs reason about. Every other access is checked by its
-    /// own meaning each time it runs.
+    /// Base plus a 32- or 64-bit index plus displacement, from a segment base or not, a fixed size and 64-bit
+    /// addresses: the accesses the check analysis reasons about (the loop proofs only those without a
+    /// segment). Every other access is checked by its own meaning each time it runs.
     pub fn plain(&self) -> bool {
-        self.segment.is_none()
-            && self.address_bits == 64
+        self.address_bits == 64
             && matches!(self.bytes, AccessBytes::Fixed(_))
             && match &self.index {
                 None => true,

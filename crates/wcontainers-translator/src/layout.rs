@@ -57,9 +57,13 @@ pub(crate) trait Layout: Guest {
     const F_SAVE: u32 = Self::F_DISPATCH + 3;
     const F_PERMISSION: u32 = Self::F_DISPATCH + 4;
     /// The functions that work out the flags word on the way to the runner: one for flags in locals, then
-    /// one for each of the guest's shapes.
+    /// one for each of the guest's shapes; none for a guest without flags.
     const F_FLAGS_WORD: u32 = Self::F_DISPATCH + 5;
-    const FLAGS_WORDS: u32 = 1 + Self::SHAPES.len() as u32;
+    const FLAGS_WORDS: u32 = if Self::FLAGS.is_empty() {
+        0
+    } else {
+        1 + Self::SHAPES.len() as u32
+    };
     const F_FIRST_PIECE: u32 = Self::F_FLAGS_WORD + Self::FLAGS_WORDS;
 
     // Type indices: those of the translator's own hooks and functions, the guest's hooks, then the rest.
