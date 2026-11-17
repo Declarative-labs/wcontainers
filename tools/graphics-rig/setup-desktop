@@ -1,0 +1,14 @@
+#!/bin/bash
+# Sets up the GPU desktop: puts this checkout's desktop scripts in C:\wc\rig, installs the tools
+# (desktop/install-tools.ps1) and sets up the job queue (desktop/install-queue.ps1). Each step is
+# skipped when already done, so it is safe to run again.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=tools/graphics-rig/common.sh
+. "$here/common.sh"
+connect
+rig_ssh "if not exist C:\\wc\\rig mkdir C:\\wc\\rig"
+rig_scp "$here"/desktop/* "$host:C:/wc/rig/"
+for script in install-tools install-queue; do
+    rig_powershell "C:\\wc\\rig\\$script.ps1" || exit 1
+done

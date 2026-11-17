@@ -1,0 +1,15 @@
+# The GPU job queue's daemon and clients (pueue), everything under C:\wc\pueue.
+shared:
+  pueue_directory: C:\wc\pueue\data
+  runtime_directory: C:\wc\pueue\run
+  alias_file: C:\wc\pueue\aliases.yml
+  host: 127.0.0.1
+  port: "6924"
+  daemon_cert: C:\wc\pueue\data\certs\daemon.cert
+  daemon_key: C:\wc\pueue\data\certs\daemon.key
+  shared_secret_path: C:\wc\pueue\data\shared_secret
+daemon:
+  pause_group_on_failure: false
+  pause_all_on_failure: false
+  # cmd.exe passes the job's exit code through; PowerShell, pueue's default, turns any failure into 1.
+  shell_command: ["cmd", "/d", "/s", "/c", "{{ pueue_command_string }}"]

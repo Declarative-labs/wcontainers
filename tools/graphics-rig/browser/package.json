@@ -1,0 +1,10 @@
+{
+  "name": "wcontainers-graphics-rig-browser",
+  "private": true,
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "dependencies": {
+    "@puppeteer/browsers": "3.2.7",
+    "playwright-core": "1.65.1"
+  }
+}
