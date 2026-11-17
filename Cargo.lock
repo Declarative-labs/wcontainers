@@ -2628,6 +2628,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-direct3d-12"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "naga",
+ "slab",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-gpu",
+]
+
+[[package]]
+name = "wcontainers-directx-graphics-infrastructure"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "naga",
+ "wcontainers-gpu",
+]
+
+[[package]]
 name = "wcontainers-gpu"
 version = "0.1.0"
 dependencies = [
@@ -2683,7 +2703,10 @@ dependencies = [
 name = "wcontainers-graphics-test-forward"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "object 0.41.0",
+ "png",
+ "windows",
  "windows-sys",
 ]
 

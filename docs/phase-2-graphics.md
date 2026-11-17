@@ -759,7 +759,9 @@ answer with their API's own words (`DXGI_ERROR_DEVICE_REMOVED` with `GetDeviceRe
 
 ### 4.11 The capability list
 
-`Caps` is `Features` (bits), `Limits` (numbers) and `FormatCaps` (per format: sample, filter, render,
+`Caps` is `AdapterInfo` (the GPU's name, PCI vendor and device numbers where the host gives them,
+and whether it draws on the CPU, which DXGI's adapter description and the other APIs' device names
+answer from), `Features` (bits), `Limits` (numbers) and `FormatCaps` (per format: sample, filter, render,
 blend, resolve, storage read and write, storage atomics, vertex, depth-stencil, copy out, present, and
 the set of sample counts a texture of that format may have, so a native back end can say a format takes
 4 samples but not 8 where others take 8, as Direct3D's `CheckMultisampleQualityLevels` and Vulkan's

@@ -69,6 +69,7 @@ impl Recorder {
         };
         Recorder {
             caps: Some(Caps {
+                adapter: crate::caps::AdapterInfo::default(),
                 features: Features::empty(),
                 limits,
                 formats: FormatCaps {

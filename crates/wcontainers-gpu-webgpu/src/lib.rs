@@ -488,7 +488,14 @@ fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Caps {
         max_anisotropy: 16,
         capture_buffers: 0,
     };
+    let info = adapter.get_info();
     Caps {
+        adapter: wcontainers_gpu::AdapterInfo {
+            name: info.name,
+            vendor: info.vendor,
+            device: info.device,
+            software: info.device_type == wgpu::DeviceType::Cpu,
+        },
         features,
         limits,
         formats,
