@@ -31,12 +31,18 @@ fn random_sequences_record_and_replay_identically() {
     });
     let ran = Cell::new(0u64);
     let calls = Cell::new(0usize);
+    let resolved = Cell::new(0usize);
     let result = runner.run(&sequence::steps(40), |steps| {
         ran.set(ran.get() + 1);
         let mut r = Recorder::new();
         let read = sequence::run(&mut r, &steps).expect("a step was refused");
         assert!(r.violations.is_empty(), "violations: {:?}", r.violations);
         calls.set(calls.get() + r.calls.len());
+        // Passes on a four-sample texture, each resolved into the texture the step named.
+        let multisampled = r.calls.iter().filter(
+            |c| matches!(c, wcontainers_gpu_test::Call::CreateTexture(d, Ok(_)) if d.samples == 4),
+        );
+        resolved.set(resolved.get() + multisampled.count());
         let again = replay(&r.calls);
         assert!(
             again.violations.is_empty(),
@@ -58,10 +64,11 @@ fn random_sequences_record_and_replay_identically() {
         Ok(())
     });
     eprintln!(
-        "random sequences: seed {seed:#x}, {} asked, {} run, {} calls",
+        "random sequences: seed {seed:#x}, {} asked, {} run, {} calls, {} multisampled passes",
         cases,
         ran.get(),
-        calls.get()
+        calls.get(),
+        resolved.get()
     );
     result.unwrap();
 }
