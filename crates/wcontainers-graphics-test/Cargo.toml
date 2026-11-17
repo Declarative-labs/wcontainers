@@ -14,6 +14,8 @@ bytemuck = "1.25.2"
 half = "2.7.1"
 image = { version = "0.25.10", default-features = false, features = ["exr", "png"] }
 pollster = "1.0.1"
+rand = "0.9.2"
+rand_chacha = "0.9.0"
 serde_json = "1.0.154"
 wgpu = "30.0.2"
 

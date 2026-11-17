@@ -508,3 +508,33 @@ impl Gpu {
         self.viewport(width, height);
     }
 }
+
+/// A seeded generator for a scene's data: the same bytes on every run.
+pub fn seeded(seed: u64) -> rand_chacha::ChaCha8Rng {
+    rand::SeedableRng::seed_from_u64(seed)
+}
+
+/// Texels of a `width` by `height` RGBA8 image: a checker of squares `width / 4` texels wide in
+/// colour `index` of `count` and a dark tone, so mips, layers and faces tell apart.
+pub fn checker(width: u32, height: u32, index: u32, count: u32) -> Vec<u8> {
+    let [r, g, b] = crate::d3d11::scenes::hue(index, count);
+    let light = [r, g, b, 1.0].map(|c| (c * 255.0) as u8);
+    let dark = [r * 0.3, g * 0.3, b * 0.3, 1.0].map(|c| (c * 255.0) as u8);
+    let square = (width / 4).max(1);
+    let mut texels = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let on = (x / square + y / square).is_multiple_of(2);
+            texels.extend_from_slice(if on { &light } else { &dark });
+        }
+    }
+    texels
+}
+
+/// The bytes as lines of 32 hexadecimal bytes.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes
+        .chunks(32)
+        .map(|line| line.iter().map(|b| format!("{b:02x}")).collect::<String>() + "\n")
+        .collect()
+}

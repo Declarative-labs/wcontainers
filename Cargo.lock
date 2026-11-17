@@ -2636,6 +2636,8 @@ dependencies = [
  "half",
  "image",
  "pollster",
+ "rand 0.9.5",
+ "rand_chacha",
  "serde_json",
  "wgpu",
  "windows",

@@ -2,14 +2,22 @@
 
 mod basic;
 mod blend;
+mod constants;
+mod copies;
 mod depth;
 mod draws;
+mod dynamic;
 mod formats;
+mod mips;
 mod msaa;
+mod queries;
 mod raster;
+mod samplers;
 mod stencil;
 mod targets;
+mod textures;
 mod topology;
+mod views;
 
 use anyhow::Result;
 use windows::Win32::Graphics::Direct3D11::D3D11_INPUT_ELEMENT_DESC;
@@ -36,6 +44,14 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("msaa", msaa::run),
     ("targets", targets::run),
     ("formats", formats::run),
+    ("textures", textures::run),
+    ("samplers", samplers::run),
+    ("views", views::run),
+    ("constants", constants::run),
+    ("dynamic", dynamic::run),
+    ("copies", copies::run),
+    ("queries", queries::run),
+    ("mips", mips::run),
 ];
 
 pub fn find(name: &str) -> Option<Scene> {
