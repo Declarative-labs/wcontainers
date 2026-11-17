@@ -28,8 +28,6 @@ use windows::core::{Interface, s};
 
 const SIZE: u32 = 64;
 const TEXTURE_SIZE: u32 = 8;
-/// Bytes of the `Camera` constant buffer: a matrix and a tint.
-const CONSTANTS: u64 = 80;
 
 /// One picture: a vertex and a pixel shader of tests/own, drawn into a target of `format`.
 struct Case {
@@ -293,12 +291,55 @@ fn texture<B: Backend>(
     (t, v)
 }
 
-/// Draws a case through a back end with the converted shaders, binding by their reflection; returns
-/// the target's texels. `provoking` is the back end's own (it only decides `ps_integer`'s value).
-fn ours<B: Backend>(b: &mut B, case: &Case, provoking: ProvokingVertex) -> Vec<u8> {
+/// One draw through a back end: the shaders, the vertices and the target.
+struct Draw<'a> {
+    vs: Source<'a>,
+    ps: Source<'a>,
+    format: Format,
+    size: u32,
+    /// Vertices of `stride` bytes; an input of the vertex shader finds its offset and format by
+    /// semantic in `attributes`.
+    vertices: &'a [f32],
+    stride: u32,
+    attributes: &'a [(&'a str, u32, VertexFormat)],
+    count: u32,
+    constants: Vec<u8>,
+    clear: [u32; 4],
+}
+
+impl<'a> Draw<'a> {
+    /// One of the cases of tests/own; `code` holds its vertex and pixel shader's bytecode.
+    fn own(case: &Case, code: &'a [Vec<u8>; 2], grid: &'a [f32]) -> Draw<'a> {
+        const ATTRIBUTES: &[(&str, u32, VertexFormat)] = &[
+            ("POSITION", 0, VertexFormat::Float32x3),
+            ("TEXCOORD", 12, VertexFormat::Float32x2),
+        ];
+        Draw {
+            vs: Source::Dxbc(&code[0]),
+            ps: Source::Dxbc(&code[1]),
+            format: case.format,
+            size: SIZE,
+            vertices: if case.grid { grid } else { &[] },
+            stride: 20,
+            attributes: ATTRIBUTES,
+            count: if case.grid { 96 } else { 3 },
+            constants: constants(case.tint),
+            clear: if case.format == Format::Rgba32Uint {
+                [0; 4]
+            } else {
+                CLEAR.map(f32::to_bits)
+            },
+        }
+    }
+}
+
+/// Draws through a back end with the converted shaders, binding by their reflection (every slot is
+/// register 0: the constants, the texture of [`texels`] and a linear clamping sampler); returns the
+/// target's texels. `provoking` is the back end's own (it only decides `ps_integer`'s value).
+fn ours<B: Backend>(b: &mut B, draw: &Draw<'_>, provoking: ProvokingVertex) -> Vec<u8> {
     let key = VariantKey::default();
-    let vs = convert(Source::Dxbc(&bytecode(case.vs)), &key, None).unwrap();
-    let ps = convert(Source::Dxbc(&bytecode(case.ps)), &key, None).unwrap();
+    let vs = convert(draw.vs, &key, None).unwrap();
+    let ps = convert(draw.ps, &key, None).unwrap();
     let vertex = b.create_shader(&vs.modules[0]).unwrap();
     let fragment = b.create_shader(&ps.modules[0]).unwrap();
     let program = b
@@ -308,7 +349,7 @@ fn ours<B: Backend>(b: &mut B, case: &Case, provoking: ProvokingVertex) -> Vec<u
         })
         .unwrap();
 
-    let constants = buffer(b, &constants(case.tint), BufferUsage::UNIFORM);
+    let constants = buffer(b, &draw.constants, BufferUsage::UNIFORM);
     let (texture_object, view) = texture(
         b,
         Format::Rgba8Unorm,
@@ -358,7 +399,7 @@ fn ours<B: Backend>(b: &mut B, case: &Case, provoking: ProvokingVertex) -> Vec<u
                 SlotKind::Uniform => BindingResource::UniformBuffer(BufferRange {
                     buffer: &constants,
                     offset: 0,
-                    size: CONSTANTS,
+                    size: draw.constants.len() as u64,
                 }),
                 SlotKind::Texture => BindingResource::Texture(&view),
                 SlotKind::Sampler => BindingResource::Sampler(&sampler),
@@ -379,17 +420,17 @@ fn ours<B: Backend>(b: &mut B, case: &Case, provoking: ProvokingVertex) -> Vec<u
         streams: [None; 32],
         attributes: [None; 32],
     };
-    if case.grid {
+    if !draw.vertices.is_empty() {
         layout.streams[0] = Some(VertexStream {
-            stride: 20,
+            stride: draw.stride,
             step: StepMode::Vertex,
         });
         for input in vs.reflection.inputs.iter().filter(|i| i.system.is_none()) {
-            let (offset, format) = match input.semantic.as_str() {
-                "POSITION" => (0, VertexFormat::Float32x3),
-                "TEXCOORD" => (12, VertexFormat::Float32x2),
-                s => panic!("no vertex data for {s}"),
-            };
+            let &(_, offset, format) = draw
+                .attributes
+                .iter()
+                .find(|a| a.0 == input.semantic)
+                .unwrap_or_else(|| panic!("no vertex data for {}", input.semantic));
             layout.attributes[input.location as usize] = Some(VertexAttribute {
                 location: input.location,
                 stream: 0,
@@ -399,8 +440,8 @@ fn ours<B: Backend>(b: &mut B, case: &Case, provoking: ProvokingVertex) -> Vec<u
         }
     }
     let vertex_layout = b.create_vertex_layout(&layout).unwrap();
-    let vertices = grid();
-    let vertex_buffer = buffer(b, bytes_of(&vertices), BufferUsage::VERTEX);
+    let vertex_buffer = (!draw.vertices.is_empty())
+        .then(|| buffer(b, bytes_of(draw.vertices), BufferUsage::VERTEX));
     let blend = b
         .create_blend(&BlendDesc {
             targets: [RenderTargetBlend {
@@ -441,8 +482,8 @@ fn ours<B: Backend>(b: &mut B, case: &Case, provoking: ProvokingVertex) -> Vec<u
 
     let (target, target_view) = texture(
         b,
-        case.format,
-        SIZE,
+        draw.format,
+        draw.size,
         TextureUsage::RENDER | TextureUsage::COPY_SRC,
     );
     let mut pass = PassDesc {
@@ -455,18 +496,14 @@ fn ours<B: Backend>(b: &mut B, case: &Case, provoking: ProvokingVertex) -> Vec<u
         view: &target_view,
         depth_slice: 0,
         resolve: None,
-        load: wcontainers_gpu::LoadOp::Clear(if case.format == Format::Rgba32Uint {
-            [0; 4]
-        } else {
-            CLEAR.map(f32::to_bits)
-        }),
+        load: wcontainers_gpu::LoadOp::Clear(draw.clear),
         store: StoreOp::Store,
     });
     b.begin_pass(&pass);
-    let streams = [Some(VertexBinding {
-        buffer: &vertex_buffer,
-        offset: 0,
-    })];
+    let streams: Vec<_> = vertex_buffer
+        .iter()
+        .map(|buffer| Some(VertexBinding { buffer, offset: 0 }))
+        .collect();
     b.draw(&DrawCall {
         program: &program,
         blend: &blend,
@@ -474,15 +511,15 @@ fn ours<B: Backend>(b: &mut B, case: &Case, provoking: ProvokingVertex) -> Vec<u
         raster: &raster,
         vertex_layout: &vertex_layout,
         bindings: [sets[0].as_ref(), sets[1].as_ref(), None, None],
-        vertex_buffers: if case.grid { &streams } else { &[] },
+        vertex_buffers: &streams,
         index: None,
         topology: Topology::TriangleList,
         restart: false,
         viewports: &[Viewport {
             x: 0,
             y: 0,
-            width: (SIZE as f32).to_bits(),
-            height: (SIZE as f32).to_bits(),
+            width: (draw.size as f32).to_bits(),
+            height: (draw.size as f32).to_bits(),
             min_depth: 0,
             max_depth: 1.0f32.to_bits(),
         }],
@@ -492,13 +529,13 @@ fn ours<B: Backend>(b: &mut B, case: &Case, provoking: ProvokingVertex) -> Vec<u
         immediates: &[],
         range: DrawRange::Vertices {
             first: 0,
-            count: if case.grid { 96 } else { 3 },
+            count: draw.count,
             first_instance: 0,
             instances: 1,
         },
     });
     b.end_pass();
-    let mut out = vec![0; (SIZE * SIZE * case.format.block().2) as usize];
+    let mut out = vec![0; (draw.size * draw.size * draw.format.block().2) as usize];
     b.read_back_now(
         &ReadSource::Texture {
             region: TextureRegion {
@@ -509,8 +546,8 @@ fn ours<B: Backend>(b: &mut B, case: &Case, provoking: ProvokingVertex) -> Vec<u
                 stencil: false,
             },
             extent: Extent {
-                width: SIZE,
-                height: SIZE,
+                width: draw.size,
+                height: draw.size,
                 depth_or_layers: 1,
             },
         },
@@ -600,16 +637,19 @@ fn own_shaders_draw_as_direct3d_does() {
     let mut wgpu_backend = webgpu();
     let mut gl = webgl();
     let mut failures = Vec::new();
+    let grid = grid();
     for case in &CASES {
         let name = format!("{}+{}", case.vs, case.ps);
         let reference = direct3d(&gpu, case);
         keep(&format!("{name}.d3d11"), &reference, case.format);
+        let code = [bytecode(case.vs), bytecode(case.ps)];
+        let draw = Draw::own(case, &code, &grid);
         let mut runs = vec![(
             "webgpu",
-            ours(&mut wgpu_backend, case, ProvokingVertex::First),
+            ours(&mut wgpu_backend, &draw, ProvokingVertex::First),
         )];
         match case.not_on_webgl {
-            None => runs.push(("webgl", ours(&mut gl, case, ProvokingVertex::Last))),
+            None => runs.push(("webgl", ours(&mut gl, &draw, ProvokingVertex::Last))),
             Some(why) => eprintln!("{name} webgl: not drawn: {why}"),
         }
         for (back_end, texels) in runs {
@@ -625,4 +665,68 @@ fn own_shaders_draw_as_direct3d_does() {
         }
     }
     assert!(failures.is_empty(), "differ from Direct3D 11: {failures:?}");
+}
+
+/// The rig's triangle scene drawn from its DXIL (dxc) and its DXBC (fxc) through both back ends, each
+/// against the picture real Direct3D 12 drew, with the rig's allowance (one step, as WARP).
+#[test]
+fn rig_triangle_from_dxil_and_dxbc_draws_as_direct3d_12_does() {
+    use wcontainers_graphics_test::scene;
+    let rig = Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test");
+    let read = |name: &str| std::fs::read(rig.join("shaders").join(name)).unwrap();
+    let reference = wcontainers_graphics_test::load(&rig.join("references/d3d12/triangle.png"))
+        .unwrap()
+        .to_rgba8()
+        .into_raw();
+    let dxil = [read("dxil/triangle.vs.dxil"), read("dxil/triangle.ps.dxil")];
+    let dxbc = [read("dxbc/triangle.vs.dxbc"), read("dxbc/triangle.ps.dxbc")];
+    let vertices: Vec<f32> = scene::TRIANGLE.iter().flatten().copied().collect();
+    assert_eq!(scene::WIDTH, scene::HEIGHT);
+    let draw = |vs, ps| Draw {
+        vs,
+        ps,
+        format: Format::Rgba8Unorm,
+        size: scene::WIDTH,
+        vertices: &vertices,
+        stride: 20,
+        attributes: &[
+            ("POSITION", 0, VertexFormat::Float32x2),
+            ("COLOR", 8, VertexFormat::Float32x3),
+        ],
+        count: 3,
+        constants: vec![0; 16],
+        clear: scene::CLEAR.map(f32::to_bits),
+    };
+    let mut wgpu_backend = webgpu();
+    let mut gl = webgl();
+    let mut failures = Vec::new();
+    for (route, code) in [("dxil", &dxil), ("dxbc", &dxbc)] {
+        let (vs, ps) = match route {
+            "dxil" => (Source::Dxil(&code[0]), Source::Dxil(&code[1])),
+            _ => (Source::Dxbc(&code[0]), Source::Dxbc(&code[1])),
+        };
+        let d = draw(vs, ps);
+        for (back_end, texels) in [
+            (
+                "webgpu",
+                ours(&mut wgpu_backend, &d, ProvokingVertex::First),
+            ),
+            ("webgl", ours(&mut gl, &d, ProvokingVertex::Last)),
+        ] {
+            keep(&format!("triangle.{route}.{back_end}"), &texels, d.format);
+            let beyond = reference
+                .chunks(4)
+                .zip(texels.chunks(4))
+                .filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > 1))
+                .count();
+            let (count, largest) = differ(&reference, &texels, d.format);
+            eprintln!(
+                "triangle {route} {back_end}: {beyond} texels beyond 1, {count} differ, largest difference {largest}"
+            );
+            if beyond > 0 {
+                failures.push(format!("{route} {back_end}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "differ from Direct3D 12: {failures:?}");
 }
