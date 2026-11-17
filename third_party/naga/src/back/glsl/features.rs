@@ -63,6 +63,8 @@ bitflags::bitflags! {
         ///
         /// Without draw parameters, a uniform adds the base vertex
         const VERTEX_INDEX = 1 << 28;
+        /// Fine derivatives (`dFdxFine` and the like), which GLSL ES lacks
+        const DERIVATIVE_CONTROL = 1 << 29;
     }
 }
 
@@ -143,6 +145,7 @@ impl FeaturesManager {
         check_feature!(TEXTURE_LEVELS, 130);
         check_feature!(IMAGE_SIZE, 430, 310);
         check_feature!(TEXTURE_SHADOW_LOD, 200, 300);
+        check_feature!(DERIVATIVE_CONTROL, 450);
 
         // Return an error if there are missing features
         if missing.is_empty() {
@@ -594,6 +597,11 @@ impl<W> Writer<'_, W> {
                 Expression::SubgroupBallotResult |
                 Expression::SubgroupOperationResult { .. } => {
                     features.request(Features::SUBGROUP_OPERATIONS)
+                }
+                // Coarse and unspecified derivatives may be written as the plain ones, which are
+                // either; fine ones may not.
+                Expression::Derivative { ctrl: crate::DerivativeControl::Fine, .. } => {
+                    features.request(Features::DERIVATIVE_CONTROL)
                 }
                 _ => {}
             }

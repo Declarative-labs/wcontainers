@@ -34,7 +34,8 @@ struct Case {
     vs: &'static str,
     ps: &'static str,
     format: Format,
-    /// The constant buffer's tint (`ps_loop` takes its trip count from `w`).
+    /// The constant buffer's tint (`ps_loop` takes its trip count from `w`, `ps_ftoi` its special
+    /// values).
     tint: [f32; 4],
     /// Drawn from the vertex grid; otherwise three vertices without a buffer.
     grid: bool,
@@ -46,7 +47,7 @@ struct Case {
     dxil: bool,
 }
 
-const CASES: [Case; 16] = [
+const CASES: [Case; 21] = [
     Case {
         vs: "vs_transform",
         ps: "ps_textured",
@@ -199,6 +200,56 @@ const CASES: [Case; 16] = [
         vs: "vs_transform",
         ps: "ps_clip",
         format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_carry",
+        ps: "ps_textured",
+        format: Format::Rgba8Unorm,
+        tint: [1.0, 0.75, 0.5, 1.5],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_ftoi",
+        format: Format::Rgba32Uint,
+        tint: [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 2_147_483_648.0],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_table",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: false,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_deriv",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [Some("GLSL ES 3.00 has no fine derivatives"); 2],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_coarse",
+        format: Format::Rgba32Uint,
         tint: [1.0; 4],
         grid: true,
         not_on_webgl: [None, None],

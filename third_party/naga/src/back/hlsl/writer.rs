@@ -9,19 +9,19 @@ use core::{
 };
 
 use super::{
-    BackendResult, Error, FragmentEntryPoint, Options, PipelineOptions, ShaderModel, help,
+    help,
     help::{
         WrappedArrayLength, WrappedConstructor, WrappedImageQuery, WrappedStructMatrixAccess,
         WrappedZeroValue,
     },
     storage::StoreValue,
+    BackendResult, Error, FragmentEntryPoint, Options, PipelineOptions, ShaderModel,
 };
 use crate::{
-    Handle, Module, RayQueryFunction, Scalar, ScalarKind, ShaderStage, TypeInner,
-    back::{self, Baked, get_entry_points},
+    back::{self, get_entry_points, Baked},
     common,
-    proc::{self, ExternalTextureNameKey, NameKey, index},
-    valid,
+    proc::{self, index, ExternalTextureNameKey, NameKey},
+    valid, Handle, Module, RayQueryFunction, Scalar, ScalarKind, ShaderStage, TypeInner,
 };
 
 const LOCATION_SEMANTIC: &str = "LOC";
@@ -167,6 +167,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             continue_ctx: back::continue_forward::ContinueCtx::default(),
             temp_access_chain: Vec::new(),
             need_bake_expressions: Default::default(),
+            continuing_values: Default::default(),
             function_task_payload_var: Default::default(),
         }
     }
@@ -2216,6 +2217,12 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         match *stmt {
             Statement::Emit(ref range) => {
                 for handle in range.clone() {
+                    // A value a loop's `continuing` reads: written here, then copied to its
+                    // variable.
+                    let continuing_name = self.continuing_values.remove(&handle);
+                    if continuing_name.is_some() {
+                        self.named_expressions.shift_remove(&handle);
+                    }
                     let ptr_class = func_ctx.resolve_type(handle, &module.types).pointer_space();
                     let expr_name = if ptr_class.is_some() {
                         // HLSL can't save a pointer-valued expression in a variable,
@@ -2237,6 +2244,12 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                     if let Some(name) = expr_name {
                         write!(self.out, "{level}")?;
                         self.write_named_expr(module, handle, name, handle, func_ctx)?;
+                    }
+                    if let Some(name) = continuing_name {
+                        write!(self.out, "{level}{name} = ")?;
+                        self.write_expr(module, handle, func_ctx)?;
+                        writeln!(self.out, ";")?;
+                        self.named_expressions.entry(handle).or_insert(name);
                     }
                 }
             }
@@ -2609,6 +2622,34 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 if let Some(ref gate_name) = gate_name {
                     writeln!(self.out, "{level}bool {gate_name} = true;")?;
                 }
+                // `continuing` is written ahead of the body, so the body's values it reads live
+                // in variables declared before the loop.
+                let mut continuing_names = Vec::new();
+                if gate_name.is_some() {
+                    let values = func_ctx.values_for_continuing(
+                        module,
+                        body,
+                        continuing,
+                        break_if,
+                        |handle| self.named_expressions.contains_key(&handle),
+                    );
+                    for handle in values {
+                        let name = self.namer.call("loop_value");
+                        write!(self.out, "{level}")?;
+                        self.write_value_declaration(module, handle, &name, func_ctx)?;
+                        write!(self.out, " = (")?;
+                        self.write_value_type_of(module, handle, func_ctx)?;
+                        if let TypeInner::Array { base, size, .. } =
+                            *func_ctx.resolve_type(handle, &module.types)
+                        {
+                            self.write_array_size(module, base, size)?;
+                        }
+                        writeln!(self.out, ")0;")?;
+                        self.named_expressions.insert(handle, name.clone());
+                        self.continuing_values.insert(handle, name.clone());
+                        continuing_names.push((handle, name));
+                    }
+                }
 
                 self.continue_ctx.enter_loop();
                 writeln!(self.out, "{level}while(true) {{")?;
@@ -2635,6 +2676,19 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
 
                 for sta in body.iter() {
                     self.write_stmt(module, sta, func_ctx, l2)?;
+                    // A statement's result `continuing` reads.
+                    for &(handle, ref name) in continuing_names.iter() {
+                        if self.continuing_values.contains_key(&handle)
+                            && self.named_expressions.get(&handle) != Some(name)
+                        {
+                            let value = &self.named_expressions[&handle];
+                            writeln!(self.out, "{l2}{name} = {value};")?;
+                            self.continuing_values.remove(&handle);
+                        }
+                    }
+                }
+                for &(handle, _) in continuing_names.iter() {
+                    self.continuing_values.remove(&handle);
                 }
 
                 writeln!(self.out, "{level}}}")?;
@@ -4819,6 +4873,22 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 return Ok(());
             }
         }
+        self.write_value_declaration(module, expr, &name, func_ctx)?;
+        write!(self.out, " = ")?;
+        self.write_expr(module, handle, func_ctx)?;
+        writeln!(self.out, ";")?;
+        self.named_expressions.insert(expr, name);
+
+        Ok(())
+    }
+
+    /// Writes the type of `expr`'s value, without array sizes.
+    fn write_value_type_of(
+        &mut self,
+        module: &Module,
+        expr: Handle<crate::Expression>,
+        func_ctx: &back::FunctionCtx,
+    ) -> BackendResult {
         match func_ctx.info[expr].ty {
             proc::TypeResolution::Handle(ty_handle) => match module.types[ty_handle].inner {
                 TypeInner::Struct { .. } => {
@@ -4833,19 +4903,23 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
                 self.write_value_type(module, inner)?;
             }
         }
+        Ok(())
+    }
 
-        let resolved = func_ctx.resolve_type(expr, &module.types);
-
+    /// Writes the type and name of a variable that holds `expr`'s value.
+    fn write_value_declaration(
+        &mut self,
+        module: &Module,
+        expr: Handle<crate::Expression>,
+        name: &str,
+        func_ctx: &back::FunctionCtx,
+    ) -> BackendResult {
+        self.write_value_type_of(module, expr, func_ctx)?;
         write!(self.out, " {name}")?;
         // If rhs is a array type, we should write array size
-        if let TypeInner::Array { base, size, .. } = *resolved {
+        if let TypeInner::Array { base, size, .. } = *func_ctx.resolve_type(expr, &module.types) {
             self.write_array_size(module, base, size)?;
         }
-        write!(self.out, " = ")?;
-        self.write_expr(module, handle, func_ctx)?;
-        writeln!(self.out, ";")?;
-        self.named_expressions.insert(expr, name);
-
         Ok(())
     }
 

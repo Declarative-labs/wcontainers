@@ -17,7 +17,7 @@ blake3 = "1"
 cc = { version = "1", features = ["parallel"] }
 
 [dev-dependencies]
-naga = { workspace = true, features = ["wgsl-in", "glsl-out", "wgsl-out"] }
+naga = { workspace = true, features = ["wgsl-in", "glsl-out", "hlsl-out", "wgsl-out"] }
 
 # tests/draw.rs: real Direct3D 11 beside the WebGPU and WebGL 2 back ends.
 [target.'cfg(windows)'.dev-dependencies]
