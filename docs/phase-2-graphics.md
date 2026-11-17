@@ -178,10 +178,12 @@ Recording:
   in larger granules (`Limits::buffer_copy_alignment`, 4 on WebGPU for `writeBuffer`,
   `copyBufferToBuffer` and `clearBuffer`) does the aligned middle natively and merges the edge words with
   a small program (`UnalignedBufferEdge`). `copy_buffer` may copy between non-overlapping ranges of one
-  buffer, as OpenGL's `glCopyBufferSubData` and Vulkan's `vkCmdCopyBuffer` allow (Direct3D never asks:
-  its copies need different subresources); WebGPU forbids a buffer as both source and destination, so
-  its back end copies through a temporary buffer (`CopyWithinBuffer`). WebGL 2 copies within one buffer
-  natively.
+  buffer, as OpenGL's `glCopyBufferSubData`, Vulkan's `vkCmdCopyBuffer` and Direct3D 12's
+  `CopyBufferRegion` allow (Direct3D 12's buffers are untyped ranges that engines sub-allocate, and its
+  documentation sets no rule against one buffer; Direct3D 11's `CopySubresourceRegion` and Direct3D 12's
+  `CopyTextureRegion` need different subresources); WebGPU forbids a buffer as both source and
+  destination, so its back end copies through a temporary buffer (`CopyWithinBuffer`). WebGL 2 copies
+  within one buffer natively.
 - `submit() -> Fence`, `fence_done(&fence)`, `wait_fence(&fence)`.
 
 Bytes out:
@@ -308,7 +310,10 @@ would add a fast path then, not before.
 A draw names (`DrawCall`): a program, a blend block, a depth-stencil block, a raster block, a vertex
 layout block, up to four binding sets, the vertex streams and index buffer (buffer plus offset, plain data),
 the topology, whether strips restart, viewports and scissors, blend constant, stencil reference, small
-immediate constants, and the range (direct, indexed, or indirect from a buffer).
+immediate constants, and the range (direct, indexed, or indirect from a buffer). In every back end the
+program's `vertex_index` and `instance_index` include the range's first or base vertex and first
+instance, as WebGPU and Vulkan count them; APIs that count otherwise are served by a program variant
+(4.12, vertex and instance numbers).
 
 The blocks:
 - **Blend** (`BlendDesc`): per target blend and write mask, whether all targets share target 0,
@@ -450,8 +455,11 @@ Nothing is mapped across the boundary. Every API's mapping rule becomes a write 
 - **WriteMode::Discard**: the whole old contents go; earlier commands still see them. Direct3D 11
   `Map(WRITE_DISCARD)`, Direct3D 9 `D3DLOCK_DISCARD`, OpenGL `GL_MAP_INVALIDATE_BUFFER_BIT` and
   `glBufferData` with the same size. WebGPU: the back end renames the buffer to a spare from a pool (the
-  same idea DXVK uses) and writes the spare; no pass is split. WebGL 2: `bufferData` with the new bytes
-  (orphaning), which drivers rename.
+  same idea DXVK uses) and writes the spare; no pass is split. WebGL 2: `bufferData(size, null)` at the
+  buffer's own size (orphaning, which drivers rename), then `bufferSubData` of the part. A `Discard` may
+  write only part of the buffer, as the ring default does when it wraps (its first part is `Discard`,
+  later parts `NoOverwrite` at higher offsets), so `bufferData` with only the part's bytes, which would
+  shrink the GL buffer and make those later writes fail, is never used.
 - **WriteMode::NoOverwrite**: the caller promises no unfinished command reads the bytes. Direct3D 11
   `Map(WRITE_NO_OVERWRITE)`, OpenGL `GL_MAP_UNSYNCHRONIZED_BIT`. Both back ends write at once.
 
@@ -812,19 +820,30 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   corpus at G6 measures how many real shaders this hits.
 - **Texture sizes.** Not emulated: a front reports the feature level whose sizes the back end meets
   (section 9), and refuses larger textures as its API does.
-- **Atomics on storage textures.** Direct3D 11_0 requires every atomic operation on typed storage views
-  of `R32_UINT` and `R32_SINT`, and exchange on `R32_FLOAT` (tiled light culling and depth min-max
-  passes use them). No browser format has `STORAGE_ATOMIC` (4.11). The front gives each texture used
-  through such a view a buffer holding the view's texels in the layout `copy_texture_to_buffer` writes
-  (rows padded to the copy alignment), and binds the variant that reads, writes and runs atomics on that
-  storage slot through the buffer at the same binding (`VariantKey::atomics_through_buffer`; the row
-  pitch and rows per layer in `HelperValue::TexelLayout`; float exchange as u32 exchange of the bits).
-  The front tracks which of texture and buffer is newer: before a draw or dispatch with the variant, a
-  newer texture is copied into the buffer; before any other use of the texture (sampling, target, copy,
-  read back, a storage view without atomics), a newer buffer is copied back
-  (`AtomicsThroughBuffer`). Exact: the same 32-bit values, and storage buffer atomics are atomic. Typed
-  storage buffers (`RWBuffer<uint>`) are storage buffers already (`TexelBufferRoute::Storage`), so their
-  atomics are native.
+- **Storage textures through a buffer: atomics, and formats without storage.** Direct3D 11_0 requires
+  every atomic operation on typed storage views of `R32_UINT` and `R32_SINT`, and exchange on
+  `R32_FLOAT` (tiled light culling and depth min-max passes use them); no browser format has
+  `STORAGE_ATOMIC` (4.11). Its format tables also require typed storage stores (UAV typed store) on
+  `R10G10B10A2_*`, `R11G11B10_FLOAT`, `R16G16_*`, `R8G8_*`, `R16_*`, `R8_*` and `A8_UNORM` (compute
+  post-processing writes `R11G11B10` and `R16G16` this way); WebGPU stores into these only with
+  `texture-formats-tier1` (its spec's feature list: `r8*`, `rg8*`, `r16*`, `rg16*`, `rgb10a2*`,
+  `rg11b10ufloat`), which 6.9% of adapters lack. `A8_UNORM` is stored as `rgba8unorm`
+  (`FormatConverted`), which core WebGPU stores into, the program writing (0, 0, 0, a). One route
+  serves both: the front gives each texture used through such a view a buffer holding the view's texels
+  in the layout `copy_texture_to_buffer` writes (rows padded to the copy alignment), and binds the
+  variant that reads, writes and runs atomics on that storage slot through the buffer at the same
+  binding (`VariantKey::texels_through_buffer`, the view's format from `VariantKey::storage_formats`;
+  the row pitch and rows per layer in `HelperValue::TexelLayout`). The program encodes and decodes the
+  format as Direct3D's conversion rules say; float exchange is u32 exchange of the bits; a texel
+  narrower than 32 bits is written by a compare-exchange loop on its 32-bit word, so neighbouring texels
+  written at the same time by other invocations are kept and one of two racing writes to the same texel
+  wins, as on hardware. The front tracks which of texture and buffer is newer: before a draw or dispatch
+  with the variant, a newer texture is copied into the buffer; before any other use of the texture
+  (sampling, target, copy, read back, a storage view without the variant), a newer buffer is copied
+  back (`AtomicsThroughBuffer` for atomics, `StorageFormatThroughBuffer` for formats). Exact: the same
+  bits, and storage buffer atomics are atomic. Typed storage buffers (`RWBuffer<uint>`) are storage
+  buffers already (`TexelBufferRoute::Storage`), so their atomics and formats are native. WebGL 2 has no
+  storage views (10_0).
 - **16-bit normalised formats and rendered signed normalised ones.** Required from 10_0 (sampled,
   loaded, rendered and blended `R16_UNORM` to `R16G16B16A16_SNORM`, rendered and blended `R8_SNORM` to
   `R8G8B8A8_SNORM`). Native where the back end has them (4.11). Otherwise the front stores the texture
@@ -934,9 +953,15 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
     come), and every predicate on WebGL 2: the front reads the predicate value on the device thread
     (`read_back_now` of the buffer, or the query's answer), which waits, and skips or keeps the
     operations (`PredicationWait`). Exact, slow.
-- Depth and stencil read back: WebGPU cannot copy `depth24plus` out. The back end draws the depth into a
-  color texture and reads that (`DepthReadByDraw`); exact for 16 and 32-bit depth, and for 24-bit depth
-  as stored.
+- Depth and stencil read back (a staging copy of a depth texture, then `Map(READ)`; OpenGL's
+  `glReadPixels` of depth): WebGPU cannot copy `depth24plus` out, and WebGL 2's `readPixels` takes only
+  colour formats (GLES 3.0.6 4.3.2). Both back ends draw the depth, sampled as a texture, into an
+  `r32float` colour texture and read that (`DepthReadByDraw`; WebGL 2 renders `r32float` with
+  EXT_color_buffer_float, a condition of its 10_0); exact for 16 and 32-bit depth, and for 24-bit depth
+  as stored. Stencil: WebGPU copies the stencil aspect out natively; WebGL 2 samples it with
+  WEBGL_stencil_texturing and draws it into an `r8ui` texture read with `RGBA_INTEGER`, or without the
+  extension fills that texture by `StencilCopiedByDraw` first. A depth-stencil texture is a texture on
+  WebGL 2 whenever it is single-sampled, which every staging and read-back source is.
 - Different stencil reference or masks per face (Vulkan, OpenGL, newer Direct3D 12): WebGPU has one of
   each, and WebGL 2 forbids drawing with them different (4.11); the front draws twice, culling one face
   each time (`StencilFacesSplit`). Exact.
@@ -1056,6 +1081,87 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   bytes alone, several elements per buffer in separate mode) is captured whole into a scratch buffer and
   repacked by a second capture that also reads the destination's old bytes (`StreamOutRepacked`).
   Exact.
+- **Vertex and instance numbers.** The common form's `vertex_index` and `instance_index` count as
+  WebGPU's and Vulkan's do: they include the draw's first vertex (draws without indices) or base vertex
+  (indexed draws) and its first instance (`DrawRange`'s doc, 4.4). Every back end gives exactly that:
+  WebGPU natively; WebGL 2 natively for `drawArrays`' `first`, and for the bases it applies by binding
+  streams at an offset (`BaseVertexRebind`) through two hidden uniforms its GLSL adds back: naga's GLSL
+  writer already writes `instance_index` as `gl_InstanceID + naga_vs_first_instance` (a uniform naga
+  declares, which the back end sets to each draw's first instance), and our naga fork gives
+  `vertex_index` the same treatment with `naga_vs_base_vertex`, set to each indexed draw's base vertex
+  (G6 makes the writer change and sends it upstream; G3 sets both uniforms). WGSL has no base vertex or
+  base instance built-in (naga's WGSL writer refuses them), so the common form never holds them: the
+  shaders crate turns them into a read of the draw's bases, as it does for the API values that leave
+  the bases out. Direct3D's `SV_VertexID` is the vertex's place (draws without indices) or the index
+  value (indexed draws), and `SV_InstanceID` starts at zero (functional specification 8.16 and 8.18,
+  `downloads/d3d11spec/` in scratch; dxbc-spirv's own SPIR-V subtracts `BaseVertex` and `BaseInstance`
+  for the same reason). OpenGL's `gl_InstanceID` leaves out the base instance too, and OpenGL 4.6's and
+  Vulkan's `gl_BaseVertex`, `gl_BaseInstance` and `gl_DrawID` name the bases. The reflection lists
+  these as `SystemValue::VertexId`, `InstanceId`, `BaseVertex`, `BaseInstance` and `DrawIndex`. A
+  program reading any of them that needs a base gets the variant `VariantKey::draw_base`:
+  - `DrawBaseSource::Helpers` for direct draws, on every back end: the program reads base vertex, first
+    instance and draw number from `HelperValue::DrawBase`, which the front writes before each draw whose
+    bases differ from the last (`DrawBaseInHelpers`, counted per helper write). The values are those of
+    the API's draw, also when a route splits it (`VertexFetchZeroed`, `TargetsSplit`) or turns it into an
+    indexed draw (`draw_fan_or_loop`, which keeps `vertex_index`), and a draw the front itself made
+    indirect (`PredicationIndirect`) keeps this source, since its bases are known.
+  - `DrawBaseSource::Arguments` for indirect draws, whose arguments live on the GPU (WebGPU, with
+    `INDIRECT`): the front binds the argument buffer read-only at `DRAW_ARGUMENTS_BINDING` (11) in
+    `HELPER_SET`, beside its indirect use (both are read-only uses, which WebGPU allows in one pass), and
+    the program reads the base vertex and first instance there, at the word offset and indexed-or-not
+    that `HelperValue::DrawArguments` gives (`DrawBaseFromArguments`). The front makes argument buffers
+    with `BufferUsage::STORAGE` as well as `INDIRECT` (Direct3D 11's `DRAWINDIRECT_ARGS` buffers; every
+    Direct3D 12 and Vulkan buffer). The binding counts against the stage's storage buffers, so a program
+    then beyond the limit is packed (`StoragePacked`). WebGL 2 has no indirect draws (`IndirectReadBack`
+    makes them direct), so it only meets the first source.
+  Exact. A program that reads no number, the common case, has `DrawBaseSource::None` and costs nothing.
+- **Video and packed-pair formats.** Microsoft's 10_0, 10_1 and 11_0 tables require `NV12`, `YUY2`,
+  `420_OPAQUE`, `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM`. No browser API has them; the interface has the
+  two packed-pair formats and the front builds the others:
+  - `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` (`Format::Rgbg8Unorm`, `Grgb8Unorm`; two pixels in four
+    bytes sharing red and blue): sampled, loaded, mipmapped and CPU-locked, never targets. Back ends
+    store them decoded as `rgba8unorm` on every write, with the bytes kept on the host for copies and
+    read backs, as for BC textures (`BlockDecoded`, `HostCopyReadBack`; block 2 by 1). Exact: the
+    decode is a byte copy per pixel, and filtering of the decoded texels is what Direct3D defines.
+  - `YUY2` (two pixels in four bytes, Y0 U Y1 V): Direct3D views it only as `R8G8B8A8_UNORM` or `_UINT`
+    of half the width, so the front makes an `rgba8unorm` texture of half the width, and its views,
+    copies, maps and storage stores are those of that format. Exact, with no slow path.
+  - `NV12` (an 8-bit luma plane, then a half-size plane of interleaved chroma pairs): Direct3D views it
+    only through its planes, as `R8_*` (plane 0) and `R8G8_*` (plane 1), for sampling, targets and
+    storage stores. The front makes two textures, `r8unorm` and a half-size `rg8unorm`, and each view
+    names one; `Map`, `UpdateSubresource` and copies of the whole resource split and join the planes in
+    the layout Direct3D gives (plane 1's rows after plane 0's, at the same row pitch). Storage stores
+    into the planes as for the formats above. Exact, with no slow path.
+  - `420_OPAQUE`: usable only by the video decoder and video processor; the front stores it as `NV12`.
+  - The video abilities those tables also require (Video Decoder Support, Video Processor Input and
+    Output) have no route: the Direct3D 11 front does not offer `ID3D11VideoDevice` (`QueryInterface`
+    fails with `E_NOINTERFACE`, as with a driver without video acceleration) and `CheckFormatSupport`
+    reports no decoder or video processor bits. This is a shortfall against the tables, listed in
+    section 9 beside multisample counts; games play video through Media Foundation, which falls back to
+    software decoding and uploads frames as ordinary textures.
+- **Copies between multisampled textures on WebGL 2.** Direct3D 11 copies a multisampled subresource
+  whole into another of the same sample count (`CopyResource`, `CopySubresourceRegion` without a box).
+  WebGL 2 keeps multisampled textures as renderbuffers, which no program reads, `blitFramebuffer` cannot
+  write into, and `readPixels` cannot read, so no exact route exists. The back end resolves the source
+  into a pooled single-sampled texture with `blitFramebuffer`, then draws it into every sample of the
+  destination (colour as sampled; depth by `gl_FragDepth` from the resolved depth, stencil by eight
+  stencil-reference draws as in `StencilCopiedByDraw`) (`MultisampleCopyResolved`): a listed loss, the
+  same as 4.7's for fitted attachments. A resolve or present of the copy right away is exact (the
+  resolved value of equal samples is that value); drawing more into the copy where a primitive covers
+  part of a pixel can differ there, and at 10_0 nothing else can see samples (multisample load is
+  reported absent). WebGPU copies multisampled textures natively (`copyTextureToTexture` with equal
+  sample counts).
+- **Alpha-antialiased lines** (Direct3D 10 and 11's `AntialiasedLineEnable` with `MultisampleEnable`
+  off; functional specification 3.4.4): the coverage of a one-pixel-wide rectangle around each line is
+  multiplied into the pixel shader's `o0.a`, with an implementation's own filter kernel and "reasonable"
+  tolerances. Neither browser API draws such lines, and no fixed state expresses it, so the raster block
+  has no field for it. The front hands such line draws to the stage helper (section 7), which runs the
+  vertex stage as for geometry shaders and draws each line as a rectangle widened by the filter kernel
+  (the reference's 3 by 3 pixels), passing each fragment's distances to the line's axis and ends; the
+  pixel program variant `VariantFlags::LINE_COVERAGE` multiplies target 0's alpha by the coverage
+  computed from them (`AntialiasedLinesAsQuads`). Exact within the specification's tolerance, compared
+  with the reference at G4. Direct3D 9 and OpenGL take the same
+  route when they come (`GL_LINE_SMOOTH`, Direct3D 9's `D3DRS_ANTIALIASEDLINEENABLE`).
 
 ### 4.13 Compile-time resolution
 
@@ -1136,6 +1242,18 @@ stage helper (section 7), which issues `dispatch` and `draw` (WebGPU) or `captur
 (WebGL 2). Deferred contexts record into a front-side list replayed on the immediate context at
 `ExecuteCommandList`.
 
+Vertex shaders reading `SV_VertexID` or `SV_InstanceID` with a non-zero `StartVertexLocation`,
+`BaseVertexLocation` or `StartInstanceLocation`: `DrawBaseInHelpers`, or for
+`Draw*InstancedIndirect` on WebGPU `DrawBaseFromArguments` (4.12). Typed storage views of
+`R11G11B10_FLOAT`, `R16G16_*` and the other formats WebGPU stores into only with
+`texture-formats-tier1`, on adapters without it: `StorageFormatThroughBuffer` (4.12). `NV12`, `YUY2`
+and `420_OPAQUE` textures are built from ordinary ones, `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` are
+`BlockDecoded`; `ID3D11VideoDevice` is not offered (4.12). `CopyResource` between multisampled
+textures: native on WebGPU, `MultisampleCopyResolved` on WebGL 2 (a listed loss, 4.12). A rasterizer
+state with `AntialiasedLineEnable` and `MultisampleEnable` off, on line draws:
+`AntialiasedLinesAsQuads` (4.12). A staging copy of a depth texture read back: `DepthReadByDraw` on both
+back ends (4.12).
+
 ### 5.2 Direct3D 12 (explicit)
 
 `CreateGraphicsPipelineState` creates the blocks, the program and calls `prepare` with the PSO's target
@@ -1166,9 +1284,36 @@ the commands past the count (`IndirectCountExpanded`, no read back). A signature
 vertex or index buffers, root constants or root descriptors per command has no GPU-side form in either
 API: the argument and count buffers are read back to the device thread, which waits, decodes each
 command (root descriptors through the address map) and records ordinary draws (`IndirectReadBack`).
-Exact, slow. Placed resources each get their own storage:
-aliased resources' contents are undefined in Direct3D 12 after aliasing, so separate storage is exact,
-only larger. Bundles replay their recorded calls.
+Exact, slow. Bundles replay their recorded calls.
+
+Placed resources and aliasing. Microsoft's "Memory Aliasing and Data Inheritance" (fetched in scratch,
+`check6/spec/aliasing.md`) defines when an aliased resource keeps the bytes another one wrote: buffers
+always inherit from overlapping buffers, in any state; two textures with identical descriptions
+(including the optimised clear value and the creation method) at the same offset of a heap inherit;
+buffers and textures inherit from each other only through standard-swizzle or row-major layouts. Every
+other overlap leaves the new resource's contents undefined until a full write, which a copy or clear of
+the whole subresource may be. The front gives each placed resource its own storage, as WebGPU must
+(one buffer used for a placed vertex buffer and, through another placed buffer, as a writable storage
+view in the same pass would break WebGPU's usage rules), and makes the defined cases exact by copying:
+when a placed resource is created, the front lists the live placed resources it inherits from (the
+overlapping buffers; for a texture, the identically described textures at the same offset). Each
+placed resource carries a write stamp the front bumps whenever it records a GPU write into it (storage
+view, target, copy or clear destination, resolve, query resolve, stream output). Before the front
+records any use of a resource with such a list, it finds the listed resources written after this one
+was last written or brought up to date, and copies from each of them, oldest write first, the bytes
+they share (`AliasCopied`; for buffers `copy_buffer` of the overlap, for textures `copy_texture` of
+each subresource); the resource is then up to date. Resources without
+overlaps, the common case, cost nothing; `CopyBufferRegion` into one alias to initialise another
+(which Microsoft's page for it mentions) works the same way. The check is the front's own and does not
+depend on the program's aliasing barriers, so programs that omit them still get the bytes hardware
+would give. Upload and readback heaps are guest memory (4.6), so their placed buffers share bytes
+directly. Reported: `StandardSwizzle64KBSupported` FALSE (so no texture-buffer inheritance arises),
+resource heap tier 2. `CopyBufferRegion` within one buffer: `CopyWithinBuffer` on WebGPU.
+
+Vertex shaders reading `SV_VertexID` or `SV_InstanceID`: as Direct3D 11's (5.1); `ExecuteIndirect`'s
+draws and the count-buffer route read their bases from the argument buffer (`DrawBaseFromArguments`).
+Typed storage views of formats WebGPU cannot store into without `texture-formats-tier1`:
+`StorageFormatThroughBuffer`.
 
 Queries in Direct3D 12 live in query heaps and leave them only through `ResolveQueryData` into a buffer,
 which the program then copies into a readback heap or hands to `SetPredication`. The front makes each
@@ -1213,6 +1358,9 @@ reports OpenGL 3.1 there (3.1 needs texture buffers: `TexelBufferAsTexture`). Wi
 1 to 1, which core profile allows. Border colors: `BorderInShader` on both. `GL_TEXTURE_LOD_BIAS`:
 `LodBiasInShader`. `glDepthRange` with near beyond far: `ViewportDepthFlip`. Cube map and array targets
 set `TextureDesc::cube` and the layers as the target says; 1D textures are one texel high.
+`gl_VertexID` and `gl_InstanceID` are the common form's numbers as they are: OpenGL's `gl_VertexID`
+includes `first` and the base vertex as WebGPU's does, and 3.3 has no base instance. `GL_LINE_SMOOTH`
+(still core): `AntialiasedLinesAsQuads` (4.12).
 
 ### 5.4 OpenGL 4.6 (Mesa, second batch, WebGPU only)
 
@@ -1223,8 +1371,10 @@ draw each; with a count read from a buffer (4.6), `IndirectCountExpanded`); quer
 by `resolve_queries`; SPIR-V shaders (into the
 common form through naga's SPIR-V reader, section 6); clip control (`ClipDepthRewrite`); anisotropic
 filtering (native). `layout(early_fragment_tests)` with image stores: `EarlyTestsInShader` or
-`EarlyTestsPerPrimitive` (4.12). Cull distances are absent on WebGPU: Mesa lowers them to discards in the shader. On
-WebGL 2 the version stays at 3.1.
+`EarlyTestsPerPrimitive` (4.12). Cull distances are absent on WebGPU: Mesa lowers them to discards in the shader.
+`gl_InstanceID` with a base instance (4.2), and `gl_BaseVertex`, `gl_BaseInstance` and `gl_DrawID`
+(4.6): `DrawBaseInHelpers`, or `DrawBaseFromArguments` for indirect draws (4.12). On WebGL 2 the version
+stays at 3.1.
 
 ### 5.5 Vulkan 1.1 (Mesa Vulkan runtime, second batch, WebGPU only)
 
@@ -1242,7 +1392,10 @@ values); `vkGetQueryPoolResults` is `read_queries`. Conditional rendering
 `AttachmentsFitted` (4.7). A `D24_UNORM_S8_UINT`-style 24-bit depth format: `DEPTH24_UNORM` decides
 whether Vulkan reports `VK_FORMAT_X8_D24_UNORM_PACK32` and `VK_FORMAT_D24_UNORM_S8_UINT` (with it) or only
 `D32_SFLOAT` and `D32_SFLOAT_S8_UINT` (without it), so programs pick a format whose bias is exact; Vulkan
-lets an implementation omit the 24-bit ones. `vkCmdCopyBuffer` within one buffer: `CopyWithinBuffer`. `EarlyFragmentTests`: as
+lets an implementation omit the 24-bit ones. `vkCmdCopyBuffer` within one buffer: `CopyWithinBuffer`.
+`VertexIndex` and `InstanceIndex` are the common form's numbers as they are; `shaderDrawParameters`
+(`BaseVertex`, `BaseInstance`, `DrawIndex`) is reported present, served by `DrawBaseInHelpers` and
+`DrawBaseFromArguments` (4.12). `EarlyFragmentTests`: as
 Direct3D's (4.12). Fractional viewports are native. A viewport whose `minDepth` exceeds `maxDepth` (allowed by Vulkan
 and used for reversed depth): `ViewportDepthFlip`. A sampler's `mipLodBias`: `LodBiasInShader`; the
 `maxSamplerLodBias` limit is reported as 15.99, the range Direct3D also allows. `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT`
@@ -1281,7 +1434,8 @@ converted vertex shader.
   clears (`UnalignedBufferEdge`); passes without targets on its own attachment; formats WebGPU lacks
   (three-component 8 and 16-bit vertex formats, B5G6R5 and other 16-bit packed formats, A8) converted on
   upload (`VertexFormatConverted`, `FormatConverted`); BC textures decoded where `BLOCK_COMPRESSION` is
-  absent, with host blocks for copies and read backs (`BlockDecoded`, `HostCopyReadBack`); copies
+  absent, and the packed-pair formats `Rgbg8Unorm` and `Grgb8Unorm` always, with host blocks for copies
+  and read backs (`BlockDecoded`, `HostCopyReadBack`); copies
   between a BC and an uncompressed texture of the same block size, and between formats of one typeless
   group, through a buffer (`CopyThroughBuffer`), into `depth32float` by a draw (`DepthWrittenByDraw`);
   copies within one buffer through a temporary one (`CopyWithinBuffer`); the 24-bit depth probe (4.11).
@@ -1307,7 +1461,10 @@ converted vertex shader.
   (`StagingRefreshed`); attachments of different sizes (`AttachmentsFitted`); 8-bit indices
   (`IndexWidened`); adjacency without a geometry shader (`AdjacencyDropped`); predicates of recorded
   command lists (`PredicationIndirect`), other predicates (`PredicationWait`); constant depth bias into
-  24-bit depth stored as float (`DepthBiasInShader`, where `DEPTH24_UNORM` is absent).
+  24-bit depth stored as float (`DepthBiasInShader`, where `DEPTH24_UNORM` is absent); the API's vertex
+  and instance numbers and draw bases (`DrawBaseInHelpers`, `DrawBaseFromArguments`); typed storage
+  stores of formats without `texture-formats-tier1` (`StorageFormatThroughBuffer`); alpha-antialiased
+  lines (`AntialiasedLinesAsQuads`); Direct3D 12's aliased placed resources (`AliasCopied`).
 - Absent and reported as such: transform feedback (the stage helper builds stream output instead), logic
   ops, wide lines, sample counts other than 1 and 4, 64-bit shader types, resource tables, persistent
   mapping, sparse resources.
@@ -1322,14 +1479,18 @@ converted vertex shader.
   only when changed.
 - Buffers holding both indices and other data as two GL buffers (`IndexBufferTwin`,
   `IndexTwinReadBack`, 4.6); the fast-path defaults never make one (two rings).
-- Writes: `bufferSubData` (ordered by GL) and `bufferData` orphaning for `Discard`. Chrome charges a
+- Writes: `bufferSubData` (ordered by GL); for `Discard`, `bufferData(size, null)` at the buffer's size
+  (orphaning), then `bufferSubData` of the part (4.6). Chrome charges a
   `bufferSubData` into a buffer a queued draw uses in proportion to the whole buffer (research: 0.9 ms at
   16 MB), so `MapIntent::Often` buffers are kept small and renamed.
-- Read back now: `readPixels` and `getBufferSubData`, inside the call.
+- Read back now: `readPixels` and `getBufferSubData`, inside the call. Depth and stencil, which
+  `readPixels` cannot take, are drawn into a colour texture first (`DepthReadByDraw`, 4.12).
 - Fans and loops native; 8-bit indices native; transform feedback native, with or without
   rasterising; `resolve_queries` by its default (`QueryResolveWait`), since GLES 3.0 gives query results
   only to the host; `timestamps_disjoint` from `GPU_DISJOINT_EXT`; the 24-bit depth probe (4.11); base vertex and first instance by binding the vertex
-  streams at an offset (`BaseVertexRebind`); indirect draws read their arguments back first
+  streams at an offset (`BaseVertexRebind`), with the hidden uniforms `naga_vs_base_vertex` and
+  `naga_vs_first_instance` set per draw so `vertex_index` and `instance_index` still include them
+  (4.12); indirect draws read their arguments back first
   (`IndirectReadBack`, with `INDIRECT` absent).
 - Stream output declarations transform feedback cannot write: `StreamOutRepacked`. Exact occlusion
   counts: `OcclusionCountReplay`. Direct3D's clip depth: native with EXT_clip_control, otherwise
@@ -1344,7 +1505,9 @@ converted vertex shader.
   `draw_fan_or_loop`,
   `read_back_now`. Stencil views: native with WEBGL_stencil_texturing, else `StencilCopiedByDraw`.
   Copies: equal renderable formats by `blitFramebuffer` (depth and stencil too) or `copyTexSubImage`,
-  formats of one typeless group through a pixel pack buffer (`CopyThroughBuffer`), formats it cannot
+  formats of one typeless group through a pixel pack buffer (`CopyThroughBuffer`), multisampled
+  textures by resolving and drawing into every sample (`MultisampleCopyResolved`, a listed loss, 4.12),
+  formats it cannot
   attach through the host copy (`HostCopyKept`, `HostCopyReadBack`; 4.12). BC textures native
   with the extensions of 4.11, else decoded (`BlockDecoded`); either way their blocks are kept on the
   host for read backs and copies, since GLES cannot read compressed textures back; copies into them from
@@ -1361,7 +1524,8 @@ converted vertex shader.
   texture level and sample counts (`TextureInfoInHelpers`); attachments of different sizes
   (`AttachmentsFitted`, with the multisample loss of 4.12); adjacency without a geometry shader
   (`AdjacencyDropped`); predicates (`PredicationWait`); constant depth bias into 24-bit depth stored as
-  float (`DepthBiasInShader`, where `DEPTH24_UNORM` is absent).
+  float (`DepthBiasInShader`, where `DEPTH24_UNORM` is absent); the API's vertex and instance numbers
+  (`DrawBaseInHelpers`); alpha-antialiased lines (`AntialiasedLinesAsQuads`).
 - Absent and reported as such: compute and storage (so Direct3D 11 reports feature level 10_0 and
   Direct3D 12 is not offered), texture views (fronts make views by copying: `ReinterpretCopy`),
   multisample textures read in shaders (reported per format through `CheckFormatSupport`), subgroups,
@@ -1464,6 +1628,14 @@ What follows for the plan:
   measures it on the same corpus first, and falls back to the measured SPIR-V route if it does worse.
 - DXIL depends on naga's SPIR-V reader growing; that work is G6's first task, measured on the same
   corpus plus real DXIL from games.
+- Vertex shaders reading `SV_VertexID` or `SV_InstanceID`: dxbc-spirv's SPIR-V subtracts the
+  `BaseVertex` and `BaseInstance` built-ins from `VertexIndex` and `InstanceIndex`, and naga's reader
+  keeps them as entry arguments, which WGSL cannot express (naga's WGSL writer has no form for them).
+  G0's sixth independent check reran `corpus/dxbc/047_vs_code_4.dxbc` and got exactly that, and then a
+  validation failure for integer stage values without flat interpolation. The direct lowering never
+  emits the base built-ins: it reads the bases as 4.12 says (`VariantKey::draw_base`), and it marks
+  integer stage values flat. dxil-spirv does the same subtraction for DXIL, so the reader path gets the
+  same rewrite in the shaders crate.
 
 ### 6.4 One binding rule, the reflection and the conversion API
 
@@ -1495,17 +1667,20 @@ against the same Rust from the start; back ends never read them.
   counts where the back end's language cannot ask (`TEXTURE_INFO`), depth bias, pulled streams' offset, stride and step,
   the sample mask, packed storage offsets, the texel layout of storage views read through a buffer,
   how each target combined in the program blends, the early tests a program runs itself, a texture's
-  minimum level-of-detail clamp, and the viewport adjustment (`HelperValue`). Set 3 also holds the
+  minimum level-of-detail clamp, the viewport adjustment, and the draw's bases or where an indirect
+  draw's arguments are (`DrawBase`, `DrawArguments`) (`HelperValue`). Set 3 also holds the
   copies of targets such programs read, from `TARGET_COPY_BINDING` (1 to 8); the read-only depth and
   stencil of early tests in the program, at `EARLY_DEPTH_BINDING` (9) and `EARLY_STENCIL_BINDING` (10);
+  the argument buffer of an indirect draw whose program reads the bases, at `DRAW_ARGUMENTS_BINDING` (11);
   and the merged samplers of clamped textures, from `CLAMPED_SAMPLER_BINDING` (16) plus the index of
   the pair in `Reflection::sampled_pairs`.
 - Variants: `VariantKey` (4.5) is part of the converted shader's cache key. Its per-slot fields carry a
   bit per API slot; the typed buffer route is one field; the sample count, dual-source blending, the
   clip-depth rewrite, the depth flip, depth bias, the provoking rewrite, the sample mask, the counting
-  variant, early tests in the program, the viewport adjustment and texture level and sample counts from
-  the helpers (`TEXTURE_INFO`) are its flags; the clamped texture
-  slots are `min_lod_clamped`.
+  variant, early tests in the program, the viewport adjustment, texture level and sample counts from
+  the helpers (`TEXTURE_INFO`) and line coverage (`LINE_COVERAGE`) are its flags; the clamped texture
+  slots are `min_lod_clamped`; storage slots run through a buffer are `texels_through_buffer`; where
+  the draw's bases come from is `draw_base`.
 
 The conversion API G6 provides in `wcontainers-shaders`, which G4 and G5 call:
 
@@ -1535,7 +1710,9 @@ WGSL: `isnan` and `isinf` lowered to bit tests. (Storage formats from the bound 
 shaders crate makes, 4.5.)
 GLSL ES 3.00: bitfield operations lowered to shifts and masks; `textureGather` built from four
 `texelFetch` reads at the gather footprint; conservative depth hints kept with EXT_conservative_depth and
-dropped without it (they only allow optimisation); `gl_SampleID` converted where it meets unsigned values.
+dropped without it (they only allow optimisation); `gl_SampleID` converted where it meets unsigned values;
+`instance_index` written as `gl_InstanceID + naga_vs_first_instance` (naga's own) and `vertex_index` as
+`gl_VertexID + naga_vs_base_vertex` (our naga fork, 4.12), uniforms the back end sets per draw.
 Each of these needs nothing beyond the module, which is why a back end may do it while writing its
 language. Texture level and sample counts are not among them: their values come from the bound views, so
 the shaders crate reads them from the helper constants when the front asks for
@@ -1559,6 +1736,12 @@ They never reach a back end. The shaders crate lowers them, and its stage helper
   texture, then one draw runs the geometry shader once per output vertex slot, each invocation keeping
   only its own emitted vertex and collapsing unused slots (`GeometryAsReplay`). Hull and domain shaders
   are not offered on WebGL 2 (feature level 10_0 does not have them).
+
+Alpha-antialiased lines (4.12) take the same first step: the vertex stage runs as compute (WebGPU) or is
+captured (WebGL 2), then a draw expands each line into a rectangle around it, carrying each fragment's
+distances to the line's axis and ends to the pixel program's `LINE_COVERAGE` variant
+(`AntialiasedLinesAsQuads`). Vertex and instance numbers reach the vertex stage's compute form as they
+do a draw (4.12): the stage helper passes the API draw's bases in the helper constants.
 
 The ideas follow Asahi's and the MIT-headed mesa-wink driver's published descriptions; nothing is copied
 from gex (AGPL).
@@ -1605,14 +1788,20 @@ Crates for the cache, licences to be confirmed at G6: `blake3` (CC0-1.0 or Apach
 The rule: a front reports the highest level whose required features it serves natively or by an exact
 slow path, and reports each optional capability it lacks through the API's own query. Requirements were
 read in Microsoft's feature level tables (direct3d11/overviews-direct3d-11-devices-downlevel-intro.md)
-and format support tables (direct3ddxgi/format-support-for-direct3d-*-hardware.md) on 2026-11-17. Every
-format ability those tables require is served natively or by an exact route of 4.12, named below (atomics
-on storage textures, 16-bit normalised and rendered signed normalised formats, stencil loads, copies
-within typeless groups, read backs of every format, mipmap generation of every format the tables require
-it on, including the 32-bit float formats where the adapter cannot filter them). Shader model 5's early
-depth and stencil tests, required at 11_0, are served by `EarlyTestsInShader` and
-`EarlyTestsPerPrimitive`. The one shortfall against the tables is multisample counts per format (4.12),
-and the owner is told.
+and format support tables (direct3ddxgi/format-support-for-direct3d-*-hardware.md, saved in
+`downloads/msdocs/` in scratch) on 2026-11-17. Every format ability those tables require is served
+natively or by an exact route of 4.12, except the two shortfalls below: atomics on storage textures and
+typed storage stores of the formats WebGPU stores into only with `texture-formats-tier1` (through a
+buffer of texels), 16-bit normalised and rendered signed normalised formats, stencil loads, copies within
+typeless groups, read backs of every format (depth and stencil by a draw), mipmap generation of every
+format the tables require it on (including the 32-bit float formats where the adapter cannot filter
+them), the packed-pair formats `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` (decoded), and `NV12`, `YUY2` and
+`420_OPAQUE` built from ordinary textures. Shader model 5's early depth and stencil tests, required at
+11_0, are served by `EarlyTestsInShader` and `EarlyTestsPerPrimitive`. The shortfalls against the
+tables, which the owner is told: multisample counts per format (4.12); and the video abilities of the
+video formats (Video Decoder Support, Video Processor Input and Output), since the Direct3D 11 front
+offers no video device (4.12). On WebGL 2 a multisampled copy keeps only the resolved value
+(`MultisampleCopyResolved`, a listed loss, 4.12).
 
 What each level needs of a back end's numbers, from Microsoft's table and the SDK headers
 (`d3d10.h`, `d3d10_1.h`, `d3d11.h` of SDK 10.0.26100, read on the development desktop), and how each is
@@ -1626,7 +1815,9 @@ met:
   `R32_UINT` and `R32_SINT`, and exchange on `R32_FLOAT`: by `AtomicsThroughBuffer`. Mipmap
   generation on `R32G32B32A32_FLOAT`, `R32G32_FLOAT` and `R32_FLOAT`: natively with
   `float32-filterable` (91.2% of adapters per the research), otherwise by the default's in-program
-  filtering (4.3). `[earlydepthstencil]`: 4.12.
+  filtering (4.3). `[earlydepthstencil]`: 4.12. Typed storage stores on `R10G10B10A2_*`,
+  `R11G11B10_FLOAT`, `R16G16_*`, `R8G8_*`, `R16_*`, `R8_*` (and `A8_UNORM`, stored as `rgba8unorm`):
+  natively with `texture-formats-tier1` (93.1%), otherwise `StorageFormatThroughBuffer`.
 - 10_1: 8192 2D and cube, 2048 3D, 512 layers: conditions. 32 input slots and elements, 32 registers:
   as 11_0. BC1 to BC5.
 - 10_0: 8192 2D and cube, 2048 3D, 512 layers: conditions. 16 input slots and elements, 16 registers:
@@ -1668,16 +1859,19 @@ Direct3D 11:
   (`VertexPulledInShader`, `ConstantsAsStorage`), BC formats without the adapter feature
   (`BlockDecoded`),
   wireframe (`FillModeConverted`), formats WebGPU lacks (`FormatConverted`, `VertexFormatConverted`),
-  instance step rates, fat targets, layered drawing, exact occlusion counts (4.12). Multisampling: 4
-  samples where WebGPU allows, reported per format (4.12). Typed UAV loads of more formats follow
-  `FormatCaps` storage read.
+  instance step rates, fat targets, layered drawing, exact occlusion counts (4.12), typed storage
+  stores without `texture-formats-tier1` (`StorageFormatThroughBuffer`), `SV_VertexID` and
+  `SV_InstanceID` with non-zero bases (`DrawBaseInHelpers`, `DrawBaseFromArguments`), alpha-antialiased
+  lines (`AntialiasedLinesAsQuads`). Multisampling: 4 samples where WebGPU allows, reported per format
+  (4.12). Typed UAV loads of more formats follow `FormatCaps` storage read.
 - **WebGL 2: feature level 10_0**, when the device has 8 color targets, 8192-texel 2D and cube
   textures, 2048 3D extent and 512 array layers, and EXT_color_buffer_float (GLES 3.0 guarantees only
   2048, 2048, 256 and 256, and no float targets;
   this Mac's Chrome gives 16384, 16384, 2048 and 2048); otherwise 9_3 (4096 2D and cube, 256 3D, 4
   targets), otherwise 9_1. BC1 to BC5, 16 input slots and 14 constant buffers as above. `resinfo` and
   `sampleinfo` (shader model 4.0) by `TextureInfoInHelpers` (4.12). Compute is optional at 10_x and reported absent
-  (`ComputeShaders_Plus_RawAndStructuredBuffers_Via_Shader_4_x` FALSE). Multisampling is optional for
+  (`ComputeShaders_Plus_RawAndStructuredBuffers_Via_Shader_4_x` FALSE). Copies between multisampled
+  textures: `MultisampleCopyResolved` (a listed loss, 4.12). Multisampling is optional for
   every format at 10_0. Without OES_sample_variables none is reported, because a partial sample mask
   would have no route (4.12). With it, 4 samples are reported for the formats WebGL 2 renderbuffers take,
   with
@@ -1809,8 +2003,15 @@ helpers there.
   through `ViewportInShader` against G2's native one on single-sampled targets; a buffer used as indices
   and as vertices, written by the host and by a copy and by transform feedback, drawn both ways
   (`IndexBufferTwin`, `IndexTwinReadBack`); 8-bit indices; `capture_vertices` with and without
-  rasterising; `timestamps_disjoint`; the 24-bit depth probe; per-draw cost measured against
-  G2 on the same scene. Needs: G1's suite. Test programs are WGSL, written to GLSL ES by naga.
+  rasterising; `timestamps_disjoint`; the 24-bit depth probe; `vertex_index` and `instance_index`
+  including the bases under `BaseVertexRebind` (the two hidden uniforms of 4.12), in indexed and
+  non-indexed instanced draws; a `Discard` write of part of a buffer followed by `NoOverwrite` writes
+  above it; depth and stencil read back by `DepthReadByDraw` (with and without
+  WEBGL_stencil_texturing); a copy between two multisampled textures (`MultisampleCopyResolved`) whose
+  resolve equals the source's; per-draw cost measured against
+  G2 on the same scene. Needs: G1's suite; G6's `naga_vs_base_vertex` change to naga's GLSL writer (until
+  it lands, base-vertex draws whose program reads `vertex_index` are a known failure). Test programs are
+  WGSL, written to GLSL ES by naga.
 - **G4, the Direct3D 11 front.** `wcontainers-direct3d-11`, and `wcontainers-directx` with the Windows
   library and forwarders of section 10. Pass bar: Wine's Direct3D 11 tests give real Direct3D's verdicts
   on the RTX 3080 except a written gap list naming the absent feature behind each gap; three real
@@ -1820,8 +2021,13 @@ helpers there.
   WebGL 2 without OES_draw_buffers_indexed, texture atomics, `[earlydepthstencil]` with storage writes
   (both with depth writes off and on), `SetResourceMinLOD` with a fractional clamp (sampling, loads,
   gathers and a clamp past the last level), `Map(WRITE)` on a staging texture after a copy into it, a
-  depth buffer larger than its render target, `resinfo` on WebGL 2, a rasterised stream output, and the
-  timestamp disjoint query each have a test against real Direct3D.
+  depth buffer larger than its render target, `resinfo` on WebGL 2, a rasterised stream output, the
+  timestamp disjoint query, `SV_VertexID` and `SV_InstanceID` with non-zero start and base locations in
+  direct and indirect draws, a compute shader storing to `R11G11B10_FLOAT` and `R16G16_UNORM` typed views
+  on a device made without `texture-formats-tier1`, `NV12` and `YUY2` textures written, sampled through
+  their views and mapped, `R8G8_B8G8_UNORM` sampled, a copy between multisampled textures, and
+  alpha-antialiased lines (within the specification's tolerance) each have a test against real
+  Direct3D.
   Needs: G1, G2 (to draw), G6's `convert` (6.4) for real shaders. Before G6 lands it
   works on the recording back end and G2 with WGSL programs and hand-written reflections.
 - **G5, the Direct3D 12 front and the shared infrastructure.**
@@ -1831,7 +2037,11 @@ helpers there.
   copy queue and a compute queue that wait on each other's fences and on CPU signals replays in the
   order of 5.2, tested with fences signalled late from the CPU; `ResolveQueryData` of binary occlusion,
   counted occlusion and timestamps into a default-heap buffer, copied to a readback heap and used by
-  `SetPredication`, matches real Direct3D, with the predicated draws made indirect on WebGPU. Needs: G1,
+  `SetPredication`, matches real Direct3D, with the predicated draws made indirect on WebGPU; placed
+  buffers overlapping in one heap inherit each other's bytes (written by a copy, a storage view and the
+  CPU through an upload heap), and identically described textures at one offset inherit, both against
+  real Direct3D, while resources without overlaps take no `AliasCopied`; `ExecuteIndirect` draws whose
+  vertex shader reads `SV_VertexID` with a base vertex. Needs: G1,
   G2, G6's `convert` for DXIL (as G4, it starts with WGSL programs). G4 uses the infrastructure crate, so
   G5 builds it first and G4 starts with a stub of its two calls (create a swap chain, present) until it
   lands.
@@ -1840,8 +2050,11 @@ helpers there.
   route, 6.3), naga's SPIR-V reader fixes for DXIL, `convert` with every `VariantKey` field and flag of
   6.4 (including the counting variant, texel buffer routes, storage packing, atomics through a buffer,
   decoded textures, targets written in the program, the sample mask, early tests in the program, the
-  minimum level-of-detail clamp, the viewport adjustment and texture level and sample counts from the
-  helpers), the `gl_SampleID` fix in naga's GLSL writer (6.3), `side_effects` and `discards` and the
+  minimum level-of-detail clamp, the viewport adjustment, texture level and sample counts from the
+  helpers, the draw's bases from the helpers or the argument buffer, storage formats through a buffer
+  with compare-exchange for narrow texels, and line coverage), the `gl_SampleID` fix and the
+  `naga_vs_base_vertex` uniform in naga's GLSL writer (6.3, 4.12; G3 needs the second early, so it comes
+  first), integer stage values marked flat, `side_effects` and `discards` and the
   sampled pairs in the reflection, the counter operations of 5.1,
   the binding rule and reflection of 6.4, the built-in compute
   programs fronts use (texture clears of 5.1), the stage helper of section 7, and the cache of section 8.
@@ -1897,6 +2110,11 @@ Mesa's runtime, sound and input.
   games draw with a constant depth bias into 24-bit depth.
 - What `AttachmentsFitted`, `IndexBufferTwin`, `QueryResolveWait` and `PredicationIndirect` cost, and
   how often real programs reach them.
+- How often real programs read `SV_VertexID` or `SV_InstanceID` with non-zero bases, and what
+  `DrawBaseInHelpers` costs per draw where the bases change every draw (G4).
+- What `StorageFormatThroughBuffer`, `AliasCopied` and `AntialiasedLinesAsQuads` cost, and how often real
+  programs reach them; how close `MultisampleCopyResolved` comes to real Direct3D in pictures (G3, G4,
+  G5).
 - How close the mipmap default's in-program filtering comes to the RTX 3080's GenerateMips (G2), and
   what `EarlyTestsInShader`, `EarlyTestsPerPrimitive`, `MinLodClamp` and `StagingRefreshed` cost, and how
   often real programs reach them (G4).
