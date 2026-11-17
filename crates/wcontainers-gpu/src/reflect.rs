@@ -65,6 +65,15 @@ pub const HELPER_BINDING: u32 = 0;
 /// The binding in [`HELPER_SET`] of the copy of color target 0 a program reads to blend or apply a
 /// logic operation itself ([`TargetInShader::combine`]); target n is at this plus n.
 pub const TARGET_COPY_BINDING: u32 = 1;
+/// The binding in [`HELPER_SET`] of the depth aspect of the pass's read-only depth-stencil attachment,
+/// read by a program that runs its early depth test itself ([`VariantFlags::EARLY_TESTS`]).
+pub const EARLY_DEPTH_BINDING: u32 = 9;
+/// The binding in [`HELPER_SET`] of the stencil aspect of that attachment.
+pub const EARLY_STENCIL_BINDING: u32 = 10;
+/// The bindings in [`HELPER_SET`] of the merged samplers of a clamped program: pair n of
+/// [`Reflection::sampled_pairs`], when its texture slot is in [`VariantKey::min_lod_clamped`], samples
+/// through the sampler at this plus n.
+pub const CLAMPED_SAMPLER_BINDING: u32 = 16;
 
 /// The API stage a shader was written for. Geometry, hull and domain shaders become compute and vertex
 /// programs in the shaders crate's stage helper; the others become one program stage each.
@@ -161,6 +170,10 @@ pub enum StageExtras {
     Pixel {
         /// Depth and stencil tests run before the shader (Direct3D's `earlydepthstencil`).
         early_tests: bool,
+        /// The shader writes storage views or counters.
+        side_effects: bool,
+        /// The shader may discard.
+        discards: bool,
         /// The shader runs once per sample.
         per_sample: bool,
     },
@@ -230,6 +243,16 @@ pub enum HelperValue {
     /// factors and operations, the write mask and the logic operation as u32 codes (eight u32), then the
     /// draw's blend constant (four f32).
     TargetCombine { target: u8 },
+    /// The early tests the program runs itself: depth compare, front and back stencil compare (u32
+    /// codes, zero for a test that is off), stencil reference and read mask (u32), eight u32.
+    EarlyTests,
+    /// A texture's per-resource minimum level-of-detail clamp, in the view's level numbering (f32), and
+    /// the view's level count (u32): loads and gathers of a level below the clamp's whole part, and every
+    /// access when the clamp passes the last level, read zero.
+    MinLod { texture: u32 },
+    /// The fractional viewport within the whole-pixel one the back end draws with: scale and offset of
+    /// clip x and y (four f32), applied to the last vertex stage's position.
+    ViewportAdjust,
 }
 
 /// Where one helper value sits in the helper constants.
@@ -249,6 +272,8 @@ pub struct Reflection {
     /// The helper constants the program reads, and the size of their block in bytes (zero for none).
     pub helpers: Vec<HelperSlot>,
     pub helper_size: u32,
+    /// The (texture slot, sampler slot) pairs the shader samples with, in a fixed order.
+    pub sampled_pairs: Vec<(u32, u32)>,
     pub extras: StageExtras,
 }
 
@@ -273,6 +298,14 @@ bitflags! {
         /// The fragment stage writes the sample mask from the helper constants
         /// ([`crate::SlowPath::SampleMaskInShader`]).
         const SAMPLE_MASK = 1 << 6;
+        /// The pixel shader's early depth and stencil tests run in the program before its side effects,
+        /// against the read-only attachment at [`EARLY_DEPTH_BINDING`] and [`EARLY_STENCIL_BINDING`],
+        /// with the fragment's depth biased as the raster block says; a failing fragment is discarded
+        /// ([`crate::SlowPath::EarlyTestsInShader`], [`crate::SlowPath::EarlyTestsPerPrimitive`]).
+        const EARLY_TESTS = 1 << 7;
+        /// The last vertex stage maps clip x and y by [`HelperValue::ViewportAdjust`]
+        /// ([`crate::SlowPath::ViewportInShader`]).
+        const VIEWPORT_ADJUST = 1 << 8;
     }
 }
 
@@ -343,6 +376,10 @@ pub struct VariantKey {
     pub decoded: Vec<(u32, Format)>,
     /// Color targets written in another stored format, or combined in the program.
     pub targets_in_shader: Vec<TargetInShader>,
+    /// Texture slots under a per-resource minimum level-of-detail clamp: sampled through the samplers at
+    /// [`CLAMPED_SAMPLER_BINDING`], loaded and gathered by [`HelperValue::MinLod`]
+    /// ([`crate::SlowPath::MinLodClamp`]).
+    pub min_lod_clamped: u128,
     /// The sample count of the targets, where the program depends on it.
     pub samples: u8,
     /// A hash of the binding layout that numbers the slots, for APIs whose layout the program does not

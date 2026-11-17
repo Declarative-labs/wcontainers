@@ -53,9 +53,10 @@ pub use error::{DeviceStatus, GpuError, LossReason};
 pub use format::{Format, FormatKind};
 pub use helpers::Helpers;
 pub use reflect::{
-    HELPER_BINDING, HELPER_SET, HelperSlot, HelperValue, Interpolation, ReflectedBinding,
-    Reflection, ScalarKind, SlotKind, SourceStage, StageExtras, StageValue, SystemValue,
-    TARGET_COPY_BINDING, TargetInShader, TexelBufferRoute, VariantFlags, VariantKey,
+    CLAMPED_SAMPLER_BINDING, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING, HELPER_BINDING,
+    HELPER_SET, HelperSlot, HelperValue, Interpolation, ReflectedBinding, Reflection, ScalarKind,
+    SlotKind, SourceStage, StageExtras, StageValue, SystemValue, TARGET_COPY_BINDING,
+    TargetInShader, TexelBufferRoute, VariantFlags, VariantKey,
 };
 pub use resource::{AddressMode, BorderColor, CompareFn, Filter};
 pub use resource::{

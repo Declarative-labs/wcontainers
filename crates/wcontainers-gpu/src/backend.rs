@@ -1,17 +1,18 @@
 //! The [`Backend`] trait: the base every back end provides, and the fast paths with their defaults.
 
-use crate::caps::{Caps, Features};
+use crate::caps::{Caps, Features, FormatUse};
 use crate::draw::{
     AspectOps, CaptureTargets, ColorAttachment, DepthAttachment, DispatchCall, DrawCall, DrawRange,
     IndexBinding, LoadOp, PassDesc, ScissorRect, StoreOp, Viewport,
 };
 use crate::error::{DeviceStatus, GpuError};
 use crate::format::{Format, FormatKind};
-use crate::helpers::{self, Builtin, Helpers, PARAMS_SIZE, Ring};
+use crate::helpers::{self, Builtin, Helpers, MipRead, PARAMS_SIZE, Ring};
 use crate::resource::{
     BindingEntry, BindingLayoutKey, BindingResource, BufferDesc, BufferRange, BufferUsage,
-    CopyBufferTexture, Extent, MapIntent, QueryKind, ReadSource, ReadState, SamplerDesc,
-    TextureDesc, TextureDimension, TextureRegion, TextureViewDesc, ViewDimension, WriteMode,
+    CopyBufferTexture, Extent, MapIntent, Origin, QueryKind, ReadSource, ReadState, SamplerDesc,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
+    WriteMode,
 };
 use crate::shader::{Program, ShaderModule, StageSet};
 use crate::slow::{SlowPath, SlowPaths};
@@ -204,6 +205,9 @@ pub trait Backend: Sized {
     /// (slow path [`crate::SlowPath::QueriesSegmented`]).
     fn begin_query(&mut self, index: u32);
     fn end_query(&mut self);
+    /// Copies bytes between buffers. Source and destination may be the same buffer when the ranges do
+    /// not overlap (OpenGL and Vulkan allow it; Direct3D never asks): a back end whose API forbids that
+    /// copies through a temporary buffer ([`crate::SlowPath::CopyWithinBuffer`]).
     fn copy_buffer(
         &mut self,
         src: &Self::Buffer,
@@ -307,7 +311,8 @@ pub trait Backend: Sized {
     /// Draws a triangle fan or a line loop. `call.topology`, `call.index` and `call.range` are ignored:
     /// the vertices come from `source`, and instances from `instances`. `provoking` is the convention
     /// of the front's API, so flat-shaded values come from the vertex it names. The default builds a
-    /// triangle list or a line list in a fresh index buffer and draws that. WebGL 2 overrides it.
+    /// triangle list or a line list in the ring ([`Backend::write_buffer_ring`]) and draws that. WebGL 2
+    /// overrides it.
     fn draw_fan_or_loop(
         &mut self,
         call: &DrawCall<'_, Self>,
@@ -322,12 +327,8 @@ pub trait Backend: Sized {
             return Ok(());
         }
         let bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
-        let buffer = self.create_buffer(&BufferDesc {
-            size: bytes.len() as u64,
-            usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
-            intent: MapIntent::Rarely,
-        })?;
-        self.write_buffer(&buffer, 0, &bytes, WriteMode::Discard);
+        let mut offset = [0];
+        let buffer = self.write_buffer_ring(&[&bytes], 4, &mut offset)?;
         let (topology, path) = match kind {
             FanOrLoop::TriangleFan => (Topology::TriangleList, SlowPath::FanConverted),
             FanOrLoop::LineLoop => (Topology::LineList, SlowPath::LoopConverted),
@@ -336,7 +337,7 @@ pub trait Backend: Sized {
         self.draw(&DrawCall {
             index: Some(IndexBinding {
                 buffer: &buffer,
-                offset: 0,
+                offset: offset[0],
                 format: IndexFormat::U32,
             }),
             topology,
@@ -350,7 +351,6 @@ pub trait Backend: Sized {
             },
             ..*call
         });
-        self.destroy(Object::Buffer(buffer));
         Ok(())
     }
 
@@ -552,29 +552,57 @@ pub trait Backend: Sized {
     }
 
     /// Fills mip levels `mips` (each from the level above) of `layers` of a texture made from `desc`,
-    /// outside a pass (Direct3D's GenerateMips, OpenGL's glGenerateMipmap). The default draws each level
-    /// and layer, or each slice of a 3D level, with a built-in program sampling the level above through
-    /// a linear sampler. It reads the level above through a view of all layers in the texture's own
-    /// dimension, the layer chosen in the program, and draws into a view of one level and one layer, so
-    /// it needs no [`Features::TEXTURE_VIEWS`]. WebGL 2 overrides it with generateMipmap where the
-    /// format allows and uses the default otherwise.
+    /// outside a pass (Direct3D's GenerateMips, OpenGL's glGenerateMipmap). `values` is the format whose
+    /// values the texels hold: `desc.format`, or the normalised format a front stores as its integer
+    /// twin ([`crate::SlowPath::NormAsInteger`]).
+    ///
+    /// The default draws each level and layer, or each slice of a 3D level, with a built-in program
+    /// reading the level above: through the linear sampler where the format has
+    /// [`crate::FormatUse::FILTER`]; otherwise filtered in the program with the same weights, from
+    /// samples at texel centres through the nearest sampler (float formats) or from integer loads
+    /// decoded and encoded again (integer twins), counted [`SlowPath::FilterInShader`]. It reads the
+    /// level above through a view of all layers in the texture's own dimension, the layer chosen in the
+    /// program, and draws into a view of one level and one layer, so it needs no
+    /// [`Features::TEXTURE_VIEWS`]; the one exception is a cube read by integer loads, which no
+    /// language has for cubes, read through a 2D array view, or without [`Features::TEXTURE_VIEWS`] from
+    /// a copy of the level above ([`SlowPath::ReinterpretCopy`]). WebGL 2 overrides it with
+    /// generateMipmap where the format allows and uses the default otherwise.
     fn generate_mips(
         &mut self,
         texture: &Self::Texture,
         desc: &TextureDesc,
+        values: Format,
         mips: Range<u32>,
         layers: Range<u32>,
     ) -> Result<(), GpuError> {
         let b = helpers::builtins(self)?;
         let own = desc.own_view();
-        let (which, binding) = match own {
-            ViewDimension::D2 => (Builtin::Mip2d, 32),
-            ViewDimension::D3 => (Builtin::Mip3d, 33),
-            ViewDimension::D2Array => (Builtin::Mip2dArray, 34),
-            ViewDimension::Cube => (Builtin::MipCube, 35),
-            ViewDimension::CubeArray => (Builtin::MipCubeArray, 36),
+        let decoded = norm_twin(values, desc.format)?;
+        let read = match decoded {
+            Some((_, false)) => MipRead::Unorm,
+            Some((_, true)) => MipRead::Snorm,
+            None if self
+                .caps()
+                .formats
+                .get(desc.format)
+                .contains(FormatUse::FILTER) =>
+            {
+                MipRead::Filtered
+            }
+            None => MipRead::Unfiltered,
         };
+        let cube = matches!(own, ViewDimension::Cube | ViewDimension::CubeArray);
+        let read_dim = if decoded.is_some() && cube {
+            ViewDimension::D2Array
+        } else {
+            own
+        };
+        let copied = read_dim != own && !self.caps().has(Features::TEXTURE_VIEWS);
+        let which = Builtin::Mip(read_dim, read);
         let program = helpers::program(self, which)?;
+        if read != MipRead::Filtered {
+            self.slow_paths().hit(SlowPath::FilterInShader);
+        }
         let three_d = own == ViewDimension::D3;
         let layers = if three_d {
             0..1
@@ -596,18 +624,51 @@ pub trait Backend: Sized {
                 width,
                 height,
             }];
-            let src = self.create_view(
-                texture,
-                &TextureViewDesc {
+            let all = if three_d { 1 } else { desc.depth_or_layers };
+            let mut source_view = TextureViewDesc {
+                format: desc.format,
+                dimension: read_dim,
+                base_mip: mip - 1,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: all,
+                stencil: false,
+            };
+            // A cube read by loads without views: the level above copied into a 2D array first.
+            let copy = if copied {
+                self.slow_paths().hit(SlowPath::ReinterpretCopy);
+                let above = |n: u32| (n >> (mip - 1)).max(1);
+                let extent = Extent {
+                    width: above(desc.width),
+                    height: above(desc.height),
+                    depth_or_layers: all,
+                };
+                let scratch = self.create_texture(&TextureDesc {
+                    dimension: TextureDimension::D2,
                     format: desc.format,
-                    dimension: own,
-                    base_mip: mip - 1,
-                    mip_count: 1,
-                    base_layer: 0,
-                    layer_count: if three_d { 1 } else { desc.depth_or_layers },
+                    width: extent.width,
+                    height: extent.height,
+                    depth_or_layers: all,
+                    mip_levels: 1,
+                    samples: 1,
+                    usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+                    reinterpret: false,
+                    cube: false,
+                })?;
+                let region = |texture, mip| TextureRegion {
+                    texture,
+                    mip,
+                    layer: 0,
+                    origin: Origin { x: 0, y: 0, z: 0 },
                     stencil: false,
-                },
-            )?;
+                };
+                self.copy_texture(&region(texture, mip - 1), &region(&scratch, 0), extent);
+                source_view.base_mip = 0;
+                Some(scratch)
+            } else {
+                None
+            };
+            let src = self.create_view(copy.as_ref().unwrap_or(texture), &source_view)?;
             for layer in layers.clone() {
                 let dst = self.create_view(
                     texture,
@@ -627,20 +688,26 @@ pub trait Backend: Sized {
                 )?;
                 for slice in 0..slices {
                     let ring;
-                    let mut entries = alloc::vec![
-                        BindingEntry {
+                    let mut entries = alloc::vec![BindingEntry {
+                        binding: 32,
+                        stages: StageSet::FRAGMENT,
+                        resource: BindingResource::Texture(&src),
+                    }];
+                    if which.uses_sampler() {
+                        let sampler = match read {
+                            MipRead::Filtered => &b.linear,
+                            _ => &b.nearest,
+                        };
+                        entries.push(BindingEntry {
                             binding: 16,
                             stages: StageSet::FRAGMENT,
-                            resource: BindingResource::Sampler(&b.linear),
-                        },
-                        BindingEntry {
-                            binding,
-                            stages: StageSet::FRAGMENT,
-                            resource: BindingResource::Texture(&src),
-                        },
-                    ];
-                    if which != Builtin::Mip2d {
+                            resource: BindingResource::Sampler(sampler),
+                        });
+                    }
+                    if which.uses_params() {
                         let mut params = [0u8; PARAMS_SIZE];
+                        let scale = decoded.map_or(0, |(scale, _)| scale);
+                        params[0..4].copy_from_slice(&scale.to_le_bytes());
                         let w = (slice as f32 + 0.5) / slices as f32;
                         params[16..20].copy_from_slice(&w.to_bits().to_le_bytes());
                         params[24..28].copy_from_slice(&layer.to_le_bytes());
@@ -683,6 +750,9 @@ pub trait Backend: Sized {
                 self.destroy(Object::TextureView(dst));
             }
             self.destroy(Object::TextureView(src));
+            if let Some(copy) = copy {
+                self.destroy(Object::Texture(copy));
+            }
         }
         Ok(())
     }
@@ -816,6 +886,27 @@ fn aspects(format: Format) -> (bool, bool) {
         FormatKind::DepthStencil => (true, true),
         _ => (false, false),
     }
+}
+
+/// For a texture a front stores as the integer twin of a normalised format, the largest encoded value
+/// and whether it is signed; None when the texture holds its own format's values.
+fn norm_twin(values: Format, stored: Format) -> Result<Option<(u32, bool)>, GpuError> {
+    use Format::*;
+    Ok(match (values, stored) {
+        _ if values == stored => None,
+        (R16Unorm, R16Uint) | (Rg16Unorm, Rg16Uint) | (Rgba16Unorm, Rgba16Uint) => {
+            Some((65535, false))
+        }
+        (R16Snorm, R16Sint) | (Rg16Snorm, Rg16Sint) | (Rgba16Snorm, Rgba16Sint) => {
+            Some((32767, true))
+        }
+        (R8Snorm, R8Sint) | (Rg8Snorm, Rg8Sint) | (Rgba8Snorm, Rgba8Sint) => Some((127, true)),
+        _ => {
+            return Err(GpuError::Invalid(
+                "generate_mips: values differ from the stored format but are not its integer twin",
+            ));
+        }
+    })
 }
 
 /// A viewport over `width` by `height` pixels at depth zero to one.

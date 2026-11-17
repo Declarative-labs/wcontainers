@@ -85,7 +85,8 @@ pub struct PassDesc<'a, B: Backend> {
     pub occlusion: Option<&'a B::QuerySet>,
 }
 
-/// A viewport. Floats as bits so draws can be compared. `min_depth` is at most `max_depth`, as WebGPU
+/// A viewport. Floats as bits so draws can be compared; x, y, width and height may be fractional only on a
+/// back end with [`crate::Features::FRACTIONAL_VIEWPORT`]. `min_depth` is at most `max_depth`, as WebGPU
 /// and WebGL 2 require; a front whose API allows the reverse (Vulkan, OpenGL's `glDepthRange`) passes the
 /// range swapped and binds the program variant that writes `w - z` as clip depth, which gives the same
 /// depth values (slow path [`crate::SlowPath::ViewportDepthFlip`]).

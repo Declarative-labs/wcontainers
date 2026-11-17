@@ -115,6 +115,11 @@ bitflags! {
         /// the BC formats it serves in [`FormatCaps`], storing them decoded (slow path
         /// [`crate::SlowPath::BlockDecoded`]).
         const BLOCK_COMPRESSION = 1 << 46;
+        /// Viewports at fractions of a pixel, kept to sub-pixel precision. Without it a front with a
+        /// fractional viewport sets the enclosing whole-pixel one and binds the program variant that
+        /// maps positions onto the fractional one, with the scissor cut to the pixels whose centres it
+        /// covers (slow path [`crate::SlowPath::ViewportInShader`]).
+        const FRACTIONAL_VIEWPORT = 1 << 48;
     }
 }
 

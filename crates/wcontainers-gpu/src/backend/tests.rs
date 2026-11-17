@@ -3,6 +3,8 @@
 use super::*;
 use crate::caps::{FormatCaps, FormatUse, Limits};
 use crate::draw::Viewport;
+use crate::helpers::MipRead;
+use crate::resource::Filter;
 use crate::state::ProvokingVertex;
 use alloc::format;
 use alloc::string::String;
@@ -19,6 +21,10 @@ struct Recorder {
     buffers: Vec<Vec<u8>>,
     /// Read backs already "finished" by the fake GPU.
     ready_after_wait: bool,
+    /// Each sampler's minifying filter, by id.
+    samplers: Vec<(Id, Filter)>,
+    /// The samplers the last binding set holds.
+    bound_samplers: Vec<Id>,
 }
 
 type Id = u32;
@@ -123,8 +129,10 @@ impl Backend for Recorder {
         ));
         Ok(id)
     }
-    fn create_sampler(&mut self, _: &SamplerDesc) -> Result<Id, GpuError> {
-        Ok(self.id())
+    fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.samplers.push((id, desc.min));
+        Ok(id)
     }
     fn create_shader(&mut self, _: &ShaderModule) -> Result<Id, GpuError> {
         Ok(self.id())
@@ -146,7 +154,14 @@ impl Backend for Recorder {
     fn create_vertex_layout(&mut self, _: &VertexLayoutDesc) -> Result<Id, GpuError> {
         Ok(self.id())
     }
-    fn create_binding_set(&mut self, _: &[BindingEntry<'_, Self>]) -> Result<Id, GpuError> {
+    fn create_binding_set(&mut self, entries: &[BindingEntry<'_, Self>]) -> Result<Id, GpuError> {
+        self.bound_samplers = entries
+            .iter()
+            .filter_map(|e| match e.resource {
+                BindingResource::Sampler(s) => Some(*s),
+                _ => None,
+            })
+            .collect();
         Ok(self.id())
     }
     fn binding_layout_key(&self, _: &Id) -> BindingLayoutKey {
@@ -204,10 +219,14 @@ impl Backend for Recorder {
     fn copy_buffer(&mut self, _: &Id, _: u64, _: &Id, _: u64, _: u64) {}
     fn copy_texture(
         &mut self,
-        _: &TextureRegion<'_, Self>,
-        _: &TextureRegion<'_, Self>,
-        _: Extent,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        e: Extent,
     ) {
+        self.log.push(format!(
+            "copy_texture {} mip {} to {} mip {}, {}x{}x{}",
+            src.texture, src.mip, dst.texture, dst.mip, e.width, e.height, e.depth_or_layers
+        ));
     }
     fn copy_buffer_to_texture(
         &mut self,
@@ -306,8 +325,10 @@ fn call<'a>(viewports: &'a [Viewport]) -> DrawCall<'a, Recorder> {
     }
 }
 
+/// The indices written into the ring so far.
 fn indices(r: &Recorder, id: Id) -> Vec<u32> {
-    r.buffers[id as usize]
+    let head = r.helpers.ring.as_ref().unwrap().head as usize;
+    r.buffers[id as usize][..head]
         .as_chunks::<4>()
         .0
         .iter()
@@ -336,14 +357,33 @@ fn fan_default_draws_a_generated_list() {
     assert_eq!(
         r.log,
         [
-            "create_buffer 1 size 36",
-            "write_buffer 1 36 bytes Discard",
+            "create_buffer 1 size 4194304",
+            "write_buffer 1 36 bytes NoOverwrite",
             "draw TriangleList index Some(1) Indexed { first: 0, count: 9, base_vertex: 0, first_instance: 0, instances: 1 } scissor None stencil 0",
-            "destroy_buffer 1",
-        ]
+        ],
+        "the list goes into the ring, so no buffer is made per draw"
     );
-    assert_eq!(r.slow_paths().count(SlowPath::FanConverted), 1);
-    assert_eq!(r.slow_paths().take_warnings(), [SlowPath::FanConverted]);
+    r.draw_fan_or_loop(
+        &call(&vp),
+        FanOrLoop::TriangleFan,
+        IndexSource::Sequential { first: 0, count: 3 },
+        ProvokingVertex::First,
+        0,
+        1,
+    )
+    .unwrap();
+    assert_eq!(lines(&r, "create_buffer").len(), 1);
+    assert_eq!(
+        &indices(&r, 1)[9..12],
+        [1, 2, 0],
+        "the next list follows in the ring"
+    );
+    assert_eq!(r.slow_paths().count(SlowPath::FanConverted), 2);
+    assert_eq!(
+        r.slow_paths().take_warnings(),
+        [SlowPath::FanConverted],
+        "one warning however often"
+    );
 }
 
 #[test]
@@ -663,7 +703,8 @@ fn generate_mips_draws_each_level_and_layer_from_the_one_above() {
         reinterpret: false,
         cube: false,
     };
-    r.generate_mips(&50, &desc, 1..3, 0..2).unwrap();
+    r.generate_mips(&50, &desc, desc.format, 1..3, 0..2)
+        .unwrap();
     let views: Vec<_> = lines(&r, "create_view")
         .iter()
         .map(|l| l.split(" of ").nth(1).unwrap())
@@ -712,7 +753,8 @@ fn generate_mips_of_a_volume_draws_each_slice_at_its_centre() {
         reinterpret: false,
         cube: false,
     };
-    r.generate_mips(&50, &desc, 1..2, 0..1).unwrap();
+    r.generate_mips(&50, &desc, desc.format, 1..2, 0..1)
+        .unwrap();
     let passes: Vec<_> = r
         .log
         .iter()
@@ -731,7 +773,8 @@ fn generate_mips_of_a_cube_reads_whole_cube_views_and_names_the_face() {
     let mut r = Recorder::new();
     let mut desc = texture(TextureDimension::D2, Format::Rgba8Unorm, 6, 2);
     desc.cube = true;
-    r.generate_mips(&50, &desc, 1..2, 0..6).unwrap();
+    r.generate_mips(&50, &desc, desc.format, 1..2, 0..6)
+        .unwrap();
     let views: Vec<_> = lines(&r, "create_view")
         .iter()
         .map(|l| l.split(" of ").nth(1).unwrap())
@@ -751,8 +794,10 @@ fn generate_mips_of_a_cube_reads_whole_cube_views_and_names_the_face() {
 fn defaults_build_only_the_built_in_programs_they_draw_with() {
     let mut r = Recorder::new();
     let desc = texture(TextureDimension::D2, Format::Rgba8Unorm, 1, 3);
-    r.generate_mips(&50, &desc, 1..3, 0..1).unwrap();
-    r.generate_mips(&50, &desc, 1..3, 0..1).unwrap();
+    r.generate_mips(&50, &desc, desc.format, 1..3, 0..1)
+        .unwrap();
+    r.generate_mips(&50, &desc, desc.format, 1..3, 0..1)
+        .unwrap();
     assert_eq!(
         lines(&r, "create_program").len(),
         1,
@@ -859,5 +904,103 @@ fn absent_features_say_which() {
     assert_eq!(
         r.write_timestamp(&BLOCK, 0).unwrap_err(),
         GpuError::Absent(Features::TIMESTAMPS)
+    );
+}
+
+/// The built-in programs made so far.
+fn made(r: &Recorder) -> Vec<Builtin> {
+    r.helpers.programs.iter().map(|(w, _)| *w).collect()
+}
+
+fn generate(r: &mut Recorder, desc: &TextureDesc, values: Format) {
+    r.generate_mips(&50, desc, values, 1..2, 0..desc.depth_or_layers)
+        .unwrap();
+}
+
+#[test]
+fn generate_mips_filters_in_the_program_where_the_format_cannot_be_filtered() {
+    let mut r = Recorder::new();
+    let filter = FormatUse::all() - FormatUse::FILTER;
+    r.caps.as_mut().unwrap().formats.0[Format::R32Float.index()] = filter;
+    let desc = texture(TextureDimension::D2, Format::R32Float, 1, 2);
+    generate(&mut r, &desc, desc.format);
+    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 1);
+    assert_eq!(
+        made(&r),
+        [Builtin::Mip(ViewDimension::D2, MipRead::Unfiltered)]
+    );
+    let bound = r.bound_samplers[0];
+    assert_eq!(
+        r.samplers.iter().find(|s| s.0 == bound).unwrap().1,
+        Filter::Nearest
+    );
+
+    let mut r = Recorder::new();
+    let desc = texture(TextureDimension::D2, Format::R32Float, 1, 2);
+    generate(&mut r, &desc, desc.format);
+    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 0);
+    assert_eq!(
+        made(&r),
+        [Builtin::Mip(ViewDimension::D2, MipRead::Filtered)]
+    );
+}
+
+#[test]
+fn generate_mips_of_an_integer_twin_decodes_and_encodes() {
+    let mut r = Recorder::new();
+    let desc = texture(TextureDimension::D2, Format::Rgba16Uint, 3, 2);
+    generate(&mut r, &desc, Format::Rgba16Unorm);
+    assert_eq!(
+        made(&r),
+        [Builtin::Mip(ViewDimension::D2Array, MipRead::Unorm)]
+    );
+    let ring = r.helpers.ring.as_ref().unwrap().buffer;
+    let scale = u32::from_le_bytes(r.buffers[ring as usize][..4].try_into().unwrap());
+    assert_eq!(scale, 65535);
+
+    let mut r = Recorder::new();
+    let desc = texture(TextureDimension::D2, Format::Rgba8Sint, 1, 2);
+    generate(&mut r, &desc, Format::Rgba8Snorm);
+    assert_eq!(made(&r), [Builtin::Mip(ViewDimension::D2, MipRead::Snorm)]);
+
+    let mut r = Recorder::new();
+    let desc = texture(TextureDimension::D2, Format::Rgba8Uint, 1, 2);
+    assert!(matches!(
+        r.generate_mips(&50, &desc, Format::Rgba16Unorm, 1..2, 0..1),
+        Err(GpuError::Invalid(_))
+    ));
+}
+
+#[test]
+fn generate_mips_of_an_integer_cube_reads_a_2d_array() {
+    // With views: a 2D array view of the cube.
+    let mut r = Recorder::new();
+    r.caps.as_mut().unwrap().features = Features::TEXTURE_VIEWS;
+    let mut desc = texture(TextureDimension::D2, Format::R16Uint, 6, 2);
+    desc.cube = true;
+    generate(&mut r, &desc, Format::R16Unorm);
+    assert_eq!(
+        made(&r),
+        [Builtin::Mip(ViewDimension::D2Array, MipRead::Unorm)]
+    );
+    assert!(lines(&r, "create_view")[0].ends_with(" of 50 D2Array mip 0+1 layer 0+6"));
+    assert_eq!(r.slow_paths().count(SlowPath::ReinterpretCopy), 0);
+
+    // Without: the level above copied into a 2D array texture first.
+    let mut r = Recorder::new();
+    generate(&mut r, &desc, Format::R16Unorm);
+    assert_eq!(r.slow_paths().count(SlowPath::ReinterpretCopy), 1);
+    let copy = lines(&r, "copy_texture");
+    assert_eq!(copy.len(), 1);
+    assert!(
+        copy[0].starts_with("copy_texture 50 mip 0 to "),
+        "{}",
+        copy[0]
+    );
+    assert!(copy[0].ends_with(" mip 0, 8x8x6"), "{}", copy[0]);
+    let view = lines(&r, "create_view")[0];
+    assert!(
+        view.contains("D2Array mip 0+1 layer 0+6") && !view.contains(" of 50 "),
+        "{view}"
     );
 }

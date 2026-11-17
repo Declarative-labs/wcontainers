@@ -41,8 +41,6 @@ pub enum SlowPath {
     DepthBiasInShader,
     /// Sampler border color applied in the program.
     BorderInShader,
-    /// Wide lines drawn as triangles.
-    WideLinesAsTriangles,
     /// Logic operation applied in the program, reading a copy of the target.
     LogicOpInShader,
     /// Polygon fill mode drawn as generated lines or points.
@@ -158,11 +156,26 @@ pub enum SlowPath {
     /// Overlapping guest queries split into one back-end query per stretch between their begins and
     /// ends, the results added.
     QueriesSegmented,
+    /// A copy between non-overlapping ranges of one buffer made through a temporary buffer.
+    CopyWithinBuffer,
+    /// A pixel shader declaring early depth and stencil tests, with side effects, drawn with the depth
+    /// and stencil read in the program from the read-only attachment and tested before the side effects.
+    EarlyTestsInShader,
+    /// As [`SlowPath::EarlyTestsInShader`] for a draw that also writes depth or stencil: each primitive
+    /// drawn with the test in the program, then drawn again writing only depth and stencil.
+    EarlyTestsPerPrimitive,
+    /// A per-resource minimum level-of-detail clamp applied by merged samplers and by the program.
+    MinLodClamp,
+    /// A fractional viewport drawn with the enclosing whole-pixel viewport, adjusted in the program.
+    ViewportInShader,
+    /// A staging resource the GPU wrote, mapped for writing only, read back first so the bytes the
+    /// program leaves alone keep the GPU's values.
+    StagingRefreshed,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 66] = [
+    pub const ALL: [SlowPath; 71] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -178,7 +191,6 @@ impl SlowPath {
         SlowPath::ProvokingRewrite,
         SlowPath::DepthBiasInShader,
         SlowPath::BorderInShader,
-        SlowPath::WideLinesAsTriangles,
         SlowPath::LogicOpInShader,
         SlowPath::FillModeConverted,
         SlowPath::TexelBufferAsStorage,
@@ -229,6 +241,12 @@ impl SlowPath {
         SlowPath::DepthWrittenByDraw,
         SlowPath::HostCopyKept,
         SlowPath::QueriesSegmented,
+        SlowPath::CopyWithinBuffer,
+        SlowPath::EarlyTestsInShader,
+        SlowPath::EarlyTestsPerPrimitive,
+        SlowPath::MinLodClamp,
+        SlowPath::ViewportInShader,
+        SlowPath::StagingRefreshed,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -249,7 +267,6 @@ impl SlowPath {
             SlowPath::ProvokingRewrite => "provoking vertex rewritten",
             SlowPath::DepthBiasInShader => "depth bias applied in the shader",
             SlowPath::BorderInShader => "sampler border color applied in the shader",
-            SlowPath::WideLinesAsTriangles => "wide lines drawn as triangles",
             SlowPath::LogicOpInShader => "logic operation applied in the shader",
             SlowPath::FillModeConverted => "fill mode drawn as generated lines or points",
             SlowPath::TexelBufferAsStorage => "typed buffer read through a storage buffer",
@@ -304,6 +321,16 @@ impl SlowPath {
             SlowPath::DepthWrittenByDraw => "depth copy made by a draw",
             SlowPath::HostCopyKept => "texture kept on the host as well",
             SlowPath::QueriesSegmented => "overlapping queries segmented",
+            SlowPath::CopyWithinBuffer => "copy within one buffer made through another",
+            SlowPath::EarlyTestsInShader => "early depth and stencil tests run in the shader",
+            SlowPath::EarlyTestsPerPrimitive => {
+                "early depth and stencil tests run one primitive at a time"
+            }
+            SlowPath::MinLodClamp => {
+                "resource minimum lod clamp applied by samplers and the shader"
+            }
+            SlowPath::ViewportInShader => "fractional viewport applied in the shader",
+            SlowPath::StagingRefreshed => "staging resource read back before a write-only map",
         }
     }
 }

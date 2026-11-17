@@ -11,5 +11,8 @@ repository.workspace = true
 bitflags.workspace = true
 naga = { workspace = true, features = ["wgsl-in"] }
 
+[dev-dependencies]
+naga = { workspace = true, features = ["wgsl-in", "glsl-out", "wgsl-out"] }
+
 [lints]
 workspace = true
