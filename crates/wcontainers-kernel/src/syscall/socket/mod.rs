@@ -1826,7 +1826,14 @@ fn receive(
         )
     };
     let copied = (data.len() as u64).min(size);
-    scatter(kernel, cx, tid, parts, &data[..copied as usize])?;
+    if let Err(error) = scatter(kernel, cx, tid, parts, &data[..copied as usize]) {
+        // `__unix_dgram_recvmsg` has taken the message off the queue and frees it.
+        if !peek {
+            let packet = socket.borrow_mut().queue.pop_front().expect("a packet");
+            drop_packet(kernel, cx, packet);
+        }
+        return Err(error);
+    }
     let mut received = Received {
         files,
         time,
@@ -2496,7 +2503,7 @@ pub(super) fn recvmsg(
     let (file, socket) = socket_of(kernel, tid, fd)?;
     let header = read_header(kernel, cx, tid, address, false)?;
     let flags = flags as u32;
-    let (copied, received) = receive(
+    let result = receive(
         kernel,
         cx,
         tid,
@@ -2504,7 +2511,37 @@ pub(super) fn recvmsg(
         &socket,
         Data::Guest(&header.parts),
         flags,
-    )?;
+    );
+    let (copied, received) = match result {
+        // `unix_stream_read_generic` hands its credentials over even when its loop read nothing
+        // and failed (no bytes, or a pending error): empty ones, as nothing was examined.
+        Err(error)
+            if !matches!(
+                error,
+                Errno::PARKED | Errno::EINVAL | Errno::EFAULT | Errno::ERESTARTSYS
+            ) && socket.borrow().local()
+                && socket.borrow().kind == SOCK_STREAM
+                && socket.borrow().passcred
+                && flags & MSG_OOB == 0 =>
+        {
+            let mut control = Vec::new();
+            let mut ignored = 0;
+            let room = header.control_length as usize;
+            put_control(
+                &mut control,
+                room,
+                SOL_SOCKET,
+                SCM_CREDENTIALS,
+                &[0; 12],
+                &mut ignored,
+            );
+            if !control.is_empty() {
+                guest(kernel, cx, tid).write(header.control, &control)?;
+            }
+            return Err(error);
+        }
+        result => result?,
+    };
     // `____sys_recvmsg` starts the flags given back from MSG_CMSG_CLOEXEC.
     let mut out_flags = received.flags | (flags & MSG_CMSG_CLOEXEC);
     // The sender's name.
@@ -2564,7 +2601,12 @@ pub(super) fn recvmsg(
     }
     let passcred = socket.borrow().passcred && socket.borrow().family == AF_UNIX;
     if passcred {
-        let cred = received.cred.unwrap_or(NO_CRED);
+        // A stream read that examined nothing has empty credentials.
+        let cred = received.cred.unwrap_or(Cred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        });
         let mut data = Vec::new();
         data.extend_from_slice(&(cred.pid as u32).to_le_bytes());
         data.extend_from_slice(&cred.uid.to_le_bytes());

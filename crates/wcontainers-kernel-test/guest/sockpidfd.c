@@ -260,6 +260,39 @@ static void rights(void) {
     close(other[1]);
 }
 
+// A failed stream read with credentials asked for still writes empty ones into the control area,
+// and a datagram that could not be copied out is gone.
+static void failed_reads(void) {
+    int sv[2], on = 1;
+    socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sv);
+    setsockopt(sv[1], SOL_SOCKET, SO_PASSCRED, &on, sizeof on);
+    unsigned char control[64];
+    memset(control, 0xab, sizeof control);
+    char buf[8];
+    struct iovec iov = {.iov_base = buf, .iov_len = sizeof buf};
+    struct msghdr msg = {.msg_iov = &iov, .msg_iovlen = 1, .msg_control = control,
+                         .msg_controllen = 20};
+    result("empty stream", recvmsg(sv[1], &msg, 0));
+    printf("control after:");
+    for (int i = 0; i < 24; i++)
+        printf(" %02x", control[i]);
+    printf(" controllen %zu\n", (size_t)msg.msg_controllen);
+    shutdown(sv[0], SHUT_WR);
+    msg.msg_controllen = 64;
+    result("ended stream", recvmsg(sv[1], &msg, 0));
+    show_control("ended stream control", &msg, 0, 0);
+    close(sv[0]);
+    close(sv[1]);
+    socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv);
+    send(sv[0], "lost", 4, 0);
+    struct iovec bad = {.iov_base = (void *)8, .iov_len = 4};
+    struct msghdr m = {.msg_iov = &bad, .msg_iovlen = 1};
+    result("into a bad buffer", recvmsg(sv[1], &m, MSG_DONTWAIT));
+    result("after it", recv(sv[1], buf, sizeof buf, MSG_DONTWAIT));
+    close(sv[0]);
+    close(sv[1]);
+}
+
 static void queued(void) {
     int sv[2];
     socketpair(AF_UNIX, SOCK_STREAM, 0, sv);
@@ -344,6 +377,7 @@ int main(void) {
     passing();
     rights();
     queued();
+    failed_reads();
     attributes();
     attribute_rights("root");
     setresuid(1000, -1, 1000);
