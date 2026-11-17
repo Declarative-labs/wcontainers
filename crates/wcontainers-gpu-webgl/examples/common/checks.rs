@@ -420,3 +420,144 @@ pub fn discard_then_no_overwrite_writes<H: Host>() {
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
+
+/// Depth and stencil read back as stored (`DepthReadByDraw` on WebGL 2): a pass clears a 4 by 4 target
+/// to depth 0.25 and stencil 0x5a, then `clear_rects` sets the middle 2 by 2 to 0.75 and 0xc3. Depth
+/// in unorm formats within one step (GL lets the conversion round either way). Formats the back end
+/// cannot read back (no `COPY_OUT`) are left out: stencil needs WEBGL_stencil_texturing.
+pub fn depth_and_stencil_read_back<H: Host>() {
+    let mut b = H::make();
+    let formats = [
+        Format::Depth16Unorm,
+        Format::Depth24Plus,
+        Format::Depth32Float,
+        Format::Depth24PlusStencil8,
+        Format::Depth32FloatStencil8,
+    ];
+    let inside = |p: usize| (1..3).contains(&(p % 4)) && (1..3).contains(&(p / 4));
+    for format in formats {
+        if !b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+            continue;
+        }
+        let stencil = format.kind() == FormatKind::DepthStencil;
+        let t = b
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: 4,
+                height: 4,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+                cube: false,
+                reinterpret: false,
+            })
+            .expect("create_texture");
+        let v = b
+            .create_view(
+                &t,
+                &TextureViewDesc {
+                    format,
+                    dimension: ViewDimension::D2,
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: 0,
+                    layer_count: 1,
+                    stencil: false,
+                },
+            )
+            .expect("create_view");
+        let ops = |v| AspectOps {
+            load: LoadOp::Clear(v),
+            store: StoreOp::Store,
+            read_only: false,
+        };
+        b.begin_pass(&PassDesc {
+            colors: core::array::from_fn(|_| None),
+            depth: Some(DepthAttachment {
+                view: &v,
+                depth: Some(ops(0.25f32.to_bits())),
+                stencil: stencil.then_some(AspectOps {
+                    load: LoadOp::Clear(0x5a),
+                    store: StoreOp::Store,
+                    read_only: false,
+                }),
+            }),
+            occlusion: None,
+            empty: None,
+        });
+        b.end_pass();
+        b.clear_rects(
+            &v,
+            format,
+            ClearValue::DepthStencil {
+                depth: Some(0.75f32.to_bits()),
+                stencil: stencil.then_some(0xc3),
+            },
+            &[ScissorRect {
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 2,
+            }],
+        )
+        .expect("clear_rects");
+        let read = |b: &mut H::Backend, stencil: bool, bytes: usize| {
+            let mut got = vec![0u8; 16 * bytes];
+            b.read_back_now(
+                &ReadSource::Texture {
+                    region: TextureRegion {
+                        texture: &t,
+                        mip: 0,
+                        layer: 0,
+                        origin: Origin::default(),
+                        stencil,
+                    },
+                    extent: Extent {
+                        width: 4,
+                        height: 4,
+                        depth_or_layers: 1,
+                    },
+                },
+                &mut got,
+            )
+            .expect("read_back_now");
+            got
+        };
+        let (bytes, one, tolerance) = match format {
+            Format::Depth16Unorm => (2, 65535.0, 1),
+            Format::Depth24Plus | Format::Depth24PlusStencil8 => (4, 16_777_215.0, 1),
+            _ => (4, 0.0, 0),
+        };
+        let depth = read(&mut b, false, bytes);
+        for p in 0..16 {
+            let want = if inside(p) { 0.75f64 } else { 0.25 };
+            let raw = &depth[p * bytes..(p + 1) * bytes];
+            let got = if bytes == 2 {
+                u64::from(u16::from_le_bytes(raw.try_into().unwrap()))
+            } else {
+                u64::from(u32::from_le_bytes(raw.try_into().unwrap()))
+            };
+            let want = if one == 0.0 {
+                u64::from((want as f32).to_bits())
+            } else {
+                (want * one).round() as u64
+            };
+            assert!(
+                got.abs_diff(want) <= tolerance,
+                "{format:?}: depth at {p} is {got:#x}, expected {want:#x}"
+            );
+        }
+        if stencil {
+            let got = read(&mut b, true, 1);
+            let want: Vec<u8> = (0..16)
+                .map(|p| if inside(p) { 0xc3 } else { 0x5a })
+                .collect();
+            assert_eq!(got, want, "{format:?}: stencil");
+        }
+        b.destroy(Object::TextureView(v));
+        b.destroy(Object::Texture(t));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}

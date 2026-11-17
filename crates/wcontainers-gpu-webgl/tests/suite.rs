@@ -47,3 +47,8 @@ fn vertex_and_instance_numbers_include_the_bases() {
 fn discard_then_no_overwrite_writes() {
     checks::discard_then_no_overwrite_writes::<Angle>();
 }
+
+#[test]
+fn depth_and_stencil_read_back() {
+    checks::depth_and_stencil_read_back::<Angle>();
+}

@@ -129,6 +129,7 @@ suite!(
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,
+    depth_and_stencil_read_back,
 );
 
 /// Runs the suite test `name` with `off` (extensions to treat as missing, separated by spaces). A

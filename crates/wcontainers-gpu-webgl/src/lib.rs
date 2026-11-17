@@ -265,8 +265,9 @@ pub struct WebGl {
     /// GL's last compile or link log, for tests and bug reports.
     last_log: String,
     surface: Option<SurfaceState>,
-    /// The depth read programs for 2D and 2D array sources, made at their first use.
-    depth_read: [Option<depth::DepthRead>; 2],
+    /// The depth and stencil read programs for 2D and 2D array sources (depth 2D, depth array,
+    /// stencil 2D, stencil array), made at their first use.
+    depth_read: [Option<depth::DepthRead>; 4],
     /// A nearest-filtering sampler for the back end's own fetches, made at its first use.
     point_sampler: Option<glow::Sampler>,
 }
@@ -322,7 +323,7 @@ impl WebGl {
             twins: 0,
             last_log: String::new(),
             surface: None,
-            depth_read: [None, None],
+            depth_read: [None, None, None, None],
             point_sampler: None,
         }
     }
@@ -714,8 +715,9 @@ impl WebGl {
         fb
     }
 
-    /// Draws the depth of a region into a new `r32uint` texture of the region's size and layers, which
-    /// reads back as the depth's stored bytes ([`SlowPath::DepthReadByDraw`]).
+    /// Draws the depth (or with `region.stencil` the stencil) of a region into a new `r32uint` texture
+    /// of the region's size and layers, which reads back as the stored bytes
+    /// ([`SlowPath::DepthReadByDraw`]).
     fn depth_by_draw(
         &mut self,
         region: &TextureRegion<'_, Self>,
@@ -726,14 +728,15 @@ impl WebGl {
         let Some((scale, kept)) = depth::stored(src.desc.format) else {
             return Err(GpuError::Invalid("webgl: not a depth format"));
         };
+        let kept = if region.stencil { 1 } else { kept };
         let array = match src.target {
             glow::TEXTURE_2D => 0,
             glow::TEXTURE_2D_ARRAY => 1,
             _ => return Err(self.unbuilt("depth read backs of cube textures")),
-        };
+        } + 2 * usize::from(region.stencil);
         self.slow.hit(SlowPath::DepthReadByDraw);
         if self.depth_read[array].is_none() {
-            match depth::build(&self.gl, array == 1) {
+            match depth::build(&self.gl, array % 2 == 1, region.stencil) {
                 Ok(p) => self.depth_read[array] = Some(p),
                 Err(log) => {
                     self.last_log = log;
@@ -796,7 +799,16 @@ impl WebGl {
             }
             gl.bind_sampler(0, Some(sampler));
             gl.use_program(Some(program.program));
-            gl.uniform_1_u32(Some(&program.scale), scale);
+            if let Some(location) = &program.scale {
+                gl.uniform_1_u32(Some(location), scale);
+            }
+            if region.stencil {
+                gl.tex_parameter_i32(
+                    src.target,
+                    depth::DEPTH_STENCIL_TEXTURE_MODE,
+                    depth::STENCIL_INDEX as i32,
+                );
+            }
             if !self.flip_y {
                 self.platform
                     .clip_control(gl, platform::LOWER_LEFT, self.values.clip_depth);
@@ -832,6 +844,17 @@ impl WebGl {
         if !self.flip_y {
             self.platform
                 .clip_control(&self.gl, platform::UPPER_LEFT, self.values.clip_depth);
+        }
+        if region.stencil {
+            // Sampled views read depth, so the mode goes back. Unit 0 still holds the source.
+            // SAFETY: a plain GL call on the bound texture.
+            unsafe {
+                self.gl.tex_parameter_i32(
+                    src.target,
+                    depth::DEPTH_STENCIL_TEXTURE_MODE,
+                    depth::DEPTH_COMPONENT as i32,
+                )
+            };
         }
         Ok(scratch)
     }
@@ -936,9 +959,9 @@ impl WebGl {
         read: impl FnOnce(&mut Self, &TextureRegion<'_, Self>) -> Result<R, GpuError>,
     ) -> Option<Result<R, GpuError>> {
         depth::stored(region.texture.desc.format)?;
-        if region.stencil || region.texture.desc.format.kind() == FormatKind::DepthStencil {
+        if region.stencil && !self.extensions.contains("WEBGL_stencil_texturing") {
             return Some(Err(
-                self.unbuilt("read backs and copies of depth-stencil formats")
+                self.unbuilt("stencil read backs without WEBGL_stencil_texturing")
             ));
         }
         Some(self.depth_by_draw(region, extent).and_then(|scratch| {

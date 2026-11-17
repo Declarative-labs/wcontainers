@@ -119,6 +119,7 @@ pub struct FormatExtensions {
     pub color_buffer_float: bool,
     pub float_linear: bool,
     pub float_blend: bool,
+    pub stencil_texturing: bool,
 }
 
 impl FormatExtensions {
@@ -127,6 +128,7 @@ impl FormatExtensions {
             color_buffer_float: ext.contains("EXT_color_buffer_float"),
             float_linear: ext.contains("OES_texture_float_linear"),
             float_blend: ext.contains("EXT_float_blend"),
+            stencil_texturing: ext.contains("WEBGL_stencil_texturing"),
         }
     }
 }
@@ -162,8 +164,11 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     if gl.format == DEPTH_STENCIL {
         uses.remove(FormatUse::SAMPLE);
     }
-    // Depth reads back by a draw into a colour texture; the stencil of combined formats not yet.
-    if read_as(format, ext).is_some() || gl.format == DEPTH_COMPONENT {
+    // Depth reads back by a draw into a colour texture, and stencil so with WEBGL_stencil_texturing.
+    if read_as(format, ext).is_some()
+        || gl.format == DEPTH_COMPONENT
+        || (gl.format == DEPTH_STENCIL && ext.stencil_texturing)
+    {
         uses |= FormatUse::COPY_OUT;
     }
     // The canvas's drawing buffer is RGBA8, which surfaces present into.
