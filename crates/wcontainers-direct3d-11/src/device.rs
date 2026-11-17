@@ -178,7 +178,7 @@ impl<B: Backend> Device<B> {
     }
 
     /// What `CheckFormatSupport` answers for DXGI format `dxgi`: the uses this front serves on its
-    /// back end (multisampling, 1D and 3D textures and typed buffers are not served).
+    /// back end (1D and 3D textures and typed buffers are not reported).
     pub fn format_support(&self, dxgi: u32) -> u32 {
         use crate::desc::support::*;
         let mut bits = 0;
@@ -216,13 +216,37 @@ impl<B: Backend> Device<B> {
                 bits |= bit;
             }
         }
+        if [2, 4, 8, 16].iter().any(|&n| self.takes_samples(f, n)) {
+            bits |= MULTISAMPLE_RENDERTARGET;
+            if uses.contains(FormatUse::SAMPLE) {
+                bits |= MULTISAMPLE_LOAD;
+            }
+            if resolvable(f) {
+                bits |= MULTISAMPLE_RESOLVE;
+            }
+        }
         bits
     }
 
+    /// Whether textures of `format` drawn into or for depth take `samples` samples.
+    fn takes_samples(&self, format: Format, samples: u32) -> bool {
+        let uses = self.backend.caps().formats.get(format);
+        uses.intersects(FormatUse::RENDER | FormatUse::DEPTH_STENCIL)
+            && self.backend.caps().formats.takes_samples(format, samples)
+    }
+
     /// What `CheckMultisampleQualityLevels` answers: one level for a single sample of a format
-    /// textures can have, none otherwise (multisampled textures are not served yet).
+    /// textures can have, and for a count the back end draws that format with; none otherwise.
     pub fn multisample_quality_levels(&self, dxgi: u32, samples: u32) -> u32 {
-        u32::from(samples == 1 && self.format_support(dxgi) & crate::desc::support::TEXTURE2D != 0)
+        if samples == 1 {
+            return u32::from(self.format_support(dxgi) & crate::desc::support::TEXTURE2D != 0);
+        }
+        let format = format::texture_format(dxgi).or_else(|| {
+            format::is_typeless(dxgi)
+                .then(|| format::storage_format(dxgi, false).ok())
+                .flatten()
+        });
+        u32::from(format.is_some_and(|f| self.takes_samples(f, samples)))
     }
 
     /// Why the device is removed, if it is, polling the back end first (plan section 4.10).
@@ -536,12 +560,21 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
-        // Multisampling is not served, so the device reports no quality level above one sample, and a
-        // count and quality it reports no level for is invalid, as in Direct3D.
+        // A count and quality the device reports no level for is invalid, as in Direct3D.
         if d.sample_quality >= self.multisample_quality_levels(d.format, d.sample_count) {
-            eprintln!("wcontainers direct3d 11: not served: multisampled textures");
             return Err(Error::InvalidArg(
                 "a sample count and quality the device reports no level for",
+            ));
+        }
+        if d.sample_count > 1
+            && (d.dimension != TexDim::D2
+                || mips != 1
+                || d.usage != usage::DEFAULT
+                || d.bind_flags & (bind::RENDER_TARGET | bind::DEPTH_STENCIL) == 0
+                || d.bind_flags & bind::UNORDERED_ACCESS != 0)
+        {
+            return Err(Error::InvalidArg(
+                "a multisampled texture is 2D, of one level and default usage, drawn into",
             ));
         }
         let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
@@ -664,7 +697,7 @@ impl<B: Backend> Device<B> {
             height: d.height,
             depth_or_layers,
             mip_levels: mips,
-            samples: 1,
+            samples: d.sample_count.max(1),
             usage,
             cube,
             reinterpret: false,
@@ -794,9 +827,12 @@ impl<B: Backend> Device<B> {
         let cube = t.misc_flags & MISC_TEXTURECUBE != 0 && kind == bind::SHADER_RESOURCE;
         // Views drawn into are one layer at a pass; shader and unordered access views see theirs.
         let drawn = kind & (bind::RENDER_TARGET | bind::DEPTH_STENCIL) != 0;
+        let multisampled = t.sample_count > 1;
         let whole = ViewDesc {
             format: t.format,
             dimension: match (t.dimension, arrayed) {
+                (TexDim::D2, false) if multisampled => ViewDim::Texture2DMS,
+                (TexDim::D2, true) if multisampled => ViewDim::Texture2DMSArray,
                 (TexDim::D2, _) if cube && t.array_size == 6 => ViewDim::TextureCube,
                 (TexDim::D2, _) if cube => ViewDim::TextureCubeArray,
                 (TexDim::D1, false) => ViewDim::Texture1D,
@@ -826,7 +862,11 @@ impl<B: Backend> Device<B> {
             ViewDim::Texture3D => TexDim::D3,
             _ => TexDim::D2,
         };
-        if of != t.dimension {
+        let ms_view = matches!(
+            v.dimension,
+            ViewDim::Texture2DMS | ViewDim::Texture2DMSArray
+        );
+        if of != t.dimension || ms_view != multisampled {
             return Err(Error::InvalidArg(
                 "a view of a dimension the texture does not have",
             ));
@@ -836,8 +876,15 @@ impl<B: Backend> Device<B> {
             TexDim::D3 => (t.depth >> v.first_mip.min(31)).max(1),
             _ => t.array_size,
         };
-        if matches!(v.dimension, ViewDim::Texture1D | ViewDim::Texture2D)
-            || (v.dimension == ViewDim::Texture3D && kind == bind::SHADER_RESOURCE)
+        if ms_view {
+            // One level, which the descriptions of these views do not name.
+            v.first_mip = 0;
+            v.mip_count = 1;
+        }
+        if matches!(
+            v.dimension,
+            ViewDim::Texture1D | ViewDim::Texture2D | ViewDim::Texture2DMS
+        ) || (v.dimension == ViewDim::Texture3D && kind == bind::SHADER_RESOURCE)
         {
             v.first_layer = 0;
             v.layer_count = if v.dimension == ViewDim::Texture3D {
@@ -887,8 +934,10 @@ impl<B: Backend> Device<B> {
             }
         } else {
             let dimension = match v.dimension {
-                ViewDim::Texture1D | ViewDim::Texture2D => ViewDimension::D2,
-                ViewDim::Texture1DArray | ViewDim::Texture2DArray => ViewDimension::D2Array,
+                ViewDim::Texture1D | ViewDim::Texture2D | ViewDim::Texture2DMS => ViewDimension::D2,
+                ViewDim::Texture1DArray | ViewDim::Texture2DArray | ViewDim::Texture2DMSArray => {
+                    ViewDimension::D2Array
+                }
                 ViewDim::Texture3D => ViewDimension::D3,
                 ViewDim::TextureCube => ViewDimension::Cube,
                 ViewDim::TextureCubeArray => ViewDimension::CubeArray,
@@ -1440,6 +1489,14 @@ fn stand_ins(module: &naga::Module) -> Vec<(u32, Option<StandIn>)> {
             ))
         })
         .collect()
+}
+
+/// Whether multisampled textures of `format` resolve (averaging: not integer or depth).
+pub(crate) fn resolvable(format: Format) -> bool {
+    !matches!(
+        format.kind(),
+        FormatKind::Uint | FormatKind::Sint | FormatKind::DepthStencil
+    )
 }
 
 fn check_buffer(d: &BufferDesc, has_init: bool) -> Result<()> {

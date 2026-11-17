@@ -14,7 +14,7 @@ use wcontainers_gpu::{
 use crate::desc::{
     self, Box3, SubresourceData, TexDim, TextureDesc, Viewport, map, topology, usage,
 };
-use crate::device::{Device, ZERO_BYTES, gpu_buffer, integer_format};
+use crate::device::{Device, ZERO_BYTES, gpu_buffer, integer_format, resolvable};
 use crate::error::{Error, Result, not_implemented};
 use crate::format;
 use crate::object::*;
@@ -1282,6 +1282,21 @@ impl<B: Backend> Device<B> {
         if self.ctx.sample_mask & 1 == 0 || instances == 0 {
             return Ok(());
         }
+        // The back ends keep the sample mask in the raster block; Direct3D sets it with the blend
+        // state, so a mask leaving out samples of multisampled targets is not served yet.
+        let samples = self
+            .ctx
+            .targets
+            .iter()
+            .chain([&self.ctx.depth])
+            .flatten()
+            .map(|v| v.texture.desc.sample_count)
+            .max()
+            .unwrap_or(1);
+        let all = u32::MAX >> (32 - samples.min(32));
+        if samples > 1 && self.ctx.sample_mask & all != all {
+            return not_implemented("a sample mask leaving out samples of multisampled targets");
+        }
         // The common form's vertex and instance indices include the draw's bases, which SV_VertexID
         // and SV_InstanceID leave out; the helper constants that take them off are not served yet.
         let vertex_base = match range {
@@ -1529,6 +1544,7 @@ impl<B: Backend> Device<B> {
                         t.depth,
                         t.mip_levels,
                         t.array_size,
+                        t.sample_count,
                     )
                 };
                 if shape(a) != shape(b) || Rc::ptr_eq(d, s) {
@@ -1641,6 +1657,51 @@ impl<B: Backend> Device<B> {
             }
             _ => Err(Error::InvalidArg("a copy between a buffer and a texture")),
         }
+    }
+
+    /// `ResolveSubresource`: the samples of a multisampled subresource averaged into a
+    /// single-sampled subresource of its size, both read as `format`.
+    pub fn resolve_subresource(
+        &mut self,
+        dst: &Resource<B>,
+        dst_sub: u32,
+        src: &Resource<B>,
+        src_sub: u32,
+        format: u32,
+    ) -> Result<()> {
+        let (Resource::Texture(d), Resource::Texture(s)) = (dst, src) else {
+            return Err(Error::InvalidArg("a resolve between buffers"));
+        };
+        let (dm, sm) = (d.desc.mip_levels, s.desc.mip_levels);
+        if s.desc.sample_count < 2
+            || d.desc.sample_count != 1
+            || dst_sub >= dm * d.desc.array_size
+            || src_sub >= sm * s.desc.array_size
+        {
+            return Err(Error::InvalidArg(
+                "a resolve of a multisampled subresource into a single-sampled one",
+            ));
+        }
+        let (de, se) = (d.mip_extent(dst_sub % dm), s.mip_extent(src_sub % sm));
+        if (de.width, de.height) != (se.width, se.height) {
+            return Err(Error::InvalidArg(
+                "a resolve between subresources of two sizes",
+            ));
+        }
+        let (into, _) = format::view_format(format, d.desc.format, d.format)?;
+        format::view_format(format, s.desc.format, s.format)?;
+        if !resolvable(into) {
+            return Err(Error::InvalidArg(
+                "a resolve in a format that does not average",
+            ));
+        }
+        self.settle();
+        self.backend.resolve(
+            &s.region(src_sub % sm, src_sub / sm, Origin { x: 0, y: 0, z: 0 }),
+            &d.region(dst_sub % dm, dst_sub / dm, Origin { x: 0, y: 0, z: 0 }),
+            into,
+        );
+        self.texture_written(d, dst_sub)
     }
 
     /// `UpdateSubresource`: `bytes` is the stand-in's copy of the program's data.

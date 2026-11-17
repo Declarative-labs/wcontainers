@@ -959,6 +959,25 @@ impl Context {
         self.update_subresource(dst, sub, dst_box, data, row_pitch, depth_pitch);
     }
 
+    pub(super) fn resolve_subresource(
+        &self,
+        dst: Ref<ID3D11Resource>,
+        dst_sub: u32,
+        src: Ref<ID3D11Resource>,
+        src_sub: u32,
+        format: DXGI_FORMAT,
+    ) {
+        let (Some(d), Some(s)) = (
+            dst.as_ref().and_then(resource_of),
+            src.as_ref().and_then(resource_of),
+        ) else {
+            return;
+        };
+        self.run("ResolveSubresource", move |f| {
+            f.resolve_subresource(&d, dst_sub, &s, src_sub, format.0 as u32)
+        });
+    }
+
     /// Discards leave contents undefined; keeping them is one of the contents allowed.
     pub(super) fn discard_resource(&self, _resource: Ref<ID3D11Resource>) {}
 

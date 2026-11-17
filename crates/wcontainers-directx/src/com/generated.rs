@@ -1282,7 +1282,13 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::ResolveSubresource")
+        self.resolve_subresource(
+            pdstresource,
+            dstsubresource,
+            psrcresource,
+            srcsubresource,
+            format,
+        )
     }
     fn ExecuteCommandList(
         &self,

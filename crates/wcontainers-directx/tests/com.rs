@@ -544,11 +544,32 @@ fn capability_queries_claim_only_what_creation_serves() {
         let Ok(bits) = (unsafe { device.CheckFormatSupport(format) }) else {
             continue;
         };
+        // A quality level for 4 samples makes a texture of 4 samples drawn into, as a target or
+        // for depth (a typeless group's bits do not say which).
         let levels = unsafe { device.CheckMultisampleQualityLevels(format, 4) }.unwrap();
-        assert_eq!(
-            levels, 0,
-            "format {f}: multisampled textures are not served"
-        );
+        if levels > 0 {
+            let made = [D3D11_BIND_RENDER_TARGET, D3D11_BIND_DEPTH_STENCIL]
+                .iter()
+                .any(|bind| {
+                    let desc = D3D11_TEXTURE2D_DESC {
+                        Width: 4,
+                        Height: 4,
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: format,
+                        SampleDesc: DXGI_SAMPLE_DESC {
+                            Count: 4,
+                            Quality: 0,
+                        },
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: bind.0 as u32,
+                        ..Default::default()
+                    };
+                    let mut out = None;
+                    unsafe { device.CreateTexture2D(&desc, None, Some(&mut out)) }.is_ok()
+                });
+            assert!(made, "format {f} with 4 samples");
+        }
         if bits & D3D11_FORMAT_SUPPORT_TEXTURE2D.0 as u32 == 0 {
             continue;
         }
