@@ -4,6 +4,10 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
+the reference and on our kernel, one command each for a test, a group and the whole suite. See
+"K6a, first run" just below for what exists, the bar, the first comparison and what is next.
+
 K0 to K4 are done. K5 (sockets and network) is built: every part of its milestone exists and is
 tested against the reference. The eighth run fixed every finding of the seventh run's check (the
 unstable deferred accept test, six option corners, connects to oneself, IPV6_ADDRFORM, the
@@ -13,7 +17,60 @@ corner differences and options not built, each counted, listed under Next for la
 and 5050450 passed 20000 sequences each with every fix in (see Measurements). The fuller run-by-run record of K4 and of K5's first two runs is in this file at
 commit fdf7001 (git history); what they built is summarised here.
 
-K5 built (all four runs):
+## K6a, first run
+
+The K5 check's ten findings (orchestrator's k5-open-findings.json), each tested against the
+reference (tests/inet.rs `option_reads_and_socket_corners_match_reference`, guest/optreads.c;
+`route_questions_and_rules_match_reference`, guest/routeget.c):
+- TCP sendmsg reads its control messages only once connected (`sk_stream_wait_connect` first):
+  an unconnected socket with a bad cmsg_len is EPIPE, as Linux (layer 1 seed 9595101's find).
+- Route questions: RTM_GETROUTE of one address (`ip route get`, IPv4 and ::1, RTM_F_FIB_MATCH,
+  RTA_OIF), and the RTM_GETRULE dump (IPv4's three rules, multicast routing's, IPv6's two) as
+  measured; a single RTM_GETRULE is EOPNOTSUPP as Linux.
+- Socket options Linux answers: every SOL_SOCKET one of the check's list (SO_DEBUG, SO_NO_CHECK,
+  SO_BSDCOMPAT, SO_GET_FILTER, SO_RXQ_OVFL with its drop counts, SO_WIFI_STATUS, SO_NOFCS,
+  SO_LOCK_FILTER, SO_SELECT_ERR_QUEUE with POLLPRI, SO_MAX_PACING_RATE, SO_BPF_EXTENSIONS,
+  SO_INCOMING_NAPI_ID, SO_COOKIE, SO_PEERGROUPS, SO_PREFER_BUSY_POLL, SO_NETNS_COOKIE,
+  SO_BUF_LOCK, SO_RESERVE_MEM's read, SO_TXREHASH, SO_DETACH_FILTER) and the TCP, IP and IPv6
+  ones of the list as read on fresh and connected sockets; what is still not built is named
+  under "Not built" ("socket option not built"). UDP now counts its drops (/proc/net/udp's
+  column too) and takes a datagram as 7.0's `__udp_enqueue_schedule_skb` does (room for its
+  true size, or an empty queue), found by the new test. IPv6's route MTU is 65536 (IPV6_MTU
+  read 65535 before).
+- SO_PASSSEC on internet sockets is EOPNOTSUPP; TCP poll wants SO_RCVLOWAT's bytes (or a full
+  receive buffer); a second automatic bind of a named local socket is 0.
+- TCP_CORK, TCP_FASTOPEN_CONNECT, TCP_SAVE_SYN, TCP_TX_DELAY, a paced SO_MAX_PACING_RATE and TCP's
+  MSG_MORE are counted "socket option not acted on" (warned); the counter "recvmmsg returned
+  early" is gone: recvmmsg's and sendmmsg's later messages wait as Linux's do (the thread's call
+  slot keeps the messages done, `Call::messages`).
+- Netlink protocols other than route, ping sockets and AF_PACKET stay refused and counted; they
+  are now named under "Not built" (ping and packet sockets are section 15's raw packets).
+- sigpick's reference race: musl's fork blocks every signal until it returns in the parent, so a
+  child that signalled at once could find the main thread blocking it. The child now waits for
+  the parent's word; 8 of 8 runs passed alone (load about 20).
+
+The Linux Test Project (layer 3):
+- Release 20260930 (the newest, September 2026), built with glibc on Debian trixie (pinned by
+  digest): glibc is the C library the project is written and tested for; its musl build drops
+  tests that do not build there. `crates/wcontainers-kernel-test/ltp/build.sh <scratch>` builds
+  the image wc-kernel-ltp:20260930 (suite at /opt/ltp, binaries stripped) and leaves its files
+  as `docker export` gives them in `<scratch>/ltp-20260930.tar` (718 MB). Kept in scratch:
+  pyro-parked/wcontainers-scratch/kernel/ltp. The build took 83 s for the compile (load ~25).
+- One command each (`src/bin/ltp.rs`, `src/ltp.rs`):
+  `LTP_TAR=<tar> nix develop -c cargo run -p wcontainers-kernel-test --bin ltp -- reference|ours <results> [group | group:test | test]...`
+  (no names: the whole suite), and `... --bin ltp -- compare <reference results> <our results>`.
+  `LTP_JOBS` (4), `LTP_SEED` (1; our runs' schedules), `LTP_LIMIT` (seconds per test: 900 ours,
+  1800 reference). A results file that exists is continued. Each test runs `/bin/sh -c
+  <runtest command>` as the first process of a container of its own, with the same environment
+  in both (a default container's plus LTPROOT, TMPDIR and the suite's bin on PATH). Results are
+  one line per test: id, verdict (pass, fail, broken, skipped, warning from the exit code the
+  library ORs together; timeout, hang, crash or unsupported when there was none), exit code,
+  seconds, and on ours the kernel's warnings. Logs under `<results>.logs/`.
+- On ours the image is loaded once into a prepared kernel (`driver::prepare`) and each test runs
+  in a process forked from it, so a kernel crash or a hang ends only that test; the clock is the
+  repeatable one, so the suite's own timeouts are in the guest's time.
+
+
 - Local sockets of every kind (stream, datagram, sequenced packets), names (paths and abstract),
   listening, SCM_RIGHTS and SCM_CREDENTIALS, options and buffer limits as Linux; a connect by path
   moves the socket node's access time.

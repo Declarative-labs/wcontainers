@@ -22,7 +22,37 @@ pub fn image_name() -> String {
 
 /// The groups (the suite's `runtest` files) of a whole run: those whose tests a default
 /// container can start. Each test says what it needs and skips itself when that is missing.
-pub const SUITE: &[&str] = &["syscalls", "syscalls-ipc"];
+/// Left out are the groups for hardware, other hosts or long stress: cpuhotplug, crashme, dio,
+/// dma_thread_diotest, hyperthreading, ima, kvm, ltp-aio*, net.*, net_stress.*, numa,
+/// power_management_tests, scsi_debug.part1, smack, staging, thermal, tpm_tools and tracing.
+pub const SUITE: &[&str] = &[
+    "syscalls",
+    "syscalls-ipc",
+    "can",
+    "capability",
+    "commands",
+    "containers",
+    "controllers",
+    "crypto",
+    "cve",
+    "fcntl-locktests",
+    "fs",
+    "fs_bind",
+    "fs_perms_simple",
+    "fs_readonly",
+    "hugetlb",
+    "input",
+    "kernel_misc",
+    "math",
+    "mm",
+    "nptl",
+    "pty",
+    "sched",
+    "smoketest",
+    "sysfs",
+    "uevent",
+    "watchqueue",
+];
 
 /// The environment of every test: a default container's, with the suite's programs on the path
 /// and its root and temporary directory named as its runners name them.
@@ -129,7 +159,8 @@ pub fn verdict(exit_code: i32) -> String {
     match exit_code {
         0 => "pass".into(),
         32 => "skipped".into(),
-        code if code >= 128 => format!("signal{}", code - 128),
+        // `docker run`'s 128 plus a signal (Linux has 64).
+        code if (129..=192).contains(&code) => format!("signal{}", code - 128),
         code if code & 2 != 0 => "broken".into(),
         code if code & 1 != 0 => "fail".into(),
         code if code & 4 != 0 => "warning".into(),
