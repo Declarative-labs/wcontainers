@@ -102,20 +102,28 @@ bitflags! {
         const MIRROR_ONCE = 1 << 43;
         /// Clip space depth from zero to one, as Direct3D and Vulkan define it, without rewriting shaders.
         const CLIP_DEPTH_ZERO_ONE = 1 << 44;
+        /// [`crate::RasterDesc`]'s depth bias clamp. Without it a front whose draw has a non-zero clamp
+        /// applies the bias in the program (slow path [`crate::SlowPath::DepthBiasInShader`]).
+        const DEPTH_BIAS_CLAMP = 1 << 45;
+        /// Every block-compressed (BC) format is sampled natively. Without it a back end still declares
+        /// the BC formats it serves in [`FormatCaps`], storing them decoded (slow path
+        /// [`crate::SlowPath::BlockDecoded`]).
+        const BLOCK_COMPRESSION = 1 << 46;
     }
 }
 
 /// Numeric limits. Each field says what it bounds; fronts compare them with what their API promises.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Limits {
-    pub max_texture_1d: u32,
     pub max_texture_2d: u32,
+    pub max_texture_cube: u32,
     pub max_texture_3d: u32,
     pub max_texture_layers: u32,
     pub max_buffer_size: u64,
     pub max_uniform_buffer_size: u32,
     pub max_storage_buffer_size: u64,
-    /// Uniform buffers one stage may read.
+    /// Uniform buffers one stage may read, including the one that holds a converted program's helper
+    /// constants.
     pub uniform_buffers_per_stage: u32,
     /// Sampled textures one stage may read.
     pub textures_per_stage: u32,

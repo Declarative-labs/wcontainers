@@ -209,6 +209,10 @@ pub trait Backend: Sized {
         dst_offset: u64,
         size: u64,
     );
+    /// Copies texels between two regions whose formats are equal, sRGB twins, or (as Direct3D and Vulkan
+    /// allow) a block-compressed format and an uncompressed one of the same block size. A back end whose
+    /// API copies only equal formats copies the last kind through a buffer, or through its host copy of
+    /// the blocks where it stores them decoded ([`crate::SlowPath::BlockCopyReadBack`]).
     fn copy_texture(
         &mut self,
         src: &TextureRegion<'_, Self>,
@@ -645,7 +649,9 @@ pub trait Backend: Sized {
         };
         let (buffer, size, mut head) = (ring.buffer.clone(), ring.size, ring.head);
         if total == 0 {
-            offsets.iter_mut().for_each(|o| *o = head);
+            let at = head.next_multiple_of(align);
+            let at = if at > size { 0 } else { at };
+            offsets.iter_mut().for_each(|o| *o = at);
             return Ok(buffer);
         }
         let mut mode = WriteMode::NoOverwrite;
@@ -776,9 +782,9 @@ fn builtin_draw<'a, B: Backend>(
 }
 
 /// The index list that draws a fan as a triangle list or a loop as a line list, honouring restart in
-/// guest indices, and the base vertex to draw it with. Each fan triangle keeps the fan's winding and puts
-/// first the vertex `provoking` names, since lists take the first vertex as the provoking one where the
-/// back end has no choice.
+/// guest indices, and the base vertex to draw it with. Each fan triangle keeps the fan's winding and
+/// puts the vertex `provoking` names where the list's own provoking vertex is: first for
+/// [`ProvokingVertex::First`] (vertex i + 1 of the fan), last for [`ProvokingVertex::Last`] (vertex i + 2).
 fn fan_or_loop_indices(
     kind: FanOrLoop,
     source: IndexSource<'_>,

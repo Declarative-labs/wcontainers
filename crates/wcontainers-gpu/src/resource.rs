@@ -71,10 +71,11 @@ bitflags! {
     }
 }
 
-/// The shape of a texture.
+/// The shape of a texture. There is no 1D shape: fronts make an API's 1D textures as 2D textures one
+/// texel high, and the shaders crate reads them as such, so every back end serves them with mipmaps,
+/// arrays and rendering (WebGPU's 1D textures have none of these).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextureDimension {
-    D1,
     D2,
     D3,
 }
@@ -91,17 +92,33 @@ pub struct TextureDesc {
     pub mip_levels: u32,
     pub samples: u32,
     pub usage: TextureUsage,
+    /// The layers are cube faces, six per cube (Direct3D's `TEXTURECUBE` flag, Vulkan's cube-compatible
+    /// images, OpenGL's cube map targets). With [`TextureDesc::own_view`] it fixes what a back end that
+    /// must choose a texture's kind at creation (WebGL 2) makes.
+    pub cube: bool,
     /// Views may use other formats of the same block size (Direct3D's typeless textures). Views as the
     /// sRGB twin are always allowed. Without [`crate::Features::FORMAT_REINTERPRET`], the front copies
     /// into a texture of the other format instead (slow path [`crate::SlowPath::ReinterpretCopy`]).
     pub reinterpret: bool,
 }
 
+impl TextureDesc {
+    /// The dimension a view of the whole texture has: `Cube` for a cube texture of six layers,
+    /// `CubeArray` for more, `D2Array` for a 2D texture of several layers, otherwise `D2` or `D3`.
+    pub fn own_view(&self) -> ViewDimension {
+        match (self.dimension, self.cube, self.depth_or_layers) {
+            (TextureDimension::D3, _, _) => ViewDimension::D3,
+            (TextureDimension::D2, true, 6) => ViewDimension::Cube,
+            (TextureDimension::D2, true, _) => ViewDimension::CubeArray,
+            (TextureDimension::D2, false, 1) => ViewDimension::D2,
+            (TextureDimension::D2, false, _) => ViewDimension::D2Array,
+        }
+    }
+}
+
 /// How a view sees a texture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ViewDimension {
-    D1,
-    D1Array,
     D2,
     D2Array,
     Cube,
@@ -111,11 +128,14 @@ pub enum ViewDimension {
 
 /// A view of part of a texture, as a front's shader resource, render target, depth or storage view.
 ///
-/// Every back end makes views of one mip level and one layer (or all layers) to draw into, and views of a
-/// mip range of the whole texture in its own dimension to sample. Anything else (another dimension, a
-/// layer range, another format of the same size) needs [`crate::Features::TEXTURE_VIEWS`] or
-/// [`crate::Features::FORMAT_REINTERPRET`]; without them the front copies (slow path
-/// [`crate::SlowPath::ReinterpretCopy`]).
+/// Every back end makes, without further features: views to draw into of one mip level and one layer
+/// (or one slice of a 3D level, or all layers); and views to sample or store into of a mip range of all
+/// layers in the texture's own dimension ([`TextureDesc::own_view`]) and own format or its sRGB twin.
+/// Anything else (another dimension, such as one layer of an array or a cube seen as a 2D array; a layer
+/// range; another format of the same size) needs [`crate::Features::TEXTURE_VIEWS`] or
+/// [`crate::Features::FORMAT_REINTERPRET`]. Without them the front keeps a second texture made in the
+/// view's own shape and format, copied from the first whenever that changed since the last copy (slow
+/// path [`crate::SlowPath::ReinterpretCopy`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TextureViewDesc {
     pub format: Format,
@@ -141,12 +161,13 @@ pub enum AddressMode {
     Repeat,
     Mirror,
     Clamp,
-    /// Needs [`crate::Features::BORDER_COLOR`] for colors other than transparent black; otherwise
-    /// the back end applies it in the program (slow path [`crate::SlowPath::BorderInShader`]).
+    /// Needs [`crate::Features::BORDER_COLOR`] for colors other than transparent black. Otherwise the
+    /// front binds a clamping sampler and a program variant applies the border (slow path
+    /// [`crate::SlowPath::BorderInShader`], [`crate::VariantKey::border_in_shader`]).
     Border,
-    /// Mirrored once about zero, then clamped. Needs [`crate::Features::MIRROR_ONCE`]; otherwise the back
-    /// end samples the absolute coordinate with clamping and the original gradients, which is exact (slow
-    /// path [`crate::SlowPath::MirrorOnceInShader`]).
+    /// Mirrored once about zero, then clamped. Needs [`crate::Features::MIRROR_ONCE`]; otherwise the
+    /// front binds a clamping sampler and a program variant samples the absolute coordinate with the
+    /// original gradients, which is exact (slow path [`crate::SlowPath::MirrorOnceInShader`]).
     MirrorOnce,
 }
 
@@ -174,14 +195,17 @@ pub enum CompareFn {
 }
 
 /// A sampler to create.
+///
+/// There is no level-of-detail bias: neither WebGPU nor WebGL 2 samplers have one. A front whose API
+/// sets one (Direct3D's `MipLODBias`, OpenGL's `TEXTURE_LOD_BIAS`, Vulkan's `mipLodBias`) passes it in the
+/// program's helper constants and binds the variant that adds it to every sampling of that sampler (slow
+/// path [`crate::SlowPath::LodBiasInShader`], [`crate::VariantKey::lod_bias`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SamplerDesc {
     pub min: Filter,
     pub mag: Filter,
     pub mip: Filter,
     pub address: [AddressMode; 3],
-    /// Level-of-detail bias, as f32 bits.
-    pub lod_bias: u32,
     /// Smallest and largest level of detail, as f32 bits.
     pub lod_range: [u32; 2],
     pub anisotropy: u16,
@@ -201,9 +225,9 @@ pub struct BufferRange<H> {
 #[derive(Debug)]
 pub enum BindingResource<'a, B: Backend> {
     UniformBuffer(BufferRange<&'a B::Buffer>),
-    /// Any offset. Where the offset is not a multiple of [`crate::Limits::min_storage_offset_alignment`],
-    /// the back end binds from the aligned offset below it and the program adds the rest, which it reads
-    /// from the helper constants every converted program has (plan section 6.4).
+    /// The offset is a multiple of [`crate::Limits::min_storage_offset_alignment`]. A front whose API
+    /// binds at any offset binds from the aligned offset below it and writes the rest into the program's
+    /// helper constants ([`crate::HelperValue::StorageOffset`]), which the program adds to its addresses.
     StorageBuffer {
         range: BufferRange<&'a B::Buffer>,
         writable: bool,

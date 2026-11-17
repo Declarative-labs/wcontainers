@@ -203,7 +203,6 @@ pub(crate) fn builtins<B: Backend>(backend: &mut B) -> Result<Builtins<B>, GpuEr
         mag: Filter::Linear,
         mip: Filter::Nearest,
         address: [AddressMode::Clamp; 3],
-        lod_bias: 0,
         lod_range: [0, 0x7f7f_ffff],
         anisotropy: 1,
         compare: None,

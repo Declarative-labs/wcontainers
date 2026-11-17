@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 pub enum SlowPath {
     /// A triangle fan was drawn as a generated triangle list.
     FanConverted,
-    /// A line loop was drawn as a generated line strip.
+    /// A line loop was drawn as a generated line list.
     LoopConverted,
     /// A read back that the guest needed at once paused the device thread until the GPU finished.
     ReadBackWait,
@@ -19,7 +19,8 @@ pub enum SlowPath {
     PipelineMiss,
     /// An ordered write landed inside a pass, which the back end had to split.
     WriteSplitPass,
-    /// A view needed a format the texture cannot be viewed as, so the texture was copied.
+    /// A view needed a format, dimension or part the texture cannot be viewed as, so a second texture of
+    /// the view's shape was kept and copied into.
     ReinterpretCopy,
     /// Geometry shader run as compute work before the draw.
     GeometryAsCompute,
@@ -35,8 +36,9 @@ pub enum SlowPath {
     RestartRewrite,
     /// The provoking vertex was changed by rewriting the program or the indices.
     ProvokingRewrite,
-    /// Depth bias on lines or points applied in the program.
-    LineBiasInShader,
+    /// Depth bias applied in the program: on lines and points (WebGPU allows none), or with a clamp the
+    /// back end lacks.
+    DepthBiasInShader,
     /// Sampler border color applied in the program.
     BorderInShader,
     /// Wide lines drawn as triangles.
@@ -112,11 +114,33 @@ pub enum SlowPath {
     /// Refused, not slow: a program needs more bindings of one kind than the back end has, and no exact
     /// route exists, so making it failed.
     BindingsBeyondLimit,
+    /// Vertex streams or attributes beyond the back end's limits fetched by the program from storage
+    /// buffers.
+    VertexPulledInShader,
+    /// Constant buffers beyond the back end's uniform buffer slots read as read-only storage buffers.
+    ConstantsAsStorage,
+    /// Constant buffers beyond the back end's uniform blocks or block size, copied into a texture and
+    /// read with texel fetches (no storage buffers).
+    ConstantsAsTexture,
+    /// A block-compressed texture the back end cannot sample, stored decoded, with its blocks kept on the
+    /// host for copies and read backs.
+    BlockDecoded,
+    /// Blocks copied into a decoded block-compressed texture from an uncompressed one, read back to the
+    /// host to be decoded.
+    BlockCopyReadBack,
+    /// A sampler's level-of-detail bias added in the program.
+    LodBiasInShader,
+    /// A viewport whose near depth exceeds its far depth drawn swapped, with clip depth flipped in the
+    /// program.
+    ViewportDepthFlip,
+    /// Refused, not slow: a program passes more values between stages than the back end has, after
+    /// packing, so making it failed.
+    VaryingsBeyondLimit,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 49] = [
+    pub const ALL: [SlowPath; 57] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -130,7 +154,7 @@ impl SlowPath {
         SlowPath::VertexStorageAsCompute,
         SlowPath::RestartRewrite,
         SlowPath::ProvokingRewrite,
-        SlowPath::LineBiasInShader,
+        SlowPath::DepthBiasInShader,
         SlowPath::BorderInShader,
         SlowPath::WideLinesAsTriangles,
         SlowPath::LogicOpInShader,
@@ -166,17 +190,25 @@ impl SlowPath {
         SlowPath::LayerSplit,
         SlowPath::VertexFetchZeroed,
         SlowPath::BindingsBeyondLimit,
+        SlowPath::VertexPulledInShader,
+        SlowPath::ConstantsAsStorage,
+        SlowPath::ConstantsAsTexture,
+        SlowPath::BlockDecoded,
+        SlowPath::BlockCopyReadBack,
+        SlowPath::LodBiasInShader,
+        SlowPath::ViewportDepthFlip,
+        SlowPath::VaryingsBeyondLimit,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
     pub fn reason(self) -> &'static str {
         match self {
             SlowPath::FanConverted => "triangle fan converted to a list",
-            SlowPath::LoopConverted => "line loop converted to a strip",
+            SlowPath::LoopConverted => "line loop converted to a list",
             SlowPath::ReadBackWait => "read back waited for the gpu",
             SlowPath::PipelineMiss => "state combination built at first draw",
             SlowPath::WriteSplitPass => "ordered write split a pass",
-            SlowPath::ReinterpretCopy => "texture copied to view it as another format",
+            SlowPath::ReinterpretCopy => "texture copied to view it another way",
             SlowPath::GeometryAsCompute => "geometry shader run as compute",
             SlowPath::GeometryAsReplay => "geometry shader run by vertex replay",
             SlowPath::TessellationAsCompute => "tessellation run as compute",
@@ -184,7 +216,7 @@ impl SlowPath {
             SlowPath::VertexStorageAsCompute => "vertex stage storage writes run as compute",
             SlowPath::RestartRewrite => "indices rewritten for primitive restart",
             SlowPath::ProvokingRewrite => "provoking vertex rewritten",
-            SlowPath::LineBiasInShader => "depth bias on lines or points applied in the shader",
+            SlowPath::DepthBiasInShader => "depth bias applied in the shader",
             SlowPath::BorderInShader => "sampler border color applied in the shader",
             SlowPath::WideLinesAsTriangles => "wide lines drawn as triangles",
             SlowPath::LogicOpInShader => "logic operation applied in the shader",
@@ -220,6 +252,16 @@ impl SlowPath {
             SlowPath::LayerSplit => "layered draw split per layer",
             SlowPath::VertexFetchZeroed => "vertex fetch past the end zeroed",
             SlowPath::BindingsBeyondLimit => "program refused: more bindings than the back end has",
+            SlowPath::VertexPulledInShader => "vertex streams fetched in the shader",
+            SlowPath::ConstantsAsStorage => "constant buffers read as storage buffers",
+            SlowPath::ConstantsAsTexture => "constant buffers read through a texture",
+            SlowPath::BlockDecoded => "block-compressed texture stored decoded",
+            SlowPath::BlockCopyReadBack => "blocks read back to be decoded",
+            SlowPath::LodBiasInShader => "sampler lod bias applied in the shader",
+            SlowPath::ViewportDepthFlip => "viewport depth range flipped in the shader",
+            SlowPath::VaryingsBeyondLimit => {
+                "program refused: more stage values than the back end has"
+            }
         }
     }
 }

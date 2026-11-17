@@ -26,8 +26,8 @@ type Id = u32;
 impl Recorder {
     fn new() -> Self {
         let limits = Limits {
-            max_texture_1d: 8192,
             max_texture_2d: 8192,
+            max_texture_cube: 8192,
             max_texture_3d: 2048,
             max_texture_layers: 256,
             max_buffer_size: 1 << 28,
@@ -521,6 +521,54 @@ fn ring_aligns_parts_pads_tails_and_wraps_with_discard() {
 }
 
 #[test]
+fn ring_gives_empty_parts_an_aligned_offset() {
+    let mut r = Recorder::new();
+    let mut o = [0];
+    r.write_buffer_ring(&[&[0u8; 145]], 256, &mut o).unwrap();
+    assert_eq!(o, [0]);
+    r.write_buffer_ring(&[&[]], 256, &mut o).unwrap();
+    assert_eq!(o, [256]);
+    let writes = r
+        .log
+        .iter()
+        .filter(|l| l.starts_with("write_buffer"))
+        .count();
+    r.write_buffer_ring(&[&[], &[]], 64, &mut [0, 0]).unwrap();
+    assert_eq!(
+        r.log
+            .iter()
+            .filter(|l| l.starts_with("write_buffer"))
+            .count(),
+        writes
+    );
+}
+
+#[test]
+fn own_view_follows_cube_and_layers() {
+    let mut d = TextureDesc {
+        dimension: TextureDimension::D2,
+        format: Format::Rgba8Unorm,
+        width: 4,
+        height: 4,
+        depth_or_layers: 1,
+        mip_levels: 1,
+        samples: 1,
+        usage: crate::TextureUsage::SAMPLE,
+        reinterpret: false,
+        cube: false,
+    };
+    assert_eq!(d.own_view(), ViewDimension::D2);
+    d.depth_or_layers = 6;
+    assert_eq!(d.own_view(), ViewDimension::D2Array);
+    d.cube = true;
+    assert_eq!(d.own_view(), ViewDimension::Cube);
+    d.depth_or_layers = 12;
+    assert_eq!(d.own_view(), ViewDimension::CubeArray);
+    d.dimension = TextureDimension::D3;
+    assert_eq!(d.own_view(), ViewDimension::D3);
+}
+
+#[test]
 fn generate_mips_draws_each_level_and_layer_from_the_one_above() {
     let mut r = Recorder::new();
     let desc = TextureDesc {
@@ -533,6 +581,7 @@ fn generate_mips_draws_each_level_and_layer_from_the_one_above() {
         samples: 1,
         usage: crate::TextureUsage::SAMPLE | crate::TextureUsage::RENDER,
         reinterpret: false,
+        cube: false,
     };
     r.generate_mips(&50, &desc, 1..3, 0..2).unwrap();
     let views: Vec<_> = r
@@ -574,6 +623,7 @@ fn generate_mips_of_a_volume_draws_each_slice_at_its_centre() {
         samples: 1,
         usage: crate::TextureUsage::SAMPLE | crate::TextureUsage::RENDER,
         reinterpret: false,
+        cube: false,
     };
     r.generate_mips(&50, &desc, 1..2, 0..1).unwrap();
     let passes: Vec<_> = r

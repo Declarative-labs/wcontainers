@@ -36,6 +36,7 @@ mod draw;
 mod error;
 mod format;
 mod helpers;
+mod reflect;
 mod resource;
 mod shader;
 mod slow;
@@ -51,6 +52,11 @@ pub use draw::{
 pub use error::{DeviceStatus, GpuError, LossReason};
 pub use format::{Format, FormatKind};
 pub use helpers::Helpers;
+pub use reflect::{
+    HELPER_BINDING, HELPER_SET, HelperSlot, HelperValue, Interpolation, ReflectedBinding,
+    Reflection, ScalarKind, SlotKind, SourceStage, StageExtras, StageValue, SystemValue,
+    VariantFlags, VariantKey,
+};
 pub use resource::{AddressMode, BorderColor, CompareFn, Filter};
 pub use resource::{
     BindingEntry, BindingLayoutKey, BindingResource, BufferDesc, BufferRange, BufferUsage,
@@ -69,7 +75,8 @@ pub use state::{
 
 /// The most color targets any front can bind at once (Direct3D 10 and later, Vulkan's common limit).
 pub const MAX_COLOR_TARGETS: usize = 8;
-/// The most vertex streams a draw can read (Direct3D 11's input slots).
+/// The most vertex streams a draw can read (Direct3D 11's input slots). Streams beyond the back end's
+/// [`Limits::vertex_streams`] are fetched by the program ([`SlowPath::VertexPulledInShader`]).
 pub const MAX_VERTEX_STREAMS: usize = 32;
 /// The most binding sets a draw names: one per update frequency, as fronts group them.
 pub const MAX_BINDING_SETS: usize = 4;

@@ -176,7 +176,11 @@ pub struct RasterDesc {
     pub fill: FillMode,
     pub cull: CullMode,
     pub front: FrontFace,
-    /// Depth bias: constant, slope scale (f32 bits) and clamp (f32 bits).
+    /// Depth bias: constant, slope scale (f32 bits) and clamp (f32 bits). The bias applies to triangles
+    /// only (WebGPU allows none on lines and points, GLES offsets only filled polygons), and a non-zero
+    /// clamp needs [`crate::Features::DEPTH_BIAS_CLAMP`]. A front whose API biases lines and points, or
+    /// clamps without the feature, passes zero and binds the program variant that adds the bias to the
+    /// fragment's depth (slow path [`crate::SlowPath::DepthBiasInShader`]).
     pub depth_bias: i32,
     pub depth_bias_slope: u32,
     pub depth_bias_clamp: u32,
