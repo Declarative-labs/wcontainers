@@ -27,7 +27,7 @@ pub(super) fn ioctl(
     [fd, request, argument, ..]: Args,
 ) -> Result<u64, Errno> {
     let fd = fd as i32;
-    let file = kernel.files(tid).file(fd)?;
+    let file = kernel.call_file(tid, fd)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -269,7 +269,7 @@ fn clone_range(
     destination: &FileRef,
     source: i32,
 ) -> Result<u64, Errno> {
-    let source = kernel.files(tid).file(source)?;
+    let source = kernel.call_file(tid, source)?;
     if source.borrow().is_path() {
         return Err(Errno::EBADF);
     }

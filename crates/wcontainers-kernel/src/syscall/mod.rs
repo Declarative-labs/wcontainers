@@ -428,6 +428,27 @@ pub(crate) fn guest<'a>(kernel: &'a mut Kernel, cx: &'a mut Context<'_>, tid: Ti
     }
 }
 
+/// A path argument, copied once per call (`getname`): a call that waits takes the same bytes in
+/// its later runs, whatever memory holds by then. Empty is ENOENT unless `may_be_empty`.
+pub(crate) fn path_argument(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    address: u64,
+    may_be_empty: bool,
+) -> Result<alloc::vec::Vec<u8>, Errno> {
+    let mut taken = core::mem::take(kernel.thread_mut(tid).taken.get_mut());
+    let path = taken.path(address, || {
+        guest(kernel, cx, tid).read_path_maybe_empty(address)
+    });
+    *kernel.thread_mut(tid).taken.get_mut() = taken;
+    let path = path?;
+    if path.is_empty() && !may_be_empty {
+        return Err(Errno::ENOENT);
+    }
+    Ok(path)
+}
+
 pub(crate) fn all() -> impl Iterator<Item = crate::SystemCall> {
     TABLE
         .iter()

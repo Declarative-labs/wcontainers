@@ -46,7 +46,7 @@ fn target(
             super::files::lookup(kernel, cx, tid, AT_FDCWD as u64, path, 0, follow)
         }
         Target::File(fd) => {
-            let file = kernel.files(tid).file(fd as i32)?;
+            let file = kernel.call_file(tid, fd as i32)?;
             if file.borrow().is_path() {
                 return Err(Errno::EBADF);
             }

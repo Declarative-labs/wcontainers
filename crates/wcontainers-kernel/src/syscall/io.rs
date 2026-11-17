@@ -31,7 +31,7 @@ pub(super) const MAX_SEGMENTS: u64 = 1024;
 const END_OF_DIRECTORY: u64 = i32::MAX as u64;
 
 pub(super) fn file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
-    kernel.files(tid).file(fd as i32)
+    kernel.call_file(tid, fd as i32)
 }
 
 /// A descriptor's open file as `fdget` finds it: not an `O_PATH` one.
@@ -1118,7 +1118,7 @@ fn write_parts(
         crate::fs::backend::getattr(&node, Some(handle.fh))?;
     }
     let offset = if append {
-        node.borrow().size()
+        kernel.settle_once(tid, node.borrow().size())
     } else {
         at.unwrap_or(file.borrow().offset)
     };
@@ -1288,7 +1288,7 @@ pub(super) fn write_bytes(
         Content::Regular(regular) => regular,
         Content::Backend(remote) => {
             let offset = if append {
-                remote.size.get()
+                kernel.settle_once(tid, remote.size.get())
             } else {
                 at.unwrap_or(file.borrow().offset)
             };
@@ -2139,20 +2139,21 @@ pub(super) fn close(
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
     let pid = kernel.threads[&tid].process;
-    // `filp_close`: a file on the backend is flushed there, and the descriptor goes whatever the
-    // flush answers.
-    let flushed = match kernel.files(tid).file(fd as i32) {
-        Ok(file) => match &file.borrow().backend {
-            Some(handle) => crate::fs::backend::flush(handle, kernel.files(tid).lock_owner()),
-            None => Ok(()),
-        },
-        Err(_) => Ok(()),
+    // `file_close_fd` takes the descriptor first; then `filp_close` flushes a file on the backend
+    // there, and the call waits for that answer.
+    let file = kernel.call_file(tid, fd as i32)?;
+    if kernel.threads[&tid].call.progress == 0 {
+        kernel.thread_mut(tid).call.progress = 1;
+        kernel.files_mut(tid).remove(fd as i32, pid, true)?;
+        kernel.files_released(cx);
+    }
+    let flushed = match &file.borrow().backend {
+        Some(handle) => crate::fs::backend::flush(handle, kernel.files(tid).lock_owner()),
+        None => Ok(()),
     };
     if flushed == Err(Errno::PARKED) {
         return Err(Errno::PARKED);
     }
-    kernel.files_mut(tid).remove(fd as i32, pid, true)?;
-    kernel.files_released(cx);
     flushed.map(|()| 0)
 }
 
@@ -2280,7 +2281,7 @@ fn fcntl_typed(
         command,
         F_GETLK | F_SETLK | F_SETLKW | F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW
     ) {
-        let file = kernel.files(tid).file(fd)?;
+        let file = kernel.call_file(tid, fd)?;
         if file.borrow().is_path() {
             return Err(Errno::EBADF);
         }

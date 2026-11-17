@@ -164,6 +164,7 @@ impl Kernel {
 
     /// Runs a system call, the first time or again after its thread was woken.
     fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
+        self.threads[&tid].taken.borrow_mut().rewind();
         self.begin_asking(tid);
         let outcome = syscall::dispatch(self, cx, tid, call, again);
         self.end_asking(tid, matches!(outcome, syscall::Outcome::Parked));
@@ -176,11 +177,11 @@ impl Kernel {
         }
         match outcome {
             syscall::Outcome::Return(value) => {
-                self.finish_call(tid);
+                self.finish_call(cx, tid);
                 self.return_to_user(cx, tid, Resume::Return(value));
             }
             syscall::Outcome::Restart => {
-                self.finish_call(tid);
+                self.finish_call(cx, tid);
                 self.return_to_user(cx, tid, Resume::FromRegisters);
             }
             syscall::Outcome::Parked => {
@@ -270,13 +271,18 @@ impl Kernel {
     }
 
     /// Clears a finished call's slot; a named pipe's open still waiting gives up its end.
-    fn finish_call(&mut self, tid: Tid) {
+    fn finish_call(&mut self, cx: &mut Context<'_>, tid: Tid) {
         let thread = self.thread_mut(tid);
         let holds = core::mem::take(&mut thread.call).holds;
+        let taken = thread.taken.get_mut().clear();
+        self.released.extend(taken);
         self.let_go(holds);
         let thread = self.thread_mut(tid);
         let opening = thread.opening.take();
         self.give_up_opening(opening);
+        if !self.released.is_empty() {
+            self.files_released(cx);
+        }
     }
 
     /// Closes the end a named pipe's waiting open held, which the other end may wait on.
@@ -541,6 +547,8 @@ impl Kernel {
             self.parked.remove(tid, channel, call.deadline);
         }
         self.thread_mut(tid).call.holds = Default::default();
+        let taken = self.thread_mut(tid).taken.get_mut().clear();
+        self.released.extend(taken);
         self.let_go(call.holds);
         if self.current == Some(tid) {
             self.current = None;
@@ -598,6 +606,8 @@ impl Kernel {
         }
         let mut thread = self.threads.remove(&tid).expect("thread exists");
         thread.call = Call::default();
+        let taken = thread.taken.get_mut().clear();
+        self.released.extend(taken);
         // Its own number goes with the first thread, and the descriptors naming it with it.
         if let Some(node) = thread.pidfd.take() {
             self.wake(syscall::pidfd::channel(&node));

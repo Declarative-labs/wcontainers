@@ -365,8 +365,18 @@ pub fn run_injected(
             } => {
                 // The seed chooses where in its slice each turn ends, so a run repeats for a seed
                 // and threads interleave differently under different seeds.
-                let slice_nanoseconds =
+                let mut slice_nanoseconds =
                     slice_nanoseconds.map(|slice| host.schedule.random_range(1..=slice.max(1)));
+                // An answer owed arrives during the turn, at a moment drawn from the seed: the
+                // host raises the running thread's stop flag then, as the boundary says.
+                if host
+                    .backend
+                    .as_ref()
+                    .is_some_and(|backend| backend.waiting())
+                {
+                    let arrival = host.schedule.random_range(1..=ANSWER_ARRIVES_WITHIN);
+                    slice_nanoseconds = Some(slice_nanoseconds.map_or(arrival, |s| s.min(arrival)));
+                }
                 let exit = match cpu.run(thread, resume, slice_nanoseconds) {
                     Ok(exit) => exit,
                     // A copy cannot hand a failure back; it says what it was and ends.
@@ -379,7 +389,7 @@ pub fn run_injected(
 
                 kernel.exit(&mut cpu, &mut host, exit);
                 turns += 1;
-                // The backend's answers arrive at moments drawn from the seed, in its order.
+                // The backend's answers arrive at moments and in an order drawn from the seed.
                 while host
                     .backend
                     .as_ref()
@@ -478,6 +488,9 @@ pub fn run_injected(
     Ok(finish(run, report))
 }
 
+/// The longest a turn runs while the backend owes an answer, in nanoseconds of the CPU side.
+const ANSWER_ARRIVES_WITHIN: u64 = 50_000;
+
 /// The request numbers of RETRIEVE notices this host sends: above any the kernel numbers.
 const RETRIEVED: u64 = 1 << 62;
 
@@ -563,13 +576,18 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
     notice
 }
 
-/// Hands the kernel the backend's next answer or notice, waiting for it.
+/// Hands the kernel one of the backend's answers or notices, in an order drawn from the seed,
+/// waiting for it.
 pub(crate) fn deliver(
     kernel: &mut Kernel,
     cpu: &mut dyn wcontainers_abi::Cpu,
     host: &mut TestHost,
 ) {
-    let Some(message) = host.backend.as_mut().and_then(|backend| backend.receive()) else {
+    let Some(message) = host
+        .backend
+        .as_mut()
+        .and_then(|backend| backend.next(&mut host.schedule))
+    else {
         return;
     };
     match message {

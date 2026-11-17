@@ -499,6 +499,22 @@ impl Kernel {
         self.threads[&tid].files.borrow()
     }
 
+    /// The open file descriptor `fd` names, taken once per call (`fdget`): a call that waits
+    /// takes the same file in its later runs, whatever the table holds by then.
+    pub(crate) fn call_file(&self, tid: Tid, fd: i32) -> Result<file::FileRef, Errno> {
+        let thread = &self.threads[&tid];
+        thread
+            .taken
+            .borrow_mut()
+            .file(fd, || thread.files.borrow().file(fd))
+    }
+
+    /// A value `tid`'s call settles once, such as where an append goes (Linux computes it once
+    /// under the inode's lock): an earlier run's, else `value`.
+    pub(crate) fn settle_once(&self, tid: Tid, value: u64) -> u64 {
+        self.threads[&tid].taken.borrow_mut().value(value)
+    }
+
     pub(crate) fn files_mut(&self, tid: Tid) -> core::cell::RefMut<'_, file::FdTable> {
         self.threads[&tid].files.borrow_mut()
     }

@@ -109,6 +109,20 @@ fn cached_shared_positions_match_reference() {
     }
 }
 
+/// Calls waiting for the backend while another thread changes the descriptor or the path they
+/// named, and a thread spinning while another waits for the backend: each call acts once, on what
+/// it named when it started, and the spinning thread gives way when an answer comes.
+#[test]
+fn arguments_taken_once_match_reference() {
+    let injections = driver::Injections {
+        saves: 2,
+        ..Default::default()
+    };
+    for run in same_on_backend("backendrace", injections) {
+        assert_warned_only(&run, &[]);
+    }
+}
+
 /// Appends while another thread truncates the file: the inode is held across each.
 #[test]
 fn truncations_and_appends_match_reference() {

@@ -121,7 +121,7 @@ pub(super) fn mmap(
     let file = if flags & MAP_ANONYMOUS != 0 {
         None
     } else {
-        let file = kernel.files(tid).file(fd)?;
+        let file = kernel.call_file(tid, fd)?;
         if file.borrow().is_path() {
             return Err(Errno::EBADF);
         }

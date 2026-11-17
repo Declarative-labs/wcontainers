@@ -272,7 +272,7 @@ pub(super) fn mq_open(
     } else {
         None
     };
-    let name = guest(kernel, cx, tid).read_path(name)?;
+    let name = super::path_argument(kernel, cx, tid, name, false)?;
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     kernel.files(tid).lowest_free(0, limit)?;
     // `lookup_noperm`: one name in the file system's root.
@@ -341,7 +341,7 @@ pub(super) fn mq_unlink(
     tid: Tid,
     [name, ..]: Args,
 ) -> Result<u64, Errno> {
-    let name = guest(kernel, cx, tid).read_path(name)?;
+    let name = super::path_argument(kernel, cx, tid, name, false)?;
     if name == b"." || name == b".." || name.contains(&b'/') {
         return Err(Errno::EACCES);
     }

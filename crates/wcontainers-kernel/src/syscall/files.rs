@@ -26,7 +26,7 @@ pub(super) fn start(kernel: &Kernel, tid: Tid, dirfd: u64, path: &[u8]) -> Resul
     if dirfd == AT_FDCWD {
         return Ok(kernel.fs(tid).cwd.clone());
     }
-    let node = kernel.files(tid).file(dirfd)?.borrow().node.clone();
+    let node = kernel.call_file(tid, dirfd)?.borrow().node.clone();
     if !path.is_empty() && !node.borrow().is_directory() {
         return Err(Errno::ENOTDIR);
     }
@@ -44,9 +44,9 @@ pub(super) fn lookup(
     follow: bool,
 ) -> Result<Node, Errno> {
     let path = if flags & AT_EMPTY_PATH != 0 {
-        guest(kernel, cx, tid).read_path_maybe_empty(address)?
+        super::path_argument(kernel, cx, tid, address, true)?
     } else {
-        guest(kernel, cx, tid).read_path(address)?
+        super::path_argument(kernel, cx, tid, address, false)?
     };
     if path.is_empty() {
         return empty_path_node(kernel, tid, dirfd);
@@ -62,7 +62,7 @@ fn parent(
     dirfd: u64,
     address: u64,
 ) -> Result<crate::fs::Parent, Errno> {
-    let path = guest(kernel, cx, tid).read_path(address)?;
+    let path = super::path_argument(kernel, cx, tid, address, false)?;
     let at = start(kernel, tid, dirfd, &path)?;
     kernel.with_walk(tid, |walk, _| walk.parent(&at, &path))
 }
@@ -281,7 +281,7 @@ pub(super) fn openat(
     // is read or walked (`do_sys_openat2`'s `FD_ADD`).
     open_flags(flags as u32)?;
     free_descriptor(kernel, tid)?;
-    let path = guest(kernel, cx, tid).read_path(path)?;
+    let path = super::path_argument(kernel, cx, tid, path, false)?;
     open(kernel, cx, tid, dirfd, &path, flags as u32, mode as u32)
 }
 
@@ -338,7 +338,7 @@ pub(super) fn openat2(
             .counters
             .refuse_flag(cx.host, __NR_openat2, how.resolve, Errno::ENOSYS));
     }
-    let path = guest(kernel, cx, tid).read_path(path)?;
+    let path = super::path_argument(kernel, cx, tid, path, false)?;
     let flags = flags | (how.flags as u32 & O_CLOEXEC);
     open(kernel, cx, tid, dirfd, &path, flags, how.mode as u32)
 }
@@ -929,7 +929,7 @@ pub(super) fn symlinkat(
     tid: Tid,
     [target, dirfd, path, ..]: Args,
 ) -> Result<u64, Errno> {
-    let target = guest(kernel, cx, tid).read_path(target)?;
+    let target = super::path_argument(kernel, cx, tid, target, false)?;
     let parent = parent(kernel, cx, tid, dirfd, path)?;
     if parent.name.is_empty() {
         return Err(Errno::EEXIST);
@@ -966,9 +966,9 @@ pub(super) fn linkat(
     // With `AT_EMPTY_PATH`, a walk from a descriptor needs the credentials it was opened with or
     // `CAP_DAC_READ_SEARCH`, else the name is not found (Linux's `LOOKUP_LINKAT_EMPTY` in `path_init`).
     if flags & AT_EMPTY_PATH != 0 && old_dirfd as i32 != AT_FDCWD {
-        let path = guest(kernel, cx, tid).read_path_maybe_empty(old_path)?;
+        let path = super::path_argument(kernel, cx, tid, old_path, true)?;
         if !path.starts_with(b"/") {
-            let file = kernel.files(tid).file(old_dirfd as i32)?;
+            let file = kernel.call_file(tid, old_dirfd as i32)?;
             let credentials = credentials(kernel, tid);
             if file.borrow().opener != credentials.serial
                 && !credentials.has(crate::credentials::CAP_DAC_READ_SEARCH)
@@ -1043,7 +1043,7 @@ pub(super) fn unlinkat(
     if flags & !AT_REMOVEDIR != 0 {
         return Err(Errno::EINVAL);
     }
-    let raw = guest(kernel, cx, tid).read_path(path)?;
+    let raw = super::path_argument(kernel, cx, tid, path, false)?;
     let parent = parent(kernel, cx, tid, dirfd, path)?;
     let removing_directory = flags & AT_REMOVEDIR != 0;
     if parent.name.is_empty() {
@@ -1464,9 +1464,7 @@ pub(super) fn readlinkat(
     if size <= 0 {
         return Err(Errno::EINVAL);
     }
-    let empty = guest(kernel, cx, tid)
-        .read_path_maybe_empty(path)?
-        .is_empty();
+    let empty = super::path_argument(kernel, cx, tid, path, true)?.is_empty();
     let node = lookup(kernel, cx, tid, dirfd, path, AT_EMPTY_PATH, false)?;
     if matches!(node.borrow().content, Content::Symlink(_)) {
         super::io::accessed(kernel, cx, &node, 0);
@@ -1581,7 +1579,7 @@ fn empty_path_node(kernel: &Kernel, tid: Tid, dirfd: u64) -> Result<Node, Errno>
     if dirfd as i32 == AT_FDCWD {
         return Ok(kernel.fs(tid).cwd.clone());
     }
-    Ok(kernel.files(tid).file(dirfd as i32)?.borrow().node.clone())
+    Ok(kernel.call_file(tid, dirfd as i32)?.borrow().node.clone())
 }
 
 pub(super) fn newfstatat(
@@ -1626,7 +1624,7 @@ pub(super) fn fstat(
     tid: Tid,
     [fd, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
-    let node = kernel.files(tid).file(fd as i32)?.borrow().node.clone();
+    let node = kernel.call_file(tid, fd as i32)?.borrow().node.clone();
     count_unknown_blocks(kernel, cx, &node);
     crate::fs::backend::fresh(&node)?;
     let value = stat_of(kernel, &node);
@@ -1906,7 +1904,7 @@ pub(super) fn fchmod(
     tid: Tid,
     [fd, mode, ..]: Args,
 ) -> Result<u64, Errno> {
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -2040,7 +2038,7 @@ pub(super) fn fchown(
     tid: Tid,
     [fd, uid, gid, ..]: Args,
 ) -> Result<u64, Errno> {
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -2093,7 +2091,7 @@ pub(super) fn utimensat(
             return Err(Errno::EINVAL);
         }
         // Linux's `do_utimes_fd` takes no `O_PATH` descriptor.
-        let file = kernel.files(tid).file(dirfd as i32)?;
+        let file = kernel.call_file(tid, dirfd as i32)?;
         let file = file.borrow();
         if file.is_path() {
             return Err(Errno::EBADF);
@@ -2354,7 +2352,7 @@ pub(super) fn ftruncate(
     if (length as i64) < 0 {
         return Err(Errno::EINVAL);
     }
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -2375,7 +2373,7 @@ pub(super) fn fallocate(
     [fd, mode, offset, length, ..]: Args,
 ) -> Result<u64, Errno> {
     // In the order of Linux's `vfs_fallocate`; tmpfs takes keeping the size and punching holes.
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -2566,7 +2564,7 @@ pub(super) fn fchdir(
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
-    let node = kernel.files(tid).file(fd as i32)?.borrow().node.clone();
+    let node = kernel.call_file(tid, fd as i32)?.borrow().node.clone();
     change_directory(kernel, tid, node)
 }
 
@@ -2678,7 +2676,7 @@ pub(super) fn fstatfs(
     tid: Tid,
     [fd, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     let node = file.borrow().node.clone();
     let mut out = statfs_of(kernel, cx, &node)?;
     if file.borrow().internal_mount {
@@ -2729,7 +2727,7 @@ fn flock_typed(
         LOCK_UN => None,
         _ => return Err(Errno::EINVAL),
     };
-    let file = kernel.files(tid).file(fd as i32)?;
+    let file = kernel.call_file(tid, fd as i32)?;
     let usable = {
         let file = file.borrow();
         file.readable() || file.writable()
