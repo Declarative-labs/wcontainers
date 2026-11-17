@@ -35,9 +35,30 @@ pub struct Device<B: Backend> {
     pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
     /// Vertex shaders' input signatures by the blake3 of their bytecode, for input layouts.
     vertex_inputs: HashMap<[u8; 32], Vec<StageValue>>,
+    /// What empty slots read.
+    pub(crate) zeros: Zeros<B>,
     /// Set once the device is removed; later work is dropped and the API reports the removal.
     pub removed: Option<Removal>,
 }
+
+/// What empty slots read, made at their first use: Direct3D reads zeros from an empty vertex,
+/// constant or texture slot, and samples with its default sampler state through an empty sampler slot.
+pub(crate) struct Zeros<B: Backend> {
+    /// The largest constant buffer's bytes of zeros, also past any vertex element's offset.
+    pub buffer: Option<Kept<B, B::Buffer>>,
+    /// A texture of one zero texel per layer and its view, by view dimension and kind.
+    pub textures: HashMap<(ViewDimension, FormatKind), ZeroView<B>>,
+    pub sampler: Option<Rc<Sampler<B>>>,
+}
+
+/// A texture of zeros and its view.
+pub(crate) struct ZeroView<B: Backend> {
+    _texture: Kept<B, B::Texture>,
+    view: Kept<B, B::TextureView>,
+}
+
+/// Bytes of the zero buffer: 4096 constants of 16 bytes.
+pub(crate) const ZERO_BYTES: u64 = 65536;
 
 /// Why the device was removed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +156,11 @@ impl<B: Backend> Device<B> {
             programs: HashMap::new(),
             layouts: HashMap::new(),
             vertex_inputs: HashMap::new(),
+            zeros: Zeros {
+                buffer: None,
+                textures: HashMap::new(),
+                sampler: None,
+            },
             removed: None,
         })
     }
@@ -241,6 +267,111 @@ impl<B: Backend> Device<B> {
             .into_iter()
             .map(SlowPath::reason)
             .collect()
+    }
+
+    /// The zero buffer, made at its first use.
+    pub(crate) fn zero_buffer(&mut self) -> Result<B::Buffer> {
+        if let Some(b) = &self.zeros.buffer {
+            return Ok(b.handle.clone());
+        }
+        let desc = GpuBuffer {
+            size: ZERO_BYTES,
+            usage: BufferUsage::VERTEX | BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        };
+        let gpu = self.backend.create_buffer(&desc);
+        let gpu = self.gpu(gpu)?;
+        self.backend.clear_buffer(&gpu, 0, ZERO_BYTES, &[0]);
+        let id = self.id();
+        self.zeros.buffer = Some(Kept::new(gpu.clone(), id, Object::Buffer, &self.graveyard));
+        Ok(gpu)
+    }
+
+    /// A view of zeros of `kind` in `dimension`, made at its first use.
+    pub(crate) fn zero_view(
+        &mut self,
+        dimension: ViewDimension,
+        kind: FormatKind,
+    ) -> Result<B::TextureView> {
+        if let Some(z) = self.zeros.textures.get(&(dimension, kind)) {
+            return Ok(z.view.handle.clone());
+        }
+        let format = match kind {
+            FormatKind::Float => Format::Rgba8Unorm,
+            FormatKind::Uint => Format::Rgba8Uint,
+            FormatKind::Sint => Format::Rgba8Sint,
+            _ => return not_implemented("an empty slot a shader reads as depth or stencil"),
+        };
+        let (texture_dimension, layers) = match dimension {
+            ViewDimension::D2 | ViewDimension::D2Array => (TextureDimension::D2, 1),
+            ViewDimension::Cube | ViewDimension::CubeArray => (TextureDimension::D2, 6),
+            ViewDimension::D3 => (TextureDimension::D3, 1),
+        };
+        let desc = TextureDesc {
+            dimension: texture_dimension,
+            format,
+            width: 1,
+            height: 1,
+            depth_or_layers: layers,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            cube: layers == 6,
+            reinterpret: false,
+        };
+        let texture = self.backend.create_texture(&desc);
+        let texture = self.gpu(texture)?;
+        self.backend.write_texture(
+            &TextureRegion {
+                texture: &texture,
+                mip: 0,
+                layer: 0,
+                origin: Origin { x: 0, y: 0, z: 0 },
+                stencil: false,
+            },
+            Extent {
+                width: 1,
+                height: 1,
+                depth_or_layers: layers,
+            },
+            &[0; 24],
+            4,
+            1,
+            WriteMode::Discard,
+        );
+        let view = self.backend.create_view(
+            &texture,
+            &TextureViewDesc {
+                format,
+                dimension,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: layers,
+                stencil: false,
+            },
+        );
+        let view = self.gpu(view)?;
+        let (t, v) = (self.id(), self.id());
+        self.zeros.textures.insert(
+            (dimension, kind),
+            ZeroView {
+                _texture: Kept::new(texture, t, Object::Texture, &self.graveyard),
+                view: Kept::new(view.clone(), v, Object::TextureView, &self.graveyard),
+            },
+        );
+        Ok(view)
+    }
+
+    /// The sampler of Direct3D's default sampler state, made at its first use.
+    pub(crate) fn default_sampler(&mut self) -> Result<B::Sampler> {
+        if let Some(s) = &self.zeros.sampler {
+            return Ok(s.gpu.handle.clone());
+        }
+        let s = self.create_sampler_state(&SamplerDesc::default_state())?;
+        let handle = s.gpu.handle.clone();
+        self.zeros.sampler = Some(s);
+        Ok(handle)
     }
 
     pub(crate) fn id(&mut self) -> u64 {
@@ -487,7 +618,15 @@ impl<B: Backend> Device<B> {
                     let mip = i as u32 % mips;
                     let (w, h) = ((d.width >> mip).max(1), (d.height >> mip).max(1));
                     let (row, rows) = format::row_bytes(format, w, h);
-                    vec![0; (row * rows) as usize]
+                    let mut shadow = vec![0; (row * rows) as usize];
+                    // The shadow starts as the initial data, tightly packed.
+                    if let Some(data) = init.get(i) {
+                        for (r, out) in shadow.chunks_exact_mut(row as usize).enumerate() {
+                            let at = r * data.row_pitch as usize;
+                            out.copy_from_slice(&data.bytes[at..at + row as usize]);
+                        }
+                    }
+                    shadow
                 })
                 .collect()
         } else {
@@ -774,11 +913,13 @@ impl<B: Backend> Device<B> {
             );
         }
         let constant_sizes = constant_sizes(&module.module);
+        let stand_ins = stand_ins(&module.module);
         let id = self.id();
         Ok(Rc::new(Shader {
             gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
             reflection: converted.reflection,
             constant_sizes,
+            stand_ins,
         }))
     }
 
@@ -895,6 +1036,50 @@ fn constant_sizes(module: &naga::Module) -> Vec<(u32, u64)> {
         .filter_map(|(_, v)| {
             let size = module.types[v.ty].inner.size(module.to_ctx());
             v.binding.as_ref().map(|b| (b.binding, u64::from(size)))
+        })
+        .collect()
+}
+
+/// What stands in for an empty slot of each texture and sampler `module` reads, by binding number;
+/// `None` for one-dimensional, multisampled and depth textures and comparison samplers.
+fn stand_ins(module: &naga::Module) -> Vec<(u32, Option<StandIn>)> {
+    use naga::{ImageClass, ImageDimension, ScalarKind, TypeInner};
+    module
+        .global_variables
+        .iter()
+        .filter_map(|(_, v)| {
+            let binding = v.binding.as_ref()?.binding;
+            let (dim, arrayed, class) = match module.types[v.ty].inner {
+                TypeInner::Image {
+                    dim,
+                    arrayed,
+                    class,
+                } => (dim, arrayed, class),
+                TypeInner::Sampler { comparison } => {
+                    return Some((binding, (!comparison).then_some(StandIn::DefaultSampler)));
+                }
+                _ => return None,
+            };
+            let dimension = match (dim, arrayed) {
+                (ImageDimension::D2, false) => Some(ViewDimension::D2),
+                (ImageDimension::D2, true) => Some(ViewDimension::D2Array),
+                (ImageDimension::Cube, false) => Some(ViewDimension::Cube),
+                (ImageDimension::Cube, true) => Some(ViewDimension::CubeArray),
+                (ImageDimension::D3, _) => Some(ViewDimension::D3),
+                (ImageDimension::D1, _) => None,
+            };
+            let kind = match class {
+                ImageClass::Sampled { kind, multi: false } => match kind {
+                    ScalarKind::Uint => Some(FormatKind::Uint),
+                    ScalarKind::Sint => Some(FormatKind::Sint),
+                    _ => Some(FormatKind::Float),
+                },
+                _ => None,
+            };
+            Some((
+                binding,
+                dimension.zip(kind).map(|(d, k)| StandIn::Zeros(d, k)),
+            ))
         })
         .collect()
 }

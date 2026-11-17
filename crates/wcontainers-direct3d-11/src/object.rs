@@ -4,7 +4,9 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use wcontainers_gpu::{Backend, Format, Object, Reflection, TextureDesc, VertexFormat};
+use wcontainers_gpu::{
+    Backend, Format, FormatKind, Object, Reflection, TextureDesc, VertexFormat, ViewDimension,
+};
 
 use crate::desc::{
     BlendDesc, BufferDesc, DepthStencilDesc, RasterizerDesc, SamplerDesc, Texture2DDesc, ViewDesc,
@@ -193,4 +195,16 @@ pub struct Shader<B: Backend> {
     pub reflection: Reflection,
     /// The bytes each constant buffer the program reads is declared with, by binding number.
     pub constant_sizes: Vec<(u32, u64)>,
+    /// What stands in for an empty slot of each texture and sampler it reads, by binding number
+    /// (`None` where nothing does yet).
+    pub stand_ins: Vec<(u32, Option<StandIn>)>,
+}
+
+/// What a draw binds for an empty texture or sampler slot its shader reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StandIn {
+    /// A view of zeros of this dimension and kind.
+    Zeros(ViewDimension, FormatKind),
+    /// Direct3D's default sampler state.
+    DefaultSampler,
 }

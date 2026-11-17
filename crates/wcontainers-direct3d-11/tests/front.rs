@@ -595,28 +595,110 @@ fn dynamic_constants_upload_whole_on_unmap() {
     dev.set_constant_buffers(VERTEX, 0, &[None]).unwrap();
 }
 
+/// The id of the object a log line starting `prefix` made.
+fn made(log: &[String], prefix: &str) -> String {
+    log[find(log, prefix)]
+        .split(' ')
+        .nth(1)
+        .expect("an id")
+        .to_string()
+}
+
 #[test]
-fn a_draw_the_front_cannot_serve_removes_the_device() {
+fn empty_slots_read_zeros_and_sample_with_the_default_state() {
     let mut dev = device();
     let target = dev
         .create_texture_2d(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
         .unwrap();
     let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
     begin(&mut dev, &rtv, None, 16.0);
+    let mut color = element("COLOR", RGBA32F, 0);
+    color.slot = 1;
     let elements = [
         element("POSITION", RGB32F, 0),
         element("TEXCOORD", RG32F, 12),
-        element("COLOR", RGBA32F, 20),
+        color,
     ];
     program(&mut dev, "quads.vs", "quads.ps", &elements);
-    let vertices = immutable(&mut dev, &[0; 36 * 3], bind::VERTEX_BUFFER);
-    dev.ia_set_vertex_buffers(0, &[Some((vertices, 36, 0))])
+    let vertices = immutable(&mut dev, &[0; 20 * 3], bind::VERTEX_BUFFER);
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 20, 0))])
         .unwrap();
     dev.ia_set_primitive_topology(topology::TRIANGLELIST);
-    // The pixel shader samples texture slot 0, which nothing is bound to.
+    // Vertex slot 1, the pixel shader's texture slot 0 and its sampler slot 0 are empty.
+    let from = dev.backend.log.len();
     dev.draw(3, 0);
-    assert!(dev.removed.is_some());
-    assert!(!dev.backend.log.iter().any(|l| l.starts_with("draw ")));
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    let zero = made(&log, "create_buffer");
+    assert!(
+        log[find(&log, "create_buffer")].contains("size 65536"),
+        "{log:#?}"
+    );
+    find(&log, &format!("clear_buffer {zero} "));
+    let texture = made(&log, "create_texture");
+    assert!(log[find(&log, "create_texture")].contains("Rgba8Unorm 1x1x1"));
+    find(&log, &format!("write_texture {texture} "));
+    let view = made(&log, "create_view");
+    // Direct3D's default sampler: linear filtering, clamped.
+    let sampler = made(&log, "create_sampler");
+    assert!(
+        log[find(&log, "create_sampler")].contains("Linear Linear Linear [Clamp, Clamp, Clamp]"),
+        "{log:#?}"
+    );
+    let set = &log[find(&log, "create_binding_set")];
+    assert!(set.contains(&format!("=texture {view}")), "{set}");
+    assert!(set.contains(&format!("=sampler {sampler}")), "{set}");
+    assert!(log[find(&log, "create_vertex_layout")].contains("stream 1 stride 0"));
+    let draw = &log[find(&log, "draw ")];
+    assert!(draw.contains(&format!("Some(({zero}, 0))]")), "{draw}");
+
+    // A second draw makes nothing new.
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(!log.iter().any(|l| l.starts_with("create_")), "{log:#?}");
+}
+
+#[test]
+fn copies_between_groups_are_invalid_and_within_one_copy_bits() {
+    let mut dev = device();
+    let source = Resource::Texture2D(
+        dev.create_texture_2d(&tex2d(4, 4, RGBA8, bind::SHADER_RESOURCE), &[])
+            .unwrap(),
+    );
+    let staging = |dev: &mut Dev, format| {
+        let mut d = tex2d(4, 4, format, 0);
+        d.usage = usage::STAGING;
+        d.cpu_access_flags = cpu::READ;
+        Resource::Texture2D(dev.create_texture_2d(&d, &[]).unwrap())
+    };
+    // R8G8B8A8_UNORM_SRGB and _UINT share the group; R32_FLOAT does not; R32G32_UINT and BC1 are
+    // Direct3D 10.1's conversion, not served.
+    for format in [29, 30] {
+        let dst = staging(&mut dev, format);
+        dev.copy_resource(&dst, &source).unwrap();
+        dev.copy_subresource_region(&dst, 0, [0; 3], &source, 0, None)
+            .unwrap();
+    }
+    let dst = staging(&mut dev, 41);
+    assert!(matches!(
+        dev.copy_resource(&dst, &source),
+        Err(Error::InvalidArg(_))
+    ));
+    assert!(matches!(
+        dev.copy_subresource_region(&dst, 0, [0; 3], &source, 0, None),
+        Err(Error::InvalidArg(_))
+    ));
+    let wide = Resource::Texture2D(
+        dev.create_texture_2d(&tex2d(1, 1, 17, bind::SHADER_RESOURCE), &[])
+            .unwrap(),
+    );
+    let bc1 = staging(&mut dev, 71);
+    assert!(matches!(
+        dev.copy_subresource_region(&bc1, 0, [0; 3], &wide, 0, None),
+        Err(Error::NotImplemented(_))
+    ));
+    assert!(dev.removed.is_none());
 }
 
 #[test]

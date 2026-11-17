@@ -137,6 +137,22 @@ pub struct SamplerDesc {
     pub max_lod: f32,
 }
 
+impl SamplerDesc {
+    /// What an empty sampler slot samples with: linear filtering, clamped addressing.
+    pub fn default_state() -> Self {
+        SamplerDesc {
+            filter: 0x15,
+            address: [3; 3],
+            mip_lod_bias: 0.0,
+            max_anisotropy: 1,
+            comparison: 1,
+            border: [1.0; 4],
+            min_lod: -f32::MAX,
+            max_lod: f32::MAX,
+        }
+    }
+}
+
 /// `D3D11_RENDER_TARGET_BLEND_DESC`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TargetBlend {
