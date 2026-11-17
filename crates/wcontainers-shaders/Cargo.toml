@@ -21,6 +21,7 @@ cc = { version = "1", features = ["parallel"] }
 
 [dev-dependencies]
 fastrand = "2"
+serde = { version = "1", features = ["derive"] }
 naga = { workspace = true, features = ["wgsl-in", "glsl-out", "hlsl-out", "msl-out", "wgsl-out"] }
 
 # tests/draw.rs: real Direct3D 11 beside the WebGPU and WebGL 2 back ends.

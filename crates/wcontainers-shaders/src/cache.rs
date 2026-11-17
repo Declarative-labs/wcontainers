@@ -290,6 +290,24 @@ pub fn convert_cached(
     Ok((converted, appended))
 }
 
+/// Records a state combination a program was drawn with, in the front's own terms (its blocks, the
+/// program's shader keys and variant keys, target layout, topology class and binding layout keys);
+/// its key is the hash of its record. Returns the bytes appended to the file, if any.
+pub fn record_combination<T: Serialize>(cache: &mut Cache, combination: &T) -> Vec<u8> {
+    let record = postcard::to_allocvec(combination).expect("a combination serialises");
+    let key = *blake3::hash(&record).as_bytes();
+    cache.insert(Kind::Combination, key, &record).to_vec()
+}
+
+/// Every recorded state combination, in the order recorded, for building ahead at start-up. A record
+/// that does not decode as `T` (another front's, or another version's) is skipped.
+pub fn combinations<'a, T: Deserialize<'a>>(cache: &'a Cache) -> impl Iterator<Item = T> + 'a {
+    cache
+        .entries()
+        .filter(|&(kind, _, _)| kind == Kind::Combination as u8)
+        .filter_map(|(_, _, record)| postcard::from_bytes(record).ok())
+}
+
 impl core::fmt::Display for LoadError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use wcontainers_gpu::VariantKey;
+use wcontainers_gpu::{CompareFn, DepthStencilDesc, Format, Topology, VariantKey};
 use wcontainers_shaders::Source;
 use wcontainers_shaders::cache::{self, Cache, Kind, LoadError};
 
@@ -188,4 +188,38 @@ fn other_files_are_not_read_as_caches() {
     assert_eq!(Cache::load(bytes).unwrap_err(), LoadError::Version(9));
     let (c, dropped) = Cache::load(Vec::new()).unwrap();
     assert_eq!((c.len(), dropped, c.bytes().len()), (0, 0, 16));
+}
+
+/// A front's state combination, in part: a block, the targets, the topology and the program's
+/// shader keys.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Tuple {
+    depth_stencil: DepthStencilDesc,
+    targets: Vec<Format>,
+    topology: Topology,
+    shaders: Vec<([u8; 32], VariantKey)>,
+}
+
+#[test]
+fn state_combinations_are_recorded_once_and_read_back() {
+    let tuple = |compare| Tuple {
+        depth_stencil: DepthStencilDesc {
+            depth_compare: Some(compare),
+            depth_write: true,
+            stencil: None,
+            stencil_read_mask: [0xff; 2],
+            stencil_write_mask: [0xff; 2],
+            depth_bounds: None,
+        },
+        targets: vec![Format::Rgba8Unorm],
+        topology: Topology::TriangleList,
+        shaders: vec![(key(1), VariantKey::default())],
+    };
+    let mut c = made(0, 3);
+    assert!(!cache::record_combination(&mut c, &tuple(CompareFn::Less)).is_empty());
+    assert!(cache::record_combination(&mut c, &tuple(CompareFn::Less)).is_empty());
+    assert!(!cache::record_combination(&mut c, &tuple(CompareFn::Always)).is_empty());
+    let (loaded, _) = Cache::load(c.bytes().to_vec()).unwrap();
+    let read: Vec<Tuple> = cache::combinations(&loaded).collect();
+    assert_eq!(read, [tuple(CompareFn::Less), tuple(CompareFn::Always)]);
 }
