@@ -53,6 +53,9 @@ pub struct BufferDesc {
 
 /// What a write promises about the bytes already in the buffer. This is how the mapping rules of
 /// Direct3D, OpenGL and Vulkan reach a back end without any buffer being mapped across the boundary.
+/// A texture write ([`crate::Backend::write_texture`]) takes the same modes: the whole texture for the
+/// whole buffer (every level and layer), its texels for bytes (both aspects of a depth and stencil
+/// format).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WriteMode {
     /// The write takes effect between the commands recorded before it and those after it, exactly as
@@ -109,6 +112,8 @@ pub struct TextureDesc {
     pub height: u32,
     /// Depth for 3D textures, array layers otherwise (6 per cube).
     pub depth_or_layers: u32,
+    /// From one to the full chain, `floor(log2(largest side)) + 1`, where a 3D texture's depth is a
+    /// side.
     pub mip_levels: u32,
     /// One, or a count [`crate::FormatCaps::takes_samples`] gives the format. A multisampled texture
     /// is 2D with one level and one layer, never a storage texture, and its bytes move only by a draw,
@@ -117,7 +122,8 @@ pub struct TextureDesc {
     pub samples: u32,
     pub usage: TextureUsage,
     /// The layers are cube faces, six per cube (Direct3D's `TEXTURECUBE` flag, Vulkan's cube-compatible
-    /// images, OpenGL's cube map targets). With [`TextureDesc::own_view`] it fixes what a back end that
+    /// images, OpenGL's cube map targets): only of a 2D texture whose width equals its height and whose
+    /// layers are a multiple of six. With [`TextureDesc::own_view`] it fixes what a back end that
     /// must choose a texture's kind at creation (WebGL 2) makes.
     pub cube: bool,
     /// Views may use other colour formats of the same block size (Direct3D's typeless textures). Views
@@ -140,13 +146,19 @@ impl TextureDesc {
     }
 }
 
-/// How a view sees a texture.
+/// How a view sees a texture. Each fits its texture and layer count, as WebGPU, WebGL 2 and Direct3D
+/// all require.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ViewDimension {
+    /// One layer of a 2D texture.
     D2,
+    /// Any layers of a 2D texture.
     D2Array,
+    /// Six layers of a cube texture ([`TextureDesc::cube`]).
     Cube,
+    /// A multiple of six layers of a cube texture.
     CubeArray,
+    /// A 3D texture, its one layer.
     D3,
 }
 
@@ -212,7 +224,7 @@ pub enum BorderColor {
 }
 
 /// A comparison, for depth and stencil tests and comparison samplers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CompareFn {
     Never,
     Less,
@@ -308,9 +320,13 @@ pub struct BindingLayoutKey {
 /// One slot of a binding set: which program binding it fills, and with what.
 #[derive(Debug)]
 pub struct BindingEntry<'a, B: Backend> {
-    /// The binding number the shader converter gave this slot (see the plan, section 6).
+    /// The binding number the shader converter gave this slot (see the plan, section 6). A texture the
+    /// program pairs with a sampler lies in [`crate::SlotKind::Texture`]'s range, 32 to 159, so that
+    /// [`BindingLayoutKey`] has its bit; the other kinds' ranges are the fronts' numbering, which no
+    /// back end relies on (the helper set's own bindings lie outside them).
     pub binding: u32,
-    /// Stages that read it; back ends that bind per stage use this.
+    /// Every stage whose program reads it, and perhaps more; back ends that bind per stage, and the
+    /// limits per stage, count by this.
     pub stages: StageSet,
     pub resource: BindingResource<'a, B>,
 }
@@ -345,10 +361,14 @@ pub struct TextureRegion<'a, B: Backend> {
     pub stencil: bool,
 }
 
-/// The buffer side of a copy between a buffer and a texture.
+/// The buffer side of a copy between a buffer and a texture. A block's size here is that of the
+/// aspect moved for a format with depth and stencil (one byte of stencil, four of depth).
 #[derive(Debug)]
 pub struct CopyBufferTexture<'a, B: Backend> {
     pub buffer: &'a B::Buffer,
+    /// Where the first block is, any multiple of the block size (as Vulkan and WebGPU require). A
+    /// back end whose API needs more (WebGPU: multiples of 4 for depth and stencil) copies the rows
+    /// through a buffer ([`crate::SlowPath::RowsRepacked`]).
     pub offset: u64,
     /// Bytes from one row of blocks to the next, any multiple of the block size. A back end whose API
     /// needs larger pitches (WebGPU: multiples of 256) copies the rows through a buffer at its own pitch

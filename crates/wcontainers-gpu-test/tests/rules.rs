@@ -54,6 +54,9 @@ struct Out { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> }
 @vertex fn vs_out(@location(0) v: vec2<f32>) -> Out {
     return Out(vec4<f32>(v, 0.5, 1.0), vec4<f32>(1.0));
 }
+@vertex fn vs_reads(@location(0) v: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(v, p.c.z, 1.0);
+}
 ";
 
 fn buffer(r: &mut Recorder, size: u64, usage: BufferUsage) -> Id {
@@ -67,6 +70,15 @@ fn buffer(r: &mut Recorder, size: u64, usage: BufferUsage) -> Id {
 
 fn texture(r: &mut Recorder, format: Format, size: u32, usage: TextureUsage) -> Id {
     r.create_texture(&TextureDesc {
+        usage,
+        ..texture_desc(format, size)
+    })
+    .unwrap()
+}
+
+/// A square 2D texture of one level and layer with every use but storage.
+fn texture_desc(format: Format, size: u32) -> TextureDesc {
+    TextureDesc {
         dimension: TextureDimension::D2,
         format,
         width: size,
@@ -74,11 +86,10 @@ fn texture(r: &mut Recorder, format: Format, size: u32, usage: TextureUsage) -> 
         depth_or_layers: 1,
         mip_levels: 1,
         samples: 1,
-        usage,
+        usage: ALL,
         cube: false,
         reinterpret: false,
-    })
-    .unwrap()
+    }
 }
 
 fn view(r: &mut Recorder, t: &Id, format: Format) -> Id {
@@ -1384,6 +1395,49 @@ fn buffer_texture_copies_take_pitches_covering_the_region() {
 }
 
 #[test]
+fn buffer_texture_copies_take_offsets_and_pitches_of_whole_blocks() {
+    // 4-byte blocks of rgba8unorm; of depth24plus-stencil8, 4 bytes of depth and 1 of stencil.
+    let pitch = "a buffer-texture copy's row pitch is not a whole number of blocks";
+    let offset = "a buffer-texture copy's offset is not a whole number of blocks";
+    let cases: [(Format, bool, u64, u32, &[&str]); 8] = [
+        (Format::Rgba8Unorm, false, 4, 12, &[]),
+        (Format::Rgba8Unorm, false, 0, 9, &[pitch]),
+        (Format::Rgba8Unorm, false, 2, 8, &[offset]),
+        (Format::Depth24PlusStencil8, false, 4, 12, &[]),
+        (Format::Depth24PlusStencil8, false, 0, 10, &[pitch]),
+        (Format::Depth24PlusStencil8, false, 2, 8, &[offset]),
+        (Format::Depth24PlusStencil8, true, 0, 3, &[]),
+        (Format::Depth24PlusStencil8, true, 1, 2, &[]),
+    ];
+    for (format, stencil, at, row_pitch, want) in cases {
+        for to_texture in [false, true] {
+            let mut r = Recorder::new();
+            let b = buffer(&mut r, 64, COPIES);
+            let t = texture(&mut r, format, 2, ALL);
+            let side = CopyBufferTexture {
+                buffer: &b,
+                offset: at,
+                row_pitch,
+                rows_per_layer: 2,
+            };
+            let texels = TextureRegion {
+                stencil,
+                ..region(&t)
+            };
+            if to_texture {
+                r.copy_buffer_to_texture(&side, &texels, extent(2));
+            } else {
+                r.copy_texture_to_buffer(&texels, &side, extent(2));
+            }
+            assert_eq!(
+                r.violations, want,
+                "{format:?} stencil {stencil} offset {at} pitch {row_pitch} to texture {to_texture}"
+            );
+        }
+    }
+}
+
+#[test]
 fn reads_back_stay_inside_their_buffers() {
     let mut r = Recorder::new();
     let b = buffer(&mut r, 16, COPIES);
@@ -1484,6 +1538,217 @@ fn a_discard_write_gives_the_buffer_fresh_contents() {
     d.r.end_pass();
     d.r.write_buffer(&vertices, 20, &[0; 4], WriteMode::NoOverwrite);
     assert_eq!(d.r.violations.len(), 1);
+}
+
+#[test]
+fn a_discard_texture_write_gives_the_texture_fresh_contents() {
+    // A 2 by 2 texture of two levels: a copy reads level 0, then a discard writes one texel of it.
+    let mut r = Recorder::new();
+    let t = r
+        .create_texture(&TextureDesc {
+            mip_levels: 2,
+            ..texture_desc(Format::Rgba8Unorm, 2)
+        })
+        .unwrap();
+    let b = buffer(&mut r, 16, COPIES);
+    let level = |mip| TextureRegion { mip, ..region(&t) };
+    r.write_texture(&level(0), extent(2), &[9; 16], 8, 2, WriteMode::Ordered);
+    r.write_texture(&level(1), extent(1), &[8; 4], 4, 1, WriteMode::Ordered);
+    let side = CopyBufferTexture {
+        buffer: &b,
+        offset: 0,
+        row_pitch: 8,
+        rows_per_layer: 2,
+    };
+    r.copy_texture_to_buffer(&level(0), &side, extent(2));
+    let corner = TextureRegion {
+        origin: Origin { x: 1, y: 1, z: 0 },
+        ..region(&t)
+    };
+    r.write_texture(&corner, extent(1), &[1; 4], 4, 1, WriteMode::Discard);
+    // Nothing earlier uses the fresh texture, so no-overwrite writes may follow over the copy's texels.
+    r.write_texture(
+        &region(&t),
+        extent(1),
+        &[2; 4],
+        4,
+        1,
+        WriteMode::NoOverwrite,
+    );
+    assert!(r.violations.is_empty(), "{:?}", r.violations);
+    let (objects, _) = r.contents();
+    let mut want = [0xcd; 20];
+    want[..4].copy_from_slice(&[2; 4]);
+    want[12..16].copy_from_slice(&[1; 4]);
+    assert_eq!(
+        objects[n(&t).parse::<usize>().unwrap()].as_deref(),
+        Some(&want[..])
+    );
+    assert_eq!(
+        objects[n(&b).parse::<usize>().unwrap()].as_deref(),
+        Some(&[9; 16][..]),
+        "the copy recorded before the discard"
+    );
+}
+
+#[test]
+fn a_no_overwrite_texture_write_keeps_off_texels_in_use() {
+    let refusal = |t: &Id| {
+        format!(
+            "a NoOverwrite write over texels of texture {} an unfinished command or an ordered write touches",
+            n(t)
+        )
+    };
+    fn at(t: &Id, x: u32, y: u32) -> TextureRegion<'_, Recorder> {
+        TextureRegion {
+            origin: Origin { x, y, z: 0 },
+            ..region(t)
+        }
+    }
+    let one = extent(1);
+    // An ordered write not waited for, then texels beside it and over it.
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    r.write_texture(&at(&t, 0, 0), one, &[1; 4], 4, 1, WriteMode::Ordered);
+    r.write_texture(&at(&t, 1, 0), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+    r.write_texture(&at(&t, 0, 1), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+    assert!(r.violations.is_empty(), "{:?}", r.violations);
+    r.write_texture(&at(&t, 0, 0), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+    assert_eq!(r.violations, [refusal(&t)]);
+    // Each command that reads or writes texel (1, 1), then writes beside it and over it; and over
+    // it after a wait.
+    type Use = fn(&mut Recorder, &Id, &Id, &Id);
+    let uses: [(&str, Use); 5] = [
+        ("copy_texture_to_buffer", |r, t, _, b| {
+            r.copy_texture_to_buffer(
+                &TextureRegion {
+                    origin: Origin { x: 1, y: 1, z: 0 },
+                    ..region(t)
+                },
+                &CopyBufferTexture {
+                    buffer: b,
+                    offset: 0,
+                    row_pitch: 4,
+                    rows_per_layer: 1,
+                },
+                extent(1),
+            )
+        }),
+        ("copy_buffer_to_texture", |r, t, _, b| {
+            r.copy_buffer_to_texture(
+                &CopyBufferTexture {
+                    buffer: b,
+                    offset: 0,
+                    row_pitch: 4,
+                    rows_per_layer: 1,
+                },
+                &TextureRegion {
+                    origin: Origin { x: 1, y: 1, z: 0 },
+                    ..region(t)
+                },
+                extent(1),
+            )
+        }),
+        ("copy_texture from", |r, t, other, _| {
+            r.copy_texture(
+                &TextureRegion {
+                    origin: Origin { x: 1, y: 1, z: 0 },
+                    ..region(t)
+                },
+                &region(other),
+                extent(1),
+            )
+        }),
+        ("copy_texture to", |r, t, other, _| {
+            r.copy_texture(
+                &region(other),
+                &TextureRegion {
+                    origin: Origin { x: 1, y: 1, z: 0 },
+                    ..region(t)
+                },
+                extent(1),
+            )
+        }),
+        ("read_back", |r, t, _, _| {
+            r.read_back(&ReadSource::Texture {
+                region: TextureRegion {
+                    origin: Origin { x: 1, y: 1, z: 0 },
+                    ..region(t)
+                },
+                extent: extent(1),
+            })
+            .unwrap();
+        }),
+    ];
+    for (name, use_texels) in uses {
+        for wait in [false, true] {
+            let mut r = Recorder::new();
+            let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+            let other = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+            let b = buffer(&mut r, 64, COPIES);
+            use_texels(&mut r, &t, &other, &b);
+            if wait {
+                let done = r.submit();
+                r.wait_fence(&done);
+            }
+            r.write_texture(&at(&t, 0, 1), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+            assert!(r.violations.is_empty(), "{name}: {:?}", r.violations);
+            r.write_texture(&at(&t, 1, 1), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+            let want = if wait { vec![] } else { vec![refusal(&t)] };
+            assert_eq!(r.violations, want, "{name}, waited {wait}");
+        }
+    }
+    // A resolve writes all of its destination.
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let ms = r
+        .create_texture(&TextureDesc {
+            samples: 4,
+            usage: TextureUsage::RENDER,
+            ..texture_desc(Format::Rgba8Unorm, 2)
+        })
+        .unwrap();
+    r.resolve(&region(&ms), &region(&t), Format::Rgba8Unorm);
+    r.write_texture(&at(&t, 1, 1), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+    assert_eq!(r.violations, [refusal(&t)]);
+    // A pass attaching slice 1 of level 1 (2 by 2 by 2) of a 3D texture uses that slice alone.
+    let mut r = Recorder::new();
+    let t = shaped(&mut r, TextureDimension::D3, 4, 4, 2);
+    let level = view_of(&mut r, &t, ViewDimension::D3, (1, 1), (0, 1));
+    r.begin_pass(&pass_of([ColorAttachment {
+        depth_slice: 1,
+        ..color(&level)
+    }]));
+    r.end_pass();
+    let slice = |z| TextureRegion {
+        mip: 1,
+        origin: Origin { x: 0, y: 0, z },
+        ..region(&t)
+    };
+    r.write_texture(&slice(0), extent(2), &[2; 16], 8, 2, WriteMode::NoOverwrite);
+    assert!(r.violations.is_empty(), "{:?}", r.violations);
+    r.write_texture(&slice(1), extent(2), &[2; 16], 8, 2, WriteMode::NoOverwrite);
+    assert_eq!(r.violations, [refusal(&t)]);
+    // A draw sampling the texture, and a pass attaching it, use all its texels.
+    let mut d = Drawing::new();
+    let sampled = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
+    let sampled_view = view(&mut d.r, &sampled, Format::Rgba8Unorm);
+    let set =
+        d.r.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&sampled_view),
+        }])
+        .unwrap();
+    let p = d.program("loads");
+    d.begin();
+    d.draw(&p, Some(&set), Topology::TriangleList, false);
+    d.r.end_pass();
+    let target = d.target;
+    for t in [&sampled, &target] {
+        d.r.write_texture(&at(t, 1, 1), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
+    }
+    assert_eq!(d.r.violations, [refusal(&sampled), refusal(&target)]);
 }
 
 #[test]
@@ -3231,7 +3496,7 @@ fn textures_are_of_held_formats_and_not_empty() {
             ..desc
         }),
         Err(GpuError::Invalid(
-            "cube texture whose layers are not whole cubes"
+            "cube texture that is not 2D and square with whole cubes of layers"
         ))
     );
     assert!(
@@ -3242,6 +3507,121 @@ fn textures_are_of_held_formats_and_not_empty() {
         })
         .is_ok()
     );
+}
+
+#[test]
+fn cube_textures_are_square_and_levels_end_at_the_full_chain() {
+    let mut r = Recorder::new();
+    let cube = TextureDesc {
+        cube: true,
+        depth_or_layers: 6,
+        ..texture_desc(Format::Rgba8Unorm, 4)
+    };
+    assert!(r.create_texture(&cube).is_ok());
+    for wrong in [
+        TextureDesc { height: 2, ..cube },
+        TextureDesc {
+            dimension: TextureDimension::D3,
+            ..cube
+        },
+    ] {
+        assert_eq!(
+            r.create_texture(&wrong),
+            Err(GpuError::Invalid(
+                "cube texture that is not 2D and square with whole cubes of layers"
+            )),
+            "{wrong:?}"
+        );
+    }
+    // 4x4 has three levels; a 2x8 2D array four, its layers not counting; a 4x4x16 3D texture five.
+    let square = texture_desc(Format::Rgba8Unorm, 4);
+    let tall = TextureDesc {
+        width: 2,
+        height: 8,
+        depth_or_layers: 16,
+        ..square
+    };
+    let deep = TextureDesc {
+        dimension: TextureDimension::D3,
+        depth_or_layers: 16,
+        ..square
+    };
+    for (desc, chain) in [(square, 3), (tall, 4), (deep, 5)] {
+        assert!(
+            r.create_texture(&TextureDesc {
+                mip_levels: chain,
+                ..desc
+            })
+            .is_ok(),
+            "{desc:?}"
+        );
+        for past in [chain + 1, 40] {
+            assert_eq!(
+                r.create_texture(&TextureDesc {
+                    mip_levels: past,
+                    ..desc
+                }),
+                Err(GpuError::Invalid("more levels than the full chain")),
+                "{desc:?} {past}"
+            );
+        }
+    }
+}
+
+#[test]
+fn view_dimensions_fit_their_texture_and_layers() {
+    let mut r = Recorder::new();
+    let array = shaped(&mut r, TextureDimension::D2, 4, 12, 1);
+    let cube = r
+        .create_texture(&TextureDesc {
+            cube: true,
+            depth_or_layers: 12,
+            ..texture_desc(Format::Rgba8Unorm, 4)
+        })
+        .unwrap();
+    let volume = shaped(&mut r, TextureDimension::D3, 4, 4, 1);
+    let desc = |dimension, layer_count| TextureViewDesc {
+        format: Format::Rgba8Unorm,
+        dimension,
+        base_mip: 0,
+        mip_count: 1,
+        base_layer: 0,
+        layer_count,
+        stencil: false,
+    };
+    use ViewDimension::*;
+    let fitting = [
+        (&array, desc(D2, 1)),
+        (&array, desc(D2Array, 3)),
+        (&cube, desc(D2, 1)),
+        (&cube, desc(D2Array, 12)),
+        (&cube, desc(Cube, 6)),
+        (&cube, desc(CubeArray, 12)),
+        (&volume, desc(D3, 1)),
+    ];
+    for (t, view) in fitting {
+        assert!(r.create_view(t, &view).is_ok(), "{view:?}");
+    }
+    let unfitting = [
+        (&array, desc(D2, 3)),
+        (&array, desc(Cube, 6)),
+        (&array, desc(CubeArray, 12)),
+        (&array, desc(D3, 1)),
+        (&cube, desc(Cube, 4)),
+        (&cube, desc(CubeArray, 8)),
+        (&volume, desc(D2, 1)),
+        (&volume, desc(D2Array, 1)),
+        (&volume, desc(Cube, 1)),
+    ];
+    for (t, view) in unfitting {
+        assert_eq!(
+            r.create_view(t, &view),
+            Err(GpuError::Invalid(
+                "view dimension that does not fit its texture and layers"
+            )),
+            "{view:?}"
+        );
+    }
 }
 
 #[test]
@@ -3294,9 +3674,29 @@ fn depth_bounds_and_border_and_mirror_once_samplers_are_absent() {
         }),
         Err(GpuError::Absent(Features::DEPTH_BOUNDS))
     );
-    for mode in [AddressMode::Border, AddressMode::MirrorOnce] {
-        let mut address = [AddressMode::Clamp; 3];
-        address[2] = mode;
+    // Each mode names the feature it needs, and only that one.
+    for (address, absent) in [
+        (
+            [AddressMode::Clamp, AddressMode::Clamp, AddressMode::Border],
+            Features::BORDER_COLOR,
+        ),
+        (
+            [
+                AddressMode::MirrorOnce,
+                AddressMode::Clamp,
+                AddressMode::Clamp,
+            ],
+            Features::MIRROR_ONCE,
+        ),
+        (
+            [
+                AddressMode::Border,
+                AddressMode::MirrorOnce,
+                AddressMode::Clamp,
+            ],
+            Features::BORDER_COLOR | Features::MIRROR_ONCE,
+        ),
+    ] {
         assert_eq!(
             r.create_sampler(&SamplerDesc {
                 min: Filter::Nearest,
@@ -3308,10 +3708,8 @@ fn depth_bounds_and_border_and_mirror_once_samplers_are_absent() {
                 compare: None,
                 border: BorderColor::TransparentBlack,
             }),
-            Err(GpuError::Absent(
-                Features::BORDER_COLOR | Features::MIRROR_ONCE
-            )),
-            "{mode:?}"
+            Err(GpuError::Absent(absent)),
+            "{address:?}"
         );
     }
 }
@@ -3364,6 +3762,7 @@ fn query_sets_of_absent_kinds_are_refused() {
         r.create_query_set(QueryKind::Occlusion, 1),
         Err(GpuError::Absent(Features::OCCLUSION_COUNT))
     );
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::TIMESTAMPS));
     assert_eq!(
         r.create_query_set(QueryKind::Timestamp, 1),
         Err(GpuError::Absent(Features::TIMESTAMPS))
@@ -4029,4 +4428,137 @@ fn ranges_ending_past_the_largest_offset_are_refused() {
         c.vertex_buffers = streams
     });
     d.refused("a vertex past the buffer's end");
+}
+
+#[test]
+fn textures_paired_with_samplers_lie_in_the_sampled_texture_range() {
+    // Textures at the edges of 32..160 and outside it, sampled through a sampler (directly or in a
+    // function the entry point calls) or only loaded.
+    let source = "
+@group(0) @binding(16) var s: sampler;
+@group(3) @binding(5) var low: texture_2d<f32>;
+@group(0) @binding(31) var below: texture_2d<f32>;
+@group(0) @binding(32) var first: texture_2d<f32>;
+@group(1) @binding(159) var last: texture_2d<f32>;
+@group(0) @binding(160) var past: texture_2d<f32>;
+fn sample_low() -> vec4<f32> {
+    return textureSampleLevel(low, s, vec2<f32>(0.5), 0.0);
+}
+@fragment fn pairs_5() -> @location(0) vec4<f32> { return sample_low(); }
+@fragment fn pairs_31() -> @location(0) vec4<f32> {
+    return textureSampleLevel(below, s, vec2<f32>(0.5), 0.0);
+}
+@fragment fn pairs_32() -> @location(0) vec4<f32> {
+    return textureSampleLevel(first, s, vec2<f32>(0.5), 0.0);
+}
+@fragment fn pairs_159() -> @location(0) vec4<f32> {
+    return textureSampleLevel(last, s, vec2<f32>(0.5), 0.0);
+}
+@fragment fn pairs_160() -> @location(0) vec4<f32> {
+    return textureSampleLevel(past, s, vec2<f32>(0.5), 0.0);
+}
+@fragment fn loads_5() -> @location(0) vec4<f32> {
+    return textureLoad(low, vec2<i32>(0, 0), 0) + textureLoad(past, vec2<i32>(0, 0), 0);
+}
+@vertex fn vs_pairs_5() -> @builtin(position) vec4<f32> {
+    return textureSampleLevel(low, s, vec2<f32>(0.5), 0.0);
+}
+@vertex fn vs_pairs_32() -> @builtin(position) vec4<f32> {
+    return textureSampleLevel(first, s, vec2<f32>(0.5), 0.0);
+}
+";
+    let module = naga::front::wgsl::parse_str(source).unwrap();
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .unwrap();
+    let mut r = Recorder::new();
+    let outside = Err(GpuError::Invalid(
+        "a texture paired with a sampler outside the sampled-texture bindings",
+    ));
+    for (entry, stage, made) in [
+        ("pairs_5", ShaderStage::Fragment, false),
+        ("pairs_31", ShaderStage::Fragment, false),
+        ("pairs_32", ShaderStage::Fragment, true),
+        ("pairs_159", ShaderStage::Fragment, true),
+        ("pairs_160", ShaderStage::Fragment, false),
+        ("loads_5", ShaderStage::Fragment, true),
+        ("vs_pairs_5", ShaderStage::Vertex, false),
+        ("vs_pairs_32", ShaderStage::Vertex, true),
+    ] {
+        let got = r
+            .create_shader(&ShaderModule {
+                module: module.clone(),
+                info: info.clone(),
+                entry_point: entry.into(),
+                stage,
+                key: *blake3::hash(entry.as_bytes()).as_bytes(),
+            })
+            .map(|_| ());
+        if made {
+            assert_eq!(got, Ok(()), "{entry}");
+        } else {
+            assert_eq!(got, outside, "{entry}");
+        }
+    }
+}
+
+#[test]
+fn binding_entries_name_every_stage_that_reads_them() {
+    // A texture and sampler the fragment program samples, and a uniform the vertex program reads,
+    // each made for the stages given; naming a stage that does not read is allowed.
+    let f = StageSet::FRAGMENT;
+    let v = StageSet::VERTEX;
+    let both = v | f;
+    let fragment_left_out = "a binding the fragment stage reads whose entry leaves that stage out";
+    let vertex_left_out = "a binding the vertex stage reads whose entry leaves that stage out";
+    type Case<'a> = (&'a str, &'a str, [StageSet; 3], Option<&'a str>);
+    let cases: [Case; 7] = [
+        ("vs", "sampled", [f, f, f], None),
+        ("vs", "sampled", [both, both, both], None),
+        ("vs", "sampled", [v, f, f], Some(fragment_left_out)),
+        ("vs", "sampled", [f, v, f], Some(fragment_left_out)),
+        ("vs_reads", "plain", [f, f, v], None),
+        ("vs_reads", "plain", [f, f, both], None),
+        ("vs_reads", "plain", [f, f, f], Some(vertex_left_out)),
+    ];
+    for (vs, fs, [texture_stages, sampler_stages, uniform_stages], violation) in cases {
+        let mut d = Drawing::new();
+        let t = texture(&mut d.r, Format::Rgba8Unorm, 2, TextureUsage::SAMPLE);
+        let tv = view(&mut d.r, &t, Format::Rgba8Unorm);
+        let s = sampler_of(&mut d.r, [Filter::Nearest; 3], None);
+        let u = buffer(&mut d.r, 16, BufferUsage::UNIFORM);
+        let set =
+            d.r.create_binding_set(&[
+                BindingEntry {
+                    binding: 32,
+                    stages: texture_stages,
+                    resource: BindingResource::Texture(&tv),
+                },
+                BindingEntry {
+                    binding: 16,
+                    stages: sampler_stages,
+                    resource: BindingResource::Sampler(&s),
+                },
+                BindingEntry {
+                    binding: 0,
+                    stages: uniform_stages,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &u,
+                        offset: 0,
+                        size: 16,
+                    }),
+                },
+            ])
+            .unwrap();
+        let p = d.program_of(vs, fs);
+        d.begin();
+        d.draw(&p, Some(&set), Topology::TriangleList, false);
+        match violation {
+            Some(violation) => d.refused(violation),
+            None => assert!(d.r.violations.is_empty(), "{vs} {fs}: {:?}", d.r.violations),
+        }
+    }
 }

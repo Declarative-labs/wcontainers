@@ -51,27 +51,33 @@ pub enum HeapType {
     Readback,
 }
 
-/// `D3D12_HEAP_FLAGS`: every defined bit, the deny flags, and the ones this front honours as they
-/// are (resources are always resident, and memory is zeroed anyway).
+/// `D3D12_HEAP_FLAGS`: every defined bit, and the deny flags.
 const HEAP_FLAGS_DEFINED: u32 =
     0x1 | 0x4 | 0x8 | 0x20 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x2000;
 const HEAP_FLAGS_DENY: u32 = 0x4 | 0x40 | 0x80;
-const HEAP_FLAGS_TAKEN: u32 = 0x800 | 0x1000;
+
+/// The heap flags asking for an ability the front lacks, each with its reason. The others are
+/// honoured as they are: resources are always resident, memory is zeroed anyway, and atomics on
+/// one adapter need nothing of the heap.
+const HEAP_FLAGS_REFUSED: [(u32, &str); 6] = [
+    (0x1, "shared heaps"),
+    (0x8, "heaps allowing display"),
+    (0x20, "heaps shared across adapters"),
+    (0x100, "hardware-protected heaps"),
+    (0x200, "heaps allowing write watching"),
+    (0x2000, "heaps with manual write tracking"),
+];
 
 /// Checks heap flags: refuses undefined bits and, for committed resources (`committed`), the deny
-/// flags, as Direct3D 12 does; reports as not done those asking for an ability the front lacks
-/// (sharing, display, protected memory, write watching, cross-adapter atomics, manual write
-/// tracking).
+/// flags, as Direct3D 12 does; reports as not done those asking for an ability the front lacks.
 pub fn check_heap_flags(flags: u32, committed: bool) -> Result<(), Error> {
     if flags & !HEAP_FLAGS_DEFINED != 0 || (committed && flags & HEAP_FLAGS_DENY != 0) {
         return Err(Error::Invalid("heap flags"));
     }
-    if flags & !(HEAP_FLAGS_TAKEN | HEAP_FLAGS_DENY) != 0 {
-        return Err(Error::NotImplemented(
-            "heap flags for sharing, display, protection, write watching or atomics",
-        ));
+    match HEAP_FLAGS_REFUSED.iter().find(|(bit, _)| flags & bit != 0) {
+        Some(&(_, reason)) => Err(Error::NotImplemented(reason)),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// `CreateHeap`'s checks of what the description asks beyond its type: an alignment of 0, 64 KiB
@@ -258,9 +264,29 @@ impl ResourceDesc {
         }
     }
 
-    /// The interface format of a texture and whether its DXGI format is typeless.
+    /// The interface format of a texture and whether its DXGI format is typeless. A typeless
+    /// texture allowing depth-stencil views whose family has a depth format is stored in it (as
+    /// `R24G8` and `R32G8X24` are), and views of the family's colour formats read its depth.
     pub fn texture_format(&self) -> Result<(Format, bool), Error> {
-        dxgi_format(self.format).ok_or(Error::Invalid("a format the front cannot store"))
+        let (format, typeless) =
+            dxgi_format(self.format).ok_or(Error::Invalid("a format the front cannot store"))?;
+        if typeless && self.flags & FLAG_DEPTH_STENCIL != 0 {
+            match format {
+                Format::R32Float => return Ok((Format::Depth32Float, false)),
+                Format::R16Float => return Ok((Format::Depth16Unorm, false)),
+                _ => {}
+            }
+        }
+        Ok((format, typeless))
+    }
+
+    /// The depth format whose depth a view of colour format `view` reads.
+    pub fn depth_read_as(view: Format) -> Option<Format> {
+        match view {
+            Format::R32Float => Some(Format::Depth32Float),
+            Format::R16Unorm => Some(Format::Depth16Unorm),
+            _ => None,
+        }
     }
 
     /// `GetResourceAllocationInfo` for this resource: its size and alignment in a heap. Buffers and

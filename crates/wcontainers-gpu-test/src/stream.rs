@@ -112,6 +112,30 @@ pub struct Draw {
     pub range: Range,
 }
 
+/// A dispatch: program, binding sets, immediates, and its group counts or its argument buffer and
+/// offset.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dispatch {
+    pub program: Id,
+    pub bindings: [Option<Id>; MAX_BINDING_SETS],
+    pub immediates: Vec<u8>,
+    pub groups: Result<[u32; 3], (Id, u64)>,
+}
+
+impl Dispatch {
+    pub fn of(c: &DispatchCall<'_, Recorder>) -> Dispatch {
+        Dispatch {
+            program: *c.program,
+            bindings: c.bindings.map(|b| b.copied()),
+            immediates: c.immediates.to_vec(),
+            groups: match c.groups {
+                DispatchGroups::Direct(g) => Ok(g),
+                DispatchGroups::Indirect { args, offset } => Err((*args, offset)),
+            },
+        }
+    }
+}
+
 /// The kinds of [`Object`], for [`Call::Destroy`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
@@ -155,6 +179,11 @@ pub enum Call {
     BeginPass(Pass),
     EndPass,
     Draw(Box<Draw>),
+    Dispatch(Box<Dispatch>, Result<(), GpuError>),
+    /// The draw, its targets (buffer, offset, size) and whether it also rasterised.
+    CaptureVertices(Box<Draw>, Vec<(Id, u64, u64)>, bool, Result<(), GpuError>),
+    WriteTimestamp(Id, u32, Result<(), GpuError>),
+    TimestampsDisjoint,
     BeginQuery(u32),
     EndQuery,
     CopyBuffer(Id, u64, Id, u64, u64),
@@ -200,6 +229,10 @@ impl Call {
             Call::BeginPass(..) => "begin_pass",
             Call::EndPass => "end_pass",
             Call::Draw(..) => "draw",
+            Call::Dispatch(..) => "dispatch",
+            Call::CaptureVertices(..) => "capture_vertices",
+            Call::WriteTimestamp(..) => "write_timestamp",
+            Call::TimestampsDisjoint => "timestamps_disjoint",
             Call::BeginQuery(..) => "begin_query",
             Call::EndQuery => "end_query",
             Call::CopyBuffer(..) => "copy_buffer",
@@ -381,6 +414,72 @@ impl Draw {
     }
 }
 
+impl Draw {
+    /// Calls `f` with the draw as a [`DrawCall`].
+    pub fn with<T>(&self, f: impl FnOnce(&DrawCall<'_, Recorder>) -> T) -> T {
+        let d = self;
+        let streams: Vec<_> = d
+            .vertex_buffers
+            .iter()
+            .map(|v| {
+                v.as_ref().map(|(buffer, offset)| VertexBinding {
+                    buffer,
+                    offset: *offset,
+                })
+            })
+            .collect();
+        f(&DrawCall {
+            program: &d.blocks[0],
+            blend: &d.blocks[1],
+            depth_stencil: &d.blocks[2],
+            raster: &d.blocks[3],
+            vertex_layout: &d.blocks[4],
+            bindings: [0, 1, 2, 3].map(|i| d.bindings[i].as_ref()),
+            vertex_buffers: &streams,
+            index: d
+                .index
+                .as_ref()
+                .map(|(buffer, offset, format)| IndexBinding {
+                    buffer,
+                    offset: *offset,
+                    format: *format,
+                }),
+            topology: d.topology,
+            restart: d.restart,
+            viewports: &d.viewports,
+            scissors: &d.scissors,
+            blend_constant: d.blend_constant,
+            stencil_reference: d.stencil_reference,
+            immediates: &d.immediates,
+            range: match &d.range {
+                Range::Vertices(first, count, first_instance, instances) => DrawRange::Vertices {
+                    first: *first,
+                    count: *count,
+                    first_instance: *first_instance,
+                    instances: *instances,
+                },
+                Range::Indexed(first, count, base_vertex, first_instance, instances) => {
+                    DrawRange::Indexed {
+                        first: *first,
+                        count: *count,
+                        base_vertex: *base_vertex,
+                        first_instance: *first_instance,
+                        instances: *instances,
+                    }
+                }
+                Range::Indirect(args, offset) => DrawRange::Indirect {
+                    args,
+                    offset: *offset,
+                },
+                Range::IndexedIndirect(args, offset) => DrawRange::IndexedIndirect {
+                    args,
+                    offset: *offset,
+                },
+            },
+        })
+    }
+}
+
 /// Runs `calls` on a new recording back end, each as it was made, and gives the back end, whose
 /// own stream then equals `calls` where the recording is deterministic.
 pub fn replay(calls: &[Call]) -> Recorder {
@@ -458,69 +557,34 @@ fn run(r: &mut Recorder, call: &Call) {
             });
         }
         Call::EndPass => r.end_pass(),
-        Call::Draw(d) => {
-            let streams: Vec<_> = d
-                .vertex_buffers
-                .iter()
-                .map(|v| {
-                    v.as_ref().map(|(buffer, offset)| VertexBinding {
-                        buffer,
-                        offset: *offset,
-                    })
-                })
-                .collect();
-            r.draw(&DrawCall {
-                program: &d.blocks[0],
-                blend: &d.blocks[1],
-                depth_stencil: &d.blocks[2],
-                raster: &d.blocks[3],
-                vertex_layout: &d.blocks[4],
+        Call::Draw(d) => d.with(|c| r.draw(c)),
+        Call::Dispatch(d, _) => {
+            _ = r.dispatch(&DispatchCall {
+                program: &d.program,
                 bindings: [0, 1, 2, 3].map(|i| d.bindings[i].as_ref()),
-                vertex_buffers: &streams,
-                index: d
-                    .index
-                    .as_ref()
-                    .map(|(buffer, offset, format)| IndexBinding {
-                        buffer,
-                        offset: *offset,
-                        format: *format,
-                    }),
-                topology: d.topology,
-                restart: d.restart,
-                viewports: &d.viewports,
-                scissors: &d.scissors,
-                blend_constant: d.blend_constant,
-                stencil_reference: d.stencil_reference,
                 immediates: &d.immediates,
-                range: match &d.range {
-                    Range::Vertices(first, count, first_instance, instances) => {
-                        DrawRange::Vertices {
-                            first: *first,
-                            count: *count,
-                            first_instance: *first_instance,
-                            instances: *instances,
-                        }
-                    }
-                    Range::Indexed(first, count, base_vertex, first_instance, instances) => {
-                        DrawRange::Indexed {
-                            first: *first,
-                            count: *count,
-                            base_vertex: *base_vertex,
-                            first_instance: *first_instance,
-                            instances: *instances,
-                        }
-                    }
-                    Range::Indirect(args, offset) => DrawRange::Indirect {
-                        args,
-                        offset: *offset,
-                    },
-                    Range::IndexedIndirect(args, offset) => DrawRange::IndexedIndirect {
+                groups: match &d.groups {
+                    Ok(g) => DispatchGroups::Direct(*g),
+                    Err((args, offset)) => DispatchGroups::Indirect {
                         args,
                         offset: *offset,
                     },
                 },
-            });
+            })
         }
+        Call::CaptureVertices(d, targets, rasterize, _) => {
+            let targets: Vec<_> = targets
+                .iter()
+                .map(|(buffer, offset, size)| BufferRange {
+                    buffer,
+                    offset: *offset,
+                    size: *size,
+                })
+                .collect();
+            _ = d.with(|c| r.capture_vertices(c, &targets, *rasterize));
+        }
+        Call::WriteTimestamp(set, index, _) => _ = r.write_timestamp(set, *index),
+        Call::TimestampsDisjoint => _ = r.timestamps_disjoint(),
         Call::BeginQuery(i) => r.begin_query(*i),
         Call::EndQuery => r.end_query(),
         Call::CopyBuffer(s, so, d, doff, size) => r.copy_buffer(s, *so, d, *doff, *size),

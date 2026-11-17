@@ -247,7 +247,9 @@ pub trait Backend: Sized {
     /// a buffer, the back end copies into a colour texture first and draws the depth
     /// ([`crate::SlowPath::DepthWrittenByDraw`]): `r32float` for 32-bit float depth, and `r32uint`
     /// for 24-bit depth, whose buffer bytes are 24-bit unorm in the low bits of a 32-bit word, drawn as
-    /// `(v & 0xffffff) / 16777215`; see [`CopyBufferTexture::row_pitch`] for pitches.
+    /// `(v & 0xffffff) / 16777215`; see [`CopyBufferTexture::row_pitch`] for pitches. Float depth so
+    /// drawn holds only what a draw can write: values outside 0 to 1, denormals and NaN are lost
+    /// (plan 4.12).
     fn copy_buffer_to_texture(
         &mut self,
         src: &CopyBufferTexture<'_, Self>,
@@ -474,8 +476,9 @@ pub trait Backend: Sized {
     }
 
     /// Clears rectangles of one view outside a pass (Direct3D 11.1's ClearView, Direct3D 12's clears
-    /// with rectangles). `view` is one mip level and one layer; the rectangles lie inside it. The
-    /// default draws a full-screen triangle per rectangle, scissored to it, with a built-in program
+    /// with rectangles). `view` is one mip level and one layer; rectangles are clipped to it. The
+    /// default draws a full-screen triangle per rectangle, scissored to it (the scissor clipped as
+    /// [`DrawCall::scissors`] says), with a built-in program
     /// writing the value. WebGL 2 overrides it with scissored clears.
     fn clear_rects(
         &mut self,
@@ -562,8 +565,16 @@ pub trait Backend: Sized {
                 }),
             }])?)
         };
-        let width = rects.iter().map(|r| r.x + r.width).max().unwrap_or(0);
-        let height = rects.iter().map(|r| r.y + r.height).max().unwrap_or(0);
+        let width = rects
+            .iter()
+            .map(|r| r.x.saturating_add(r.width))
+            .max()
+            .unwrap_or(0);
+        let height = rects
+            .iter()
+            .map(|r| r.y.saturating_add(r.height))
+            .max()
+            .unwrap_or(0);
         let viewport = [full_viewport(width, height)];
         self.begin_pass(&pass);
         for rect in rects {
@@ -888,6 +899,11 @@ pub trait Backend: Sized {
         dst: &Self::Buffer,
         dst_offset: u64,
     ) -> Result<(), GpuError> {
+        if !dst_offset.is_multiple_of(8) {
+            return Err(GpuError::Invalid(
+                "query results go to multiples of 8 bytes",
+            ));
+        }
         let rb = self.read_queries(set, first, count)?;
         if self.read_state(&rb) == ReadState::Pending {
             self.slow_paths().hit(SlowPath::QueryResolveWait);
@@ -920,8 +936,12 @@ pub trait Backend: Sized {
     /// position is captured writes it to a location too). With one target every output of a vertex is
     /// written one after another, vertex after vertex; with more, output n goes to target n alone and
     /// there are as many targets as outputs, at most [`crate::Limits::capture_buffers`]. Vertices are
-    /// written once per vertex of each primitive (strips as the lists they draw), in draw order,
-    /// instance after instance, and the targets hold every vertex the draw makes.
+    /// written once per vertex of each whole primitive, in draw order, instance after instance, and the
+    /// targets hold every vertex the draw makes. Strips are written as the lists they draw: triangle
+    /// `i` of a strip is `(i, i + 1, i + 2)` for even `i`, and for odd `i` `(i, i + 2, i + 1)`, or
+    /// `(i + 1, i, i + 2)` with [`crate::ProvokingVertex::Last`] (each keeps the winding and the
+    /// provoking vertex every API gives the triangle). Fans and loops need
+    /// [`Features::FAN_AND_LOOP`].
     fn capture_vertices(
         &mut self,
         call: &DrawCall<'_, Self>,
@@ -949,7 +969,7 @@ pub trait Backend: Sized {
         Err(GpuError::Absent(Features::RESOURCE_TABLES))
     }
 
-    /// Writes the GPU time into query `index`, outside a pass: back ends whose API writes timestamps only
+    /// Writes the GPU time into query `index` of a [`QueryKind::Timestamp`] set, outside a pass: back ends whose API writes timestamps only
     /// where passes begin and end attach it to the next pass, or to an empty one. A front asked for one
     /// between draws ends the pass first (slow path [`SlowPath::TimestampSplitPass`]). Needs
     /// [`Features::TIMESTAMPS`].

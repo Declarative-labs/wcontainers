@@ -305,11 +305,12 @@ fn clear_rects_draws_one_triangle_per_rectangle_in_one_pass() {
             width: 2,
             height: 1,
         },
+        // Clipped to the view.
         ScissorRect {
             x: 2,
             y: 2,
-            width: 2,
-            height: 2,
+            width: 5,
+            height: 9,
         },
     ];
     r.clear_rects(&v, Format::Rgba8Unorm, ClearValue::Color(red()), &rects)
@@ -940,7 +941,15 @@ fn resolve_queries_reads_them_back_and_writes_them_in_order() {
     r.end_query();
     r.end_pass();
     let dst = buffer(&mut r, 24, BufferUsage::COPY_SRC | BufferUsage::COPY_DST);
+    // Results go to multiples of 8 bytes; the refusal makes no call.
     let from = r.calls.len();
+    assert_eq!(
+        r.resolve_queries(&set, 0, 2, &dst, 4),
+        Err(GpuError::Invalid(
+            "query results go to multiples of 8 bytes"
+        ))
+    );
+    assert_eq!(r.calls.len(), from);
     r.resolve_queries(&set, 0, 2, &dst, 8).unwrap();
     assert_eq!(
         names(&r, from),

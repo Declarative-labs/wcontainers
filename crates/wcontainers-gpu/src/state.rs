@@ -8,7 +8,7 @@ use crate::{MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS};
 use bitflags::bitflags;
 
 /// Blend factors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BlendFactor {
     Zero,
     One,
@@ -34,7 +34,7 @@ pub enum BlendFactor {
 }
 
 /// Blend operations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BlendOp {
     Add,
     Subtract,
@@ -44,7 +44,7 @@ pub enum BlendOp {
 }
 
 /// One half (color or alpha) of a target's blend.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BlendComponent {
     pub src: BlendFactor,
     pub dst: BlendFactor,
@@ -53,7 +53,7 @@ pub struct BlendComponent {
 
 bitflags! {
     /// Which channels a target keeps.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
     pub struct ColorWrites: u8 {
         const R = 1;
         const G = 2;
@@ -63,7 +63,7 @@ bitflags! {
 }
 
 /// Logic operations, which replace blending on integer and normalized targets where present.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum LogicOp {
     Clear,
     And,
@@ -84,7 +84,7 @@ pub enum LogicOp {
 }
 
 /// One color target's blend.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RenderTargetBlend {
     /// None writes the fragment's value unchanged.
     pub blend: Option<(BlendComponent, BlendComponent)>,
@@ -92,7 +92,7 @@ pub struct RenderTargetBlend {
 }
 
 /// The blend block: Direct3D's blend state, OpenGL's blend enables and functions, Vulkan's color blend.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BlendDesc {
     pub targets: [RenderTargetBlend; MAX_COLOR_TARGETS],
     /// Whether every target uses `targets[0]`. Back ends without [`crate::Features::INDEPENDENT_BLEND`]
@@ -106,7 +106,7 @@ pub struct BlendDesc {
 }
 
 /// What a stencil test does on each outcome.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum StencilOp {
     Keep,
     Zero,
@@ -119,7 +119,7 @@ pub enum StencilOp {
 }
 
 /// One face's stencil test.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct StencilFace {
     pub compare: CompareFn,
     pub fail: StencilOp,
@@ -129,7 +129,7 @@ pub struct StencilFace {
 
 /// The depth and stencil block. The stencil reference is not here: it changes per draw
 /// ([`crate::DrawCall::stencil_reference`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DepthStencilDesc {
     /// None turns the depth test off.
     pub depth_compare: Option<CompareFn>,
@@ -146,7 +146,7 @@ pub struct DepthStencilDesc {
 }
 
 /// Which way triangles are filled.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FillMode {
     Solid,
     Line,
@@ -154,7 +154,7 @@ pub enum FillMode {
 }
 
 /// Which faces are dropped.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CullMode {
     None,
     Front,
@@ -162,21 +162,21 @@ pub enum CullMode {
 }
 
 /// Which winding faces the viewer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FrontFace {
     CounterClockwise,
     Clockwise,
 }
 
 /// Which vertex of a primitive gives flat-shaded values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ProvokingVertex {
     First,
     Last,
 }
 
 /// The rasterising block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RasterDesc {
     pub fill: FillMode,
     pub cull: CullMode,
@@ -213,7 +213,7 @@ pub struct RasterDesc {
 /// formats Direct3D and OpenGL use. A back end that lacks one (WebGPU has no three-component 8 or 16-bit
 /// formats) fetches it in the vertex program from a storage buffer or converts it on upload (slow path
 /// [`crate::SlowPath::VertexFormatConverted`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum VertexFormat {
     Uint8x1,
     Uint8x2,
@@ -271,7 +271,7 @@ pub enum VertexFormat {
 }
 
 /// Whether a stream advances per vertex or per instance.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum StepMode {
     Vertex,
     /// Advances once every `n` instances (Direct3D's step rate; zero means never): the instance of
@@ -284,7 +284,7 @@ pub enum StepMode {
 }
 
 /// One attribute the vertex program reads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct VertexAttribute {
     /// The program input it feeds.
     pub location: u32,
@@ -294,7 +294,7 @@ pub struct VertexAttribute {
 }
 
 /// One vertex stream's layout.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct VertexStream {
     /// Bytes between elements. Not part of Direct3D 11's input layout, so the Direct3D 11 front builds
     /// the block from the layout and the bound strides together. Zero means every vertex and instance
@@ -305,14 +305,14 @@ pub struct VertexStream {
 }
 
 /// The vertex layout block. Unused streams are `None`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct VertexLayoutDesc {
     pub streams: [Option<VertexStream>; MAX_VERTEX_STREAMS],
     pub attributes: [Option<VertexAttribute>; MAX_VERTEX_STREAMS],
 }
 
 /// The formats a pass's targets have, which programs and pipelines are built against.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TargetLayout {
     pub colors: [Option<Format>; MAX_COLOR_TARGETS],
     pub depth_stencil: Option<Format>,
@@ -324,7 +324,7 @@ pub struct TargetLayout {
 /// geometry shader the stage helper reads them; without one, as OpenGL allows, the front draws the list
 /// or strip from indices that leave out the adjacent vertices (slow path
 /// [`crate::SlowPath::AdjacencyDropped`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Topology {
     PointList,
     LineList,
@@ -336,7 +336,7 @@ pub enum Topology {
 }
 
 /// Width of index values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum IndexFormat {
     /// 8-bit indices (OpenGL's `GL_UNSIGNED_BYTE`), where [`crate::Features::INDEX_U8`] is present;
     /// otherwise a front widens them to 16 bits in the index ring ([`crate::SlowPath::IndexWidened`]).

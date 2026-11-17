@@ -25,6 +25,8 @@ pub enum Step {
     WriteTexture {
         which: u16,
         at: [u8; 6],
+        mode: u8,
+        pitch: u8,
         seed: u8,
     },
     CopyBuffer {
@@ -77,6 +79,15 @@ pub enum Step {
     },
     Destroy(u16),
     Submit,
+    /// A dispatch updating each word of a buffer, where the back end has compute.
+    Dispatch(u16),
+    /// Vertices captured into a buffer, one to three triangles, where it has vertex capture.
+    Capture {
+        which: u16,
+        triangles: u8,
+    },
+    /// A timestamp written into one of two, both read back, where it has timestamps.
+    Timestamp(u8),
 }
 
 /// What else a pass does, each where present: a depth-stencil target (its cleared depth and
@@ -114,8 +125,20 @@ pub fn steps(max: usize) -> impl Strategy<Value = Vec<Step>> {
                 seed
             }
         ),
-        (any::<u16>(), any::<[u8; 6]>(), any::<u8>())
-            .prop_map(|(which, at, seed)| Step::WriteTexture { which, at, seed }),
+        (
+            any::<u16>(),
+            any::<[u8; 6]>(),
+            any::<u8>(),
+            any::<u8>(),
+            any::<u8>()
+        )
+            .prop_map(|(which, at, mode, pitch, seed)| Step::WriteTexture {
+                which,
+                at,
+                mode,
+                pitch,
+                seed
+            }),
         (any::<[u16; 2]>(), any::<[u16; 3]>())
             .prop_map(|(which, at)| Step::CopyBuffer { which, at }),
         (any::<[u16; 2]>(), any::<[u8; 8]>())
@@ -194,6 +217,10 @@ pub fn steps(max: usize) -> impl Strategy<Value = Vec<Step>> {
             .prop_map(|(which, value)| Step::ClearTexture { which, value }),
         any::<u16>().prop_map(Step::Destroy),
         Just(Step::Submit),
+        any::<u16>().prop_map(Step::Dispatch),
+        (any::<u16>(), any::<u8>())
+            .prop_map(|(which, triangles)| Step::Capture { which, triangles }),
+        any::<u8>().prop_map(Step::Timestamp),
     ];
     prop::collection::vec(step, 1..=max)
 }
@@ -215,6 +242,14 @@ struct V { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> }
 @group(0) @binding(0) var<uniform> tint: vec4<f32>;
 @fragment fn tinted(v: V) -> @location(0) vec4<f32> {
     return v.c * tint;
+}
+@group(0) @binding(1) var<storage, read_write> words: array<u32>;
+@compute @workgroup_size(1) fn step(@builtin(global_invocation_id) g: vec3<u32>) {
+    words[g.x] = words[g.x] * 3u + g.x + 1u;
+}
+struct Counted { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> }
+@vertex fn counted(@builtin(vertex_index) i: u32, @builtin(instance_index) k: u32) -> Counted {
+    return Counted(vec4<f32>(f32(i), f32(k), 0.5, 1.0), vec4<f32>(f32(i) * 0.25, f32(k), 0.0, 1.0));
 }
 ";
 
@@ -246,6 +281,11 @@ struct Kit<B: Backend> {
     raster: B::Raster,
     scissored: B::Raster,
     layout: B::VertexLayout,
+    /// The dispatch's program, where the back end has compute.
+    step: Option<B::Program>,
+    /// A vertex program reading no stream, with a layout of none, where it has vertex capture.
+    counted: Option<(B::Program, B::VertexLayout)>,
+    timestamps: Option<B::QuerySet>,
 }
 
 fn kit<B: Backend>(b: &mut B) -> Result<Kit<B>, GpuError> {
@@ -366,7 +406,36 @@ fn kit<B: Backend>(b: &mut B) -> Result<Kit<B>, GpuError> {
         format: VertexFormat::Float32x4,
     });
     let layout = b.create_vertex_layout(&desc)?;
+    let has = b.caps().features;
+    let step = if has.contains(Features::COMPUTE) {
+        let c = shader(b, "step", ShaderStage::Compute)?;
+        Some(b.create_program(&Program::Compute(&c))?)
+    } else {
+        None
+    };
+    let counted = if has.contains(Features::TRANSFORM_FEEDBACK) {
+        let v = shader(b, "counted", ShaderStage::Vertex)?;
+        let program = b.create_program(&Program::Render {
+            vertex: &v,
+            fragment: None,
+        })?;
+        let none = b.create_vertex_layout(&VertexLayoutDesc {
+            streams: [None; MAX_VERTEX_STREAMS],
+            attributes: [None; MAX_VERTEX_STREAMS],
+        })?;
+        Some((program, none))
+    } else {
+        None
+    };
+    let timestamps = if has.contains(Features::TIMESTAMPS) {
+        Some(b.create_query_set(QueryKind::Timestamp, 2)?)
+    } else {
+        None
+    };
     Ok(Kit {
+        step,
+        counted,
+        timestamps,
         float_program,
         uint_program,
         sint_program,
@@ -444,13 +513,55 @@ fn region<B: Backend>(
     }
 }
 
+/// Texels of one level and layer of a texture (by index), a rectangle from `min` to `max`.
+#[derive(Clone, Copy)]
+struct Area {
+    texture: usize,
+    mip: u32,
+    layer: u32,
+    min: [u32; 2],
+    max: [u32; 2],
+}
+
+impl Area {
+    fn of(texture: usize, mip: u32, layer: u32, origin: Origin, e: Extent) -> Self {
+        Self {
+            texture,
+            mip,
+            layer,
+            min: [origin.x, origin.y],
+            max: [origin.x + e.width, origin.y + e.height],
+        }
+    }
+
+    /// Every texel of a level and layer.
+    fn whole(texture: usize, mip: u32, layer: u32) -> Self {
+        Self {
+            texture,
+            mip,
+            layer,
+            min: [0; 2],
+            max: [u32::MAX; 2],
+        }
+    }
+
+    fn meets(&self, o: &Self) -> bool {
+        (self.texture, self.mip, self.layer) == (o.texture, o.mip, o.layer)
+            && (0..2).all(|k| self.min[k] < o.max[k] && o.min[k] < self.max[k])
+    }
+}
+
 /// Runs `steps` on `b` as valid calls, and gives every byte read back, in order.
 pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuError> {
     let kit = kit(b)?;
     let mut buffers: Vec<(B::Buffer, u64)> = Vec::new();
     let mut textures: Vec<(B::Texture, TextureDesc)> = Vec::new();
     let mut read = Vec::new();
-    let all = BufferUsage::COPY_SRC | BufferUsage::COPY_DST | BufferUsage::VERTEX;
+    let all = BufferUsage::COPY_SRC
+        | BufferUsage::COPY_DST
+        | BufferUsage::VERTEX
+        | BufferUsage::STORAGE
+        | BufferUsage::CAPTURE;
     let drawn = FormatUse::RENDER | FormatUse::SAMPLE;
     let formats: Vec<Format> = FORMATS
         .into_iter()
@@ -459,6 +570,8 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
     // Buffer ranges (by index into `buffers`) commands or writes touched since the last wait for
     // all work: what a no-overwrite write keeps off without waiting.
     let mut pending: Vec<(usize, u64, u64)> = Vec::new();
+    // The same for texels.
+    let mut texels: Vec<Area> = Vec::new();
     let finish = |b: &mut B, rb: B::Readback, len: usize, read: &mut Vec<Vec<u8>>| {
         b.submit();
         b.wait_read(&rb);
@@ -483,13 +596,16 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 layers,
                 mips,
             } => {
+                let (width, height) = (1 + u32::from(size[0] % 8), 1 + u32::from(size[1] % 8));
+                // A second level where the full chain has one.
+                let second = width.max(height) > 1 && *mips % 2 == 1;
                 let desc = TextureDesc {
                     dimension: TextureDimension::D2,
                     format: formats[pick(*format, formats.len())],
-                    width: 1 + u32::from(size[0] % 8),
-                    height: 1 + u32::from(size[1] % 8),
+                    width,
+                    height,
                     depth_or_layers: 1 + u32::from(*layers % 2),
-                    mip_levels: 1 + u32::from(*mips % 2),
+                    mip_levels: 1 + u32::from(second),
                     samples: 1,
                     usage: TextureUsage::RENDER
                         | TextureUsage::SAMPLE
@@ -524,6 +640,7 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                     let fence = b.submit();
                     b.wait_fence(&fence);
                     pending.clear();
+                    texels.clear();
                 }
                 // A discard gives the buffer fresh contents that nothing earlier uses.
                 match mode {
@@ -533,18 +650,44 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 }
                 b.write_buffer(buffer, offset, &bytes(len as usize, *seed), mode);
             }
-            Step::WriteTexture { which, at, seed } if !textures.is_empty() => {
-                let (t, desc) = &textures[pick(*which, textures.len())];
+            Step::WriteTexture {
+                which,
+                at,
+                mode,
+                pitch,
+                seed,
+            } if !textures.is_empty() => {
+                let i = pick(*which, textures.len());
+                let (t, desc) = &textures[i];
                 let (mip, layer, origin, e) = region_of(desc, at);
-                let pitch = e.width * texel_size(desc.format);
-                let data = bytes((pitch * e.height) as usize, *seed);
+                let texel = texel_size(desc.format);
+                let row = e.width * texel;
+                let row_pitch = row + texel * u32::from(*pitch % 3);
+                let data = bytes((row_pitch * (e.height - 1) + row) as usize, *seed);
+                let mode = [
+                    WriteMode::Ordered,
+                    WriteMode::Discard,
+                    WriteMode::NoOverwrite,
+                ][pick(*mode, 3)];
+                let area = Area::of(i, mip, layer, origin, e);
+                if mode == WriteMode::NoOverwrite && texels.iter().any(|a| a.meets(&area)) {
+                    let fence = b.submit();
+                    b.wait_fence(&fence);
+                    pending.clear();
+                    texels.clear();
+                }
+                match mode {
+                    WriteMode::Ordered => texels.push(area),
+                    WriteMode::Discard => texels.retain(|a| a.texture != i),
+                    WriteMode::NoOverwrite => {}
+                }
                 b.write_texture(
                     &region::<B>(t, mip, layer, origin),
                     e,
                     &data,
-                    pitch,
+                    row_pitch,
                     e.height,
-                    WriteMode::Ordered,
+                    mode,
                 );
             }
             Step::CopyBuffer { which, at } if !buffers.is_empty() => {
@@ -587,6 +730,8 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 if i == j && smip == dmip && slayer == dlayer {
                     continue;
                 }
+                texels.push(Area::of(i, smip, slayer, so, e));
+                texels.push(Area::of(j, dmip, dlayer, dst_origin, e));
                 b.copy_texture(
                     &region::<B>(s, smip, slayer, so),
                     &region::<B>(d, dmip, dlayer, dst_origin),
@@ -607,7 +752,8 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
             } if !buffers.is_empty() && !textures.is_empty() => {
                 let i = pick(which[0], buffers.len());
                 let (buffer, size) = &buffers[i];
-                let (t, desc) = &textures[pick(which[1], textures.len())];
+                let k = pick(which[1], textures.len());
+                let (t, desc) = &textures[k];
                 let (mip, layer, origin, e) = region_of(desc, at);
                 let texel = texel_size(desc.format);
                 let row = e.width * texel;
@@ -616,8 +762,11 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 if need > *size {
                     continue;
                 }
-                let offset = u64::from(*offset) % (size - need + 1);
+                // A whole number of texels from the buffer's start.
+                let texel = u64::from(texel);
+                let offset = u64::from(*offset) % ((size - need) / texel + 1) * texel;
                 pending.push((i, offset, offset + need));
+                texels.push(Area::of(k, mip, layer, origin, e));
                 let side = CopyBufferTexture {
                     buffer,
                     offset,
@@ -666,8 +815,10 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 finish(b, rb, len as usize, &mut read);
             }
             Step::ReadTexture { which, at } if !textures.is_empty() => {
-                let (t, desc) = &textures[pick(*which, textures.len())];
+                let i = pick(*which, textures.len());
+                let (t, desc) = &textures[i];
                 let (mip, layer, origin, e) = region_of(desc, at);
+                texels.push(Area::of(i, mip, layer, origin, e));
                 let rb = b.read_back(&ReadSource::Texture {
                     region: region::<B>(t, mip, layer, origin),
                     extent: e,
@@ -682,7 +833,9 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 multisampled,
                 options,
             } if !textures.is_empty() => {
-                let (t, desc) = &textures[pick(*which, textures.len())];
+                let i = pick(*which, textures.len());
+                let (t, desc) = &textures[i];
+                texels.push(Area::whole(i, 0, 0));
                 pass(
                     b,
                     &kit,
@@ -696,7 +849,13 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 )?;
             }
             Step::ClearTexture { which, value } if !textures.is_empty() => {
-                let (t, desc) = &textures[pick(*which, textures.len())];
+                let i = pick(*which, textures.len());
+                let (t, desc) = &textures[i];
+                for mip in 0..desc.mip_levels {
+                    for layer in 0..desc.depth_or_layers {
+                        texels.push(Area::whole(i, mip, layer));
+                    }
+                }
                 let value = match desc.format.kind() {
                     FormatKind::Uint => value.map(|v| (v * 255.0) as u32),
                     FormatKind::Sint => value.map(|v| ((v * 255.0) as i32 - 128) as u32),
@@ -726,11 +885,96 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                         }
                     }
                 } else {
-                    b.destroy(Object::Texture(textures.remove(i - buffers.len()).0));
+                    let i = i - buffers.len();
+                    b.destroy(Object::Texture(textures.remove(i).0));
+                    texels.retain(|a| a.texture != i);
+                    for a in &mut texels {
+                        if a.texture > i {
+                            a.texture -= 1;
+                        }
+                    }
                 }
             }
             Step::Submit => {
                 b.submit();
+            }
+            Step::Dispatch(which) if kit.step.is_some() && !buffers.is_empty() => {
+                let i = pick(*which, buffers.len());
+                let (buffer, size) = &buffers[i];
+                let words = size / 4;
+                let set = b.create_binding_set(&[BindingEntry {
+                    binding: 1,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::StorageBuffer {
+                        range: BufferRange {
+                            buffer,
+                            offset: 0,
+                            size: words * 4,
+                        },
+                        writable: true,
+                    },
+                }])?;
+                pending.push((i, 0, words * 4));
+                b.dispatch(&DispatchCall {
+                    program: kit.step.as_ref().ok_or(GpuError::Invalid("no compute"))?,
+                    bindings: [Some(&set), None, None, None],
+                    immediates: &[],
+                    groups: DispatchGroups::Direct([words as u32, 1, 1]),
+                })?;
+                b.destroy(Object::BindingSet(set));
+            }
+            Step::Capture { which, triangles } if kit.counted.is_some() && !buffers.is_empty() => {
+                let i = pick(*which, buffers.len());
+                let (buffer, size) = &buffers[i];
+                // One vec4 of 16 bytes a vertex, as many triangles as fit, at most three.
+                let triangles = u64::from(1 + triangles % 3).min(size / 48);
+                let (program, none) = kit
+                    .counted
+                    .as_ref()
+                    .ok_or(GpuError::Invalid("no capture"))?;
+                if triangles > 0 {
+                    pending.push((i, 0, triangles * 48));
+                    b.capture_vertices(
+                        &DrawCall {
+                            program,
+                            blend: &kit.opaque,
+                            depth_stencil: &kit.depth,
+                            raster: &kit.raster,
+                            vertex_layout: none,
+                            bindings: [None; MAX_BINDING_SETS],
+                            vertex_buffers: &[],
+                            index: None,
+                            topology: Topology::TriangleList,
+                            restart: false,
+                            viewports: &[],
+                            scissors: &[],
+                            blend_constant: [0; 4],
+                            stencil_reference: [0; 2],
+                            immediates: &[],
+                            range: DrawRange::Vertices {
+                                first: 0,
+                                count: triangles as u32 * 3,
+                                first_instance: 0,
+                                instances: 1,
+                            },
+                        },
+                        &[BufferRange {
+                            buffer,
+                            offset: 0,
+                            size: triangles * 48,
+                        }],
+                        false,
+                    )?;
+                }
+            }
+            Step::Timestamp(n) if kit.timestamps.is_some() => {
+                let set = kit
+                    .timestamps
+                    .as_ref()
+                    .ok_or(GpuError::Invalid("no timestamps"))?;
+                b.write_timestamp(set, u32::from(*n % 2))?;
+                let rb = b.read_queries(set, 0, 2)?;
+                finish(b, rb, 16, &mut read);
             }
             _ => {}
         }
