@@ -9,6 +9,7 @@
 mod convert;
 mod draw;
 mod edge;
+mod fill;
 mod layout;
 mod memory;
 
@@ -64,6 +65,7 @@ pub struct WebGpu {
     pool: memory::BufferPool,
     arena: Option<memory::Arena>,
     edge: Option<edge::EdgeProgram>,
+    fills: fill::Fills,
     /// Colour clears reach the API as floats, so integers past 2^24 cannot be cleared exactly.
     float_clears: bool,
     /// Changed whenever a buffer a binding set names moves so that a bind group made with it may no
@@ -359,6 +361,7 @@ impl WebGpu {
             pool: Default::default(),
             arena: None,
             edge: None,
+            fills: Default::default(),
             float_clears,
             bind_epoch: 0,
             windows: HashMap::new(),
@@ -832,7 +835,15 @@ impl Backend for WebGpu {
         // Read backs and the staging route of ordered writes copy in and out of every texture whose
         // format allows it.
         let copies = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
-        usage |= copies & self.usages[desc.format.index()];
+        let allowed = self.usages[desc.format.index()];
+        usage |= copies & allowed;
+        // Depth copies WebGPU has no copy for are draws: from a bound source into an attachment.
+        if desc.usage.contains(TextureUsage::COPY_SRC) && fill::DepthSource::readable(desc.format) {
+            usage |= allowed & wgpu::TextureUsages::TEXTURE_BINDING;
+        }
+        if desc.usage.contains(TextureUsage::COPY_DST) && desc.format.is_depth_stencil() {
+            usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
+        }
         let srgb_twin = (format.remove_srgb_suffix() != format)
             .then(|| format.remove_srgb_suffix())
             .or_else(|| (format.add_srgb_suffix() != format).then(|| format.add_srgb_suffix()));

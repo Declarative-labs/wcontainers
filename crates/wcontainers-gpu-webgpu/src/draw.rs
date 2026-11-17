@@ -783,6 +783,7 @@ impl WebGpu {
         };
         let (mut width, mut height) = (0, 0);
         let mut colors = Vec::new();
+        let mut by_draw = Vec::new();
         for (i, c) in pass.colors.iter().enumerate() {
             let Some(c) = c else {
                 colors.push(None);
@@ -812,11 +813,12 @@ impl WebGpu {
                             _ => true,
                         };
                         if self.float_clears && !bits.iter().all(|b| exact(*b)) {
-                            self.fail(
-                                "an integer clear past 2^24, which wgpu's Direct3D 12 rounds through a float, is not built yet",
-                            );
+                            // Loaded, then cleared by a draw once the pass is open.
+                            by_draw.push((i, bits));
+                            None
+                        } else {
+                            Some(color_value(bits, kind))
                         }
-                        Some(color_value(bits, kind))
                     }
                     LoadOp::DontCare => Some(wgpu::Color::TRANSPARENT),
                 },
@@ -892,13 +894,16 @@ impl WebGpu {
             }));
         }
         let occlusion_set = pass.occlusion.map(|q| q.0.raw.clone());
-        let rp = open(
+        let mut rp = open(
             self.encoder(),
             &colors,
             &depth,
             occlusion_set.as_ref(),
             false,
         );
+        for (i, bits) in by_draw {
+            self.clear_by_draw(&mut rp, &targets, i, bits);
+        }
         self.pass = Some(Pass {
             rp,
             occlusion: occlusion_set.is_some(),
