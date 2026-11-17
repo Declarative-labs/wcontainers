@@ -289,6 +289,13 @@ impl<'a> Immediate<'a> {
     }
 
     /// Draws `count` vertices without a vertex buffer, with the four root constants.
+    /// Draws `count` vertices without a vertex buffer, with only the bindings set.
+    pub fn draw_generated(&self, count: u32) -> Result<()> {
+        self.bind()?;
+        unsafe { self.gpu.list.DrawInstanced(count, 1, 0, 0) };
+        Ok(())
+    }
+
     pub fn draw(&self, count: u32, constants: [f32; 4]) -> Result<()> {
         self.bind()?;
         unsafe {

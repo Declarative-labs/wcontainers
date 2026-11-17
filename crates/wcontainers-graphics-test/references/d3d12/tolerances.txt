@@ -7,6 +7,8 @@ bundles.png 1 0 warp 1568 1
 compute-image.exr 0 0 warp 0 0
 compute-sums.txt exact warp same
 compute.png 1 0 warp 279 1
+constants-slots.png 1 0 warp 988 1
+constants-window.png 1 0 warp 288 1
 copies-buffer.txt exact warp same
 copies-region.png 0 0 warp 0 0
 copies-resolve.png 1 0 warp 780 1
@@ -17,6 +19,7 @@ depth-clip_depth.exr 0.0000002980232238769531 0 warp 4630 0.00000029802322387695
 depth-funcs.png 1 0 warp 21280 1
 depth-shader.png 0 0 warp 0 0
 depth-shader_depth.exr 0.00000011920928955078125 0 warp 1952 0.00000011920928955078125
+draws.png 1 0 warp 335 1
 formats-b5g6r5_unorm.png 1 0 warp 698 1
 formats-bgra8_srgb.png 1 0 warp 611 1
 formats-bgra8_unorm.png 1 0 warp 186 1
@@ -97,3 +100,6 @@ textures-cube_array.png 1 0 warp 529 1
 textures-mips.png 1 0 warp 2800 1
 topology.png 1 0 warp 641 1
 triangle.png 1 0 warp 1950 1
+views-rtv_layer.png 1 0 warp 441 1
+views-rtv_mip.png 1 0 warp 441 1
+views.png 2 0 warp 6938 2

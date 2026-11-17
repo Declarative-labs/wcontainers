@@ -14,9 +14,36 @@ use crate::d3d11::scenes::textures::{BC, SIZE, bc_blocks, subresources};
 use crate::dxil;
 use crate::output::Output;
 
+/// A texture of `desc` holding `levels` (its first subresources), in the pixel shader resource
+/// state.
+pub(super) fn filled_texture(
+    gpu: &Gpu,
+    desc: &D3D12_RESOURCE_DESC,
+    levels: &[Vec<u8>],
+) -> Result<ID3D12Resource> {
+    let texture = gpu.committed(
+        D3D12_HEAP_TYPE_DEFAULT,
+        desc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        None,
+    )?;
+    fill_levels(gpu, &texture, levels)?;
+    unsafe {
+        gpu.list.ResourceBarrier(&[transition(
+            &texture,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )])
+    };
+    Ok(texture)
+}
+
 /// Four root constants at b0, a table of one shader resource view at t0, and a static linear
-/// wrapping sampler at s0.
-pub(super) fn texture_root(gpu: &Gpu) -> Result<ID3D12RootSignature> {
+/// sampler at s0 with `address` on every axis.
+pub(super) fn texture_root(
+    gpu: &Gpu,
+    address: D3D12_TEXTURE_ADDRESS_MODE,
+) -> Result<ID3D12RootSignature> {
     let range = D3D12_DESCRIPTOR_RANGE {
         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
         NumDescriptors: 1,
@@ -47,9 +74,9 @@ pub(super) fn texture_root(gpu: &Gpu) -> Result<ID3D12RootSignature> {
     ];
     let sampler = D3D12_STATIC_SAMPLER_DESC {
         Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
-        AddressU: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-        AddressV: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-        AddressW: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+        AddressU: address,
+        AddressV: address,
+        AddressW: address,
         MaxAnisotropy: 1,
         ComparisonFunc: D3D12_COMPARISON_FUNC_NEVER,
         MaxLOD: f32::MAX,
@@ -70,7 +97,7 @@ pub(super) fn texture_root(gpu: &Gpu) -> Result<ID3D12RootSignature> {
     })
 }
 
-fn texture_desc(
+pub(super) fn texture_desc(
     dimension: D3D12_RESOURCE_DIMENSION,
     size: [u32; 3],
     mips: u32,
@@ -183,19 +210,8 @@ pub fn textures(gpu: &Gpu) -> Result<Vec<Output>> {
         .map(|(_, desc, data, view, _)| (desc, data, view.as_ref()))
         .chain(bc.iter().map(|(desc, data)| (desc, data, None)));
     for (i, (desc, data, view)) in sources.enumerate() {
-        let texture = gpu.committed(
-            D3D12_HEAP_TYPE_DEFAULT,
-            desc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            None,
-        )?;
-        fill_levels(gpu, &texture, data)?;
+        let texture = filled_texture(gpu, desc, data)?;
         unsafe {
-            gpu.list.ResourceBarrier(&[transition(
-                &texture,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            )]);
             gpu.device.CreateShaderResourceView(
                 &texture,
                 view.map(|v| v as *const _),
@@ -206,7 +222,7 @@ pub fn textures(gpu: &Gpu) -> Result<Vec<Output>> {
     }
 
     let mut im = Immediate::new(gpu)?;
-    im.root = texture_root(gpu)?;
+    im.root = texture_root(gpu, D3D12_TEXTURE_ADDRESS_MODE_WRAP)?;
     im.vs = dxil!("common.vs_full");
     im.colored = false;
     let mut outputs = Vec::new();

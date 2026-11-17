@@ -230,7 +230,7 @@ pub fn msaa_scene(gpu: &Gpu) -> Result<Vec<Output>> {
         Quality: 0,
     };
     im.raster = solid();
-    im.root = texture_root(gpu)?;
+    im.root = texture_root(gpu, D3D12_TEXTURE_ADDRESS_MODE_WRAP)?;
     im.vs = dxil!("common.vs_full");
     im.ps = dxil!("msaa.ps_load");
     im.colored = false;

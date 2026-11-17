@@ -3,11 +3,11 @@
 mod basic;
 pub(crate) mod blend;
 mod compute;
-mod constants;
+pub(crate) mod constants;
 mod copies;
 mod deferred;
 pub(crate) mod depth;
-mod draws;
+pub(crate) mod draws;
 mod dynamic;
 pub(crate) mod formats;
 pub(crate) mod geometry;
@@ -24,7 +24,7 @@ pub(crate) mod targets;
 pub(crate) mod tessellation;
 pub(crate) mod textures;
 pub(crate) mod topology;
-mod views;
+pub(crate) mod views;
 
 use anyhow::Result;
 use windows::Win32::Graphics::Direct3D11::D3D11_INPUT_ELEMENT_DESC;
