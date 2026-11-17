@@ -361,8 +361,10 @@ impl Kernel {
             monotonic_offset: self.monotonic_offset,
             refused: 0,
         };
-        self.boot = Time::from_nanoseconds(cx.host.realtime_nanoseconds());
+        let wall = cx.host.realtime_nanoseconds();
+        self.boot = Time::from_nanoseconds(wall);
         self.boot_monotonic = cx.monotonic();
+        self.wall_offset = wall.wrapping_sub(self.boot_monotonic);
         cx.host.random(&mut self.boot_id);
         cx.host.random(&mut self.files.generation_key);
         self.machine.memory_bytes = cx.cpu.address_space().end;

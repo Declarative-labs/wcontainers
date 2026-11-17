@@ -376,6 +376,9 @@ pub(crate) struct Call {
     pub deadline: Option<u64>,
     /// Whether the call has run before (so its deadline and progress are its own).
     pub started: bool,
+    /// Whether its deadline is a time on the wall clock (`HRTIMER_BASE_REALTIME`), moved when the
+    /// wall clock is set.
+    pub wall: bool,
     /// How much of the call is done, such as bytes of a large write.
     pub progress: u64,
     /// For F_SETLKW's wait: the descriptor table asking, and the table holding the lock in the way
@@ -422,6 +425,8 @@ pub(crate) enum Restart {
         bitset: u32,
         shared: bool,
         until: u64,
+        /// Whether `until` is a time on the wall clock.
+        wall: bool,
     },
 }
 

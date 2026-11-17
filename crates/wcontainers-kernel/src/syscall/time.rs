@@ -195,12 +195,14 @@ fn sleep_until(
     tid: Tid,
     until: u64,
     left: Option<u64>,
+    wall: bool,
 ) -> Outcome {
     let thread = kernel.thread_mut(tid);
     if !thread.call.started {
         thread.call.started = true;
         thread.call.progress = until;
         thread.call.deadline = Some(until.saturating_add(thread.timer_slack));
+        thread.call.wall = wall;
     }
     let call = thread.call;
     let now = cx.monotonic();
@@ -305,7 +307,7 @@ pub(super) fn restart_syscall(
 ) -> Outcome {
     match kernel.threads[&tid].restart {
         Some(Restart::Sleep { until, left }) => {
-            let outcome = sleep_until(kernel, cx, tid, until, Some(left));
+            let outcome = sleep_until(kernel, cx, tid, until, Some(left), false);
             if matches!(outcome, Outcome::Return(_)) {
                 kernel.thread_mut(tid).restart = None;
             }
@@ -332,12 +334,12 @@ pub(super) fn nanosleep(
 ) -> Outcome {
     if kernel.threads[&tid].call.started {
         let until = kernel.threads[&tid].call.progress;
-        return sleep_until(kernel, cx, tid, until, Some(left));
+        return sleep_until(kernel, cx, tid, until, Some(left), false);
     }
     match read_duration(kernel, cx, tid, request) {
         Ok(duration) => {
             let until = cx.monotonic().saturating_add(nanoseconds(&duration));
-            sleep_until(kernel, cx, tid, until, Some(left))
+            sleep_until(kernel, cx, tid, until, Some(left), false)
         }
         Err(error) => Err(error).into(),
     }
@@ -364,7 +366,14 @@ pub(super) fn clock_nanosleep(
                 (!absolute).then_some(left),
             );
         }
-        return sleep_until(kernel, cx, tid, call.progress, (!absolute).then_some(left));
+        return sleep_until(
+            kernel,
+            cx,
+            tid,
+            call.progress,
+            (!absolute).then_some(left),
+            call.wall,
+        );
     }
     let signed = id as i32;
     let id = id as u32;
@@ -438,7 +447,14 @@ pub(super) fn clock_nanosleep(
     } else {
         now.saturating_add(duration)
     };
-    sleep_until(kernel, cx, tid, until, (!absolute).then_some(left))
+    sleep_until(
+        kernel,
+        cx,
+        tid,
+        until,
+        (!absolute).then_some(left),
+        absolute && realtime,
+    )
 }
 
 pub(super) fn times(

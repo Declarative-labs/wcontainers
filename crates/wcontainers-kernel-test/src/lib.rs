@@ -48,6 +48,19 @@ pub fn run_ours_saving(
     seed: u64,
     saves: usize,
 ) -> driver::Run {
+    run_ours_wall_moved(directory, path, arguments, seed, saves, 0)
+}
+
+/// As [`run_ours_saving`], with the host's wall clock moved on `wall_step` nanoseconds against its
+/// monotonic clock at each save.
+pub fn run_ours_wall_moved(
+    directory: &Path,
+    path: &str,
+    arguments: &[&str],
+    seed: u64,
+    saves: usize,
+    wall_step: u64,
+) -> driver::Run {
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(directory, "wc"));
     let container = driver::Container {
@@ -57,7 +70,7 @@ pub fn run_ours_saving(
         environment: reference::ENVIRONMENT,
         working_directory: "/",
     };
-    driver::run_saving(&container, seed, saves)
+    driver::run_saving(&container, seed, saves, wall_step)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))
 }
 

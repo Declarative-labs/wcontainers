@@ -138,6 +138,9 @@ pub struct Kernel {
     /// What is added to the host's monotonic clock to give the kernel's: zero until a restore on a
     /// host whose clock reads differently.
     monotonic_offset: u64,
+    /// The wall clock less the kernel's monotonic clock (`ktime_mono_to_real`), as at the start or
+    /// the last restore; a restore that finds it changed has seen the wall clock set.
+    wall_offset: u64,
     /// The monotonic clock when the kernel was last entered.
     entry_now: u64,
     /// The monotonic clock when the kernel last handed control back, which is when the thread it
@@ -206,6 +209,7 @@ impl Kernel {
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
             monotonic_offset: 0,
+            wall_offset: 0,
             entry_now: 0,
             last_now: 0,
             picked_runtime: 0,
@@ -338,8 +342,13 @@ impl Kernel {
             refused: 0,
         };
         self.entry_now = cx.monotonic();
+        // The wall clock moved against the monotonic clock while saved, as across a suspend, which
+        // Linux's resume treats as a setting of the wall clock (`timerfd_resume`).
+        let wall_offset = cx.host.realtime_nanoseconds().wrapping_sub(self.entry_now);
+        let moved = wall_offset.wrapping_sub(self.wall_offset) as i64;
+        self.wall_offset = wall_offset;
         let tids: Vec<Tid> = self.threads.keys().copied().collect();
-        for tid in tids {
+        for &tid in &tids {
             let thread = self.threads.get_mut(&tid).expect("thread");
             // A parked thread's registers still hold its call; it gets its value when the call ends.
             if thread.call.wait.is_some() {
@@ -359,7 +368,30 @@ impl Kernel {
             }
             thread.resume = wcontainers_abi::Resume::FromRegisters;
         }
+        if moved != 0 {
+            self.clock_was_set(moved, &tids);
+        }
         self.settle(&mut cx);
+    }
+
+    /// `clock_was_set`: the wall clock moved by `delta` against the monotonic clock. Calls and
+    /// timers whose times are on it move with it, so those whose time has come end.
+    fn clock_was_set(&mut self, delta: i64, tids: &[Tid]) {
+        let shift =
+            |at: u64| (i128::from(at) - i128::from(delta)).clamp(0, i128::from(u64::MAX)) as u64;
+        for tid in tids {
+            let thread = self.thread_mut(*tid);
+            if thread.call.wall {
+                thread.call.deadline = thread.call.deadline.map(shift);
+            }
+            if let Some(process::Restart::Futex {
+                until, wall: true, ..
+            }) = &mut thread.restart
+            {
+                *until = shift(*until);
+            }
+        }
+        syscall::timer::clock_was_set(self, delta);
     }
 
     /// Every counter that has been bumped.

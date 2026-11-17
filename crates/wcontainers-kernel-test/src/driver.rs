@@ -124,8 +124,9 @@ impl TestHost {
     /// The host a saved container is brought back on. What the container wrote has already left;
     /// the monotonic clock reads from an earlier start than this one's (a kernel that did not carry
     /// its clock over would see it go back) and the wall clock goes on from the save (a repeatable
-    /// one without the time the save took); randomness and the length of turns come from `seed`.
-    fn moved(&mut self, seed: u64) -> Self {
+    /// one without the time the save took, moved on by `wall_step`); randomness and the length of
+    /// turns come from `seed`.
+    fn moved(&mut self, seed: u64, wall_step: u64) -> Self {
         let wall = self.realtime_nanoseconds();
         let mut host = Self {
             started: Instant::now(),
@@ -138,7 +139,7 @@ impl TestHost {
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
         };
-        host.wall_base = wall - host.monotonic_nanoseconds();
+        host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
     }
 
@@ -245,7 +246,7 @@ pub struct Container<'a> {
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
 pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
-    run_saving(container, seed, 0)
+    run_saving(container, seed, 0, 0)
 }
 
 /// As [`run`], saving the container up to `saves` times at moments drawn from the seed (each 1 to
@@ -253,8 +254,14 @@ pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
 /// process holding a copy of this one's memory, as a host that saves copies the kernel's memory
 /// and every guest memory: the copy goes on with a new CPU side made from the saved memories and
 /// registers and a new host whose clock reads differently, while this process only waits for the
-/// copy's run.
-pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<Run, Failure> {
+/// copy's run. Each time the host's wall clock has moved on `wall_step` nanoseconds more than its
+/// monotonic clock, as on a host whose wall clock was set while the container was saved.
+pub fn run_saving(
+    container: &Container<'_>,
+    seed: u64,
+    saves: usize,
+    wall_step: u64,
+) -> Result<Run, Failure> {
     let mut moments = StdRng::seed_from_u64(seed ^ 0x5a7e);
     let mut last = 0;
     let mut at: Vec<u64> = (0..saves)
@@ -342,7 +349,7 @@ pub fn run_saving(container: &Container<'_>, seed: u64, saves: usize) -> Result<
                         }
                     }
                     cpu = cpu.restored();
-                    host = host.moved(seed ^ ((saved as u64) << 32));
+                    host = host.moved(seed ^ ((saved as u64) << 32), wall_step);
                     kernel.restore(&mut cpu, &mut host);
                 }
             }

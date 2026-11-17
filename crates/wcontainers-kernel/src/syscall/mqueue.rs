@@ -466,6 +466,8 @@ fn park(kernel: &mut Kernel, tid: Tid, node: &Node, deadline: Option<u64>) -> Re
     let thread = kernel.thread_mut(tid);
     thread.call.started = true;
     thread.call.deadline = deadline;
+    // Its time is on the wall clock.
+    thread.call.wall = deadline.is_some();
     kernel.park(tid, Channel::Nothing);
     Err(Errno::PARKED)
 }

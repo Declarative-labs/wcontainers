@@ -22,7 +22,7 @@ use crate::{Context, Errno, Kernel};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Clock {
     /// The monotonic clock, or the wall clock with its times turned into the monotonic clock's
-    /// (the wall clock cannot be set inside the container).
+    /// (moved when the wall clock is set, for a timer on the wall clock's base).
     Wall,
     /// A process's CPU time.
     Process(Pid),
@@ -80,6 +80,13 @@ struct Timer {
     sequence: u64,
     /// The count when its signal now queued was sent.
     sent_at: Option<u64>,
+    /// On the wall clock's base (`HRTIMER_BASE_REALTIME`): its expiry moves when the wall clock is
+    /// set. Set by `settime`.
+    wall: bool,
+    /// A descriptor set with TFD_TIMER_CANCEL_ON_SET (`might_cancel`), and whether a setting of the
+    /// wall clock has canceled it since (`moffs` at `KTIME_MAX`).
+    might_cancel: bool,
+    canceled: bool,
 }
 
 /// Every timer in the container.
@@ -510,6 +517,9 @@ pub(super) fn start_cpu_sleep(
         clock_id: 0,
         sequence: 0,
         sent_at: None,
+        wall: false,
+        might_cancel: false,
+        canceled: false,
     });
     kernel.timers.arm(id, until);
     id
@@ -757,6 +767,9 @@ pub(super) fn timer_create(
         expired: false,
         sequence: 0,
         sent_at: None,
+        wall: false,
+        might_cancel: false,
+        canceled: false,
         clock_id,
     });
     Ok(0)
@@ -816,6 +829,14 @@ fn set(
     timer.sequence += 1;
     timer.ticks = 0;
     timer.expired = false;
+    // A descriptor's timer on the wall clock stays on its base, a POSIX timer only when its time
+    // is absolute (`common_hrtimer_arm`), and one on TAI always.
+    timer.wall = match (&timer.owner, timer.clock_id as u32) {
+        (Owner::Descriptor { .. }, CLOCK_REALTIME | CLOCK_REALTIME_ALARM) => true,
+        (Owner::Posix { .. }, CLOCK_REALTIME | CLOCK_REALTIME_ALARM) => absolute,
+        (Owner::Posix { .. }, CLOCK_TAI) => true,
+        _ => false,
+    };
     if value == 0 {
         return;
     }
@@ -957,6 +978,9 @@ pub(super) fn setitimer(
             sequence: 0,
             sent_at: None,
             clock_id: CLOCK_MONOTONIC as i32,
+            wall: false,
+            might_cancel: false,
+            canceled: false,
         }),
     };
     set(kernel, cx, id, value, interval, false);
@@ -1006,6 +1030,9 @@ pub(super) fn timerfd_create(
         expired: false,
         sequence: 0,
         sent_at: None,
+        wall: false,
+        might_cancel: false,
+        canceled: false,
         clock_id,
     });
     file.borrow_mut().anon = Some(Anon::Timer(id));
@@ -1065,7 +1092,13 @@ pub(super) fn timerfd_settime(
     if alarm && !kernel.credentials(tid).has(CAP_WAKE_ALARM) {
         return Err(Errno::EPERM);
     }
-    // The wall clock is never set inside the container, so a cancel on set never happens.
+    // `timerfd_setup_cancel`: an absolute time on the wall clock may be canceled by its setting.
+    let wall_clock = matches!(
+        kernel.timers.all[&id].clock_id as u32,
+        CLOCK_REALTIME | CLOCK_REALTIME_ALARM
+    );
+    kernel.timers.all.get_mut(&id).expect("timer").might_cancel =
+        wall_clock && flags & TFD_TIMER_ABSTIME != 0 && flags & TFD_TIMER_CANCEL_ON_SET != 0;
     if kernel.timers.all[&id].expired && kernel.timers.all[&id].interval > 0 {
         let timer = &kernel.timers.all[&id];
         let (expires, clock_now) = (timer.expires.unwrap_or(0), kernel.entry_now);
@@ -1084,7 +1117,49 @@ pub(super) fn timerfd_settime(
     if old != 0 {
         write_itimerspec(kernel, cx, tid, old, before)?;
     }
+    // An armed timer whose clock was set since is told so, and stays armed.
+    if value_ns != 0 && canceled(kernel, id) {
+        return Err(Errno::ECANCELED);
+    }
     Ok(0)
+}
+
+/// `timerfd_canceled`: whether a setting of the wall clock canceled the descriptor since it last
+/// said so; saying so clears it.
+fn canceled(kernel: &mut Kernel, id: u64) -> bool {
+    let timer = kernel.timers.all.get_mut(&id).expect("timer");
+    if !timer.might_cancel || !timer.canceled {
+        return false;
+    }
+    timer.canceled = false;
+    true
+}
+
+/// `clock_was_set`: the wall clock moved by `delta` nanoseconds against the monotonic clock.
+/// Timers on its base move with it (and fire if their time has come), and each descriptor that may
+/// be canceled is, and becomes readable (`timerfd_clock_was_set`).
+pub(crate) fn clock_was_set(kernel: &mut Kernel, delta: i64) {
+    let ids: alloc::vec::Vec<u64> = kernel.timers.all.keys().copied().collect();
+    for id in ids {
+        let timer = &kernel.timers.all[&id];
+        if timer.wall
+            && let Some(expires) = timer.expires
+        {
+            let moved = (i128::from(expires) - i128::from(delta)).clamp(0, i128::from(u64::MAX));
+            kernel.timers.arm(id, moved as u64);
+        }
+        let timer = kernel.timers.all.get_mut(&id).expect("timer");
+        if !timer.might_cancel {
+            continue;
+        }
+        timer.canceled = true;
+        timer.ticks += 1;
+        if let Owner::Descriptor { file } = &timer.owner
+            && let Some(file) = file.upgrade()
+        {
+            kernel.wake(Channel::Object(Rc::as_ptr(&file) as *const () as usize));
+        }
+    }
 }
 
 /// `timerfd_get_remaining`: what is left, never below zero.
@@ -1140,6 +1215,13 @@ pub(super) fn read(
         kernel.park(tid, Channel::Object(Rc::as_ptr(file) as *const () as usize));
         return Err(Errno::PARKED);
     }
+    // A setting of the wall clock drops what was counted, without rearming.
+    if canceled(kernel, id) {
+        let timer = kernel.timers.all.get_mut(&id).expect("timer");
+        timer.ticks = 0;
+        timer.expired = false;
+        return Err(Errno::ECANCELED);
+    }
     catch_up(kernel, id);
     let timer = kernel.timers.all.get_mut(&id).expect("timer");
     let ticks = core::mem::take(&mut timer.ticks);
@@ -1174,6 +1256,9 @@ pub(super) fn set_ticks(
     let ticks: u64 = guest(kernel, cx, tid).read_value(at)?;
     if ticks == 0 {
         return Err(Errno::EINVAL);
+    }
+    if canceled(kernel, id) {
+        return Err(Errno::ECANCELED);
     }
     kernel.timers.all.get_mut(&id).expect("timer").ticks = ticks;
     kernel.wake(Channel::Object(Rc::as_ptr(file) as *const () as usize));

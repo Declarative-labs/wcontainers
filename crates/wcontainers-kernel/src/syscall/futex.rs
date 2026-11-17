@@ -266,6 +266,11 @@ fn read_timespec(
         .saturating_add(value.tv_nsec as u64))
 }
 
+/// Whether a timeout is a time on the wall clock, which moves with it when it is set.
+fn on_wall(timeout: Timeout) -> bool {
+    matches!(timeout, Timeout::Absolute { realtime: true, .. })
+}
+
 /// The call's deadline on the kernel's monotonic clock, set at its first run.
 fn deadline(cx: &mut Context<'_>, timeout: Timeout, slack: u64) -> Option<u64> {
     let now = cx.monotonic();
@@ -465,6 +470,7 @@ fn wait(
     let thread = kernel.thread_mut(tid);
     thread.call.started = true;
     thread.call.deadline = until;
+    thread.call.wall = on_wall(timeout);
     // What `restart_syscall` needs to wait again after a handler-less signal.
     thread.restart = until.filter(|_| restartable).map(|until| Restart::Futex {
         address,
@@ -472,6 +478,7 @@ fn wait(
         bitset,
         shared,
         until,
+        wall: on_wall(timeout),
     });
     wait_again(kernel, cx, tid)
 }
@@ -513,6 +520,7 @@ pub(super) fn restart(
         bitset,
         shared,
         until,
+        wall,
     } = restart
     else {
         unreachable!("a futex's restart");
@@ -536,6 +544,11 @@ pub(super) fn restart(
             true,
         )
     };
+    // The same deadline stays on the wall clock if it was.
+    kernel.thread_mut(tid).call.wall |= wall;
+    if let Some(Restart::Futex { wall: kept, .. }) = &mut kernel.thread_mut(tid).restart {
+        *kept |= wall;
+    }
     let interrupted = Errno::ERESTART_RESTARTBLOCK.to_return();
     if matches!(outcome, Outcome::Return(value) if value != interrupted) {
         kernel.thread_mut(tid).restart = None;
@@ -821,6 +834,7 @@ fn lock_pi(
     let call = &mut kernel.thread_mut(tid).call;
     call.started = true;
     call.deadline = until;
+    call.wall = on_wall(timeout);
     lock_pi_again(kernel, cx, tid)
 }
 
@@ -935,6 +949,7 @@ fn wait_requeue_pi(
     let call = &mut kernel.thread_mut(tid).call;
     call.started = true;
     call.deadline = until;
+    call.wall = on_wall(timeout);
     wait_requeue_pi_again(kernel, cx, tid, address2, shared)
 }
 
@@ -1333,6 +1348,7 @@ pub(super) fn futex_waitv(
     let call = &mut kernel.thread_mut(tid).call;
     call.started = true;
     call.deadline = until;
+    call.wall = on_wall(timeout);
     waitv_again(kernel, cx, tid)
 }
 
