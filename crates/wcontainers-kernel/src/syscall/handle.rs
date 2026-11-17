@@ -31,7 +31,11 @@ pub(super) fn unique_mount_id(inode: &Inode) -> u64 {
 /// The words of a file's handle and their type: tmpfs's own encoding (generation, then the inode
 /// number), pidfs's (the inode number, `FILEID_KERNFS`), or, only when asked for an identifier, the
 /// generic one other file systems get (the inode number, then a generation of 0).
-fn encode(kernel: &Kernel, inode: &Inode, identifier: bool) -> Result<(i32, Vec<u32>), Errno> {
+pub(super) fn encode(
+    kernel: &Kernel,
+    inode: &Inode,
+    identifier: bool,
+) -> Result<(i32, Vec<u32>), Errno> {
     let ino = [inode.ino as u32, (inode.ino >> 32) as u32];
     match inode.fs.kind {
         Kind::Tmpfs => Ok((

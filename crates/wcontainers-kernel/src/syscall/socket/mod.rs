@@ -355,6 +355,33 @@ pub(crate) fn proc_net(
     procnet::contents(kernel, cx, file)
 }
 
+/// `unix_show_fdinfo`: for a local socket, the descriptors in flight to it: those its queue holds
+/// while it is connected or takes datagrams, those its connections not yet accepted hold while it
+/// listens. Other families show nothing.
+pub(crate) fn fdinfo(socket: &SocketRef) -> Option<u64> {
+    let own = socket.borrow();
+    if !own.local() {
+        return None;
+    }
+    let held = |socket: &Socket| {
+        socket
+            .queue
+            .iter()
+            .map(|packet| packet.files.len() as u64)
+            .sum::<u64>()
+    };
+    Some(match own.state {
+        _ if own.kind == SOCK_DGRAM => held(&own),
+        State::Connected => held(&own),
+        State::Listening => own
+            .backlog
+            .iter()
+            .map(|waiting| held(&waiting.borrow()))
+            .sum(),
+        State::Closed => 0,
+    })
+}
+
 /// After a restore: connections to the outside read as closed.
 pub(crate) fn restored(kernel: &mut Kernel, cx: &mut Context<'_>) {
     outside::restored(kernel, cx);

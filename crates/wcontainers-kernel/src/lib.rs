@@ -108,6 +108,8 @@ pub(crate) struct Files {
     pub shared: Vec<Node>,
     /// The key tmpfs inodes' generation numbers are made from, as Linux draws each at random.
     pub generation_key: [u8; 16],
+    /// Every event descriptor's counter, for the lowest free number a new one takes.
+    pub event_counters: Vec<alloc::rc::Weak<core::cell::RefCell<syscall::eventfd::Counter>>>,
     /// Changed attributes of the `/proc` entries that keep them.
     pub proc_kept: BTreeMap<u64, fs::proc::Kept>,
     /// Every tmpfs's count of what it holds, for the machine's memory in use.
@@ -260,6 +262,7 @@ impl Kernel {
                 sockfs: None,
                 shared: Vec::new(),
                 generation_key: [0; 16],
+                event_counters: Vec::new(),
                 proc_kept: BTreeMap::new(),
                 spaces,
                 terminals: BTreeMap::new(),

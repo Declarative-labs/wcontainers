@@ -6,6 +6,7 @@
 mod clone;
 pub(crate) mod epoll;
 pub(crate) mod eventfd;
+mod fdinfo;
 mod files;
 pub(crate) mod futex;
 mod handle;

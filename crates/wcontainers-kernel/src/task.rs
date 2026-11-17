@@ -881,28 +881,9 @@ impl Kernel {
         })
     }
 
-    /// Linux's `ptrace_may_access` with PTRACE_MODE_READ_FSCREDS: the caller's own process, or one
-    /// whose ids all match the caller's file system ids, that may be dumped and whose permitted
-    /// powers the caller's effective ones cover (`cap_ptrace_access_check`), unless the caller has
-    /// CAP_SYS_PTRACE.
+    /// Linux's `ptrace_may_access` with PTRACE_MODE_READ_FSCREDS ([`crate::fs::proc::ptrace_may_read`]).
     pub(crate) fn ptrace_may_read(&self, caller: Tid, target: Pid) -> bool {
-        if self.threads[&caller].process == target {
-            return true;
-        }
-        let Some(target_process) = self.processes.get(&target) else {
-            return false;
-        };
-        let (c, t) = (self.credentials(caller), self.task_credentials(target));
-        let traces = c.has(CAP_SYS_PTRACE);
-        let same = [t.uid, t.euid, t.suid].iter().all(|id| *id == c.fsuid)
-            && [t.gid, t.egid, t.sgid].iter().all(|id| *id == c.fsgid);
-        if !same && !traces {
-            return false;
-        }
-        if target_process.ended.is_none() && !target_process.map.borrow().dumpable && !traces {
-            return false;
-        }
-        t.permitted & !c.effective == 0 || traces
+        crate::fs::proc::ptrace_may_read(&self.processes, &self.threads, caller, target)
     }
 
     fn group_has_stopped(&self, group: Pid) -> bool {
@@ -1070,7 +1051,7 @@ impl Kernel {
             let mut node = node.borrow_mut();
             let_go |= crate::locks::release_dead(&mut node.record_locks);
             let flocks = node.flocks.len();
-            node.flocks.retain(|(holder, _)| holder.strong_count() > 0);
+            node.flocks.retain(|(holder, ..)| holder.strong_count() > 0);
             let_go |= node.flocks.len() != flocks;
         }
         if let_go {

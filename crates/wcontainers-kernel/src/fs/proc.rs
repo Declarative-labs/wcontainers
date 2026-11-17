@@ -67,6 +67,9 @@ pub(crate) enum Entry {
     ProcessLink(Task, ProcessLink),
     Fds(Task),
     Fd(Task, i32),
+    /// A process's `fdinfo` directory, and a descriptor's file in it.
+    FdInfos(Task),
+    FdInfo(Task, i32),
     /// A process's `net` directory (its network's), and the files in it.
     Net(Task),
     NetFile(Task, NetFile),
@@ -411,6 +414,7 @@ impl Entry {
             Entry::Root => Some(String::new()),
             Entry::Process(task) => Some(task.path()),
             Entry::Fds(task) => Some(format!("{}/fd", task.path())),
+            Entry::FdInfos(task) => Some(format!("{}/fdinfo", task.path())),
             Entry::Net(task) => Some(format!("{}/net", task.path())),
             Entry::Tasks(pid) => Some(format!("/{pid}/task")),
             Entry::Global(index) => Some(format!("/{}", GLOBAL[index].0)),
@@ -427,6 +431,8 @@ impl Entry {
             | Entry::ProcessLink(task, _)
             | Entry::Fds(task)
             | Entry::Fd(task, _)
+            | Entry::FdInfos(task)
+            | Entry::FdInfo(task, _)
             | Entry::Net(task)
             | Entry::NetFile(task, _) => Some(task.pid),
             Entry::Tasks(pid) => Some(pid),
@@ -488,8 +494,11 @@ impl Entry {
 
     fn mode(&self) -> u32 {
         match self {
-            Entry::Root | Entry::Process(_) | Entry::Tasks(_) => S_IFDIR | 0o555,
+            Entry::Root | Entry::Process(_) | Entry::Tasks(_) | Entry::FdInfos(_) => {
+                S_IFDIR | 0o555
+            }
             Entry::Fds(_) => S_IFDIR | 0o500,
+            Entry::FdInfo(..) => S_IFREG | 0o444,
             Entry::Net(_) => S_IFDIR | 0o555,
             Entry::NetFile(..) => S_IFREG | 0o444,
             Entry::Global(index) => match GLOBAL[*index].1 {
@@ -523,6 +532,8 @@ impl Entry {
             Entry::ProcessFile(t, file) => task(t, 16 + *file as u64),
             Entry::ProcessLink(t, link) => task(t, 64 + *link as u64),
             Entry::Fd(t, fd) => task(t, 0x1000 + *fd as u64 % 0xf000),
+            Entry::FdInfos(t) => task(t, 5),
+            Entry::FdInfo(t, fd) => task(t, 0x1000 + *fd as u64 % 0xf000) | 1 << 46,
         }
     }
 
@@ -532,7 +543,9 @@ impl Entry {
             | Entry::ProcessFile(task, _)
             | Entry::ProcessLink(task, _)
             | Entry::Fds(task)
-            | Entry::Fd(task, _) => task.tid,
+            | Entry::Fd(task, _)
+            | Entry::FdInfos(task)
+            | Entry::FdInfo(task, _) => task.tid,
             Entry::Tasks(pid) => pid,
             // The network's entries belong to its owner, root.
             Entry::Root
@@ -581,6 +594,51 @@ pub(crate) fn task_credentials<'a>(
     match threads.get(&tid) {
         Some(thread) => &thread.credentials,
         None => &processes[&tid].ended_leader.credentials,
+    }
+}
+
+/// Linux's `ptrace_may_access` with PTRACE_MODE_READ_FSCREDS: the caller's own process, or one
+/// whose ids all match the caller's file system ids, that may be dumped and whose permitted
+/// powers the caller's effective ones cover (`cap_ptrace_access_check`), unless the caller has
+/// CAP_SYS_PTRACE.
+pub(crate) fn ptrace_may_read(
+    processes: &BTreeMap<Pid, Process>,
+    threads: &BTreeMap<Tid, Thread>,
+    caller: Tid,
+    target: Pid,
+) -> bool {
+    if threads[&caller].process == target {
+        return true;
+    }
+    let Some(target_process) = processes.get(&target) else {
+        return false;
+    };
+    let (c, t) = (
+        &threads[&caller].credentials,
+        task_credentials(processes, threads, target),
+    );
+    let traces = c.has(CAP_SYS_PTRACE);
+    let same = [t.uid, t.euid, t.suid].iter().all(|id| *id == c.fsuid)
+        && [t.gid, t.egid, t.sgid].iter().all(|id| *id == c.fsgid);
+    if !same && !traces {
+        return false;
+    }
+    if target_process.ended.is_none() && !target_process.map.borrow().dumpable && !traces {
+        return false;
+    }
+    t.permitted & !c.effective == 0 || traces
+}
+
+/// Whether `caller` may see the descriptors of `entry`'s process through its `fdinfo` directory
+/// (`proc_fdinfo_access_allowed`).
+pub(crate) fn fdinfo_allowed(view: &View<'_>, entry: &Entry, caller: Tid) -> Result<(), Errno> {
+    match entry {
+        Entry::FdInfos(task) | Entry::FdInfo(task, _)
+            if !ptrace_may_read(view.processes, view.threads, caller, task.pid) =>
+        {
+            Err(Errno::EACCES)
+        }
+        _ => Ok(()),
     }
 }
 
@@ -846,6 +904,7 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
                 add(name, Entry::ProcessLink(task, *link));
             }
             add(b"fd", Entry::Fds(task));
+            add(b"fdinfo", Entry::FdInfos(task));
             add(b"net", Entry::Net(task));
             if !task.own {
                 add(b"task", Entry::Tasks(task.pid));
@@ -867,14 +926,15 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
                 }
             }
         }
-        Entry::Fds(task) => {
+        Entry::Fds(task) | Entry::FdInfos(task) => {
             if let Some(thread) = view.threads.get(&task.tid) {
                 for (fd, _) in thread.files.borrow().iter() {
-                    out.push((
-                        format!("{fd}").into_bytes(),
-                        Entry::Fd(*task, fd),
-                        fd as u64 + 2,
-                    ));
+                    let child = if matches!(entry, Entry::Fds(_)) {
+                        Entry::Fd(*task, fd)
+                    } else {
+                        Entry::FdInfo(*task, fd)
+                    };
+                    out.push((format!("{fd}").into_bytes(), child, fd as u64 + 2));
                 }
             }
         }

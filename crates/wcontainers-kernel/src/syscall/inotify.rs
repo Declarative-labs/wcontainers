@@ -63,6 +63,33 @@ pub(crate) struct Mark {
     mask: u32,
 }
 
+/// An instance's watches for fdinfo, newest first as Linux lists its marks: number, inode and
+/// the mask a user sees (`inotify_mark_user_mask`).
+pub(super) fn marks(instance: &Rc<RefCell<Instance>>) -> Vec<(i32, crate::fs::Node, u32)> {
+    instance
+        .borrow()
+        .watches
+        .iter()
+        .rev()
+        .filter_map(|(wd, inode)| {
+            let node = inode.upgrade()?;
+            let mask = node
+                .borrow()
+                .watches
+                .iter()
+                .find(|mark| {
+                    mark.wd == *wd && core::ptr::eq(mark.instance.as_ptr(), Rc::as_ptr(instance))
+                })?
+                .mask;
+            Some((
+                *wd,
+                node,
+                mask & (IN_ALL_EVENTS | IN_ONESHOT | IN_EXCL_UNLINK),
+            ))
+        })
+        .collect()
+}
+
 /// The instance behind an open file, if it is one.
 pub(crate) fn of_file(file: &FileRef) -> Option<Rc<RefCell<Instance>>> {
     of(&file.borrow())

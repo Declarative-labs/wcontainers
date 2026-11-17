@@ -273,7 +273,11 @@ pub(crate) struct Inode {
     pub content: Content,
     /// `flock` locks: the open file holding each, and whether it is exclusive. An entry whose open file
     /// is gone was released when it closed.
-    pub flocks: Vec<(alloc::rc::Weak<RefCell<crate::file::OpenFile>>, bool)>,
+    pub flocks: Vec<(
+        alloc::rc::Weak<RefCell<crate::file::OpenFile>>,
+        bool,
+        crate::process::Pid,
+    )>,
     /// Record locks (`fcntl`'s).
     pub record_locks: Vec<crate::locks::RecordLock>,
     /// Extended attributes by full name, for file systems that keep them.
@@ -1334,7 +1338,11 @@ impl<'a> Walk<'a> {
         if !directory.is_directory() {
             return Err(Errno::ENOTDIR);
         }
-        permission(&directory, self.credentials, X_OK, self.proc.caller)
+        permission(&directory, self.credentials, X_OK, self.proc.caller)?;
+        if let Content::Proc(entry) = &directory.content {
+            proc::fdinfo_allowed(self.proc, entry, self.proc.caller_thread)?;
+        }
+        Ok(())
     }
 
     /// One step from a directory to a name in it, crossing mounts.

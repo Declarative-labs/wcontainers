@@ -2120,7 +2120,7 @@ pub(super) fn getdents64(
                     let mut out = Vec::new();
                     for (name, child, position) in crate::fs::proc::list(walk.proc, &entry) {
                         let jumps = match child {
-                            Entry::Fd(..) | Entry::ThreadSelfLink => true,
+                            Entry::Fd(..) | Entry::FdInfo(..) | Entry::ThreadSelfLink => true,
                             Entry::Process(task) => !task.own,
                             _ => false,
                         };
@@ -2130,7 +2130,7 @@ pub(super) fn getdents64(
                         out.push((name, child_inode.ino, kind, position, jumps));
                     }
                     let end = match entry {
-                        Entry::Fds(task) => walk
+                        Entry::Fds(task) | Entry::FdInfos(task) => walk
                             .proc
                             .threads
                             .get(&task.tid)
@@ -2140,7 +2140,7 @@ pub(super) fn getdents64(
                     Ok((out, end))
                 })?;
                 let ino = node.borrow().ino;
-                let fds = matches!(entry, Entry::Fds(_));
+                let fds = matches!(entry, Entry::Fds(_) | Entry::FdInfos(_));
                 if position == 0 {
                     entries.push((b".".to_vec(), ino, DT_DIR as u8, 0, 1));
                 }
@@ -2514,6 +2514,7 @@ fn record_lock(
             LockOwner::Table(kernel.files(tid).lock_owner())
         },
         pid,
+        file: alloc::rc::Rc::downgrade(file),
         write,
         start: start as u64,
         end: end as u64,

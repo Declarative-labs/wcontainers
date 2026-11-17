@@ -90,6 +90,8 @@ struct Timer {
     /// wall clock has canceled it since (`moffs` at `KTIME_MAX`).
     might_cancel: bool,
     canceled: bool,
+    /// A descriptor's flags as its last `settime` gave them (`settime_flags`), which fdinfo shows.
+    settime_flags: u32,
     /// A periodic POSIX timer whose signal was ignored when it fired, kept until the signal's
     /// handler stops being SIG_IGN (Linux's `ignored_posix_timers`).
     ignored: bool,
@@ -541,6 +543,7 @@ pub(super) fn start_cpu_sleep(
         charge: None,
         wall: false,
         might_cancel: false,
+        settime_flags: 0,
         canceled: false,
         ignored: false,
     });
@@ -794,6 +797,7 @@ pub(super) fn timer_create(
         charge: Some(charge),
         wall: false,
         might_cancel: false,
+        settime_flags: 0,
         canceled: false,
         ignored: false,
         clock_id,
@@ -1011,6 +1015,7 @@ pub(super) fn setitimer(
             clock_id: CLOCK_MONOTONIC as i32,
             wall: false,
             might_cancel: false,
+            settime_flags: 0,
             canceled: false,
             ignored: false,
         }),
@@ -1065,6 +1070,7 @@ pub(super) fn timerfd_create(
         charge: None,
         wall: false,
         might_cancel: false,
+        settime_flags: 0,
         canceled: false,
         ignored: false,
         clock_id,
@@ -1131,8 +1137,10 @@ pub(super) fn timerfd_settime(
         kernel.timers.all[&id].clock_id as u32,
         CLOCK_REALTIME | CLOCK_REALTIME_ALARM
     );
-    kernel.timers.all.get_mut(&id).expect("timer").might_cancel =
+    let timer = kernel.timers.all.get_mut(&id).expect("timer");
+    timer.might_cancel =
         wall_clock && flags & TFD_TIMER_ABSTIME != 0 && flags & TFD_TIMER_CANCEL_ON_SET != 0;
+    timer.settime_flags = flags & (TFD_SETTIME_FLAGS | TFD_TIMER_CANCEL_ON_SET);
     if kernel.timers.all[&id].expired && kernel.timers.all[&id].interval > 0 {
         let timer = &kernel.timers.all[&id];
         let (expires, clock_now) = (timer.expires.unwrap_or(0), kernel.entry_now);
@@ -1216,6 +1224,23 @@ pub(super) fn timerfd_gettime(
     let left = descriptor_remaining(kernel, id);
     write_itimerspec(kernel, cx, tid, out, left)?;
     Ok(0)
+}
+
+/// `timerfd_show`: a descriptor's clock, expirations not yet read, flags, time left and interval,
+/// as they stand (no catching up on missed expirations, unlike `gettime`).
+pub(super) fn fdinfo(kernel: &Kernel, id: u64) -> alloc::string::String {
+    let timer = &kernel.timers.all[&id];
+    let (left, interval) = descriptor_remaining(kernel, id);
+    alloc::format!(
+        "clockid: {}\nticks: {}\nsettime flags: 0{:o}\nit_value: ({}, {})\nit_interval: ({}, {})\n",
+        timer.clock_id,
+        timer.ticks,
+        timer.settime_flags,
+        left / 1_000_000_000,
+        left % 1_000_000_000,
+        interval / 1_000_000_000,
+        interval % 1_000_000_000,
+    )
 }
 
 /// The descriptor's timer, if the file is one.

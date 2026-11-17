@@ -636,6 +636,11 @@ pub(super) fn open(
         }
         if let Content::Proc(entry) = node.borrow().content {
             proc::open_check(&kernel.processes, &entry)?;
+            if let proc::Entry::FdInfos(task) | proc::Entry::FdInfo(task, _) = entry
+                && !kernel.ptrace_may_read(tid, task.pid)
+            {
+                return Err(Errno::EACCES);
+            }
         }
         // Linux's `do_dentry_open` refuses direct I/O after the open itself, before truncating.
         // A named pipe's and a terminal's are refused once they are open (below).
@@ -801,8 +806,10 @@ pub(super) fn proc_contents(
     entry: &proc::Entry,
 ) -> Result<Vec<u8>, Errno> {
     use proc::ProcessFile;
-    if let proc::Entry::NetFile(_, file) = entry {
-        return Ok(super::socket::proc_net(kernel, cx, *file));
+    match *entry {
+        proc::Entry::NetFile(_, file) => return Ok(super::socket::proc_net(kernel, cx, file)),
+        proc::Entry::FdInfo(task, fd) => return super::fdinfo::contents(kernel, task, fd),
+        _ => {}
     }
     // Fields not tracked show 0, and the mount table leaves out Docker's masks of `/proc` and the
     // mounts not built.
@@ -2893,12 +2900,14 @@ fn flock_typed(
     let node = file.borrow().node.clone();
     let mut inode = node.borrow_mut();
     let own = alloc::rc::Rc::downgrade(&file);
-    inode.flocks.retain(|(holder, _)| holder.strong_count() > 0);
+    inode
+        .flocks
+        .retain(|(holder, ..)| holder.strong_count() > 0);
     // The file's own lock is dropped first, so a refused change loses it, as on Linux.
     if let Some(index) = inode
         .flocks
         .iter()
-        .position(|(holder, _)| holder.ptr_eq(&own))
+        .position(|(holder, ..)| holder.ptr_eq(&own))
     {
         if Some(inode.flocks[index].1) == exclusive {
             return Ok(Some(0));
@@ -2915,10 +2924,11 @@ fn flock_typed(
     let conflict = inode
         .flocks
         .iter()
-        .any(|(_, held_exclusive)| exclusive || *held_exclusive);
+        .any(|(_, held_exclusive, _)| exclusive || *held_exclusive);
     if conflict {
         return if wait { Ok(None) } else { Err(Errno::EAGAIN) };
     }
-    inode.flocks.push((own, exclusive));
+    let pid = kernel.threads[&tid].process;
+    inode.flocks.push((own, exclusive, pid));
     Ok(Some(0))
 }

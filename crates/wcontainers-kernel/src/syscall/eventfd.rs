@@ -17,6 +17,8 @@ const LINK: &[u8] = b"anon_inode:[eventfd]";
 pub(crate) struct Counter {
     pub count: u64,
     pub semaphore: bool,
+    /// Its number, the lowest no other counter has (`eventfd_ida`), which fdinfo shows.
+    pub id: u32,
 }
 
 /// The counter behind an open file, if it is an event descriptor.
@@ -45,10 +47,24 @@ pub(super) fn eventfd2(
     let node = super::anon_node(kernel, cx);
     let opener = kernel.credentials(tid).serial;
     let file = OpenFile::new(node, O_RDWR | (flags & O_NONBLOCK), LINK.to_vec(), opener);
-    file.borrow_mut().anon = Some(Anon::Event(Rc::new(RefCell::new(Counter {
+    let counters = &mut kernel.files.event_counters;
+    counters.retain(|counter| counter.strong_count() > 0);
+    let mut taken: alloc::vec::Vec<u32> = counters
+        .iter()
+        .filter_map(|counter| counter.upgrade().map(|counter| counter.borrow().id))
+        .collect();
+    taken.sort_unstable();
+    let id = (0..)
+        .zip(taken)
+        .find(|(id, used)| id != used)
+        .map_or(counters.len() as u32, |(id, _)| id);
+    let counter = Rc::new(RefCell::new(Counter {
         count: u64::from(count as u32),
         semaphore: flags & EFD_SEMAPHORE != 0,
-    }))));
+        id,
+    }));
+    counters.push(Rc::downgrade(&counter));
+    file.borrow_mut().anon = Some(Anon::Event(counter));
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
         .files_mut(tid)

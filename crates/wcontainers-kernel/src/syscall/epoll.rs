@@ -116,6 +116,16 @@ impl Watches {
     }
 }
 
+/// An instance's items for fdinfo: descriptor number, file, events and data, those whose file is
+/// still open.
+pub(super) fn items(epoll: &Epoll) -> Vec<(i32, FileRef, u32, u64)> {
+    epoll
+        .items
+        .iter()
+        .filter_map(|((fd, _), item)| Some((*fd, item.file.upgrade()?, item.events, item.data)))
+        .collect()
+}
+
 /// The instance behind an open file, if it is one.
 pub(super) fn of(file: &OpenFile) -> Option<EpollRef> {
     match &file.anon {
