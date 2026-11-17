@@ -115,6 +115,10 @@ pub mod reason {
     /// section 9) or its port is taken there. It goes on listening inside the container. Detail:
     /// the port.
     pub const OUTSIDE_LISTEN_FAILED: &str = "listening outside failed";
+    /// A receiver asked for the TTL, hop limit, type of service or class of a datagram from
+    /// outside or from the name server, which the host does not report: 64 and 0 were given.
+    /// Detail: none.
+    pub const OUTSIDE_HEADER_MADE_UP: &str = "outside datagram header made up";
     /// A notice from the backend that Linux refuses, with nothing done: a body of the wrong size,
     /// or a DELETE whose parent and name are not the child's. Linux answers the backend's write of
     /// it with the error; no hook carries that back. Detail: the notice's code times 2^32 plus the

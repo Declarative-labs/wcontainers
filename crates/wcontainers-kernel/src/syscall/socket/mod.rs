@@ -73,8 +73,9 @@ struct Packet {
     cred: Cred,
     sender: Weak<RefCell<Socket>>,
     truesize: u64,
-    /// Where an internet datagram came from.
+    /// Where an internet datagram came from, and what its header and route said.
     source: Option<inet::Endpoint>,
+    arrival: Option<inet::Arrival>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1292,6 +1293,7 @@ fn send_stream(
             truesize: truesize(size - pages, pages),
             data,
             source: None,
+            arrival: None,
         };
         files_sent = true;
         socket.borrow_mut().written += packet.truesize;
@@ -1422,6 +1424,7 @@ fn send_packet(
         truesize: truesize(total.saturating_sub(pages), pages),
         data,
         source: None,
+        arrival: None,
     };
     socket.borrow_mut().written += packet.truesize;
     target.borrow_mut().queue.push_back(packet);
@@ -1440,6 +1443,8 @@ struct Received {
     flags: u32,
     /// The length to report (a datagram's whole length with MSG_TRUNC).
     reported: Option<u64>,
+    /// An internet datagram's header and route.
+    arrival: Option<inet::Arrival>,
 }
 
 /// `unix_stream_read_generic` and `__unix_dgram_recvmsg`: bytes into `parts`, waiting for some
@@ -2078,9 +2083,15 @@ pub(super) fn recvmsg(
         guest(kernel, cx, tid).write(header.name, &bytes[..room])?;
         name_length = bytes.len() as i32;
     }
-    // Control messages: credentials when asked for, then descriptors.
+    // Control messages: an internet datagram's header and route, credentials when asked for,
+    // then descriptors.
     let mut control = Vec::new();
     let room = header.control_length as usize;
+    if let Some(arrival) = &received.arrival {
+        for (level, kind, data) in inet::arrival_messages(kernel, cx, &socket, arrival) {
+            put_control(&mut control, room, level, kind, &data, &mut out_flags);
+        }
+    }
     let passcred = socket.borrow().passcred && socket.borrow().family == AF_UNIX;
     if passcred {
         let cred = received.cred.unwrap_or(Cred {
@@ -2092,7 +2103,14 @@ pub(super) fn recvmsg(
         data.extend_from_slice(&(cred.pid as u32).to_le_bytes());
         data.extend_from_slice(&cred.uid.to_le_bytes());
         data.extend_from_slice(&cred.gid.to_le_bytes());
-        put_control(&mut control, room, SCM_CREDENTIALS, &data, &mut out_flags);
+        put_control(
+            &mut control,
+            room,
+            SOL_SOCKET,
+            SCM_CREDENTIALS,
+            &data,
+            &mut out_flags,
+        );
     }
     if !received.files.is_empty() {
         let space = room.saturating_sub(control.len());
@@ -2134,17 +2152,30 @@ pub(super) fn recvmsg(
     Ok(received.reported.unwrap_or(copied))
 }
 
-/// `put_cmsg`: a control message if it fits whole, padded to the next one; else MSG_CTRUNC.
-fn put_control(control: &mut Vec<u8>, room: usize, kind: u32, data: &[u8], flags: &mut u32) {
-    let length = CMSG_HEADER as usize + data.len();
-    if control.len() + length > room {
+/// `put_cmsg`: a control message padded to the next one; one that does not fit whole is cut to
+/// the room left, with MSG_CTRUNC, and none at all when not even its header fits.
+fn put_control(
+    control: &mut Vec<u8>,
+    room: usize,
+    level: u32,
+    kind: u32,
+    data: &[u8],
+    flags: &mut u32,
+) {
+    let left = room.saturating_sub(control.len());
+    if left < CMSG_HEADER as usize {
         *flags |= MSG_CTRUNC;
         return;
     }
+    let mut length = CMSG_HEADER as usize + data.len();
+    if length > left {
+        *flags |= MSG_CTRUNC;
+        length = left;
+    }
     control.extend_from_slice(&(length as u64).to_le_bytes());
-    control.extend_from_slice(&SOL_SOCKET.to_le_bytes());
+    control.extend_from_slice(&level.to_le_bytes());
     control.extend_from_slice(&kind.to_le_bytes());
-    control.extend_from_slice(data);
+    control.extend_from_slice(&data[..length - CMSG_HEADER as usize]);
     let padded = control
         .len()
         .next_multiple_of(CMSG_ALIGN as usize)

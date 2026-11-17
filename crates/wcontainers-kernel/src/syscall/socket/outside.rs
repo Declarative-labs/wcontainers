@@ -287,6 +287,7 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
                     sender: Weak::new(),
                     truesize,
                     source: flow,
+                    arrival: (!stream).then(super::inet::arrival_outside),
                 };
                 let mut own = socket.borrow_mut();
                 if let Some(inet) = own.inet.as_deref_mut() {
@@ -543,6 +544,12 @@ pub(super) fn deliver(kernel: &mut Kernel, socket: &SocketRef, from: Endpoint, d
         sender: Weak::new(),
         truesize,
         source: Some(from),
+        // The container's name server answers on loopback; the host does not say how.
+        arrival: Some(super::inet::Arrival {
+            destination: super::inet::mapped([127, 0, 0, 1]),
+            index: network::LOOPBACK_INDEX,
+            ..super::inet::arrival_outside()
+        }),
     };
     socket.borrow_mut().queue.push_back(packet);
     kernel.wake_poll(channel(socket), EPOLLIN | EPOLLRDNORM);

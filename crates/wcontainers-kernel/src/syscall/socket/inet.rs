@@ -1543,6 +1543,7 @@ fn tcp_send(
             sender: Rc::downgrade(socket),
             truesize: size,
             source: None,
+            arrival: None,
         };
         socket.borrow_mut().written += size;
         {
@@ -1703,6 +1704,7 @@ fn udp_send(
                     sender: Weak::new(),
                     truesize,
                     source: Some(from),
+                    arrival: Some(arrival_from(socket, &to)),
                 };
                 receiver.borrow_mut().queue.push_back(packet);
                 kernel.wake_poll(channel(&receiver), EPOLLIN | EPOLLRDNORM);
@@ -1850,16 +1852,17 @@ fn udp_receive(
             return Err(wait_room(kernel, tid, socket, nonblocking, timeout));
         }
     }
-    let (data, source) = {
+    let (data, source, arrival) = {
         let own = socket.borrow();
         let packet = own.queue.front().expect("a datagram");
-        (packet.data.clone(), packet.source)
+        (packet.data.clone(), packet.source, packet.arrival)
     };
     let copied = (data.len() as u64).min(size);
     scatter(kernel, cx, tid, parts, &data[..copied as usize])?;
     let family = socket.borrow().family;
     let mut received = Received {
         address: source.map(|from| address_bytes(family, &from)),
+        arrival,
         ..Received::default()
     };
     if data.len() as u64 > size {
@@ -1872,6 +1875,133 @@ fn udp_receive(
         socket.borrow_mut().queue.pop_front();
     }
     Ok((copied, received))
+}
+
+/// What a datagram from `sender` to `to` inside the container carries in its header and route:
+/// the sender's TTL or hop limit and type of service or class, and the interface of the address
+/// it went to (`inet_iif`, eth0's for eth0's address, else loopback).
+fn arrival_from(sender: &SocketRef, to: &Endpoint) -> Arrival {
+    let own = sender.borrow();
+    let option = |level: u32, name: u32, default: i32| {
+        own.options
+            .get(&(level, name))
+            .map(|value| i32::from_le_bytes(value[..4].try_into().expect("4 bytes")))
+            .filter(|value| *value >= 0)
+            .unwrap_or(default)
+    };
+    let (ttl, tos) = if v4_of(&to.address).is_some() && own.family == AF_INET {
+        (option(SOL_IP, IP_TTL, 64), option(SOL_IP, IP_TOS, 0))
+    } else if v4_of(&to.address).is_some() {
+        (64, 0)
+    } else {
+        (
+            option(SOL_IPV6, IPV6_UNICAST_HOPS, 64),
+            option(SOL_IPV6, IPV6_TCLASS, 0),
+        )
+    };
+    let index = if v4_of(&to.address) == Some(network::ADDRESS) {
+        network::ETHERNET_INDEX
+    } else {
+        network::LOOPBACK_INDEX
+    };
+    Arrival {
+        destination: to.address,
+        index,
+        ttl: ttl as u8,
+        tos: tos as u8,
+        known: true,
+    }
+}
+
+/// What came from outside to eth0's address: the host does not say its TTL or type of service.
+pub(super) fn arrival_outside() -> Arrival {
+    Arrival {
+        destination: mapped(network::ADDRESS),
+        index: network::ETHERNET_INDEX,
+        ttl: 64,
+        tos: 0,
+        known: false,
+    }
+}
+
+/// A received datagram's header and route, for the control messages its receiver asks for.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Arrival {
+    pub destination: [u8; 16],
+    pub index: u32,
+    pub ttl: u8,
+    pub tos: u8,
+    /// Whether the TTL and type of service are the sender's (else 64 and 0, made up).
+    pub known: bool,
+}
+
+/// The control messages of IP_PKTINFO, IP_RECVTTL, IP_RECVTOS and their IPv6 forms for a
+/// datagram, in Linux's order: an IPv6 socket's own (`ip6_datagram_recv_common_ctl`, and for an
+/// IPv6 datagram `ip6_datagram_recv_specific_ctl`), then the IPv4 ones for an IPv4 datagram
+/// (`ip_cmsg_recv_offset`). Each is (level, type, data).
+pub(super) fn arrival_messages(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    arrival: &Arrival,
+) -> Vec<(u32, u32, Vec<u8>)> {
+    let own = socket.borrow();
+    let on = |level: u32, name: u32| flag(&own, level, name);
+    let mut out = Vec::new();
+    let v4 = v4_of(&arrival.destination);
+    let mut header_used = false;
+    if own.family == AF_INET6 {
+        if on(SOL_IPV6, IPV6_RECVPKTINFO) {
+            let mut data = arrival.destination.to_vec();
+            data.extend_from_slice(&arrival.index.to_le_bytes());
+            out.push((SOL_IPV6, IPV6_PKTINFO, data));
+        }
+        if v4.is_none() {
+            if on(SOL_IPV6, IPV6_RECVHOPLIMIT) {
+                header_used = true;
+                out.push((
+                    SOL_IPV6,
+                    IPV6_HOPLIMIT,
+                    i32::from(arrival.ttl).to_le_bytes().to_vec(),
+                ));
+            }
+            if on(SOL_IPV6, IPV6_RECVTCLASS) {
+                header_used = true;
+                out.push((
+                    SOL_IPV6,
+                    IPV6_TCLASS,
+                    i32::from(arrival.tos).to_le_bytes().to_vec(),
+                ));
+            }
+        }
+    }
+    if let Some(destination) = v4 {
+        if on(SOL_IP, IP_PKTINFO) {
+            let mut data = arrival.index.to_le_bytes().to_vec();
+            data.extend_from_slice(&destination);
+            data.extend_from_slice(&destination);
+            out.push((SOL_IP, IP_PKTINFO, data));
+        }
+        if on(SOL_IP, IP_RECVTTL) {
+            header_used = true;
+            out.push((
+                SOL_IP,
+                IP_TTL,
+                i32::from(arrival.ttl).to_le_bytes().to_vec(),
+            ));
+        }
+        if on(SOL_IP, IP_RECVTOS) {
+            header_used = true;
+            out.push((SOL_IP, IP_TOS, alloc::vec![arrival.tos]));
+        }
+    }
+    drop(own);
+    if header_used && !arrival.known {
+        kernel
+            .counters
+            .count(cx.host, crate::reason::OUTSIDE_HEADER_MADE_UP, 0);
+    }
+    out
 }
 
 /// One integer option's value as a call gave it: at least four bytes (or one for the IP level's
@@ -2051,7 +2181,10 @@ pub(super) fn set_option(
                 | IP_BIND_ADDRESS_NO_PORT
                 | IP_MULTICAST_LOOP
                 | IP_MULTICAST_ALL
-                | IP_NODEFRAG => store(socket, i32::from(value != 0)),
+                | IP_NODEFRAG
+                | IP_PKTINFO
+                | IP_RECVTTL
+                | IP_RECVTOS => store(socket, i32::from(value != 0)),
                 _ => not_built(kernel, cx),
             }
         }
@@ -2093,7 +2226,9 @@ pub(super) fn set_option(
                     store(socket, value)
                 }
                 IPV6_RECVERR | IPV6_MULTICAST_LOOP | IPV6_FREEBIND | IPV6_TRANSPARENT
-                | IPV6_DONTFRAG => store(socket, i32::from(value != 0)),
+                | IPV6_DONTFRAG | IPV6_RECVPKTINFO | IPV6_RECVHOPLIMIT | IPV6_RECVTCLASS => {
+                    store(socket, i32::from(value != 0))
+                }
                 _ => not_built(kernel, cx),
             }
         }
@@ -2200,7 +2335,10 @@ pub(super) fn get_option(
             | IP_FREEBIND
             | IP_TRANSPARENT
             | IP_BIND_ADDRESS_NO_PORT
-            | IP_NODEFRAG => kept(0),
+            | IP_NODEFRAG
+            | IP_PKTINFO
+            | IP_RECVTTL
+            | IP_RECVTOS => kept(0),
             IP_MULTICAST_TTL | IP_MULTICAST_LOOP | IP_MULTICAST_ALL => kept(1),
             IP_MTU_DISCOVER => kept(IP_PMTUDISC_WANT as i32),
             IP_MTU => {
@@ -2221,9 +2359,8 @@ pub(super) fn get_option(
                 int(if hops == -1 { 64 } else { hops })
             }
             IPV6_MULTICAST_HOPS | IPV6_MULTICAST_LOOP => kept(1),
-            IPV6_TCLASS | IPV6_RECVERR | IPV6_FREEBIND | IPV6_TRANSPARENT | IPV6_DONTFRAG => {
-                kept(0)
-            }
+            IPV6_TCLASS | IPV6_RECVERR | IPV6_FREEBIND | IPV6_TRANSPARENT | IPV6_DONTFRAG
+            | IPV6_RECVPKTINFO | IPV6_RECVHOPLIMIT | IPV6_RECVTCLASS => kept(0),
             IPV6_MTU_DISCOVER => kept(IPV6_PMTUDISC_WANT as i32),
             IPV6_MTU => {
                 if !connected {

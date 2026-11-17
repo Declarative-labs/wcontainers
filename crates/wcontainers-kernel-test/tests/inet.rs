@@ -27,3 +27,9 @@ fn transfers_with_sockets_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "sockxfer", &[]);
 }
+
+#[test]
+fn datagram_control_messages_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "udpcontrol", &[]);
+}

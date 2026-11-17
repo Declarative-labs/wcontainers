@@ -263,6 +263,7 @@ pub(super) fn send(
             cred: super::own_cred(kernel, tid),
             sender: alloc::rc::Weak::new(),
             source: None,
+            arrival: None,
         };
         socket.borrow_mut().queue.push_back(packet);
     }
