@@ -347,6 +347,11 @@ impl Kernel {
                 continue;
             }
             if let wcontainers_abi::Resume::Return(value) = thread.resume {
+                // A call a stop interrupted keeps its restart code: the signals acted on when the
+                // process is continued turn it into the call again or EINTR, and set the registers.
+                if errno::Errno::restart_of(value).is_some() {
+                    continue;
+                }
                 let mut registers = wcontainers_abi::RegisterBlock::ZERO;
                 cx.cpu.registers(thread.cpu, &mut registers);
                 registers.x[0] = value;
