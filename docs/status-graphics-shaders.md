@@ -760,6 +760,11 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   notes the desktop's clock once went back 8 hours, so cargo may keep stale objects: run 7's first
   draw build ran `cargo clean -p wcontainers-shaders -p naga -p wcontainers-gpu
   -p wcontainers-gpu-webgpu -p wcontainers-gpu-webgl -p wcontainers-graphics-test` first.
+- The laptop's disk (122 GB) filled during run 10 and a build failed with "No space left on device":
+  run 10 deleted this branch's `debug/incremental` and three stale `wcontainers-shaders-*` build
+  directories under `~/wcontainers-graphics/target/phase-2-graphics-shaders` (16 GB free after). The
+  independent checks' directories `~/wcontainers-graphics/check-g6a*` hold about 29 GB and were left
+  alone.
 - Building on the desktop: the rig's `remote` does not fetch submodules, so a build command that
   needs this crate starts with `git submodule update --init crates/wcontainers-shaders/dxbc-spirv
   crates/wcontainers-shaders/dxil-spirv && git -C crates/wcontainers-shaders/dxil-spirv submodule
