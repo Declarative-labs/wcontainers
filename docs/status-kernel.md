@@ -2096,6 +2096,15 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
+- K5, second run, open: tests/saving.rs fails for guest/unixsock.c seed 1 since the access time
+  check was added to it last in this run: under saves ours printed "after connect atime moved 0"
+  where the reference (and ours in tests/unixsock.rs, unsaved) prints 1. Every other line
+  matched. Cause not looked into (no context left in the run); `touch_atime` is called from
+  `socket::find` on a path connect. Start here: run that seed with saves and see whether the
+  connect's call reaches `find`'s path branch after a restore. The whole suite stopped at that
+  binary (60 of 89 run, 100 passed, 1 failed, 5 ignored, load about 21 to 32); the run before
+  the last few changes (the inotify commit) passed whole: 88 binaries, 160 passed, 0 failed.
+
 - K4, second run (fixed in the third): layer 1 on the backend seed 4040103 differed on
   statx(AT_FDCWD, "", AT_EMPTY_PATH, mask 0): Linux's FUSE does not sync attributes for a mask with
   no basic field and shows what it held; ours asked the backend. Ours now takes the held
