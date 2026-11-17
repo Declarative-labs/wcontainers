@@ -1,0 +1,7 @@
+#!/bin/bash
+# Prints what is installed and set on the GPU desktop (desktop/inventory.ps1), to compare with the
+# status file's list of what the rig installed.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+enc=$(iconv -f UTF-8 -t UTF-16LE < "$here/desktop/inventory.ps1" | base64 | tr -d '\n')
+ssh -o BatchMode=yes tom@192.168.2.183 powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "$enc" | tr -d '\r'
