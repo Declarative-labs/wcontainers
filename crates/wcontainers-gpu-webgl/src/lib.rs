@@ -1207,7 +1207,8 @@ impl WebGl {
         GpuError::DeviceLost
     }
 
-    /// A nearest-filtering sampler for the back end's own fetches, made at its first use.
+    /// A nearest-filtering sampler for the back end's own fetches and for textures read only by
+    /// loads, made at its first use.
     fn point_sampler(&mut self) -> Result<glow::Sampler, GpuError> {
         if let Some(s) = self.point_sampler {
             return Ok(s);
@@ -1218,9 +1219,14 @@ impl WebGl {
                 .gl
                 .create_sampler()
                 .map_err(|_| GpuError::OutOfMemory)?;
-            for p in [glow::TEXTURE_MIN_FILTER, glow::TEXTURE_MAG_FILTER] {
-                self.gl.sampler_parameter_i32(s, p, glow::NEAREST as i32);
-            }
+            // A mipmap filter: texel fetches reach only the base level without one.
+            self.gl.sampler_parameter_i32(
+                s,
+                glow::TEXTURE_MIN_FILTER,
+                glow::NEAREST_MIPMAP_NEAREST as i32,
+            );
+            self.gl
+                .sampler_parameter_i32(s, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
             s
         };
         self.point_sampler = Some(s);

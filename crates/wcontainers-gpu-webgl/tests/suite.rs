@@ -72,3 +72,8 @@ fn stencil_sampled_and_read_back() {
 fn copies_within_a_typeless_group() {
     checks::copies_within_a_typeless_group::<Angle>();
 }
+
+#[test]
+fn loads_count_levels_from_the_view() {
+    checks::loads_count_levels_from_the_view::<Angle>();
+}

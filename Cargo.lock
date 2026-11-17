@@ -2732,11 +2732,14 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "naga",
+ "pollster",
  "wasm-bindgen",
  "wcontainers-gpu",
  "wcontainers-gpu-test",
+ "wcontainers-gpu-webgpu",
  "wcontainers-graphics-test",
  "web-sys",
+ "wgpu",
 ]
 
 [[package]]
