@@ -22,7 +22,7 @@ pub fn resource_of(r: &ID3D11Resource) -> Option<front::Resource<Chosen>> {
 
 #[implement(ID3D11Buffer)]
 pub struct Buffer {
-    pub front: Rc<front::Buffer<Chosen>>,
+    pub front: Locked<Rc<front::Buffer<Chosen>>>,
     pub(super) child: Child,
     priority: Cell<u32>,
 }
@@ -30,7 +30,7 @@ pub struct Buffer {
 impl Buffer {
     pub fn new(front: Rc<front::Buffer<Chosen>>, device: ID3D11Device) -> Self {
         Buffer {
-            front,
+            front: Locked::new(front),
             child: Child::new(device),
             priority: Cell::new(0),
         }
@@ -59,7 +59,7 @@ impl Buffer {
 
 #[implement(ID3D11Texture2D)]
 pub struct Texture2D {
-    pub front: Rc<front::Texture2D<Chosen>>,
+    pub front: Locked<Rc<front::Texture2D<Chosen>>>,
     pub(super) child: Child,
     priority: Cell<u32>,
 }
@@ -67,7 +67,7 @@ pub struct Texture2D {
 impl Texture2D {
     pub fn new(front: Rc<front::Texture2D<Chosen>>, device: ID3D11Device) -> Self {
         Texture2D {
-            front,
+            front: Locked::new(front),
             child: Child::new(device),
             priority: Cell::new(0),
         }
@@ -97,7 +97,7 @@ impl Texture2D {
 /// A view: the front view and the resource it views (held with a reference).
 #[implement(ID3D11RenderTargetView)]
 pub struct RenderTargetView {
-    pub front: Rc<front::View<Chosen>>,
+    pub front: Locked<Rc<front::View<Chosen>>>,
     resource: ID3D11Resource,
     pub(super) child: Child,
 }
@@ -109,7 +109,7 @@ impl RenderTargetView {
         device: ID3D11Device,
     ) -> Self {
         RenderTargetView {
-            front,
+            front: Locked::new(front),
             resource,
             child: Child::new(device),
         }
@@ -129,7 +129,7 @@ impl RenderTargetView {
 /// A view: the front view and the resource it views (held with a reference).
 #[implement(ID3D11DepthStencilView)]
 pub struct DepthStencilView {
-    pub front: Rc<front::View<Chosen>>,
+    pub front: Locked<Rc<front::View<Chosen>>>,
     resource: ID3D11Resource,
     pub(super) child: Child,
 }
@@ -141,7 +141,7 @@ impl DepthStencilView {
         device: ID3D11Device,
     ) -> Self {
         DepthStencilView {
-            front,
+            front: Locked::new(front),
             resource,
             child: Child::new(device),
         }
@@ -161,7 +161,7 @@ impl DepthStencilView {
 /// A view: the front view and the resource it views (held with a reference).
 #[implement(ID3D11ShaderResourceView)]
 pub struct ShaderResourceView {
-    pub front: Rc<front::View<Chosen>>,
+    pub front: Locked<Rc<front::View<Chosen>>>,
     resource: ID3D11Resource,
     pub(super) child: Child,
 }
@@ -173,7 +173,7 @@ impl ShaderResourceView {
         device: ID3D11Device,
     ) -> Self {
         ShaderResourceView {
-            front,
+            front: Locked::new(front),
             resource,
             child: Child::new(device),
         }
@@ -193,7 +193,7 @@ impl ShaderResourceView {
 /// A state object and the description it was made from, which `GetDesc` returns.
 #[implement(ID3D11SamplerState)]
 pub struct SamplerState {
-    pub front: Rc<front::Sampler<Chosen>>,
+    pub front: Locked<Rc<front::Sampler<Chosen>>>,
     desc: D3D11_SAMPLER_DESC,
     pub(super) child: Child,
 }
@@ -205,7 +205,7 @@ impl SamplerState {
         device: ID3D11Device,
     ) -> Self {
         SamplerState {
-            front,
+            front: Locked::new(front),
             desc,
             child: Child::new(device),
         }
@@ -221,7 +221,7 @@ impl SamplerState {
 /// A state object and the description it was made from, which `GetDesc` returns.
 #[implement(ID3D11BlendState)]
 pub struct BlendState {
-    pub front: Rc<front::Blend<Chosen>>,
+    pub front: Locked<Rc<front::Blend<Chosen>>>,
     desc: D3D11_BLEND_DESC,
     pub(super) child: Child,
 }
@@ -233,7 +233,7 @@ impl BlendState {
         device: ID3D11Device,
     ) -> Self {
         BlendState {
-            front,
+            front: Locked::new(front),
             desc,
             child: Child::new(device),
         }
@@ -249,7 +249,7 @@ impl BlendState {
 /// A state object and the description it was made from, which `GetDesc` returns.
 #[implement(ID3D11DepthStencilState)]
 pub struct DepthStencilState {
-    pub front: Rc<front::DepthStencil<Chosen>>,
+    pub front: Locked<Rc<front::DepthStencil<Chosen>>>,
     desc: D3D11_DEPTH_STENCIL_DESC,
     pub(super) child: Child,
 }
@@ -261,7 +261,7 @@ impl DepthStencilState {
         device: ID3D11Device,
     ) -> Self {
         DepthStencilState {
-            front,
+            front: Locked::new(front),
             desc,
             child: Child::new(device),
         }
@@ -277,7 +277,7 @@ impl DepthStencilState {
 /// A state object and the description it was made from, which `GetDesc` returns.
 #[implement(ID3D11RasterizerState)]
 pub struct RasterizerState {
-    pub front: Rc<front::Rasterizer<Chosen>>,
+    pub front: Locked<Rc<front::Rasterizer<Chosen>>>,
     desc: D3D11_RASTERIZER_DESC,
     pub(super) child: Child,
 }
@@ -289,7 +289,7 @@ impl RasterizerState {
         device: ID3D11Device,
     ) -> Self {
         RasterizerState {
-            front,
+            front: Locked::new(front),
             desc,
             child: Child::new(device),
         }
@@ -304,14 +304,14 @@ impl RasterizerState {
 
 #[implement(ID3D11InputLayout)]
 pub struct InputLayout {
-    pub front: Rc<front::InputLayout>,
+    pub front: Locked<Rc<front::InputLayout>>,
     pub(super) child: Child,
 }
 
 impl InputLayout {
     pub fn new(front: Rc<front::InputLayout>, device: ID3D11Device) -> Self {
         InputLayout {
-            front,
+            front: Locked::new(front),
             child: Child::new(device),
         }
     }
@@ -319,14 +319,14 @@ impl InputLayout {
 
 #[implement(ID3D11VertexShader)]
 pub struct VertexShader {
-    pub front: Rc<front::Shader<Chosen>>,
+    pub front: Locked<Rc<front::Shader<Chosen>>>,
     pub(super) child: Child,
 }
 
 impl VertexShader {
     pub fn new(front: Rc<front::Shader<Chosen>>, device: ID3D11Device) -> Self {
         VertexShader {
-            front,
+            front: Locked::new(front),
             child: Child::new(device),
         }
     }
@@ -334,14 +334,14 @@ impl VertexShader {
 
 #[implement(ID3D11PixelShader)]
 pub struct PixelShader {
-    pub front: Rc<front::Shader<Chosen>>,
+    pub front: Locked<Rc<front::Shader<Chosen>>>,
     pub(super) child: Child,
 }
 
 impl PixelShader {
     pub fn new(front: Rc<front::Shader<Chosen>>, device: ID3D11Device) -> Self {
         PixelShader {
-            front,
+            front: Locked::new(front),
             child: Child::new(device),
         }
     }

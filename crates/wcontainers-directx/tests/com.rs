@@ -206,3 +206,30 @@ fn the_forwarding_d3d11_reaches_the_library() {
     let forwarded = unsafe { GetProcAddress(forwarder, s!("D3D11CreateDevice")) }.unwrap();
     assert_eq!(direct as usize, forwarded as usize);
 }
+
+#[test]
+fn device_calls_from_several_threads_reach_the_front_one_at_a_time() {
+    // Direct3D 11's device is free-threaded: eight threads make, query and release buffers at once.
+    let (device, _context) = device();
+    let before = refs(&device);
+    let raw = device.as_raw() as usize;
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            std::thread::spawn(move || {
+                let raw = raw as *mut std::ffi::c_void;
+                let device = unsafe { ID3D11Device::from_raw_borrowed(&raw) }
+                    .unwrap()
+                    .clone();
+                for _ in 0..200 {
+                    let b = buffer(&device);
+                    let r: ID3D11Resource = b.cast().unwrap();
+                    assert_eq!(refs(&r), 2);
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    assert_eq!(refs(&device), before);
+}

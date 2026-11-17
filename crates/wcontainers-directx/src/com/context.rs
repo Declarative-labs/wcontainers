@@ -18,24 +18,25 @@ use super::*;
 
 #[implement(ID3D11DeviceContext)]
 pub struct Context {
-    front: Shared,
+    front: Locked<Shared>,
     pub(super) child: Child,
     /// The device's pointer to this context, cleared when the context goes.
-    slot: Rc<Cell<*mut c_void>>,
+    slot: Locked<Rc<Cell<*mut c_void>>>,
 }
 
 impl Context {
     pub(super) fn new(front: Shared, device: ID3D11Device, slot: Rc<Cell<*mut c_void>>) -> Self {
         Context {
-            front,
+            front: Locked::new(front),
             child: Child::new(device),
-            slot,
+            slot: Locked::new(slot),
         }
     }
 }
 
 impl Drop for Context {
     fn drop(&mut self) {
+        let _lock = lock();
         self.slot.set(std::ptr::null_mut());
     }
 }

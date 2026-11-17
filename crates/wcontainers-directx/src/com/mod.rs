@@ -1,5 +1,6 @@
 //! COM objects around the fronts, and the exported entry points. In this build every call runs on the
-//! calling thread straight into the front; the call buffer and device thread come with the channel.
+//! calling thread straight into the front, one call at a time under the library's lock; the call
+//! buffer and device thread come with the channel.
 
 mod context;
 mod convert;
@@ -10,8 +11,12 @@ mod objects;
 
 use std::cell::RefCell;
 use std::ffi::c_void;
+use std::mem::ManuallyDrop;
+use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Mutex;
+
+use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 
 use windows::Win32::Foundation::{E_INVALIDARG, E_NOTIMPL, HMODULE};
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL;
@@ -51,6 +56,39 @@ pub fn backend() -> Option<Chosen> {
     let (device, queue) =
         pollster::block_on(adapter.request_device(&Chosen::device_descriptor(&adapter))).ok()?;
     Some(Chosen::new(&adapter, device, queue))
+}
+
+/// Held through every COM method and every drop of what the objects share, so a program's threads
+/// (Direct3D 11's device is free-threaded) reach the front's single-threaded state one at a time. It
+/// is re-entrant: a call may release objects, whose drops take it again.
+static LOCK: ReentrantMutex<()> = ReentrantMutex::new(());
+
+pub fn lock() -> ReentrantMutexGuard<'static, ()> {
+    LOCK.lock()
+}
+
+/// A value shared between COM objects that is touched only under the library's lock, dropped
+/// under it too (COM objects are released on any thread).
+pub struct Locked<T>(ManuallyDrop<T>);
+
+impl<T> Locked<T> {
+    pub fn new(value: T) -> Self {
+        Locked(ManuallyDrop::new(value))
+    }
+}
+
+impl<T> Deref for Locked<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> Drop for Locked<T> {
+    fn drop(&mut self) {
+        let _lock = lock();
+        unsafe { ManuallyDrop::drop(&mut self.0) }
+    }
 }
 
 static WARNED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());

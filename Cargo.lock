@@ -2666,6 +2666,7 @@ name = "wcontainers-directx"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "parking_lot",
  "pollster",
  "wcontainers-direct3d-11",
  "wcontainers-gpu",
