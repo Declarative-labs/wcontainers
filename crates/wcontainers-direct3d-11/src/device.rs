@@ -181,15 +181,26 @@ impl<B: Backend> Device<B> {
         } else {
             MapIntent::Rarely
         };
-        let size = u64::from(d.byte_width);
+        // The buffer is made whole granules of the back end's copies long, so writing the initial data
+        // (padded with zeros past the program's bytes) never needs an edge merge.
+        let granule = u64::from(self.backend.caps().limits.buffer_copy_alignment.max(1));
+        let size = u64::from(d.byte_width).div_ceil(granule) * granule;
         let gpu = self.backend.create_buffer(&GpuBuffer {
             size,
             usage,
             intent,
         })?;
         if let Some(bytes) = init {
-            self.backend
-                .write_buffer(&gpu, 0, &bytes[..d.byte_width as usize], WriteMode::Discard);
+            let bytes = &bytes[..d.byte_width as usize];
+            if bytes.len() as u64 == size {
+                self.backend
+                    .write_buffer(&gpu, 0, bytes, WriteMode::Discard);
+            } else {
+                let mut padded = bytes.to_vec();
+                padded.resize(size as usize, 0);
+                self.backend
+                    .write_buffer(&gpu, 0, &padded, WriteMode::Discard);
+            }
         }
         let shadow = if d.usage == usage::DYNAMIC || d.usage == usage::STAGING {
             let mut s = vec![0; d.byte_width as usize];

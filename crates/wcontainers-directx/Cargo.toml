@@ -14,6 +14,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 wcontainers-direct3d-11 = { path = "../wcontainers-direct3d-11" }
 wcontainers-gpu = { path = "../wcontainers-gpu" }
+wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
+wgpu = { version = "30.0.2", default-features = false }
+pollster = "1.0.1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [

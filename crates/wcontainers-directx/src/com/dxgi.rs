@@ -9,28 +9,36 @@ use windows::core::{GUID, Result, implement};
 
 use super::*;
 
-/// What the adapter calls itself.
-const NAME: &str = "wcontainers recording back end (draws nothing)";
-
 #[implement(IDXGIAdapter1)]
 pub struct Adapter {
     pub(super) private: Private,
+    gpu: Gpu,
 }
 
 impl Adapter {
-    pub fn new() -> Self {
+    pub fn new(gpu: Gpu) -> Self {
         Adapter {
             private: Private::default(),
+            gpu,
         }
     }
 
     pub(super) fn get_desc1(&self) -> Result<DXGI_ADAPTER_DESC1> {
         let mut d = DXGI_ADAPTER_DESC1 {
             AdapterLuid: LUID::default(),
-            Flags: DXGI_ADAPTER_FLAG_NONE.0 as u32,
+            Flags: if self.gpu.software {
+                DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32
+            } else {
+                0
+            },
             ..Default::default()
         };
-        for (o, c) in d.Description.iter_mut().zip(NAME.encode_utf16()) {
+        for (o, c) in d
+            .Description
+            .iter_mut()
+            .take(127)
+            .zip(self.gpu.name.encode_utf16())
+        {
             *o = c;
         }
         Ok(d)
@@ -63,11 +71,5 @@ impl Adapter {
         }
         missing_void("IDXGIAdapter::GetParent (the factory)");
         Err(E_NOINTERFACE.into())
-    }
-}
-
-impl Default for Adapter {
-    fn default() -> Self {
-        Self::new()
     }
 }
