@@ -1176,7 +1176,9 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
 - **Clip depth from zero on WebGL 2 without EXT_clip_control** (6.8% of WebGL 2 browsers; a listed loss).
   The vertex program writes z as 2z - w (`ClipDepthRewrite`), which loses low bits of depth and the
   precision gain of reversed depth. Measured against the reference at G3.
-- Format reinterpretation through views is absent in both; fronts copy (`ReinterpretCopy`). Exact, slow.
+- Format reinterpretation through views (`FORMAT_REINTERPRET`: views of a texture made with
+  `reinterpret` in another colour format of the same block size; depth and stencil formats never) is
+  absent in both; fronts copy (`ReinterpretCopy`). Exact, slow.
 - **Predicated drawing.** Direct3D 11's `SetPredication` names a query. Direct3D 12's names a buffer and
   an offset holding a 64-bit value (usually written there by `ResolveQueryData`), and predicates draws,
   dispatches, `ExecuteIndirect`, clears, copies and resolves; Vulkan's conditional rendering also reads

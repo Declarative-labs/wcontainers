@@ -78,7 +78,8 @@ bitflags! {
         const BASE_VERTEX_INSTANCE = 1 << 25;
         /// Primitive restart can be switched off for strips.
         const RESTART_SWITCH = 1 << 26;
-        /// Views may reinterpret any format of the same block size, not only sRGB twins.
+        /// Views of a texture made with `reinterpret` may take any colour format of the same block size,
+        /// not only the sRGB twin. Depth and stencil formats are never reinterpreted.
         const FORMAT_REINTERPRET = 1 << 27;
         /// Views may swizzle channels.
         const VIEW_SWIZZLE = 1 << 28;
