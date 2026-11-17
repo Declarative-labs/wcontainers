@@ -317,6 +317,12 @@ pub enum Command {
         area: Option<[u32; 6]>,
     },
     Dispatch([u32; 3]),
+    /// `WriteBufferImmediate`: `value` written at GPU virtual address `address`, in order with
+    /// the work around it.
+    WriteImmediate {
+        address: u64,
+        value: u32,
+    },
     /// `ResolveSubresource`: the samples of subresource `src_index` averaged as `format` into
     /// `dst_index`.
     Resolve {

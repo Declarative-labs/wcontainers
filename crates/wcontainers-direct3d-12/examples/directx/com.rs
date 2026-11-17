@@ -631,6 +631,379 @@ impl IDXGIObject_Impl for SwapChain_Impl {
     }
 }
 
+impl ID3D12Device8_Impl for Device_Impl {
+    fn GetResourceAllocationInfo2(
+        &self,
+        visiblemask: u32,
+        numresourcedescs: u32,
+        presourcedescs: *const D3D12_RESOURCE_DESC1,
+        presourceallocationinfo1: *mut D3D12_RESOURCE_ALLOCATION_INFO1,
+    ) -> D3D12_RESOURCE_ALLOCATION_INFO {
+        Device::GetResourceAllocationInfo2(
+            self,
+            visiblemask,
+            numresourcedescs,
+            presourcedescs,
+            presourceallocationinfo1,
+        )
+    }
+    fn CreateCommittedResource2(
+        &self,
+        pheapproperties: *const D3D12_HEAP_PROPERTIES,
+        heapflags: D3D12_HEAP_FLAGS,
+        pdesc: *const D3D12_RESOURCE_DESC1,
+        initialresourcestate: D3D12_RESOURCE_STATES,
+        poptimizedclearvalue: *const D3D12_CLEAR_VALUE,
+        pprotectedsession: windows_core::Ref<ID3D12ProtectedResourceSession>,
+        riidresource: *const windows_core::GUID,
+        ppvresource: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Device::CreateCommittedResource2(
+            self,
+            pheapproperties,
+            heapflags,
+            pdesc,
+            initialresourcestate,
+            poptimizedclearvalue,
+            pprotectedsession,
+            riidresource,
+            ppvresource,
+        )
+    }
+    fn CreatePlacedResource1(
+        &self,
+        pheap: windows_core::Ref<ID3D12Heap>,
+        heapoffset: u64,
+        pdesc: *const D3D12_RESOURCE_DESC1,
+        initialstate: D3D12_RESOURCE_STATES,
+        poptimizedclearvalue: *const D3D12_CLEAR_VALUE,
+        riid: *const windows_core::GUID,
+        ppvresource: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Device::CreatePlacedResource1(
+            self,
+            pheap,
+            heapoffset,
+            pdesc,
+            initialstate,
+            poptimizedclearvalue,
+            riid,
+            ppvresource,
+        )
+    }
+    fn CreateSamplerFeedbackUnorderedAccessView(
+        &self,
+        _ptargetedresource: windows_core::Ref<ID3D12Resource>,
+        _pfeedbackresource: windows_core::Ref<ID3D12Resource>,
+        _destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        self.unsupported("CreateSamplerFeedbackUnorderedAccessView");
+    }
+    fn GetCopyableFootprints1(
+        &self,
+        presourcedesc: *const D3D12_RESOURCE_DESC1,
+        firstsubresource: u32,
+        numsubresources: u32,
+        baseoffset: u64,
+        playouts: *mut D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+        pnumrows: *mut u32,
+        prowsizeinbytes: *mut u64,
+        ptotalbytes: *mut u64,
+    ) {
+        Device::GetCopyableFootprints1(
+            self,
+            presourcedesc,
+            firstsubresource,
+            numsubresources,
+            baseoffset,
+            playouts,
+            pnumrows,
+            prowsizeinbytes,
+            ptotalbytes,
+        )
+    }
+}
+
+impl ID3D12Device7_Impl for Device_Impl {
+    fn AddToStateObject(
+        &self,
+        _paddition: *const D3D12_STATE_OBJECT_DESC,
+        _pstateobjecttogrowfrom: windows_core::Ref<ID3D12StateObject>,
+        _riid: *const windows_core::GUID,
+        _ppnewstateobject: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("AddToStateObject"))
+    }
+    fn CreateProtectedResourceSession1(
+        &self,
+        _pdesc: *const D3D12_PROTECTED_RESOURCE_SESSION_DESC1,
+        _riid: *const windows_core::GUID,
+        _ppsession: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("CreateProtectedResourceSession1"))
+    }
+}
+
+impl ID3D12Device6_Impl for Device_Impl {
+    fn SetBackgroundProcessingMode(
+        &self,
+        mode: D3D12_BACKGROUND_PROCESSING_MODE,
+        measurementsaction: D3D12_MEASUREMENTS_ACTION,
+        heventtosignaluponcompletion: windows::Win32::Foundation::HANDLE,
+        pbfurthermeasurementsdesired: *mut windows_core::BOOL,
+    ) -> windows_core::Result<()> {
+        Device::SetBackgroundProcessingMode(
+            self,
+            mode,
+            measurementsaction,
+            heventtosignaluponcompletion,
+            pbfurthermeasurementsdesired,
+        )
+    }
+}
+
+impl ID3D12Device5_Impl for Device_Impl {
+    fn CreateLifetimeTracker(
+        &self,
+        _powner: windows_core::Ref<ID3D12LifetimeOwner>,
+        _riid: *const windows_core::GUID,
+        _ppvtracker: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("CreateLifetimeTracker"))
+    }
+    fn RemoveDevice(&self) {
+        Device::RemoveDevice(self)
+    }
+    fn EnumerateMetaCommands(
+        &self,
+        pnummetacommands: *mut u32,
+        pdescs: *mut D3D12_META_COMMAND_DESC,
+    ) -> windows_core::Result<()> {
+        Device::EnumerateMetaCommands(self, pnummetacommands, pdescs)
+    }
+    fn EnumerateMetaCommandParameters(
+        &self,
+        commandid: *const windows_core::GUID,
+        stage: D3D12_META_COMMAND_PARAMETER_STAGE,
+        ptotalstructuresizeinbytes: *mut u32,
+        pparametercount: *mut u32,
+        pparameterdescs: *mut D3D12_META_COMMAND_PARAMETER_DESC,
+    ) -> windows_core::Result<()> {
+        Device::EnumerateMetaCommandParameters(
+            self,
+            commandid,
+            stage,
+            ptotalstructuresizeinbytes,
+            pparametercount,
+            pparameterdescs,
+        )
+    }
+    fn CreateMetaCommand(
+        &self,
+        commandid: *const windows_core::GUID,
+        nodemask: u32,
+        pcreationparametersdata: *const core::ffi::c_void,
+        creationparametersdatasizeinbytes: usize,
+        riid: *const windows_core::GUID,
+        ppmetacommand: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Device::CreateMetaCommand(
+            self,
+            commandid,
+            nodemask,
+            pcreationparametersdata,
+            creationparametersdatasizeinbytes,
+            riid,
+            ppmetacommand,
+        )
+    }
+    fn CreateStateObject(
+        &self,
+        _pdesc: *const D3D12_STATE_OBJECT_DESC,
+        _riid: *const windows_core::GUID,
+        _ppstateobject: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("CreateStateObject"))
+    }
+    fn GetRaytracingAccelerationStructurePrebuildInfo(
+        &self,
+        _pdesc: *const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS,
+        _pinfo: *mut D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO,
+    ) {
+        self.unsupported("GetRaytracingAccelerationStructurePrebuildInfo");
+    }
+    fn CheckDriverMatchingIdentifier(
+        &self,
+        serializeddatatype: D3D12_SERIALIZED_DATA_TYPE,
+        pidentifiertocheck: *const D3D12_SERIALIZED_DATA_DRIVER_MATCHING_IDENTIFIER,
+    ) -> D3D12_DRIVER_MATCHING_IDENTIFIER_STATUS {
+        Device::CheckDriverMatchingIdentifier(self, serializeddatatype, pidentifiertocheck)
+    }
+}
+
+impl ID3D12Device4_Impl for Device_Impl {
+    fn CreateCommandList1(
+        &self,
+        nodemask: u32,
+        r#type: D3D12_COMMAND_LIST_TYPE,
+        flags: D3D12_COMMAND_LIST_FLAGS,
+        riid: *const windows_core::GUID,
+        ppcommandlist: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Device::CreateCommandList1(self, nodemask, r#type, flags, riid, ppcommandlist)
+    }
+    fn CreateProtectedResourceSession(
+        &self,
+        _pdesc: *const D3D12_PROTECTED_RESOURCE_SESSION_DESC,
+        _riid: *const windows_core::GUID,
+        _ppsession: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("CreateProtectedResourceSession"))
+    }
+    fn CreateCommittedResource1(
+        &self,
+        pheapproperties: *const D3D12_HEAP_PROPERTIES,
+        heapflags: D3D12_HEAP_FLAGS,
+        pdesc: *const D3D12_RESOURCE_DESC,
+        initialresourcestate: D3D12_RESOURCE_STATES,
+        poptimizedclearvalue: *const D3D12_CLEAR_VALUE,
+        pprotectedsession: windows_core::Ref<ID3D12ProtectedResourceSession>,
+        riidresource: *const windows_core::GUID,
+        ppvresource: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Device::CreateCommittedResource1(
+            self,
+            pheapproperties,
+            heapflags,
+            pdesc,
+            initialresourcestate,
+            poptimizedclearvalue,
+            pprotectedsession,
+            riidresource,
+            ppvresource,
+        )
+    }
+    fn CreateHeap1(
+        &self,
+        pdesc: *const D3D12_HEAP_DESC,
+        pprotectedsession: windows_core::Ref<ID3D12ProtectedResourceSession>,
+        riid: *const windows_core::GUID,
+        ppvheap: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Device::CreateHeap1(self, pdesc, pprotectedsession, riid, ppvheap)
+    }
+    fn CreateReservedResource1(
+        &self,
+        _pdesc: *const D3D12_RESOURCE_DESC,
+        _initialstate: D3D12_RESOURCE_STATES,
+        _poptimizedclearvalue: *const D3D12_CLEAR_VALUE,
+        _pprotectedsession: windows_core::Ref<ID3D12ProtectedResourceSession>,
+        _riid: *const windows_core::GUID,
+        _ppvresource: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("CreateReservedResource1"))
+    }
+    fn GetResourceAllocationInfo1(
+        &self,
+        visiblemask: u32,
+        numresourcedescs: u32,
+        presourcedescs: *const D3D12_RESOURCE_DESC,
+        presourceallocationinfo1: *mut D3D12_RESOURCE_ALLOCATION_INFO1,
+    ) -> D3D12_RESOURCE_ALLOCATION_INFO {
+        Device::GetResourceAllocationInfo1(
+            self,
+            visiblemask,
+            numresourcedescs,
+            presourcedescs,
+            presourceallocationinfo1,
+        )
+    }
+}
+
+impl ID3D12Device3_Impl for Device_Impl {
+    fn OpenExistingHeapFromAddress(
+        &self,
+        _paddress: *const core::ffi::c_void,
+        _riid: *const windows_core::GUID,
+        _ppvheap: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("OpenExistingHeapFromAddress"))
+    }
+    fn OpenExistingHeapFromFileMapping(
+        &self,
+        _hfilemapping: windows::Win32::Foundation::HANDLE,
+        _riid: *const windows_core::GUID,
+        _ppvheap: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("OpenExistingHeapFromFileMapping"))
+    }
+    fn EnqueueMakeResident(
+        &self,
+        flags: D3D12_RESIDENCY_FLAGS,
+        numobjects: u32,
+        ppobjects: *const Option<ID3D12Pageable>,
+        pfencetosignal: windows_core::Ref<ID3D12Fence>,
+        fencevaluetosignal: u64,
+    ) -> windows_core::Result<()> {
+        Device::EnqueueMakeResident(
+            self,
+            flags,
+            numobjects,
+            ppobjects,
+            pfencetosignal,
+            fencevaluetosignal,
+        )
+    }
+}
+
+impl ID3D12Device2_Impl for Device_Impl {
+    fn CreatePipelineState(
+        &self,
+        pdesc: *const D3D12_PIPELINE_STATE_STREAM_DESC,
+        riid: *const windows_core::GUID,
+        pppipelinestate: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Device::CreatePipelineState(self, pdesc, riid, pppipelinestate)
+    }
+}
+
+impl ID3D12Device1_Impl for Device_Impl {
+    fn CreatePipelineLibrary(
+        &self,
+        plibraryblob: *const core::ffi::c_void,
+        bloblength: usize,
+        riid: *const windows_core::GUID,
+        pppipelinelibrary: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Device::CreatePipelineLibrary(self, plibraryblob, bloblength, riid, pppipelinelibrary)
+    }
+    fn SetEventOnMultipleFenceCompletion(
+        &self,
+        ppfences: *const Option<ID3D12Fence>,
+        pfencevalues: *const u64,
+        numfences: u32,
+        flags: D3D12_MULTIPLE_FENCE_WAIT_FLAGS,
+        hevent: windows::Win32::Foundation::HANDLE,
+    ) -> windows_core::Result<()> {
+        Device::SetEventOnMultipleFenceCompletion(
+            self,
+            ppfences,
+            pfencevalues,
+            numfences,
+            flags,
+            hevent,
+        )
+    }
+    fn SetResidencyPriority(
+        &self,
+        numobjects: u32,
+        ppobjects: *const Option<ID3D12Pageable>,
+        ppriorities: *const D3D12_RESIDENCY_PRIORITY,
+    ) -> windows_core::Result<()> {
+        Device::SetResidencyPriority(self, numobjects, ppobjects, ppriorities)
+    }
+}
+
 impl ID3D12Device_Impl for Device_Impl {
     fn GetNodeCount(&self) -> u32 {
         Device::GetNodeCount(self)
@@ -909,17 +1282,17 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn MakeResident(
         &self,
-        _numobjects: u32,
-        _ppobjects: *const Option<ID3D12Pageable>,
+        numobjects: u32,
+        ppobjects: *const Option<ID3D12Pageable>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("MakeResident"))
+        Device::MakeResident(self, numobjects, ppobjects)
     }
     fn Evict(
         &self,
-        _numobjects: u32,
-        _ppobjects: *const Option<ID3D12Pageable>,
+        numobjects: u32,
+        ppobjects: *const Option<ID3D12Pageable>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("Evict"))
+        Device::Evict(self, numobjects, ppobjects)
     }
     fn CreateFence(
         &self,
@@ -1175,6 +1548,72 @@ impl ID3D12Object_Impl for Allocator_Impl {
     }
     fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
         self.base().SetName(name)
+    }
+}
+
+impl ID3D12GraphicsCommandList2_Impl for List_Impl {
+    fn WriteBufferImmediate(
+        &self,
+        count: u32,
+        pparams: *const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER,
+        pmodes: *const D3D12_WRITEBUFFERIMMEDIATE_MODE,
+    ) {
+        List::WriteBufferImmediate(self, count, pparams, pmodes)
+    }
+}
+
+impl ID3D12GraphicsCommandList1_Impl for List_Impl {
+    fn AtomicCopyBufferUINT(
+        &self,
+        _pdstbuffer: windows_core::Ref<ID3D12Resource>,
+        _dstoffset: u64,
+        _psrcbuffer: windows_core::Ref<ID3D12Resource>,
+        _srcoffset: u64,
+        _dependencies: u32,
+        _ppdependentresources: *const Option<ID3D12Resource>,
+        _pdependentsubresourceranges: *const D3D12_SUBRESOURCE_RANGE_UINT64,
+    ) {
+        self.unsupported("AtomicCopyBufferUINT");
+    }
+    fn AtomicCopyBufferUINT64(
+        &self,
+        _pdstbuffer: windows_core::Ref<ID3D12Resource>,
+        _dstoffset: u64,
+        _psrcbuffer: windows_core::Ref<ID3D12Resource>,
+        _srcoffset: u64,
+        _dependencies: u32,
+        _ppdependentresources: *const Option<ID3D12Resource>,
+        _pdependentsubresourceranges: *const D3D12_SUBRESOURCE_RANGE_UINT64,
+    ) {
+        self.unsupported("AtomicCopyBufferUINT64");
+    }
+    fn OMSetDepthBounds(&self, _min: f32, _max: f32) {
+        self.unsupported("OMSetDepthBounds");
+    }
+    fn SetSamplePositions(
+        &self,
+        _numsamplesperpixel: u32,
+        _numpixels: u32,
+        _psamplepositions: *const D3D12_SAMPLE_POSITION,
+    ) {
+        self.unsupported("SetSamplePositions");
+    }
+    fn ResolveSubresourceRegion(
+        &self,
+        _pdstresource: windows_core::Ref<ID3D12Resource>,
+        _dstsubresource: u32,
+        _dstx: u32,
+        _dsty: u32,
+        _psrcresource: windows_core::Ref<ID3D12Resource>,
+        _srcsubresource: u32,
+        _psrcrect: *const windows::Win32::Foundation::RECT,
+        _format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+        _resolvemode: D3D12_RESOLVE_MODE,
+    ) {
+        self.unsupported("ResolveSubresourceRegion");
+    }
+    fn SetViewInstanceMask(&self, _mask: u32) {
+        self.unsupported("SetViewInstanceMask");
     }
 }
 
@@ -1695,6 +2134,22 @@ impl ID3D12Object_Impl for Fence_Impl {
     }
     fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
         self.base().SetName(name)
+    }
+}
+
+impl ID3D12Resource2_Impl for Resource_Impl {
+    fn GetDesc1(&self) -> D3D12_RESOURCE_DESC1 {
+        Resource::GetDesc1(self)
+    }
+}
+
+impl ID3D12Resource1_Impl for Resource_Impl {
+    fn GetProtectedResourceSession(
+        &self,
+        _riid: *const windows_core::GUID,
+        _ppprotectedsession: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("GetProtectedResourceSession"))
     }
 }
 

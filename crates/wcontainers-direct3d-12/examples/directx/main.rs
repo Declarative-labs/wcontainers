@@ -15,6 +15,7 @@ mod gpu;
 mod objects;
 mod present;
 mod rootsig;
+mod stream;
 
 const EXPORTS: &str = " /EXPORT:D3D12CreateDevice=wc_D3D12CreateDevice,@101 /EXPORT:D3D12GetDebugInterface=wc_D3D12GetDebugInterface,@102 /EXPORT:D3D12SerializeRootSignature=wc_D3D12SerializeRootSignature,@116 /EXPORT:D3D12SerializeVersionedRootSignature=wc_D3D12SerializeVersionedRootSignature,@117 /EXPORT:D3D12CreateRootSignatureDeserializer=wc_D3D12CreateRootSignatureDeserializer,@107 /EXPORT:D3D12CreateVersionedRootSignatureDeserializer=wc_D3D12CreateVersionedRootSignatureDeserializer,@108 ";
 
@@ -166,7 +167,8 @@ pub unsafe extern "system" fn wc_D3D12CreateDevice(
     }
     // One device per adapter: while it lives, it is handed out again.
     let device = base::live_device().unwrap_or_else(|| {
-        let device: ID3D12Device = abi::fixed(Device::default().into());
+        let device: ID3D12Device8 = abi::fixed(Device::default().into());
+        let device: ID3D12Device = device.cast().unwrap();
         base::set_live_device(&device);
         device
     });
@@ -416,6 +418,10 @@ pub unsafe extern "system" fn wc_D3D12CreateRootSignatureDeserializer(
     riid: *const GUID,
     out: *mut *mut c_void,
 ) -> HRESULT {
+    if !out.is_null() {
+        // SAFETY: the caller's out pointer, cleared for a failed call.
+        unsafe { *out = std::ptr::null_mut() };
+    }
     // SAFETY: the caller's bytes.
     match unsafe { read_root(data, length) } {
         Ok(desc) => {
@@ -436,6 +442,10 @@ pub unsafe extern "system" fn wc_D3D12CreateVersionedRootSignatureDeserializer(
     riid: *const GUID,
     out: *mut *mut c_void,
 ) -> HRESULT {
+    if !out.is_null() {
+        // SAFETY: the caller's out pointer, cleared for a failed call.
+        unsafe { *out = std::ptr::null_mut() };
+    }
     // SAFETY: the caller's bytes.
     match unsafe { read_root(data, length) } {
         Ok(desc) => {
