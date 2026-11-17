@@ -4,11 +4,57 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 to K3 are done (their runs are in git history and below). K4 (files outside) is partly built:
-its first run built the FUSE side with the backend as a volume; its second run put the root file
-system on the backend, built private mappings, extended attributes, access control lists and
-fallocate of backend files, FLUSH at every close, tests of backend notices and layer 1 on the
-backend. Shared mappings of backend files the backend caches are not built (see Next).
+K0 to K3 are done (their runs are in git history and below). K4 (files outside) is built in three
+runs: the first built the FUSE side with the backend as a volume; the second put the root file
+system on the backend, built extended attributes, access control lists and fallocate of backend
+files, FLUSH at every close, tests of backend notices and layer 1 on the backend; the third built
+mapped backend files as Linux's page cache holds them (shared and private mappings, programs) and
+layer 1 on a backend that opens files for the page cache. What is left is in Next.
+
+Built in K4's third run:
+- A mapped backend file's pages (`fs::backend::Pages`, held in `Remote::pages`; shared.rs): while
+  any mapping shows the file, its first pages are a block of shared pages, as a tmpfs file's are.
+  mmap asks GETATTR, then READs what the block lacks before anything changes
+  (`shared::backend_block`; the call parks and runs again); a program or interpreter on the
+  backend gets its block from the bytes exec read (`shared::backend_block_of`). Private mappings
+  show the block until a page is written (copy on write as for tmpfs), so MADV_DONTNEED and
+  MREMAP_DONTUNMAP show the file again and mremap growth reads the next pages first; both were
+  refused before. Shared mappings of files the backend opens without FOPEN_DIRECT_IO are built;
+  with FOPEN_DIRECT_IO they stay ENODEV as Linux.
+- While mapped, reads through a handle the backend opened for the page cache ask GETATTR (as
+  `fuse_cache_read_iter` with FUSE_AUTO_INVAL_DATA) and take the block's bytes, READ beyond it;
+  writes go to the backend (write-through, as Linux without writeback cache) and into the block.
+  Direct-IO handles bypass the block both ways, as Linux's direct IO bypasses the page cache.
+  Writes and fallocate move the held size (`fuse_write_update_attr`); truncation (truncate,
+  ftruncate, O_TRUNC) and punched or zeroed ranges zero the block (`truncate_pagecache_range`);
+  every such change sets the mappings' file end (SIGBUS past it).
+- Written back with WRITE (FUSE_WRITE_CACHE) through the handle of the last shared writable
+  mapping (`fuse_write_file_get`): at msync with MS_SYNC (then FSYNC with datasync, as
+  `vfs_fsync_range`), at fsync and fdatasync before FSYNC (waited), and when the last mapping goes
+  (munmap, exec, exit; sent with nothing waiting, before the handle's RELEASE). The whole block up
+  to the file's end is written each time: which pages a mapping wrote is not known (counted
+  "backend pages written whole", a new reason, with a warning).
+- Notices with mapped pages: STORE writes its bytes into the block and grows the size; RETRIEVE
+  answers the block's bytes up to the file's end (no bytes for an unmapped file, as before);
+  INVAL_INODE of a mapped file keeps the block (plan section 15) and is counted "backend change not
+  seen by mapped pages" (new reason). Not tested: the test driver sends no RETRIEVE and its notices
+  reach mapped files only by chance.
+- mremap of any file mapping sets its file end from the file's size afterwards (`shared::changed`);
+  before, the grown part of a tmpfs or backend mapping kept the old end and faulted with SIGBUS.
+- statx with no field FUSE has (mask without STATX_BASIC_STATS or STATX_BTIME) or with
+  AT_STATX_DONT_SYNC takes the attributes the inode holds from the backend's last answer, without
+  GETATTR, as `fuse_update_get_attr` (`sync = false`). This was layer 1 backend seed 4040103.
+- "backend call not built" is gone: nothing answers it any more.
+- The test server takes `--cached` (fuse-backend-rs `CachePolicy::Auto`: no FOPEN_DIRECT_IO, so
+  Linux's FUSE caches pages; names and attributes still time out at once). `driver::Container`
+  has `cached`; `backend::reference_run` and `Backend::start` take it. tests/backend.rs
+  `cached_file_mappings_match_reference` (guest/backendmap.c, 4 saves) and
+  `cached_mappings_share_pages_as_reference` (guest/backendshared.c, 6 saves: coherence of
+  mappings, reads and writes, fork, two descriptors, msync, fsync, shrink and grow with SIGBUS,
+  MADV_DONTNEED, mremap growth, write-back at munmap and exit, the bytes left on the backend).
+  tests/layer1.rs `sequences_on_cached_backend_match_reference` (`LAYER1_CACHED_CASES`, default
+  32).
+- Harness: the server is built once per test binary (a lock; parallel tests raced to build it).
 
 Built in K4's second run:
 - Root file system on the backend. `Start::backend` (was `volume`) names where the backend is
@@ -59,13 +105,10 @@ Built in K4's second run:
   can be written, else only as many bytes as can).
 - fallocate on backend files: FALLOCATE with keep-size, punch-hole and zero-range; other modes
   EOPNOTSUPP (`fuse_file_fallocate`), after the generic checks.
-- Mappings of backend files: a private mapping reads the mapped range at mmap (GETATTR with the
-  handle for the size, then READ) and holds the bytes as its own copies; a shared mapping of a file
-  the backend opened with FOPEN_DIRECT_IO is ENODEV, as Linux (`fuse_file_mmap`; the first backend
-  opens every file so, so the reference refuses too, measured). A shared mapping of a file opened
-  without direct IO is counted "backend call not built" (ENODEV). MADV_DONTNEED on a private
-  backend mapping keeps its pages (counted, see Known gaps) and mremap growing one is refused
-  (counted, ENOMEM). tests/backend.rs `file_mappings_match_reference` (guest/backendmap.c, 4 saves).
+- Mappings of backend files (replaced in the third run by the file's pages, above): a shared
+  mapping of a file the backend opened with FOPEN_DIRECT_IO is ENODEV, as Linux
+  (`fuse_file_mmap`; the first backend opens every file so, so the reference refuses too,
+  measured). tests/backend.rs `file_mappings_match_reference` (guest/backendmap.c, 4 saves).
 - FLUSH at every close of a backend descriptor (`FdTable::closed`): `close` asks and waits as
   before; dup2/dup3 over it, close_range, exec and exit send it with nothing waiting
   (`backend::flush_unwaited`). Lock owner is the table's.
@@ -2072,14 +2115,18 @@ All on this shared Mac; noisy, not benchmarks.
 - K4, second run: the image is unpacked into the backend's directory by the server's container
   (busybox tar) before the server starts, not as FUSE messages from the kernel; the plan's section 1
   says tests unpack an image into a directory.
-- K4, second run: a private mapping of a backend file is a copy read at mmap (as the plan's section
-  7 says), where Linux reads each page at its first fault; a change to the file after the mmap and
-  before a page is first touched shows on Linux and not here. INIT does not ask for
+- K4, third run: a mapped backend file's pages are read whole at mmap (from the file's start to the
+  mapping's end), where Linux reads each page at its first fault; a change to the file through a
+  direct-IO descriptor after the mmap and before a page is first touched shows on Linux and not
+  here. Pages are written back whole, not only those written (counted). The plan's "keeps no
+  cache" is kept apart from these pages, which correct mappings need. INIT does not ask for
   FUSE_DIRECT_IO_ALLOW_MMAP or FUSE_SETXATTR_EXT (flags2 is 0), which Linux asks for; the first
   backend grants neither, so the reference behaves the same.
-- K4, second run: Linux's FUSE keeps a file's attributes until the next jiffy even with an
-  attribute timeout of 0, and answers stat with an empty statx mask from them; the kernel keeps
-  none (plan section 8) and asks the backend each time (layer 1 seed 4040103 found it).
+- K4, second run (changed in the third): Linux's FUSE keeps a file's attributes until the next
+  jiffy even with an attribute timeout of 0; the kernel asks again in every call that has not had
+  them. statx with no basic field or with AT_STATX_DONT_SYNC takes the held attributes, as Linux
+  does with no sync (seed 4040103); within a jiffy Linux may still answer other stats from held
+  attributes where ours asks.
 - K4, second run: FLUSH for a descriptor closed by anything but `close` is sent with nothing
   waiting for it; Linux's `filp_close` waits for it (and ignores its error).
 
@@ -2281,7 +2328,8 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "call on another process not built": process_vm_readv and process_vm_writev on another process.
 Approximations that are not refusals have their own counters: "page residency not tracked", "proc
 fields not tracked", "fault syndrome approximated", "core dump not
-written", "vmsplice pages copied". "wake to run" is a measurement (count and total nanoseconds), not a slow path. "host cannot do
+written", "vmsplice pages copied", "backend pages written whole", "backend change not seen by
+mapped pages". "wake to run" is a measurement (count and total nanoseconds), not a slow path. "host cannot do
 this" counts a CPU side that answered it cannot make a memory, thread or shared block (ENOSYS to the
 guest).
 
@@ -2396,18 +2444,15 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K4 goes on. Its fresh layer 1 seeds are done (Measurements). Left for this milestone, most
-important first:
-1. Shared mappings of backend files opened without direct IO (a block of shared pages filled with
-   READ, written back with WRITE at msync, munmap and exit, and reads and writes of the file going
-   through the block while it is mapped). Untestable against the reference with the first backend,
-   which opens every file for direct IO; would need the server run with caching.
-2. Re-reading a backend file's private pages on MADV_DONTNEED, and mremap growth of such mappings
-   (both counted "backend call not built" now).
-3. copy_file_range, sendfile and fadvise on backend files are reached by layer 1 on the backend;
-   splice and cachestat on them are untested.
-4. Layer 1 on the backend seed 4040103 (statx with an empty mask, Known issues) is left failing;
-   no backend seeds have run beyond 0 and 4040101 to 4040103.
+K4 goes on. Left for this milestone, most important first:
+1. The milestone's closing runs with every fix of the third run in: three fresh plain layer 1
+   seeds of 20000 and the whole suite (see Measurements for what ran).
+2. Notices about mapped files are not tested on purpose: the driver cannot send RETRIEVE (the
+   server never asked), and its STORE and INVAL_INODE reach mapped files only by chance.
+3. splice and cachestat on backend files are untested; copy_file_range, sendfile and fadvise are
+   reached only through layer 1 on the backend.
+4. Unchecked: whether exec on the reference honours file capabilities of a FUSE file, and why the
+   reference answers getxattr of security.capability over FUSE with EINVAL.
 
 Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
