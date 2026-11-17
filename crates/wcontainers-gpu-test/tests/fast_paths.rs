@@ -41,7 +41,7 @@ fn texture(r: &mut Recorder, size: u32, layers: u32, mips: u32) -> (Id, TextureD
         depth_or_layers: layers,
         mip_levels: mips,
         samples: 1,
-        usage: TextureUsage::all(),
+        usage: TextureUsage::all().difference(TextureUsage::STORAGE),
         cube: false,
         reinterpret: false,
     };

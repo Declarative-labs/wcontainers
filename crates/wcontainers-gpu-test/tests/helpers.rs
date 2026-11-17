@@ -32,16 +32,6 @@ struct Two { @location(0) a: vec4<f32>, @location(1) b: vec4<f32> }
 @fragment fn per_sample(@builtin(sample_index) i: u32) -> @location(0) vec4<f32> {
     return vec4<f32>(f32(i) / 3.0, 0.0, 0.0, 1.0);
 }
-@group(1) @binding(32) var samples: texture_multisampled_2d<f32>;
-@fragment fn samples_of(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = vec2<i32>(p.xy);
-    return vec4<f32>(
-        textureLoad(samples, c, 0).r,
-        textureLoad(samples, c, 1).r,
-        textureLoad(samples, c, 2).r,
-        textureLoad(samples, c, 3).r,
-    );
-}
 ";
 
 /// What the tests draw with: one recorder and the blocks they share.
@@ -562,27 +552,13 @@ fn multisampled_targets_fitted(direct: bool) {
     let resolved = k.r.slow_paths().count(SlowPath::MultisampleCopyResolved);
     assert_eq!(resolved, if direct { 0 } else { 2 });
 
-    // Read every sample of the larger target.
-    let check = k.target(3, 3, Format::Rgba8Unorm);
-    let read =
-        k.r.create_binding_set(&[BindingEntry {
-            binding: 32,
-            stages: StageSet::FRAGMENT,
-            resource: BindingResource::Texture(&large.view),
-        }])
-        .unwrap();
-    let samples_of = k.program("samples_of");
-    passes.set_targets(&mut k.r, colors(check.clone())).unwrap();
-    let area = passes.before_draw(&mut k.r, &[]).unwrap();
-    k.draw(
-        (3, 3),
-        area,
-        &samples_of,
-        &none,
-        [Some(&set), Some(&read), None, None],
-    );
-    passes.close(&mut k.r).unwrap();
-    let got = k.read(&check, 4);
+    // Every sample of the larger target, as the recording back end holds them: sample i's red in
+    // channel i (a back end without MULTISAMPLE_READ cannot load them in a program).
+    let held = k.r.texture_bytes(large.texture).unwrap();
+    let got: Vec<u8> = (0..9)
+        .flat_map(|t| (0..4).map(move |s| (s, t)))
+        .map(|(s, t)| held[s * 36 + t * 4])
+        .collect();
     for y in 0..3 {
         for x in 0..3 {
             let at = (y * 3 + x) * 4;
