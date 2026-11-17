@@ -2,12 +2,13 @@
 //! by Direct3D's rules (vertices snapped to 1/256 pixel, pixel centres, the top-left rule), depth and
 //! stencil tests, and blending. Sampling and loads of textures are here too.
 
-use crate::program::{self, Error, Level, Resources, Value};
+use crate::program::{self, Error, Level, Resources, StorageWrite, Value};
 use crate::recorder::{
     Bound, DepthOps, Obj, Recorder, TextureObj, as_kind, level_size, subresource,
 };
 use crate::texel;
 use naga::{Binding, BuiltIn, Interpolation, ScalarKind, TypeInner};
+use std::cell::RefCell;
 use wcontainers_gpu::*;
 
 /// One value a vertex passes on.
@@ -55,6 +56,8 @@ impl Target {
 struct Bindings<'a> {
     rec: &'a Recorder,
     sets: &'a [Option<Vec<(u32, Bound)>>; MAX_BINDING_SETS],
+    /// The draw's writes into storage buffers, applied when it ends.
+    writes: &'a RefCell<Vec<StorageWrite>>,
 }
 
 impl Bindings<'_> {
@@ -81,6 +84,7 @@ impl Resources for Bindings<'_> {
             buffer,
             offset,
             size,
+            ..
         } = *self.find(group, binding)?
         else {
             return Err(format!("no buffer at group {group} binding {binding}"));
@@ -630,6 +634,50 @@ impl Recorder {
         })
     }
 
+    /// Checks the usage-scope rule of a pass: a buffer any draw of the pass binds as writable storage
+    /// is used no other way by any draw of the pass (texture subresources cannot be storage here).
+    fn usage_scope(&mut self, call: &DrawCall<'_, Self>, state: &DrawState) -> Result<(), Error> {
+        let mut uses: Vec<(crate::recorder::Id, bool)> = Vec::new();
+        uses.extend(
+            call.vertex_buffers
+                .iter()
+                .flatten()
+                .map(|v| (*v.buffer, false)),
+        );
+        uses.extend(call.index.iter().map(|i| (*i.buffer, false)));
+        if let DrawRange::Indirect { args, .. } | DrawRange::IndexedIndirect { args, .. } =
+            call.range
+        {
+            uses.push((*args, false));
+        }
+        for (_, bound) in state.sets.iter().flatten().flatten() {
+            if let Bound::Buffer {
+                buffer, writable, ..
+            } = bound
+            {
+                uses.push((*buffer, *writable));
+            }
+        }
+        let pass = self.pass.as_mut().ok_or("draw outside a pass")?;
+        for &(buffer, writable) in &uses {
+            let (mine, theirs) = if writable {
+                (&mut pass.written, &pass.other)
+            } else {
+                (&mut pass.other, &pass.written)
+            };
+            if !mine.contains(&buffer) {
+                mine.push(buffer);
+            }
+            if theirs.contains(&buffer) {
+                return Err(format!(
+                    "a pass uses buffer {} as writable storage and another way",
+                    buffer.0
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Every (texture, subresource) the bound texture views cover.
     fn read_subresources(
         &self,
@@ -753,12 +801,26 @@ impl Recorder {
                 Ok(make_value(kind, &numbers[..n]))
             }
         })?;
+        let writes = RefCell::default();
         let res = Bindings {
             rec: self,
             sets: &state.sets,
+            writes: &writes,
         };
-        let out = program::run(m, &state.vertex.info, ep, args, &res)?
-            .ok_or("a vertex program discarded")?;
+        let out = program::run(
+            m,
+            &state.vertex.info,
+            ep,
+            args,
+            &res,
+            &mut writes.borrow_mut(),
+        )?
+        .ok_or("a vertex program discarded")?;
+        if !writes.borrow().is_empty() {
+            return Err(
+                "a vertex program writing storage, which this back end reports absent".into(),
+            );
+        }
         let mut position = None;
         let mut values = Vec::new();
         for (binding, ty, v) in outputs(m, fun, out)? {
@@ -795,8 +857,10 @@ impl Recorder {
     }
 
     pub(crate) fn draw_call(&mut self, call: &DrawCall<'_, Self>) -> Result<(), Error> {
-        let pass = self.pass.as_ref().ok_or("draw outside a pass")?;
+        self.pass.as_ref().ok_or("draw outside a pass")?;
         let state = self.gather(call)?;
+        self.usage_scope(call, &state)?;
+        let pass = self.pass.as_ref().ok_or("draw outside a pass")?;
         match call.topology {
             Topology::TriangleList | Topology::TriangleStrip => {}
             Topology::TriangleFan | Topology::LineLoop => {
@@ -880,6 +944,7 @@ impl Recorder {
             }
         };
         let mut passed = 0u64;
+        let writes = RefCell::default();
         if result.is_ok() {
             result = self.rasterise(
                 call,
@@ -890,7 +955,21 @@ impl Recorder {
                 pw,
                 ph,
                 &mut passed,
+                &writes,
             );
+        }
+        for (group, binding, at, bytes) in writes.into_inner() {
+            let Some(Bound::Buffer { buffer, offset, .. }) = state.sets[group as usize]
+                .as_ref()
+                .and_then(|s| s.iter().find(|(b, _)| *b == binding))
+                .map(|(_, r)| r.clone())
+            else {
+                continue;
+            };
+            if let Some(Obj::Buffer(b)) = self.objects[buffer.0 as usize].as_mut() {
+                let at = (offset + u64::from(at)) as usize;
+                b.bytes[at..at + bytes.len()].copy_from_slice(&bytes);
+            }
         }
         for t in colors.into_iter().flatten().chain(depth) {
             if let Some(Obj::Texture(o)) = self.objects[t.texture.0 as usize].as_mut() {
@@ -914,6 +993,7 @@ impl Recorder {
         pw: u32,
         ph: u32,
         passed: &mut u64,
+        writes: &RefCell<Vec<StorageWrite>>,
     ) -> Result<(), Error> {
         let (list, first_instance, instances) = self.vertex_list(call)?;
         let raster = state.raster;
@@ -936,6 +1016,7 @@ impl Recorder {
         let res = Bindings {
             rec: self,
             sets: &state.sets,
+            writes,
         };
         for instance in first_instance..first_instance + instances {
             // Shade each vertex once per instance.
@@ -1248,7 +1329,9 @@ impl Recorder {
                             Ok(make_value(kind, &numbers))
                         }
                     })?;
-                    let Some(out) = program::run(m, &fs.info, ep, args, res)? else {
+                    let out =
+                        program::run(m, &fs.info, ep, args, res, &mut res.writes.borrow_mut())?;
+                    let Some(out) = out else {
                         continue;
                     };
                     for (binding, _, value) in outputs(m, fun, out)? {
