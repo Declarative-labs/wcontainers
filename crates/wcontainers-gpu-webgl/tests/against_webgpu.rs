@@ -24,6 +24,11 @@ fn webgl(off: &[&str]) -> WebGl {
 }
 
 fn webgpu() -> WebGpu {
+    webgpu_without(wgpu::Features::empty())
+}
+
+/// The WebGPU back end on a device made without `drop`.
+fn webgpu_without(drop: wgpu::Features) -> WebGpu {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = wgpu::Backends::DX12;
     let instance = wgpu::Instance::new(desc);
@@ -32,9 +37,10 @@ fn webgpu() -> WebGpu {
         ..Default::default()
     }))
     .expect("a Direct3D 12 adapter");
+    let mut device_desc = WebGpu::device_descriptor(&adapter);
+    device_desc.required_features.remove(drop);
     let (device, queue) =
-        pollster::block_on(adapter.request_device(&WebGpu::device_descriptor(&adapter)))
-            .expect("a device");
+        pollster::block_on(adapter.request_device(&device_desc)).expect("a device");
     WebGpu::new(&adapter, device, queue)
 }
 
@@ -448,6 +454,37 @@ fn generate_mips_of_r32float_without_float_filtering_equals_webgpu() {
         }
     }
     assert!(failed.is_empty(), "failed with extensions {failed:?}");
+}
+
+/// `r32float` filtered in the program on both: WebGPU on a device made without float32-filterable
+/// (as the WebGPU back end's own comparison with Direct3D makes it), this back end without
+/// OES_texture_float_linear.
+#[test]
+fn generate_mips_of_r32float_filtered_in_the_program_on_both_equals_webgpu() {
+    let bytes: Vec<u8> = (0..64u32)
+        .flat_map(|i| ((i * 37 % 64) as f32 / 7.0).to_le_bytes())
+        .collect();
+    let mut gpu = webgpu_without(
+        wgpu::Features::FLOAT32_FILTERABLE
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+    );
+    assert!(
+        !gpu.caps()
+            .formats
+            .get(Format::R32Float)
+            .contains(FormatUse::FILTER)
+    );
+    let reference = gpu.mips(Format::R32Float, Format::R32Float, &bytes);
+    assert!(gpu.slow_paths().count(SlowPath::FilterInShader) > 0);
+    let mut gl = webgl(&["OES_texture_float_linear"]);
+    let got = gl.mips(Format::R32Float, Format::R32Float, &bytes);
+    assert!(gl.slow_paths().count(SlowPath::FilterInShader) > 0);
+    check(
+        "r32float mips",
+        &reference,
+        &got,
+        "off OES_texture_float_linear",
+    );
 }
 
 /// A 16-bit normalised format stored as its integer twin, filtered in the program on both.
