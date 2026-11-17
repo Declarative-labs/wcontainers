@@ -193,5 +193,15 @@ int main(void) {
     printf("udp: %d %s\n", r, r < 0 ? strerror(errno) : "");
     close(c);
     close(l);
+
+    // A connect waiting for a full backlog's room has sent its SYN.
+    int full = listener(AF_INET, 6104, 0);
+    int first = connect_to(AF_INET, 6104, 0);
+    int waiting = connect_to(AF_INET, 6104, SOCK_NONBLOCK);
+    maxseg("waiting", waiting);
+    unconnected("waiting for room", waiting);
+    close(waiting);
+    close(first);
+    close(full);
     return 0;
 }

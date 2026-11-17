@@ -100,6 +100,8 @@ const TCP_SNDBUF: u64 = 16384;
 const TCP_RCVBUF: u64 = 131072;
 const TCP_CONNECTED_SNDBUF: u64 = 2_626_560;
 const TCP_MSS_UNCONNECTED: i32 = 536;
+/// The MSS while a SYN waits for its answer: 536 less the timestamp option (measured).
+const TCP_MSS_SYN_SENT: u32 = 524;
 /// What `IP_MTU` gives on a connection inside the container (measured).
 const ROUTE_MTU: i32 = 65535;
 /// The largest UDP payloads (measured).
@@ -437,11 +439,12 @@ fn tcp_info(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) -> Ve
         out.extend_from_slice(&[state, 0, 0, 0, 0, 0, 0, 1]);
         u32s(&mut out, &[1_000_000, 0]);
         if syn_sent {
-            u32s(&mut out, &[524, 88]);
+            u32s(&mut out, &[TCP_MSS_SYN_SENT, 88]);
         } else {
             u32s(&mut out, &[TCP_MSS_UNCONNECTED as u32, 0]);
         }
-        u32s(&mut out, &[0; 5]);
+        // The SYN is the one segment out.
+        u32s(&mut out, &[u32::from(syn_sent), 0, 0, 0, 0]);
         u32s(&mut out, &[jiffies, 0, jiffies, jiffies]);
         let (pmtu, window) = if syn_sent {
             (PMTU4, advmss(family) + 12)
@@ -4104,9 +4107,11 @@ pub(super) fn get_option(
                     .map(|bytes| i32::from_le_bytes(bytes[..4].try_into().expect("4 bytes")))
                     .filter(|&value| value != 0);
                 let mss = send_mss(family, &inet_ref(socket).traffic) as i32;
+                let syn_sent = inet_ref(socket).connecting.is_some();
                 int(match (connected, set) {
                     (true, Some(value)) => value.min(mss),
                     (true, None) => mss,
+                    (false, None) if syn_sent => TCP_MSS_SYN_SENT as i32,
                     (false, Some(value)) => value,
                     (false, None) => TCP_MSS_UNCONNECTED,
                 })
