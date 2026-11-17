@@ -183,11 +183,16 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
         };
         let class = match convert(source, &VariantKey::default(), None) {
             Ok(_) => "ok".into(),
-            Err(e @ (ConvertError::Malformed(_) | ConvertError::Invalid(_))) => format!("{}", e)
-                .split(':')
-                .take(2)
-                .collect::<Vec<_>>()
-                .join(":"),
+            Err(e @ (ConvertError::Malformed(_) | ConvertError::Invalid(_))) => {
+                // Refused, but by our lowering's own checks or naga's validation rather than by a
+                // converter: listed per case, since on real bytecode these are our bugs.
+                eprintln!("case {case} seed {seed}: ours: {e}");
+                format!("{e}")
+                    .split(':')
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(":")
+            }
             Err(e) => format!("{e}").split(':').next().unwrap().to_string(),
         };
         *counts.entry(class).or_insert(0) += 1;

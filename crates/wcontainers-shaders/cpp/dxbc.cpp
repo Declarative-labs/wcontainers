@@ -15,17 +15,6 @@ using namespace dxbc_spv;
 
 namespace {
 
-// Keeps the first error dxbc-spirv reports, as the reason a conversion failed.
-class ErrorLog : public util::Logger {
-public:
-  void message(util::LogLevel severity, const char* text) override {
-    if (severity == util::LogLevel::eError && first.empty())
-      first = text;
-  }
-  util::LogLevel getMinimumSeverity() override { return util::LogLevel::eError; }
-  std::string first;
-};
-
 // (space, first register, size in vectors) of every dynamically indexed constant buffer, which
 // dxbc-spirv declares with its largest size.
 std::vector<uint32_t> dynamic_constant_buffers(const dxbc::Container& container) {
@@ -50,7 +39,7 @@ std::vector<uint32_t> dynamic_constant_buffers(const dxbc::Container& container)
 }
 
 int convert(const uint8_t* data, size_t size, uint8_t** out, size_t* out_size, uint32_t** sizes,
-            size_t* sizes_words, char** error, ErrorLog& log) {
+            size_t* sizes_words, char** error, wcs::ErrorLog& log) {
   // Direct3D refuses a container whose checksum does not match its bytes.
   dxbc::Container container(data, size);
   if (!container || !container.validateHash()) {
@@ -114,7 +103,7 @@ extern "C" int wcs_dxbc_to_ir(const uint8_t* data, size_t size, uint8_t** out, s
   *sizes = nullptr;
   *sizes_words = 0;
   *error = nullptr;
-  ErrorLog log;
+  wcs::ErrorLog log;
   return wcs::contained("dxbc-spirv", error, [&] {
     return convert(data, size, out, out_size, sizes, sizes_words, error, log);
   });
