@@ -84,6 +84,19 @@ Failures found by the run, each with its cause and fix:
    denormal, and their neighbours, every mode, single and double, checked by exact squares in quad
    precision, and infinities): 50,807 wrong before, 0 after. The failing form and the other two square root
    forms at 1,000 cases seed 100002, and at 10,000 cases seeds 5001 to 5003: 0 failing (load 16 to 24).
+2. Layer 2 chunk 22 (seed 100, case 525010, 92b0866): Linux ended the program with SIGILL, every translation
+   ran it to the end. The CPU stopped at `ldp q15, q15, [x14], #-64` (found with a temporary SIGILL report
+   in a scratch copy of the reference runner): a pair loaded into one register, which Arm leaves constrained
+   unpredictable and this CPU treats as undefined. Cause, in the test's generator, not the translator:
+   `through` moved a transfer register off a written-back base for vector accesses too, though a vector
+   register is never the base, so q14/q15 through x14 became q15/q15. Fix (445e3cf): vector accesses are
+   left as `fitted` made them; and layer 2 now checks every word of each program against layer 1's
+   `excluded` rules before running it (this check failed on the case before the fix). A scratch sweep of
+   50,000 programs of seed 100: 170 such words before the fix, none after, and no other word left out.
+   About 0.3 percent of layer 2's programs held such a word before; only the CPU sample could notice, and
+   chunks 1 to 21 and 23 (passed before the fix) compared those translations with each other only. With the
+   fix, cases from 525000 make some programs differently than before. Restarted 22:59 on 445e3cf, same
+   command; chunk 22 runs again.
 
 ## P1: close-out of M5 and the long-run driver
 
