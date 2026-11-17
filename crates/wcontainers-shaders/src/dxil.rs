@@ -109,7 +109,8 @@ pub(crate) fn lower(
         let into = &mut reflection.outputs;
         stage_values(&module, r.ty, r.binding.as_ref(), pixel, &outputs, into);
     }
-    bindings(&mut module, set, &mut reflection)?;
+    let registers = bindings(&mut module, set, &mut reflection)?;
+    reflection.sampled_pairs = sampled_pairs(&module, &registers)?;
     draw_bases(&mut module, variant, &mut reflection)?;
     Ok((module, reflection, stage))
 }
@@ -453,14 +454,44 @@ fn stage_values(
     });
 }
 
+/// The (texture register, sampler register) pairs the program samples with, in the order its code
+/// first uses them.
+fn sampled_pairs(
+    module: &Module,
+    registers: &[(Handle<GlobalVariable>, u32)],
+) -> Result<Vec<(u32, u32)>, ConvertError> {
+    let register = |f: &Function, e: Handle<Expression>| match f.expressions[e] {
+        Expression::GlobalVariable(g) => registers.iter().find(|(h, _)| *h == g).map(|r| r.1),
+        _ => None,
+    };
+    let functions = module.functions.iter().map(|(_, f)| f);
+    let mut pairs = Vec::new();
+    for f in core::iter::once(&module.entry_points[0].function).chain(functions) {
+        for (_, e) in f.expressions.iter() {
+            let Expression::ImageSample { image, sampler, .. } = *e else {
+                continue;
+            };
+            let (Some(texture), Some(sampler)) = (register(f, image), register(f, sampler)) else {
+                return Err(ConvertError::Unsupported("SampledThroughArgument"));
+            };
+            if !pairs.contains(&(texture, sampler)) {
+                pairs.push((texture, sampler));
+            }
+        }
+    }
+    Ok(pairs)
+}
+
 /// Numbers every resource by the rule of 6.4 for the stage's set (Direct3D 10 and 11's layout until
 /// root signatures number Direct3D 12's), reading dxil-spirv's register (binding) and space (group).
+/// Returns each resource's register.
 fn bindings(
     module: &mut Module,
     set: u32,
     reflection: &mut Reflection,
-) -> Result<(), ConvertError> {
-    for (_, var) in module.global_variables.iter_mut() {
+) -> Result<Vec<(Handle<GlobalVariable>, u32)>, ConvertError> {
+    let mut registers = Vec::new();
+    for (handle, var) in module.global_variables.iter_mut() {
         let Some(binding) = var.binding.as_mut() else {
             continue;
         };
@@ -498,6 +529,7 @@ fn bindings(
             binding: number,
             added: None,
         });
+        registers.push((handle, register));
     }
-    Ok(())
+    Ok(registers)
 }

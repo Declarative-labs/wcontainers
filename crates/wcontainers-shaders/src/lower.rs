@@ -2583,7 +2583,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     let o = self.l.ir.op(lod);
                     o.code == code::CONSTANT && f32::from_bits(o.lits[0] as u32) == 0.0
                 };
-                if depth_ref.is_some() || is_zero {
+                // Level zero is naga's form for comparisons only (HLSL has no plain `SampleLevelZero`).
+                if depth_ref.is_some() {
                     if !is_zero {
                         return Err(unsupported("SampleCompareLevel"));
                     }

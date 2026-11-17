@@ -4,8 +4,8 @@ Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6,
 
 ## Where things stand
 
-Milestone G6a (first slice), run 2, in progress. Run 2 merged origin/phase-2-graphics and every
-origin/phase-2-graphics-* branch (rig, webgpu, webgl, direct3d-11, direct3d-12).
+Milestone G6a (first slice): done in run 3. Run 3 merged origin/phase-2-graphics and every
+origin/phase-2-graphics-* branch again (only Cargo.lock conflicted; the shared line's was taken).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -18,8 +18,8 @@ Done:
   naga with WebGPU's core capabilities, the GLSL ES 3.00 compiled by glslangValidator.
 - Chrome's own compile of every written file (run 2): `crates/wcontainers-shaders/web/check <out-dir>`
   compiles each WGSL file with Chrome's WebGPU and each GLSL file with its WebGL 2 on the desktop's
-  RTX 3080 (one GPU job, counts below). Every converted shader's WGSL compiles in Chrome (corpus 127,
-  rig DXBC 56, rig DXIL 11, own 5). The GLSL is written with the WebGL 2 back end's options
+  RTX 3080 (one GPU job, counts below). Every converted shader's WGSL compiles in Chrome (run 3:
+  corpus 127, rig DXBC 56, rig DXIL 24, own 6). The GLSL is written with the WebGL 2 back end's options
   (`FORCE_POINT_SIZE`, Embedded 300 for WebGL, no y flip as on a context with EXT_clip_control).
 - Fixed on the way (run 2): constants that are infinite or NaN are now read from a local variable
   (Tint refused `bitcast<f32>(4290772992u)` as a constant expression); naga's WGSL writer writes f32
@@ -28,8 +28,24 @@ Done:
   `gl_SampleMask[0] = int(..)`, reads `uint(gl_SampleMaskIn[0])` and enables
   GL_OES_sample_variables for it.
 - The module is the same on every run and host: the corpus test converts each shader twice and
-  compares, and the WebAssembly build's output files equal the native build's byte for byte (run 1;
-  not re-run after run 2's changes).
+  compares, and the WebAssembly build's output files and verdicts equal the native build's byte for
+  byte (re-run in run 3 after all its changes: corpus, rig DXBC, rig DXIL and own).
+- Drawn and compared (run 3, `tests/draw.rs`, Windows, one GPU job): the own shaders drawn by real
+  Direct3D 11 and, converted, through the WebGPU back end (wgpu on Direct3D 12) and the WebGL 2
+  back end (ANGLE), all on the RTX 3080: every picture equal texel for texel (4 pairs on WebGPU, 2
+  on WebGL 2; the other 2 use bitfield operations GLSL ES 3.00 lacks). The rig's triangle from its
+  DXIL and from its DXBC through both back ends: equal to real Direct3D 12's picture, largest
+  difference 0. Drawing found and fixed two lowering bugs: dynamically indexed constant buffers were
+  declared 4096 vectors long (dxbc-spirv's choice), so WebGPU wanted 64 KiB bound (now the size the
+  bytecode declares); and plain samples at level zero used naga's comparison-only `Zero` level,
+  which naga's HLSL writer (wgpu's Direct3D 12 path) writes as a method HLSL lacks.
+- The rig's Direct3D 11 scenes through the direct3d-11 track's d3d11.dll (which calls `convert`):
+  8 outputs pass (triangle, quads, topology, instanced, targets in 4 formats), instanced newly so
+  after the constant buffer fix; the other 141 are missing outputs or failures of the front (it
+  refuses what it does not serve yet, for example depth-stencil views, 1D and 3D textures, queries).
+  Through the direct3d-12 track's d3d12.dll only the triangle passes, and that front does not call
+  `convert` yet (it answers "DXIL shaders need the shaders crate's converter" for every other
+  shader), so DXIL is proven by `tests/draw.rs` instead.
 - dxil-spirv built in too (submodule, pinned), and `convert` for DXIL: dxil-spirv's SPIR-V, read by
   naga's SPIR-V reader (`src/dxil.rs`), then given 6.4's binding rule. 11 of the rig's 14 DXIL shaders
   convert, WGSL and GLSL ES both compile in Chrome; the other 3 stop at the reader's known gaps
@@ -40,26 +56,27 @@ Done:
   the container's `ISG1` and `OSG1` signatures; test `dxil_reflection_matches_dxbc` checks that the
   rig's five shaders compiled both by fxc and dxc give the same semantics, locations, types and
   interpolation by both routes.
-- Independent check (run 1): five shaders of our own (`tests/own/own.hlsl`), compiled by fxc
-  10.0.26100.0 on the desktop (`tests/own/compile.cmd` through `tools/graphics-rig/remote`). All five
-  give WGSL that compiles in Chrome; three compile as GLSL ES in Chrome, two use bitfield operations
-  GLSL ES 3.00 lacks. Meaning checked by reading two of them, not by drawing yet.
+- Independent check: six shaders of our own (`tests/own/own.hlsl`; the sixth, `ps_window`, added in
+  run 3 to draw with `vs_fullscreen`), compiled by fxc 10.0.26100.0 on the desktop
+  (`tests/own/compile.cmd` through `tools/graphics-rig/remote`; recompiling gave the same bytes for
+  the first five). All give WGSL that compiles in Chrome; four compile as GLSL ES in Chrome, two use
+  bitfield operations GLSL ES 3.00 lacks. Their meaning is checked by drawing (above).
 
-Not done in this milestone yet (in order):
-- Draw through a back end and compare with the references. The direct3d-11 track drew the rig's
-  triangle, quads and topology scenes through its d3d11.dll with `convert` (its commits b65186d and
-  2436685, equal to Direct3D 11 on the RTX 3080). Our own run (`tools/graphics-rig/scenes --dll
-  d3d11.dll=...wcontainers_directx.dll --api d3d11`, build command below) could not build in this
-  merged tree: wcontainers-direct3d-11's recorder and wcontainers-gpu-webgl still implement the
-  interface's `resolve` without its new format argument, and the webgl back end's `Caps` lacks
-  `adapter` (the interface track's merges settle this, not this track). Next: draw the five own
-  shaders and the rig's DXIL shaders through the WebGPU back end (and the WebGL 2 one) and compare
-  with real Direct3D, which also checks their meaning by drawing.
-- DXIL: sampled pairs in the reflection, binding numbers by root signature (`VariantKey::layout`),
-  packed signature elements (two values in one register take one location each; WGSL has no
-  component qualifier).
+- DXIL's sampled pairs are in the reflection (run 3); test `dxil_bindings_and_sampled_pairs_match_dxbc`
+  checks that the 18 rig shaders compiled by both fxc and dxc that convert by both routes get the same
+  bindings and pairs (4 of them sample).
+
+Next (G6b and on, in order):
+- DXIL inputs and outputs as the DXBC route lays them out: one four-component value per register
+  (now each value keeps its own width, so a Direct3D 12 vertex shader writing a float4 that a pixel
+  shader reads as float2 fails WebGPU's pipeline check), and elements dxc packs into one register
+  (dxil-spirv gives them a SPIR-V component; naga's reader drops it, so two values claim one
+  location). Both fit one wrapper, the one `draw_bases` already makes.
+- DXIL binding numbers by root signature (6.4, `VariantKey::layout`); today Direct3D 11's rule.
+- The remaining `VariantKey` fields and flags of 6.4, the stage helper (section 7), the cache
+  (section 8), and the corpus of real game shaders.
 - GLSL ES 3.00 lacks bitfield operations, `textureGather` and multisampled samplers: what Chrome's
-  WebGL 2 refuses (corpus 13, rig 6, own 2) is only these. 6.5 gives the first two to the WebGL 2
+  WebGL 2 refuses (corpus 13, rig DXBC 6, rig DXIL 1, own 2) is only these. 6.5 gives the first two to the WebGL 2
   back end's writing; multisampled reads are absent there.
 
 ## How the Direct3D fronts call `convert`
@@ -93,14 +110,28 @@ let reflection = &converted.reflection;
   vertex helper block as for DXBC above) are taken; `Arguments` is
   `Unsupported("DrawBaseFromArguments")` on both routes. Inputs and outputs are filled as for DXBC
   (semantic names from the container's signatures, location = register); a pixel shader's unread
-  `SV_Position` may be listed where the DXBC route leaves it out. Sampled pairs are still empty for
-  DXIL.
+  `SV_Position` may be listed where the DXBC route leaves it out. Sampled pairs are listed as for
+  DXBC, by register (a pair's register spaces are not in the pair).
+- Constant buffers are declared with the size the bytecode gives them, so binding the program's own
+  buffer (or any range at least that long) satisfies WebGPU.
 - Errors: `Rejected` (dxbc-spirv or dxil-spirv refused the bytecode, with its message),
   `Unsupported(name)` (a named feature not provided yet, for example `GeometryShader`, `StorageImage`,
   `TypedBuffer`, `Atomics`), `Reader(text)` (a gap of naga's SPIR-V reader, DXIL only), `Malformed`
   and `Invalid` (our bugs: the corpus test fails on any of these).
 
 ## Measurements
+
+Run 3, 2026-11-17, after all of run 3's changes:
+- Laptop corpus test (i7-8750H, load average below 6): corpus 127 convert (85 GLSL ES compile in
+  glslang, 15 do not, 27 not written), 64 named failures, the same counts by reason as below; rig
+  DXBC 56 of 79 (unchanged); rig DXIL 24 of 27 (the rig now has 27 DXIL shaders; the 3 others are
+  the reader's gaps: typed buffers twice, a storage image without a format).
+- Chrome 157 on the RTX 3080 (one GPU job, about 2 s): WGSL corpus 127 of 127, rig DXBC 56 of 56,
+  rig DXIL 24 of 24, own 6 of 6; GLSL ES corpus 87 of 100, rig DXBC 47 of 53, rig DXIL 23 of 24
+  (`textureGather`), own 4 of 6. Verdicts in scratch `graphics-shaders/run3/out-final/*/chrome.txt`.
+- `tests/draw.rs` on the desktop (RTX 3080, driver 32.0.16.2101; ANGLE from mozangle 0.7.1): every
+  comparison exact, as listed above. The desktop is shared; no timings taken.
+- WebAssembly: `wasm_imports` (release) is 4,853,482 bytes, the same 10 WASI imports.
 
 Chrome, run 2, 2026-11-17: Chrome 157.0.8103.78 (the rig's pinned build), headless, on the desktop
 (RTX 3080, WebGPU on D3D12, WebGL 2 on ANGLE D3D11), every adapter feature requested and every WebGL
@@ -139,7 +170,7 @@ valid WGSL (45 also compile as GLSL ES in glslang); 23 named: GeometryShader 6, 
 DomainShader 3, StorageCounter 3, StorageImage 2, Atomics 1, PrimitiveId 1, VertexWithoutPosition 1.
 
 WebAssembly: the conversion alone (`examples/wasm_imports.rs`, release, `wasm32-wasip1`, both
-converters linked) is 4,842,413 bytes (2,356,683 with dxbc-spirv alone) and imports from `wasi_snapshot_preview1`: environ_get, environ_sizes_get, fd_close,
+converters linked) was 4,842,413 bytes in run 2 (4,853,482 in run 3) (2,356,683 with dxbc-spirv alone) and imports from `wasi_snapshot_preview1`: environ_get, environ_sizes_get, fd_close,
 fd_fdstat_get, fd_prestat_get, fd_prestat_dir_name, fd_read, fd_seek, fd_write, proc_exit (10;
 the plan expected proc_exit and fd_write only: libc++'s streams, which dxbc-spirv's logger uses, pull
 in wasi-libc's stdio and start-up). The corpus test built for `wasm32-wasip1` and run under wasmtime
@@ -177,6 +208,14 @@ Not yet sent upstream.
   needs this crate starts with `git submodule update --init crates/wcontainers-shaders/dxbc-spirv
   crates/wcontainers-shaders/dxil-spirv && git -C crates/wcontainers-shaders/dxil-spirv submodule
   update --init third_party/spirv-headers && cargo build ...` (they stay checked out afterwards).
+- Drawing (Windows, needs the GPU and ANGLE at C:\wc\tools\angle-mozangle-0.7.1, which the WebGL
+  track's `angle\build.cmd` makes; `WCONTAINERS_ANGLE` names another):
+  `S="git submodule update --init -q crates/wcontainers-shaders/dxbc-spirv crates/wcontainers-shaders/dxil-spirv && git -C crates/wcontainers-shaders/dxil-spirv submodule update --init -q third_party/spirv-headers"; tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test draw --no-run" -- "cargo test -j 3 -p wcontainers-shaders --test draw -- --nocapture --test-threads 1"`.
+  With `WCONTAINERS_SHADERS_OUT` set in the job the pictures are kept as raw texels under `draw`.
+- Windows lint (the draw test is Windows only): `tools/graphics-rig/remote "$S && cargo clippy -j 3
+  -p wcontainers-shaders --all-targets -- -D warnings"`.
+- The rig's scenes through the direct3d-11 track's library: `tools/graphics-rig/scenes --build "$S &&
+  cargo build -q -j 3 -p wcontainers-directx" --dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll' --api d3d11`.
 - Unit and corpus tests: `tools/graphics-rig/linux 'WCONTAINERS_SHADER_CORPUS=$HOME/wcontainers-graphics/corpus/dxbc
   WCONTAINERS_SHADERS_OUT=$HOME/wcontainers-graphics/out GLSLANG=glslangValidator cargo test -p
   wcontainers-shaders -- --nocapture'`. Prints the verdict counts; the written WGSL and GLSL and
@@ -212,6 +251,12 @@ were already there.
 - `cc` 1.11 (build dependency, compiles the C++): MIT OR Apache-2.0 (its Cargo.toml); with `jobserver`
   0.1 (MIT OR Apache-2.0) for its parallel feature.
 - `blake3` 1.8: as in the plan's section 3.
+- Dev-dependencies of `tests/draw.rs`, Windows only, already in the workspace's lock: `windows` 0.62
+  (MIT OR Apache-2.0), `wgpu` 30 (MIT OR Apache-2.0), `pollster` 1 (Apache-2.0 OR MIT), and the
+  workspace's own wcontainers-gpu-webgpu, wcontainers-gpu-webgl and wcontainers-graphics-test.
+- Both C++ projects confirmed in run 3: the submodules' URLs are the upstream repositories, the
+  pinned commits are on upstream's main (dxbc-spirv, still its head) and master (dxil-spirv, whose
+  head has since moved to a781dce), and neither checkout has local changes.
 - Test tools only, never shipped: glslang (BSD-3-Clause and others, Khronos), wasi-sdk (Apache-2.0
   WITH LLVM-exception; its libc++ and wasi-libc are linked into the WebAssembly build: libc++ Apache-2.0
   WITH LLVM-exception, wasi-libc MIT-style and others), wasmtime (Apache-2.0 WITH LLVM-exception).
@@ -248,7 +293,12 @@ were already there.
   interpolation per location (an interface change to propose).
 - Direct3D links stages by register here; programs whose vertex outputs and pixel inputs use different
   registers for one semantic need remapping by semantic (also a variant to add).
-- Out-of-bounds texture loads give what WebGPU's robustness gives, not Direct3D's zero.
+- Out-of-bounds texture loads give what WebGPU's robustness gives, not Direct3D's zero. So does a
+  dynamically indexed constant read past the size the bytecode declares (WebGPU clamps the index).
+- Found while drawing, for other tracks: the WebGL 2 back end keeps GL's previous viewport when a
+  draw names none (the 1 by 1 pbuffer's at first), where the WebGPU back end uses the whole target;
+  the interface does not say what an empty `viewports` means. And its read back later calls
+  `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
 
