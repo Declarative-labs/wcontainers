@@ -16,7 +16,8 @@ pub struct GlFormat {
 /// Which row of GLES 3.0's format table a format is in, which decides its uses with the extensions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
-    /// Normalised fixed point: filterable, and renderable and blendable where `render` is set.
+    /// Normalised fixed point: filterable, and renderable and blendable where `render` is set (signed
+    /// ones with EXT_render_snorm).
     Norm {
         render: bool,
     },
@@ -143,6 +144,7 @@ pub struct FormatExtensions {
     pub float_linear: bool,
     pub float_blend: bool,
     pub norm16: bool,
+    pub render_snorm: bool,
 }
 
 impl FormatExtensions {
@@ -152,6 +154,7 @@ impl FormatExtensions {
             float_linear: ext.contains("OES_texture_float_linear"),
             float_blend: ext.contains("EXT_float_blend"),
             norm16: ext.contains("EXT_texture_norm16"),
+            render_snorm: ext.contains("EXT_render_snorm"),
         }
     }
 }
@@ -173,6 +176,7 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     let mut uses = FormatUse::SAMPLE
         | match gl.class {
             Class::Norm { render: true } => FormatUse::FILTER | target,
+            Class::Norm { render: false } if ext.render_snorm => FormatUse::FILTER | target,
             Class::Norm { render: false } | Class::SharedExponent => FormatUse::FILTER,
             Class::Half | Class::SmallFloat if ext.color_buffer_float => FormatUse::FILTER | target,
             Class::Half | Class::SmallFloat => FormatUse::FILTER,
@@ -250,7 +254,8 @@ impl ReadAs {
 
 /// How GLES 3.0's `readPixels` reads `format` back exactly (its always-supported pairs: normalised
 /// bytes as RGBA bytes, integers as RGBA 32-bit integers, and floats as RGBA floats with
-/// EXT_color_buffer_float; 16-bit normalised ones as RGBA shorts with EXT_texture_norm16), or None
+/// EXT_color_buffer_float; 16-bit normalised ones as RGBA shorts with EXT_texture_norm16, and signed
+/// ones as signed RGBA bytes or shorts with EXT_render_snorm), or None
 /// where it cannot: formats that are not colour-renderable, packed ones and 16-bit floats.
 pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
     let gl = gl_format(format)?;
@@ -264,6 +269,10 @@ pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
         Class::Norm { render: true } if gl.ty == UNSIGNED_BYTE => (RGBA, UNSIGNED_BYTE, 1),
         Class::Norm { render: true } if gl.ty == UNSIGNED_SHORT && ext.norm16 => {
             (RGBA, UNSIGNED_SHORT, 2)
+        }
+        Class::Norm { render: false } if gl.ty == BYTE && ext.render_snorm => (RGBA, BYTE, 1),
+        Class::Norm { render: false } if gl.ty == SHORT && ext.render_snorm && ext.norm16 => {
+            (RGBA, SHORT, 2)
         }
         Class::Int { render: true } if matches!(gl.ty, BYTE | SHORT | INT) => {
             (RGBA_INTEGER, INT, 4)

@@ -157,6 +157,7 @@ suite!(
     generate_mipmap_equals_the_draws,
     sixteen_bit_normalised_formats_follow_their_extension,
     bgra_surfaces_present,
+    signed_normalised_formats_follow_their_extension,
 );
 
 thread_local! {

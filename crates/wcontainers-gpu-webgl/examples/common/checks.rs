@@ -748,11 +748,18 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::R16Unorm, Format::R16Uint),
         (Format::Rg16Sint, Format::Rg16Unorm),
         (Format::Rg16Unorm, Format::Rg16Sint),
+        (Format::Rgba8Snorm, Format::Rgba8Uint),
+        (Format::Rgba8Sint, Format::Rgba8Snorm),
+        (Format::Rgba16Snorm, Format::Rgba16Sint),
     ];
     let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for (i, (from, to)) in pairs.into_iter().enumerate() {
         let caps = &b.caps().formats;
-        if caps.get(from).is_empty() || !caps.get(to).contains(FormatUse::COPY_OUT) {
+        // A source that does not read back here (signed normalised without EXT_render_snorm) is not
+        // copied either.
+        if !caps.get(from).contains(FormatUse::COPY_OUT)
+            || !caps.get(to).contains(FormatUse::COPY_OUT)
+        {
             continue;
         }
         let texel = from.block().2 as usize;
@@ -1130,6 +1137,123 @@ pub fn bgra_surfaces_present<H: Host>() {
         b.end_pass();
         b.present(&surface).expect("present");
         assert_eq!(H::shown(&mut b, window), texel.repeat(16), "{value:?}");
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// The signed normalised formats follow EXT_render_snorm: with it they render, blend and read back
+/// as stored (-128 included), and a clear writes their values; without it they only sample and
+/// filter.
+pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
+    use crate::kit;
+    use Format as F;
+    let mut b = H::make();
+    let has = b
+        .caps()
+        .formats
+        .get(F::Rgba8Snorm)
+        .contains(FormatUse::RENDER);
+    let usage = TextureUsage::SAMPLE
+        | TextureUsage::RENDER
+        | TextureUsage::COPY_SRC
+        | TextureUsage::COPY_DST;
+    let mut formats = vec![F::R8Snorm, F::Rg8Snorm, F::Rgba8Snorm];
+    if b.caps().formats.get(F::Rgba16Snorm) != FormatUse::empty() {
+        formats.extend([F::R16Snorm, F::Rg16Snorm, F::Rgba16Snorm]);
+    }
+    for format in formats {
+        let uses = b.caps().formats.get(format);
+        if !has {
+            assert_eq!(uses, FormatUse::SAMPLE | FormatUse::FILTER, "{format:?}");
+            continue;
+        }
+        let want = FormatUse::SAMPLE
+            | FormatUse::FILTER
+            | FormatUse::RENDER
+            | FormatUse::BLEND
+            | FormatUse::COPY_OUT;
+        assert!(uses.contains(want), "{format:?}: {uses:?}");
+        let texel = format.block().2 as usize;
+        let comp =
+            if texel % 2 == 0 && matches!(format, F::R16Snorm | F::Rg16Snorm | F::Rgba16Snorm) {
+                2
+            } else {
+                1
+            };
+        // Every bit pattern of the first texels, then the most negative value in the last.
+        let mut bytes = pattern(8 * texel, 0x2545_f491);
+        let last = bytes.len() - texel;
+        for c in bytes[last..].chunks_mut(comp) {
+            c.fill(0);
+            c[comp - 1] = 0x80;
+        }
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [4, 2, 1],
+            1,
+            usage,
+            false,
+        );
+        let region = TextureRegion {
+            texture: &t,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        let extent = Extent {
+            width: 4,
+            height: 2,
+            depth_or_layers: 1,
+        };
+        b.write_texture(
+            &region,
+            extent,
+            &bytes,
+            4 * texel as u32,
+            2,
+            WriteMode::Ordered,
+        );
+        assert_eq!(
+            kit::read(&mut b, &t, 0, 0, [4, 2, 1], texel, false),
+            bytes,
+            "{format:?}"
+        );
+        // Cleared to -1, 0, 1 and 64 steps (a value each format holds exactly).
+        let max = if comp == 2 { 32767.0 } else { 127.0 };
+        let value = [-1.0f32, 0.0, 1.0, 64.0 / max];
+        let v = kit::target(&mut b, &t, format, 0, 0);
+        b.begin_pass(&PassDesc {
+            colors: core::array::from_fn(|i| {
+                (i == 0).then_some(ColorAttachment {
+                    view: &v,
+                    depth_slice: 0,
+                    load: LoadOp::Clear(value.map(f32::to_bits)),
+                    store: StoreOp::Store,
+                    resolve: None,
+                })
+            }),
+            depth: None,
+            occlusion: None,
+            empty: None,
+        });
+        b.end_pass();
+        let steps = [-(max as i32), 0, max as i32, 64];
+        let n = texel / comp;
+        let texel_bytes: Vec<u8> = steps[..n]
+            .iter()
+            .flat_map(|s| {
+                let le = s.to_le_bytes();
+                le[..comp].to_vec()
+            })
+            .collect();
+        assert_eq!(
+            kit::read(&mut b, &t, 0, 0, [4, 2, 1], texel, false),
+            texel_bytes.repeat(8),
+            "{format:?} cleared"
+        );
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }

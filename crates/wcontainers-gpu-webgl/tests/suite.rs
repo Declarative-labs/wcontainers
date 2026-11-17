@@ -275,3 +275,8 @@ fn sixteen_bit_normalised_formats_follow_their_extension() {
 fn bgra_surfaces_present() {
     checks::bgra_surfaces_present::<Angle>();
 }
+
+#[test]
+fn signed_normalised_formats_follow_their_extension() {
+    checks::signed_normalised_formats_follow_their_extension::<Angle>();
+}

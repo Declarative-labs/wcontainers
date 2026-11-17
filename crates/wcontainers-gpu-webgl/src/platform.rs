@@ -16,7 +16,7 @@ pub const FIRST_VERTEX: u32 = 0x8E4D;
 pub const LAST_VERTEX: u32 = 0x8E4E;
 
 /// The WebGL extension names, with the GL names ANGLE reports for each natively.
-const EXTENSIONS: [(&str, &str); 14] = [
+const EXTENSIONS: [(&str, &str); 15] = [
     ("EXT_clip_control", "GL_EXT_clip_control"),
     ("WEBGL_provoking_vertex", "GL_ANGLE_provoking_vertex"),
     ("EXT_color_buffer_float", "GL_EXT_color_buffer_float"),
@@ -53,6 +53,7 @@ const EXTENSIONS: [(&str, &str); 14] = [
         "GL_EXT_texture_compression_bptc",
     ),
     ("EXT_texture_norm16", "GL_EXT_texture_norm16"),
+    ("EXT_render_snorm", "GL_EXT_render_snorm"),
 ];
 
 /// GL_TIMESTAMP_EXT, GL_QUERY_COUNTER_BITS_EXT and GL_GPU_DISJOINT_EXT.
@@ -594,6 +595,7 @@ mod web {
         // Enabled here since glow does not know them; they add only enums.
         let _ = context.get_extension("WEBGL_stencil_texturing");
         let _ = context.get_extension("EXT_texture_norm16");
+        let _ = context.get_extension("EXT_render_snorm");
         for compressed in [
             "WEBGL_compressed_texture_s3tc",
             "WEBGL_compressed_texture_s3tc_srgb",
