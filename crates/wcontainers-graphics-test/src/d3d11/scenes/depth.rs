@@ -27,6 +27,22 @@ pub const FUNCS: [D3D11_COMPARISON_FUNC; 8] = [
     D3D11_COMPARISON_ALWAYS,
 ];
 
+/// Constant bias, slope-scaled bias and clamp of each bias cell.
+pub const BIASES: [(i32, f32, f32); 4] = [
+    (0, 0.0, 0.0),
+    (-3, 0.0, 0.0),
+    (0, -1.5, 0.0),
+    (-3000, -1.5, -0.00002),
+];
+
+/// The depth formats written and read back.
+pub const FORMATS: [(&str, DXGI_FORMAT); 4] = [
+    ("d16", DXGI_FORMAT_D16_UNORM),
+    ("d24s8", DXGI_FORMAT_D24_UNORM_S8_UINT),
+    ("d32", DXGI_FORMAT_D32_FLOAT),
+    ("d32s8", DXGI_FORMAT_D32_FLOAT_S8X24_UINT),
+];
+
 pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     let mut outputs = Vec::new();
     colored_program(gpu)?;
@@ -57,13 +73,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     let (target, rtv) = gpu.target(256, 64, DXGI_FORMAT_R8G8B8A8_UNORM)?;
     let (depth, dsv) = gpu.depth(256, 64, DXGI_FORMAT_D24_UNORM_S8_UINT)?;
     gpu.begin(&rtv, Some(&dsv), 256, 64);
-    let biases = [
-        (0, 0.0, 0.0),
-        (-3, 0.0, 0.0),
-        (0, -1.5, 0.0),
-        (-3000, -1.5, -0.00002),
-    ];
-    for (i, (bias, slope, clamp)) in biases.into_iter().enumerate() {
+    for (i, (bias, slope, clamp)) in BIASES.into_iter().enumerate() {
         unsafe {
             c.RSSetViewports(Some(&[cell(i as u32, 4, 64.0)]));
             c.RSSetState(&solid_state);
@@ -148,12 +158,7 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
 
     // Each depth format, cleared with a stencil value, then a slope drawn into it without colour.
     colored_program(gpu)?;
-    for (name, format) in [
-        ("d16", DXGI_FORMAT_D16_UNORM),
-        ("d24s8", DXGI_FORMAT_D24_UNORM_S8_UINT),
-        ("d32", DXGI_FORMAT_D32_FLOAT),
-        ("d32s8", DXGI_FORMAT_D32_FLOAT_S8X24_UINT),
-    ] {
+    for (name, format) in FORMATS {
         let (depth, dsv) = gpu.depth(64, 64, format)?;
         unsafe {
             c.ClearDepthStencilView(

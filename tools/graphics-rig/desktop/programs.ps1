@@ -5,7 +5,11 @@
 # -Capture and ends it after the last one. A Direct3D 12 program saves its own frames (the
 # forwarding library is Direct3D 11 only) and ends itself after the last. With replacement
 # libraries (-Dlls), a replacement d3d11.dll sits behind the forwarding one (WC_D3D11) and the
-# others beside the program. Writes <Out>\<program>\census.txt (Direct3D 11) and frame-<n>.png.
+# others beside the program. Writes <Out>\<program>\census.txt (Direct3D 11) and frame-<n>.png,
+# and compares the frames with the program's references (see -Record): its frames are kept on this
+# machine (they show the programs' own art, under the programs' licences), and the repository
+# holds their allowances and SHA-256 (tools\graphics-rig\program-references), so references that
+# changed or went missing fail.
 param(
     [Parameter(Mandatory)][ValidateSet('build', 'run')][string]$Mode,
     # Programs to run, comma separated; all when empty.
@@ -16,7 +20,17 @@ param(
     # Libraries for the programs, as name=path pairs separated by semicolons.
     [string]$Dlls = '',
     [string]$Capture = '10,60,120',
-    [int]$Limit = 120
+    [int]$Limit = 120,
+    # gt-run, which compares frames with their references.
+    [string]$Check,
+    # gt-launch, which runs each program and reports where it loaded the replacements from.
+    [string]$Launch,
+    # Where each program's reference frames are kept: <References>\<program>.
+    [string]$References = 'C:\wc\programs\reference',
+    # Runs each program three times on real Direct3D and keeps the first run's frames as its
+    # references, with the allowances the others give; writes <Out>\references\<program> (the
+    # allowances and the frames' SHA-256) for the repository.
+    [switch]$Record
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -49,14 +63,18 @@ $bgfxExamples = @('01-cubes', '06-bump', '09-hdr', '16-shadowmaps', '21-deferred
 $godot = 'godot\Godot_v4.7.2-stable_win64_console.exe'
 $godotProjects = @('3d/platformer', '2d/platformer')
 # Each program: its executable and working directory under $root, its arguments ({out} is its
-# output directory), its environment, and its API (Direct3D 11 unless said). A Direct3D 12
+# output directory), its environment, its API (Direct3D 11 unless said), and a part of its frames
+# not compared, if any. A Direct3D 12
 # program writes its own frames as {out}\movie\frame<number>.png.
 $all = [ordered]@{}
 foreach ($n in 2, 4, 5, 6, 7) {
     $all["sdk-tutorial0$n"] = @{ exe = "$tutorials\x64\Release\Tutorial0$n.exe"; cwd = "$tutorials\Tutorial0$n"; args = '' }
 }
+# bgfx's overlay shows the GPU memory the driver reports in use, which differs from run to run and
+# between implementations; its line (lower when the example's description takes two lines) is
+# left out of the comparison: ignore is x,y,width,height in the frame.
 foreach ($e in $bgfxExamples) {
-    $all["bgfx-$e"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d11' }
+    $all["bgfx-$e"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d11'; ignore = '0,236,320,36' }
 }
 # Freedoom's first demo played as fast as it can be drawn, one game tic a frame, through SDL's
 # Direct3D 11 renderer.
@@ -132,9 +150,18 @@ if ($Mode -eq 'build') {
     $src = "$root\src"
     Build 'the DirectX SDK tutorials' "`"$msbuild`" `"$src\$tutorials\Tutorials_1-7_2022.sln`" /nologo /v:minimal /m /p:Configuration=Release /p:Platform=x64"
     Build 'the bgfx project files' "cd /d `"$src\bgfx`" && ..\bx\tools\bin\windows\genie.exe --with-examples vs2022"
-    foreach ($e in $bgfxExamples) {
-        Build "bgfx example $e" "`"$msbuild`" `"$src\bgfx\.build\projects\vs2022\example-$e.vcxproj`" /nologo /v:minimal /m /p:Configuration=Release /p:Platform=x64"
+    # bgfx built to draw on the thread that calls bgfx::frame, not on a render thread of its own, so
+    # what an example draws in a frame follows the clock it read for that frame (see clock.rs of
+    # the forwarding library). MSBuild does not see a change of CL, so a change rebuilds all.
+    $defines = '/DBGFX_CONFIG_MULTITHREADED=0'
+    $stamp = "$src\bgfx\.build\wc-defines.txt"
+    if (-not (Test-Path $stamp) -or (Get-Content $stamp) -ne $defines) {
+        if (Test-Path "$src\bgfx\.build\win64_vs2022") { Remove-Item -Recurse -Force "$src\bgfx\.build\win64_vs2022" }
     }
+    foreach ($e in $bgfxExamples) {
+        Build "bgfx example $e" "set CL=$defines&& `"$msbuild`" `"$src\bgfx\.build\projects\vs2022\example-$e.vcxproj`" /nologo /v:minimal /m /p:Configuration=Release /p:Platform=x64"
+    }
+    Set-Content $stamp $defines
     # Godot imports a project's assets once, without drawing.
     $env:APPDATA = "$root\godot-data\appdata"
     $env:LOCALAPPDATA = "$root\godot-data\localappdata"
@@ -156,19 +183,10 @@ if ($Mode -eq 'build') {
 
 # Run: each chosen program in its own directory of copies, with the forwarding library as
 # d3d11.dll (Direct3D 11 programs) and any replacements, until its last frame or the time limit.
-$replacement = $null
-$extra = @()
-foreach ($pair in ($Dlls.Split(';') | Where-Object { $_ })) {
-    $dll, $path = $pair.Split('=', 2)
-    if ($dll -eq 'd3d11.dll') { $replacement = (Resolve-Path $path).Path } else { $extra += , @($dll, (Resolve-Path $path).Path) }
-}
-$frameList = @($Capture.Split(',') | ForEach-Object { [int]$_ })
-$last = $frameList[-1]
-$failed = 0
-foreach ($name in $chosen) {
+# Returns whether it presented its last frame and saved every frame, after printing why not.
+function Run-Program([string]$name, [string]$dir) {
     $program = $all[$name]
     $d3d12 = $program.api -eq 'd3d12'
-    $dir = "$Out\$name"
     # Through rd with the long path prefix, as programs' caches can go past 260 characters.
     if (Test-Path $dir) { cmd.exe /d /c "rd /s /q `"\\?\$dir`"" }
     $bin = "$dir\bin"
@@ -185,7 +203,11 @@ foreach ($name in $chosen) {
         Copy-Item $replacement "$bin\replacement\d3d11.dll"
     }
     $arguments = $program.args.Replace('{out}', $dir).Replace('{last}', "$last")
-    $info = New-Object Diagnostics.ProcessStartInfo "$bin\$(Split-Path -Leaf $exe)", $arguments
+    # Through gt-launch, which reports where the program loaded each replacement from.
+    $names = @($extra | ForEach-Object { $_[0].ToLower() }) + @(if ($replacement -and $d3d12) { 'd3d11.dll' })
+    $wanted = if ($names) { $names -join ',' } else { '-' }
+    $report = "$dir\loaded.txt"
+    $info = New-Object Diagnostics.ProcessStartInfo $Launch, "`"$report`" $wanted `"$bin\$(Split-Path -Leaf $exe)`" $arguments"
     $info.UseShellExecute = $false
     $info.WorkingDirectory = "$root\src\$($program.cwd)"
     $info.RedirectStandardOutput = $true
@@ -219,12 +241,71 @@ foreach ($name in $chosen) {
         $whole = $ended
     }
     $saved = @(Get-ChildItem "$dir\frame-*.png" -ErrorAction SilentlyContinue).Count
-    if ($whole -and $frames -ge $last -and $saved -eq $frameList.Count) {
-        "${name}: pass, $frames frames, $saved saved, $census, $seconds s"
-    } else {
-        $why = if (-not $ended) { "still running after $Limit s" } else { ('exited with 0x{0:x8}' -f $process.ExitCode) }
-        "${name}: FAIL, $why, $frames frames, $saved of $($frameList.Count) frames saved, $seconds s"
-        $failed++
+    $elsewhere = @(if (Test-Path $report) { Get-Content $report | Where-Object { $_ -notmatch ' from not loaded$' } | Where-Object { ($_ -split ' from ', 2)[1] -ine "$bin\$(($_ -split ' from ', 2)[0])" } })
+    if ($elsewhere) {
+        "${name}: FAIL, did not load the replacement: $($elsewhere -join ', ')"
+        return $false
     }
+    if ($whole -and $frames -ge $last -and $saved -eq $frameList.Count) {
+        "${name}: ran, $frames frames, $saved saved, $census, $seconds s"
+        return $true
+    }
+    $why = if (-not $ended) { "still running after $Limit s" } else { ('exited with 0x{0:x8}' -f $process.ExitCode) }
+    "${name}: FAIL, $why, $frames frames, $saved of $($frameList.Count) frames saved, $seconds s"
+    return $false
+}
+
+# The SHA-256 of each file of a program's references, as "<hash> <file>" lines.
+function Reference-Hashes([string]$dir) {
+    @(Get-ChildItem $dir -File | Where-Object { $_.Name -ne 'frames.sha256' } | Sort-Object Name | ForEach-Object { "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower()) $($_.Name)" })
+}
+
+$replacement = $null
+$extra = @()
+foreach ($pair in ($Dlls.Split(';') | Where-Object { $_ })) {
+    $dll, $path = $pair.Split('=', 2)
+    if ($dll -eq 'd3d11.dll') { $replacement = (Resolve-Path $path).Path } else { $extra += , @($dll, (Resolve-Path $path).Path) }
+}
+if ($Record -and $Dlls) { throw 'references are recorded on real Direct3D only' }
+$frameList = @($Capture.Split(',') | ForEach-Object { [int]$_ })
+$last = $frameList[-1]
+$failed = 0
+foreach ($name in $chosen) {
+    $dir = "$Out\$name"
+    $reference = "$References\$name"
+    $listing = "tools\graphics-rig\program-references\$name\frames.sha256"
+    if ($Record) {
+        # Three runs: the first is kept, the others show what the program draws differently each time.
+        $runs = @($dir, "$dir-again", "$dir-third")
+        $ran = $true
+        foreach ($run in $runs) {
+            $result = @(Run-Program $name $run)
+            $result[0..($result.Count - 2)]
+            if (-not $result[-1]) { $ran = $false }
+        }
+        if (-not $ran) { $failed++; continue }
+        if (Test-Path $reference) { Remove-Item -Recurse -Force $reference }
+        if (Test-Path "$Out\references\$name") { Remove-Item -Recurse -Force "$Out\references\$name" }
+        $ignore = @(if ($all[$name].ignore) { '--ignore', $all[$name].ignore })
+        & $Check frames --record @ignore $reference @runs | ForEach-Object { "${name} $_" }
+        if ($LASTEXITCODE) { "${name}: FAIL, recording its references failed"; $failed++; continue }
+        New-Item -ItemType Directory -Force "$Out\references\$name" | Out-Null
+        Copy-Item "$reference\tolerances.txt" "$Out\references\$name\"
+        Set-Content "$Out\references\$name\frames.sha256" (Reference-Hashes $reference)
+        "${name}: references recorded in $reference"
+        continue
+    }
+    $result = @(Run-Program $name $dir)
+    $result[0..($result.Count - 2)]
+    if (-not $result[-1]) { $failed++; continue }
+    # The references on this machine must be the ones the repository names.
+    if (-not (Test-Path $listing)) { "${name}: FAIL, no references recorded ($listing); run programs run --record"; $failed++; continue }
+    $want = @(Get-Content $listing)
+    $have = if (Test-Path $reference) { Reference-Hashes $reference } else { @() }
+    if (($want -join "`n") -ne ($have -join "`n")) { "${name}: FAIL, the references in $reference are not the ones $listing names; run programs run --record"; $failed++; continue }
+    $verdicts = @(& $Check frames $reference $dir)
+    $bad = $LASTEXITCODE
+    $verdicts | ForEach-Object { "${name} $_" }
+    if ($bad) { "${name}: FAIL, frames differ"; $failed++ } else { "${name}: pass, every frame as on real Direct3D" }
 }
 if ($failed) { exit 1 }
