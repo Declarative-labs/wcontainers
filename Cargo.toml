@@ -13,6 +13,7 @@ repository = "https://github.com/stack1ng/wcontainers"
 wcontainers-abi = { path = "crates/wcontainers-abi" }
 bitflags = { version = "2", default-features = false }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
+naga = { version = "30.0.2", default-features = false }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -1,0 +1,291 @@
+//! Buffers, textures, views, samplers, binding sets, queries, and how bytes move in and out of them.
+
+use crate::backend::Backend;
+use crate::format::Format;
+use crate::shader::StageSet;
+use bitflags::bitflags;
+
+bitflags! {
+    /// How a buffer will be used. A back end may refuse a combination it cannot hold in one object only
+    /// if it can build it from several; it never refuses one a front's API allows.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+    pub struct BufferUsage: u16 {
+        const VERTEX = 1 << 0;
+        const INDEX = 1 << 1;
+        const UNIFORM = 1 << 2;
+        const STORAGE = 1 << 3;
+        const INDIRECT = 1 << 4;
+        const COPY_SRC = 1 << 5;
+        const COPY_DST = 1 << 6;
+        /// The buffer is a target of [`crate::Backend::capture_vertices`].
+        const CAPTURE = 1 << 7;
+        /// Results are read back to guest memory.
+        const READ_BACK = 1 << 8;
+    }
+}
+
+/// How the guest will change a buffer's contents. Back ends choose where the buffer lives from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MapIntent {
+    /// Written once or rarely (static vertex data, textures' uploads).
+    Rarely,
+    /// Rewritten often, usually whole, usually every frame (Direct3D's dynamic buffers).
+    Often,
+}
+
+/// A buffer to create.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BufferDesc {
+    pub size: u64,
+    pub usage: BufferUsage,
+    pub intent: MapIntent,
+}
+
+/// What a write promises about the bytes already in the buffer. This is how the mapping rules of
+/// Direct3D, OpenGL and Vulkan reach a back end without any buffer being mapped across the boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WriteMode {
+    /// The write takes effect between the commands recorded before it and those after it, exactly as
+    /// if the GPU had stopped to take it. The general case, and the slowest where a back end must order
+    /// it inside a pass.
+    Ordered,
+    /// The whole buffer's old contents are dropped; commands recorded earlier still see the old bytes.
+    /// A back end may give the buffer fresh storage (renaming), so nothing waits.
+    Discard,
+    /// The caller promises no command recorded earlier and not yet finished reads the bytes written.
+    /// A back end may write in place at once.
+    NoOverwrite,
+}
+
+bitflags! {
+    /// How a texture will be used.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+    pub struct TextureUsage: u16 {
+        const SAMPLE = 1 << 0;
+        const RENDER = 1 << 1;
+        const STORAGE = 1 << 2;
+        const COPY_SRC = 1 << 3;
+        const COPY_DST = 1 << 4;
+        /// Shown on screen through [`crate::Backend::present`].
+        const PRESENT = 1 << 5;
+    }
+}
+
+/// The shape of a texture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureDimension {
+    D1,
+    D2,
+    D3,
+}
+
+/// A texture to create.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureDesc {
+    pub dimension: TextureDimension,
+    pub format: Format,
+    pub width: u32,
+    pub height: u32,
+    /// Depth for 3D textures, array layers otherwise (6 per cube).
+    pub depth_or_layers: u32,
+    pub mip_levels: u32,
+    pub samples: u32,
+    pub usage: TextureUsage,
+    /// Views may use other formats of the same block size (Direct3D's typeless textures). Views as the
+    /// sRGB twin are always allowed. Without [`crate::Features::FORMAT_REINTERPRET`], the front copies
+    /// into a texture of the other format instead (slow path [`crate::SlowPath::ReinterpretCopy`]).
+    pub reinterpret: bool,
+}
+
+/// How a view sees a texture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ViewDimension {
+    D1,
+    D1Array,
+    D2,
+    D2Array,
+    Cube,
+    CubeArray,
+    D3,
+}
+
+/// A view of part of a texture, as a front's shader resource, render target, depth or storage view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureViewDesc {
+    pub format: Format,
+    pub dimension: ViewDimension,
+    pub base_mip: u32,
+    pub mip_count: u32,
+    pub base_layer: u32,
+    pub layer_count: u32,
+    /// Which of depth and stencil a depth-stencil view reads: true for stencil.
+    pub stencil: bool,
+}
+
+/// Texture filtering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Filter {
+    Nearest,
+    Linear,
+}
+
+/// What a sampler does outside the texture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AddressMode {
+    Repeat,
+    Mirror,
+    Clamp,
+    Border,
+    MirrorOnce,
+}
+
+/// The color outside the texture for [`AddressMode::Border`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BorderColor {
+    TransparentBlack,
+    OpaqueBlack,
+    OpaqueWhite,
+    /// Any other color, as raw f32 bits.
+    Custom([u32; 4]),
+}
+
+/// A comparison, for depth and stencil tests and comparison samplers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CompareFn {
+    Never,
+    Less,
+    Equal,
+    LessEqual,
+    Greater,
+    NotEqual,
+    GreaterEqual,
+    Always,
+}
+
+/// A sampler to create.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SamplerDesc {
+    pub min: Filter,
+    pub mag: Filter,
+    pub mip: Filter,
+    pub address: [AddressMode; 3],
+    /// Level-of-detail bias, as f32 bits.
+    pub lod_bias: u32,
+    /// Smallest and largest level of detail, as f32 bits.
+    pub lod_range: [u32; 2],
+    pub anisotropy: u16,
+    pub compare: Option<CompareFn>,
+    pub border: BorderColor,
+}
+
+/// Part of a buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BufferRange<H> {
+    pub buffer: H,
+    pub offset: u64,
+    pub size: u64,
+}
+
+/// One resource in a binding set.
+#[derive(Debug)]
+pub enum BindingResource<'a, B: Backend> {
+    UniformBuffer(BufferRange<&'a B::Buffer>),
+    StorageBuffer {
+        range: BufferRange<&'a B::Buffer>,
+        writable: bool,
+    },
+    Texture(&'a B::TextureView),
+    StorageTexture {
+        view: &'a B::TextureView,
+        writable: bool,
+    },
+    Sampler(&'a B::Sampler),
+    /// A buffer read as typed texels (Direct3D's typed buffer views, OpenGL's buffer textures).
+    TexelBuffer {
+        range: BufferRange<&'a B::Buffer>,
+        format: Format,
+        writable: bool,
+    },
+    /// A big resource table, where [`crate::Features::RESOURCE_TABLES`] is present.
+    Table(&'a B::ResourceTable),
+}
+
+/// One slot of a binding set: which program binding it fills, and with what.
+#[derive(Debug)]
+pub struct BindingEntry<'a, B: Backend> {
+    /// The binding number the shader converter gave this slot (see the plan, section 6).
+    pub binding: u32,
+    /// Stages that read it; back ends that bind per stage use this.
+    pub stages: StageSet,
+    pub resource: BindingResource<'a, B>,
+}
+
+/// Where in a texture a copy starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub struct Origin {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
+
+/// How much of a texture a copy covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Extent {
+    pub width: u32,
+    pub height: u32,
+    pub depth_or_layers: u32,
+}
+
+/// One subresource region of a texture.
+#[derive(Debug)]
+pub struct TextureRegion<'a, B: Backend> {
+    pub texture: &'a B::Texture,
+    pub mip: u32,
+    /// First layer for array textures, ignored for 3D (use `origin.z`).
+    pub layer: u32,
+    pub origin: Origin,
+    /// Depth or stencil, for combined depth-stencil textures.
+    pub stencil: bool,
+}
+
+/// The buffer side of a copy between a buffer and a texture.
+#[derive(Debug)]
+pub struct CopyBufferTexture<'a, B: Backend> {
+    pub buffer: &'a B::Buffer,
+    pub offset: u64,
+    /// Bytes from one row of blocks to the next.
+    pub row_pitch: u32,
+    /// Rows of blocks from one layer or slice to the next.
+    pub rows_per_layer: u32,
+}
+
+/// What a read back reads.
+#[derive(Debug)]
+pub enum ReadSource<'a, B: Backend> {
+    Buffer {
+        buffer: &'a B::Buffer,
+        offset: u64,
+        size: u64,
+    },
+    /// Rows land tightly packed in guest memory, whatever alignment the back end copies with.
+    Texture {
+        region: TextureRegion<'a, B>,
+        extent: Extent,
+    },
+}
+
+/// Whether a read back has finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadState {
+    Pending,
+    Ready,
+}
+
+/// Kinds of query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum QueryKind {
+    /// Samples that passed depth and stencil; exact only with [`crate::Features::OCCLUSION_COUNT`].
+    Occlusion,
+    /// GPU time in nanoseconds, where [`crate::Features::TIMESTAMPS`] is present.
+    Timestamp,
+}
