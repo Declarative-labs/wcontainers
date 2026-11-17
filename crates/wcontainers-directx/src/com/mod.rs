@@ -79,6 +79,28 @@ pub fn lock() -> ReentrantMutexGuard<'static, ()> {
     LOCK.lock()
 }
 
+/// Runs a creation whose object goes to `out`, which is cleared when it fails, as Direct3D clears it.
+pub fn creating<T: windows::core::Type<T>>(
+    out: OutRef<T>,
+    make: impl FnOnce(OutRef<T>) -> Result<()>,
+) -> Result<()> {
+    // SAFETY: `OutRef` is a transparent pointer.
+    let raw: *mut *mut c_void = unsafe { std::mem::transmute_copy(&out) };
+    let r = make(out);
+    if r.is_err() && !raw.is_null() {
+        unsafe { *raw = std::ptr::null_mut() };
+    }
+    r
+}
+
+/// Gives back one hold of the library's lock whose guard was forgotten.
+///
+/// # Safety
+/// The calling thread holds the lock through a forgotten guard.
+pub unsafe fn unlock() {
+    unsafe { LOCK.force_unlock() }
+}
+
 /// Held through each method of the device and the context: the library's lock and, on leaving, the
 /// front's new slow-path warnings shown.
 pub struct Call<'a> {
@@ -294,6 +316,11 @@ impl Child {
 
     pub fn get_device(&self, out: OutRef<ID3D11Device>) {
         let _ = out.write(Some(self.device().clone()));
+    }
+
+    /// DXGI's parent and device of a resource: its device, as interface `riid`.
+    pub(crate) fn query_device(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
+        unsafe { self.device.query(riid, out).ok() }
     }
 
     pub(crate) fn get_private_data(
