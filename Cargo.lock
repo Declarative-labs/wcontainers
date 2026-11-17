@@ -2628,6 +2628,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-direct3d-12"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "naga",
+ "slab",
+ "wcontainers-directx-graphics-infrastructure",
+ "wcontainers-gpu",
+]
+
+[[package]]
+name = "wcontainers-directx-graphics-infrastructure"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "naga",
+ "wcontainers-gpu",
+]
+
+[[package]]
 name = "wcontainers-gpu"
 version = "0.1.0"
 dependencies = [

@@ -10,6 +10,9 @@ repository.workspace = true
 [dependencies]
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-directx-graphics-infrastructure = { path = "../wcontainers-directx-graphics-infrastructure" }
+blake3 = { version = "1", default-features = false }
+naga = { workspace = true, features = ["wgsl-in"] }
+slab = "0.4"
 
 [lints]
 workspace = true
