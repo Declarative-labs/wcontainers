@@ -98,9 +98,13 @@ mod webgl {
         })
     }
 
-    /// Makes the back end on ANGLE's OpenGL ES 3.0 context, or none if ANGLE cannot make one.
+    /// Makes the back end on ANGLE's OpenGL ES 3.0 context, or none if ANGLE cannot make one. The
+    /// WebGL extensions `WEBGL_OFF` lists (separated by spaces) are taken as missing, as browsers
+    /// without them lack them.
     pub fn make() -> Option<Chosen> {
-        Chosen::on_angle(angle_dir(), &[])
+        let off = std::env::var("WEBGL_OFF").unwrap_or_default();
+        let off: Vec<&str> = off.split_whitespace().collect();
+        Chosen::on_angle(angle_dir(), &off)
             .map_err(|e| eprintln!("wcontainers direct3d 11: no WebGL 2 back end: {e}"))
             .ok()
     }
