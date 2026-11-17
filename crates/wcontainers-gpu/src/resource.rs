@@ -112,6 +112,8 @@ pub struct TextureDesc {
     pub height: u32,
     /// Depth for 3D textures, array layers otherwise (6 per cube).
     pub depth_or_layers: u32,
+    /// From one to the full chain, `floor(log2(largest side)) + 1`, where a 3D texture's depth is a
+    /// side.
     pub mip_levels: u32,
     /// One, or a count [`crate::FormatCaps::takes_samples`] gives the format. A multisampled texture
     /// is 2D with one level and one layer, never a storage texture, and its bytes move only by a draw,
@@ -120,7 +122,8 @@ pub struct TextureDesc {
     pub samples: u32,
     pub usage: TextureUsage,
     /// The layers are cube faces, six per cube (Direct3D's `TEXTURECUBE` flag, Vulkan's cube-compatible
-    /// images, OpenGL's cube map targets). With [`TextureDesc::own_view`] it fixes what a back end that
+    /// images, OpenGL's cube map targets): only of a 2D texture whose width equals its height and whose
+    /// layers are a multiple of six. With [`TextureDesc::own_view`] it fixes what a back end that
     /// must choose a texture's kind at creation (WebGL 2) makes.
     pub cube: bool,
     /// Views may use other colour formats of the same block size (Direct3D's typeless textures). Views
@@ -143,13 +146,19 @@ impl TextureDesc {
     }
 }
 
-/// How a view sees a texture.
+/// How a view sees a texture. Each fits its texture and layer count, as WebGPU, WebGL 2 and Direct3D
+/// all require.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ViewDimension {
+    /// One layer of a 2D texture.
     D2,
+    /// Any layers of a 2D texture.
     D2Array,
+    /// Six layers of a cube texture ([`TextureDesc::cube`]).
     Cube,
+    /// A multiple of six layers of a cube texture.
     CubeArray,
+    /// A 3D texture, its one layer.
     D3,
 }
 

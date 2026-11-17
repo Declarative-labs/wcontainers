@@ -155,7 +155,12 @@ Objects, each made from plain data and named by an associated type of the back e
   A multisampled texture is 2D with one level and one layer, never a storage texture, and its bytes
   move only by draws, resolves and whole-subresource copies between equal sample counts (WebGPU's
   rules; a front holds a multisampled array, such as Direct3D's `Texture2DMSArray`, as one texture per
-  layer). Samplers have no level-of-detail bias, because neither browser API has one (4.12).
+  layer). A cube texture is 2D and square, its layers a multiple of six; a texture has from one level to
+  its full chain, `floor(log2(largest side)) + 1` (a 3D texture's depth counts). A view's dimension fits
+  its texture and layers: `D2` one layer and `D2Array` any of a 2D texture, `Cube` six and `CubeArray`
+  a multiple of six layers of a cube texture, `D3` a 3D texture (WebGPU's view rules, and WebGL 2's and
+  Direct3D's, whose cube kind is fixed when the texture is made). Samplers have no level-of-detail bias,
+  because neither browser API has one (4.12).
 - `create_shader(&ShaderModule)`: a validated `naga::Module` with its entry point, stage and content key.
 - `create_program(&Program)`: vertex plus optional fragment shader, or one compute shader.
 - The state blocks: `create_blend`, `create_depth_stencil`, `create_raster`, `create_vertex_layout`.
