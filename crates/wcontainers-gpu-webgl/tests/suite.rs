@@ -26,9 +26,9 @@ impl wcontainers_gpu_test::Host for Angle {
         0
     }
 
-    /// Surfaces are not built yet, so `present_shows_the_frame` fails before it asks (a known failure).
-    fn shown(_: &mut WebGl, _: u32) -> Vec<u8> {
-        unreachable!("webgl: surfaces are not built yet, so nothing was shown")
+    /// The EGL surface is off-screen, so the back end reads what it presented.
+    fn shown(b: &mut WebGl, _: u32) -> Vec<u8> {
+        b.read_presented()
     }
 }
 

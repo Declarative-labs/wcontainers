@@ -162,8 +162,13 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     if gl.format == DEPTH_STENCIL {
         uses.remove(FormatUse::SAMPLE);
     }
-    if read_as(format, ext).is_some() {
+    // Depth reads back by a draw into a colour texture; the stencil of combined formats not yet.
+    if read_as(format, ext).is_some() || gl.format == DEPTH_COMPONENT {
         uses |= FormatUse::COPY_OUT;
+    }
+    // The canvas's drawing buffer is RGBA8, which surfaces present into.
+    if format == Format::Rgba8Unorm {
+        uses |= FormatUse::PRESENT;
     }
     uses
 }
