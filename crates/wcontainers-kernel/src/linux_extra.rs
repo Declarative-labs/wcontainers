@@ -622,3 +622,8 @@ pub(crate) struct mq_attr {
 /// The longest name a FUSE backend may answer with (`FUSE_NAME_MAX`, Linux's internal
 /// `fs/fuse/fuse_i.h`).
 pub(crate) const FUSE_NAME_MAX: usize = 1024;
+
+// Values from Linux's kernel-side `linux/net.h`, which no uapi header carries.
+
+/// One more than the largest socket kind (`SOCK_PACKET` is 10).
+pub(crate) const SOCK_MAX: u32 = 11;

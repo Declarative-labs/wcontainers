@@ -21,6 +21,7 @@ impl Errno {
     pub const ENOBUFS: Self = Self(errno::ENOBUFS);
     pub const ENOPROTOOPT: Self = Self(errno::ENOPROTOOPT);
     pub const ECONNRESET: Self = Self(errno::ECONNRESET);
+    pub const ECONNABORTED: Self = Self(errno::ECONNABORTED);
     pub const EDOM: Self = Self(errno::EDOM);
     pub const EADDRNOTAVAIL: Self = Self(errno::EADDRNOTAVAIL);
     pub const ENETUNREACH: Self = Self(errno::ENETUNREACH);

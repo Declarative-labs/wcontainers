@@ -21,6 +21,7 @@ mod linux_extra;
 mod loader;
 mod locks;
 mod memory;
+pub mod network;
 mod pipe;
 mod process;
 mod schedule;

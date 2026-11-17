@@ -85,6 +85,18 @@ pub mod reason {
     pub const FAMILY_NOT_BUILT: &str = "socket family not built";
     /// A socket option that is not built. Detail: the level times 2^32 plus the option.
     pub const OPTION_NOT_BUILT: &str = "socket option not built";
+    /// A socket of a built family whose kind or protocol is not built: raw packets, ping, SCTP,
+    /// MPTCP, UDP-Lite (plan section 15). Answered as Linux without the power or the protocol.
+    /// Detail: the family times 2^32, plus the kind times 2^16, plus the protocol.
+    pub const PROTOCOL_NOT_BUILT: &str = "socket protocol not built";
+    /// A TCP send found no room: how much a connection holds is a fixed model here (the sender's
+    /// SO_SNDBUF of unread bytes), where Linux's depends on timing (window and buffer growth).
+    /// Detail: none.
+    pub const TCP_ROOM_MODELLED: &str = "tcp room modelled";
+    /// A TCP connect found the listener's backlog full: it waits for room and completes when an
+    /// accept makes some, where Linux drops the handshake and retries after 1, 3, 7 seconds and so
+    /// on. Detail: none.
+    pub const TCP_BACKLOG_WAIT: &str = "tcp connect waits for backlog room";
     /// A notice from the backend that Linux refuses, with nothing done: a body of the wrong size,
     /// or a DELETE whose parent and name are not the child's. Linux answers the backend's write of
     /// it with the error; no hook carries that back. Detail: the notice's code times 2^32 plus the
@@ -119,6 +131,7 @@ pub mod reason {
         CROSS_PROCESS_NOT_BUILT,
         FAMILY_NOT_BUILT,
         OPTION_NOT_BUILT,
+        PROTOCOL_NOT_BUILT,
     ];
 }
 

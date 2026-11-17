@@ -1,7 +1,12 @@
 //! Sockets, as Linux's `net/socket.c` and, for local sockets, `net/unix/af_unix.c`: each socket
 //! is an inode of its own on sockfs, its file a descriptor of it. Local sockets of every kind
 //! (stream, datagram, sequenced packets) carry bytes, descriptors (SCM_RIGHTS) and credentials
-//! (SCM_CREDENTIALS) between processes wholly inside the kernel.
+//! (SCM_CREDENTIALS) between processes wholly inside the kernel. Internet sockets are in
+//! [`inet`].
+
+mod inet;
+
+pub(crate) use inet::Ports;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::{Rc, Weak};
@@ -13,8 +18,8 @@ use crate::file::{FileRef, OpenFile};
 use crate::fs::{Content, Node};
 use crate::linux::general::*;
 use crate::linux::net::{
-    AF_UNIX, MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_DONTWAIT, MSG_NOSIGNAL, MSG_OOB, MSG_PEEK,
-    MSG_TRUNC, MSG_WAITALL, SCM_CREDENTIALS, SCM_RIGHTS, SHUT_RDWR, SOCK_DGRAM, SOCK_RAW,
+    AF_INET, AF_INET6, AF_UNIX, MSG_CMSG_CLOEXEC, MSG_CTRUNC, MSG_DONTWAIT, MSG_NOSIGNAL, MSG_OOB,
+    MSG_PEEK, MSG_TRUNC, MSG_WAITALL, SCM_CREDENTIALS, SCM_RIGHTS, SHUT_RDWR, SOCK_DGRAM, SOCK_RAW,
     SOCK_SEQPACKET, SOCK_STREAM, SOL_SOCKET,
 };
 use crate::process::{Channel, Pid, Tid};
@@ -27,9 +32,10 @@ const RCV_SHUTDOWN: u8 = 1;
 const SEND_SHUTDOWN: u8 = 2;
 const SHUTDOWN_MASK: u8 = 3;
 
-/// `net.core.wmem_default`, `rmem_default` and their largest settable values (measured).
+/// `net.core.wmem_default`, `rmem_default` and `wmem_max`, `rmem_max`, the largest settable
+/// values (measured).
 const DEFAULT_BUFFER: u64 = 212_992;
-const MAX_BUFFER: u64 = 212_992;
+const MAX_BUFFER: u64 = 4_194_304;
 /// `SOCK_MIN_SNDBUF` and `SOCK_MIN_RCVBUF` on ARM64.
 const MIN_SNDBUF: u64 = 4608;
 const MIN_RCVBUF: u64 = 2304;
@@ -63,6 +69,8 @@ struct Packet {
     cred: Cred,
     sender: Weak<RefCell<Socket>>,
     truesize: u64,
+    /// Where an internet datagram came from.
+    source: Option<inet::Endpoint>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +116,10 @@ pub(crate) struct Socket {
     /// `SO_RCVTIMEO` and `SO_SNDTIMEO`, in nanoseconds; 0 waits for ever.
     receive_timeout: u64,
     send_timeout: u64,
+    /// The effective user that bound it, for SO_REUSEPORT.
+    owner_uid: u32,
+    /// An internet socket's own part.
+    inet: Option<alloc::boxed::Box<inet::Inet>>,
 }
 
 impl Socket {
@@ -139,6 +151,8 @@ impl Socket {
             peek_offset: None,
             receive_timeout: 0,
             send_timeout: 0,
+            owner_uid: 0,
+            inet: None,
         }
     }
 
@@ -153,6 +167,8 @@ impl Socket {
 pub(crate) struct Names {
     abstract_names: BTreeMap<(u32, Vec<u8>), Weak<RefCell<Socket>>>,
     paths: BTreeMap<(u64, u64), Weak<RefCell<Socket>>>,
+    /// The ports internet sockets hold.
+    inet: Ports,
 }
 
 /// The address waits and epoll use for a socket.
@@ -254,6 +270,33 @@ fn unix_kind(kind: u32, protocol: u32) -> Result<u32, Errno> {
     }
 }
 
+/// `__sock_create`: a socket of a family and kind, or what Linux answers.
+fn create(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    family: u64,
+    kind: u32,
+    protocol: u64,
+) -> Result<Socket, Errno> {
+    let family = family as u32;
+    if family >= crate::linux::net::AF_MAX {
+        return Err(Errno::EAFNOSUPPORT);
+    }
+    if kind >= crate::linux_extra::SOCK_MAX {
+        return Err(Errno::EINVAL);
+    }
+    match family {
+        AF_UNIX => Ok(Socket::new(family, unix_kind(kind, protocol as u32)?, 0)),
+        AF_INET | AF_INET6 => inet::create(kernel, cx, family, kind, protocol as u32),
+        _ => Err(kernel.counters.refuse(
+            cx.host,
+            crate::reason::FAMILY_NOT_BUILT,
+            family.into(),
+            Errno::EAFNOSUPPORT,
+        )),
+    }
+}
+
 pub(super) fn socket(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -261,20 +304,7 @@ pub(super) fn socket(
     [family, kind, protocol, ..]: Args,
 ) -> Result<u64, Errno> {
     let (kind, flags) = kind_and_flags(kind)?;
-    let family = family as u32;
-    if family >= crate::linux::net::AF_MAX {
-        return Err(Errno::EAFNOSUPPORT);
-    }
-    if family != AF_UNIX {
-        return Err(kernel.counters.refuse(
-            cx.host,
-            crate::reason::FAMILY_NOT_BUILT,
-            family.into(),
-            Errno::EAFNOSUPPORT,
-        ));
-    }
-    let kind = unix_kind(kind, protocol as u32)?;
-    let socket = Rc::new(RefCell::new(Socket::new(family, kind, 0)));
+    let socket = Rc::new(RefCell::new(create(kernel, cx, family, kind, protocol)?));
     let file = make_file(kernel, cx, tid, socket, flags)?;
     install(kernel, tid, file, flags & O_CLOEXEC != 0)
 }
@@ -286,20 +316,12 @@ pub(super) fn socketpair(
     [family, kind, protocol, pair, ..]: Args,
 ) -> Result<u64, Errno> {
     let (kind, flags) = kind_and_flags(kind)?;
-    let family = family as u32;
-    if family >= crate::linux::net::AF_MAX {
-        return Err(Errno::EAFNOSUPPORT);
+    let made = create(kernel, cx, family, kind, protocol)?;
+    if made.family != AF_UNIX {
+        // Other families' `socketpair` is `sock_no_socketpair`.
+        return Err(Errno::EOPNOTSUPP);
     }
-    if family != AF_UNIX {
-        // Linux's other families answer EOPNOTSUPP to a pair once made.
-        return Err(kernel.counters.refuse(
-            cx.host,
-            crate::reason::FAMILY_NOT_BUILT,
-            family.into(),
-            Errno::EAFNOSUPPORT,
-        ));
-    }
-    let kind = unix_kind(kind, protocol as u32)?;
+    let (family, kind) = (made.family, made.kind);
     let cred = own_cred(kernel, tid);
     let ends = [(); 2].map(|()| Rc::new(RefCell::new(Socket::new(family, kind, 0))));
     for (one, other) in [(0, 1), (1, 0)] {
@@ -398,6 +420,10 @@ pub(super) fn bind(
     [fd, address, length, ..]: Args,
 ) -> Result<u64, Errno> {
     let (file, socket) = socket_of(kernel, tid, fd)?;
+    if socket.borrow().inet.is_some() {
+        let bytes = address_argument(kernel, cx, tid, address, length)?;
+        return inet::bind(kernel, cx, tid, &socket, &bytes);
+    }
     // `unix_bind`: the address is checked before the socket's state.
     let length_ok = (length as i32) >= PATH_OFFSET as i32;
     if !length_ok {
@@ -457,6 +483,24 @@ pub(super) fn bind(
             Ok(0)
         }
     }
+}
+
+/// `move_addr_to_kernel`: an address of at most a `sockaddr_storage`.
+fn address_argument(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    address: u64,
+    length: u64,
+) -> Result<Vec<u8>, Errno> {
+    let length = length as i32;
+    if !(0..=128).contains(&length) {
+        return Err(Errno::EINVAL);
+    }
+    if length == 0 {
+        return Ok(Vec::new());
+    }
+    guest(kernel, cx, tid).read(address, length as u64)
 }
 
 fn node_key(node: &Node) -> (u64, u64) {
@@ -542,13 +586,16 @@ fn find(
 
 pub(super) fn listen(
     kernel: &mut Kernel,
-    _: &mut Context<'_>,
+    cx: &mut Context<'_>,
     tid: Tid,
     [fd, backlog, ..]: Args,
 ) -> Result<u64, Errno> {
     let (_, socket) = socket_of(kernel, tid, fd)?;
     // `__sys_listen`: the backlog is capped at `net.core.somaxconn`.
     let backlog = (backlog as i32).min(4096);
+    if socket.borrow().inet.is_some() {
+        return inet::listen(kernel, cx, tid, &socket, backlog);
+    }
     let cred = peer_cred(kernel, tid);
     let mut listener = socket.borrow_mut();
     if !listener.connection() {
@@ -571,6 +618,10 @@ pub(super) fn connect(
     [fd, address, length, ..]: Args,
 ) -> Result<u64, Errno> {
     let (file, socket) = socket_of(kernel, tid, fd)?;
+    if socket.borrow().inet.is_some() {
+        let bytes = address_argument(kernel, cx, tid, address, length)?;
+        return inet::connect(kernel, cx, tid, &file, &socket, &bytes);
+    }
     if (length as i32) < PATH_OFFSET as i32 {
         return Err(Errno::EINVAL);
     }
@@ -685,14 +736,22 @@ pub(super) fn accept4(
     };
     // Room in the backlog for one more connecting socket.
     kernel.wake_poll(channel(&socket), EPOLLOUT | EPOLLWRNORM);
+    let is_inet = socket.borrow().inet.is_some();
+    if is_inet {
+        inet::accepted(kernel, &socket);
+    }
     let new = make_file(kernel, cx, tid, embryo.clone(), flags)?;
     if address != 0 {
-        let peer_name = embryo
-            .borrow()
-            .peer
-            .as_ref()
-            .and_then(|peer| peer.borrow().name.clone());
-        let bytes = address_bytes(peer_name.as_deref());
+        let bytes = if is_inet {
+            inet::peer_bytes(&embryo)
+        } else {
+            let peer_name = embryo
+                .borrow()
+                .peer
+                .as_ref()
+                .and_then(|peer| peer.borrow().name.clone());
+            address_bytes(peer_name.as_deref())
+        };
         put_address(kernel, cx, tid, address, length, &bytes)?;
     }
     install(kernel, tid, new, flags & O_CLOEXEC != 0)
@@ -740,7 +799,11 @@ pub(super) fn getsockname(
     [fd, address, length, ..]: Args,
 ) -> Result<u64, Errno> {
     let (_, socket) = socket_of(kernel, tid, fd)?;
-    let bytes = address_bytes(socket.borrow().name.as_deref());
+    let bytes = if socket.borrow().inet.is_some() {
+        inet::name(&socket, false)?
+    } else {
+        address_bytes(socket.borrow().name.as_deref())
+    };
     put_address(kernel, cx, tid, address, length, &bytes)?;
     Ok(0)
 }
@@ -752,6 +815,11 @@ pub(super) fn getpeername(
     [fd, address, length, ..]: Args,
 ) -> Result<u64, Errno> {
     let (_, socket) = socket_of(kernel, tid, fd)?;
+    if socket.borrow().inet.is_some() {
+        let bytes = inet::name(&socket, true)?;
+        put_address(kernel, cx, tid, address, length, &bytes)?;
+        return Ok(0);
+    }
     let peer = socket.borrow().peer.clone().ok_or(Errno::ENOTCONN)?;
     let bytes = address_bytes(peer.borrow().name.as_deref());
     put_address(kernel, cx, tid, address, length, &bytes)?;
@@ -771,6 +839,9 @@ pub(super) fn shutdown(
     }
     // SHUT_RD, SHUT_WR, SHUT_RDWR as bits.
     let mode = (how + 1) as u8;
+    if socket.borrow().inet.is_some() {
+        return inet::shutdown(kernel, &socket, mode);
+    }
     let peer = {
         let mut own = socket.borrow_mut();
         own.shutdown |= mode;
@@ -795,6 +866,9 @@ pub(super) fn shutdown(
 
 /// `unix_poll` and `unix_dgram_poll`.
 pub(super) fn poll(socket: &SocketRef) -> u16 {
+    if socket.borrow().inet.is_some() {
+        return inet::poll(socket);
+    }
     let own = socket.borrow();
     let mut mask = 0u32;
     if own.error != 0 {
@@ -838,6 +912,9 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
 /// a connection sees it shut down (and reset if it left bytes unread), waiting connections are
 /// refused, and what its queue held is let go.
 pub(crate) fn released(kernel: &mut Kernel, socket: &SocketRef) {
+    if socket.borrow().inet.is_some() {
+        return inet::released(kernel, socket);
+    }
     let (peer, backlog, queue, unread, connection) = {
         let mut own = socket.borrow_mut();
         own.dead = true;
@@ -944,6 +1021,8 @@ fn stream_piece(size: u64, sndbuf: u64) -> (u64, u64) {
 struct Outgoing {
     parts: Vec<(u64, u64)>,
     name: Option<Name>,
+    /// An internet socket's destination as the program gave it.
+    address: Option<Vec<u8>>,
     files: Vec<FileRef>,
     cred: Option<Cred>,
     flags: u32,
@@ -961,11 +1040,16 @@ fn send(
 ) -> Result<u64, Errno> {
     let total: u64 = message.parts.iter().map(|(_, length)| length).sum();
     let nonblocking = message.flags & MSG_DONTWAIT != 0 || file.borrow().flags & O_NONBLOCK != 0;
-    if message.flags & MSG_OOB != 0 && socket.borrow().kind != SOCK_STREAM {
+    if message.flags & MSG_OOB != 0
+        && socket.borrow().kind != SOCK_STREAM
+        && socket.borrow().inet.is_none()
+    {
         return Err(Errno::EOPNOTSUPP);
     }
     let kind = socket.borrow().kind;
+    let is_inet = socket.borrow().inet.is_some();
     let result = match kind {
+        _ if is_inet => inet::send(kernel, cx, tid, socket, &message, total, nonblocking),
         SOCK_STREAM => {
             if message.flags & MSG_OOB != 0 {
                 return Err(kernel.counters.refuse_flag(
@@ -979,7 +1063,8 @@ fn send(
         }
         _ => send_packet(kernel, cx, tid, socket, &message, total, nonblocking),
     };
-    if result == Err(Errno::EPIPE) && message.flags & MSG_NOSIGNAL == 0 {
+    let stream = kind == SOCK_STREAM || !is_inet;
+    if result == Err(Errno::EPIPE) && message.flags & MSG_NOSIGNAL == 0 && stream {
         let process = kernel.process_of(tid);
         let info = crate::signal::sender_info(
             SIGPIPE,
@@ -1095,6 +1180,7 @@ fn send_stream(
             sender: Rc::downgrade(socket),
             truesize: truesize(size - pages, pages),
             data,
+            source: None,
         };
         files_sent = true;
         socket.borrow_mut().written += packet.truesize;
@@ -1215,6 +1301,7 @@ fn send_packet(
         sender: Rc::downgrade(socket),
         truesize: truesize(total.saturating_sub(pages), pages),
         data,
+        source: None,
     };
     socket.borrow_mut().written += packet.truesize;
     target.borrow_mut().queue.push_back(packet);
@@ -1228,6 +1315,8 @@ struct Received {
     files: Vec<FileRef>,
     cred: Option<Cred>,
     name: Option<Option<Vec<u8>>>,
+    /// An internet sender's address, as the receiving socket's family shows it.
+    address: Option<Vec<u8>>,
     flags: u32,
     /// The length to report (a datagram's whole length with MSG_TRUNC).
     reported: Option<u64>,
@@ -1246,6 +1335,9 @@ fn receive(
 ) -> Result<(u64, Received), Errno> {
     let nonblocking = flags & MSG_DONTWAIT != 0 || file.borrow().flags & O_NONBLOCK != 0;
     let kind = socket.borrow().kind;
+    if socket.borrow().inet.is_some() {
+        return inet::receive(kernel, cx, tid, socket, parts, flags, nonblocking);
+    }
     if flags & MSG_OOB != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
@@ -1337,11 +1429,26 @@ fn receive_stream(
     nonblocking: bool,
 ) -> Result<(u64, Received), Errno> {
     let peek = flags & MSG_PEEK != 0;
+    let is_inet = socket.borrow().inet.is_some();
+    // SO_RCVLOWAT, kept for every socket, is how much a TCP read waits for.
+    let low = if is_inet {
+        socket
+            .borrow()
+            .options
+            .get(&(SOL_SOCKET, crate::linux::net::SO_RCVLOWAT))
+            .map_or(1, |value| {
+                i32::from_le_bytes(value[..4].try_into().expect("4 bytes")).max(1) as u64
+            })
+    } else {
+        1
+    };
     let target = if flags & MSG_WAITALL != 0 {
         size
     } else {
-        1.min(size)
+        low.min(size)
     };
+    // A TCP read with MSG_TRUNC throws the bytes away.
+    let discard = is_inet && flags & MSG_TRUNC != 0;
     let mut copied = kernel.threads[&tid].call.progress;
     let mut received = Received::default();
     let check_creds = socket.borrow().passcred;
@@ -1380,6 +1487,10 @@ fn receive_stream(
                 break;
             }
             let own = socket.borrow();
+            // TCP: the other end's FIN comes before a pending error (`SOCK_DONE`).
+            if own.inet.as_deref().is_some_and(|inet| inet.done) {
+                break;
+            }
             if own.error != 0 {
                 let error = own.error;
                 drop(own);
@@ -1419,7 +1530,8 @@ fn receive_stream(
             received.name = Some(sender.and_then(|sender| sender.borrow().name.clone()));
         }
         let chunk = (data.len() as u64).min(size - copied);
-        if scatter_at(kernel, cx, tid, parts, copied, &data[..chunk as usize]).is_err() {
+        if !discard && scatter_at(kernel, cx, tid, parts, copied, &data[..chunk as usize]).is_err()
+        {
             if copied == 0 {
                 return Err(Errno::EFAULT);
             }
@@ -1527,6 +1639,7 @@ pub(super) fn write(
     let message = Outgoing {
         parts: parts.to_vec(),
         name: None,
+        address: None,
         files: Vec::new(),
         cred: None,
         flags: 0,
@@ -1545,14 +1658,22 @@ pub(super) fn sendto(
     if !crate::user::access_ok(buffer, length) {
         return Err(Errno::EFAULT);
     }
-    let name = if address != 0 {
-        Some(read_name(kernel, cx, tid, address, address_length)?)
+    let is_inet = socket.borrow().inet.is_some();
+    let (name, address) = if address == 0 {
+        (None, None)
+    } else if is_inet {
+        let bytes = address_argument(kernel, cx, tid, address, address_length)?;
+        (None, Some(bytes))
     } else {
-        None
+        (
+            Some(read_name(kernel, cx, tid, address, address_length)?),
+            None,
+        )
     };
     let message = Outgoing {
         parts: alloc::vec![(buffer, length)],
         name,
+        address,
         files: Vec::new(),
         cred: None,
         flags: flags as u32,
@@ -1576,10 +1697,15 @@ pub(super) fn recvfrom(
     kernel.released.extend(received.files);
     if address != 0 {
         // A sender with no name gives a length of 0 (`unix_copy_addr`).
-        let bytes = match received.name.flatten() {
-            Some(name) => address_bytes(Some(&name)),
-            None => Vec::new(),
-        };
+        let bytes = received
+            .address
+            .or_else(|| {
+                received
+                    .name
+                    .flatten()
+                    .map(|name| address_bytes(Some(&name)))
+            })
+            .unwrap_or_default();
         put_address(kernel, cx, tid, address, address_length, &bytes)?;
     }
     Ok(received.reported.unwrap_or(copied))
@@ -1705,7 +1831,14 @@ pub(super) fn sendmsg(
 ) -> Result<u64, Errno> {
     let (file, socket) = socket_of(kernel, tid, fd)?;
     let header = read_header(kernel, cx, tid, header)?;
-    let name = if header.name != 0 && header.name_length != 0 {
+    let is_inet = socket.borrow().inet.is_some();
+    let address = if is_inet && header.name != 0 && header.name_length != 0 {
+        let length = header.name_length.min(128) as u64;
+        Some(address_argument(kernel, cx, tid, header.name, length)?)
+    } else {
+        None
+    };
+    let name = if !is_inet && header.name != 0 && header.name_length != 0 {
         Some(read_name(
             kernel,
             cx,
@@ -1720,6 +1853,7 @@ pub(super) fn sendmsg(
     let message = Outgoing {
         parts: header.parts,
         name,
+        address,
         files,
         cred,
         flags: flags as u32,
@@ -1741,10 +1875,16 @@ pub(super) fn recvmsg(
     let mut out_flags = received.flags | (flags & MSG_CMSG_CLOEXEC);
     // The sender's name.
     let mut name_length = 0i32;
+    let sender = received.address.clone().or_else(|| {
+        received
+            .name
+            .clone()
+            .flatten()
+            .map(|name| address_bytes(Some(&name)))
+    });
     if header.name != 0
-        && let Some(name) = received.name.clone().flatten()
+        && let Some(bytes) = sender
     {
-        let bytes = address_bytes(Some(&name));
         let room = (header.name_length.max(0) as usize).min(bytes.len());
         guest(kernel, cx, tid).write(header.name, &bytes[..room])?;
         name_length = bytes.len() as i32;
@@ -1752,7 +1892,7 @@ pub(super) fn recvmsg(
     // Control messages: credentials when asked for, then descriptors.
     let mut control = Vec::new();
     let room = header.control_length as usize;
-    let passcred = socket.borrow().passcred;
+    let passcred = socket.borrow().passcred && socket.borrow().inet.is_none();
     if passcred {
         let cred = received.cred.unwrap_or(Cred {
             pid: 0,
@@ -1834,7 +1974,12 @@ pub(super) fn setsockopt(
     if length < 0 {
         return Err(Errno::EINVAL);
     }
-    if level != SOL_SOCKET {
+    if socket.borrow().inet.is_some() {
+        let bytes = guest(kernel, cx, tid).read(value, (length as u64).min(64))?;
+        if let Some(answer) = inet::set_option(kernel, cx, &socket, level, name, &bytes) {
+            return answer;
+        }
+    } else if level != SOL_SOCKET {
         return Err(Errno::EOPNOTSUPP);
     }
     use crate::linux::net::*;
@@ -1937,7 +2082,25 @@ pub(super) fn getsockopt(
     if room < 0 {
         return Err(Errno::EINVAL);
     }
-    if level != SOL_SOCKET {
+    if socket.borrow().inet.is_some() {
+        if let Some(answer) = inet::get_option(kernel, cx, &socket, level, name) {
+            let bytes = answer?;
+            // `ip_getsockopt` gives a small value in one byte to a buffer shorter than an int.
+            let small = level == crate::linux::net::SOL_IP
+                && bytes.len() == 4
+                && (room as usize) < 4
+                && room > 0
+                && (0..=255).contains(&i32::from_le_bytes(bytes[..4].try_into().expect("4 bytes")));
+            let copied = if small {
+                1
+            } else {
+                (room as usize).min(bytes.len())
+            };
+            guest(kernel, cx, tid).write(value, &bytes[..copied])?;
+            guest(kernel, cx, tid).write_value(length, &(copied as i32))?;
+            return Ok(0);
+        }
+    } else if level != SOL_SOCKET {
         return Err(Errno::EOPNOTSUPP);
     }
     use crate::linux::net::*;
