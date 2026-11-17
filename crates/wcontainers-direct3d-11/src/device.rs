@@ -282,10 +282,17 @@ impl<B: Backend> Device<B> {
             not_implemented("a format the back end lacks")
         } else if has.contains(needs) {
             Ok(())
-        } else {
+        } else if (needs.contains(FormatUse::DEPTH_STENCIL) && !format.is_depth_stencil())
+            || (needs.contains(FormatUse::RENDER)
+                && (format.is_depth_stencil() || format.block().0 > 1))
+        {
+            // Direct3D's own rule: depth formats are bound for depth only, block formats never
+            // as targets.
             Err(Error::InvalidArg(
                 "the format does not support the bind flags",
             ))
+        } else {
+            not_implemented("a use of a format the back end lacks")
         }
     }
 
