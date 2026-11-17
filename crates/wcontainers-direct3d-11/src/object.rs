@@ -89,8 +89,9 @@ pub enum Staged<B: Backend> {
     Current,
     /// The GPU wrote it since the shadow was filled; no read back started.
     Written,
-    /// The GPU wrote it, and the read back started after that write.
-    Reading(B::Readback),
+    /// The GPU wrote it, and the read back started after that write: of the whole, or for a format
+    /// with depth and stencil of the depth, then of the stencil.
+    Reading(B::Readback, Option<B::Readback>),
 }
 
 impl<B: Backend> Buffer<B> {
@@ -148,6 +149,17 @@ impl<B: Backend> Texture<B> {
             self.region(mip, layer, Origin { x: 0, y: 0, z: 0 }),
             self.mip_extent(mip),
         ))
+    }
+
+    /// The stencil aspect of subresource `sub` whole, for a format with depth and stencil, whose
+    /// aspects the back end reads and writes apart.
+    pub fn stencil_region(&self, sub: u32) -> Option<(TextureRegion<'_, B>, Extent)> {
+        if self.format.kind() != FormatKind::DepthStencil {
+            return None;
+        }
+        let (mut region, extent) = self.whole(sub)?;
+        region.stencil = true;
+        Some((region, extent))
     }
 
     /// Bytes of a row, rows of a slice, and slices of mip `mip`, tightly packed.

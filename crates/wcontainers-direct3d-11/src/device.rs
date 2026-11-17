@@ -772,6 +772,26 @@ impl<B: Backend> Device<B> {
         let row_pitch = if rows == 1 { row } else { data.row_pitch };
         let slice_pitch = data.slice_pitch;
         let depth = extent.depth_or_layers;
+        if format.kind() == FormatKind::DepthStencil {
+            // Each aspect apart, from the rows packed (depth-stencil textures are 2D: one slice).
+            let texel = format.block().2;
+            let mut packed = Vec::with_capacity((row * rows) as usize);
+            for y in 0..rows {
+                let at = (y * row_pitch) as usize;
+                packed.extend_from_slice(&data.bytes[at..at + row as usize]);
+            }
+            let (d, s) = crate::context::split_depth_stencil(texel, &packed);
+            let texels = row / texel;
+            let stencil = TextureRegion {
+                stencil: true,
+                ..*region
+            };
+            self.backend
+                .write_texture(region, extent, &d, texels * 4, rows, WriteMode::Ordered);
+            self.backend
+                .write_texture(&stencil, extent, &s, texels, rows, WriteMode::Ordered);
+            return;
+        }
         if row_pitch < row || (depth > 1 && slice_pitch < row_pitch * rows) {
             // Rows or slices laid over each other (a pitch of zero repeats one), packed apart.
             self.backend.slow_paths().hit(SlowPath::RowsRepacked);

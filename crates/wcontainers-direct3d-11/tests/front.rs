@@ -975,6 +975,49 @@ fn a_new_pair_is_built_ahead_with_the_states_its_vertex_shader_was_drawn_with() 
 }
 
 #[test]
+fn staging_depth_with_stencil_moves_both_aspects_in_direct3ds_layout() {
+    // D24_UNORM_S8_UINT (four bytes a texel) and D32_FLOAT_S8X24_UINT (eight).
+    for (format, texel) in [(45u32, 4usize), (20, 8)] {
+        let mut dev = device();
+        let desc = TextureDesc {
+            usage: usage::STAGING,
+            bind_flags: 0,
+            cpu_access_flags: cpu::READ | cpu::WRITE,
+            ..tex2d(2, 2, format, 0)
+        };
+        let a = Resource::Texture(dev.create_texture(&desc, &[]).unwrap());
+        let b = Resource::Texture(dev.create_texture(&desc, &[]).unwrap());
+        // Every texel distinct in depth and stencil (the unused bytes of D32_FLOAT_S8X24 zero).
+        let bytes: Vec<u8> = (0..4u8)
+            .flat_map(|i| {
+                let mut t = vec![0u8; texel];
+                t[..4].copy_from_slice(&[0x10 + i, 0x20 + i, 0x30 + i, 0x40 + i]);
+                if texel == 8 {
+                    t[4] = 0x50 + i;
+                }
+                t
+            })
+            .collect();
+        let mapped = dev.map(&a, 0, map::WRITE, 0).unwrap();
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.data, bytes.len()) };
+        let from = dev.backend.log.len();
+        dev.unmap(&a, 0);
+        let writes = dev.backend.log[from..]
+            .iter()
+            .filter(|l| l.starts_with("write_texture "))
+            .count();
+        assert_eq!(writes, 2, "one write per aspect");
+        dev.copy_resource(&b, &a).unwrap();
+        let mapped = dev.map(&b, 0, map::READ, 0).unwrap();
+        assert_eq!(mapped.row_pitch as usize, 2 * texel);
+        let back = unsafe { std::slice::from_raw_parts(mapped.data, bytes.len()) }.to_vec();
+        dev.unmap(&b, 0);
+        assert_eq!(back, bytes, "format {format}");
+        assert!(dev.removed.is_none());
+    }
+}
+
+#[test]
 fn a_back_end_loss_reaches_the_program_where_it_waits() {
     let mut dev = device();
     let desc = BufferDesc {

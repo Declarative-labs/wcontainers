@@ -258,6 +258,26 @@ enum Range {
     },
 }
 
+/// Texels of Direct3D's layout of a format with depth and stencil, `texel` bytes each
+/// (D24_UNORM_S8_UINT: depth in the low 24 bits of a word, stencil in its high byte;
+/// D32_FLOAT_S8X24_UINT: the float, the stencil byte, three unused), as the back end takes them:
+/// depth in four bytes per texel (24-bit depth in the low bits of a word), stencil in one.
+pub(crate) fn split_depth_stencil(texel: u32, bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let n = bytes.len() / texel as usize;
+    let mut depth = Vec::with_capacity(n * 4);
+    let mut stencil = Vec::with_capacity(n);
+    for c in bytes.chunks_exact(texel as usize) {
+        if texel == 4 {
+            depth.extend_from_slice(&[c[0], c[1], c[2], 0]);
+            stencil.push(c[3]);
+        } else {
+            depth.extend_from_slice(&c[..4]);
+            stencil.push(c[4]);
+        }
+    }
+    (depth, stencil)
+}
+
 /// Bytes of one indirect draw's arguments: four words, five for an indexed draw.
 const fn indirect_bytes(indexed: bool) -> u32 {
     if indexed { 20 } else { 16 }
@@ -2042,7 +2062,8 @@ impl<B: Backend> Device<B> {
                         size: u64::from(d.byte_width),
                     };
                     let mut staged = b.staged.borrow_mut();
-                    self.refresh(&mut staged, &src, &mut b.shadow.borrow_mut(), reads, wait)?;
+                    let shadow = &mut b.shadow.borrow_mut();
+                    self.refresh(&mut staged, &src, None, shadow, reads, wait)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(b) as usize, 0, kind));
                 let data = b.shadow.borrow_mut().as_mut_ptr();
@@ -2069,12 +2090,17 @@ impl<B: Backend> Device<B> {
                 };
                 let (row, rows, _) = t.packed(region.mip);
                 let src = ReadSource::Texture { region, extent };
+                let stencil = t.stencil_region(sub);
                 let mut shadow = t.shadow.borrow_mut();
                 let mut staged = t.staged.borrow_mut();
                 let s = sub as usize;
                 // A dynamic texture's shadow is the program's to fill; nothing is read back.
                 if d.usage == usage::STAGING {
-                    self.refresh(&mut staged[s], &src, &mut shadow[s], reads, wait)?;
+                    let stencil =
+                        stencil.map(|(region, extent)| ReadSource::Texture { region, extent });
+                    let texel = t.format.block().2 as usize;
+                    let stencil = stencil.as_ref().map(|s| (s, texel));
+                    self.refresh(&mut staged[s], &src, stencil, &mut shadow[s], reads, wait)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(t) as usize, sub, kind));
                 Ok(Mapped {
@@ -2099,7 +2125,7 @@ impl<B: Backend> Device<B> {
                 offset: 0,
                 size: u64::from(b.desc.byte_width),
             });
-            Staged::Reading(self.gpu(r)?)
+            Staged::Reading(self.gpu(r)?, None)
         } else {
             Staged::Written
         };
@@ -2117,7 +2143,17 @@ impl<B: Backend> Device<B> {
             let r = self
                 .backend
                 .read_back(&ReadSource::Texture { region, extent });
-            Staged::Reading(self.gpu(r)?)
+            let r = self.gpu(r)?;
+            let stencil = match t.stencil_region(sub) {
+                Some((region, extent)) => {
+                    let s = self
+                        .backend
+                        .read_back(&ReadSource::Texture { region, extent });
+                    Some(self.gpu(s)?)
+                }
+                None => None,
+            };
+            Staged::Reading(r, stencil)
         } else {
             Staged::Written
         };
@@ -2126,39 +2162,80 @@ impl<B: Backend> Device<B> {
     }
 
     /// Brings a staging subresource's shadow up to the GPU's bytes before a map hands it out: the
-    /// read back started at the copy, or one started now; a write-only map that needs it is
+    /// read back started at the copy, or one started now from `src` (and from `stencil`, the stencil
+    /// aspect of a format with depth and stencil, with the bytes of the shadow's texels); a write-only map that needs it is
     /// `StagingRefreshed`. Without `wait`, a read back not yet done answers `StillDrawing` (after
     /// submitting, so it gets done).
     fn refresh(
         &mut self,
         staged: &mut Staged<B>,
         src: &ReadSource<'_, B>,
+        stencil: Option<(&ReadSource<'_, B>, usize)>,
         shadow: &mut [u8],
         reads: bool,
         wait: bool,
     ) -> Result<()> {
-        let rb = match std::mem::replace(staged, Staged::Current) {
+        let (rb, stencil_rb) = match std::mem::replace(staged, Staged::Current) {
             Staged::Current => return Ok(()),
             Staged::Written => {
                 self.settle();
                 let r = self.backend.read_back(src);
-                self.gpu(r)?
+                let r = self.gpu(r)?;
+                let s = match stencil {
+                    Some((src, _)) => {
+                        let s = self.backend.read_back(src);
+                        Some(self.gpu(s)?)
+                    }
+                    None => None,
+                };
+                (r, s)
             }
-            Staged::Reading(rb) => rb,
+            Staged::Reading(rb, s) => (rb, s),
         };
-        if self.backend.read_state(&rb) == ReadState::Pending {
+        let pending = self.backend.read_state(&rb) == ReadState::Pending
+            || stencil_rb
+                .as_ref()
+                .is_some_and(|s| self.backend.read_state(s) == ReadState::Pending);
+        if pending {
             if !wait {
-                *staged = Staged::Reading(rb);
+                *staged = Staged::Reading(rb, stencil_rb);
                 self.flush();
                 return Err(Error::StillDrawing);
             }
             self.backend.slow_paths().hit(SlowPath::ReadBackWait);
             self.backend.wait_read(&rb);
+            if let Some(s) = &stencil_rb {
+                self.backend.wait_read(s);
+            }
         }
         if !reads {
             self.backend.slow_paths().hit(SlowPath::StagingRefreshed);
         }
-        self.backend.finish_read(rb, shadow);
+        match stencil_rb {
+            None => self.backend.finish_read(rb, shadow),
+            Some(s) => {
+                // Direct3D's layouts: D24_UNORM_S8_UINT is depth in the low 24 bits of a word and
+                // stencil in its high byte; D32_FLOAT_S8X24_UINT is the float, the stencil byte and
+                // three unused bytes. The back end gives depth in four bytes and stencil in one.
+                let texel = stencil.map_or(4, |s| s.1);
+                let n = shadow.len() / texel;
+                let mut depth = vec![0u8; n * 4];
+                let mut stencil = vec![0u8; n];
+                self.backend.finish_read(rb, &mut depth);
+                self.backend.finish_read(s, &mut stencil);
+                for i in 0..n {
+                    let t = &mut shadow[i * texel..(i + 1) * texel];
+                    if texel == 4 {
+                        t[..3].copy_from_slice(&depth[i * 4..i * 4 + 3]);
+                        t[3] = stencil[i];
+                    } else {
+                        t[..4].copy_from_slice(&depth[i * 4..i * 4 + 4]);
+                        t[4] = stencil[i];
+                        t[5..].fill(0);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2194,11 +2271,36 @@ impl<B: Backend> Device<B> {
                 let (region, extent) = t.whole(sub).expect("a subresource the map checked");
                 let (row, rows, _) = t.packed(region.mip);
                 self.end_pass();
+                let shadow = &t.shadow.borrow()[sub as usize];
+                let Some((stencil, _)) = t.stencil_region(sub) else {
+                    self.backend.write_texture(
+                        &region,
+                        extent,
+                        shadow,
+                        row,
+                        rows,
+                        WriteMode::Ordered,
+                    );
+                    return;
+                };
+                // Each aspect of a format with depth and stencil apart, from Direct3D's layout
+                // (see `refresh`): depth in four bytes per texel, stencil in one.
+                let texel = t.format.block().2;
+                let (depth, stencils) = split_depth_stencil(texel, shadow);
+                let texels = row / texel;
                 self.backend.write_texture(
                     &region,
                     extent,
-                    &t.shadow.borrow()[sub as usize],
-                    row,
+                    &depth,
+                    texels * 4,
+                    rows,
+                    WriteMode::Ordered,
+                );
+                self.backend.write_texture(
+                    &stencil,
+                    extent,
+                    &stencils,
+                    texels,
                     rows,
                     WriteMode::Ordered,
                 );
