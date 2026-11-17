@@ -242,8 +242,10 @@ pub trait Backend: Sized {
         extent: Extent,
     );
     /// Copies texels from a buffer into a texture region. Into a depth format the API cannot write from
-    /// a buffer, the back end copies into a float texture first and draws the depth
-    /// ([`crate::SlowPath::DepthWrittenByDraw`]); see [`CopyBufferTexture::row_pitch`] for pitches.
+    /// a buffer, the back end copies into a colour texture first and draws the depth
+    /// ([`crate::SlowPath::DepthWrittenByDraw`]): `r32float` for 32-bit float depth, and `r32uint`
+    /// for 24-bit depth, whose buffer bytes are 24-bit unorm in the low bits of a 32-bit word, drawn as
+    /// `(v & 0xffffff) / 16777215`; see [`CopyBufferTexture::row_pitch`] for pitches.
     fn copy_buffer_to_texture(
         &mut self,
         src: &CopyBufferTexture<'_, Self>,

@@ -371,12 +371,14 @@ bitflags! {
         /// The pixel shader's target 0 alpha multiplied by the line coverage the stage helper's
         /// rectangle passes in ([`crate::SlowPath::AntialiasedLinesAsQuads`]).
         const LINE_COVERAGE = 1 << 10;
-        /// Clip distances made ordinary values between the stages (each divided by w, interpolated
-        /// linearly), and the fragment stage discards where one is negative, or on multisampled targets
-        /// clears the samples where one is ([`crate::SlowPath::ClipDistanceInShader`]).
+        /// Clip distances made ordinary perspective-correct values between the stages, and the
+        /// fragment stage discards where one is negative, or on multisampled targets clears the samples
+        /// where one is, from each distance times the fragment position's w (affine on the screen; no
+        /// `noperspective`, which GLSL ES 3.00 lacks) ([`crate::SlowPath::ClipDistanceInShader`]).
         const CLIP_DISTANCE = 1 << 11;
         /// Depth clamped instead of clipped: the last vertex stage keeps clip z inside the clip volume
-        /// and passes z over w, and the fragment stage writes that depth, biased as the raster block
+        /// and passes the unclamped z as a perspective-correct value, and the fragment stage writes it
+        /// times the fragment position's w (z over w) as the depth, biased as the raster block
         /// says and clamped to [`HelperValue::DepthRange`] ([`crate::SlowPath::DepthClampInShader`]).
         const DEPTH_CLAMP = 1 << 12;
         /// The pixel shader reads its primitive index from a flat value the stage helper's draw passes,

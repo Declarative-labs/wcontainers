@@ -150,7 +150,7 @@ pub enum SlowPath {
     /// A copy between two formats the API copies only through a buffer: two copies.
     CopyThroughBuffer,
     /// Depth copied into a texture whose depth cannot be written by a copy (from a texture, or from a
-    /// buffer through a float texture), by a draw writing depth.
+    /// buffer through an `r32float` or `r32uint` texture), by a draw writing depth.
     DepthWrittenByDraw,
     /// A texture whose format the back end cannot read back or copy on the GPU, kept on the host too.
     HostCopyKept,
@@ -214,8 +214,8 @@ pub enum SlowPath {
     /// A buffer one draw uses both as writable storage and another way: the other use reads a copy made
     /// before the pass.
     UsageScopeCopied,
-    /// Clip distances applied by the program: interpolated as ordinary values, the fragment discarded
-    /// or its samples masked where one is negative.
+    /// Clip distances applied by the program: interpolated as ordinary perspective-correct values, the
+    /// fragment discarded or its samples masked where one is negative.
     ClipDistanceInShader,
     /// Depth clamped instead of clipped by the program, which writes the fragment's depth.
     DepthClampInShader,
