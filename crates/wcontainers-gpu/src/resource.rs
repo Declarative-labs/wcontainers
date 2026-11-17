@@ -75,7 +75,8 @@ bitflags! {
     /// How a texture will be used. What each use needs: `COPY_DST` to be written
     /// ([`crate::Backend::write_texture`], a copy's destination); `COPY_SRC` to be read (a copy's
     /// source, [`crate::Backend::read_back`]); `SAMPLE` and `STORAGE` for those bindings; `RENDER` for
-    /// an attachment or resolve target, and so for [`crate::Backend::clear_texture`],
+    /// an attachment or resolve target, and so for both sides of [`crate::Backend::resolve`],
+    /// [`crate::Backend::clear_texture`],
     /// [`crate::Backend::clear_rects`] and [`crate::Backend::generate_mips`] (which also samples);
     /// `PRESENT` for a surface's texture.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
