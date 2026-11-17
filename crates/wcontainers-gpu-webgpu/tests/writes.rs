@@ -12,8 +12,9 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, DeviceStatus, Extent, Format, MapIntent, Object, Origin,
-    ReadSource, SlowPath, TextureRegion, TextureUsage, WriteMode,
+    Backend, BufferDesc, BufferUsage, ColorAttachment, DeviceStatus, Extent, Format, LoadOp,
+    MapIntent, Object, Origin, PassDesc, QueryKind, ReadSource, SlowPath, StoreOp, TextureRegion,
+    TextureUsage, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -96,17 +97,10 @@ fn ordered_write_in_a_pass_splits_it() {
     b.finish_read(rb, &mut rgba);
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 1);
-    let reference = std::fs::read(format!(
-        "{}/../wcontainers-graphics-test/references/d3d11/triangle.png",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .unwrap();
-    let mut reader = png::Decoder::new(std::io::Cursor::new(reference))
-        .read_info()
-        .unwrap();
-    let mut want = vec![0; reader.output_buffer_size().unwrap()];
-    reader.next_frame(&mut want).unwrap();
-    assert!(rgba == want, "the split pass lost or changed what it drew");
+    assert!(
+        rgba == reference("triangle.png"),
+        "the split pass lost or changed what it drew"
+    );
 }
 
 fn read_buffer_back(
@@ -309,6 +303,8 @@ fn arena_buffers_keep_command_order() {
 
 /// Seeded random buffer writes in every mode, copies between buffers and within one, and clears to
 /// patterns, at any byte offset and length, checked against a model of the bytes after each batch.
+/// A `NoOverwrite` write is made only where it keeps its promise: over bytes no command and no
+/// `Ordered` write since the last wait touches; elsewhere the write is `Ordered`.
 /// `WEBGPU_SEED` replays a run; `WEBGPU_CASES` is how many operations it runs (default 400).
 #[test]
 fn byte_granular_buffer_operations_match_a_model() {
@@ -323,10 +319,16 @@ fn byte_granular_buffer_operations_match_a_model() {
         buffer(&mut b, SIZE as u64, BufferUsage::empty(), MapIntent::Rarely),
     ];
     let mut model = [vec![0u8; SIZE], vec![0u8; SIZE]];
+    // Bytes a command or an ordered write touched since the last wait.
+    let mut busy = [vec![true; SIZE], vec![true; SIZE]];
+    let mark = |busy: &mut [Vec<bool>; 2], i: usize, at: usize, len: usize| {
+        busy[i][at..at + len].fill(true);
+    };
     for (buf, m) in bufs.iter().zip(&mut model) {
         rng.fill(m);
         b.write_buffer(buf, 0, m, WriteMode::Ordered);
     }
+    let (mut no_overwrites, mut demoted) = (0, 0);
     for case in 0..cases {
         let i = rng.usize(0..2);
         let len = rng.usize(1..=64);
@@ -334,20 +336,32 @@ fn byte_granular_buffer_operations_match_a_model() {
         match rng.u8(0..3) {
             0 => {
                 let data: Vec<u8> = (0..len).map(|_| rng.u8(..)).collect();
-                let mode = [
+                let mut mode = [
                     WriteMode::Ordered,
                     WriteMode::NoOverwrite,
                     WriteMode::Discard,
                 ][rng.usize(0..3)];
+                if mode == WriteMode::NoOverwrite {
+                    if busy[i][at..at + len].contains(&true) {
+                        mode = WriteMode::Ordered;
+                        demoted += 1;
+                    } else {
+                        no_overwrites += 1;
+                    }
+                }
                 if mode == WriteMode::Discard {
                     // Discard drops the old contents: write the whole buffer.
                     rng.fill(&mut model[i]);
                     model[i][at..at + len].copy_from_slice(&data);
                     let whole = model[i].clone();
                     b.write_buffer(&bufs[i], 0, &whole, mode);
+                    busy[i].fill(false);
                 } else {
                     b.write_buffer(&bufs[i], at as u64, &data, mode);
                     model[i][at..at + len].copy_from_slice(&data);
+                    if mode == WriteMode::Ordered {
+                        mark(&mut busy, i, at, len);
+                    }
                 }
             }
             1 => {
@@ -362,6 +376,8 @@ fn byte_granular_buffer_operations_match_a_model() {
                 b.copy_buffer(&bufs[j], from as u64, &bufs[i], at as u64, len as u64);
                 let bytes = model[j][from..from + len].to_vec();
                 model[i][at..at + len].copy_from_slice(&bytes);
+                mark(&mut busy, j, from, len);
+                mark(&mut busy, i, at, len);
             }
             _ => {
                 let pattern: Vec<u8> = (0..[1, 2, 4, 8, 16][rng.usize(0..5)])
@@ -373,6 +389,7 @@ fn byte_granular_buffer_operations_match_a_model() {
                 for (k, v) in model[i][at..at + len].iter_mut().enumerate() {
                     *v = pattern[k % pattern.len()];
                 }
+                mark(&mut busy, i, at, len);
             }
         }
         if case % 50 == 49 || case == cases - 1 {
@@ -384,7 +401,170 @@ fn byte_granular_buffer_operations_match_a_model() {
                     "bytes differ from the model after operation {case} (seed {seed})"
                 );
             }
+            for x in &mut busy {
+                x.fill(false);
+            }
         }
+    }
+    eprintln!("{no_overwrites} no-overwrite writes, {demoted} made ordered");
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Writes of any length after a submit, so that none meets a recorded command, take effect in the
+/// order they were made in every pair of modes, also when the first is not whole words.
+#[test]
+fn writes_of_any_length_keep_their_order() {
+    let mut b = device();
+    let modes = [
+        WriteMode::Ordered,
+        WriteMode::NoOverwrite,
+        WriteMode::Discard,
+    ];
+    for first in modes {
+        for second in modes {
+            for (one, two) in [(&[1u8, 1, 1][..], &[2u8, 2, 2, 2][..]), (&[1; 4], &[2; 3])] {
+                let x = buffer(&mut b, 16, BufferUsage::empty(), MapIntent::Rarely);
+                b.write_buffer(&x, 0, &[0; 16], WriteMode::Ordered);
+                let f = b.submit();
+                b.wait_fence(&f);
+                b.write_buffer(&x, 0, one, first);
+                b.write_buffer(&x, 0, two, second);
+                let rb = read_buffer_back(&mut b, &x, 4);
+                b.submit();
+                // A `Discard` leaves the bytes outside what it writes undefined.
+                let defined = if second == WriteMode::Discard {
+                    two.len()
+                } else {
+                    one.len().max(two.len())
+                };
+                let mut want = vec![1; defined];
+                want[..two.len()].copy_from_slice(two);
+                let got = finish(&mut b, rb, 4);
+                assert_eq!(
+                    got[..want.len()],
+                    want[..],
+                    "{first:?} {} bytes, then {second:?} {} bytes",
+                    one.len(),
+                    two.len()
+                );
+            }
+        }
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// A write of bytes not in whole words into a buffer the open pass does not use, and one after a
+/// `Discard` renamed a buffer it does use, go ahead of the pass without splitting it, also while an
+/// occlusion query runs; the picture is still Direct3D's triangle.
+#[test]
+fn writes_ahead_of_a_pass_do_not_split_it() {
+    let mut b = device();
+    let p = draw::prepare(&mut b, scene::Scene::Triangle, draw::Twist::None).unwrap();
+    let t = draw::targets(&mut b, false).unwrap();
+    let other = buffer(&mut b, 16, BufferUsage::empty(), MapIntent::Rarely);
+    let queries = b.create_query_set(QueryKind::OcclusionAny, 1).unwrap();
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: None,
+        empty: None,
+        occlusion: Some(&queries),
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &t.color_view,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Clear(scene::CLEAR.map(f32::to_bits)),
+        store: StoreOp::Store,
+    });
+    b.begin_pass(&pass);
+    b.begin_query(0);
+    draw::draw(&mut b, &p);
+    b.write_buffer(&other, 1, &[7, 7, 7], WriteMode::Ordered);
+    let mut vertices: Vec<u8> = bytemuck::cast_slice(&scene::TRIANGLE).to_vec();
+    b.write_buffer(&p.vertices, 0, &vertices, WriteMode::Discard);
+    // The last byte again alone, with the same value: not whole words.
+    let last = vertices.pop().unwrap();
+    b.write_buffer(
+        &p.vertices,
+        vertices.len() as u64,
+        &[last],
+        WriteMode::NoOverwrite,
+    );
+    draw::draw(&mut b, &p);
+    b.end_query();
+    b.end_pass();
+    let rb = draw::read(&mut b, &t).unwrap();
+    let small = read_buffer_back(&mut b, &other, 4);
+    b.submit();
+    assert_eq!(finish(&mut b, small, 4)[1..], [7, 7, 7]);
+    let rgba = finish(&mut b, rb, (scene::WIDTH * scene::HEIGHT * 4) as usize);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 0);
+    assert!(rgba == reference("triangle.png"), "the picture changed");
+}
+
+fn reference(name: &str) -> Vec<u8> {
+    let path = format!(
+        "{}/../wcontainers-graphics-test/references/d3d11/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut reader = png::Decoder::new(std::io::Cursor::new(std::fs::read(path).unwrap()))
+        .read_info()
+        .unwrap();
+    let mut want = vec![0; reader.output_buffer_size().unwrap()];
+    reader.next_frame(&mut want).unwrap();
+    want
+}
+
+/// A copy whose source and destination sit at different places within a word, larger than one
+/// dispatch of the edge program may merge, is exact.
+#[test]
+fn large_copies_between_places_in_a_word_are_exact() {
+    const SIZE: u64 = 16 << 20;
+    let mut b = device();
+    let total = SIZE + 16;
+    let (s, d) = (
+        buffer(&mut b, total, BufferUsage::empty(), MapIntent::Rarely),
+        buffer(&mut b, total, BufferUsage::empty(), MapIntent::Rarely),
+    );
+    let src: Vec<u8> = (0..total).map(|i| (i * 7 + i / 251) as u8).collect();
+    b.write_buffer(&s, 0, &src, WriteMode::Ordered);
+    b.write_buffer(&d, 0, &vec![0xee; total as usize], WriteMode::Ordered);
+    b.copy_buffer(&s, 1, &d, 2, SIZE);
+    let rb = read_buffer_back(&mut b, &d, total);
+    b.submit();
+    let got = finish(&mut b, rb, total as usize);
+    let mut want = vec![0xee; total as usize];
+    want[2..2 + SIZE as usize].copy_from_slice(&src[1..1 + SIZE as usize]);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    let wrong = got.iter().zip(&want).filter(|(a, b)| a != b).count();
+    assert_eq!(wrong, 0, "bytes wrong");
+}
+
+/// Clears to patterns of lengths that do not divide the pattern block, at an offset not in whole
+/// words, fill exactly.
+#[test]
+fn clears_take_patterns_of_any_length() {
+    const SIZE: u64 = 120_000;
+    let mut b = device();
+    for len in [3u8, 12, 16] {
+        let buf = buffer(&mut b, SIZE + 2, BufferUsage::empty(), MapIntent::Rarely);
+        b.write_buffer(
+            &buf,
+            0,
+            &vec![0xee; (SIZE + 2) as usize],
+            WriteMode::Ordered,
+        );
+        let pattern: Vec<u8> = (1..=len).collect();
+        b.clear_buffer(&buf, 1, SIZE, &pattern);
+        let rb = read_buffer_back(&mut b, &buf, SIZE + 2);
+        b.submit();
+        let got = finish(&mut b, rb, (SIZE + 2) as usize);
+        let mut want = vec![0xee];
+        want.extend(pattern.iter().cycle().take(SIZE as usize));
+        want.push(0xee);
+        let first = got.iter().zip(&want).position(|(a, b)| a != b);
+        assert_eq!(first, None, "pattern of {len} bytes");
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }

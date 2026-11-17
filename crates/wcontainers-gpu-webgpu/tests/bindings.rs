@@ -287,3 +287,78 @@ fn float_targets_blend_or_fail_loudly() {
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert_eq!(got, [0.75, 0.125, 0.5, 0.5]);
 }
+
+/// A full-target triangle whose red is texel (0, 0) of a texture it only loads from.
+const LOAD_WGSL: &str = r#"
+@group(1) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn ps() -> @location(0) vec4f {
+    return vec4f(textureLoad(t, vec2i(0), 0).r, 0.0, 0.0, 1.0);
+}
+"#;
+
+/// A texture the program only loads from is unfilterable whatever is bound (plan 4.5): drawing it
+/// with a filterable view and then a depth view, which never filters, keeps one pipeline.
+#[test]
+fn load_only_textures_keep_one_pipeline_for_any_view() {
+    let mut b = device();
+    let k = Kit {
+        program: draw::program(&mut b, LOAD_WGSL).unwrap(),
+        ..kit(&mut b, Format::Rgba8Unorm, 2, &draw::opaque())
+    };
+    let (color, color_view) = draw::texture_2d(
+        &mut b,
+        Format::Rgba8Unorm,
+        1,
+        1,
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+    )
+    .unwrap();
+    b.write_texture(
+        &TextureRegion {
+            texture: &color,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        },
+        Extent {
+            width: 1,
+            height: 1,
+            depth_or_layers: 1,
+        },
+        &[200, 20, 30, 255],
+        4,
+        1,
+        WriteMode::Ordered,
+    );
+    let (_, depth_view) =
+        draw::texture_2d(&mut b, Format::Depth32Float, 1, 1, TextureUsage::SAMPLE).unwrap();
+    let sets: Vec<_> = [&color_view, &depth_view]
+        .into_iter()
+        .map(|v| {
+            b.create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(v),
+            }])
+            .unwrap()
+        })
+        .collect();
+    let keys: Vec<_> = sets.iter().map(|s| b.binding_layout_key(s)).collect();
+    assert!(
+        keys[0] != keys[1],
+        "the depth view's key marks it unfilterable"
+    );
+    let before = *b.counters();
+    begin(&mut b, &k, [0.0, 1.0, 0.0, 1.0]);
+    draw_at(&mut b, &k, &sets[0], Some(0));
+    draw_at(&mut b, &k, &sets[1], Some(1));
+    let got = finish(&mut b, &k, 4);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(got, [200, 0, 0, 255, 0, 0, 0, 255]);
+    assert_eq!(b.counters().pipelines - before.pipelines, 1);
+}

@@ -12,11 +12,11 @@ use wcontainers_gpu::{
 };
 
 use crate::{
-    Buffer, BufferObj, MAP_PENDING, MAP_READY, QuerySet, Readback, ReadbackObj, WebGpu, convert,
-    row_bytes,
+    Buffer, BufferObj, MAP_PENDING, MAP_READY, QuerySet, Readback, ReadbackObj, Stream, WebGpu,
+    convert, row_bytes,
 };
 
-/// Bytes of pattern a non-zero clear uploads: a multiple of every pattern length and of 4.
+/// The most bytes of pattern a non-zero clear uploads.
 const PATTERN_BLOCK: u64 = 64 * 1024;
 
 /// Storage that renamed buffers gave up, reused once the GPU has finished with it.
@@ -209,6 +209,7 @@ impl WebGpu {
         }
         b.base.set(base);
         b.generation.set(b.generation.get() + 1);
+        b.lead_in.set(0);
         if b.in_sets.get() && (storage.is_some() || b.static_bound.get()) {
             self.bind_epoch += 1;
         }
@@ -283,24 +284,34 @@ impl WebGpu {
             return;
         }
         let b = &buffer.0;
-        let aligned = offset.is_multiple_of(4) && data.len().is_multiple_of(4);
+        let recorded = self.pending(b.used_in.get());
         match mode {
-            _ if !self.pending(b.used_in.get()) => {}
-            WriteMode::NoOverwrite => {}
-            WriteMode::Discard if b.in_arena => self.move_in_arena(b),
-            WriteMode::Discard => self.rename(b),
-            WriteMode::Ordered => {
+            WriteMode::Ordered if recorded => {
                 self.staged_write(b, offset, data);
                 return;
             }
+            WriteMode::Discard if recorded && b.in_arena => self.move_in_arena(b),
+            WriteMode::Discard if recorded => self.rename(b),
+            _ => {}
         }
-        if aligned {
-            self.queue
-                .write_buffer(&b.raw.borrow(), b.base.get() + offset, data);
-        } else {
-            // The queue writes whole words only: the edge words are merged in command order.
-            self.staged_write(b, offset, data);
+        self.write_now(b, offset, data);
+    }
+
+    /// Writes ahead of every command recorded so far: from the queue, or, for bytes not in whole words
+    /// and for any write behind such a one, by a copy in the lead encoder, since queue writes land
+    /// before it.
+    fn write_now(&mut self, b: &BufferObj, offset: u64, data: &[u8]) {
+        let at = b.base.get() + offset;
+        let words = at.is_multiple_of(4) && data.len().is_multiple_of(4);
+        if words && !self.lead_pending(b) {
+            self.queue.write_buffer(&b.raw.borrow(), at, data);
+            return;
         }
+        let staging = self.staging_at(at % 4, data);
+        self.counters.staged_writes += 1;
+        b.lead_in.set(self.serial);
+        let dst = b.raw.borrow().clone();
+        self.copy_bytes(Stream::Lead, &staging, at % 4, &dst, at, data.len() as u64);
     }
 
     /// Writes through a staging buffer and a copy recorded in command order, splitting an open pass.
@@ -309,9 +320,10 @@ impl WebGpu {
         // The staged bytes sit in the same place of their word as their destination.
         let staging = self.staging_at(at % 4, data);
         self.counters.staged_writes += 1;
+        b.used_in.set(self.serial);
         let dst = b.raw.borrow().clone();
         let size = data.len() as u64;
-        self.split_pass(|w| w.copy_bytes(&staging, at % 4, &dst, at, size));
+        self.split_pass(|w| w.copy_bytes(Stream::Main, &staging, at % 4, &dst, at, size));
     }
 
     pub(crate) fn write_texture_impl(
@@ -410,10 +422,10 @@ impl WebGpu {
                     | wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             });
-            self.copy_bytes(&s, src_offset, &temp, at, size);
-            self.copy_bytes(&temp, at, &d, dst_offset, size);
+            self.copy_bytes(Stream::Main, &s, src_offset, &temp, at, size);
+            self.copy_bytes(Stream::Main, &temp, at, &d, dst_offset, size);
         } else {
-            self.copy_bytes(&s, src_offset, &d, dst_offset, size);
+            self.copy_bytes(Stream::Main, &s, src_offset, &d, dst_offset, size);
         }
     }
 
@@ -536,9 +548,9 @@ impl WebGpu {
         for l in 0..layers {
             for r in 0..rows {
                 if to_texture {
-                    self.copy_bytes(&raw, theirs(l, r), &temp, ours(l, r), row);
+                    self.copy_bytes(Stream::Main, &raw, theirs(l, r), &temp, ours(l, r), row);
                 } else {
-                    self.copy_bytes(&temp, ours(l, r), &raw, theirs(l, r), row);
+                    self.copy_bytes(Stream::Main, &temp, ours(l, r), &raw, theirs(l, r), row);
                 }
             }
         }
@@ -578,8 +590,11 @@ impl WebGpu {
             self.slow.hit(SlowPath::PatternClearCopied);
         }
         // One block of whole patterns, in the same place of its word as the range, copied over the
-        // range; every copy starts on a pattern and on the same place of a word.
-        let block_size = size.min(PATTERN_BLOCK);
+        // range; its size is a multiple of the pattern and of 4, so every copy starts on a pattern and
+        // on the same place of a word.
+        let len = pattern.len() as u64;
+        let unit = len << (2 - len.trailing_zeros().min(2));
+        let block_size = size.min(PATTERN_BLOCK.div_ceil(unit) * unit);
         let block: Vec<u8> = pattern
             .iter()
             .copied()
@@ -591,7 +606,7 @@ impl WebGpu {
         let mut done = 0;
         while done < size {
             let n = block_size.min(size - done);
-            self.copy_bytes(&staging, at, &raw, offset + done, n);
+            self.copy_bytes(Stream::Main, &staging, at, &raw, offset + done, n);
             done += n;
         }
     }

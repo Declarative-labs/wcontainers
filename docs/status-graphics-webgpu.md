@@ -17,7 +17,9 @@ G2a (the first slice) is done, run 1, 2026-11-17:
 - Writes follow 4.6: straight to the queue when no unsubmitted command uses the resource;
   otherwise `Discard` renames the buffer (old storage pooled until its work is done), `NoOverwrite`
   writes in place, `Ordered` goes through a staging buffer and a copy, splitting an open pass
-  (`WriteSplitPass`). Read backs copy into a mapped buffer, mapped after the submit; rows arrive
+  (`WriteSplitPass`). Writes that take effect at once but are not whole words (and any later
+  write of that buffer before the submit) are copies in a lead encoder submitted ahead of the
+  frame's encoder (run 3, below). Read backs copy into a mapped buffer, mapped after the submit; rows arrive
   packed. Occlusion queries, `resolve_queries` by `resolveQuerySet` and a copy, resolves, surfaces
   (windows registered by the host with `WebGpu::add_window`) are in.
 - The rig's three Direct3D 11 reference scenes (triangle; textured, depth-tested, blended quads;
@@ -26,7 +28,7 @@ G2a (the first slice) is done, run 1, 2026-11-17:
   on Vulkan, and built for WebAssembly in Chrome 157's WebGPU. Tolerance 0 (see Measurements).
 - The quads with the colour source factor changed to one, or the depth test changed to greater,
   fail the comparison both natively and in Chrome.
-- Writes keep command order exactly (test `writes_take_effect_in_command_order`: copies between an
+- Writes keep command order (test `writes_take_effect_in_command_order`: copies between an
   ordered write that stages, a second one, and a renaming discard each read the bytes written just
   before them), and an ordered write of a vertex buffer the open pass drew with splits the pass
   without changing the picture (`ordered_write_in_a_pass_splits_it`, equal to Direct3D's
@@ -76,11 +78,51 @@ Run 2, 2026-11-17 (fixes from the independent check of run 1, then the shared su
   ordered writes, copies between two of them and a read back; a seeded random test of 400 byte-
   granular writes, copies and clears against a model, `WEBGPU_SEED` and `WEBGPU_CASES`), and
   tests/suite.rs (the shared suite of `wcontainers-gpu-test`, seven tests).
-- The shared suite (origin/phase-2-graphics at a58f79a, merged): 7 of 7 pass on Vulkan; on
+- The shared suite (origin/phase-2-graphics at a58f79a, merged): 7 of 7 pass on Vulkan, one of
+  which, present, checked no texels (the host gave none; the shared line has since left it out); on
   Direct3D 12, 6 of 7: `clears_fill_exactly` fails, as a known failure, at its `R32Uint` clear of
   0xdeadbeef (wgpu-hal's dx12 command.rs passes clear values to `ClearRenderTargetView` as f32,
   which gave 0xdeadbf00; the back end now fails loudly there). Vulkan clears it exactly; Chrome's
   Dawn is expected to (it clears big integers with a draw on Direct3D 12), not yet run there.
+
+Run 3, 2026-11-17 (fixes from the independent check of run 2):
+- Ordered writes no longer land out of order. Before, a write not in whole words went through a
+  copy in the frame's encoder without marking the buffer used, so a later whole-word write went
+  straight to the queue and landed first. Now such a write, when it takes effect at once (no
+  recorded command uses the buffer, or `NoOverwrite`, or after a `Discard` renamed it), is a copy
+  in a second encoder, the lead encoder, submitted just before the frame's encoder; later writes of
+  that buffer before the submit go there too (`BufferObj::lead_in`), so all of them keep their
+  order, and queue writes made earlier still land before. It never splits a pass, also while an
+  occlusion query runs. An `Ordered` write of a buffer the frame's encoder uses still stages in
+  that encoder and marks the buffer used.
+- `NoOverwrite` had three readings (the test model, the interface wording, the back end). The
+  interface now says the caller promises that no unfinished command and no `Ordered` write since
+  it last waited reads or writes the bytes (interface change below): Direct3D 11 allows
+  no-overwrite only on dynamic resources, which copies and `UpdateSubresource` cannot write, and
+  OpenGL leaves unsynchronised writes over pending operations undefined. The random test now keeps
+  that promise: it tracks the bytes touched since its last wait and makes a write `Ordered` where a
+  no-overwrite write would break it (it prints how many of each it made).
+- Byte-granular copies are merged in pieces sized from the device's limits (workgroups per
+  dimension less one, and the largest storage binding less one offset alignment and a word), not
+  16 MiB; a 16 MiB copy between different places in a word lost the device before.
+- Clears take a pattern of any length: the copied block is a multiple of the pattern and of 4
+  bytes. A 12-byte pattern wrote wrong bytes past 64 KiB before.
+- Layouts follow 4.5 exactly: a texture the program only loads from is always
+  `unfilterable-float`, and the pipeline and layout keys keep only the bits of textures the
+  program samples through a sampler (`paired`, per shader, from naga's sampling set), so one
+  program drawn with a filterable and then an unfilterable view of a load-only texture is one
+  pipeline. Working out the keys per draw allocates nothing.
+- Merged origin/phase-2-graphics at c15677a (a fast-forward): the suite host now leaves out
+  `present_shows_the_frame`, which this host cannot check (a swap chain's texels cannot be read
+  back once presented), so the suite here is 12 tests and present is not run.
+- New tests: writes.rs `writes_of_any_length_keep_their_order` (every pair of modes, first or
+  second write not whole words), `writes_ahead_of_a_pass_do_not_split_it` (an ordered write not
+  in whole words of a buffer the pass does not use, a discard and a no-overwrite byte of the
+  vertex buffer it draws with, inside a running occlusion query: no split, Direct3D's triangle),
+  `large_copies_between_places_in_a_word_are_exact` (16 MiB from byte 1 to byte 2),
+  `clears_take_patterns_of_any_length` (3, 12 and 16 bytes over 120000 bytes at byte 1);
+  bindings.rs `load_only_textures_keep_one_pipeline_for_any_view` (an `rgba8unorm` view, then a
+  `depth32float` view, whose key differs: one pipeline, both pixels right).
 
 ## How another track builds and uses the back end
 
@@ -115,8 +157,13 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   they need a GPU, and the suite's present test a desktop, so `--desktop`; `WEBGPU_API=dx12|vulkan|
   metal` picks wgpu's API, default the platform's, Vulkan on the desktop), both APIs in one job:
   `tools/graphics-rig/gpu-job --desktop --build "cargo test -j 3 -p wcontainers-gpu-webgpu --no-run"
-  -- "set WEBGPU_API=vulkan&& cargo test -j 3 -p wcontainers-gpu-webgpu -- --test-threads 1 & set
-  WEBGPU_API=dx12&& cargo test -j 3 -p wcontainers-gpu-webgpu -- --test-threads 1"`.
+  -- "set WEBGPU_API=vulkan&& cargo test -j 3 -p wcontainers-gpu-webgpu --no-fail-fast --
+  --test-threads 1 & set WEBGPU_API=dx12&& cargo test -j 3 -p wcontainers-gpu-webgpu --no-fail-fast
+  -- --test-threads 1"`. `--no-fail-fast` matters: without it the known Direct3D 12 failure in the
+  suite stops cargo before tests/writes.rs.
+- The random byte test with other seeds and lengths: `set WEBGPU_SEED=<n>&& set WEBGPU_CASES=<n>&&
+  cargo test -j 3 -p wcontainers-gpu-webgpu --test writes byte_granular -- --nocapture` as the job's
+  command (it prints the seed, the count, and how many no-overwrite writes it made).
 - Lint: `tools/graphics-rig/remote cargo clippy -j 3 -p wcontainers-gpu-webgpu --all-targets --
   -D warnings`; and `nix develop -c cargo check -j 2 -p wcontainers-gpu-webgpu --target
   wasm32-unknown-unknown --examples` for the WebAssembly build.
@@ -133,6 +180,23 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 
 ## Measurements
 
+Run 3 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs; Mac
+load average 26 to 30):
+- All tests on Vulkan: 30 of 30 (bindings 4 in 0.44 s, scenes 3 in 0.33 s, suite 12 in 1.12 s,
+  writes 11 in 0.97 s). On Direct3D 12: 29 of 30, the suite's `clears_fill_exactly` failing loudly
+  as before ("webgpu: an integer clear past 2^24, which wgpu's Direct3D 12 rounds through a float,
+  is not built yet"; the suite then sees its read back never ready). Run with `--no-fail-fast`, so
+  writes.rs ran on both.
+- The random byte test, every run passing: on Vulkan seeds 1 to 20 at 3000 operations each and
+  seed 987654321 at 6000; on Direct3D 12 seeds 1, 2, 3, 4 and 9 at 3000 and 987654321 at 6000
+  (27 runs, 69000 operations). Of each seed's 3000, about 200 to 260 were no-overwrite writes and
+  about 80 to 120 were turned into ordered writes to keep the promise (987654321: 457 and 188).
+  Seeds 9 and 987654321 are those the independent check found failing.
+- `web/check` passes again: all nine pictures equal Direct3D 11's at tolerance 0, both twists
+  differ (blend factor 16384 pixels by up to 92, depth function 25016 by up to 204, natively and in
+  Chrome), Chrome 157.0.8103.78's adapter is "NVIDIA GeForce RTX 3080", D3D12, discrete GPU, not a
+  fallback. Clippy with warnings denied passes.
+
 All on the desktop (Windows 10, i9-9900K, RTX 3080, driver 32.0.16.2101 / NVIDIA 621.01); desktop
 CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other tracks).
 - Every pixel equal to Direct3D 11's reference, all three scenes: wgpu on Vulkan (adapter "NVIDIA
@@ -147,9 +211,10 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   programs with equal blocks over two passes made 2 pipelines, 3 `setPipeline` calls, 2 bind groups
   (one per set), 1 bind group layout, 2 `PipelineMiss`.
 - Run 2 (desktop CPU load 27 % sampled right after, Mac load average 24 to 26): on Vulkan all
-  20 tests pass (bindings 3 in 0.39 s, scenes 3 in 0.39 s, suite 7 in 0.96 s, writes 7 in 0.75 s);
-  on Direct3D 12, 19 of 20 (suite 6 of 7, the known failure above). The random byte test ran its
-  default 400 operations, seed 0x5eed, on both. Constants rewritten per draw: 20 draws made 1 bind
+  20 tests pass (present among them without checking texels) (bindings 3 in 0.39 s, scenes 3 in 0.39 s, suite 7 in 0.96 s, writes 7 in 0.75 s);
+  on Direct3D 12, 19 of 20 (suite 6 of 7, the known failure above; writes.rs ran in a separate
+  command, since without `--no-fail-fast` the failure stops cargo first). The random byte test ran
+  its default 400 operations, seed 0x5eed, on both; most other seeds failed then (run 3). Constants rewritten per draw: 20 draws made 1 bind
   group, 0 renames, 19 slice moves. `web/check` passes again after these changes: all nine pictures
   equal Direct3D 11's, both twists fail natively and in Chrome with the same counts as run 1, and
   Chrome's adapter is the RTX 3080 (D3D12, discrete, not a fallback); job 6 s. The arena, edge
@@ -175,6 +240,7 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   textures on `Discard` (staged instead), and freeing cached layouts and pipelines of destroyed
   programs.
 - Arena slices of buffers dropped without `destroy` are not reused until the arena is replaced.
+- The present test of the shared suite: this host cannot read a presented swap chain's texels.
 
 ## Next (G2)
 
@@ -209,6 +275,10 @@ blocks, naga validation with WebGPU's core capabilities).
 
 ## Interface changes
 
+- db9e0d8 `interface: made no-overwrite writes promise that no unfinished command or ordered write
+  touches their bytes`: the doc of `WriteMode::NoOverwrite` and the plan's 4.6 entry. The promise
+  was only about reads; a back end writing at once cannot order itself after a pending copy into
+  the same bytes, and Direct3D 11 and OpenGL do not ask it to.
 - 61a266e `interface: named the slow path of buffer clears to a non-zero pattern made by copies`:
   `SlowPath::PatternClearCopied`, and the plan's sentence on `clear_buffer` (4.2) saying WebGPU
   fills non-zero patterns by copies.
@@ -219,7 +289,7 @@ Confirmed in each crate's Cargo.toml on 2026-11-17: wgpu 30.0.2 and wgpu-naga-br
 Apache-2.0 (dependencies). Test-only: windows-sys 0.61.2 MIT OR Apache-2.0 (the suite's window, already
 in the lock file); wcontainers-gpu-test (ours); png 0.18.1, anyhow 1.0.104, wasm-bindgen 0.2.130,
 wasm-bindgen-futures 0.4.80, js-sys 0.3.107 MIT OR Apache-2.0; pollster 1.0.1 Apache-2.0/MIT;
-bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT. Tool: wasm-bindgen-cli 0.2.130 MIT OR Apache-2.0.
+bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT; fastrand 2.5.0 Apache-2.0 OR MIT (the random test). Tool: wasm-bindgen-cli 0.2.130 MIT OR Apache-2.0.
 
 ## Installed on the desktop
 
