@@ -470,6 +470,9 @@ int main(void) {
             memcpy(ARENA, arena_init, length);
             memcpy(before, ARENA, ARENA_SIZE);
             setsid();
+            // Our caller is the container's first process, which Linux keeps from a SIGPIPE it has
+            // no handler for; ignored here too, a write with no reader is EPIPE on both sides.
+            signal(SIGPIPE, SIG_IGN);
             self_pid = getpid();
             uint64_t self = (uint64_t)self_pid;
             int terminal = opens_terminal(sequence, calls);

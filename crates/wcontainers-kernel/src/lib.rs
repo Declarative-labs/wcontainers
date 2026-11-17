@@ -327,6 +327,29 @@ impl Kernel {
         self.settle(&mut cx);
     }
 
+    /// Sends a signal to the container's first process from outside the container, as `docker
+    /// kill` does: from no process the container can see, and SIGKILL ends it even though Linux keeps
+    /// other signals with no handler from that process.
+    pub fn kill(&mut self, cpu: &mut dyn Cpu, host: &mut dyn Host, signal: u32) {
+        assert!(self.running.is_none(), "a signal sent while a thread runs");
+        let mut cx = Context {
+            cpu,
+            host,
+            monotonic_offset: self.monotonic_offset,
+            refused: 0,
+        };
+        self.entry_now = cx.monotonic();
+        if let Some(pid) = self.init.filter(|_| self.finished.is_none()) {
+            if signal == linux::general::SIGKILL {
+                self.die_of(&mut cx, pid, signal);
+            } else {
+                let info = signal::sender_info(signal, linux::general::SI_USER as i32, 0, 0);
+                self.send_to_process(&mut cx, pid, signal, info);
+            }
+        }
+        self.settle(&mut cx);
+    }
+
     /// Brings back a saved container, on a CPU side restored from the same save (every memory, block
     /// and thread's registers under the same handles, nothing else) and a host whose clocks may read
     /// anything: the kernel's monotonic clock goes on from where it was saved, every thread starts

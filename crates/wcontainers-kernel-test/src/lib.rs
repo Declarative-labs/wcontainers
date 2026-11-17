@@ -61,6 +61,22 @@ pub fn run_ours_wall_moved(
     saves: usize,
     wall_step: u64,
 ) -> driver::Run {
+    let injections = driver::Injections {
+        saves,
+        wall_step,
+        ..Default::default()
+    };
+    run_ours_injected(directory, path, arguments, seed, injections)
+}
+
+/// As [`run_ours`], with the run's seed and what it has done to it.
+pub fn run_ours_injected(
+    directory: &Path,
+    path: &str,
+    arguments: &[&str],
+    seed: u64,
+    injections: driver::Injections,
+) -> driver::Run {
     let mut files = image::reference_image().to_vec();
     files.extend(image::host_directory(directory, "wc"));
     let container = driver::Container {
@@ -70,7 +86,7 @@ pub fn run_ours_wall_moved(
         environment: reference::ENVIRONMENT,
         working_directory: "/",
     };
-    driver::run_saving(&container, seed, saves, wall_step)
+    driver::run_injected(&container, seed, injections)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))
 }
 

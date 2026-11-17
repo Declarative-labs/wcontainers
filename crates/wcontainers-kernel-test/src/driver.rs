@@ -246,30 +246,47 @@ pub struct Container<'a> {
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
 pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
-    run_saving(container, seed, 0, 0)
+    run_injected(container, seed, Injections::default())
 }
 
-/// As [`run`], saving the container up to `saves` times at moments drawn from the seed (each 1 to
-/// 100 turns after the last) and bringing it back each time from the copy alone. A save is a new
+/// What a run has done to it at moments drawn from its seed, besides where its turns end.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Injections {
+    /// How many times it is saved and brought back.
+    pub saves: usize,
+    /// How much more the host's wall clock moves on than its monotonic clock at each save.
+    pub wall_step: u64,
+    /// A signal sent to the first process from outside, and how many times.
+    pub signal: Option<(u32, usize)>,
+}
+
+/// Turn counts at which something is injected: `count` of them, each 1 to 100 turns after the last.
+fn moments(seed: u64, count: usize) -> Vec<u64> {
+    let mut moments = StdRng::seed_from_u64(seed);
+    let mut last = 0;
+    (0..count)
+        .map(|_| {
+            last += moments.random_range(1..100);
+            last
+        })
+        .collect()
+}
+
+/// As [`run`], with what `injections` says: saving the container up to `saves` times at moments
+/// drawn from the seed and bringing it back each time from the copy alone, and sending signals. A save is a new
 /// process holding a copy of this one's memory, as a host that saves copies the kernel's memory
 /// and every guest memory: the copy goes on with a new CPU side made from the saved memories and
 /// registers and a new host whose clock reads differently, while this process only waits for the
 /// copy's run. Each time the host's wall clock has moved on `wall_step` nanoseconds more than its
 /// monotonic clock, as on a host whose wall clock was set while the container was saved.
-pub fn run_saving(
+pub fn run_injected(
     container: &Container<'_>,
     seed: u64,
-    saves: usize,
-    wall_step: u64,
+    injections: Injections,
 ) -> Result<Run, Failure> {
-    let mut moments = StdRng::seed_from_u64(seed ^ 0x5a7e);
-    let mut last = 0;
-    let mut at: Vec<u64> = (0..saves)
-        .map(|_| {
-            last += moments.random_range(1..100);
-            last
-        })
-        .collect();
+    let mut at = moments(seed ^ 0x5a7e, injections.saves);
+    let (signal, signals) = injections.signal.unwrap_or((0, 0));
+    let mut signal_at = moments(seed ^ 0x5197, signals);
     let mut turns = 0u64;
     let mut saved = 0;
     // In a copy, where its run is reported to the process it was copied from.
@@ -323,6 +340,10 @@ pub fn run_saving(
 
                 kernel.exit(&mut cpu, &mut host, exit);
                 turns += 1;
+                while signal_at.first() == Some(&turns) {
+                    signal_at.remove(0);
+                    kernel.kill(&mut cpu, &mut host, signal);
+                }
                 while at.first() == Some(&turns) {
                     at.remove(0);
                     saved += 1;
@@ -349,7 +370,7 @@ pub fn run_saving(
                         }
                     }
                     cpu = cpu.restored();
-                    host = host.moved(seed ^ ((saved as u64) << 32), wall_step);
+                    host = host.moved(seed ^ ((saved as u64) << 32), injections.wall_step);
                     kernel.restore(&mut cpu, &mut host);
                 }
             }
