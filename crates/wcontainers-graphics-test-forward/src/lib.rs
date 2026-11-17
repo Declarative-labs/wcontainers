@@ -1,11 +1,13 @@
 //! A stand-in d3d11.dll that writes the name of each call it receives to standard error and passes
 //! the call, untouched, to the system's d3d11.dll. A program that loads it from its own directory
 //! shows that a replacement placed beside a program is the one it uses. With WC_OUT set it also
-//! takes a census of the program's Direct3D calls and saves chosen frames (census.rs).
+//! takes a census of the program's Direct3D calls and saves chosen frames (census.rs), on a clock
+//! that moves by frames (clock.rs).
 
 #![cfg(windows)]
 
 mod census;
+mod clock;
 
 use std::ffi::c_void;
 
@@ -155,12 +157,20 @@ unsafe extern "system" fn wc_typed_D3D11CreateDeviceAndSwapChain(
     result
 }
 
-/// Writes the census when the process ends normally.
+/// Starts the frame clock when frames are captured, as early as the program can be given it, and
+/// writes the census when the process ends normally.
 #[unsafe(no_mangle)]
 extern "system" fn DllMain(_module: *mut c_void, reason: u32, _reserved: *mut c_void) -> i32 {
     const DLL_PROCESS_DETACH: u32 = 0;
-    if reason == DLL_PROCESS_DETACH {
-        census::write();
+    const DLL_PROCESS_ATTACH: u32 = 1;
+    match reason {
+        DLL_PROCESS_ATTACH if std::env::var_os("WC_CAPTURE").is_some_and(|v| !v.is_empty()) => {
+            for missed in clock::install() {
+                census::note(format!("clock not detoured: {missed}"));
+            }
+        }
+        DLL_PROCESS_DETACH => census::write(),
+        _ => {}
     }
     1
 }

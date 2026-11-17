@@ -33,10 +33,7 @@ fn main() -> anyhow::Result<()> {
             &[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0],
         )?;
         println!("adapter {}", gpu.adapter()?);
-        println!(
-            "{}",
-            wcontainers_graphics_test::library_paths(&["d3d11.dll", "dxgi.dll"])
-        );
+        println!("{}", wcontainers_graphics_test::library_paths());
         for name in names {
             let scene = d3d11::scenes::find(name)
                 .with_context(|| format!("no scene {name}; see gt-d3d11 list"))?;

@@ -7,4 +7,4 @@ rectangle 5 (33,0)-(34,64) behind the left half: 53 samples passed
 predicate 0: hidden
 predicate 1: visible
 statistics: input vertices 6 primitives 2, vertex shader 6, geometry shader 0 primitives 0, clipper 2 primitives 2, pixel shader at least the 416 covered pixels true, hull 0 domain 0 compute 0
-timestamps: frequency above zero true, disjoint false, in order true
+timestamps: frequency above zero true, in order or disjoint true
