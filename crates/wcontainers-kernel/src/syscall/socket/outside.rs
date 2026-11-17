@@ -289,6 +289,7 @@ pub(super) fn pull(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef
                     source: flow,
                     arrival: (!stream).then(super::inet::arrival_outside),
                     time: super::stamp(kernel, cx, socket),
+                    urgent: false,
                 };
                 let mut own = socket.borrow_mut();
                 if let Some(inet) = own.inet.as_deref_mut() {
@@ -552,6 +553,7 @@ pub(super) fn deliver(kernel: &mut Kernel, socket: &SocketRef, from: Endpoint, d
             ..super::inet::arrival_outside()
         }),
         time: None,
+        urgent: false,
     };
     socket.borrow_mut().queue.push_back(packet);
     kernel.wake_poll(channel(socket), EPOLLIN | EPOLLRDNORM);

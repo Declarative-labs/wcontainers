@@ -235,7 +235,6 @@ impl Kernel {
         file: &crate::file::FileRef,
         reason: u32,
     ) {
-        use crate::file::OwnerKind;
         let (owner, fd) = {
             let file = file.borrow();
             match (file.owner, file.async_fd) {
@@ -245,35 +244,8 @@ impl Kernel {
                 _ => return,
             }
         };
-        let live = |process: &crate::process::Process| process.ended.is_none();
-        let targets: alloc::vec::Vec<(Target, Pid)> = match owner.kind {
-            OwnerKind::Thread => self
-                .threads
-                .get(&owner.pid)
-                .map(|thread| (Target::Thread(owner.pid), thread.process))
-                .into_iter()
-                .collect(),
-            OwnerKind::Process => self
-                .processes
-                .get(&owner.pid)
-                .filter(|process| live(process))
-                .map(|process| (Target::Process(process.pid), process.pid))
-                .into_iter()
-                .collect(),
-            OwnerKind::Group => self
-                .processes
-                .values()
-                .filter(|process| process.group == owner.pid && live(process))
-                .map(|process| (Target::Process(process.pid), process.pid))
-                .collect(),
-        };
-        for (target, pid) in targets {
-            let credentials = self.task_credentials(pid);
-            let allowed = owner.euid == 0
-                || [owner.euid, owner.uid]
-                    .iter()
-                    .any(|user| *user == credentials.suid || *user == credentials.uid);
-            if !allowed {
+        for (target, pid) in self.owner_targets(&owner) {
+            if !self.may_signal_owner(&owner, pid) {
                 continue;
             }
             let (signal, info) = if owner.signal == 0 {
@@ -304,6 +276,60 @@ impl Kernel {
                 let _ = self.send(cx, target, SIGIO, kernel_info(SIGIO));
             }
         }
+    }
+
+    /// Linux's `send_sigurg`: SIGURG to an open file's owner's tasks that its namer may signal,
+    /// with or without `FASYNC`; false if it has no owner.
+    pub(crate) fn send_urgent_signal(
+        &mut self,
+        cx: &mut Context<'_>,
+        file: &crate::file::FileRef,
+    ) -> bool {
+        let Some(owner) = file.borrow().owner.filter(|owner| owner.pid != 0) else {
+            return false;
+        };
+        for (target, pid) in self.owner_targets(&owner) {
+            if self.may_signal_owner(&owner, pid) {
+                let _ = self.send(cx, target, SIGURG, kernel_info(SIGURG));
+            }
+        }
+        true
+    }
+
+    /// The live tasks a file's owner names, with their processes.
+    fn owner_targets(&self, owner: &crate::file::Owner) -> alloc::vec::Vec<(Target, Pid)> {
+        use crate::file::OwnerKind;
+        let live = |process: &crate::process::Process| process.ended.is_none();
+        match owner.kind {
+            OwnerKind::Thread => self
+                .threads
+                .get(&owner.pid)
+                .map(|thread| (Target::Thread(owner.pid), thread.process))
+                .into_iter()
+                .collect(),
+            OwnerKind::Process => self
+                .processes
+                .get(&owner.pid)
+                .filter(|process| live(process))
+                .map(|process| (Target::Process(process.pid), process.pid))
+                .into_iter()
+                .collect(),
+            OwnerKind::Group => self
+                .processes
+                .values()
+                .filter(|process| process.group == owner.pid && live(process))
+                .map(|process| (Target::Process(process.pid), process.pid))
+                .collect(),
+        }
+    }
+
+    /// `sigio_perm`: whether a file's owner, by who named it, may be sent its signals.
+    fn may_signal_owner(&self, owner: &crate::file::Owner, pid: Pid) -> bool {
+        let credentials = self.task_credentials(pid);
+        owner.euid == 0
+            || [owner.euid, owner.uid]
+                .iter()
+                .any(|user| *user == credentials.suid || *user == credentials.uid)
     }
 
     /// Sends a signal to every live process of a group; false if it has none.

@@ -228,12 +228,22 @@ pub(super) fn set_async(
     let has_fasync = {
         let file = file.borrow();
         let inode = file.node.borrow();
-        match inode.content {
+        match &inode.content {
             Content::Pipe(_) => true,
             Content::Special => matches!(
                 Device::from_number(inode.rdev),
                 Some(Device::Random | Device::Urandom)
             ),
+            Content::Socket(socket) => {
+                let socket = socket.borrow();
+                if on && !socket.local() {
+                    kernel.counters.note(
+                        crate::reason::SOCKET_SIGNALS_NOT_BUILT,
+                        socket.family.into(),
+                    );
+                }
+                true
+            }
             _ => false,
         }
     };

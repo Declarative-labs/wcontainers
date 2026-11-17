@@ -9,3 +9,9 @@ fn local_sockets_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "unixsock", &[]);
 }
+
+#[test]
+fn urgent_bytes_and_io_signals_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "unixoob", &[]);
+}

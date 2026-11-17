@@ -709,7 +709,7 @@ pub(super) fn connect(
         },
         Protocol::Tcp => match named {
             Named::Unspecified => {
-                disconnect_tcp(kernel, socket);
+                disconnect_tcp(kernel, cx, socket);
                 Ok(0)
             }
             Named::Endpoint(endpoint) => tcp_connect(kernel, cx, tid, file, socket, endpoint),
@@ -737,14 +737,14 @@ fn disconnect_udp(kernel: &mut Kernel, socket: &SocketRef) {
 }
 
 /// `tcp_disconnect`: a connection is reset, a listener stops listening.
-fn disconnect_tcp(kernel: &mut Kernel, socket: &SocketRef) {
+fn disconnect_tcp(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
     let state = socket.borrow().state;
     match state {
         State::Listening => {
             super::outside::stop_listening(kernel, socket);
             let backlog = core::mem::take(&mut socket.borrow_mut().backlog);
             for embryo in backlog {
-                super::released(kernel, &embryo);
+                super::released(kernel, cx, &embryo);
             }
             refuse_waiting(kernel, socket);
         }
@@ -764,7 +764,7 @@ fn disconnect_tcp(kernel: &mut Kernel, socket: &SocketRef) {
         core::mem::take(&mut own.queue)
     };
     for packet in packets {
-        super::drop_packet(kernel, packet);
+        super::drop_packet(kernel, cx, packet);
     }
     kernel.wake(channel(socket));
 }
@@ -1206,13 +1206,13 @@ pub(super) fn shutdown(
         (own.state, inet.connecting.is_some(), inet.protocol)
     };
     if connecting {
-        disconnect_tcp(kernel, socket);
+        disconnect_tcp(kernel, cx, socket);
         return Ok(0);
     }
     match state {
         State::Listening => {
             if mode & RCV_SHUTDOWN != 0 {
-                disconnect_tcp(kernel, socket);
+                disconnect_tcp(kernel, cx, socket);
             }
             Ok(0)
         }
@@ -1349,7 +1349,7 @@ fn writable(own: &Socket) -> bool {
 /// The last descriptor went: a connection is reset if bytes were left unread (or SO_LINGER asks
 /// for no wait), else the other end gets a FIN; a listener's waiting connections are reset; the
 /// ports are let go.
-pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
+pub(super) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
     super::outside::released(kernel, socket);
     let (state, protocol) = {
         let own = socket.borrow();
@@ -1361,7 +1361,7 @@ pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
                 let backlog = core::mem::take(&mut socket.borrow_mut().backlog);
                 for embryo in backlog {
                     reset_peer(kernel, &embryo);
-                    super::released(kernel, &embryo);
+                    super::released(kernel, cx, &embryo);
                 }
                 refuse_waiting(kernel, socket);
             }
@@ -1403,7 +1403,7 @@ pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
         kernel.wake(channel(&peer));
     }
     for packet in queue {
-        super::drop_packet(kernel, packet);
+        super::drop_packet(kernel, cx, packet);
     }
     kernel.wake(channel(socket));
 }
@@ -1545,6 +1545,7 @@ fn tcp_send(
             source: None,
             arrival: None,
             time: None,
+            urgent: false,
         };
         socket.borrow_mut().written += size;
         {
@@ -1711,6 +1712,7 @@ fn udp_send(
                     source: Some(from),
                     arrival: Some(arrival_from(socket, &to)),
                     time: super::stamp(kernel, cx, &receiver),
+                    urgent: false,
                 };
                 receiver.borrow_mut().queue.push_back(packet);
                 kernel.wake_poll(channel(&receiver), EPOLLIN | EPOLLRDNORM);

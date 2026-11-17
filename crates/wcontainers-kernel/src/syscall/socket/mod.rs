@@ -78,6 +78,8 @@ struct Packet {
     arrival: Option<inet::Arrival>,
     /// When it came, for a receiver that asked for timestamps when it was sent.
     time: Option<crate::fs::Time>,
+    /// The urgent byte of a local stream's `MSG_OOB` that the receiver's mark is at (`oob_skb`).
+    urgent: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,6 +132,15 @@ pub(crate) struct Socket {
     /// Its inode's number and owner, once it has a file (`sock_i_ino`, `sock_i_uid`).
     ino: u64,
     uid: u32,
+    /// Its file, whose owner hears of urgent bytes and, with `FASYNC`, of I/O.
+    file: Weak<RefCell<OpenFile>>,
+    /// Urgent bytes a local stream read passed over unread, which Linux's queued count keeps
+    /// (`inq_len` is not lowered when `manage_oob` drops them).
+    skipped_urgent: u64,
+    /// A send found no room, so room coming back is told (`SOCKWQ_ASYNC_NOSPACE`).
+    no_space: bool,
+    /// A local stream reader waits for data, so data coming is not told (`SOCKWQ_ASYNC_WAITDATA`).
+    waiting_data: bool,
     /// An internet socket's own part.
     inet: Option<alloc::boxed::Box<inet::Inet>>,
     /// A netlink socket's own part.
@@ -169,6 +180,10 @@ impl Socket {
             stamps: 0,
             ino: 0,
             uid: 0,
+            file: Weak::new(),
+            skipped_urgent: 0,
+            no_space: false,
+            waiting_data: false,
             inet: None,
             netlink: None,
         }
@@ -176,6 +191,77 @@ impl Socket {
 
     fn connection(&self) -> bool {
         self.kind == SOCK_STREAM || self.kind == SOCK_SEQPACKET
+    }
+
+    /// A local socket, not an internet or netlink one.
+    pub(crate) fn local(&self) -> bool {
+        self.inet.is_none() && self.netlink.is_none()
+    }
+
+    /// SO_OOBINLINE (`SOCK_URGINLINE`).
+    fn urgent_inline(&self) -> bool {
+        self.options
+            .get(&(SOL_SOCKET, crate::linux::net::SO_OOBINLINE))
+            .is_some_and(|value| value.iter().any(|byte| *byte != 0))
+    }
+
+    /// Whether its queue holds the urgent byte its mark is at (`oob_skb`).
+    fn has_urgent(&self) -> bool {
+        self.queue.iter().any(|packet| packet.urgent)
+    }
+
+    /// `unix_writable`: not listening, and what it sent holds at most a quarter of its buffer.
+    fn unix_writable(&self) -> bool {
+        self.state != State::Listening && self.written << 2 <= self.sndbuf
+    }
+}
+
+/// What `sk_wake_async` is told: data or an end came (`SOCK_WAKE_WAITD`), or room came back
+/// (`SOCK_WAKE_SPACE`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wake {
+    Data,
+    Space,
+}
+
+/// `sk_wake_async`: the I/O signal of a local socket's file with `FASYNC` set, for `reason`. Data
+/// is not told while a reader waits for it, and room only after a send found none.
+fn wake_async(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    how: Wake,
+    reason: u32,
+) {
+    let file = {
+        let mut own = socket.borrow_mut();
+        if own.inet.is_some() || own.netlink.is_some() {
+            return;
+        }
+        match how {
+            Wake::Data if own.waiting_data => return,
+            Wake::Space if !core::mem::take(&mut own.no_space) => return,
+            _ => {}
+        }
+        own.file.upgrade()
+    };
+    if let Some(file) = file {
+        kernel.send_io_signal(cx, &file, reason);
+    }
+}
+
+/// `sock_def_readable`: a local socket's waiters and its I/O signal hear of data.
+fn data_ready(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, key: u32) {
+    kernel.wake_poll(channel(socket), key);
+    wake_async(kernel, cx, socket, Wake::Data, POLL_IN);
+}
+
+/// `unix_write_space`: room came back to a sender, which its waiters and, once it is writable
+/// and a send found none, its I/O signal hear of.
+fn write_space(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+    kernel.wake_poll(channel(socket), EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
+    if socket.borrow().unix_writable() {
+        wake_async(kernel, cx, socket, Wake::Space, POLL_OUT);
     }
 }
 
@@ -303,19 +389,16 @@ fn make_file(
             gid,
             rdev: 0,
             now,
-            content: Content::Socket(socket),
+            content: Content::Socket(socket.clone()),
             parent: None,
             name: Vec::new(),
         },
     )?;
     let link = alloc::format!("socket:[{ino}]").into_bytes();
     let opener = kernel.credentials(tid).serial;
-    Ok(OpenFile::new(
-        node,
-        O_RDWR | (flags & O_NONBLOCK),
-        link,
-        opener,
-    ))
+    let file = OpenFile::new(node, O_RDWR | (flags & O_NONBLOCK), link, opener);
+    socket.borrow_mut().file = Rc::downgrade(&file);
+    Ok(file)
 }
 
 fn install(kernel: &mut Kernel, tid: Tid, file: FileRef, cloexec: bool) -> Result<u64, Errno> {
@@ -768,7 +851,7 @@ pub(super) fn connect(
         client.peer_cred = other.borrow().peer_cred;
     }
     other.borrow_mut().backlog.push_back(embryo);
-    kernel.wake_poll(channel(&other), EPOLLIN | EPOLLRDNORM);
+    data_ready(kernel, cx, &other, EPOLLIN | EPOLLRDNORM);
     Ok(0)
 }
 
@@ -961,6 +1044,14 @@ pub(super) fn shutdown(
         }
         drop(other);
         kernel.wake(channel(&peer));
+        // What the other end was told, as its I/O signal.
+        let told = (u8::from(mode & RCV_SHUTDOWN != 0) * SEND_SHUTDOWN)
+            | (u8::from(mode & SEND_SHUTDOWN != 0) * RCV_SHUTDOWN);
+        if told == SHUTDOWN_MASK {
+            wake_async(kernel, cx, &peer, Wake::Data, POLL_HUP);
+        } else if told & RCV_SHUTDOWN != 0 {
+            wake_async(kernel, cx, &peer, Wake::Data, POLL_IN);
+        }
     }
     Ok(0)
 }
@@ -987,12 +1078,14 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
     if !own.queue.is_empty() || (own.state == State::Listening && !own.backlog.is_empty()) {
         mask |= EPOLLIN | EPOLLRDNORM;
     }
+    if own.has_urgent() {
+        mask |= EPOLLPRI;
+    }
     let connection_closed = own.connection() && own.state == State::Closed;
     if (own.kind == SOCK_STREAM || own.kind == SOCK_SEQPACKET) && connection_closed {
         mask |= EPOLLHUP;
     }
-    // `unix_writable`: not listening, and what it sent holds at most a quarter of its buffer.
-    let mut writable = own.state != State::Listening && own.written << 2 <= own.sndbuf;
+    let mut writable = own.unix_writable();
     if writable
         && own.kind == SOCK_DGRAM
         && let Some(other) = &own.peer
@@ -1008,6 +1101,10 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
     }
     if writable {
         mask |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
+    } else if own.kind != SOCK_STREAM {
+        // `unix_dgram_poll` asks to hear when room comes back.
+        drop(own);
+        socket.borrow_mut().no_space = true;
     }
     mask as u16
 }
@@ -1015,9 +1112,14 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
 /// The last descriptor of a socket went (`unix_release_sock`): its name is free, the other end of
 /// a connection sees it shut down (and reset if it left bytes unread), waiting connections are
 /// refused, and what its queue held is let go.
-pub(crate) fn released(kernel: &mut Kernel, socket: &SocketRef) {
+pub(crate) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+    release(kernel, cx, socket, false);
+}
+
+/// As [`released`], for a socket or an embryo a listener held (whose other end is reset).
+fn release(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, embryo: bool) {
     if socket.borrow().inet.is_some() {
-        return inet::released(kernel, socket);
+        return inet::released(kernel, cx, socket);
     }
     if socket.borrow().netlink.is_some() {
         return netlink::released(kernel, socket);
@@ -1027,7 +1129,13 @@ pub(crate) fn released(kernel: &mut Kernel, socket: &SocketRef) {
         own.dead = true;
         own.state = State::Closed;
         own.shutdown = SHUTDOWN_MASK;
-        let unread = !own.queue.is_empty();
+        // An urgent byte read out of band at the front is not unread.
+        let first = usize::from(
+            own.queue
+                .front()
+                .is_some_and(|packet| packet.consumed == packet.data.len()),
+        );
+        let unread = own.queue.len() > first || embryo;
         (
             own.peer.take(),
             core::mem::take(&mut own.backlog),
@@ -1069,23 +1177,26 @@ pub(crate) fn released(kernel: &mut Kernel, socket: &SocketRef) {
             }
         }
         kernel.wake(channel(&peer));
+        if connection {
+            wake_async(kernel, cx, &peer, Wake::Data, POLL_HUP);
+        }
     }
     for embryo in backlog {
-        released(kernel, &embryo);
+        release(kernel, cx, &embryo, true);
     }
     for packet in queue {
-        drop_packet(kernel, packet);
+        drop_packet(kernel, cx, packet);
     }
     kernel.wake(channel(socket));
 }
 
 /// A buffer leaves a queue: its sender's room comes back and its descriptors are let go.
-fn drop_packet(kernel: &mut Kernel, packet: Packet) {
+fn drop_packet(kernel: &mut Kernel, cx: &mut Context<'_>, packet: Packet) {
     if let Some(sender) = packet.sender.upgrade() {
         let mut own = sender.borrow_mut();
         own.written = own.written.saturating_sub(packet.truesize);
         drop(own);
-        kernel.wake_poll(channel(&sender), EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
+        write_space(kernel, cx, &sender);
     }
     kernel.released.extend(packet.files);
 }
@@ -1165,19 +1276,12 @@ fn send(
         let to = message.address.as_deref();
         return netlink::send(kernel, cx, tid, socket, message.data, to, total);
     }
+    let urgent = message.flags & MSG_OOB != 0;
     let result = match kind {
         _ if is_inet => inet::send(kernel, cx, tid, socket, &message, total, nonblocking),
-        SOCK_STREAM => {
-            if message.flags & MSG_OOB != 0 {
-                return Err(kernel.counters.refuse_flag(
-                    cx.host,
-                    __NR_sendmsg,
-                    MSG_OOB.into(),
-                    Errno::EOPNOTSUPP,
-                ));
-            }
-            send_stream(kernel, cx, tid, socket, &message, total, nonblocking)
-        }
+        // `unix_stream_sendmsg`: an urgent byte is the last of at least one.
+        SOCK_STREAM if urgent && total == 0 => return Err(Errno::EOPNOTSUPP),
+        SOCK_STREAM => send_stream(kernel, cx, tid, socket, &message, total, nonblocking),
         _ => send_packet(kernel, cx, tid, socket, &message, total, nonblocking),
     };
     let stream = kind == SOCK_STREAM || !is_inet;
@@ -1259,10 +1363,13 @@ fn send_stream(
         });
     }
     let peer = connected_peer(socket)?;
+    // An urgent byte is the last, sent alone after the others (`queue_oob`).
+    let urgent = message.flags & MSG_OOB != 0;
+    let ordinary = total - u64::from(urgent);
     // A large write goes in pieces across waits; the call's progress is what went.
     let mut sent = kernel.threads[&tid].call.progress;
     let mut files_sent = sent > 0;
-    while sent < total || (total == 0 && !files_sent && !message.files.is_empty()) {
+    while sent < ordinary || (total == 0 && !files_sent && !message.files.is_empty()) {
         if peer.borrow().dead || peer.borrow().shutdown & RCV_SHUTDOWN != 0 {
             return if sent > 0 {
                 Ok(sent)
@@ -1270,21 +1377,11 @@ fn send_stream(
                 Err(Errno::EPIPE)
             };
         }
-        let (sndbuf, written, timeout) = {
-            let own = socket.borrow();
-            (own.sndbuf, own.written, own.send_timeout)
-        };
-        if written >= sndbuf {
-            if sent > 0 && (nonblocking || kernel.signal_pending(tid)) {
-                return Ok(sent);
-            }
-            let error = wait_room(kernel, tid, socket, nonblocking, timeout);
-            if error == Errno::PARKED {
-                kernel.thread_mut(tid).call.progress = sent;
-            }
-            return Err(error);
+        let sndbuf = socket.borrow().sndbuf;
+        if let Some(error) = wait_send_room(kernel, tid, socket, nonblocking, sent) {
+            return error;
         }
-        let (size, pages) = stream_piece(total - sent, sndbuf);
+        let (size, pages) = stream_piece(ordinary - sent, sndbuf);
         let data = gather(kernel, cx, tid, message.data, sent, size)?;
         let packet = Packet {
             consumed: 0,
@@ -1300,17 +1397,104 @@ fn send_stream(
             source: None,
             arrival: None,
             time: None,
+            urgent: false,
         };
         files_sent = true;
         socket.borrow_mut().written += packet.truesize;
         peer.borrow_mut().queue.push_back(packet);
-        kernel.wake_poll(channel(&peer), EPOLLIN | EPOLLRDNORM);
+        data_ready(kernel, cx, &peer, EPOLLIN | EPOLLRDNORM);
         sent += size;
         if total == 0 {
             break;
         }
     }
-    Ok(sent)
+    if !urgent {
+        return Ok(sent);
+    }
+    // `queue_oob`: room for one byte, then the receiver's mark moves to it.
+    if let Some(error) = wait_send_room(kernel, tid, socket, nonblocking, sent) {
+        return error;
+    }
+    let partial = |error: Errno| if sent > 0 { Ok(sent) } else { Err(error) };
+    if peer.borrow().dead || peer.borrow().shutdown & RCV_SHUTDOWN != 0 {
+        return partial(Errno::EPIPE);
+    }
+    let data = match gather(kernel, cx, tid, message.data, sent, 1) {
+        Ok(data) => data,
+        Err(error) => return partial(error),
+    };
+    let packet = Packet {
+        consumed: 0,
+        files: if files_sent {
+            Vec::new()
+        } else {
+            message.files.clone()
+        },
+        cred: message.cred.unwrap_or_else(|| own_cred(kernel, tid)),
+        sender: Rc::downgrade(socket),
+        truesize: truesize(1, 0),
+        data,
+        source: None,
+        arrival: None,
+        time: None,
+        urgent: true,
+    };
+    socket.borrow_mut().written += packet.truesize;
+    {
+        let mut other = peer.borrow_mut();
+        for earlier in other.queue.iter_mut() {
+            earlier.urgent = false;
+        }
+        other.queue.push_back(packet);
+    }
+    send_urgent(kernel, cx, &peer);
+    data_ready(
+        kernel,
+        cx,
+        &peer,
+        EPOLLIN | EPOLLPRI | EPOLLRDNORM | EPOLLRDBAND,
+    );
+    Ok(sent + 1)
+}
+
+/// `sock_alloc_send_pskb`'s wait for room in the send buffer: None when there is room, else what
+/// the send gives back (what went before, EAGAIN, or parked to go on from `sent`).
+fn wait_send_room(
+    kernel: &mut Kernel,
+    tid: Tid,
+    socket: &SocketRef,
+    nonblocking: bool,
+    sent: u64,
+) -> Option<Result<u64, Errno>> {
+    let (sndbuf, written, timeout) = {
+        let own = socket.borrow();
+        (own.sndbuf, own.written, own.send_timeout)
+    };
+    if written < sndbuf {
+        return None;
+    }
+    socket.borrow_mut().no_space = true;
+    if sent > 0 && (nonblocking || kernel.signal_pending(tid)) {
+        return Some(Ok(sent));
+    }
+    let error = wait_room(kernel, tid, socket, nonblocking, timeout);
+    if error == Errno::PARKED {
+        kernel.thread_mut(tid).call.progress = sent;
+    }
+    Some(Err(error))
+}
+
+/// `sk_send_sigurg`: the owner of the receiver's file hears of an urgent byte, and with a chosen
+/// I/O signal and `FASYNC` it is told too (`SOCK_WAKE_URG`).
+fn send_urgent(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+    let Some(file) = socket.borrow().file.upgrade() else {
+        return;
+    };
+    if kernel.send_urgent_signal(cx, &file)
+        && file.borrow().owner.is_some_and(|owner| owner.signal != 0)
+    {
+        kernel.send_io_signal(cx, &file, POLL_PRI);
+    }
 }
 
 /// The bytes of `data` from `offset`, `length` of them.
@@ -1412,6 +1596,9 @@ fn send_packet(
         && !back
         && target.borrow().queue.len() > target.borrow().max_backlog as usize;
     if written >= sndbuf || full {
+        if !full {
+            socket.borrow_mut().no_space = true;
+        }
         let waits_on = if full { &target } else { socket };
         return Err(wait_room(kernel, tid, waits_on, nonblocking, timeout));
     }
@@ -1432,6 +1619,7 @@ fn send_packet(
         source: None,
         arrival: None,
         time: None,
+        urgent: false,
     };
     let packet = Packet {
         time: stamp(kernel, cx, &target),
@@ -1439,7 +1627,7 @@ fn send_packet(
     };
     socket.borrow_mut().written += packet.truesize;
     target.borrow_mut().queue.push_back(packet);
-    kernel.wake_poll(channel(&target), EPOLLIN | EPOLLRDNORM);
+    data_ready(kernel, cx, &target, EPOLLIN | EPOLLRDNORM);
     Ok(total)
 }
 
@@ -1479,15 +1667,23 @@ fn receive(
     if socket.borrow().netlink.is_some() {
         return netlink::receive(kernel, cx, tid, socket, parts, flags, nonblocking);
     }
-    if flags & MSG_OOB != 0 {
-        return Err(Errno::EOPNOTSUPP);
-    }
     let size = parts.size();
     if kind == SOCK_STREAM {
         if socket.borrow().state != State::Connected && socket.borrow().queue.is_empty() {
             return Err(Errno::EINVAL);
         }
-        return receive_stream(kernel, cx, tid, socket, parts, size, flags, nonblocking);
+        if flags & MSG_OOB != 0 {
+            return receive_urgent(kernel, cx, tid, socket, parts, flags);
+        }
+        socket.borrow_mut().waiting_data = false;
+        let result = receive_stream(kernel, cx, tid, socket, parts, size, flags, nonblocking);
+        if result.as_ref().err() == Some(&Errno::PARKED) {
+            socket.borrow_mut().waiting_data = true;
+        }
+        return result;
+    }
+    if flags & MSG_OOB != 0 {
+        return Err(Errno::EOPNOTSUPP);
     }
     let packet_ready = !socket.borrow().queue.is_empty();
     if !packet_ready {
@@ -1549,7 +1745,7 @@ fn receive(
             let mut own = sender.borrow_mut();
             own.written = own.written.saturating_sub(truesize);
             drop(own);
-            kernel.wake_poll(channel(&sender), EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
+            write_space(kernel, cx, &sender);
         }
         // Room in a full queue for the senders waiting on it.
         kernel.wake_poll(channel(socket), EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
@@ -1604,6 +1800,13 @@ fn receive_stream(
     loop {
         if copied >= size && size > 0 {
             break;
+        }
+        if !is_inet && socket.borrow().queue.get(index).is_some() {
+            match manage_urgent(kernel, cx, socket, index, peek, copied) {
+                Some(at) => index = at,
+                None if copied > 0 => break,
+                None => index = socket.borrow().queue.len(),
+            }
         }
         let next = {
             let own = socket.borrow();
@@ -1710,7 +1913,7 @@ fn receive_stream(
                 let mut own = sender.borrow_mut();
                 own.written = own.written.saturating_sub(truesize);
                 drop(own);
-                kernel.wake_poll(channel(&sender), EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
+                write_space(kernel, cx, &sender);
             }
             if had_files {
                 break;
@@ -1733,6 +1936,107 @@ fn receive_stream(
         }
     }
     Ok((copied, received))
+}
+
+/// `manage_oob`: before a local stream read takes the buffer at `index`, an emptied one (an urgent
+/// byte read out of band) is passed or let go, and at the urgent byte the read stops if it has
+/// bytes, or else passes it (letting it go unless SO_OOBINLINE). The buffer to read, or None.
+fn manage_urgent(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    mut index: usize,
+    peek: bool,
+    copied: u64,
+) -> Option<usize> {
+    let at = |socket: &SocketRef, index: usize| {
+        let own = socket.borrow();
+        own.queue
+            .get(index)
+            .map(|packet| (packet.consumed == packet.data.len(), packet.urgent))
+    };
+    let (empty, urgent) = at(socket, index)?;
+    if !empty && !urgent {
+        return Some(index);
+    }
+    if empty {
+        if copied > 0 && (urgent || !socket.borrow().has_urgent()) {
+            return None;
+        }
+        if peek {
+            index += 1;
+        } else {
+            let packet = socket.borrow_mut().queue.remove(index).expect("the packet");
+            drop_packet(kernel, cx, packet);
+        }
+        if !at(socket, index)?.1 {
+            return Some(index);
+        }
+    }
+    if copied > 0 {
+        return None;
+    }
+    let inline = socket.borrow().urgent_inline();
+    if !peek {
+        let mut own = socket.borrow_mut();
+        own.queue[index].urgent = false;
+        if !inline {
+            let packet = own.queue.remove(index).expect("the urgent byte");
+            own.skipped_urgent += (packet.data.len() - packet.consumed) as u64;
+            let any = !own.queue.is_empty();
+            drop(own);
+            drop_packet(kernel, cx, packet);
+            return any.then_some(0);
+        }
+        Some(index)
+    } else if !inline {
+        at(socket, index + 1).map(|_| index + 1)
+    } else {
+        Some(index)
+    }
+}
+
+/// `unix_stream_recv_urg`: the urgent byte the mark is at, out of band. Taken, it stays in the
+/// queue emptied, and an emptied buffer just before it goes.
+fn receive_urgent(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
+    parts: Data<'_>,
+    flags: u32,
+) -> Result<(u64, Received), Errno> {
+    let (byte, emptied) = {
+        let mut own = socket.borrow_mut();
+        let at = own
+            .queue
+            .iter()
+            .position(|packet| packet.urgent)
+            .filter(|_| !own.urgent_inline())
+            .ok_or(Errno::EINVAL)?;
+        let packet = &mut own.queue[at];
+        let byte = packet.data[packet.consumed];
+        let mut emptied = None;
+        if flags & MSG_PEEK == 0 {
+            packet.urgent = false;
+            packet.consumed += 1;
+            if at > 0 && own.queue[at - 1].consumed == own.queue[at - 1].data.len() {
+                emptied = own.queue.remove(at - 1);
+            }
+        }
+        (byte, emptied)
+    };
+    let room = parts.size().min(1) as usize;
+    let copy = scatter(kernel, cx, tid, parts, &[byte][..room]);
+    if let Some(packet) = emptied {
+        drop_packet(kernel, cx, packet);
+    }
+    copy.map_err(|_| Errno::EFAULT)?;
+    let received = Received {
+        flags: MSG_OOB,
+        ..Received::default()
+    };
+    Ok((1, received))
 }
 
 fn scatter(
@@ -2564,7 +2868,8 @@ pub(super) fn ioctl(
                     own.queue
                         .iter()
                         .map(|packet| packet.data.len() - packet.consumed)
-                        .sum()
+                        .sum::<usize>()
+                        + own.skipped_urgent as usize
                 };
                 drop(own);
                 return put_int(kernel, cx, amount as i32);
@@ -2582,7 +2887,21 @@ pub(super) fn ioctl(
                 drop(own);
                 return put_int(kernel, cx, amount as i32);
             }
-            SIOCATMARK => return put_int(kernel, cx, 0),
+            // `unix_ioctl`: at the urgent byte, or at an emptied buffer with none past it or the
+            // urgent byte next. TCP's urgent data is not built (MSG_OOB is refused).
+            SIOCATMARK => {
+                let own = socket.borrow();
+                let mut queue = own.queue.iter();
+                let mark = family == AF_UNIX
+                    && queue.next().is_some_and(|first| {
+                        first.urgent
+                            || (first.consumed == first.data.len()
+                                && (!own.has_urgent()
+                                    || queue.next().is_some_and(|next| next.urgent)))
+                    });
+                drop(own);
+                return put_int(kernel, cx, i32::from(mark));
+            }
             _ => {}
         }
     }

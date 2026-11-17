@@ -265,6 +265,7 @@ pub(super) fn send(
             source: None,
             arrival: None,
             time: None,
+            urgent: false,
         };
         socket.borrow_mut().queue.push_back(packet);
     }

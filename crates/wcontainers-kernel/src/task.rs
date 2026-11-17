@@ -1010,7 +1010,7 @@ impl Kernel {
             if alloc::rc::Rc::strong_count(file) == 1
                 && let Some(socket) = crate::syscall::socket::of(file)
             {
-                crate::syscall::socket::released(self, &socket);
+                crate::syscall::socket::released(self, cx, &socket);
             }
         }
         crate::syscall::socket::flush_outside(self, cx);
