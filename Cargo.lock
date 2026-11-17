@@ -2760,9 +2760,11 @@ dependencies = [
  "wasm-bindgen",
  "wcontainers-gpu",
  "wcontainers-gpu-test",
+ "wcontainers-graphics-test",
  "web-sys",
  "wgpu",
  "wgpu-naga-bridge",
+ "windows",
  "windows-sys",
 ]
 
