@@ -1908,6 +1908,19 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K4, third run: layer 1 on the backend seed 4040103 (failing before on statx) passed 2000
+  (1723.7 s; docker execs were slow then, load 14 to 18). On the backend that opens files for the
+  page cache (`sequences_on_cached_backend_match_reference`): seed 0 passed 32, 4040301 passed
+  2000 (1784.6 s, same time and load). With pipes, splice, tee and cachestat added to the backend
+  calls (head 3cad455): direct 4040104 passed 300 (20.3 s), 4040105 passed 2000 (123.5 s); cached
+  4040302 passed 300 (20.3 s), 4040303 passed 2000 (123.4 s); load 14 to 17.
+- K4, third run: the milestone's fresh plain layer 1 seeds with every fix in (kernel at a2b3fcf,
+  the same at 3cad455): 4040205, 4040206 and 4040207 each passed 20000 (326.6 s, 326.4 s,
+  326.2 s), run side by side with each other and with the whole suite, load 14.5 at the start
+  and 34.2 at the end.
+- K4, third run: whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`) at head 3cad455 beside the three layer 1 runs:
+  144 passed, 0 failed, 5 ignored, 6 min 47 s, load 15.0 at the start and 16.3 at the end.
 - K4, second run: layer 1 on the backend (`sequences_on_backend_match_reference`): seed 0 passed
   300 (18.1 s); seed 4040101 passed 2000 (113.7 s), 4040102 passed 2000 (118.1 s), load 11 to 15.
   Seed 4040103 failed at 2000 on statx with an empty mask (Known issues). Fresh plain layer 1 seed
@@ -2375,12 +2388,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
-- K4, second run: layer 1 on the backend seed 4040103 differs from the reference on
-  statx(AT_FDCWD, "", AT_EMPTY_PATH, mask 0) of the work directory after a mknod in it: the
-  reference shows the directory's size before the mknod. With an empty mask Linux's
-  `fuse_update_get_attr` uses attributes it got within the same jiffy even with a timeout of 0
-  (a cache, and a race on the clock); ours asks the backend every time, as phase one keeps nothing
-  (see Departures). Left failing.
+- K4, second run (fixed in the third): layer 1 on the backend seed 4040103 differed on
+  statx(AT_FDCWD, "", AT_EMPTY_PATH, mask 0): Linux's FUSE does not sync attributes for a mask with
+  no basic field and shows what it held; ours asked the backend. Ours now takes the held
+  attributes too; the seed passed 2000.
 - K4, second run: getxattr of `security.capability` on the reference's FUSE mount answers EINVAL
   (with size 0 and with a buffer, set or not), though the server holds a valid v2 value (read on
   the server's side). Ours answers the same, as measured; the cause is not found
@@ -2444,18 +2455,17 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K4 goes on. Left for this milestone, most important first:
-1. The milestone's closing runs with every fix of the third run in: three fresh plain layer 1
-   seeds of 20000 and the whole suite (see Measurements for what ran).
-2. Notices about mapped files are not tested on purpose: the driver cannot send RETRIEVE (the
+K4's parts are built and its closing runs passed (Measurements). Left, none of it blocking:
+1. Notices about mapped files are not tested on purpose: the driver cannot send RETRIEVE (the
    server never asked), and its STORE and INVAL_INODE reach mapped files only by chance.
-3. splice and cachestat on backend files are untested; copy_file_range, sendfile and fadvise are
-   reached only through layer 1 on the backend.
-4. Unchecked: whether exec on the reference honours file capabilities of a FUSE file, and why the
+2. splice, tee, cachestat, copy_file_range, sendfile and fadvise on backend files are reached
+   only through layer 1 on the backend (both server kinds); no layer 2 program uses them there.
+3. Unchecked: whether exec on the reference honours file capabilities of a FUSE file, and why the
    reference answers getxattr of security.capability over FUSE with EINVAL.
 
 Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040204, and the checks' 91001 to 91003, 8181801 to
-8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend: 0 and 4040101 to 4040103.
+8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend: 0, 4040101 to 4040105;
+on the caching backend: 0, 4040301 to 4040303. Plain seeds of the K4 third run: 4040205 to 4040207.
