@@ -919,6 +919,20 @@ impl Backend for WebGl {
         if second {
             return Err(GpuError::Absent(Features::DUAL_SOURCE_BLEND));
         }
+        // WebGL refuses the constant colour and the constant alpha as a colour blend's two factors.
+        let mixed = used.iter().filter_map(|t| t.blend).any(|(c, _)| {
+            let colour = |f| matches!(f, BlendFactor::Constant | BlendFactor::OneMinusConstant);
+            let alpha = |f| {
+                matches!(
+                    f,
+                    BlendFactor::ConstantAlpha | BlendFactor::OneMinusConstantAlpha
+                )
+            };
+            (colour(c.src) && alpha(c.dst)) || (alpha(c.src) && colour(c.dst))
+        });
+        if mixed {
+            return Err(GpuError::Absent(Features::BLEND_CONSTANT_ALPHA));
+        }
         Ok(Handle(Rc::new((self.id(), *desc))))
     }
 
@@ -1636,7 +1650,7 @@ impl Backend for WebGl {
             ReadSource::Texture { region, extent } => {
                 let t = region.texture;
                 let three_d = t.desc.dimension == TextureDimension::D3;
-                let layer_bytes = (extent.width * extent.height * 4) as u32;
+                let layer_bytes = extent.width * extent.height * 4;
                 for i in 0..extent.depth_or_layers {
                     let layer = if three_d {
                         region.origin.z + i

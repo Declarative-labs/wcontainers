@@ -40,6 +40,7 @@ console.log(`chrome ${browser.version()}`);
 const scenes = [['triangle', ''], ['quads', ''], ['instanced', ''], ['quads', 'blend_factor'], ['quads', 'depth_function']];
 let failed = false;
 try {
+  await gpuReady(browser);
   const page = await browser.newPage();
   page.on('console', (m) => console.log(`console: ${m.text()}`));
   page.on('pageerror', (e) => { console.log(`page error: ${e.message}`); failed = true; });
@@ -64,6 +65,25 @@ try {
   server.close();
 }
 process.exitCode = failed ? 1 : 0;
+
+// Chrome's GPU process can restart just after Chrome starts, losing the WebGL contexts made before it
+// settles. This waits until a context survives half a second, and says how many did not.
+async function gpuReady(browser) {
+  const page = await browser.newPage();
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    const survived = await page.evaluate(async () => {
+      const gl = document.createElement('canvas').getContext('webgl2');
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return !gl.isContextLost();
+    });
+    if (survived) {
+      if (attempt > 1) console.log(`chrome: ${attempt - 1} WebGL contexts were lost while the GPU process started`);
+      break;
+    }
+  }
+  await page.close();
+}
 
 // The adapters chrome://gpu reports for WebGL (ANGLE) and WebGPU (Dawn).
 async function gpuReport(browser) {

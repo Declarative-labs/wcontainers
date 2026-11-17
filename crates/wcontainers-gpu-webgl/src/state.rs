@@ -216,7 +216,7 @@ pub fn raster(
         } else {
             crate::platform::ZERO_TO_ONE
         };
-        set_if!(v.clip_depth, depth, |d| clip_control(d));
+        set_if!(v.clip_depth, depth, clip_control);
     }
 }
 
