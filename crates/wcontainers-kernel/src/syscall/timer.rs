@@ -20,7 +20,7 @@ use crate::{Context, Errno, Kernel};
 
 /// What a timer's time is measured on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Clock {
+pub(super) enum Clock {
     /// The monotonic clock, or the wall clock with its times turned into the monotonic clock's
     /// (the wall clock cannot be set inside the container).
     Wall,
@@ -40,9 +40,23 @@ enum Notify {
 
 #[derive(Clone, Debug)]
 enum Owner {
-    Posix { pid: Pid, id: i32, notify: Notify },
-    Interval { pid: Pid, which: u32 },
-    Descriptor { file: Weak<RefCell<OpenFile>> },
+    Posix {
+        pid: Pid,
+        id: i32,
+        notify: Notify,
+    },
+    Interval {
+        pid: Pid,
+        which: u32,
+    },
+    Descriptor {
+        file: Weak<RefCell<OpenFile>>,
+    },
+    /// A thread sleeping on a CPU clock (`do_cpu_nanosleep`), with the time its call was given.
+    Sleep {
+        tid: Tid,
+        asked: u64,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -404,6 +418,8 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
                 kernel.wake(Channel::Object(Rc::as_ptr(&file) as *const () as usize));
             }
         }
+        // Disarmed, which tells the sleeper its time has come.
+        Owner::Sleep { tid, .. } => kernel.wake_thread(tid),
     }
 }
 
@@ -464,11 +480,81 @@ pub(crate) fn process_end(kernel: &mut Kernel, pid: Pid, exec: bool) {
         .filter(|(_, timer)| match timer.owner {
             Owner::Posix { pid: owner, .. } => owner == pid,
             Owner::Interval { pid: owner, .. } => owner == pid && !exec,
-            Owner::Descriptor { .. } => false,
+            Owner::Descriptor { .. } | Owner::Sleep { .. } => false,
         })
         .map(|(id, _)| *id)
         .collect();
     for id in ids {
+        kernel.timers.remove(id);
+    }
+}
+
+/// Starts the timer of a sleep on a CPU clock, which wakes `tid` when the clock reaches `until`;
+/// `asked` is the time the call was given.
+pub(super) fn start_cpu_sleep(
+    kernel: &mut Kernel,
+    tid: Tid,
+    clock: Clock,
+    until: u64,
+    asked: u64,
+) -> u64 {
+    let id = kernel.timers.add(Timer {
+        owner: Owner::Sleep { tid, asked },
+        clock,
+        expires: None,
+        interval: 0,
+        overrun: 0,
+        overrun_last: 0,
+        ticks: 0,
+        expired: false,
+        clock_id: 0,
+        sequence: 0,
+        sent_at: None,
+    });
+    kernel.timers.arm(id, until);
+    id
+}
+
+/// What is left of a sleep on a CPU clock: 0 once its timer fired or its clock reached the time; the
+/// time the call was given when the clock's task is gone (`posix_cpu_timer_set` fails and leaves it).
+pub(super) fn cpu_sleep_left(kernel: &Kernel, id: u64) -> u64 {
+    let timer = &kernel.timers.all[&id];
+    let Some(expires) = timer.expires else {
+        return 0;
+    };
+    match now(kernel, timer.clock) {
+        Some(clock_now) => expires.saturating_sub(clock_now),
+        None => match timer.owner {
+            Owner::Sleep { asked, .. } => asked,
+            _ => 0,
+        },
+    }
+}
+
+/// When a sleep on a CPU clock ends on its clock; none once its timer fired.
+pub(super) fn cpu_sleep_until(kernel: &Kernel, id: u64) -> Option<u64> {
+    kernel.timers.all[&id].expires
+}
+
+/// A CPU clock's time now; none when its task is gone.
+pub(super) fn cpu_clock_now(kernel: &Kernel, clock: Clock) -> Option<u64> {
+    now(kernel, clock)
+}
+
+/// Ends a sleep on a CPU clock: its timer goes.
+pub(super) fn end_cpu_sleep(kernel: &mut Kernel, id: u64) {
+    kernel.timers.remove(id);
+}
+
+/// A thread ended: the timer of a sleep it was in goes.
+pub(crate) fn thread_end(kernel: &mut Kernel, tid: Tid) {
+    let sleeping = kernel
+        .timers
+        .all
+        .iter()
+        .find(|(_, timer)| matches!(timer.owner, Owner::Sleep { tid: owner, .. } if owner == tid))
+        .map(|(id, _)| *id);
+    if let Some(id) = sleeping {
         kernel.timers.remove(id);
     }
 }

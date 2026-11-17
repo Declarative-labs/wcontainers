@@ -407,8 +407,8 @@ pub(crate) enum Channel {
 pub(crate) enum Restart {
     /// A sleep until this time on the monotonic clock, writing what is left to this address.
     Sleep { until: u64, left: u64 },
-    /// A sleep on a clock that never ends by time (a CPU clock that does not move).
-    Forever,
+    /// A sleep until a CPU clock (its id) reaches a time, writing what is left to this address.
+    CpuSleep { clock: i32, until: u64, left: u64 },
     /// A futex wait with a timeout: the futex, the value it must hold, the bits it waits for, and
     /// when it ends on the monotonic clock.
     Futex {

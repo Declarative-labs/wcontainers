@@ -461,6 +461,7 @@ impl Kernel {
     /// Ends one thread of a process that has others.
     pub(crate) fn end_thread(&mut self, cx: &mut Context<'_>, tid: Tid) {
         syscall::futex::thread_end(self, cx, tid, true);
+        syscall::timer::thread_end(self, tid);
         self.unschedule(tid);
         self.release_vfork(tid);
         syscall::sem::forget(self, tid);
@@ -534,6 +535,7 @@ impl Kernel {
             syscall::futex::thread_end(self, cx, tid, shared || index + 1 < threads.len());
         }
         for tid in threads {
+            syscall::timer::thread_end(self, tid);
             self.unschedule(tid);
             self.release_vfork(tid);
             syscall::sem::forget(self, tid);

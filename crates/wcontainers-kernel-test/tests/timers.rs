@@ -11,3 +11,11 @@ fn timers_match_reference() {
         assert!(run.warnings.is_empty(), "{:?}", run.warnings);
     }
 }
+
+#[test]
+fn cpu_clock_sleeps_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    for run in assert_same_output_seeded(&out, "cpusleep", &[], 2) {
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+    }
+}

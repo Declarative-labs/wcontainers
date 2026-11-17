@@ -227,15 +227,69 @@ fn sleep_until(
     Outcome::Parked
 }
 
-/// A sleep on a clock that never reaches its time (a CPU clock that does not move while the caller
-/// sleeps): only a signal ends it.
-fn sleep_forever(kernel: &mut Kernel, tid: Tid, relative: bool) -> Outcome {
-    kernel.thread_mut(tid).call.started = true;
-    if kernel.signal_pending(tid) {
-        if !relative {
-            return Err(Errno::ERESTARTNOHAND).into();
+/// The CPU clock a sleep is on, as `posix_cpu_timer_create` finds it; none when the id names none.
+fn cpu_sleep_clock(kernel: &Kernel, tid: Tid, id: i32) -> Option<super::timer::Clock> {
+    use super::timer::Clock;
+    if id == CLOCK_PROCESS_CPUTIME_ID as i32 {
+        return Some(Clock::Process(kernel.threads[&tid].process));
+    }
+    let pid = cpu_clock_target(kernel, tid, id, false)?;
+    Some(if id & CPUCLOCK_PERTHREAD_MASK != 0 {
+        Clock::Thread(!(id >> 3))
+    } else {
+        Clock::Process(pid)
+    })
+}
+
+/// A sleep until a CPU clock reaches `until`, as Linux's `do_cpu_nanosleep`: a timer on the clock
+/// wakes the thread, so only time used by other threads ends it. A signal interrupts it: when `left`
+/// is given (a relative sleep or its restart) what is left is written there (an address of 0 takes
+/// nothing) and the sleep continues from `restart_syscall`; an absolute one simply runs again.
+fn cpu_sleep(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    clock: i32,
+    until: u64,
+    asked: u64,
+    left: Option<u64>,
+) -> Outcome {
+    let call = kernel.threads[&tid].call;
+    let timer = if call.started {
+        call.progress
+    } else {
+        let Some(on) = cpu_sleep_clock(kernel, tid, clock) else {
+            return Err(Errno::EINVAL).into();
+        };
+        // A time of zero disarms the timer and a time already passed fires it at once.
+        if until == 0 || super::timer::cpu_clock_now(kernel, on).is_some_and(|now| now >= until) {
+            return Outcome::Return(0);
         }
-        kernel.thread_mut(tid).restart = Some(Restart::Forever);
+        let id = super::timer::start_cpu_sleep(kernel, tid, on, until, asked);
+        let call = &mut kernel.thread_mut(tid).call;
+        call.started = true;
+        call.progress = id;
+        call.deadline = None;
+        id
+    };
+    let remaining = super::timer::cpu_sleep_left(kernel, timer);
+    if remaining == 0 {
+        super::timer::end_cpu_sleep(kernel, timer);
+        return Outcome::Return(0);
+    }
+    if kernel.signal_pending(tid) {
+        let until = super::timer::cpu_sleep_until(kernel, timer).unwrap_or(until);
+        super::timer::end_cpu_sleep(kernel, timer);
+        let Some(left) = left else {
+            return Err(Errno::ERESTARTNOHAND).into();
+        };
+        if left != 0 {
+            let remaining = timespec_bytes(remaining);
+            if let Err(error) = guest(kernel, cx, tid).write_value(left, &remaining) {
+                return Err(error).into();
+            }
+        }
+        kernel.thread_mut(tid).restart = Some(Restart::CpuSleep { clock, until, left });
         return Err(Errno::ERESTART_RESTARTBLOCK).into();
     }
     kernel.park(tid, Channel::Nothing);
@@ -257,7 +311,13 @@ pub(super) fn restart_syscall(
             }
             outcome
         }
-        Some(Restart::Forever) => sleep_forever(kernel, tid, true),
+        Some(Restart::CpuSleep { clock, until, left }) => {
+            let outcome = cpu_sleep(kernel, cx, tid, clock, until, until, Some(left));
+            if matches!(outcome, Outcome::Return(_)) {
+                kernel.thread_mut(tid).restart = None;
+            }
+            outcome
+        }
         Some(restart @ Restart::Futex { .. }) => super::futex::restart(kernel, cx, tid, restart),
         // `do_no_restart_syscall`.
         None => Err(Errno::EINTR).into(),
@@ -293,7 +353,16 @@ pub(super) fn clock_nanosleep(
     let call = kernel.threads[&tid].call;
     if call.started {
         if call.deadline.is_none() {
-            return sleep_forever(kernel, tid, !absolute);
+            // Its clock and times are in its timer.
+            return cpu_sleep(
+                kernel,
+                cx,
+                tid,
+                id as i32,
+                0,
+                0,
+                (!absolute).then_some(left),
+            );
         }
         return sleep_until(kernel, cx, tid, call.progress, (!absolute).then_some(left));
     }
@@ -336,18 +405,27 @@ pub(super) fn clock_nanosleep(
             return Err(Errno::EINVAL).into();
         }
     }
-    // The process's CPU clock does not move while its only thread sleeps, so a sleep on it that is not
-    // already over never ends.
     if id == CLOCK_PROCESS_CPUTIME_ID || signed < 0 {
-        let over = if absolute {
-            duration <= cpu_time(kernel, cx, tid)
+        let until = if absolute {
+            duration
         } else {
-            duration == 0
+            match cpu_sleep_clock(kernel, tid, signed)
+                .and_then(|on| super::timer::cpu_clock_now(kernel, on))
+            {
+                // A relative time of zero disarms the timer.
+                Some(now) if duration != 0 => now.saturating_add(duration),
+                _ => 0,
+            }
         };
-        if over {
-            return Outcome::Return(0);
-        }
-        return sleep_forever(kernel, tid, !absolute);
+        return cpu_sleep(
+            kernel,
+            cx,
+            tid,
+            signed,
+            until,
+            duration,
+            (!absolute).then_some(left),
+        );
     }
     let now = cx.monotonic();
     let until = if absolute {
