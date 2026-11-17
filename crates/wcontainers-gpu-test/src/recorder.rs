@@ -411,6 +411,9 @@ impl Recorder {
         if !t.desc.usage.contains(TextureUsage::RENDER) {
             return Err("an attachment without render usage".into());
         }
+        if slice >= level_size(&t.desc, v.desc.base_mip).2 {
+            return Err("an attachment's slice outside its level".into());
+        }
         Ok((
             v.texture,
             subresource(&t.desc, v.desc.base_mip, v.desc.base_layer),
@@ -472,11 +475,6 @@ impl Recorder {
                 return Err("a depth format as a colour attachment".into());
             }
             self.attachment(*c.view, c.depth_slice)?;
-            self.texture_for(
-                self.view(*c.view)?.texture,
-                TextureUsage::RENDER,
-                "an attachment",
-            )?;
             colors[i] = Some((*c.view, c.depth_slice, c.store));
         }
         let mut depth = None;
@@ -493,11 +491,6 @@ impl Recorder {
                 return Err("depth attachment aspects differ from the format's".into());
             }
             self.attachment(*d.view, 0)?;
-            self.texture_for(
-                self.view(*d.view)?.texture,
-                TextureUsage::RENDER,
-                "an attachment",
-            )?;
             depth = Some((*d.view, d.depth, d.stencil));
         }
         let (width, height) = match (size, pass.empty) {
