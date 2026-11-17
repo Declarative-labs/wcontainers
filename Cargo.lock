@@ -2633,6 +2633,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "half",
  "image",
  "pollster",
  "serde_json",

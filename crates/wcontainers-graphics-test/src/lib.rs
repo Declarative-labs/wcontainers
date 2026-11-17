@@ -1,6 +1,8 @@
 //! The graphics test rig: reference scenes, the renderers that draw them, and picture comparison.
 
+pub mod check;
 pub mod compare;
+pub mod output;
 pub mod scene;
 pub mod webgpu;
 
@@ -11,7 +13,16 @@ pub mod d3d12;
 #[cfg(windows)]
 mod debug;
 #[cfg(windows)]
-mod hlsl;
+pub mod texels;
+
+/// Compiled DXIL of an entry point of shaders/<file>.hlsl, named "<file>.<entry>".
+#[cfg(windows)]
+#[macro_export]
+macro_rules! dxil {
+    ($name:literal) => {
+        include_bytes!(concat!(env!("OUT_DIR"), "/dxil/", $name, ".dxil")).as_slice()
+    };
+}
 
 use std::path::Path;
 

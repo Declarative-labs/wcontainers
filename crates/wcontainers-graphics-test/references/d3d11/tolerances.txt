@@ -1,0 +1,10 @@
+# <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference>
+blend-alpha.png 2 0 warp 15714 2
+blend-factors.png 2 0 warp 53491 2
+blend-masks.png 1 0 warp 34040 1
+blend-ops.png 2 0 warp 50930 2
+draws.png 1 0 warp 335 1
+instanced.png 0 0 warp 0 0
+quads.png 1 0 warp 3863 1
+topology.png 1 0 warp 641 1
+triangle.png 1 0 warp 1950 1

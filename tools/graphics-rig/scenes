@@ -1,0 +1,39 @@
+#!/bin/bash
+# The Direct3D scenes from the Mac, as one GPU job on the desktop (gt-run, see its source for the
+# details). Checking prints one line per scene output, pass or FAIL, and exits 1 if any fails:
+#   tools/graphics-rig/scenes [--build <command>] [--dll <name>=<path>]... [--api d3d11|d3d12]
+#       [--driver hardware|warp] [<scene>...]
+# --dll puts a library beside the scene programs under that name, for example a replacement
+# `--dll d3d11.dll=%CARGO_TARGET_DIR%\debug\my_d3d11.dll`; paths are on the desktop, relative to the
+# checkout there. --build runs a command after building the rig, for building the replacement.
+# Recording draws every scene on the GPU twice and on WARP with the debug layer and copies the GPU's
+# outputs, their allowances and the compiled shader corpus into this checkout:
+#   tools/graphics-rig/scenes --record
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(git rev-parse --show-toplevel)
+# shellcheck source=tools/graphics-rig/common.sh
+. "$here/common.sh"
+build="cargo build -q -p wcontainers-graphics-test"
+record=
+args=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        --record) record=1; shift ;;
+        --build) build="$build && ($2)"; shift 2 ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+out="C:\\wc\\out\\$name"
+if [ -z "$record" ]; then
+    exec "$here/gpu-job" --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run check $out\\scenes ${args[*]-}"
+fi
+[ ${#args[@]} -eq 0 ] || { echo "scenes: --record takes no other arguments" >&2; exit 2; }
+"$here/gpu-job" --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run record $out\\record"
+crate=$root/crates/wcontainers-graphics-test
+for dir in references/d3d11 references/d3d12 shaders/dxbc shaders/dxil; do
+    rm -rf "${crate:?}/$dir"
+    mkdir -p "$crate/$dir"
+    rig_scp "$host:C:/wc/out/$name/record/$dir/*" "$crate/$dir/"
+done
+echo "scenes: references and shaders copied into $crate"

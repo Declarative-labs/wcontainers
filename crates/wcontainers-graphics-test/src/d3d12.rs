@@ -12,18 +12,24 @@ use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObj
 use windows::core::{Interface, s};
 
 use crate::scene::{self, HEIGHT, WIDTH};
-use crate::{Driver, Picture, debug, hlsl, picture_from_rows};
+use crate::{Driver, Picture, debug, picture_from_rows};
+use windows::Win32::Graphics::Direct3D::ID3DBlob;
 
 /// Bytes per row of the readback buffer: the picture's row, already a multiple of 256 as copies need.
 const PITCH: u32 = WIDTH * 4;
 const _: () = assert!(PITCH.is_multiple_of(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT));
 
-pub fn render_triangle(driver: Driver) -> Result<Picture> {
+/// The scenes drawn with Direct3D 12.
+pub const SCENES: &[&str] = &["triangle"];
+
+pub fn render_triangle(driver: Driver, debug_layer: bool) -> Result<Picture> {
     unsafe {
-        let mut debug_interface: Option<ID3D12Debug> = None;
-        D3D12GetDebugInterface(&mut debug_interface)
-            .context("the debug layer needs the Graphics Tools feature")?;
-        debug_interface.unwrap().EnableDebugLayer();
+        if debug_layer {
+            let mut debug_interface: Option<ID3D12Debug> = None;
+            D3D12GetDebugInterface(&mut debug_interface)
+                .context("the debug layer needs the Graphics Tools feature")?;
+            debug_interface.unwrap().EnableDebugLayer();
+        }
 
         let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))?;
         let adapter: IDXGIAdapter1 = match driver {
@@ -37,8 +43,9 @@ pub fn render_triangle(driver: Driver) -> Result<Picture> {
         let device = device.unwrap();
 
         let image = draw(&device);
-        let messages = debug_messages(&device)?;
-        debug::check(messages)?;
+        if debug_layer {
+            debug::check(debug_messages(&device)?)?;
+        }
         Ok(Picture {
             adapter: adapter_name,
             image: image?.into(),
@@ -62,14 +69,14 @@ unsafe fn draw(device: &ID3D12Device) -> Result<image::RgbaImage> {
         )
         .with_context(|| {
             errors
-                .map(|e| String::from_utf8_lossy(hlsl::blob_bytes(&e)).into_owned())
+                .map(|e| String::from_utf8_lossy(blob_bytes(&e)).into_owned())
                 .unwrap_or_default()
         })?;
         let root: ID3D12RootSignature =
-            device.CreateRootSignature(0, hlsl::blob_bytes(&blob.unwrap()))?;
+            device.CreateRootSignature(0, blob_bytes(&blob.unwrap()))?;
 
-        let vs = hlsl::compile(scene::TRIANGLE_HLSL, "vs", "vs_5_0")?;
-        let ps = hlsl::compile(scene::TRIANGLE_HLSL, "ps", "ps_5_0")?;
+        let vs = crate::dxil!("triangle.vs");
+        let ps = crate::dxil!("triangle.ps");
         let layout = [
             element(s!("POSITION"), DXGI_FORMAT_R32G32_FLOAT, 0),
             element(s!("COLOR"), DXGI_FORMAT_R32G32B32_FLOAT, 8),
@@ -88,8 +95,8 @@ unsafe fn draw(device: &ID3D12Device) -> Result<image::RgbaImage> {
         };
         let mut pipeline_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
             pRootSignature: transmute_copy(&root),
-            VS: bytecode(&vs),
-            PS: bytecode(&ps),
+            VS: bytecode(vs),
+            PS: bytecode(ps),
             BlendState: blend,
             SampleMask: u32::MAX,
             RasterizerState: D3D12_RASTERIZER_DESC {
@@ -361,4 +368,8 @@ unsafe fn debug_messages(device: &ID3D12Device) -> Result<Vec<(i32, String)>> {
         }
     }
     Ok(messages)
+}
+
+fn blob_bytes(blob: &ID3DBlob) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast(), blob.GetBufferSize()) }
 }

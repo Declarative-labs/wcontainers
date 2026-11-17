@@ -1,7 +1,8 @@
 #!/bin/bash
-# The whole loop from the Mac: sends this checkout to the desktop, builds the rig there, draws every
-# scene with every renderer as one GPU job (loop.cmd) and compares the pictures; with a directory,
-# also copies the pictures into it.
+# The whole loop from the Mac: sends this checkout to the desktop, builds the rig there, checks every
+# Direct3D scene against its reference, runs three through the forwarding d3d11.dll and the triangle
+# through wgpu and Chrome, as one GPU job (loop.cmd); with a directory, also copies the triangle
+# pictures of the other renderers into it.
 #   tools/graphics-rig/loop [picture-dir]
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)

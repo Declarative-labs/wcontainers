@@ -1,0 +1,2 @@
+# <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference>
+triangle.png 1 0 warp 1950 1
