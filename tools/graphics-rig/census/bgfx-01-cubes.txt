@@ -28,11 +28,11 @@ device CreateDepthStencilView 1
 device CreateRenderTargetView 1
 device CreateSamplerState 1
 device SetPrivateDataInterface 1
-immediate-context UpdateSubresource 16401
+immediate-context UpdateSubresource 16637
 immediate-context DrawIndexed 14998
 immediate-context IASetVertexBuffers 838
 immediate-context RSSetState 838
-immediate-context GetData 484
+immediate-context GetData 487
 immediate-context OMSetRenderTargetsAndUnorderedAccessViews 484
 immediate-context OMSetBlendState 480
 immediate-context OMSetDepthStencilState 480

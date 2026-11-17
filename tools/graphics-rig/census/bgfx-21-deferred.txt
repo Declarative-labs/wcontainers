@@ -28,7 +28,7 @@ device CreateDepthStencilView 2
 device CreateSamplerState 2
 device CreateTexture2D1 2
 device SetPrivateDataInterface 1
-immediate-context UpdateSubresource 102439
+immediate-context UpdateSubresource 102408
 immediate-context IASetVertexBuffers 72579
 immediate-context RSSetState 37249
 immediate-context IASetInputLayout 36410

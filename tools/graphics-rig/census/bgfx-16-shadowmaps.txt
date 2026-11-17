@@ -47,7 +47,7 @@ immediate-context VSSetShader 1320
 immediate-context VSSetShaderResources 1320
 immediate-context RSSetViewports 1080
 immediate-context RSSetScissorRects 718
-immediate-context GetData 484
+immediate-context GetData 487
 immediate-context End 372
 immediate-context IASetPrimitiveTopology 364
 immediate-context OMSetRenderTargets 245

@@ -55,14 +55,14 @@ set -e
 scratch=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/programs
 mkdir -p "$scratch"
 rig_scp -r "$host:C:/wc/out/$name/programs/*" "$scratch/" 2>/dev/null || true
-rm -rf "$scratch"/*/bin "$scratch/references"
-if [ -n "$record" ]; then
+if [ -n "$record" ] && [ -d "$scratch/references" ]; then
     mkdir -p "$here/program-references" "$scratch/../program-references"
-    rig_scp -r "$host:C:/wc/out/$name/programs/references/*" "$here/program-references/" 2>/dev/null || true
+    cp -R "$scratch/references/"* "$here/program-references/"
     # The frames themselves stay out of the repository; a copy is kept in the scratch directory.
     rig_scp -r "$host:C:/wc/programs/reference/*" "$scratch/../program-references/" 2>/dev/null || true
     echo "programs: allowances and SHA-256 of the references copied into $here/program-references"
 fi
+rm -rf "$scratch"/*/bin "$scratch/references"
 if [ -n "$census" ]; then
     mkdir -p "$here/census"
     for dir in "$scratch"/*/; do
