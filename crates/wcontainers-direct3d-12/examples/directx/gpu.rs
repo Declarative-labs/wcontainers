@@ -14,7 +14,8 @@ use windows::Win32::Foundation::{HANDLE, HWND};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW, INFINITE,
-    SetEvent, SetWaitableTimer, TIMER_ALL_ACCESS, WaitForMultipleObjects, WaitForSingleObject,
+    ReleaseSemaphore, SetEvent, SetWaitableTimer, TIMER_ALL_ACCESS, WaitForMultipleObjects,
+    WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GWLP_HINSTANCE, GetWindowLongPtrW, MSG, MsgWaitForMultipleObjects, PM_NOREMOVE,
@@ -132,6 +133,12 @@ fn start() -> Thread {
                             }
                         }
                     }
+                }
+                for (semaphore, frames) in state.front.frames_finished() {
+                    // SAFETY: a swap chain's waitable object, closed only after the chain is gone.
+                    let _ = unsafe {
+                        ReleaseSemaphore(HANDLE(semaphore as usize as *mut _), frames as i32, None)
+                    };
                 }
                 for event in state.front.reached_events() {
                     // SAFETY: the event the program gave `SetEventOnCompletion`.

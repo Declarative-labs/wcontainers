@@ -1080,10 +1080,10 @@ impl ID3D12CommandQueue_Impl for Queue_Impl {
     }
     fn GetClockCalibration(
         &self,
-        _pgputimestamp: *mut u64,
-        _pcputimestamp: *mut u64,
+        pgputimestamp: *mut u64,
+        pcputimestamp: *mut u64,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetClockCalibration"))
+        Queue::GetClockCalibration(self, pgputimestamp, pcputimestamp)
     }
     fn GetDesc(&self) -> D3D12_COMMAND_QUEUE_DESC {
         Queue::GetDesc(self)
@@ -1312,8 +1312,8 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     fn ResourceBarrier(&self, numbarriers: u32, pbarriers: *const D3D12_RESOURCE_BARRIER) {
         List::ResourceBarrier(self, numbarriers, pbarriers)
     }
-    fn ExecuteBundle(&self, _pcommandlist: windows_core::Ref<ID3D12GraphicsCommandList>) {
-        self.unsupported("ExecuteBundle");
+    fn ExecuteBundle(&self, pcommandlist: windows_core::Ref<ID3D12GraphicsCommandList>) {
+        List::ExecuteBundle(self, pcommandlist)
     }
     fn SetDescriptorHeaps(
         &self,
@@ -1718,23 +1718,37 @@ impl ID3D12Resource_Impl for Resource_Impl {
     }
     fn WriteToSubresource(
         &self,
-        _dstsubresource: u32,
-        _pdstbox: *const D3D12_BOX,
-        _psrcdata: *const core::ffi::c_void,
-        _srcrowpitch: u32,
-        _srcdepthpitch: u32,
+        dstsubresource: u32,
+        pdstbox: *const D3D12_BOX,
+        psrcdata: *const core::ffi::c_void,
+        srcrowpitch: u32,
+        srcdepthpitch: u32,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("WriteToSubresource"))
+        Resource::WriteToSubresource(
+            self,
+            dstsubresource,
+            pdstbox,
+            psrcdata,
+            srcrowpitch,
+            srcdepthpitch,
+        )
     }
     fn ReadFromSubresource(
         &self,
-        _pdstdata: *mut core::ffi::c_void,
-        _dstrowpitch: u32,
-        _dstdepthpitch: u32,
-        _srcsubresource: u32,
-        _psrcbox: *const D3D12_BOX,
+        pdstdata: *mut core::ffi::c_void,
+        dstrowpitch: u32,
+        dstdepthpitch: u32,
+        srcsubresource: u32,
+        psrcbox: *const D3D12_BOX,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("ReadFromSubresource"))
+        Resource::ReadFromSubresource(
+            self,
+            pdstdata,
+            dstrowpitch,
+            dstdepthpitch,
+            srcsubresource,
+            psrcbox,
+        )
     }
     fn GetHeapProperties(
         &self,
