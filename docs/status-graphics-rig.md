@@ -13,9 +13,13 @@ R1 (the Direct3D reference library) is partly done; its first run (2026-11-17) d
   outputs stored as references with an allowance derived from WARP, the HLSL kept beside its
   compiled DXBC and DXIL. `tools/graphics-rig/scenes` checks every scene, through replacement
   libraries if given, and prints what passes and what differs.
-- Part 2 (Wine's Direct3D tests) and part 3 (real programs and their call census) are not started.
-- Swap chains cannot be tested in the queue: jobs run in session 0, where DXGI refuses to create any
-  swap chain (see Known issues). This also blocks real programs, which present to windows.
+- Part 2, Wine's Direct3D tests: the four test files (d3d11, d3d10core, dxgi, d3d12) of Wine 11.22
+  build as 64-bit Windows programs in C:\wc\wine (`wine-tests build`) and run through the queue
+  (`wine-tests run`), but every one of them stops within its first second: each creates a swap
+  chain early, DXGI refuses it in session 0, and the test then crashes. No baseline yet.
+- Part 3 (real programs and their call census) is not started.
+- The blocker for the rest: jobs run in session 0, where DXGI refuses every swap chain (see Known
+  issues). Wine's tests, a swap chain scene and real programs all need a session with a desktop.
 
 The plan document, docs/phase-2-graphics.md, is on branch phase-2-graphics and not in this checkout;
 its sections 10 to 12 (one source two builds, testing, milestones G4 and G5) were read for this run.
@@ -95,6 +99,16 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   (10.0.26100.0; dxc 1.9.2602.17) when building for Windows; the programs embed the bytecode. The
   corpus for the shader track is shaders/dxbc (79 files) and shaders/dxil (14 files), written by
   `scenes --record`; `scenes` says when it no longer matches the build.
+- `tools/graphics-rig/wine-tests build`: fetches llvm-mingw 20261104 and the Direct3D test sources
+  of Wine 11.22 (commit 9f8c4ae4d35c7ff4153267aba9618c026f5f5583, sparse: the four test
+  directories, libs/winecrt0, include/wine, include/ddk) into C:\wc\wine and builds
+  C:\wc\wine\build\<test>_test.exe for d3d11, d3d10core, dxgi and d3d12 (desktop/wine-tests.ps1).
+  Not a GPU job. About 50 s from nothing.
+- `tools/graphics-rig/wine-tests run [--warp] [<test>...]`: one GPU job running the named test files
+  (all four by default; a test file is Wine's unit of selection, its framework has no way to pick
+  one test function) on the GPU or on WARP; prints for each its summary line, failed-check count,
+  exit code and time; logs in C:\wc\out\<branch>\wine and copied to the scratch directory
+  (wine-logs). Exits 1 if any test failed or crashed.
 - `tools/graphics-rig/inventory`: prints the desktop's installed programs, root scheduled tasks,
   services, Graphics Tools state, PATHs and C:\wc, to compare with "The desktop" below. The listing
   taken before anything was installed is in the scratch directory
@@ -308,6 +322,12 @@ R1 first run (2026-11-17; desktop CPU load 1 to 4 % before each run, Mac load av
   blend pictures, which do not use that value.
 - Through a replacement library: `loop` runs triangle, quads and topology with the forwarding
   d3d11.dll beside gt-d3d11 (all pass, and the program loaded d3d11.dll from its own directory).
+- Wine's tests, first run on the RTX 3080 (2026-11-17): d3d11 stopped at d3d11.c:1776 after 2
+  failed checks (hr 0x887a0022 creating a swap chain), then an access violation; d3d10core at
+  d3d10core.c:1403 likewise; d3d12 at d3d12.c:635; dxgi at dxgi.c:6013 (output and swap chain
+  checks). Each ran under 1.3 s. Not run on WARP yet; it would stop at the same calls.
+- `cargo tree --workspace -e all` lists no Wine crate or source: the tests live only in C:\wc\wine
+  on the desktop, fetched by the script.
 - Swap chains in session 0 (the queue's session): CreateSwapChainForHwnd on a never-shown window with
   the flip model and with the blit model, and CreateSwapChainForComposition, all fail with
   DXGI_ERROR_NOT_CURRENTLY_AVAILABLE (0x887A0022). The scene is kept out of the list (its source is
@@ -395,15 +415,27 @@ There is no plan document in this checkout; these depart from the task or brief 
   bundles, barriers of all three kinds, ExecuteIndirect, queries and predication, three queues with
   fences, copies and resolves); the pipeline state each Direct3D 11 scene covers (blending, depth,
   stencil, formats and so on) is not repeated for Direct3D 12 yet.
+- Wine's tests are built with llvm-mingw (clang and mingw-w64's headers and import libraries)
+  rather than MSVC, each test file compiled alone in Wine's standalone test mode (STANDALONE,
+  __WINESRC__), with Wine's include/wine headers, winecrt0's debug.c (the debug string helpers Wine's
+  ntdll exports), and four Windows headers mingw-w64 lacks taken from Wine (ddk/d3dkmthk.h,
+  d3dukmdt.h, dxcore.h, dxcore_interface.h); ARRAY_SIZE and DECLSPEC_EXPORT come from Wine's
+  winnt.h, so they are defined on the command line, and an import library for d3d10_1.dll is made
+  with llvm-dlltool. Wine's other headers are not used: half of them are generated from .idl files
+  by Wine's build and clash with mingw-w64's. vkd3d's own Direct3D 12 tests are not built; Wine's
+  dlls/d3d12/tests is.
 - Texts hold only facts every correct implementation shares; values the implementation chooses
   (timestamps, helper pixel invocations, append order) are recorded as facts about them or sorted.
 
 ## Known issues
 
 - No swap chain can be created in session 0, where the queue runs its jobs (see Measurements), so
-  presenting is untested and real programs, which present to a window, cannot run in the queue.
-  Running them needs a job in the owner's interactive session, where their windows would appear on
-  his screen; that needs his decision.
+  presenting is untested, Wine's tests crash early, and real programs, which present to a window,
+  cannot run in the queue. Running them needs jobs in an interactive session with a desktop: the
+  owner's own (his screen would show their windows while they run, and they would compete with his
+  games), or a second Windows user's session (Windows 10 Home allows fast user switching, but such a
+  session exists only while someone has logged that user in). This needs the owner's decision; until
+  then parts 2 and 3 cannot be finished.
 
 - SSH to the desktop has refused new connections (reset right after key exchange) for about 9 to 10
   minutes at a time and then recovered by itself, with no reboot and nothing in the OpenSSH or System
@@ -443,24 +475,24 @@ reborrow MIT, zune-inflate MIT OR Apache-2.0 OR Zlib), rand 0.9 and rand_chacha 
 Apache-2.0, already in the workspace's lock file); in R0 anyhow, bytemuck (Zlib OR Apache-2.0 OR MIT), image, pollster, wgpu,
 windows, windows-sys, object, serde_json 1.0.154 (already in the workspace's lock file), all MIT OR
 Apache-2.0 unless said. Node packages (tools only):
-playwright-core 1.65.1 and @puppeteer/browsers 3.2.7, Apache-2.0. Tools on the desktop, none shipped:
+playwright-core 1.65.1 and @puppeteer/browsers 3.2.7, Apache-2.0. Tools on the desktop, none shipped: in R1 llvm-mingw 20261104 (C:\wc\llvm-mingw, 0.70 GB;
+its scripts ISC, LLVM Apache-2.0 with LLVM exceptions, mingw-w64 headers and runtime under their
+permissive and public-domain terms) and Wine 11.22's test sources (C:\wc\wine, 0.16 GB with the
+builds, LGPL-2.1, testing only, never in the repository or any crate); its download is in
+C:\wc\downloads (now 0.30 GB);
 pueue MIT, Git GPL-2.0, Node MIT, Rust MIT OR Apache-2.0, Visual Studio Build Tools and Windows SDK
 under Microsoft's licence terms, Chrome for Testing under Google's terms.
 
 ## Next
 
 R1 continues, in this order:
-1. Part 2, Wine's Direct3D tests: a script under tools/graphics-rig that fetches Wine at a pinned
-   commit into C:\wc (never into the workspace), builds dlls/d3d11/tests, d3d10core/tests,
-   dxgi/tests and vkd3d's d3d12 tests for 64-bit Windows (MSVC from the Build Tools, or llvm-mingw
-   if Wine's headers need it; record the choice), runs them on the RTX 3080 and WARP through the
-   queue, records the baseline (tests, checks, failures on real Direct3D with reasons, time), and
-   runs one file or one named test as one command; then a check that no workspace crate depends on
-   it (`cargo tree` shows no Wine).
-2. Part 3, real programs: needs the swap chain question settled (Known issues). Candidates to
+1. Settle where presenting jobs run (Known issues), then add that kind of job to the queue.
+2. Part 2, Wine's Direct3D tests: run all four on the RTX 3080 and on WARP in that session and
+   record the baseline (tests and checks run, failures on real Direct3D with their reasons, time).
+3. Part 3, real programs, in that session too. Candidates to
    check at their source: DirectX-Graphics-Samples (MIT), DirectXTK samples (MIT), and two or three
    open-source games or demos with 64-bit Direct3D 11 renderers. For each: a fetch-or-build script
    into C:\wc, a fixed number of frames run repeatably, saved pictures, and a call census through a
    forwarding library that also sees the COM methods (R0's sees only the 51 exports).
-3. Direct3D 12 versions of the pipeline-state scenes (blending, depth and stencil, formats,
+4. Direct3D 12 versions of the pipeline-state scenes (blending, depth and stencil, formats,
    textures and samplers), and a swap chain scene once presenting can run.

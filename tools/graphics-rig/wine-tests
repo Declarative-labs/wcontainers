@@ -1,0 +1,40 @@
+#!/bin/bash
+# Wine's Direct3D conformance tests (LGPL, testing only; built and kept in C:\wc\wine on the desktop,
+# never part of the workspace), from the Mac.
+#   tools/graphics-rig/wine-tests build
+#       fetches llvm-mingw and Wine's test sources at the pinned commit and builds
+#       d3d11, d3d10core, dxgi and d3d12 tests (desktop/wine-tests.ps1); not a GPU job
+#   tools/graphics-rig/wine-tests run [--warp] [<test>...]
+#       one GPU job running the named tests (all four by default) on the GPU or on WARP; prints each
+#       test's summary and failed-check count (desktop/wine-run.ps1); logs stay in
+#       C:\wc\out\<branch>\wine\<test>-<hardware|warp>.log, and are copied to
+#       pyro-parked/wcontainers-scratch/graphics-rig/wine-logs on the Mac
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=tools/graphics-rig/common.sh
+. "$here/common.sh"
+[ $# -gt 0 ] || { echo "usage: wine-tests build | run [--warp] [<test>...]" >&2; exit 2; }
+script='powershell -NoProfile -ExecutionPolicy Bypass -File tools\graphics-rig\desktop'
+case $1 in
+    build) exec "$here/remote" "$script\\wine-tests.ps1" ;;
+    run) shift ;;
+    *) echo "usage: wine-tests build | run [--warp] [<test>...]" >&2; exit 2 ;;
+esac
+warp=
+tests=()
+for arg in "$@"; do
+    case $arg in
+        --warp) warp=" -Warp" ;;
+        *) tests+=("$arg") ;;
+    esac
+done
+list=
+[ ${#tests[@]} -eq 0 ] || list=" -Tests $(IFS=,; echo "${tests[*]}")"
+set +e
+"$here/remote" "exit 0" >/dev/null
+"$here/gpu-job" -- "$script\\wine-run.ps1 -Out C:\\wc\\out\\$name\\wine$warp$list"
+code=$?
+logs=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/wine-logs
+mkdir -p "$logs"
+rig_scp "$host:C:/wc/out/$name/wine/*.log" "$logs/" 2>/dev/null
+exit $code
