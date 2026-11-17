@@ -16,7 +16,7 @@ pub trait Guest: Personality {
     // --- the instruction unit ---
     /// Every instruction starts at a multiple of this many bytes: ARM64 4, x86-64 1, RV64GC 2.
     const ALIGN: u64;
-    /// The longest instruction in bytes: ARM64 4, x86-64 15, RV64GC 4.
+    /// The longest instruction in bytes: ARM64 4, x86-64 15, RV64GC 8 (a far call's two halves read as one).
     const MAX_LENGTH: u64;
     type Instruction: Copy + Debug + Send + Sync;
     /// The instruction at the start of `code` (which runs to the end of the code range), with its length in
