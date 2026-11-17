@@ -3,7 +3,8 @@
 //! moves only when the program presents a frame (by 1/60 s) or sleeps (by the time asked for).
 //! The functions programs read time through (the performance counter, tick counts, the system time
 //! and winmm's timeGetTime if loaded) are detoured to it in the process's own system libraries, so
-//! every caller sees it, whichever module calls and however it found the function.
+//! every caller sees it, whichever module calls and however it found the function. Direct3D 11
+//! timestamp queries read it too (census.rs), so GPU timings a program shows are fixed as well.
 
 use std::cell::Cell;
 use std::sync::OnceLock;
@@ -17,6 +18,8 @@ use windows_sys::Win32::System::SystemInformation::{GetSystemTimeAsFileTime, Get
 
 /// 100-nanosecond units in a second, Windows' unit of time.
 const SECOND: u64 = 10_000_000;
+/// The ticks a second of the clock's GPU timestamps.
+pub const FREQUENCY: u64 = SECOND;
 /// How far each presented frame moves the clock.
 const FRAME: u64 = SECOND / 60;
 
@@ -149,6 +152,16 @@ pub fn install() -> Vec<String> {
 /// Moves the clock on by one presented frame.
 pub fn frame() {
     ELAPSED.fetch_add(FRAME, Ordering::Relaxed);
+}
+
+/// Whether the clock runs in this process.
+pub fn running() -> bool {
+    START.get().is_some()
+}
+
+/// The time on the clock since it started, in 100-nanosecond units.
+pub fn now() -> u64 {
+    elapsed()
 }
 
 fn start() -> &'static Start {

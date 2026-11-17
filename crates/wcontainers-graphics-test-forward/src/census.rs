@@ -201,6 +201,7 @@ fn wrapper_tables() -> &'static [Vec<usize>; 2] {
                 .map(|k| thunks + 32 * (t * CONTEXT_SLOTS + k))
                 .collect();
             table[0] = wrapper_query as *const () as usize;
+            table[get_data_slot()] = wrapper_get_data as *const () as usize;
             table
         })
     })
@@ -257,6 +258,57 @@ unsafe extern "system" fn wrapper_query(
     if result.is_ok() && own {
         // The reference the context gave is the wrapper's: they share one count.
         unsafe { *out = this };
+    }
+    result
+}
+
+/// Where GetData sits in a context's method table.
+fn get_data_slot() -> usize {
+    let (_, interface) = Table::Immediate.chain()[0];
+    methods(interface)
+        .iter()
+        .position(|n| *n == "GetData")
+        .expect("a context has GetData")
+}
+
+/// GetData of a wrapper: the context's own answer, except that while the frame clock runs a
+/// timestamp query reads that clock (in 100-nanosecond ticks, never disjoint), so timings a
+/// program shows are the same on every run.
+unsafe extern "system" fn wrapper_get_data(
+    this: *mut c_void,
+    query: *mut c_void,
+    data: *mut c_void,
+    size: u32,
+    flags: u32,
+) -> HRESULT {
+    let wrapper = unsafe { &*(this as *const Wrapper) };
+    let index = usize::from(wrapper.vtable == wrapper_tables()[1].as_ptr());
+    let k = get_data_slot();
+    WRAPPED_COUNTS[index * CONTEXT_SLOTS + k].fetch_add(1, Ordering::Relaxed);
+    let own: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, u32, u32) -> HRESULT =
+        unsafe { std::mem::transmute(*(*(wrapper.context as *const *const usize)).add(k)) };
+    let result = unsafe { own(wrapper.context, query, data, size, flags) };
+    if result != windows::Win32::Foundation::S_OK || data.is_null() || !crate::clock::running() {
+        return result;
+    }
+    let Some(desc) = unsafe { IUnknown::from_raw_borrowed(&query) }
+        .and_then(|q| q.cast::<ID3D11Query>().ok())
+        .map(|q| unsafe { q.GetDesc() })
+    else {
+        return result;
+    };
+    if desc.Query == D3D11_QUERY_TIMESTAMP && size as usize >= size_of::<u64>() {
+        unsafe { *(data as *mut u64) = crate::clock::now() };
+    } else if desc.Query == D3D11_QUERY_TIMESTAMP_DISJOINT
+        && size as usize >= size_of::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>()
+    {
+        unsafe {
+            *(data as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT) =
+                D3D11_QUERY_DATA_TIMESTAMP_DISJOINT {
+                    Frequency: crate::clock::FREQUENCY,
+                    Disjoint: false.into(),
+                }
+        };
     }
     result
 }
