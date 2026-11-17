@@ -744,3 +744,224 @@ fn present_needs_the_current_texture() {
     assert!(r.present(&s).is_err());
     assert_eq!(r.violations, ["present without a current texture"]);
 }
+
+fn multisampled(r: &mut Recorder, format: Format, size: u32) -> Result<Id, GpuError> {
+    r.create_texture(&TextureDesc {
+        dimension: TextureDimension::D2,
+        format,
+        width: size,
+        height: size,
+        depth_or_layers: 1,
+        mip_levels: 1,
+        samples: 4,
+        usage: TextureUsage::RENDER
+            | TextureUsage::SAMPLE
+            | TextureUsage::COPY_SRC
+            | TextureUsage::COPY_DST,
+        cube: false,
+        reinterpret: false,
+    })
+}
+
+#[test]
+fn a_multisampled_texture_is_2d_with_one_level_and_layer_and_no_storage() {
+    let mut r = Recorder::new();
+    assert!(multisampled(&mut r, Format::Rgba8Unorm, 2).is_ok());
+    let desc = TextureDesc {
+        dimension: TextureDimension::D2,
+        format: Format::Rgba8Unorm,
+        width: 2,
+        height: 2,
+        depth_or_layers: 1,
+        mip_levels: 1,
+        samples: 4,
+        usage: TextureUsage::RENDER,
+        cube: false,
+        reinterpret: false,
+    };
+    for broken in [
+        TextureDesc {
+            depth_or_layers: 2,
+            ..desc
+        },
+        TextureDesc {
+            mip_levels: 2,
+            ..desc
+        },
+        TextureDesc {
+            dimension: TextureDimension::D3,
+            ..desc
+        },
+        TextureDesc {
+            usage: TextureUsage::RENDER | TextureUsage::STORAGE,
+            ..desc
+        },
+    ] {
+        assert!(
+            matches!(r.create_texture(&broken), Err(GpuError::Invalid(_))),
+            "{broken:?}"
+        );
+    }
+    // A count the format does not take.
+    assert!(
+        r.create_texture(&TextureDesc { samples: 2, ..desc })
+            .is_err()
+    );
+}
+
+/// A call moving bytes of a multisampled texture (given with another, a single-sampled texture and a
+/// buffer).
+type MovesBytes = fn(&mut Recorder, &Id, &Id, &Id, &Id);
+
+/// A call breaking a rule on a fresh recorder.
+type Breaks = fn(&mut Recorder);
+
+#[test]
+fn a_multisampled_textures_bytes_move_by_draws_resolves_and_whole_copies() {
+    let moved =
+        "a multisampled texture's bytes moved other than by a draw, a resolve or a whole copy";
+    let not_whole = "a multisampled copy that is not of whole subresources of one sample count";
+    let broken: [(&str, MovesBytes); 5] = [
+        (moved, |r, ms, _, _, _| {
+            r.write_texture(&region(ms), extent(2), &[0; 16], 8, 2, WriteMode::Ordered)
+        }),
+        (moved, |r, ms, _, _, b| {
+            let dst = CopyBufferTexture {
+                buffer: b,
+                offset: 0,
+                row_pitch: 8,
+                rows_per_layer: 2,
+            };
+            r.copy_texture_to_buffer(&region(ms), &dst, extent(2))
+        }),
+        (moved, |r, ms, _, _, _| {
+            let _ = r.read_back(&ReadSource::Texture {
+                region: region(ms),
+                extent: extent(2),
+            });
+        }),
+        (not_whole, |r, ms, other, _, _| {
+            r.copy_texture(&region(ms), &region(other), extent(1))
+        }),
+        (not_whole, |r, ms, _, single, _| {
+            r.copy_texture(&region(ms), &region(single), extent(2))
+        }),
+    ];
+    for (violation, f) in broken {
+        let mut r = Recorder::new();
+        let ms = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
+        let other = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
+        let single = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+        let b = buffer(&mut r, 64, COPIES);
+        f(&mut r, &ms, &other, &single, &b);
+        assert_eq!(r.violations, [violation]);
+    }
+    // A whole copy between equal sample counts is one of the ways.
+    let mut r = Recorder::new();
+    let ms = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
+    let other = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
+    r.copy_texture(&region(&ms), &region(&other), extent(2));
+    assert!(r.violations.is_empty());
+}
+
+#[test]
+fn attachments_share_one_sample_count() {
+    let mut r = Recorder::new();
+    let ms = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
+    let ms = view(&mut r, &ms, Format::Rgba8Unorm);
+    let single = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let single = view(&mut r, &single, Format::Rgba8Unorm);
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: None,
+        empty: None,
+        occlusion: None,
+    };
+    for (i, v) in [&ms, &single].into_iter().enumerate() {
+        pass.colors[i] = Some(ColorAttachment {
+            view: v,
+            depth_slice: 0,
+            resolve: None,
+            load: LoadOp::Load,
+            store: StoreOp::Store,
+        });
+    }
+    r.begin_pass(&pass);
+    assert_eq!(r.violations, ["attachments of different sample counts"]);
+}
+
+/// A resolve, at a pass's end or by `resolve`, goes from a multisampled subresource into a
+/// single-sampled one of its size and format (or the twin, for `resolve`), of a format that averages.
+#[test]
+fn resolves_go_from_many_samples_to_one_of_an_averaging_format() {
+    fn pass_resolving(r: &mut Recorder, from: &Id, to: &Id) {
+        let mut pass = PassDesc {
+            colors: Default::default(),
+            depth: None,
+            empty: None,
+            occlusion: None,
+        };
+        pass.colors[0] = Some(ColorAttachment {
+            view: from,
+            depth_slice: 0,
+            resolve: Some(to),
+            load: LoadOp::Load,
+            store: StoreOp::Discard,
+        });
+        r.begin_pass(&pass);
+    }
+    let cases: [(&str, Breaks); 6] = [
+        (
+            "a resolve from a single-sampled attachment or into a multisampled one",
+            |r| {
+                let a = texture(r, Format::Rgba8Unorm, 2, ALL);
+                let a = view(r, &a, Format::Rgba8Unorm);
+                let b = texture(r, Format::Rgba8Unorm, 2, ALL);
+                let b = view(r, &b, Format::Rgba8Unorm);
+                pass_resolving(r, &a, &b);
+            },
+        ),
+        (
+            "a resolve target of another format than its attachment",
+            |r| {
+                let a = multisampled(r, Format::Rgba8Unorm, 2).unwrap();
+                let a = view(r, &a, Format::Rgba8Unorm);
+                let b = texture(r, Format::Bgra8Unorm, 2, ALL);
+                let b = view(r, &b, Format::Bgra8Unorm);
+                pass_resolving(r, &a, &b);
+            },
+        ),
+        ("a resolve of a format that cannot be averaged", |r| {
+            let a = multisampled(r, Format::Rgba8Uint, 2).unwrap();
+            let a = view(r, &a, Format::Rgba8Uint);
+            let b = texture(r, Format::Rgba8Uint, 2, ALL);
+            let b = view(r, &b, Format::Rgba8Uint);
+            pass_resolving(r, &a, &b);
+        }),
+        ("attachments of different sizes", |r| {
+            let a = multisampled(r, Format::Rgba8Unorm, 2).unwrap();
+            let a = view(r, &a, Format::Rgba8Unorm);
+            let b = texture(r, Format::Rgba8Unorm, 4, ALL);
+            let b = view(r, &b, Format::Rgba8Unorm);
+            pass_resolving(r, &a, &b);
+        }),
+        ("a resolve between subresources of different sizes", |r| {
+            let a = multisampled(r, Format::Rgba8Unorm, 2).unwrap();
+            let b = texture(r, Format::Rgba8Unorm, 4, ALL);
+            r.resolve(&region(&a), &region(&b), Format::Rgba8Unorm);
+        }),
+        (
+            "a resolve between formats other than one format and its sRGB twin",
+            |r| {
+                let a = multisampled(r, Format::Rgba8Unorm, 2).unwrap();
+                let b = texture(r, Format::Rgba8Unorm, 2, ALL);
+                r.resolve(&region(&a), &region(&b), Format::Bgra8Unorm);
+            },
+        ),
+    ];
+    for (violation, f) in cases {
+        let mut r = Recorder::new();
+        f(&mut r);
+        assert_eq!(r.violations, [violation]);
+    }
+}

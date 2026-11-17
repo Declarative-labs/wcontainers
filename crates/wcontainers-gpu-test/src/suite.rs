@@ -48,6 +48,8 @@ macro_rules! suite {
             instances_start_at_the_first_instance,
             indexed_strips_restart_and_add_the_base_vertex,
             fragments_write_storage_buffers,
+            multisampled_targets_cover_their_samples_and_resolve,
+            programs_run_per_sample_and_read_samples,
             present_shows_the_frame,
         );
     };
@@ -193,9 +195,10 @@ fn read_texture<B: Backend>(
 
 fn shader<B: Backend>(b: &mut B, source: &str, entry: &str, stage: ShaderStage) -> B::Shader {
     let module = naga::front::wgsl::parse_str(source).expect("test program parses");
+    // Programs reading the sample index run only where the back end declares `SAMPLE_SHADING`.
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::empty(),
+        naga::valid::Capabilities::MULTISAMPLED_SHADING,
     )
     .validate(&module)
     .expect("test program validates");
