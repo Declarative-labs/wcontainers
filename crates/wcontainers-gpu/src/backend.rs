@@ -474,7 +474,7 @@ pub trait Backend: Sized {
     }
 
     /// Clears rectangles of one view outside a pass (Direct3D 11.1's ClearView, Direct3D 12's clears
-    /// with rectangles). `view` is one mip level and one layer; the rectangles lie inside it. The
+    /// with rectangles). `view` is one mip level and one layer; rectangles are clipped to it. The
     /// default draws a full-screen triangle per rectangle, scissored to it, with a built-in program
     /// writing the value. WebGL 2 overrides it with scissored clears.
     fn clear_rects(
@@ -888,6 +888,11 @@ pub trait Backend: Sized {
         dst: &Self::Buffer,
         dst_offset: u64,
     ) -> Result<(), GpuError> {
+        if !dst_offset.is_multiple_of(8) {
+            return Err(GpuError::Invalid(
+                "query results go to multiples of 8 bytes",
+            ));
+        }
         let rb = self.read_queries(set, first, count)?;
         if self.read_state(&rb) == ReadState::Pending {
             self.slow_paths().hit(SlowPath::QueryResolveWait);

@@ -268,7 +268,8 @@ Fast paths, all in the crate with their defaults:
   default; WebGL 2 overrides it with `clearBuffer*` on each attachment, which skips the pass
   bookkeeping.
 - `clear_rects(&view, format, ClearValue, &[ScissorRect])`: Direct3D 11.1 `ClearView` and Direct3D 12
-  clears with rectangles, outside a pass. Default: one pass, a full-screen triangle per rectangle
+  clears with rectangles, outside a pass; rectangles are clipped to the view (the default's scissors
+  and WebGL 2's scissored clears clip them). Default: one pass, a full-screen triangle per rectangle
   scissored to it, with a built-in program writing the value (float, unsigned or signed output by format;
   depth through the fragment depth; stencil by `Replace` with the value as reference). WebGL 2 overrides
   it with scissored `clearBuffer*`.
@@ -307,7 +308,8 @@ Fast paths, all in the crate with their defaults:
   `NoOverwrite`, and with `Discard` when it wraps, so nothing waits. No back end overrides it today; a
   native back end would map the rings.
 - `resolve_queries(&set, first, count, &dst, dst_offset)`: query results written into a buffer on the
-  GPU, one u64 each, ordered with the work around it (Direct3D 12's `ResolveQueryData`, the only way it
+  GPU, one u64 each at an offset that is a multiple of 8 (refused otherwise, `GpuError::Invalid`),
+  ordered with the work around it (Direct3D 12's `ResolveQueryData`, the only way it
   gives query results; Vulkan's `vkCmdCopyQueryPoolResults`; OpenGL's query buffer objects). Default:
   `read_queries`, a wait on the device thread (counted `QueryResolveWait`), then an `Ordered`
   `write_buffer` of the results. WebGPU overrides it with `resolveQuerySet` into a buffer of its own
