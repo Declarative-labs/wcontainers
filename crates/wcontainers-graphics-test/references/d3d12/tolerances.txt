@@ -1,0 +1,22 @@
+# <output> <channel tolerance> <pixels allowed beyond it> warp <pixels differing at all> <largest difference>
+bundles.png 1 0 warp 1568 1
+compute-image.exr 0 0 warp 0 0
+compute-sums.txt exact warp same
+compute.png 1 0 warp 279 1
+copies-buffer.txt exact warp same
+copies-region.png 0 0 warp 0 0
+copies-resolve.png 1 0 warp 780 1
+copies-resource.png 0 0 warp 0 0
+heaps-first.png 1 0 warp 1599 1
+heaps-second.png 1 0 warp 1365 1
+queries-results.txt exact warp same
+queries.png 1 0 warp 470 1
+queues-sums.txt exact warp same
+queues.png 1 0 warp 1980 1
+roots.png 1 0 warp 5714 1
+swapchain-frame0.png 1 0 warp 3408 1
+swapchain-frame1.png 1 0 warp 7037 1
+swapchain-frame2.png 1 0 warp 3408 1
+swapchain-frame3.png 1 0 warp 2912 1
+swapchain-results.txt exact warp same
+triangle.png 1 0 warp 1950 1

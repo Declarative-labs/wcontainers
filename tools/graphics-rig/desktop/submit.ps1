@@ -8,6 +8,8 @@ param(
     [switch]$Built,
     [int]$Priority = 0,
     [switch]$Alone,
+    # Runs the command on the hidden desktop of the logged-in user's session (see job.ps1).
+    [switch]$Desktop,
     # The command, base64 of its UTF-8 text, run by cmd.exe in C:\wc\src\<Name>.
     [Parameter(Mandatory)][string]$Command
 )
@@ -32,6 +34,7 @@ if ($state.groups.default.status -ne 'Running' -and $aloneTasks.Count -eq 0) {
 }
 
 # The job runs with this environment, which pueue records when the job is added.
+. $PSScriptRoot\env.ps1
 $env:CARGO_TARGET_DIR = "C:\wc\target\$Name"
 $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Command))
 $label = "$Name`: $text"
@@ -43,6 +46,7 @@ $arguments = @('-c', $config, 'add', '--print-task-id', '--group', $group, "--pr
     '-Name', $Name, '-Tree', $Tree)
 if ($Built) { $arguments += '-Built' }
 if ($Alone) { $arguments += '-Alone' }
+if ($Desktop) { $arguments += '-Desktop' }
 $arguments += '-ErrorFile', $errors, '-Command', $Command
 # Windows PowerShell 5.1 passes arguments to programs without escaping their quotes, so the command
 # line is made here by the rules programs parse it with.
