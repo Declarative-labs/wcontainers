@@ -6,15 +6,15 @@ use std::sync::{Arc, Mutex};
 
 use wcontainers_direct3d_12::address::DESCRIPTOR_SIZE;
 use wcontainers_direct3d_12::list::{
-    Command, CommandList, CopyLocation, Descriptor, IndexBufferView, TargetView, VertexBufferView,
-    ViewportF,
+    Command, CommandList, CopyLocation, Descriptor, IndexBufferView, ResourceView, RootArgument,
+    SamplerView, TargetView, VertexBufferView, ViewportF,
 };
 use wcontainers_direct3d_12::resource::{Footprint, HeapType, ResourceDesc};
 use wcontainers_direct3d_12::state::{
     Blend, DepthStencil, InputElement, Raster, StencilOps, TargetBlend,
 };
 use wcontainers_direct3d_12::{
-    Error, FenceId, GraphicsPipelineDesc, PipelineId, ResourceId, RootId, features,
+    Error, FenceId, GraphicsPipelineDesc, HeapId, PipelineId, ResourceId, RootId, features,
 };
 use wcontainers_directx_graphics_infrastructure::{AdapterDesc, format_support, plane_count};
 use wcontainers_gpu::Backend;
@@ -25,13 +25,17 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::core::{AsImpl, BOOL, GUID, HRESULT, Interface, Ref, Result, implement};
 
+use crate::base::{Base, HasBase};
 use crate::gpu;
 
 /// The HRESULT for a front error.
 pub fn hr(e: Error) -> windows::core::Error {
     match e {
         Error::Invalid(s) => windows::core::Error::new(E_INVALIDARG, s),
-        Error::NotImplemented(s) => windows::core::Error::new(E_NOTIMPL, s),
+        Error::NotImplemented(s) => {
+            eprintln!("wcontainers: {s}: not implemented");
+            windows::core::Error::new(E_NOTIMPL, s)
+        }
         Error::OutOfMemory => E_OUTOFMEMORY.into(),
         Error::DeviceRemoved => DXGI_ERROR_DEVICE_REMOVED.into(),
     }
@@ -220,6 +224,11 @@ impl Adapter {
     }
 
     /// The host's monitors, the primary first.
+    /// A new factory: adapters do not keep the one that enumerated them.
+    pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
+        give::<IDXGIFactory4>(Factory(0).into(), riid, out)
+    }
+
     pub fn EnumOutputs(&self, output: u32) -> Result<IDXGIOutput> {
         let (desc, monitor) = crate::present::outputs()
             .into_iter()
@@ -239,7 +248,24 @@ fn luid(value: u64) -> LUID {
 // ---- The device ----
 
 #[implement(ID3D12Device)]
-pub struct Device;
+#[derive(Default)]
+pub struct Device {
+    base: Base,
+}
+
+macro_rules! based {
+    ($($t:ty => $f:tt),*) => {$(
+        impl HasBase for $t {
+            fn base(&self) -> &Base {
+                &self.$f
+            }
+        }
+    )*};
+}
+based!(
+    Device => base, Queue => 1, Allocator => 1, Fence => base, Resource => base,
+    RootSignature => 1, PipelineState => 1, DescriptorHeap => base, List => base
+);
 
 /// The front's description of a resource.
 fn resource_desc(d: &D3D12_RESOURCE_DESC) -> ResourceDesc {
@@ -342,7 +368,11 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let desc = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
-        give::<ID3D12CommandQueue>(Queue(*desc).into(), riid, out)
+        give::<ID3D12CommandQueue>(
+            crate::abi::fixed(Queue(*desc, Base::child()).into()),
+            riid,
+            out,
+        )
     }
 
     pub fn CreateCommandAllocator(
@@ -351,7 +381,7 @@ impl Device {
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
-        give::<ID3D12CommandAllocator>(Allocator(r#type).into(), riid, out)
+        give::<ID3D12CommandAllocator>(Allocator(r#type, Base::child()).into(), riid, out)
     }
 
     pub fn CreateCommandList(
@@ -366,6 +396,7 @@ impl Device {
         let list = List {
             kind: r#type,
             rec: Mutex::new(CommandList::new()),
+            base: Base::child(),
         };
         list.start(initial);
         give::<ID3D12GraphicsCommandList>(list.into(), riid, out)
@@ -379,13 +410,23 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let desc = *unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let slots = vec![[0u64; DESCRIPTOR_SIZE as usize / 8]; desc.NumDescriptors.max(1) as usize];
+        let count = desc.NumDescriptors;
+        let (id, cpu, gpu) = gpu::call(move |d| {
+            let (id, cpu, gpu) = d.create_descriptor_heap(count);
+            (id, cpu as usize, gpu)
+        });
+        let visible = desc.Flags.0 & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE.0 != 0;
         give::<ID3D12DescriptorHeap>(
-            DescriptorHeap {
-                desc,
-                slots: slots.into_boxed_slice(),
-            }
-            .into(),
+            crate::abi::fixed(
+                DescriptorHeap {
+                    desc,
+                    id,
+                    cpu,
+                    gpu: if visible { gpu } else { 0 },
+                    base: Base::child(),
+                }
+                .into(),
+            ),
             riid,
             out,
         )
@@ -409,7 +450,7 @@ impl Device {
         // SAFETY: the caller's blob of `length` bytes.
         let bytes = unsafe { std::slice::from_raw_parts(blob.cast::<u8>(), length) }.to_vec();
         let id = gpu::call(move |d| d.create_root_signature(&bytes)).map_err(hr)?;
-        give::<ID3D12RootSignature>(RootSignature(id).into(), riid, out)
+        give::<ID3D12RootSignature>(RootSignature(id, Base::child()).into(), riid, out)
     }
 
     pub fn CreateGraphicsPipelineState(
@@ -537,7 +578,7 @@ impl Device {
             })
         })
         .map_err(hr)?;
-        give::<ID3D12PipelineState>(PipelineState(id).into(), riid, out)
+        give::<ID3D12PipelineState>(PipelineState(id, Base::child()).into(), riid, out)
     }
 
     pub fn CreateRenderTargetView(
@@ -581,6 +622,19 @@ impl Device {
                             layers: t.ArraySize,
                         })
                     }
+                    Some(v) if v.ViewDimension == D3D12_RTV_DIMENSION_TEXTURE3D => {
+                        // SAFETY: the member the dimension names.
+                        let t = unsafe { v.Anonymous.Texture3D };
+                        let depth = (u32::from(r.desc.DepthOrArraySize) >> t.MipSlice).max(1);
+                        Some(TargetView {
+                            resource: r.id,
+                            format: v.Format.0 as u32,
+                            mip: t.MipSlice,
+                            first_layer: t.FirstWSlice,
+                            // All slices from the first, for a size of -1.
+                            layers: t.WSize.min(depth.saturating_sub(t.FirstWSlice)),
+                        })
+                    }
                     Some(_) => {
                         self.unsupported("CreateRenderTargetView of this dimension");
                         None
@@ -601,6 +655,186 @@ impl Device {
         unsafe { *(dest.ptr as *mut Descriptor) = descriptor };
     }
 
+    pub fn CreateDepthStencilView(
+        &self,
+        resource: Ref<ID3D12Resource>,
+        pdesc: *const D3D12_DEPTH_STENCIL_VIEW_DESC,
+        dest: &D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        let descriptor = resource.as_ref().and_then(|r| {
+            // SAFETY: resources come from this library.
+            let r = unsafe { r.as_impl() };
+            let own = r.desc.Format.0 as u32;
+            // SAFETY: an optional description, as the API allows.
+            let (format, mip, first_layer, layers, read_only) = match unsafe { pdesc.as_ref() } {
+                None => (own, 0, 0, 1, 0),
+                Some(v) => {
+                    let format = if v.Format.0 == 0 {
+                        own
+                    } else {
+                        v.Format.0 as u32
+                    };
+                    // SAFETY: the member the dimension names.
+                    let (mip, first, count) = unsafe {
+                        match v.ViewDimension {
+                            D3D12_DSV_DIMENSION_TEXTURE2D => (v.Anonymous.Texture2D.MipSlice, 0, 1),
+                            D3D12_DSV_DIMENSION_TEXTURE2DARRAY => {
+                                let t = v.Anonymous.Texture2DArray;
+                                (t.MipSlice, t.FirstArraySlice, t.ArraySize)
+                            }
+                            D3D12_DSV_DIMENSION_TEXTURE2DMS => (0, 0, 1),
+                            _ => {
+                                self.unsupported("CreateDepthStencilView of this dimension");
+                                return None;
+                            }
+                        }
+                    };
+                    (format, mip, first, count, v.Flags.0 as u32)
+                }
+            };
+            Some(Descriptor::DepthStencil {
+                view: TargetView {
+                    resource: r.id,
+                    format,
+                    mip,
+                    first_layer,
+                    layers,
+                },
+                read_only,
+            })
+        });
+        // SAFETY: CPU descriptor handles point into a heap of this library.
+        unsafe { *(dest.ptr as *mut Descriptor) = descriptor.unwrap_or_default() };
+    }
+
+    pub fn CreateConstantBufferView(
+        &self,
+        pdesc: *const D3D12_CONSTANT_BUFFER_VIEW_DESC,
+        dest: &D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        // SAFETY: an optional description, as the API allows.
+        let descriptor =
+            unsafe { pdesc.as_ref() }.map_or(Descriptor::Empty, |d| Descriptor::ConstantBuffer {
+                address: d.BufferLocation,
+                size: d.SizeInBytes,
+            });
+        // SAFETY: CPU descriptor handles point into a heap of this library.
+        unsafe { *(dest.ptr as *mut Descriptor) = descriptor };
+    }
+
+    pub fn CreateShaderResourceView(
+        &self,
+        resource: Ref<ID3D12Resource>,
+        pdesc: *const D3D12_SHADER_RESOURCE_VIEW_DESC,
+        dest: &D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        let descriptor = resource.as_ref().and_then(|r| {
+            // SAFETY: resources come from this library; an optional description.
+            let (r, d) = unsafe { (r.as_impl(), pdesc.as_ref()) };
+            shader_resource_view(r, d).map(Descriptor::ShaderResource)
+        });
+        // SAFETY: CPU descriptor handles point into a heap of this library.
+        unsafe { *(dest.ptr as *mut Descriptor) = descriptor.unwrap_or_default() };
+    }
+
+    pub fn CreateUnorderedAccessView(
+        &self,
+        resource: Ref<ID3D12Resource>,
+        _counter: Ref<ID3D12Resource>,
+        pdesc: *const D3D12_UNORDERED_ACCESS_VIEW_DESC,
+        dest: &D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        let descriptor = resource.as_ref().and_then(|r| {
+            // SAFETY: resources come from this library; an optional description.
+            let (r, d) = unsafe { (r.as_impl(), pdesc.as_ref()) };
+            unordered_access_view(r, d).map(Descriptor::UnorderedAccess)
+        });
+        // SAFETY: CPU descriptor handles point into a heap of this library.
+        unsafe { *(dest.ptr as *mut Descriptor) = descriptor.unwrap_or_default() };
+    }
+
+    pub fn CreateSampler(
+        &self,
+        pdesc: *const D3D12_SAMPLER_DESC,
+        dest: &D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        // SAFETY: the API requires a description.
+        let Some(d) = (unsafe { pdesc.as_ref() }) else {
+            return;
+        };
+        let descriptor = Descriptor::Sampler(SamplerView {
+            filter: d.Filter.0 as u32,
+            address: [
+                d.AddressU.0 as u32,
+                d.AddressV.0 as u32,
+                d.AddressW.0 as u32,
+            ],
+            lod_bias: d.MipLODBias.to_bits(),
+            anisotropy: d.MaxAnisotropy,
+            compare: d.ComparisonFunc.0 as u32,
+            border: d.BorderColor.map(f32::to_bits),
+            min_lod: d.MinLOD.to_bits(),
+            max_lod: d.MaxLOD.to_bits(),
+        });
+        // SAFETY: CPU descriptor handles point into a heap of this library.
+        unsafe { *(dest.ptr as *mut Descriptor) = descriptor };
+    }
+
+    pub fn CopyDescriptorsSimple(
+        &self,
+        count: u32,
+        dest: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        src: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        _kind: D3D12_DESCRIPTOR_HEAP_TYPE,
+    ) {
+        // SAFETY: handles of this library's heaps with `count` slots after each.
+        unsafe {
+            std::ptr::copy(
+                src.ptr as *const Descriptor,
+                dest.ptr as *mut Descriptor,
+                count as usize,
+            )
+        };
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn CopyDescriptors(
+        &self,
+        dest_ranges: u32,
+        dest_starts: *const D3D12_CPU_DESCRIPTOR_HANDLE,
+        dest_sizes: *const u32,
+        src_ranges: u32,
+        src_starts: *const D3D12_CPU_DESCRIPTOR_HANDLE,
+        src_sizes: *const u32,
+        _kind: D3D12_DESCRIPTOR_HEAP_TYPE,
+    ) {
+        // Every source descriptor in order, then written into the destination ranges in order. A
+        // missing size list means ranges of one.
+        // SAFETY: the caller's arrays of the lengths given, and handles of this library's heaps.
+        unsafe {
+            let size = |sizes: *const u32, i: usize| {
+                if sizes.is_null() {
+                    1
+                } else {
+                    *sizes.add(i) as usize
+                }
+            };
+            let mut all = Vec::new();
+            for (i, s) in many(src_starts, src_ranges).iter().enumerate() {
+                let n = size(src_sizes, i);
+                all.extend_from_slice(std::slice::from_raw_parts(s.ptr as *const Descriptor, n));
+            }
+            let mut from = all.iter();
+            for (i, d) in many(dest_starts, dest_ranges).iter().enumerate() {
+                for k in 0..size(dest_sizes, i) {
+                    if let Some(v) = from.next() {
+                        *(d.ptr as *mut Descriptor).add(k) = *v;
+                    }
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn CreateCommittedResource(
         &self,
@@ -613,7 +847,7 @@ impl Device {
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
-        wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32).map_err(hr)?;
+        wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32, true).map_err(hr)?;
         // SAFETY: the API requires both.
         let (heap, desc) = unsafe {
             (
@@ -622,6 +856,7 @@ impl Device {
             )
         };
         let kind = HeapType::from_d3d12(heap.Type.0 as u32).map_err(hr)?;
+        let heap_type = heap.Type;
         let front = resource_desc(&desc);
         let (id, address, host) = gpu::call(move |d| {
             let id = d.create_committed(kind, &front)?;
@@ -638,14 +873,19 @@ impl Device {
             desc.MipLevels = front.mips() as u16;
         }
         give::<ID3D12Resource>(
-            Resource {
-                id,
-                desc,
-                address,
-                host,
-                back_buffer: false,
-            }
-            .into(),
+            crate::abi::fixed(
+                Resource {
+                    id,
+                    desc,
+                    address,
+                    host,
+                    back_buffer: false,
+                    heap: heap_type,
+                    heap_flags: flags,
+                    base: Base::child(),
+                }
+                .into(),
+            ),
             riid,
             out,
         )
@@ -659,7 +899,15 @@ impl Device {
         out: *mut *mut c_void,
     ) -> Result<()> {
         let id = gpu::call(move |d| d.create_fence(initial));
-        give::<ID3D12Fence>(Fence { id }.into(), riid, out)
+        give::<ID3D12Fence>(
+            Fence {
+                id,
+                base: Base::child(),
+            }
+            .into(),
+            riid,
+            out,
+        )
     }
 
     pub fn GetDeviceRemovedReason(&self) -> Result<()> {
@@ -908,7 +1156,7 @@ impl Device {
 // ---- Queues, allocators, fences ----
 
 #[implement(ID3D12CommandQueue)]
-pub struct Queue(D3D12_COMMAND_QUEUE_DESC);
+pub struct Queue(D3D12_COMMAND_QUEUE_DESC, Base);
 
 impl Queue {
     pub fn GetDesc(&self) -> D3D12_COMMAND_QUEUE_DESC {
@@ -955,7 +1203,7 @@ impl Queue {
 }
 
 #[implement(ID3D12CommandAllocator)]
-pub struct Allocator(#[allow(dead_code)] D3D12_COMMAND_LIST_TYPE);
+pub struct Allocator(#[allow(dead_code)] D3D12_COMMAND_LIST_TYPE, Base);
 
 impl Allocator {
     /// Lists keep their own commands, so there is nothing to free here.
@@ -967,6 +1215,7 @@ impl Allocator {
 #[implement(ID3D12Fence)]
 pub struct Fence {
     id: FenceId,
+    base: Base,
 }
 
 impl Fence {
@@ -1025,22 +1274,53 @@ pub struct Resource {
     host: usize,
     /// A swap chain's back buffer, which the swap chain releases.
     back_buffer: bool,
+    /// The heap's type and the flags the resource was made with.
+    heap: D3D12_HEAP_TYPE,
+    heap_flags: D3D12_HEAP_FLAGS,
+    base: Base,
 }
 
 impl Resource {
     pub fn back_buffer(id: ResourceId, desc: D3D12_RESOURCE_DESC) -> ID3D12Resource {
-        Resource {
-            id,
-            desc,
-            address: 0,
-            host: 0,
-            back_buffer: true,
-        }
-        .into()
+        crate::abi::fixed(
+            Resource {
+                id,
+                desc,
+                address: 0,
+                host: 0,
+                back_buffer: true,
+                heap: D3D12_HEAP_TYPE_DEFAULT,
+                heap_flags: D3D12_HEAP_FLAG_NONE,
+                base: Base::child(),
+            }
+            .into(),
+        )
     }
 
     pub fn GetDesc(&self) -> D3D12_RESOURCE_DESC {
         self.desc
+    }
+
+    pub fn GetHeapProperties(
+        &self,
+        properties: *mut D3D12_HEAP_PROPERTIES,
+        flags: *mut D3D12_HEAP_FLAGS,
+    ) -> Result<()> {
+        // SAFETY: the caller's optional out pointers.
+        unsafe {
+            if let Some(p) = properties.as_mut() {
+                *p = D3D12_HEAP_PROPERTIES {
+                    Type: self.heap,
+                    CreationNodeMask: 1,
+                    VisibleNodeMask: 1,
+                    ..Default::default()
+                };
+            }
+            if let Some(f) = flags.as_mut() {
+                *f = self.heap_flags;
+            }
+        }
+        Ok(())
     }
 
     pub fn GetGPUVirtualAddress(&self) -> u64 {
@@ -1084,7 +1364,7 @@ impl Drop for Resource {
 }
 
 #[implement(ID3D12RootSignature)]
-pub struct RootSignature(pub RootId);
+pub struct RootSignature(pub RootId, Base);
 
 impl Drop for RootSignature {
     fn drop(&mut self) {
@@ -1094,7 +1374,7 @@ impl Drop for RootSignature {
 }
 
 #[implement(ID3D12PipelineState)]
-pub struct PipelineState(pub PipelineId);
+pub struct PipelineState(pub PipelineId, Base);
 
 impl Drop for PipelineState {
     fn drop(&mut self) {
@@ -1106,8 +1386,20 @@ impl Drop for PipelineState {
 #[implement(ID3D12DescriptorHeap)]
 pub struct DescriptorHeap {
     desc: D3D12_DESCRIPTOR_HEAP_DESC,
-    /// One slot of `DESCRIPTOR_SIZE` bytes per descriptor; CPU handles point into it.
-    slots: Box<[[u64; DESCRIPTOR_SIZE as usize / 8]]>,
+    id: HeapId,
+    /// The front's slots, one of `DESCRIPTOR_SIZE` bytes per descriptor, which CPU handles point
+    /// into.
+    cpu: usize,
+    /// The first GPU handle; zero for heaps shaders do not see.
+    gpu: u64,
+    base: Base,
+}
+
+impl Drop for DescriptorHeap {
+    fn drop(&mut self) {
+        let id = self.id;
+        gpu::call(move |d| d.destroy_descriptor_heap(id));
+    }
 }
 
 impl DescriptorHeap {
@@ -1116,15 +1408,11 @@ impl DescriptorHeap {
     }
 
     pub fn GetCPUDescriptorHandleForHeapStart(&self) -> D3D12_CPU_DESCRIPTOR_HANDLE {
-        D3D12_CPU_DESCRIPTOR_HANDLE {
-            ptr: self.slots.as_ptr() as usize,
-        }
+        D3D12_CPU_DESCRIPTOR_HANDLE { ptr: self.cpu }
     }
 
     pub fn GetGPUDescriptorHandleForHeapStart(&self) -> D3D12_GPU_DESCRIPTOR_HANDLE {
-        D3D12_GPU_DESCRIPTOR_HANDLE {
-            ptr: self.slots.as_ptr() as u64,
-        }
+        D3D12_GPU_DESCRIPTOR_HANDLE { ptr: self.gpu }
     }
 }
 
@@ -1147,6 +1435,7 @@ impl Blob {
 pub struct List {
     kind: D3D12_COMMAND_LIST_TYPE,
     rec: Mutex<CommandList>,
+    base: Base,
 }
 
 /// The descriptor a CPU handle points at.
@@ -1227,7 +1516,103 @@ impl List {
 
     /// Bindings of an empty root signature need nothing; root parameters are set by methods the
     /// front does not do yet, which fail the list.
-    pub fn SetGraphicsRootSignature(&self, _root: Ref<ID3D12RootSignature>) {}
+    fn root_signature(&self, compute: bool, root: Ref<ID3D12RootSignature>) {
+        // SAFETY: root signatures come from this library.
+        let root = root.as_ref().map(|r| unsafe { r.as_impl() }.0);
+        self.record(Command::RootSignature { compute, root });
+    }
+
+    pub fn SetGraphicsRootSignature(&self, root: Ref<ID3D12RootSignature>) {
+        self.root_signature(false, root);
+    }
+
+    pub fn SetComputeRootSignature(&self, root: Ref<ID3D12RootSignature>) {
+        self.root_signature(true, root);
+    }
+
+    /// The heaps tables name are found from the handles themselves.
+    pub fn SetDescriptorHeaps(&self, _count: u32, _heaps: *const Option<ID3D12DescriptorHeap>) {}
+
+    fn argument(&self, compute: bool, index: u32, argument: RootArgument) {
+        self.record(Command::RootArgument {
+            compute,
+            index,
+            argument,
+        });
+    }
+
+    pub fn SetGraphicsRootDescriptorTable(&self, index: u32, base: &D3D12_GPU_DESCRIPTOR_HANDLE) {
+        self.argument(false, index, RootArgument::Table(base.ptr));
+    }
+
+    pub fn SetComputeRootDescriptorTable(&self, index: u32, base: &D3D12_GPU_DESCRIPTOR_HANDLE) {
+        self.argument(true, index, RootArgument::Table(base.ptr));
+    }
+
+    pub fn SetGraphicsRootConstantBufferView(&self, index: u32, address: u64) {
+        self.argument(false, index, RootArgument::Descriptor(address));
+    }
+
+    pub fn SetComputeRootConstantBufferView(&self, index: u32, address: u64) {
+        self.argument(true, index, RootArgument::Descriptor(address));
+    }
+
+    pub fn SetGraphicsRootShaderResourceView(&self, index: u32, address: u64) {
+        self.argument(false, index, RootArgument::Descriptor(address));
+    }
+
+    pub fn SetComputeRootShaderResourceView(&self, index: u32, address: u64) {
+        self.argument(true, index, RootArgument::Descriptor(address));
+    }
+
+    pub fn SetGraphicsRootUnorderedAccessView(&self, index: u32, address: u64) {
+        self.argument(false, index, RootArgument::Descriptor(address));
+    }
+
+    pub fn SetComputeRootUnorderedAccessView(&self, index: u32, address: u64) {
+        self.argument(true, index, RootArgument::Descriptor(address));
+    }
+
+    fn constants(&self, compute: bool, index: u32, offset: u32, values: &[u32]) {
+        self.record(Command::RootConstants {
+            compute,
+            index,
+            offset,
+            values: values.to_vec(),
+        });
+    }
+
+    pub fn SetGraphicsRoot32BitConstant(&self, index: u32, value: u32, offset: u32) {
+        self.constants(false, index, offset, &[value]);
+    }
+
+    pub fn SetComputeRoot32BitConstant(&self, index: u32, value: u32, offset: u32) {
+        self.constants(true, index, offset, &[value]);
+    }
+
+    pub fn SetGraphicsRoot32BitConstants(
+        &self,
+        index: u32,
+        count: u32,
+        values: *const c_void,
+        offset: u32,
+    ) {
+        // SAFETY: the caller's `count` values.
+        let values = unsafe { many(values.cast::<u32>(), count) };
+        self.constants(false, index, offset, values);
+    }
+
+    pub fn SetComputeRoot32BitConstants(
+        &self,
+        index: u32,
+        count: u32,
+        values: *const c_void,
+        offset: u32,
+    ) {
+        // SAFETY: the caller's `count` values.
+        let values = unsafe { many(values.cast::<u32>(), count) };
+        self.constants(true, index, offset, values);
+    }
 
     /// Both back ends order their own work; plan section 5.2.
     pub fn ResourceBarrier(&self, _count: u32, _barriers: *const D3D12_RESOURCE_BARRIER) {}
@@ -1367,6 +1752,28 @@ impl List {
         });
     }
 
+    pub fn ClearDepthStencilView(
+        &self,
+        view: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        flags: D3D12_CLEAR_FLAGS,
+        depth: f32,
+        stencil: u8,
+        count: u32,
+        rects: *const RECT,
+    ) {
+        // SAFETY: a handle of this library's heaps and `count` rectangles.
+        let (view, rects) = unsafe { (descriptor(*view), many(rects, count)) };
+        self.record(Command::ClearDepth {
+            view,
+            depth: (flags.0 & D3D12_CLEAR_FLAG_DEPTH.0 != 0).then_some(depth),
+            stencil: (flags.0 & D3D12_CLEAR_FLAG_STENCIL.0 != 0).then_some(stencil),
+            rects: rects
+                .iter()
+                .map(|r| [r.left, r.top, r.right, r.bottom])
+                .collect(),
+        });
+    }
+
     pub fn DrawInstanced(
         &self,
         vertices: u32,
@@ -1397,6 +1804,47 @@ impl List {
             base_vertex,
             first_instance,
         });
+    }
+
+    /// The whole resource: a buffer's bytes, or every subresource of a texture.
+    pub fn CopyResource(&self, dst: Ref<ID3D12Resource>, src: Ref<ID3D12Resource>) {
+        let (Some(d), Some(s)) = (dst.as_ref(), src.as_ref()) else {
+            return self
+                .rec
+                .lock()
+                .unwrap()
+                .fail(Error::Invalid("CopyResource with no resource"));
+        };
+        // SAFETY: resources come from this library.
+        let (d, s) = unsafe { (d.as_impl(), s.as_impl()) };
+        if d.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER {
+            return self.record(Command::CopyBuffer {
+                dst: d.id,
+                dst_offset: 0,
+                src: s.id,
+                src_offset: 0,
+                size: d.desc.Width.min(s.desc.Width),
+            });
+        }
+        let layers = if d.desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D {
+            1
+        } else {
+            u32::from(d.desc.DepthOrArraySize)
+        };
+        for index in 0..u32::from(d.desc.MipLevels) * layers {
+            self.record(Command::CopyTexture {
+                dst: CopyLocation::Subresource {
+                    resource: d.id,
+                    index,
+                },
+                at: [0; 3],
+                src: CopyLocation::Subresource {
+                    resource: s.id,
+                    index,
+                },
+                area: None,
+            });
+        }
     }
 
     pub fn CopyBufferRegion(
@@ -1472,4 +1920,198 @@ impl List {
                 .fail(Error::Invalid("CopyTextureRegion with no resource")),
         }
     }
+}
+
+/// A shader resource view of `r`; None for a description this front cannot read.
+fn shader_resource_view(
+    r: &Resource,
+    d: Option<&D3D12_SHADER_RESOURCE_VIEW_DESC>,
+) -> Option<ResourceView> {
+    let own = r.desc.Format.0 as u32;
+    let layers = u32::from(r.desc.DepthOrArraySize);
+    let mut v = ResourceView {
+        resource: r.id,
+        format: own,
+        dimension: 0,
+        mapping: 0x1688,
+        first_element: 0,
+        count: u32::MAX,
+        stride: 0,
+        mip: 0,
+        first_layer: 0,
+        layers: 1,
+        flags: 0,
+        min_lod: 0,
+    };
+    let Some(d) = d else {
+        // The resource's own dimension, every mip and layer.
+        v.dimension = match r.desc.Dimension {
+            D3D12_RESOURCE_DIMENSION_TEXTURE2D if r.desc.SampleDesc.Count > 1 => {
+                if layers > 1 {
+                    7
+                } else {
+                    6
+                }
+            }
+            D3D12_RESOURCE_DIMENSION_TEXTURE2D => {
+                if layers > 1 {
+                    5
+                } else {
+                    4
+                }
+            }
+            D3D12_RESOURCE_DIMENSION_TEXTURE3D => 8,
+            D3D12_RESOURCE_DIMENSION_TEXTURE1D => {
+                if layers > 1 {
+                    3
+                } else {
+                    2
+                }
+            }
+            _ => return None,
+        };
+        v.layers = layers;
+        return Some(v);
+    };
+    if d.Format.0 != 0 {
+        v.format = d.Format.0 as u32;
+    }
+    v.dimension = d.ViewDimension.0 as u32;
+    v.mapping = d.Shader4ComponentMapping;
+    // SAFETY: the member the dimension names.
+    unsafe {
+        match d.ViewDimension {
+            D3D12_SRV_DIMENSION_BUFFER => {
+                let b = d.Anonymous.Buffer;
+                v.first_element = b.FirstElement;
+                v.count = b.NumElements;
+                v.stride = b.StructureByteStride;
+                v.flags = b.Flags.0 as u32;
+            }
+            D3D12_SRV_DIMENSION_TEXTURE2D => {
+                let t = d.Anonymous.Texture2D;
+                (v.mip, v.count, v.min_lod) = (
+                    t.MostDetailedMip,
+                    t.MipLevels,
+                    t.ResourceMinLODClamp.to_bits(),
+                );
+            }
+            D3D12_SRV_DIMENSION_TEXTURE2DARRAY => {
+                let t = d.Anonymous.Texture2DArray;
+                (v.mip, v.count, v.min_lod) = (
+                    t.MostDetailedMip,
+                    t.MipLevels,
+                    t.ResourceMinLODClamp.to_bits(),
+                );
+                (v.first_layer, v.layers) = (t.FirstArraySlice, t.ArraySize);
+            }
+            D3D12_SRV_DIMENSION_TEXTURE2DMS => {}
+            D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY => {
+                let t = d.Anonymous.Texture2DMSArray;
+                (v.first_layer, v.layers) = (t.FirstArraySlice, t.ArraySize);
+            }
+            D3D12_SRV_DIMENSION_TEXTURE3D => {
+                let t = d.Anonymous.Texture3D;
+                (v.mip, v.count, v.min_lod) = (
+                    t.MostDetailedMip,
+                    t.MipLevels,
+                    t.ResourceMinLODClamp.to_bits(),
+                );
+            }
+            D3D12_SRV_DIMENSION_TEXTURECUBE => {
+                let t = d.Anonymous.TextureCube;
+                (v.mip, v.count, v.min_lod) = (
+                    t.MostDetailedMip,
+                    t.MipLevels,
+                    t.ResourceMinLODClamp.to_bits(),
+                );
+            }
+            D3D12_SRV_DIMENSION_TEXTURECUBEARRAY => {
+                let t = d.Anonymous.TextureCubeArray;
+                (v.mip, v.count, v.min_lod) = (
+                    t.MostDetailedMip,
+                    t.MipLevels,
+                    t.ResourceMinLODClamp.to_bits(),
+                );
+                (v.first_layer, v.layers) = (t.First2DArrayFace, t.NumCubes);
+            }
+            D3D12_SRV_DIMENSION_TEXTURE1D => {
+                let t = d.Anonymous.Texture1D;
+                (v.mip, v.count, v.min_lod) = (
+                    t.MostDetailedMip,
+                    t.MipLevels,
+                    t.ResourceMinLODClamp.to_bits(),
+                );
+            }
+            D3D12_SRV_DIMENSION_TEXTURE1DARRAY => {
+                let t = d.Anonymous.Texture1DArray;
+                (v.mip, v.count, v.min_lod) = (
+                    t.MostDetailedMip,
+                    t.MipLevels,
+                    t.ResourceMinLODClamp.to_bits(),
+                );
+                (v.first_layer, v.layers) = (t.FirstArraySlice, t.ArraySize);
+            }
+            _ => return None,
+        }
+    }
+    Some(v)
+}
+
+/// An unordered access view of `r`; None for a description this front cannot read.
+fn unordered_access_view(
+    r: &Resource,
+    d: Option<&D3D12_UNORDERED_ACCESS_VIEW_DESC>,
+) -> Option<ResourceView> {
+    let mut v = ResourceView {
+        resource: r.id,
+        format: r.desc.Format.0 as u32,
+        dimension: 0,
+        mapping: 0x1688,
+        first_element: 0,
+        count: 1,
+        stride: 0,
+        mip: 0,
+        first_layer: 0,
+        layers: 1,
+        flags: 0,
+        min_lod: 0,
+    };
+    let Some(d) = d else {
+        v.dimension = match r.desc.Dimension {
+            D3D12_RESOURCE_DIMENSION_TEXTURE2D if r.desc.DepthOrArraySize > 1 => 5,
+            D3D12_RESOURCE_DIMENSION_TEXTURE2D => 4,
+            D3D12_RESOURCE_DIMENSION_TEXTURE3D => 8,
+            _ => return None,
+        };
+        v.layers = u32::from(r.desc.DepthOrArraySize);
+        return Some(v);
+    };
+    if d.Format.0 != 0 {
+        v.format = d.Format.0 as u32;
+    }
+    v.dimension = d.ViewDimension.0 as u32;
+    // SAFETY: the member the dimension names.
+    unsafe {
+        match d.ViewDimension {
+            D3D12_UAV_DIMENSION_BUFFER => {
+                let b = d.Anonymous.Buffer;
+                v.first_element = b.FirstElement;
+                v.count = b.NumElements;
+                v.stride = b.StructureByteStride;
+                v.flags = b.Flags.0 as u32;
+            }
+            D3D12_UAV_DIMENSION_TEXTURE2D => v.mip = d.Anonymous.Texture2D.MipSlice,
+            D3D12_UAV_DIMENSION_TEXTURE2DARRAY => {
+                let t = d.Anonymous.Texture2DArray;
+                (v.mip, v.first_layer, v.layers) = (t.MipSlice, t.FirstArraySlice, t.ArraySize);
+            }
+            D3D12_UAV_DIMENSION_TEXTURE3D => {
+                let t = d.Anonymous.Texture3D;
+                (v.mip, v.first_layer, v.layers) = (t.MipSlice, t.FirstWSlice, t.WSize);
+            }
+            _ => return None,
+        }
+    }
+    Some(v)
 }

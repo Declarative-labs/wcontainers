@@ -2,9 +2,10 @@
 //! made from it.
 
 use wcontainers_gpu::{
-    BlendComponent, BlendDesc, BlendFactor, BlendOp, Caps, ColorWrites, CompareFn, CullMode,
-    DepthStencilDesc, Features, FillMode, FrontFace, LogicOp, MAX_COLOR_TARGETS, ProvokingVertex,
-    RasterDesc, RenderTargetBlend, StencilFace, StencilOp, Topology, VertexFormat,
+    AddressMode, BlendComponent, BlendDesc, BlendFactor, BlendOp, BorderColor, Caps, ColorWrites,
+    CompareFn, CullMode, DepthStencilDesc, Features, FillMode, Filter, FrontFace, LogicOp,
+    MAX_COLOR_TARGETS, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc, StencilFace,
+    StencilOp, Topology, VertexFormat,
 };
 
 use wcontainers_directx_graphics_infrastructure::dxgi_vertex_format;
@@ -104,10 +105,8 @@ fn blend_factor(value: u32) -> Result<BlendFactor, Error> {
         11 => SrcAlphaSaturated,
         14 => Constant,
         15 => OneMinusConstant,
-        16 => Src1,
-        17 => OneMinusSrc1,
-        18 => Src1Alpha,
-        19 => OneMinusSrc1Alpha,
+        // The converter does not mark a pixel shader's second output as the blend's second source.
+        16..=19 => return Err(Error::NotImplemented("dual-source blending")),
         20 => ConstantAlpha,
         21 => OneMinusConstantAlpha,
         _ => return Err(Error::Invalid("unknown blend factor")),
@@ -237,8 +236,15 @@ impl Blend {
 }
 
 impl Raster {
-    /// The rasterising block, with the pipeline's sample mask.
-    pub fn block(&self, caps: &Caps, sample_mask: u32, samples: u32) -> Result<RasterDesc, Error> {
+    /// The rasterising block, with the pipeline's sample mask; `triangles` for pipelines drawing
+    /// triangles, the only primitives back ends bias.
+    pub fn block(
+        &self,
+        caps: &Caps,
+        sample_mask: u32,
+        samples: u32,
+        triangles: bool,
+    ) -> Result<RasterDesc, Error> {
         let fill = match self.fill {
             2 => FillMode::Line,
             3 => FillMode::Solid,
@@ -253,15 +259,19 @@ impl Raster {
             3 => CullMode::Back,
             _ => return Err(Error::Invalid("unknown cull mode")),
         };
-        if self.depth_bias != 0
-            || self.slope_scaled_depth_bias != 0.0
-            || self.depth_bias_clamp != 0.0
-            || !self.depth_clip
-            || self.forced_sample_count != 0
-            || self.conservative != 0
-        {
+        let biased = self.depth_bias != 0 || self.slope_scaled_depth_bias != 0.0;
+        if biased && !triangles {
+            return Err(Error::NotImplemented("depth bias of lines and points"));
+        }
+        if biased && self.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP) {
+            return Err(Error::NotImplemented("a depth bias clamp"));
+        }
+        if !self.depth_clip && !caps.has(Features::DEPTH_CLAMP) {
+            return Err(Error::NotImplemented("depth clamping"));
+        }
+        if self.forced_sample_count != 0 || self.conservative != 0 {
             return Err(Error::NotImplemented(
-                "depth bias, depth clamp, forced sample counts and conservative rasterization",
+                "forced sample counts and conservative rasterization",
             ));
         }
         let mask = sample_mask & ((1u64 << samples.min(32)) - 1) as u32;
@@ -278,10 +288,22 @@ impl Raster {
             } else {
                 FrontFace::Clockwise
             },
-            depth_bias: 0,
-            depth_bias_slope: 0,
-            depth_bias_clamp: 0,
-            depth_clip: true,
+            depth_bias: if biased {
+                (self.depth_bias as f32).to_bits()
+            } else {
+                0
+            },
+            depth_bias_slope: if biased {
+                self.slope_scaled_depth_bias.to_bits()
+            } else {
+                0
+            },
+            depth_bias_clamp: if biased {
+                self.depth_bias_clamp.to_bits()
+            } else {
+                0
+            },
+            depth_clip: self.depth_clip,
             scissor: true,
             line_width: 1.0f32.to_bits(),
             provoking: ProvokingVertex::First,
@@ -354,4 +376,101 @@ pub fn topology(value: u32) -> Result<Topology, Error> {
         33..=64 => return Err(Error::NotImplemented("patch lists")),
         _ => return Err(Error::Invalid("unknown primitive topology")),
     })
+}
+
+/// The sampler of a sampler descriptor. Filters that reduce by minimum or maximum, level-of-detail
+/// bias, and border colours or mirrored-once addressing the back end lacks wait for the program
+/// variants that do them.
+pub fn sampler(v: &crate::list::SamplerView, caps: &Caps) -> Result<SamplerDesc, Error> {
+    let filter = |bit: u32| {
+        if v.filter & (1 << bit) != 0 {
+            Filter::Linear
+        } else {
+            Filter::Nearest
+        }
+    };
+    let anisotropic = v.filter & 0x40 != 0;
+    let reduction = (v.filter >> 7) & 3;
+    if reduction > 1 {
+        return Err(Error::NotImplemented("minimum and maximum filters"));
+    }
+    if v.lod_bias != 0 && f32::from_bits(v.lod_bias) != 0.0 {
+        return Err(Error::NotImplemented("level-of-detail bias"));
+    }
+    let mut border_used = false;
+    let mut address = [AddressMode::Repeat; 3];
+    for (a, &mode) in address.iter_mut().zip(&v.address) {
+        *a = match mode {
+            1 => AddressMode::Repeat,
+            2 => AddressMode::Mirror,
+            3 => AddressMode::Clamp,
+            4 => {
+                border_used = true;
+                AddressMode::Border
+            }
+            5 if caps.has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
+            5 => return Err(Error::NotImplemented("mirrored-once addressing")),
+            _ => return Err(Error::Invalid("unknown address mode")),
+        };
+    }
+    let border = match v.border.map(f32::from_bits) {
+        [0.0, 0.0, 0.0, 0.0] => BorderColor::TransparentBlack,
+        [0.0, 0.0, 0.0, 1.0] => BorderColor::OpaqueBlack,
+        [1.0, 1.0, 1.0, 1.0] => BorderColor::OpaqueWhite,
+        _ => BorderColor::Custom(v.border),
+    };
+    if border_used && border != BorderColor::TransparentBlack && !caps.has(Features::BORDER_COLOR) {
+        return Err(Error::NotImplemented("border colours"));
+    }
+    Ok(SamplerDesc {
+        min: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(4)
+        },
+        mag: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(2)
+        },
+        mip: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(0)
+        },
+        address,
+        lod_range: [v.min_lod, v.max_lod],
+        anisotropy: if anisotropic {
+            v.anisotropy.clamp(1, 16) as u16
+        } else {
+            1
+        },
+        compare: (reduction == 1).then(|| compare(v.compare)).transpose()?,
+        border: if border_used {
+            border
+        } else {
+            BorderColor::TransparentBlack
+        },
+    })
+}
+
+/// A root signature's static sampler as a sampler descriptor would hold it.
+pub fn static_sampler(s: &crate::root::StaticSampler) -> crate::list::SamplerView {
+    let w = s.0;
+    let one = 1.0f32.to_bits();
+    crate::list::SamplerView {
+        filter: w[0],
+        address: [w[1], w[2], w[3]],
+        lod_bias: w[4],
+        anisotropy: w[5],
+        compare: w[6],
+        // `D3D12_STATIC_BORDER_COLOR`: transparent black, opaque black, opaque white.
+        border: match w[7] {
+            1 => [0, 0, 0, one],
+            2 => [one; 4],
+            _ => [0; 4],
+        },
+        min_lod: w[8],
+        max_lod: w[9],
+    }
 }
