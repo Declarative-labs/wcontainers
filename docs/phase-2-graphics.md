@@ -178,8 +178,9 @@ Recording:
 - `draw(&DrawCall)`: inside a pass. Section 4.4.
 - `begin_query(index)`, `end_query()`: occlusion, inside a pass.
 - `copy_buffer`, `copy_texture`, `copy_buffer_to_texture`, `copy_texture_to_buffer`, `clear_buffer`
-  (a pattern of 1 to 16 bytes repeated: zero, or an element's bits for Direct3D's storage view clears),
-  `resolve`: outside a pass. `resolve` names the format the samples are averaged in, the source's
+  (a pattern of 1 to 16 bytes repeated: zero, or an element's bits for Direct3D's storage view clears;
+  WebGPU clears only to zero, so its back end fills with any other pattern by copies from a block of
+  the pattern, `PatternClearCopied`), `resolve`: outside a pass. `resolve` names the format the samples are averaged in, the source's
   stored format or its sRGB twin, because Direct3D 11's and 12's `ResolveSubresource` take one: a
   multisampled `R8G8B8A8_TYPELESS` target (one texture seen through sRGB and linear views) resolves in
   linear light as `UNORM_SRGB` and on the stored values as `UNORM`. WebGPU resolves natively through

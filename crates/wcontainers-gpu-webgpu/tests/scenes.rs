@@ -124,6 +124,14 @@ fn pipelines_and_bind_groups_are_cached() {
     let mut b = device();
     let first = draw::prepare(&mut b, Scene::Quads, Twist::None).unwrap();
     let again = draw::prepare(&mut b, Scene::Quads, Twist::None).unwrap();
+    assert!(
+        first.blend == again.blend
+            && first.depth_stencil == again.depth_stencil
+            && first.raster == again.raster
+            && first.vertex_layout == again.vertex_layout,
+        "equal blocks made twice must be one block"
+    );
+    assert!(first.program != again.program);
     let t = draw::targets(&mut b, true).unwrap();
     let before = *b.counters();
     draw::begin(&mut b, &t, true);

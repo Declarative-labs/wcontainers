@@ -1,7 +1,7 @@
 //! Blocks, binding sets, the pipeline and bind group caches, passes and draws (plan sections 4.4, 4.5
 //! and 4.7).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::num::NonZeroU64;
@@ -28,6 +28,8 @@ pub struct Counters {
     pub group_layouts: u64,
     /// Buffers given fresh storage by a `Discard` write.
     pub renames: u64,
+    /// Uniform arena buffers moved to a new slice by a `Discard` write.
+    pub slices: u64,
     /// Writes ordered through a staging buffer and a copy.
     pub staged_writes: u64,
 }
@@ -68,14 +70,32 @@ impl<D: Hash + Eq + Copy> BlockTable<D> {
     }
 }
 
-/// A binding set: its resources, its layout key, and the bind groups made from it per layout.
+/// The most dynamic offsets one bind group takes: the uniform buffer slots of one set (plan 6.4).
+pub const MAX_GROUP_DYNAMIC: usize = 16;
+
+/// A binding set: its resources, its layout key, and its bind group for each group layout.
 #[derive(Debug)]
 pub struct SetObj {
     pub key: BindingLayoutKey,
     entries: Vec<(u32, SetRes)>,
-    /// Bind groups by group layout id, with the buffer generations they were made at.
-    groups: RefCell<Vec<(u64, u64, Rc<GroupObj>)>>,
+    groups: RefCell<Vec<Rc<SetGroup>>>,
 }
+
+/// A set's bind group for one group layout, and where the set's dynamic offsets come from.
+#[derive(Debug)]
+pub struct SetGroup {
+    layout: u64,
+    /// The bind epoch at which `group` was last known to be the set's.
+    epoch: Cell<u64>,
+    group: Rc<GroupObj>,
+    /// The set's entries giving the layout's dynamic offsets, in the layout's order.
+    dynamic: Box<[usize]>,
+}
+
+/// What a bind group is made of: its layout, and per entry the binding, the resource (a buffer's
+/// storage number), the fixed offset (zero for a dynamic one) and the size. Sets differing only in
+/// dynamic offsets, or naming different buffers of the uniform arena, share one bind group.
+type GroupKey = (u64, Vec<(u32, u64, u64, u64)>);
 
 #[derive(Debug)]
 enum SetRes {
@@ -89,15 +109,55 @@ enum SetRes {
 }
 
 impl SetObj {
-    /// Changes whenever a buffer of the set is renamed.
-    fn stamp(&self) -> u64 {
-        self.entries
-            .iter()
-            .map(|(_, r)| match r {
-                SetRes::Buffer { buffer, .. } => buffer.0.generation.get(),
-                _ => 0,
-            })
-            .sum()
+    /// The key of the bind group this set makes with `gl`, and the entries giving its dynamic
+    /// offsets.
+    fn group_key(&self, gl: &GroupLayout) -> Result<(GroupKey, Vec<usize>), &'static str> {
+        let mut key = Vec::with_capacity(gl.entries.len());
+        let mut dynamic = Vec::new();
+        for le in &gl.entries {
+            let i = self
+                .entries
+                .iter()
+                .position(|(b, _)| *b == le.binding)
+                .ok_or("a binding set lacks a binding its program reads")?;
+            key.push(match (&self.entries[i].1, &le.ty) {
+                (
+                    SetRes::Buffer {
+                        buffer,
+                        offset,
+                        size,
+                    },
+                    wgpu::BindingType::Buffer {
+                        has_dynamic_offset, ..
+                    },
+                ) => {
+                    let b = &buffer.0;
+                    if *has_dynamic_offset {
+                        dynamic.push(i);
+                        (le.binding, b.storage.get(), 0, *size)
+                    } else {
+                        (le.binding, b.storage.get(), b.base.get() + offset, *size)
+                    }
+                }
+                (
+                    SetRes::View(v),
+                    wgpu::BindingType::Texture { .. } | wgpu::BindingType::StorageTexture { .. },
+                ) => (le.binding, v.0.id, 0, 0),
+                (SetRes::Sampler(s), wgpu::BindingType::Sampler(_)) => (le.binding, s.0.id, 0, 0),
+                _ => return Err("a binding set's resource is not the kind its program reads"),
+            });
+        }
+        Ok(((gl.id, key), dynamic))
+    }
+
+    /// Fills `out` with the dynamic offsets of `group`; says how many.
+    fn offsets(&self, group: &SetGroup, out: &mut [u32; MAX_GROUP_DYNAMIC]) -> usize {
+        for (o, &i) in out.iter_mut().zip(&group.dynamic) {
+            if let SetRes::Buffer { buffer, offset, .. } = &self.entries[i].1 {
+                *o = (buffer.0.base.get() + offset) as u32;
+            }
+        }
+        group.dynamic.len()
     }
 
     fn mark_used(&self, serial: u64) {
@@ -119,6 +179,7 @@ impl SetObj {
 pub struct GroupObj {
     id: u64,
     raw: wgpu::BindGroup,
+    key: GroupKey,
 }
 
 pub struct GroupLayout {
@@ -154,6 +215,10 @@ type SetKey = Vec<(u32, u8, u64, u64, u64)>;
 #[derive(Default)]
 pub struct Caches {
     sets: HashMap<SetKey, Weak<SetObj>>,
+    /// Bind groups by what they are made of.
+    groups: HashMap<GroupKey, Weak<GroupObj>>,
+    /// How many bind groups were alive at the last pruning.
+    groups_alive: usize,
     group_layouts: HashMap<Vec<wgpu::BindGroupLayoutEntry>, Rc<GroupLayout>>,
     layouts: HashMap<(u64, [BindingLayoutKey; MAX_BINDING_SETS]), Rc<ProgramLayout>>,
     pipelines: HashMap<PipelineKey, (u64, wgpu::RenderPipeline, Rc<ProgramLayout>)>,
@@ -162,6 +227,16 @@ pub struct Caches {
         (wgpu::ComputePipeline, Rc<ProgramLayout>),
     >,
     own_targets: HashMap<(u32, u32, u32), wgpu::TextureView>,
+}
+
+impl Caches {
+    /// Forgets bind groups no set holds any more, once the table has doubled since last time.
+    pub fn prune_groups(&mut self) {
+        if self.groups.len() > 2 * self.groups_alive.max(64) {
+            self.groups.retain(|_, g| g.strong_count() > 0);
+            self.groups_alive = self.groups.len();
+        }
+    }
 }
 
 /// One color attachment as the pass opened it.
@@ -199,13 +274,21 @@ struct Last {
     key: Option<PipelineKey>,
     pipeline: u64,
     layout: Option<Rc<ProgramLayout>>,
-    groups: [Option<(u64, Vec<u32>)>; MAX_BINDING_SETS],
+    groups: [Option<LastGroup>; MAX_BINDING_SETS],
     vertex: Vec<Option<(u64, u64, u64)>>,
     index: Option<(u64, u64, u64, wgpu::IndexFormat)>,
     viewport: Option<[u32; 6]>,
     scissor: Option<[u32; 4]>,
     blend_constant: Option<[u32; 4]>,
     stencil_reference: Option<u8>,
+}
+
+/// The bind group a group index holds, and the set and offsets it was bound for.
+struct LastGroup {
+    set: Rc<SetObj>,
+    group: Rc<SetGroup>,
+    offsets: [u32; MAX_GROUP_DYNAMIC],
+    count: usize,
 }
 
 fn color_value(bits: [u32; 4], kind: FormatKind) -> wgpu::Color {
@@ -288,11 +371,14 @@ impl WebGpu {
         for e in entries {
             let r = match &e.resource {
                 BindingResource::UniformBuffer(r)
-                | BindingResource::StorageBuffer { range: r, .. } => SetRes::Buffer {
-                    buffer: r.buffer.clone(),
-                    offset: r.offset,
-                    size: r.size,
-                },
+                | BindingResource::StorageBuffer { range: r, .. } => {
+                    r.buffer.0.in_sets.set(true);
+                    SetRes::Buffer {
+                        buffer: r.buffer.clone(),
+                        offset: r.offset,
+                        size: r.size,
+                    }
+                }
                 BindingResource::Texture(v) => {
                     let filterable = self
                         .caps
@@ -399,17 +485,49 @@ impl WebGpu {
         Ok(l)
     }
 
-    /// The bind group of `set` for `gl`, made once per layout and buffer generations.
-    fn bind_group(&mut self, set: &SetObj, gl: &GroupLayout) -> Result<Rc<GroupObj>, &'static str> {
-        let stamp = set.stamp();
-        if let Some((_, _, g)) = set
+    /// The bind group of `set` for `gl`: checked again only when the bind epoch moved, and shared
+    /// between sets made of the same things.
+    fn set_group(&mut self, set: &SetObj, gl: &GroupLayout) -> Result<Rc<SetGroup>, &'static str> {
+        let found = set
             .groups
             .borrow()
             .iter()
-            .find(|(id, s, _)| *id == gl.id && *s == stamp)
+            .find(|g| g.layout == gl.id)
+            .cloned();
+        if let Some(g) = &found
+            && g.epoch.get() == self.bind_epoch
         {
             return Ok(g.clone());
         }
+        let (key, dynamic) = set.group_key(gl)?;
+        if let Some(g) = found
+            && g.group.key == key
+        {
+            g.epoch.set(self.bind_epoch);
+            return Ok(g);
+        }
+        let group = match self.caches.groups.get(&key).and_then(Weak::upgrade) {
+            Some(g) => g,
+            None => self.make_group(set, gl, key)?,
+        };
+        let g = Rc::new(SetGroup {
+            layout: gl.id,
+            epoch: Cell::new(self.bind_epoch),
+            group,
+            dynamic: dynamic.into(),
+        });
+        let mut groups = set.groups.borrow_mut();
+        groups.retain(|g| g.layout != gl.id);
+        groups.push(g.clone());
+        Ok(g)
+    }
+
+    fn make_group(
+        &mut self,
+        set: &SetObj,
+        gl: &GroupLayout,
+        key: GroupKey,
+    ) -> Result<Rc<GroupObj>, &'static str> {
         let buffers: Vec<Option<wgpu::Buffer>> = set
             .entries
             .iter()
@@ -419,31 +537,31 @@ impl WebGpu {
             })
             .collect();
         let mut entries = Vec::with_capacity(gl.entries.len());
-        for le in &gl.entries {
+        for (le, &(_, _, offset, size)) in gl.entries.iter().zip(&key.1) {
             let i = set
                 .entries
                 .iter()
                 .position(|(b, _)| *b == le.binding)
                 .ok_or("a binding set lacks a binding its program reads")?;
-            let resource = match (&set.entries[i].1, &le.ty) {
-                (
-                    SetRes::Buffer { offset, size, .. },
-                    wgpu::BindingType::Buffer {
-                        has_dynamic_offset, ..
-                    },
-                ) => wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: buffers[i].as_ref().ok_or("buffer")?,
-                    offset: if *has_dynamic_offset { 0 } else { *offset },
-                    size: NonZeroU64::new(*size),
-                }),
-                (
-                    SetRes::View(v),
-                    wgpu::BindingType::Texture { .. } | wgpu::BindingType::StorageTexture { .. },
-                ) => wgpu::BindingResource::TextureView(&v.0.raw),
-                (SetRes::Sampler(s), wgpu::BindingType::Sampler(_)) => {
-                    wgpu::BindingResource::Sampler(&s.0.raw)
+            let resource = match &set.entries[i].1 {
+                SetRes::Buffer { buffer, .. } => {
+                    if !matches!(
+                        le.ty,
+                        wgpu::BindingType::Buffer {
+                            has_dynamic_offset: true,
+                            ..
+                        }
+                    ) {
+                        buffer.0.static_bound.set(true);
+                    }
+                    wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: buffers[i].as_ref().ok_or("buffer")?,
+                        offset,
+                        size: NonZeroU64::new(size),
+                    })
                 }
-                _ => return Err("a binding set's resource is not the kind its program reads"),
+                SetRes::View(v) => wgpu::BindingResource::TextureView(&v.0.raw),
+                SetRes::Sampler(s) => wgpu::BindingResource::Sampler(&s.0.raw),
             };
             entries.push(wgpu::BindGroupEntry {
                 binding: le.binding,
@@ -456,32 +574,13 @@ impl WebGpu {
             entries: &entries,
         });
         self.counters.bind_groups += 1;
-        let g = Rc::new(GroupObj { id: self.id(), raw });
-        let mut groups = set.groups.borrow_mut();
-        groups.retain(|(id, _, _)| *id != gl.id);
-        groups.push((gl.id, stamp, g.clone()));
+        let g = Rc::new(GroupObj {
+            id: self.id(),
+            raw,
+            key: key.clone(),
+        });
+        self.caches.groups.insert(key, Rc::downgrade(&g));
         Ok(g)
-    }
-
-    /// The dynamic offsets `set` gives in layout `gl`, in binding order.
-    fn dynamic_offsets(set: &SetObj, gl: &GroupLayout) -> Vec<u32> {
-        gl.entries
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e.ty,
-                    wgpu::BindingType::Buffer {
-                        has_dynamic_offset: true,
-                        ..
-                    }
-                )
-            })
-            .filter_map(|e| set.entries.iter().find(|(b, _)| *b == e.binding))
-            .map(|(_, r)| match r {
-                SetRes::Buffer { offset, .. } => *offset as u32,
-                _ => 0,
-            })
-            .collect()
     }
 
     fn render_pipeline(
@@ -548,20 +647,29 @@ impl WebGpu {
                 .rposition(Option::is_some)
                 .map_or(0, |i| i + 1);
             for (i, format) in key.targets.colors[..used].iter().enumerate() {
-                targets.push(format.map(|f| {
-                    let t = blend.targets[if blend.same_for_all { 0 } else { i }];
-                    let blendable = self.caps.formats.get(f).contains(FormatUse::BLEND);
-                    wgpu::ColorTargetState {
-                        format: convert::texture_format(f).unwrap_or(wgpu::TextureFormat::R8Unorm),
-                        blend: t
-                            .blend
-                            .filter(|_| blendable)
-                            .map(|(c, a)| wgpu::BlendState {
-                                color: blend_component(c),
-                                alpha: blend_component(a),
-                            }),
-                        write_mask: convert::color_writes(t.writes),
+                let Some(f) = *format else {
+                    targets.push(None);
+                    continue;
+                };
+                let t = blend.targets[if blend.same_for_all { 0 } else { i }];
+                // Integer targets ignore blending, as in every API; any other format this device
+                // cannot blend is the front's to blend in the program (BlendInShader).
+                let blend = match t.blend {
+                    Some(_) if matches!(f.kind(), FormatKind::Uint | FormatKind::Sint) => None,
+                    Some(_) if !self.caps.formats.get(f).contains(FormatUse::BLEND) => {
+                        return Err(
+                            "blending into a format this device cannot blend; fronts blend in the program (BlendInShader)",
+                        );
                     }
+                    b => b.map(|(c, a)| wgpu::BlendState {
+                        color: blend_component(c),
+                        alpha: blend_component(a),
+                    }),
+                };
+                targets.push(Some(wgpu::ColorTargetState {
+                    format: convert::texture_format(f).unwrap_or(wgpu::TextureFormat::R8Unorm),
+                    blend,
+                    write_mask: convert::color_writes(t.writes),
                 }));
             }
         }
@@ -672,7 +780,10 @@ impl WebGpu {
                 continue;
             };
             let v = &c.view.0;
-            if let Some(t) = &v.texture {
+            for t in std::iter::once(&**v)
+                .chain(c.resolve.map(|r| &*r.0))
+                .filter_map(|v| v.texture.as_ref())
+            {
                 t.0.used_in.set(serial);
             }
             targets.colors[i] = Some(v.format);
@@ -684,7 +795,20 @@ impl WebGpu {
                 slice: v.three_d.then_some(c.depth_slice),
                 clear: match c.load {
                     LoadOp::Load => None,
-                    LoadOp::Clear(bits) => Some(color_value(bits, v.format.kind())),
+                    LoadOp::Clear(bits) => {
+                        let kind = v.format.kind();
+                        let exact = |b: u32| match kind {
+                            FormatKind::Uint => b <= 1 << 24,
+                            FormatKind::Sint => (b as i32).unsigned_abs() <= 1 << 24,
+                            _ => true,
+                        };
+                        if self.float_clears && !bits.iter().all(|b| exact(*b)) {
+                            self.fail(
+                                "an integer clear past 2^24, which wgpu's Direct3D 12 rounds through a float, is not built yet",
+                            );
+                        }
+                        Some(color_value(bits, kind))
+                    }
                     LoadOp::DontCare => Some(wgpu::Color::TRANSPARENT),
                 },
             }));
@@ -781,21 +905,22 @@ impl WebGpu {
         });
     }
 
-    /// Ends the open pass, records `between` on the encoder, and opens the pass again loading what
-    /// it drew (slow path `WriteSplitPass`).
-    pub(crate) fn split_pass(&mut self, between: impl FnOnce(&mut wgpu::CommandEncoder)) {
+    /// Ends the open pass, records `between` outside it, and opens the pass again loading what it
+    /// drew (slow path `WriteSplitPass`).
+    pub(crate) fn split_pass(&mut self, between: impl FnOnce(&mut WebGpu)) {
         let Some(mut pass) = self.pass.take() else {
-            between(self.encoder());
+            between(self);
             return;
         };
         if pass.query_running {
             self.fail("an ordered write splitting a pass with a running query is not built yet");
+            self.pass = Some(pass);
             return;
         }
         self.slow.hit(SlowPath::WriteSplitPass);
         drop(pass.rp);
+        between(self);
         let encoder = self.encoder.as_mut().expect("a pass implies an encoder");
-        between(encoder);
         pass.rp = open(
             encoder,
             &pass.colors,
@@ -882,16 +1007,42 @@ impl WebGpu {
             last.key = Some(key);
             last.layout = Some(layout);
         }
-        let layout = last.layout.clone().expect("set with the pipeline");
+        let layout = last.layout.as_ref().expect("set with the pipeline");
         for (i, gl) in layout.groups.iter().enumerate() {
             let Some(gl) = gl else { continue };
-            let set = call.bindings[i].ok_or("a draw lacks a binding set its program reads")?;
-            let group = self.bind_group(&set.0, gl)?;
-            let offsets = Self::dynamic_offsets(&set.0, gl);
-            if last.groups[i].as_ref() != Some(&(group.id, offsets.clone())) {
-                rp.set_bind_group(i as u32, &group.raw, &offsets);
-                set.0.mark_used(self.serial);
-                last.groups[i] = Some((group.id, offsets));
+            let set = &call.bindings[i]
+                .ok_or("a draw lacks a binding set its program reads")?
+                .0;
+            let held = last.groups[i].as_ref();
+            let same_set = held.is_some_and(|l| Rc::ptr_eq(&l.set, set));
+            let group = match held {
+                Some(l)
+                    if same_set
+                        && l.group.layout == gl.id
+                        && l.group.epoch.get() == self.bind_epoch =>
+                {
+                    l.group.clone()
+                }
+                _ => self.set_group(set, gl)?,
+            };
+            let mut offsets = [0; MAX_GROUP_DYNAMIC];
+            let count = set.offsets(&group, &mut offsets);
+            let bound = held.is_some_and(|l| {
+                l.group.group.id == group.group.id && l.offsets[..l.count] == offsets[..count]
+            });
+            if !bound {
+                rp.set_bind_group(i as u32, &group.group.raw, &offsets[..count]);
+            }
+            if !same_set {
+                set.mark_used(self.serial);
+            }
+            if !bound || !same_set {
+                last.groups[i] = Some(LastGroup {
+                    set: set.clone(),
+                    group,
+                    offsets,
+                    count,
+                });
             }
         }
         if last.vertex.len() < call.vertex_buffers.len() {
@@ -902,7 +1053,10 @@ impl WebGpu {
             let b = &vb.buffer.0;
             let now = Some((b.id, b.generation.get(), vb.offset));
             if last.vertex[slot] != now {
-                rp.set_vertex_buffer(slot as u32, b.raw.borrow().slice(vb.offset..));
+                rp.set_vertex_buffer(
+                    slot as u32,
+                    b.raw.borrow().slice(b.base.get() + vb.offset..),
+                );
                 b.used_in.set(self.serial);
                 last.vertex[slot] = now;
             }
@@ -911,7 +1065,7 @@ impl WebGpu {
             let b = &i.buffer.0;
             let now = Some((b.id, b.generation.get(), i.offset, format));
             if last.index != now {
-                rp.set_index_buffer(b.raw.borrow().slice(i.offset..), format);
+                rp.set_index_buffer(b.raw.borrow().slice(b.base.get() + i.offset..), format);
                 b.used_in.set(self.serial);
                 last.index = now;
             }
@@ -977,11 +1131,11 @@ impl WebGpu {
             ),
             DrawRange::Indirect { args, offset } => {
                 args.0.used_in.set(self.serial);
-                rp.draw_indirect(&args.0.raw.borrow(), *offset);
+                rp.draw_indirect(&args.0.raw.borrow(), args.0.base.get() + offset);
             }
             DrawRange::IndexedIndirect { args, offset } => {
                 args.0.used_in.set(self.serial);
-                rp.draw_indexed_indirect(&args.0.raw.borrow(), *offset);
+                rp.draw_indexed_indirect(&args.0.raw.borrow(), args.0.base.get() + offset);
             }
         }
         Ok(())
@@ -1033,14 +1187,16 @@ impl WebGpu {
             let set = call.bindings[i].ok_or(GpuError::Invalid(
                 "a dispatch lacks a binding set its program reads",
             ))?;
-            let group = self.bind_group(&set.0, gl).map_err(GpuError::Invalid)?;
+            let group = self.set_group(&set.0, gl).map_err(GpuError::Invalid)?;
             set.0.mark_used(self.serial);
-            groups.push((i as u32, group, Self::dynamic_offsets(&set.0, gl)));
+            let mut offsets = [0; MAX_GROUP_DYNAMIC];
+            let count = set.0.offsets(&group, &mut offsets);
+            groups.push((i as u32, group, offsets, count));
         }
         let indirect = match &call.groups {
             DispatchGroups::Indirect { args, offset } => {
                 args.0.used_in.set(self.serial);
-                Some((args.0.raw.borrow().clone(), *offset))
+                Some((args.0.raw.borrow().clone(), args.0.base.get() + offset))
             }
             DispatchGroups::Direct(_) => None,
         };
@@ -1048,8 +1204,8 @@ impl WebGpu {
             .encoder()
             .begin_compute_pass(&wgpu::ComputePassDescriptor::default());
         cp.set_pipeline(&pipeline);
-        for (i, g, offsets) in &groups {
-            cp.set_bind_group(*i, &g.raw, offsets);
+        for (i, g, offsets, count) in &groups {
+            cp.set_bind_group(*i, &g.group.raw, &offsets[..*count]);
         }
         match (&call.groups, indirect) {
             (_, Some((args, offset))) => cp.dispatch_workgroups_indirect(&args, offset),

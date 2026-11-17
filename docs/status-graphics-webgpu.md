@@ -35,8 +35,52 @@ G2a (the first slice) is done, run 1, 2026-11-17:
   differing per-face stencil references now fail loudly instead of being ignored, textures take
   only the copy usages their format allows (`depth24plus` has none), and anisotropy applies only to
   fully linear samplers. What is still missing is listed below.
-- Not yet run: the shared back-end suite. origin/phase-2-graphics had no new commit since
-  6efefe6 when this run ended (G1 has not published it).
+
+Run 2, 2026-11-17 (fixes from the independent check of run 1, then the shared suite):
+- Read backs now count as uses of their source, so a later write in the same encoder is ordered
+  after them and `destroy` waits for them (they returned the new bytes, and destroying the source
+  lost the device). Resolve targets of a pass count as used too.
+- The device is made with `float32-blendable` where the adapter has it (the RTX 3080 natively
+  and Chrome do). A blend into any non-integer target the device cannot blend now marks the device
+  lost with the reason (the front blends in the program, `BlendInShader`); before, the blend was
+  silently dropped.
+- The uniform arena of 4.5 and 4.6 is built: uniform-only buffers with `MapIntent::Often` live in
+  slices of one large buffer; a `Discard` while recorded work uses one moves it to a free slice
+  (counted in `Counters::slices`), its bind group stays, and the draw passes the slice's offset as
+  a dynamic offset. Bind groups are shared by what they are made of, with dynamic offsets left out:
+  sets differing only in a dynamic offset, or naming different arena buffers of one size, share one
+  bind group. A draw whose sets did not change and whose bind epoch (moved only by a rename or arena
+  move of a buffer some set names) is the same only reads each dynamic entry's offset, with no
+  allocation; `setBindGroup` is called only when the group or an offset changed.
+- Clears to a non-zero pattern copy from a block of at most 64 KiB of the pattern, counted as the
+  new slow path `PatternClearCopied` (an interface change, below); before, they uploaded a host
+  copy of the whole range uncounted.
+- Buffer writes, copies and clears take any byte offset and length (`UnalignedBufferEdge`): the
+  aligned middle is copied natively and the words a range only partly covers are merged by a small
+  compute program of the back end's own (src/edge.rs); where source and destination differ in their
+  place within a word, the program copies every word. So every buffer gets WebGPU's storage usage.
+  Buffer and texture copies at row pitches WebGPU does not take go through a buffer at its pitch,
+  one buffer copy per row (`RowsRepacked`).
+- Under wgpu's Direct3D 12 (native only), which clears colour targets through 32-bit floats, an
+  integer clear value past 2^24 now marks the device lost with the reason instead of clearing to
+  a rounded value.
+- Mirror-once samplers are refused as `Absent(MIRROR_ONCE)` (was `BORDER_COLOR`); dual-source
+  blend factors without the feature as `Absent(DUAL_SOURCE_BLEND)` at `create_blend`.
+- Handles compare equal when they name one object, and the caching test checks that equal blocks
+  made twice are one block.
+- New tests: tests/bindings.rs (twenty draws each after a `Discard` of their constant buffer make
+  one bind group, no rename and nineteen slice moves, every pixel its own draw's colour; two sets at
+  offsets 0 and 256 make one bind group; an `rgba32float` blend equals Direct3D's rule or fails
+  loudly), tests/writes.rs (read backs keep command order for buffers and textures; destroying
+  after a recorded read back; a pattern clear over 200000 bytes; arena buffers through discards,
+  ordered writes, copies between two of them and a read back; a seeded random test of 400 byte-
+  granular writes, copies and clears against a model, `WEBGPU_SEED` and `WEBGPU_CASES`), and
+  tests/suite.rs (the shared suite of `wcontainers-gpu-test`, seven tests).
+- The shared suite (origin/phase-2-graphics at a58f79a, merged): 7 of 7 pass on Vulkan; on
+  Direct3D 12, 6 of 7: `clears_fill_exactly` fails, as a known failure, at its `R32Uint` clear of
+  0xdeadbeef (wgpu-hal's dx12 command.rs passes clear values to `ClearRenderTargetView` as f32,
+  which gave 0xdeadbf00; the back end now fails loudly there). Vulkan clears it exactly; Chrome's
+  Dawn is expected to (it clears big integers with a draw on Direct3D 12), not yet run there.
 
 ## How another track builds and uses the back end
 
@@ -52,8 +96,12 @@ G2a (the first slice) is done, run 1, 2026-11-17:
 - Binding numbers follow 6.4: uniform buffers from 0, samplers from 16, textures from 32, storage
   from 160; group = binding set (vertex-only set 0, fragment-only set 1, both 2, helpers 3).
 - Natively `wait_read` and `wait_fence` block on the device. In the browser they cannot block
-  until the JSPI suspension of 4.8 exists; they panic with that reason. Poll `read_state` and
-  yield to the event loop instead (as `draw_scene` in examples/scenes/main.rs does).
+  until the JSPI suspension of 4.8 exists; they panic with that reason, and so does the
+  interface's default `read_back_now`, which calls `wait_read`. Do not use either in the browser:
+  poll `read_state` and yield to the event loop instead (as `draw_scene` in examples/scenes/main.rs
+  does).
+- Uniform-only buffers made with `MapIntent::Often` live in the uniform arena: give constant
+  buffers rewritten per draw that intent and write them with `Discard`.
 - `WebGpu::counters()` says how many pipelines, bind groups, layouts, renames and staged writes
   were made; `slow_paths()` the slow paths taken.
 - Anything the back end does not carry out yet (list below) marks the device lost with
@@ -63,10 +111,12 @@ G2a (the first slice) is done, run 1, 2026-11-17:
 
 All from the checkout root on the Mac; nothing is built or run on the Mac but formatting and
 `cargo check -j 2`.
-- Tests on the RTX 3080 (5 tests in tests/scenes.rs and tests/writes.rs, need a GPU; `WEBGPU_API=dx12|vulkan|metal` picks wgpu's API,
-  default the platform's, Vulkan on the desktop):
-  `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p wcontainers-gpu-webgpu --no-run" --
-  "cargo test -j 3 -p wcontainers-gpu-webgpu -- --test-threads 1 --nocapture"`.
+- Tests on the RTX 3080 (tests/scenes.rs, writes.rs, bindings.rs and suite.rs, the shared suite;
+  they need a GPU, and the suite's present test a desktop, so `--desktop`; `WEBGPU_API=dx12|vulkan|
+  metal` picks wgpu's API, default the platform's, Vulkan on the desktop), both APIs in one job:
+  `tools/graphics-rig/gpu-job --desktop --build "cargo test -j 3 -p wcontainers-gpu-webgpu --no-run"
+  -- "set WEBGPU_API=vulkan&& cargo test -j 3 -p wcontainers-gpu-webgpu -- --test-threads 1 & set
+  WEBGPU_API=dx12&& cargo test -j 3 -p wcontainers-gpu-webgpu -- --test-threads 1"`.
 - Lint: `tools/graphics-rig/remote cargo clippy -j 3 -p wcontainers-gpu-webgpu --all-targets --
   -D warnings`; and `nix develop -c cargo check -j 2 -p wcontainers-gpu-webgpu --target
   wasm32-unknown-unknown --examples` for the WebAssembly build.
@@ -102,8 +152,7 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Not carried out yet (each marks the device lost with its reason, or is declared absent)
 
-- Unaligned buffer writes, copies and clears (`UnalignedBufferEdge`).
-- Buffer-texture copies at row pitches that are not multiples of 256.
+- Integer colour clears past 2^24 under wgpu's native Direct3D 12 (above).
 - Copies into depth formats (`DepthWrittenByDraw`).
 - Immediates: `immediate_bytes` is 0, so fronts spill them.
 - A program without a fragment shader drawing into colour targets.
@@ -113,16 +162,14 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 - Declared absent until built or measured: `TIMESTAMPS`, `BACKGROUND_PREPARE` (`prepare` keeps the
   default), `FRACTIONAL_VIEWPORT` (needs the half-pixel test), `DEPTH24_UNORM` (needs the probe).
 - Waiting in the browser (JSPI, 4.8).
-- Not yet as 4.5 says for speed: the uniform ring for `MapIntent::Often` uniform buffers (so a
-  per-draw `Discard` of a constant buffer renames it and makes a bind group per draw), sharing of
-  bind groups between sets that differ only in dynamic offsets, a staging ring (each staged write
-  makes a buffer), renaming textures on `Discard` (staged instead), and freeing cached layouts and
-  pipelines of destroyed programs.
+- Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), renaming
+  textures on `Discard` (staged instead), and freeing cached layouts and pipelines of destroyed
+  programs.
+- Arena slices of buffers dropped without `destroy` are not reused until the arena is replaced.
 
 ## Next (G2)
 
-In order: run the shared suite once G1 publishes it; the uniform ring and the counter test of no
-bind group per draw; `prepare` with createRenderPipelineAsync and its measurement; the rest of the
+In order: `prepare` with createRenderPipelineAsync and its measurement; the rest of the
 list above; then the remaining G2 pass bar of section 12 (layouts with depth and r32float views,
 BC both ways, typeless copies, tier1 formats, generate_mips, fractional viewport, copy within one
 buffer test, unaligned resolve_queries, the 24-bit depth probe, a fitted multisampled pass, helper
@@ -134,22 +181,33 @@ blocks, naga validation with WebGPU's core capabilities).
   ordered write may split the pass, and its first part must keep what it drew. Correct, but it
   gives up the bandwidth saving of a discard on tiled GPUs; recording a pass's draws before opening
   it would allow both.
-- `DontCare` loads clear to zero (WebGPU has no don't-care load; a clear is its cheapest load).
+- `DontCare` loads of colour attachments clear to zero (WebGPU has no don't-care load; a clear is
+  its cheapest load); of depth and stencil they load, which is as cheap there and keeps the bytes.
 - Depth writes happen only with the depth test on, as in Direct3D, OpenGL and Vulkan.
 - Blend factors of min and max operations are set to one (WebGPU requires it; every API ignores
-  them there), and blending is left off on formats without `BLEND` (integer targets), which every
-  API ignores too.
+  them there). Blending is left off on integer targets, which OpenGL and Direct3D ignore and Vulkan
+  and WebGPU refuse; into any other target without `BLEND` the draw fails loudly.
+- The uniform "ring" of 4.5 is an arena of slices reused by size, not a ring: a buffer's latest
+  bytes stay in its slice until its next `Discard`, so slices cannot be overwritten in ring order.
+  It is still one large GPU buffer, replaced by one twice as large when it fills. A slice given up
+  is reused after the next submit, not after the GPU finishes, because queue writes land after all
+  work already submitted.
+- Copies between two arena buffers go through a temporary buffer (counted `CopyWithinBuffer`),
+  since both live in one GPU buffer.
 - Anisotropy is set to one unless all three filters are linear, as WebGPU requires and Direct3D
   does.
 
 ## Interface changes
 
-None.
+- 61a266e `interface: named the slow path of buffer clears to a non-zero pattern made by copies`:
+  `SlowPath::PatternClearCopied`, and the plan's sentence on `clear_buffer` (4.2) saying WebGPU
+  fills non-zero patterns by copies.
 
 ## Licences
 
 Confirmed in each crate's Cargo.toml on 2026-11-17: wgpu 30.0.2 and wgpu-naga-bridge 30.0.2 MIT OR
-Apache-2.0 (dependencies). Test-only: png 0.18.1, anyhow 1.0.104, wasm-bindgen 0.2.130,
+Apache-2.0 (dependencies). Test-only: windows-sys 0.61.2 MIT OR Apache-2.0 (the suite's window, already
+in the lock file); wcontainers-gpu-test (ours); png 0.18.1, anyhow 1.0.104, wasm-bindgen 0.2.130,
 wasm-bindgen-futures 0.4.80, js-sys 0.3.107 MIT OR Apache-2.0; pollster 1.0.1 Apache-2.0/MIT;
 bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT. Tool: wasm-bindgen-cli 0.2.130 MIT OR Apache-2.0.
 

@@ -134,6 +134,7 @@ pub fn derive(
     let mut dynamic = 0;
     for entries in &mut groups {
         entries.sort_by_key(|e| e.binding);
+        let mut in_group = 0;
         for e in entries {
             if let BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
@@ -141,9 +142,11 @@ pub fn derive(
                 ..
             } = &mut e.ty
                 && dynamic < max_dynamic
+                && in_group < crate::draw::MAX_GROUP_DYNAMIC
             {
                 *has_dynamic_offset = true;
                 dynamic += 1;
+                in_group += 1;
             }
         }
     }

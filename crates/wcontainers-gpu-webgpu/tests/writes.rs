@@ -12,7 +12,8 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, DeviceStatus, MapIntent, ReadSource, SlowPath, WriteMode,
+    Backend, BufferDesc, BufferUsage, DeviceStatus, Extent, Format, MapIntent, Object, Origin,
+    ReadSource, SlowPath, TextureRegion, TextureUsage, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -106,4 +107,284 @@ fn ordered_write_in_a_pass_splits_it() {
     let mut want = vec![0; reader.output_buffer_size().unwrap()];
     reader.next_frame(&mut want).unwrap();
     assert!(rgba == want, "the split pass lost or changed what it drew");
+}
+
+fn read_buffer_back(
+    b: &mut WebGpu,
+    buffer: &<WebGpu as Backend>::Buffer,
+    size: u64,
+) -> <WebGpu as Backend>::Readback {
+    b.read_back(&ReadSource::Buffer {
+        buffer,
+        offset: 0,
+        size,
+    })
+    .unwrap()
+}
+
+fn finish(b: &mut WebGpu, rb: <WebGpu as Backend>::Readback, len: usize) -> Vec<u8> {
+    b.wait_read(&rb);
+    let mut got = vec![0; len];
+    b.finish_read(rb, &mut got);
+    got
+}
+
+fn buffer(
+    b: &mut WebGpu,
+    size: u64,
+    usage: BufferUsage,
+    intent: MapIntent,
+) -> <WebGpu as Backend>::Buffer {
+    b.create_buffer(&BufferDesc {
+        size,
+        usage: usage | BufferUsage::COPY_SRC | BufferUsage::COPY_DST | BufferUsage::READ_BACK,
+        intent,
+    })
+    .unwrap()
+}
+
+/// A read back recorded before a write sees the bytes from before it, in every mode that may meet
+/// recorded work, for buffers and textures.
+#[test]
+fn read_backs_see_the_bytes_before_a_later_write() {
+    let mut b = device();
+    for mode in [WriteMode::Ordered, WriteMode::Discard] {
+        let buf = buffer(&mut b, 16, BufferUsage::empty(), MapIntent::Rarely);
+        b.write_buffer(&buf, 0, &words(1), WriteMode::Ordered);
+        let f = b.submit();
+        b.wait_fence(&f);
+        let rb = read_buffer_back(&mut b, &buf, 16);
+        b.write_buffer(&buf, 0, &words(2), mode);
+        let after = read_buffer_back(&mut b, &buf, 16);
+        b.submit();
+        assert_eq!(finish(&mut b, rb, 16), words(1), "{mode:?}");
+        assert_eq!(finish(&mut b, after, 16), words(2), "{mode:?}");
+    }
+    let (texture, _) = draw::texture_2d(
+        &mut b,
+        Format::Rgba8Unorm,
+        4,
+        4,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    )
+    .unwrap();
+    let region = TextureRegion {
+        texture: &texture,
+        mip: 0,
+        layer: 0,
+        origin: Origin::default(),
+        stencil: false,
+    };
+    let extent = Extent {
+        width: 4,
+        height: 4,
+        depth_or_layers: 1,
+    };
+    b.write_texture(&region, extent, &[11; 64], 16, 4, WriteMode::Ordered);
+    let f = b.submit();
+    b.wait_fence(&f);
+    let rb = b
+        .read_back(&ReadSource::Texture {
+            region: TextureRegion { ..region },
+            extent,
+        })
+        .unwrap();
+    b.write_texture(&region, extent, &[22; 64], 16, 4, WriteMode::Ordered);
+    let after = b
+        .read_back(&ReadSource::Texture { region, extent })
+        .unwrap();
+    b.submit();
+    assert_eq!(finish(&mut b, rb, 64), [11; 64]);
+    assert_eq!(finish(&mut b, after, 64), [22; 64]);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Destroying a buffer and a texture after recording a read back of them, before the submit, leaves
+/// the recorded read back its bytes.
+#[test]
+fn destroy_after_a_recorded_read_back_waits_for_it() {
+    let mut b = device();
+    let buf = buffer(&mut b, 16, BufferUsage::empty(), MapIntent::Rarely);
+    b.write_buffer(&buf, 0, &words(5), WriteMode::Ordered);
+    let (texture, _) = draw::texture_2d(
+        &mut b,
+        Format::Rgba8Unorm,
+        4,
+        4,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    )
+    .unwrap();
+    let region = TextureRegion {
+        texture: &texture,
+        mip: 0,
+        layer: 0,
+        origin: Origin::default(),
+        stencil: false,
+    };
+    let extent = Extent {
+        width: 4,
+        height: 4,
+        depth_or_layers: 1,
+    };
+    b.write_texture(&region, extent, &[33; 64], 16, 4, WriteMode::Ordered);
+    let f = b.submit();
+    b.wait_fence(&f);
+    let from_buffer = read_buffer_back(&mut b, &buf, 16);
+    let from_texture = b
+        .read_back(&ReadSource::Texture { region, extent })
+        .unwrap();
+    b.destroy(Object::Buffer(buf));
+    b.destroy(Object::Texture(texture));
+    b.submit();
+    assert_eq!(finish(&mut b, from_buffer, 16), words(5));
+    assert_eq!(finish(&mut b, from_texture, 64), [33; 64]);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// A clear to a non-zero pattern over more than one pattern block, at an offset, leaves the bytes
+/// around it alone; the slow path is counted once.
+#[test]
+fn clears_to_a_pattern_fill_exactly() {
+    const SIZE: u64 = 200_000;
+    let mut b = device();
+    let buf = buffer(&mut b, SIZE + 32, BufferUsage::empty(), MapIntent::Rarely);
+    b.write_buffer(
+        &buf,
+        0,
+        &vec![0xee; (SIZE + 32) as usize],
+        WriteMode::Ordered,
+    );
+    let pattern = [1, 2, 3, 4, 5, 6, 7, 8];
+    b.clear_buffer(&buf, 16, SIZE, &pattern);
+    let rb = read_buffer_back(&mut b, &buf, SIZE + 32);
+    b.submit();
+    let got = finish(&mut b, rb, (SIZE + 32) as usize);
+    let mut want = vec![0xee; 16];
+    want.extend(pattern.iter().cycle().take(SIZE as usize));
+    want.extend([0xee; 16]);
+    assert!(got == want, "the pattern clear wrote the wrong bytes");
+    assert_eq!(b.slow_paths().count(SlowPath::PatternClearCopied), 1);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Uniform buffers written often live in the arena: discards between copies move them and each copy
+/// sees its own bytes; copies between two of them, read backs and destroying them keep exact bytes.
+#[test]
+fn arena_buffers_keep_command_order() {
+    let mut b = device();
+    let arena = |b: &mut WebGpu| {
+        b.create_buffer(&BufferDesc {
+            size: 16,
+            usage: BufferUsage::UNIFORM,
+            intent: MapIntent::Often,
+        })
+        .unwrap()
+    };
+    let (a, c) = (arena(&mut b), arena(&mut b));
+    let out: Vec<_> = (0..3)
+        .map(|_| buffer(&mut b, 16, BufferUsage::empty(), MapIntent::Rarely))
+        .collect();
+    b.write_buffer(&a, 0, &words(10), WriteMode::Discard);
+    b.copy_buffer(&a, 0, &out[0], 0, 16);
+    b.write_buffer(&a, 0, &words(20), WriteMode::Discard);
+    b.copy_buffer(&a, 0, &out[1], 0, 16);
+    b.copy_buffer(&a, 0, &c, 0, 16);
+    b.write_buffer(&a, 0, &words(30), WriteMode::Ordered);
+    b.copy_buffer(&c, 0, &out[2], 0, 16);
+    let reads: Vec<_> = out
+        .iter()
+        .map(|o| read_buffer_back(&mut b, o, 16))
+        .collect();
+    let direct = read_buffer_back(&mut b, &a, 16);
+    b.destroy(Object::Buffer(a));
+    b.submit();
+    for (rb, want) in reads.into_iter().zip([10, 20, 20]) {
+        assert_eq!(finish(&mut b, rb, 16), words(want));
+    }
+    assert_eq!(finish(&mut b, direct, 16), words(30));
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    let k = b.counters();
+    assert_eq!((k.renames, k.slices, k.staged_writes), (0, 1, 1), "{k:?}");
+}
+
+/// Seeded random buffer writes in every mode, copies between buffers and within one, and clears to
+/// patterns, at any byte offset and length, checked against a model of the bytes after each batch.
+/// `WEBGPU_SEED` replays a run; `WEBGPU_CASES` is how many operations it runs (default 400).
+#[test]
+fn byte_granular_buffer_operations_match_a_model() {
+    const SIZE: usize = 1024;
+    let seed = std::env::var("WEBGPU_SEED").map_or(0x5eed, |s| s.parse().unwrap());
+    let cases: usize = std::env::var("WEBGPU_CASES").map_or(400, |s| s.parse().unwrap());
+    eprintln!("seed {seed}, {cases} operations");
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let mut b = device();
+    let bufs = [
+        buffer(&mut b, SIZE as u64, BufferUsage::VERTEX, MapIntent::Rarely),
+        buffer(&mut b, SIZE as u64, BufferUsage::empty(), MapIntent::Rarely),
+    ];
+    let mut model = [vec![0u8; SIZE], vec![0u8; SIZE]];
+    for (buf, m) in bufs.iter().zip(&mut model) {
+        rng.fill(m);
+        b.write_buffer(buf, 0, m, WriteMode::Ordered);
+    }
+    for case in 0..cases {
+        let i = rng.usize(0..2);
+        let len = rng.usize(1..=64);
+        let at = rng.usize(0..=SIZE - len);
+        match rng.u8(0..3) {
+            0 => {
+                let data: Vec<u8> = (0..len).map(|_| rng.u8(..)).collect();
+                let mode = [
+                    WriteMode::Ordered,
+                    WriteMode::NoOverwrite,
+                    WriteMode::Discard,
+                ][rng.usize(0..3)];
+                if mode == WriteMode::Discard {
+                    // Discard drops the old contents: write the whole buffer.
+                    rng.fill(&mut model[i]);
+                    model[i][at..at + len].copy_from_slice(&data);
+                    let whole = model[i].clone();
+                    b.write_buffer(&bufs[i], 0, &whole, mode);
+                } else {
+                    b.write_buffer(&bufs[i], at as u64, &data, mode);
+                    model[i][at..at + len].copy_from_slice(&data);
+                }
+            }
+            1 => {
+                let j = rng.usize(0..2);
+                let mut from = rng.usize(0..=SIZE - len);
+                if i == j {
+                    // Within one buffer the ranges do not overlap.
+                    while from < at + len && at < from + len {
+                        from = rng.usize(0..=SIZE - len);
+                    }
+                }
+                b.copy_buffer(&bufs[j], from as u64, &bufs[i], at as u64, len as u64);
+                let bytes = model[j][from..from + len].to_vec();
+                model[i][at..at + len].copy_from_slice(&bytes);
+            }
+            _ => {
+                let pattern: Vec<u8> = (0..[1, 2, 4, 8, 16][rng.usize(0..5)])
+                    .map(|_| rng.u8(..))
+                    .collect();
+                let len = (len / pattern.len()).max(1) * pattern.len();
+                let at = at.min(SIZE - len);
+                b.clear_buffer(&bufs[i], at as u64, len as u64, &pattern);
+                for (k, v) in model[i][at..at + len].iter_mut().enumerate() {
+                    *v = pattern[k % pattern.len()];
+                }
+            }
+        }
+        if case % 50 == 49 || case == cases - 1 {
+            for (buf, m) in bufs.iter().zip(&model) {
+                let rb = read_buffer_back(&mut b, buf, SIZE as u64);
+                b.submit();
+                assert!(
+                    finish(&mut b, rb, SIZE) == *m,
+                    "bytes differ from the model after operation {case} (seed {seed})"
+                );
+            }
+        }
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
 }
