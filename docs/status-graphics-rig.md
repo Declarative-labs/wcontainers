@@ -8,7 +8,7 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done and checked.
 R1 (the Direct3D reference library): the fifth run (2026-11-17) fixed the findings of the fourth
 check (see "Fifth run" under Measurements), but SSH to the desktop refused every connection from
-09:45 Pacific time to the end of the run (over two hours), so these are left, in this order:
+09:45 Pacific time to the end of the run (still at 12:41, tried every 2 minutes), so these are left, in this order:
 1. `tools/graphics-rig/remote "cargo clean -q -p wcontainers-graphics-test -p
    wcontainers-graphics-test-forward"` (the desktop's clock jumped back, Known issues), then
    `tools/graphics-rig/programs run --record bgfx-24-nbody` and commit: the nbody references in
