@@ -146,7 +146,16 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 - Caching (test `pipelines_and_bind_groups_are_cached`, Vulkan and Direct3D 12): 21 draws of two
   programs with equal blocks over two passes made 2 pipelines, 3 `setPipeline` calls, 2 bind groups
   (one per set), 1 bind group layout, 2 `PipelineMiss`.
-- Last full run: 5 tests pass on Vulkan (scenes 0.95 s, writes 0.76 s) and on Direct3D 12 (1.10 s,
+- Run 2 (desktop CPU load 27 % sampled right after, Mac load average 24 to 26): on Vulkan all
+  20 tests pass (bindings 3 in 0.39 s, scenes 3 in 0.39 s, suite 7 in 0.96 s, writes 7 in 0.75 s);
+  on Direct3D 12, 19 of 20 (suite 6 of 7, the known failure above). The random byte test ran its
+  default 400 operations, seed 0x5eed, on both. Constants rewritten per draw: 20 draws made 1 bind
+  group, 0 renames, 19 slice moves. `web/check` passes again after these changes: all nine pictures
+  equal Direct3D 11's, both twists fail natively and in Chrome with the same counts as run 1, and
+  Chrome's adapter is the RTX 3080 (D3D12, discrete, not a fallback); job 6 s. The arena, edge
+  program and suite have not been run in Chrome yet (the browser page draws only the scenes).
+  Clippy with warnings denied passes.
+- Run 1, last full run: 5 tests pass on Vulkan (scenes 0.95 s, writes 0.76 s) and on Direct3D 12 (1.10 s,
   0.69 s); `web/check` passes (job 4 s); clippy with warnings denied passes. First build of the
   crate's tests 2 min 44 s at `-j 3`.
 
@@ -169,7 +178,8 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Next (G2)
 
-In order: `prepare` with createRenderPipelineAsync and its measurement; the rest of the
+In order: run tests/bindings.rs, tests/writes.rs and the shared suite in Chrome too (the page
+draws only the scenes); `prepare` with createRenderPipelineAsync and its measurement; the rest of the
 list above; then the remaining G2 pass bar of section 12 (layouts with depth and r32float views,
 BC both ways, typeless copies, tier1 formats, generate_mips, fractional viewport, copy within one
 buffer test, unaligned resolve_queries, the 24-bit depth probe, a fitted multisampled pass, helper
