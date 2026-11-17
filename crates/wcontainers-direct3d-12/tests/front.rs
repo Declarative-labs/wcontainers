@@ -108,6 +108,77 @@ fn malformed_root_signatures_are_refused() {
 }
 
 #[test]
+fn root_signatures_binding_a_register_twice_for_a_stage_are_refused() {
+    let range = |kind, count, register, space, offset| DescriptorRange {
+        kind,
+        count,
+        register,
+        space,
+        flags: 0,
+        offset,
+    };
+    let table = |ranges: Vec<DescriptorRange>, visibility| RootParameter {
+        kind: RootParameterKind::Table(ranges),
+        visibility,
+    };
+    let constants = |register, visibility| RootParameter {
+        kind: RootParameterKind::Constants {
+            register,
+            space: 0,
+            count: 4,
+        },
+        visibility,
+    };
+    let check = |parameters: Vec<RootParameter>| {
+        RootSignatureDesc {
+            version: 1,
+            parameters,
+            samplers: Vec::new(),
+            flags: 0,
+        }
+        .validate()
+        .is_ok()
+    };
+    // SRV t0-t7 and t8-t9 at overlapping table offsets: allowed; t7 twice: refused.
+    assert!(check(vec![table(
+        vec![range(0, 8, 0, 0, 0), range(0, 2, 8, 0, 7)],
+        0
+    )]));
+    assert!(!check(vec![table(
+        vec![range(0, 8, 0, 0, 0), range(0, 2, 7, 0, 8)],
+        0
+    )]));
+    // The same registers as SRV and CBV, or in another space: allowed.
+    assert!(check(vec![table(
+        vec![range(0, 8, 0, 0, 0), range(2, 8, 0, 0, 8)],
+        0
+    )]));
+    assert!(check(vec![table(
+        vec![range(0, u32::MAX, 0, 0, 0), range(0, 1, 16, 1, 16)],
+        0
+    )]));
+    // An unbounded range followed by an appended one, an empty range, a range past the last
+    // register, samplers beside views: refused.
+    assert!(!check(vec![table(
+        vec![range(0, u32::MAX, 0, 0, 0), range(0, 1, 16, 1, u32::MAX)],
+        0
+    )]));
+    assert!(!check(vec![table(vec![range(0, 0, 0, 0, 0)], 0)]));
+    assert!(!check(vec![table(
+        vec![range(0, 0x1000, 0xffff_f001, 0, 0)],
+        0
+    )]));
+    assert!(!check(vec![table(
+        vec![range(0, 1, 0, 0, 0), range(3, 1, 2, 0, 10)],
+        0
+    )]));
+    // Root constants at b0 seen by every stage and by the vertex stage: refused; by the pixel and
+    // vertex stages: allowed.
+    assert!(!check(vec![constants(0, 0), constants(0, 1)]));
+    assert!(check(vec![constants(0, 5), constants(0, 1)]));
+}
+
+#[test]
 fn webgpu_reports_11_0_and_tier_1() {
     let caps = record::webgpu_like_caps();
     assert_eq!(feature_level(&caps), Some(FEATURE_LEVEL_11_0));
