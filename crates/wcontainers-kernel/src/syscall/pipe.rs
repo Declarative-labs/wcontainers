@@ -288,8 +288,6 @@ pub(super) fn read(
     }
     lock(kernel, tid, file)?;
     let node = file.borrow().node.clone();
-    // Empty pages a faulted write left are passed over.
-    with_pipe(file, |pipe| pipe.drop_empty());
     if with_pipe(file, |pipe| pipe.is_empty()) {
         let (writers, nonblocking) = (
             with_pipe(file, |pipe| pipe.writers()),
@@ -429,11 +427,11 @@ pub(super) fn write(
                 continue;
             }
         }
-        // A new page; one the buffer cannot fill takes its slot empty and ends the write.
+        // A new page; one the buffer cannot fill ends the write and gives its slot back (measured:
+        // the reader sees nothing and the pipe keeps all its room).
         if !with_pipe(file, |pipe| pipe.is_full()) {
             let (bytes, faulted) = next(kernel, cx, done, PAGE_SIZE);
             if faulted {
-                with_pipe(file, |pipe| pipe.push(Vec::new(), packet));
                 break Err(Errno::EFAULT);
             }
             done += bytes.len() as u64;

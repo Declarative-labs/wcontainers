@@ -966,6 +966,8 @@ fn requeue_pi(
     address2: u64,
     requeue: i32,
 ) -> Result<u64, Errno> {
+    // `futex_proxy_trylock_atomic` reads the lock's word first, waiters or not.
+    read_word(kernel, cx, tid, address2)?;
     let mut count = 0i64;
     let mut first = true;
     // Each waiter is taken or moved, so the next is always the first.

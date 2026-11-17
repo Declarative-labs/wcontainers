@@ -17,3 +17,11 @@ fn write_edges_match_reference() {
     assert_eq!(ours.outcome, theirs);
     assert!(ours.warnings.is_empty(), "{:?}", ours.warnings);
 }
+
+/// Pipe writes whose buffer faults (found by layer 1 seed 3021).
+#[test]
+fn faulted_pipe_writes_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let run = wcontainers_kernel_test::assert_same_output(&out, "pipefault", &[]);
+    assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+}

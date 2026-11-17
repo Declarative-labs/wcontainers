@@ -281,17 +281,6 @@ impl Pipe {
         &slot.page[slot.read..]
     }
 
-    /// Passes over empty pages at the front, as a read does.
-    pub fn drop_empty(&mut self) {
-        while self
-            .slots
-            .front()
-            .is_some_and(|slot| slot.read == slot.page.len())
-        {
-            self.slots.pop_front();
-        }
-    }
-
     /// Slots in use.
     pub fn occupancy(&self) -> usize {
         self.slots.len()

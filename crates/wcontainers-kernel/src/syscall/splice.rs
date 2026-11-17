@@ -393,7 +393,6 @@ fn pipe_to_file(
         if kernel.signal_pending(tid) {
             break Err(Errno::ERESTARTSYS);
         }
-        with_pipe(input, |pipe| pipe.drop_empty());
         if with_pipe(input, |pipe| pipe.is_empty()) {
             if with_pipe(input, |pipe| pipe.writers()) == 0 || done > 0 {
                 break Ok(());
@@ -637,7 +636,6 @@ fn vmsplice_to_user(
         if kernel.signal_pending(tid) {
             break Err(Errno::ERESTARTSYS);
         }
-        with_pipe(pipe, |pipe| pipe.drop_empty());
         if with_pipe(pipe, |pipe| pipe.is_empty()) {
             if with_pipe(pipe, |pipe| pipe.writers()) == 0 || done > 0 {
                 break Ok(());

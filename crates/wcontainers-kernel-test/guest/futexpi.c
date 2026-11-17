@@ -65,6 +65,7 @@ int main(void) {
     p("cmp rq pi negative", fx(&cond, FUTEX_CMP_REQUEUE_PI_PRIVATE, 1, (void *)-1L, &lock, 0));
     p("cmp rq pi wake 0", fx(&cond, FUTEX_CMP_REQUEUE_PI_PRIVATE, 0, (void *)1L, &lock, 0));
     p("cmp rq pi unaligned", fx(&cond, FUTEX_CMP_REQUEUE_PI_PRIVATE, 1, (void *)1L, odd, 0));
+    p("cmp rq pi null lock", fx(&cond, FUTEX_CMP_REQUEUE_PI_PRIVATE, 1, (void *)1L, NULL, 0));
     p("wait rq same", fx(&cond, FUTEX_WAIT_REQUEUE_PI_PRIVATE, 0, NULL, &cond, 0));
     p("wait rq other value", fx(&cond, FUTEX_WAIT_REQUEUE_PI_PRIVATE, 5, NULL, &lock, 0));
     p("wait rq past", fx(&cond, FUTEX_WAIT_REQUEUE_PI_PRIVATE, 0, &zero, &lock, 0));

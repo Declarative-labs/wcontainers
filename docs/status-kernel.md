@@ -40,6 +40,13 @@ Built in K3's fifth run (the K3 check's findings):
   0 for a count of 0, EINVAL otherwise; a process descriptor or secret memory (which cannot seek)
   is EINVAL even for 0 (measured; tests/splice.rs `sending_from_anonymous_files_matches_reference`,
   guest/sendanon.c). Found by layer 1 seed 3015.
+- Pipes, timer and signal descriptors and secret memory have the pseudo file systems' largest file,
+  `MAX_LFS_FILESIZE` (`pseudo_fs_fill_super`; measured with sendfile at 2 GiB: a pipe takes the
+  byte, a timer descriptor is EINVAL, not EOVERFLOW). Found by layer 1 seed 3016.
+- An open with O_CREAT|O_TRUNC that makes the file does not truncate it (`FMODE_CREATED`): a queue
+  made in `/dev/mqueue` that way shows its 80 bytes (measured; guest/posixmq.c). Seed 3015.
+- timerfd_settime and timerfd_gettime on an O_PATH descriptor are EBADF (`fdget`), not EINVAL
+  (guest/timers.c). Seed 3018.
 - jobs.c's hangup job waits for both SIGHUP and SIGCONT with them blocked outside `sigsuspend`; the
   reference could run the job between the two (the check's whole-suite failure).
 - The repeatable test clock charges each turn 0.5 to 1.5 ns an instruction, drawn per turn from the
