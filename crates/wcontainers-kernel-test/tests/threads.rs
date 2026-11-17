@@ -116,7 +116,7 @@ fn thread_credentials_match_reference() {
 }
 
 /// A signal sent to the process is taken by the thread Linux's `complete_signal` chooses, with the
-/// others in `pause`. On several CPUs the reference's choice races once in about ten runs.
+/// others in `pause`.
 #[test]
 fn process_signal_takers_match_reference() {
     for run in wcontainers_kernel_test::assert_same_output_one_cpu_seeded(&out(), "sigpick", &[], 0)
