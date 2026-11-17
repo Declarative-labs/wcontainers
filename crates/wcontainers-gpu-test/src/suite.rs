@@ -12,9 +12,10 @@ pub trait Host {
     fn make() -> Self::Backend;
     /// A window to present into, as the host's graphics hook names it.
     fn window(backend: &mut Self::Backend) -> u32;
-    /// The texels last shown in `window`, rows top first, tightly packed in the surface's format, where
-    /// the host can see them; None where it cannot.
-    fn shown(backend: &mut Self::Backend, window: u32) -> Option<Vec<u8>>;
+    /// The texels last shown in `window`, rows top first, tightly packed in the surface's format. A host
+    /// gives its back end a window it can see (a browser canvas read through a 2D canvas, a native
+    /// window read by the host's graphics hook), since the interface reads no surface back.
+    fn shown(backend: &mut Self::Backend, window: u32) -> Vec<u8>;
 }
 
 /// Declares one `#[test]` per suite test for a [`Host`].
@@ -28,6 +29,12 @@ macro_rules! suite {
             clears_fill_exactly,
             triangle_covers_the_pixels_whose_centres_it_holds,
             textured_draw_with_depth_and_blending,
+            edges_through_pixel_centres_follow_the_top_left_rule,
+            strips_take_flat_values_from_the_provoking_vertex,
+            depth_writes_off_leave_the_depth,
+            a_fragment_covering_no_sample_writes_nothing,
+            srgb_targets_convert_colour_but_not_alpha,
+            generate_mips_averages_in_the_values_format,
             present_shows_the_frame,
         );
     };
@@ -469,7 +476,7 @@ pub fn texture_writes_land_and_read_back<H: Host>() {
 }
 
 /// Copies between buffers (at byte offsets, and within one buffer), from a buffer into a texture at a
-/// 256-byte and at a tight row pitch, between textures and from a texture into a buffer move exactly
+/// 256-byte and at a tight row pitch over several rows, between textures and from a texture into a buffer move exactly
 /// the bytes they name.
 pub fn copies_move_bytes_exactly<H: Host>() {
     let mut b = H::make();
@@ -502,7 +509,8 @@ pub fn copies_move_bytes_exactly<H: Host>() {
         4,
         WriteMode::Ordered,
     );
-    // Two rows of three texels from offset 256 at a pitch of 256, and one row at a tight pitch.
+    // Two rows of three texels from offset 256 at a pitch of 256, then two rows at a tight pitch of
+    // 12 bytes (which WebGPU refuses, so its back end repacks them).
     b.copy_buffer_to_texture(
         &CopyBufferTexture {
             buffer: &src,
@@ -522,12 +530,15 @@ pub fn copies_move_bytes_exactly<H: Host>() {
             buffer: &src,
             offset: 12,
             row_pitch: 12,
-            rows_per_layer: 1,
+            rows_per_layer: 2,
         },
-        &region(&a, 0, 0, 0, 3),
-        extent(3, 1, 1),
+        &region(&a, 0, 0, 0, 2),
+        extent(3, 2, 1),
     );
-    a_bytes[48..60].copy_from_slice(&src_bytes[12..24]);
+    for y in 0..2 {
+        let at = (2 + y) * 16;
+        a_bytes[at..at + 12].copy_from_slice(&src_bytes[12 + y * 12..24 + y * 12]);
+    }
     assert_eq!(
         read_texture(&mut b, region(&a, 0, 0, 0, 0), extent(4, 4, 1), 4),
         a_bytes
@@ -992,9 +1003,499 @@ pub fn present_shows_the_frame<H: Host>() {
         ));
         b.end_pass();
         b.present(&surface).expect("present");
-        if let Some(shown) = H::shown(&mut b, window) {
-            assert_eq!(shown, texel.repeat(16));
-        }
+        assert_eq!(H::shown(&mut b, window), texel.repeat(16));
     }
     ok(&mut b);
+}
+
+/// Draws `count` vertices from `first` of `vb` with fixed state into an `n` by `n` viewport.
+#[allow(clippy::too_many_arguments)]
+fn draw<B: Backend>(
+    b: &mut B,
+    program: &B::Program,
+    blend: &B::Blend,
+    depth_stencil: &B::DepthStencil,
+    raster: &B::Raster,
+    layout: &B::VertexLayout,
+    vb: &B::Buffer,
+    topology: Topology,
+    first: u32,
+    count: u32,
+    n: u32,
+) {
+    let vp = viewport(n, n);
+    let streams = [Some(VertexBinding {
+        buffer: vb,
+        offset: 0,
+    })];
+    b.draw(&DrawCall {
+        program,
+        blend,
+        depth_stencil,
+        raster,
+        vertex_layout: layout,
+        bindings: [None; MAX_BINDING_SETS],
+        vertex_buffers: &streams,
+        index: None,
+        topology,
+        restart: false,
+        viewports: &vp,
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Vertices {
+            first,
+            count,
+            first_instance: 0,
+            instances: 1,
+        },
+    });
+}
+
+/// A layout of one stream of a `vec2<f32>` position at location 0 and one `f32` at location 1.
+fn positions_and_values<B: Backend>(b: &mut B) -> B::VertexLayout {
+    let mut desc = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    desc.streams[0] = Some(VertexStream {
+        stride: 12,
+        step: StepMode::Vertex,
+    });
+    desc.attributes[0] = Some(VertexAttribute {
+        location: 0,
+        stream: 0,
+        offset: 0,
+        format: VertexFormat::Float32x2,
+    });
+    desc.attributes[1] = Some(VertexAttribute {
+        location: 1,
+        stream: 0,
+        offset: 8,
+        format: VertexFormat::Float32x1,
+    });
+    b.create_vertex_layout(&desc).expect("create_vertex_layout")
+}
+
+fn raster_with<B: Backend>(b: &mut B, provoking: ProvokingVertex) -> B::Raster {
+    b.create_raster(&RasterDesc {
+        fill: FillMode::Solid,
+        cull: CullMode::None,
+        front: FrontFace::CounterClockwise,
+        depth_bias: 0,
+        depth_bias_slope: 0,
+        depth_bias_clamp: 0,
+        depth_clip: true,
+        scissor: false,
+        line_width: 1.0f32.to_bits(),
+        provoking,
+        depth_minus_one: false,
+        sample_mask: !0,
+    })
+    .expect("create_raster")
+}
+
+/// An `n` by `n` `rgba8unorm` target that can be read back, and its view.
+fn rgba8_target<B: Backend>(b: &mut B, n: u32) -> (B::Texture, B::TextureView) {
+    needs(
+        b,
+        Format::Rgba8Unorm,
+        FormatUse::RENDER | FormatUse::COPY_OUT,
+    );
+    let t = texture(
+        b,
+        Format::Rgba8Unorm,
+        (n, n),
+        1,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    );
+    let v = view(b, &t, Format::Rgba8Unorm);
+    (t, v)
+}
+
+/// An `n` by `n` `depth32float` target and its view, cleared to 1 by the pass that uses it.
+fn depth_target<B: Backend>(b: &mut B, n: u32) -> (B::Texture, B::TextureView) {
+    needs(b, Format::Depth32Float, FormatUse::DEPTH_STENCIL);
+    let t = texture(b, Format::Depth32Float, (n, n), 1, 1, TextureUsage::RENDER);
+    let v = view(b, &t, Format::Depth32Float);
+    (t, v)
+}
+
+fn with_depth<'a, B: Backend>(
+    mut pass: PassDesc<'a, B>,
+    depth: &'a B::TextureView,
+) -> PassDesc<'a, B> {
+    pass.depth = Some(DepthAttachment {
+        view: depth,
+        depth: Some(AspectOps {
+            load: LoadOp::Clear(1.0f32.to_bits()),
+            store: StoreOp::Store,
+            read_only: false,
+        }),
+        stencil: None,
+    });
+    pass
+}
+
+const VALUES: &str = "
+struct Out { @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) v: f32 }
+@vertex fn flat(@location(0) p: vec2<f32>, @location(1) v: f32) -> Out {
+    return Out(vec4<f32>(p, 0.5, 1.0), v);
+}
+@vertex fn at_depth(@location(0) p: vec2<f32>, @location(1) z: f32) -> Out {
+    return Out(vec4<f32>(p, z, 1.0), 0.0);
+}
+@fragment fn red(i: Out) -> @location(0) vec4<f32> {
+    return vec4<f32>(i.v, 0.0, 0.0, 1.0);
+}
+@fragment fn white() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
+struct Masked { @location(0) color: vec4<f32>, @builtin(sample_mask) mask: u32 }
+@fragment fn masked() -> Masked {
+    return Masked(vec4<f32>(1.0, 0.0, 0.0, 1.0), 0u);
+}
+";
+
+/// Two triangles sharing a diagonal through pixel centres, with their other edges along rows and
+/// columns of centres: every centre on an edge belongs to exactly one triangle, the one for which the
+/// edge is a top or a left edge (Direct3D's top-left rule). Triangle A is written to red, B to green.
+pub fn edges_through_pixel_centres_follow_the_top_left_rule<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 4;
+    let (t, v) = rgba8_target(&mut b, N);
+    // In pixels, A is (0.5, 0.5), (3.5, 0.5), (0.5, 3.5): a top edge and a left edge through centres
+    // and its right edge the diagonal. B is (3.5, 0.5), (3.5, 3.5), (0.5, 3.5): a right and a bottom
+    // edge through centres and its left edge the diagonal.
+    let verts = [
+        -0.75f32, 0.75, 0.0, 0.75, 0.75, 0.0, -0.75, -0.75, 0.0, //
+        0.75, 0.75, 0.0, 0.75, -0.75, 0.0, -0.75, -0.75, 0.0,
+    ];
+    let vb = buffer(&mut b, 72, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    b.write_buffer(&vb, 0, &floats(&verts), WriteMode::Discard);
+    let p = program(&mut b, VALUES, "flat", "white");
+    let red = blend(
+        &mut b,
+        RenderTargetBlend {
+            blend: None,
+            writes: ColorWrites::R,
+        },
+    );
+    let green = blend(
+        &mut b,
+        RenderTargetBlend {
+            blend: None,
+            writes: ColorWrites::G,
+        },
+    );
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions_and_values(&mut b);
+    b.begin_pass(&color_pass::<H::Backend>(
+        &v,
+        LoadOp::Clear(f32_bits([0.0, 0.0, 0.0, 1.0])),
+    ));
+    let list = Topology::TriangleList;
+    draw(&mut b, &p, &red, &ds, &rs, &vl, &vb, list, 0, 3, N);
+    draw(&mut b, &p, &green, &ds, &rs, &vl, &vb, list, 3, 3, N);
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let mut expected = Vec::new();
+    for y in 0..N {
+        for x in 0..N {
+            // A owns its top row and left column and the inside below the diagonal; B the diagonal
+            // itself and the inside above it, not its right column or bottom row.
+            let a = x + y < 3;
+            let on_b = x + y >= 3 && x < 3 && y < 3;
+            expected.extend_from_slice(&[
+                if a { 255 } else { 0 },
+                if on_b { 255 } else { 0 },
+                0,
+                255,
+            ]);
+        }
+    }
+    assert_close(&got, &expected, 0, 4, N as usize);
+    ok(&mut b);
+}
+
+/// A strip of two triangles with a flat value per vertex: triangle i takes vertex i's value with the
+/// first vertex provoking and vertex i + 2's with the last, odd triangles included.
+pub fn strips_take_flat_values_from_the_provoking_vertex<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 4;
+    // Vertices 0 bottom left, 1 top left, 2 bottom right, 3 top right; values 0, 0.2, 0.6, 1.
+    let verts = [
+        -1.0f32, -1.0, 0.0, -1.0, 1.0, 0.2, 1.0, -1.0, 0.6, 1.0, 1.0, 1.0,
+    ];
+    let vb = buffer(&mut b, 48, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    b.write_buffer(&vb, 0, &floats(&verts), WriteMode::Discard);
+    let p = program(&mut b, VALUES, "flat", "red");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let vl = positions_and_values(&mut b);
+    let mut ran = 0;
+    for (feature, provoking, values) in [
+        (
+            Features::PROVOKING_VERTEX_FIRST,
+            ProvokingVertex::First,
+            [0u8, 51],
+        ),
+        (
+            Features::PROVOKING_VERTEX_LAST,
+            ProvokingVertex::Last,
+            [153, 255],
+        ),
+    ] {
+        if !b.caps().features.contains(feature) {
+            continue;
+        }
+        ran += 1;
+        let (t, v) = rgba8_target(&mut b, N);
+        let rs = raster_with(&mut b, provoking);
+        b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+        draw(
+            &mut b,
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &vb,
+            Topology::TriangleStrip,
+            0,
+            4,
+            N,
+        );
+        b.end_pass();
+        let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+        // Triangle 0 lies below the diagonal, triangle 1 above it; centres on it are left out.
+        for y in 0..N as usize {
+            for x in 0..N as usize {
+                if x != y {
+                    let want = values[usize::from(x > y)];
+                    assert_eq!(
+                        got[(y * N as usize + x) * 4],
+                        want,
+                        "{provoking:?}: texel ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+    assert!(ran > 0, "a back end declares no provoking vertex");
+    ok(&mut b);
+}
+
+/// A draw that tests depth with writes off leaves the depth as it was: a later draw behind it but in
+/// front of the cleared depth still passes.
+pub fn depth_writes_off_leave_the_depth<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 2;
+    let (t, v) = rgba8_target(&mut b, N);
+    let (_d, dv) = depth_target(&mut b, N);
+    let quads = [
+        -1.0f32, -1.0, 0.25, -1.0, 1.0, 0.25, 1.0, -1.0, 0.25, 1.0, 1.0, 0.25, //
+        -1.0, -1.0, 0.5, -1.0, 1.0, 0.5, 1.0, -1.0, 0.5, 1.0, 1.0, 0.5,
+    ];
+    let vb = buffer(&mut b, 96, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    b.write_buffer(&vb, 0, &floats(&quads), WriteMode::Discard);
+    let p = program(&mut b, VALUES, "at_depth", "white");
+    let red = blend(
+        &mut b,
+        RenderTargetBlend {
+            blend: None,
+            writes: ColorWrites::R,
+        },
+    );
+    let green = blend(
+        &mut b,
+        RenderTargetBlend {
+            blend: None,
+            writes: ColorWrites::G,
+        },
+    );
+    let test_only = depth_test(&mut b, Some(CompareFn::Less), false);
+    let test_and_write = depth_test(&mut b, Some(CompareFn::Less), true);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions_and_values(&mut b);
+    let pass = color_pass::<H::Backend>(&v, LoadOp::Clear(f32_bits([0.0, 0.0, 0.0, 1.0])));
+    b.begin_pass(&with_depth(pass, &dv));
+    let strip = Topology::TriangleStrip;
+    draw(&mut b, &p, &red, &test_only, &rs, &vl, &vb, strip, 0, 4, N);
+    draw(
+        &mut b,
+        &p,
+        &green,
+        &test_and_write,
+        &rs,
+        &vl,
+        &vb,
+        strip,
+        4,
+        4,
+        N,
+    );
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    assert_close(&got, &[255, 255, 0, 255].repeat(4), 0, 4, N as usize);
+    ok(&mut b);
+}
+
+/// A fragment whose program clears every bit of its sample mask covers no sample, so it writes no
+/// colour and no depth: a later draw behind it but in front of the cleared depth still passes.
+/// Where the back end has no [`Features::SAMPLE_SHADING`], programs cannot write the mask and the
+/// test checks nothing beyond that.
+pub fn a_fragment_covering_no_sample_writes_nothing<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::SAMPLE_SHADING) {
+        return;
+    }
+    const N: u32 = 2;
+    let (t, v) = rgba8_target(&mut b, N);
+    let (_d, dv) = depth_target(&mut b, N);
+    let quads = [
+        -1.0f32, -1.0, 0.25, -1.0, 1.0, 0.25, 1.0, -1.0, 0.25, 1.0, 1.0, 0.25, //
+        -1.0, -1.0, 0.5, -1.0, 1.0, 0.5, 1.0, -1.0, 0.5, 1.0, 1.0, 0.5,
+    ];
+    let vb = buffer(&mut b, 96, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    b.write_buffer(&vb, 0, &floats(&quads), WriteMode::Discard);
+    let masked = program(&mut b, VALUES, "at_depth", "masked");
+    let white = program(&mut b, VALUES, "at_depth", "white");
+    let all = blend(&mut b, opaque());
+    let green = blend(
+        &mut b,
+        RenderTargetBlend {
+            blend: None,
+            writes: ColorWrites::G,
+        },
+    );
+    let less = depth_test(&mut b, Some(CompareFn::Less), true);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions_and_values(&mut b);
+    let pass = color_pass::<H::Backend>(&v, LoadOp::Clear(f32_bits([0.0, 0.0, 0.0, 1.0])));
+    b.begin_pass(&with_depth(pass, &dv));
+    let strip = Topology::TriangleStrip;
+    draw(&mut b, &masked, &all, &less, &rs, &vl, &vb, strip, 0, 4, N);
+    draw(&mut b, &white, &green, &less, &rs, &vl, &vb, strip, 4, 4, N);
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    assert_close(&got, &[0, 255, 0, 255].repeat(4), 0, 4, N as usize);
+    ok(&mut b);
+}
+
+/// An sRGB target stores red, green and blue encoded by the sRGB curve and alpha as it is, both from
+/// a clear and from a draw (the stored values computed from the curve, one step of tolerance).
+pub fn srgb_targets_convert_colour_but_not_alpha<H: Host>() {
+    let mut b = H::make();
+    needs(
+        &b,
+        Format::Rgba8UnormSrgb,
+        FormatUse::RENDER | FormatUse::COPY_OUT,
+    );
+    const N: u32 = 2;
+    let t = texture(
+        &mut b,
+        Format::Rgba8UnormSrgb,
+        (N, N),
+        1,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    );
+    let v = view(&mut b, &t, Format::Rgba8UnormSrgb);
+    // Linear 0.25, 0.6 and 0.05 encode to 136.96, 203.42 and 63.19; alpha 0.4 is 102.
+    b.begin_pass(&color_pass::<H::Backend>(
+        &v,
+        LoadOp::Clear(f32_bits([0.25, 0.6, 0.05, 0.4])),
+    ));
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    assert_close(&got, &[137, 203, 63, 102].repeat(4), 1, 4, N as usize);
+
+    const SRGB: &str = "
+    @vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+        return vec4<f32>(p, 0.5, 1.0);
+    }
+    @fragment fn fs() -> @location(0) vec4<f32> {
+        return vec4<f32>(0.6, 0.05, 0.25, 0.4);
+    }
+    ";
+    let quad = [-1.0f32, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0];
+    let vb = buffer(&mut b, 32, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    b.write_buffer(&vb, 0, &floats(&quad), WriteMode::Discard);
+    let p = program(&mut b, SRGB, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Load));
+    draw(
+        &mut b,
+        &p,
+        &bl,
+        &ds,
+        &rs,
+        &vl,
+        &vb,
+        Topology::TriangleStrip,
+        0,
+        4,
+        N,
+    );
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    assert_close(&got, &[203, 63, 137, 102].repeat(4), 1, 4, N as usize);
+    ok(&mut b);
+}
+
+/// `generate_mips` of a texture that may be reinterpreted averages in the format its values are given
+/// in: through the sRGB twin in linear light, through the stored format on the stored numbers.
+pub fn generate_mips_averages_in_the_values_format<H: Host>() {
+    // Columns of 0 and 200: stored, the average is 100; as sRGB, 200 is linear 0.5776, the
+    // average 0.2888, which encodes to 146.31. Alpha 255 stays 255.
+    for (values, expected) in [
+        (Format::Rgba8UnormSrgb, [146u8, 146, 146, 255]),
+        (Format::Rgba8Unorm, [100, 100, 100, 255]),
+    ] {
+        let mut b = H::make();
+        for f in [Format::Rgba8Unorm, Format::Rgba8UnormSrgb] {
+            needs(
+                &b,
+                f,
+                FormatUse::RENDER | FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT,
+            );
+        }
+        let desc = TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: 2,
+            height: 2,
+            depth_or_layers: 1,
+            mip_levels: 2,
+            samples: 1,
+            usage: TextureUsage::RENDER
+                | TextureUsage::SAMPLE
+                | TextureUsage::COPY_SRC
+                | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: true,
+        };
+        let t = b.create_texture(&desc).expect("create_texture");
+        let row = [0u8, 0, 0, 255, 200, 200, 200, 255];
+        b.write_texture(
+            &region(&t, 0, 0, 0, 0),
+            extent(2, 2, 1),
+            &row.repeat(2),
+            8,
+            2,
+            WriteMode::Ordered,
+        );
+        b.generate_mips(&t, &desc, values, 1..2, 0..1)
+            .expect("generate_mips");
+        let got = read_texture(&mut b, region(&t, 1, 0, 0, 0), extent(1, 1, 1), 4);
+        assert_close(&got, &expected, 1, 4, 1);
+        ok(&mut b);
+    }
 }
