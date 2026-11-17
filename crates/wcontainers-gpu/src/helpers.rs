@@ -300,7 +300,6 @@ pub(crate) const RASTER: RasterDesc = RasterDesc {
     depth_bias_clamp: 0,
     depth_clip: true,
     scissor: true,
-    multisample_lines: false,
     line_width: 0x3f80_0000,
     provoking: ProvokingVertex::First,
     depth_minus_one: false,
@@ -329,17 +328,14 @@ pub(crate) fn program<B: Backend>(backend: &mut B, which: Builtin) -> Result<B::
     }
     let source = which.source();
     let (module, info) = module(which)?;
-    // The content key: a marker, then a hash of the source.
-    let mut key = [0u8; 32];
-    key[..8].copy_from_slice(b"builtin3");
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in source.bytes() {
-        h = (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
-    }
-    key[8..16].copy_from_slice(&h.to_le_bytes());
     let shader = |backend: &mut B, entry: &str, stage: ShaderStage| {
-        let mut k = key;
-        k[31] = stage as u8;
+        // The content key, made as every converted shader's is: BLAKE3 of what the module comes from,
+        // here the built-in's WGSL and the entry point.
+        let k = *blake3::Hasher::new()
+            .update(source.as_bytes())
+            .update(entry.as_bytes())
+            .finalize()
+            .as_bytes();
         backend.create_shader(&ShaderModule {
             module: module.clone(),
             info: info.clone(),

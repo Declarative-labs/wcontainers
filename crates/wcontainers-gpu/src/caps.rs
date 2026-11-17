@@ -135,6 +135,15 @@ bitflags! {
         const TEXTURE_LEVEL_QUERY = 1 << 50;
         /// 8-bit index values ([`crate::IndexFormat::U8`]).
         const INDEX_U8 = 1 << 51;
+        /// A constant depth bias with a fraction ([`crate::RasterDesc::depth_bias`]; OpenGL's and
+        /// Vulkan's are floats). Without it a front whose bias has a fraction binds the program variant
+        /// that adds the bias to the fragment's depth (slow path [`crate::SlowPath::DepthBiasInShader`]).
+        const FRACTIONAL_DEPTH_BIAS = 1 << 52;
+        /// [`crate::BlendFactor::ConstantAlpha`] and [`crate::BlendFactor::OneMinusConstantAlpha`].
+        /// Without it a front uses [`crate::BlendFactor::Constant`] with the constant's alpha in all four
+        /// channels where its block uses no constant colour as well (exact), and otherwise blends in the
+        /// program (slow path [`crate::SlowPath::BlendInShader`]).
+        const BLEND_CONSTANT_ALPHA = 1 << 53;
     }
 }
 
@@ -168,8 +177,6 @@ pub struct Limits {
     pub color_bytes_per_sample: u32,
     /// Values passed from the vertex stage to the fragment stage, in four-component slots.
     pub inter_stage_slots: u32,
-    /// Sample counts a target may have, as a bit per count (bit 0 for one sample).
-    pub sample_counts: u32,
     pub min_uniform_offset_alignment: u32,
     pub min_storage_offset_alignment: u32,
     /// The granule of offsets and sizes the API itself copies, writes and clears buffers in (4 on WebGPU,
@@ -202,7 +209,7 @@ bitflags! {
         const FILTER = 1 << 1;
         const RENDER = 1 << 2;
         const BLEND = 1 << 3;
-        const MULTISAMPLE = 1 << 4;
+        /// A multisampled target of this format resolves into a single-sampled one.
         const RESOLVE = 1 << 5;
         const STORAGE_READ = 1 << 6;
         const STORAGE_WRITE = 1 << 7;
@@ -222,12 +229,23 @@ bitflags! {
 
 /// Per-format abilities, indexed by [`Format::index`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormatCaps(pub [FormatUse; Format::COUNT]);
+pub struct FormatCaps {
+    pub uses: [FormatUse; Format::COUNT],
+    /// The sample counts a texture of each format may have, a bit per count (bit n for 2^n samples, so
+    /// bit 0 is one sample), as Direct3D's `CheckMultisampleQualityLevels` and Vulkan's sample count
+    /// flags ask per format.
+    pub samples: [u8; Format::COUNT],
+}
 
 impl FormatCaps {
     /// What `format` can be used for.
     pub fn get(&self, format: Format) -> FormatUse {
-        self.0[format.index()]
+        self.uses[format.index()]
+    }
+
+    /// Whether a texture of `format` may have `count` samples.
+    pub fn takes_samples(&self, format: Format, count: u32) -> bool {
+        count.is_power_of_two() && count <= 128 && self.samples[format.index()] & (count as u8) != 0
     }
 }
 
@@ -243,5 +261,26 @@ impl Caps {
     /// Whether every feature in `f` is present.
     pub fn has(&self, f: Features) -> bool {
         self.features.contains(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_counts_are_per_format() {
+        let mut caps = FormatCaps {
+            uses: [FormatUse::empty(); Format::COUNT],
+            samples: [0b1; Format::COUNT],
+        };
+        caps.samples[Format::Rgba8Unorm.index()] = 0b1101;
+        assert!(caps.takes_samples(Format::Rgba8Unorm, 1));
+        assert!(caps.takes_samples(Format::Rgba8Unorm, 4));
+        assert!(caps.takes_samples(Format::Rgba8Unorm, 8));
+        assert!(!caps.takes_samples(Format::Rgba8Unorm, 2));
+        assert!(!caps.takes_samples(Format::Rgba8Unorm, 3));
+        assert!(!caps.takes_samples(Format::Rgba8Unorm, 256));
+        assert!(!caps.takes_samples(Format::R32Float, 4));
     }
 }

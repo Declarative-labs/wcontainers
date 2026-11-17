@@ -260,12 +260,15 @@ pub enum BindingResource<'a, B: Backend> {
 }
 
 /// What a pipeline must know of a binding set beyond its program: which sampled textures (bit = binding
-/// number minus 32) cannot be filtered on this back end, and which samplers (bit = binding number minus
-/// 16) filter. WebGPU builds layouts from it (plan section 4.5); back ends without layouts give zero.
+/// number minus 32) cannot be filtered on this back end. The zero key means every texture can be.
+///
+/// WebGPU builds layouts from it with the program (plan section 4.5): such a texture is
+/// `"unfilterable-float"`, and a sampler is `"comparison"` where the program compares with it,
+/// `"non-filtering"` where the program pairs it with such a texture, and `"filtering"` otherwise (which
+/// takes every sampler that does not compare). Back ends without layouts give zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct BindingLayoutKey {
     pub unfilterable_textures: u128,
-    pub filtering_samplers: u16,
 }
 
 /// One slot of a binding set: which program binding it fills, and with what.

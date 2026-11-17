@@ -23,6 +23,8 @@ pub enum BlendFactor {
     SrcAlphaSaturated,
     Constant,
     OneMinusConstant,
+    /// The blend constant's alpha in every channel (OpenGL's and Vulkan's); needs
+    /// [`crate::Features::BLEND_CONSTANT_ALPHA`].
     ConstantAlpha,
     OneMinusConstantAlpha,
     Src1,
@@ -179,19 +181,18 @@ pub struct RasterDesc {
     pub fill: FillMode,
     pub cull: CullMode,
     pub front: FrontFace,
-    /// Depth bias: constant, slope scale (f32 bits) and clamp (f32 bits). The bias applies to triangles
-    /// only (WebGPU allows none on lines and points, GLES offsets only filled polygons), and a non-zero
-    /// clamp needs [`crate::Features::DEPTH_BIAS_CLAMP`]. A front whose API biases lines and points, or
-    /// clamps without the feature, passes zero and binds the program variant that adds the bias to the
-    /// fragment's depth (slow path [`crate::SlowPath::DepthBiasInShader`]).
-    pub depth_bias: i32,
+    /// Depth bias: constant (in steps of the depth format), slope scale and clamp, each as f32 bits. The
+    /// bias applies to triangles only (WebGPU allows none on lines and points, GLES offsets only filled
+    /// polygons); a non-zero clamp needs [`crate::Features::DEPTH_BIAS_CLAMP`], and a constant with a
+    /// fraction needs [`crate::Features::FRACTIONAL_DEPTH_BIAS`]. A front whose API biases lines and
+    /// points, or needs what the back end lacks, passes zero and binds the program variant that adds the
+    /// bias to the fragment's depth (slow path [`crate::SlowPath::DepthBiasInShader`]).
+    pub depth_bias: u32,
     pub depth_bias_slope: u32,
     pub depth_bias_clamp: u32,
     /// False clamps depth instead of clipping it.
     pub depth_clip: bool,
     pub scissor: bool,
-    /// Multisampled rasterisation of lines (Direct3D's MultisampleEnable).
-    pub multisample_lines: bool,
     /// Line width as f32 bits; one unless [`crate::Features::WIDE_LINES`].
     pub line_width: u32,
     pub provoking: ProvokingVertex,

@@ -5,6 +5,7 @@
 //! it. Back ends never read it: they see the program's module and the binding sets only.
 
 use crate::format::Format;
+use crate::shader::ShaderStage;
 use crate::state::VertexFormat;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -57,11 +58,19 @@ impl SlotKind {
     }
 }
 
-/// The binding set that holds a converted program's helper constants, as one uniform buffer at
-/// [`HELPER_BINDING`].
+/// The binding set that holds a converted program's helper constants (one uniform buffer per stage, at
+/// [`helper_binding`]) and the other bindings a variant adds.
 pub const HELPER_SET: u32 = 3;
-/// The binding of the helper constants' uniform buffer in [`HELPER_SET`].
-pub const HELPER_BINDING: u32 = 0;
+
+/// The binding in [`HELPER_SET`] of the uniform buffer holding one stage's helper constants. Each stage
+/// of a program has its own block, laid out by that stage's own [`Reflection::helpers`], so the vertex
+/// and fragment stages of one draw never read each other's values; the front writes both blocks.
+pub const fn helper_binding(stage: ShaderStage) -> u32 {
+    match stage {
+        ShaderStage::Vertex | ShaderStage::Compute => 0,
+        ShaderStage::Fragment => 12,
+    }
+}
 /// The binding in [`HELPER_SET`] of the copy of color target 0 a program reads to blend or apply a
 /// logic operation itself ([`TargetInShader::combine`]); target n is at this plus n.
 pub const TARGET_COPY_BINDING: u32 = 1;
@@ -103,6 +112,26 @@ pub struct ReflectedBinding {
     /// Where the converted program binds it: set and binding number.
     pub set: u32,
     pub binding: u32,
+    /// For a binding the variant adds rather than one of the API's slots, what it holds; `space`,
+    /// `register` and `count` then say nothing.
+    pub added: Option<AddedBinding>,
+}
+
+/// A binding a variant adds to a program. It lives in the set of the one stage that reads it (set 0 for
+/// vertex and compute programs, set 1 for fragment programs; plan section 6.4), numbered in its kind's
+/// range from the first binding past the highest one of that kind the stage's program already uses, so
+/// the stages of one draw, converted apart, never collide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AddedBinding {
+    /// Vertex stream n, fetched in the program (a read-only storage buffer).
+    PulledStream(u32),
+    /// The constant buffer in the stage's slot n (Direct3D 12: the root signature's constant buffer
+    /// range n), read as a read-only storage buffer.
+    ConstantsAsStorage(u32),
+    /// The same, read through a texture.
+    ConstantsAsTexture(u32),
+    /// Root constants past the back end's immediate bytes, as a uniform buffer (Direct3D 12).
+    SpilledImmediates,
 }
 
 /// A value the API's pipeline gives a stage, or takes from it, by meaning rather than by location.
@@ -292,7 +321,9 @@ pub struct Reflection {
     pub inputs: Vec<StageValue>,
     pub outputs: Vec<StageValue>,
     pub bindings: Vec<ReflectedBinding>,
-    /// The helper constants the program reads, and the size of their block in bytes (zero for none).
+    /// The helper constants the program reads, at offsets in its own stage's block (bound at
+    /// [`helper_binding`] of that stage), and the size of that block in bytes (zero for none). The stage
+    /// helper fills the blocks of the programs it makes from geometry, hull and domain shaders itself.
     pub helpers: Vec<HelperSlot>,
     pub helper_size: u32,
     /// The (texture slot, sampler slot) pairs the shader samples with, in a fixed order.
@@ -465,5 +496,23 @@ mod tests {
         assert_eq!(SlotKind::Texture.binding(128), None);
         assert_eq!(SlotKind::Storage.binding(63), Some(223));
         assert_eq!(SlotKind::Counter.binding(0), Some(224));
+    }
+
+    #[test]
+    fn helper_blocks_of_the_two_draw_stages_never_share_a_binding() {
+        let vertex = helper_binding(ShaderStage::Vertex);
+        let fragment = helper_binding(ShaderStage::Fragment);
+        assert_ne!(vertex, fragment);
+        let targets = TARGET_COPY_BINDING..TARGET_COPY_BINDING + crate::MAX_COLOR_TARGETS as u32;
+        let others = [
+            EARLY_DEPTH_BINDING,
+            EARLY_STENCIL_BINDING,
+            DRAW_ARGUMENTS_BINDING,
+        ];
+        for b in [vertex, fragment] {
+            assert!(!targets.contains(&b));
+            assert!(!others.contains(&b));
+            assert!(b < CLAMPED_SAMPLER_BINDING);
+        }
     }
 }

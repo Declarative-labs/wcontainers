@@ -80,6 +80,13 @@ pub struct EmptyPass {
 /// limited to their common area (Direct3D 9 to 11 with a larger depth buffer, OpenGL, Vulkan), passes
 /// them through the shared pass tracker, which puts temporaries of one size in their place (slow path
 /// [`crate::SlowPath::AttachmentsFitted`], plan section 4.7).
+///
+/// One pass is one usage scope, as WebGPU defines it: a buffer, or a texture subresource, that any draw
+/// of the pass binds as writable storage is used no other way by any draw of the pass (not as vertices,
+/// indices, indirect arguments, a uniform, sampled or read-only storage binding). The shared pass tracker
+/// keeps this for every front: it ends the pass and begins the next with `Load` before a draw that would
+/// break it ([`crate::SlowPath::UsageScopeSplit`]), and a draw that itself uses one buffer both ways
+/// (OpenGL and Vulkan allow it) reads the other use from a copy ([`crate::SlowPath::UsageScopeCopied`]).
 #[derive(Debug)]
 pub struct PassDesc<'a, B: Backend> {
     pub colors: [Option<ColorAttachment<'a, B>>; MAX_COLOR_TARGETS],

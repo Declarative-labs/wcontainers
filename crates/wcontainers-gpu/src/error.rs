@@ -8,7 +8,8 @@ use crate::caps::Features;
 pub enum GpuError {
     /// The back end does not have these features; the front should have read [`crate::Caps`] first.
     Absent(Features),
-    /// The GPU or the host ran out of memory for this object.
+    /// The GPU or the host ran out of memory for this object, known when the call returns. Browser APIs
+    /// mostly learn it later; a back end then reports [`LossReason::OutOfMemory`].
     OutOfMemory,
     /// The device is gone; every later call fails the same way until a new back end is made.
     DeviceLost,
@@ -33,4 +34,9 @@ pub enum LossReason {
     Removed,
     /// A command was invalid on the back end's own API. A bug, here or in a front.
     Error,
+    /// Making an object ran out of memory after the guest had been told it was made (object creation
+    /// does not wait for the device thread; plan section 4.8). Direct3D fronts answer
+    /// `DXGI_ERROR_DEVICE_REMOVED` with the reason `DXGI_ERROR_DRIVER_INTERNAL_ERROR` (Direct3D 11 lists
+    /// no memory reason).
+    OutOfMemory,
 }

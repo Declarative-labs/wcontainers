@@ -53,10 +53,11 @@ pub use error::{DeviceStatus, GpuError, LossReason};
 pub use format::{Format, FormatKind};
 pub use helpers::Helpers;
 pub use reflect::{
-    CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource, EARLY_DEPTH_BINDING,
-    EARLY_STENCIL_BINDING, HELPER_BINDING, HELPER_SET, HelperSlot, HelperValue, Interpolation,
+    AddedBinding, CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource,
+    EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING, HELPER_SET, HelperSlot, HelperValue, Interpolation,
     ReflectedBinding, Reflection, ScalarKind, SlotKind, SourceStage, StageExtras, StageValue,
     SystemValue, TARGET_COPY_BINDING, TargetInShader, TexelBufferRoute, VariantFlags, VariantKey,
+    helper_binding,
 };
 pub use resource::{AddressMode, BorderColor, CompareFn, Filter};
 pub use resource::{
@@ -79,5 +80,7 @@ pub const MAX_COLOR_TARGETS: usize = 8;
 /// The most vertex streams a draw can read (Direct3D 11's input slots). Streams beyond the back end's
 /// [`Limits::vertex_streams`] are fetched by the program ([`SlowPath::VertexPulledInShader`]).
 pub const MAX_VERTEX_STREAMS: usize = 32;
-/// The most binding sets a draw names: one per update frequency, as fronts group them.
+/// The most binding sets a draw names, by the binding rule (plan section 6.4): what the vertex (or
+/// compute) stage reads alone, what the fragment stage reads alone, what every stage reads (Direct3D 12
+/// ranges visible to all stages), and the helper constants ([`HELPER_SET`]).
 pub const MAX_BINDING_SETS: usize = 4;

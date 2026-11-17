@@ -80,7 +80,7 @@ pub struct PrepareDesc<'a, B: Backend> {
     pub targets: TargetLayout,
     pub topology: Topology,
     /// The layout keys of the binding sets the draws will bind, as [`Backend::binding_layout_key`] gave
-    /// them or a cache recorded them; the zero key assumes filterable textures and filtering samplers.
+    /// them or a cache recorded them; the zero key means every texture can be filtered.
     pub layouts: [BindingLayoutKey; crate::MAX_BINDING_SETS],
 }
 

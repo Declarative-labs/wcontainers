@@ -207,11 +207,17 @@ pub enum SlowPath {
     AliasCopied,
     /// Alpha-antialiased lines drawn as rectangles whose coverage the program multiplies into alpha.
     AntialiasedLinesAsQuads,
+    /// A pass ended and resumed with `Load` because a draw used a resource another way than an earlier
+    /// draw of the pass wrote it as storage (WebGPU makes one pass one usage scope).
+    UsageScopeSplit,
+    /// A buffer one draw uses both as writable storage and another way: the other use reads a copy made
+    /// before the pass.
+    UsageScopeCopied,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 85] = [
+    pub const ALL: [SlowPath; 87] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -297,6 +303,8 @@ impl SlowPath {
         SlowPath::MultisampleCopyResolved,
         SlowPath::AliasCopied,
         SlowPath::AntialiasedLinesAsQuads,
+        SlowPath::UsageScopeSplit,
+        SlowPath::UsageScopeCopied,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -399,6 +407,8 @@ impl SlowPath {
             SlowPath::MultisampleCopyResolved => "multisampled copy made from the resolved source",
             SlowPath::AliasCopied => "aliased resource bytes copied before use",
             SlowPath::AntialiasedLinesAsQuads => "antialiased lines drawn as covered rectangles",
+            SlowPath::UsageScopeSplit => "pass split between a storage write and another use",
+            SlowPath::UsageScopeCopied => "buffer used two ways in one draw read from a copy",
         }
     }
 }
