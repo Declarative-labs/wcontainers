@@ -17,11 +17,15 @@ Done:
   naga with WebGPU's core capabilities, the GLSL ES 3.00 compiled by glslangValidator.
 - The module is the same on every run and host: the corpus test converts each shader twice and
   compares, and the WebAssembly build's output files equal the native build's byte for byte.
+- dxil-spirv built in too (submodule, pinned), and `convert` for DXIL: dxil-spirv's SPIR-V, read by
+  naga's SPIR-V reader (`src/dxil.rs`), then given 6.4's binding rule. 11 of the rig's 14 DXIL shaders
+  convert, WGSL valid and GLSL ES compiled by glslang; the other 3 stop at the reader's known gaps
+  (6.2): typed buffers ("unsupported image dimension", twice) and a storage image without a format.
 
-Not done in this milestone yet (in order): DXIL through dxil-spirv on the rig's Direct3D 12 scene;
-the five own HLSL shaders compiled on the desktop and checked for meaning; Chrome's own compile of the
-written WGSL and GLSL (the plan's final verdict; so far naga and glslang only); the rig's DXBC drawn
-through a back end.
+Not done in this milestone yet (in order): the five own HLSL shaders compiled on the desktop and
+checked for meaning; Chrome's own compile of the written WGSL and GLSL (the plan's final verdict; so
+far naga and glslang only); the rig's shaders drawn through a back end (no back end branch is on the
+remote yet: only phase-2-graphics and phase-2-graphics-rig); the DXIL draw bases from the helpers.
 
 ## How the Direct3D fronts call `convert`
 
@@ -48,9 +52,15 @@ let reflection = &converted.reflection;
   `vertex_index` and `SV_InstanceID` is `instance_index` as they are (right only when the bases are 0).
 - `reflection.sampled_pairs` lists (texture register, sampler register) pairs in first-use order.
   `reflection.extras` for pixel shaders: early tests, side effects (UAV writes), discards, per sample.
-- Errors: `Rejected` (dxbc-spirv refused the bytecode, with its message), `Unsupported(name)` (a named
-  feature not provided yet, for example `GeometryShader`, `StorageImage`, `TypedBuffer`, `Atomics`),
-  `Malformed` and `Invalid` (our bugs: the corpus test fails on any of these).
+- DXIL: `convert(Source::Dxil(bytecode), &variant_key, None)`, same result shape. Bindings are
+  numbered as for Direct3D 11 for now (stage set, kind range + register; `space` kept in the
+  reflection), not yet by root signature. Only `draw_base: None` is taken (the bases read as zero);
+  anything else is `Unsupported("DxilDrawBase")`. The reflection has bindings and extras; inputs,
+  outputs and sampled pairs are still empty for DXIL.
+- Errors: `Rejected` (dxbc-spirv or dxil-spirv refused the bytecode, with its message),
+  `Unsupported(name)` (a named feature not provided yet, for example `GeometryShader`, `StorageImage`,
+  `TypedBuffer`, `Atomics`), `Reader(text)` (a gap of naga's SPIR-V reader, DXIL only), `Malformed`
+  and `Invalid` (our bugs: the corpus test fails on any of these).
 
 ## Measurements
 
@@ -78,12 +88,13 @@ The rig's 79 compiled DXBC shaders (`crates/wcontainers-graphics-test/shaders/dx
 valid WGSL (45 also compile as GLSL ES in glslang); 23 named: GeometryShader 6, HullShader 6,
 DomainShader 3, StorageCounter 3, StorageImage 2, Atomics 1, PrimitiveId 1, VertexWithoutPosition 1.
 
-WebAssembly: the conversion alone (`examples/wasm_imports.rs`, release, `wasm32-wasip1`) is 2,356,683
-bytes and imports from `wasi_snapshot_preview1`: environ_get, environ_sizes_get, fd_close,
+WebAssembly: the conversion alone (`examples/wasm_imports.rs`, release, `wasm32-wasip1`, both
+converters linked) is 4,842,413 bytes (2,356,683 with dxbc-spirv alone) and imports from `wasi_snapshot_preview1`: environ_get, environ_sizes_get, fd_close,
 fd_fdstat_get, fd_prestat_get, fd_prestat_dir_name, fd_read, fd_seek, fd_write, proc_exit (10;
 the plan expected proc_exit and fd_write only: libc++'s streams, which dxbc-spirv's logger uses, pull
 in wasi-libc's stdio and start-up). The corpus test built for `wasm32-wasip1` and run under wasmtime
-38.0.4 gives the same verdicts and the same written files as the native build.
+38.0.4 gives the same verdicts and the same written files as the native build, for the corpus and
+the rig's DXBC and DXIL.
 
 ## naga as carried
 
@@ -112,8 +123,12 @@ Not yet sent upstream.
 - WebAssembly: add `WASI_SDK_PATH=$HOME/wcontainers-graphics/tools/wasi-sdk` and `--target
   wasm32-wasip1`; run tests with `~/wcontainers-graphics/tools/wasmtime/wasmtime run --dir
   corpus/dxbc::/corpus --env WCONTAINERS_SHADER_CORPUS=/corpus <test>.wasm`.
-- After cloning: `git submodule update --init crates/wcontainers-shaders/dxbc-spirv` (its own
-  SPIRV-Headers submodule is not needed: we do not build its SPIR-V back end).
+- After cloning: `git submodule update --init crates/wcontainers-shaders/dxbc-spirv
+  crates/wcontainers-shaders/dxil-spirv` and `git -C crates/wcontainers-shaders/dxil-spirv submodule
+  update --init third_party/spirv-headers`. dxbc-spirv's own SPIRV-Headers and dxil-spirv's other
+  submodules (SPIRV-Tools, SPIRV-Cross, its copy of dxbc-spirv) are not needed. The rig's `remote`
+  sends a git bundle, which carries no submodules: building this crate on the desktop needs the
+  submodules fetched there (not done yet; a matter for the rig's remote script).
 - The corpus is in scratch (`wcontainers-scratch/graphics/corpus/dxbc`, from Wine's tests, LGPL, test
   data only) and was copied to `~/wcontainers-graphics/corpus/dxbc` on the laptop.
 
@@ -126,7 +141,12 @@ were already there.
 
 - dxbc-spirv, https://github.com/doitsujin/dxbc-spirv, submodule at 6196cc6c62b7b04acb4f3e713ff3bb1a7e7950fd
   (upstream main's head on 2026-11-17): MIT, "Copyright (c) 2025 Philip Rebohle" (its LICENSE).
-- naga 30.0.2 (carried, see above): MIT OR Apache-2.0.
+- dxil-spirv, https://github.com/HansKristian-Work/dxil-spirv, submodule at
+  510991e707cda3aa389305448edad7c7dd76e3e7 (upstream master's head on 2026-11-17): MIT (LICENSE.MIT,
+  "Copyright (c) 2019-2022 Hans-Kristian Arntzen for Valve Corporation", SPDX MIT). Of its submodules
+  only third_party/spirv-headers (Khronos, MIT-style) is fetched; its glslang SPIR-V builder and
+  bitcode reader are in its own tree (licences in the plan's section 3).
+- naga 30.0.2 (carried, see above): MIT OR Apache-2.0; its `spv-in` reader is now used.
 - `cc` 1.11 (build dependency, compiles the C++): MIT OR Apache-2.0 (its Cargo.toml); with `jobserver`
   0.1 (MIT OR Apache-2.0) for its parallel feature.
 - `blake3` 1.8: as in the plan's section 3.
@@ -151,6 +171,10 @@ were already there.
 - The content key is BLAKE3 over the source, `CONVERTER_VERSION` and the variant key's debug text, until
   the cache (section 8) gives the variant key a serialised form.
 - The WebAssembly build imports ten WASI functions, not two (above).
+- dxil-spirv's converter library is not free of dxbc-spirv as 6.2 says: its bitcode module
+  (`bc/module_dxbc_ir.cpp`) reads dxbc-spirv's IR. It is built against our one copy of dxbc-spirv
+  (newer than the commit dxil-spirv pins; it compiles), and all of dxil-spirv is built as C++17, as
+  its CMake does for that file.
 
 ## Known gaps found so far
 
