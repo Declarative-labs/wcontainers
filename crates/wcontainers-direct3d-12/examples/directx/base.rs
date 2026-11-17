@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 use std::sync::Mutex;
 
-use windows::Win32::Foundation::{E_INVALIDARG, E_POINTER};
+use windows::Win32::Foundation::{E_INVALIDARG, E_POINTER, S_FALSE};
 use windows::Win32::Graphics::Direct3D::WKPDID_D3DDebugObjectNameW;
 use windows::Win32::Graphics::Direct3D12::ID3D12Device;
 use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_MORE_DATA, DXGI_ERROR_NOT_FOUND};
@@ -29,7 +29,8 @@ pub fn set_live_device(device: &ID3D12Device) {
 
 enum Data {
     Bytes(Vec<u8>),
-    Object(IUnknown),
+    /// An interface, or a null one, which reads back as a null pointer.
+    Object(Option<IUnknown>),
 }
 
 #[derive(Default)]
@@ -80,8 +81,8 @@ impl Base {
         let bytes: &[u8] = match value {
             Data::Bytes(b) => b,
             Data::Object(o) => {
-                // SAFETY: the pointer's own bytes.
-                unsafe { std::slice::from_raw_parts((o as *const IUnknown).cast(), 8) }
+                // SAFETY: the pointer's own bytes (an `Option` of an interface is a pointer).
+                unsafe { std::slice::from_raw_parts((o as *const Option<IUnknown>).cast(), 8) }
             }
         };
         let needed = bytes.len() as u32;
@@ -113,14 +114,18 @@ impl Base {
             let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size as usize) };
             Some(Data::Bytes(bytes.to_vec()))
         };
-        self.set(guid, value);
+        let removing = value.is_none();
+        // Removing data that is not there answers S_FALSE.
+        if !self.set(guid, value) && removing {
+            return Err(windows::core::Error::from_hresult(S_FALSE));
+        }
         Ok(())
     }
 
     pub fn SetPrivateDataInterface(&self, guid: *const GUID, object: Ref<IUnknown>) -> Result<()> {
         // SAFETY: the caller's GUID, checked for null.
         let guid = *unsafe { guid.as_ref() }.ok_or(E_INVALIDARG)?;
-        self.set(guid, object.as_ref().map(|o| Data::Object(o.clone())));
+        self.set(guid, Some(Data::Object(object.as_ref().cloned())));
         Ok(())
     }
 
@@ -140,11 +145,15 @@ impl Base {
         Ok(())
     }
 
-    fn set(&self, guid: GUID, value: Option<Data>) {
+    /// Sets or removes the data of `guid`, and says whether there was some.
+    fn set(&self, guid: GUID, value: Option<Data>) -> bool {
         let mut data = self.data.lock().unwrap();
+        let before = data.len();
         data.retain(|(g, _)| *g != guid);
+        let had = data.len() != before;
         if let Some(v) = value {
             data.push((guid, v));
         }
+        had
     }
 }

@@ -277,8 +277,10 @@ fn queues_wait_for_fences_signalled_late() {
 }
 
 #[test]
-fn placed_resources_lie_in_their_heap_and_overlaps_are_refused() {
+fn placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes() {
+    use wcontainers_gpu::SlowPath::AliasCopied;
     let mut device = Device::new(Recorder::new());
+    let queue = device.create_queue();
     let page = 64 << 10;
     let heap = device.create_heap(4 * page, HeapType::Default, 0).unwrap();
     let buffer = |width| ResourceDesc {
@@ -290,13 +292,6 @@ fn placed_resources_lie_in_their_heap_and_overlaps_are_refused() {
         sample_count: 1,
         ..Default::default()
     };
-    let a = device.create_placed(heap, 0, &buffer(page)).unwrap();
-    let b = device.create_placed(heap, page, &buffer(2 * page)).unwrap();
-    assert_ne!(device.address(a), device.address(b));
-    assert!(matches!(
-        device.create_placed(heap, 2 * page, &buffer(page)),
-        Err(Error::NotImplemented(_))
-    ));
     assert!(matches!(
         device.create_placed(heap, 100, &buffer(page)),
         Err(Error::Invalid(_))
@@ -305,6 +300,70 @@ fn placed_resources_lie_in_their_heap_and_overlaps_are_refused() {
         device.create_placed(heap, 3 * page, &buffer(2 * page)),
         Err(Error::Invalid(_))
     ));
+    // a and b share their second and first page; c overlaps neither.
+    let a = device.create_placed(heap, 0, &buffer(2 * page)).unwrap();
+    let b = device.create_placed(heap, page, &buffer(2 * page)).unwrap();
+    let c = device.create_placed(heap, 3 * page, &buffer(page)).unwrap();
+    assert_ne!(device.address(a), device.address(b));
+    let upload = device
+        .create_committed(HeapType::Upload, &buffer(2 * page))
+        .unwrap();
+    let readback = device
+        .create_committed(HeapType::Readback, &buffer(2 * page))
+        .unwrap();
+    let copy = |dst, src| Command::CopyBuffer {
+        dst,
+        dst_offset: 0,
+        src,
+        src_offset: 0,
+        size: page,
+    };
+    let run = |d: &mut Device<Recorder>, commands: Vec<Command>| {
+        let mut list = CommandList::new();
+        for c in commands {
+            list.record(c);
+        }
+        list.close().unwrap();
+        let start = d.backend().calls.len();
+        d.execute(queue, &[list.commands().unwrap().clone()])
+            .unwrap();
+        d.backend().calls[start..]
+            .iter()
+            .filter(|c| c.starts_with("copy_buffer"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let copied = |d: &mut Device<Recorder>| d.backend().slow_paths().count(AliasCopied);
+    // Nothing written yet, and c overlaps nothing: no copies of inherited bytes.
+    assert_eq!(
+        run(&mut device, vec![copy(c, upload), copy(readback, c)]).len(),
+        2
+    );
+    assert_eq!(copied(&mut device), 0);
+    // b, read after a was written, first takes the page they share from a.
+    let calls = run(&mut device, vec![copy(a, upload), copy(readback, b)]);
+    assert_eq!(calls.len(), 3, "{calls:#?}");
+    assert!(calls[1].ends_with(&format!(
+        " {page} {} 0 {page}",
+        calls[1].split(' ').nth(3).unwrap()
+    )));
+    assert_eq!(copied(&mut device), 1);
+    // Up to date now: read again, b copies nothing; written, b gives a its bytes back.
+    assert_eq!(run(&mut device, vec![copy(readback, b)]).len(), 1);
+    let calls = run(&mut device, vec![copy(b, upload), copy(readback, a)]);
+    assert_eq!(calls.len(), 3, "{calls:#?}");
+    assert!(calls[1].ends_with(&format!(
+        " 0 {} {page} {page}",
+        calls[1].split(' ').nth(3).unwrap()
+    )));
+    assert_eq!(copied(&mut device), 2);
+    // Buffers placed in an upload heap map the heap's one memory.
+    let shared = device.create_heap(2 * page, HeapType::Upload, 0).unwrap();
+    let x = device.create_placed(shared, 0, &buffer(2 * page)).unwrap();
+    let y = device.create_placed(shared, page, &buffer(page)).unwrap();
+    let (px, py) = (device.map(x).unwrap(), device.map(y).unwrap());
+    assert_eq!(py as usize - px as usize, page as usize);
     device.destroy_resource(b);
-    device.create_placed(heap, 2 * page, &buffer(page)).unwrap();
+    device.destroy_resource(a);
+    assert_eq!(run(&mut device, vec![copy(readback, c)]).len(), 1);
 }

@@ -9,9 +9,16 @@ repository.workspace = true
 
 [dependencies]
 wcontainers-gpu = { path = "../wcontainers-gpu" }
+bcdec_rs = "0.2.1"
+half = { version = "2.7.1", default-features = false }
 naga.workspace = true
 wgpu-naga-bridge = "30.0.2"
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "metal", "vulkan", "webgpu", "naga-ir", "wgsl"] }
+
+# Waiting in the browser suspends through JSPI.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3.107"
+wasm-bindgen = "=0.2.130"
 
 [dev-dependencies]
 anyhow = "1.0.100"
@@ -19,19 +26,22 @@ bytemuck = "1.25.2"
 fastrand = "2.5.0"
 naga = { workspace = true, features = ["wgsl-in"] }
 png = "0.18.1"
-
-# The shared suite runs natively only.
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-pollster = "1.0.1"
 wcontainers-gpu-test = { path = "../wcontainers-gpu-test" }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+pollster = "1.0.1"
+
+# Real Direct3D 11 on the same GPU and WARP, through the rig's device and comparison (tests/direct3d.rs).
 [target.'cfg(windows)'.dev-dependencies]
+wcontainers-graphics-test = { path = "../wcontainers-graphics-test" }
+image = { version = "0.25.10", default-features = false }
+windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi_Common"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_System_LibraryLoader", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
+# proptest, which the shared suite brings, takes getrandom's browser source to build for WebAssembly.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-js-sys = "0.3.107"
-wasm-bindgen = "=0.2.130"
-wasm-bindgen-futures = "0.4.80"
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+web-sys = { version = "0.3.107", features = ["HtmlCanvasElement"] }
 
 [lints]
 workspace = true

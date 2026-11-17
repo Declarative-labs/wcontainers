@@ -187,8 +187,9 @@ Recording:
   WebGPU clears only to zero, so its back end fills with any other pattern by copies from a block of
   the pattern, `PatternClearCopied`), `resolve`: outside a pass. A buffer copy or read back of a format
   with depth and stencil moves the aspect its region names (the stencil byte, or depth in four bytes);
-  a copy between two such textures moves both aspects, as WebGPU requires, and a front whose API copies
-  one plane (Direct3D 12's plane slices, Vulkan's aspects) goes through a buffer. `resolve` names the format the samples are averaged in, the source's
+  `copy_texture` between two such textures moves both aspects in one call, as Direct3D copies it and
+  as WebGPU requires, and a front whose API copies one plane (Direct3D 12's plane slices, Vulkan's
+  aspects) goes through a buffer. `resolve` names the format the samples are averaged in, the source's
   stored format or its sRGB twin, because Direct3D 11's and 12's `ResolveSubresource` take one: a
   multisampled `R8G8B8A8_TYPELESS` target (one texture seen through sRGB and linear views) resolves in
   linear light as `UNORM_SRGB` and on the stored values as `UNORM`. WebGPU resolves natively through
@@ -205,6 +206,10 @@ Recording:
   texture, since the bytes a front hands over for it are 24-bit unorm depth in the low bits of a 32-bit
   word (Direct3D's `D24_UNORM_S8_UINT` depth, Vulkan's D24 depth aspect, GL's `UNSIGNED_INT_24_8`), and
   the draw writes `(v & 0xffffff) / 16777215`.
+  WebGPU copies depth and stencil only as whole subresources, so its back end writes part of a stencil
+  (from a buffer through an `r8uint` texture, or from a texture) by one draw per bit with that bit's
+  write mask (`StencilWrittenByDraw`), and reads part of either aspect, or 24-bit depth at all, into a
+  buffer by drawing it into a colour texture first (`DepthReadByDraw`).
   Buffer ranges are byte-granular in every call; a back end whose API copies
   in larger granules (`Limits::buffer_copy_alignment`, 4 on WebGPU for `writeBuffer`,
   `copyBufferToBuffer` and `clearBuffer`) does the aligned middle natively and merges the edge words with
@@ -321,6 +326,9 @@ Present or absent, with no cheap default:
   `rasterize` false it runs outside a pass and draws nothing (rasterizer discard); with it true it runs
   inside a pass and also draws the primitives in the same run of the vertex work, as Direct3D's
   `RasterizedStream` naming the captured stream and OpenGL's transform feedback without discard do.
+  It writes the vertex stage's location outputs in location order as packed 32-bit components (no
+  built-ins): with one target interleaved, vertex after vertex; with more, output n into target n
+  (OpenGL's interleaved and separate modes), once per vertex of each primitive, strips as lists.
   WebGL 2 has both natively; WebGPU has neither, and the shaders crate's stage helper builds stream
   output from compute instead (section 7), whose draw of the captured vertices is the rasterised part.
 - `create_resource_table`, `write_resource_table`: big resource tables (`RESOURCE_TABLES`). Absent in both
@@ -632,7 +640,9 @@ tracker of 4.4) so each implicit front uses the same one.
 Rules a pass description follows:
 - A depth-stencil attachment names only the aspects its format has (`AspectOps` for depth and for
   stencil, each with its load, store and read-only flag), so no back end sees an operation on a missing
-  aspect.
+  aspect. No draw writes an aspect marked read-only (WebGPU's `depthReadOnly` and `stencilReadOnly`).
+- No subresource or 3D slice is attached, or resolved into, twice in one pass. Colour attachments stay
+  within `color_targets` and `color_bytes_per_sample`.
 - A color attachment of a 3D view names the slice it draws into (`depth_slice`, WebGPU's `depthSlice`).
 - Every attachment and resolve target has the same width and height. WebGPU requires it (its
   `GPURenderPassDescriptor` validation: every view's render extent must match), and so does WebGL 2 (its
@@ -924,15 +934,17 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
      back now and sums it on the device thread on every back end, so on WebGPU it waits, counted
      `ReadBackWait`; a dispatch summing it on the GPU is to come with G2; WebGL 2: a read back
      summed on the device thread, a multisampled target resolved first and the average multiplied by
-     the sample count). The query's count is the sum over its counting passes. If any sample reached
-     the counting format's exact bound (2^24 for `r32float`, 2048 for `r16float`), the replay runs
+     the sample count). The query's count is the sum over its counting passes. If any pixel's sum over
+     its samples reached the counting format's exact bound (2^24 for `r32float`, 2048 for `r16float`;
+     below it the resolved average keeps every count exact), the replay runs
      again with the draws split into halves (of the draws, of one draw's instances, or of one list's
      or strip's primitives, a triangle strip at an even triangle), the second half after the first and
-     both from the depth the whole began with (kept by one more copy, made only where the draws have
-     as many primitives as the bound), and the halves added, so the answer stays exact. A single fan,
-     strip with restart or indirect draw past the bound cannot be split: the helper refuses it
-     (`GpuError::Invalid`), a known gap that needs over 2048 fragments at one sample from one such
-     draw on a back end without blendable `r32float`. A program reading the primitive index sees it
+     both from the depth the whole began with (kept by one more copy, made only where the draws'
+     primitives times the sample count reach the bound), and the halves added, so the answer stays
+     exact. A single fan, strip with restart or indirect draw reaching the bound cannot be split: the
+     helper refuses it (`GpuError::Invalid`), a known gap that needs, from one such draw on a back end
+     without blendable `r32float`, a pixel whose samples together pass 2048 fragments (2048 at its one
+     sample on a single-sampled target, 512 a sample on average on four samples). A program reading the primitive index sees it
      start again in a split's second half.
   The cost is one pass and one reduction per counted query and per change inside it, and a depth copy
   only for those whose draws write depth or stencil (unmeasured; G4 measures it on real programs).

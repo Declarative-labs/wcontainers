@@ -202,6 +202,23 @@ fn format_support_follows_the_back_ends_format_uses() {
     );
     assert_ne!(r32.support1 & TYPED_UNORDERED_ACCESS_VIEW, 0);
     assert_eq!(r32.support2, support2::UAV_TYPED_STORE);
+    // Direct3D resolves no integer format and loads samples only of targets, whatever a back end
+    // declares of the format.
+    let mut generous = caps.clone();
+    for f in [
+        wcontainers_gpu::Format::R32Uint,
+        wcontainers_gpu::Format::Bc1RgbaUnorm,
+    ] {
+        generous.formats.uses[f.index()] |=
+            wcontainers_gpu::FormatUse::RESOLVE | wcontainers_gpu::FormatUse::SAMPLE;
+        generous.formats.samples[f.index()] =
+            generous.formats.samples[wcontainers_gpu::Format::Rgba8Unorm.index()];
+    }
+    assert_eq!(
+        format_support(&generous, 42).support1 & MULTISAMPLE_RESOLVE,
+        0
+    );
+    assert_eq!(format_support(&generous, 71).support1 & MULTISAMPLE_LOAD, 0);
     // R32_FLOAT views depth stored as D32_FLOAT, so it compares.
     assert_ne!(
         format_support(&caps, 41).support1 & SHADER_SAMPLE_COMPARISON,

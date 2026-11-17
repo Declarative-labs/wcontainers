@@ -68,18 +68,21 @@ pub(super) struct Predicate<B: Backend> {
     value: Option<u64>,
 }
 
-/// The front's own compute programs, made at first use.
-pub(super) struct Programs<B: Backend> {
-    binary: Option<B::Program>,
-    predicate: Option<B::Program>,
+/// The front's own compute programs.
+#[derive(Clone, Copy)]
+pub(super) enum Own {
+    Binary,
+    Predicate,
+    /// Zeroes the commands of `ExecuteIndirect` past its count (`indirect.rs`).
+    Expand,
 }
+
+/// The front's own compute programs, made at first use.
+pub(super) struct Programs<B: Backend>([Option<B::Program>; 3]);
 
 impl<B: Backend> Default for Programs<B> {
     fn default() -> Self {
-        Programs {
-            binary: None,
-            predicate: None,
-        }
+        Programs([None, None, None])
     }
 }
 
@@ -112,40 +115,35 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    /// The front's compute program `source`, made once.
-    fn own_program(&mut self, predicate: bool) -> Result<B::Program, Error> {
-        let slot = if predicate {
-            &self.programs.predicate
-        } else {
-            &self.programs.binary
-        };
-        if let Some(p) = slot {
+    /// The front's compute program `which`, made once.
+    fn own_program(&mut self, which: Own) -> Result<B::Program, Error> {
+        if let Some(p) = &self.programs.0[which as usize] {
             return Ok(p.clone());
         }
-        let source = if predicate { PREDICATE } else { BINARY };
+        let source = match which {
+            Own::Binary => BINARY,
+            Own::Predicate => PREDICATE,
+            Own::Expand => super::indirect::EXPAND,
+        };
         let module = ShaderModule::from_wgsl(source, "main", ShaderStage::Compute)?;
         let shader = self.backend.create_shader(&module)?;
         let program = self.backend.create_program(&Program::Compute(&shader));
         self.backend.destroy(Object::Shader(shader));
         let program = program?;
-        if predicate {
-            self.programs.predicate = Some(program.clone());
-        } else {
-            self.programs.binary = Some(program.clone());
-        }
+        self.programs.0[which as usize] = Some(program.clone());
         Ok(program)
     }
 
     /// Runs one of the front's programs over `groups` workgroups with a uniform block and storage
     /// buffers at their binding numbers.
-    fn run_own(
+    pub(super) fn run_own(
         &mut self,
-        predicate: bool,
+        which: Own,
         uniform: &[u32],
         storage: &[(u32, &B::Buffer, u64, bool)],
         threads: u32,
     ) -> Result<(), Error> {
-        let program = self.own_program(predicate)?;
+        let program = self.own_program(which)?;
         let bytes: Vec<u8> = uniform.iter().flat_map(|v| v.to_le_bytes()).collect();
         let align = self.backend.caps().limits.min_uniform_offset_alignment;
         let mut offset = [0];
@@ -190,7 +188,7 @@ impl<B: Backend> Device<B> {
     }
 
     /// A buffer of the front's own for the length of one replay.
-    fn scratch(&mut self, size: u64, usage: BufferUsage) -> Result<B::Buffer, Error> {
+    pub(super) fn scratch(&mut self, size: u64, usage: BufferUsage) -> Result<B::Buffer, Error> {
         let buffer = self.backend.create_buffer(&BufferDesc {
             size: size.next_multiple_of(4),
             usage,
@@ -236,7 +234,12 @@ impl<B: Backend> Device<B> {
         self.backend
             .resolve_queries(&set, first, count, &scratch, 0)?;
         if kind == QUERY_BINARY_OCCLUSION {
-            self.run_own(false, &[0, count], &[(160, &scratch, size, true)], count)?;
+            self.run_own(
+                Own::Binary,
+                &[0, count],
+                &[(160, &scratch, size, true)],
+                count,
+            )?;
         }
         let (target, heap_type) = self.buffer(dst)?;
         let target = target.clone();
@@ -342,7 +345,7 @@ impl<B: Backend> Device<B> {
             .write_buffer(&records, 0, &bytes, WriteMode::Ordered);
         let count = (words.len() / 5) as u32;
         self.run_own(
-            true,
+            Own::Predicate,
             &[(offset / 4) as u32, u32::from(op == 0), count],
             &[
                 (32, &buffer, width.next_multiple_of(4), false),

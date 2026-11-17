@@ -333,6 +333,135 @@ fn clear_rects_draws_one_triangle_per_rectangle_in_one_pass() {
     healthy(&mut r);
 }
 
+/// A depth-stencil texture of `format` and its view, 4 by 4.
+fn depth_texture(r: &mut Recorder, format: Format) -> (Id, Id) {
+    let t = r
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width: 4,
+            height: 4,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let v = r
+        .create_view(
+            &t,
+            &TextureViewDesc {
+                format,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        )
+        .unwrap();
+    (t, v)
+}
+
+/// One aspect of a 4 by 4 depth-stencil texture, as 4-byte depth words or stencil bytes.
+fn read_aspect(r: &mut Recorder, t: &Id, stencil: bool) -> Vec<u8> {
+    let mut out = vec![0; if stencil { 16 } else { 64 }];
+    r.read_back_now(
+        &ReadSource::Texture {
+            region: TextureRegion {
+                texture: t,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil,
+            },
+            extent: Extent {
+                width: 4,
+                height: 4,
+                depth_or_layers: 1,
+            },
+        },
+        &mut out,
+    )
+    .unwrap();
+    out
+}
+
+/// The depth route writes the value as the fragment's depth, and the stencil route replaces with
+/// the value as the reference; the other aspect is left as it was.
+#[test]
+fn clear_rects_writes_depth_and_stencil_by_draws() {
+    let mut r = Recorder::new();
+    let (t, v) = depth_texture(&mut r, Format::Depth32Float);
+    let from = r.calls.len();
+    let rect = [ScissorRect {
+        x: 1,
+        y: 1,
+        width: 2,
+        height: 2,
+    }];
+    let depth = |d: Option<f32>, s| ClearValue::DepthStencil {
+        depth: d.map(f32::to_bits),
+        stencil: s,
+    };
+    r.clear_rects(&v, Format::Depth32Float, depth(Some(0.25), None), &rect)
+        .unwrap();
+    let called = names(&r, from);
+    assert_eq!(called.iter().filter(|&&n| n == "draw").count(), 1);
+    assert!(called.iter().all(|n| n.starts_with("create_")
+        || ["begin_pass", "draw", "end_pass", "write_buffer", "destroy"].contains(n)));
+    let got = read_aspect(&mut r, &t, false);
+    for y in 0..4 {
+        for x in 0..4 {
+            let inside = (1..3).contains(&x) && (1..3).contains(&y);
+            let want = if inside { 0.25f32 } else { 0.0 };
+            let at = (y * 4 + x) * 4;
+            let d = f32::from_le_bytes(got[at..at + 4].try_into().unwrap());
+            assert_eq!(d, want, "({x}, {y})");
+        }
+    }
+
+    let (t, v) = depth_texture(&mut r, Format::Depth24PlusStencil8);
+    let whole = [ScissorRect {
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+    }];
+    let column = [ScissorRect {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 4,
+    }];
+    r.clear_rects(
+        &v,
+        Format::Depth24PlusStencil8,
+        depth(Some(0.5), None),
+        &whole,
+    )
+    .unwrap();
+    let before = read_aspect(&mut r, &t, false);
+    r.clear_rects(
+        &v,
+        Format::Depth24PlusStencil8,
+        depth(None, Some(7)),
+        &column,
+    )
+    .unwrap();
+    let stencil = read_aspect(&mut r, &t, true);
+    for (i, &s) in stencil.iter().enumerate() {
+        assert_eq!(s, if i % 4 == 0 { 7 } else { 0 }, "texel {i}");
+    }
+    assert_eq!(read_aspect(&mut r, &t, false), before);
+    let word = u32::from_le_bytes(before[..4].try_into().unwrap());
+    assert_eq!(word, (0.5f64 * f64::from((1u32 << 24) - 1)).round() as u32);
+    healthy(&mut r);
+}
+
 #[test]
 fn generate_mips_is_a_pass_per_level_and_layer() {
     let mut r = Recorder::new();

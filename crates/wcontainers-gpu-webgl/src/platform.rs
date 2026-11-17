@@ -16,7 +16,7 @@ pub const FIRST_VERTEX: u32 = 0x8E4D;
 pub const LAST_VERTEX: u32 = 0x8E4E;
 
 /// The WebGL extension names, with the GL names ANGLE reports for each natively.
-const EXTENSIONS: [(&str, &str); 9] = [
+const EXTENSIONS: [(&str, &str); 13] = [
     ("EXT_clip_control", "GL_EXT_clip_control"),
     ("WEBGL_provoking_vertex", "GL_ANGLE_provoking_vertex"),
     ("EXT_color_buffer_float", "GL_EXT_color_buffer_float"),
@@ -34,6 +34,23 @@ const EXTENSIONS: [(&str, &str); 9] = [
     (
         "EXT_disjoint_timer_query_webgl2",
         "GL_EXT_disjoint_timer_query",
+    ),
+    // ANGLE reports DXT1, DXT3 and DXT5 apart; WebGL's extension needs all three.
+    (
+        "WEBGL_compressed_texture_s3tc",
+        "GL_ANGLE_texture_compression_dxt5",
+    ),
+    (
+        "WEBGL_compressed_texture_s3tc_srgb",
+        "GL_EXT_texture_compression_s3tc_srgb",
+    ),
+    (
+        "EXT_texture_compression_rgtc",
+        "GL_EXT_texture_compression_rgtc",
+    ),
+    (
+        "EXT_texture_compression_bptc",
+        "GL_EXT_texture_compression_bptc",
     ),
 ];
 
@@ -475,6 +492,14 @@ mod web {
             extension_call(&context, "WEBGL_provoking_vertex", "provokingVertexWEBGL");
         // Enabled here since glow does not know it; its calls are plain texture parameters.
         let _ = context.get_extension("WEBGL_stencil_texturing");
+        for compressed in [
+            "WEBGL_compressed_texture_s3tc",
+            "WEBGL_compressed_texture_s3tc_srgb",
+            "EXT_texture_compression_rgtc",
+            "EXT_texture_compression_bptc",
+        ] {
+            let _ = context.get_extension(compressed);
+        }
         let canvas = js_sys::Reflect::get(&context, &JsValue::from_str("canvas"))
             .unwrap_or(JsValue::UNDEFINED);
         (

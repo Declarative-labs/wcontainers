@@ -102,3 +102,23 @@ fn fractional_depth_bias() {
 fn constant_alpha_blends() {
     checks::constant_alpha_blends::<Angle>();
 }
+
+#[test]
+fn vertices_captured_with_and_without_rasterising() {
+    checks::vertices_captured_with_and_without_rasterising::<Angle>();
+}
+
+#[test]
+fn block_compressed_and_shared_exponent_textures_read_back_as_written() {
+    checks::block_compressed_and_shared_exponent_textures_read_back_as_written::<Angle>();
+}
+
+#[test]
+fn fragment_depth_follows_the_clip_convention() {
+    checks::fragment_depth_follows_the_clip_convention::<Angle>();
+}
+
+#[test]
+fn captured_indices_drawn_both_ways() {
+    checks::captured_indices_drawn_both_ways::<Angle>();
+}

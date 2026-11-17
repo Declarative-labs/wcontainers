@@ -4,7 +4,7 @@
 
 use crate::program::{self, Error, Level, Resources, StorageWrite, Value};
 use crate::recorder::{
-    Bound, DepthOps, Obj, Recorder, TextureObj, as_kind, level_size, subresource,
+    Bound, DepthOps, Obj, Recorder, StageCounts, TextureObj, as_kind, level_size, subresource,
 };
 use crate::texel;
 use naga::{Binding, BuiltIn, Interpolation, ScalarKind, TypeInner};
@@ -616,7 +616,7 @@ impl Recorder {
         for (slot, set) in sets.iter_mut().zip(call.bindings) {
             if let Some(set) = set {
                 match self.obj(*set)? {
-                    Obj::BindingSet(s) => *slot = Some(s.clone()),
+                    Obj::BindingSet(s, _) => *slot = Some(s.clone()),
                     _ => return Err("a binding set that is not one".into()),
                 }
             }
@@ -694,8 +694,31 @@ impl Recorder {
         {
             return Err("8-bit indices without INDEX_U8".into());
         }
-        if call.immediates.len() > self.caps().limits.immediate_bytes as usize {
+        let l = self.caps().limits;
+        if call.immediates.len() > l.immediate_bytes as usize {
             return Err("immediates past the limit".into());
+        }
+        let mut counts = StageCounts::default();
+        for set in call.bindings.iter().flatten() {
+            if let Obj::BindingSet(_, c) = self.obj(**set)? {
+                for (all, one) in counts.iter_mut().zip(c) {
+                    for (a, o) in all.iter_mut().zip(one) {
+                        *a += o;
+                    }
+                }
+            }
+        }
+        let most = [
+            l.uniform_buffers_per_stage,
+            l.textures_per_stage,
+            l.samplers_per_stage,
+            l.storage_buffers_per_stage,
+        ];
+        if counts
+            .iter()
+            .any(|c| c.iter().zip(most).any(|(&n, m)| n > m))
+        {
+            return Err("bindings of one stage past a limit per stage".into());
         }
         Ok(())
     }
@@ -1144,6 +1167,20 @@ impl Recorder {
             .is_some_and(|a| a.read_only);
         if depth_read_only && ds.depth_write && ds.depth_compare.is_some() {
             return Err("a draw writing depth into a read-only attachment".into());
+        }
+        let writes_stencil = ds.stencil.is_some_and(|faces| {
+            [faces.0, faces.1]
+                .iter()
+                .zip(ds.stencil_write_mask)
+                .any(|(f, mask)| {
+                    mask != 0
+                        && [f.fail, f.depth_fail, f.pass]
+                            .iter()
+                            .any(|&o| o != StencilOp::Keep)
+                })
+        });
+        if stencil_read_only && writes_stencil {
+            return Err("a draw writing stencil into a read-only attachment".into());
         }
         let k: Vec<f64> = call
             .blend_constant

@@ -3,8 +3,10 @@
 //! One 24-bit step above 0.1 is 24-bit unorm storage (`DEPTH24_UNORM`); one float bit above (2^-27)
 //! is float storage.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// The triangle at depth 0.1, and the depth loaded as a colour.
-#[cfg(not(target_arch = "wasm32"))]
 const PROBE_WGSL: &str = "
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
     let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
@@ -45,8 +47,7 @@ impl Depth24 {
     }
 }
 
-/// Draws the probe and waits for its answer; natively only, since the browser cannot wait yet.
-#[cfg(not(target_arch = "wasm32"))]
+/// Draws the probe and waits for its answer.
 pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Depth24 {
     let texture = |format, usage| {
         device.create_texture(&wgpu::TextureDescriptor {
@@ -211,11 +212,13 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Depth24 {
         },
     );
     let index = queue.submit([encoder.finish()]);
-    read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    let _ = device.poll(wgpu::PollType::Wait {
-        submission_index: Some(index),
-        timeout: None,
+    let mapped = Arc::new(AtomicBool::new(false));
+    let flag = mapped.clone();
+    read.slice(..).map_async(wgpu::MapMode::Read, move |_| {
+        flag.store(true, Ordering::Release);
+        crate::wait::wake();
     });
+    crate::wait::until(device, Some(index), || mapped.load(Ordering::Acquire));
     let value = match read.slice(..).get_mapped_range() {
         Ok(bytes) => f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
         Err(_) => f32::NAN,

@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use wcontainers_direct3d_12::address::DESCRIPTOR_SIZE;
 use wcontainers_direct3d_12::list::{
-    Command, CommandList, CopyLocation, Descriptor, IndexBufferView, ResourceView, RootArgument,
-    SamplerView, TargetView, VertexBufferView, ViewportF,
+    Command, CommandList, CopyLocation, Descriptor, IndexBufferView, IndirectArgument,
+    ResourceView, RootArgument, SamplerView, TargetView, VertexBufferView, ViewportF,
 };
 use wcontainers_direct3d_12::resource::{Footprint, HeapType, ResourceDesc};
 use wcontainers_direct3d_12::state::{
@@ -75,6 +75,7 @@ not_implemented!(
     RootSignature,
     PipelineState,
     QueryHeap,
+    CommandSignature,
     Heap,
     DescriptorHeap,
     Blob
@@ -267,8 +268,25 @@ macro_rules! based {
 }
 based!(
     Device => base, Queue => 1, Allocator => 1, Fence => base, Resource => base,
-    RootSignature => 1, PipelineState => 1, QueryHeap => 1, Heap => 2, DescriptorHeap => base, List => base
+    RootSignature => 1, PipelineState => 1, QueryHeap => 1, Heap => 2, DescriptorHeap => base, List => base,
+    CommandSignature => 1
 );
+
+/// Checks a `D3D12_COMMAND_LIST_TYPE`: the video types are not done, others do not exist.
+fn list_type(kind: D3D12_COMMAND_LIST_TYPE) -> Result<()> {
+    match kind {
+        D3D12_COMMAND_LIST_TYPE_DIRECT
+        | D3D12_COMMAND_LIST_TYPE_BUNDLE
+        | D3D12_COMMAND_LIST_TYPE_COMPUTE
+        | D3D12_COMMAND_LIST_TYPE_COPY => Ok(()),
+        D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE
+        | D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS
+        | D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE => {
+            Err(hr(Error::NotImplemented("video command lists")))
+        }
+        _ => Err(E_INVALIDARG.into()),
+    }
+}
 
 /// The front's description of a resource.
 fn resource_desc(d: &D3D12_RESOURCE_DESC) -> ResourceDesc {
@@ -390,6 +408,7 @@ impl Device {
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        list_type(r#type)?;
         give::<ID3D12CommandAllocator>(Allocator(r#type, Base::child()).into(), riid, out)
     }
 
@@ -397,11 +416,18 @@ impl Device {
         &self,
         _nodemask: u32,
         r#type: D3D12_COMMAND_LIST_TYPE,
-        _allocator: Ref<ID3D12CommandAllocator>,
+        allocator: Ref<ID3D12CommandAllocator>,
         initial: Ref<ID3D12PipelineState>,
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        list_type(r#type)?;
+        // The allocator must be one for lists of this type.
+        // SAFETY: allocators come from this library.
+        match allocator.as_ref().map(|a| unsafe { a.as_impl() }.0) {
+            Some(kind) if kind == r#type => {}
+            _ => return Err(E_INVALIDARG.into()),
+        }
         let list = List {
             kind: r#type,
             rec: Mutex::new(CommandList::new()),
@@ -419,6 +445,15 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let desc = *unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        // Only CBV, SRV and UAV heaps and sampler heaps are seen by shaders.
+        if desc.Flags.0 & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE.0 != 0
+            && matches!(
+                desc.Type,
+                D3D12_DESCRIPTOR_HEAP_TYPE_RTV | D3D12_DESCRIPTOR_HEAP_TYPE_DSV
+            )
+        {
+            return Err(E_INVALIDARG.into());
+        }
         let count = desc.NumDescriptors;
         let (id, cpu, gpu) = gpu::call(move |d| {
             let (id, cpu, gpu) = d.create_descriptor_heap(count);
@@ -601,6 +636,70 @@ impl Device {
         let (kind, count) = (d.Type.0 as u32, d.Count);
         let id = gpu::call(move |dev| dev.create_query_heap(kind, count)).map_err(hr)?;
         give::<ID3D12QueryHeap>(QueryHeap(id, Base::child()).into(), riid, out)
+    }
+
+    pub fn CreateCommandSignature(
+        &self,
+        pdesc: *const D3D12_COMMAND_SIGNATURE_DESC,
+        root: Ref<ID3D12RootSignature>,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: the API requires a description with `NumArgumentDescs` arguments.
+        let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let descs = unsafe { many(d.pArgumentDescs, d.NumArgumentDescs) };
+        let mut arguments = Vec::with_capacity(descs.len());
+        for a in descs {
+            // SAFETY: each argument's union member is the one its type names.
+            let argument = unsafe {
+                match a.Type {
+                    D3D12_INDIRECT_ARGUMENT_TYPE_DRAW => IndirectArgument::Draw,
+                    D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED => IndirectArgument::DrawIndexed,
+                    D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH => IndirectArgument::Dispatch,
+                    D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW => {
+                        IndirectArgument::VertexBuffer {
+                            slot: a.Anonymous.VertexBuffer.Slot,
+                        }
+                    }
+                    D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW => IndirectArgument::IndexBuffer,
+                    D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT => IndirectArgument::Constants {
+                        root: a.Anonymous.Constant.RootParameterIndex,
+                        offset: a.Anonymous.Constant.DestOffsetIn32BitValues,
+                        count: a.Anonymous.Constant.Num32BitValuesToSet,
+                    },
+                    D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW => {
+                        IndirectArgument::RootView {
+                            root: a.Anonymous.ConstantBufferView.RootParameterIndex,
+                        }
+                    }
+                    D3D12_INDIRECT_ARGUMENT_TYPE_SHADER_RESOURCE_VIEW => {
+                        IndirectArgument::RootView {
+                            root: a.Anonymous.ShaderResourceView.RootParameterIndex,
+                        }
+                    }
+                    D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW => {
+                        IndirectArgument::RootView {
+                            root: a.Anonymous.UnorderedAccessView.RootParameterIndex,
+                        }
+                    }
+                    _ => {
+                        return Err(hr(Error::NotImplemented("this kind of indirect argument")));
+                    }
+                }
+            };
+            arguments.push(argument);
+        }
+        let signature = wcontainers_direct3d_12::list::CommandSignature::new(
+            d.ByteStride,
+            arguments,
+            root.is_some(),
+        )
+        .map_err(hr)?;
+        give::<ID3D12CommandSignature>(
+            CommandSignature(Arc::new(signature), Base::child()).into(),
+            riid,
+            out,
+        )
     }
 
     pub fn CreateComputePipelineState(
@@ -1178,8 +1277,9 @@ impl Device {
             }
             D3D12_FEATURE_SHADER_MODEL => {
                 let d = unsafe { fill::<D3D12_FEATURE_DATA_SHADER_MODEL>(data, size)? };
-                d.HighestShaderModel =
-                    D3D_SHADER_MODEL(features::shader_model(d.HighestShaderModel.0 as u32) as i32);
+                d.HighestShaderModel = D3D_SHADER_MODEL(
+                    features::shader_model(d.HighestShaderModel.0 as u32).map_err(hr)? as i32,
+                );
             }
             D3D12_FEATURE_ROOT_SIGNATURE => {
                 let d = unsafe { fill::<D3D12_FEATURE_DATA_ROOT_SIGNATURE>(data, size)? };
@@ -1265,7 +1365,19 @@ impl Device {
                         *total = bytes;
                     }
                 }
+                // Every output is all ones, as Direct3D 12 answers a description it refuses.
                 Err(_) => {
+                    for i in 0..count as usize {
+                        if !layouts.is_null() {
+                            std::ptr::write_bytes(layouts.add(i), 0xff, 1);
+                        }
+                        if !rows.is_null() {
+                            *rows.add(i) = u32::MAX;
+                        }
+                        if !row_sizes.is_null() {
+                            *row_sizes.add(i) = u64::MAX;
+                        }
+                    }
                     if !total.is_null() {
                         *total = u64::MAX;
                     }
@@ -1288,8 +1400,12 @@ impl Drop for Queue {
 }
 
 impl Queue {
+    /// The description, with the one node the device has in the node mask.
     pub fn GetDesc(&self) -> D3D12_COMMAND_QUEUE_DESC {
-        self.0
+        D3D12_COMMAND_QUEUE_DESC {
+            NodeMask: self.0.NodeMask.max(1),
+            ..self.0
+        }
     }
 
     pub fn ExecuteCommandLists(&self, count: u32, lists: *const Option<ID3D12CommandList>) {
@@ -1353,7 +1469,7 @@ impl Queue {
 }
 
 #[implement(ID3D12CommandAllocator)]
-pub struct Allocator(#[allow(dead_code)] D3D12_COMMAND_LIST_TYPE, Base);
+pub struct Allocator(D3D12_COMMAND_LIST_TYPE, Base);
 
 impl Allocator {
     /// Lists keep their own commands, so there is nothing to free here.
@@ -1499,10 +1615,13 @@ impl Resource {
     /// memory holds the bytes of every copy whose fence the program has seen.
     pub fn Map(
         &self,
-        _subresource: u32,
+        subresource: u32,
         _range: *const D3D12_RANGE,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        if subresource != 0 {
+            return Err(E_INVALIDARG.into());
+        }
         if self.host == 0 {
             return Err(windows::core::Error::new(
                 E_INVALIDARG,
@@ -1557,6 +1676,12 @@ impl Drop for Heap {
         gpu::call(move |d| d.destroy_heap(id));
     }
 }
+
+#[implement(ID3D12CommandSignature)]
+pub struct CommandSignature(
+    pub Arc<wcontainers_direct3d_12::list::CommandSignature>,
+    Base,
+);
 
 #[implement(ID3D12QueryHeap)]
 pub struct QueryHeap(pub QueryHeapId, Base);
@@ -2044,6 +2169,45 @@ impl List {
 
     pub fn Dispatch(&self, x: u32, y: u32, z: u32) {
         self.record(Command::Dispatch([x, y, z]));
+    }
+
+    pub fn ExecuteIndirect(
+        &self,
+        signature: Ref<ID3D12CommandSignature>,
+        max: u32,
+        args: Ref<ID3D12Resource>,
+        args_offset: u64,
+        count: Ref<ID3D12Resource>,
+        count_offset: u64,
+    ) {
+        let args_ref = args;
+        let (Some(signature), Some(args)) = (signature.as_ref(), id(&args_ref)) else {
+            return self.rec.lock().unwrap().fail(Error::Invalid(
+                "ExecuteIndirect with no signature or arguments",
+            ));
+        };
+        // SAFETY: command signatures come from this library.
+        let signature = unsafe { signature.as_impl() }.0.clone();
+        let width = |r: &Ref<ID3D12Resource>| {
+            // SAFETY: resources come from this library.
+            r.as_ref().map_or(0, |r| unsafe { r.as_impl() }.desc.Width)
+        };
+        let (args_width, count_width) = (width(&args_ref), width(&count));
+        if !signature.fits(max, args_offset, args_width)
+            || (count.is_some()
+                && (!count_offset.is_multiple_of(4) || count_offset + 4 > count_width))
+        {
+            return self.rec.lock().unwrap().fail(Error::Invalid(
+                "ExecuteIndirect's arguments or count past their buffer's end",
+            ));
+        }
+        self.record(Command::ExecuteIndirect {
+            signature,
+            max,
+            args,
+            args_offset,
+            count: id(&count).map(|c| (c, count_offset)),
+        });
     }
 
     /// A storage view clear; the view is read from its CPU handle when recorded.

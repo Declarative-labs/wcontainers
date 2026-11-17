@@ -133,9 +133,13 @@ pub fn options1(caps: &Caps) -> Options1 {
 }
 
 /// The highest shader model, given the highest the program asks about
-/// (`D3D12_FEATURE_SHADER_MODEL` answers the lower of the two).
-pub fn shader_model(asked: u32) -> u32 {
-    asked.min(SHADER_MODEL_6_0)
+/// (`D3D12_FEATURE_SHADER_MODEL` answers the lower of the two); a value that names no shader model
+/// (5.1, or 6.0 to 6.9) is refused.
+pub fn shader_model(asked: u32) -> Result<u32, crate::Error> {
+    match asked {
+        0x51 | 0x60..=0x69 => Ok(asked.min(SHADER_MODEL_6_0)),
+        _ => Err(crate::Error::Invalid("no such shader model")),
+    }
 }
 
 /// `D3D_ROOT_SIGNATURE_VERSION_1_1`, the highest version `root::deserialize` reads.
