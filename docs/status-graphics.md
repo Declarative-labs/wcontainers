@@ -47,6 +47,57 @@ branches into it at the start and end of every run.
   front). The end merges brought webgpu, webgl, direct3d-11 and direct3d-12 in without conflict; the
   webgpu track added `SlowPath::IntegerClearByDraw` (kept: a named slow path).
 
+- G1, run 4 (2026-11-17): the five findings of G1's second independent check fixed (below). The
+  start merges brought webgpu, webgl, direct3d-11, direct3d-12 and shaders in; one conflict, in the
+  text of `TextureRegion::stencil` and plan 4.2, where the direct3d-11 track stated the same rule
+  as run 3 (copies between textures move both aspects): kept one statement with both reasons.
+
+## G1's second check, and how each finding was settled (run 4)
+
+- Rule checks no test broke (blocking): every rule check of the recording back end is now broken by
+  a test, shown by a sweep that turns each check off in turn and runs the crate's tests
+  (scratch `g1r4/sweep.py`; Measurements). Run 4's first sweep, on the code the check saw, left 47 of
+  101 checks (and parts of checks) unbroken, the 13 the check named among them; 4 more are match
+  guards the sweep cannot turn off, each now asserted by message. New tests in
+  `tests/rules.rs` for each: attachment views of one level and of one layer, a 3D slice past its
+  level's depth, colour formats as the depth attachment and depth formats as colour, `empty` with
+  attachments and neither, a pass ended with its query running, `end_pass` and `end_query` without
+  their begin, present inside a pass, surfaces in a format without `PRESENT` and `current_texture`
+  before configuring, regions past the last level, layer and slice and outside their level, pitches
+  of texture writes and buffer-to-texture copies (both aspects), data shorter than the region,
+  buffer copies, buffer-texture copies and clears past their buffers, clear patterns of 3 bytes,
+  formats not held, empty textures, cube layers not whole cubes, view ranges past the layers or of
+  no level or layer, loads naming a sample from a single-sampled texture and none from a
+  multisampled one, bindings of the wrong kind of resource, vertices and indices past their
+  buffers, draws with no viewport, scissor on with no scissor, streams without buffers or
+  descriptions, fans without `FAN_AND_LOOP`, indirect draws, query sets of absent kinds,
+  `read_queries` outside its set or inside a pass, depth bounds, border and mirror-once samplers,
+  the raster block's absent features (polygon mode, depth clamp, clip depth from -1), storage
+  bindings of buffers without `STORAGE`, `resolve` from one sample or into many, past its levels
+  or layers or from another level or layer.
+  - The multisampled no-storage case could not fail as written: the multisampled-shape check now
+    comes before the format-use check, and the test asserts each refusal's message.
+  - New checks with their tests: a draw writing stencil into a read-only stencil aspect (it was
+    skipped silently); one subresource attached or resolved into twice (refused at `begin_pass`;
+    the draw's own check is now unreachable); and the limits the recording back end declared but
+    did not check: texture sizes (2D, cube, 3D, layers), vertex streams, attributes and stride,
+    sampler anisotropy, the vertex program's outputs against `inter_stage_slots`, colour targets
+    and their bytes a sample (counted by block bytes, the recorder's own measure), and uniform
+    buffers, textures, samplers and storage buffers per stage across a draw's sets.
+- Four-sample bound (minor): the comparison stays on a pixel's sum over its samples (it keeps the
+  resolved average exact); the text now says so (plan 4.12 step 4, the counter's docs, Known
+  failures). The same reasoning found a real fault: the depth copy was saved for halves only where
+  the draws' primitives reached the bound, not primitives times samples, so on four samples the
+  halves could start from the depth the whole left. Fixed, and tested by
+  `the_occlusion_counter_keeps_the_starting_depth_for_halves_on_four_samples` (9,616; 0 before).
+- `clear_rects` depth and stencil (minor): `clear_rects_writes_depth_and_stencil_by_draws`
+  (`depth32float` rectangle at 0.25, the rest 0; `depth24plus-stencil8` stencil 7 in column 0, its
+  depth word unchanged).
+- Prepared combinations drawn before (minor): a combination remembers its draws when first
+  prepared and counts as used only for draws after; tested by the check's own case.
+- 3D attachment slice (minor): `a_3d_attachment_slice_lies_inside_its_levels_depth` (level 1 of a
+  4-deep texture takes slice 1, refuses slice 2).
+
 ## G1's check, and how each finding was settled (run 3)
 
 - Rules stated but not checked (blocking): the recording back end now reads its own `Features`,
@@ -99,7 +150,8 @@ branches into it at the start and end of every run.
 ## G1's pass bar, item by item
 
 - Every rule of section 4 checked by the recording back end, with a test that breaks it (the list
-  under "The rules and their tests").
+  under "The rules and their tests"), shown since run 4 by the sweep that turns each check off in
+  turn (Measurements).
 - Every fast-path default shown built from the base by a recorded stream: `tests/fast_paths.rs`, one
   test each for `read_back_now`, `prepare`, `clear_texture`, `clear_rects`, `generate_mips` (and
   its three routes by their averages), `draw_fan_or_loop` (fans drawn; loops by their stream, the
@@ -178,6 +230,18 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   (`tests/rules.rs`, one test per rule or per block kind);
 - buffer copies and read backs of depth with stencil move the aspect named, texture copies both,
   and only such formats name stencil;
+- since run 4 (each in `tests/rules.rs`): attachment views of one level and one layer, 3D slices
+  inside their level's depth, depth formats only as the depth attachment, attachments or `empty`
+  but not both, nothing attached or resolved into twice, no draw writing a read-only aspect, a pass
+  ending with no query running, `end_pass` and `end_query` after their begins, present outside a
+  pass, surfaces of presentable formats configured before `current_texture`, regions inside their
+  level, layers and slices, pitches and data covering the region, buffer ranges of every copy and
+  clear inside their buffers, bindings of the resource kind the program reads, vertices and indices
+  inside their buffers, a viewport, a scissor where the raster block scissors, a buffer and a
+  description for every stream an attribute names, query sets and `read_queries` ranges, and every
+  limit the back end declares that a call can pass (buffer and texture sizes, vertex streams,
+  attributes and stride, anisotropy, inter-stage slots, colour targets and their bytes, bindings
+  per stage, immediates, binding sizes and alignments);
 - multisampled textures 2D, one level and layer, no storage
   (`a_multisampled_texture_is_2d_with_one_level_and_layer_and_no_storage`); their bytes moved only by
   draws, resolves and whole copies between equal sample counts
@@ -188,6 +252,20 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   when its texture is multisampled (an error of the draw).
 
 ## Interface changes
+
+- G1 run 4:
+  - c39aeac ("interface: kept the starting depth for halves ..."): helpers, G1's own, no public item
+    changed. The occlusion counter saves the depth copy wherever the draws' primitives times the
+    sample count reach the bound; `CombinationTracker::prepared_use` counts only draws after a
+    combination was prepared. Plan 4.12 step 4 now says the bound is on a pixel's sum over its
+    samples.
+  - 9aa5da6 ("interface: stated that no draw writes a read-only aspect ..."): documentation of
+    `AspectOps::read_only` and `PassDesc`, and plan 4.7: no draw writes an aspect marked read-only
+    (WebGPU's `depthReadOnly`, `stencilReadOnly`), nothing is attached or resolved into twice,
+    colour attachments within `color_targets` and `color_bytes_per_sample`.
+  - From the direct3d-11 track (c8a7be9, merged at the start): `copy_texture` of a combined
+    depth-stencil format copies both aspects in one call; the same rule as run 3's c743db5, so the
+    two texts were made one.
 
 - G1 run 3:
   - c743db5 ("interface: stated the alignment and limits of buffer bindings and which aspect a copy
@@ -247,7 +325,8 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 - It draws through an interpreter of naga's IR (`program.rs`); since this run fragment programs
   write storage buffers (applied when the draw ends; an invocation sees its own earlier writes), and
   it declares `FRAGMENT_STORAGE_WRITE`. Since run 2 it draws four samples (above); since run 3 its
-  programs call functions, and it refuses everything its own capabilities leave out. No format it
+  programs call functions, and it refuses everything its own capabilities leave out; since run 4 it
+also checks every limit it declares that a call can pass. No format it
   holds has storage uses, so storage textures are refused. Still not drawn, each refused with an
   error naming it: points and lines, sample counts other than one and four, cube sampling, implicit
   level of detail over several levels, compute, indirect draws, alpha to coverage, storage writes
@@ -268,11 +347,23 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 
 ## Next
 
-- The independent check of G1 (run 3's fixes).
+- The independent check of G1 (run 4's fixes).
+- The measure of `color_bytes_per_sample` per format is not stated by the interface: WebGPU counts
+  each format by its own render-target byte cost and alignment (8 for `rgba8unorm`), and the webgpu
+  back end passes WebGPU's limit straight; the recording back end counts block bytes. To settle with
+  the webgpu and Direct3D tracks when `TargetsSplit` is built (no front draws it yet).
+- Recording back end limitations, each refused with an error naming it and so left without a
+  breaking test: cube sampling, alpha to coverage, implicit level of detail over several levels.
+  Two checks are unreachable through the interface and stay as guards: storage writes from vertex
+  programs (refused when the binding set is made) and an attachment taken twice by a draw (refused
+  at `begin_pass`).
 - Taken away with `with_caps`, `TEXTURE_VIEWS` is checked for view shapes and bound views
   (`views_of_other_shapes_need_texture_views`) but not yet for its one mip range per texture per
   draw; a view in a format other than the texture's or its twin is refused as invalid rather than
   as absent `FORMAT_REINTERPRET`; `SEPARATE_SAMPLERS` is neither declared nor checked.
+- Limits the recording back end does not check because nothing they bound is drawn: point size
+  and line width (lines and points are not drawn; `WIDE_LINES` is checked), compute and transform
+  feedback (absent).
 - Not G1's: the occlusion counter's sum by a dispatch on WebGPU is G2's (plan 4.12 step 4); until
   then it reads back (`ReadBackWait`).
 - More suite tests, beyond G1's pass bar: every format's clear and read back (needs reference bytes
@@ -297,6 +388,11 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     `python3 -I breaks.py <tree> <work dir>` there (it copies the tree, changes one line, runs
     `tests/recorder.rs` and `tests/helpers.rs`); 18 faults, five of them added in run 2 for
     multisampling and the counter's halving.
+  - the rule sweep: copy `g1r4/sweep.py` from scratch to the laptop, copy the tree beside it, and
+    run `python3 -I sweep.py <tree> <target dir>` there (`list` instead of a target prints the
+    checks); it turns each `if` that refuses something in `src/recorder.rs` and `src/draw.rs` off
+    (whole, and each line of a condition over several lines) and runs `cargo test -p
+    wcontainers-gpu-test`, printing CAUGHT or SURVIVED. About 40 s a check at 4 jobs.
   - Rust there: rustup with the 1.99.0 toolchain the repository names, installed by another track;
     this run installed nothing.
 - A back end runs the suite with a test file holding a `Host` implementation and
@@ -369,6 +465,7 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 ## Known failures
 
 - The occlusion counter refuses (`GpuError::Invalid`) a single fan, strip with restart or indirect
-  draw that passes more fragments at one sample than its counting format holds (2048 in `r16float`,
-  only on back ends without blendable `r32float`); no test, as no route exists. A counting program
+  draw that brings a pixel's sum over its samples to its counting format's bound (2048 in
+  `r16float`, only on back ends without blendable `r32float`): 2048 fragments at the one sample of a
+  single-sampled target, 512 a sample on average on four samples; no test, as no route exists. A counting program
   reading the primitive index sees it start again in the second half of a split draw.
