@@ -1083,26 +1083,36 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
             .scalar_kind()
             .unwrap();
 
+        // Negation is defined on signed integers only: an unsigned one is negated as signed.
+        let op_kind = match (op, kind) {
+            (crate::UnaryOperator::Negate, crate::ScalarKind::Uint) => crate::ScalarKind::Sint,
+            _ => kind,
+        };
+        let p1_kind = ctx.module.types[self.lookup_type.lookup(p1_lexp.type_id)?.handle]
+            .inner
+            .scalar_kind();
         let expr = crate::Expression::Unary {
             op,
-            expr: if p1_lexp.type_id == result_type_id {
+            expr: if p1_kind == Some(op_kind) {
                 left
             } else {
                 ctx.expressions.append(
                     crate::Expression::As {
                         expr: left,
-                        kind,
+                        kind: op_kind,
                         convert: None,
                     },
                     span,
                 )
             },
         };
+        let handle = ctx.expressions.append(expr, span);
+        let handle = Self::retype_int(ctx, handle, Some(op_kind), Some(kind), span);
 
         self.lookup_expression.insert(
             result_id,
             LookupExpression {
-                handle: ctx.expressions.append(expr, span),
+                handle,
                 type_id: result_type_id,
                 block_id,
             },
