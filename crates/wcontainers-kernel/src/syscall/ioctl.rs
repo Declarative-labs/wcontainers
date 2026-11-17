@@ -388,6 +388,10 @@ fn own(
     if matches!(file.borrow().node.borrow().content, Content::Pidfd(..)) {
         return super::pidfd::ioctl(kernel, cx, tid, file, request, argument);
     }
+    let epoll = super::epoll::of(&file.borrow());
+    if let Some(epoll) = epoll {
+        return super::epoll::ioctl(kernel, cx, tid, &epoll, request, argument);
+    }
     let inotify = super::inotify::of(&file.borrow());
     if let Some(instance) = inotify {
         return super::inotify::ioctl(kernel, cx, tid, &instance, request, argument);

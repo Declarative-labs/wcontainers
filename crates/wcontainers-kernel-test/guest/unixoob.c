@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -390,8 +391,23 @@ static void broken_pipes(void) {
     signal(SIGPIPE, SIG_IGN);
 }
 
+// A long write whose buffer ends part way: the pieces before the fault go.
+static void fault_part_way(void) {
+    int sv[2];
+    pair(sv);
+    char *buffer = mmap(NULL, 12 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    munmap(buffer + 10 * 4096, 2 * 4096);
+    memset(buffer, 'q', 10 * 4096);
+    fcntl(sv[0], F_SETFL, O_NONBLOCK);
+    result("write over the end", write(sv[0], buffer, 80000));
+    result("write from the end", write(sv[0], buffer + 10 * 4096 - 10, 100));
+    close(sv[0]);
+    close(sv[1]);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
+    fault_part_way();
     basics();
     mark();
     inline_urgent();

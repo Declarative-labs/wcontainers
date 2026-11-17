@@ -228,7 +228,7 @@ fn vectored2(
         verify_area(position, total)?;
     }
     // A file without Linux's iterating read or write (directories, message queues, inotify
-    // instances, and writes to `/dev/full`) is moved a segment at a time by
+    // instances, and writes to `/dev/full` and event descriptors) is moved a segment at a time by
     // `do_loop_readv_writev`, which takes no flag but RWF_HIPRI.
     let looped = {
         let file = file.borrow();
@@ -240,6 +240,7 @@ fn vectored2(
             || matches!(inode.content, Content::Proc(entry) if entry.loops(writing))
             || matches!(inode.content, Content::Mqueue(_))
             || super::inotify::of(&file).is_some()
+            || writing && matches!(file.anon, Some(crate::file::Anon::Event(_)))
     };
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);

@@ -1940,24 +1940,43 @@ fn udp_receive(
     flags: u32,
     nonblocking: bool,
 ) -> Result<(u64, Received), Errno> {
-    {
+    let peeking = flags & MSG_PEEK != 0;
+    // `sk_peek_offset`: where a peek starts with SO_PEEK_OFF, past whole datagrams
+    // (`__skb_try_recv_from_queue`).
+    let mut skip = if peeking {
+        socket.borrow().peek_offset.unwrap_or(0)
+    } else {
+        0
+    };
+    let found = {
         let mut own = socket.borrow_mut();
         if own.error != 0 {
             let error = core::mem::take(&mut own.error);
             return Err(Errno(error as u32));
         }
-        if own.queue.is_empty() {
-            if own.shutdown & RCV_SHUTDOWN != 0 {
+        let mut found = None;
+        for (index, packet) in own.queue.iter().enumerate() {
+            let length = packet.data.len() as u64;
+            if skip >= length && (length > 0 || skip > 0) {
+                skip -= length;
+                continue;
+            }
+            found = Some(index);
+            break;
+        }
+        if found.is_none() {
+            if own.queue.is_empty() && own.shutdown & RCV_SHUTDOWN != 0 {
                 return Ok((0, Received::default()));
             }
             let timeout = own.receive_timeout;
             drop(own);
             return Err(wait_room(kernel, tid, socket, nonblocking, timeout));
         }
-    }
+        found.expect("a datagram")
+    };
     let (data, source, arrival, time) = {
         let own = socket.borrow();
-        let packet = own.queue.front().expect("a datagram");
+        let packet = &own.queue[found];
         (
             packet.data.clone(),
             packet.source,
@@ -1965,11 +1984,12 @@ fn udp_receive(
             packet.time,
         )
     };
-    let copied = (data.len() as u64).min(size);
-    if let Err(error) = scatter(kernel, cx, tid, parts, &data[..copied as usize]) {
+    let left = &data[skip as usize..];
+    let copied = (left.len() as u64).min(size);
+    if let Err(error) = scatter(kernel, cx, tid, parts, &left[..copied as usize]) {
         // `udp_recvmsg` drops a datagram it could not copy out, unless peeking.
-        if flags & MSG_PEEK == 0 {
-            socket.borrow_mut().queue.pop_front();
+        if !peeking {
+            socket.borrow_mut().queue.remove(found);
         }
         return Err(error);
     }
@@ -1980,15 +2000,26 @@ fn udp_receive(
         time,
         ..Received::default()
     };
-    if data.len() as u64 > size {
+    if left.len() as u64 > size {
         received.flags |= MSG_TRUNC;
     }
     if flags & MSG_TRUNC != 0 {
         received.reported = Some(data.len() as u64);
     }
-    if flags & MSG_PEEK == 0 {
-        socket.borrow_mut().queue.pop_front();
+    // `skb_consume_udp`: a peek moves the peek offset on by what it gave back, a read back.
+    let given = received.reported.unwrap_or(copied);
+    let mut own = socket.borrow_mut();
+    if let Some(offset) = &mut own.peek_offset {
+        *offset = if peeking {
+            *offset + given
+        } else {
+            offset.saturating_sub(given)
+        };
     }
+    if !peeking {
+        own.queue.remove(found);
+    }
+    drop(own);
     Ok((copied, received))
 }
 
@@ -2358,6 +2389,24 @@ pub(super) fn set_option(
 
 /// getsockopt for an internet socket's own levels and its own SOL_SOCKET options; `None` for an
 /// option the common code answers.
+/// Whether an internet socket's protocol reads options of `level` at all; if not, what it
+/// answers before reading the length (`ip_getsockopt`'s EOPNOTSUPP, `ipv6_getsockopt`'s
+/// ENOPROTOOPT).
+pub(super) fn level_known(socket: &SocketRef, level: u32) -> Result<(), Errno> {
+    let family = socket.borrow().family;
+    let protocol = inet_ref(socket).protocol;
+    let known = level == SOL_SOCKET
+        || level == SOL_IP
+        || (level == SOL_IPV6 && family == AF_INET6)
+        || (level == SOL_TCP && protocol == Protocol::Tcp)
+        || (level == SOL_UDP && protocol == Protocol::Udp);
+    match known {
+        true => Ok(()),
+        false if family == AF_INET6 => Err(Errno::ENOPROTOOPT),
+        false => Err(Errno::EOPNOTSUPP),
+    }
+}
+
 pub(super) fn get_option(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,

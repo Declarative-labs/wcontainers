@@ -56,6 +56,9 @@ pub(crate) struct Epoll {
     ready: VecDeque<Key>,
     /// Threads waiting in `epoll_wait`, in the order they began (an exclusive wait queue).
     waiters: VecDeque<Tid>,
+    /// `struct epoll_params` as EPIOCSPARAMS set it: busy polling, which nothing here does (no
+    /// device is polled), so they are only kept.
+    busy_poll: [u8; 8],
 }
 
 struct Item {
@@ -667,5 +670,43 @@ fn send_events(
     match failed {
         Some(error) => Err(error),
         None => Ok(reported),
+    }
+}
+
+/// `ep_eventpoll_ioctl`: busy polling's parameters, checked, kept and given back; every other
+/// request is EINVAL (measured).
+pub(super) fn ioctl(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    epoll: &EpollRef,
+    request: u32,
+    argument: u64,
+) -> Result<u64, Errno> {
+    use crate::linux_extra::{EPIOCGPARAMS, EPIOCSPARAMS};
+    match request {
+        EPIOCSPARAMS => {
+            let bytes: [u8; 8] = super::guest(kernel, cx, tid)
+                .read(argument, 8)?
+                .try_into()
+                .expect("8 bytes");
+            let usecs = u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes"));
+            let budget = u16::from_le_bytes([bytes[4], bytes[5]]);
+            if bytes[7] != 0 || usecs > i32::MAX as u32 || bytes[6] > 1 {
+                return Err(Errno::EINVAL);
+            }
+            // NAPI_POLL_WEIGHT.
+            if budget > 64 && !kernel.credentials(tid).has(CAP_NET_ADMIN) {
+                return Err(Errno::EPERM);
+            }
+            epoll.borrow_mut().busy_poll = bytes;
+            Ok(0)
+        }
+        EPIOCGPARAMS => {
+            let bytes = epoll.borrow().busy_poll;
+            super::guest(kernel, cx, tid).write(argument, &bytes)?;
+            Ok(0)
+        }
+        _ => Err(Errno::EINVAL),
     }
 }

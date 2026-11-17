@@ -631,6 +631,11 @@ pub(crate) const SOCK_MAX: u32 = 11;
 /// `recvmmsg`'s flag to wait only for the first message (`linux/socket.h`, not in uapi).
 pub(crate) const MSG_WAITFORONE: u32 = 0x10000;
 
+/// epoll's requests for busy polling's parameters, `_IOW` and `_IOR` of an 8 byte
+/// `struct epoll_params` (`linux/eventpoll.h`, which linux-raw-sys does not generate).
+pub(crate) const EPIOCSPARAMS: u32 = 0x4008_8a01;
+pub(crate) const EPIOCGPARAMS: u32 = 0x8008_8a02;
+
 /// The control message carrying a sender's process descriptor (`linux/socket.h`, not in uapi).
 pub(crate) const SCM_PIDFD: u32 = 0x04;
 

@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/signalfd.h>
 #include <sys/stat.h>
@@ -308,6 +309,33 @@ static void waits(void) {
     printf("select event %d\n", select(shared_efd + 1, &readable, 0, 0, &none));
 }
 
+// epoll's busy polling parameters and its refusal of other requests.
+static void requests(void) {
+    struct params {
+        uint32_t usecs;
+        uint16_t budget;
+        uint8_t prefer, pad;
+    } got;
+    int ep = epoll_create1(0);
+    memset(&got, 0xab, sizeof got);
+    result("get", ioctl(ep, 0x80088a02, &got));
+    printf("params %u %u %u %u\n", got.usecs, got.budget, got.prefer, got.pad);
+    struct params set = {100, 8, 1, 0}, big = {1, 200, 0, 0}, prefer = {1, 8, 2, 0};
+    struct params pad = {1, 8, 0, 1}, usecs = {0x80000000u, 8, 0, 0};
+    result("set", ioctl(ep, 0x40088a01, &set));
+    memset(&got, 0, sizeof got);
+    result("get again", ioctl(ep, 0x80088a02, &got));
+    printf("params %u %u %u %u\n", got.usecs, got.budget, got.prefer, got.pad);
+    result("set big budget", ioctl(ep, 0x40088a01, &big));
+    result("set prefer 2", ioctl(ep, 0x40088a01, &prefer));
+    result("set pad", ioctl(ep, 0x40088a01, &pad));
+    result("set usecs", ioctl(ep, 0x40088a01, &usecs));
+    result("other", ioctl(ep, 0x5420, 0));
+    result("bytes waiting", ioctl(ep, FIONREAD, &got));
+    result("get to a bad address", ioctl(ep, 0x80088a02, (void *)8));
+    close(ep);
+}
+
 // An event descriptor takes exactly one value per write, a vector a segment at a time.
 static void sizes(void) {
     char z[32] = {0};
@@ -336,6 +364,7 @@ static void sizes(void) {
 int main(void) {
     setvbuf(stdout, 0, _IONBF, 0);
     sizes();
+    requests();
     counters();
     triggers();
     checks();

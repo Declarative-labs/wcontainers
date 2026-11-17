@@ -1461,7 +1461,12 @@ fn send_stream(
             return Err(Errno::EPERM);
         }
         let (size, pages) = stream_piece(ordinary - sent, sndbuf);
-        let data = gather(kernel, cx, tid, message.data, sent, size)?;
+        // A piece that cannot be copied in ends the send with what went before.
+        let data = match gather(kernel, cx, tid, message.data, sent, size) {
+            Ok(data) => data,
+            Err(_) if sent > 0 => return Ok(sent),
+            Err(error) => return Err(error),
+        };
         let packet = Packet {
             consumed: 0,
             files: if files_sent {
@@ -2898,6 +2903,9 @@ pub(super) fn getsockopt(
     // A local socket has no options past its own level, whatever the length (`do_sock_getsockopt`).
     if socket.borrow().local() && level != SOL_SOCKET {
         return Err(Errno::EOPNOTSUPP);
+    }
+    if socket.borrow().inet.is_some() {
+        inet::level_known(&socket, level)?;
     }
     if room < 0 {
         return Err(Errno::EINVAL);
