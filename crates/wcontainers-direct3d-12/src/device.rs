@@ -392,7 +392,7 @@ impl<B: Backend> Device<B> {
                 HeapType::Readback => READBACK_BUFFER,
             };
             let buffer = self.backend.create_buffer(&BufferDesc {
-                size: desc.width.next_multiple_of(4),
+                size: stored_size(desc.width, self.backend.caps().limits.max_buffer_size),
                 usage,
                 intent: if heap == HeapType::Upload {
                     MapIntent::Often
@@ -3114,4 +3114,13 @@ fn copy_texture<B: Backend>(
         _ => return Err(Error::Invalid("a copy between two buffer footprints")),
     }
     Ok(())
+}
+
+/// The bytes a buffer of `width` is stored in: whole blocks of 256 (Direct3D's constant buffer
+/// alignment), zero past `width`, so a constant buffer view may declare more than the buffer's
+/// last bytes hold, which Direct3D 12 reads from the buffer's page.
+pub(crate) fn stored_size(width: u64, max: u64) -> u64 {
+    width
+        .next_multiple_of(256)
+        .min(max.max(width.next_multiple_of(4)))
 }
