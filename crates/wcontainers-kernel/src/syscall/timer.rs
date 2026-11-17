@@ -57,7 +57,8 @@ enum Owner {
         tid: Tid,
         asked: u64,
     },
-    /// The end of a TCP connection's deferral (TCP_DEFER_ACCEPT) on a listener.
+    /// The end of a TCP connection's deferral (TCP_DEFER_ACCEPT) on a listener, or a held
+    /// connection's client sending again to a listener gone.
     Deferral {
         listener: Weak<RefCell<crate::syscall::socket::Socket>>,
     },
@@ -561,7 +562,8 @@ pub(super) fn start_cpu_sleep(
     id
 }
 
-/// Starts a timer that ends a listener's connection deferral at `until` on the monotonic clock.
+/// Starts a timer that ends a listener's connection deferral at `until` on the monotonic clock
+/// (or, on a client, sends again what its gone listener dropped).
 pub(crate) fn start_deferral(
     kernel: &mut Kernel,
     listener: Weak<RefCell<crate::syscall::socket::Socket>>,

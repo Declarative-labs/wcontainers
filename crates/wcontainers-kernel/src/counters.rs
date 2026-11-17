@@ -95,6 +95,10 @@ pub mod reason {
     /// A netlink request Linux answers that is not built: answered EOPNOTSUPP, as Linux does
     /// for a request with no handler. Detail: the message type, plus 2^16 for a dump.
     pub const NETLINK_REQUEST_NOT_BUILT: &str = "netlink request not built";
+    /// The neighbour table was dumped after packets left by eth0: the entries those make on
+    /// Linux (the gateway's, which the host's own network stands for, and groups' and
+    /// broadcasts') are not built, so only the loopback entries were given. Detail: none.
+    pub const NEIGHBOURS_NOT_BUILT: &str = "neighbour entries not built";
     /// A name query to the container's name server asked for something other than an address of
     /// the Internet class, which the host's lookup cannot answer: "not implemented" was answered.
     /// Detail: the query type (0 for a message with other than one standard question).

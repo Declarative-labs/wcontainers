@@ -163,12 +163,21 @@ int main(void) {
         char b[8];
         errno = 0;
         printf("first accepted reads %d %s\n", (int)read(a, b, 8), strerror(errno));
+        // Held requests go without a word; client 0's data, dropped while the queue was full,
+        // is sent again (after 200 ms) to the closed port and draws a reset, as does any
+        // client's next send.
         close(l);
-        usleep(100000);
+        usleep(600000);
         for (int i = 0; i < 6; i++) {
             errno = 0;
             int r = (int)write(cs[i], "y", 1);
             printf("client %d after the listener closed: write %d %s\n", i, r, r < 0 ? strerror(errno) : "");
+        }
+        usleep(100000);
+        for (int i = 0; i < 6; i++) {
+            errno = 0;
+            int r = (int)read(cs[i], b, 8);
+            printf("client %d then reads %d %s\n", i, r, r < 0 ? strerror(errno) : "");
         }
     }
     return 0;

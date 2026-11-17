@@ -20,3 +20,25 @@ pub const LOOPBACK_NAME: &str = "lo";
 pub const LOOPBACK_INDEX: u32 = 1;
 pub const ETHERNET_NAME: &str = "eth0";
 pub const ETHERNET_INDEX: u32 = 2;
+
+/// The interfaces by name and number.
+const INTERFACES: [(&str, u32); 2] = [
+    (LOOPBACK_NAME, LOOPBACK_INDEX),
+    (ETHERNET_NAME, ETHERNET_INDEX),
+];
+
+/// The number of the interface called `name`.
+pub fn index_of(name: &[u8]) -> Option<u32> {
+    INTERFACES
+        .iter()
+        .find(|(known, _)| known.as_bytes() == name)
+        .map(|(_, index)| *index)
+}
+
+/// The name of interface `index`.
+pub fn name_of(index: u32) -> Option<&'static str> {
+    INTERFACES
+        .iter()
+        .find(|(_, known)| *known == index)
+        .map(|(name, _)| *name)
+}

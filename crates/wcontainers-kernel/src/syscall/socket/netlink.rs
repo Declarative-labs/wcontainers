@@ -417,6 +417,9 @@ fn answer(
             addresses(family, index, request, portid)
         }
         _ if kind == RTM_GETROUTE as u32 && dump => routes(family, request, portid),
+        _ if kind == RTM_GETNEIGH as u32 && dump => {
+            neighbours(kernel, cx, family, strict, body, request, portid)
+        }
         _ => {
             return Err(kernel.counters.refuse(
                 cx.host,
@@ -426,7 +429,8 @@ fn answer(
             ));
         }
     };
-    // The answers fill one read, and NLMSG_DONE comes in the next (`netlink_dump`).
+    // The answers fill one read. NLMSG_DONE comes in the next for links, addresses and routes
+    // (`RTNL_FLAG_DUMP_SPLIT_NLM_DONE`), in the same one for neighbours (`netlink_dump`).
     let mut joined = Vec::new();
     for message in messages {
         joined.extend_from_slice(&message);
@@ -434,6 +438,11 @@ fn answer(
     let mut done = Message::new(NLMSG_DONE as u16, NLM_F_MULTI as u16, request, portid);
     done.push(&0i32.to_le_bytes());
     let mut parts = Vec::new();
+    if kind == RTM_GETNEIGH as u32 {
+        joined.extend_from_slice(&done.finish());
+        parts.push(joined);
+        return Ok(Answer::Dump(parts));
+    }
     if !joined.is_empty() {
         parts.push(joined);
     }
@@ -677,6 +686,74 @@ fn addresses(family: u32, index: Option<u32>, request: &[u8], portid: u32) -> Ve
         out.push(address_message(
             request, portid, AF_INET6, 128, host, lo, &loopback, None, None,
         ));
+    }
+    out
+}
+
+/// The neighbour table's dump (`neigh_dump_info`): IPv4's entries, then IPv6's. A request for
+/// proxies (NTF_PROXY) has none; under strict checking an interface named filters.
+fn neighbours(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    family: u32,
+    strict: bool,
+    body: &[u8],
+    request: &[u8],
+    portid: u32,
+) -> Vec<Vec<u8>> {
+    let field = |at: usize, size: usize| body.get(at..at + size);
+    let index = field(4, 4).filter(|_| strict).map_or(0, |bytes| {
+        u32::from_le_bytes(bytes.try_into().expect("4 bytes"))
+    });
+    let proxies = field(10, 1).is_some_and(|flags| u32::from(flags[0]) & NTF_PROXY != 0);
+    let table = &kernel.sockets.inet.neighbours;
+    if table.ethernet && !proxies && family != AF_INET6 {
+        kernel
+            .counters
+            .count(cx.host, crate::reason::NEIGHBOURS_NOT_BUILT, 0);
+    }
+    let table = &kernel.sockets.inet.neighbours;
+    if proxies || (index != 0 && index != network::LOOPBACK_INDEX) {
+        return Vec::new();
+    }
+    let now = kernel.entry_now;
+    // Times in clock ticks of 100 a second (`jiffies_to_clock_t`).
+    let ticks = |since: u64| (now.saturating_sub(since) / 10_000_000) as u32;
+    let mut out = Vec::new();
+    for (slot, (kind, kind_of)) in [(AF_INET, RTN_BROADCAST), (AF_INET6, RTN_LOCAL)]
+        .into_iter()
+        .enumerate()
+    {
+        let Some((made, confirmed)) = table.loopback[slot] else {
+            continue;
+        };
+        if family != AF_UNSPEC && family != kind {
+            continue;
+        }
+        let mut message = Message::new(RTM_NEWNEIGH as u16, NLM_F_MULTI as u16, request, portid);
+        // `struct ndmsg`: family, padding, interface, state, flags, type.
+        let mut header = alloc::vec![kind as u8, 0, 0, 0];
+        header.extend_from_slice(&network::LOOPBACK_INDEX.to_le_bytes());
+        header.extend_from_slice(&(NUD_NOARP as u16).to_le_bytes());
+        header.extend_from_slice(&[0, kind_of as u8]);
+        message.push(&header);
+        let mut address = alloc::vec![0u8; if kind == AF_INET { 4 } else { 16 }];
+        if kind == AF_INET6 {
+            address[15] = 1;
+        }
+        message.attr(NDA_DST as u32, &address);
+        message.attr(NDA_LLADDR as u32, &[0; 6]);
+        message.u32(NDA_PROBES as u32, 0);
+        // `struct nda_cacheinfo`: since confirmed (a new entry counts as confirmed twice the
+        // base reachable time, 30 s, before it was made), used and updated, and its references
+        // past the table's own.
+        let confirmed = confirmed.map_or(ticks(made) + 6000, ticks);
+        let mut times = Vec::new();
+        for value in [confirmed, ticks(made), ticks(made), 0] {
+            times.extend_from_slice(&value.to_le_bytes());
+        }
+        message.attr(NDA_CACHEINFO as u32, &times);
+        out.push(message.finish());
     }
     out
 }

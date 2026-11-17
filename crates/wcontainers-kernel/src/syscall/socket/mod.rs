@@ -3259,6 +3259,29 @@ pub(super) fn setsockopt(
             }
         }
         SO_SNDBUFFORCE | SO_RCVBUFFORCE => return Err(Errno::EPERM),
+        // `sock_setbindtodevice` (a name of at most 15 bytes; none lets go) and
+        // `sock_bindtoindex_locked` (an index the program names, kept whether or not it exists).
+        SO_BINDTODEVICE | SO_BINDTOIFINDEX => {
+            let index = if name == SO_BINDTOIFINDEX {
+                int()?
+            } else {
+                let device = &bytes[..bytes.len().min(15)];
+                let device = &device[..device.iter().position(|&b| b == 0).unwrap_or(device.len())];
+                if device.is_empty() {
+                    0
+                } else {
+                    crate::network::index_of(device).ok_or(Errno::ENODEV)? as i32
+                }
+            };
+            if bound_device(&own) != 0 && !kernel.credentials(tid).has(CAP_NET_RAW) {
+                return Err(Errno::EPERM);
+            }
+            if index < 0 {
+                return Err(Errno::EINVAL);
+            }
+            own.options
+                .insert((level, SO_BINDTOIFINDEX), index.to_le_bytes().to_vec());
+        }
         // `sk_setsockopt`: a mark wants CAP_NET_RAW or CAP_NET_ADMIN, as does a priority past
         // the ones anyone may choose (`sk_set_prio_allowed`).
         SO_MARK | SO_PRIORITY => {
@@ -3403,9 +3426,17 @@ pub(super) fn setsockopt(
                 own.stamps & !STAMP_NEW
             };
         }
+        // Kept as given: busy polling's microseconds (never negative) and the CPU asked for.
+        SO_BUSY_POLL | SO_INCOMING_CPU => {
+            let value = int()?;
+            if name == SO_BUSY_POLL && value < 0 {
+                return Err(Errno::EINVAL);
+            }
+            own.options
+                .insert((level, name), value.to_le_bytes().to_vec());
+        }
         SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE | SO_DONTROUTE
-        | SO_PASSSEC | SO_RCVLOWAT | SO_ZEROCOPY | SO_BUSY_POLL | SO_INCOMING_CPU | SO_RCVMARK
-        | SO_RCVPRIORITY => {
+        | SO_PASSSEC | SO_RCVLOWAT | SO_ZEROCOPY | SO_RCVMARK | SO_RCVPRIORITY => {
             let value = int()?;
             let kept = if name == SO_RCVLOWAT {
                 value.max(1)
@@ -3463,6 +3494,18 @@ fn peer_pidfd(
     guest(kernel, cx, tid).write_value(length, &(room as i32))?;
     kernel.files_mut(tid).add(file, true, 0, limit)?;
     Ok(0)
+}
+
+/// The interface a socket is bound to (SO_BINDTODEVICE), 0 for none.
+fn bound_device(own: &Socket) -> i32 {
+    own.options
+        .get(&(
+            crate::linux::net::SOL_SOCKET,
+            crate::linux::net::SO_BINDTOIFINDEX,
+        ))
+        .map_or(0, |bytes| {
+            i32::from_le_bytes(bytes[..4].try_into().expect("4 bytes"))
+        })
 }
 
 pub(super) fn getsockopt(
@@ -3536,10 +3579,27 @@ pub(super) fn getsockopt(
     if name == SO_PEERPIDFD {
         return peer_pidfd(kernel, cx, tid, &socket, value, length, room);
     }
+    // `sock_getbindtodevice`: none bound reads as nothing; a name wants room for any name.
+    if name == SO_BINDTODEVICE {
+        let index = bound_device(&socket.borrow());
+        let mut bytes = Vec::new();
+        if index != 0 {
+            if room < 16 {
+                return Err(Errno::EINVAL);
+            }
+            let device = crate::network::name_of(index as u32).ok_or(Errno::ENODEV)?;
+            bytes.extend_from_slice(device.as_bytes());
+            bytes.push(0);
+        }
+        guest(kernel, cx, tid).write(value, &bytes)?;
+        guest(kernel, cx, tid).write_value(length, &(bytes.len() as i32))?;
+        return Ok(0);
+    }
     let int = |value: i32| value.to_le_bytes().to_vec();
     let bytes = {
         let mut own = socket.borrow_mut();
         match name {
+            SO_BINDTOIFINDEX => int(bound_device(&own)),
             SO_TYPE => int(own.kind as i32),
             SO_DOMAIN => int(own.family as i32),
             SO_PROTOCOL => int(own.protocol as i32),

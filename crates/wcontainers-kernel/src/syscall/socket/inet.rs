@@ -309,14 +309,11 @@ fn send_mss(family: u32, traffic: &Traffic) -> u32 {
 fn carry(
     from: Option<&mut Traffic>,
     to: Option<&mut Traffic>,
-    family: u32,
+    mss: u32,
     size: u64,
     fin: bool,
     now: u64,
 ) {
-    let mss = from
-        .as_deref()
-        .map_or(TCP_WINDOW / 2, |from| send_mss(family, from));
     let segments = if fin {
         1
     } else {
@@ -353,19 +350,24 @@ fn carry(
 }
 
 /// Data or a FIN between two of the container's own connected sockets.
-fn carry_between(kernel: &Kernel, from: &SocketRef, to: &SocketRef, size: u64, fin: bool) {
+fn carry_between(kernel: &mut Kernel, from: &SocketRef, to: &SocketRef, size: u64, fin: bool) {
+    if let Some(remote) = inet_ref(from).remote {
+        neighbour(kernel, &remote.address, true, true);
+    }
     let family = from.borrow().family;
+    let mss = send_mss(family, &inet_ref(from).traffic);
+    let now = kernel.entry_now;
+    // A socket connected to itself is both ends.
+    if Rc::ptr_eq(from, to) {
+        let traffic = &mut inet(from).traffic;
+        carry(Some(traffic), None, mss, size, fin, now);
+        carry(None, Some(traffic), mss, size, fin, now);
+        return;
+    }
     let mut sender = inet(from);
     let mut receiver = to.borrow_mut();
     let receiver = receiver.inet.as_deref_mut().map(|inet| &mut inet.traffic);
-    carry(
-        Some(&mut sender.traffic),
-        receiver,
-        family,
-        size,
-        fin,
-        kernel.entry_now,
-    );
+    carry(Some(&mut sender.traffic), receiver, mss, size, fin, now);
 }
 
 /// Data or a FIN between a connection's socket and the outside, `sent` by the socket or
@@ -373,17 +375,34 @@ fn carry_between(kernel: &Kernel, from: &SocketRef, to: &SocketRef, size: u64, f
 pub(super) fn carry_outside(kernel: &Kernel, socket: &SocketRef, size: u64, fin: bool, sent: bool) {
     let family = socket.borrow().family;
     let mut own = inet(socket);
-    let (from, to) = if sent {
-        (Some(&mut own.traffic), None)
+    let (from, to, mss) = if sent {
+        let mss = send_mss(family, &own.traffic);
+        (Some(&mut own.traffic), None, mss)
     } else {
-        (None, Some(&mut own.traffic))
+        (None, Some(&mut own.traffic), TCP_WINDOW / 2)
     };
-    carry(from, to, family, size, fin, kernel.entry_now);
+    carry(from, to, mss, size, fin, kernel.entry_now);
 }
 
 /// A connection to or from the outside was made.
-pub(super) fn made_outside(kernel: &Kernel, socket: &SocketRef, connector: bool) {
+pub(super) fn made_outside(kernel: &mut Kernel, socket: &SocketRef, connector: bool) {
+    kernel.sockets.inet.neighbours.ethernet = true;
     inet(socket).traffic = Traffic::made(connector, kernel.entry_now);
+    clamp_window(socket);
+}
+
+/// A connection's end was established: its window clamp is at most the window its receive
+/// buffer gives (`tcp_init_buffer_space`, half the buffer).
+fn clamp_window(socket: &SocketRef) {
+    let mut own = socket.borrow_mut();
+    let full = (own.rcvbuf / 2) as i32;
+    let key = (SOL_TCP, TCP_WINDOW_CLAMP);
+    let clamp = own.options.get(&key).map_or(0, |bytes| {
+        i32::from_le_bytes(bytes[..4].try_into().expect("4 bytes"))
+    });
+    if clamp == 0 || clamp >= full {
+        own.options.insert(key, full.to_le_bytes().to_vec());
+    }
 }
 
 /// The TCP state Linux shows for a socket (`sk_state`).
@@ -402,6 +421,16 @@ pub(super) fn tcp_state(own: &Socket) -> u8 {
             }
         }
         State::Closed => crate::linux_extra::TCP_CLOSE,
+    }
+}
+
+/// Whether a socket is in Linux's TCP_ESTABLISHED state: a TCP connection neither end has
+/// closed, or a connected UDP socket.
+fn established(socket: &SocketRef) -> bool {
+    let own = socket.borrow();
+    match own.inet.as_deref().unwrap().protocol {
+        Protocol::Tcp => tcp_state(&own) == crate::linux_extra::TCP_ESTABLISHED,
+        Protocol::Udp => own.state == State::Connected,
     }
 }
 
@@ -593,6 +622,36 @@ pub(crate) struct Ports {
     pub(super) time_wait: Vec<TimeWait>,
     /// Connections to the outside and name lookups under way.
     pub outside: super::outside::Outside,
+    /// The neighbour table's entries.
+    pub neighbours: Neighbours,
+}
+
+/// The neighbour table (`arp_tbl`, `nd_tbl`) as the container's own traffic makes it: each
+/// family's loopback entry, made by its first packet through lo (IPv4's keyed 0.0.0.0, as ARP
+/// keys every loopback neighbour; IPv6's ::1), and whether a packet left by eth0, whose entries
+/// (the gateway's, a group's, a broadcast's) are not built.
+#[derive(Default)]
+pub(crate) struct Neighbours {
+    /// When the IPv4 and the IPv6 loopback entries were made, and last confirmed by a TCP
+    /// segment, on the monotonic clock.
+    pub loopback: [Option<(u64, Option<u64>)>; 2],
+    pub ethernet: bool,
+}
+
+/// A packet to `to` left: through lo it makes or confirms (for TCP) the loopback entry of its
+/// family, else it went by eth0.
+fn neighbour(kernel: &mut Kernel, to: &[u8; 16], through_lo: bool, tcp: bool) {
+    let now = kernel.entry_now;
+    let table = &mut kernel.sockets.inet.neighbours;
+    if !through_lo {
+        table.ethernet = true;
+        return;
+    }
+    let entry = &mut table.loopback[usize::from(v4_of(to).is_none())];
+    let (_, confirmed) = entry.get_or_insert((now, None));
+    if tcp {
+        *confirmed = Some(now);
+    }
 }
 
 fn inet(socket: &SocketRef) -> core::cell::RefMut<'_, Inet> {
@@ -1252,6 +1311,7 @@ fn tcp_connect(
         inet(socket).local.address = source_for(&to.address);
     }
     autobind(kernel, cx, tid, socket, true)?;
+    neighbour(kernel, &to.address, is_own(&to.address), true);
     if !is_own(&to.address) {
         return connect_outside(kernel, cx, tid, socket, to, nonblocking);
     }
@@ -1263,6 +1323,15 @@ fn tcp_connect(
         inet.remote = Some(to);
         inet.done = false;
         inet.closed_first = false;
+    }
+    // A SYN to its own address and port meets itself: a simultaneous open.
+    if inet_ref(socket).local == to && find_listener(kernel, &to).is_none() {
+        join_self(kernel, cx, socket);
+        if nonblocking {
+            inet(socket).in_progress = true;
+            return Err(Errno::EINPROGRESS);
+        }
+        return Ok(0);
     }
     let Some(listener) = find_listener(kernel, &to) else {
         // The listener's reset comes at once (`tcp_reset` in SYN_SENT).
@@ -1462,6 +1531,8 @@ fn join(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, listener:
     }
     inet(socket).traffic = Traffic::made(true, kernel.entry_now);
     inet(&embryo).traffic = Traffic::made(false, kernel.entry_now);
+    clamp_window(socket);
+    clamp_window(&embryo);
     // TCP_DEFER_ACCEPT holds the connection back until data comes, while the listener's requests
     // are not over its backlog (past it Linux answers with a SYN cookie, which is not deferred).
     let defer = deferral_seconds(&listener.borrow());
@@ -1476,6 +1547,24 @@ fn join(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, listener:
         listener.borrow_mut().backlog.push_back(embryo);
         super::data_ready(kernel, cx, listener, EPOLLIN | EPOLLRDNORM);
     }
+    kernel.wake_poll(channel(socket), EPOLLOUT | EPOLLWRNORM);
+    super::wake_async(kernel, cx, socket, super::Wake::Io, POLL_OUT);
+}
+
+/// A socket connected to itself (`tcp_rcv_synsent_state_process`'s simultaneous open): what it
+/// sends it reads.
+fn join_self(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+    {
+        let mut own = socket.borrow_mut();
+        own.state = State::Connected;
+        own.peer = Some(socket.clone());
+        if !own.inet.as_deref().unwrap().sndbuf_set {
+            own.sndbuf = TCP_CONNECTED_SNDBUF;
+        }
+        own.inet.as_deref_mut().unwrap().connecting = None;
+    }
+    inet(socket).traffic = Traffic::made(true, kernel.entry_now);
+    clamp_window(socket);
     kernel.wake_poll(channel(socket), EPOLLOUT | EPOLLWRNORM);
     super::wake_async(kernel, cx, socket, super::Wake::Io, POLL_OUT);
 }
@@ -1544,8 +1633,21 @@ fn arrived(kernel: &mut Kernel, cx: &mut Context<'_>, embryo: &SocketRef) {
 }
 
 /// A listener's deferral timer fired: the connections whose deferral ended are accepted, oldest
-/// first (the SYN-ACK retransmitted at its end is answered at once on loopback).
+/// first (the SYN-ACK retransmitted at its end is answered at once on loopback). On a client
+/// whose held request went with its listener, the retransmit of its dropped data or FIN draws
+/// a reset.
 pub(super) fn deferrals_due(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRef) {
+    if listener.borrow().state != State::Listening {
+        let gone = listener
+            .borrow()
+            .peer
+            .as_ref()
+            .is_some_and(|peer| peer.borrow().dead);
+        if gone && listener.borrow().state == State::Connected {
+            reset(kernel, cx, listener);
+        }
+        return;
+    }
     let now = kernel.entry_now;
     let due: Vec<SocketRef> = inet_ref(listener)
         .deferred
@@ -1925,16 +2027,26 @@ pub(super) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &Socke
     if protocol == Protocol::Tcp {
         match state {
             State::Listening => {
-                // Requests held back go without a reset (`inet_csk_listen_stop` resets only the
-                // accept queue); their clients learn of it when they next send.
+                // Requests held back go without a word (`inet_csk_listen_stop` resets only the
+                // accept queue); their clients' next sends draw resets. A client whose data or
+                // FIN was dropped while the queue was full sends it again at its retransmit.
                 let deferred = core::mem::take(&mut inet(socket).deferred);
                 for embryo in deferred {
-                    inet(&embryo).deferral = None;
-                    // What the client sent was never taken in, so it draws no reset here.
+                    let until = inet(&embryo).deferral.take().map(|(_, _, until)| until);
+                    let sent = !embryo.borrow().queue.is_empty() || inet_ref(&embryo).done;
                     let packets = core::mem::take(&mut embryo.borrow_mut().queue);
                     for packet in packets {
                         super::drop_packet(kernel, cx, packet);
                     }
+                    let client = embryo.borrow().peer.clone();
+                    if let (true, Some(until), Some(client)) = (sent, until, client) {
+                        crate::syscall::timer::start_deferral(
+                            kernel,
+                            Rc::downgrade(&client),
+                            until,
+                        );
+                    }
+                    embryo.borrow_mut().state = State::Closed;
                     super::released(kernel, cx, &embryo);
                 }
                 let backlog = core::mem::take(&mut socket.borrow_mut().backlog);
@@ -3220,13 +3332,21 @@ fn udp_deliver(
         } else {
             network::ETHERNET_INDEX
         };
+        neighbour(
+            kernel,
+            &to.address,
+            interface == network::LOOPBACK_INDEX,
+            false,
+        );
         for piece in pieces(&data) {
             deliver_many(kernel, cx, tid, socket, to, from, &piece, sent, interface);
         }
         return Ok(());
     }
     // Through lo every destination is the container's own.
-    if !is_own(&to.address) && sent.interface != Some(network::LOOPBACK_INDEX) {
+    let through_lo = is_own(&to.address) || sent.interface == Some(network::LOOPBACK_INDEX);
+    neighbour(kernel, &to.address, through_lo, false);
+    if !through_lo {
         if !unicast(&to.address) {
             return Ok(());
         }
@@ -3898,21 +4018,6 @@ pub(super) fn set_option(
                 kernel.wake_poll(channel(socket), EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
                 Some(Ok(0))
             }
-            SO_BINDTODEVICE => {
-                let name_bytes =
-                    &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())];
-                if !name_bytes.is_empty()
-                    && name_bytes != network::LOOPBACK_NAME.as_bytes()
-                    && name_bytes != network::ETHERNET_NAME.as_bytes()
-                {
-                    return Some(Err(Errno::ENODEV));
-                }
-                socket
-                    .borrow_mut()
-                    .options
-                    .insert((level, name), name_bytes.to_vec());
-                Some(Ok(0))
-            }
             _ => None,
         },
         SOL_TCP if protocol == Protocol::Tcp => {
@@ -3921,9 +4026,13 @@ pub(super) fn set_option(
             }
             let value = int_value(bytes, level).unwrap_or(0);
             match name {
+                // Quick acknowledgements are pingpong mode's opposite (`__tcp_sock_set_quickack`).
+                TCP_QUICKACK => {
+                    inet(socket).pingpong = value == 0;
+                    Some(Ok(0))
+                }
                 TCP_NODELAY
                 | TCP_CORK
-                | TCP_QUICKACK
                 | TCP_THIN_LINEAR_TIMEOUTS
                 | TCP_FASTOPEN_CONNECT
                 | TCP_FASTOPEN_NO_COOKIE
@@ -3954,7 +4063,13 @@ pub(super) fn set_option(
                 }
                 TCP_LINGER2 => store(socket, value.clamp(-1, 120)),
                 TCP_DEFER_ACCEPT => store(socket, deferral_rounded(value)),
+                // `tcp_set_window_clamp`: 0 (no clamp) only while closed.
                 TCP_WINDOW_CLAMP => {
+                    let closed = socket.borrow().state == State::Closed
+                        && inet_ref(socket).connecting.is_none();
+                    if value == 0 && !closed {
+                        return Some(Err(Errno::EINVAL));
+                    }
                     if value != 0 && value < (super::MIN_RCVBUF / 2) as i32 {
                         return store(socket, (super::MIN_RCVBUF / 2) as i32);
                     }
@@ -4120,6 +4235,26 @@ pub(super) fn set_option(
                 Err(error) => return Some(Err(error)),
             };
             match name {
+                // A connection to an IPv4-mapped address becomes an IPv4 socket.
+                IPV6_ADDRFORM => {
+                    if value != AF_INET as i32 {
+                        return Some(Err(Errno::EINVAL));
+                    }
+                    if protocol == Protocol::Udp && inet_ref(socket).cork.is_some() {
+                        return Some(Err(Errno::EBUSY));
+                    }
+                    if !established(socket) {
+                        return Some(Err(Errno::ENOTCONN));
+                    }
+                    let mapped = inet_ref(socket)
+                        .remote
+                        .is_some_and(|remote| v4_of(&remote.address).is_some());
+                    if inet_ref(socket).v6only || !mapped {
+                        return Some(Err(Errno::EADDRNOTAVAIL));
+                    }
+                    socket.borrow_mut().family = AF_INET;
+                    Some(Ok(0))
+                }
                 IPV6_V6ONLY => {
                     if inet_ref(socket).held {
                         return Some(Err(Errno::EINVAL));
@@ -4217,7 +4352,6 @@ pub(super) fn get_option(
     };
     match level {
         SOL_SOCKET => match name {
-            SO_BINDTODEVICE => kept(0).map(|bytes| bytes.map(|_| Vec::new())),
             SO_PEERNAME => {
                 let own = socket.borrow();
                 let remote = own.inet.as_deref().unwrap().remote;
@@ -4242,12 +4376,20 @@ pub(super) fn get_option(
             | TCP_FASTOPEN
             | TCP_WINDOW_CLAMP
             | TCP_DEFER_ACCEPT => kept(0),
-            TCP_QUICKACK => kept(1),
+            TCP_QUICKACK => int(i32::from(!inet_ref(socket).pingpong)),
             TCP_KEEPIDLE => kept(7200),
             TCP_KEEPINTVL => kept(75),
             TCP_KEEPCNT => kept(9),
             TCP_SYNCNT => kept(6),
-            TCP_LINGER2 => kept(60),
+            // 0 reads as the system's FIN timeout (`tcp_fin_timeout`, 60 s).
+            TCP_LINGER2 => kept(0).map(|bytes| {
+                bytes.map(|bytes| {
+                    match i32::from_le_bytes(bytes[..4].try_into().expect("4 bytes")) {
+                        0 => 60i32.to_le_bytes().to_vec(),
+                        _ => bytes,
+                    }
+                })
+            }),
             TCP_MAXSEG => {
                 let set = socket
                     .borrow()
@@ -4323,6 +4465,8 @@ pub(super) fn get_option(
             _ => not_built(kernel, cx),
         },
         SOL_IPV6 if family == AF_INET6 => match name {
+            IPV6_ADDRFORM if !established(socket) => Some(Err(Errno::ENOTCONN)),
+            IPV6_ADDRFORM => int(AF_INET6 as i32),
             IPV6_V6ONLY => int(i32::from(inet_ref(socket).v6only)),
             IPV6_UNICAST_HOPS => {
                 let hops = kept(-1)?.ok()?;

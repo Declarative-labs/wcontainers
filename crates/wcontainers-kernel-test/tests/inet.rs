@@ -111,3 +111,9 @@ fn multicast_and_broadcast_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "multicast", &[]);
 }
+
+#[test]
+fn option_corners_and_neighbours_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "inetcorners", &[]);
+}
