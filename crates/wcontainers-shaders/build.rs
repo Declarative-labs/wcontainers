@@ -1,7 +1,7 @@
-//! Builds the C++ converters into the crate with the `cc` crate. The file lists come from their meson
-//! and CMake files.
+//! Builds the C++ converters into the crate with the `cc` crate, and names their sources' contents in
+//! `WCS_CONVERTER_SOURCES` for the content key. The file lists come from their meson and CMake files.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const DXBC_SPIRV: &[&str] = &[
     "dxbc/dxbc_api.cpp",
@@ -139,20 +139,86 @@ fn main() {
         build.file(dxil.join(file));
     }
     build.file("cpp/dxil.cpp").compile("dxil_spirv");
+    // Linked after both, which call it.
+    base().file("cpp/assertion.cpp").compile("wcs_assertion");
+
+    let sources = [
+        root.join("dxbc"),
+        root.join("ir"),
+        root.join("util"),
+        dxil.to_path_buf(),
+        dxil.join("bc"),
+        dxil.join("debug"),
+        dxil.join("util"),
+        dxil.join("opcodes"),
+        dxil.join("third_party/glslang-spirv"),
+        dxil.join("third_party/bc-decoder"),
+        dxil.join("third_party/spirv-headers/include/spirv/unified1"),
+        PathBuf::from("cpp"),
+    ];
+    println!(
+        "cargo:rustc-env=WCS_CONVERTER_SOURCES={}",
+        contents_hash(&sources)
+    );
     println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
     println!("cargo:rerun-if-changed=cpp");
     println!("cargo:rerun-if-changed=dxbc-spirv");
     println!("cargo:rerun-if-changed=dxil-spirv");
 }
 
-/// The common C++ setup, and for WebAssembly wasi-sdk's clang, libc and libc++ (exceptions off).
+/// BLAKE3 over the C++ sources under `dirs` (those directories' own files, and the whole tree of
+/// `opcodes`), by path and contents with carriage returns left out, so every checkout of the same
+/// sources names the same converter.
+fn contents_hash(dirs: &[PathBuf]) -> String {
+    let mut files = Vec::new();
+    for dir in dirs {
+        let recursive = dir.ends_with("opcodes");
+        let mut stack = vec![dir.clone()];
+        while let Some(d) = stack.pop() {
+            for entry in std::fs::read_dir(&d).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    if recursive {
+                        stack.push(path);
+                    }
+                } else if path.extension().is_some_and(|e| {
+                    ["c", "cpp", "h", "hpp", "inc"].contains(&&*e.to_string_lossy())
+                }) || path.parent() == Some(Path::new("cpp/assert"))
+                {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    let mut hasher = blake3::Hasher::new();
+    for file in files {
+        let name = file.to_string_lossy().replace('\\', "/");
+        let bytes: Vec<u8> = std::fs::read(&file)
+            .unwrap()
+            .into_iter()
+            .filter(|&b| b != b'\r')
+            .collect();
+        hasher.update(name.as_bytes());
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+/// The common C++ setup: the converters' assertions as `cpp/assert` defines them, C++ exceptions on
+/// natively (so the boundary contains them), and for WebAssembly wasi-sdk's clang, libc and libc++
+/// (exceptions off).
 fn base() -> cc::Build {
     let mut build = cc::Build::new();
     build
         .cpp(true)
-        .flag_if_supported("-fno-exceptions")
+        .include("cpp/assert")
+        .include("cpp")
         .warnings(false);
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi") {
+        build.flag("-fno-exceptions");
         let sdk = std::env::var("WASI_SDK_PATH")
             .expect("WASI_SDK_PATH must name the wasi-sdk that builds the C++ for WebAssembly");
         let lib = format!("{sdk}/share/wasi-sysroot/lib/wasm32-wasip1");
