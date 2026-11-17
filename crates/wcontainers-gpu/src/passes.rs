@@ -21,7 +21,9 @@ use crate::slow::SlowPath;
 use alloc::vec::Vec;
 use core::ops::Range;
 
-/// One attachment: the view a pass names and the subresource it is, as the front made them.
+/// One attachment: the view a pass names and the subresource it is, as the front made them. A colour
+/// attachment or resolve target whose size differs from the pass's is copied in and out of a
+/// temporary, so its texture needs `COPY_SRC` and `COPY_DST`.
 #[derive(Debug)]
 pub struct Target<B: Backend> {
     pub view: B::TextureView,
