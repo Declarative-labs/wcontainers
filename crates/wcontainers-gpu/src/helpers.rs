@@ -13,7 +13,7 @@ use crate::state::{
     BlendDesc, ColorWrites, CullMode, DepthStencilDesc, FillMode, FrontFace, ProvokingVertex,
     RasterDesc, RenderTargetBlend, VertexLayoutDesc,
 };
-use crate::{MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS};
+use crate::{Features, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -376,7 +376,14 @@ pub(crate) fn builtins<B: Backend>(backend: &mut B) -> Result<Builtins<B>, GpuEr
         alpha_to_coverage: false,
         logic_op: None,
     })?;
-    let raster = backend.create_raster(&RASTER)?;
+    // Built-in programs write clip z 0, inside both clip depth conventions: take the one the back end has.
+    let raster = backend.create_raster(&RasterDesc {
+        depth_minus_one: !backend
+            .caps()
+            .features
+            .contains(Features::CLIP_DEPTH_ZERO_ONE),
+        ..RASTER
+    })?;
     let vertex_layout = backend.create_vertex_layout(&VertexLayoutDesc {
         streams: [None; MAX_VERTEX_STREAMS],
         attributes: [None; MAX_VERTEX_STREAMS],

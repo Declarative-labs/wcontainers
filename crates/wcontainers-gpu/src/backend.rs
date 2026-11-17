@@ -958,7 +958,7 @@ pub trait Backend: Sized {
 }
 
 /// Which aspects a depth-stencil format has: depth, stencil.
-fn aspects(format: Format) -> (bool, bool) {
+pub(crate) fn aspects(format: Format) -> (bool, bool) {
     match format.kind() {
         FormatKind::Depth => (true, false),
         FormatKind::Stencil => (false, true),
