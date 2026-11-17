@@ -289,7 +289,8 @@ pub enum TexelBufferRoute {
     Texture,
 }
 
-/// A color target the program writes in a stored format other than the guest's.
+/// A color target the program writes itself: encoded into the guest's format where the texture is
+/// stored in another, and combined with its old value where the back end cannot blend it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TargetInShader {
     pub target: u8,

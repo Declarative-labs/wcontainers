@@ -142,7 +142,8 @@ pub enum SlowPath {
     /// A 16-bit normalised format, or a rendered 8-bit signed normalised one, the back end lacks, stored
     /// as the integer format of the same bits: decoded and filtered in the program, encoded on writes.
     NormAsInteger,
-    /// Blending into a target stored as integers done in the program, reading a copy of the target.
+    /// Blending done in the program, reading a copy of the target: into a target stored as integers, or
+    /// of a format the back end cannot blend.
     BlendInShader,
     /// A sample mask other than all ones written by the fragment program.
     SampleMaskInShader,
