@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use wcontainers_abi::{Permissions, RegisterBlock};
 use wcontainers_arm64::Arm64;
-use wcontainers_guest_cpu::{Guest, HookBody, HookDone, Personality};
+use wcontainers_guest_cpu::{GUEST_REASONS, Guest, HookBody, HookDone, Personality};
 use wcontainers_translator::contract;
 use wcontainers_translator::{LookAhead, Omit, Optimise, translate_in_modules, translate_omitting};
 
@@ -71,7 +71,7 @@ pub extern "C" fn translate(
     } else {
         Optimise::Speed
     };
-    let host = wcontainers_arm64::Host::from_probe(probe);
+    let host = Arm64::host_from_probe(probe);
     let code = code_start..code_end;
     let result = INPUT.with_borrow(|blob| match module_bytes {
         0 => translate_omitting::<Arm64>(
@@ -131,12 +131,16 @@ pub extern "C" fn more_module(i: u32) -> i32 {
 /// its length.
 #[unsafe(no_mangle)]
 pub extern "C" fn probe_module() -> i32 {
-    answer(wcontainers_arm64::host::probe_module())
+    answer(Arm64::probe_module())
 }
 
 thread_local! {
-    /// A copy of the thread's state for the guest's own hooks, allocated once and never moved.
-    static STATE: RefCell<Vec<u8>> = RefCell::new(vec![0; contract::thread_state_size::<Arm64>()]);
+    /// A copy of the thread's state for the guest's own hooks, allocated once and never moved, with room
+    /// after it for an instruction's bytes.
+    static STATE: RefCell<Vec<u8>> = RefCell::new(vec![
+        0;
+        contract::thread_state_size::<Arm64>() + Arm64::MAX_LENGTH as usize
+    ]);
     static DONE: std::cell::Cell<HookDone> = const {
         std::cell::Cell::new(HookDone {
             results: [0; 2],
@@ -151,15 +155,34 @@ pub extern "C" fn cpu_state() -> *mut u8 {
     STATE.with_borrow_mut(|state| state.as_mut_ptr())
 }
 
-/// A hook of the guest's own (by its index in the guest's hooks): `Guest::run_hook` on the state at
-/// [`cpu_state`], with the hook's arguments first (the rest 0). Its results are then read with
+/// A hook of the guest's own (by its index in the guest's hooks): `Guest::run_hook` on the hook's bytes of
+/// the thread's state, copied to [`cpu_state`], with the hook's arguments first (the rest 0). Its results are then read with
 /// [`cpu_hook_result`] and the slow path it was with [`cpu_hook_reason`].
 #[unsafe(no_mangle)]
 pub extern "C" fn cpu_hook(hook: u32, a: i64, b: i64, c: i64, d: i64) {
     let args = [a, b, c, d];
-    let count = Arm64::HOOKS[hook as usize].params.len();
-    let done = STATE.with_borrow_mut(|state| Arm64::run_hook(hook as usize, &args[..count], state));
+    let types = &Arm64::HOOKS[hook as usize];
+    let (count, length) = (types.params.len(), usize::from(types.state.len));
+    let done = STATE.with_borrow_mut(|state| {
+        Arm64::run_hook(hook as usize, &args[..count], &mut state[..length])
+    });
     DONE.set(done);
+}
+
+/// The fault a memory fault at `address` is (`Guest::memory_fault`), as its place in the contract's
+/// `memoryFaults`: worked out from the thread's state copied to [`cpu_state`] and the faulting instruction's
+/// bytes, `length` of them, copied after it.
+#[unsafe(no_mangle)]
+pub extern "C" fn cpu_memory_fault(address: i64, length: u32) -> i32 {
+    use zerocopy::FromBytes;
+    STATE.with_borrow(|state| {
+        let block = <Arm64 as Personality>::Block::read_from_prefix(state)
+            .expect("a register block")
+            .0;
+        let code_at = contract::thread_state_size::<Arm64>();
+        let code = &state[code_at..code_at + length as usize];
+        Arm64::memory_fault(address as u64, code, &block) as i32
+    })
 }
 
 /// Result `i` of the last [`cpu_hook`].
@@ -193,6 +216,10 @@ pub extern "C" fn contract() -> i32 {
             TrapKind::Unsupported => "unsupported",
             TrapKind::Breakpoint => "breakpoint",
             TrapKind::Alignment => "alignment",
+            TrapKind::DivideError => "divide error",
+            TrapKind::GeneralProtection => "general protection",
+            TrapKind::FloatException => "float exception",
+            TrapKind::Overflow => "overflow",
         })
         .collect();
     let guest_hooks: Vec<serde_json::Value> = Arm64::HOOKS
@@ -203,7 +230,12 @@ pub extern "C" fn contract() -> i32 {
                 HookBody::CodeChanged => "codeChanged",
                 HookBody::Cpu => "cpu",
             };
-            serde_json::json!({ "name": hook.name, "body": body })
+            serde_json::json!({
+                "name": hook.name,
+                "body": body,
+                "stateAt": hook.state.at,
+                "stateLength": hook.state.len,
+            })
         })
         .collect();
     let description = serde_json::json!({
@@ -233,8 +265,10 @@ pub extern "C" fn contract() -> i32 {
         "hookTrap": HOOK_TRAP,
         "guestHooks": guest_hooks,
         "align": Arm64::ALIGN,
+        "maxLength": Arm64::MAX_LENGTH,
+        "memoryFaults": ["page", "general protection", "stack fault"],
         "lookup": LOOKUP,
-        "probe": wcontainers_arm64::host::PROBE,
+        "probe": PROBE,
         "threadStateSize": thread_state_size::<Arm64>(),
         "pageRead": PAGE_READ,
         "pageWrite": PAGE_WRITE,
@@ -245,7 +279,9 @@ pub extern "C" fn contract() -> i32 {
         "execute": Permissions::EXECUTE.bits(),
         "pageSize": wcontainers_abi::PAGE_SIZE,
         "warningThreshold": WARNING_THRESHOLD,
-        "reasons": Reason::ALL.map(Reason::name),
+        "reasons": (0..GUEST_REASONS + Arm64::REASONS.len() as u32)
+            .map(Reason::name_of::<Arm64>)
+            .collect::<Vec<_>>(),
         "trapKinds": trap_kinds,
         "stopFlag": Arm64::STOP_FLAG_OFFSET,
         "threadBlockSize": Arm64::BLOCK_SIZE,

@@ -15,8 +15,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
 use wcontainers_guest_cpu::{
-    Access, AccessKind, Base, Emitter, FlowKind, Guest, Index, MemoryAccess, Registers, StackMove,
-    Target, Through, TrapKind, TrapPc, WriteBack,
+    Access, AccessKind, Base, Emitter, FlowKind, Guest, Index, MemoryAccess, Registers,
+    ReturnAddress, StackMove, Target, Through, TrapKind, TrapPc, WriteBack,
 };
 
 mod proof;
@@ -456,13 +456,14 @@ impl<G: Guest> Finder<'_, G> {
                 note(found, offset.wrapping_add_signed(by), Means::Call);
             }
             let blob = self.code.blob;
+            let before = |o: u64| self.before(&body, &leaders, o);
             if let Some(address) =
-                G::built_address(offset, &instruction, blob, self.code.range.clone())
+                G::built_address(offset, &instruction, blob, self.code.range.clone(), before)
             {
                 built.push(address);
             }
             if let FlowKind::JumpThrough(Through::Register(r)) = flow.kind
-                && let Some(targets) = self.jump_table(offset, r)
+                && let Some(targets) = self.jump_table(offset, r, before)
             {
                 jumps.extend(&targets);
                 tables.insert(offset, targets);
@@ -552,10 +553,35 @@ impl<G: Guest> Finder<'_, G> {
         }
     }
 
+    /// The instruction of the walk so far that falls through into `offset`, with its offset; `None` when
+    /// none does or a jump is known to enter there.
+    fn before(
+        &self,
+        body: &BTreeMap<u64, u64>,
+        leaders: &BTreeSet<u64>,
+        offset: u64,
+    ) -> Option<(u64, G::Instruction)> {
+        if leaders.contains(&offset) {
+            return None;
+        }
+        // Instructions may overlap, so the one ending here need not be the last to start before it.
+        let p = (offset.saturating_sub(G::MAX_LENGTH)..offset)
+            .rev()
+            .find(|p| body.get(p).is_some_and(|&n| p + n == offset))?;
+        let instruction = self.get(p).instruction;
+        (G::flow(&instruction).falls_through && !ends_block::<G>(&instruction))
+            .then_some((p, instruction))
+    }
+
     /// The targets of a switch's jump table ending at the jump through a register at `offset`, if the code
     /// before it has that shape and every target is code.
-    fn jump_table(&self, offset: u64, r: G::Reg) -> Option<Vec<u64>> {
-        let targets = G::jump_table(offset, r, self.code.blob, self.code.range.clone())?;
+    fn jump_table(
+        &self,
+        offset: u64,
+        r: G::Reg,
+        before: impl Fn(u64) -> Option<(u64, G::Instruction)>,
+    ) -> Option<Vec<u64>> {
+        let targets = G::jump_table(offset, r, self.code.blob, self.code.range.clone(), before)?;
         targets
             .iter()
             .all(|&t| self.code.inside(t))
@@ -692,7 +718,8 @@ struct Plan<G: Guest> {
     shapes: Vec<G::Shape>,
     /// Some point does not know statically where the flags are, so a local says.
     dynamic_flags: bool,
-    checks: FxHashMap<u64, CheckPlan>,
+    /// By instruction and which of its accesses.
+    checks: FxHashMap<(u64, u8), CheckPlan>,
     /// Ranges relative to the stack pointer before the instruction, checked as the stack grows.
     frame_checks: FxHashMap<u64, (i64, u32)>,
     /// Calls after which a frame is known, so the stack pointer must come back unchanged.
@@ -763,13 +790,27 @@ fn aligned_after<G: Guest>(d: &Decoded<G>, aligned: bool) -> bool {
     }
 }
 
-/// Shift a frame to a stack pointer moved by `delta`. What is left below the stack pointer is no frame, so
-/// it is dropped.
-fn shift(frame: Frame, delta: i64) -> Frame {
+/// Shift a frame to a stack pointer moved by `delta`. What is left below the red zone under the stack
+/// pointer is no frame, so it is dropped.
+fn shift<G: Guest>(frame: Frame, delta: i64) -> Frame {
     frame.and_then(|(lo, hi)| {
-        let (lo, hi) = ((lo - delta).max(0), hi - delta);
+        let (lo, hi) = ((lo - delta).max(-(G::RED_ZONE as i64)), hi - delta);
         (lo < hi).then_some((lo, hi))
     })
+}
+
+/// The frame after an instruction: moved as the stack pointer moves, and after a call that leaves its
+/// return address on the stack, back up past it, where the callee's return leaves the stack pointer.
+fn frame_after<G: Guest>(d: &Decoded<G>, frame: Frame) -> Frame {
+    let frame = match stack_move(d) {
+        StackMove::None => frame,
+        StackMove::Unknown => None,
+        StackMove::By { delta, .. } => shift::<G>(grow::<G>(frame, delta), delta),
+    };
+    match G::RETURN_ADDRESS {
+        ReturnAddress::Stack { bytes } if d.effects.calls => shift::<G>(frame, bytes.into()),
+        _ => frame,
+    }
 }
 
 fn covers(frame: Frame, lo: i64, hi: i64) -> bool {
@@ -897,13 +938,6 @@ impl<G: Guest> Plan<G> {
                 Registers::NONE
             } else {
                 dirty.union(d.effects.defs.intersect(tracked::<G>()))
-            }
-        };
-        let frame_after = |d: &Decoded<G>, frame: Frame| -> Frame {
-            match stack_move(d) {
-                StackMove::None => frame,
-                StackMove::Unknown => None,
-                StackMove::By { delta, .. } => shift(grow(frame, delta), delta),
             }
         };
 
@@ -1083,7 +1117,7 @@ impl<G: Guest> Plan<G> {
             {
                 for o in instructions(b) {
                     if let (Some(CheckPlan::Exact), Some(access)) =
-                        (checks.get(&o), only_access(&decoded[&o]))
+                        (checks.get(&(o, 0)), only_access(&decoded[&o]))
                     {
                         let key = (h, access.base, access.kind != AccessKind::Read);
                         let number = match keys.iter().position(|k| *k == key) {
@@ -1230,9 +1264,12 @@ fn leaves_piece<G: Guest>(function: &Function, b: usize, offset: u64, d: &Decode
     }
 }
 
+/// One access of one instruction: its offset and which of its accesses.
+type AccessAt = (u64, u8);
+
 /// Which accesses need a check, where the stack's frame is checked, and the calls a frame is kept across.
 struct Checks {
-    plans: FxHashMap<u64, CheckPlan>,
+    plans: FxHashMap<(u64, u8), CheckPlan>,
     frame_checks: FxHashMap<u64, (i64, u32)>,
     frame_across: FxHashSet<u64>,
 }
@@ -1245,9 +1282,10 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
         let mut frame = frame;
         // Per base register: how far its value has moved from where its current groups are measured.
         let mut moved: FxHashMap<u32, i64> = FxHashMap::default();
-        // Open groups by base register and write: first access, its start, and the bytes covered.
-        let mut open: FxHashMap<(u32, bool), usize> = FxHashMap::default();
-        let mut groups: Vec<(u64, i64, i64, i64, u32)> = Vec::new();
+        // Open groups by segment base, base register and write: first access, its start, and the bytes
+        // covered.
+        let mut open: FxHashMap<(Option<u32>, u32, bool), usize> = FxHashMap::default();
+        let mut groups: Vec<(AccessAt, i64, i64, i64, u32)> = Vec::new();
         for &o in function.instructions(b) {
             let d = &decoded[&o];
             if d.effects.calls || d.effects.syscall {
@@ -1261,13 +1299,20 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
             if let StackMove::By { delta, .. } = movement
                 && delta < 0
             {
-                frame_checks.insert(o, (delta, (-delta) as u32));
+                // The red zone below the new stack pointer is part of the frame checked.
+                let low = delta - G::RED_ZONE as i64;
+                frame_checks.insert(o, (low, (-low) as u32));
             }
-            // An access that is not plain, or one of two, has no plan: it is checked by itself each time.
-            let access = only_access(d).filter(MemoryAccess::plain);
-            if let Some(access) = access {
+            // An access that is not plain has no plan: it is checked by itself each time.
+            let accesses = G::accesses(&d.instruction);
+            let plain = accesses
+                .iter()
+                .enumerate()
+                .filter_map(|(which, a)| Some((which as u8, a.filter(MemoryAccess::plain)?)));
+            for (which, access) in plain {
                 let bytes = access.fixed_bytes().expect("a plain access");
                 let base = base_bit::<G>(&access).filter(|_| access.index.is_none());
+                let segment = access.segment.and_then(G::reg_bit);
                 let ahead = match access.write_back {
                     WriteBack::Before(by) => by,
                     _ => 0,
@@ -1277,13 +1322,13 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                     WriteBack::None => 0,
                 };
                 let plan = match base {
-                    Some(bit) if bit == G::SP_BIT => {
+                    Some(bit) if bit == G::SP_BIT && segment.is_none() => {
                         let at = access.displacement;
                         let known = match movement {
                             StackMove::By {
                                 delta,
                                 before_access: true,
-                            } => shift(grow(frame, delta), delta),
+                            } => shift::<G>(grow::<G>(frame, delta), delta),
                             _ => frame,
                         };
                         if covers(known, at, at + i64::from(bytes)) {
@@ -1297,7 +1342,7 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                         let (start, after) = (m + access.displacement + ahead, m + behind);
                         let end = start + i64::from(bytes);
                         moved.insert(n, after);
-                        let key = (n, access.kind != AccessKind::Read);
+                        let key = (segment, n, access.kind != AccessKind::Read);
                         match open.get(&key).map(|&g| (g, groups[g])) {
                             Some((g, (first, first_start, lo, hi, count)))
                                 if hi.max(end) - lo.min(start) <= 4096 =>
@@ -1308,31 +1353,32 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                             }
                             _ => {
                                 open.insert(key, groups.len());
-                                groups.push((o, start, start, end, 1));
+                                groups.push(((o, which), start, start, end, 1));
                                 CheckPlan::Exact
                             }
                         }
                     }
                     _ => CheckPlan::Exact,
                 };
-                plans.insert(o, plan);
+                plans.insert((o, which), plan);
             }
-            // Any other write of a base starts it afresh.
-            let written_back = only_access(d)
+            // Any other write of a base, or of a segment base, starts it afresh.
+            let written_back: Vec<u32> = accesses
+                .iter()
+                .flatten()
                 .filter(|a| a.write_back != WriteBack::None)
-                .and_then(|a| base_bit::<G>(&a));
+                .filter_map(base_bit::<G>)
+                .collect();
             for bit in d.effects.defs.intersect(G::GENERAL_BUT_SP).bits() {
-                if Some(bit) != written_back {
+                if !written_back.contains(&bit) {
                     moved.remove(&bit);
-                    open.remove(&(bit, false));
-                    open.remove(&(bit, true));
+                    open.retain(|&(_, base, _), _| base != bit);
                 }
             }
-            frame = match movement {
-                StackMove::None => frame,
-                StackMove::Unknown => None,
-                StackMove::By { delta, .. } => shift(grow(frame, delta), delta),
-            };
+            for bit in d.effects.defs.intersect(G::SEGMENT_BITS).bits() {
+                open.retain(|&(segment, _, _), _| segment != Some(bit));
+            }
+            frame = frame_after(d, frame);
         }
         for (first, first_start, lo, hi, count) in groups {
             if count > 1 {
@@ -1353,14 +1399,16 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
     }
 }
 
-/// A frame before the stack pointer moves by `delta`, with the part a move down checks added.
-fn grow(frame: Frame, delta: i64) -> Frame {
+/// A frame before the stack pointer moves by `delta`, with the part a move down checks added: down to the
+/// red zone below the new stack pointer.
+fn grow<G: Guest>(frame: Frame, delta: i64) -> Frame {
     if delta >= 0 {
         return frame;
     }
+    let low = delta - G::RED_ZONE as i64;
     match frame {
-        Some((lo, hi)) if lo <= 0 && hi >= 0 => Some((delta.min(lo), hi)),
-        _ => Some((delta, 0)),
+        Some((lo, hi)) if lo <= 0 && hi >= 0 => Some((low.min(lo), hi)),
+        _ => Some((low, 0)),
     }
 }
 
@@ -1453,6 +1501,8 @@ struct FullEmitter<'a, G: Guest> {
     entry_check: bool,
     /// The instruction being emitted has written a register, the flags or a control register.
     written: bool,
+    /// The instruction being emitted may have raised the stop flag.
+    raised_stop: bool,
     /// i64 local: the depth the piece passes to what it calls, its callers' and its own.
     depth: u32,
 }
@@ -1479,7 +1529,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             optimise,
             code,
             float_mode_local: None,
-            sites: Sites::default(),
+            sites: [0; SITES],
             body: Vec::new(),
             locals: Vec::new(),
             free: Vec::new(),
@@ -1503,6 +1553,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             unchecked: Vec::new(),
             entry_check: (plan.calls_out || loop_piece) && !omit.stop,
             written: false,
+            raised_stop: false,
             depth: 0,
         };
         e.depth = e.new_local(ValType::I64);
@@ -1946,7 +1997,8 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
     /// neither reads a flag still to be set again nor moves the stack pointer counts as reading them.
     fn flags_needed_after(&self, offset: u64) -> bool {
         let instructions = self.function.instructions(self.at.block);
-        let after = instructions.iter().position(|&o| o == offset).unwrap() + 1;
+        // A block's instructions are in address order.
+        let after = instructions.partition_point(|&o| o <= offset);
         let mut pending = G::FLAG_BITS;
         for o in &instructions[after..] {
             let d = &self.decoded[o];
@@ -2440,7 +2492,21 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     }
 
     fn hook(&mut self, hook: G::Hook) {
+        // The registers the hook works on go to the thread block before it and come back after: those that
+        // may be stale there, and the passed ones, which live only in their parameters.
+        let registers = G::HOOKS[G::hook_index(hook)].registers;
+        let block = self.fixed(G_THREAD_BLOCK);
+        let stale = self.at.dirty.union(Registers::of_bits(G::PASSED_IN));
+        for bit in registers.intersect(stale).bits() {
+            let local = self.register(bit);
+            Slot::of_bit::<G>(bit).store_from(&mut self.sink(), block, local);
+        }
+        self.at.dirty = self.at.dirty.minus(registers);
         self.sink().call(hook_function::<G>(hook));
+        for bit in registers.bits() {
+            let local = self.register(bit);
+            Slot::of_bit::<G>(bit).load_into(&mut self.sink(), block, local);
+        }
     }
 
     fn host(&self) -> G::Host {
@@ -2496,7 +2562,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         slot.store_from(&mut s, block, value);
     }
 
-    fn check(&mut self, address: u32, bytes: u32, access: Access) {
+    fn check(&mut self, address: u32, bytes: u32, access: Access, which: u8) {
         if self.omit.permissions {
             return;
         }
@@ -2508,7 +2574,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         let plan = self
             .plan
             .checks
-            .get(&self.at.offset)
+            .get(&(self.at.offset, which))
             .copied()
             .unwrap_or(CheckPlan::Exact);
         if let CheckPlan::Skip = plan {
@@ -2592,6 +2658,38 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         }
     }
 
+    fn check_range(&mut self, address: u32, length: u32, access: Access) -> u32 {
+        let (page, last) = (self.temporary(ValType::I64), self.temporary(ValType::I64));
+        let allowed = self.temporary(ValType::I32);
+        let table = self.table();
+        let mut s = self.sink();
+        G::data_address(&mut s, address);
+        s.local_set(address);
+        permission_range(
+            &mut s,
+            table,
+            (address, length),
+            page_bit(access),
+            (page, last),
+            allowed,
+        );
+        allowed
+    }
+
+    fn warn(&mut self, reason: G::Reason) {
+        let number = guest_reason::<G>(reason);
+        self.sites[number as usize] += 1;
+        self.sink().i32_const(number as i32);
+        self.this_address(0);
+        self.sink().call(F_WARN);
+    }
+
+    fn raise_stop(&mut self) {
+        self.raised_stop = true;
+        let block = self.fixed(G_THREAD_BLOCK);
+        raise_stop::<G>(&mut self.sink(), block);
+    }
+
     fn jump(&mut self, target: Target) {
         match target {
             Target::Relative(by) => {
@@ -2660,13 +2758,18 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             }
         }
         let returned_sp = self.temporary(ValType::I64);
-        let mut s = self.sink();
+        let mut reload = self.plan.live_after[&offset];
         for &bit in G::PASSED_OUT.iter().rev() {
-            if bit == G::SP_BIT {
-                s.local_set(returned_sp);
+            let local = if bit == G::SP_BIT {
+                returned_sp
+            } else if let Some(local) = G::passed(bit) {
+                local
             } else {
-                s.local_set(G::passed(bit).expect("passed out as in"));
-            }
+                // Passed out only: the thread block holds the same value, so it needs no load.
+                reload = reload.minus(Registers(1 << bit));
+                self.register(bit)
+            };
+            self.sink().local_set(local);
         }
         self.at.dirty = Registers::NONE;
         self.set_flag_state(FLAGS_IN_BLOCK);
@@ -2675,10 +2778,13 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         let kept =
             self.at.aligned || (self.plan.frame_across.contains(&offset) && !self.omit.permissions);
         if kept {
-            self.sink()
-                .local_get(returned_sp)
-                .local_get(G::L_SP)
-                .i64_ne()
+            let mut s = self.sink();
+            s.local_get(returned_sp).local_get(G::L_SP);
+            // The callee's return moved the stack pointer up past the return address.
+            if let ReturnAddress::Stack { bytes } = G::RETURN_ADDRESS {
+                s.i64_const(bytes.into()).i64_add();
+            }
+            s.i64_ne()
                 .local_get(returned_sp)
                 .local_set(G::L_SP)
                 .if_(BlockType::Empty);
@@ -2687,7 +2793,6 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         } else {
             self.sink().local_get(returned_sp).local_set(G::L_SP);
         }
-        let reload = self.plan.live_after[&offset];
         let block = self.fixed(G_THREAD_BLOCK);
         for bit in reload.bits() {
             let local = self.register(bit);
@@ -2696,6 +2801,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     }
 
     fn ret(&mut self, target: u32) {
+        pop_return_address::<G>(&mut self.sink());
         self.write_back_registers();
         // The flags go back only when the caller asks for them.
         let flags = self.at.flags;
@@ -2712,13 +2818,11 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                 e.sink().end();
             }
         };
+        let block = self.fixed(G_THREAD_BLOCK);
         if self.omit.returns {
             wanted(self);
-            let mut s = self.sink();
-            for i in 0..G::PASSED {
-                s.local_get(i);
-            }
-            s.return_();
+            push_results::<G>(&mut self.sink(), block);
+            self.sink().return_();
             return;
         }
         let mut s = self.sink();
@@ -2730,18 +2834,15 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             .if_(BlockType::Empty);
         wanted(self);
         let mut s = self.sink();
-        for i in 0..G::PASSED {
-            s.local_get(i);
-        }
+        push_results::<G>(&mut s, block);
         s.return_().end();
         // Not where the caller expects: go to the address from the bottom loop.
         self.write_back_flags(false);
-        let block = self.fixed(G_THREAD_BLOCK);
         let mut s = self.sink();
         set_pc::<G>(&mut s, block, |s| {
             s.local_get(target);
         });
-        bottom_return::<G>(&mut s);
+        bottom_return::<G>(&mut s, block);
         save_passed::<G>(&mut s, block);
         s.i32_const(UNWIND_GO_TO).call(G::F_UNWIND).unreachable();
     }
@@ -2790,10 +2891,16 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
     }
 
     fn next(&mut self) {
+        let next = self.at.offset + u64::from(self.decoded().length);
+        // The stop hook runs before the next instruction when this one raised the flag.
+        if self.raised_stop {
+            self.raised_stop = false;
+            let live = self.plan.live_after[&self.at.offset];
+            self.stop_check(Pc::Offset(next), AfterStop::Reload(live));
+        }
         if self.at.offset != self.function.last(self.at.block) {
             return;
         }
-        let next = self.at.offset + u64::from(self.decoded().length);
         self.goto(next);
     }
 }

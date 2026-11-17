@@ -15,20 +15,6 @@ const fn position(list: &[u32], bit: u32) -> u32 {
     panic!("the stack pointer is passed")
 }
 
-const fn same(a: &[u32], b: &[u32]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut i = 0;
-    while i < a.len() {
-        if a[i] != b[i] {
-            return false;
-        }
-        i += 1;
-    }
-    true
-}
-
 /// Each bit's index in `bits`, 255 for a bit not used.
 const fn bit_index(bits: &[Bit]) -> [u8; 128] {
     let mut at = [u8::MAX; 128];
@@ -45,11 +31,13 @@ const fn general_but_sp(bits: &[Bit], sp: u32) -> Registers {
 }
 
 pub(crate) trait Layout: Guest {
-    /// How many registers a piece takes as its first parameters and gives back as its results.
-    const PASSED: u32 = {
-        // Pieces pass the same registers in and out until a guest passes different lists.
-        assert!(same(Self::PASSED_IN, Self::PASSED_OUT));
-        Self::PASSED_IN.len() as u32
+    /// How many registers a piece takes as its first parameters.
+    const PASSED: u32 = Self::PASSED_IN.len() as u32;
+    /// How many it gives back as its results.
+    const RESULTS: u32 = {
+        // The stack pointer goes out as it comes in.
+        position(Self::PASSED_OUT, Self::SP_BIT);
+        Self::PASSED_OUT.len() as u32
     };
     /// The parameter local of the stack pointer.
     const L_SP: u32 = position(Self::PASSED_IN, Self::SP_BIT);
@@ -83,6 +71,7 @@ pub(crate) trait Layout: Guest {
     /// Every register bit, and the flags'.
     const ALL: Registers = Registers::of_class(Self::BITS, None);
     const FLAG_BITS: Registers = Registers::of_class(Self::BITS, Some(Class::Flag));
+    const SEGMENT_BITS: Registers = Registers::of_class(Self::BITS, Some(Class::Segment));
     /// General registers other than the stack pointer.
     const GENERAL_BUT_SP: Registers = general_but_sp(Self::BITS, Self::SP_BIT);
     /// Registers that live in a piece's locals and are tracked between its thread block copies: everything

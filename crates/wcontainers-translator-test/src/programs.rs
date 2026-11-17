@@ -2,13 +2,15 @@
 
 use crate::layout::initial_stack;
 use crate::reference::{build as build_reference, container_name};
-use crate::runner::{Machine, Stopped, Syscalls};
+use crate::runner::{Fault, Machine, Stopped, Syscalls};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use wcontainers_abi::{Exit, Permissions, RegisterBlock};
+use wcontainers_arm64::Arm64;
+use wcontainers_guest_cpu::Personality;
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 /// Where every blob is linked, and loaded unless it is moved.
@@ -341,10 +343,7 @@ pub fn ready_with(
     }
     load(&mut machine);
     machine.write(place.sp, &place.stack);
-    let mut registers = RegisterBlock::ZERO;
-    registers.pc = blob.load;
-    registers.sp = place.sp;
-    machine.set_registers(&registers);
+    machine.set_registers(&Arm64::initial_block(blob.load, place.sp));
     machine
 }
 
@@ -358,6 +357,9 @@ pub fn ran(blob: &Blob, machine: &Machine, stopped: Stopped, registers: &Registe
         Stopped::Exit(Exit::AlignmentFault { .. }) => 128 + 7,
         Stopped::Exit(Exit::IllegalInstruction) => 128 + 4,
         Stopped::Exit(Exit::Breakpoint { .. }) => 128 + 5,
+        Stopped::Fault(Fault::DivideError | Fault::FloatException(_)) => 128 + 8,
+        Stopped::Fault(Fault::GeneralProtection | Fault::Overflow) => 128 + 11,
+        Stopped::Fault(Fault::Stack) => 128 + 7,
         other => {
             let at = registers.pc.wrapping_sub(blob.load) as usize;
             let word = blob

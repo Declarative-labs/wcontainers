@@ -160,6 +160,9 @@ fn run_in_chrome(
         Some("alignment") => 128 + 7,
         Some("undefined" | "unsupported") => 128 + 4,
         Some("breakpoint") => 128 + 5,
+        Some("divide error" | "float exception") => 128 + 8,
+        Some("general protection" | "overflow") => 128 + 11,
+        Some("stack fault") => 128 + 7,
         _ => panic!(
             "the program stopped without exiting in Chrome: {stopped} at {}",
             result["pc"]

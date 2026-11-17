@@ -249,8 +249,11 @@ function run({
       return 0;
     },
     [contract.hookMemoryFault]: (address, access) => {
-      slowPath(reason("memory fault"), BigInt.asUintN(64, address), 0);
-      stop({ kind: "memory fault", address: BigInt.asUintN(64, address).toString(), write: access === 1 });
+      address = BigInt.asUintN(64, address);
+      slowPath(reason("memory fault"), address, 0);
+      const fault = memoryFault(address);
+      if (fault === "page") stop({ kind: "memory fault", address: address.toString(), write: access === 1 });
+      else stop({ kind: fault });
     },
     // Code runs only from pages that allow it, as on Linux: a jump anywhere else faults there. Otherwise the
     // code is translated as it is in memory now, which may be code the program wrote: the blob's code, or the
@@ -306,7 +309,19 @@ function run({
   };
   // The guest's own hooks, by who does their work.
   const cpuState = translator.cpu_state();
-  contract.guestHooks.forEach(({ name, body }, index) => {
+
+  // What a memory fault at `address` is on the guest CPU, from the thread's state and the instruction's
+  // bytes, which the translator's `cpu_memory_fault` reads at `cpu_state`.
+  function memoryFault(address) {
+    const size = contract.threadStateSize;
+    new Uint8Array(translator.memory.buffer, cpuState, size).set(new Uint8Array(state.buffer, BLOCK_AT, size));
+    const pc = Number(registers().pc);
+    const memory = guest();
+    const code = memory.subarray(pc, Math.min(pc + contract.maxLength, memory.length));
+    new Uint8Array(translator.memory.buffer, cpuState + size, code.length).set(code);
+    return contract.memoryFaults[translator.cpu_memory_fault(address, code.length)];
+  }
+  contract.guestHooks.forEach(({ name, body, stateAt, stateLength }, index) => {
     if (body === "clock") {
       hooks[name] = () => BigInt(Math.round((performance.now() - startedAt) * 1e6));
     } else if (body === "codeChanged") {
@@ -319,13 +334,14 @@ function run({
         }
       };
     } else {
-      // The work is the translator's `cpu_hook` on a copy of the thread's state; a counted slow path.
+      // The work is the translator's `cpu_hook` on a copy of the hook's bytes of the thread's state; a counted
+      // slow path.
+      const at = BLOCK_AT + stateAt;
       hooks[name] = (...args) => {
-        const size = contract.threadStateSize;
-        new Uint8Array(translator.memory.buffer, cpuState, size).set(new Uint8Array(state.buffer, BLOCK_AT, size));
+        new Uint8Array(translator.memory.buffer, cpuState, stateLength).set(new Uint8Array(state.buffer, at, stateLength));
         const wide = [0, 1, 2, 3].map((i) => BigInt.asIntN(64, BigInt(args[i] ?? 0)));
         translator.cpu_hook(index, ...wide);
-        new Uint8Array(state.buffer, BLOCK_AT, size).set(new Uint8Array(translator.memory.buffer, cpuState, size));
+        new Uint8Array(state.buffer, at, stateLength).set(new Uint8Array(translator.memory.buffer, cpuState, stateLength));
         const why = translator.cpu_hook_reason();
         // Registers are not saved here, so the detail is the first argument, not the address.
         if (why >= 0) {

@@ -1,24 +1,54 @@
 //! The translator is written once against the guest CPU interface: it depends on no CPU crate and its
-//! source names none, so everything it knows of a guest comes through `wcontainers_guest_cpu::Guest`.
+//! source names none, so everything it knows of a guest comes through `wcontainers_guest_cpu::Guest`. Of the
+//! shared abi crate, which also holds ARM64's register block and its offsets, it may name only what is true
+//! of every guest: the page size and the page permissions.
 
 use std::path::Path;
 
 /// The crates of this repository the translator may name.
 const ALLOWED: [&str; 2] = ["wcontainers_abi", "wcontainers_guest_cpu"];
+/// What it may name of the abi crate, always by its full path.
+const ABI_ALLOWED: [&str; 2] = ["PAGE_SIZE", "Permissions"];
 
-/// Every `wcontainers_*` crate name in `text` that is not allowed.
+/// Every `wcontainers_*` crate name in `text` that is not allowed, and every use of the abi crate other
+/// than `wcontainers_abi::<an allowed item>`.
 fn named(text: &str) -> Vec<String> {
     let normal = text.replace('-', "_");
+    let word = |from: &str| -> String {
+        from.chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect()
+    };
     normal
         .match_indices("wcontainers_")
-        .map(|(at, _)| {
-            normal[at..]
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect::<String>()
+        .filter_map(|(at, _)| {
+            let name = word(&normal[at..]);
+            if !ALLOWED.contains(&name.as_str()) {
+                return Some(name);
+            }
+            let rest = &normal[at + name.len()..];
+            let item = rest.strip_prefix("::").map(word);
+            let in_rust = rest.starts_with("::") || rest.starts_with(';');
+            match (name.as_str(), item) {
+                ("wcontainers_abi", Some(item)) if ABI_ALLOWED.contains(&item.as_str()) => None,
+                ("wcontainers_abi", _) if in_rust => Some(format!("{name}{}", word(rest))),
+                _ => None,
+            }
         })
-        .filter(|name| !ALLOWED.contains(&name.as_str()))
         .collect()
+}
+
+#[test]
+fn the_abi_check_finds_what_it_should() {
+    assert!(named("wcontainers_abi::PAGE_SIZE wcontainers_abi::Permissions").is_empty());
+    assert_eq!(named("x: wcontainers_abi::RegisterBlock").len(), 1);
+    assert_eq!(
+        named("use wcontainers_abi::{PAGE_SIZE, STOP_FLAG_OFFSET};").len(),
+        1
+    );
+    assert_eq!(named("use wcontainers_abi;").len(), 1);
+    assert_eq!(named("wcontainers_arm64::Arm64").len(), 1);
+    assert!(named("wcontainers-abi.workspace = true").is_empty());
 }
 
 fn sources(directory: &Path, files: &mut Vec<std::path::PathBuf>) {

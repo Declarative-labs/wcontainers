@@ -16,6 +16,7 @@ wcontainers-arm64 = { path = "../../wcontainers-arm64" }
 wcontainers-guest-cpu = { path = "../../wcontainers-guest-cpu" }
 wcontainers-translator = { path = "../../wcontainers-translator", features = ["measure"] }
 serde_json = "1"
+zerocopy = { version = "0.8", default-features = false }
 
 [profile.release]
 panic = "abort"

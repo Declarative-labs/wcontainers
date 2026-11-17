@@ -9,9 +9,15 @@ use wasm_encoder::{InstructionSink, ValType};
 
 /// Everything the translator needs that is true of one guest CPU only.
 pub trait Guest: Personality {
+    // --- identity ---
+    /// Names the guest in the description section and the cache key.
+    const ID: GuestId;
+
     // --- the instruction unit ---
     /// Every instruction starts at a multiple of this many bytes: ARM64 4, x86-64 1, RV64GC 2.
     const ALIGN: u64;
+    /// The longest instruction in bytes: ARM64 4, x86-64 15, RV64GC 4.
+    const MAX_LENGTH: u64;
     type Instruction: Copy + Debug + Send + Sync;
     /// The instruction at the start of `code` (which runs to the end of the code range), with its length in
     /// bytes; `None` when it would run past the end. An encoding of no instruction is an instruction whose
@@ -30,6 +36,8 @@ pub trait Guest: Personality {
     /// The register's bit; `None` for a hard zero register (ARM64 xzr, RISC-V x0).
     fn reg_bit(r: Self::Reg) -> Option<u32>;
     fn vector_bit(v: Self::Vector) -> u32;
+    /// The register a general-register bit names.
+    fn bit_reg(bit: u32) -> Self::Reg;
     /// The stack pointer's bit.
     const SP_BIT: u32;
     /// Registers passed into pieces as their first parameters, in order, and out of them as their results,
@@ -100,29 +108,51 @@ pub trait Guest: Personality {
     /// in this order.
     const HOOKS: &'static [HookType];
     fn hook_index(h: Self::Hook) -> usize;
-    /// The host side of a hook whose `HookType::body` is `Cpu`: the work, on the thread's state
-    /// (`BLOCK_SIZE + PRIVATE_BYTES` bytes from the block), with the hook's arguments. Every runner
-    /// calls this and nothing CPU-named.
+    /// The host side of a hook whose `HookType::body` is `Cpu`: the work, on the bytes of the thread's state
+    /// its `HookType::state` names (`state[0]` is the byte at `state.at`), with the hook's arguments. `hook`
+    /// is the hook's index in `HOOKS`. Every runner calls this and nothing CPU-named.
     fn run_hook(hook: usize, args: &[i64], state: &mut [u8]) -> HookDone;
 
     // --- traps ---
     type Trap: Copy + Debug + Send + Sync;
     /// The generic stop a trap is, where its detail comes from and where it leaves pc.
     fn trap_kind(t: Self::Trap) -> (TrapKind, TrapDetail, TrapPc);
+    /// Slow paths of this CPU's own, numbered from `GUEST_REASONS` in this order, with their fixed names.
+    type Reason: Copy + Eq + Debug + Send + Sync;
+    const REASONS: &'static [(Self::Reason, &'static str)];
 
     // --- what the host's engine does where WebAssembly leaves it open ---
     type Host: Copy + Eq + Hash + Debug + Send + Sync;
+    /// A module whose `probe` export (the contract's `PROBE`), an i32 function, gives the answer
+    /// `host_from_probe` reads.
+    fn probe_module() -> Vec<u8>;
+    fn host_from_probe(answer: i32) -> Self::Host;
+    /// The host answer as a number, for the cache key.
+    fn host_key(host: Self::Host) -> u32;
 
     // --- what the container offers beyond the default claims ---
     /// A container setting that changes what the CPU claims, given with every translation (`()` when there
     /// is none).
     type Offer: Copy + Eq + Hash + Debug + Send + Sync;
+    /// The offer as a number, for the cache key and the description section (0 for `()`).
+    fn offer_key(offer: Self::Offer) -> u32;
 
     // --- what a memory fault is on this CPU ---
     /// The memory fault hook reported `address` (the first byte not allowed) for the instruction at the
     /// start of `code`, with the thread's registers exact in `block`: the fault the CPU gives for it. The
     /// runner asks this before it tells the kernel.
     fn memory_fault(address: u64, code: &[u8], block: &Self::Block) -> MemoryFault;
+
+    // --- single stepping by a trap flag the program sets ---
+    /// Whether a program can turn single stepping on (x86's TF); when false the runners never call `step`.
+    const STEPS: bool = false;
+    /// What the stop hook does about single stepping, worked out on the thread's state (`BLOCK_SIZE +
+    /// PRIVATE_BYTES` bytes from the block). The runner asks it first at every stop hook call, with
+    /// `StepAt::Stop(pc)`, and with `StepAt::Kernel` whenever the kernel has had the thread.
+    fn step(state: &mut [u8], at: StepAt) -> Step {
+        let _ = (state, at);
+        Step::Off
+    }
 
     // --- meanings ---
     fn emit<E: Emitter<Self> + ?Sized>(e: &mut E, i: &Self::Instruction);
@@ -134,16 +164,34 @@ pub trait Guest: Personality {
     /// How the stack pointer moves, where the CPU knows; any other write of it is an unknown move.
     fn stack_move(i: &Self::Instruction) -> StackMove;
     /// The blob offset of an address the instruction `i` at blob offset `at` builds into a register, for
-    /// code in `code`.
-    fn built_address(at: u64, i: &Self::Instruction, blob: &[u8], code: Range<u64>) -> Option<u64>;
+    /// code in `code`. `before` as for `jump_table`.
+    fn built_address(
+        at: u64,
+        i: &Self::Instruction,
+        blob: &[u8],
+        code: Range<u64>,
+        before: impl Fn(u64) -> Option<(u64, Self::Instruction)>,
+    ) -> Option<u64>;
     /// The targets of the jump through `reg` at blob offset `at`, made from a switch statement, as blob
-    /// offsets, each once, in table order.
-    fn jump_table(at: u64, reg: Self::Reg, blob: &[u8], code: Range<u64>) -> Option<Vec<u64>>;
+    /// offsets, each once, in table order. `before(o)` is the function's instruction that falls through
+    /// into offset `o`, with its offset, or `None` at the start of a block more than one edge enters: the
+    /// way back for a CPU whose code cannot be decoded backwards.
+    fn jump_table(
+        at: u64,
+        reg: Self::Reg,
+        blob: &[u8],
+        code: Range<u64>,
+        before: impl Fn(u64) -> Option<(u64, Self::Instruction)>,
+    ) -> Option<Vec<u64>>;
     /// Plain computation, which the flags' liveness may look past: registers from registers only (no memory,
     /// hook, control, trap or leaving).
     fn plain(i: &Self::Instruction) -> bool;
 
     // --- calls, returns and the stack ---
+    /// Where a call leaves the return address.
+    const RETURN_ADDRESS: ReturnAddress;
+    /// Bytes below the stack pointer a function may use without moving it: x86-64 128, else 0.
+    const RED_ZONE: u64;
     /// The CPU checks the stack pointer's alignment when it is the base of an access.
     const SP_ALIGNMENT_CHECKED: bool;
     /// Push the address in this i64 local as data accesses use it (ARM64 untags it).
@@ -158,6 +206,9 @@ pub trait Guest: Personality {
     // --- system calls ---
     const SYSCALL: SyscallRegisters<Self::Reg>;
 
+    // --- code changes ---
+    const CODE_CHANGES: CodeChanges;
+
     // --- loop proofs ---
     /// This instruction adds a step to a register (by arithmetic or by an access's write-back).
     fn induction(i: &Self::Instruction) -> Option<Induction<Self::Reg>>;
@@ -171,6 +222,18 @@ pub trait Guest: Personality {
     /// When this instruction is a load that zero-extends what it loads (at most 4 bytes): the register it
     /// loads and the largest value it leaves there.
     fn loaded_max(i: &Self::Instruction) -> Option<(Self::Reg, i64)>;
+}
+
+/// The first number of a CPU's own slow paths (`Guest::REASONS`); the translator's are below it.
+pub const GUEST_REASONS: u32 = 64;
+
+/// Which guest CPU, in the description section and the cache key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum GuestId {
+    Arm64 = 1,
+    X86_64 = 2,
+    Rv64 = 3,
 }
 
 /// Where a meaning's registers, flags and control flow go. Each look-ahead implements it, and so does the
@@ -221,16 +284,26 @@ pub trait Emitter<G: Guest> {
         false
     }
     /// Make the address in this i64 local what data accesses use (`Guest::data_address`), in place, then
-    /// stop the thread with a memory fault unless `bytes` bytes at it may be accessed this way.
-    fn check(&mut self, address: u32, bytes: u32, access: Access);
+    /// stop the thread with a memory fault unless `bytes` bytes at it may be accessed this way. `which` is
+    /// the instruction's access (0 or 1, as `Guest::accesses` lists them) this check is for.
+    fn check(&mut self, address: u32, bytes: u32, access: Access, which: u8);
+    /// Whether the i64 run-time `length` (in this local) of bytes from the address in `address` may all be
+    /// accessed this way, as an i32 local 1 or 0, without stopping.
+    fn check_range(&mut self, address: u32, length: u32, access: Access) -> u32;
+    /// Count and warn this CPU's own slow path at this instruction.
+    fn warn(&mut self, reason: G::Reason);
+    /// Pop an i32; when it is not zero, raise the thread's stop flag, so the stop hook is called before
+    /// the next instruction runs.
+    fn raise_stop(&mut self);
     /// Go to the target. Nothing after it in this instruction runs.
     fn jump(&mut self, target: Target);
     /// Pop an i32 and go to the target if it is not zero.
     fn jump_if(&mut self, target: Target);
     /// Call the target with the next instruction as the return address, already written where the CPU
-    /// keeps it.
+    /// keeps it (`Guest::RETURN_ADDRESS`; on the stack the meaning has also moved the stack pointer).
     fn call(&mut self, target: Target);
-    /// Return to the address in this i64 local.
+    /// Return to the address in this i64 local. With return addresses on the stack, the meaning has read
+    /// it from there, and this moves the stack pointer up past it.
     fn ret(&mut self, target: u32);
     /// The system call instruction, with its registers as `Guest::SYSCALL` says.
     fn syscall(&mut self);
@@ -335,6 +408,7 @@ impl<R> MemoryAccess<R> {
             && match &self.index {
                 None => true,
                 Some(Index::Register { extend, .. }) => matches!(extend.from_bits, 32 | 64),
+                Some(Index::BitOffset { .. } | Index::Lanes { .. }) => false,
             }
     }
 
@@ -342,6 +416,7 @@ impl<R> MemoryAccess<R> {
     pub fn fixed_bytes(&self) -> Option<u32> {
         match self.bytes {
             AccessBytes::Fixed(n) => Some(u32::from(n)),
+            AccessBytes::Counted { .. } | AccessBytes::Masked { .. } => None,
         }
     }
 }
@@ -358,6 +433,13 @@ pub enum Base<R> {
 pub enum Index<R> {
     /// A general register, read as `extend` says, shifted left by `shift`.
     Register { reg: R, shift: u8, extend: Extend },
+    /// x86 `bt`, `bts`, `btr`, `btc` with a register bit offset: whole operands of `width` bits from the
+    /// operand's address, the register read signed at `width` and shifted right arithmetically by
+    /// log2(width), then left by log2(width / 8).
+    BitOffset { reg: R, width: u8 },
+    /// x86 VSIB (the gathers): each element's address takes one lane of this vector register, `lane_bits`
+    /// (32 or 64) read signed, shifted left by `shift`.
+    Lanes { reg: R, lane_bits: u8, shift: u8 },
 }
 
 /// How a register is read as an index: its low `from_bits` (8, 16, 32 or 64), zero- or sign-extended.
@@ -379,6 +461,16 @@ pub enum WriteBack {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccessBytes {
     Fixed(u16),
+    /// A rep string instruction: rcx elements of this size.
+    Counted {
+        element: u8,
+    },
+    /// `count` elements of `element` bytes from the address (or one per lane of a `Lanes` index), of which
+    /// only those a mask selects at run time are accessed; masked-off elements never fault.
+    Masked {
+        element: u8,
+        count: u8,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -459,6 +551,41 @@ pub enum StackMove {
     Unknown,
 }
 
+/// Where a call leaves the return address: in a register (its bit), or written on the stack below the stack
+/// pointer, `bytes` long.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnAddress {
+    Register(u32),
+    Stack { bytes: u8 },
+}
+
+/// How the translator learns that code changed: the program announces it (ARM64 `ic ivau`, RISC-V
+/// `fence.i`), or a write to a page holding translated code is detected (x86-64).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeChanges {
+    Announced,
+    Detected,
+}
+
+/// When `Guest::step` is asked: at a stop hook call with pc, or after the kernel has had the thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepAt {
+    Stop(u64),
+    Kernel,
+}
+
+/// What the runner then does. `Off`: carry on, the stop flag lowered unless another reason holds it. `Run`:
+/// carry on with the stop flag kept raised. `Exact`: run the instruction at pc alone, the flag kept raised.
+/// `Trap`: stop the thread with a single step at pc (`SIGTRAP`, `TRAP_TRACE`), before any other reason the
+/// flag was raised for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Off,
+    Run,
+    Exact,
+    Trap,
+}
+
 /// The registers of the system call instruction: the number, the six arguments and the result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SyscallRegisters<R> {
@@ -489,7 +616,28 @@ pub struct HookType {
     pub name: &'static str,
     pub params: &'static [ValType],
     pub results: &'static [ValType],
+    /// The register bits the hook reads or writes in the thread block: written back before the call and
+    /// loaded after it.
+    pub registers: Registers,
+    /// For a `Cpu` hook, the bytes of the thread's state its work reads and writes, which the runner hands
+    /// to `Guest::run_hook`.
+    pub state: StateBytes,
     pub body: HookBody,
+}
+
+/// `len` bytes of a thread's state from `at`, an offset from the start of the block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StateBytes {
+    pub at: u16,
+    pub len: u16,
+}
+
+impl StateBytes {
+    pub const NONE: Self = Self { at: 0, len: 0 };
+
+    pub const fn range(self) -> Range<usize> {
+        self.at as usize..self.at as usize + self.len as usize
+    }
 }
 
 /// Who does a hook's work on the host side.
@@ -554,6 +702,19 @@ impl Reason {
 
     pub fn from_i32(value: i32) -> Option<Self> {
         Self::ALL.into_iter().find(|r| *r as i32 == value)
+    }
+
+    /// Its number, as the warn hook and the runners' counters have it.
+    pub const fn number(self) -> u32 {
+        self as u32
+    }
+
+    /// The name of the slow path with this number, the translator's or the guest's own.
+    pub fn name_of<G: Guest>(number: u32) -> Option<&'static str> {
+        match number.checked_sub(GUEST_REASONS) {
+            Some(i) => G::REASONS.get(i as usize).map(|r| r.1),
+            None => Self::from_i32(number as i32).map(Self::name),
+        }
     }
 
     pub fn name(self) -> &'static str {

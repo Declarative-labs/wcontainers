@@ -1,6 +1,6 @@
 //! What an instruction reads and writes, found by running its meaning against an emitter that only records.
 
-use crate::{Access, Emitter, Guest, Registers, Target};
+use crate::{Access, Emitter, Guest, Registers, ReturnAddress, Target};
 use wasm_encoder::{InstructionSink, ValType};
 
 /// What one instruction does to the registers and to control flow.
@@ -134,7 +134,13 @@ impl<G: Guest> Emitter<G> for Recorder<G> {
 
     fn set_control(&mut self, _control: G::Control) {}
 
-    fn hook(&mut self, _hook: G::Hook) {}
+    fn hook(&mut self, hook: G::Hook) {
+        let registers = G::HOOKS[G::hook_index(hook)].registers;
+        for bit in registers.bits() {
+            self.read(bit);
+        }
+        self.effects.defs = self.effects.defs.union(registers);
+    }
 
     fn host(&self) -> G::Host {
         self.host
@@ -144,7 +150,15 @@ impl<G: Guest> Emitter<G> for Recorder<G> {
         self.offer
     }
 
-    fn check(&mut self, _address: u32, _bytes: u32, _access: Access) {}
+    fn check(&mut self, _address: u32, _bytes: u32, _access: Access, _which: u8) {}
+
+    fn check_range(&mut self, _address: u32, _length: u32, _access: Access) -> u32 {
+        self.local(ValType::I32)
+    }
+
+    fn warn(&mut self, _reason: G::Reason) {}
+
+    fn raise_stop(&mut self) {}
 
     fn jump(&mut self, _target: Target) {}
 
@@ -154,7 +168,12 @@ impl<G: Guest> Emitter<G> for Recorder<G> {
         self.effects.calls = true;
     }
 
-    fn ret(&mut self, _target: u32) {}
+    fn ret(&mut self, _target: u32) {
+        if let ReturnAddress::Stack { .. } = G::RETURN_ADDRESS {
+            self.read(G::SP_BIT);
+            self.write(G::SP_BIT);
+        }
+    }
 
     fn syscall(&mut self) {
         let registers = G::SYSCALL;

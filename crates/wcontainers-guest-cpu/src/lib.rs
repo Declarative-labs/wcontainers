@@ -33,6 +33,9 @@ pub trait Personality: Sized + Send + Sync + 'static {
     /// Bytes after those that only the CPU side uses, zero when a thread is made. A thread's state is
     /// `BLOCK_SIZE + PRIVATE_BYTES` bytes.
     const PRIVATE_BYTES: usize;
+    /// The registers a thread starts with at `pc` with stack pointer `sp` (x86: MXCSR 0x1F80, FCW 0x037F,
+    /// rflags 0x202).
+    fn initial_block(pc: u64, sp: u64) -> Self::Block;
 }
 
 /// A set of register bits, numbered as the guest's [`Guest::BITS`] says.
@@ -111,6 +114,8 @@ pub enum Class {
     General,
     Flag,
     Vector,
+    /// A segment base an access may add (x86 FS and GS bases), kept like a general register.
+    Segment,
 }
 
 /// The WebAssembly type a register is kept in.
@@ -121,7 +126,8 @@ pub enum Ty {
     V128,
 }
 
-/// Why the instruction at `pc` (or after it, see `TrapPc`) stopped the thread.
+/// Why the instruction at `pc` (or after it, see `TrapPc`) stopped the thread. Each kind is the signal Linux
+/// sends for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
 pub enum TrapKind {
@@ -135,6 +141,16 @@ pub enum TrapKind {
     /// An access through a stack pointer that is not a multiple of 16, or a jump to an address that is not a
     /// multiple of the instruction alignment. Detail: that stack pointer or address.
     Alignment = 3,
+    /// x86 `div` or `idiv` by zero, or a quotient too large: `SIGFPE`, `FPE_INTDIV`. Detail 0.
+    DivideError = 4,
+    /// x86 general protection raised by the instruction itself (a privileged instruction, a non-canonical
+    /// branch target, a misaligned vector access, `int n`): `SIGSEGV`, `SI_KERNEL`, address 0. Detail 0.
+    GeneralProtection = 5,
+    /// An unmasked floating point exception: `SIGFPE`. Detail: the `si_code`.
+    FloatException = 6,
+    /// x86 `int 4` (`into` has no 64-bit form): `SIGSEGV`, `SI_KERNEL`, a trap with pc after the
+    /// instruction, which the kernel tells from general protection by its trap number. Detail 0.
+    Overflow = 7,
 }
 
 impl TrapKind {
@@ -144,6 +160,10 @@ impl TrapKind {
             Self::Unsupported,
             Self::Breakpoint,
             Self::Alignment,
+            Self::DivideError,
+            Self::GeneralProtection,
+            Self::FloatException,
+            Self::Overflow,
         ]
         .into_iter()
         .find(|kind| *kind as i32 == value)

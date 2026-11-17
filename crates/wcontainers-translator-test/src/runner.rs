@@ -2,12 +2,13 @@
 //! answers `write`, `writev`, `exit`, `exit_group` and `brk`.
 
 use std::collections::HashMap;
+use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use wasmtime::{
     Caller, Config, Engine, Extern, Global, Instance, Linker, Memory, MemoryType, Module,
-    SharedMemory, Store, Trap, TypedFunc, Val,
+    SharedMemory, Store, Trap, TypedFunc, Val, ValRaw,
 };
 use wcontainers_abi::{
     Access, CounterReading, Exit, PAGE_SIZE, Permissions, RegisterBlock, STOP_FLAG_OFFSET, Syscall,
@@ -44,6 +45,23 @@ pub enum Stopped {
     NoCode(u64),
     /// The program called `exit` or `exit_group` with this status.
     Finished(i32),
+    /// A fault the abi's exits do not name yet (x86-64's, added to the abi with its kernel side).
+    Fault(Fault),
+}
+
+/// A fault of a guest CPU other than those the abi's exits name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// `SIGFPE`, `FPE_INTDIV`.
+    DivideError,
+    /// `SIGSEGV`, `SI_KERNEL`.
+    GeneralProtection,
+    /// `SIGFPE` with this `si_code`.
+    FloatException(i64),
+    /// `int 4`: `SIGSEGV`, `SI_KERNEL`.
+    Overflow,
+    /// x86's stack fault: `SIGBUS`, `SI_KERNEL`.
+    Stack,
 }
 
 /// Where the thread is paused when the pause function runs.
@@ -114,9 +132,9 @@ pub struct Host {
     /// What the guest wrote to file descriptors 1 and 2.
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-    counters: HashMap<Reason, (u64, Duration)>,
+    counters: HashMap<u32, (u64, Duration)>,
     /// How often each slow path was taken at each address or number.
-    places: HashMap<(Reason, u64), u64>,
+    places: HashMap<(u32, u64), u64>,
     warnings: Vec<Warning<'static>>,
     /// Where the code of each blob loaded is, as guest addresses.
     code_ranges: Vec<Range<u64>>,
@@ -186,14 +204,13 @@ pub fn probe() -> wcontainers_arm64::Host {
     static FACTS: OnceLock<wcontainers_arm64::Host> = OnceLock::new();
     *FACTS.get_or_init(|| {
         let engine = engine();
-        let module =
-            Module::new(&engine, wcontainers_arm64::host::probe_module()).expect("probe module");
+        let module = Module::new(&engine, Arm64::probe_module()).expect("probe module");
         let mut store = Store::new(&engine, ());
         let instance = Instance::new(&mut store, &module, &[]).expect("probe instance");
         let probe = instance
-            .get_typed_func::<(), i32>(&mut store, wcontainers_arm64::host::PROBE)
+            .get_typed_func::<(), i32>(&mut store, contract::PROBE)
             .expect("probe export");
-        wcontainers_arm64::Host::from_probe(probe.call(&mut store, ()).expect("probe runs"))
+        Arm64::host_from_probe(probe.call(&mut store, ()).expect("probe runs"))
     })
 }
 
@@ -570,7 +587,7 @@ impl Machine {
         Reason::ALL
             .into_iter()
             .filter_map(|reason| {
-                let &(count, time) = counters.get(&reason)?;
+                let &(count, time) = counters.get(&reason.number())?;
                 Some(CounterReading {
                     reason: reason.name(),
                     detail: 0,
@@ -583,7 +600,11 @@ impl Machine {
 
     /// How often a slow path was taken.
     pub fn count(&self, reason: Reason) -> u64 {
-        self.store.data().counters.get(&reason).map_or(0, |c| c.0)
+        self.store
+            .data()
+            .counters
+            .get(&reason.number())
+            .map_or(0, |c| c.0)
     }
 
     /// The warnings raised so far.
@@ -608,7 +629,7 @@ impl Machine {
                 Some(Trap::MemoryOutOfBounds) => {
                     slow_path(
                         self.store.data_mut(),
-                        Reason::FaultWithoutExactRegisters,
+                        Reason::FaultWithoutExactRegisters.number(),
                         0,
                         Duration::ZERO,
                     );
@@ -682,26 +703,33 @@ fn val_type(ty: wasm_encoder::ValType) -> wasmtime::ValType {
     }
 }
 
-/// A hook of the guest's own: its work by `Guest::run_hook` on the thread's state, counted and warned as the
-/// slow path it says it was.
-fn cpu_hook(caller: &mut Caller<'_, Host>, index: usize, params: &[Val], results: &mut [Val]) {
-    let state = caller.data().state.clone().unwrap();
-    let mut bytes = vec![0; contract::thread_state_size::<Arm64>()];
-    read_shared(&state, BLOCK_AT as usize, &mut bytes);
-    let args: Vec<i64> = params
-        .iter()
-        .map(|p| p.i64().unwrap_or_else(|| i64::from(p.unwrap_i32())))
-        .collect();
-    let done = Arm64::run_hook(index, &args, &mut bytes);
-    write_shared(&state, BLOCK_AT as usize, &bytes);
-    for (result, value) in results.iter_mut().zip(done.results) {
-        *result = match result {
-            Val::I32(_) => Val::I32(value as i32),
-            _ => Val::I64(value),
+/// A hook of the guest's own: its work by `Guest::run_hook` on the bytes of the thread's state it names,
+/// counted and warned as the slow path it says it was. `values` holds the arguments and takes the results.
+fn cpu_hook(caller: &mut Caller<'_, Host>, index: usize, values: &mut [MaybeUninit<ValRaw>]) {
+    let hook = &Arm64::HOOKS[index];
+    let mut args = [0i64; MAX_HOOK_ARGS];
+    for (i, ty) in hook.params.iter().enumerate() {
+        // SAFETY: wasmtime has checked the arguments against the hook's type.
+        let value = unsafe { values[i].assume_init() };
+        args[i] = match ty {
+            wasm_encoder::ValType::I32 => i64::from(value.get_i32()),
+            _ => value.get_i64(),
         };
     }
+    let mut bytes = [0u8; MAX_HOOK_STATE];
+    let bytes = &mut bytes[..usize::from(hook.state.len)];
+    let at = BLOCK_AT as usize + usize::from(hook.state.at);
+    let state = caller.data().state.clone().unwrap();
+    read_shared(&state, at, bytes);
+    let done = Arm64::run_hook(index, &args[..hook.params.len()], bytes);
+    write_shared(&state, at, bytes);
+    for (i, ty) in hook.results.iter().enumerate() {
+        values[i] = MaybeUninit::new(match ty {
+            wasm_encoder::ValType::I32 => ValRaw::i32(done.results[i] as i32),
+            _ => ValRaw::i64(done.results[i]),
+        });
+    }
     if let Some(reason) = done.reason {
-        let reason = Reason::from_i32(reason as i32).expect("known reason");
         // Registers are not saved here, so the detail is the hook's first argument, not the address.
         slow_path(
             caller.data_mut(),
@@ -711,6 +739,19 @@ fn cpu_hook(caller: &mut Caller<'_, Host>, index: usize, params: &[Val], results
         );
     }
 }
+
+/// The most arguments, and bytes of thread state, a guest's own hook has.
+const MAX_HOOK_ARGS: usize = 8;
+const MAX_HOOK_STATE: usize = 1024;
+const _: () = {
+    let mut i = 0;
+    while i < Arm64::HOOKS.len() {
+        let hook = &Arm64::HOOKS[i];
+        assert!(hook.params.len() <= MAX_HOOK_ARGS && hook.results.len() <= 2);
+        assert!(hook.state.len as usize <= MAX_HOOK_STATE);
+        i += 1;
+    }
+};
 
 /// The guest's bytes from `pc`, as many as an instruction may take and the memory has.
 fn code_at(caller: &mut Caller<'_, Host>, pc: u64) -> Vec<u8> {
@@ -722,7 +763,7 @@ fn code_at(caller: &mut Caller<'_, Host>, pc: u64) -> Vec<u8> {
 
 /// Count a slow path taken at an address (or for a number) and the time it took; warn once per address
 /// when its count there reaches the threshold.
-fn slow_path(host: &mut Host, reason: Reason, detail: u64, time: Duration) {
+fn slow_path(host: &mut Host, reason: u32, detail: u64, time: Duration) {
     let counter = host.counters.entry(reason).or_default();
     counter.0 += 1;
     counter.1 += time;
@@ -731,7 +772,7 @@ fn slow_path(host: &mut Host, reason: Reason, detail: u64, time: Duration) {
     *here += 1;
     if *here == contract::WARNING_THRESHOLD {
         let warning = Warning {
-            reason: reason.name(),
+            reason: Reason::name_of::<Arm64>(reason).expect("a known reason"),
             count: total,
             detail,
         };
@@ -806,7 +847,12 @@ fn hooks(linker: &mut Linker<Host>) {
             }
             // Raised from outside: the stand-in clears it and the thread carries on.
             let pc = snapshot(&mut caller).pc;
-            slow_path(caller.data_mut(), Reason::StoppedByFlag, pc, Duration::ZERO);
+            slow_path(
+                caller.data_mut(),
+                Reason::StoppedByFlag.number(),
+                pc,
+                Duration::ZERO,
+            );
             if caller.data().stop_everywhere {
                 raise_stop_flag(&caller);
             }
@@ -821,30 +867,26 @@ fn hooks(linker: &mut Linker<Host>) {
             |mut caller: Caller<'_, Host>, address: i64, access: i32| {
                 slow_path(
                     caller.data_mut(),
-                    Reason::MemoryFault,
+                    Reason::MemoryFault.number(),
                     address as u64,
                     Duration::ZERO,
                 );
                 let registers = snapshot(&mut caller);
                 let code = code_at(&mut caller, registers.pc);
-                let fault = Arm64::memory_fault(address as u64, &code, &registers);
-                assert_eq!(
-                    fault,
-                    MemoryFault::Page,
-                    "the abi has a memory fault exit only"
-                );
                 let access = if access == 1 {
                     Access::Write
                 } else {
                     Access::Read
                 };
-                stop(
-                    &mut caller,
-                    Stopped::Exit(Exit::MemoryFault {
+                let stopped = match Arm64::memory_fault(address as u64, &code, &registers) {
+                    MemoryFault::Page => Stopped::Exit(Exit::MemoryFault {
                         address: address as u64,
                         access,
                     }),
-                );
+                    MemoryFault::GeneralProtection => Stopped::Fault(Fault::GeneralProtection),
+                    MemoryFault::Stack => Stopped::Fault(Fault::Stack),
+                };
+                stop(&mut caller, stopped);
             },
         )
         .unwrap();
@@ -868,7 +910,7 @@ fn hooks(linker: &mut Linker<Host>) {
                 let Some(run) = executable_run(caller.data(), address) else {
                     slow_path(
                         caller.data_mut(),
-                        Reason::MemoryFault,
+                        Reason::MemoryFault.number(),
                         address,
                         Duration::ZERO,
                     );
@@ -926,7 +968,7 @@ fn hooks(linker: &mut Linker<Host>) {
                 let time = start.elapsed();
                 slow_path(
                     caller.data_mut(),
-                    Reason::TranslatedAtRunTime,
+                    Reason::TranslatedAtRunTime.number(),
                     address,
                     time,
                 );
@@ -939,8 +981,12 @@ fn hooks(linker: &mut Linker<Host>) {
             HOOKS,
             HOOK_WARN,
             |mut caller: Caller<'_, Host>, reason: i32, detail: i64| {
-                let reason = Reason::from_i32(reason).expect("known reason");
-                slow_path(caller.data_mut(), reason, detail as u64, Duration::ZERO);
+                slow_path(
+                    caller.data_mut(),
+                    reason as u32,
+                    detail as u64,
+                    Duration::ZERO,
+                );
             },
         )
         .unwrap();
@@ -966,12 +1012,14 @@ fn hooks(linker: &mut Linker<Host>) {
                     hook.params.iter().map(|&t| val_type(t)),
                     hook.results.iter().map(|&t| val_type(t)),
                 );
-                linker
-                    .func_new(HOOKS, hook.name, ty, move |mut caller, params, results| {
-                        cpu_hook(&mut caller, index, params, results);
+                // SAFETY: `cpu_hook` reads the arguments and writes the results of exactly this type.
+                unsafe {
+                    linker.func_new_unchecked(HOOKS, hook.name, ty, move |mut caller, values| {
+                        cpu_hook(&mut caller, index, values);
                         Ok(())
                     })
-                    .unwrap()
+                }
+                .unwrap()
             }
         };
     }
@@ -981,19 +1029,25 @@ fn hooks(linker: &mut Linker<Host>) {
             HOOK_TRAP,
             |mut caller: Caller<'_, Host>, kind: i32, detail: i64| {
                 let kind = TrapKind::from_i32(kind).expect("known trap");
-                let exit = match kind {
-                    TrapKind::Undefined | TrapKind::Unsupported => Exit::IllegalInstruction,
-                    TrapKind::Breakpoint => Exit::Breakpoint {
+                let stopped = match kind {
+                    TrapKind::Undefined | TrapKind::Unsupported => {
+                        Stopped::Exit(Exit::IllegalInstruction)
+                    }
+                    TrapKind::Breakpoint => Stopped::Exit(Exit::Breakpoint {
                         comment: detail as u16,
-                    },
-                    TrapKind::Alignment => Exit::AlignmentFault {
+                    }),
+                    TrapKind::Alignment => Stopped::Exit(Exit::AlignmentFault {
                         address: detail as u64,
-                    },
+                    }),
+                    TrapKind::DivideError => Stopped::Fault(Fault::DivideError),
+                    TrapKind::GeneralProtection => Stopped::Fault(Fault::GeneralProtection),
+                    TrapKind::FloatException => Stopped::Fault(Fault::FloatException(detail)),
+                    TrapKind::Overflow => Stopped::Fault(Fault::Overflow),
                 };
-                stop(&mut caller, Stopped::Exit(exit));
+                stop(&mut caller, stopped);
                 if kind == TrapKind::Unsupported {
                     let pc = caller.data().snapshot.pc;
-                    let reason = Reason::UnsupportedInstructionReached;
+                    let reason = Reason::UnsupportedInstructionReached.number();
                     slow_path(caller.data_mut(), reason, pc, Duration::ZERO);
                 }
             },
@@ -1379,7 +1433,7 @@ fn stand_in(caller: &mut Caller<'_, Host>, call: Syscall) -> i64 {
         // cannot.
         214 => caller.data().program_break as i64,
         number => {
-            let reason = Reason::SystemCallNotImplemented;
+            let reason = Reason::SystemCallNotImplemented.number();
             slow_path(caller.data_mut(), reason, number, Duration::ZERO);
             -ENOSYS
         }

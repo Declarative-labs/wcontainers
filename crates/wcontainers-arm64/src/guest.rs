@@ -12,11 +12,25 @@ use core::ops::Range;
 use wasm_encoder::{InstructionSink, ValType};
 use wcontainers_abi::RegisterBlock as B;
 use wcontainers_guest_cpu::{
-    AccessBytes, AccessKind, Base, Bit, Class, Comparison, Effects, Extend, Flow, FlowKind, Guest,
-    HookBody, HookDone, HookType, Index, Induction, Locals, MemoryAccess, MemoryFault, Reason,
-    Registers, Relation, StackMove, SyscallRegisters, Through, TrapDetail, TrapKind, TrapPc, Ty,
-    Value, WriteBack,
+    AccessBytes, AccessKind, Base, Bit, Class, CodeChanges, Comparison, Effects, Extend, Flow,
+    FlowKind, Guest, GuestId, HookBody, HookDone, HookType, Index, Induction, Locals, MemoryAccess,
+    MemoryFault, Reason, Registers, Relation, ReturnAddress, StackMove, StateBytes,
+    SyscallRegisters, Through, TrapDetail, TrapKind, TrapPc, Ty, Value, WriteBack,
 };
+
+/// The float hook's bytes of the thread state: FPSR and FPCR in the block, through FPSR tracking after it.
+const FLOAT_STATE: StateBytes = {
+    let at = offset_of!(B, fpsr);
+    assert!(offset_of!(B, fpcr) > at && FLOAT_TRACKING > at);
+    StateBytes {
+        at: at as u16,
+        len: (FLOAT_TRACKING + 4 - at) as u16,
+    }
+};
+
+/// The slow paths of ARM64's own: none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoReason {}
 
 /// How a flag setting that is kept lazily looks, so setters of one shape can share locals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -133,7 +147,9 @@ fn word(blob: &[u8], offset: u64) -> u32 {
 }
 
 impl Guest for Arm64 {
+    const ID: GuestId = GuestId::Arm64;
     const ALIGN: u64 = 4;
+    const MAX_LENGTH: u64 = 4;
     type Instruction = Instruction;
 
     fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
@@ -159,6 +175,14 @@ impl Guest for Arm64 {
 
     fn vector_bit(v: u8) -> u32 {
         64 + u32::from(v)
+    }
+
+    fn bit_reg(bit: u32) -> Reg {
+        match bit {
+            0..=30 => Reg::X(bit as u8),
+            31 => Reg::Sp,
+            _ => panic!("bit {bit} is no general register"),
+        }
     }
 
     const SP_BIT: u32 = 31;
@@ -394,18 +418,24 @@ impl Guest for Arm64 {
             name: "float",
             params: &[ValType::I32, ValType::I64, ValType::I64, ValType::I64],
             results: &[ValType::I64],
+            registers: Registers::NONE,
+            state: FLOAT_STATE,
             body: HookBody::Cpu,
         },
         HookType {
             name: "clock",
             params: &[],
             results: &[ValType::I64],
+            registers: Registers::NONE,
+            state: StateBytes::NONE,
             body: HookBody::Clock,
         },
         HookType {
             name: "code_changed",
             params: &[ValType::I64],
             results: &[],
+            registers: Registers::NONE,
+            state: StateBytes::NONE,
             body: HookBody::CodeChanged,
         },
     ];
@@ -423,15 +453,17 @@ impl Guest for Arm64 {
     /// engine does not fuse), else as "exact floating point requested".
     fn run_hook(hook: usize, args: &[i64], state: &mut [u8]) -> HookDone {
         assert_eq!(hook, 0, "the float hook is the only one of ARM64's own");
-        let word =
-            |state: &[u8], at: usize| u32::from_le_bytes(state[at..at + 4].try_into().unwrap());
+        let at = |offset: usize| offset - FLOAT_STATE.at as usize;
+        let word = |state: &[u8], offset: usize| {
+            u32::from_le_bytes(state[at(offset)..at(offset) + 4].try_into().unwrap())
+        };
         let operation = args[0] as i32;
         let fpcr = word(state, offset_of!(B, fpcr));
         let mut fpsr = word(state, offset_of!(B, fpsr));
         let tracking = word(state, FLOAT_TRACKING);
         let (a, b, c) = (args[1] as u64, args[2] as u64, args[3] as u64);
         let result = crate::exact::run(operation, a, b, c, fpcr, &mut fpsr);
-        state[offset_of!(B, fpsr)..][..4].copy_from_slice(&fpsr.to_le_bytes());
+        state[at(offset_of!(B, fpsr))..][..4].copy_from_slice(&fpsr.to_le_bytes());
         let (kind, _) = Operation::decode(operation);
         let reason = if kind.fused() && fpcr == 0 && tracking == 0 {
             Reason::SoftwareFusedMultiplyAdd
@@ -461,8 +493,29 @@ impl Guest for Arm64 {
         }
     }
 
+    /// ARM64 has no slow path of its own beyond the translator's.
+    type Reason = NoReason;
+    const REASONS: &'static [(NoReason, &'static str)] = &[];
+
     type Host = Host;
+
+    fn probe_module() -> Vec<u8> {
+        crate::host::probe_module()
+    }
+
+    fn host_from_probe(answer: i32) -> Host {
+        Host::from_probe(answer)
+    }
+
+    fn host_key(host: Host) -> u32 {
+        host.answer() as u32
+    }
+
     type Offer = ();
+
+    fn offer_key(_offer: ()) -> u32 {
+        0
+    }
 
     fn memory_fault(_address: u64, _code: &[u8], _block: &B) -> MemoryFault {
         MemoryFault::Page
@@ -573,7 +626,13 @@ impl Guest for Arm64 {
     }
 
     /// `adr`, or `adrp` and an `add` in the word before it (read from the blob, whatever reached the add).
-    fn built_address(at: u64, i: &Instruction, blob: &[u8], code: Range<u64>) -> Option<u64> {
+    fn built_address(
+        at: u64,
+        i: &Instruction,
+        blob: &[u8],
+        code: Range<u64>,
+        _before: impl Fn(u64) -> Option<(u64, Instruction)>,
+    ) -> Option<u64> {
         match *i {
             Instruction::PcRelative {
                 page: false,
@@ -604,7 +663,13 @@ impl Guest for Arm64 {
     }
 
     /// The 64 words before the jump that lie in the code, read from the blob, and [`habits::jump_table`].
-    fn jump_table(at: u64, reg: Reg, blob: &[u8], code: Range<u64>) -> Option<Vec<u64>> {
+    fn jump_table(
+        at: u64,
+        reg: Reg,
+        blob: &[u8],
+        code: Range<u64>,
+        _before: impl Fn(u64) -> Option<(u64, Instruction)>,
+    ) -> Option<Vec<u64>> {
         let first = at.saturating_sub(4 * 64).max(code.start);
         let before: Vec<(u64, Instruction)> = (first..at)
             .step_by(4)
@@ -643,6 +708,10 @@ impl Guest for Arm64 {
         )
     }
 
+    /// `bl` and `blr` leave the return address in x30.
+    const RETURN_ADDRESS: ReturnAddress = ReturnAddress::Register(30);
+    const RED_ZONE: u64 = 0;
+
     /// Linux checks sp's alignment when it is the base of an access.
     const SP_ALIGNMENT_CHECKED: bool = true;
 
@@ -656,6 +725,9 @@ impl Guest for Arm64 {
 
     /// Return targets are untagged, and an untagged address has a top byte of 0x00 or 0xff.
     const UNREACHABLE_RETURN: i64 = i64::MIN;
+
+    /// Code changes are announced by `ic ivau`.
+    const CODE_CHANGES: CodeChanges = CodeChanges::Announced;
 
     const SYSCALL: SyscallRegisters<Reg> = SyscallRegisters {
         number: Reg::X(8),

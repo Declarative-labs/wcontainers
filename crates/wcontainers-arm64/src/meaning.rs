@@ -1266,7 +1266,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, bytes.into(), Access::Read);
+            e.check(at, bytes.into(), Access::Read, 0);
             load(e, at, 0, bytes, signed);
             e.set(rt);
             write_back(e, update);
@@ -1278,7 +1278,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, bytes.into(), Access::Write);
+            e.check(at, bytes.into(), Access::Write, 0);
             store(e, at, 0, bytes, rt);
             write_back(e, update);
             e.next();
@@ -1291,7 +1291,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, 2 * u32::from(bytes), Access::Read);
+            e.check(at, 2 * u32::from(bytes), Access::Read, 0);
             let signed = signed.then_some(Width::X64);
             load(e, at, 0, bytes, signed);
             let first = save(e, Width::X64);
@@ -1309,7 +1309,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, 2 * u32::from(bytes), Access::Write);
+            e.check(at, 2 * u32::from(bytes), Access::Write, 0);
             store(e, at, 0, bytes, rt);
             store(e, at, bytes.into(), bytes, rt2);
             write_back(e, update);
@@ -1321,7 +1321,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, bytes.into(), Access::Read);
+            e.check(at, bytes.into(), Access::Read, 0);
             load_vector(e, at, 0, bytes);
             e.set_vector(rt);
             write_back(e, update);
@@ -1333,7 +1333,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, bytes.into(), Access::Write);
+            e.check(at, bytes.into(), Access::Write, 0);
             store_vector(e, at, 0, bytes, rt);
             write_back(e, update);
             e.next();
@@ -1345,7 +1345,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, 2 * u32::from(bytes), Access::Read);
+            e.check(at, 2 * u32::from(bytes), Access::Read, 0);
             load_vector(e, at, 0, bytes);
             let first = e.local(ValType::V128);
             e.sink().local_set(first);
@@ -1363,7 +1363,7 @@ pub fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) {
             address: form,
         } => {
             let (at, update) = address(e, form);
-            e.check(at, 2 * u32::from(bytes), Access::Write);
+            e.check(at, 2 * u32::from(bytes), Access::Write, 0);
             store_vector(e, at, 0, bytes, rt);
             store_vector(e, at, bytes.into(), bytes, rt2);
             write_back(e, update);

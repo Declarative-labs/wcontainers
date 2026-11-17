@@ -126,7 +126,7 @@ pub(super) struct Versioned {
 pub(super) struct LoopShape<'a, G: Guest> {
     pub(super) function: &'a Function,
     pub(super) decoded: &'a super::Decodes<G>,
-    pub(super) checks: &'a FxHashMap<u64, CheckPlan>,
+    pub(super) checks: &'a FxHashMap<(u64, u8), CheckPlan>,
     pub(super) body: &'a [bool],
     /// Blocks of the body inside a loop within it.
     pub(super) nested: &'a [bool],
@@ -206,10 +206,12 @@ pub(super) fn versioned<G: Guest>(shape: &LoopShape<'_, G>) -> Option<Versioned>
 
     let mut regions = Vec::new();
     for (b, o) in instructions().filter(|&(b, _)| !shape.nested[b]) {
-        let Some(access) = only_access(&shape.decoded[&o]).filter(MemoryAccess::plain) else {
+        let Some(access) =
+            only_access(&shape.decoded[&o]).filter(|a| a.plain() && a.segment.is_none())
+        else {
             continue;
         };
-        let (from, len) = match shape.checks.get(&o) {
+        let (from, len) = match shape.checks.get(&(o, 0)) {
             Some(CheckPlan::Exact) => (0, access.fixed_bytes().expect("a plain access")),
             Some(&CheckPlan::Group { from, len }) => (from, len),
             _ => continue,
@@ -234,6 +236,7 @@ pub(super) fn versioned<G: Guest>(shape: &LoopShape<'_, G>) -> Option<Versioned>
                 };
                 Some((index, domain, shift))
             }
+            Some(Index::BitOffset { .. } | Index::Lanes { .. }) => continue,
         };
         let Some(base) = G::reg_bit(base) else {
             continue;

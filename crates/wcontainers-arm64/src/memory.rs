@@ -47,7 +47,7 @@ fn exact_address<E: Emitter<Arm64> + ?Sized>(
         e.trap(Trap::Alignment(untagged));
         e.sink().end();
     }
-    e.check(at, bytes, access);
+    e.check(at, bytes, access, 0);
     at
 }
 
@@ -365,7 +365,7 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             let mut s = e.sink();
             untag(&mut s, at);
             s.i64_const(!63).i64_and().local_set(at);
-            e.check(at, 64, Access::Write);
+            e.check(at, 64, Access::Write, 0);
             e.sink()
                 .local_get(at)
                 .i32_const(0)
@@ -376,7 +376,7 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             let at = e.local(ValType::I64);
             e.get(rn);
             e.sink().local_set(at);
-            e.check(at, 1, Access::Read);
+            e.check(at, 1, Access::Read, 0);
             if let I::CodeChanged { .. } = instruction {
                 e.sink().local_get(at);
                 e.hook(Hook::CodeChanged);
@@ -446,7 +446,12 @@ fn structures<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruction) 
     );
     let base = e.local(ValType::I64);
     e.sink().local_get(at).local_set(base);
-    e.check(at, bytes, if load { Access::Read } else { Access::Write });
+    e.check(
+        at,
+        bytes,
+        if load { Access::Read } else { Access::Write },
+        0,
+    );
     let register = |k: u8| (rt + k) % 32;
     let lanes = width / u32::from(element);
     let lane_op = |s: &mut wasm_encoder::InstructionSink<'_>, offset: u64, lane: u8, load: bool| {

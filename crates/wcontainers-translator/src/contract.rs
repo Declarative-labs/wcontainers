@@ -112,6 +112,9 @@ pub const HOOK_WARN: &str = "warn";
 /// Hook `(kind: i32, detail: i64)`: the instruction at `pc` (or the one before it, as the guest's trap
 /// says) stops the thread; see [`TrapKind`]. Registers are saved. The thread then leaves.
 pub const HOOK_TRAP: &str = "trap";
+
+/// The export of a guest's probe module (`Guest::probe_module`) that gives the host answer.
+pub const PROBE: &str = "probe";
 // After these six, the guest's own hooks follow, as `Guest::HOOKS` names and types them.
 
 /// Bytes a runner gives each thread at its block's place: the block (registers, then the stop flag), then

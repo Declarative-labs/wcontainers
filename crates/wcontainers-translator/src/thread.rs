@@ -14,7 +14,7 @@ use wcontainers_guest_cpu::Guest;
 pub(crate) fn piece_type<G: Guest>(types: &mut TypeSection) {
     types.ty().function(
         vec![ValType::I64; G::PARAMETERS as usize],
-        vec![ValType::I64; G::PASSED as usize],
+        vec![ValType::I64; G::RESULTS as usize],
     );
 }
 
@@ -152,7 +152,7 @@ pub fn thread_module<G: Guest>() -> Vec<u8> {
         .ref_as_non_null()
         .call_ref(0);
     // The results, last first, go back to the block. `pc` is where the guest returned to.
-    for slot in crate::code::passed_slots::<G>().rev() {
+    for slot in crate::code::result_slots::<G>().rev() {
         s.local_set(offset).global_get(BLOCK).local_get(offset);
         slot.store_to(&mut s, STATE_M);
     }

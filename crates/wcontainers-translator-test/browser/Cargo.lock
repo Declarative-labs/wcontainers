@@ -410,6 +410,7 @@ dependencies = [
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
  "wcontainers-translator",
+ "zerocopy",
 ]
 
 [[package]]

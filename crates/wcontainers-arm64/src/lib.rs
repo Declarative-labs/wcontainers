@@ -63,6 +63,14 @@ impl Personality for Arm64 {
     const STOP_FLAG_OFFSET: usize = wcontainers_abi::STOP_FLAG_OFFSET;
     const BLOCK_SIZE: usize = THREAD_BLOCK_SIZE;
     const PRIVATE_BYTES: usize = 32;
+
+    fn initial_block(pc: u64, sp: u64) -> RegisterBlock {
+        RegisterBlock {
+            pc,
+            sp,
+            ..RegisterBlock::ZERO
+        }
+    }
 }
 
 // ARM64's words of the thread state after the block, which the kernel never sees.
