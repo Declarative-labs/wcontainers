@@ -1636,6 +1636,10 @@ pub const BACKEND_CALLS: &[u32] = &[
     linux::__NR_lremovexattr,
     linux::__NR_fremovexattr,
     linux::__NR_mincore,
+    linux::__NR_pipe2,
+    linux::__NR_splice,
+    linux::__NR_tee,
+    linux::__NR_cachestat,
 ];
 
 /// System V IPC's flag to return at once rather than wait (`linux/ipc.h`).
