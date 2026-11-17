@@ -1340,6 +1340,10 @@ fn send(
         && socket.borrow().kind != SOCK_STREAM
         && socket.borrow().inet.is_none()
     {
+        // `unix_seqpacket_sendmsg` wants a connection first.
+        if socket.borrow().kind == SOCK_SEQPACKET && socket.borrow().state != State::Connected {
+            return Err(Errno::ENOTCONN);
+        }
         return Err(Errno::EOPNOTSUPP);
     }
     let kind = socket.borrow().kind;

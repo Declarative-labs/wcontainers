@@ -2190,8 +2190,9 @@ fn int_value(bytes: &[u8], level: u32) -> Result<i32, Errno> {
     if bytes.len() >= 4 {
         return Ok(i32::from_le_bytes(bytes[..4].try_into().expect("4 bytes")));
     }
-    if level == SOL_IP && !bytes.is_empty() {
-        return Ok(i32::from(bytes[0]));
+    // `do_ip_setsockopt` reads an int or a byte, and nothing leaves the value 0 (measured).
+    if level == SOL_IP {
+        return Ok(bytes.first().map_or(0, |byte| i32::from(*byte)));
     }
     Err(Errno::EINVAL)
 }
@@ -2329,6 +2330,9 @@ pub(super) fn set_option(
             };
             match name {
                 IP_TTL => {
+                    if bytes.is_empty() {
+                        return Some(Err(Errno::EINVAL));
+                    }
                     if value != -1 && !(1..=255).contains(&value) {
                         return Some(Err(Errno::EINVAL));
                     }
