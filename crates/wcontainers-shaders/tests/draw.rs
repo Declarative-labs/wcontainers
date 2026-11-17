@@ -42,9 +42,11 @@ struct Case {
     not_on_webgl: Option<&'static str>,
     /// A known failure of the WebGL 2 back end, outside this crate: drawn and reported, not failed on.
     known_on_webgl: Option<&'static str>,
+    /// Also compiled by dxc (`<name>.dxil`): drawn by the DXIL route too, against the same picture.
+    dxil: bool,
 }
 
-const CASES: [Case; 9] = [
+const CASES: [Case; 14] = [
     Case {
         vs: "vs_transform",
         ps: "ps_textured",
@@ -53,6 +55,7 @@ const CASES: [Case; 9] = [
         grid: true,
         not_on_webgl: None,
         known_on_webgl: None,
+        dxil: false,
     },
     Case {
         vs: "vs_transform",
@@ -62,6 +65,7 @@ const CASES: [Case; 9] = [
         grid: true,
         not_on_webgl: None,
         known_on_webgl: None,
+        dxil: false,
     },
     Case {
         vs: "vs_transform",
@@ -71,6 +75,7 @@ const CASES: [Case; 9] = [
         grid: true,
         not_on_webgl: Some("GLSL ES 3.00 has no bitfield operations"),
         known_on_webgl: None,
+        dxil: false,
     },
     Case {
         vs: "vs_fullscreen",
@@ -80,6 +85,7 @@ const CASES: [Case; 9] = [
         grid: false,
         not_on_webgl: Some("GLSL ES 3.00 has no bitfield operations (vs_fullscreen inserts bits)"),
         known_on_webgl: None,
+        dxil: false,
     },
     Case {
         vs: "vs_shade",
@@ -89,6 +95,7 @@ const CASES: [Case; 9] = [
         grid: true,
         not_on_webgl: None,
         known_on_webgl: None,
+        dxil: false,
     },
     Case {
         vs: "vs_shade",
@@ -98,6 +105,7 @@ const CASES: [Case; 9] = [
         grid: true,
         not_on_webgl: Some("GLSL ES 3.00 has no noperspective"),
         known_on_webgl: None,
+        dxil: false,
     },
     Case {
         vs: "vs_transform",
@@ -107,6 +115,7 @@ const CASES: [Case; 9] = [
         grid: true,
         not_on_webgl: None,
         known_on_webgl: Some("the fragment's z arrives as (z + 1) / 2, the back end's clip depth"),
+        dxil: false,
     },
     Case {
         vs: "vs_transform",
@@ -116,6 +125,7 @@ const CASES: [Case; 9] = [
         grid: true,
         not_on_webgl: None,
         known_on_webgl: None,
+        dxil: false,
     },
     Case {
         vs: "vs_transform",
@@ -125,11 +135,62 @@ const CASES: [Case; 9] = [
         grid: true,
         not_on_webgl: None,
         known_on_webgl: None,
+        dxil: false,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_signed",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: None,
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_offset",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: None,
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_special",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: None,
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_cases",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: Some("GLSL ES 3.00 has no bitfield operations (fxc extracts bits)"),
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_pack",
+        ps: "ps_pack",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: None,
+        known_on_webgl: None,
+        dxil: false,
     },
 ];
 
 fn bytecode(name: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/own/{name}.dxbc"));
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/own/{name}"));
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
@@ -201,7 +262,10 @@ fn dxgi(format: Format) -> DXGI_FORMAT {
 
 /// Draws a case with real Direct3D 11; returns the target's texels, rows tightly packed.
 fn direct3d(gpu: &Gpu, case: &Case) -> Vec<u8> {
-    let (vs, ps) = (bytecode(case.vs), bytecode(case.ps));
+    let (vs, ps) = (
+        bytecode(&format!("{}.dxbc", case.vs)),
+        bytecode(&format!("{}.dxbc", case.ps)),
+    );
     let elements = if case.grid {
         vec![
             d3d11::element(s!("POSITION"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, 0),
@@ -359,15 +423,24 @@ struct Draw<'a> {
 }
 
 impl<'a> Draw<'a> {
-    /// One of the cases of tests/own; `code` holds its vertex and pixel shader's bytecode.
-    fn own(case: &Case, code: &'a [Vec<u8>; 2], grid: &'a [f32]) -> Draw<'a> {
+    /// One of the cases of tests/own; `code` holds its vertex and pixel shader's DXBC, or with `dxil`
+    /// their DXIL.
+    fn own(case: &Case, code: &'a [Vec<u8>; 2], dxil: bool, grid: &'a [f32]) -> Draw<'a> {
         const ATTRIBUTES: &[(&str, u32, VertexFormat)] = &[
             ("POSITION", 0, VertexFormat::Float32x3),
             ("TEXCOORD", 12, VertexFormat::Float32x2),
         ];
         Draw {
-            vs: Source::Dxbc(&code[0]),
-            ps: Source::Dxbc(&code[1]),
+            vs: if dxil {
+                Source::Dxil(&code[0])
+            } else {
+                Source::Dxbc(&code[0])
+            },
+            ps: if dxil {
+                Source::Dxil(&code[1])
+            } else {
+                Source::Dxbc(&code[1])
+            },
             format: case.format,
             size: SIZE,
             vertices: if case.grid { grid } else { &[] },
@@ -703,21 +776,30 @@ fn own_shaders_draw_as_direct3d_does() {
         let name = format!("{}+{}", case.vs, case.ps);
         let reference = direct3d(&gpu, case);
         keep(&format!("{name}.d3d11"), &reference, case.format);
-        let code = [bytecode(case.vs), bytecode(case.ps)];
-        let draw = Draw::own(case, &code, &grid);
-        let mut runs = vec![(
-            "webgpu",
-            ours(&mut wgpu_backend, &draw, ProvokingVertex::First),
-        )];
         // Flat values come from the first vertex, as Direct3D's, where the back end offers it.
         let provoking = if gl.caps().has(Features::PROVOKING_VERTEX_FIRST) {
             ProvokingVertex::First
         } else {
             ProvokingVertex::Last
         };
-        match case.not_on_webgl {
-            None => runs.push(("webgl", ours(&mut gl, &draw, provoking))),
-            Some(why) => eprintln!("{name} webgl: not drawn: {why}"),
+        let mut runs = Vec::new();
+        for (route, dxil) in [("dxbc", false), ("dxil", true)] {
+            if dxil && !case.dxil {
+                continue;
+            }
+            let code = [
+                bytecode(&format!("{}.{route}", case.vs)),
+                bytecode(&format!("{}.{route}", case.ps)),
+            ];
+            let draw = Draw::own(case, &code, dxil, &grid);
+            runs.push((
+                format!("webgpu-{route}"),
+                ours(&mut wgpu_backend, &draw, ProvokingVertex::First),
+            ));
+            match case.not_on_webgl {
+                None => runs.push((format!("webgl-{route}"), ours(&mut gl, &draw, provoking))),
+                Some(why) => eprintln!("{name} webgl {route}: not drawn: {why}"),
+            }
         }
         for (back_end, texels) in runs {
             keep(&format!("{name}.{back_end}"), &texels, case.format);
@@ -727,7 +809,10 @@ fn own_shaders_draw_as_direct3d_does() {
                 SIZE * SIZE
             );
             if count > 0 {
-                match case.known_on_webgl.filter(|_| back_end == "webgl") {
+                match case
+                    .known_on_webgl
+                    .filter(|_| back_end.starts_with("webgl"))
+                {
                     Some(why) => eprintln!("{name} {back_end}: a known failure: {why}"),
                     None => failures.push(format!("{name} {back_end}")),
                 }

@@ -1,5 +1,6 @@
-// What both converter boundaries share: copying a reason out, and keeping a converter's failure (an
-// exception or an assertion, which `cpp/assert` turns into one) inside the call as an error.
+// What both converter boundaries share: copying a reason out, keeping dxbc-spirv's errors as the
+// reason, and keeping a converter's failure (an exception or an assertion, which `cpp/assert` turns
+// into one) inside the call as an error.
 
 #pragma once
 
@@ -8,7 +9,20 @@
 #include <exception>
 #include <string>
 
+#include "util/util_log.h"
+
 namespace wcs {
+
+// Keeps the first error dxbc-spirv reports on this thread while it lives, as the reason a call failed.
+class ErrorLog : public dxbc_spv::util::Logger {
+public:
+  void message(dxbc_spv::util::LogLevel severity, const char* text) override {
+    if (severity == dxbc_spv::util::LogLevel::eError && first.empty())
+      first = text;
+  }
+  dxbc_spv::util::LogLevel getMinimumSeverity() override { return dxbc_spv::util::LogLevel::eError; }
+  std::string first;
+};
 
 inline char* copy(const std::string& s) {
   char* out = static_cast<char*>(std::malloc(s.size() + 1));

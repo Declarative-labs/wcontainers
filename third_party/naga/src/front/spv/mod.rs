@@ -1261,6 +1261,88 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
         Ok(())
     }
 
+    /// The integer kind (signed or unsigned) of SPIR-V type `type_id`, or `None` for other types.
+    fn int_kind(
+        &self,
+        ctx: &BlockContext,
+        type_id: spirv::Word,
+    ) -> Result<Option<crate::ScalarKind>, Error> {
+        let handle = self.lookup_type.lookup(type_id)?.handle;
+        Ok(ctx.module.types[handle]
+            .inner
+            .scalar_kind()
+            .filter(|k| matches!(k, crate::ScalarKind::Sint | crate::ScalarKind::Uint)))
+    }
+
+    /// `expr`, integers of kind `from` (none for other values), reinterpreted as integers of `to`.
+    fn retype_int(
+        ctx: &mut BlockContext,
+        expr: Handle<crate::Expression>,
+        from: Option<crate::ScalarKind>,
+        to: Option<crate::ScalarKind>,
+        span: crate::Span,
+    ) -> Handle<crate::Expression> {
+        match (from, to) {
+            (Some(from), Some(kind)) if from != kind => ctx.expressions.append(
+                crate::Expression::As {
+                    expr,
+                    kind,
+                    convert: None,
+                },
+                span,
+            ),
+            _ => expr,
+        }
+    }
+
+    /// An integer division or remainder in the signedness the instruction names: the operands are
+    /// read in that signedness and the result is given the result type's.
+    #[allow(clippy::too_many_arguments)]
+    fn parse_expr_signed_binary_op(
+        &mut self,
+        ctx: &mut BlockContext,
+        emitter: &mut crate::proc::Emitter,
+        block: &mut crate::Block,
+        block_id: spirv::Word,
+        body_idx: usize,
+        op: crate::BinaryOperator,
+        kind: crate::ScalarKind,
+    ) -> Result<(), Error> {
+        let start = self.data_offset;
+        let result_type_id = self.next()?;
+        let result_id = self.next()?;
+        let p1_id = self.next()?;
+        let p2_id = self.next()?;
+        let span = self.span_from_with_op(start);
+
+        let p1_lexp = self.lookup_expression.lookup(p1_id)?;
+        let left = self.get_expr_handle(p1_id, p1_lexp, ctx, emitter, block, body_idx);
+        let left_kind = self.int_kind(ctx, p1_lexp.type_id)?;
+        let p2_lexp = self.lookup_expression.lookup(p2_id)?;
+        let right = self.get_expr_handle(p2_id, p2_lexp, ctx, emitter, block, body_idx);
+        let right_kind = self.int_kind(ctx, p2_lexp.type_id)?;
+        let result_kind = self.int_kind(ctx, result_type_id)?;
+
+        let left = Self::retype_int(ctx, left, left_kind, Some(kind), span);
+        let right = Self::retype_int(ctx, right, right_kind, Some(kind), span);
+        let value = ctx
+            .expressions
+            .append(crate::Expression::Binary { op, left, right }, span);
+        let handle = Self::retype_int(ctx, value, Some(kind), result_kind, span);
+        self.lookup_expression.insert(
+            result_id,
+            LookupExpression {
+                handle,
+                type_id: result_type_id,
+                block_id,
+            },
+        );
+        Ok(())
+    }
+
+    /// A shift; `kind`, where given, is the signedness a right shift works in (arithmetic or
+    /// logical), in which the shifted value is read before the result is given the result type's.
+    #[allow(clippy::too_many_arguments)]
     fn parse_expr_shift_op(
         &mut self,
         ctx: &mut BlockContext,
@@ -1269,6 +1351,7 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
         block_id: spirv::Word,
         body_idx: usize,
         op: crate::BinaryOperator,
+        kind: Option<crate::ScalarKind>,
     ) -> Result<(), Error> {
         let start = self.data_offset;
         let result_type_id = self.next()?;
@@ -1280,6 +1363,9 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
 
         let p1_lexp = self.lookup_expression.lookup(p1_id)?;
         let left = self.get_expr_handle(p1_id, p1_lexp, ctx, emitter, block, body_idx);
+        let left_kind = self.int_kind(ctx, p1_lexp.type_id)?;
+        let result_kind = self.int_kind(ctx, result_type_id)?;
+        let left = Self::retype_int(ctx, left, left_kind, kind.or(left_kind), span);
         let p2_lexp = self.lookup_expression.lookup(p2_id)?;
         let p2_handle = self.get_expr_handle(p2_id, p2_lexp, ctx, emitter, block, body_idx);
         // convert the shift to Uint
@@ -1293,10 +1379,12 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
         );
 
         let expr = crate::Expression::Binary { op, left, right };
+        let value = ctx.expressions.append(expr, span);
+        let handle = Self::retype_int(ctx, value, kind.or(left_kind), result_kind, span);
         self.lookup_expression.insert(
             result_id,
             LookupExpression {
-                handle: ctx.expressions.append(expr, span),
+                handle,
                 type_id: result_type_id,
                 block_id,
             },
@@ -1484,6 +1572,12 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
 
         let (p_lexp_handle, p_base_ty_handle) =
             self.get_exp_and_base_ty_handles(pointer_id, ctx, emitter, block, body_idx)?;
+        // Memory cannot be reinterpreted in place: a signed minimum or maximum needs signed memory.
+        if let Some(kind) = op_signedness(inst.op) {
+            if ctx.module.types[p_base_ty_handle].inner.scalar_kind() != Some(kind) {
+                return Err(Error::UnsupportedSignedness(inst.op));
+            }
+        }
 
         log::trace!("\t\t\tlooking up value expr {value_id:?}");
         let v_lexp_handle = self.lookup_expression.lookup(value_id)?.handle;

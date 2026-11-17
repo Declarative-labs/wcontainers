@@ -70,6 +70,7 @@ pub(crate) fn lower(
         .parse()
         .map_err(|e| ConvertError::Reader(format!("{e}")))?;
     unconverted(&module)?;
+    crate::lower::derivatives_anywhere(&mut module);
     let ep = module
         .entry_points
         .first()
@@ -204,25 +205,36 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     }) {
         return Err(ConvertError::Unsupported("Texture1DArray"));
     }
-    // Every built-in the entry point reads or writes, with its type.
+    // Every built-in the entry point reads or writes, with its type, and every location it reads
+    // (`false`) or writes (`true`).
     let mut builtins = Vec::new();
-    let mut add =
-        |ty: Handle<Type>, binding: Option<&Binding>| match (binding, &module.types[ty].inner) {
-            (Some(Binding::BuiltIn(b)), _) => builtins.push((*b, ty)),
-            (None, TypeInner::Struct { members, .. }) => {
-                builtins.extend(members.iter().filter_map(|m| match m.binding {
-                    Some(Binding::BuiltIn(b)) => Some((b, m.ty)),
-                    _ => None,
-                }))
-            }
-            _ => {}
+    let mut locations = Vec::new();
+    let mut add = |ty: Handle<Type>, binding: Option<&Binding>, output: bool| {
+        let mut one = |ty, binding: Option<&Binding>| match binding {
+            Some(Binding::BuiltIn(b)) => builtins.push((*b, ty)),
+            Some(Binding::Location { location, .. }) => locations.push((output, *location)),
+            None => {}
         };
+        match (binding, &module.types[ty].inner) {
+            (None, TypeInner::Struct { members, .. }) => {
+                for m in members {
+                    one(m.ty, m.binding.as_ref());
+                }
+            }
+            _ => one(ty, binding),
+        }
+    };
     for a in &ep.function.arguments {
-        add(a.ty, a.binding.as_ref());
+        add(a.ty, a.binding.as_ref(), false);
     }
     let result = ep.function.result.as_ref();
     if let Some(r) = result {
-        add(r.ty, r.binding.as_ref());
+        add(r.ty, r.binding.as_ref(), true);
+    }
+    // dxc packs small values into one register's components; WGSL gives each value a location.
+    locations.sort_unstable();
+    if locations.windows(2).any(|w| w[0] == w[1]) {
+        return Err(ConvertError::Unsupported("PackedStageValues"));
     }
     if builtins.iter().any(|(b, _)| *b == BuiltIn::PrimitiveIndex) {
         return Err(ConvertError::Unsupported("PrimitiveId"));
