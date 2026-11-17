@@ -476,13 +476,16 @@ pub fn thread_module<G: Guest>() -> Vec<u8>;
 arguments. Every use is monomorphised; nothing of a guest is reached through `dyn`, so nothing is looked
 up at run time. ARM64's small per-instruction queries are marked `#[inline]` so they inline across the
 crate boundary (release builds have no LTO), and the translator walks only the flag states a set holds, not
-every bit of the `u128`; measured at X1, ARM64 then translates in no more cycles than before the move and
-about 2 percent fewer instructions, and the output is the same bytes, so the guest's run time is untouched.
+every bit of the `u128`. Measured at X1 (old and new alternating, one thread, python and busybox at three
+look-aheads, on a loaded Mac): ARM64 then translates in about 2.4 to 3.5 percent fewer instructions than
+before the move but about 0 to 5 percent more cycles a pair (about 2 to 3 percent on average); where the rest
+goes was looked for and not found. The output is the same bytes, so the guest's run time is untouched.
 (The loop-proof
 module passes a few of its own closures as `&dyn Fn` while it plans, as before the move: translate time only,
 nothing of the guest, nothing in the output.) The translator crate
-depends on `wcontainers-guest-cpu` only, never on a CPU crate (a test in the translator crate fails if its
-manifest or sources name one). The program that ships (the browser's cdylib, the host runner) names the one
+depends on `wcontainers-guest-cpu` only, never on a CPU crate (tests in the translator crate fail if its
+manifest or sources name one, or if its resolved dependencies, as `cargo tree` gives them, hold one). The
+program that ships (the browser's cdylib, the host runner) names the one
 guest it is built for.
 
 The interface crate depends on `zerocopy` (the `Block` bound) and, in the translation half, `wasm-encoder`
@@ -1081,14 +1084,18 @@ translator works the target out again from the guest register) and full.rs:2857 
 nothing and the branch the canonical check above.
 
 Control flow (T7). `Flow` gains `FlowKind`, so the translator no longer matches `Branch { link: true }` or
-`BranchRegister::Br`. A RISC-V `auipc ra, hi; jalr ra, lo(ra)` pair is a call through a register whose
-target the translator knows from `built_address` on the pair; it is treated as a direct call.
+`BranchRegister::Br`. A RISC-V `auipc ra, hi; jalr ra, lo(ra)` pair (a far call) is decoded by the RV64GC
+crate as one 8-byte instruction whose `Flow` is `FlowKind::Call` with its target, so the translator treats it
+as any direct call and needs nothing more; the pair cannot fault or stop between its halves, and its last
+write of ra is the return address, so the result is exact. A jump to the `jalr` alone decodes it alone, by the
+overlap rule of the instruction unit above. Any other `jalr` that links is `CallThrough` and goes through the
+lookup.
 
 Addresses the code builds (T8). `built_address(at, i, blob, code, before)` replaces "adr, or adrp plus
 add at the 4-byte slot before". ARM64 keeps reading that slot from the blob, not the instruction before
 on the walk's path: the two differ when the add is a jump target the walk first reached by the jump (the
 walk records each offset once), and reading the slot is what today's translator does, so the X1 output
-stays the same. It finds x86 `lea r, [rip + d]` alone and RISC-V `auipc` plus `addi` or `jalr` (2 or 4
+stays the same. It finds x86 `lea r, [rip + d]` alone and RISC-V `auipc` plus `addi` (2 or 4
 bytes apart) through `before`.
 
 Switches (T9, T10). `jump_table` gets the jump's offset, the blob and `before`, a way to walk the function's
@@ -1303,8 +1310,9 @@ x86-64 (`wcontainers_x86::X86_64`, section 5 gives the reasons):
 
 RV64GC (`wcontainers_riscv::Rv64`, paper only, the check that nothing assumes flags, a link register that
 is special, 4-byte instructions or a special stack pointer):
-- ALIGN 2, MAX_LENGTH 4; decode reads a 16-bit unit and, when its low two bits are 11, a second; trap detail
-  that unit or word.
+- ALIGN 2, MAX_LENGTH 8; decode reads a 16-bit unit and, when its low two bits are 11, a second; trap detail
+  that unit or word. An `auipc ra, hi` followed by `jalr ra, lo(ra)` decodes as one 8-byte call with its
+  target (3.4 Control flow).
 - Bits: x1 to x31 at 1 to 31 (x0 is the hard zero, no bit), f0 to f31 at 64 to 95 as i64 (single precision
   values are NaN-boxed). SP_BIT 2 (sp is x2 by the ABI only; nothing in the CPU checks it). tp (x4) is an
   ordinary general register, so the thread pointer needs no control. Passed in and out: a0, a1, sp.
@@ -2709,8 +2717,9 @@ Measured throughout, recorded with machine and load: translation speed, output s
   `no_std` and the rest behind `translate`; `wcontainers-arm64` implements
   them, layered the same way (section 3.1); `wcontainers-translator` is generic over `Guest` and depends on
   no CPU crate: `cargo tree -p wcontainers-translator` shows none, also among its dev-dependencies, since
-  its validity test (`tests/valid.rs`, which draws ARM64's forms) moves to the test crate, and a test in
-  the translator crate fails if its manifest or sources name a CPU crate again; the test crate and the
+  its validity test (`tests/valid.rs`, which draws ARM64's forms) moves to the test crate, and tests in
+  the translator crate fail if its manifest or sources name a CPU crate again or its resolved normal and
+  build dependencies (`cargo tree`, all features) hold one, under whatever name; the test crate and the
   browser crate name `Arm64` where they call the translator; the float hook's host side moves into
   `Arm64::run_hook`, and the host runner and the browser's cdylib call it instead of `exact::run` (the
   browser's `cpu_hook` export and runner.js's copy of the state come with it, section 3.4 Hooks); the

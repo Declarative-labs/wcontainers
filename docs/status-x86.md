@@ -16,8 +16,46 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   run 4 (the same day) fixed what the third check found: overlapping instruction streams that meet again,
   half the translate time the move added, an alias of the abi crate. Run 4 said every part of the pass bar
   held, but the float hook program was still slower in wasmtime (never timed again after run 2); run 5 (the
-  same day) found both causes of that and of the rest of the translate time, and removed them (see "X1, run
-  5"). Next: X2, the shared test harness (plan section 9).
+  same day) found both causes of that and removed them, and cut the translate time the move added, but said
+  wrongly that none was left; run 6 (the same day) measured it again and corrected that, made the guard read
+  the resolved dependencies, and fixed the plan's RISC-V far call (see "X1, run 6"). Next: X2, the shared test
+  harness (plan section 9).
+
+## X1, run 6 (2026-11-17)
+
+The fifth check of X1 found one blocking problem and four smaller ones. What was done about each:
+- Blocking, run 5's "no more cycles than before the move" at translate time does not hold. Measured again
+  (scratch `x1/run6/count.sh`: python and busybox at full, bounded 256 and bounded 4096, one thread,
+  `/usr/bin/time -l`, order flipped each round; Mac, load 12.3 to 21.2):
+  - HEAD against old (2274314), 2 rounds (`count-a.log`): cycles 118.80 G against 122.06 G, then 125.53 G
+    against 122.87 G (ratios 0.973 and 1.022).
+  - HEAD with one change tried (a function's instruction lengths kept as `u8`, the walk back over
+    instructions stepping by `ALIGN`), 8 rounds against old (`count-a8.log`): ratio of cycles a pair 0.992,
+    1.015, 1.019, 1.026, 1.035, 1.041, 1.042 and 1.000; best old 121.37 G, best new 125.60 G (1.035);
+    instructions old 471.3 to 475.8 G, new 458.9 to 462.1 G. No better than HEAD, so it was dropped.
+  - With the check's 7 pairs (1.001 to 1.050): the move costs ARM64 about 0 to 5 percent more cycles a pair at
+    translate time, about 2 to 3 percent on average, while it retires 2.4 to 3.5 percent fewer instructions.
+  - Where it goes, by `sample` of one run of each (`old.sample`, `new.sample`, `kids.py`): the walk that finds
+    functions (`Finder::explore`) has about 13 percent more samples of its own, the rest is spread thin; its
+    calls to decode cost less than before. Not found further. The output is the same bytes, so the guest's
+    run time is untouched. Plan 3.1 now gives the measured range; run 5's sentence above was wrong.
+- The licence entry for `wasmparser` now says it is a dev-dependency of the test crate.
+- The guard: a new test, `the_translator_depends_on_no_guest_cpu_crate`, runs `cargo tree --offline
+  --all-features -p wcontainers-translator -e normal,build` and fails if any `wcontainers-*` crate but the abi
+  and the interface is in it. Shown to fail with the check's example (root `cpu = { package =
+  "wcontainers-arm64", ... }` under `[workspace.dependencies]`, `cpu.workspace = true` in the translator),
+  then put back. Plan 3.1 and the X1 pass bar say so.
+- RISC-V's `auipc ra, hi; jalr ra, lo(ra)`: the plan claimed something the interface does not do. Now the
+  RV64GC crate decodes the pair as one 8-byte instruction whose flow is a call with its target, which the
+  interface already carries, so the translator treats it as any direct call (MAX_LENGTH 8 for RV64GC; a jump
+  to the `jalr` alone decodes it alone, by the overlap rule). `built_address` no longer mentions `jalr`.
+  Plan 3.4 (Control flow, Addresses the code builds) and 3.5.
+- "Cases actually run" now lists X1's seeded random tests and their counts.
+
+Proof after run 6 (machine: the Mac, Apple M5): the translator's source, the ARM64 crate and the runners are
+unchanged since run 5 (this run changed a test, a doc comment and the documents), so run 5's byte-for-byte
+comparison stands and was not repeated. origin/phase-1-translator: fetched at the start and end of the run,
+nothing new. The suite: see below.
 
 ## X1, run 5 (2026-11-17)
 
@@ -50,7 +88,8 @@ instructions retired (`/usr/bin/time -l`), which barely move between runs, with 
   - instructions: old 471.7 to 472.5 G, HEAD 468.9 to 470.1 G, new 459.6 to 460.2 G;
   - best cycles: old 128.68 G, HEAD 132.84 G (1.032), new 128.34 G (0.997).
   So the move now costs ARM64 nothing measurable at translate time, and about 2.6 percent fewer
-  instructions. The plan (3.1, 3.4 Hooks) says so.
+  instructions. The plan (3.1, 3.4 Hooks) says so. (Wrong: the best of 3 rounds hid the spread; run 6
+  measured 0 to 5 percent more cycles a pair.)
 
 Proof after run 5 (machine: the Mac, Apple M5; loads as given):
 - Byte for byte against 2274314 with `same-output.sh` at 34bfa5c (`x1/run5/same-small.log`, `same-big.log`):
@@ -699,7 +738,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   crate's lint as in docs/status-translator.md.
 - Translate time, old against new: build both sides' `tests/output.rs` (the comparison does), then
   `<scratch>/x1/run4/translate-time.sh <rounds>` (wall and user seconds) or `<scratch>/x1/run5/count.sh
-  <rounds>` (instructions retired and cycles from `/usr/bin/time -l`; edit the binaries' paths at its top).
+  <rounds>` (instructions retired and cycles from `/usr/bin/time -l`; edit the binaries' paths at its top),
+  or `<scratch>/x1/run6/count.sh <rounds> old=<binary> new=<binary>` (the same, any sides, order flipped each
+  round).
 - The no-std check is `tests/no_std.rs` of the test crate (part of the suite); by hand: `nix develop -c
   cargo build -p wcontainers-guest-cpu -p wcontainers-arm64 --no-default-features --target wasm32v1-none
   --target-dir <scratch>/x1/nostd-target`.
@@ -786,11 +827,19 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
   41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2); in run 10, one run each of `tf`
   (8 trap-flag scenarios in 9 runs, 20 stops) and `rf` (8 signal frames), and 6 `stepper6` cases.
+- X1: each run of the suite (one in each of runs 1 to 6, the last listed under that run) ran the seeded
+  random tests at their defaults, all with seed 1: layer 1 at `WC_LAYER1_CASES` 64 a form (and
+  `WC_LAYER1_CHROME` 1), decoding at `WC_DECODE_CASES` 64 a form and `WC_DECODE_WORDS` 200,000, layer 2 at
+  `WC_LAYER2_CASES` 64 programs (`WC_LAYER2_NATIVE` 8, `WC_LAYER2_CHROME` 1), layer 3 at `WC_LAYER3_CASES` 4,
+  changes at `WC_CHANGES_CASES` 64 programs and `WC_CHANGES_PROGRAM_SEEDS` 3, look-aheads at
+  `WC_LOOKAHEAD_CASES` 4, validity at `PROPTEST_CASES` 256 (`PROPTEST_RNG_SEED` 1) and `WC_VALID_WORDS` 16
+  (that one from its own fixed seed).
+  No run raised a knob. The test guest's programs and the byte-for-byte comparison are not random.
 
 ## Measurements
 
 All in the run sections above (X0 runs 9 and 10 timed nothing; X1's benchmark times are in run 2, the
-float hook's in runs 2, 3 and 5, translate time in runs 4 and 5).
+float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 ## Licences of what this track uses
 
@@ -798,8 +847,8 @@ float hook's in runs 2, 3 and 5, translate time in runs 4 and 5).
   LLVM-exception) as a dev-dependency of the test crate; `wasm-encoder` (Apache-2.0 WITH LLVM-exception OR
   Apache-2.0 OR MIT) as a dependency of the test crate and of the interface crate; `zerocopy` 0.8
   (BSD-2-Clause OR Apache-2.0 OR MIT) as a dependency of the interface crate and of the browser crate;
-  `wasmparser` 0.263 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) as a dev-dependency of the
-  translator (the test guest's validity test).
+  `wasmparser` 0.263 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) as a dev-dependency of the test
+  crate (the test guest's validity test; it was the translator's until the test guest moved in run 3).
 
 - iced-x86 1.22.0: MIT. Not yet a dependency of anything in the repository (X3 adds it, and as a
   build-dependency with `instr_info`).
@@ -873,6 +922,8 @@ X1 (each also written into the plan's text in the same commit):
   hook's closure for its index at compile time. The plan had the runner copy the named bytes; the copies
   and the per-call lookup of the hook's types cost the float hook program 8 G instructions (run 5; plan 3.4
   Hooks).
+- RV64GC's MAX_LENGTH is 8, not 4: its crate reads a far call's `auipc ra; jalr ra` as one instruction, so
+  the translator treats it as a direct call with nothing more in the interface (plan 3.4, 3.5).
 - No intentional change of ARM64's output at X1: the stop check's raised branch changes at X6 (plan 5.1),
   so the whole move is compared byte for byte against one "before".
 
