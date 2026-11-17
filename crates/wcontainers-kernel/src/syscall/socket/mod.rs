@@ -624,12 +624,17 @@ fn find(
             if node.borrow().file_type() != S_IFSOCK {
                 return Err(Errno::ECONNREFUSED);
             }
-            kernel
+            let found = kernel
                 .sockets
                 .paths
                 .get(&node_key(&node))
                 .and_then(Weak::upgrade)
-                .ok_or(Errno::ECONNREFUSED)?
+                .ok_or(Errno::ECONNREFUSED)?;
+            if found.borrow().kind == kind {
+                // `unix_find_bsd` reads the socket's node.
+                super::io::touch_atime(kernel, cx, &node, 0);
+            }
+            found
         }
     };
     if found.borrow().kind != kind {

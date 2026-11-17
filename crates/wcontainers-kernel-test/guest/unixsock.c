@@ -439,8 +439,33 @@ static void readiness(void) {
     wait(0);
 }
 
+// A connect reads the socket's node, which moves its access time.
+static void access_time(void) {
+    int s = socket(AF_UNIX, SOCK_DGRAM, 0), c = socket(AF_UNIX, SOCK_DGRAM, 0);
+    struct sockaddr_un a = {.sun_family = AF_UNIX, .sun_path = "/tmp/atime.sock"};
+    bind(s, (void *)&a, sizeof a);
+    struct timespec times[2] = {{.tv_sec = 1000}, {.tv_nsec = UTIME_OMIT}};
+    utimensat(AT_FDCWD, a.sun_path, times, 0);
+    struct stat st;
+    stat(a.sun_path, &st);
+    printf("before connect atime %ld\n", (long)st.st_atime);
+    result("connect", connect(c, (void *)&a, sizeof a));
+    stat(a.sun_path, &st);
+    printf("after connect atime moved %d\n", st.st_atime != 1000);
+    int t = socket(AF_UNIX, SOCK_STREAM, 0);
+    utimensat(AT_FDCWD, a.sun_path, times, 0);
+    result("connect of another kind", connect(t, (void *)&a, sizeof a));
+    stat(a.sun_path, &st);
+    printf("after a refused kind atime moved %d\n", st.st_atime != 1000);
+    unlink(a.sun_path);
+    close(s);
+    close(c);
+    close(t);
+}
+
 int main(void) {
     setvbuf(stdout, 0, _IONBF, 0);
+    access_time();
     pairs();
     names();
     passing();

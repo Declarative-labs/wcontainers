@@ -1935,7 +1935,12 @@ pub(super) fn accessed(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::
 }
 
 /// Linux's `touch_atime` itself, which a splice also makes for a device it read.
-fn touch_atime(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::Node, flags: u32) {
+pub(super) fn touch_atime(
+    kernel: &Kernel,
+    cx: &mut Context<'_>,
+    node: &crate::fs::Node,
+    flags: u32,
+) {
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();
     if inode.fs.kind != crate::fs::Kind::Tmpfs
