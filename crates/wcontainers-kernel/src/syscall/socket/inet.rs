@@ -2169,7 +2169,12 @@ struct SentControl {
     source: Option<[u8; 16]>,
     /// The interface packet information names, if any.
     interface: Option<u32>,
+    /// UDP's segment size (UDP_SEGMENT), from the message or else the socket.
+    segment: Option<u16>,
 }
+
+/// The most segments one UDP send may make (`UDP_MAX_SEGMENTS`).
+const UDP_MAX_SEGMENTS: u64 = 128;
 
 /// Whether an interface number names one of the container's interfaces.
 fn interface_known(index: u32) -> bool {
@@ -2212,6 +2217,25 @@ fn sent_control(
         .options
         .contains_key(&(SOL_SOCKET, SO_TXTIME));
     let family = socket.borrow().family;
+    // `udp_cmsg_send` reads UDP's own messages first.
+    if !socket_level_only {
+        while at + 16 <= bytes.len() {
+            let length = u64::from_le_bytes(bytes[at..at + 8].try_into().expect("8 bytes"));
+            let level = u32::from_le_bytes(bytes[at + 8..at + 12].try_into().expect("4 bytes"));
+            let kind = u32::from_le_bytes(bytes[at + 12..at + 16].try_into().expect("4 bytes"));
+            if length < 16 || at as u64 + length > bytes.len() as u64 {
+                return Err(Errno::EINVAL);
+            }
+            if level == SOL_UDP {
+                if kind != crate::linux_extra::UDP_SEGMENT || length != 18 {
+                    return Err(Errno::EINVAL);
+                }
+                out.segment = Some(u16::from_le_bytes([bytes[at + 16], bytes[at + 17]]));
+            }
+            at += length.next_multiple_of(8) as usize;
+        }
+        at = 0;
+    }
     while at + 16 <= bytes.len() {
         let length = u64::from_le_bytes(bytes[at..at + 8].try_into().expect("8 bytes"));
         let level = u32::from_le_bytes(bytes[at + 8..at + 12].try_into().expect("4 bytes"));
@@ -2479,13 +2503,20 @@ fn udp_send(
             own.inet.as_deref().unwrap().remote.expect("a destination")
         }
     };
-    let sent = match &message.control {
+    let mut sent = match &message.control {
         Some(control) => {
             let v4 = v4_of(&to.address).is_some();
             sent_control(kernel, cx, tid, socket, control, false, v4)?
         }
         None => SentControl::default(),
     };
+    if sent.segment.is_none() {
+        sent.segment = socket
+            .borrow()
+            .options
+            .get(&(SOL_UDP, crate::linux_extra::UDP_SEGMENT))
+            .map(|value| u16::from_le_bytes([value[0], value[1]]));
+    }
     {
         let mut own = socket.borrow_mut();
         if own.error != 0 {
@@ -2665,12 +2696,31 @@ fn udp_deliver(
     sent: SentControl,
 ) -> Result<(), Errno> {
     let total = data.len() as u64;
+    // `udp_send_skb`: a datagram longer than its segment size goes as segments of it, at most
+    // `UDP_MAX_SEGMENTS`, kept whole to a receiver with UDP_GRO (`udp_unexpected_gso`).
+    let segment = sent
+        .segment
+        .map(u64::from)
+        .filter(|&size| size > 0 && total > size);
+    if let Some(size) = segment
+        && total > size * UDP_MAX_SEGMENTS
+    {
+        return Err(Errno::EINVAL);
+    }
+    let pieces = |data: &[u8]| -> Vec<Vec<u8>> {
+        match segment {
+            Some(size) => data.chunks(size as usize).map(<[u8]>::to_vec).collect(),
+            None => alloc::vec![data.to_vec()],
+        }
+    };
     // Through lo every destination is the container's own.
     if !is_own(&to.address) && sent.interface != Some(network::LOOPBACK_INDEX) {
         if !unicast(&to.address) {
             return Ok(());
         }
-        super::outside::send_datagram(kernel, cx, socket, to, &data)?;
+        for piece in pieces(&data) {
+            super::outside::send_datagram(kernel, cx, socket, to, &piece)?;
+        }
         return Ok(());
     }
     let receiver = find_receiver(kernel, &to, &from);
@@ -2684,14 +2734,26 @@ fn udp_deliver(
     }
     match receiver {
         Some(receiver) => {
-            let truesize = datagram_truesize(total);
-            let held: u64 = receiver
-                .borrow()
-                .queue
-                .iter()
-                .map(|packet| packet.truesize)
-                .sum();
-            if held <= receiver.borrow().rcvbuf {
+            let whole = flag(&receiver.borrow(), SOL_UDP, crate::linux_extra::UDP_GRO);
+            let (pieces, kept) = match segment {
+                Some(size) if whole => (alloc::vec![data], size as u16),
+                _ => (pieces(&data), 0),
+            };
+            for data in pieces {
+                let truesize = datagram_truesize(data.len() as u64);
+                let held: u64 = receiver
+                    .borrow()
+                    .queue
+                    .iter()
+                    .map(|packet| packet.truesize)
+                    .sum();
+                if held > receiver.borrow().rcvbuf {
+                    continue;
+                }
+                let arrival = Arrival {
+                    segment: kept,
+                    ..arrival_from(socket, &to, sent)
+                };
                 let packet = Packet {
                     data,
                     consumed: 0,
@@ -2700,7 +2762,7 @@ fn udp_deliver(
                     sender: Weak::new(),
                     truesize,
                     source: Some(from),
-                    arrival: Some(prepared(&receiver, arrival_from(socket, &to, sent))),
+                    arrival: Some(prepared(&receiver, arrival)),
                     time: super::stamp(kernel, cx, &receiver),
                     urgent: false,
                     owner: 0,
@@ -2857,6 +2919,7 @@ fn read_error(
             prepared: true,
             mark: 0,
             priority: 0,
+            segment: 0,
         }),
         error: Some((level, kind, extended)),
         time: error.time,
@@ -3114,6 +3177,7 @@ fn arrival_from(sender: &SocketRef, to: &Endpoint, sent: SentControl) -> Arrival
         prepared: true,
         mark,
         priority,
+        segment: 0,
     }
 }
 
@@ -3129,6 +3193,7 @@ pub(super) fn arrival_outside() -> Arrival {
         prepared: true,
         mark: 0,
         priority: 0,
+        segment: 0,
     }
 }
 
@@ -3149,6 +3214,8 @@ pub(crate) struct Arrival {
     /// The sender's mark and priority, for SO_RCVMARK and SO_RCVPRIORITY.
     pub mark: u32,
     pub priority: u32,
+    /// The segment size of a datagram kept whole for a receiver with UDP_GRO (0 for none).
+    pub segment: u16,
 }
 
 /// What `ipv4_pktinfo_prepare` keeps of a datagram as it is queued for `receiver`.
@@ -3374,10 +3441,12 @@ pub(super) fn set_option(
                 _ => not_built(kernel, cx),
             }
         }
-        // `udp_lib_setsockopt`: corking is built; checksums mean nothing without a wire, so
-        // IPv6's are only kept; segmentation, receive offload and encapsulation are not built.
+        // `udp_lib_setsockopt`: checksums mean nothing without a wire, so IPv6's are only kept;
+        // encapsulation (IPsec and L2TP) is not built.
         SOL_UDP if protocol == Protocol::Udp => {
-            use crate::linux_extra::{UDP_CORK, UDP_NO_CHECK6_RX, UDP_NO_CHECK6_TX};
+            use crate::linux_extra::{
+                UDP_CORK, UDP_GRO, UDP_NO_CHECK6_RX, UDP_NO_CHECK6_TX, UDP_SEGMENT,
+            };
             let value = match int_value(bytes, level) {
                 Ok(value) => value,
                 Err(error) => return Some(Err(error)),
@@ -3392,7 +3461,15 @@ pub(super) fn set_option(
                     }
                     stored
                 }
-                UDP_NO_CHECK6_TX | UDP_NO_CHECK6_RX => store(socket, i32::from(value != 0)),
+                UDP_NO_CHECK6_TX | UDP_NO_CHECK6_RX | UDP_GRO => {
+                    store(socket, i32::from(value != 0))
+                }
+                UDP_SEGMENT => {
+                    if !(0..=0xffff).contains(&value) {
+                        return Some(Err(Errno::EINVAL));
+                    }
+                    store(socket, value)
+                }
                 _ => not_built(kernel, cx),
             }
         }
@@ -3630,9 +3707,11 @@ pub(super) fn get_option(
             _ => not_built(kernel, cx),
         },
         SOL_UDP if protocol == Protocol::Udp => {
-            use crate::linux_extra::{UDP_CORK, UDP_NO_CHECK6_RX, UDP_NO_CHECK6_TX};
+            use crate::linux_extra::{
+                UDP_CORK, UDP_GRO, UDP_NO_CHECK6_RX, UDP_NO_CHECK6_TX, UDP_SEGMENT,
+            };
             match name {
-                UDP_CORK | UDP_NO_CHECK6_TX | UDP_NO_CHECK6_RX => kept(0),
+                UDP_CORK | UDP_NO_CHECK6_TX | UDP_NO_CHECK6_RX | UDP_GRO | UDP_SEGMENT => kept(0),
                 _ => not_built(kernel, cx),
             }
         }

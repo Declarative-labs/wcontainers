@@ -2941,6 +2941,30 @@ pub(super) fn recvmsg(
             );
         }
     }
+    // `udp_cmsg_recv`: a datagram kept whole for UDP_GRO tells its segment size.
+    let receives_whole = socket
+        .borrow()
+        .options
+        .get(&(
+            crate::linux::net::IPPROTO_UDP as u32,
+            crate::linux_extra::UDP_GRO,
+        ))
+        .is_some_and(|value| value.iter().any(|&byte| byte != 0));
+    if let Some(arrival) = received
+        .arrival
+        .filter(|arrival| arrival.segment > 0 && receives_whole)
+    {
+        let data = i32::from(arrival.segment).to_le_bytes();
+        let level = crate::linux::net::IPPROTO_UDP as u32;
+        put_control(
+            &mut control,
+            room,
+            level,
+            crate::linux_extra::UDP_GRO,
+            &data,
+            &mut out_flags,
+        );
+    }
     if let Some(arrival) = &received.arrival {
         for (level, kind, data) in inet::arrival_messages(kernel, cx, &socket, arrival) {
             put_control(&mut control, room, level, kind, &data, &mut out_flags);

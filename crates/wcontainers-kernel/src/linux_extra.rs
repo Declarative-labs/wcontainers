@@ -667,3 +667,5 @@ pub(crate) const ICMPV6_PORT_UNREACH: u8 = 4;
 pub(crate) const UDP_CORK: u32 = 1;
 pub(crate) const UDP_NO_CHECK6_TX: u32 = 101;
 pub(crate) const UDP_NO_CHECK6_RX: u32 = 102;
+pub(crate) const UDP_SEGMENT: u32 = 103;
+pub(crate) const UDP_GRO: u32 = 104;

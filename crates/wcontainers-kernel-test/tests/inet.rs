@@ -87,3 +87,9 @@ fn send_control_messages_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "inetsend", &[]);
 }
+
+#[test]
+fn udp_segmentation_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "udpsegment", &[]);
+}
