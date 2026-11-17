@@ -6,7 +6,9 @@
 # one line per test: "<test> <pass|fail|crash|timeout> <checks run> <checks failed> <skipped> <seconds>",
 # and keeps each test's output in <Out>\logs. Without -Record, compares every result with the
 # baseline recorded on real Direct3D (<Baseline>\<file>-<driver>.txt): a test that passed there must
-# pass here; a test that did not is reported but not counted. Exits 1 if any counted test fails.
+# pass here, running at least as many checks and skipping no more (a library that refuses to make a
+# device skips nearly everything with no failure); a test that did not is reported but not counted.
+# Exits 1 if any counted test fails.
 param(
     [Parameter(Mandatory)][string]$Out,
     [Parameter(Mandatory)][string]$Baseline,
@@ -103,8 +105,11 @@ foreach ($choice in $Tests.Split(',')) {
         $before = $expected[$name]
         if (-not $before) { "$file ${name}: FAIL, not in the baseline; $what"; $failed++; $counted++ }
         elseif ($before[1] -ne 'pass') { "$file ${name}: known, $($before[1]) on real Direct3D ($($before[3]) of $($before[2]) checks failed); here $what" }
-        elseif ($verdict -eq 'pass') { "$file ${name}: pass, $checks checks (real Direct3D $($before[2])), $skipped skipped (real Direct3D $($before[4])), $seconds s"; $counted++ }
-        else { "$file ${name}: FAIL, passes on real Direct3D; here $what"; $failed++; $counted++ }
+        elseif ($verdict -ne 'pass') { "$file ${name}: FAIL, passes on real Direct3D; here $what"; $failed++; $counted++ }
+        elseif ($checks -lt [int]$before[2] -or $skipped -gt [int]$before[4]) {
+            "$file ${name}: FAIL, ran $checks checks (real Direct3D $($before[2])) and skipped $skipped (real Direct3D $($before[4])), $seconds s"; $failed++; $counted++
+        }
+        else { "$file ${name}: pass, $checks checks (real Direct3D $($before[2])), $skipped skipped (real Direct3D $($before[4])), $seconds s"; $counted++ }
     }
     [IO.File]::WriteAllLines("$Out\$file-$driver.txt", [string[]]$results)
     $passed = @($results | Where-Object { $_.Split(' ')[1] -eq 'pass' }).Count

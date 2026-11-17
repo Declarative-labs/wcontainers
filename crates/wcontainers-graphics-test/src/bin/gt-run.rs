@@ -6,8 +6,9 @@
 //! replacement d3d11.dll there), runs every scene (or the named ones) in its own process, and checks
 //! each output against the stored references (crates/wcontainers-graphics-test/references/<api>)
 //! within its allowance (see check.rs). It prints one line per output, `pass` or `FAIL`, then a
-//! count, and exits 1 if any fails. It also fails a run whose program did not load a replacement
-//! library from `<out-dir>\bin`, and reports whether the stored shader corpus matches this build.
+//! count, and exits 1 if any fails. It also fails a scene whose program loaded a library of a
+//! replacement's name from anywhere but `<out-dir>\bin`, and a scene name no program has, notes a
+//! replacement no scene loaded (other libraries given are only copied), and reports whether the stored shader corpus matches this build.
 //!
 //! `gt-run record <out-dir>` runs every scene with the debug layer on the GPU twice (the two runs
 //! must agree exactly) and on WARP, and writes the GPU's outputs and their allowances to
@@ -20,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use wcontainers_graphics_test::check::{self, Allowance, TOLERANCES};
-use wcontainers_graphics_test::{compare, load};
+use wcontainers_graphics_test::{LIBRARIES, compare, load};
 
 const APIS: [&str; 2] = ["d3d11", "d3d12"];
 /// How long one scene may run before it counts as hung.
@@ -197,13 +198,29 @@ fn check_mode(options: &Options) -> Result<bool> {
             println!("FAIL {line}");
         }
     };
-    for api in &options.apis {
+    let lists: Vec<Vec<String>> = options
+        .apis
+        .iter()
+        .map(|api| list(&bin, api))
+        .collect::<Result<_>>()?;
+    for scene in &options.scenes {
+        if !lists.iter().any(|l| l.contains(scene)) {
+            report(
+                false,
+                format!(
+                    "{scene}: no such scene in {}; see gt-d3d11 list and gt-d3d12 list",
+                    options.apis.join(" or ")
+                ),
+            );
+        }
+    }
+    let mut loaded = vec![false; options.dlls.len()];
+    for (api, all) in options.apis.iter().zip(&lists) {
         let dir = options.out.join(api);
         if dir.exists() {
             std::fs::remove_dir_all(&dir)?;
         }
-        let all = list(&bin, api)?;
-        let scenes = if options.scenes.is_empty() {
+        let scenes: Vec<String> = if options.scenes.is_empty() {
             all.clone()
         } else {
             options
@@ -220,9 +237,17 @@ fn check_mode(options: &Options) -> Result<bool> {
                 report(false, format!("{api} {scene}: {failure}"));
                 continue;
             }
-            for (name, _) in &options.dlls {
-                let want = format!("{name} from {}", bin.join(name).display()).to_lowercase();
-                if !printed.to_lowercase().contains(&want) {
+            let printed = printed.to_lowercase();
+            for ((name, _), loaded) in options.dlls.iter().zip(&mut loaded) {
+                let name = name.to_lowercase();
+                if !LIBRARIES.contains(&name.as_str())
+                    || printed.contains(&format!("{name} from not loaded"))
+                {
+                    continue;
+                }
+                *loaded = true;
+                let want = format!("{name} from {}", bin.join(&name).display()).to_lowercase();
+                if !printed.contains(&want) {
                     report(
                         false,
                         format!(
@@ -246,6 +271,13 @@ fn check_mode(options: &Options) -> Result<bool> {
             .filter(|v| scenes.iter().any(|s| of_scene(&v.file, s)))
         {
             report(v.pass, format!("{api} {}: {}", v.file, v.detail));
+        }
+    }
+    for ((name, _), loaded) in options.dlls.iter().zip(&loaded) {
+        if !loaded && LIBRARIES.contains(&name.to_lowercase().as_str()) {
+            println!(
+                "note: no scene run loaded a library named {name}, so its replacement was not used"
+            );
         }
     }
     match corpus_differences() {
@@ -359,7 +391,7 @@ fn record_mode(options: &Options) -> Result<bool> {
                     allowance.pixels,
                     allowance.tolerance
                 );
-                tolerances.push_str(&check::tolerance_line(file, allowance, &exact));
+                tolerances.push_str(&check::tolerance_line(file, &allowance, &exact));
             }
             std::fs::copy(&gpu, references.join(file))?;
         }
