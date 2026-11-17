@@ -30,6 +30,9 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("queues", queues),
     ("copies", copies),
     ("swapchain", swapchain),
+    ("blend", super::states::blend),
+    ("depth", super::states::depth),
+    ("stencil", super::states::stencil_scene),
 ];
 
 pub fn find(name: &str) -> Option<Scene> {

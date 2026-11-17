@@ -1,12 +1,12 @@
 //! Every Direct3D 11 scene by name. Each is deterministic: fixed data, no clocks, seeded when random.
 
 mod basic;
-mod blend;
+pub(crate) mod blend;
 mod compute;
 mod constants;
 mod copies;
 mod deferred;
-mod depth;
+pub(crate) mod depth;
 mod draws;
 mod dynamic;
 mod formats;
@@ -17,7 +17,7 @@ mod msaa;
 mod queries;
 mod raster;
 mod samplers;
-mod stencil;
+pub(crate) mod stencil;
 mod streamout;
 mod swapchain;
 mod targets;
