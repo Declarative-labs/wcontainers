@@ -526,6 +526,15 @@ fn creation_checks_refuse_what_direct3d_refuses() {
         dev.create_view(&target, None, bind::RENDER_TARGET),
         Err(Error::InvalidArg(_))
     ));
+    // Targets past the first are ignored unless they blend independently, as the quads scene relies on.
+    let mut blend = BlendDesc::default();
+    blend.targets[0] = BlendDesc::default_state().targets[0];
+    assert!(dev.create_blend_state(&blend).is_ok());
+    blend.independent = true;
+    assert!(matches!(
+        dev.create_blend_state(&blend),
+        Err(Error::InvalidArg(_))
+    ));
 }
 
 #[test]

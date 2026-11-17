@@ -525,7 +525,9 @@ impl<B: Backend> Device<B> {
     }
 
     pub fn create_blend_state(&mut self, d: &BlendDesc) -> Result<Rc<Blend<B>>> {
-        for t in &d.targets {
+        // Targets past the first count only when they blend independently.
+        let used = if d.independent { d.targets.len() } else { 1 };
+        for t in &d.targets[..used] {
             check_blend_factor(t.src, false)?;
             check_blend_factor(t.dst, false)?;
             check_blend_factor(t.src_alpha, true)?;
