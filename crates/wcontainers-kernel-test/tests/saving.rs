@@ -41,7 +41,7 @@ fn saved_and_brought_back(name: &str) {
 /// One test, so that no other test's thread is running when a save copies the process.
 #[test]
 fn saved_and_brought_back_match_reference() {
-    for name in ["processes", "deadlines", "clockwatch", "unixsock", "epoll"] {
+    for name in ["processes", "deadlines", "clockwatch", "unixsock"] {
         saved_and_brought_back(name);
     }
 }

@@ -56,7 +56,13 @@ K5 progress (first run):
   family not built" (EAFNOSUPPORT) for now.
 - Tests: tests/epoll.rs `epoll_and_event_descriptors_match_reference` (guest/epoll.c) and
   tests/unixsock.rs `local_sockets_match_reference` (guest/unixsock.c) match the reference;
-  tests/saving.rs saves and brings back both programs too.
+  tests/saving.rs saves and brings back guest/unixsock.c 8 times for each of 3 seeds (passes).
+  guest/epoll.c was tried there too: its output matched with saves, but it ends after 6 of the 8
+  drawn save moments (seed 1), which the test requires, so it is not in that list.
+- Whole suite at the end of this run (`cargo test -p wcontainers-kernel -p
+  wcontainers-kernel-test`, load 25 to 77 during it): 85 test binaries, 155 tests passed, 0
+  failed, 5 ignored (the known ones). Layer 1 ran at its defaults inside it; the three
+  end-of-milestone seeds of 20000 were not run (K5 is not complete).
 
 The K4 check's findings, fixed in K5's first run (each tested against the reference):
 - A call takes its descriptors and paths once (`process::Taken` in each thread: `Kernel::call_file`
