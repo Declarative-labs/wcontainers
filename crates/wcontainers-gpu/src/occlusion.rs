@@ -1,10 +1,10 @@
 //! The occlusion counter (plan 4.12): exact sample counts for the APIs that ask for them, on back ends
 //! whose queries answer only "any" ([`SlowPath::OcclusionCountReplay`]). The query's draws run
-//! normally and are kept; at the query's end they are drawn again into a counting target cleared to
-//! zero, each with its own depth-stencil and raster blocks, blending One plus One and a counting
-//! program from the front (the draw's fragment shader writing 1.0 at location 0, its storage writes
-//! removed), so each sample holds how many fragments passed every test there. The target's sum is
-//! the count.
+//! normally and are kept; before anything changes what they read or drew on, and at the query's end,
+//! they are drawn again into a counting target cleared to zero, each with its own depth-stencil and
+//! raster blocks, blending One plus One and a counting program from the front (the draw's fragment
+//! shader writing 1.0 at location 0, its storage writes removed), so each sample holds how many
+//! fragments passed every test there. The targets' sums add up to the count.
 
 use crate::MAX_BINDING_SETS;
 use crate::backend::Backend;
@@ -14,7 +14,7 @@ use crate::draw::{
 };
 use crate::error::GpuError;
 use crate::format::Format;
-use crate::passes::PassTracker;
+use crate::passes::{PassTargets, PassTracker};
 use crate::resource::{
     Extent, Origin, ReadSource, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
     TextureViewDesc, ViewDimension,
@@ -133,11 +133,19 @@ struct Pooled<B: Backend> {
 
 #[derive(Debug)]
 pub struct OcclusionCounter<B: Backend> {
+    /// The draws kept since the last count.
     draws: Vec<Kept<B>>,
     running: bool,
-    /// The depth-stencil target as it was at the query's begin, once a draw of the query writes it.
+    /// What the running query has counted so far.
+    sum: u64,
+    /// The targets the kept draws were drawn on, and the pass tracker's generation then.
+    segment: Option<(PassTargets<B>, u64)>,
+    /// The depth-stencil target as it was before the first kept draw that writes it; the count draws
+    /// on it in its place.
     depth_copy: Option<Pooled<B>>,
     copied: bool,
+    /// The copy as it was before a count that may have to be done again in halves.
+    saved: Option<Pooled<B>>,
     targets: Vec<Pooled<B>>,
     /// The One plus One blocks, without and with alpha to coverage.
     blends: [Option<B::Blend>; 2],
@@ -148,8 +156,11 @@ impl<B: Backend> Default for OcclusionCounter<B> {
         OcclusionCounter {
             draws: Vec::new(),
             running: false,
+            sum: 0,
+            segment: None,
             depth_copy: None,
             copied: false,
+            saved: None,
             targets: Vec::new(),
             blends: [None, None],
         }
@@ -164,15 +175,19 @@ impl<B: Backend> OcclusionCounter<B> {
         }
         passes.close(b)?;
         self.draws.clear();
+        self.segment = None;
         self.copied = false;
+        self.sum = 0;
         self.running = true;
         Ok(())
     }
 
     /// Keeps a draw of the running query, called before the front draws it. `counting` is the draw's
     /// counting program; `alpha_to_coverage` is its blend block's; `writes_depth_stencil` says whether
-    /// its depth-stencil block writes either aspect, in which case the first such draw copies the
-    /// depth-stencil target first (the target must have [`TextureUsage::COPY_SRC`]).
+    /// its depth-stencil block writes either aspect, in which case the first such draw since the last
+    /// count copies the depth-stencil target first (the target must have
+    /// [`TextureUsage::COPY_SRC`]). The targets must be the ones the kept draws were drawn on:
+    /// [`OcclusionCounter::flush`] comes before any change of them.
     pub fn draw(
         &mut self,
         b: &mut B,
@@ -184,6 +199,21 @@ impl<B: Backend> OcclusionCounter<B> {
     ) -> Result<(), GpuError> {
         if !self.running {
             return Ok(());
+        }
+        match &self.segment {
+            Some((_, generation)) if *generation != passes.generation() => {
+                return Err(GpuError::Invalid(
+                    "the targets of a counted query changed without a flush",
+                ));
+            }
+            Some(_) => {}
+            None => {
+                let targets = passes
+                    .targets()
+                    .ok_or(GpuError::Invalid("a counted draw with no targets"))?
+                    .clone();
+                self.segment = Some((targets, passes.generation()));
+            }
         }
         if writes_depth_stencil && !self.copied {
             self.copy_depth(b, passes)?;
@@ -246,6 +276,31 @@ impl<B: Backend> OcclusionCounter<B> {
         Ok(())
     }
 
+    /// Counts the draws kept so far. While a counted query runs, the front calls it before anything
+    /// else it records that changes what those draws read or the targets they drew on: a buffer or
+    /// texture write, a copy, a clear, a resolve, or a change of targets.
+    pub fn flush(&mut self, b: &mut B, passes: &mut PassTracker<B>) -> Result<(), GpuError> {
+        let Some((targets, generation)) = self.segment.take() else {
+            return Ok(());
+        };
+        let draws = core::mem::take(&mut self.draws);
+        let copied = core::mem::replace(&mut self.copied, false);
+        if generation != passes.generation() {
+            return Err(GpuError::Invalid(
+                "the targets of a counted query changed without a flush",
+            ));
+        }
+        if passes.is_open() {
+            passes.close(b)?;
+        }
+        b.slow_paths().hit(SlowPath::OcclusionCountReplay);
+        let count = self.count(b, &targets, copied, &draws);
+        self.draws = draws;
+        self.draws.clear();
+        self.sum += count?;
+        Ok(())
+    }
+
     /// Ends the running query and gives its exact count of samples that passed.
     pub fn end(&mut self, b: &mut B, passes: &mut PassTracker<B>) -> Result<u64, GpuError> {
         if !self.running {
@@ -254,15 +309,8 @@ impl<B: Backend> OcclusionCounter<B> {
             ));
         }
         self.running = false;
-        passes.close(b)?;
-        if self.draws.is_empty() {
-            return Ok(0);
-        }
-        b.slow_paths().hit(SlowPath::OcclusionCountReplay);
-        let draws = core::mem::take(&mut self.draws);
-        let count = self.count(b, passes, &draws);
-        self.draws = draws;
-        count
+        self.flush(b, passes)?;
+        Ok(self.sum)
     }
 
     fn copy_depth(&mut self, b: &mut B, passes: &mut PassTracker<B>) -> Result<(), GpuError> {
@@ -273,11 +321,8 @@ impl<B: Backend> OcclusionCounter<B> {
         };
         let key = (d.width, d.height, d.format, d.samples);
         if self.depth_copy.as_ref().is_none_or(|c| c.key != key) {
-            self.depth_copy = Some(pooled(
-                b,
-                key,
-                TextureUsage::RENDER | TextureUsage::COPY_DST,
-            )?);
+            let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+            self.depth_copy = Some(pooled(b, key, usage)?);
         }
         let copy = self
             .depth_copy
@@ -302,18 +347,17 @@ impl<B: Backend> OcclusionCounter<B> {
         Ok(())
     }
 
-    /// Counts `draws` by drawing them into a counting target and summing it; where a sample reached
-    /// the counting format's exact bound, counts the two halves of the draws (or of the one draw's
-    /// instances or primitives) apart and adds them.
+    /// Counts `draws`, drawn on `targets` (on the depth copy where `copied`), by drawing them into a
+    /// counting target and summing it; where a sample reached the counting format's exact bound,
+    /// counts the two halves of the draws (or of the one draw's instances or primitives) one after
+    /// the other, from the depth the whole began with, and adds them.
     fn count(
         &mut self,
         b: &mut B,
-        passes: &PassTracker<B>,
+        targets: &PassTargets<B>,
+        copied: bool,
         draws: &[Kept<B>],
     ) -> Result<u64, GpuError> {
-        let targets = passes
-            .targets()
-            .ok_or(GpuError::Invalid("a counted draw with no targets"))?;
         let size = targets
             .depth
             .as_ref()
@@ -377,12 +421,31 @@ impl<B: Backend> OcclusionCounter<B> {
             load: LoadOp::Clear([0; 4]),
             store: StoreOp::Store,
         });
+        // Where the draws could pass the bound at a sample and write depth, the copy is kept as it
+        // is, to count the halves from.
+        let saving = copied && targets.depth.is_some() && primitives(draws) >= bound as u64;
+        if saving {
+            let copy = self
+                .depth_copy
+                .as_ref()
+                .ok_or(GpuError::Invalid("no depth copy"))?;
+            if self.saved.as_ref().is_none_or(|s| s.key != copy.key) {
+                let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+                self.saved = Some(pooled(b, copy.key, usage)?);
+            }
+            let saved = self
+                .saved
+                .as_ref()
+                .ok_or(GpuError::Invalid("no saved copy"))?;
+            whole_copy(b, copy, saved);
+        }
         if let Some(d) = &targets.depth {
             let (has_depth, has_stencil) = crate::backend::aspects(d.format);
-            let (view, ops) = match (&self.depth_copy, self.copied) {
-                // The copy is the target as it was at the query's begin; the draws may write it.
-                (Some(c), true) => (&c.view, (StoreOp::Discard, false)),
-                // No draw wrote the target, so it still is as it was.
+            let (view, ops) = match (&self.depth_copy, copied) {
+                // The copy is the target as it was before the first draw that writes it, and the
+                // count writes it as the draws wrote the target.
+                (Some(c), true) => (&c.view, (StoreOp::Store, false)),
+                // No draw wrote the target, so it still is as they saw it.
                 _ => (&d.view, (StoreOp::Store, true)),
             };
             pass.depth = Some(DepthAttachment {
@@ -530,10 +593,68 @@ impl<B: Backend> OcclusionCounter<B> {
             return Ok(sum as u64);
         }
         let [a, c] = halves(draws).ok_or(GpuError::Invalid(
-            "one primitive passing more fragments at a sample than the counting format holds",
+            "a draw past the counting format's bound at a sample that cannot be split: a fan, a strip with restart or an indirect draw",
         ))?;
-        Ok(self.count(b, passes, &a)? + self.count(b, passes, &c)?)
+        if saving {
+            let (copy, saved) = (
+                self.depth_copy
+                    .as_ref()
+                    .ok_or(GpuError::Invalid("no depth copy"))?,
+                self.saved
+                    .as_ref()
+                    .ok_or(GpuError::Invalid("no saved copy"))?,
+            );
+            whole_copy(b, saved, copy);
+        }
+        Ok(self.count(b, targets, copied, &a)? + self.count(b, targets, copied, &c)?)
     }
+}
+
+/// Copies one pooled texture into another of the same key, whole.
+fn whole_copy<B: Backend>(b: &mut B, from: &Pooled<B>, to: &Pooled<B>) {
+    let at = |texture| TextureRegion {
+        texture,
+        mip: 0,
+        layer: 0,
+        origin: Origin { x: 0, y: 0, z: 0 },
+        stencil: false,
+    };
+    b.copy_texture(
+        &at(&from.texture),
+        &at(&to.texture),
+        Extent {
+            width: from.key.0,
+            height: from.key.1,
+            depth_or_layers: 1,
+        },
+    );
+}
+
+/// How many primitives the draws draw at most, which bounds how many fragments pass at one sample;
+/// an indirect draw's is unknown.
+fn primitives<B: Backend>(draws: &[Kept<B>]) -> u64 {
+    draws
+        .iter()
+        .map(|k| {
+            let (count, instances) = match k.range {
+                Range::Vertices {
+                    count, instances, ..
+                }
+                | Range::Indexed {
+                    count, instances, ..
+                } => (u64::from(count), u64::from(instances)),
+                Range::Indirect(..) => return u64::MAX,
+            };
+            let per = match k.topology {
+                Topology::PointList | Topology::LineLoop => count,
+                Topology::LineList => count / 2,
+                Topology::LineStrip => count.saturating_sub(1),
+                Topology::TriangleList => count / 3,
+                Topology::TriangleStrip | Topology::TriangleFan => count.saturating_sub(2),
+            };
+            per.saturating_mul(instances)
+        })
+        .fold(0u64, u64::saturating_add)
 }
 
 /// The draws split into two halves; one draw into its halves of instances, or of primitives for a
@@ -544,11 +665,20 @@ fn halves<B: Backend>(draws: &[Kept<B>]) -> Option<[Vec<Kept<B>>; 2]> {
         return Some([a.to_vec(), c.to_vec()]);
     }
     let k = draws.first()?;
-    let per = match k.topology {
-        Topology::PointList => 1,
-        Topology::LineList => 2,
-        Topology::TriangleList => 3,
-        _ => 0,
+    // Vertices per primitive, vertices shared with the next, and whether a split keeps strip
+    // triangles' winding (an even primitive).
+    let (per, shared, even) = match (k.topology, k.restart) {
+        (Topology::PointList, _) => (1, 0, false),
+        (Topology::LineList, _) => (2, 0, false),
+        (Topology::TriangleList, _) => (3, 0, false),
+        (Topology::LineStrip, false) => (1, 1, false),
+        (Topology::TriangleStrip, false) => (1, 2, true),
+        _ => (0, 0, false),
+    };
+    // The primitives the first half takes.
+    let split = |count: u32| {
+        let k = count.saturating_sub(shared) / per.max(1) / 2;
+        if even { k - k % 2 } else { k }
     };
     let (mut a, mut c) = (k.clone(), k.clone());
     match (&mut a.range, &mut c.range) {
@@ -596,11 +726,11 @@ fn halves<B: Backend>(draws: &[Kept<B>]) -> Option<[Vec<Kept<B>>; 2]> {
                 count: cc,
                 ..
             },
-        ) if per > 0 && *ca / per > 1 => {
-            let half = *ca / per / 2 * per;
-            *ca = half;
-            *fc = *fa + half;
-            *cc -= half;
+        ) if per > 0 && split(*ca) > 0 => {
+            let k = split(*ca);
+            *ca = k * per + shared;
+            *fc = *fa + k * per;
+            *cc -= k * per;
         }
         _ => return None,
     }
