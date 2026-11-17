@@ -1,11 +1,12 @@
-//! The GL values the back end last set, and the conversion of each block into them. A block is applied
-//! only when its handle differs from the last one applied, and then only the values that differ from
-//! what GL holds are set.
+//! The GL values the back end last set, and each block as the GL values it stands for, converted once
+//! when the block is made. A block is applied only when its handle differs from the last one applied,
+//! and then only the values that differ from what GL holds are set.
 
 use glow::HasContext;
 use wcontainers_gpu::{
     BlendDesc, BlendFactor, BlendOp, CompareFn, CullMode, DepthStencilDesc, FrontFace,
-    ProvokingVertex, RasterDesc, StencilOp, Topology, VertexFormat,
+    ProvokingVertex, RasterDesc, StencilFace, StencilOp, StepMode, Topology, VertexFormat,
+    VertexLayoutDesc,
 };
 
 /// What GL holds now, for the values blocks and draws set.
@@ -87,65 +88,120 @@ fn enable(gl: &glow::Context, cap: u32, on: bool) {
     unsafe { if on { gl.enable(cap) } else { gl.disable(cap) } }
 }
 
-pub fn blend(gl: &glow::Context, v: &mut GlValues, d: &BlendDesc) {
-    let t = d.targets[0];
-    set_if!(v.blend, t.blend.is_some(), |on| enable(gl, glow::BLEND, on));
-    if let Some((color, alpha)) = t.blend {
-        set_if!(
-            v.blend_equation,
-            [op(color.op), op(alpha.op)],
-            |e: [u32; 2]| gl.blend_equation_separate(e[0], e[1])
-        );
-        let funcs = [
-            factor(color.src),
-            factor(color.dst),
-            factor(alpha.src),
-            factor(alpha.dst),
-        ];
-        set_if!(v.blend_func, funcs, |f: [u32; 4]| gl
+/// A blend block as the GL values it stands for.
+#[derive(Debug)]
+pub struct GlBlend {
+    on: bool,
+    equation: [u32; 2],
+    func: [u32; 4],
+    color_mask: [bool; 4],
+    alpha_to_coverage: bool,
+}
+
+impl GlBlend {
+    /// `create_blend` has refused what WebGL 2 lacks; every target blends as target 0.
+    pub fn new(d: &BlendDesc) -> GlBlend {
+        let t = d.targets[0];
+        let (equation, func) = match t.blend {
+            Some((c, a)) => (
+                [op(c.op), op(a.op)],
+                [factor(c.src), factor(c.dst), factor(a.src), factor(a.dst)],
+            ),
+            None => (
+                [glow::FUNC_ADD; 2],
+                [glow::ONE, glow::ZERO, glow::ONE, glow::ZERO],
+            ),
+        };
+        use wcontainers_gpu::ColorWrites as C;
+        let w = t.writes;
+        GlBlend {
+            on: t.blend.is_some(),
+            equation,
+            func,
+            color_mask: [
+                w.contains(C::R),
+                w.contains(C::G),
+                w.contains(C::B),
+                w.contains(C::A),
+            ],
+            alpha_to_coverage: d.alpha_to_coverage,
+        }
+    }
+}
+
+pub fn blend(gl: &glow::Context, v: &mut GlValues, b: &GlBlend) {
+    set_if!(v.blend, b.on, |on| enable(gl, glow::BLEND, on));
+    if b.on {
+        set_if!(v.blend_equation, b.equation, |e: [u32; 2]| gl
+            .blend_equation_separate(e[0], e[1]));
+        set_if!(v.blend_func, b.func, |f: [u32; 4]| gl
             .blend_func_separate(f[0], f[1], f[2], f[3]));
     }
-    let w = t.writes;
-    use wcontainers_gpu::ColorWrites as C;
-    let mask = [
-        w.contains(C::R),
-        w.contains(C::G),
-        w.contains(C::B),
-        w.contains(C::A),
-    ];
-    set_if!(v.color_mask, mask, |m: [bool; 4]| gl
+    set_if!(v.color_mask, b.color_mask, |m: [bool; 4]| gl
         .color_mask(m[0], m[1], m[2], m[3]));
-    set_if!(v.alpha_to_coverage, d.alpha_to_coverage, |on| enable(
+    set_if!(v.alpha_to_coverage, b.alpha_to_coverage, |on| enable(
         gl,
         glow::SAMPLE_ALPHA_TO_COVERAGE,
         on
     ));
 }
 
+/// A depth and stencil block as the GL values it stands for.
+#[derive(Debug)]
+pub struct GlDepthStencil {
+    depth_func: Option<u32>,
+    depth_mask: bool,
+    stencil: Option<GlStencil>,
+}
+
+/// Both faces' compare and operations (fail, depth fail, pass), with one read and one write mask, as
+/// WebGL requires.
+#[derive(Debug)]
+struct GlStencil {
+    compare: [u32; 2],
+    ops: [[u32; 3]; 2],
+    read_mask: u8,
+    write_mask: u8,
+}
+
+impl GlDepthStencil {
+    /// `create_depth_stencil` has refused per-face masks and depth bounds.
+    pub fn new(d: &DepthStencilDesc) -> GlDepthStencil {
+        let ops = |f: StencilFace| [stencil(f.fail), stencil(f.depth_fail), stencil(f.pass)];
+        GlDepthStencil {
+            depth_func: d.depth_compare.map(compare),
+            depth_mask: d.depth_write,
+            stencil: d.stencil.map(|(front, back)| GlStencil {
+                compare: [compare(front.compare), compare(back.compare)],
+                ops: [ops(front), ops(back)],
+                read_mask: d.stencil_read_mask[0],
+                write_mask: d.stencil_write_mask[0],
+            }),
+        }
+    }
+}
+
 /// The depth and stencil block, with the draw's stencil reference (one for both faces, as WebGL
 /// requires).
-pub fn depth_stencil(gl: &glow::Context, v: &mut GlValues, d: &DepthStencilDesc, reference: u8) {
-    set_if!(v.depth_test, d.depth_compare.is_some(), |on| enable(
+pub fn depth_stencil(gl: &glow::Context, v: &mut GlValues, d: &GlDepthStencil, reference: u8) {
+    set_if!(v.depth_test, d.depth_func.is_some(), |on| enable(
         gl,
         glow::DEPTH_TEST,
         on
     ));
-    if let Some(f) = d.depth_compare {
-        set_if!(v.depth_func, compare(f), |f| gl.depth_func(f));
+    if let Some(f) = d.depth_func {
+        set_if!(v.depth_func, f, |f| gl.depth_func(f));
     }
     // GL writes no depth with the test off, as an absent test means in Direct3D.
-    set_if!(v.depth_mask, d.depth_write, |on| gl.depth_mask(on));
+    set_if!(v.depth_mask, d.depth_mask, |on| gl.depth_mask(on));
     set_if!(v.stencil_test, d.stencil.is_some(), |on| enable(
         gl,
         glow::STENCIL_TEST,
         on
     ));
-    if let Some(faces) = d.stencil {
-        for (i, (face, gl_face)) in [(faces.0, glow::FRONT), (faces.1, glow::BACK)]
-            .into_iter()
-            .enumerate()
-        {
-            let func = (compare(face.compare), reference, d.stencil_read_mask[0]);
+    if let Some(s) = &d.stencil {
+        for (i, gl_face) in [glow::FRONT, glow::BACK].into_iter().enumerate() {
+            let func = (s.compare[i], reference, s.read_mask);
             set_if!(v.stencil_func[i], func, |f: (u32, u8, u8)| gl
                 .stencil_func_separate(
                     gl_face,
@@ -153,35 +209,64 @@ pub fn depth_stencil(gl: &glow::Context, v: &mut GlValues, d: &DepthStencilDesc,
                     i32::from(f.1),
                     u32::from(f.2)
                 ));
-            let ops = [
-                stencil(face.fail),
-                stencil(face.depth_fail),
-                stencil(face.pass),
-            ];
-            set_if!(v.stencil_op[i], ops, |o: [u32; 3]| gl
+            set_if!(v.stencil_op[i], s.ops[i], |o: [u32; 3]| gl
                 .stencil_op_separate(gl_face, o[0], o[1], o[2]));
         }
-        set_if!(v.stencil_write_mask, d.stencil_write_mask[0], |m: u8| gl
+        set_if!(v.stencil_write_mask, s.write_mask, |m: u8| gl
             .stencil_mask(u32::from(m)));
     }
 }
 
-/// The raster block. `flipped` says the program negates y (no EXT_clip_control), which reverses every
-/// triangle's winding in window space. `create_raster` refused what the context lacks.
+/// A raster block as the GL values it stands for.
+#[derive(Debug)]
+pub struct GlRaster {
+    cull: Option<u32>,
+    front_face: u32,
+    /// Slope factor and constant units, when either is not zero.
+    polygon_offset: Option<(f32, f32)>,
+    scissor_test: bool,
+    /// The clip depth convention, where EXT_clip_control sets it.
+    clip_depth: Option<u32>,
+    provoking: u32,
+}
+
+impl GlRaster {
+    /// `flipped` says programs negate y (no EXT_clip_control), which reverses every triangle's winding
+    /// in window space. `create_raster` has refused what the context lacks.
+    pub fn new(d: &RasterDesc, flipped: bool) -> GlRaster {
+        let ccw = (d.front == FrontFace::CounterClockwise) != flipped;
+        let bias = f32::from_bits(d.depth_bias);
+        let slope = f32::from_bits(d.depth_bias_slope);
+        GlRaster {
+            cull: match d.cull {
+                CullMode::None => None,
+                CullMode::Front => Some(glow::FRONT),
+                CullMode::Back => Some(glow::BACK),
+            },
+            front_face: if ccw { glow::CCW } else { glow::CW },
+            polygon_offset: (bias != 0.0 || slope != 0.0).then_some((slope, bias)),
+            scissor_test: d.scissor,
+            clip_depth: (!flipped).then_some(if d.depth_minus_one {
+                crate::platform::NEGATIVE_ONE_TO_ONE
+            } else {
+                crate::platform::ZERO_TO_ONE
+            }),
+            provoking: match d.provoking {
+                ProvokingVertex::First => crate::platform::FIRST_VERTEX,
+                ProvokingVertex::Last => crate::platform::LAST_VERTEX,
+            },
+        }
+    }
+}
+
 pub fn raster(
     gl: &glow::Context,
     v: &mut GlValues,
-    d: &RasterDesc,
-    flipped: bool,
+    r: &GlRaster,
     platform: &crate::platform::Platform,
 ) {
-    let cull = match d.cull {
-        CullMode::None => None,
-        CullMode::Front => Some(glow::FRONT),
-        CullMode::Back => Some(glow::BACK),
-    };
-    if v.cull != cull {
-        match cull {
+    if v.cull != r.cull {
+        match r.cull {
             Some(face) => {
                 if v.cull.is_none() {
                     enable(gl, glow::CULL_FACE, true);
@@ -191,45 +276,109 @@ pub fn raster(
             }
             None => enable(gl, glow::CULL_FACE, false),
         }
-        v.cull = cull;
+        v.cull = r.cull;
     }
-    let ccw = (d.front == FrontFace::CounterClockwise) != flipped;
-    set_if!(v.front_face, if ccw { glow::CCW } else { glow::CW }, |f| gl
-        .front_face(f));
-    let bias = f32::from_bits(d.depth_bias);
-    let slope = f32::from_bits(d.depth_bias_slope);
-    let offset = (bias != 0.0 || slope != 0.0).then_some((slope, bias));
-    if v.polygon_offset != offset {
-        enable(gl, glow::POLYGON_OFFSET_FILL, offset.is_some());
-        if let Some((factor, units)) = offset {
+    set_if!(v.front_face, r.front_face, |f| gl.front_face(f));
+    if v.polygon_offset != r.polygon_offset {
+        enable(gl, glow::POLYGON_OFFSET_FILL, r.polygon_offset.is_some());
+        if let Some((factor, units)) = r.polygon_offset {
             // SAFETY: a plain GL state call.
             unsafe { gl.polygon_offset(factor, units) };
         }
-        v.polygon_offset = offset;
+        v.polygon_offset = r.polygon_offset;
     }
-    set_if!(v.scissor_test, d.scissor, |on| enable(
+    set_if!(v.scissor_test, r.scissor_test, |on| enable(
         gl,
         glow::SCISSOR_TEST,
         on
     ));
-    if !flipped {
-        let depth = if d.depth_minus_one {
-            crate::platform::NEGATIVE_ONE_TO_ONE
-        } else {
-            crate::platform::ZERO_TO_ONE
-        };
+    if let Some(depth) = r.clip_depth {
         set_if!(v.clip_depth, depth, |depth| platform.clip_control(
             gl,
             crate::platform::UPPER_LEFT,
             depth
         ));
     }
-    let provoking = match d.provoking {
-        ProvokingVertex::First => crate::platform::FIRST_VERTEX,
-        ProvokingVertex::Last => crate::platform::LAST_VERTEX,
-    };
-    set_if!(v.provoking, provoking, |mode| platform
+    set_if!(v.provoking, r.provoking, |mode| platform
         .provoking_vertex(gl, mode));
+}
+
+/// A vertex layout block as the attribute pointers it stands for.
+#[derive(Debug)]
+pub struct GlLayout {
+    pub attributes: Vec<GlAttribute>,
+}
+
+/// One attribute's pointer, less its buffer and the draw's offsets.
+#[derive(Clone, Copy, Debug)]
+pub struct GlAttribute {
+    pub location: u32,
+    pub stream: usize,
+    pub offset: u32,
+    pub stride: u32,
+    /// Whether the draw's first instance (else its base vertex) moves the stream.
+    pub per_instance: bool,
+    pub components: i32,
+    pub ty: u32,
+    pub normalized: bool,
+    pub integer: bool,
+    pub divisor: u32,
+}
+
+impl GlLayout {
+    /// None when an attribute names a missing stream or has a format GL ES cannot read as stored.
+    pub fn new(d: &VertexLayoutDesc) -> Option<GlLayout> {
+        let mut attributes = Vec::new();
+        for a in d.attributes.iter().flatten() {
+            let stream = d.streams.get(usize::from(a.stream)).copied().flatten()?;
+            let (components, ty, normalized, integer) = attribute(a.format)?;
+            // Stride 0 (one element for every vertex and instance) and step rate 0 never advance:
+            // GL's stride 0 means tightly packed and its divisor 0 per vertex, so both take a divisor
+            // no instance count reaches.
+            let divisor = match stream.step {
+                _ if stream.stride == 0 => crate::NEVER_ADVANCES,
+                StepMode::Vertex => 0,
+                StepMode::Instance(0) => crate::NEVER_ADVANCES,
+                StepMode::Instance(n) => n,
+            };
+            attributes.push(GlAttribute {
+                location: a.location,
+                stream: usize::from(a.stream),
+                offset: a.offset,
+                stride: stream.stride,
+                per_instance: matches!(stream.step, StepMode::Instance(_)),
+                components,
+                ty,
+                normalized,
+                integer,
+                divisor,
+            });
+        }
+        Some(GlLayout { attributes })
+    }
+}
+
+/// The state of a draw of the back end's own that covers a `width` by `height` target from its
+/// origin: no blending, tests or culling. The caller opens the write masks and the scissor.
+pub fn plain(gl: &glow::Context, v: &mut GlValues, width: i32, height: i32) {
+    set_if!(v.blend, false, |on| enable(gl, glow::BLEND, on));
+    set_if!(v.alpha_to_coverage, false, |on| enable(
+        gl,
+        glow::SAMPLE_ALPHA_TO_COVERAGE,
+        on
+    ));
+    set_if!(v.depth_test, false, |on| enable(gl, glow::DEPTH_TEST, on));
+    set_if!(v.stencil_test, false, |on| enable(
+        gl,
+        glow::STENCIL_TEST,
+        on
+    ));
+    if v.cull.is_some() {
+        enable(gl, glow::CULL_FACE, false);
+        v.cull = None;
+    }
+    set_if!(v.viewport, [0, 0, width, height], |r: [i32; 4]| gl
+        .viewport(r[0], r[1], r[2], r[3]));
 }
 
 pub fn mode(t: Topology) -> u32 {
@@ -320,7 +469,7 @@ pub fn factor(f: BlendFactor) -> u32 {
 
 /// How GL reads an attribute: components, type, normalised, and whether it is read as integers.
 /// None for the formats GL ES 3.0 cannot read as stored.
-pub fn attribute(f: VertexFormat) -> Option<(i32, u32, bool, bool)> {
+fn attribute(f: VertexFormat) -> Option<(i32, u32, bool, bool)> {
     use VertexFormat as V;
     let (n, ty, norm, int) = match f {
         V::Uint8x1 | V::Uint8x2 | V::Uint8x3 | V::Uint8x4 => (0, glow::UNSIGNED_BYTE, false, true),
