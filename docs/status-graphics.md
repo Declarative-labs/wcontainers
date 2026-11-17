@@ -38,7 +38,8 @@ branches into it at the start and end of every run.
     (24 now). The random sequences now include multisampled passes resolved into the texture named.
   - `Recorder::with_caps` makes a recording back end with capabilities taken away, for the routes
     of helpers on back ends without them.
-  - The direct3d-12 branch merged at the start (the others had nothing new); all six again at the end.
+  - The direct3d-12 branch merged at the start (the others had nothing new); at the end webgpu,
+    webgl and direct3d-12 had new work and were merged, with no conflict.
 
 ## G1's pass bar, item by item
 
@@ -138,6 +139,10 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   - d7347d3 (helpers, G1's own): the pass tracker's multisampled fitting and `Builtin::SampleCopy`;
     a multisampled attachment the tracker fits needs `SAMPLE` usage too (`Target` docs). No public
     item added.
+  - From the direct3d-12 track (4f1894c, merged at the end): `ShaderModule::from_wgsl`, one entry
+    point of a WGSL module keyed as the built-ins are. Kept: it serves every front's WGSL programs.
+    It validates with no extra naga capabilities, so the built-ins needing some (cube arrays, sample
+    index) keep their own path.
 - G1 run 1:
   - Commit 3fcb44f ("added the pass tracker, the occlusion counter and the combination tracker to
     the interface's helpers"): new items `PassTracker`, `PassTargets`, `ColorTarget`, `Target`,
