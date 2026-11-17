@@ -693,9 +693,12 @@ desktop):
 6. Constant buffer windows shorter than their shader's block (the rig's constants scene): copy the
    window into a buffer of the block's size whose bytes past it are zero, refreshed when the
    source is written.
-7. The building-ahead hit counts on real programs: the SDK tutorials and Doom print them at the
-   end ("built ahead N combinations ..."), in their output.log under the rig's scratch
-   programs/<program>; record them. The module size still needs the WebAssembly build planned.
+7. The building-ahead hit counts on real programs: a device prints "built ahead N combinations:
+   D drawn since, U not" at its end only when it built any. Doom's run 7 output.log has no such
+   line, so its device built none ahead (its pairs met no drawn state first). The tutorials'
+   logs were overwritten by another track's run in the rig's shared scratch before they were
+   read; keep copies in this track's scratch next time. The rig's scenes print counts (the msaa
+   scene: 17 built ahead, 0 drawn since). The module size still needs the WebAssembly build planned.
 
 After G4 run 6, first, once the desktop answers again: `resume.sh g4r7` from this tree (lint of
 both builds, front tests, library tests, every Direct3D 11 scene, Wine's d3d11 file, every scene
