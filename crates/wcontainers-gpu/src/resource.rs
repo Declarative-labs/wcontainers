@@ -212,7 +212,7 @@ pub enum BorderColor {
 }
 
 /// A comparison, for depth and stencil tests and comparison samplers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CompareFn {
     Never,
     Less,
