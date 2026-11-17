@@ -1425,7 +1425,11 @@ pub(super) fn send(
             if let Some(control) = &message.control {
                 sent_control(kernel, cx, socket, control, true).map_err(|_| Errno::EINVAL)?;
             }
-            if message.flags & MSG_OOB != 0 && total > 0 {
+            // Urgent bytes are refused only where they would go: an unconnected socket fails
+            // first (`sk_stream_wait_connect`).
+            let connected =
+                socket.borrow().state == State::Connected && inet_ref(socket).connecting.is_none();
+            if message.flags & MSG_OOB != 0 && total > 0 && connected {
                 return Err(kernel.counters.refuse_flag(
                     cx.host,
                     __NR_sendmsg,
@@ -1874,6 +1878,10 @@ pub(super) fn receive(
     nonblocking: bool,
 ) -> Result<(u64, Received), Errno> {
     let size = parts.size();
+    // `ip_recv_error`: the error queue (extended errors under IP_RECVERR are not built) is empty.
+    if flags & MSG_ERRQUEUE != 0 {
+        return Err(Errno::EAGAIN);
+    }
     if inet_ref(socket).protocol == Protocol::Udp {
         return udp_receive(kernel, cx, tid, socket, parts, size, flags, nonblocking);
     }

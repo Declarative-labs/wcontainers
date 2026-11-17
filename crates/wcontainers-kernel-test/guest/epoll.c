@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/timerfd.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -307,8 +308,34 @@ static void waits(void) {
     printf("select event %d\n", select(shared_efd + 1, &readable, 0, 0, &none));
 }
 
+// An event descriptor takes exactly one value per write, a vector a segment at a time.
+static void sizes(void) {
+    char z[32] = {0};
+    int e = eventfd(0xffffffff, EFD_NONBLOCK | EFD_SEMAPHORE), f = eventfd(0, EFD_NONBLOCK);
+    result("write 13", write(f, z, 13));
+    result("write 8", write(f, z, 8));
+    result("write 7", write(f, z, 7));
+    result("semaphore write 13", write(e, z, 13));
+    result("semaphore write 8", write(e, z, 8));
+    struct iovec halves[2] = {{z, 4}, {z, 4}}, wide[1] = {{z, 16}}, two[2] = {{z, 8}, {z, 8}};
+    result("writev 4+4", writev(f, halves, 2));
+    result("writev 16", writev(f, wide, 1));
+    result("writev 8+8", writev(f, two, 2));
+    result("read 16", read(f, z, 16));
+    result("read 7", read(f, z, 7));
+    struct iovec parts[2] = {{z, 4}, {z + 4, 4}};
+    result("readv 4+4", readv(f, parts, 2));
+    write(f, z, 8);
+    struct pollfd every = {.fd = f, .events = POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM | POLLERR};
+    poll(&every, 1, 0);
+    printf("poll every bit %#x\n", every.revents);
+    close(e);
+    close(f);
+}
+
 int main(void) {
     setvbuf(stdout, 0, _IONBF, 0);
+    sizes();
     counters();
     triggers();
     checks();

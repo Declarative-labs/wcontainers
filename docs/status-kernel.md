@@ -4,11 +4,11 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 to K4 are done. K5 (sockets and network) has had three runs and is not complete: what is left
+K0 to K4 are done. K5 (sockets and network) has had four runs and is not complete: what is left
 is under Next. The fuller run-by-run record of K4 and of K5's first two runs is in this file at
 commit fdf7001 (git history); what they built is summarised here.
 
-K5 built (all three runs):
+K5 built (all four runs):
 - Local sockets of every kind (stream, datagram, sequenced packets), names (paths and abstract),
   listening, SCM_RIGHTS and SCM_CREDENTIALS, options and buffer limits as Linux; a connect by path
   moves the socket node's access time.
@@ -57,9 +57,64 @@ K5 built (all three runs):
     pages past SKB_MAX_ALLOC); the local sockets' model is unchanged (measured to differ).
   - A TCP connection's FIN counts in its receive queue until the end is read, as Linux shows it.
 
-Layer 1 in the third run: seed 5050003, 4000 sequences (sockets, epoll, eventfd and inotify
-calls among them), passed after all the third run's changes (66.5 s, load about 34 to 40).
-Earlier: 5050001 (300) and 5050002 (4000) in the second run.
+- Fourth run:
+  - Urgent bytes on local streams (MSG_OOB) as Linux 7.0 with CONFIG_AF_UNIX_OOB: the last byte
+    of a send is the receiver's mark (`Packet::urgent`), read out of band once (it stays in the
+    queue emptied), a read stops at the mark and passes an unread urgent byte (dropping it unless
+    SO_OOBINLINE; Linux's queued count keeps it, `skipped_urgent`), SIOCATMARK, POLLPRI, SIGURG
+    to the file's owner (`send_urgent_signal`) and a chosen signal with POLL_PRI.
+  - I/O signals from local sockets with O_ASYNC (`wake_async`): data, room after a send found
+    none, a peer's shutdown and close, a connection on a listener; none for data while a reader
+    waits. Internet and netlink sockets accept FASYNC and send none, counted "socket i/o signals
+    not built".
+  - SO_PEERPIDFD, SO_PASSPIDFD with SCM_PIDFD (a process reaped since gets a descriptor that
+    names it gone), SO_PASSRIGHTS (EPERM to senders of descriptors), SO_INQ with SCM_INQ;
+    SO_PASSCRED, SO_PASSPIDFD and SO_PASSRIGHTS refused on internet sockets as Linux. A message
+    carries credentials only when either end passes them or the receiver is not yet accepted
+    (`unix_maybe_add_creds`), else the overflow ids.
+  - The `system.sockprotoname` attribute of every socket's inode, and sockfs's refusals of other
+    names (a removal of a `security.` name is EAGAIN, measured).
+  - Internet sends read their control messages where Linux does: TCP the socket level only, UDP
+    over IPv4 also IP_TTL and IP_TOS, which the datagram carries; descriptors and credentials are
+    passed over; what is not built (marks, priorities, transmit times, IPv4 options and packet
+    information, IPv6 messages) is refused and counted.
+  - Found by layer 1 once it reached sockets (below) and fixed, each measured: fsync on a socket
+    (EINVAL), socketpair writes its numbers before it makes anything, accept4's and connect's
+    order of checks, sendto and recvfrom check the buffer before the descriptor, a stream read of
+    nothing from an empty queue waits (EAGAIN), epoll_pwait takes the descriptor first, sendfile
+    from a socket into a non-pipe is EINVAL, a read of nothing from a socket is 0, UDP's length
+    and urgent flag come first and a datagram that cannot be copied out is dropped, a local
+    connect finds the listener before its own state, a datagram's bytes are taken before its
+    receiver is looked up, a nonblocking read of a datagram socket shut for reading is EAGAIN, a
+    send to a receiver shut for reading is EPIPE for every kind, only streams send SIGPIPE,
+    every socket-level option is at least an int, and a local socket answers other levels with
+    EOPNOTSUPP before reading the length. TCP's MSG_OOB on receive is EINVAL (no urgent byte can
+    come), a send of nothing with it is 0.
+
+Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
+call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
+and those calls are at its end. The third run's claim that seed 5050003 had them among its calls
+was wrong. At K4's end the list had 257 entries, so only its last (timerfd_gettime) was never
+made. The kind is now a `u16`; seeds made before this make different sequences now.
+
+Tests added in the fourth run (each against the reference):
+- tests/unixsock.rs `urgent_bytes_and_io_signals_match_reference` (guest/unixoob.c: the mark,
+  peeks, two urgent bytes, inline, descriptors with an urgent byte, epoll and poll for POLLPRI,
+  SIGURG, O_ASYNC signals with and without a chosen signal, a reader waiting in a read, SIGPIPE
+  by kind, a listener closed with a connection waiting) and
+  `process_descriptor_and_queue_options_match_reference` (guest/sockpidfd.c: SO_PEERPIDFD of a
+  pair, a child and a reaped child, SCM_PIDFD with and without room and with credentials,
+  SO_PASSRIGHTS, SO_INQ, the protocol name attribute and attribute rights as root and a user).
+- tests/inet.rs `urgent_flags_match_reference` (guest/inetoob.c).
+- Layer 1 makes accept4, sendmsg and recvmsg (headers in the arena with destinations, vectors and
+  control messages: descriptors, credentials, a bare header, IP_TTL; receives with room from none
+  to 128 bytes, their control area zeroed by both runners after each call, the sender's process
+  number and times masked), more socket options (SO_OOBINLINE, SO_PEEK_OFF, SO_PASSPIDFD,
+  SO_PEERPIDFD, SO_PASSRIGHTS, SO_INQ, timestamps, SO_LINGER, IP_PKTINFO, IP_RECVTTL,
+  IP_RECVTOS, IPV6_RECVPKTINFO). A quarter of the sequences start with a local socket pair of one
+  kind and a message from one end, ended by a recvmsg at the other; an eighth with a UDP socket at
+  127.0.0.1:5099 that sends itself a datagram, ended by a recvmsg. The test prints how many sends
+  with control messages and receives went well.
 
 Tests added in the third run (each against the reference):
 - tests/outside.rs `servers_inside_accept_clients_outside_as_linux` and
@@ -239,6 +294,9 @@ What layer 1 does not generate, and why:
   instruction pointer (the runners' differ); alternate signal stacks that could hold either caller's
   stack pointer; rseq areas where other calls write.
 - brk (its values are addresses that differ by layout; tests/memory.rs and tests/limits.rs test it).
+- Socket addresses read back (getsockname, getpeername, accept's and a receive's sender): an
+  automatic local name and an ephemeral port are random. Sends to the loopback port 5099 only from
+  the UDP socket a sequence starts with. tests/unixsock.rs and tests/inet.rs compare addresses.
 - CPU clock ids of process 1 (our caller is process 1, the reference's is not); those of the
   caller's own process and thread (encoded pid 0), of a missing process, and clock devices are
   generated. Sleeps on the profiling and user time CPU clocks: Linux samples those times at ticks, so
@@ -1800,23 +1858,26 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K5, in this order (what the three runs built is under Where things stand):
-1. Socket options whose control messages are not built, counted "socket option not built":
-   SO_TIMESTAMPING (old and new), SO_PASSPIDFD and SCM_PIDFD. TCP_INFO is not built either.
-   SO_TIMESTAMP, SO_TIMESTAMPNS and the UDP ones (IP_PKTINFO and the rest) are built.
-2. Local sockets left: MSG_OOB on streams (counted, EOPNOTSUPP; 7.0 has CONFIG_AF_UNIX_OOB),
-   collecting sockets passed over themselves (such a cycle stays open here), a socket's
-   `/proc/<pid>/fdinfo`.
-3. /proc/net's other files (netstat, snmp, sockstat, protocols, packet, raw and the rest) are
+K5, in this order (what the four runs built is under Where things stand):
+1. Layer 1 now reaches sockets, epoll, eventfd and inotify for the first time (see Where things
+   stand). Run fresh seeds (5050414 and up) at 5000 to 20000 until they pass, fixing what they
+   find; then the three end-of-milestone seeds of 20000 (`LAYER1_CASES=20000 LAYER1_SEED=<n>`,
+   one command each, see Layer 1) and the whole suite.
+2. Not built, counted "socket option not built": SO_TIMESTAMPING (old and new), TCP_INFO, and the
+   internet send control messages listed under Where things stand. TCP's urgent data (a send
+   with MSG_OOB and bytes is refused, counted). I/O signals of internet and netlink sockets
+   (counted "socket i/o signals not built").
+3. Local sockets left: collecting sockets passed over themselves (such a cycle stays open here),
+   a socket's `/proc/<pid>/fdinfo` (fdinfo is not built at all). A SCM_PIDFD or SO_PEERPIDFD for a
+   reaped process whose number was given again would name the new one (numbers are kept, not
+   Linux's `struct pid`).
+4. /proc/net's other files (netstat, snmp, sockstat, protocols, packet, raw and the rest) are
    counted "proc entry not built". fanotify_mark is still "system call not implemented"
    (fanotify_init is refused by Docker's profile, so no group can exist; Linux's flag checks come
    before EBADF and EINVAL, and linux-raw-sys has no FAN_MARK_* to check them with).
-4. inotify gaps: IN_UNMOUNT is never sent; a mapping does not keep an unlinked inode's watches
+5. inotify gaps: IN_UNMOUNT is never sent; a mapping does not keep an unlinked inode's watches
    alive (Linux sends IN_DELETE_SELF at the last unmap); events of files changed on the backend
    from outside are not seen (plan section 15's kind).
-5. The three end-of-milestone layer 1 seeds of 20000 (`LAYER1_CASES=20000 LAYER1_SEED=<n>`, one
-   command each, see Layer 1) once the above is done. Layer 1 does not yet make splice or sendfile
-   with sockets, accept from outside or the IP control message options.
 
 K4's parts are built, the check's findings are fixed, and the fifth run's end-of-milestone seeds
 found and fixed two more (Built in K4's fifth run). Left, none of it blocking:

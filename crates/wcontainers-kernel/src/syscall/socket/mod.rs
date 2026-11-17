@@ -2916,8 +2916,15 @@ pub(super) fn getsockopt(
             } else {
                 (room as usize).min(bytes.len())
             };
-            guest(kernel, cx, tid).write(value, &bytes[..copied])?;
-            guest(kernel, cx, tid).write_value(length, &(copied as i32))?;
+            // The protocols write the length first (`do_ip_getsockopt`, `do_tcp_getsockopt`,
+            // `do_ipv6_getsockopt`); the socket level writes the value first.
+            if level == SOL_SOCKET {
+                guest(kernel, cx, tid).write(value, &bytes[..copied])?;
+                guest(kernel, cx, tid).write_value(length, &(copied as i32))?;
+            } else {
+                guest(kernel, cx, tid).write_value(length, &(copied as i32))?;
+                guest(kernel, cx, tid).write(value, &bytes[..copied])?;
+            }
             return Ok(0);
         }
     } else if socket.borrow().netlink.is_some() && level != SOL_SOCKET {

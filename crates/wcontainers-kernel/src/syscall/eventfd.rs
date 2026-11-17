@@ -58,15 +58,16 @@ pub(super) fn eventfd2(
 
 /// `eventfd_poll`.
 pub(super) fn poll(counter: &Counter) -> u16 {
+    // `eventfd_poll` gives no RDNORM or WRNORM (measured).
     let mut mask = 0;
     if counter.count > 0 {
-        mask |= POLLIN | POLLRDNORM;
+        mask |= POLLIN;
     }
     if counter.count == u64::MAX {
         mask |= POLLERR;
     }
     if u64::MAX - 1 > counter.count {
-        mask |= POLLOUT | POLLWRNORM;
+        mask |= POLLOUT;
     }
     mask as u16
 }
@@ -114,35 +115,41 @@ pub(super) fn write(
     parts: &[(u64, u64)],
 ) -> Result<u64, Errno> {
     let counter = of(&file.borrow()).expect("an event descriptor");
-    let total: u64 = parts.iter().map(|(_, length)| length).sum();
-    if total < 8 {
-        return Err(Errno::EINVAL);
-    }
-    let mut bytes = alloc::vec::Vec::with_capacity(8);
-    let mut guest = super::guest(kernel, cx, tid);
-    for &(base, length) in parts {
-        let take = length.min(8 - bytes.len() as u64);
-        bytes.extend_from_slice(&guest.read(base, take)?);
-        if bytes.len() == 8 {
-            break;
+    // `eventfd_write` takes exactly one value, and a vector is written a segment at a time
+    // (`do_loop_readv_writev`), stopping at the first that fails (measured).
+    let mut written = 0u64;
+    for (index, &(base, length)) in parts.iter().enumerate() {
+        let failed = |error: Errno| if written > 0 { Ok(written) } else { Err(error) };
+        if length != 8 {
+            return failed(Errno::EINVAL);
         }
-    }
-    // Copied once, before any wait.
-    let value = kernel.settle_once(tid, u64::from_le_bytes(bytes.try_into().expect("8 bytes")));
-    if value == u64::MAX {
-        return Err(Errno::EINVAL);
-    }
-    if u64::MAX - counter.borrow().count <= value {
-        if file.borrow().flags & O_NONBLOCK != 0 {
-            return Err(Errno::EAGAIN);
+        let bytes: [u8; 8] = match super::guest(kernel, cx, tid).read(base, 8) {
+            Ok(bytes) => bytes.try_into().expect("8 bytes"),
+            Err(error) => return failed(error),
+        };
+        // The first is copied once, before any wait.
+        let value = u64::from_le_bytes(bytes);
+        let value = if index == 0 {
+            kernel.settle_once(tid, value)
+        } else {
+            value
+        };
+        if value == u64::MAX {
+            return failed(Errno::EINVAL);
         }
-        if kernel.signal_pending(tid) {
-            return Err(Errno::ERESTARTSYS);
+        if u64::MAX - counter.borrow().count <= value {
+            if written > 0 || file.borrow().flags & O_NONBLOCK != 0 {
+                return failed(Errno::EAGAIN);
+            }
+            if kernel.signal_pending(tid) {
+                return Err(Errno::ERESTARTSYS);
+            }
+            kernel.park(tid, channel(&counter));
+            return Err(Errno::PARKED);
         }
-        kernel.park(tid, channel(&counter));
-        return Err(Errno::PARKED);
+        counter.borrow_mut().count += value;
+        kernel.wake_poll(channel(&counter), EPOLLIN);
+        written += 8;
     }
-    counter.borrow_mut().count += value;
-    kernel.wake_poll(channel(&counter), EPOLLIN);
-    Ok(8)
+    Ok(written)
 }

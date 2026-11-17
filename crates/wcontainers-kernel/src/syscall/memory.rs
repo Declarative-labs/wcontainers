@@ -275,11 +275,21 @@ pub(super) fn do_mmap(
                 }
                 backend = Some(handle);
             }
-            if !zero && backend.is_none() && !matches!(inode.content, Content::Regular(_)) {
+            // A socket has an `mmap` (`sock_mmap`), so the checks after it come first; the
+            // protocol's refuses it later (`sock_no_mmap`).
+            let socket = matches!(inode.content, Content::Socket(_));
+            if !zero
+                && backend.is_none()
+                && !socket
+                && !matches!(inode.content, Content::Regular(_))
+            {
                 return Err(Errno::ENODEV);
             }
             if grows_down {
                 return Err(Errno::EINVAL);
+            }
+            if socket {
+                return Err(Errno::ENODEV);
             }
             // A sealed file is not written through a mapping, then or later (`memfd_check_seals_mmap`).
             if let Content::Regular(regular) = &inode.content
