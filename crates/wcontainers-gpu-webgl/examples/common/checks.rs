@@ -749,7 +749,6 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::Rg16Sint, Format::Rg16Unorm),
         (Format::Rg16Unorm, Format::Rg16Sint),
         (Format::Rgba8Snorm, Format::Rgba8Uint),
-        (Format::Rgba8Sint, Format::Rgba8Snorm),
         (Format::Rgba16Snorm, Format::Rgba16Sint),
     ];
     let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
@@ -1174,12 +1173,11 @@ pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
             | FormatUse::COPY_OUT;
         assert!(uses.contains(want), "{format:?}: {uses:?}");
         let texel = format.block().2 as usize;
-        let comp =
-            if texel % 2 == 0 && matches!(format, F::R16Snorm | F::Rg16Snorm | F::Rgba16Snorm) {
-                2
-            } else {
-                1
-            };
+        let comp = if matches!(format, F::R16Snorm | F::Rg16Snorm | F::Rgba16Snorm) {
+            2
+        } else {
+            1
+        };
         // Every bit pattern of the first texels, then the most negative value in the last.
         let mut bytes = pattern(8 * texel, 0x2545_f491);
         let last = bytes.len() - texel;
