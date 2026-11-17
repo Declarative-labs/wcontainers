@@ -1274,8 +1274,13 @@ each sequence the runner puts back what a sequence can change outside its direct
   5050417 each failed first and were fixed in turn (the findings under Where things stand); with
   every fix in, 5050405 and 5050406 passed 2000, 5050411 to 5050417 passed 5000 each (70 to 117
   s each, three side by side, load 15 to 40). At 10000: 5050421 passed at 6d071c7 (168 s), 5050418
-  passed at 6d071c7's parent fixes (171 s), and with every fix in (65ae145) 5050419 and 5050420
-  passed (170 s and 168 s, side by side, load 33 to 24). Sequences report how many sends with control
+  passed with the fixes before 6d071c7's (171 s), and with every fix in (65ae145) 5050419 and
+  5050420 passed (170 s and 168 s, side by side, load 33 to 24).
+- K5, fourth run: whole suite at 65ae145 (every fix in; same command, clean copy, own build): 171
+  passed, 1 failed, 5 ignored, 10 min 45 s with the build, load 26.8 at the start and 34.1 at the
+  end. The failure is the reference's known race in threads `process_signal_takers_match_reference`
+  (theirs "main willing: taken by thread 1", see Known issues, K3 sixth run); two reruns alone
+  passed. Sequences report how many sends with control
   messages and receives went well: about 100 to 300 and 300 to 4000 per 5000.
 
 - K4, fifth run, final, at head deb0e5c (every fix in): plain layer 1 seeds 4040510, 4040511,
@@ -1813,6 +1818,9 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
+- K5, fourth run: threads `process_signal_takers_match_reference` (sigpick) failed once more in
+  the whole suite at 65ae145 (load about 30): the reference gave the process signal to thread 1.
+  Two reruns alone passed. The same race as the K3 sixth run's entry below.
 - K5, fourth run: tests/inet.rs `internet_sockets_match_reference` failed once in a run of three
   test binaries (load about 30): the reference showed `peer closed poll 0x4` where ours (and every
   other run of the reference) shows the peer's FIN (0x2005); Linux handles a loopback FIN in its
