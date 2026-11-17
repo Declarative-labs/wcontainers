@@ -660,6 +660,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 
 [[package]]
+name = "fuse-abi"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19976a6994b6ebda45b4d02a46dc5a9b2af17d46a43d9f76404c333f0b38f7d7"
+dependencies = [
+ "zerocopy",
+ "zerocopy-derive",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1848,6 +1858,7 @@ dependencies = [
 name = "wcontainers-kernel"
 version = "0.1.0"
 dependencies = [
+ "fuse-abi",
  "object 0.41.0",
  "siphasher",
  "smallvec",
