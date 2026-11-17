@@ -1,4 +1,4 @@
-//! Our own two Direct3D 11 programs (the examples `own_handled` and `own_refused`) run as ordinary
+//! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges` and `lifetimes`) run as ordinary
 //! programs, once beside the system's d3d11.dll and once with our forwarding d3d11.dll and library
 //! beside them, and what each printed compared.
 #![cfg(windows)]
@@ -83,6 +83,18 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     );
 }
 
+#[test]
+fn own_edges_read_and_copy_as_direct3d_does() {
+    let (code, want) = run("own_edges", &place("edges-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_edges", &place("edges-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
 /// Seeds and steps of the `lifetimes` runs: `WC_LIFETIMES=<first seed>,<seeds>,<steps>`.
 fn lifetime_cases() -> (u64, u64, usize) {
     let v: Vec<u64> = std::env::var("WC_LIFETIMES")
@@ -135,9 +147,6 @@ fn own_handled_draws_the_same_through_ours_with_32_bit_depth() {
 }
 
 #[test]
-#[ignore = "known failure: the webgpu back end makes a depth-only view of a D24_UNORM_S8_UINT \
-            texture, which wgpu refuses as a pass's attachment (the interface says it holds both \
-            aspects); the device is removed"]
 fn own_handled_draws_the_same_through_ours_with_depth_and_stencil() {
     handled_with_depth("d24s8");
 }
