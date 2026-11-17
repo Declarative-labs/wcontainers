@@ -4,14 +4,14 @@
 # counted device as ID3D11Device5
 # counted swap-chain as IDXGISwapChain4
 # counted immediate-context and deferred-context through 1 wrapped contexts
-device AddRef 870
-device Release 870
-device QueryInterface 864
-device GetPrivateData 845
+device AddRef 872
+device Release 872
+device QueryInterface 866
+device GetPrivateData 847
 device CreateQuery 448
 device CheckMultisampleQualityLevels 208
 device CheckFeatureSupport 164
-device CreateBuffer 44
+device CreateBuffer 42
 device CreateShaderResourceView 28
 device CreatePixelShader 20
 device CheckFormatSupport 18
@@ -28,12 +28,12 @@ device CreateDepthStencilState 2
 device CreateDepthStencilView 2
 device CreateTexture2D1 2
 device SetPrivateDataInterface 1
-immediate-context UpdateSubresource 4073
+immediate-context UpdateSubresource 3954
 immediate-context IASetVertexBuffers 3238
 immediate-context RSSetState 3238
 immediate-context OMSetBlendState 2880
 immediate-context OMSetDepthStencilState 2880
-immediate-context OMSetRenderTargetsAndUnorderedAccessViews 2645
+immediate-context OMSetRenderTargetsAndUnorderedAccessViews 2644
 immediate-context PSSetSamplers 2400
 immediate-context PSSetShaderResources 2400
 immediate-context VSSetSamplers 2400
@@ -44,21 +44,21 @@ immediate-context PSSetShader 1440
 immediate-context RSSetViewports 1440
 immediate-context VSSetConstantBuffers 1440
 immediate-context VSSetShader 1440
-immediate-context OMSetRenderTargets 1086
+immediate-context OMSetRenderTargets 1085
 immediate-context Draw 1080
-immediate-context IASetPrimitiveTopology 736
+immediate-context IASetPrimitiveTopology 735
 immediate-context DrawIndexed 718
 immediate-context ClearRenderTargetView 611
-immediate-context GetData 497
+immediate-context GetData 493
 immediate-context RSSetScissorRects 478
-immediate-context End 375
+immediate-context End 372
 immediate-context IASetIndexBuffer 360
 immediate-context Map 360
 immediate-context Unmap 360
 immediate-context CopySubresourceRegion 240
 immediate-context ClearDepthStencilView 174
-immediate-context Begin 125
-immediate-context Flush 5
+immediate-context Begin 124
+immediate-context Flush 4
 immediate-context QueryInterface 1
 swap-chain Present 120
 swap-chain AddRef 3
