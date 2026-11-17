@@ -78,7 +78,9 @@ branches into it at the start and end of every run.
   branches had nothing new at the start; at the end direct3d-12, shaders and rig were merged without
   conflict and without touching the interface, the suite or the plan. The whole workspace checks.
 - G1, run 9 (2026-11-17): the three findings of G1's seventh independent check settled (below).
-  The other branches had nothing new at the start.
+  The other branches had nothing new at the start. At the end webgpu, direct3d-11 and direct3d-12
+  were merged without conflict (webgl, shaders and rig had nothing new); webgpu brought two
+  interface commits of its own (below), kept. The whole workspace checks.
 
 ## G1's seventh check, and how each finding was settled (run 9)
 
@@ -434,8 +436,9 @@ branches into it at the start and end of every run.
   giving fresh contents and the new checks, 0x5eed, 0xc0ffee and 0xd15ca4d (new), 100,000 each;
   in run 6, 0x5eed, 0xc0ffee and 0x51de6 (new); in run 7, on the recorder with the program binding
   checks, 0x5eed, 0xc0ffee and 0x5a3d7 (new), 100,000 each; in run 8, on the generator with texture
-  writes of every mode and padded pitch, 0x5eed, 0xc0ffee and 0x7e8a (new), 100,000 each
-  (Measurements).
+  writes of every mode and padded pitch, 0x5eed, 0xc0ffee and 0x7e8a (new), 100,000 each; in run 9,
+  on the recorder with the binding number and stage checks, 0x5eed, 0xc0ffee and 0xb1d5 (new),
+  100,000 each (Measurements).
 
 ## G1a's second check, and how each finding was settled
 
@@ -543,6 +546,9 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     tracks: the webgpu back end already clamps scissors and keys paired textures by binding minus
     32; the shaders crate already numbers sampled textures from 32. A front that names fewer stages
     than read a binding is now refused by the recording back end.
+  - From the webgpu track (578a3fc and a893a7c, merged at the end): a listed loss, float depth
+    copied from values a draw cannot write (`copy_buffer_to_texture` docs, plan 4.12). Documentation
+    only; kept, as it is a listed loss in the interface's own form.
 
 - G1 run 8:
   - 6c89a04 ("interface: stated that texture writes take the write modes by texel ..."):
@@ -774,6 +780,28 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 
 ## Measurements
 
+- G1 run 9, all on the Linux laptop (i7-8750H):
+  - Random sequences on 046bce6 (scratch `g1r9/sequences-100k.log`, `--release`, 2 jobs, the rule
+    sweep beside them), each 100,000 asked and run, recorded with no rule broken and replayed
+    identically: seed 0x5eed, 4,587,884 calls, 38.9 s, load 0.4; seed 0xc0ffee, 4,565,181 calls,
+    36.4 s, load 2.8; seed 0xb1d5 (new), 4,572,904 calls, 20,101 multisampled passes, 28,537
+    depth-stencil passes, 43,079 indexed draws, 28,350 queries, 12,139 no-overwrite buffer writes
+    and 11,176 no-overwrite texture writes without a wait, 18,574 discarding texture writes, 35.4 s,
+    load 2.2. The generator did not change, so the first two give run 8's counts.
+  - Sweep of the two new checks (scratch `g1r9/sweep.log`, load about 1 to 3): the paired texture
+    range in `create_shader` and the stage check at the draw, each turned off: 2 of 2 caught, each
+    by the test written for it.
+  - The Direct3D 11 and 12 fronts' tests on the recording back end with the new checks, before
+    the end merges (`g1r9/fronts.log`): 22; 2, 9, 8, all pass.
+  - End check after the end merges (scratch `g1r9/end-check.log`, load 0.7 to 2.4): the whole
+    workspace checks (`cargo check --workspace --all-targets`); `wcontainers-gpu` 32 of 32; suite
+    on the recording back end 27 of 27 (`tests/recorder.rs` 33 of 33); rules 102 of 102; helpers 15
+    of 15; fast paths 12 of 12; sequences 1 of 1 (1,000 at seed 0x5eed); the fronts on the
+    recording back end: direct3d-11 30 of 30, direct3d-12 2, 10 and 8, the infrastructure's
+    swap chain 9 of 9; clippy and docs with warnings denied clean. The direct3d-12 track's
+    `tests/gpu.rs` (WebGPU on the laptop's broken GPU) was left out: it hung past 60 s and was
+    stopped in the first run.
+
 - G1 run 8, all on the Linux laptop (i7-8750H):
   - Random sequences on 178a87c (the recorder and generator as they end the run; scratch
     `g1r8/sequences-100k.log`, `--release`, 3 jobs), each 100,000 asked and run, recorded with no
@@ -946,6 +974,11 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 - Earlier runs' measurements are in this file's history.
 
 ## The laptop's disk
+
+- Run 9 found 776 MB free. It deleted its own finished folders (`g1`, `g1r4` to `g1r6`,
+  `g1a-run2`, `work-g1r2`, `g1-check`, `g1-check2`), the folders of G1's finished fifth and sixth
+  checks (`check-g1-5`, `check-g1-6`) and our incremental cache: 10 GB free after. Left alone: the
+  `check-g6a*` folders (about 29 GB, not this track's), `check-g1-7`, and the targets named below.
 
 - Run 8 found 1.7 GB free of 122 GB. It deleted its own build folder (`g1r8/target`), run 7's tree
   copy (`g1r7/tree`, 1.2 GB) and our build folder's incremental cache
