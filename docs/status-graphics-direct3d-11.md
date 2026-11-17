@@ -1,9 +1,46 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 4 of G4 as a whole (2026-11-17).
+Runs so far: six on G4a, the first slice; then runs 1 to 5 of G4 as a whole (2026-11-17).
 
 ## Where things stand
+
+G4 run 5: the desktop still refused every SSH sign-in (probed from 11:48 through the run, same
+reset after the key exchange). Nothing was built, run or tested on Windows again; everything below
+is type-checked and clippy-clean for Windows by the check-only cross build (How to run, "Without
+the desktop"), and committed locally, not pushed. What it did:
+- Merged origin/phase-2-graphics (holding -webgpu, -webgl, -shaders), -direct3d-12 and -rig,
+  cleanly. Nothing new from them changes this front (the interface's `FORMAT_REINTERPRET` and
+  `TextureDesc::reinterpret` texts now say colour formats only).
+- 1034db1: `SV_VertexID` and `SV_InstanceID` with non-zero start and base locations. Vertex
+  shaders are converted with `draw_base: Helpers` (`shader::base_key`); a program reading either
+  gets the shaders crate's vertex helper block (set 3, `helper_binding(Vertex)`), which the front
+  writes into the back end's data ring (`write_buffer_ring`, aligned to
+  `min_uniform_offset_alignment`) for each draw whose bases differ from the last written
+  (`DrawBaseInHelpers`), with a set binding it kept on the device. Programs reading neither have no
+  block and pay nothing. Shaders reading any other helper value are still `E_NOTIMPL`.
+- Same commit: `DrawInstancedIndirect` and `DrawIndexedInstancedIndirect`. Arguments in a buffer
+  without `DRAWINDIRECT_ARGS`, off a word or past the end are dropped as invalid (as Direct3D's
+  debug layer reports them). Drawn as indirect draws where the back end has `INDIRECT` and
+  `INDIRECT_FIRST_INSTANCE` and the vertex program reads no bases; otherwise the arguments are
+  read back and drawn directly (`IndirectReadBack`, a wait): see Departures.
+- bf33687: building ahead (plan 4.4) through the interface's `CombinationTracker` (src/ahead.rs).
+  Each draw counts its combination (program, blend, depth-stencil and raster objects, input layout
+  and strides, targets, topology class, binding layout keys), looked up only when one of them
+  changed since the last draw. A new vertex or pixel shader is paired with the latest shader of the
+  other stage whose outputs cover its inputs (location, scalar type and components); the tracker
+  picks the tuples (those the vertex shader was drawn with, or the most drawn one its input layout
+  fits by location and type) and the front calls `prepare` with each. When a front device ends, it
+  prints "built ahead N combinations: D drawn since, U not" if it built any: this is the hit count
+  G4 reports on real programs. The cache's record of earlier runs (section 8) is not read yet.
+- A front test for each (front.rs `vertex_ids_read_the_draws_bases_from_the_helper_constants`,
+  which replaces the test that expected the removal, and
+  `a_new_pair_is_built_ahead_with_the_states_its_vertex_shader_was_drawn_with`); the recorder
+  now logs `prepare` and hands out a buffer's bytes. Never run.
+- The real-Direct3D test of the bases is the rig's `draws` scene (start vertex, base vertex,
+  start instance, and both indirect draws), which stopped with `E_NOTIMPL` before; run it first.
+- A one-command check for when the desktop answers: scratch `resume.sh <label> [lint front lib
+  scenes wine]` (How to run).
 
 G4 run 4: the Windows desktop refused every SSH sign-in for the whole run (the key exchange
 works, then the connection is reset; probed from 11:13 to the end). So nothing of this run was
@@ -311,7 +348,8 @@ textures (arrays, cubes and cube arrays, mips, immutable, dynamic and staging), 
 depth-stencil and shader resource views of them, `GenerateMips`, event queries and occlusion
 predicates, swap chains, samplers, blend, depth-stencil and rasterizer states, input layouts, vertex and pixel
 shaders converted from DXBC, constant buffers, draws (plain, indexed, instanced; every list and strip
-topology; adjacency topologies without a geometry shader through `AdjacencyDropped`), clears, copies,
+topology; adjacency topologies without a geometry shader through `AdjacencyDropped`; indirect;
+`SV_VertexID` and `SV_InstanceID` at any start and base), clears, copies,
 `UpdateSubresource`, maps of staging resources and of dynamic buffers (`MappedUploadWhole`),
 `ClearState`, `Flush`, the context's `Get` methods, and the device's capability queries.
 
@@ -452,6 +490,22 @@ buffer and unordered access views, geometry, stream output and compute), so they
 
 ## What comes next (G4b and on)
 
+After G4 run 5, first, once the desktop answers again: run 4's list below, where item 1 now also
+covers 1034db1 and bf33687 (run `resume.sh g4r6`, which does items 1 and 2 in one go), and the
+rig's `draws` scene for the bases. Then, still open from section 12's list and needing more than
+the desktop:
+- Move the context onto the interface's `PassTracker` (item 7 of the older list): it gives
+  `AttachmentsFitted` (a depth buffer larger than its render target, which WebGPU refuses today:
+  the back end loses the device) and `UsageScopeSplit` (a pixel shader's storage view read by the
+  next draw on the same targets). The front's overlapping predicates (stretches over one set) must
+  be kept or mapped onto the tracker's one running query.
+- The WebGL 2 Windows library: `Chosen` becomes the WebGL 2 back end in a second build (on
+  `WebGl::on_angle`, windows by `WebGl::add_window`). Check first that ANGLE, which draws through
+  Direct3D 11 itself, does not load our d3d11.dll from the program's folder (it would recurse); if
+  it does, load ANGLE's Vulkan back end or the system's d3d11.dll by full path.
+- The module size (section 10): build the front with the WebGPU back end for
+  `wasm32-unknown-unknown` (release) on the desktop and report the bytes; no build on the Mac.
+
 After G4 run 4, first, once the desktop answers again:
 1. Build, lint and run every test of both crates on the desktop (How to run) from this tree, whose
    commits from b1d136f on (code in b1d136f, bae1307, 4a36a17, d059356, 6fea7d4, f2a7656, bc0897e,
@@ -560,6 +614,12 @@ compute, then the geometry and stream output slow paths; then the three real pro
 
 ## How to run
 
+All of it in one command (G4 run 5, never run yet): the scratch script `resume.sh <label>
+[steps]` runs lint, the front tests, the library tests, every Direct3D 11 scene through our
+library and Wine's d3d11 file, in that order (steps `lint front lib scenes wine`, default all),
+each step's output in scratch logs/<label>-<step>.log, printing each exit code and last lines. The
+steps are the commands below.
+
 Without the desktop (G4 run 4): a check-only cross build on the Mac proves the Windows library
 compiles and is clippy-clean, nothing more (nothing links or runs). The script
 pyro-parked/wcontainers-scratch/graphics-direct3d-11/wincheck/check.sh runs rustup's cargo 1.99.0
@@ -632,8 +692,8 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
   integer format) are not served and remove the device; other pairs are invalid and dropped.
 - Creation checks run in the front before any back-end call and answer `E_INVALIDARG` as Direct3D
   does; what is valid but not served answers `E_NOTIMPL` with a warning. A draw that cannot be served
-  (an empty slot read, storage views, indexed adjacency, SV_VertexID/SV_InstanceID with a start or
-  base, lines under a multisampling or antialiased-line state) removes the device; COM methods not
+  (an empty slot read as a multisampled or depth texture, indexed or indirect adjacency, lines under
+  a multisampling or antialiased-line state) removes the device; COM methods not
   served answer `E_NOTIMPL`, and those without a result (on the device and context) remove the
   device, each warned once.
 - The Windows library: `wcontainers_directx.dll` exports `D3D11CreateDevice`,
@@ -654,7 +714,9 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Tests
 
-- crates/wcontainers-direct3d-11/tests/front.rs, 22 tests (since G4 run 1 also: depth-stencil
+- crates/wcontainers-direct3d-11/tests/front.rs, 23 tests since G4 run 5 (the bases in the
+  helper block and indirect draws read back, in place of the removal test; building ahead), never
+  run; 22 before (since G4 run 1 also: depth-stencil
   copies whole and of both aspects, typeless textures viewed through their group's members): the three scenes' calls on the recording
   back end (the scenes' own DXBC from the rig's corpus, converted), shader stages read from every
   corpus container, feature level choice, destruction after release, creation refusals (wrong stage,
@@ -717,6 +779,19 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Departures from the plan
 
+- An indirect draw whose vertex program reads `SV_VertexID` or `SV_InstanceID` has its arguments
+  read back and is drawn directly (`IndirectReadBack`, which pauses for the GPU), not read from the
+  arguments in the program (`DrawBaseFromArguments`): the shaders crate refuses that variant by
+  name. Exact, slow; it goes when the converter builds `DrawBaseSource::Arguments`.
+- The helper block of the draw's bases is kept between draws with equal bases on the strength of
+  the front being the only writer of the back end's data ring (the interface's defaults that write
+  it, `clear_rects` and spilled immediates, are not called by this front). A front that starts
+  calling them must write the block again after them.
+- Building ahead pairs shaders and fits tuples by location and scalar type, not by semantic name,
+  so that a pipeline it prepares is one the back end can build (a failed `prepare` loses the
+  WebGPU device). Pairs that would fail only on something else (a vertex attribute the format of
+  which WebGPU lacks) are not filtered; none is known.
+
 - DXGI's factory entry points decide by the caller's module whose DXGI a call wants: callers in
   this library (wgpu) or in the system directory get the system's dxgi.dll, every other caller
   ours. The Direct3D 12 track decides by thread (its device thread); this library has no device
@@ -764,7 +839,7 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Interface changes
 
-None in G4 runs 3 and 4.
+None in G4 runs 3, 4 and 5.
 
 - c8a7be9 "interface: copied combined depth-stencil textures whole in copy_texture": the
   documentation of `copy_texture` and `TextureRegion::stencil`, and the plan's sentence in 4.2: a copy
@@ -887,6 +962,8 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   dxgi.dll only), so the forwarder placement can be checked by the scenes command.
 
 ## Licences
+
+G4 run 5 added no dependency and installed nothing anywhere.
 
 G4 run 4 added the windows crate's `Win32_System_Diagnostics_Debug` and
 `Win32_System_SystemInformation` features (same crate, MIT OR Apache-2.0). On the Mac (not the
