@@ -87,7 +87,11 @@ branches into it at the start and end of every run.
 - G1, run 11 (2026-11-17): the five findings of G1's ninth check settled (below). The start merge
   brought webgl in (the others had nothing new), with one interface commit of its own, kept
   (Interface changes). This run's own interface change adds a limit, `capture_components`, so it
-  also filled that field in the four other crates that build `Limits` (Interface changes).
+  also filled that field in the four other crates that build `Limits` (Interface changes). After
+  this run's commits direct3d-12 and rig were merged, and at the end direct3d-11, direct3d-12 and
+  shaders; none conflicted or touched the interface, the suite or the plan. The whole workspace
+  checks after them, and the fronts' tests on the recording back end pass with its new rules:
+  direct3d-11 `front` 31, direct3d-12 `device` 10 and `front` 9, infrastructure `swapchain` 9.
 - G1, run 9 (2026-11-17): the three findings of G1's seventh independent check settled (below).
   The other branches had nothing new at the start. At the end webgpu, direct3d-11 and direct3d-12
   were merged without conflict (webgl, shaders and rig had nothing new); webgpu brought two
@@ -967,6 +971,13 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     file times, so cargo kept the first fault's build of `wcontainers-gpu` in the later faults,
     and it stopped at the first failing test binary. The script now copies with fresh times and
     runs `--no-fail-fast`.
+  - The fronts' tests on the recording back end after the end merges (`g1r11/end-check3.log`, load
+    1.2): direct3d-11 `front` 31, direct3d-12 `device` 10 and `front` 9, infrastructure
+    `swapchain` 9, all pass. The direct3d-12 `gpu` test needs a GPU and hangs on the laptop, so
+    `long.sh` names the recorder tests only.
+  - The owned crates' whole suite on the final tree (`g1r11/final-tests.log`): 211 tests pass
+    (interface 32, compute 8, fast paths 13, helpers 16, suite on the recorder 36, rules 105,
+    sequences 1 at the default 1,000 cases).
 
 - G1 run 10, all on the Linux laptop (i7-8750H), on b8a34f0:
   - Random sequences (scratch `g1r10/sequences-100k.log`, `--release`, 4 jobs, nothing else of
@@ -1183,6 +1194,11 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 - Earlier runs' measurements are in this file's history.
 
 ## The laptop's disk
+
+- Run 11 found 12 GB free and left 9.5 GB: it deleted its own fault build (`target/g1r11-faults`,
+  1.2 GB) and tree copy (`g1r11/tree`). Run 10's `long.sh` (and run 11's first one) exported
+  `CARGO_TARGET_DIR=~/...`, which `sh` does not expand there, so they built into a folder named
+  `~` inside the synced tree, which the next sync emptied; `g1r11/long.sh` uses `$HOME`.
 
 - Run 10 filled the disk with a workspace check (12 MB free). It deleted our incremental cache, its
   own `g1r9` and the finished seventh check's `check-g1-7`. That left 8 GB free, and 14 GB later as
