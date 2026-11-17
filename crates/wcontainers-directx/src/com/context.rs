@@ -95,6 +95,7 @@ struct Bound {
     raster: Option<Held<RasterizerState_Impl>>,
     viewports: Vec<D3D11_VIEWPORT>,
     scissors: Vec<RECT>,
+    predication: (Option<Held<Predicate_Impl>>, bool),
 }
 
 impl Default for Bound {
@@ -119,6 +120,7 @@ impl Default for Bound {
             raster: None,
             viewports: Vec::new(),
             scissors: Vec::new(),
+            predication: (None, false),
         }
     }
 }
@@ -804,6 +806,29 @@ impl Context {
                 f.generate_mips(&v);
                 Ok(())
             });
+        }
+    }
+
+    pub(super) fn set_predication(&self, p: Ref<ID3D11Predicate>, value: windows::core::BOOL) {
+        let h = held_one::<_, Predicate>(&p);
+        let q = h.as_ref().map(|p| p.front.clone());
+        let value = value.as_bool();
+        self.run("SetPredication", move |f| {
+            f.set_predication(q.clone(), value);
+            Ok(())
+        });
+        self.bound.borrow_mut().predication = (h, value);
+    }
+
+    pub(super) fn get_predication(
+        &self,
+        out: OutRef<ID3D11Predicate>,
+        value: *mut windows::core::BOOL,
+    ) {
+        let bound = self.bound.borrow();
+        let _ = out.write(public(&bound.predication.0));
+        if let Some(v) = unsafe { value.as_mut() } {
+            *v = bound.predication.1.into();
         }
     }
 
@@ -2100,6 +2125,12 @@ impl Context {
             let depth_stencil = b.depth_stencil.0.as_ref().map(|s| (*s.front).clone());
             let reference = b.depth_stencil.1;
             let raster = b.raster.as_ref().map(|s| (*s.front).clone());
+            let predicate = b.predication.0.as_ref().map(|p| p.front.clone());
+            let value = b.predication.1;
+            self.run("SetPredication", move |f| {
+                f.set_predication(predicate.clone(), value);
+                Ok(())
+            });
             self.run("OMSetBlendState", move |f| {
                 f.om_set_blend_state(blend.clone(), Some(factor), mask);
                 f.om_set_depth_stencil_state(depth_stencil.clone(), reference);

@@ -1097,7 +1097,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         predicatevalue: windows::core::BOOL,
     ) {
         let _call = self.call();
-        self.only_unbinding("ID3D11DeviceContext::SetPredication", !ppredicate.is_null())
+        self.set_predication(ppredicate, predicatevalue)
     }
     fn GSSetShaderResources(
         &self,
@@ -1611,10 +1611,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppredicatevalue: *mut windows::core::BOOL,
     ) {
         let _call = self.call();
-        let _ = pppredicate.write(None);
-        if let Some(v) = unsafe { ppredicatevalue.as_mut() } {
-            *v = false.into();
-        }
+        self.get_predication(pppredicate, ppredicatevalue)
     }
     fn GSGetShaderResources(
         &self,

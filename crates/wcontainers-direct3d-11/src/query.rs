@@ -82,6 +82,9 @@ pub struct Query<B: Backend> {
     stamp: std::cell::Cell<u64>,
 }
 
+/// `D3D11_QUERY_MISC_PREDICATEHINT`.
+pub const PREDICATE_HINT: u32 = 1;
+
 /// The timestamps' frequency: nanoseconds.
 const NANOSECONDS: u64 = 1_000_000_000;
 
@@ -300,6 +303,38 @@ impl<B: Backend> Device<B> {
         }
         *q.state.borrow_mut() = State::Done([any, 0]);
         Ok(Some([any, 0]))
+    }
+
+    /// The answer of an ended query, waiting for the GPU where it is not there yet
+    /// (`PredicationWait`); none for a query not ended.
+    pub(crate) fn wait_answer(&mut self, q: &Rc<Query<B>>) -> Result<Option<[u64; 2]>> {
+        let mut waited = false;
+        loop {
+            match self.query_data(q, true) {
+                Ok(Some(v)) => return Ok(Some(v)),
+                Ok(None) => {}
+                Err(Error::InvalidCall(_)) => return Ok(None),
+                Err(e) => return Err(e),
+            }
+            if !waited {
+                waited = true;
+                self.backend.slow_paths().hit(SlowPath::PredicationWait);
+            }
+            match &*q.state.borrow() {
+                State::Ended {
+                    reads: Some(reads), ..
+                } => {
+                    for r in reads {
+                        self.backend.wait_read(r);
+                    }
+                }
+                _ => {
+                    if let Some(f) = self.queries.fence.clone() {
+                        self.backend.wait_fence(&f);
+                    }
+                }
+            }
+        }
     }
 
     /// Ends the occlusion counter's stretch, if counted queries run, adding its count to each.

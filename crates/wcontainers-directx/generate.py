@@ -98,7 +98,9 @@ removes = {"Device", "Context"}
 
 def unused_stage(name, p, what):
     """The body of a context method on a stage or feature not served: served while it binds nothing."""
-    if re.fullmatch(r"(GS|HS|DS)SetShader|SetPredication", name):
+    if name in ("SetPredication", "GetPredication"):
+        return f"self.{snake(name)}({', '.join(p)})"
+    if re.fullmatch(r"(GS|HS|DS)SetShader", name):
         return f'self.only_unbinding("{what}", !{p[0]}.is_null())'
     if re.fullmatch(r"(GS|HS|DS)Set(ConstantBuffers1?|Samplers)", name):
         return f"self.{snake(name)}({', '.join(p)})"
@@ -116,9 +118,6 @@ def unused_stage(name, p, what):
         return f"super::context::nothing_bound({p[1]}, {p[0]})"
     if re.fullmatch(r"(GS|HS|DS)GetShader", name):
         return f"super::context::no_instances({p[2]}); let _ = {p[0]}.write(None);"
-    if name == "GetPredication":
-        return (f"let _ = {p[0]}.write(None); "
-                f"if let Some(v) = unsafe {{ {p[1]}.as_mut() }} {{ *v = false.into(); }}")
     return None
 
 

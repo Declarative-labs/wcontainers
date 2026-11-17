@@ -94,6 +94,9 @@ pub struct ContextState<B: Backend> {
     /// and whether the counter has copied the depth its segment's draws began from.
     counted_targets: Vec<usize>,
     counted_copy: bool,
+    /// The predicate draws, dispatches, clears, copies and writes are predicated on, and the value
+    /// that skips them; none with the hint flag, whose operations are kept, as Direct3D allows.
+    predication: Option<(Rc<crate::query::Query<B>>, bool)>,
 }
 
 impl<B: Backend> ContextState<B> {
@@ -129,6 +132,7 @@ impl<B: Backend> ContextState<B> {
             mapped: Vec::new(),
             counted_targets: Vec::new(),
             counted_copy: false,
+            predication: None,
         }
     }
 }
@@ -562,6 +566,9 @@ impl<B: Backend> Device<B> {
     }
 
     pub fn clear_render_target_view(&mut self, view: &Rc<View<B>>, color: [f32; 4]) {
+        if self.predicated_out() {
+            return;
+        }
         let bits = if integer_format(view.format) {
             color.map(|c| c as i64 as u32)
         } else {
@@ -577,6 +584,9 @@ impl<B: Backend> Device<B> {
         depth: f32,
         stencil: u8,
     ) {
+        if self.predicated_out() {
+            return;
+        }
         let kind = view.format.kind();
         let has_stencil = matches!(kind, FormatKind::DepthStencil | FormatKind::Stencil);
         let value = ClearValue::DepthStencil {
@@ -636,6 +646,25 @@ impl<B: Backend> Device<B> {
                 let _ = self.gpu::<()>(Err(e));
             }
             self.ctx.counted_copy = false;
+        }
+    }
+
+    /// `SetPredication`.
+    pub fn set_predication(&mut self, q: Option<Rc<crate::query::Query<B>>>, value: bool) {
+        self.ctx.predication = q
+            .filter(|q| q.misc & crate::query::PREDICATE_HINT == 0)
+            .map(|q| (q, value));
+    }
+
+    /// Whether the predicate set skips the operation: its answer equals the value set. A predicate
+    /// not ended skips nothing.
+    fn predicated_out(&mut self) -> bool {
+        let Some((q, value)) = self.ctx.predication.clone() else {
+            return false;
+        };
+        match self.wait_answer(&q) {
+            Ok(Some(v)) => (v[0] != 0) == value,
+            _ => false,
         }
     }
 
@@ -1196,6 +1225,9 @@ impl<B: Backend> Device<B> {
         groups: [u32; 3],
         indirect: Option<(&Rc<Buffer<B>>, u32)>,
     ) -> Result<()> {
+        if self.predicated_out() {
+            return Ok(());
+        }
         if self.removed.is_some() {
             return Ok(());
         }
@@ -1250,6 +1282,9 @@ impl<B: Backend> Device<B> {
         offset: u32,
         view: &ShaderView<B>,
     ) -> Result<()> {
+        if self.predicated_out() {
+            return Ok(());
+        }
         let ShaderView::Buffer(BufferSpan {
             counter: Some(c), ..
         }) = view
@@ -1268,6 +1303,9 @@ impl<B: Backend> Device<B> {
     /// `ClearUnorderedAccessViewUint` (`float` false) and `Float`: buffer views take the first value
     /// for each 32-bit word; texture views each texel, as raw bits of the view's format.
     pub fn clear_uav(&mut self, view: &ShaderView<B>, values: [u32; 4], float: bool) -> Result<()> {
+        if self.predicated_out() {
+            return Ok(());
+        }
         self.settle();
         match view {
             ShaderView::Buffer(span) => {
@@ -1719,7 +1757,7 @@ impl<B: Backend> Device<B> {
         instances: u32,
         args: Option<&Rc<Buffer<B>>>,
     ) -> Result<()> {
-        if self.removed.is_some() {
+        if self.removed.is_some() || self.predicated_out() {
             return Ok(());
         }
         self.bury();
@@ -2052,6 +2090,9 @@ impl<B: Backend> Device<B> {
 
     /// `CopyResource`: two resources of one shape.
     pub fn copy_resource(&mut self, dst: &Resource<B>, src: &Resource<B>) -> Result<()> {
+        if self.predicated_out() {
+            return Ok(());
+        }
         match (dst, src) {
             (Resource::Buffer(d), Resource::Buffer(s)) => {
                 if d.desc.byte_width != s.desc.byte_width || Rc::ptr_eq(d, s) {
@@ -2108,6 +2149,9 @@ impl<B: Backend> Device<B> {
         src_sub: u32,
         src_box: Option<&Box3>,
     ) -> Result<()> {
+        if self.predicated_out() {
+            return Ok(());
+        }
         match (dst, src) {
             (Resource::Buffer(d), Resource::Buffer(s)) => {
                 let (from, to) = src_box.map_or((0, s.desc.byte_width), |b| (b.left, b.right));
@@ -2204,6 +2248,9 @@ impl<B: Backend> Device<B> {
         src_sub: u32,
         format: u32,
     ) -> Result<()> {
+        if self.predicated_out() {
+            return Ok(());
+        }
         let (Resource::Texture(d), Resource::Texture(s)) = (dst, src) else {
             return Err(Error::InvalidArg("a resolve between buffers"));
         };
@@ -2249,6 +2296,9 @@ impl<B: Backend> Device<B> {
         row_pitch: u32,
         slice_pitch: u32,
     ) -> Result<()> {
+        if self.predicated_out() {
+            return Ok(());
+        }
         self.before_write();
         match dst {
             Resource::Buffer(b) => {
@@ -2630,6 +2680,9 @@ impl<B: Backend> Device<B> {
     /// `GenerateMips`: fills the view's levels below its first from the first, in its format. A
     /// texture made without mip generation is left alone, as Direct3D leaves it.
     pub fn generate_mips(&mut self, view: &View<B>) {
+        if self.predicated_out() {
+            return;
+        }
         let t = &view.texture;
         if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0 {
             return;
