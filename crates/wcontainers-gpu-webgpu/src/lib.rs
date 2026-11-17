@@ -217,12 +217,19 @@ impl ProgramObj {
         &self,
         bindings: &[Option<&BindingSet>; MAX_BINDING_SETS],
     ) -> [BindingLayoutKey; MAX_BINDING_SETS] {
+        self.own_keys(bindings.map(|s| s.map_or_else(BindingLayoutKey::default, |s| s.0.key)))
+    }
+
+    /// The parts of the sets' layout keys this program's layout depends on: the textures it samples
+    /// through a sampler.
+    fn own_keys(
+        &self,
+        sets: [BindingLayoutKey; MAX_BINDING_SETS],
+    ) -> [BindingLayoutKey; MAX_BINDING_SETS] {
         let mut keys = [BindingLayoutKey::default(); MAX_BINDING_SETS];
         for shader in self.stages() {
-            for ((k, s), paired) in keys.iter_mut().zip(bindings).zip(shader.paired) {
-                if let Some(s) = s {
-                    k.unfilterable_textures |= s.0.key.unfilterable_textures & paired;
-                }
+            for ((k, s), paired) in keys.iter_mut().zip(&sets).zip(shader.paired) {
+                k.unfilterable_textures |= s.unfilterable_textures & paired;
             }
         }
         keys
@@ -508,6 +515,11 @@ fn caps(
         if f.contains(wgpu_feature) {
             features |= ours;
         }
+    }
+    // In the browser `prepare`'s pipeline compiles in the GPU process while the page goes on;
+    // natively wgpu compiles it at once on the calling thread.
+    if cfg!(target_arch = "wasm32") {
+        features |= Features::BACKGROUND_PREPARE;
     }
     let adapter_specific = f.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
     let mut formats = FormatCaps {
@@ -1201,6 +1213,10 @@ impl Backend for WebGpu {
         if self.pass.take().is_none() {
             self.fail("end_pass without a pass");
         }
+    }
+
+    fn prepare(&mut self, desc: &wcontainers_gpu::PrepareDesc<'_, Self>) {
+        self.prepare_impl(desc);
     }
 
     fn draw(&mut self, call: &wcontainers_gpu::DrawCall<'_, Self>) {
