@@ -466,8 +466,10 @@ fn warned(line: &Line) -> Vec<(String, String)> {
 /// differs, grouped by cause: a crash of the kernel, a hang, a part not built (a warning the
 /// test gave that no test whose verdict matches gave), or else a wrong answer.
 pub fn compare(reference: &[Line], ours: &[Line]) -> String {
-    let theirs: BTreeMap<&str, &Line> =
-        reference.iter().map(|line| (line.id.as_str(), line)).collect();
+    let theirs: BTreeMap<&str, &Line> = reference
+        .iter()
+        .map(|line| (line.id.as_str(), line))
+        .collect();
     let matched = |line: &&Line| {
         theirs
             .get(line.id.as_str())
@@ -498,7 +500,10 @@ pub fn compare(reference: &[Line], ours: &[Line]) -> String {
             _ if !new.is_empty() => "a part not built (a warning no matching test gave)",
             _ => "a wrong answer",
         };
-        let mut text = format!("{}: reference {}, ours {}", line.id, their.verdict, line.verdict);
+        let mut text = format!(
+            "{}: reference {}, ours {}",
+            line.id, their.verdict, line.verdict
+        );
         if !new.is_empty() {
             text += &format!(" [{}]", new.join("; "));
         }
