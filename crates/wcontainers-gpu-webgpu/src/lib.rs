@@ -13,6 +13,7 @@ mod fill;
 mod layout;
 mod memory;
 mod probe;
+mod wait;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -32,6 +33,8 @@ use wcontainers_gpu::{
 
 pub use draw::Counters;
 pub use probe::Depth24;
+#[cfg(target_arch = "wasm32")]
+pub use wait::block_on;
 
 /// Readback states, set by the map callback.
 const MAP_PENDING: u8 = 0;
@@ -68,7 +71,7 @@ pub struct WebGpu {
     arena: Option<memory::Arena>,
     edge: Option<edge::EdgeProgram>,
     fills: fill::Fills,
-    depth24: Option<Depth24>,
+    depth24: Depth24,
     /// Colour clears reach the API as floats, so integers past 2^24 cannot be cleared exactly.
     float_clears: bool,
     /// Changed whenever a buffer a binding set names moves so that a bind group made with it may no
@@ -341,6 +344,7 @@ impl WebGpu {
                 _ => LossReason::Error,
             };
             on_error.lock().unwrap().get_or_insert(reason);
+            wait::wake();
         }));
         let on_lost = lost.clone();
         device.set_device_lost_callback(move |reason, message| {
@@ -350,15 +354,11 @@ impl WebGpu {
                 _ => LossReason::Reset,
             };
             on_lost.lock().unwrap().get_or_insert(reason);
+            wait::wake();
         });
         let (mut caps, usages) = caps(adapter, &device);
-        // The browser cannot wait for the probe's answer yet (plan 4.8), so there the bit stays clear
-        // and fronts bias in the program, which is right for either storage.
-        #[cfg(not(target_arch = "wasm32"))]
-        let depth24 = Some(probe::run(&device, &queue));
-        #[cfg(target_arch = "wasm32")]
-        let depth24 = None;
-        if let Some(Depth24::Unorm(_)) = depth24 {
+        let depth24 = probe::run(&device, &queue);
+        if let Depth24::Unorm(_) = depth24 {
             caps.features |= Features::DEPTH24_UNORM;
         }
         // wgpu's Direct3D 12 clears colour targets through 32-bit floats.
@@ -393,8 +393,8 @@ impl WebGpu {
         }
     }
 
-    /// What the probe of how `depth24plus` is stored found, where it ran.
-    pub fn depth24(&self) -> Option<Depth24> {
+    /// What the probe of how `depth24plus` is stored found.
+    pub fn depth24(&self) -> Depth24 {
         self.depth24
     }
 
@@ -1321,6 +1321,7 @@ impl Backend for WebGpu {
                         MAP_FAILED
                     };
                     state.store(s, Ordering::Release);
+                    wait::wake();
                 });
         }
         for d in self.destroy_after_submit.drain(..) {
@@ -1334,6 +1335,7 @@ impl Backend for WebGpu {
         self.queue.on_submitted_work_done(move || {
             flag.store(true, Ordering::Release);
             completed.fetch_max(serial, Ordering::AcqRel);
+            wait::wake();
         });
         self.serial += 1;
         Fence { done, index }
@@ -1535,23 +1537,12 @@ impl Backend for WebGpu {
 }
 
 impl WebGpu {
-    /// Pauses the device thread until `done` holds. Natively by waiting on the device; in the browser
-    /// the device thread suspends through JSPI (plan section 4.8), which the call channel brings.
+    /// Pauses the device thread until `done` holds or the device is lost (plan section 4.8).
     fn block_until(&mut self, done: impl Fn() -> bool, index: Option<wgpu::SubmissionIndex>) {
-        #[cfg(not(target_arch = "wasm32"))]
-        while !done() && self.status() == DeviceStatus::Ok {
-            let _ = self.device.poll(wgpu::PollType::Wait {
-                submission_index: index.clone(),
-                timeout: None,
-            });
-        }
-        #[cfg(target_arch = "wasm32")]
-        if !done() {
-            let _ = index;
-            panic!(
-                "webgpu: waiting in the browser needs the JSPI suspension of plan section 4.8, not built yet; poll instead"
-            );
-        }
+        let lost = self.lost.clone();
+        wait::until(&self.device, index, || {
+            done() || lost.lock().unwrap().is_some()
+        });
     }
 }
 

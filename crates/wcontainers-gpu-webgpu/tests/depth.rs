@@ -79,7 +79,7 @@ fn reference(name: &str) -> Vec<u8> {
 #[test]
 fn the_depth24_probe_finds_how_depth24plus_is_stored() {
     let b = device();
-    let found = b.depth24().expect("the probe runs natively");
+    let found = b.depth24();
     eprintln!("depth24plus: {found:?}");
     let (Depth24::Unorm(v) | Depth24::Float(v) | Depth24::Other(v)) = found;
     assert!(v > 0.1 && v < 0.1001, "{found:?}");
