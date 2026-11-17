@@ -74,6 +74,9 @@ pub struct TestHost {
     pub(crate) backend: Option<crate::backend::Backend>,
     /// Connections to the outside and lookups.
     network: crate::network::Network,
+    /// Whether what the container writes also goes to this process's own streams as it comes,
+    /// so a run that is stopped still shows it.
+    echo: bool,
 }
 
 impl TestHost {
@@ -91,6 +94,7 @@ impl TestHost {
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
             backend: None,
             network: Default::default(),
+            echo: false,
         }
     }
 
@@ -149,6 +153,7 @@ impl TestHost {
             backend: self.backend.take(),
             // A new host has none of the old one's connections; its published ports go on.
             network: self.network.moved(),
+            echo: self.echo,
         };
         host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
@@ -212,6 +217,13 @@ impl Host for TestHost {
     }
 
     fn output(&mut self, stream: Stream, bytes: &[u8]) {
+        if self.echo {
+            use std::io::Write;
+            let _ = match stream {
+                Stream::Output => std::io::stdout().write_all(bytes),
+                Stream::Error => std::io::stderr().write_all(bytes),
+            };
+        }
         match stream {
             Stream::Output => self.stdout.extend_from_slice(bytes),
             Stream::Error => self.stderr.extend_from_slice(bytes),
@@ -346,6 +358,8 @@ pub fn run_injected(
 pub struct Prepared {
     pub kernel: Kernel,
     pub groups: Vec<u32>,
+    /// Whether the container's output also goes to this process's streams as it comes.
+    pub echo: bool,
 }
 
 /// Puts a container's files in a new kernel's root, unless the root is on the backend.
@@ -357,6 +371,7 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
     Prepared {
         kernel,
         groups: image::root_groups(container.files),
+        echo: false,
     }
 }
 
@@ -367,7 +382,11 @@ pub fn run_prepared(
     seed: u64,
     injections: Injections,
 ) -> Result<Run, Failure> {
-    let Prepared { mut kernel, groups } = prepared;
+    let Prepared {
+        mut kernel,
+        groups,
+        echo,
+    } = prepared;
     let mut at = moments(seed ^ 0x5a7e, injections.saves);
     let (signal, signals) = injections.signal.unwrap_or((0, 0));
     let mut signal_at = moments(seed ^ 0x5197, signals);
@@ -380,6 +399,7 @@ pub fn run_prepared(
     let mut report: Option<i32> = None;
     let mut cpu = StandIn::new();
     let mut host = TestHost::repeatable(seed);
+    host.echo = echo;
     host.network.published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some("/");
     if container.backend.is_some() {

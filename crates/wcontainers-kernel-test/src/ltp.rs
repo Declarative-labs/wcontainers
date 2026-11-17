@@ -376,7 +376,8 @@ fn result_path(log: &Path) -> PathBuf {
 }
 
 /// In the forked process: runs the test with its output to its log, leaves its line and ends.
-fn run_one(prepared: driver::Prepared, test: &Test, seed: u64, log: &Path) -> ! {
+fn run_one(mut prepared: driver::Prepared, test: &Test, seed: u64, log: &Path) -> ! {
+    prepared.echo = true;
     let file = std::fs::File::create(log).expect("the log");
     // SAFETY: points this process's standard output and error at the log.
     unsafe {
@@ -396,21 +397,13 @@ fn run_one(prepared: driver::Prepared, test: &Test, seed: u64, log: &Path) -> ! 
     }));
     let seconds = started.elapsed().as_secs_f64();
     let line = match run {
-        Ok(Ok(run)) => {
-            use std::io::Write;
-            let mut out = std::io::stderr();
-            let _ = out.write_all(b"\n--- standard output ---\n");
-            let _ = out.write_all(&run.outcome.stdout);
-            let _ = out.write_all(b"\n--- standard error ---\n");
-            let _ = out.write_all(&run.outcome.stderr);
-            Line {
-                id: test.id(),
-                verdict: verdict(run.outcome.exit_code),
-                exit_code: run.outcome.exit_code,
-                seconds,
-                warnings: warnings(&run.warnings),
-            }
-        }
+        Ok(Ok(run)) => Line {
+            id: test.id(),
+            verdict: verdict(run.outcome.exit_code),
+            exit_code: run.outcome.exit_code,
+            seconds,
+            warnings: warnings(&run.warnings),
+        },
         Ok(Err(failure)) => {
             eprintln!("no outcome: {failure:?}");
             let mut line = crash_line(test, seconds);
