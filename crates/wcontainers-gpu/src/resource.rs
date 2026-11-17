@@ -53,6 +53,9 @@ pub struct BufferDesc {
 
 /// What a write promises about the bytes already in the buffer. This is how the mapping rules of
 /// Direct3D, OpenGL and Vulkan reach a back end without any buffer being mapped across the boundary.
+/// A texture write ([`crate::Backend::write_texture`]) takes the same modes: the whole texture for the
+/// whole buffer (every level and layer), its texels for bytes (both aspects of a depth and stencil
+/// format).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WriteMode {
     /// The write takes effect between the commands recorded before it and those after it, exactly as
@@ -212,7 +215,7 @@ pub enum BorderColor {
 }
 
 /// A comparison, for depth and stencil tests and comparison samplers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CompareFn {
     Never,
     Less,
@@ -308,9 +311,13 @@ pub struct BindingLayoutKey {
 /// One slot of a binding set: which program binding it fills, and with what.
 #[derive(Debug)]
 pub struct BindingEntry<'a, B: Backend> {
-    /// The binding number the shader converter gave this slot (see the plan, section 6).
+    /// The binding number the shader converter gave this slot (see the plan, section 6). A texture the
+    /// program pairs with a sampler lies in [`crate::SlotKind::Texture`]'s range, 32 to 159, so that
+    /// [`BindingLayoutKey`] has its bit; the other kinds' ranges are the fronts' numbering, which no
+    /// back end relies on (the helper set's own bindings lie outside them).
     pub binding: u32,
-    /// Stages that read it; back ends that bind per stage use this.
+    /// Every stage whose program reads it, and perhaps more; back ends that bind per stage, and the
+    /// limits per stage, count by this.
     pub stages: StageSet,
     pub resource: BindingResource<'a, B>,
 }
@@ -345,10 +352,14 @@ pub struct TextureRegion<'a, B: Backend> {
     pub stencil: bool,
 }
 
-/// The buffer side of a copy between a buffer and a texture.
+/// The buffer side of a copy between a buffer and a texture. A block's size here is that of the
+/// aspect moved for a format with depth and stencil (one byte of stencil, four of depth).
 #[derive(Debug)]
 pub struct CopyBufferTexture<'a, B: Backend> {
     pub buffer: &'a B::Buffer,
+    /// Where the first block is, any multiple of the block size (as Vulkan and WebGPU require). A
+    /// back end whose API needs more (WebGPU: multiples of 4 for depth and stencil) copies the rows
+    /// through a buffer ([`crate::SlowPath::RowsRepacked`]).
     pub offset: u64,
     /// Bytes from one row of blocks to the next, any multiple of the block size. A back end whose API
     /// needs larger pitches (WebGPU: multiples of 256) copies the rows through a buffer at its own pitch

@@ -74,8 +74,9 @@ back end; the guest stand-in libraries and the call channel; sound and input.
 ## 3. Crates and which way they depend
 
 - `wcontainers-gpu`: the interface (section 4). Depends on `naga` (the common form), `bitflags`,
-  `blake3` (content keys of the built-in programs, as of every key, section 8) and `half` (the
-  occlusion counter's `r16float` sums) only.
+  `blake3` (content keys of the built-in programs, as of every key, section 8), `half` (the
+  occlusion counter's `r16float` sums) and `serde` (derives on the variant key, the reflection and the
+  state blocks, which the cache records, section 8) only.
 - `wcontainers-gpu-webgpu`: the WebGPU back end, written on the `wgpu` crate, which runs natively (Metal,
   Direct3D 12, Vulkan) for tests and on the browser's WebGPU when built for WebAssembly. Depends on the
   interface only (plus `wgpu`).
@@ -115,6 +116,8 @@ ScanMountGoat/image_dds, "Copyright (c) 2023 SMG"), a port of iOrange's bcdec (M
 LICENSE), `no_std`, read on 2026-11-17. `blake3` 1.8.7: CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH
 LLVM-exception (its repository's `Cargo.toml` and `LICENSE_CC0`), with `arrayvec`, `cfg-if`, `cc`
 (MIT OR Apache-2.0) and `constant_time_eq` (CC0-1.0 OR MIT-0 OR Apache-2.0), read on 2026-11-17.
+`serde` 1.0.229 with `serde_core` and `serde_derive` (and their `proc-macro2`, `quote`, `syn`): MIT OR
+Apache-2.0 (each crate's `Cargo.toml`, read on 2026-11-17).
 `glow` 0.18: MIT OR Apache-2.0 OR Zlib (its repository's `Cargo.toml`; the brief says MIT, which is
 one of the three); `khronos-egl` 6.0: MIT or Apache-2.0 (its repository); ANGLE, a desktop test tool
 only (section 10): BSD-3-Clause (its `LICENSE`). `wgpu` is confirmed by the milestone that adds it.
@@ -201,7 +204,9 @@ Recording:
   any row pitch that is a whole number of blocks (Vulkan's tightly packed `bufferRowLength` 0, OpenGL's
   pixel buffer uploads); WebGPU needs multiples of 256, so its back end copies such rows through a
   staging buffer at its own pitch, one buffer copy per row (`RowsRepacked`); Direct3D 12's own 256-byte
-  pitch rule never meets it. WebGPU cannot copy a buffer into `depth24plus` or `depth32float`: its back
+  pitch rule never meets it. The buffer offset is a whole number of blocks too, as Vulkan and WebGPU
+  require (a block of the aspect moved: one byte of stencil, four of depth); WebGPU's multiple of 4
+  for depth and stencil goes the same `RowsRepacked` way. WebGPU cannot copy a buffer into `depth24plus` or `depth32float`: its back
   end copies the buffer into a colour texture and draws the depth from it (`DepthWrittenByDraw`): for
   `depth32float` an `r32float` texture whose texels are the depth; for `depth24plus` an `r32uint`
   texture, since the bytes a front hands over for it are 24-bit unorm depth in the low bits of a 32-bit
@@ -266,8 +271,10 @@ Fast paths, all in the crate with their defaults:
   default; WebGL 2 overrides it with `clearBuffer*` on each attachment, which skips the pass
   bookkeeping.
 - `clear_rects(&view, format, ClearValue, &[ScissorRect])`: Direct3D 11.1 `ClearView` and Direct3D 12
-  clears with rectangles, outside a pass. Default: one pass, a full-screen triangle per rectangle
-  scissored to it, with a built-in program writing the value (float, unsigned or signed output by format;
+  clears with rectangles, outside a pass; rectangles are clipped to the view (the default's scissors are
+  clipped as every draw's is, 4.4, and WebGL 2's scissored clears clip). Default: one pass, a
+  full-screen triangle per rectangle scissored to it, with a built-in program writing the value (float,
+  unsigned or signed output by format;
   depth through the fragment depth; stencil by `Replace` with the value as reference). WebGL 2 overrides
   it with scissored `clearBuffer*`.
 - `generate_mips(&texture, &TextureDesc, values, mips, layers)`. `values` is the format whose values the
@@ -305,7 +312,8 @@ Fast paths, all in the crate with their defaults:
   `NoOverwrite`, and with `Discard` when it wraps, so nothing waits. No back end overrides it today; a
   native back end would map the rings.
 - `resolve_queries(&set, first, count, &dst, dst_offset)`: query results written into a buffer on the
-  GPU, one u64 each, ordered with the work around it (Direct3D 12's `ResolveQueryData`, the only way it
+  GPU, one u64 each at an offset that is a multiple of 8 (refused otherwise, `GpuError::Invalid`),
+  ordered with the work around it (Direct3D 12's `ResolveQueryData`, the only way it
   gives query results; Vulkan's `vkCmdCopyQueryPoolResults`; OpenGL's query buffer objects). Default:
   `read_queries`, a wait on the device thread (counted `QueryResolveWait`), then an `Ordered`
   `write_buffer` of the results. WebGPU overrides it with `resolveQuerySet` into a buffer of its own
@@ -353,7 +361,8 @@ would add a fast path then, not before.
 A draw names (`DrawCall`): a program, a blend block, a depth-stencil block, a raster block, a vertex
 layout block, up to four binding sets, the vertex streams and index buffer (buffer plus offset, plain data),
 the topology, whether strips restart, one viewport and at most one scissor (one where the raster block
-scissors; several viewports are split into one draw each, `MultiViewportSplit`, 4.12), blend constant,
+scissors, clipped to the pass's attachments, which a back end whose API refuses a scissor past them
+cuts; several viewports are split into one draw each, `MultiViewportSplit`, 4.12), blend constant,
 stencil reference, small immediate constants, and the range (direct, indexed, or indirect from a
 buffer). In every back end the
 program's `vertex_index` and `instance_index` include the range's first or base vertex and first
@@ -423,7 +432,9 @@ its first draw is built then and the frame pauses (`PipelineMiss`), never skippi
 
 ### 4.5 Bindings
 
-A binding set is a block: a list of `BindingEntry` (binding number, stages that read it, and a resource:
+A binding set is a block: a list of `BindingEntry` (binding number, stages that read it, naming every
+stage whose program reads it, since back ends binding per stage and the limits per stage count by it,
+and a resource:
 uniform buffer range, storage buffer range, texture view, storage texture view, sampler, typed texel
 buffer, or a resource table). `create_binding_set` may return a set equal to one the back end already
 holds, so fronts call it when their slots changed and otherwise pass the handle they have.
@@ -431,7 +442,9 @@ holds, so fronts call it when their slots changed and otherwise pass the handle 
 Binding numbers come from the shaders crate's rule (section 6.4), the same for every front: one number
 space per set, binding = range start + the API's slot number, with uniform buffers from 0 (16 slots),
 samplers from 16 (16), sampled textures and typed buffers from 32 (128), storage buffers and textures
-from 160 (64) (`SlotKind` in the crate). Which set a slot lands in is the API's rule of 6.4; set 3
+from 160 (64) (`SlotKind` in the crate). Back ends rely on one part of this numbering only, the range
+of textures paired with samplers (below); the helper set's bindings lie outside the kinds' ranges.
+Which set a slot lands in is the API's rule of 6.4; set 3
 always holds the program's helper constants (`HELPER_SET`). A draw's sets are WebGPU's bind groups 0
 to 3.
 
@@ -444,8 +457,8 @@ and access, and whether a sampler compares. One thing a program does not say, an
 whether a float texture can be filtered on this back end (`FormatCaps` `FILTER`: `r32float` only with
 `float32-filterable`, depth formats never), which picks `"float"` or `"unfilterable-float"`. A texture
 the program only loads from, never pairing it with a sampler, is `"unfilterable-float"` whatever is
-bound (every float view binds to that), so only paired textures need to be told apart; these all lie
-in the API's sampled-texture range from binding 32, while the helper set's load-only textures below 32
+bound (every float view binds to that), so only paired textures need to be told apart; these must all
+lie in the API's sampled-texture range, 32 to 159, while the helper set's load-only textures below 32
 (the target copies of `BlendInShader` and `LogicOpInShader`, the early-test depth) need no bit. So each
 binding set has a layout key (`BindingLayoutKey`, from `binding_layout_key`): one bit per texture binding
 whose view cannot be filtered. Samplers need no bit: by WebGPU's rules a `"filtering"` sampler layout
@@ -607,9 +620,10 @@ Read back later and now:
 - Now is a fast path (4.3): WebGL 2 answers inside the call. On WebGPU the device thread waits (section
   4.8), so the guest thread is paused, counted.
 
-Dynamic textures: `write_texture` with `Discard` drops the whole texture's old contents, so the WebGPU
-back end renames the texture from a pool, as for buffers, instead of splitting a pass for an ordered
-write.
+Dynamic textures: `write_texture` with `Discard` drops the whole texture's old contents (every level
+and layer; texels not written are undefined), so the WebGPU back end renames the texture from a pool,
+as for buffers, instead of splitting a pass for an ordered write. `NoOverwrite` promises of the texels
+written (both aspects of depth and stencil) what it promises of a buffer's bytes.
 
 Buffers that hold both indices and other data on WebGL 2. A WebGL buffer takes a type when it is first
 bound (element array for `ELEMENT_ARRAY_BUFFER`, other data for every other target but the two copy
@@ -1223,6 +1237,13 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   depth in the program turns off early depth testing for every draw, which costs more than the loss is
   worth; pictures are compared with tolerance. Read backs return the depth as stored (4.12, depth read
   back).
+- **32-bit float depth copied from values a draw cannot write** (a listed loss, WebGPU). Direct3D and
+  Vulkan copy any bits into `D32_FLOAT`; WebGPU writes depth from a buffer or another format only by a
+  draw (`DepthWrittenByDraw`), whose depth is clamped to the viewport's range, at most 0 to 1, and whose
+  denormals may be flushed. Copied values in that range are exact; values above 1 or below 0 are
+  clamped and NaN becomes zero; denormals and -0 are kept or become zero by the GPU (the RTX 3080
+  through Direct3D 12 and Vulkan keeps -0 and flushes denormals, Metal on Apple M5 the opposite).
+  Depth that draws write is clamped by every API, so only depth copied in differs.
 - **Attachments of different sizes** (4.7): exact on WebGPU (`AttachmentsFitted`). On WebGL 2, a
   multisampled attachment replaced by a temporary keeps only its resolved value across the copy: a listed
   loss, for multisampled attachments of different sizes whose contents are loaded or stored.

@@ -3,6 +3,7 @@ ps_clip.dxil	ok
 ps_coarse.dxil	ok
 ps_deriv.dxil	ok-wgsl glsl-write
 ps_ftoi.dxil	ok
+ps_negate.dxil	ok
 ps_offset.dxil	ok
 ps_pack.dxil	unsupported PackedStageValues
 ps_rows.dxil	ok

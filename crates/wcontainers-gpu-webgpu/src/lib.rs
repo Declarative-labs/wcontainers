@@ -71,7 +71,8 @@ pub struct WebGpu {
     destroy_after_submit: Vec<Doomed>,
     blocks: draw::BlockTables,
     caches: draw::Caches,
-    pool: memory::BufferPool,
+    pool: memory::Pool<wgpu::Buffer>,
+    texture_pool: memory::Pool<wgpu::Texture>,
     arena: Option<memory::Arena>,
     edge: Option<edge::EdgeProgram>,
     vertices: vertex::Vertices,
@@ -156,6 +157,8 @@ struct BufferObj {
     lead_in: Cell<u64>,
     /// Moved by every command that may write its bytes, so shadows made from them are made again.
     written: Cell<u64>,
+    /// GPU buffers its renames made, destroyed from the pool when it is destroyed.
+    spares: Cell<u64>,
 }
 
 impl BufferObj {
@@ -172,8 +175,44 @@ struct TextureObj {
     held: Format,
     /// A decoded BC texture's blocks (`BlockDecoded`), per level and layer.
     blocks: Option<RefCell<Vec<Vec<u8>>>>,
-    raw: wgpu::Texture,
+    /// The GPU texture holding its texels, replaced when a `Discard` write renames it.
+    raw: RefCell<wgpu::Texture>,
+    /// Bumped whenever `raw` is replaced, so views made from the old one are made again.
+    generation: Cell<u64>,
     used_in: Cell<u64>,
+    /// GPU textures its renames made, destroyed from the pool when it is destroyed.
+    spares: Cell<u64>,
+}
+
+impl TextureObj {
+    fn raw(&self) -> wgpu::Texture {
+        self.raw.borrow().clone()
+    }
+}
+
+impl ViewObj {
+    /// Makes the views again if the texture was renamed since they were made.
+    fn fresh(&self) {
+        if let (Some(t), Some(desc)) = (&self.texture, &self.desc)
+            && t.0.generation.get() != self.made_for.get()
+        {
+            let views = raw_views(&t.0, desc).expect("made once from the same description");
+            self.views.replace(views);
+            self.made_for.set(t.0.generation.get());
+        }
+    }
+
+    /// The view a pass draws into.
+    fn raw(&self) -> wgpu::TextureView {
+        self.fresh();
+        self.views.borrow().0.clone()
+    }
+
+    /// The view a binding reads.
+    fn read(&self) -> wgpu::TextureView {
+        self.fresh();
+        self.views.borrow().1.clone()
+    }
 }
 
 #[derive(Debug)]
@@ -182,10 +221,12 @@ struct ViewObj {
     format: Format,
     /// None for a surface's texture.
     texture: Option<Texture>,
-    /// Every aspect: what a pass draws into.
-    raw: wgpu::TextureView,
-    /// The aspect the view reads: what a binding names.
-    read: wgpu::TextureView,
+    /// Every aspect, what a pass draws into; and the aspect the view reads, what a binding names.
+    views: RefCell<(wgpu::TextureView, wgpu::TextureView)>,
+    /// What it was made with, to make it again once its texture is renamed; None for a surface's.
+    desc: Option<TextureViewDesc>,
+    /// The texture's generation `views` were made from.
+    made_for: Cell<u64>,
     width: u32,
     height: u32,
     samples: u32,
@@ -404,6 +445,7 @@ impl WebGpu {
             blocks: Default::default(),
             caches: Default::default(),
             pool: Default::default(),
+            texture_pool: Default::default(),
             arena: None,
             edge: None,
             vertices: Default::default(),
@@ -464,22 +506,25 @@ impl WebGpu {
     fn lead_pending(&self, b: &BufferObj) -> bool {
         b.lead_in.get() == self.serial && self.lead.is_some()
     }
+}
 
-    /// The view a pass draws into (every aspect) and the view a binding reads (the aspect `stencil`
-    /// names, in that aspect's own format); one view where the two are the same.
-    fn raw_views(
-        &self,
-        texture: &TextureObj,
-        desc: &TextureViewDesc,
-    ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
-        let seen = match texture.blocks {
-            Some(_) => blocks::decoded(desc.format)?,
-            None => desc.format,
-        };
-        let format = convert::texture_format(seen)?;
-        let aspect = convert::aspect(desc.stencil, desc.format);
-        let view = |aspect, format| {
-            texture.raw.create_view(&wgpu::TextureViewDescriptor {
+/// The view a pass draws into (every aspect) and the view a binding reads (the aspect `stencil`
+/// names, in that aspect's own format); one view where the two are the same.
+fn raw_views(
+    texture: &TextureObj,
+    desc: &TextureViewDesc,
+) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
+    let seen = match texture.blocks {
+        Some(_) => blocks::decoded(desc.format)?,
+        None => desc.format,
+    };
+    let format = convert::texture_format(seen)?;
+    let aspect = convert::aspect(desc.stencil, desc.format);
+    let view = |aspect, format| {
+        texture
+            .raw
+            .borrow()
+            .create_view(&wgpu::TextureViewDescriptor {
                 label: None,
                 format: Some(format),
                 dimension: Some(convert::view_dimension(desc.dimension)),
@@ -490,14 +535,13 @@ impl WebGpu {
                 base_array_layer: desc.base_layer,
                 array_layer_count: Some(desc.layer_count),
             })
-        };
-        let whole = view(wgpu::TextureAspect::All, format);
-        if aspect == wgpu::TextureAspect::All {
-            return Some((whole.clone(), whole));
-        }
-        let read = view(aspect, format.aspect_specific_format(aspect)?);
-        Some((whole, read))
+    };
+    let whole = view(wgpu::TextureAspect::All, format);
+    if aspect == wgpu::TextureAspect::All {
+        return Some((whole.clone(), whole));
     }
+    let read = view(aspect, format.aspect_specific_format(aspect)?);
+    Some((whole, read))
 }
 
 /// What the device can do, in the interface's words (plan section 4.11). Only what this back end
@@ -885,6 +929,7 @@ impl Backend for WebGpu {
             used_in: Cell::new(0),
             lead_in: Cell::new(0),
             written: Cell::new(0),
+            spares: Cell::new(0),
         })))
     }
 
@@ -932,9 +977,7 @@ impl Backend for WebGpu {
         if desc.usage.contains(TextureUsage::COPY_DST) && desc.format.is_depth_stencil() {
             usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
         }
-        let srgb_twin = (format.remove_srgb_suffix() != format)
-            .then(|| format.remove_srgb_suffix())
-            .or_else(|| (format.add_srgb_suffix() != format).then(|| format.add_srgb_suffix()));
+        let srgb_twin = convert::srgb_twin(format);
         let raw = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -956,8 +999,10 @@ impl Backend for WebGpu {
             desc: *desc,
             held,
             blocks: (held != desc.format).then(|| RefCell::new(blocks::zeroed(desc))),
-            raw,
+            raw: RefCell::new(raw),
+            generation: Cell::new(0),
             used_in: Cell::new(0),
+            spares: Cell::new(0),
         })))
     }
 
@@ -966,7 +1011,7 @@ impl Backend for WebGpu {
         texture: &Texture,
         desc: &TextureViewDesc,
     ) -> Result<TextureView, GpuError> {
-        let (raw, read) = self.raw_views(&texture.0, desc).ok_or(GpuError::Invalid(
+        let views = raw_views(&texture.0, desc).ok_or(GpuError::Invalid(
             "view format or aspect this back end does not hold",
         ))?;
         let t = &texture.0.desc;
@@ -975,8 +1020,9 @@ impl Backend for WebGpu {
             id: self.id(),
             format: desc.format,
             texture: Some(texture.clone()),
-            raw,
-            read,
+            views: RefCell::new(views),
+            desc: Some(*desc),
+            made_for: Cell::new(texture.0.generation.get()),
             width: size(t.width),
             height: size(t.height),
             samples: t.samples,
@@ -1204,11 +1250,13 @@ impl Backend for WebGpu {
     }
 
     fn destroy(&mut self, object: Object<Self>) {
-        let pending = |used_in: u64| used_in == self.serial && self.encoder.is_some();
+        let (serial, recording) = (self.serial, self.encoder.is_some());
+        let pending = |used_in: u64| used_in == serial && recording;
         match object {
             Object::Buffer(b) if b.0.in_arena => self.release_slice(&b.0),
             Object::Buffer(b) => {
                 self.vertices.forget(b.0.id);
+                self.give_back_spares(&b.0);
                 let raw = b.0.raw.borrow().clone();
                 if pending(b.0.used_in.get()) || self.lead_pending(&b.0) {
                     self.destroy_after_submit.push(Doomed::Buffer(raw));
@@ -1217,11 +1265,11 @@ impl Backend for WebGpu {
                 }
             }
             Object::Texture(t) => {
+                self.give_back_texture_spares(&t.0);
                 if pending(t.0.used_in.get()) {
-                    self.destroy_after_submit
-                        .push(Doomed::Texture(t.0.raw.clone()));
+                    self.destroy_after_submit.push(Doomed::Texture(t.0.raw()));
                 } else {
-                    t.0.raw.destroy();
+                    t.0.raw().destroy();
                 }
             }
             Object::QuerySet(_)
@@ -1358,6 +1406,7 @@ impl Backend for WebGpu {
             a.submitted();
         }
         self.caches.prune();
+        self.reclaim_spares();
         for rb in self.to_map.drain(..) {
             let state = rb.0.state.clone();
             let Some(buffer) = &rb.0.buffer else {
@@ -1587,8 +1636,9 @@ impl Backend for WebGpu {
             id: self.id(),
             format: surface.0.format.get(),
             texture: None,
-            raw: texture.clone(),
-            read: texture,
+            views: RefCell::new((texture.clone(), texture)),
+            desc: None,
+            made_for: Cell::new(0),
             width,
             height,
             samples: 1,

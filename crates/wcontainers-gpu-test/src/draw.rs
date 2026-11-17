@@ -4,7 +4,8 @@
 
 use crate::program::{self, Error, Level, Resources, StorageWrite, Value};
 use crate::recorder::{
-    Bound, DepthOps, Obj, Recorder, StageCounts, TextureObj, as_kind, level_size, subresource,
+    Bound, DepthOps, Entries, Obj, Recorder, StageCounts, TextureObj, as_kind, level_size,
+    subresource,
 };
 use crate::texel;
 use naga::{Binding, BuiltIn, Interpolation, ScalarKind, TypeInner};
@@ -56,7 +57,7 @@ impl Target {
 /// The resources a draw's binding sets name.
 struct Bindings<'a> {
     rec: &'a Recorder,
-    sets: &'a [Option<Vec<(u32, Bound)>>; MAX_BINDING_SETS],
+    sets: &'a [Option<Entries>; MAX_BINDING_SETS],
     /// The draw's writes into storage buffers, applied when it ends.
     writes: &'a RefCell<Vec<StorageWrite>>,
 }
@@ -66,8 +67,8 @@ impl Bindings<'_> {
         self.sets
             .get(group as usize)
             .and_then(Option::as_ref)
-            .and_then(|s| s.iter().find(|(b, _)| *b == binding))
-            .map(|(_, r)| r)
+            .and_then(|s| s.iter().find(|(b, _, _)| *b == binding))
+            .map(|(_, _, r)| r)
             .ok_or_else(|| format!("nothing bound at group {group} binding {binding}"))
     }
 
@@ -581,7 +582,7 @@ struct DrawState {
     depth_stencil: DepthStencilDesc,
     raster: RasterDesc,
     layout: VertexLayoutDesc,
-    sets: [Option<Vec<(u32, Bound)>>; MAX_BINDING_SETS],
+    sets: [Option<Entries>; MAX_BINDING_SETS],
     viewport: [f64; 6],
     scissor: Option<ScissorRect>,
 }
@@ -604,7 +605,7 @@ impl Recorder {
         let Obj::VertexLayout(layout) = self.obj(*call.vertex_layout)? else {
             return Err("the draw's vertex layout block is not one".into());
         };
-        let mut sets: [Option<Vec<(u32, Bound)>>; MAX_BINDING_SETS] = Default::default();
+        let mut sets: [Option<Entries>; MAX_BINDING_SETS] = Default::default();
         for (slot, set) in sets.iter_mut().zip(call.bindings) {
             if let Some(set) = set {
                 match self.obj(*set)? {
@@ -723,7 +724,7 @@ impl Recorder {
             let mut ranges = Vec::new();
             for set in call.bindings.iter().flatten() {
                 if let Obj::BindingSet(entries, _) = self.obj(**set)? {
-                    for (_, bound) in entries {
+                    for (_, _, bound) in entries {
                         if let Bound::Texture(v) = bound {
                             let v = self.view(*v)?;
                             ranges.push((v.texture, v.desc.base_mip, v.desc.mip_count));
@@ -743,15 +744,15 @@ impl Recorder {
 
     /// Checks what the program's bindings take of the resources bound there: a sampler that compares
     /// exactly where the program compares, no linear filter paired with a texture this back end does
-    /// not filter, and buffers at least the size of the program's blocks. Bindings missing or of
-    /// another kind are refused where the program reads them.
+    /// not filter, buffers at least the size of the program's blocks, and entries naming every stage
+    /// that reads them. Bindings missing or of another kind are refused where the program reads them.
     fn program_bindings(&self, state: &DrawState) -> Result<(), Error> {
-        let bound = |rb: &naga::ResourceBinding| {
+        let entry_at = |rb: &naga::ResourceBinding| {
             state.sets[rb.group as usize]
                 .as_ref()
-                .and_then(|s| s.iter().find(|(b, _)| *b == rb.binding))
-                .map(|(_, r)| r)
+                .and_then(|s| s.iter().find(|(b, _, _)| *b == rb.binding))
         };
+        let bound = |rb: &naga::ResourceBinding| entry_at(rb).map(|(_, _, r)| r);
         let sampler = |rb: &naga::ResourceBinding| -> Result<Option<SamplerDesc>, Error> {
             match bound(rb) {
                 Some(Bound::Sampler(s)) => match self.obj(*s)? {
@@ -764,10 +765,20 @@ impl Recorder {
         for shader in std::iter::once(&state.vertex).chain(&state.fragment) {
             let m = &shader.module;
             let info = shader.info.get_entry_point(entry(shader)?);
+            let (stage, name) = match shader.stage {
+                ShaderStage::Vertex => (StageSet::VERTEX, "vertex"),
+                ShaderStage::Fragment => (StageSet::FRAGMENT, "fragment"),
+                ShaderStage::Compute => (StageSet::COMPUTE, "compute"),
+            };
             for (h, g) in m.global_variables.iter() {
                 let Some(rb) = &g.binding else { continue };
                 if info[h].is_empty() {
                     continue;
+                }
+                if entry_at(rb).is_some_and(|(_, stages, _)| !stages.contains(stage)) {
+                    return Err(format!(
+                        "a binding the {name} stage reads whose entry leaves that stage out"
+                    ));
                 }
                 match m.types[g.ty].inner {
                     TypeInner::Sampler { comparison } => {
@@ -836,7 +847,7 @@ impl Recorder {
         {
             uses.push((*args, false));
         }
-        for (_, bound) in state.sets.iter().flatten().flatten() {
+        for (_, _, bound) in state.sets.iter().flatten().flatten() {
             if let Bound::Buffer {
                 buffer, writable, ..
             } = bound
@@ -877,13 +888,33 @@ impl Recorder {
 
     /// The buffer bytes a draw reads or writes: its index range, the elements its vertex streams
     /// fetch and the ranges its binding sets bind.
+    /// Every (texture, subresource) the draw's bound views take in.
+    fn bound_subresources(
+        &self,
+        state: &DrawState,
+    ) -> Result<Vec<(crate::recorder::Id, usize)>, Error> {
+        let mut subs = Vec::new();
+        for (_, _, bound) in state.sets.iter().flatten().flatten() {
+            if let Bound::Texture(view) = *bound {
+                let v = self.view(view)?;
+                let desc = self.texture(v.texture)?.desc;
+                for mip in v.desc.base_mip..v.desc.base_mip + v.desc.mip_count {
+                    for layer in v.desc.base_layer..v.desc.base_layer + v.desc.layer_count {
+                        subs.push((v.texture, subresource(&desc, mip, layer)));
+                    }
+                }
+            }
+        }
+        Ok(subs)
+    }
+
     fn draw_reads(
         &self,
         call: &DrawCall<'_, Self>,
         state: &DrawState,
     ) -> Result<Vec<(crate::recorder::Id, u64, u64)>, Error> {
         let mut reads = Vec::new();
-        for (_, bound) in state.sets.iter().flatten().flatten() {
+        for (_, _, bound) in state.sets.iter().flatten().flatten() {
             if let Bound::Buffer {
                 buffer,
                 offset,
@@ -947,10 +978,10 @@ impl Recorder {
     /// Every (texture, subresource) the bound texture views cover.
     fn read_subresources(
         &self,
-        sets: &[Option<Vec<(u32, Bound)>>; MAX_BINDING_SETS],
+        sets: &[Option<Entries>; MAX_BINDING_SETS],
     ) -> Result<Vec<(crate::recorder::Id, usize)>, Error> {
         let mut out = Vec::new();
-        for (_, bound) in sets.iter().flatten().flatten() {
+        for (_, _, bound) in sets.iter().flatten().flatten() {
             if let Bound::Texture(view) = bound {
                 let v = self.view(*view)?;
                 let desc = &self.texture(v.texture)?.desc;
@@ -1130,6 +1161,9 @@ impl Recorder {
         for (buffer, start, end) in self.draw_reads(call, &state)? {
             self.touch(buffer, start, end);
         }
+        for (texture, sub) in self.bound_subresources(&state)? {
+            self.touch_in(texture, sub, 0, u64::MAX);
+        }
         let pass = self.pass.as_ref().ok_or("draw outside a pass")?;
         match call.topology {
             Topology::TriangleList | Topology::TriangleStrip => {}
@@ -1227,8 +1261,8 @@ impl Recorder {
         for (group, binding, at, bytes) in writes.into_inner() {
             let Some(Bound::Buffer { buffer, offset, .. }) = state.sets[group as usize]
                 .as_ref()
-                .and_then(|s| s.iter().find(|(b, _)| *b == binding))
-                .map(|(_, r)| r.clone())
+                .and_then(|s| s.iter().find(|(b, _, _)| *b == binding))
+                .map(|(_, _, r)| r.clone())
             else {
                 continue;
             };

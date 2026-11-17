@@ -2991,14 +2991,24 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             }
             c::F_ABS => math(self, b, M::Abs, rs)?,
             c::F_NEG | c::I_NEG => {
-                let x = self.get_as(b, r[0], rs)?;
-                self.add(
+                // naga negates only floats and signed integers; two's complement makes it one.
+                let ty = if rs.kind == ScalarKind::Uint {
+                    Scalar {
+                        kind: ScalarKind::Sint,
+                        ..rs
+                    }
+                } else {
+                    rs
+                };
+                let x = self.get_as(b, r[0], ty)?;
+                let v = self.add(
                     b,
                     Expression::Unary {
                         op: UnaryOperator::Negate,
                         expr: x,
                     },
-                )
+                );
+                self.e.bitcast(&mut self.f, b, v, ty, rs)
             }
             c::F_ADD | c::I_ADD => bin(self, b, B::Add, rs)?,
             c::F_SUB | c::I_SUB => bin(self, b, B::Subtract, rs)?,

@@ -62,3 +62,8 @@ workspace = true
 [[test]]
 name = "present"
 harness = false
+
+# Reports a test the device cannot run as ignored.
+[[test]]
+name = "depth"
+harness = false

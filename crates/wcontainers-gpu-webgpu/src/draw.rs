@@ -29,6 +29,12 @@ pub struct Counters {
     pub group_layouts: u64,
     /// Buffers given fresh storage by a `Discard` write.
     pub renames: u64,
+    /// Textures given fresh storage by a `Discard` write.
+    pub texture_renames: u64,
+    /// Renames of buffers or textures that took storage from the pool instead of making it.
+    pub spares_reused: u64,
+    /// Pooled storage destroyed because the buffer or texture whose renames made it was destroyed.
+    pub spares_dropped: u64,
     /// Uniform arena buffers moved to a new slice by a `Discard` write.
     pub slices: u64,
     /// Writes ordered through a staging buffer and a copy.
@@ -94,7 +100,8 @@ pub struct SetGroup {
 }
 
 /// What a bind group is made of: its layout, and per entry the binding, the resource (a buffer's
-/// storage number), the fixed offset (zero for a dynamic one) and the size. Sets differing only in
+/// storage number), the fixed offset (zero for a dynamic one; for a view, its texture's generation)
+/// and the size. Sets differing only in
 /// dynamic offsets, or naming different buffers of the uniform arena, share one bind group.
 type GroupKey = (u64, Vec<(u32, u64, u64, u64)>);
 
@@ -146,7 +153,11 @@ impl SetObj {
                 (
                     SetRes::View(v),
                     wgpu::BindingType::Texture { .. } | wgpu::BindingType::StorageTexture { .. },
-                ) => (le.binding, v.0.id, 0, 0),
+                ) => {
+                    // A renamed texture's views are made again, so the group is too.
+                    let generation = v.0.texture.as_ref().map_or(0, |t| t.0.generation.get());
+                    (le.binding, v.0.id, generation, 0)
+                }
                 (SetRes::Sampler(s), wgpu::BindingType::Sampler(_)) => (le.binding, s.0.id, 0, 0),
                 _ => return Err("a binding set's resource is not the kind its program reads"),
             });
@@ -287,6 +298,8 @@ pub struct Pass {
     depth: Option<DepthRaw>,
     occlusion_set: Option<wgpu::QuerySet>,
     last: Last,
+    /// The textures it draws or resolves into, which a write may not rename while it is open.
+    pub attached: Vec<crate::Texture>,
 }
 
 #[derive(Default)]
@@ -556,6 +569,14 @@ impl WebGpu {
                 _ => None,
             })
             .collect();
+        let views: Vec<Option<wgpu::TextureView>> = set
+            .entries
+            .iter()
+            .map(|(_, r)| match r {
+                SetRes::View(v) => Some(v.0.read()),
+                _ => None,
+            })
+            .collect();
         let mut entries = Vec::with_capacity(gl.entries.len());
         for (le, &(_, _, offset, size)) in gl.entries.iter().zip(&key.1) {
             let i = set
@@ -580,7 +601,9 @@ impl WebGpu {
                         size: NonZeroU64::new(size),
                     })
                 }
-                SetRes::View(v) => wgpu::BindingResource::TextureView(&v.0.read),
+                SetRes::View(_) => {
+                    wgpu::BindingResource::TextureView(views[i].as_ref().ok_or("view")?)
+                }
                 SetRes::Sampler(s) => {
                     if s.0.filtering
                         && le.ty
@@ -818,6 +841,7 @@ impl WebGpu {
         let (mut width, mut height) = (0, 0);
         let mut colors = Vec::new();
         let mut by_draw = Vec::new();
+        let mut attached = Vec::new();
         for (i, c) in pass.colors.iter().enumerate() {
             let Some(c) = c else {
                 colors.push(None);
@@ -829,13 +853,14 @@ impl WebGpu {
                 .filter_map(|v| v.texture.as_ref())
             {
                 t.0.used_in.set(serial);
+                attached.push(t.clone());
             }
             targets.colors[i] = Some(v.format);
             targets.samples = v.samples;
             (width, height) = (v.width, v.height);
             colors.push(Some(ColorRaw {
-                view: v.raw.clone(),
-                resolve: c.resolve.map(|r| r.0.raw.clone()),
+                view: v.raw(),
+                resolve: c.resolve.map(|r| r.0.raw()),
                 slice: v.three_d.then_some(c.depth_slice),
                 clear: match c.load {
                     LoadOp::Load => None,
@@ -867,6 +892,7 @@ impl WebGpu {
             let v = &d.view.0;
             if let Some(t) = &v.texture {
                 t.0.used_in.set(serial);
+                attached.push(t.clone());
             }
             targets.depth_stencil = Some(v.format);
             targets.samples = v.samples;
@@ -882,7 +908,7 @@ impl WebGpu {
                 })
             }
             DepthRaw {
-                view: v.raw.clone(),
+                view: v.raw(),
                 depth: aspect(d.depth, f32::from_bits),
                 stencil: aspect(d.stencil, u32::from),
             }
@@ -950,6 +976,7 @@ impl WebGpu {
             depth,
             occlusion_set,
             last: Last::default(),
+            attached,
         });
     }
 
@@ -1347,7 +1374,7 @@ impl WebGpu {
         };
         let view = |r: &wcontainers_gpu::TextureRegion<'_, Self>| {
             r.texture.0.used_in.set(self.serial);
-            r.texture.0.raw.create_view(&wgpu::TextureViewDescriptor {
+            r.texture.0.raw().create_view(&wgpu::TextureViewDescriptor {
                 format: Some(format),
                 dimension: Some(wgpu::TextureViewDimension::D2),
                 base_mip_level: r.mip,

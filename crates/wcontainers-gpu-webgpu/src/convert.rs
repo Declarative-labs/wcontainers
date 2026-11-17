@@ -6,6 +6,13 @@ use wcontainers_gpu::{
 };
 use wgpu::TextureFormat as T;
 
+/// The other sRGB form of a format, which views of its textures may take.
+pub fn srgb_twin(format: T) -> Option<T> {
+    (format.remove_srgb_suffix() != format)
+        .then(|| format.remove_srgb_suffix())
+        .or_else(|| (format.add_srgb_suffix() != format).then(|| format.add_srgb_suffix()))
+}
+
 /// The wgpu format a texture of `format` is made in; None for formats WebGPU does not hold, which
 /// the back end declares without bits.
 pub fn texture_format(format: Format) -> Option<T> {

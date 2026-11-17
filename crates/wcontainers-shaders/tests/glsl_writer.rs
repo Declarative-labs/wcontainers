@@ -204,6 +204,28 @@ fn hlsl_continuing_reads_the_body_values_of_its_iteration() {
 }
 
 #[test]
+fn msl_continuing_reads_the_body_values_of_its_iteration() {
+    use naga::back::msl;
+    let module = naga::front::wgsl::parse_str(CONTINUING).expect("parse");
+    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        .validate(&module)
+        .expect("validate");
+    let (out, _) = msl::write_string(
+        &module,
+        &info,
+        &msl::Options::default(),
+        &msl::PipelineOptions::default(),
+    )
+    .expect("write");
+    let block = continuing_block(&out);
+    assert!(block.contains("a = loop_value;"), "{out}");
+    assert!(!block.contains('*'), "{out}");
+    assert!(out.contains("float loop_value = {};"), "{out}");
+    let body = &out[out.find("loop_init = false;").expect("body")..];
+    assert!(body.contains("loop_value = "), "{out}");
+}
+
+#[test]
 fn fine_derivatives_are_refused_by_glsl_es() {
     let fine = "
 @fragment fn main(@location(0) x: f32) -> @location(0) vec4f {

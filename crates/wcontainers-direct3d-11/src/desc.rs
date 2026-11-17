@@ -58,6 +58,9 @@ pub mod support {
     pub const BLENDABLE: u32 = 0x8000;
     pub const DEPTH_STENCIL: u32 = 0x10000;
     pub const CPU_LOCKABLE: u32 = 0x20000;
+    pub const MULTISAMPLE_RESOLVE: u32 = 0x40000;
+    pub const MULTISAMPLE_RENDERTARGET: u32 = 0x200000;
+    pub const MULTISAMPLE_LOAD: u32 = 0x400000;
 }
 
 pub mod level {
@@ -147,6 +150,8 @@ pub enum ViewDim {
     Texture3D,
     TextureCube,
     TextureCubeArray,
+    Texture2DMS,
+    Texture2DMSArray,
 }
 
 /// `D3D11_SAMPLER_DESC`.

@@ -247,7 +247,9 @@ pub trait Backend: Sized {
     /// a buffer, the back end copies into a colour texture first and draws the depth
     /// ([`crate::SlowPath::DepthWrittenByDraw`]): `r32float` for 32-bit float depth, and `r32uint`
     /// for 24-bit depth, whose buffer bytes are 24-bit unorm in the low bits of a 32-bit word, drawn as
-    /// `(v & 0xffffff) / 16777215`; see [`CopyBufferTexture::row_pitch`] for pitches.
+    /// `(v & 0xffffff) / 16777215`; see [`CopyBufferTexture::row_pitch`] for pitches. Float depth so
+    /// drawn holds only what a draw can write: values outside 0 to 1, denormals and NaN are lost
+    /// (plan 4.12).
     fn copy_buffer_to_texture(
         &mut self,
         src: &CopyBufferTexture<'_, Self>,
@@ -474,8 +476,9 @@ pub trait Backend: Sized {
     }
 
     /// Clears rectangles of one view outside a pass (Direct3D 11.1's ClearView, Direct3D 12's clears
-    /// with rectangles). `view` is one mip level and one layer; the rectangles lie inside it. The
-    /// default draws a full-screen triangle per rectangle, scissored to it, with a built-in program
+    /// with rectangles). `view` is one mip level and one layer; rectangles are clipped to it. The
+    /// default draws a full-screen triangle per rectangle, scissored to it (the scissor clipped as
+    /// [`DrawCall::scissors`] says), with a built-in program
     /// writing the value. WebGL 2 overrides it with scissored clears.
     fn clear_rects(
         &mut self,
@@ -888,6 +891,11 @@ pub trait Backend: Sized {
         dst: &Self::Buffer,
         dst_offset: u64,
     ) -> Result<(), GpuError> {
+        if !dst_offset.is_multiple_of(8) {
+            return Err(GpuError::Invalid(
+                "query results go to multiples of 8 bytes",
+            ));
+        }
         let rb = self.read_queries(set, first, count)?;
         if self.read_state(&rb) == ReadState::Pending {
             self.slow_paths().hit(SlowPath::QueryResolveWait);
