@@ -3,14 +3,19 @@
 # commit, and compiles each test file on its own with Wine's test framework in standalone mode. Each
 # test its START_TEST runs is made to run only when wanted (wine-select.h), so a run can pick tests by
 # name; the copy so changed is the one built, and the names are listed in <test>.tests.
+# vkd3d's Direct3D 12 tests (LGPL, the same terms) are built as vkd3d's own "crosstest" build makes
+# them, with its test framework, which picks a test by the name in VKD3D_TEST_FILTER (made an exact
+# match in the copy of vkd3d_test.h built); its shader runner takes one .shader_test file a run.
 #   wine-tests.ps1   writes C:\wc\wine\build\<test>_test.exe and <test>.tests for d3d11, d3d10core,
-#                    dxgi and d3d12
+#                    dxgi and d3d12, and for vkd3d-d3d12, vkd3d-d3d12_invalid_usage,
+#                    vkd3d-hlsl_d3d12 and vkd3d-shader_runner
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 trap { [Console]::Error.WriteLine("wine-tests: $_"); exit 1 }
 . C:\wc\rig\env.ps1
 
 $wineCommit = '9f8c4ae4d35c7ff4153267aba9618c026f5f5583' # wine-11.22
+$vkd3dCommit = 'fb7f9ff3c1f8d972ee6f1b8c6a92caf6c8ba1e10' # vkd3d-2.1
 $mingwRelease = '20261104'
 $root = 'C:\wc\wine'
 $mingw = "C:\wc\llvm-mingw\llvm-mingw-$mingwRelease-ucrt-x86_64"
@@ -96,4 +101,69 @@ foreach ($test in $tests.Keys) {
     if ($LASTEXITCODE) { throw "compiling $test failed" }
     "built $root\build\${test}_test.exe, $($names.Count) tests"
 }
-"wine $wineCommit, llvm-mingw $mingwRelease"
+
+# A sparse checkout of a repository at a pinned commit.
+function Fetch([string]$url, [string]$dir, [string]$commit, [string[]]$paths) {
+    if (-not (Test-Path "$dir\.git")) {
+        git clone -q --filter=blob:none --no-checkout --sparse $url $dir
+        if ($LASTEXITCODE) { throw "cloning $url failed" }
+    }
+    git -C $dir sparse-checkout set @paths
+    if ((cmd.exe /d /c "git -C `"$dir`" rev-parse HEAD 2>nul") -ne $commit) {
+        git -C $dir fetch -q --depth 1 origin $commit
+        if ($LASTEXITCODE) { throw "fetching $commit of $url failed" }
+        git -C $dir checkout -q --detach $commit
+        if ($LASTEXITCODE) { throw "checking out $commit of $url failed" }
+    }
+}
+
+$vkd3d = "$root\vkd3d"
+Fetch https://gitlab.winehq.org/wine/vkd3d.git $vkd3d $vkd3dCommit @('tests', 'include', 'crosslibs')
+# The headers vkd3d's build generates from its .idl files, with llvm-mingw's widl.
+$generated = "$root\build\vkd3d-include"
+New-Item -ItemType Directory -Force "$generated\private" | Out-Null
+# Those vkd3d's Makefile.am lists as generated (widl_headers); the others are only imported.
+$widlHeaders = [regex]::Matches([IO.File]::ReadAllText("$vkd3d\Makefile.am"), '(?ms)^widl_headers = \\\r?\n(.*?)\r?\n\r?\n').Groups[1].Value
+$headers = [regex]::Matches($widlHeaders, '(\S+)\.h') | ForEach-Object { $_.Groups[1].Value }
+if (@($headers).Count -lt 10) { throw "found only $(@($headers).Count) headers in vkd3d's widl_headers" }
+# widl names each header's guard after the output path given, so it is given the bare name, as
+# the shader runner defines some of those guards to keep vkd3d's headers out.
+Push-Location $generated
+foreach ($header in $headers) {
+    $idl = "$vkd3d\$($header.Replace('/', '\')).idl"
+    & widl "-I$vkd3d\include" -h -o "$(Split-Path -Leaf $header).h" $idl
+    if ($LASTEXITCODE) { throw "widl $idl failed" }
+}
+Pop-Location
+# configure's config.h: nothing in it is needed by the tests built for Windows.
+Set-Content "$generated\config.h" ''
+$framework = [IO.File]::ReadAllText("$vkd3d\include\private\vkd3d_test.h")
+$filter = '!strstr(name, vkd3d_test_state.test_name_filter)'
+if (-not $framework.Contains($filter)) { throw "vkd3d_test.h no longer filters tests with $filter" }
+[IO.File]::WriteAllText("$generated\private\vkd3d_test.h", $framework.Replace($filter, 'strcmp(name, vkd3d_test_state.test_name_filter)'))
+& llvm-dlltool -k -m i386:x86-64 -d "$vkd3d\crosslibs\d3d12.cross64.def" -l "$root\build\libvkd3d-d3d12.a"
+if ($LASTEXITCODE) { throw 'making the d3d12 import library failed' }
+# The flags of vkd3d's crosstest build.
+$flags = @('-O1', '-municode', "-I$generated\private", "-I$vkd3d\include", "-I$vkd3d\include\private", "-I$generated", "-I$vkd3d\tests",
+    '-D_WIN32_WINNT=0x0600', '-D__USE_MINGW_ANSI_STDIO=0', '-DVKD3D_CROSSTEST=1', '-Wno-everything')
+$libraries = @("$root\build\libvkd3d-d3d12.a", '-ldxgi', '-lgdi32', '-ld3dcompiler_47')
+foreach ($test in 'd3d12', 'd3d12_invalid_usage', 'hlsl_d3d12') {
+    $text = [IO.File]::ReadAllText("$vkd3d\tests\$test.c")
+    $start = $text.IndexOf("START_TEST($test)")
+    if ($start -lt 0) { throw "no START_TEST($test) in vkd3d's $test.c" }
+    $names = [regex]::Matches($text.Substring($start), 'run_test\((\w+)\)') | ForEach-Object { $_.Groups[1].Value }
+    [IO.File]::WriteAllLines("$root\build\vkd3d-$test.tests", [string[]]$names)
+    & x86_64-w64-mingw32-clang @flags "$vkd3d\tests\$test.c" -o "$root\build\vkd3d-${test}_test.exe" @libraries
+    if ($LASTEXITCODE) { throw "compiling vkd3d's $test failed" }
+    "built $root\build\vkd3d-${test}_test.exe, $(@($names).Count) tests"
+}
+# The shader runner's tests are the .shader_test files vkd3d's Makefile.am lists.
+$runner = @('shader_runner', 'shader_runner_d3d9', 'shader_runner_d3d11', 'shader_runner_d3d12') | ForEach-Object { "$vkd3d\tests\$_.c" }
+# A test's name is its path under tests with + for / (hlsl+abs.shader_test), as / parts a run's
+# chosen tests.
+$names = [regex]::Matches([IO.File]::ReadAllText("$vkd3d\Makefile.am"), '(?m)^\ttests/(\S+\.shader_test)') | ForEach-Object { $_.Groups[1].Value.Replace('/', '+') }
+[IO.File]::WriteAllLines("$root\build\vkd3d-shader_runner.tests", [string[]]$names)
+& x86_64-w64-mingw32-clang @flags @runner -o "$root\build\vkd3d-shader_runner_test.exe" @libraries
+if ($LASTEXITCODE) { throw "compiling vkd3d's shader runner failed" }
+"built $root\build\vkd3d-shader_runner_test.exe, $(@($names).Count) shader test files"
+"wine $wineCommit, vkd3d $vkd3dCommit, llvm-mingw $mingwRelease"
