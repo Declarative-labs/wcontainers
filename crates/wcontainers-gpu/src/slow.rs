@@ -236,11 +236,14 @@ pub enum SlowPath {
     /// A constant buffer smaller than the size its shader declares (Direct3D reads past its end as
     /// zero), moved into a buffer of the declared size whose bytes past its own are zero.
     ConstantBufferGrown,
+    /// An integer colour clear made by a draw writing the value, where the API clears colour targets
+    /// through a float that cannot hold it.
+    IntegerClearByDraw,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 95] = [
+    pub const ALL: [SlowPath; 96] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -336,6 +339,7 @@ impl SlowPath {
         SlowPath::ResolveInStoredFormat,
         SlowPath::PatternClearCopied,
         SlowPath::ConstantBufferGrown,
+        SlowPath::IntegerClearByDraw,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -448,6 +452,7 @@ impl SlowPath {
             SlowPath::ResolveInStoredFormat => "resolve averaged in the stored format",
             SlowPath::PatternClearCopied => "buffer filled with a pattern by copies",
             SlowPath::ConstantBufferGrown => "constant buffer grown to its shader's size",
+            SlowPath::IntegerClearByDraw => "integer colour clear made by a draw",
         }
     }
 }
