@@ -167,11 +167,14 @@ impl Device_Impl {
         out: OutRef<ID3D11Buffer>,
     ) -> Result<()> {
         let d = convert::buffer(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
-        let bytes = unsafe { init.as_ref() }
-            .filter(|i| !i.pSysMem.is_null())
-            .map(|i| unsafe {
+        // Initial data without bytes is invalid, as Direct3D answers.
+        let bytes = match unsafe { init.as_ref() } {
+            Some(i) if i.pSysMem.is_null() => return Err(E_INVALIDARG.into()),
+            Some(i) => Some(unsafe {
                 std::slice::from_raw_parts(i.pSysMem.cast::<u8>(), d.byte_width as usize)
-            });
+            }),
+            None => None,
+        };
         let front = self
             .front
             .borrow_mut()
@@ -408,7 +411,7 @@ impl Device_Impl {
         desc: *const D3D11_BLEND_DESC,
         out: OutRef<ID3D11BlendState>,
     ) -> Result<()> {
-        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let d = &convert::blend_stored(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         shared_state::<BlendState, _>(&self.states.blend, blend_key(d), out, || {
             let state = self
                 .front
@@ -424,7 +427,7 @@ impl Device_Impl {
         desc: *const D3D11_DEPTH_STENCIL_DESC,
         out: OutRef<ID3D11DepthStencilState>,
     ) -> Result<()> {
-        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let d = &convert::depth_stencil_stored(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         shared_state::<DepthStencilState, _>(
             &self.states.depth_stencil,
             depth_stencil_key(d),
@@ -461,7 +464,7 @@ impl Device_Impl {
         desc: *const D3D11_SAMPLER_DESC,
         out: OutRef<ID3D11SamplerState>,
     ) -> Result<()> {
-        let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let d = &convert::sampler_stored(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         shared_state::<SamplerState, _>(&self.states.sampler, words(d), out, || {
             let state = self
                 .front

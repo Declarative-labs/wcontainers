@@ -439,8 +439,10 @@ impl<B: Backend> Device<B> {
 
     pub fn create_buffer(&mut self, d: &BufferDesc, init: Option<&[u8]>) -> Result<Rc<Buffer<B>>> {
         check_buffer(d, init.is_some())?;
-        if d.misc_flags != 0 {
-            return not_implemented("buffers with misc flags (structured, raw, indirect, shared)");
+        if d.misc_flags & !(MISC_DRAWINDIRECT_ARGS | MISC_ALLOW_RAW_VIEWS | MISC_STRUCTURED) != 0 {
+            return not_implemented(
+                "buffers with misc flags other than structured, raw and indirect",
+            );
         }
         self.live()?;
         self.bury();
@@ -544,13 +546,20 @@ impl<B: Backend> Device<B> {
                     "a staging texture has CPU access and no bind flags",
                 ));
             }
-            usage::DYNAMIC => return not_implemented("dynamic textures"),
-            usage::DEFAULT | usage::IMMUTABLE | usage::STAGING => {}
+            // The CPU writes a dynamic texture and the GPU only samples it.
+            usage::DYNAMIC
+                if d.cpu_access_flags != cpu::WRITE || d.bind_flags != bind::SHADER_RESOURCE =>
+            {
+                return Err(Error::InvalidArg(
+                    "a dynamic texture is written by the CPU and only sampled",
+                ));
+            }
+            usage::DEFAULT | usage::IMMUTABLE | usage::STAGING | usage::DYNAMIC => {}
             _ => return Err(Error::InvalidArg("unknown usage")),
         }
-        if d.usage != usage::STAGING && d.cpu_access_flags != 0 {
+        if !matches!(d.usage, usage::STAGING | usage::DYNAMIC) && d.cpu_access_flags != 0 {
             return Err(Error::InvalidArg(
-                "only staging textures here have CPU access",
+                "only staging and dynamic textures have CPU access",
             ));
         }
         let mut needs = FormatUse::empty();
@@ -637,7 +646,7 @@ impl<B: Backend> Device<B> {
                 .expect("a subresource of the texture");
             self.write_texels(format, &region, extent, data);
         }
-        if d.usage == usage::STAGING {
+        if matches!(d.usage, usage::STAGING | usage::DYNAMIC) {
             let shadow = (0..subresources)
                 .map(|i| {
                     let (row, rows, slices) = texture.packed(i as u32 % mips);
@@ -864,8 +873,9 @@ impl<B: Backend> Device<B> {
             return not_implemented("minimum and maximum filtering");
         }
         let anisotropic = d.filter & 0x40 != 0;
-        if anisotropic && !(1..=16).contains(&d.max_anisotropy) {
-            return Err(Error::InvalidArg("anisotropy must be 1 to 16"));
+        // Direct3D takes 0 as 1.
+        if anisotropic && d.max_anisotropy > 16 {
+            return Err(Error::InvalidArg("anisotropy above 16"));
         }
         if d.mip_lod_bias != 0.0 {
             return not_implemented("a level-of-detail bias (LodBiasInShader)");
@@ -919,7 +929,7 @@ impl<B: Backend> Device<B> {
                 d.max_lod.clamp(0.0, 32.0).to_bits(),
             ],
             anisotropy: if anisotropic {
-                d.max_anisotropy as u16
+                d.max_anisotropy.max(1) as u16
             } else {
                 1
             },
@@ -937,7 +947,7 @@ impl<B: Backend> Device<B> {
     pub fn create_blend_state(&mut self, d: &BlendDesc) -> Result<Rc<Blend<B>>> {
         // Targets past the first count only when they blend independently.
         let used = if d.independent { d.targets.len() } else { 1 };
-        for t in &d.targets[..used] {
+        for t in d.targets[..used].iter().filter(|t| t.enable) {
             check_blend_factor(t.src, false)?;
             check_blend_factor(t.dst, false)?;
             check_blend_factor(t.src_alpha, true)?;
@@ -1129,6 +1139,9 @@ pub(crate) fn gpu_buffer(d: &BufferDesc, size: u64) -> GpuBuffer {
             usage |= u;
         }
     }
+    if d.misc_flags & MISC_DRAWINDIRECT_ARGS != 0 {
+        usage |= BufferUsage::INDIRECT;
+    }
     if d.usage == usage::STAGING {
         usage |= BufferUsage::READ_BACK;
     }
@@ -1218,14 +1231,28 @@ fn check_buffer(d: &BufferDesc, has_init: bool) -> Result<()> {
             ));
         }
     }
-    if d.bind_flags & (bind::RENDER_TARGET | bind::DEPTH_STENCIL) != 0 {
-        return Err(Error::InvalidArg("buffers cannot be targets"));
+    // Buffers bound for views, render targets and stream output are made; the views and the
+    // stream output binding are what is not served.
+    if d.bind_flags & bind::DEPTH_STENCIL != 0 {
+        return Err(Error::InvalidArg("buffers cannot hold depth"));
     }
-    if d.bind_flags & bind::STREAM_OUTPUT != 0 {
-        return not_implemented("stream output buffers");
+    let views = bind::SHADER_RESOURCE | bind::UNORDERED_ACCESS;
+    if d.misc_flags & MISC_STRUCTURED != 0 {
+        let s = d.structure_byte_stride;
+        if s == 0
+            || !s.is_multiple_of(4)
+            || s > 2048
+            || !d.byte_width.is_multiple_of(s)
+            || d.misc_flags & MISC_ALLOW_RAW_VIEWS != 0
+            || d.bind_flags & (bind::VERTEX_BUFFER | bind::INDEX_BUFFER) != 0
+        {
+            return Err(Error::InvalidArg(
+                "a structured buffer's stride and bindings",
+            ));
+        }
     }
-    if d.bind_flags & (bind::SHADER_RESOURCE | bind::UNORDERED_ACCESS) != 0 {
-        return not_implemented("buffer views");
+    if d.misc_flags & MISC_ALLOW_RAW_VIEWS != 0 && d.bind_flags & views == 0 {
+        return Err(Error::InvalidArg("a raw buffer is bound for views"));
     }
     match d.usage {
         usage::DEFAULT if d.cpu_access_flags == 0 => Ok(()),
