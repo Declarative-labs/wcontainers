@@ -22,6 +22,8 @@ structs = {
     "Device": ["ID3D11Device", "IDXGIDevice", "IDXGIObject"],
     "Context": ["ID3D11DeviceContext"] + CHILD,
     "Adapter": ["IDXGIAdapter1", "IDXGIAdapter", "IDXGIObject"],
+    "Factory": ["IDXGIFactory2", "IDXGIFactory1", "IDXGIFactory", "IDXGIObject"],
+    "SwapChain": ["IDXGISwapChain1", "IDXGISwapChain", "IDXGIDeviceSubObject", "IDXGIObject"],
     "Buffer": ["ID3D11Buffer", "ID3D11Resource"] + CHILD,
     "Texture2D": ["ID3D11Texture2D", "ID3D11Resource"] + CHILD,
     "RenderTargetView": ["ID3D11RenderTargetView", "ID3D11View"] + CHILD,
@@ -42,6 +44,12 @@ hand = {
     "IDXGIDevice": "GetAdapter",
     "IDXGIAdapter": "GetDesc EnumOutputs",
     "IDXGIAdapter1": "GetDesc1",
+    "IDXGIFactory": "EnumAdapters MakeWindowAssociation GetWindowAssociation CreateSwapChain",
+    "IDXGIFactory1": "EnumAdapters1 IsCurrent",
+    "IDXGIFactory2": "IsWindowedStereoEnabled CreateSwapChainForHwnd",
+    "IDXGIDeviceSubObject": "GetDevice",
+    "IDXGISwapChain": "Present GetBuffer SetFullscreenState GetFullscreenState GetDesc ResizeBuffers GetLastPresentCount",
+    "IDXGISwapChain1": "GetDesc1 GetHwnd Present1",
     "ID3D11DeviceContext": "VSSetConstantBuffers PSSetShaderResources PSSetShader PSSetSamplers VSSetShader DrawIndexed Draw Map Unmap PSSetConstantBuffers IASetInputLayout IASetVertexBuffers IASetIndexBuffer DrawIndexedInstanced DrawInstanced IASetPrimitiveTopology VSSetShaderResources VSSetSamplers OMSetRenderTargets OMSetBlendState OMSetDepthStencilState RSSetState RSSetViewports RSSetScissorRects CopySubresourceRegion CopyResource UpdateSubresource ClearRenderTargetView ClearDepthStencilView ClearState Flush GetType GetContextFlags VSGetShader PSGetShader VSGetConstantBuffers PSGetConstantBuffers VSGetShaderResources PSGetShaderResources VSGetSamplers PSGetSamplers IAGetInputLayout IAGetVertexBuffers IAGetIndexBuffer IAGetPrimitiveTopology OMGetRenderTargets OMGetBlendState OMGetDepthStencilState RSGetState RSGetViewports RSGetScissorRects",
     "ID3D11Resource": "GetType SetEvictionPriority GetEvictionPriority",
     "ID3D11View": "GetResource",
@@ -116,6 +124,8 @@ for struct, tlist in structs.items():
                 body = f"self.{snake(name)}({args})"
             elif ret.startswith("-> windows::core::Result"):
                 body = f'Err(missing("{t}::{name}"))'
+            elif ret == "-> windows::core::HRESULT":
+                body = f'missing("{t}::{name}").code()'
             elif struct in removes:
                 body = f'self.unserved("{t}::{name}")' + ("" if not ret else "; Default::default()")
             elif not ret:

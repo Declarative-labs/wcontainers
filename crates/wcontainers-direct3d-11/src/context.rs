@@ -24,6 +24,10 @@ pub const PIXEL: usize = 1;
 /// A vertex buffer slot: buffer, stride, offset.
 type VertexSlot<B> = (Rc<Buffer<B>>, u32, u32);
 
+/// Direct3D 11's vertex buffer slots and viewports.
+const VERTEX_SLOTS: usize = 32;
+const VIEWPORTS: usize = 16;
+
 /// A clear recorded but not yet run: it becomes the next pass's load, or a `clear_texture`.
 struct PendingClear<B: Backend> {
     view: Rc<View<B>>,
@@ -72,7 +76,7 @@ impl<B: Backend> ContextState<B> {
             ps: None,
             layout: None,
             topology: topology::UNDEFINED,
-            vertex_buffers: vec![None; 32],
+            vertex_buffers: vec![None; VERTEX_SLOTS],
             index: None,
             constant_buffers: [vec![None; 14], vec![None; 14]],
             resources: [vec![None; 128], vec![None; 128]],
@@ -377,8 +381,11 @@ impl<B: Backend> Device<B> {
         self.ctx.raster = state;
     }
 
+    /// More than Direct3D's 16 viewports is invalid and dropped.
     pub fn rs_set_viewports(&mut self, viewports: &[Viewport]) {
-        self.ctx.viewports = viewports.to_vec();
+        if viewports.len() <= VIEWPORTS {
+            self.ctx.viewports = viewports.to_vec();
+        }
     }
 
     /// Scissor rectangles as (left, top, right, bottom).
@@ -712,31 +719,31 @@ impl<B: Backend> Device<B> {
         } else {
             self.ctx.ps.clone()
         };
-        let wanted: Vec<_> = shader
-            .as_ref()
-            .map(|s| {
-                s.reflection
-                    .bindings
-                    .iter()
-                    .filter(|b| b.set as usize == stage)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        if wanted.is_empty() {
+        let Some(shader) = shader.filter(|s| {
+            s.reflection
+                .bindings
+                .iter()
+                .any(|b| b.set as usize == stage)
+        }) else {
             self.ctx.sets[stage] = None;
             self.ctx.sets_dirty[stage] = false;
             return Ok(());
-        }
+        };
+        let wanted = || {
+            shader
+                .reflection
+                .bindings
+                .iter()
+                .filter(move |b| b.set as usize == stage)
+        };
         let stages = if stage == VERTEX {
             StageSet::VERTEX
         } else {
             StageSet::FRAGMENT
         };
-        let shader = shader.expect("a shader with bindings");
         // What stands in for each empty slot the shader reads, by binding number.
         let mut empty: Vec<(u32, Zero<B>)> = Vec::new();
-        for b in &wanted {
+        for b in wanted() {
             let slot = b.register as usize;
             let filled = match b.kind {
                 SlotKind::Uniform => self.ctx.constant_buffers[stage]
@@ -775,7 +782,7 @@ impl<B: Backend> Device<B> {
                 (_, Some(StandIn::DefaultSampler)) => Zero::Sampler(self.default_sampler()?),
                 (_, None) => {
                     return not_implemented(
-                        "an empty slot read as a one-dimensional, multisampled or depth texture, or a comparison sampler",
+                        "an empty slot read as a multisampled or depth texture, or a comparison sampler",
                     );
                 }
             };
@@ -785,10 +792,10 @@ impl<B: Backend> Device<B> {
             .iter()
             .map(|c| c.as_ref().map(|c| (c.gpu.borrow(), c.size.get())))
             .collect();
-        let views = self.ctx.resources[stage].clone();
-        let samplers = self.ctx.samplers[stage].clone();
-        let mut entries = Vec::with_capacity(wanted.len());
-        for b in &wanted {
+        let views = &self.ctx.resources[stage];
+        let samplers = &self.ctx.samplers[stage];
+        let mut entries = Vec::new();
+        for b in wanted() {
             let slot = b.register as usize;
             let resource = match b.kind {
                 SlotKind::Uniform => cbs.get(slot).and_then(Option::as_ref).map(|(c, size)| {
@@ -831,7 +838,6 @@ impl<B: Backend> Device<B> {
                 resource,
             });
         }
-        // The entries borrow handles from the slot clones above, which live to the end of this call.
         let set = self.backend.create_binding_set(&entries);
         drop(entries);
         drop(cbs);
@@ -966,20 +972,19 @@ impl<B: Backend> Device<B> {
         self.open_pass();
 
         let ctx = &self.ctx;
-        let vertex_handles: Vec<_> = ctx
-            .vertex_buffers
-            .iter()
-            .map(|s| s.as_ref().map(|(b, _, offset)| (b.gpu.borrow(), *offset)))
-            .collect();
+        // Fixed arrays: no allocation per draw (Direct3D has 32 vertex slots and 16 viewports).
+        let vertex_handles: [_; VERTEX_SLOTS] = std::array::from_fn(|slot| {
+            ctx.vertex_buffers[slot]
+                .as_ref()
+                .map(|(b, _, offset)| (b.gpu.borrow(), *offset))
+        });
         let read = |slot: usize| {
             ctx.layout
                 .as_ref()
                 .is_some_and(|l| l.elements.iter().any(|e| e.slot as usize == slot))
         };
-        let vertex_buffers: Vec<Option<VertexBinding<'_, B>>> = vertex_handles
-            .iter()
-            .enumerate()
-            .map(|(slot, s)| match (s, &zero_stream) {
+        let vertex_buffers: [Option<VertexBinding<'_, B>>; VERTEX_SLOTS] =
+            std::array::from_fn(|slot| match (&vertex_handles[slot], &zero_stream) {
                 (Some((b, offset)), _) => Some(VertexBinding {
                     buffer: &b.handle,
                     offset: u64::from(*offset),
@@ -989,8 +994,7 @@ impl<B: Backend> Device<B> {
                     offset: 0,
                 }),
                 _ => None,
-            })
-            .collect();
+            });
         let index_handle = ctx.index.as_ref().map(|(b, _, _)| b.gpu.borrow());
         let used = vertex_buffers
             .iter()
@@ -1009,18 +1013,18 @@ impl<B: Backend> Device<B> {
             }),
             _ => None,
         };
-        let viewports: Vec<GpuViewport> = ctx
-            .viewports
-            .iter()
-            .map(|v| GpuViewport {
+        let viewport_count = ctx.viewports.len().min(VIEWPORTS);
+        let viewports: [GpuViewport; VIEWPORTS] = std::array::from_fn(|i| {
+            let v = ctx.viewports.get(i).copied().unwrap_or_default();
+            GpuViewport {
                 x: v.x.to_bits(),
                 y: v.y.to_bits(),
                 width: v.width.to_bits(),
                 height: v.height.to_bits(),
                 min_depth: v.min_depth.to_bits(),
                 max_depth: v.max_depth.to_bits(),
-            })
-            .collect();
+            }
+        });
         let blend = ctx.blend.as_ref().unwrap_or(&self.defaults.blend);
         let depth_stencil = ctx
             .depth_stencil
@@ -1042,7 +1046,7 @@ impl<B: Backend> Device<B> {
             index,
             topology,
             restart: strip && indexed,
-            viewports: &viewports,
+            viewports: &viewports[..viewport_count],
             scissors: &ctx.scissors,
             blend_constant: ctx.blend_factor.map(f32::to_bits),
             stencil_reference: [ctx.stencil_ref as u8; 2],
@@ -1148,40 +1152,27 @@ impl<B: Backend> Device<B> {
                 if at[0] + extent.width > dw || at[1] + extent.height > dh {
                     return Ok(());
                 }
-                self.settle();
-                // Direct3D copies depth and stencil together; the interface copies one aspect a call.
-                let aspects = if s.format.kind() == FormatKind::DepthStencil {
-                    2
-                } else {
-                    1
-                };
-                for stencil in [false, true].into_iter().take(aspects) {
-                    self.backend.copy_texture(
-                        &TextureRegion {
-                            texture: &s.gpu.handle,
-                            mip: src_mip,
-                            layer: src_layer,
-                            origin: Origin {
-                                x: b.left,
-                                y: b.top,
-                                z: 0,
-                            },
-                            stencil,
-                        },
-                        &TextureRegion {
-                            texture: &d.gpu.handle,
-                            mip: dst_mip,
-                            layer: dst_layer,
-                            origin: Origin {
-                                x: at[0],
-                                y: at[1],
-                                z: 0,
-                            },
-                            stencil,
-                        },
-                        extent,
-                    );
+                // Depth-stencil subresources are copied whole; Direct3D drops a part.
+                if s.format.kind() == FormatKind::DepthStencil
+                    && (at != [0; 3]
+                        || (extent.width, extent.height) != (w, h)
+                        || (dw, dh) != (w, h))
+                {
+                    return Ok(());
                 }
+                self.settle();
+                let region = |texture, mip, layer, x, y| TextureRegion {
+                    texture,
+                    mip,
+                    layer,
+                    origin: Origin { x, y, z: 0 },
+                    stencil: false,
+                };
+                self.backend.copy_texture(
+                    &region(&s.gpu.handle, src_mip, src_layer, b.left, b.top),
+                    &region(&d.gpu.handle, dst_mip, dst_layer, at[0], at[1]),
+                    extent,
+                );
                 self.texture_written(d, dst_sub)
             }
             _ => Err(Error::InvalidArg("a copy between a buffer and a texture")),

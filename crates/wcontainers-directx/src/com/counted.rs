@@ -43,6 +43,11 @@ pub unsafe trait Counted: IUnknownImpl + Sized + 'static {
     fn child(&self) -> &Child;
 }
 
+/// How many references the program holds.
+pub fn public_count<O: Counted>(o: &O) -> u32 {
+    o.counts().public.load(Ordering::Relaxed)
+}
+
 /// The program takes a reference: the first since it had none takes one of the library's and one
 /// on the device.
 pub fn add_public<O: Counted>(o: &O) -> u32 {

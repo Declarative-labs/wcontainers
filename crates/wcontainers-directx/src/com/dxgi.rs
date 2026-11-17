@@ -3,9 +3,9 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{E_NOINTERFACE, LUID};
+use windows::Win32::Foundation::LUID;
 use windows::Win32::Graphics::Dxgi::*;
-use windows::core::{GUID, Result, implement};
+use windows::core::{GUID, IUnknownImpl, Interface, Result, implement};
 
 use wcontainers_directx_graphics_infrastructure::AdapterDesc;
 
@@ -65,17 +65,16 @@ impl Adapter {
         })
     }
 
-    /// No outputs: presenting comes with the infrastructure crate.
+    /// No outputs yet (the shared DXGI of What comes next).
     pub(super) fn enum_outputs(&self, _output: u32) -> Result<IDXGIOutput> {
         Err(DXGI_ERROR_NOT_FOUND.into())
     }
+}
 
-    /// The factory is the infrastructure crate's, not made yet.
-    pub(super) fn get_parent(&self, _riid: *const GUID, parent: *mut *mut c_void) -> Result<()> {
-        if let Some(p) = unsafe { parent.as_mut() } {
-            *p = std::ptr::null_mut();
-        }
-        missing_void("IDXGIAdapter::GetParent (the factory)");
-        Err(E_NOINTERFACE.into())
+impl Adapter_Impl {
+    /// A factory enumerating this adapter, which makes swap chains of its devices.
+    pub(super) fn get_parent(&self, riid: *const GUID, parent: *mut *mut c_void) -> Result<()> {
+        let factory: IDXGIFactory2 = Factory::new(self.to_interface()).into();
+        unsafe { factory.query(riid, parent).ok() }
     }
 }

@@ -702,6 +702,42 @@ fn copies_between_groups_are_invalid_and_within_one_copy_bits() {
 }
 
 #[test]
+fn depth_stencil_copies_are_whole_and_of_both_aspects() {
+    let mut dev = device();
+    let ds = |dev: &mut Dev| {
+        Resource::Texture2D(
+            dev.create_texture_2d(&tex2d(4, 4, 45, bind::DEPTH_STENCIL), &[])
+                .unwrap(),
+        )
+    };
+    let (a, b) = (ds(&mut dev), ds(&mut dev));
+    let from = dev.backend.log.len();
+    dev.copy_resource(&b, &a).unwrap();
+    dev.copy_subresource_region(&b, 0, [0; 3], &a, 0, None)
+        .unwrap();
+    // A part of a depth-stencil subresource is dropped, as Direct3D drops it.
+    let part = Box3 {
+        left: 0,
+        top: 0,
+        front: 0,
+        right: 2,
+        bottom: 2,
+        back: 1,
+    };
+    dev.copy_subresource_region(&b, 0, [0; 3], &a, 0, Some(&part))
+        .unwrap();
+    dev.copy_subresource_region(&b, 0, [1, 0, 0], &a, 0, None)
+        .unwrap();
+    let copies: Vec<_> = log_from(&dev, from)
+        .into_iter()
+        .filter(|l| l.starts_with("copy_texture "))
+        .collect();
+    assert_eq!(copies.len(), 2, "{copies:#?}");
+    assert!(copies.iter().all(|l| l.ends_with(" 4x4")), "{copies:#?}");
+    assert!(dev.removed.is_none());
+}
+
+#[test]
 fn vertex_ids_with_a_start_location_are_not_served() {
     let mut dev = device();
     let target = dev
@@ -908,8 +944,8 @@ fn a_constant_buffer_smaller_than_its_shader_declares_grows() {
 #[test]
 fn formats_direct3d_defines_but_the_front_does_not_serve_are_not_implemented() {
     let mut dev = device();
-    // R8G8B8A8_TYPELESS, R24G8_TYPELESS and R32_TYPELESS are valid; 0 and 500 are no format.
-    for typeless in [27, 44, 39] {
+    // R32G32B32_TYPELESS and _FLOAT are valid; 0 and 500 are no format.
+    for typeless in [5, 6] {
         assert!(matches!(
             dev.create_texture_2d(&tex2d(4, 4, typeless, bind::SHADER_RESOURCE), &[]),
             Err(Error::NotImplemented(_))
@@ -1079,4 +1115,81 @@ fn a_view_of_a_target_is_unbound_and_cannot_be_bound() {
     assert!(!dev.shader_resource_bound(PIXEL, 3));
     dev.set_shader_resources(PIXEL, 3, &[Some(srv)]).unwrap();
     assert!(!dev.shader_resource_bound(PIXEL, 3));
+}
+
+#[test]
+fn typeless_textures_are_viewed_through_members_of_their_group() {
+    let mut dev = device();
+    let view = |format| ViewDesc {
+        format,
+        dimension: ViewDim::Texture2D,
+        first_mip: 0,
+        mip_count: 1,
+        first_layer: 0,
+        layer_count: 1,
+    };
+    // R24G8_TYPELESS: D24_UNORM_S8_UINT for depth, R24_UNORM_X8_TYPELESS and X24_TYPELESS_G8_UINT
+    // to read depth and stencil; a D format is for depth-stencil views only.
+    let depth = dev
+        .create_texture_2d(
+            &tex2d(4, 4, 44, bind::DEPTH_STENCIL | bind::SHADER_RESOURCE),
+            &[],
+        )
+        .unwrap();
+    assert_eq!(depth.format, wcontainers_gpu::Format::Depth24PlusStencil8);
+    dev.create_view(&depth, Some(&view(45)), bind::DEPTH_STENCIL)
+        .unwrap();
+    for (format, stencil) in [(46, false), (47, true)] {
+        let from = dev.backend.log.len();
+        dev.create_view(&depth, Some(&view(format)), bind::SHADER_RESOURCE)
+            .unwrap();
+        let made = log_from(&dev, from).join("\n");
+        assert_eq!(made.ends_with(" stencil"), stencil, "{made}");
+    }
+    for (format, kind) in [
+        (45, bind::SHADER_RESOURCE),
+        (46, bind::DEPTH_STENCIL),
+        (44, bind::SHADER_RESOURCE),
+        (28, bind::SHADER_RESOURCE),
+    ] {
+        assert!(
+            matches!(
+                dev.create_view(&depth, Some(&view(format)), kind),
+                Err(Error::InvalidArg(_))
+            ),
+            "{format}"
+        );
+    }
+    // R32_TYPELESS bound for depth is stored as depth and read as R32_FLOAT.
+    let r32 = dev
+        .create_texture_2d(
+            &tex2d(4, 4, 39, bind::DEPTH_STENCIL | bind::SHADER_RESOURCE),
+            &[],
+        )
+        .unwrap();
+    assert_eq!(r32.format, wcontainers_gpu::Format::Depth32Float);
+    dev.create_view(&r32, Some(&view(40)), bind::DEPTH_STENCIL)
+        .unwrap();
+    dev.create_view(&r32, Some(&view(41)), bind::SHADER_RESOURCE)
+        .unwrap();
+    // R8G8B8A8_TYPELESS: UNORM and UNORM_SRGB views; UINT would reinterpret the bits.
+    let colour = dev
+        .create_texture_2d(
+            &tex2d(4, 4, 27, bind::RENDER_TARGET | bind::SHADER_RESOURCE),
+            &[],
+        )
+        .unwrap();
+    dev.create_view(&colour, Some(&view(29)), bind::RENDER_TARGET)
+        .unwrap();
+    dev.create_view(&colour, Some(&view(28)), bind::SHADER_RESOURCE)
+        .unwrap();
+    assert!(matches!(
+        dev.create_view(&colour, Some(&view(30)), bind::SHADER_RESOURCE),
+        Err(Error::NotImplemented(_))
+    ));
+    assert!(matches!(
+        dev.create_view(&colour, None, bind::SHADER_RESOURCE),
+        Err(Error::InvalidArg(_))
+    ));
+    assert!(dev.removed.is_none());
 }

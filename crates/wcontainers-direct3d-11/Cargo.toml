@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-shaders = { path = "../wcontainers-shaders" }
+wcontainers-directx-graphics-infrastructure = { path = "../wcontainers-directx-graphics-infrastructure" }
 blake3 = { version = "1", default-features = false }
 naga = { workspace = true }
 
