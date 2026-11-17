@@ -1,0 +1,79 @@
+blend.ps_dest.dxbc	ok
+blend.ps_dual.dxbc	ok
+blend.vs.dxbc	ok-wgsl glsl-compile
+common.ps_color.dxbc	ok
+common.ps_color_9_1.dxbc	ok
+common.vs_color.dxbc	ok
+common.vs_color_9_1.dxbc	ok
+common.vs_full.dxbc	ok-wgsl glsl-compile
+compute.cs_append.dxbc	unsupported StorageCounter
+compute.cs_atomic.dxbc	unsupported Atomics
+compute.cs_consume.dxbc	unsupported StorageCounter
+compute.cs_counter.dxbc	unsupported StorageCounter
+compute.cs_shared.dxbc	ok-wgsl glsl-write
+compute.cs_structured.dxbc	ok-wgsl glsl-write
+compute.cs_texture.dxbc	unsupported StorageImage
+compute.ps_overlap.dxbc	unsupported StorageImage
+constants.ps_slots.dxbc	ok
+constants.ps_window.dxbc	ok
+depth.ps_depth.dxbc	ok
+depth.ps_greater.dxbc	ok
+depth.ps_less.dxbc	ok
+draws.ps.dxbc	ok
+draws.vs.dxbc	ok
+dynamic.ps_tint.dxbc	ok
+formats.ps_float.dxbc	ok
+formats.ps_sint.dxbc	ok
+formats.ps_uint.dxbc	ok
+geometry.gs_adjacency.dxbc	unsupported GeometryShader
+geometry.gs_layers.dxbc	unsupported GeometryShader
+geometry.gs_points.dxbc	unsupported GeometryShader
+geometry.gs_strips.dxbc	unsupported GeometryShader
+geometry.ps.dxbc	ok
+geometry.ps_id.dxbc	unsupported PrimitiveId
+geometry.ps_primitive.dxbc	ok
+geometry.vs.dxbc	ok
+instanced.ps.dxbc	ok
+instanced.vs.dxbc	ok
+msaa.ps_coverage.dxbc	ok-wgsl glsl-compile
+msaa.ps_load.dxbc	ok-wgsl glsl-compile
+msaa.ps_sample.dxbc	ok-wgsl glsl-compile
+msaa.vs_full.dxbc	ok-wgsl glsl-compile
+quads.ps.dxbc	ok
+quads.vs.dxbc	ok
+raster.gs.dxbc	unsupported GeometryShader
+raster.ps.dxbc	ok
+raster.vs.dxbc	ok
+samplers.ps_compare.dxbc	ok
+samplers.ps_compare_zero.dxbc	ok
+samplers.ps_gather.dxbc	ok-wgsl glsl-compile
+samplers.ps_sample.dxbc	ok
+streamout.gs.dxbc	unsupported GeometryShader
+streamout.vs_back.dxbc	ok
+targets.ps.dxbc	ok
+tessellation.ds_line.dxbc	unsupported DomainShader
+tessellation.ds_quad.dxbc	unsupported DomainShader
+tessellation.ds_tri.dxbc	unsupported DomainShader
+tessellation.hs_line.dxbc	unsupported HullShader
+tessellation.hs_quad_even.dxbc	unsupported HullShader
+tessellation.hs_quad_integer.dxbc	unsupported HullShader
+tessellation.hs_quad_odd.dxbc	unsupported HullShader
+tessellation.hs_quad_pow2.dxbc	unsupported HullShader
+tessellation.hs_tri.dxbc	unsupported HullShader
+tessellation.ps.dxbc	ok
+tessellation.vs.dxbc	unsupported VertexWithoutPosition
+textures.ps_1d.dxbc	ok
+textures.ps_1d_array.dxbc	ok
+textures.ps_2d_array.dxbc	ok
+textures.ps_3d.dxbc	ok
+textures.ps_cube.dxbc	ok
+textures.ps_cube_array.dxbc	ok-wgsl glsl-write
+textures.ps_load.dxbc	ok
+textures.ps_mips.dxbc	ok
+triangle.ps.dxbc	ok
+triangle.vs.dxbc	ok
+views.ps_array.dxbc	ok
+views.ps_depth.dxbc	ok
+views.ps_level0.dxbc	ok
+views.ps_stencil.dxbc	ok
+views.ps_uint.dxbc	ok-wgsl glsl-compile

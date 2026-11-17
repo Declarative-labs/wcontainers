@@ -99,6 +99,49 @@ pub fn texture_format(dxgi: u32) -> Option<Format> {
     })
 }
 
+/// The typeless format heading `dxgi`'s group (formats whose texels are the same bits), or `dxgi`
+/// itself for a format in no group.
+pub fn typeless_group(dxgi: u32) -> u32 {
+    match dxgi {
+        1..=4 => 1,
+        5..=8 => 5,
+        9..=14 => 9,
+        15..=18 => 15,
+        19..=22 => 19,
+        23..=25 => 23,
+        27..=32 => 27,
+        33..=38 => 33,
+        39..=43 => 39,
+        44..=47 => 44,
+        48..=52 => 48,
+        53..=59 => 53,
+        60..=64 => 60,
+        70..=72 => 70,
+        73..=75 => 73,
+        76..=78 => 76,
+        79..=81 => 79,
+        82..=84 => 82,
+        87 | 90 | 91 => 90,
+        88 | 92 | 93 => 92,
+        94..=96 => 94,
+        97..=99 => 97,
+        f => f,
+    }
+}
+
+/// Whether Direct3D copies between `a` and `b`, of different groups, as the same bits (Direct3D 10.1's
+/// format conversions): a 32-bit integer format and a shared-exponent or packed 4:2:2 one, and an
+/// integer format of 64 or 128 bits and a block-compressed format of that block size.
+pub fn copy_cast(a: u32, b: u32) -> bool {
+    let one = |x: u32, y: u32| match x {
+        42 | 43 => matches!(y, 67..=69),
+        12 | 14 | 17 | 18 => matches!(y, 70..=72 | 79..=81),
+        3 | 4 => matches!(y, 73..=78 | 82..=84 | 94..=99),
+        _ => false,
+    };
+    one(a, b) || one(b, a)
+}
+
 /// The interface vertex format of a DXGI format an input element may have.
 pub fn vertex_format(dxgi: u32) -> Option<VertexFormat> {
     use VertexFormat::*;

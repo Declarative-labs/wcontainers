@@ -8,8 +8,8 @@ use wcontainers_gpu::{
     AddressMode, Backend, BlendComponent, BlendFactor, BlendOp, BorderColor,
     BufferDesc as GpuBuffer, BufferUsage, ColorWrites, CompareFn, CullMode,
     DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, Features, FillMode, Filter, Format,
-    FormatKind, FormatUse, FrontFace, LossReason, MAX_COLOR_TARGETS, MapIntent, Object, Origin,
-    ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, SlowPath,
+    FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object,
+    Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, SlowPath,
     StageValue, StencilFace, StencilOp, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
     TextureViewDesc, ViewDimension, WriteMode,
 };
@@ -35,9 +35,30 @@ pub struct Device<B: Backend> {
     pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
     /// Vertex shaders' input signatures by the blake3 of their bytecode, for input layouts.
     vertex_inputs: HashMap<[u8; 32], Vec<StageValue>>,
+    /// What empty slots read.
+    pub(crate) zeros: Zeros<B>,
     /// Set once the device is removed; later work is dropped and the API reports the removal.
     pub removed: Option<Removal>,
 }
+
+/// What empty slots read, made at their first use: Direct3D reads zeros from an empty vertex,
+/// constant or texture slot, and samples with its default sampler state through an empty sampler slot.
+pub(crate) struct Zeros<B: Backend> {
+    /// The largest constant buffer's bytes of zeros, also past any vertex element's offset.
+    pub buffer: Option<Kept<B, B::Buffer>>,
+    /// A texture of one zero texel per layer and its view, by view dimension and kind.
+    pub textures: HashMap<(ViewDimension, FormatKind), ZeroView<B>>,
+    pub sampler: Option<Rc<Sampler<B>>>,
+}
+
+/// A texture of zeros and its view.
+pub(crate) struct ZeroView<B: Backend> {
+    _texture: Kept<B, B::Texture>,
+    view: Kept<B, B::TextureView>,
+}
+
+/// Bytes of the zero buffer: 4096 constants of 16 bytes.
+pub(crate) const ZERO_BYTES: u64 = 65536;
 
 /// Why the device was removed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +67,16 @@ pub enum Removal {
     Unserved,
     /// The back end lost its device.
     Lost(LossReason),
+}
+
+/// A back-end error in the front's terms, where it does not remove a device.
+fn gpu_error(e: GpuError) -> Error {
+    match e {
+        GpuError::Absent(_) => Error::NotImplemented("a feature the back end lacks"),
+        GpuError::OutOfMemory => Error::OutOfMemory,
+        GpuError::DeviceLost => Error::DeviceRemoved,
+        GpuError::Invalid(_) => Error::DeviceRemoved,
+    }
 }
 
 /// The blocks a `None` state stands for.
@@ -92,9 +123,15 @@ impl<B: Backend> Device<B> {
         let blend_desc = BlendDesc::default_state();
         let ds_desc = DepthStencilDesc::default_state();
         let raster_desc = RasterizerDesc::default_state();
-        let blend = backend.create_blend(&blend_block(&blend_desc))?;
-        let ds = backend.create_depth_stencil(&depth_stencil_block(&ds_desc))?;
-        let raster = backend.create_raster(&raster_block(&raster_desc))?;
+        let blend = backend
+            .create_blend(&blend_block(&blend_desc))
+            .map_err(gpu_error)?;
+        let ds = backend
+            .create_depth_stencil(&depth_stencil_block(&ds_desc))
+            .map_err(gpu_error)?;
+        let raster = backend
+            .create_raster(&raster_block(&raster_desc))
+            .map_err(gpu_error)?;
         let defaults = Defaults {
             blend: Rc::new(Blend {
                 desc: blend_desc,
@@ -119,12 +156,57 @@ impl<B: Backend> Device<B> {
             programs: HashMap::new(),
             layouts: HashMap::new(),
             vertex_inputs: HashMap::new(),
+            zeros: Zeros {
+                buffer: None,
+                textures: HashMap::new(),
+                sampler: None,
+            },
             removed: None,
         })
     }
 
     pub fn feature_level(&self) -> u32 {
         self.level
+    }
+
+    /// What `CheckFormatSupport` answers for DXGI format `dxgi`: the uses this front serves on its
+    /// back end (multisampling, 1D and 3D textures and typed buffers are not served).
+    pub fn format_support(&self, dxgi: u32) -> u32 {
+        use crate::desc::support::*;
+        let mut bits = 0;
+        if format::vertex_format(dxgi).is_some() {
+            bits |= IA_VERTEX_BUFFER;
+        }
+        if format::index_format(dxgi).is_some() {
+            bits |= IA_INDEX_BUFFER;
+        }
+        let Some(f) = format::texture_format(dxgi) else {
+            return bits;
+        };
+        let uses = self.backend.caps().formats.get(f);
+        if uses.is_empty() {
+            return bits;
+        }
+        bits |= TEXTURE2D | TEXTURECUBE | MIP;
+        for (has, bit) in [
+            (FormatUse::SAMPLE, SHADER_LOAD),
+            (FormatUse::FILTER, SHADER_SAMPLE),
+            (FormatUse::RENDER, RENDER_TARGET),
+            (FormatUse::BLEND, BLENDABLE),
+            (FormatUse::DEPTH_STENCIL, DEPTH_STENCIL),
+            (FormatUse::COPY_OUT, CPU_LOCKABLE),
+        ] {
+            if uses.contains(has) {
+                bits |= bit;
+            }
+        }
+        bits
+    }
+
+    /// What `CheckMultisampleQualityLevels` answers: one level for a single sample of a format
+    /// textures can have, none otherwise (multisampled textures are not served yet).
+    pub fn multisample_quality_levels(&self, dxgi: u32, samples: u32) -> u32 {
+        u32::from(samples == 1 && self.format_support(dxgi) & crate::desc::support::TEXTURE2D != 0)
     }
 
     /// Why the device is removed, if it is, polling the back end first (plan section 4.10).
@@ -148,10 +230,33 @@ impl<B: Backend> Device<B> {
 
     /// Removes the device because of `e`: a request it cannot serve, or the back end's loss.
     pub fn lose(&mut self, e: Error) {
+        self.remove(&format!("{e:?}"));
+    }
+
+    fn remove(&mut self, why: &str) {
         if self.poll_removed().is_none() {
-            eprintln!("wcontainers direct3d 11: device removed: {e:?}");
+            eprintln!("wcontainers direct3d 11: device removed: {why}");
             self.removed = Some(Removal::Unserved);
         }
+    }
+
+    /// The back end's answer in the front's terms. A loss or a call the back end refused removes the
+    /// device, with the back end's reason.
+    pub(crate) fn gpu<T>(&mut self, r: core::result::Result<T, GpuError>) -> Result<T> {
+        r.map_err(|e| match e {
+            GpuError::Absent(_) | GpuError::OutOfMemory => gpu_error(e),
+            GpuError::DeviceLost => {
+                if self.poll_removed().is_none() {
+                    eprintln!("wcontainers direct3d 11: device removed: the back end lost it");
+                    self.removed = Some(Removal::Lost(LossReason::Removed));
+                }
+                Error::DeviceRemoved
+            }
+            GpuError::Invalid(rule) => {
+                self.remove(&format!("the back end refused a call: {rule}"));
+                Error::DeviceRemoved
+            }
+        })
     }
 
     /// The warnings not yet shown: each slow path the first time it is taken.
@@ -162,6 +267,111 @@ impl<B: Backend> Device<B> {
             .into_iter()
             .map(SlowPath::reason)
             .collect()
+    }
+
+    /// The zero buffer, made at its first use.
+    pub(crate) fn zero_buffer(&mut self) -> Result<B::Buffer> {
+        if let Some(b) = &self.zeros.buffer {
+            return Ok(b.handle.clone());
+        }
+        let desc = GpuBuffer {
+            size: ZERO_BYTES,
+            usage: BufferUsage::VERTEX | BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        };
+        let gpu = self.backend.create_buffer(&desc);
+        let gpu = self.gpu(gpu)?;
+        self.backend.clear_buffer(&gpu, 0, ZERO_BYTES, &[0]);
+        let id = self.id();
+        self.zeros.buffer = Some(Kept::new(gpu.clone(), id, Object::Buffer, &self.graveyard));
+        Ok(gpu)
+    }
+
+    /// A view of zeros of `kind` in `dimension`, made at its first use.
+    pub(crate) fn zero_view(
+        &mut self,
+        dimension: ViewDimension,
+        kind: FormatKind,
+    ) -> Result<B::TextureView> {
+        if let Some(z) = self.zeros.textures.get(&(dimension, kind)) {
+            return Ok(z.view.handle.clone());
+        }
+        let format = match kind {
+            FormatKind::Float => Format::Rgba8Unorm,
+            FormatKind::Uint => Format::Rgba8Uint,
+            FormatKind::Sint => Format::Rgba8Sint,
+            _ => return not_implemented("an empty slot a shader reads as depth or stencil"),
+        };
+        let (texture_dimension, layers) = match dimension {
+            ViewDimension::D2 | ViewDimension::D2Array => (TextureDimension::D2, 1),
+            ViewDimension::Cube | ViewDimension::CubeArray => (TextureDimension::D2, 6),
+            ViewDimension::D3 => (TextureDimension::D3, 1),
+        };
+        let desc = TextureDesc {
+            dimension: texture_dimension,
+            format,
+            width: 1,
+            height: 1,
+            depth_or_layers: layers,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            cube: layers == 6,
+            reinterpret: false,
+        };
+        let texture = self.backend.create_texture(&desc);
+        let texture = self.gpu(texture)?;
+        self.backend.write_texture(
+            &TextureRegion {
+                texture: &texture,
+                mip: 0,
+                layer: 0,
+                origin: Origin { x: 0, y: 0, z: 0 },
+                stencil: false,
+            },
+            Extent {
+                width: 1,
+                height: 1,
+                depth_or_layers: layers,
+            },
+            &[0; 24],
+            4,
+            1,
+            WriteMode::Discard,
+        );
+        let view = self.backend.create_view(
+            &texture,
+            &TextureViewDesc {
+                format,
+                dimension,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: layers,
+                stencil: false,
+            },
+        );
+        let view = self.gpu(view)?;
+        let (t, v) = (self.id(), self.id());
+        self.zeros.textures.insert(
+            (dimension, kind),
+            ZeroView {
+                _texture: Kept::new(texture, t, Object::Texture, &self.graveyard),
+                view: Kept::new(view.clone(), v, Object::TextureView, &self.graveyard),
+            },
+        );
+        Ok(view)
+    }
+
+    /// The sampler of Direct3D's default sampler state, made at its first use.
+    pub(crate) fn default_sampler(&mut self) -> Result<B::Sampler> {
+        if let Some(s) = &self.zeros.sampler {
+            return Ok(s.gpu.handle.clone());
+        }
+        let s = self.create_sampler_state(&SamplerDesc::default_state())?;
+        let handle = s.gpu.handle.clone();
+        self.zeros.sampler = Some(s);
+        Ok(handle)
     }
 
     pub(crate) fn id(&mut self) -> u64 {
@@ -203,10 +413,17 @@ impl<B: Backend> Device<B> {
             not_implemented("a format the back end lacks")
         } else if has.contains(needs) {
             Ok(())
-        } else {
+        } else if (needs.contains(FormatUse::DEPTH_STENCIL) && !format.is_depth_stencil())
+            || (needs.contains(FormatUse::RENDER)
+                && (format.is_depth_stencil() || format.block().0 > 1))
+        {
+            // Direct3D's own rule: depth formats are bound for depth only, block formats never
+            // as targets.
             Err(Error::InvalidArg(
                 "the format does not support the bind flags",
             ))
+        } else {
+            not_implemented("a use of a format the back end lacks")
         }
     }
 
@@ -221,7 +438,8 @@ impl<B: Backend> Device<B> {
         // (padded with zeros past the program's bytes) never needs an edge merge.
         let granule = u64::from(self.backend.caps().limits.buffer_copy_alignment.max(1));
         let size = u64::from(d.byte_width).div_ceil(granule) * granule;
-        let gpu = self.backend.create_buffer(&gpu_buffer(d, size))?;
+        let gpu = self.backend.create_buffer(&gpu_buffer(d, size));
+        let gpu = self.gpu(gpu)?;
         if let Some(bytes) = init {
             let bytes = &bytes[..d.byte_width as usize];
             if bytes.len() as u64 == size {
@@ -250,6 +468,7 @@ impl<B: Backend> Device<B> {
             size: Cell::new(size),
             grown: Cell::new(false),
             shadow: RefCell::new(shadow),
+            staged: RefCell::new(Staged::Current),
         }))
     }
 
@@ -364,7 +583,8 @@ impl<B: Backend> Device<B> {
             cube,
             reinterpret: false,
         };
-        let gpu = self.backend.create_texture(&gpu_desc)?;
+        let gpu = self.backend.create_texture(&gpu_desc);
+        let gpu = self.gpu(gpu)?;
         let resolved = Texture2DDesc {
             mip_levels: mips,
             ..*d
@@ -398,7 +618,15 @@ impl<B: Backend> Device<B> {
                     let mip = i as u32 % mips;
                     let (w, h) = ((d.width >> mip).max(1), (d.height >> mip).max(1));
                     let (row, rows) = format::row_bytes(format, w, h);
-                    vec![0; (row * rows) as usize]
+                    let mut shadow = vec![0; (row * rows) as usize];
+                    // The shadow starts as the initial data, tightly packed.
+                    if let Some(data) = init.get(i) {
+                        for (r, out) in shadow.chunks_exact_mut(row as usize).enumerate() {
+                            let at = r * data.row_pitch as usize;
+                            out.copy_from_slice(&data.bytes[at..at + row as usize]);
+                        }
+                    }
+                    shadow
                 })
                 .collect()
         } else {
@@ -410,6 +638,7 @@ impl<B: Backend> Device<B> {
             format,
             gpu_desc,
             gpu: Kept::new(gpu, id, Object::Texture, &self.graveyard),
+            staged: RefCell::new((0..shadow.len()).map(|_| Staged::Current).collect()),
             shadow: RefCell::new(shadow),
         }))
     }
@@ -495,7 +724,8 @@ impl<B: Backend> Device<B> {
                 layer_count: v.layer_count,
                 stencil: false,
             },
-        )?;
+        );
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(View {
             texture: texture.clone(),
@@ -578,7 +808,8 @@ impl<B: Backend> Device<B> {
             },
             compare,
             border,
-        })?;
+        });
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Sampler {
             desc: *d,
@@ -604,7 +835,8 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_blend(&block)?;
+        let gpu = self.backend.create_blend(&block);
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Blend {
             desc: *d,
@@ -628,7 +860,8 @@ impl<B: Backend> Device<B> {
         let block = depth_stencil_block(d);
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_depth_stencil(&block)?;
+        let gpu = self.backend.create_depth_stencil(&block);
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(DepthStencil {
             desc: *d,
@@ -652,7 +885,8 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_raster(&raster_block(d))?;
+        let gpu = self.backend.create_raster(&raster_block(d));
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Rasterizer {
             desc: *d,
@@ -670,7 +904,8 @@ impl<B: Backend> Device<B> {
         let module = converted.modules.pop().expect("one module");
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_shader(&module)?;
+        let gpu = self.backend.create_shader(&module);
+        let gpu = self.gpu(gpu)?;
         if stage == wcontainers_gpu::SourceStage::Vertex {
             self.vertex_inputs.insert(
                 *blake3::hash(bytecode).as_bytes(),
@@ -678,11 +913,13 @@ impl<B: Backend> Device<B> {
             );
         }
         let constant_sizes = constant_sizes(&module.module);
+        let stand_ins = stand_ins(&module.module);
         let id = self.id();
         Ok(Rc::new(Shader {
             gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
             reflection: converted.reflection,
             constant_sizes,
+            stand_ins,
         }))
     }
 
@@ -722,6 +959,9 @@ impl<B: Backend> Device<B> {
             };
             next_offset[slot] = offset + format::vertex_size(vf);
             let step = e.per_instance.then_some(e.step_rate);
+            if step.is_some_and(|r| r != 1) {
+                return not_implemented("instance step rates other than one");
+            }
             if resolved.iter().any(|r: &LayoutElement| r.slot == e.slot)
                 && instance_steps[slot] != step
             {
@@ -796,6 +1036,50 @@ fn constant_sizes(module: &naga::Module) -> Vec<(u32, u64)> {
         .filter_map(|(_, v)| {
             let size = module.types[v.ty].inner.size(module.to_ctx());
             v.binding.as_ref().map(|b| (b.binding, u64::from(size)))
+        })
+        .collect()
+}
+
+/// What stands in for an empty slot of each texture and sampler `module` reads, by binding number;
+/// `None` for one-dimensional, multisampled and depth textures and comparison samplers.
+fn stand_ins(module: &naga::Module) -> Vec<(u32, Option<StandIn>)> {
+    use naga::{ImageClass, ImageDimension, ScalarKind, TypeInner};
+    module
+        .global_variables
+        .iter()
+        .filter_map(|(_, v)| {
+            let binding = v.binding.as_ref()?.binding;
+            let (dim, arrayed, class) = match module.types[v.ty].inner {
+                TypeInner::Image {
+                    dim,
+                    arrayed,
+                    class,
+                } => (dim, arrayed, class),
+                TypeInner::Sampler { comparison } => {
+                    return Some((binding, (!comparison).then_some(StandIn::DefaultSampler)));
+                }
+                _ => return None,
+            };
+            let dimension = match (dim, arrayed) {
+                (ImageDimension::D2, false) => Some(ViewDimension::D2),
+                (ImageDimension::D2, true) => Some(ViewDimension::D2Array),
+                (ImageDimension::Cube, false) => Some(ViewDimension::Cube),
+                (ImageDimension::Cube, true) => Some(ViewDimension::CubeArray),
+                (ImageDimension::D3, _) => Some(ViewDimension::D3),
+                (ImageDimension::D1, _) => None,
+            };
+            let kind = match class {
+                ImageClass::Sampled { kind, multi: false } => match kind {
+                    ScalarKind::Uint => Some(FormatKind::Uint),
+                    ScalarKind::Sint => Some(FormatKind::Sint),
+                    _ => Some(FormatKind::Float),
+                },
+                _ => None,
+            };
+            Some((
+                binding,
+                dimension.zip(kind).map(|(d, k)| StandIn::Zeros(d, k)),
+            ))
         })
         .collect()
 }

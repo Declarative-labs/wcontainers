@@ -37,6 +37,59 @@ fn malformed(what: String) -> ConvertError {
     ConvertError::Malformed(what)
 }
 
+/// The interpolation mode bits the variant asks a vertex output at `location` to be written with.
+pub(crate) fn output_modes(asked: &[(u32, Interpolation)], location: u32) -> u64 {
+    let Some(&(_, i)) = asked.iter().find(|(l, _)| *l == location) else {
+        return 0;
+    };
+    match i {
+        Interpolation::Perspective => 0,
+        Interpolation::Linear => interp::NO_PERSPECTIVE,
+        Interpolation::Flat => interp::FLAT,
+        Interpolation::PerspectiveCentroid => interp::CENTROID,
+        Interpolation::LinearCentroid => interp::NO_PERSPECTIVE | interp::CENTROID,
+        Interpolation::PerspectiveSample => interp::SAMPLE,
+        Interpolation::LinearSample => interp::NO_PERSPECTIVE | interp::SAMPLE,
+    }
+}
+
+/// naga's interpolation and sampling for interpolation mode bits (`ir::interp`).
+pub(crate) fn naga_interpolation(
+    modes: u64,
+) -> (Option<naga::Interpolation>, Option<naga::Sampling>) {
+    if modes & interp::FLAT != 0 {
+        return (Some(naga::Interpolation::Flat), None);
+    }
+    let i = if modes & interp::NO_PERSPECTIVE != 0 {
+        naga::Interpolation::Linear
+    } else {
+        naga::Interpolation::Perspective
+    };
+    let s = if modes & interp::SAMPLE != 0 {
+        naga::Sampling::Sample
+    } else if modes & interp::CENTROID != 0 {
+        naga::Sampling::Centroid
+    } else {
+        naga::Sampling::Center
+    };
+    (Some(i), Some(s))
+}
+
+/// Whether `op` asks if level 0 is below a texture's level count (Direct3D's `resinfo` at level 0). A
+/// bound view has at least one level, so it is true; GLSL ES 3.00 cannot ask for the level count.
+fn level_zero_check(ir: &Ir, op: &Op) -> bool {
+    let is_mips = |id: u32| ir.op(id).is_ok_and(|o| o.code == code::IMAGE_QUERY_MIPS);
+    let is_zero = |id: u32| {
+        ir.op(id)
+            .is_ok_and(|o| o.code == code::CONSTANT && o.lits.first() == Some(&0))
+    };
+    match (op.code, &op.refs[..]) {
+        (code::U_LT, &[x, y]) => is_zero(x) && is_mips(y),
+        (code::U_GT | code::I_NE, &[x, y]) => is_mips(x) && is_zero(y),
+        _ => false,
+    }
+}
+
 /// What a lowered SSA value is.
 #[derive(Clone)]
 enum Val {
@@ -234,8 +287,10 @@ impl<'a> Lowering<'a> {
 
     /// The naga type of an IR type with one member, arrays included.
     fn ir_ty(&mut self, t: &Ty) -> Result<Handle<Type>> {
-        let [member] = t.members[..] else {
-            return Err(unsupported("StructType"));
+        let member = match t.members[..] {
+            [member] => member,
+            [] => return Err(malformed("a declaration without a type".into())),
+            _ => return Err(unsupported("StructType")),
         };
         let mut handle = self.basic(member)?;
         let mut size = basic_size(member);
@@ -289,13 +344,13 @@ impl<'a> Lowering<'a> {
             };
             if compare {
                 for &d in &op.refs[..2] {
-                    let dcl = self.ir.op(d).refs[0];
+                    let dcl = self.ir.op(d)?.refs[0];
                     self.compared.insert(dcl);
                 }
             }
         }
         for id in 1..=self.ir.ops.len() as u32 {
-            let op = self.ir.op(id);
+            let op = self.ir.op(id)?;
             if op.code > code::LAST_DECLARATIVE {
                 break;
             }
@@ -343,9 +398,6 @@ impl<'a> Lowering<'a> {
                 self.resource(id, op, SlotKind::Sampler, ty, None, false)?;
             }
             code::DCL_CBV => {
-                if self.variant.constants_as_storage | self.variant.constants_as_texture != 0 {
-                    return Err(unsupported("ConstantsVariant"));
-                }
                 let ty = self.ir_ty(&op.ty)?;
                 self.resource(id, op, SlotKind::Uniform, ty, None, false)?;
             }
@@ -404,6 +456,10 @@ impl<'a> Lowering<'a> {
                 self.memory.insert(id, var);
             }
             code::DCL_SCRATCH => {
+                // dxbc-spirv leaves a local array it resolved elsewhere declared without a type.
+                if op.ty.is_void() && !self.ir.ops.iter().any(|o| o.refs.contains(&id)) {
+                    return Ok(());
+                }
                 let ty = self.ir_ty(&op.ty)?;
                 let var = self.global(
                     format!("scratch{id}"),
@@ -458,10 +514,19 @@ impl<'a> Lowering<'a> {
         image: Option<(u64, bool)>,
         depth: bool,
     ) -> Result<()> {
-        let (space_index, register, count) =
-            (op.lits[0] as u32, op.lits[1] as u32, op.lits[2] as u32);
+        let [space_index, register, count] = [0, 1, 2].map(|i| op.lits.get(i).map(|&l| l as u32));
+        let (Some(space_index), Some(register), Some(count)) = (space_index, register, count)
+        else {
+            return Err(malformed(
+                "a resource declaration without its register".into(),
+            ));
+        };
         if count != 1 {
             return Err(unsupported("ResourceArray"));
+        }
+        // Direct3D 11's numbering knows one space; other spaces are numbered by a root signature.
+        if space_index != 0 {
+            return Err(unsupported("RegisterSpace"));
         }
         let binding = slot
             .binding(register)
@@ -631,7 +696,7 @@ impl<'a> Lowering<'a> {
         }
         let mut id = f + 1;
         loop {
-            let op = self.ir.op(id);
+            let op = self.ir.op(id)?;
             match op.code {
                 code::FUNCTION_END => break,
                 code::FUNCTION_CALL => self.call_order(op.refs[0], order, seen)?,
@@ -659,7 +724,7 @@ impl<'a> Lowering<'a> {
         let io_count = self.io.len();
         for i in 0..io_count {
             let (id, ref io) = self.io[i];
-            if !input(self.ir.op(id).code) {
+            if !input(self.ir.op(id)?.code) {
                 continue;
             }
             let (var, location, builtin, modes) =
@@ -734,7 +799,7 @@ impl<'a> Lowering<'a> {
         let mut out_locations: Vec<u32> = Vec::new();
         for i in 0..io_count {
             let (id, ref io) = self.io[i];
-            if input(self.ir.op(id).code) {
+            if input(self.ir.op(id)?.code) {
                 continue;
             }
             if let Some((loc, _)) = io.location {
@@ -763,7 +828,7 @@ impl<'a> Lowering<'a> {
         for loc in out_locations {
             let decls: Vec<usize> = (0..io_count)
                 .filter(|&i| {
-                    !input(self.ir.op(self.io[i].0).code)
+                    self.ir.op(self.io[i].0).is_ok_and(|o| !input(o.code))
                         && self.io[i].1.location.is_some_and(|l| l.0 == loc)
                 })
                 .collect();
@@ -816,21 +881,28 @@ impl<'a> Lowering<'a> {
                     components: comps,
                 },
             );
-            let flat = s.kind != ScalarKind::Float;
-            let binding = self.location_binding(loc, 0, flat, false);
+            let modes = match self.stage {
+                SourceStage::Vertex => output_modes(&self.variant.output_interpolation, loc),
+                _ => 0,
+            };
+            let flat = s.kind != ScalarKind::Float || modes & interp::FLAT != 0;
+            let binding = self.location_binding(loc, modes, flat, false);
             members.push((format!("v{loc}"), ty, binding));
             values.push(v);
             for &i in &decls {
                 let (id, ref io) = self.io[i];
                 let (loc, comp) = io.location.unwrap();
                 let b = io.ty.basic().unwrap();
-                self.reflect_value(id, false, Some(loc), comp, b, 0, None);
+                self.reflect_value(id, false, Some(loc), comp, b, modes, None);
             }
         }
         if self.stage == SourceStage::Vertex
             && !self.io.iter().any(|(id, io)| {
                 io.builtin == Some(builtin::POSITION)
-                    && self.ir.op(*id).code == code::DCL_OUTPUT_BUILT_IN
+                    && self
+                        .ir
+                        .op(*id)
+                        .is_ok_and(|o| o.code == code::DCL_OUTPUT_BUILT_IN)
             })
         {
             return Err(unsupported("VertexWithoutPosition"));
@@ -921,21 +993,9 @@ impl<'a> Lowering<'a> {
         let (interpolation, sampling) = if !between_stages {
             (None, None)
         } else if flat {
-            (Some(naga::Interpolation::Flat), None)
+            naga_interpolation(interp::FLAT)
         } else {
-            let i = if modes & interp::NO_PERSPECTIVE != 0 {
-                naga::Interpolation::Linear
-            } else {
-                naga::Interpolation::Perspective
-            };
-            let s = if modes & interp::SAMPLE != 0 {
-                naga::Sampling::Sample
-            } else if modes & interp::CENTROID != 0 {
-                naga::Sampling::Centroid
-            } else {
-                naga::Sampling::Center
-            };
-            (Some(i), Some(s))
+            naga_interpolation(modes)
         };
         naga::Binding::Location {
             location: loc,
@@ -1324,7 +1384,7 @@ struct Targets {
 impl<'l, 'a> FunctionLowering<'l, 'a> {
     fn lower(l: &'l mut Lowering<'a>, id: u32) -> Result<Handle<Function>> {
         let ir = l.ir;
-        let fop = ir.op(id);
+        let fop = ir.op(id)?;
         let mut f = Function {
             name: Some(if id == l.main {
                 "shader".into()
@@ -1334,7 +1394,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             ..Default::default()
         };
         for (i, &p) in fop.refs.iter().enumerate() {
-            let ty = l.ir_ty(&ir.op(p).ty)?;
+            let ty = l.ir_ty(&ir.op(p)?.ty)?;
             f.arguments.push(FunctionArgument {
                 name: Some(format!("p{i}")),
                 ty,
@@ -1375,7 +1435,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         let mut entry = 0;
         let mut cur: Option<Block2> = None;
         loop {
-            let op = ir.op(id);
+            let op = ir.op(id)?;
             match op.code {
                 code::FUNCTION_END => break,
                 code::LABEL => {
@@ -1416,7 +1476,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         // Values used outside their block, or by a phi from another block, get a variable.
         let mut spill = Vec::new();
         for (&id, &label) in &self.block_of {
-            let op = ir.op(id);
+            let op = ir.op(id)?;
             if op.code == code::PHI {
                 for pair in op.refs.chunks(2) {
                     if let [from, v] = *pair
@@ -1437,14 +1497,14 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         spill.sort_unstable();
         spill.dedup();
         for v in spill {
-            let op = ir.op(v);
+            let op = ir.op(v)?;
             if self.spills.contains_key(&v)
                 || op.code == code::DESCRIPTOR_LOAD
                 || op.ty.members.len() != 1
             {
                 continue;
             }
-            let ty = self.l.ir_ty(&ir.op(v).ty)?;
+            let ty = self.l.ir_ty(&ir.op(v)?.ty)?;
             let local = self.f.local_variables.append(
                 LocalVariable {
                     name: Some(format!("x{v}")),
@@ -1458,7 +1518,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         let mut phis: Vec<u32> = self.blocks.values().flat_map(|b| b.phis.clone()).collect();
         phis.sort_unstable();
         for p in phis {
-            let ty = self.l.ir_ty(&ir.op(p).ty)?;
+            let ty = self.l.ir_ty(&ir.op(p)?.ty)?;
             let local = self.f.local_variables.append(
                 LocalVariable {
                     name: Some(format!("phi{p}")),
@@ -1517,7 +1577,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     fn basic_of(&self, id: u32) -> Result<Basic> {
         self.l
             .ir
-            .op(id)
+            .op(id)?
             .ty
             .basic()
             .ok_or_else(|| malformed(format!("value {id} is not a scalar or vector")))
@@ -1544,7 +1604,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
 
     fn val(&mut self, b: &mut Block, id: u32) -> Result<Val> {
         let ir = self.l.ir;
-        let op = ir.op(id);
+        let op = ir.op(id)?;
         match op.code {
             code::CONSTANT => return Ok(Val::Expr(self.constant(b, id)?)),
             code::UNDEF => {
@@ -1574,7 +1634,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         if let Some(&h) = self.consts.get(&id) {
             return Ok(h);
         }
-        let op = self.l.ir.op(id);
+        let op = self.l.ir.op(id)?;
         let basic = op.ty.basic();
         let h = match basic {
             Some(m) if m.size == 1 => {
@@ -1645,7 +1705,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             if Some(label) == stop {
                 return Ok(());
             }
-            let lop = self.l.ir.op(label);
+            let lop = self.l.ir.op(label)?;
             if lop.lits.last() == Some(&construct::LOOP) && t.header != Some(label) {
                 let merge = lop.refs[0];
                 self.lower_loop(label, t, out)?;
@@ -1660,7 +1720,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     }
 
     fn lower_loop(&mut self, header: u32, outer: Targets, out: &mut Block) -> Result<()> {
-        let lop = self.l.ir.op(header);
+        let lop = self.l.ir.op(header)?;
         let (merge, cont) = (lop.refs[0], lop.refs[1]);
         let t = Targets {
             brk: Some(merge),
@@ -1682,7 +1742,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             let mut label = cont;
             loop {
                 let b = &self.blocks[&label];
-                let term = self.l.ir.op(b.last);
+                let term = self.l.ir.op(b.last)?;
                 let back = match term.code {
                     code::BRANCH => term.refs[0] == header,
                     code::BRANCH_CONDITIONAL => term.refs[1] == header || term.refs[2] == header,
@@ -1723,7 +1783,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         out: &mut Block,
     ) -> Result<Option<Handle<Expression>>> {
         self.contents(label, out)?;
-        let term = self.l.ir.op(self.blocks[&label].last);
+        let term = self.l.ir.op(self.blocks[&label].last)?;
         match term.code {
             code::BRANCH => {
                 self.store_phis(label, term.refs[0], out)?;
@@ -1766,7 +1826,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             self.define(out, p, Val::Expr(v));
         }
         for id in first..last {
-            let op = self.l.ir.op(id);
+            let op = self.l.ir.op(id)?;
             if op.code == code::PHI {
                 continue;
             }
@@ -1784,9 +1844,9 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         out: &mut Block,
     ) -> Result<Option<u32>> {
         self.contents(label, out)?;
-        let lop = self.l.ir.op(label);
+        let lop = self.l.ir.op(label)?;
         let selection = (lop.lits.last() == Some(&construct::SELECTION)).then(|| lop.refs[0]);
-        let term = self.l.ir.op(self.blocks[&label].last);
+        let term = self.l.ir.op(self.blocks[&label].last)?;
         match term.code {
             code::BRANCH => {
                 let target = term.refs[0];
@@ -1885,7 +1945,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             let [value, target] = *pair else {
                 return Err(malformed("switch case".into()));
             };
-            let raw = self.l.ir.op(value).lits[0];
+            let raw = self.l.ir.op(value)?.lits[0];
             let v = if s.kind == ScalarKind::Sint {
                 SwitchValue::I32(raw as i32)
             } else {
@@ -1920,7 +1980,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             self.cur = label;
             self.store_phis(label, target, &mut body)?;
             if target != merge {
-                let falls = self.falls_into_case(target, merge, term);
+                let falls = self.falls_into_case(target, merge, term)?;
                 if falls {
                     return Err(unsupported("SwitchFallthrough"));
                 }
@@ -1947,14 +2007,14 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         Ok(())
     }
 
-    fn falls_into_case(&self, target: u32, merge: u32, term: &Op) -> bool {
+    fn falls_into_case(&self, target: u32, merge: u32, term: &Op) -> Result<bool> {
         // A case whose block branches straight into another case's block.
         let b = &self.blocks[&target];
-        let end = self.l.ir.op(b.last);
-        end.code == code::BRANCH
+        let end = self.l.ir.op(b.last)?;
+        Ok(end.code == code::BRANCH
             && end.refs[0] != merge
             && term.refs[1..].contains(&end.refs[0])
-            && self.l.ir.op(end.refs[0]).code == code::LABEL
+            && self.l.ir.op(end.refs[0])?.code == code::LABEL)
     }
 
     /// Stores the values the phis of `to` take when coming from `from`.
@@ -1967,7 +2027,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         self.cur = from;
         let mut stores = Vec::new();
         for p in phis {
-            let op = self.l.ir.op(p);
+            let op = self.l.ir.op(p)?;
             let v = op
                 .refs
                 .chunks(2)
@@ -1990,15 +2050,15 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     fn instruction(&mut self, id: u32, b: &mut Block) -> Result<()> {
         use code as c;
         let ir = self.l.ir;
-        let op = ir.op(id);
+        let op = ir.op(id)?;
         let r = &op.refs;
         let v: Handle<Expression> = match op.code {
             c::DEBUG_NAME | c::DEBUG_MEMBER_NAME | c::SEMANTIC => return Ok(()),
             c::DESCRIPTOR_LOAD => {
-                if r.get(1).is_some_and(|&i| {
-                    let o = ir.op(i);
-                    !(o.code == c::CONSTANT && o.lits.first() == Some(&0))
-                }) {
+                if let Some(&i) = r.get(1)
+                    && let o = ir.op(i)?
+                    && !(o.code == c::CONSTANT && o.lits.first() == Some(&0))
+                {
                     return Err(unsupported("ResourceArray"));
                 }
                 return Ok(());
@@ -2017,11 +2077,11 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                     .functions
                     .get(&r[0])
                     .ok_or_else(|| malformed("call before callee".into()))?;
-                let params = ir.op(r[0]).refs.clone();
+                let params = ir.op(r[0])?.refs.clone();
                 let mut arguments = Vec::new();
                 for (&a, &p) in r[1..].iter().zip(&params) {
                     let s =
-                        Lowering::scalar(ir.op(p).ty.basic().map_or(scalar::U32, |m| m.scalar))?;
+                        Lowering::scalar(ir.op(p)?.ty.basic().map_or(scalar::U32, |m| m.scalar))?;
                     arguments.push(self.get_as(b, a, s)?);
                 }
                 let result =
@@ -2080,7 +2140,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 )
             }
             c::COMPOSITE_EXTRACT => {
-                let addr = ir.op(r[1]);
+                let addr = ir.op(r[1])?;
                 if addr.code != c::CONSTANT {
                     return Err(malformed("composite index is not a constant".into()));
                 }
@@ -2166,6 +2226,16 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 self.define(b, id, Val::Tuple(vec![size, layers]));
                 return Ok(());
             }
+            // Read only by checks that level 0 exists, which are true.
+            c::IMAGE_QUERY_MIPS
+                if ir
+                    .ops
+                    .iter()
+                    .filter(|o| o.refs.contains(&id))
+                    .all(|o| level_zero_check(ir, o)) =>
+            {
+                return Ok(());
+            }
             c::IMAGE_QUERY_MIPS | c::IMAGE_QUERY_SAMPLES => {
                 let res = self.image(r[0])?;
                 let image = self.add(b, Expression::GlobalVariable(res.var));
@@ -2208,7 +2278,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         let ir = self.l.ir;
         if opcode == code::CONSTANT_LOAD {
             let var = self.l.constant_array(dcl)?;
-            return Ok((var, ir.op(dcl).ty.clone()));
+            return Ok((var, ir.op(dcl)?.ty.clone()));
         }
         if let Some(&i) = self.l.io_index.get(&dcl) {
             let io = &self.l.io[i].1;
@@ -2219,17 +2289,17 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             .memory
             .get(&dcl)
             .ok_or_else(|| malformed(format!("memory {dcl}")))?;
-        Ok((var, ir.op(dcl).ty.clone()))
+        Ok((var, ir.op(dcl)?.ty.clone()))
     }
 
     fn buffer(&self, desc: u32) -> Result<(Resource, Ty)> {
-        let dcl = self.l.ir.op(desc).refs[0];
+        let dcl = self.l.ir.op(desc)?.refs[0];
         let res = *self
             .l
             .resources
             .get(&dcl)
             .ok_or_else(|| malformed(format!("descriptor {desc}")))?;
-        Ok((res, self.l.ir.op(dcl).ty.clone()))
+        Ok((res, self.l.ir.op(dcl)?.ty.clone()))
     }
 
     fn image(&self, desc: u32) -> Result<Resource> {
@@ -2246,14 +2316,14 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             return Ok(Vec::new());
         }
         let ir = self.l.ir;
-        let op = ir.op(addr);
+        let op = ir.op(addr)?;
         let n = op.ty.basic().map_or(1, |m| m.size);
         let mut out = Vec::new();
         match op.code {
             code::CONSTANT => out.extend(op.lits.iter().map(|&l| Index::Const(l as u32))),
             code::COMPOSITE_CONSTRUCT => {
                 for &m in &op.refs {
-                    let mo = ir.op(m);
+                    let mo = ir.op(m)?;
                     if mo.code == code::CONSTANT {
                         out.push(Index::Const(mo.lits[0] as u32));
                     } else {
@@ -2546,8 +2616,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         let res = self.image(r[0])?;
         let (sampler_res, _) = self.buffer(r[1])?;
         let (k, _) = res.image.unwrap();
-        let tex_slot = self.slot_of(r[0]);
-        let smp_slot = self.slot_of(r[1]);
+        let tex_slot = self.slot_of(r[0])?;
+        let smp_slot = self.slot_of(r[1])?;
         if !self
             .l
             .reflection
@@ -2580,7 +2650,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             }
             if lod != 0 {
                 let is_zero = {
-                    let o = self.l.ir.op(lod);
+                    let o = self.l.ir.op(lod)?;
                     o.code == code::CONSTANT && f32::from_bits(o.lits[0] as u32) == 0.0
                 };
                 // Level zero is naga's form for comparisons only (HLSL has no plain `SampleLevelZero`).
@@ -2662,7 +2732,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     }
 
     fn offset_constant(&mut self, b: &mut Block, k: u64, id: u32) -> Result<Handle<Expression>> {
-        let op = self.l.ir.op(id);
+        let op = self.l.ir.op(id)?;
         if op.code != code::CONSTANT {
             return Err(unsupported("DynamicOffset"));
         }
@@ -2674,9 +2744,9 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         Ok(self.add(b, Expression::Constant(c)))
     }
 
-    fn slot_of(&self, desc: u32) -> u32 {
-        let dcl = self.l.ir.op(desc).refs[0];
-        self.l.ir.op(dcl).lits.get(1).copied().unwrap_or(0) as u32
+    fn slot_of(&self, desc: u32) -> Result<u32> {
+        let dcl = self.l.ir.op(desc)?.refs[0];
+        Ok(self.l.ir.op(dcl)?.lits.get(1).copied().unwrap_or(0) as u32)
     }
 
     fn image_load(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
@@ -2691,7 +2761,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         let array_index = self.layer(b, layer)?;
         let mut coordinate = self.coords(b, k, coord, false)?;
         if offset != 0 {
-            let o = self.l.ir.op(offset);
+            let o = self.l.ir.op(offset)?;
             if o.code != code::CONSTANT {
                 return Err(unsupported("DynamicOffset"));
             }
@@ -2775,6 +2845,9 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             Ok(s.math(b, f, &args))
         };
         let operand = |s: &Self| s.scalar_of(r[0]);
+        if level_zero_check(self.l.ir, op) {
+            return Ok(self.lit(b, Literal::Bool(true)));
+        }
         Ok(match op.code {
             c::F_EQ => bin(self, b, B::Equal, Scalar::F32)?,
             c::F_NE => bin(self, b, B::NotEqual, Scalar::F32)?,
@@ -3046,7 +3119,7 @@ fn literal(s: Scalar, bits: u64) -> Literal {
 impl Lowering<'_> {
     /// A module constant holding the vector or array constant `id`.
     fn global_constant(&mut self, id: u32) -> Result<Handle<naga::Constant>> {
-        let op = self.ir.op(id);
+        let op = self.ir.op(id)?;
         let ty = self.ir_ty(&op.ty)?;
         let init = self.const_expr(&op.ty, &op.lits)?;
         Ok(self.module.constants.append(
@@ -3133,7 +3206,7 @@ impl Lowering<'_> {
         if let Some(&v) = self.memory.get(&id) {
             return Ok(v);
         }
-        let op = self.ir.op(id);
+        let op = self.ir.op(id)?;
         let ty = self.ir_ty(&op.ty)?;
         let init = self.const_expr(&op.ty, &op.lits)?;
         let var = self.global(

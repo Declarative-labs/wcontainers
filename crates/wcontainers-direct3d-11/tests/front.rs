@@ -595,28 +595,110 @@ fn dynamic_constants_upload_whole_on_unmap() {
     dev.set_constant_buffers(VERTEX, 0, &[None]).unwrap();
 }
 
+/// The id of the object a log line starting `prefix` made.
+fn made(log: &[String], prefix: &str) -> String {
+    log[find(log, prefix)]
+        .split(' ')
+        .nth(1)
+        .expect("an id")
+        .to_string()
+}
+
 #[test]
-fn a_draw_the_front_cannot_serve_removes_the_device() {
+fn empty_slots_read_zeros_and_sample_with_the_default_state() {
     let mut dev = device();
     let target = dev
         .create_texture_2d(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
         .unwrap();
     let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
     begin(&mut dev, &rtv, None, 16.0);
+    let mut color = element("COLOR", RGBA32F, 0);
+    color.slot = 1;
     let elements = [
         element("POSITION", RGB32F, 0),
         element("TEXCOORD", RG32F, 12),
-        element("COLOR", RGBA32F, 20),
+        color,
     ];
     program(&mut dev, "quads.vs", "quads.ps", &elements);
-    let vertices = immutable(&mut dev, &[0; 36 * 3], bind::VERTEX_BUFFER);
-    dev.ia_set_vertex_buffers(0, &[Some((vertices, 36, 0))])
+    let vertices = immutable(&mut dev, &[0; 20 * 3], bind::VERTEX_BUFFER);
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 20, 0))])
         .unwrap();
     dev.ia_set_primitive_topology(topology::TRIANGLELIST);
-    // The pixel shader samples texture slot 0, which nothing is bound to.
+    // Vertex slot 1, the pixel shader's texture slot 0 and its sampler slot 0 are empty.
+    let from = dev.backend.log.len();
     dev.draw(3, 0);
-    assert!(dev.removed.is_some());
-    assert!(!dev.backend.log.iter().any(|l| l.starts_with("draw ")));
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    let zero = made(&log, "create_buffer");
+    assert!(
+        log[find(&log, "create_buffer")].contains("size 65536"),
+        "{log:#?}"
+    );
+    find(&log, &format!("clear_buffer {zero} "));
+    let texture = made(&log, "create_texture");
+    assert!(log[find(&log, "create_texture")].contains("Rgba8Unorm 1x1x1"));
+    find(&log, &format!("write_texture {texture} "));
+    let view = made(&log, "create_view");
+    // Direct3D's default sampler: linear filtering, clamped.
+    let sampler = made(&log, "create_sampler");
+    assert!(
+        log[find(&log, "create_sampler")].contains("Linear Linear Linear [Clamp, Clamp, Clamp]"),
+        "{log:#?}"
+    );
+    let set = &log[find(&log, "create_binding_set")];
+    assert!(set.contains(&format!("=texture {view}")), "{set}");
+    assert!(set.contains(&format!("=sampler {sampler}")), "{set}");
+    assert!(log[find(&log, "create_vertex_layout")].contains("stream 1 stride 0"));
+    let draw = &log[find(&log, "draw ")];
+    assert!(draw.contains(&format!("Some(({zero}, 0))]")), "{draw}");
+
+    // A second draw makes nothing new.
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(!log.iter().any(|l| l.starts_with("create_")), "{log:#?}");
+}
+
+#[test]
+fn copies_between_groups_are_invalid_and_within_one_copy_bits() {
+    let mut dev = device();
+    let source = Resource::Texture2D(
+        dev.create_texture_2d(&tex2d(4, 4, RGBA8, bind::SHADER_RESOURCE), &[])
+            .unwrap(),
+    );
+    let staging = |dev: &mut Dev, format| {
+        let mut d = tex2d(4, 4, format, 0);
+        d.usage = usage::STAGING;
+        d.cpu_access_flags = cpu::READ;
+        Resource::Texture2D(dev.create_texture_2d(&d, &[]).unwrap())
+    };
+    // R8G8B8A8_UNORM_SRGB and _UINT share the group; R32_FLOAT does not; R32G32_UINT and BC1 are
+    // Direct3D 10.1's conversion, not served.
+    for format in [29, 30] {
+        let dst = staging(&mut dev, format);
+        dev.copy_resource(&dst, &source).unwrap();
+        dev.copy_subresource_region(&dst, 0, [0; 3], &source, 0, None)
+            .unwrap();
+    }
+    let dst = staging(&mut dev, 41);
+    assert!(matches!(
+        dev.copy_resource(&dst, &source),
+        Err(Error::InvalidArg(_))
+    ));
+    assert!(matches!(
+        dev.copy_subresource_region(&dst, 0, [0; 3], &source, 0, None),
+        Err(Error::InvalidArg(_))
+    ));
+    let wide = Resource::Texture2D(
+        dev.create_texture_2d(&tex2d(1, 1, 17, bind::SHADER_RESOURCE), &[])
+            .unwrap(),
+    );
+    let bc1 = staging(&mut dev, 71);
+    assert!(matches!(
+        dev.copy_subresource_region(&bc1, 0, [0; 3], &wide, 0, None),
+        Err(Error::NotImplemented(_))
+    ));
+    assert!(dev.removed.is_none());
 }
 
 #[test]
@@ -864,4 +946,137 @@ fn dual_source_blending_is_not_served() {
     dev.draw(3, 0);
     assert!(dev.removed.is_some());
     assert!(!dev.backend.log.iter().any(|l| l.starts_with("draw ")));
+}
+
+#[test]
+fn staging_read_backs_start_at_the_copy_and_maps_may_not_wait() {
+    let mut dev = device();
+    dev.backend.reads_need_submit = true;
+    let source = dev
+        .create_texture_2d(
+            &tex2d(4, 4, RGBA8, bind::SHADER_RESOURCE),
+            &[SubresourceData {
+                bytes: &[7; 64],
+                row_pitch: 16,
+                slice_pitch: 0,
+            }],
+        )
+        .unwrap();
+    let staging = |dev: &mut Dev, access: u32| {
+        let mut d = tex2d(4, 4, RGBA8, 0);
+        d.usage = usage::STAGING;
+        d.cpu_access_flags = access;
+        Resource::Texture2D(dev.create_texture_2d(&d, &[]).unwrap())
+    };
+    let src = Resource::Texture2D(source);
+    let readable = staging(&mut dev, cpu::READ);
+    let start = dev.backend.log.len();
+    dev.copy_subresource_region(&readable, 0, [0; 3], &src, 0, None)
+        .unwrap();
+    let log = log_from(&dev, start);
+    assert!(
+        find(&log, "read_back") > find(&log, "copy_texture"),
+        "{log:#?}"
+    );
+    // Not done yet: a map that may not wait is told so, and the work is submitted.
+    let start = dev.backend.log.len();
+    let r = dev.map(&readable, 0, map::READ, map::DO_NOT_WAIT);
+    assert!(matches!(r, Err(Error::StillDrawing)));
+    find(&log_from(&dev, start), "submit");
+    let mapped = dev.map(&readable, 0, map::READ, map::DO_NOT_WAIT).unwrap();
+    assert_eq!(unsafe { *mapped.data }, 7);
+    dev.unmap(&readable, 0);
+    // The shadow is current: mapping again reads nothing back.
+    let start = dev.backend.log.len();
+    dev.map(&readable, 0, map::READ, 0).unwrap();
+    dev.unmap(&readable, 0);
+    assert!(
+        !log_from(&dev, start)
+            .iter()
+            .any(|l| l.starts_with("read_back"))
+    );
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::ReadBackWait), 0);
+
+    // A write-only map reads back only what the GPU wrote since the shadow was filled.
+    let writable = staging(&mut dev, cpu::WRITE);
+    let start = dev.backend.log.len();
+    dev.map(&writable, 0, map::WRITE, 0).unwrap();
+    dev.unmap(&writable, 0);
+    assert!(
+        !log_from(&dev, start)
+            .iter()
+            .any(|l| l.starts_with("read_back"))
+    );
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::StagingRefreshed),
+        0
+    );
+    dev.copy_subresource_region(&writable, 0, [0; 3], &src, 0, None)
+        .unwrap();
+    let mapped = dev.map(&writable, 0, map::WRITE, 0).unwrap();
+    assert_eq!(unsafe { *mapped.data }, 7, "the GPU's bytes are kept");
+    dev.unmap(&writable, 0);
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::StagingRefreshed),
+        1
+    );
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::ReadBackWait), 1);
+}
+
+#[test]
+fn binding_the_same_objects_again_makes_no_new_binding_set() {
+    let mut dev = device();
+    ready(
+        &mut dev,
+        "instanced.vs",
+        "instanced.ps",
+        &[element("POSITION", RG32F, 0)],
+        8,
+    );
+    let vs = dev
+        .create_shader(&corpus("instanced.vs"), SourceStage::Vertex)
+        .unwrap();
+    let desc = BufferDesc {
+        byte_width: vs.constant_sizes[0].1 as u32,
+        usage: usage::DEFAULT,
+        bind_flags: bind::CONSTANT_BUFFER,
+        ..Default::default()
+    };
+    let cb = dev.create_buffer(&desc, None).unwrap();
+    let sets = |dev: &mut Dev, rebind: Option<&Rc<Buffer<Recorder>>>| {
+        let from = dev.backend.log.len();
+        for _ in 0..3 {
+            if let Some(b) = rebind {
+                dev.set_constant_buffers(VERTEX, 0, &[Some(b.clone())])
+                    .unwrap();
+            }
+            dev.draw_instanced(3, 4, 0, 0);
+        }
+        log_from(dev, from)
+            .iter()
+            .filter(|l| l.starts_with("create_binding_set"))
+            .count()
+    };
+    assert_eq!(sets(&mut dev, Some(&cb)), 1, "the first draw makes it");
+    assert_eq!(sets(&mut dev, Some(&cb)), 0, "rebinding the same buffer");
+    let other = dev.create_buffer(&desc, None).unwrap();
+    assert_eq!(sets(&mut dev, Some(&other)), 1, "a different buffer");
+    assert!(dev.removed.is_none());
+}
+
+#[test]
+fn a_view_of_a_target_is_unbound_and_cannot_be_bound() {
+    let mut dev = device();
+    let mut d = tex2d(8, 8, RGBA8, bind::RENDER_TARGET | bind::SHADER_RESOURCE);
+    d.mip_levels = 2;
+    let t = dev.create_texture_2d(&d, &[]).unwrap();
+    let srv = dev.create_view(&t, None, bind::SHADER_RESOURCE).unwrap();
+    let rtv = dev.create_view(&t, None, bind::RENDER_TARGET).unwrap();
+    dev.set_shader_resources(PIXEL, 3, &[Some(srv.clone())])
+        .unwrap();
+    assert!(dev.shader_resource_bound(PIXEL, 3));
+    dev.om_set_render_targets(&[Some(rtv)], None).unwrap();
+    assert!(!dev.shader_resource_bound(PIXEL, 3));
+    dev.set_shader_resources(PIXEL, 3, &[Some(srv)]).unwrap();
+    assert!(!dev.shader_resource_bound(PIXEL, 3));
 }

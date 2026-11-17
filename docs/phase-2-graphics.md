@@ -185,7 +185,10 @@ Recording:
 - `copy_buffer`, `copy_texture`, `copy_buffer_to_texture`, `copy_texture_to_buffer`, `clear_buffer`
   (a pattern of 1 to 16 bytes repeated: zero, or an element's bits for Direct3D's storage view clears;
   WebGPU clears only to zero, so its back end fills with any other pattern by copies from a block of
-  the pattern, `PatternClearCopied`), `resolve`: outside a pass. `resolve` names the format the samples are averaged in, the source's
+  the pattern, `PatternClearCopied`), `resolve`: outside a pass. A buffer copy or read back of a format
+  with depth and stencil moves the aspect its region names (the stencil byte, or depth in four bytes);
+  a copy between two such textures moves both aspects, as WebGPU requires, and a front whose API copies
+  one plane (Direct3D 12's plane slices, Vulkan's aspects) goes through a buffer. `resolve` names the format the samples are averaged in, the source's
   stored format or its sRGB twin, because Direct3D 11's and 12's `ResolveSubresource` take one: a
   multisampled `R8G8B8A8_TYPELESS` target (one texture seen through sRGB and linear views) resolves in
   linear light as `UNORM_SRGB` and on the stored values as `UNORM`. WebGPU resolves natively through
@@ -470,7 +473,9 @@ the program, how typed buffers are read (`TexelBufferRoute`: native, storage on 
 WebGL 2), storage slots packed into one buffer, storage textures used with atomics read through a
 buffer, textures and targets stored as integers (`decoded`, `targets_in_shader`), blending or logic
 operations done in the program, the sample mask written by the program, clip depth, flipped depth
-ranges, depth bias, the counting variant) is a field of `VariantKey` in `wcontainers-gpu`; the front
+ranges, depth bias, the counting variant, the interpolation the pixel program reads the vertex
+program's outputs with, which WebGPU and GLSL ES require the two stages to agree on) is a field of
+`VariantKey` in `wcontainers-gpu`; the front
 computes the key from `Caps` and what it binds, asks the shaders crate for that variant (cached by
 key, section 8), and counts the slow path. `convert` (6.4) reads nothing but the source, the key and
 the root signature (whose hash is in the key), never `Caps`: so a key names one module on every back
@@ -666,7 +671,8 @@ Rules a pass description follows:
   way (per-pixel linked lists for order-independent transparency, GPU histograms, Direct3D 12's
   unordered-access-to-shader-resource barrier between draws). The pass tracker keeps, per open pass,
   the buffers and subresources its draws named as writable storage and those they named any other way
-  (both sets empty in the common pass, so the check is a test of one flag); before a draw that would
+  (kept sorted; while neither the pass nor the draw writes storage, the common case, the check is a
+  test of one flag, and recording a draw's uses one search per use); before a draw that would
   put a resource in both, it ends the pass with `Store` and begins the next on the same targets with
   `Load` (`UsageScopeSplit`, counted); each part names the resolve target, whose last resolve is the
   one that stays (a part cannot be known to be the last when it begins; a split pass costs one more
@@ -895,15 +901,19 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   Where it asks for a count (Direct3D 9, 11 and 12 occlusion queries, OpenGL's `SAMPLES_PASSED`) the
   front counts exactly by replay (`OcclusionCountReplay`), with a shared helper in `wcontainers-gpu`
   (G1):
-  1. At the guest's query begin, the pass tracker ends the pass; if any draw recorded inside the query
-     writes depth or stencil, the depth-stencil target is copied first.
+  1. At the guest's query begin, the pass tracker ends the pass; before the first draw since the last
+     count that writes depth or stencil, the depth-stencil target is copied.
   2. The query's draws run normally (with an `OcclusionAny` query, which the front can answer early
-     when it is zero), and the front keeps their draw calls.
-  3. At query end, a counting pass: one counting target of the pass's size and sample count (`r32float`
+     when it is zero), and the front keeps their draw calls. The kept draws name their buffers and
+     targets, not their contents, so before anything else the front records while the query runs
+     that changes what they read or drew on (a buffer or texture write, a copy, a clear, a resolve, a
+     change of targets) it has them counted (step 3) and keeps the later ones afresh; the helper
+     refuses a draw or a query end on changed targets that were not counted first.
+  3. At query end, and at each such change, a counting pass: one counting target of the pass's size and sample count (`r32float`
      where `float32-blendable` or EXT_float_blend is present, otherwise `r16float`; WebGL 2 renders float
      with EXT_color_buffer_float, 99.94% per the research), cleared to zero, with the depth-stencil
      target (read-only when no draw writes it, as with the usual bounding-box queries; otherwise the
-     copy). The draws are replayed with their own depth-stencil and raster blocks, alpha to coverage
+     copy, which the counting draws write as the draws wrote the target). The draws are replayed with their own depth-stencil and raster blocks, alpha to coverage
      kept, blend One plus One, and the counting variant of each program: the fragment shader with its
      outputs replaced by 1.0 at location 0 (alpha kept for alpha to coverage) and its storage writes
      removed, or the built-in one when the draw had none. The helper takes each draw's counting program
@@ -914,11 +924,18 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
      back now and sums it on the device thread on every back end, so on WebGPU it waits, counted
      `ReadBackWait`; a dispatch summing it on the GPU is to come with G2; WebGL 2: a read back
      summed on the device thread, a multisampled target resolved first and the average multiplied by
-     the sample count). If any sample reached the counting format's exact bound (2^24 for `r32float`,
-     2048 for `r16float`), the replay runs again with the draws split into halves and the halves added,
-     so the answer stays exact.
-  The cost is one pass and one reduction per counted query, and a depth copy only for queries whose
-  draws write depth or stencil (unmeasured; G4 measures it on real programs).
+     the sample count). The query's count is the sum over its counting passes. If any sample reached
+     the counting format's exact bound (2^24 for `r32float`, 2048 for `r16float`), the replay runs
+     again with the draws split into halves (of the draws, of one draw's instances, or of one list's
+     or strip's primitives, a triangle strip at an even triangle), the second half after the first and
+     both from the depth the whole began with (kept by one more copy, made only where the draws have
+     as many primitives as the bound), and the halves added, so the answer stays exact. A single fan,
+     strip with restart or indirect draw past the bound cannot be split: the helper refuses it
+     (`GpuError::Invalid`), a known gap that needs over 2048 fragments at one sample from one such
+     draw on a back end without blendable `r32float`. A program reading the primitive index sees it
+     start again in a split's second half.
+  The cost is one pass and one reduction per counted query and per change inside it, and a depth copy
+  only for those whose draws write depth or stencil (unmeasured; G4 measures it on real programs).
 - **Other queries.** Direct3D's pipeline statistics, stream output statistics and overflow predicate,
   and Direct3D 10's `DrawAuto`, are made by the front and the stage helper from the work they issued,
   not by a back end: input assembler counts from draw arguments (indirect arguments read back,

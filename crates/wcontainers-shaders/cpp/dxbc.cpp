@@ -3,8 +3,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
+#include "boundary.h"
 #include "dxbc/dxbc_api.h"
+#include "dxbc/dxbc_container.h"
+#include "dxbc/dxbc_parser.h"
 #include "ir/ir_serialize.h"
 
 using namespace dxbc_spv;
@@ -22,22 +26,38 @@ public:
   std::string first;
 };
 
-char* copy(const std::string& s) {
-  char* out = static_cast<char*>(std::malloc(s.size() + 1));
-  if (out)
-    std::memcpy(out, s.c_str(), s.size() + 1);
+// (space, first register, size in vectors) of every dynamically indexed constant buffer, which
+// dxbc-spirv declares with its largest size.
+std::vector<uint32_t> dynamic_constant_buffers(const dxbc::Container& container) {
+  std::vector<uint32_t> out;
+  dxbc::Parser parser(container.getCodeChunk());
+  bool sm51 = parser.getShaderInfo().getVersion() >= std::make_pair(5u, 1u);
+  while (parser) {
+    auto op = parser.parseInstruction();
+    if (!op)
+      break;
+    if (op.getOpToken().getOpCode() != dxbc::OpCode::eDclConstantBuffer ||
+        !op.getOpToken().getCbvDynamicIndexingFlag())
+      continue;
+    const auto& operand = op.getDst(0u);
+    if (sm51)
+      out.insert(out.end(), { op.getImm(1u).getImmediate<uint32_t>(0u), operand.getIndex(1u),
+                              op.getImm(0u).getImmediate<uint32_t>(0u) });
+    else
+      out.insert(out.end(), { 0u, operand.getIndex(0u), operand.getIndex(1u) });
+  }
   return out;
 }
 
-}
-
-// Returns 0 and the serialised IR in `out` (free with wcs_free), or nonzero with the reason in `error`
-// (free with wcs_free) when one was reported.
-extern "C" int wcs_dxbc_to_ir(const uint8_t* data, size_t size, uint8_t** out, size_t* out_size, char** error) {
-  ErrorLog log;
-  *out = nullptr;
-  *out_size = 0;
-  *error = nullptr;
+int convert(const uint8_t* data, size_t size, uint8_t** out, size_t* out_size, uint32_t** sizes,
+            size_t* sizes_words, char** error, ErrorLog& log) {
+  // Direct3D refuses a container whose checksum does not match its bytes.
+  dxbc::Container container(data, size);
+  if (!container || !container.validateHash()) {
+    *error = wcs::copy("the container's checksum does not match its bytes");
+    return 1;
+  }
+  auto dynamic = dynamic_constant_buffers(container);
 
   dxbc::Converter::Options convert = { };
 
@@ -57,7 +77,7 @@ extern "C" int wcs_dxbc_to_ir(const uint8_t* data, size_t size, uint8_t** out, s
 
   auto builder = dxbc::compileShaderToLegalizedIr(data, size, convert, compile);
   if (!builder) {
-    *error = copy(log.first);
+    *error = wcs::copy(log.first.empty() ? "dxbc-spirv gave no reason" : log.first);
     return 1;
   }
 
@@ -66,12 +86,38 @@ extern "C" int wcs_dxbc_to_ir(const uint8_t* data, size_t size, uint8_t** out, s
   auto* buffer = static_cast<uint8_t*>(std::malloc(n));
   if (!buffer || !serializer.serialize(buffer, n)) {
     std::free(buffer);
-    *error = copy("the IR did not serialise");
+    *error = wcs::copy("the IR did not serialise");
     return 2;
   }
+  *sizes = static_cast<uint32_t*>(std::malloc(dynamic.size() * 4 + 4));
+  if (!*sizes) {
+    std::free(buffer);
+    *error = wcs::copy("out of memory");
+    return 2;
+  }
+  std::memcpy(*sizes, dynamic.data(), dynamic.size() * 4);
+  *sizes_words = dynamic.size();
   *out = buffer;
   *out_size = n;
   return 0;
+}
+
+}
+
+// Returns 0 with the serialised IR in `out` and the dynamically indexed constant buffers' (space,
+// register, size) triples in `sizes` (free both with wcs_free), or nonzero with the reason in `error`
+// (free with wcs_free).
+extern "C" int wcs_dxbc_to_ir(const uint8_t* data, size_t size, uint8_t** out, size_t* out_size,
+                              uint32_t** sizes, size_t* sizes_words, char** error) {
+  *out = nullptr;
+  *out_size = 0;
+  *sizes = nullptr;
+  *sizes_words = 0;
+  *error = nullptr;
+  ErrorLog log;
+  return wcs::contained("dxbc-spirv", error, [&] {
+    return convert(data, size, out, out_size, sizes, sizes_words, error, log);
+  });
 }
 
 extern "C" void wcs_free(void* p) {

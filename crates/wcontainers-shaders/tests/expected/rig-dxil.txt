@@ -1,0 +1,72 @@
+blend.ps_dest.dxil	ok
+blend.ps_dual.dxil	ok
+blend.vs.dxil	ok
+common.ps_color.dxil	ok
+common.vs_color.dxil	ok
+common.vs_full.dxil	ok
+constants.ps_slots.dxil	ok
+constants.ps_window.dxil	ok
+d3d12.cs_add.dxil	spirv-reader unsupported
+d3d12.cs_image.dxil	spirv-reader image
+d3d12.ps_bundle.dxil	ok
+d3d12.ps_constants.dxil	ok
+d3d12.ps_image.dxil	ok
+d3d12.ps_root_cbv.dxil	ok
+d3d12.ps_root_srv.dxil	spirv-reader unsupported
+d3d12.ps_static.dxil	ok
+d3d12.ps_table.dxil	ok
+depth.ps_depth.dxil	ok
+depth.ps_greater.dxil	ok
+depth.ps_less.dxil	ok
+draws.ps.dxil	ok
+draws.vs.dxil	ok
+formats.ps_float.dxil	ok
+formats.ps_sint.dxil	ok
+formats.ps_uint.dxil	ok
+geometry.gs_adjacency.dxil	spirv-reader unsupported
+geometry.gs_layers.dxil	spirv-reader unsupported
+geometry.gs_points.dxil	spirv-reader unsupported
+geometry.gs_strips.dxil	spirv-reader unsupported
+geometry.ps.dxil	ok
+geometry.ps_id.dxil	unsupported PrimitiveId
+geometry.ps_primitive.dxil	ok
+geometry.vs.dxil	ok
+msaa.ps_coverage.dxil	spirv-reader the
+msaa.ps_load.dxil	ok-wgsl glsl-compile
+msaa.ps_sample.dxil	ok-wgsl glsl-compile
+raster.gs.dxil	spirv-reader unsupported
+raster.ps.dxil	spirv-reader unsupported
+raster.vs.dxil	ok
+samplers.ps_compare.dxil	ok
+samplers.ps_compare_zero.dxil	ok
+samplers.ps_gather.dxil	ok-wgsl glsl-compile
+samplers.ps_sample.dxil	ok
+streamout.gs.dxil	spirv-reader unsupported
+streamout.vs_back.dxil	ok
+targets.ps.dxil	ok
+tessellation.ds_line.dxil	spirv-reader unsupported
+tessellation.ds_quad.dxil	spirv-reader unsupported
+tessellation.ds_tri.dxil	spirv-reader unsupported
+tessellation.hs_line.dxil	spirv-reader unsupported
+tessellation.hs_quad_even.dxil	spirv-reader unsupported
+tessellation.hs_quad_integer.dxil	spirv-reader unsupported
+tessellation.hs_quad_odd.dxil	spirv-reader unsupported
+tessellation.hs_quad_pow2.dxil	spirv-reader unsupported
+tessellation.hs_tri.dxil	spirv-reader unsupported
+tessellation.ps.dxil	ok
+tessellation.vs.dxil	unsupported VertexWithoutPosition
+textures.ps_1d.dxil	ok
+textures.ps_1d_array.dxil	unsupported Texture1DArray
+textures.ps_2d_array.dxil	ok
+textures.ps_3d.dxil	ok
+textures.ps_cube.dxil	ok
+textures.ps_cube_array.dxil	ok-wgsl glsl-write
+textures.ps_load.dxil	ok
+textures.ps_mips.dxil	ok
+triangle.ps.dxil	ok
+triangle.vs.dxil	ok
+views.ps_array.dxil	ok
+views.ps_depth.dxil	ok
+views.ps_level0.dxil	ok
+views.ps_stencil.dxil	ok
+views.ps_uint.dxil	ok

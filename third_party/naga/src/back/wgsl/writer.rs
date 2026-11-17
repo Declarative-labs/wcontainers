@@ -8,16 +8,17 @@ use core::fmt::Write;
 
 use super::Error;
 use super::ToWgslIfImplemented as _;
-use crate::{back::wgsl::polyfill::InversePolyfill, common::wgsl::TypeContext};
 use crate::{
+    Handle, Module, ShaderStage, TypeInner,
     back::{self, Baked},
     common::{
         self,
-        wgsl::{address_space_str, ToWgsl, TryToWgsl},
+        wgsl::{ToWgsl, TryToWgsl, address_space_str},
     },
     proc::{self, NameKey},
-    valid, Handle, Module, ShaderStage, TypeInner,
+    valid,
 };
+use crate::{back::wgsl::polyfill::InversePolyfill, common::wgsl::TypeContext};
 
 /// Shorthand result used internally by the backend
 type BackendResult = Result<(), Error>;
@@ -145,6 +146,7 @@ impl<W: Write> Writer<W> {
 
         // Write all `enable` declarations
         self.write_enable_declarations(module)?;
+        self.write_diagnostic_directives(module)?;
 
         // Write all structs
         for (handle, ty) in module.types.iter() {
@@ -286,6 +288,29 @@ impl<W: Write> Writer<W> {
 
     /// Helper method which writes all the `enable` declarations
     /// needed for a module.
+    /// Writes the module's diagnostic filters as `diagnostic` directives, outermost first.
+    fn write_diagnostic_directives(&mut self, module: &Module) -> BackendResult {
+        let mut chain = Vec::new();
+        let mut next = module.diagnostic_filter_leaf;
+        while let Some(handle) = next {
+            let node = &module.diagnostic_filters[handle];
+            chain.push(&node.inner);
+            next = node.parent;
+        }
+        for filter in chain.iter().rev() {
+            writeln!(
+                self.out,
+                "diagnostic({}, {});",
+                filter.new_severity.to_wgsl_ident(),
+                filter.triggering_rule.display_wgsl_ident()
+            )?;
+        }
+        if !chain.is_empty() {
+            writeln!(self.out)?;
+        }
+        Ok(())
+    }
+
     fn write_enable_declarations(&mut self, module: &Module) -> BackendResult {
         #[derive(Default)]
         struct RequiredEnabled {

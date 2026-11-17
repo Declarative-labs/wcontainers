@@ -45,6 +45,21 @@ pub mod clear {
 }
 
 /// `D3D_FEATURE_LEVEL`.
+/// `D3D11_FORMAT_SUPPORT` bits.
+pub mod support {
+    pub const IA_VERTEX_BUFFER: u32 = 0x2;
+    pub const IA_INDEX_BUFFER: u32 = 0x4;
+    pub const TEXTURE2D: u32 = 0x20;
+    pub const TEXTURECUBE: u32 = 0x80;
+    pub const SHADER_LOAD: u32 = 0x100;
+    pub const SHADER_SAMPLE: u32 = 0x200;
+    pub const MIP: u32 = 0x1000;
+    pub const RENDER_TARGET: u32 = 0x4000;
+    pub const BLENDABLE: u32 = 0x8000;
+    pub const DEPTH_STENCIL: u32 = 0x10000;
+    pub const CPU_LOCKABLE: u32 = 0x20000;
+}
+
 pub mod level {
     pub const L10_0: u32 = 0xa000;
     pub const L10_1: u32 = 0xa100;
@@ -120,6 +135,22 @@ pub struct SamplerDesc {
     pub border: [f32; 4],
     pub min_lod: f32,
     pub max_lod: f32,
+}
+
+impl SamplerDesc {
+    /// What an empty sampler slot samples with: linear filtering, clamped addressing.
+    pub fn default_state() -> Self {
+        SamplerDesc {
+            filter: 0x15,
+            address: [3; 3],
+            mip_lod_bias: 0.0,
+            max_anisotropy: 1,
+            comparison: 1,
+            border: [1.0; 4],
+            min_lod: -f32::MAX,
+            max_lod: f32::MAX,
+        }
+    }
 }
 
 /// `D3D11_RENDER_TARGET_BLEND_DESC`.

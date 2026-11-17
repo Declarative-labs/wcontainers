@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 /// The step between descriptors of every heap type (`GetDescriptorHandleIncrementSize`).
-pub const DESCRIPTOR_SIZE: u64 = 32;
+pub const DESCRIPTOR_SIZE: u64 = 64;
 /// Alignment of each range handed out, as resources are placed at 64 KiB
 /// (`D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT`). Zero is never handed out.
 const ALIGN: u64 = 1 << 16;

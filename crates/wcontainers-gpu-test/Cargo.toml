@@ -13,7 +13,7 @@ wcontainers-gpu = { path = "../wcontainers-gpu" }
 naga = { workspace = true, features = ["wgsl-in"] }
 blake3 = { version = "1", default-features = false }
 half = { version = "2", default-features = false }
-proptest = "1.12.0"
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

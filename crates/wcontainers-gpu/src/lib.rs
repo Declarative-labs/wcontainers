@@ -47,7 +47,7 @@ mod state;
 
 pub use backend::{Backend, ClearValue, FanOrLoop, IndexSource, Object, PrepareDesc, RingKind};
 pub use caps::{AdapterInfo, Caps, Features, FormatCaps, FormatUse, Limits};
-pub use combinations::CombinationTracker;
+pub use combinations::{Combination, CombinationTracker};
 pub use draw::{
     AspectOps, CaptureTargets, ColorAttachment, DepthAttachment, DispatchCall, DispatchGroups,
     DrawCall, DrawRange, EmptyPass, IndexBinding, LoadOp, PassDesc, ScissorRect, StoreOp,

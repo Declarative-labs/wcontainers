@@ -267,7 +267,7 @@ impl ID3D11Device_Impl for Device_Impl {
         format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
     ) -> windows::core::Result<u32> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CheckFormatSupport"))
+        self.check_format_support(format)
     }
     fn CheckMultisampleQualityLevels(
         &self,
@@ -275,7 +275,7 @@ impl ID3D11Device_Impl for Device_Impl {
         samplecount: u32,
     ) -> windows::core::Result<u32> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CheckMultisampleQualityLevels"))
+        self.check_multisample_quality_levels(format, samplecount)
     }
     fn CheckCounterInfo(&self, pcounterinfo: *mut D3D11_COUNTER_INFO) {
         let _call = self.call();
@@ -303,7 +303,7 @@ impl ID3D11Device_Impl for Device_Impl {
         featuresupportdatasize: u32,
     ) -> windows::core::Result<()> {
         let _call = self.call();
-        Err(missing("ID3D11Device::CheckFeatureSupport"))
+        self.check_feature_support(feature, pfeaturesupportdata, featuresupportdatasize)
     }
     fn GetPrivateData(
         &self,

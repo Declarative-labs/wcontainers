@@ -13,11 +13,11 @@ use std::path::Path;
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc, BufferRange,
     BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange,
-    Extent, FillMode, Filter, Format, FrontFace, MapIntent, Origin, PassDesc, Program,
-    ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc, SlotKind, StageSet,
-    StepMode, StoreOp, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    Topology, VariantKey, VertexAttribute, VertexBinding, VertexFormat, VertexLayoutDesc,
-    VertexStream, ViewDimension, Viewport, WriteMode,
+    Extent, Features, FillMode, Filter, Format, FrontFace, Interpolation, MapIntent, Origin,
+    PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc,
+    SlotKind, StageSet, StepMode, StoreOp, TextureDesc, TextureDimension, TextureRegion,
+    TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding,
+    VertexFormat, VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};
@@ -40,9 +40,11 @@ struct Case {
     grid: bool,
     /// Why the WebGL 2 back end cannot draw it, if it cannot.
     not_on_webgl: Option<&'static str>,
+    /// A known failure of the WebGL 2 back end, outside this crate: drawn and reported, not failed on.
+    known_on_webgl: Option<&'static str>,
 }
 
-const CASES: [Case; 4] = [
+const CASES: [Case; 9] = [
     Case {
         vs: "vs_transform",
         ps: "ps_textured",
@@ -50,6 +52,7 @@ const CASES: [Case; 4] = [
         tint: [1.0, 0.75, 0.5, 1.5],
         grid: true,
         not_on_webgl: None,
+        known_on_webgl: None,
     },
     Case {
         vs: "vs_transform",
@@ -58,6 +61,7 @@ const CASES: [Case; 4] = [
         tint: [1.0, 1.0, 1.0, 5.0],
         grid: true,
         not_on_webgl: None,
+        known_on_webgl: None,
     },
     Case {
         vs: "vs_transform",
@@ -66,6 +70,7 @@ const CASES: [Case; 4] = [
         tint: [1.0; 4],
         grid: true,
         not_on_webgl: Some("GLSL ES 3.00 has no bitfield operations"),
+        known_on_webgl: None,
     },
     Case {
         vs: "vs_fullscreen",
@@ -74,6 +79,52 @@ const CASES: [Case; 4] = [
         tint: [1.0; 4],
         grid: false,
         not_on_webgl: Some("GLSL ES 3.00 has no bitfield operations (vs_fullscreen inserts bits)"),
+        known_on_webgl: None,
+    },
+    Case {
+        vs: "vs_shade",
+        ps: "ps_flat",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: None,
+        known_on_webgl: None,
+    },
+    Case {
+        vs: "vs_shade",
+        ps: "ps_shade",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: Some("GLSL ES 3.00 has no noperspective"),
+        known_on_webgl: None,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_depth",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: None,
+        known_on_webgl: Some("the fragment's z arrives as (z + 1) / 2, the back end's clip depth"),
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_local",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: None,
+        known_on_webgl: None,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_size",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: None,
+        known_on_webgl: None,
     },
 ];
 
@@ -337,9 +388,19 @@ impl<'a> Draw<'a> {
 /// register 0: the constants, the texture of [`texels`] and a linear clamping sampler); returns the
 /// target's texels. `provoking` is the back end's own (it only decides `ps_integer`'s value).
 fn ours<B: Backend>(b: &mut B, draw: &Draw<'_>, provoking: ProvokingVertex) -> Vec<u8> {
-    let key = VariantKey::default();
+    // As a front links the stages: the vertex program writes each output as the pixel program reads it.
+    let ps = convert(draw.ps, &VariantKey::default(), None).unwrap();
+    let key = VariantKey {
+        output_interpolation: ps
+            .reflection
+            .inputs
+            .iter()
+            .filter(|v| v.system.is_none() && v.interpolation != Interpolation::Perspective)
+            .map(|v| (v.location, v.interpolation))
+            .collect(),
+        ..VariantKey::default()
+    };
     let vs = convert(draw.vs, &key, None).unwrap();
-    let ps = convert(draw.ps, &key, None).unwrap();
     let vertex = b.create_shader(&vs.modules[0]).unwrap();
     let fragment = b.create_shader(&ps.modules[0]).unwrap();
     let program = b
@@ -648,8 +709,14 @@ fn own_shaders_draw_as_direct3d_does() {
             "webgpu",
             ours(&mut wgpu_backend, &draw, ProvokingVertex::First),
         )];
+        // Flat values come from the first vertex, as Direct3D's, where the back end offers it.
+        let provoking = if gl.caps().has(Features::PROVOKING_VERTEX_FIRST) {
+            ProvokingVertex::First
+        } else {
+            ProvokingVertex::Last
+        };
         match case.not_on_webgl {
-            None => runs.push(("webgl", ours(&mut gl, &draw, ProvokingVertex::Last))),
+            None => runs.push(("webgl", ours(&mut gl, &draw, provoking))),
             Some(why) => eprintln!("{name} webgl: not drawn: {why}"),
         }
         for (back_end, texels) in runs {
@@ -660,7 +727,10 @@ fn own_shaders_draw_as_direct3d_does() {
                 SIZE * SIZE
             );
             if count > 0 {
-                failures.push(format!("{name} {back_end}"));
+                match case.known_on_webgl.filter(|_| back_end == "webgl") {
+                    Some(why) => eprintln!("{name} {back_end}: a known failure: {why}"),
+                    None => failures.push(format!("{name} {back_end}")),
+                }
             }
         }
     }
@@ -729,4 +799,103 @@ fn rig_triangle_from_dxil_and_dxbc_draws_as_direct3d_12_does() {
         }
     }
     assert!(failures.is_empty(), "differ from Direct3D 12: {failures:?}");
+}
+
+/// Real Direct3D refuses a container whose checksum does not match its bytes, as `convert` does: DXBC
+/// through Direct3D 11's shader creation, DXIL through Direct3D 12's pipeline creation.
+#[test]
+fn direct3d_refuses_a_wrong_checksum_as_convert_does() {
+    let rig = Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test/shaders");
+    let corrupt = |mut b: Vec<u8>| {
+        let at = b.len() - 8;
+        b[at] ^= 1;
+        b
+    };
+    let dxbc = std::fs::read(rig.join("dxbc/triangle.ps.dxbc")).unwrap();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let create = |code: &[u8]| unsafe { gpu.device.CreatePixelShader(code, None, None) };
+    assert!(create(&dxbc).is_ok());
+    let bad = corrupt(dxbc);
+    let refused = create(&bad).unwrap_err().code();
+    eprintln!("direct3d 11: {refused:?}");
+    assert_eq!(refused, windows::Win32::Foundation::E_INVALIDARG);
+    assert!(matches!(
+        convert(Source::Dxbc(&bad), &VariantKey::default(), None),
+        Err(wcontainers_shaders::ConvertError::Rejected(_))
+    ));
+
+    use windows::Win32::Graphics::Direct3D12::*;
+    let dxil = std::fs::read(rig.join("dxil/triangle.vs.dxil")).unwrap();
+    let gpu = wcontainers_graphics_test::d3d12::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+    )
+    .unwrap();
+    let root = gpu
+        .root_signature(&D3D12_VERSIONED_ROOT_SIGNATURE_DESC {
+            Version: D3D_ROOT_SIGNATURE_VERSION_1_0,
+            Anonymous: D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0 {
+                Desc_1_0: D3D12_ROOT_SIGNATURE_DESC {
+                    Flags: D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+                    ..Default::default()
+                },
+            },
+        })
+        .unwrap();
+    let layout = [
+        wcontainers_graphics_test::d3d12::element(s!("POSITION"), DXGI_FORMAT_R32G32_FLOAT, 0),
+        wcontainers_graphics_test::d3d12::element(s!("COLOR"), DXGI_FORMAT_R32G32B32_FLOAT, 8),
+    ];
+    let pipeline = |vs: &[u8]| {
+        let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+            pRootSignature: std::mem::ManuallyDrop::new(Some(root.clone())),
+            VS: wcontainers_graphics_test::d3d12::bytecode(vs),
+            SampleMask: u32::MAX,
+            RasterizerState: D3D12_RASTERIZER_DESC {
+                FillMode: D3D12_FILL_MODE_SOLID,
+                CullMode: D3D12_CULL_MODE_NONE,
+                DepthClipEnable: true.into(),
+                ..Default::default()
+            },
+            InputLayout: D3D12_INPUT_LAYOUT_DESC {
+                pInputElementDescs: layout.as_ptr(),
+                NumElements: layout.len() as u32,
+            },
+            PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            ..Default::default()
+        };
+        desc.BlendState.RenderTarget[0] = D3D12_RENDER_TARGET_BLEND_DESC {
+            SrcBlend: D3D12_BLEND_ONE,
+            DestBlend: D3D12_BLEND_ZERO,
+            BlendOp: D3D12_BLEND_OP_ADD,
+            SrcBlendAlpha: D3D12_BLEND_ONE,
+            DestBlendAlpha: D3D12_BLEND_ZERO,
+            BlendOpAlpha: D3D12_BLEND_OP_ADD,
+            LogicOp: D3D12_LOGIC_OP_NOOP,
+            RenderTargetWriteMask: 0xf,
+            ..Default::default()
+        };
+        let made: windows::core::Result<ID3D12PipelineState> =
+            unsafe { gpu.device.CreateGraphicsPipelineState(&desc) };
+        drop(std::mem::ManuallyDrop::into_inner(desc.pRootSignature));
+        made
+    };
+    assert!(pipeline(&dxil).is_ok());
+    let bad = corrupt(dxil);
+    let refused = pipeline(&bad).unwrap_err().code();
+    eprintln!("direct3d 12: {refused:?}");
+    assert_eq!(refused, windows::Win32::Foundation::E_INVALIDARG);
+    assert!(matches!(
+        convert(Source::Dxil(&bad), &VariantKey::default(), None),
+        Err(wcontainers_shaders::ConvertError::Rejected(_))
+    ));
 }

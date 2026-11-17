@@ -24,6 +24,13 @@ struct P { c: vec4<f32> }
 @fragment fn loads() -> @location(0) vec4<f32> {
     return textureLoad(t, vec2<i32>(0, 0), 0);
 }
+@group(0) @binding(16) var s: sampler;
+@fragment fn sampled() -> @location(0) vec4<f32> {
+    return textureSampleLevel(t, s, vec2<f32>(0.5), 0.0);
+}
+@fragment fn per_sample(@builtin(sample_index) i: u32) -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(i));
+}
 ";
 
 fn buffer(r: &mut Recorder, size: u64, usage: BufferUsage) -> Id {
@@ -67,7 +74,7 @@ fn view(r: &mut Recorder, t: &Id, format: Format) -> Id {
     .unwrap()
 }
 
-const ALL: TextureUsage = TextureUsage::all();
+const ALL: TextureUsage = TextureUsage::all().difference(TextureUsage::STORAGE);
 const COPIES: BufferUsage = BufferUsage::COPY_SRC.union(BufferUsage::COPY_DST);
 
 fn region(t: &Id) -> TextureRegion<'_, Recorder> {
@@ -102,7 +109,15 @@ struct Drawing {
 
 impl Drawing {
     fn new() -> Drawing {
-        let mut r = Recorder::new();
+        Drawing::on(Recorder::new())
+    }
+
+    /// The same on a recording back end whose capabilities `change` alters.
+    fn with_caps(change: impl FnOnce(&mut Caps)) -> Drawing {
+        Drawing::on(Recorder::with_caps(change))
+    }
+
+    fn on(mut r: Recorder) -> Drawing {
         let target = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
         let target_view = view(&mut r, &target, Format::Rgba8Unorm);
         let vertices = buffer(&mut r, 24, BufferUsage::VERTEX | BufferUsage::COPY_DST);
@@ -179,7 +194,7 @@ impl Drawing {
         let module = naga::front::wgsl::parse_str(PROGRAM).unwrap();
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::empty(),
+            naga::valid::Capabilities::MULTISAMPLED_SHADING,
         )
         .validate(&module)
         .unwrap();
@@ -223,6 +238,18 @@ impl Drawing {
 
     /// Draws one triangle over the target with `program`, the binding set and topology given.
     fn draw(&mut self, program: &Id, set: Option<&Id>, topology: Topology, restart: bool) {
+        self.draw_with(program, set, topology, restart, |_| {});
+    }
+
+    /// Draws as [`Drawing::draw`] with the call changed by `change` first.
+    fn draw_with(
+        &mut self,
+        program: &Id,
+        set: Option<&Id>,
+        topology: Topology,
+        restart: bool,
+        change: impl FnOnce(&mut DrawCall<'_, Recorder>),
+    ) {
         let viewport = [Viewport {
             x: 0f32.to_bits(),
             y: 0f32.to_bits(),
@@ -235,7 +262,7 @@ impl Drawing {
             buffer: &self.vertices,
             offset: 0,
         })];
-        self.r.draw(&DrawCall {
+        let mut call = DrawCall {
             program,
             blend: &self.blend,
             depth_stencil: &self.depth,
@@ -257,7 +284,9 @@ impl Drawing {
                 first_instance: 0,
                 instances: 1,
             },
-        });
+        };
+        change(&mut call);
+        self.r.draw(&call);
     }
 
     fn refused(&mut self, violation: &str) {
@@ -964,4 +993,614 @@ fn resolves_go_from_many_samples_to_one_of_an_averaging_format() {
         f(&mut r);
         assert_eq!(r.violations, [violation]);
     }
+}
+
+/// A blend block where every target writes everything, blended as `blend` says.
+fn blend_desc(blend: Option<(BlendComponent, BlendComponent)>) -> BlendDesc {
+    BlendDesc {
+        targets: [RenderTargetBlend {
+            blend,
+            writes: ColorWrites::all(),
+        }; MAX_COLOR_TARGETS],
+        same_for_all: true,
+        alpha_to_coverage: false,
+        logic_op: None,
+    }
+}
+
+fn component(src: BlendFactor, dst: BlendFactor) -> BlendComponent {
+    BlendComponent {
+        src,
+        dst,
+        op: BlendOp::Add,
+    }
+}
+
+#[test]
+fn blocks_differ_per_target_only_with_independent_blend() {
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::INDEPENDENT_BLEND));
+    let mut desc = blend_desc(None);
+    assert!(r.create_blend(&desc).is_ok());
+    desc.same_for_all = false;
+    assert_eq!(
+        r.create_blend(&desc),
+        Err(GpuError::Absent(Features::INDEPENDENT_BLEND))
+    );
+    assert!(Recorder::new().create_blend(&desc).is_ok());
+}
+
+#[test]
+fn the_constant_alpha_factors_need_blend_constant_alpha() {
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::BLEND_CONSTANT_ALPHA));
+    let add = component(BlendFactor::One, BlendFactor::Zero);
+    let desc = blend_desc(Some((
+        component(
+            BlendFactor::ConstantAlpha,
+            BlendFactor::OneMinusConstantAlpha,
+        ),
+        add,
+    )));
+    assert_eq!(
+        r.create_blend(&desc),
+        Err(GpuError::Absent(Features::BLEND_CONSTANT_ALPHA))
+    );
+    assert!(Recorder::new().create_blend(&desc).is_ok());
+}
+
+#[test]
+fn stencil_masks_differ_per_face_only_with_stencil_per_face() {
+    let mut r = Recorder::new();
+    assert!(!r.caps().features.contains(Features::STENCIL_PER_FACE));
+    let mut desc = DepthStencilDesc {
+        depth_compare: None,
+        depth_write: false,
+        stencil: None,
+        stencil_read_mask: [0xff, 0x0f],
+        stencil_write_mask: [0xff; 2],
+        depth_bounds: None,
+    };
+    let absent = Err(GpuError::Absent(Features::STENCIL_PER_FACE));
+    assert_eq!(r.create_depth_stencil(&desc), absent);
+    desc.stencil_read_mask = [0xff; 2];
+    desc.stencil_write_mask = [0x01, 0x02];
+    assert_eq!(r.create_depth_stencil(&desc), absent);
+}
+
+#[test]
+fn stencil_references_differ_per_face_only_with_stencil_per_face() {
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+        c.stencil_reference = [1, 2]
+    });
+    d.refused("stencil references per face without STENCIL_PER_FACE");
+}
+
+/// A change made to a block's description.
+type Change = fn(&mut RasterDesc);
+
+#[test]
+fn raster_blocks_need_the_features_they_use() {
+    let base = RasterDesc {
+        fill: FillMode::Solid,
+        cull: CullMode::None,
+        front: FrontFace::CounterClockwise,
+        depth_bias: 0,
+        depth_bias_slope: 0,
+        depth_bias_clamp: 0,
+        depth_clip: true,
+        scissor: false,
+        line_width: 1.0f32.to_bits(),
+        provoking: ProvokingVertex::First,
+        depth_minus_one: false,
+        sample_mask: !0,
+    };
+    let cases: [(Features, Change); 7] = [
+        (Features::PROVOKING_VERTEX_FIRST, |_| {}),
+        (Features::PROVOKING_VERTEX_LAST, |d| {
+            d.provoking = ProvokingVertex::Last
+        }),
+        (Features::DEPTH_BIAS_CLAMP, |d| {
+            d.depth_bias_clamp = 0.5f32.to_bits()
+        }),
+        (Features::FRACTIONAL_DEPTH_BIAS, |d| {
+            d.depth_bias = 1.5f32.to_bits()
+        }),
+        (Features::SAMPLE_MASK, |d| d.sample_mask = 0b1110),
+        (Features::CLIP_DEPTH_ZERO_ONE, |_| {}),
+        (Features::WIDE_LINES, |d| d.line_width = 2.0f32.to_bits()),
+    ];
+    for (feature, change) in cases {
+        let mut desc = base;
+        change(&mut desc);
+        let mut r = Recorder::with_caps(|c| c.features.remove(feature));
+        assert_eq!(
+            r.create_raster(&desc),
+            Err(GpuError::Absent(feature)),
+            "{feature:?}"
+        );
+        if Recorder::new().caps().features.contains(feature) {
+            assert!(Recorder::new().create_raster(&desc).is_ok(), "{feature:?}");
+        }
+    }
+}
+
+#[test]
+fn buffer_bindings_are_aligned_inside_the_buffer_and_the_limits() {
+    let mut r = Recorder::new();
+    let limits = r.caps().limits;
+    let uniform = buffer(&mut r, 1 << 17, BufferUsage::UNIFORM);
+    let storage = buffer(&mut r, 1024, BufferUsage::STORAGE);
+    let bind = |r: &mut Recorder, resource| {
+        r.create_binding_set(&[BindingEntry {
+            binding: 0,
+            stages: StageSet::FRAGMENT,
+            resource,
+        }])
+    };
+    let range = |buffer, offset, size| BufferRange {
+        buffer,
+        offset,
+        size,
+    };
+    let storage_at = |offset, size| BindingResource::StorageBuffer {
+        range: range(&storage, offset, size),
+        writable: false,
+    };
+    let unaligned = Err(GpuError::Invalid(
+        "a buffer binding at an offset off the limit's alignment",
+    ));
+    assert_eq!(limits.min_storage_offset_alignment, 256);
+    assert_eq!(bind(&mut r, storage_at(4, 16)), unaligned);
+    assert_eq!(
+        bind(
+            &mut r,
+            BindingResource::UniformBuffer(range(&uniform, 4, 16))
+        ),
+        unaligned
+    );
+    assert!(bind(&mut r, storage_at(256, 16)).is_ok());
+    assert_eq!(
+        bind(&mut r, storage_at(768, 512)),
+        Err(GpuError::Invalid("a buffer binding past the buffer's end"))
+    );
+    assert_eq!(
+        bind(
+            &mut r,
+            BindingResource::UniformBuffer(range(
+                &uniform,
+                0,
+                u64::from(limits.max_uniform_buffer_size) + 256
+            ))
+        ),
+        Err(GpuError::Invalid("a buffer binding larger than the limit"))
+    );
+}
+
+#[test]
+fn bindings_need_the_features_their_stages_and_textures_use() {
+    let storage = |r: &mut Recorder, stages, writable| {
+        let b = buffer(r, 256, BufferUsage::STORAGE);
+        r.create_binding_set(&[BindingEntry {
+            binding: 0,
+            stages,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer: &b,
+                    offset: 0,
+                    size: 256,
+                },
+                writable,
+            },
+        }])
+    };
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::FRAGMENT_STORAGE_WRITE));
+    assert_eq!(
+        storage(&mut r, StageSet::FRAGMENT, true),
+        Err(GpuError::Absent(Features::FRAGMENT_STORAGE_WRITE))
+    );
+    let mut r = Recorder::new();
+    assert!(!r.caps().features.contains(Features::VERTEX_STORAGE_READ));
+    assert_eq!(
+        storage(&mut r, StageSet::VERTEX, false),
+        Err(GpuError::Absent(Features::VERTEX_STORAGE_READ))
+    );
+
+    let multisampled = |r: &mut Recorder| {
+        let t = r
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format: Format::Rgba8Unorm,
+                width: 2,
+                height: 2,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 4,
+                usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
+                cube: false,
+                reinterpret: false,
+            })
+            .unwrap();
+        let v = view(r, &t, Format::Rgba8Unorm);
+        r.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&v),
+        }])
+    };
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::MULTISAMPLE_READ));
+    assert_eq!(
+        multisampled(&mut r),
+        Err(GpuError::Absent(Features::MULTISAMPLE_READ))
+    );
+    assert!(multisampled(&mut Recorder::new()).is_ok());
+}
+
+#[test]
+fn textures_take_only_the_usages_their_format_does() {
+    let desc = |format, usage| TextureDesc {
+        dimension: TextureDimension::D2,
+        format,
+        width: 2,
+        height: 2,
+        depth_or_layers: 1,
+        mip_levels: 1,
+        samples: 1,
+        usage,
+        cube: false,
+        reinterpret: false,
+    };
+    let refused = Err(GpuError::Invalid(
+        "a texture usage its format does not take",
+    ));
+    let mut r = Recorder::new();
+    assert_eq!(
+        r.create_texture(&desc(Format::Rgba8Unorm, TextureUsage::STORAGE)),
+        refused
+    );
+    let mut r = Recorder::with_caps(|c| {
+        let at = Format::R32Float.index();
+        c.formats.uses[at].remove(FormatUse::RENDER);
+    });
+    assert_eq!(
+        r.create_texture(&desc(Format::R32Float, TextureUsage::RENDER)),
+        refused
+    );
+    assert!(
+        r.create_texture(&desc(Format::R32Float, TextureUsage::SAMPLE))
+            .is_ok()
+    );
+}
+
+#[test]
+fn viewports_keep_min_depth_at_most_max_depth() {
+    const REVERSED: [Viewport; 1] = [Viewport {
+        x: 0,
+        y: 0,
+        width: 0x4000_0000,
+        height: 0x4000_0000,
+        min_depth: 0x3f80_0000,
+        max_depth: 0,
+    }];
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+        c.viewports = &REVERSED
+    });
+    d.refused("a viewport whose min_depth is above its max_depth");
+}
+
+#[test]
+fn fractional_viewports_need_fractional_viewport() {
+    const HALF: [Viewport; 1] = [Viewport {
+        x: 0x3f00_0000,
+        y: 0,
+        width: 0x4000_0000,
+        height: 0x4000_0000,
+        min_depth: 0,
+        max_depth: 0x3f80_0000,
+    }];
+    let mut d = Drawing::with_caps(|c| c.features.remove(Features::FRACTIONAL_VIEWPORT));
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+        c.viewports = &HALF
+    });
+    d.refused("a fractional viewport without FRACTIONAL_VIEWPORT");
+}
+
+#[test]
+fn draw_bases_need_base_vertex_instance() {
+    let mut d = Drawing::with_caps(|c| c.features.remove(Features::BASE_VERTEX_INSTANCE));
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+        c.range = DrawRange::Vertices {
+            first: 0,
+            count: 3,
+            first_instance: 1,
+            instances: 1,
+        }
+    });
+    d.refused("a base vertex or first instance without BASE_VERTEX_INSTANCE");
+}
+
+#[test]
+fn eight_bit_indices_need_index_u8() {
+    let mut d = Drawing::with_caps(|c| c.features.remove(Features::INDEX_U8));
+    let p = d.program("plain");
+    let indices: &'static Id = Box::leak(Box::new(buffer(&mut d.r, 4, BufferUsage::INDEX)));
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+        c.index = Some(IndexBinding {
+            buffer: indices,
+            offset: 0,
+            format: IndexFormat::U8,
+        });
+        c.range = DrawRange::Indexed {
+            first: 0,
+            count: 3,
+            base_vertex: 0,
+            first_instance: 0,
+            instances: 1,
+        };
+    });
+    d.refused("8-bit indices without INDEX_U8");
+}
+
+#[test]
+fn immediates_stay_within_the_limit() {
+    let mut d = Drawing::new();
+    assert_eq!(d.r.caps().limits.immediate_bytes, 0);
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+        c.immediates = &[0; 4]
+    });
+    d.refused("immediates past the limit");
+}
+
+#[test]
+fn draws_blend_only_into_formats_that_blend() {
+    let mut d =
+        Drawing::with_caps(|c| c.formats.uses[Format::Rgba8Unorm.index()].remove(FormatUse::BLEND));
+    let add = component(BlendFactor::One, BlendFactor::One);
+    d.blend = d.r.create_blend(&blend_desc(Some((add, add)))).unwrap();
+    let p = d.program("plain");
+    d.begin();
+    d.draw(&p, None, Topology::TriangleList, false);
+    d.refused("blending into Rgba8Unorm, which this back end does not blend");
+}
+
+#[test]
+fn draws_filter_only_formats_that_filter() {
+    let mut d =
+        Drawing::with_caps(|c| c.formats.uses[Format::R32Float.index()].remove(FormatUse::FILTER));
+    let t = texture(&mut d.r, Format::R32Float, 2, TextureUsage::SAMPLE);
+    let v = view(&mut d.r, &t, Format::R32Float);
+    let s =
+        d.r.create_sampler(&SamplerDesc {
+            min: Filter::Linear,
+            mag: Filter::Linear,
+            mip: Filter::Nearest,
+            address: [AddressMode::Clamp; 3],
+            lod_range: [0.0f32.to_bits(), 32.0f32.to_bits()],
+            anisotropy: 1,
+            compare: None,
+            border: BorderColor::TransparentBlack,
+        })
+        .unwrap();
+    let set =
+        d.r.create_binding_set(&[
+            BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&v),
+            },
+            BindingEntry {
+                binding: 16,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Sampler(&s),
+            },
+        ])
+        .unwrap();
+    let p = d.program("sampled");
+    d.begin();
+    d.draw(&p, Some(&set), Topology::TriangleList, false);
+    d.refused("R32Float filtered, which this back end does not filter");
+}
+
+#[test]
+fn programs_run_per_sample_only_with_sample_shading() {
+    let mut d = Drawing::with_caps(|c| c.features.remove(Features::SAMPLE_SHADING));
+    let p = d.program("per_sample");
+    d.begin();
+    d.draw(&p, None, Topology::TriangleList, false);
+    d.refused("a program run per sample without SAMPLE_SHADING");
+}
+
+#[test]
+fn resolves_and_copies_out_need_the_formats_uses() {
+    let mut r = Recorder::with_caps(|c| {
+        c.formats.uses[Format::Rgba8Unorm.index()].remove(FormatUse::RESOLVE | FormatUse::COPY_OUT)
+    });
+    let many = r
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: 2,
+            height: 2,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 4,
+            usage: TextureUsage::RENDER,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let one = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    r.resolve(&region(&many), &region(&one), Format::Rgba8Unorm);
+    assert_eq!(
+        r.violations,
+        ["a resolve of a format that cannot be averaged"]
+    );
+    let mut r = Recorder::with_caps(|c| {
+        c.formats.uses[Format::Rgba8Unorm.index()].remove(FormatUse::COPY_OUT)
+    });
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let b = buffer(&mut r, 16, COPIES);
+    r.copy_texture_to_buffer(
+        &region(&t),
+        &CopyBufferTexture {
+            buffer: &b,
+            offset: 0,
+            row_pitch: 8,
+            rows_per_layer: 0,
+        },
+        extent(2),
+    );
+    assert_eq!(
+        r.violations,
+        ["Rgba8Unorm copied out, which this back end does not declare"]
+    );
+}
+
+/// Buffer copies and read backs of a format with depth and stencil move the aspect named: the
+/// stencil byte, or depth in four bytes; copies between textures move both, naming neither.
+#[test]
+fn copies_of_depth_and_stencil_move_the_aspect_named() {
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Depth24PlusStencil8, 2, ALL);
+    let b = buffer(&mut r, 64, COPIES);
+    let to_buffer = |stencil, row_pitch| {
+        (
+            TextureRegion {
+                stencil,
+                ..region(&t)
+            },
+            CopyBufferTexture {
+                buffer: &b,
+                offset: 0,
+                row_pitch,
+                rows_per_layer: 0,
+            },
+        )
+    };
+    // Stencil 1..4 and depth words 0x123456 + i written by aspect.
+    let (s, from) = to_buffer(true, 2);
+    r.write_texture(&s, extent(2), &[1, 2, 3, 4], 2, 0, WriteMode::Ordered);
+    let depth: Vec<u8> = (0..4u32)
+        .flat_map(|i| (0x0012_3456 + i).to_le_bytes())
+        .collect();
+    let (dr, _) = to_buffer(false, 8);
+    r.write_texture(&dr, extent(2), &depth, 8, 0, WriteMode::Ordered);
+    r.copy_texture_to_buffer(&s, &from, extent(2));
+    let rb = r
+        .read_back(&ReadSource::Buffer {
+            buffer: &b,
+            offset: 0,
+            size: 4,
+        })
+        .unwrap();
+    r.submit();
+    r.wait_read(&rb);
+    let mut got = [0u8; 4];
+    r.finish_read(rb, &mut got);
+    assert_eq!(got, [1, 2, 3, 4]);
+    let rb = r
+        .read_back(&ReadSource::Texture {
+            region: dr,
+            extent: extent(2),
+        })
+        .unwrap();
+    r.submit();
+    r.wait_read(&rb);
+    let mut got = [0u8; 16];
+    r.finish_read(rb, &mut got);
+    assert_eq!(got.to_vec(), depth);
+    assert!(r.violations.is_empty(), "{:?}", r.violations);
+
+    let other = texture(&mut r, Format::Depth24PlusStencil8, 2, ALL);
+    r.copy_texture(&s, &region(&other), extent(2));
+    assert_eq!(
+        r.violations,
+        ["a copy between textures naming one aspect of depth and stencil"]
+    );
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    r.write_texture(
+        &TextureRegion {
+            stencil: true,
+            ..region(&t)
+        },
+        extent(2),
+        &[0; 16],
+        8,
+        0,
+        WriteMode::Ordered,
+    );
+    assert_eq!(
+        r.violations,
+        ["a stencil region of a format without stencil"]
+    );
+}
+
+/// Without `TEXTURE_VIEWS` a back end makes views to draw into of one level and one layer (or all
+/// layers) and views of all layers in the texture's own dimension; it binds only the latter.
+#[test]
+fn views_of_other_shapes_need_texture_views() {
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::TEXTURE_VIEWS));
+    let t = r
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: 4,
+            height: 4,
+            depth_or_layers: 3,
+            mip_levels: 2,
+            samples: 1,
+            usage: ALL,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let shape = |dimension, mip_count, base_layer, layer_count| TextureViewDesc {
+        format: Format::Rgba8Unorm,
+        dimension,
+        base_mip: 0,
+        mip_count,
+        base_layer,
+        layer_count,
+        stencil: false,
+    };
+    let absent = Err(GpuError::Absent(Features::TEXTURE_VIEWS));
+    // Two layers of three, and one layer over two levels.
+    assert_eq!(
+        r.create_view(&t, &shape(ViewDimension::D2Array, 1, 0, 2)),
+        absent
+    );
+    assert_eq!(
+        r.create_view(&t, &shape(ViewDimension::D2, 2, 1, 1)),
+        absent
+    );
+    let whole = r
+        .create_view(&t, &shape(ViewDimension::D2Array, 2, 0, 3))
+        .unwrap();
+    let layer = r
+        .create_view(&t, &shape(ViewDimension::D2, 1, 1, 1))
+        .unwrap();
+    let bind = |r: &mut Recorder, v: &Id| {
+        r.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(v),
+        }])
+    };
+    assert!(bind(&mut r, &whole).is_ok());
+    assert_eq!(
+        bind(&mut r, &layer),
+        Err(GpuError::Absent(Features::TEXTURE_VIEWS))
+    );
 }
