@@ -64,6 +64,37 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   - New capability bits `DEPTH_BIAS_CLAMP`, `BLOCK_COMPRESSION`; limit `max_texture_cube` (the 1D limit
     removed). 57 slow path reasons.
 
+- G0, run 4 (2026-11-17): every finding of the third independent check fixed:
+  - Texture atomics (required at 11_0 on `R32_UINT`, `R32_SINT`, exchange on `R32_FLOAT`): new
+    `FormatUse::STORAGE_ATOMIC` (no browser format has it) and the exact route `AtomicsThroughBuffer`
+    (the view's texels in a buffer, copied around other uses; plan 4.12).
+  - 16-bit normalised and rendered snorm formats: native with `texture-formats-tier1` (WebGPU) or
+    EXT_texture_norm16 and EXT_render_snorm (WebGL 2), otherwise `NormAsInteger` (stored as the integer
+    format of the same bits, decoded, filtered and encoded in the program, blended in it:
+    `BlendInShader`). 32-bit float blending, which 10_0 also requires, takes `BlendInShader` without
+    `float32-blendable` or EXT_float_blend.
+  - `STENCIL_PER_FACE` removed from WebGL 2's list (WebGL forbids it); `StencilFacesSplit` there.
+  - Sample mask: new `Features::SAMPLE_MASK` (WebGPU); WebGL 2 writes it in the program with
+    OES_sample_variables (`SampleMaskInShader`), and without it the Direct3D fronts report no
+    multisampling.
+  - Stencil sampling on WebGL 2: WEBGL_stencil_texturing, otherwise `StencilCopiedByDraw`. Every back end
+    serves both aspects of a depth-stencil format (documented on `FormatUse::SAMPLE` and the view).
+  - Per-target blends without OES_draw_buffers_indexed: `TargetsSplit`; `BlendDesc::same_for_all` doc
+    corrected.
+  - `VariantKey` now holds every back-end-dependent rewrite (`texel_buffers`, `storage_packed`,
+    `atomics_through_buffer`, `decoded`, `targets_in_shader`, the sample-mask flag); `convert` reads
+    nothing else, so cache keys name one module everywhere (plan 4.5, 8).
+  - `clear_texture` now takes the texture, levels and layers and clears every 3D slice and every layer
+    in a pass of its own; `generate_mips` reads the level above through whole-array, cube or cube-array
+    views (new built-in programs) so it needs no `TEXTURE_VIEWS`. Tests for both.
+  - Overlapping queries (`QueriesSegmented`, plan 4.7), append and counter views and
+    `CopyStructureCount` (`SlotKind::Counter`, plan 5.1), copies within typeless groups
+    (`CopyThroughBuffer`, `DepthWrittenByDraw`), WebGL 2 copies and read backs of formats it cannot
+    attach (`HostCopyKept`), and surface formats and colour space (`FormatUse::PRESENT`, SDR only,
+    plan 4.9).
+  - Renamed: `LogicOpPerPrimitive` to `TargetReadPerPrimitive`, `BlockCopyReadBack` to
+    `HostCopyReadBack`. 66 slow path reasons.
+
 ## Partly done
 
 - Nothing in G0. Designed for G1, not in the crate yet: the pass tracker (plan 4.7), the occlusion
@@ -77,7 +108,7 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 
 ## How to run
 
-- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (16 tests) and
+- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (19 tests) and
   `nix develop -c cargo clippy -p wcontainers-gpu --all-targets -- -D warnings`, and
   `RUSTDOCFLAGS="-D warnings" nix develop -c cargo doc -p wcontainers-gpu --no-deps`. It also builds for
   `wasm32-unknown-unknown`.
@@ -106,7 +137,9 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 - No timings were taken in G0. The shader verdicts (counts only) were taken on the Mac (Apple M5) on
   2026-11-17 with load average 12.51, 20.81, 20.69 when the builds started; Chrome as installed, headless,
   through the flake's Playwright. Results: plan section 6.3, files in `corpus/`. Run 2 took no new
-  measurements (load average 13.02, 14.76, 17.39 when its tests ran).
+  measurements (load average 13.02, 14.76, 17.39 when its tests ran). Run 4 took no new measurements
+  (load average 27.52, 27.98, 24.45 when its tests ran); facts it used were read in Microsoft's format
+  tables in `downloads/msdocs/` and the WebGPU specification copy in `check-g0/spec/` (scratch).
 - Run 3, on the Mac, load average 14.71, 16.16, 16.39: Chrome's adapter limits (plan 4.11), counts not
   timings. WebGPU: 16384 2D, 2048 3D and layers, 8 vertex buffers, 30 attributes, 12 uniform buffers, 10
   storage buffers, 48 sampled textures, 28 inter-stage slots, 64 immediate bytes, BC and BC sliced 3D
@@ -150,9 +183,14 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   requires logic ops, target-independent rasterisation and forced sample counts up to 16 (Direct3D 11)
   and binding tier 3 (Direct3D 12), none of which WebGPU can serve exactly.
 - Multisample counts per format fall short of Microsoft's 10_1 and 11_0 format tables (8 samples on 47
-  formats at 11_0; 4 samples on `R32_UINT` and others). They are reported through the API's per-format
-  queries; no exact emulation exists. This is the one place reported answers fall short of a level's
-  table, and the owner should know.
+  formats at 11_0; 4 samples on `R32_UINT` and others; on WebGPU adapters without
+  `texture-formats-tier1`, the 16-bit normalised formats too). They are reported through the API's
+  per-format queries; no exact emulation exists. This is the one place reported answers fall short of a
+  level's table, and the owner should know.
+- On WebGL 2 without OES_sample_variables (10.3% of WebGL 2 browsers, nearly all Firefox) the Direct3D
+  fronts report no multisampling at all, because a partial sample mask has no route there. With it,
+  4 samples as before.
+- WebGL 2's 10_0 also needs EXT_color_buffer_float (99.94%), since 10_0 renders to float formats.
 - Two listed precision losses remain: denormal handling in shaders, and Direct3D clip depth on WebGL 2
   without EXT_clip_control (6.8% of WebGL 2 browsers). Indexed vertex fetch past a buffer's end gets
   WebGPU's robust-access value, not zero.
