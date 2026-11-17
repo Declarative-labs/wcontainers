@@ -105,10 +105,8 @@ fn blend_factor(value: u32) -> Result<BlendFactor, Error> {
         11 => SrcAlphaSaturated,
         14 => Constant,
         15 => OneMinusConstant,
-        16 => Src1,
-        17 => OneMinusSrc1,
-        18 => Src1Alpha,
-        19 => OneMinusSrc1Alpha,
+        // The converter does not mark a pixel shader's second output as the blend's second source.
+        16..=19 => return Err(Error::NotImplemented("dual-source blending")),
         20 => ConstantAlpha,
         21 => OneMinusConstantAlpha,
         _ => return Err(Error::Invalid("unknown blend factor")),

@@ -101,17 +101,23 @@ write_buffer_immediate, unbounded_resource_arrays, unbounded_samplers, readback_
 get_resource_tiling, shader_cache, multi_fence_event, enumerate_meta_commands (a pass may be a test
 that checks a refusal: several of these only check that what is absent is reported absent).
 
-The rig's Direct3D 12 scenes through ours (run 5, last code): 17 of 124 outputs pass, all equal
-to real Direct3D 12 (triangle; swapchain, four frames and its results; targets rgba8, rgb10a2,
-rgba16f, r32ui; depth clip, funcs and shader with their depth; blend masks and ops). Wrong pictures,
-not yet understood, to look at first: blend-alpha and blend-factors (every pixel differs, by up to
-255) and depth-bias (every pixel, up to 255; depth bias went native in run 5). The stencil scene
-panics the device thread with an arithmetic overflow (num/mod.rs:1322, not yet found). The others
-stop at a refusal: samplers, textures, topology, constants and views at level-of-detail bias or
-other refusals turned into device removal at replay; formats at E_FAIL; raster at wireframe without
-`POLYGON_MODE` (the Vulkan path); draws at instance step rates; heaps, bundles, compute, queues,
-queries, copies (resolve) and msaa at calls not done; geometry, tessellation and streamout at their
-stages (the stage helper, G6).
+The rig's Direct3D 12 scenes through ours (run 5): 17 of 124 outputs passed, all equal to real
+Direct3D 12. Then blend-alpha and blend-factors were wrong at every pixel: the pipelines blend with
+the second source (`SRC1` factors), which WebGPU refused because the converted shader does not mark
+its second output (`Pipeline uses dual-source blending, but the shader does not support it`).
+`SRC1` factors are now refused at pipeline creation (E_NOTIMPL, "dual-source blending"), so the
+blend scene stops there and its four outputs are missing; last code: 15 passed (triangle;
+swapchain, four frames and its results; targets rgba8, rgb10a2, rgba16f, r32ui; depth clip, funcs
+and shader with their depth). Still wrong: depth-bias, every pixel (WebGPU refuses a view: "a view
+of format Depth24PlusStencil8 of a texture with format Depth24PlusStencil8 ... not present in the
+texture's viewFormat array", so the work is lost; look at how the typeless depth texture is made).
+The stencil scene panics the device thread with an arithmetic overflow (num/mod.rs:1322, not yet
+found). The others stop at a refusal: samplers, textures, topology, constants and views at
+level-of-detail bias or other refusals turned into device removal at replay; formats at E_FAIL;
+raster at wireframe without `POLYGON_MODE` (the Vulkan path); draws at instance step rates; heaps,
+bundles, compute, queues, queries, copies (resolve) and msaa at calls not done; geometry,
+tessellation and streamout at their stages (the stage helper, G6). Dual-source blending needs the
+converter to mark the second output (G6).
 
 Gap list (the absent feature behind failing tests, from the logs of the last run, most common
 first): compute pipelines and `Dispatch`; unordered access views (front, and the shaders crate's
@@ -125,7 +131,7 @@ the pass bar's final written gap list: most of these gaps are work of this miles
 
 ## Next, in this order
 
-1. The wrong pictures and the panic above (blend-alpha, blend-factors, depth-bias, stencil).
+1. The wrong depth-bias picture and the stencil panic above.
 2. Unordered access views (storage buffers and textures, root UAVs, counters) and compute pipelines
    with `Dispatch` and the compute root arguments; `ClearUnorderedAccessView*`. Ask G6 for storage
    images and typed buffers in the converter where the logs show them refused.
