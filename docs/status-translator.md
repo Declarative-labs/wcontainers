@@ -56,10 +56,27 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   It skips every chunk that passed on c38b4ad or later and runs the rest. To stop it: `pkill -f long-runs.sh`,
   then stop its `cargo test` and remove its containers (`docker ps -aq --filter name=wc-translator- | xargs
   docker rm -f`).
+- Restarted 2026-11-16 16:44 on 92b0866 (the square root fix below) with `WC_LONG_ACCEPT=c38b4ad`: layer 1
+  chunks 1, 2 and 4 kept from c38b4ad, chunk 3 run again. Chunk 5 had started on c38b4ad and was stopped
+  (no ledger line). Use `WC_LONG_ACCEPT=c38b4ad` on any later restart too.
 - After the last fix: the confirmation, 5 percent of each layer on the final commit with base seed 200 (not
   used before): the same command with `WC_LONG_PERCENT=5 WC_LONG_SEED=200` and a new `WC_LONG_DIR`.
 - Expected length (from P1's 1 percent rates at load about 30, not measured): about 50 hours, more at higher
   load.
+
+Failures found by the run, each with its cause and fix:
+1. Layer 1 chunk 3 (seed 100002, c38b4ad): `FSQRT_D_floatdp1`, the root of a denormal (0x19) rounding up
+   (FPCR 0x2400000) gave one ulp too many and raised inexact; Linux gives the exact root 0x1e84000000000000.
+   Cause: `ieee-apsqrt` runs its Newton steps in the rounding mode asked for and calls a root exact only when
+   its square comes out equal, so with rounding up it settles one ulp above any exact root (the root of 9.0
+   gave 3 plus an ulp). The earlier scaling of denormals had hidden one case of it. Fix (92b0866): the
+   square root is the host's root, correctly rounded to nearest, moved one ulp for the directed modes by the
+   sign of the remainder m - r * r (apfloat's fused multiply-add, exact for m scaled into 1 to 4);
+   `ieee-apsqrt` is gone. Infinity is answered before the root, as zero is. Test:
+   `wcontainers-arm64` `tests/exact.rs` `square_roots_round_as_asked` (exact squares k^2 * 2^j, normal and
+   denormal, and their neighbours, every mode, single and double, checked by exact squares in quad
+   precision, and infinities): 50,807 wrong before, 0 after. The failing form and the other two square root
+   forms at 1,000 cases seed 100002, and at 10,000 cases seeds 5001 to 5003: 0 failing (load 16 to 24).
 
 ## P1: close-out of M5 and the long-run driver
 
