@@ -10,7 +10,7 @@ use slab::Slab;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
     AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, CopyBufferTexture,
-    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features,
+    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features, Format,
     FormatKind, FormatUse, GpuError, IndexBinding, IndexFormat, LoadOp, MAX_COLOR_TARGETS,
     MAX_VERTEX_STREAMS, MapIntent, Object, Origin, PassDesc, PrepareDesc, Program, ReadSource,
     ReadState, SamplerDesc, ScissorRect, ShaderStage, SlowPath, StageSet, StepMode, StoreOp,
@@ -61,6 +61,7 @@ id!(
 mod alias;
 mod bind;
 mod indirect;
+mod null;
 mod query;
 
 /// Where GPU virtual addresses start, far from zero so a null address is never a buffer.
@@ -268,6 +269,7 @@ pub struct Device<B: Backend> {
     /// The last write stamp given.
     stamp: u64,
     programs: query::Programs<B>,
+    nulls: null::Nulls<B>,
     /// Messages not yet shown, such as why a shader did not convert.
     messages: Vec<String>,
     /// The error that removed the device, if one did.
@@ -307,6 +309,7 @@ impl<B: Backend> Device<B> {
             touched: Vec::new(),
             stamp: 0,
             programs: query::Programs::default(),
+            nulls: null::Nulls::default(),
             messages: Vec::new(),
             removed: None,
         }
@@ -469,11 +472,12 @@ impl<B: Backend> Device<B> {
     pub fn create_heap(
         &mut self,
         size: u64,
+        alignment: u64,
         heap: HeapType,
         flags: u32,
     ) -> Result<MemoryId, Error> {
         self.live()?;
-        resource::check_heap_flags(flags, false)?;
+        resource::check_heap(alignment, flags)?;
         if size == 0 {
             return Err(Error::Invalid("a heap of zero bytes"));
         }
@@ -722,6 +726,7 @@ impl<B: Backend> Device<B> {
             bindings.extend(bind::stage_bindings(ps, StageSet::FRAGMENT));
         }
         bind::check(&root, &bindings)?;
+        self.prepare_nulls(&bind::null_shapes(&bindings))?;
         let caps = self.backend.caps();
         let blend = desc.blend.block(caps, desc.rtv_formats.len())?;
         let raster = desc.raster.block(
@@ -806,6 +811,7 @@ impl<B: Backend> Device<B> {
         let cs = self.convert(cs, ShaderStage::Compute)?;
         let bindings = bind::stage_bindings(&cs, StageSet::COMPUTE);
         bind::check(&root, &bindings)?;
+        self.prepare_nulls(&bind::null_shapes(&bindings))?;
         let shader = self.backend.create_shader(&cs.modules[0])?;
         let program = self.backend.create_program(&Program::Compute(&shader));
         self.backend.destroy(Object::Shader(shader));
@@ -1300,6 +1306,7 @@ impl<B: Backend> Device<B> {
             }
             replay.finish(self)
         });
+        let result = result.and_then(|()| self.zero_written_nulls());
         let submission = self.backend.submit();
         for r in &mut self.reads[first_read..] {
             r.submission = Some(submission.clone());
@@ -1313,6 +1320,10 @@ impl<B: Backend> Device<B> {
 
     /// Adds the upload resources command `c` reads.
     fn uploads_read(&self, c: &Command, out: &mut Vec<ResourceId>) {
+        if let Command::Bundle(commands) = c {
+            commands.iter().for_each(|c| self.uploads_read(c, out));
+            return;
+        }
         let mut add = |id: ResourceId| {
             if self
                 .resources
@@ -1832,11 +1843,17 @@ impl<B: Backend> Replay<B> {
     }
 
     fn run(&mut self, d: &mut Device<B>, c: &Command) -> Result<(), Error> {
+        // A bundle's commands run in the calling list's state, and what they set stays set.
+        if let Command::Bundle(commands) = c {
+            return commands.iter().try_for_each(|c| self.run(d, c));
+        }
         d.touched.clear();
         if d.aliased != 0 {
             self.copies_due(d, c)?;
         }
         match c {
+            // Run at the top.
+            Command::Bundle(_) => {}
             Command::Pipeline(p) => {
                 if !d.pipelines.contains(p.0 as usize) {
                     return Err(Error::Invalid(

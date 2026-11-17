@@ -21,6 +21,19 @@ pub(super) struct StageBinding {
     declared: u64,
     /// How the program reads the resource.
     form: Form,
+    /// Textures: the shape a null view of it takes.
+    shape: Option<null::Shape>,
+}
+
+/// The null texture shapes `bindings` may read, and whether each is written.
+pub(super) fn null_shapes(bindings: &[StageBinding]) -> Vec<(null::Shape, bool)> {
+    bindings
+        .iter()
+        .filter_map(|b| {
+            let writable = matches!(b.form, Form::Image { writable: true });
+            b.shape.map(|s| (s, writable))
+        })
+        .collect()
 }
 
 /// The form of a resource binding in the converted program.
@@ -46,8 +59,9 @@ pub(super) fn stage_bindings(c: &Converted, stages: StageSet) -> Vec<StageBindin
                     .as_ref()
                     .is_some_and(|r| (r.group, r.binding) == (b.set, b.binding))
             });
-            let (mut declared, mut form) = (0, Form::Plain);
+            let (mut declared, mut form, mut shape) = (0, Form::Plain, None);
             if let Some((_, v)) = global {
+                shape = null::shape(&module.types[v.ty].inner);
                 match (v.space, &module.types[v.ty].inner) {
                     (naga::AddressSpace::Uniform, ty) => {
                         declared = u64::from(ty.size(module.to_ctx()));
@@ -76,6 +90,7 @@ pub(super) fn stage_bindings(c: &Converted, stages: StageSet) -> Vec<StageBindin
                 binding: b.clone(),
                 declared,
                 form,
+                shape,
             }
         })
         .collect()
@@ -375,9 +390,10 @@ impl<B: Backend> Device<B> {
                         (SlotKind::Sampler, Descriptor::Sampler(v)) => {
                             Held::Sampler(self.sampler(&v)?)
                         }
-                        (_, Descriptor::Empty) => {
-                            return Err(Error::NotImplemented("null descriptors"));
+                        (SlotKind::Sampler, Descriptor::Empty) => {
+                            return Err(Error::Invalid("an empty sampler descriptor"));
                         }
+                        (kind, Descriptor::Empty) => self.null(kind, b)?,
                         _ => return Err(Error::Invalid("a descriptor of another kind")),
                     }
                 }
@@ -390,6 +406,35 @@ impl<B: Backend> Device<B> {
             held.push((index, h));
         }
         Ok(held)
+    }
+
+    /// The zeros a null descriptor binds for `b`.
+    fn null(&mut self, kind: SlotKind, b: &StageBinding) -> Result<Held<B>, Error> {
+        Ok(match (kind, b.form) {
+            (SlotKind::Uniform, _) => Held::Uniform(
+                self.null_buffer(false)?,
+                0,
+                b.declared.clamp(16, null::NULL_BYTES).next_multiple_of(16),
+            ),
+            (_, Form::Buffer { writable }) => Held::Storage {
+                buffer: self.null_buffer(writable)?,
+                offset: 0,
+                size: null::NULL_BYTES,
+                writable,
+            },
+            (_, Form::Image { writable }) => {
+                let shape = b
+                    .shape
+                    .ok_or(Error::NotImplemented("null views of this storage texture"))?;
+                Held::StorageTexture(self.null_view(shape, writable)?, writable)
+            }
+            (_, Form::Plain) => {
+                let shape = b.shape.ok_or(Error::NotImplemented(
+                    "null views of one-dimensional textures",
+                ))?;
+                Held::Texture(self.null_view(shape, false)?)
+            }
+        })
     }
 
     /// A uniform binding of `size` bytes at a GPU virtual address.

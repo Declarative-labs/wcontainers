@@ -2,7 +2,7 @@
 //! of their interfaces is in com.rs and reports itself as not implemented.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wcontainers_direct3d_12::address::DESCRIPTOR_SIZE;
@@ -10,7 +10,7 @@ use wcontainers_direct3d_12::list::{
     Command, CommandList, CopyLocation, Descriptor, IndexBufferView, IndirectArgument,
     ResourceView, RootArgument, SamplerView, TargetView, VertexBufferView, ViewportF,
 };
-use wcontainers_direct3d_12::resource::{Footprint, HeapType, ResourceDesc};
+use wcontainers_direct3d_12::resource::{Footprint, HeapType, ResourceDesc, check_creation};
 use wcontainers_direct3d_12::state::{
     Blend, DepthStencil, InputElement, Raster, StencilOps, TargetBlend,
 };
@@ -310,11 +310,6 @@ fn resource_desc(d: &D3D12_RESOURCE_DESC) -> ResourceDesc {
 ///
 /// # Safety
 /// The bytecode points to `BytecodeLength` readable bytes, as the API requires.
-/// Buffers take no optimised clear value.
-fn is_buffer(d: &D3D12_RESOURCE_DESC) -> bool {
-    d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER
-}
-
 unsafe fn code(b: &D3D12_SHADER_BYTECODE) -> Vec<u8> {
     if b.pShaderBytecode.is_null() {
         return Vec::new();
@@ -900,12 +895,14 @@ impl Device {
         pdesc: *const D3D12_CONSTANT_BUFFER_VIEW_DESC,
         dest: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
-        // SAFETY: an optional description, as the API allows.
-        let descriptor =
-            unsafe { pdesc.as_ref() }.map_or(Descriptor::Empty, |d| Descriptor::ConstantBuffer {
+        // SAFETY: an optional description, as the API allows. Address zero makes a null view.
+        let descriptor = match unsafe { pdesc.as_ref() } {
+            Some(d) if d.BufferLocation != 0 => Descriptor::ConstantBuffer {
                 address: d.BufferLocation,
                 size: d.SizeInBytes,
-            });
+            },
+            _ => Descriptor::Empty,
+        };
         // SAFETY: CPU descriptor handles point into a heap of this library.
         unsafe { *(dest.ptr as *mut Descriptor) = descriptor };
     }
@@ -1039,18 +1036,19 @@ impl Device {
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        clear_out(out);
         // SAFETY: the API requires a description.
         let mut desc = *unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let kind = HeapType::from_d3d12(desc.Properties.Type.0 as u32).map_err(hr)?;
+        let (kind, _) = heap_kind(&desc.Properties)?;
         // Zeros read as the defaults: the one node, and 64 KiB alignment.
         let p = &mut desc.Properties;
         p.CreationNodeMask = p.CreationNodeMask.max(1);
         p.VisibleNodeMask = p.VisibleNodeMask.max(1);
+        let (size, align, flags) = (desc.SizeInBytes, desc.Alignment, desc.Flags.0 as u32);
         if desc.Alignment == 0 {
             desc.Alignment = 64 << 10;
         }
-        let (size, flags) = (desc.SizeInBytes, desc.Flags.0 as u32);
-        let id = gpu::call(move |d| d.create_heap(size, kind, flags)).map_err(hr)?;
+        let id = gpu::call(move |d| d.create_heap(size, align, kind, flags)).map_err(hr)?;
         give::<ID3D12Heap>(
             crate::abi::fixed(Heap(desc, id, Base::child()).into()),
             riid,
@@ -1064,20 +1062,18 @@ impl Device {
         heap: Ref<ID3D12Heap>,
         offset: u64,
         pdesc: *const D3D12_RESOURCE_DESC,
-        _state: D3D12_RESOURCE_STATES,
+        state: D3D12_RESOURCE_STATES,
         clear: *const D3D12_CLEAR_VALUE,
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
-        // SAFETY: an optional pointer the API defines.
-        if !clear.is_null() && unsafe { pdesc.as_ref() }.is_some_and(is_buffer) {
-            return Err(E_INVALIDARG.into());
-        }
+        clear_out(out);
         // SAFETY: heaps come from this library; the API requires a description.
         let (heap, desc) = unsafe { (heap.ok()?.as_impl(), *pdesc.as_ref().ok_or(E_INVALIDARG)?) };
         let (memory, heap_desc) = (heap.1, heap.0);
-        let kind = HeapType::from_d3d12(heap_desc.Properties.Type.0 as u32).map_err(hr)?;
+        let (kind, cpu_custom) = heap_kind(&heap_desc.Properties)?;
         let front = resource_desc(&desc);
+        check_creation(kind, cpu_custom, &front, state.0 as u32, !clear.is_null()).map_err(hr)?;
         let (id, address, host) = gpu::call(move |d| {
             let id = d.create_placed(memory, offset, &front)?;
             let host = if kind == HeapType::Default {
@@ -1100,8 +1096,10 @@ impl Device {
                     address,
                     host,
                     back_buffer: false,
-                    heap: heap_desc.Properties.Type,
+                    heap: heap_desc.Properties,
                     heap_flags: heap_desc.Flags,
+                    cpu_maps: cpu_custom.then(AtomicU32::default),
+                    _chain: None,
                     base: Base::child(),
                 }
                 .into(),
@@ -1117,27 +1115,24 @@ impl Device {
         heap: *const D3D12_HEAP_PROPERTIES,
         flags: D3D12_HEAP_FLAGS,
         pdesc: *const D3D12_RESOURCE_DESC,
-        // The initial state and the optimised clear value change nothing this front does.
-        _state: D3D12_RESOURCE_STATES,
+        // The initial state is checked; it and the optimised clear value change nothing else.
+        state: D3D12_RESOURCE_STATES,
         clear: *const D3D12_CLEAR_VALUE,
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
-        // SAFETY: an optional pointer the API defines.
-        if !clear.is_null() && unsafe { pdesc.as_ref() }.is_some_and(is_buffer) {
-            return Err(E_INVALIDARG.into());
-        }
+        clear_out(out);
         wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32, true).map_err(hr)?;
         // SAFETY: the API requires both.
         let (heap, desc) = unsafe {
             (
-                heap.as_ref().ok_or(E_INVALIDARG)?,
+                *heap.as_ref().ok_or(E_INVALIDARG)?,
                 *pdesc.as_ref().ok_or(E_INVALIDARG)?,
             )
         };
-        let kind = HeapType::from_d3d12(heap.Type.0 as u32).map_err(hr)?;
-        let heap_type = heap.Type;
+        let (kind, cpu_custom) = heap_kind(&heap)?;
         let front = resource_desc(&desc);
+        check_creation(kind, cpu_custom, &front, state.0 as u32, !clear.is_null()).map_err(hr)?;
         let (id, address, host) = gpu::call(move |d| {
             let id = d.create_committed(kind, &front)?;
             let host = if kind == HeapType::Default {
@@ -1160,8 +1155,10 @@ impl Device {
                     address,
                     host,
                     back_buffer: false,
-                    heap: heap_type,
+                    heap,
                     heap_flags: flags,
+                    cpu_maps: cpu_custom.then(AtomicU32::default),
+                    _chain: None,
                     base: Base::child(),
                 }
                 .into(),
@@ -1651,14 +1648,42 @@ pub struct Resource {
     host: usize,
     /// A swap chain's back buffer, which the swap chain releases.
     back_buffer: bool,
-    /// The heap's type and the flags the resource was made with.
-    heap: D3D12_HEAP_TYPE,
+    /// The heap's properties and the flags the resource was made with.
+    heap: D3D12_HEAP_PROPERTIES,
     heap_flags: D3D12_HEAP_FLAGS,
+    /// A texture in a custom heap the CPU sees: how many times it is mapped.
+    cpu_maps: Option<AtomicU32>,
+    /// A back buffer's share of its swap chain's reference.
+    _chain: Option<Arc<crate::present::BufferHold>>,
     base: Base,
 }
 
+/// Sets a creation call's out pointer to null, as Direct3D 12 leaves it when the call fails.
+fn clear_out(out: *mut *mut c_void) {
+    if !out.is_null() {
+        // SAFETY: the caller's out pointer.
+        unsafe { *out = std::ptr::null_mut() };
+    }
+}
+
+/// The front's heap type for heap properties, and whether it is a custom heap the CPU sees.
+fn heap_kind(p: &D3D12_HEAP_PROPERTIES) -> Result<(HeapType, bool)> {
+    if p.Type == D3D12_HEAP_TYPE_CUSTOM {
+        return wcontainers_direct3d_12::resource::custom_heap(
+            p.CPUPageProperty.0 as u32,
+            p.MemoryPoolPreference.0 as u32,
+        )
+        .map_err(hr);
+    }
+    Ok((HeapType::from_d3d12(p.Type.0 as u32).map_err(hr)?, false))
+}
+
 impl Resource {
-    pub fn back_buffer(id: ResourceId, desc: D3D12_RESOURCE_DESC) -> ID3D12Resource {
+    pub fn back_buffer(
+        id: ResourceId,
+        chain: Arc<crate::present::BufferHold>,
+        desc: D3D12_RESOURCE_DESC,
+    ) -> ID3D12Resource {
         crate::abi::fixed(
             Resource {
                 id,
@@ -1666,8 +1691,13 @@ impl Resource {
                 address: 0,
                 host: 0,
                 back_buffer: true,
-                heap: D3D12_HEAP_TYPE_DEFAULT,
+                heap: D3D12_HEAP_PROPERTIES {
+                    Type: D3D12_HEAP_TYPE_DEFAULT,
+                    ..Default::default()
+                },
                 heap_flags: D3D12_HEAP_FLAG_NONE,
+                cpu_maps: None,
+                _chain: Some(chain),
                 base: Base::child(),
             }
             .into(),
@@ -1687,10 +1717,9 @@ impl Resource {
         unsafe {
             if let Some(p) = properties.as_mut() {
                 *p = D3D12_HEAP_PROPERTIES {
-                    Type: self.heap,
                     CreationNodeMask: 1,
                     VisibleNodeMask: 1,
-                    ..Default::default()
+                    ..self.heap
                 };
             }
             if let Some(f) = flags.as_mut() {
@@ -1712,6 +1741,17 @@ impl Resource {
         _range: *const D3D12_RANGE,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        // A texture the CPU sees maps with no pointer, for `WriteToSubresource` and
+        // `ReadFromSubresource`.
+        if let Some(maps) = &self.cpu_maps {
+            if !out.is_null()
+                || subresource >= resource_desc(&self.desc).subresources().unwrap_or(0)
+            {
+                return Err(E_INVALIDARG.into());
+            }
+            maps.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
         if subresource != 0 {
             return Err(E_INVALIDARG.into());
         }
@@ -1731,7 +1771,86 @@ impl Resource {
     }
 
     /// Written bytes reach the GPU when a list reading them is executed.
-    pub fn Unmap(&self, _subresource: u32, _range: *const D3D12_RANGE) {}
+    pub fn Unmap(&self, _subresource: u32, _range: *const D3D12_RANGE) {
+        if let Some(maps) = &self.cpu_maps {
+            let _ = maps.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
+        }
+    }
+
+    /// The checks `WriteToSubresource` and `ReadFromSubresource` share: a mapped texture in a heap
+    /// the CPU sees, a subresource it has, and a box inside it on block edges. `Ok(false)` for an
+    /// empty box, which moves nothing.
+    fn check_cpu_access(&self, subresource: u32, pbox: *const D3D12_BOX) -> Result<bool> {
+        let desc = resource_desc(&self.desc);
+        let Some(maps) = &self.cpu_maps else {
+            return Err(E_INVALIDARG.into());
+        };
+        let mips = desc.mips();
+        if subresource >= desc.subresources().map_err(hr)? {
+            return Err(E_INVALIDARG.into());
+        }
+        let mip = subresource % mips;
+        let size = |n: u64| (n >> mip).max(1) as u32;
+        let (w, h) = (size(desc.width), size(u64::from(desc.height)));
+        let d = if desc.dimension == wcontainers_direct3d_12::resource::DIMENSION_TEXTURE3D {
+            size(u64::from(desc.depth_or_array_size))
+        } else {
+            1
+        };
+        // SAFETY: an optional box, as the API allows.
+        if let Some(b) = unsafe { pbox.as_ref() } {
+            let (bw, bh, _) = desc.texture_format().map_err(hr)?.0.block();
+            let edge = |v: u32, block: u32, end: u32| v.is_multiple_of(block) || v == end;
+            if b.right > w
+                || b.bottom > h
+                || b.back > d
+                || !b.left.is_multiple_of(bw)
+                || !b.top.is_multiple_of(bh)
+                || !edge(b.right, bw, w)
+                || !edge(b.bottom, bh, h)
+            {
+                return Err(E_INVALIDARG.into());
+            }
+            if b.left >= b.right || b.top >= b.bottom || b.front >= b.back {
+                return Ok(false);
+            }
+        }
+        if maps.load(Ordering::Relaxed) == 0 {
+            return Err(windows::core::Error::new(
+                E_INVALIDARG,
+                "the texture is not mapped",
+            ));
+        }
+        Ok(true)
+    }
+
+    pub fn WriteToSubresource(
+        &self,
+        subresource: u32,
+        pbox: *const D3D12_BOX,
+        _data: *const c_void,
+        _row_pitch: u32,
+        _depth_pitch: u32,
+    ) -> Result<()> {
+        if self.check_cpu_access(subresource, pbox)? {
+            return Err(self.unsupported("WriteToSubresource of a mapped texture"));
+        }
+        Ok(())
+    }
+
+    pub fn ReadFromSubresource(
+        &self,
+        _data: *mut c_void,
+        _row_pitch: u32,
+        _depth_pitch: u32,
+        subresource: u32,
+        pbox: *const D3D12_BOX,
+    ) -> Result<()> {
+        if self.check_cpu_access(subresource, pbox)? {
+            return Err(self.unsupported("ReadFromSubresource of a mapped texture"));
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Resource {
@@ -1952,7 +2071,10 @@ impl List {
     /// Ends recording whether or not the list's calls were valid; a failed list must be reset.
     pub fn Close(&self) -> Result<()> {
         self.release();
-        self.rec.lock().unwrap().close().map_err(hr)
+        self.rec.lock().unwrap().close().map_err(|e| {
+            eprintln!("wcontainers: Close: {e:?}");
+            hr(e)
+        })
     }
 
     /// Fails with `E_FAIL` while the list is open, as Direct3D 12 does.
@@ -1968,6 +2090,28 @@ impl List {
         self.rec.lock().unwrap().reset();
         self.start(initial);
         Ok(())
+    }
+
+    /// Records a closed bundle's commands into a direct list.
+    pub fn ExecuteBundle(&self, bundle: Ref<ID3D12GraphicsCommandList>) {
+        let commands = bundle.as_ref().and_then(|b| {
+            // SAFETY: command lists come from this library.
+            let b: &List = unsafe { b.as_impl() };
+            if b.kind != D3D12_COMMAND_LIST_TYPE_BUNDLE {
+                return None;
+            }
+            b.rec.lock().unwrap().commands().cloned()
+        });
+        match commands {
+            Some(c) if self.kind == D3D12_COMMAND_LIST_TYPE_DIRECT => {
+                self.record(Command::Bundle(c));
+            }
+            _ => self
+                .rec
+                .lock()
+                .unwrap()
+                .fail(Error::Invalid("ExecuteBundle of no closed bundle")),
+        }
     }
 
     pub fn SetPipelineState(&self, pipeline: Ref<ID3D12PipelineState>) {

@@ -2,7 +2,7 @@
 //! queue over the infrastructure crate's, run on the device thread.
 
 use std::ffi::c_void;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 
 use wcontainers_direct3d_12::device::ChainId;
 use wcontainers_directx_graphics_infrastructure::{
@@ -19,7 +19,9 @@ use windows::Win32::Graphics::Gdi::{
     HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
-use windows::core::{BOOL, GUID, HRESULT, IUnknown, Interface, PCWSTR, Ref, Result, implement};
+use windows::core::{
+    AsImpl, BOOL, GUID, HRESULT, IUnknown, Interface, PCWSTR, Ref, Result, implement,
+};
 
 use crate::gpu;
 use crate::objects::{Resource, give, hr};
@@ -421,7 +423,7 @@ pub fn create(
     let mut d = *desc;
     d.Width = width;
     d.Height = height;
-    Ok(IDXGISwapChain4::from(SwapChain {
+    let chain = IDXGISwapChain4::from(SwapChain {
         id,
         hwnd,
         queue,
@@ -429,15 +431,30 @@ pub fn create(
         state: Mutex::new(ChainState {
             desc: d,
             buffers: Vec::new(),
+            this: 0,
+            hold: Weak::new(),
         }),
-    })
-    .into())
+    });
+    // SAFETY: the object was made just above, by this library.
+    let inner: &SwapChain = unsafe { chain.as_impl() };
+    inner.state.lock().unwrap().this = chain.as_raw() as usize;
+    Ok(chain.into())
+}
+
+/// The one reference the back buffers the program holds keep on their swap chain, released with
+/// the last of them (DXGI's rule).
+pub struct BufferHold {
+    _chain: IDXGISwapChain4,
 }
 
 struct ChainState {
     desc: DXGI_SWAP_CHAIN_DESC1,
-    /// The back buffers handed out, made at the first `GetBuffer` of each.
-    buffers: Vec<Option<ID3D12Resource>>,
+    /// The back buffers handed out while the program holds them, made at the first `GetBuffer` of
+    /// each after none was held.
+    buffers: Vec<Option<windows::core::Weak<ID3D12Resource>>>,
+    /// The swap chain's own interface, held by no one through this.
+    this: usize,
+    hold: Weak<BufferHold>,
 }
 
 #[implement(IDXGISwapChain4)]
@@ -456,17 +473,6 @@ const PRESENT_TEST: u32 = 0x1;
 const PRESENT_RESTART: u32 = 0x4;
 const PRESENT_DO_NOT_WAIT: u32 = 0x8;
 const PRESENT_ALLOW_TEARING: u32 = 0x200;
-
-/// How many references `r` has besides the caller's own.
-fn references(r: &ID3D12Resource) -> u32 {
-    let u: &IUnknown = r.into();
-    // SAFETY: a live COM object; the reference taken is given back at once.
-    unsafe {
-        let raw = u.as_raw();
-        (u.vtable().AddRef)(raw);
-        (u.vtable().Release)(raw) - 1
-    }
-}
 
 impl SwapChain {
     pub fn Present(&self, sync_interval: u32, flags: DXGI_PRESENT) -> HRESULT {
@@ -521,11 +527,29 @@ impl SwapChain {
             state.buffers = vec![None; n];
         }
         let desc = state.desc;
-        let slot = state
+        let held = state
             .buffers
-            .get_mut(index as usize)
-            .ok_or(DXGI_ERROR_INVALID_CALL)?;
-        if slot.is_none() {
+            .get(index as usize)
+            .ok_or(DXGI_ERROR_INVALID_CALL)?
+            .as_ref()
+            .and_then(|w| w.upgrade());
+        if let Some(buffer) = held {
+            return give(buffer, riid, out);
+        }
+        let hold = match state.hold.upgrade() {
+            Some(h) => h,
+            None => {
+                let this = state.this as *mut c_void;
+                // SAFETY: the swap chain's own interface, alive while `self` is.
+                let chain = unsafe { IDXGISwapChain4::from_raw_borrowed(&this) }
+                    .ok_or(E_POINTER)?
+                    .clone();
+                let h = Arc::new(BufferHold { _chain: chain });
+                state.hold = Arc::downgrade(&h);
+                h
+            }
+        };
+        {
             let resource =
                 gpu::call(move |d| d.chain_buffer(id, index)).ok_or(DXGI_ERROR_INVALID_CALL)?;
             let flags = if desc.BufferUsage.0 & USAGE_UNORDERED_ACCESS != 0 {
@@ -533,8 +557,9 @@ impl SwapChain {
             } else {
                 D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
             };
-            *slot = Some(Resource::back_buffer(
+            let buffer = Resource::back_buffer(
                 resource,
+                hold,
                 D3D12_RESOURCE_DESC {
                     Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
                     Alignment: 0,
@@ -550,9 +575,10 @@ impl SwapChain {
                     Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
                     Flags: flags,
                 },
-            ));
+            );
+            state.buffers[index as usize] = Some(buffer.downgrade()?);
+            give(buffer, riid, out)
         }
-        give(slot.clone().unwrap(), riid, out)
     }
 
     pub fn ResizeBuffers(
@@ -571,7 +597,12 @@ impl SwapChain {
         }
         let mut state = self.state.lock().unwrap();
         // DXGI refuses while the program holds a back buffer.
-        if state.buffers.iter().flatten().any(|b| references(b) > 1) {
+        if state
+            .buffers
+            .iter()
+            .flatten()
+            .any(|b| b.upgrade().is_some())
+        {
             return Err(windows::core::Error::new(
                 DXGI_ERROR_INVALID_CALL,
                 "a back buffer is still referenced",

@@ -243,6 +243,8 @@ pub enum RootArgument {
 /// One recorded command.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    /// `ExecuteBundle`: a closed bundle's commands.
+    Bundle(Arc<[Command]>),
     Pipeline(PipelineId),
     /// `SetGraphicsRootSignature` (`compute` false) or `SetComputeRootSignature`.
     RootSignature {
