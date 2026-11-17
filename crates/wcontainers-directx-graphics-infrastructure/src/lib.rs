@@ -8,18 +8,16 @@ mod format;
 mod output;
 mod support;
 mod swapchain;
-mod wgsl;
 
 pub use adapter::{ADAPTER_LUID, AdapterDesc};
 pub use format::{
     BACK_BUFFER_FORMATS, dxgi_format, dxgi_vertex_format, present_format, present_formats,
 };
-pub use output::{DisplayMode, OutputDesc};
+pub use output::{COLOR_SPACE_LINEAR, COLOR_SPACE_SRGB, DisplayMode, OutputDesc, presents_in, sdr};
 pub use support::{FormatSupport, format_support, plane_count, support1, support2, takes_samples};
 pub use swapchain::{
     DEFAULT_LATENCY, MAX_BUFFERS, Model, SwapChain, SwapChainDesc, SwapChainError,
 };
-pub use wgsl::program_from_wgsl;
 
 use wcontainers_gpu::Caps;
 

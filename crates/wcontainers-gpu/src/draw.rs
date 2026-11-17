@@ -79,7 +79,8 @@ pub struct EmptyPass {
 /// `FRAMEBUFFER_INCOMPLETE_DIMENSIONS`). A front whose API draws into attachments of different sizes,
 /// limited to their common area (Direct3D 9 to 11 with a larger depth buffer, OpenGL, Vulkan), passes
 /// them through the shared pass tracker, which puts temporaries of one size in their place (slow path
-/// [`crate::SlowPath::AttachmentsFitted`], plan section 4.7).
+/// [`crate::SlowPath::AttachmentsFitted`], plan section 4.7). Every attachment has the same sample
+/// count; a resolve target is a single-sampled view of its attachment's format.
 ///
 /// One pass is one usage scope, as WebGPU defines it: a buffer, or a texture subresource, that any draw
 /// of the pass binds as writable storage is used no other way by any draw of the pass (not as vertices,

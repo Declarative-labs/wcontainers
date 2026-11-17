@@ -1,4 +1,4 @@
-// Draws the three reference scenes through the WebGPU back end built for WebAssembly, in the rig's
+// Draws the three reference scenes (and the quads on depth and stencil) through the WebGPU back end built for WebAssembly, in the rig's
 // pinned Chrome, and saves them:
 //   node draw.mjs <pkg-dir> <out-dir> [twist...]
 // <pkg-dir> is wasm-bindgen's output for the scenes example. For each twist (default none) writes
@@ -19,7 +19,7 @@ const { getInstalledBrowsers } = await import(pathToFileURL(rig.resolve('@puppet
 const [pkg, out, ...given] = process.argv.slice(2);
 if (!out) throw new Error('usage: node draw.mjs <pkg-dir> <out-dir> [twist...]');
 const twists = given.length ? given : ['none'];
-const scenes = ['triangle', 'quads', 'instanced'];
+const scenes = ['triangle', 'quads', 'instanced', 'quads-d24s8'];
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
 
 const server = createServer(async (request, response) => {

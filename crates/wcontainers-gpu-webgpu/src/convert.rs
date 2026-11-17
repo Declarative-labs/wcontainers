@@ -91,7 +91,7 @@ pub fn texture_format(format: Format) -> Option<T> {
     })
 }
 
-/// The format of a view of one aspect: depth formats seen as their depth, stencil as `Stencil8`'s.
+/// The aspect a view reads: the stencil, the depth of a format with both, or all of it.
 pub fn aspect(stencil: bool, format: Format) -> wgpu::TextureAspect {
     match (stencil, format.kind()) {
         (true, _) => wgpu::TextureAspect::StencilOnly,
@@ -110,7 +110,7 @@ pub fn view_dimension(d: ViewDimension) -> wgpu::TextureViewDimension {
     }
 }
 
-/// None for the formats WebGPU lacks, which fronts convert first.
+/// None for the formats WebGPU lacks, which the back end converts.
 pub fn vertex_format(f: VertexFormat) -> Option<wgpu::VertexFormat> {
     use VertexFormat::*;
     use wgpu::VertexFormat as W;

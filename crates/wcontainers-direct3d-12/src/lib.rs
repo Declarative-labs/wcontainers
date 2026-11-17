@@ -8,7 +8,6 @@ pub mod features;
 pub mod list;
 pub mod resource;
 pub mod root;
-pub mod stand_in;
 pub mod state;
 
 pub use device::{Device, FenceId, GraphicsPipelineDesc, PipelineId, ResourceId, RootId};

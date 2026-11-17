@@ -45,9 +45,10 @@ struct Target {
 }
 
 impl Target {
-    fn texel(&mut self, x: u32, y: u32) -> &mut [u8] {
+    /// Sample `sample` of a texel: a multisampled target (2D, slice 0) holds its samples as planes.
+    fn texel(&mut self, x: u32, y: u32, sample: u32) -> &mut [u8] {
         let size = self.format.block().2 as usize;
-        let at = ((self.slice * self.height + y) * self.width + x) as usize * size;
+        let at = (((self.slice + sample) * self.height + y) * self.width + x) as usize * size;
         &mut self.bytes[at..at + size]
     }
 }
@@ -121,6 +122,7 @@ impl Resources for Bindings<'_> {
         coord: [i64; 3],
         layer: Option<i64>,
         level: i64,
+        sample: Option<i64>,
     ) -> Result<[f64; 4], Error> {
         let view = self.texture(image)?;
         let v = self.rec.view(view)?;
@@ -128,14 +130,18 @@ impl Resources for Bindings<'_> {
         if level < 0 || level >= i64::from(v.desc.mip_count) {
             return Ok([0.0; 4]);
         }
+        if sample.is_some() != (t.desc.samples > 1) {
+            return Err("a load naming a sample from a single-sampled texture, or none from a multisampled one".into());
+        }
         let mip = v.desc.base_mip + level as u32;
         let (w, h, d) = level_size(&t.desc, mip);
         let layer = layer.unwrap_or(0);
         let inside = |c: i64, n: u32| c >= 0 && c < i64::from(n);
-        let z = if v.desc.dimension == ViewDimension::D3 {
-            coord[2]
-        } else {
-            0
+        // A multisampled texture holds its samples as planes, where a 3D one holds its slices.
+        let (z, d) = match sample {
+            Some(n) => (n, t.desc.samples),
+            None if v.desc.dimension == ViewDimension::D3 => (coord[2], d),
+            None => (0, d),
         };
         if !inside(coord[0], w)
             || !inside(coord[1], h)
@@ -634,8 +640,9 @@ impl Recorder {
         })
     }
 
-    /// Checks the usage-scope rule of a pass: a buffer any draw of the pass binds as writable storage
-    /// is used no other way by any draw of the pass (texture subresources cannot be storage here).
+    /// Checks the draw's buffers were made for how it uses them, and the usage-scope rule of a pass: a
+    /// buffer any draw of the pass binds as writable storage is used no other way by any draw of the
+    /// pass (texture subresources cannot be storage here).
     fn usage_scope(&mut self, call: &DrawCall<'_, Self>, state: &DrawState) -> Result<(), Error> {
         let mut uses: Vec<(crate::recorder::Id, bool)> = Vec::new();
         uses.extend(
@@ -658,6 +665,17 @@ impl Recorder {
                 uses.push((*buffer, *writable));
             }
         }
+        for v in call.vertex_buffers.iter().flatten() {
+            self.buffer_for(*v.buffer, BufferUsage::VERTEX, "a vertex stream")?;
+        }
+        if let Some(i) = &call.index {
+            self.buffer_for(*i.buffer, BufferUsage::INDEX, "an index binding")?;
+        }
+        if let DrawRange::Indirect { args, .. } | DrawRange::IndexedIndirect { args, .. } =
+            call.range
+        {
+            self.buffer_for(*args, BufferUsage::INDIRECT, "indirect arguments")?;
+        }
         let pass = self.pass.as_mut().ok_or("draw outside a pass")?;
         for &(buffer, writable) in &uses {
             let (mine, theirs) = if writable {
@@ -676,6 +694,67 @@ impl Recorder {
             }
         }
         Ok(())
+    }
+
+    /// The buffer bytes a draw reads or writes: its index range, the elements its vertex streams
+    /// fetch and the ranges its binding sets bind.
+    fn draw_reads(
+        &self,
+        call: &DrawCall<'_, Self>,
+        state: &DrawState,
+    ) -> Result<Vec<(crate::recorder::Id, u64, u64)>, Error> {
+        let mut reads = Vec::new();
+        for (_, bound) in state.sets.iter().flatten().flatten() {
+            if let Bound::Buffer {
+                buffer,
+                offset,
+                size,
+                ..
+            } = *bound
+            {
+                reads.push((buffer, offset, offset + size));
+            }
+        }
+        if let (Some(i), DrawRange::Indexed { first, count, .. }) = (&call.index, &call.range) {
+            let size = u64::from(i.format.size());
+            let start = i.offset + u64::from(*first) * size;
+            reads.push((*i.buffer, start, start + u64::from(*count) * size));
+        }
+        let (list, first_instance, instances) = self.vertex_list(call)?;
+        let vertices = list.iter().flatten();
+        let (lo, hi) = (vertices.clone().min(), vertices.max());
+        for (n, stream) in state.layout.streams.iter().enumerate() {
+            let (Some(stream), Some(Some(binding))) = (stream, call.vertex_buffers.get(n)) else {
+                continue;
+            };
+            let (first, last) = match stream.step {
+                StepMode::Vertex => match (lo, hi) {
+                    (Some(&lo), Some(&hi)) => (lo, hi),
+                    _ => continue,
+                },
+                StepMode::Instance(k) if instances > 0 => {
+                    (first_instance, first_instance + (instances - 1) / k.max(1))
+                }
+                StepMode::Instance(_) => continue,
+            };
+            let mut ends = (u64::MAX, 0u64);
+            for a in state.layout.attributes.iter().flatten() {
+                if usize::from(a.stream) == n {
+                    let (count, size, _) = vertex_format(a.format)?;
+                    ends.0 = ends.0.min(u64::from(a.offset));
+                    ends.1 = ends.1.max(u64::from(a.offset) + (count * size) as u64);
+                }
+            }
+            if ends.1 > 0 {
+                let stride = u64::from(stream.stride);
+                reads.push((
+                    *binding.buffer,
+                    binding.offset + u64::from(first) * stride + ends.0,
+                    binding.offset + u64::from(last) * stride + ends.1,
+                ));
+            }
+        }
+        Ok(reads)
     }
 
     /// Every (texture, subresource) the bound texture views cover.
@@ -860,6 +939,9 @@ impl Recorder {
         self.pass.as_ref().ok_or("draw outside a pass")?;
         let state = self.gather(call)?;
         self.usage_scope(call, &state)?;
+        for (buffer, start, end) in self.draw_reads(call, &state)? {
+            self.touch(buffer, start, end);
+        }
         let pass = self.pass.as_ref().ok_or("draw outside a pass")?;
         match call.topology {
             Topology::TriangleList | Topology::TriangleStrip => {}
@@ -875,10 +957,7 @@ impl Recorder {
             return Err("restart on a list topology".into());
         }
         if state.blend.alpha_to_coverage {
-            return Err(
-                "alpha to coverage with one sample is not drawn by the recording back end yet"
-                    .into(),
-            );
+            return Err("alpha to coverage is not drawn by the recording back end yet".into());
         }
         // Take the attachments out while the draw writes them.
         let mut colors: Vec<Option<Target>> = Vec::new();
@@ -888,7 +967,7 @@ impl Recorder {
             .map(|c| c.map(|(v, s, _)| (v, s)))
             .collect();
         let depth_view = pass.depth;
-        let (pw, ph) = (pass.width, pass.height);
+        let (pw, ph, samples) = (pass.width, pass.height, pass.samples);
         let read = self.read_subresources(&state.sets)?;
         let take = |r: &mut Self, view, slice, read_only: bool| -> Result<Target, Error> {
             let (texture, sub, slice) = r.attachment(view, slice)?;
@@ -952,8 +1031,7 @@ impl Recorder {
                 &mut colors,
                 depth.as_mut(),
                 depth_view,
-                pw,
-                ph,
+                (pw, ph, samples),
                 &mut passed,
                 &writes,
             );
@@ -990,8 +1068,7 @@ impl Recorder {
         colors: &mut [Option<Target>],
         mut depth: Option<&mut Target>,
         depth_ops: Option<DepthOps>,
-        pw: u32,
-        ph: u32,
+        (pw, ph, samples): (u32, u32, u32),
         passed: &mut u64,
         writes: &RefCell<Vec<StorageWrite>>,
     ) -> Result<(), Error> {
@@ -1137,8 +1214,7 @@ impl Recorder {
                         depth_read_only,
                         stencil_read_only,
                         k,
-                        pw,
-                        ph,
+                        (pw, ph, samples),
                         passed,
                     )?;
                 }
@@ -1162,8 +1238,7 @@ impl Recorder {
         depth_read_only: bool,
         stencil_read_only: bool,
         k: [f64; 4],
-        pw: u32,
-        ph: u32,
+        (pw, ph, samples): (u32, u32, u32),
         passed: &mut u64,
     ) -> Result<(), Error> {
         let raster = state.raster;
@@ -1257,198 +1332,260 @@ impl Recorder {
         };
         let fragment = state.fragment.as_deref();
         let stencil_at = depth.as_ref().and_then(|d| texel::stencil_byte(d.format));
+        // Where each sample lies in its pixel, in 1/256 pixel: the standard positions of Direct3D and
+        // Vulkan, which WebGPU's four samples take.
+        let positions: &[(i64, i64)] = match samples {
+            1 => &[(128, 128)],
+            4 => &[(96, 32), (224, 96), (32, 160), (160, 224)],
+            n => {
+                return Err(format!(
+                    "{n} samples are not drawn by the recording back end"
+                ));
+            }
+        };
+        // A program reading the sample index, or a value interpolated at the sample, runs per sample.
+        let mut per_sample = false;
+        if let Some(fs) = fragment {
+            let fun = &fs.module.entry_points[entry(fs)?].function;
+            arguments(&fs.module, fun, |binding, _| {
+                per_sample |= matches!(
+                    binding,
+                    Binding::BuiltIn(BuiltIn::SampleIndex)
+                        | Binding::Location {
+                            sampling: Some(naga::Sampling::Sample),
+                            ..
+                        }
+                );
+                Ok(Value::U32(0))
+            })?;
+        }
+        let inside = |q: (i64, i64)| {
+            !edges.iter().zip(&biased).any(|(&(a, b), &tl)| {
+                let e = edge(a, b, q);
+                e < 0 || (e == 0 && !tl)
+            })
+        };
+        // Weights per original vertex at a point.
+        let bary_at = |q: (i64, i64)| {
+            let mut bary = [0.0; 3];
+            for (j, &i) in order.iter().enumerate() {
+                let (a, b) = edges[j];
+                bary[i] = edge(a, b, q) as f64 / area as f64;
+            }
+            bary
+        };
+        let depth_at = |bary: &[f64; 3]| (0..3).map(|i| bary[i] * s[i][2]).sum::<f64>() + bias;
         for py in y0.max(0)..y1 {
             for px in x0.max(0)..x1 {
-                let q = (px * 256 + 128, py * 256 + 128);
-                let w: Vec<i64> = edges.iter().map(|&(a, b)| edge(a, b, q)).collect();
-                if w.iter()
-                    .zip(&biased)
-                    .any(|(&e, &tl)| e < 0 || (e == 0 && !tl))
-                {
+                let at = |p: (i64, i64)| (px * 256 + p.0, py * 256 + p.1);
+                let cover = positions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| inside(at(**p)))
+                    .fold(0u32, |m, (i, _)| m | 1 << i);
+                if cover == 0 {
                     continue;
                 }
-                let l: Vec<f64> = w.iter().map(|&e| e as f64 / area as f64).collect();
-                // Weights per original vertex.
-                let mut bary = [0.0; 3];
-                for (j, &i) in order.iter().enumerate() {
-                    bary[i] = l[j];
-                }
-                let inv_w: f64 = (0..3).map(|i| bary[i] * s[i][3]).sum();
-                let mut z: f64 = (0..3).map(|i| bary[i] * s[i][2]).sum::<f64>() + bias;
-                let interp = |values: &dyn Fn(&ClipVertex) -> &Vec<f64>,
-                              perspective: bool,
-                              at: usize|
-                 -> f64 {
-                    if perspective {
-                        (0..3)
-                            .map(|i| bary[i] * s[i][3] * values(v[i])[at])
-                            .sum::<f64>()
-                            / inv_w
-                    } else {
-                        (0..3).map(|i| bary[i] * values(v[i])[at]).sum()
-                    }
+                // Each run of the fragment program: the sample it runs at (the pixel's centre when
+                // none) and the samples it covers.
+                let runs: Vec<(Option<usize>, u32)> = if per_sample {
+                    (0..positions.len())
+                        .filter(|i| cover & 1 << i != 0)
+                        .map(|i| (Some(i), 1 << i))
+                        .collect()
+                } else {
+                    vec![(None, cover)]
                 };
-                // The fragment program.
-                let mut outs: Vec<(u32, Vec<f64>)> = Vec::new();
-                let mut mask = raster.sample_mask & 1;
-                if let Some(fs) = fragment {
-                    let m = &fs.module;
-                    let ep = entry(fs)?;
-                    let fun = &m.entry_points[ep].function;
-                    let args = arguments(m, fun, |binding, ty| match *binding {
-                        Binding::BuiltIn(BuiltIn::Position { .. }) => Ok(make_value(
-                            ScalarKind::Float,
-                            &[px as f64 + 0.5, py as f64 + 0.5, z, inv_w],
-                        )),
-                        Binding::BuiltIn(BuiltIn::FrontFacing) => Ok(Value::Bool(front)),
-                        Binding::BuiltIn(BuiltIn::SampleIndex) => Ok(Value::U32(0)),
-                        Binding::BuiltIn(BuiltIn::SampleMask) => Ok(Value::U32(1)),
-                        Binding::BuiltIn(b) => Err(format!("fragment input {b:?}")),
-                        Binding::Location { location, .. } => {
-                            let (kind, n) = shape(m, ty)?;
-                            let (vary, at) = layout
-                                .entries
-                                .iter()
-                                .find(|(v, _)| v.location == location)
-                                .ok_or_else(|| {
-                                    format!("no vertex output at location {location}")
-                                })?;
-                            let numbers: Vec<f64> = match vary.interpolation {
-                                Interpolation::Perspective => (0..n)
-                                    .map(|c| interp(&|cv| &cv.perspective, true, at + c))
-                                    .collect(),
-                                Interpolation::Linear => (0..n)
-                                    .map(|c| interp(&|cv| &cv.linear, false, at + c))
-                                    .collect(),
-                                _ => flat
-                                    .iter()
-                                    .find(|f| f.location == location)
-                                    .map(|f| f.numbers[..n].to_vec())
-                                    .ok_or("a flat value missing")?,
-                            };
-                            Ok(make_value(kind, &numbers))
-                        }
-                    })?;
-                    let out =
-                        program::run(m, &fs.info, ep, args, res, &mut res.writes.borrow_mut())?;
-                    let Some(out) = out else {
-                        continue;
-                    };
-                    for (binding, _, value) in outputs(m, fun, out)? {
-                        match binding {
-                            Binding::Location {
-                                location,
-                                blend_src: None | Some(0),
-                                ..
-                            } => outs.push((location, value.numbers()?)),
-                            Binding::BuiltIn(BuiltIn::FragDepth) => z = f64::from(value.f32()?),
-                            Binding::BuiltIn(BuiltIn::SampleMask) => {
-                                mask &= value.numbers()?[0] as u32
-                            }
-                            other => return Err(format!("fragment output {other:?}")),
-                        }
-                    }
-                }
-                z = z.clamp(vmin.min(vmax), vmax.max(vmin));
-                // A fragment covering no sample writes nothing: no depth, stencil or colour.
-                if mask == 0 {
-                    continue;
-                }
-                // Depth and stencil.
-                let mut depth_pass = true;
-                let mut stencil_pass = true;
-                if let Some(d) = depth.as_deref_mut() {
-                    let (x, y) = (px as u32, py as u32);
-                    let format = d.format;
-                    let t = d.texel(x, y);
-                    if let Some(cmp) = ds.depth_compare
-                        && !matches!(format, Format::Stencil8)
-                    {
-                        let stored = texel::decode_depth(format, t);
-                        depth_pass = compare(cmp, texel_depth(format, z), stored);
-                    }
-                    if let (Some((f, b)), Some(at)) = (ds.stencil, stencil_at) {
-                        let face = usize::from(!front);
-                        let rule = if front { f } else { b };
-                        let reference = call.stencil_reference[face];
-                        let read = ds.stencil_read_mask[face];
-                        let old = t[at];
-                        stencil_pass = compare(
-                            rule.compare,
-                            f64::from(reference & read),
-                            f64::from(old & read),
-                        );
-                        let op = match (stencil_pass, depth_pass) {
-                            (false, _) => rule.fail,
-                            (true, false) => rule.depth_fail,
-                            (true, true) => rule.pass,
-                        };
-                        let new = stencil_op(op, old, reference);
-                        let write = ds.stencil_write_mask[face];
-                        if !stencil_read_only {
-                            t[at] = (old & !write) | (new & write);
-                        }
-                    }
-                    if depth_pass
-                        && stencil_pass
-                        && ds.depth_write
-                        && ds.depth_compare.is_some()
-                        && !depth_read_only
-                    {
-                        texel::encode_depth(format, z, t);
-                    }
-                }
-                if !(depth_pass && stencil_pass) {
-                    continue;
-                }
-                *passed += 1;
-                // Colour.
-                for (i, target) in colors.iter_mut().enumerate() {
-                    let Some(target) = target else { continue };
-                    let Some((_, out)) = outs.iter().find(|(l, _)| *l as usize == i) else {
-                        continue;
-                    };
-                    let rule = if state.blend.same_for_all {
-                        state.blend.targets[0]
-                    } else {
-                        state.blend.targets[i]
-                    };
-                    let format = target.format;
-                    let t = target.texel(px as u32, py as u32);
-                    let dst = texel::decode(format, t);
-                    let mut src = [0.0, 0.0, 0.0, 1.0];
-                    for (c, v) in out.iter().enumerate().take(4) {
-                        src[c] = *v;
-                    }
-                    let mut result = src;
-                    if let Some((color, alpha)) = rule.blend {
-                        if texel::integer(format) {
-                            return Err("blending into an integer target".into());
-                        }
-                        // Normalised targets clamp what is blended into them, the constant too.
-                        let (src, k) = if texel::normalised(format) {
-                            let low = if signed(format) { -1.0 } else { 0.0 };
-                            (src.map(|x| x.clamp(low, 1.0)), k.map(|x| x.clamp(low, 1.0)))
+                for (sample, run) in runs {
+                    let q = at(sample.map_or((128, 128), |i| positions[i]));
+                    let bary = bary_at(q);
+                    let inv_w: f64 = (0..3).map(|i| bary[i] * s[i][3]).sum();
+                    let z_run = depth_at(&bary);
+                    let interp = |values: &dyn Fn(&ClipVertex) -> &Vec<f64>,
+                                  perspective: bool,
+                                  at: usize|
+                     -> f64 {
+                        if perspective {
+                            (0..3)
+                                .map(|i| bary[i] * s[i][3] * values(v[i])[at])
+                                .sum::<f64>()
+                                / inv_w
                         } else {
-                            (src, k)
+                            (0..3).map(|i| bary[i] * values(v[i])[at]).sum()
+                        }
+                    };
+                    // The fragment program.
+                    let mut outs: Vec<(u32, Vec<f64>)> = Vec::new();
+                    let mut mask = raster.sample_mask & run;
+                    let mut frag_depth = None;
+                    if let Some(fs) = fragment {
+                        let m = &fs.module;
+                        let ep = entry(fs)?;
+                        let fun = &m.entry_points[ep].function;
+                        let args = arguments(m, fun, |binding, ty| match *binding {
+                            Binding::BuiltIn(BuiltIn::Position { .. }) => Ok(make_value(
+                                ScalarKind::Float,
+                                &[q.0 as f64 / 256.0, q.1 as f64 / 256.0, z_run, inv_w],
+                            )),
+                            Binding::BuiltIn(BuiltIn::FrontFacing) => Ok(Value::Bool(front)),
+                            Binding::BuiltIn(BuiltIn::SampleIndex) => {
+                                Ok(Value::U32(sample.unwrap_or(0) as u32))
+                            }
+                            Binding::BuiltIn(BuiltIn::SampleMask) => Ok(Value::U32(run)),
+                            Binding::BuiltIn(b) => Err(format!("fragment input {b:?}")),
+                            Binding::Location { location, .. } => {
+                                let (kind, n) = shape(m, ty)?;
+                                let (vary, at) = layout
+                                    .entries
+                                    .iter()
+                                    .find(|(v, _)| v.location == location)
+                                    .ok_or_else(|| {
+                                        format!("no vertex output at location {location}")
+                                    })?;
+                                let numbers: Vec<f64> = match vary.interpolation {
+                                    Interpolation::Perspective => (0..n)
+                                        .map(|c| interp(&|cv| &cv.perspective, true, at + c))
+                                        .collect(),
+                                    Interpolation::Linear => (0..n)
+                                        .map(|c| interp(&|cv| &cv.linear, false, at + c))
+                                        .collect(),
+                                    _ => flat
+                                        .iter()
+                                        .find(|f| f.location == location)
+                                        .map(|f| f.numbers[..n].to_vec())
+                                        .ok_or("a flat value missing")?,
+                                };
+                                Ok(make_value(kind, &numbers))
+                            }
+                        })?;
+                        let out =
+                            program::run(m, &fs.info, ep, args, res, &mut res.writes.borrow_mut())?;
+                        let Some(out) = out else {
+                            continue;
                         };
-                        for c in 0..4 {
-                            let comp = if c == 3 { alpha } else { color };
-                            result[c] = if matches!(comp.op, BlendOp::Min | BlendOp::Max) {
-                                blend_op(comp.op, src[c], dst[c])
-                            } else {
-                                let fs = blend_factor(comp.src, c, src, dst, k)?;
-                                let fd = blend_factor(comp.dst, c, src, dst, k)?;
-                                blend_op(comp.op, src[c] * fs, dst[c] * fd)
+                        for (binding, _, value) in outputs(m, fun, out)? {
+                            match binding {
+                                Binding::Location {
+                                    location,
+                                    blend_src: None | Some(0),
+                                    ..
+                                } => outs.push((location, value.numbers()?)),
+                                Binding::BuiltIn(BuiltIn::FragDepth) => {
+                                    frag_depth = Some(f64::from(value.f32()?))
+                                }
+                                Binding::BuiltIn(BuiltIn::SampleMask) => {
+                                    mask &= value.numbers()?[0] as u32
+                                }
+                                other => return Err(format!("fragment output {other:?}")),
+                            }
+                        }
+                    }
+                    // Each covered sample is tested and written on its own, with its own depth.
+                    for (j, &p) in positions.iter().enumerate() {
+                        if mask & 1 << j == 0 {
+                            continue;
+                        }
+                        let z = frag_depth
+                            .unwrap_or_else(|| depth_at(&bary_at(at(p))))
+                            .clamp(vmin.min(vmax), vmax.max(vmin));
+                        let j = j as u32;
+                        // Depth and stencil.
+                        let mut depth_pass = true;
+                        let mut stencil_pass = true;
+                        if let Some(d) = depth.as_deref_mut() {
+                            let format = d.format;
+                            let t = d.texel(px as u32, py as u32, j);
+                            if let Some(cmp) = ds.depth_compare
+                                && !matches!(format, Format::Stencil8)
+                            {
+                                let stored = texel::decode_depth(format, t);
+                                depth_pass = compare(cmp, texel_depth(format, z), stored);
+                            }
+                            if let (Some((f, b)), Some(at)) = (ds.stencil, stencil_at) {
+                                let face = usize::from(!front);
+                                let rule = if front { f } else { b };
+                                let reference = call.stencil_reference[face];
+                                let read = ds.stencil_read_mask[face];
+                                let old = t[at];
+                                stencil_pass = compare(
+                                    rule.compare,
+                                    f64::from(reference & read),
+                                    f64::from(old & read),
+                                );
+                                let op = match (stencil_pass, depth_pass) {
+                                    (false, _) => rule.fail,
+                                    (true, false) => rule.depth_fail,
+                                    (true, true) => rule.pass,
+                                };
+                                let new = stencil_op(op, old, reference);
+                                let write = ds.stencil_write_mask[face];
+                                if !stencil_read_only {
+                                    t[at] = (old & !write) | (new & write);
+                                }
+                            }
+                            if depth_pass
+                                && stencil_pass
+                                && ds.depth_write
+                                && ds.depth_compare.is_some()
+                                && !depth_read_only
+                            {
+                                texel::encode_depth(format, z, t);
+                            }
+                        }
+                        if !(depth_pass && stencil_pass) {
+                            continue;
+                        }
+                        *passed += 1;
+                        // Colour.
+                        for (i, target) in colors.iter_mut().enumerate() {
+                            let Some(target) = target else { continue };
+                            let Some((_, out)) = outs.iter().find(|(l, _)| *l as usize == i) else {
+                                continue;
                             };
+                            let rule = if state.blend.same_for_all {
+                                state.blend.targets[0]
+                            } else {
+                                state.blend.targets[i]
+                            };
+                            let format = target.format;
+                            let t = target.texel(px as u32, py as u32, j);
+                            let dst = texel::decode(format, t);
+                            let mut src = [0.0, 0.0, 0.0, 1.0];
+                            for (c, v) in out.iter().enumerate().take(4) {
+                                src[c] = *v;
+                            }
+                            let mut result = src;
+                            if let Some((color, alpha)) = rule.blend {
+                                if texel::integer(format) {
+                                    return Err("blending into an integer target".into());
+                                }
+                                // Normalised targets clamp what is blended into them, the constant
+                                // too.
+                                let (src, k) = if texel::normalised(format) {
+                                    let low = if signed(format) { -1.0 } else { 0.0 };
+                                    (src.map(|x| x.clamp(low, 1.0)), k.map(|x| x.clamp(low, 1.0)))
+                                } else {
+                                    (src, k)
+                                };
+                                for c in 0..4 {
+                                    let comp = if c == 3 { alpha } else { color };
+                                    result[c] = if matches!(comp.op, BlendOp::Min | BlendOp::Max) {
+                                        blend_op(comp.op, src[c], dst[c])
+                                    } else {
+                                        let fs = blend_factor(comp.src, c, src, dst, k)?;
+                                        let fd = blend_factor(comp.dst, c, src, dst, k)?;
+                                        blend_op(comp.op, src[c] * fs, dst[c] * fd)
+                                    };
+                                }
+                            }
+                            for c in 0..4 {
+                                if !rule.writes.bits() & (1 << c) != 0 {
+                                    result[c] = dst[c];
+                                }
+                            }
+                            texel::encode(format, result, t);
                         }
                     }
-                    for c in 0..4 {
-                        if !rule.writes.bits() & (1 << c) != 0 {
-                            result[c] = dst[c];
-                        }
-                    }
-                    texel::encode(format, result, t);
                 }
             }
         }

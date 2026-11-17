@@ -12,6 +12,12 @@ bitflags! {
     /// GL buffers, each made when first used its way, every write from the host made to both and every
     /// GPU write to the one it can reach (slow paths [`crate::SlowPath::IndexBufferTwin`],
     /// [`crate::SlowPath::IndexTwinReadBack`]; plan section 4.6).
+    ///
+    /// What each use needs: `COPY_DST` to be written ([`crate::Backend::write_buffer`], a copy's
+    /// destination, [`crate::Backend::clear_buffer`], [`crate::Backend::resolve_queries`]); `COPY_SRC` to
+    /// be read (a copy's source, [`crate::Backend::read_back`]); `VERTEX`, `INDEX` and `INDIRECT` for a
+    /// draw's streams, indices and arguments; `UNIFORM` and `STORAGE` for those bindings; `CAPTURE` for
+    /// [`crate::Backend::capture_vertices`].
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
     pub struct BufferUsage: u16 {
         const VERTEX = 1 << 0;
@@ -66,7 +72,13 @@ pub enum WriteMode {
 }
 
 bitflags! {
-    /// How a texture will be used.
+    /// How a texture will be used. What each use needs: `COPY_DST` to be written
+    /// ([`crate::Backend::write_texture`], a copy's destination); `COPY_SRC` to be read (a copy's
+    /// source, [`crate::Backend::read_back`]); `SAMPLE` and `STORAGE` for those bindings; `RENDER` for
+    /// an attachment or resolve target, and so for both sides of [`crate::Backend::resolve`],
+    /// [`crate::Backend::clear_texture`],
+    /// [`crate::Backend::clear_rects`] and [`crate::Backend::generate_mips`] (which also samples);
+    /// `PRESENT` for a surface's texture.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
     pub struct TextureUsage: u16 {
         const SAMPLE = 1 << 0;
@@ -98,6 +110,10 @@ pub struct TextureDesc {
     /// Depth for 3D textures, array layers otherwise (6 per cube).
     pub depth_or_layers: u32,
     pub mip_levels: u32,
+    /// One, or a count [`crate::FormatCaps::takes_samples`] gives the format. A multisampled texture
+    /// is 2D with one level and one layer, never a storage texture, and its bytes move only by a draw,
+    /// a resolve, or a copy of the whole subresource into another of the same sample count: never to
+    /// or from a buffer, by a write or by a read back (WebGPU's rules).
     pub samples: u32,
     pub usage: TextureUsage,
     /// The layers are cube faces, six per cube (Direct3D's `TEXTURECUBE` flag, Vulkan's cube-compatible

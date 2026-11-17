@@ -29,6 +29,19 @@ struct Two { @location(0) a: vec4<f32>, @location(1) b: vec4<f32> }
 @fragment fn counting() -> @location(0) vec4<f32> {
     return vec4<f32>(1.0);
 }
+@fragment fn per_sample(@builtin(sample_index) i: u32) -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(i) / 3.0, 0.0, 0.0, 1.0);
+}
+@group(1) @binding(32) var samples: texture_multisampled_2d<f32>;
+@fragment fn samples_of(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = vec2<i32>(p.xy);
+    return vec4<f32>(
+        textureLoad(samples, c, 0).r,
+        textureLoad(samples, c, 1).r,
+        textureLoad(samples, c, 2).r,
+        textureLoad(samples, c, 3).r,
+    );
+}
 ";
 
 /// What the tests draw with: one recorder and the blocks they share.
@@ -46,7 +59,7 @@ fn shader(r: &mut Recorder, entry: &str, stage: ShaderStage) -> Id {
     let module = naga::front::wgsl::parse_str(PROGRAMS).unwrap();
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::empty(),
+        naga::valid::Capabilities::MULTISAMPLED_SHADING,
     )
     .validate(&module)
     .unwrap();
@@ -79,7 +92,10 @@ fn raster_desc(scissor: bool) -> RasterDesc {
 
 impl Kit {
     fn new() -> Kit {
-        let mut r = Recorder::new();
+        Kit::on(Recorder::new())
+    }
+
+    fn on(mut r: Recorder) -> Kit {
         let quad = r
             .create_buffer(&BufferDesc {
                 size: 32,
@@ -185,6 +201,16 @@ impl Kit {
     }
 
     fn target(&mut self, width: u32, height: u32, format: Format) -> Target<Recorder> {
+        self.target_of(width, height, format, 1)
+    }
+
+    fn target_of(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: Format,
+        samples: u32,
+    ) -> Target<Recorder> {
         let texture = self
             .r
             .create_texture(&TextureDesc {
@@ -194,8 +220,11 @@ impl Kit {
                 height,
                 depth_or_layers: 1,
                 mip_levels: 1,
-                samples: 1,
-                usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                samples,
+                usage: TextureUsage::RENDER
+                    | TextureUsage::COPY_SRC
+                    | TextureUsage::COPY_DST
+                    | TextureUsage::SAMPLE,
                 cube: false,
                 reinterpret: false,
             })
@@ -224,7 +253,7 @@ impl Kit {
             depth_slice: 0,
             width,
             height,
-            samples: 1,
+            samples,
         }
     }
 
@@ -309,11 +338,7 @@ impl Kit {
     }
 
     fn calls(&self, name: &str) -> usize {
-        self.r
-            .calls
-            .iter()
-            .filter(|c| c.split(' ').next() == Some(name))
-            .count()
+        self.r.calls.iter().filter(|c| c.name() == name).count()
     }
 
     fn healthy(&mut self) {
@@ -489,6 +514,125 @@ fn colour_targets_of_different_sizes_are_fitted() {
     }
     assert_eq!(k.read(&large, 4), want);
     k.healthy();
+}
+
+/// A multisampled colour target larger than the pass, its common area loaded into and stored from a
+/// temporary by draws: each sample read and written where the back end reads samples in programs,
+/// otherwise through the resolved value (the listed loss of plan 4.7). Each sample of the larger
+/// target is read afterwards by a program loading it.
+fn multisampled_targets_fitted(direct: bool) {
+    let mut k = if direct {
+        Kit::new()
+    } else {
+        Kit::on(Recorder::with_caps(|c| {
+            c.features.remove(Features::MULTISAMPLE_READ)
+        }))
+    };
+    let mut passes = PassTracker::default();
+    let small = k.target_of(2, 2, Format::Rgba8Unorm, 4);
+    let large = k.target_of(3, 3, Format::Rgba8Unorm, 4);
+    let none = k.depth(None, false);
+    let set = k.params(0, [1.0, 1.0, 1.0, 1.0], 0.5);
+    // Sample i of every texel of the larger target holds i / 3 in red.
+    let per_sample = k.program("per_sample");
+    passes.set_targets(&mut k.r, colors(large.clone())).unwrap();
+    let area = passes.before_draw(&mut k.r, &[]).unwrap();
+    k.draw(
+        (3, 3),
+        area,
+        &per_sample,
+        &none,
+        [Some(&set), None, None, None],
+    );
+
+    // Both as targets of one pass of the smaller one's size; a draw covers the top row.
+    let mut targets = colors(small.clone());
+    targets.colors[1] = Some(ColorTarget {
+        target: large.clone(),
+        resolve: None,
+    });
+    passes.set_targets(&mut k.r, targets).unwrap();
+    let two = k.program("two");
+    let area = passes.before_draw(&mut k.r, &[]).unwrap();
+    assert_eq!(area.map(|a| (a.width, a.height)), Some((2, 2)));
+    k.draw((2, 1), area, &two, &none, [Some(&set), None, None, None]);
+    passes.close(&mut k.r).unwrap();
+    assert_eq!(k.calls("copy_texture"), 0);
+    assert_eq!(k.r.slow_paths().count(SlowPath::AttachmentsFitted), 1);
+    let resolved = k.r.slow_paths().count(SlowPath::MultisampleCopyResolved);
+    assert_eq!(resolved, if direct { 0 } else { 2 });
+
+    // Read every sample of the larger target.
+    let check = k.target(3, 3, Format::Rgba8Unorm);
+    let read =
+        k.r.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&large.view),
+        }])
+        .unwrap();
+    let samples_of = k.program("samples_of");
+    passes.set_targets(&mut k.r, colors(check.clone())).unwrap();
+    let area = passes.before_draw(&mut k.r, &[]).unwrap();
+    k.draw(
+        (3, 3),
+        area,
+        &samples_of,
+        &none,
+        [Some(&set), Some(&read), None, None],
+    );
+    passes.close(&mut k.r).unwrap();
+    let got = k.read(&check, 4);
+    for y in 0..3 {
+        for x in 0..3 {
+            let at = (y * 3 + x) * 4;
+            let texel = &got[at..at + 4];
+            if x < 2 && y == 0 {
+                assert_eq!(texel, [255; 4], "drawn at ({x}, {y})");
+            } else if x < 2 && y == 1 && !direct {
+                // Loaded and stored through the resolved value, the same in every sample.
+                assert!(
+                    texel.iter().all(|&v| v == texel[0]) && (127..=128).contains(&texel[0]),
+                    "resolved at ({x}, {y}): {texel:?}"
+                );
+            } else {
+                assert_eq!(texel, [0, 85, 170, 255], "kept at ({x}, {y})");
+            }
+        }
+    }
+    k.healthy();
+}
+
+#[test]
+fn multisampled_targets_of_different_sizes_are_fitted_sample_by_sample() {
+    multisampled_targets_fitted(true);
+}
+
+#[test]
+fn multisampled_targets_of_different_sizes_are_fitted_through_the_resolved_value() {
+    multisampled_targets_fitted(false);
+}
+
+/// Integer samples cannot be resolved, so without reading samples in programs the tracker reports
+/// the fitting absent.
+#[test]
+fn integer_multisampled_targets_need_multisample_reads_to_be_fitted() {
+    let mut k = Kit::on(Recorder::with_caps(|c| {
+        c.features.remove(Features::MULTISAMPLE_READ)
+    }));
+    let mut passes = PassTracker::default();
+    let small = k.target_of(2, 2, Format::Rgba8Uint, 4);
+    let large = k.target_of(3, 3, Format::Rgba8Uint, 4);
+    let mut targets = colors(small);
+    targets.colors[1] = Some(ColorTarget {
+        target: large,
+        resolve: None,
+    });
+    passes.set_targets(&mut k.r, targets).unwrap();
+    assert_eq!(
+        passes.before_draw(&mut k.r, &[]),
+        Err(GpuError::Absent(Features::MULTISAMPLE_READ))
+    );
 }
 
 /// A storage buffer written by one draw and read by the next: the tracker splits the pass there,
@@ -692,6 +836,179 @@ fn the_occlusion_counter_counts_exactly() {
     // The depth is now 0.5: nothing passes.
     assert_eq!(counted(&mut k, &[(&tests, &far)]), 0);
     assert_eq!(k.r.slow_paths().count(SlowPath::OcclusionCountReplay), 3);
+    k.healthy();
+}
+
+/// Where a sample of the counting target reaches the counting format's exact bound (2048 in
+/// `r16float`, which a back end without blendable `r32float` counts in), the draws are counted again
+/// in halves: of the draws, of one draw's instances, or of one list's primitives.
+#[test]
+fn the_occlusion_counter_counts_past_its_formats_bound_in_halves() {
+    let mut k = Kit::on(Recorder::with_caps(|c| {
+        let at = Format::R32Float.index();
+        c.formats.uses[at].remove(FormatUse::BLEND);
+    }));
+    let mut passes = PassTracker::default();
+    let mut counter = OcclusionCounter::default();
+    let color = k.target(2, 2, Format::Rgba8Unorm);
+    passes.set_targets(&mut k.r, colors(color)).unwrap();
+    let p = k.program("color");
+    let counting = k.program("counting");
+    let none = k.depth(None, false);
+    let set = k.params(0, [1.0; 4], 0.5);
+    // 2,500 copies of one triangle over the whole target, as a list.
+    let corners: Vec<u8> = [-1.0f32, -1.0, 3.0, -1.0, -1.0, 3.0]
+        .repeat(2500)
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let list =
+        k.r.create_buffer(&BufferDesc {
+            size: corners.len() as u64,
+            usage: BufferUsage::VERTEX | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    k.r.write_buffer(&list, 0, &corners, WriteMode::Discard);
+
+    // Each draw: (vertex buffer, topology, vertices, instances).
+    let mut counted = |k: &mut Kit, draws: &[(&Id, Topology, u32, u32)]| {
+        counter.begin(&mut k.r, &mut passes).unwrap();
+        for &(vertices, topology, count, instances) in draws {
+            let viewport = [Viewport {
+                x: 0f32.to_bits(),
+                y: 0f32.to_bits(),
+                width: 2f32.to_bits(),
+                height: 2f32.to_bits(),
+                min_depth: 0f32.to_bits(),
+                max_depth: 1f32.to_bits(),
+            }];
+            let streams = [Some(VertexBinding {
+                buffer: vertices,
+                offset: 0,
+            })];
+            let call = DrawCall {
+                program: &p,
+                blend: &k.blend,
+                depth_stencil: &none,
+                raster: &k.raster,
+                vertex_layout: &k.layout,
+                bindings: [Some(&set), None, None, None],
+                vertex_buffers: &streams,
+                index: None,
+                topology,
+                restart: false,
+                viewports: &viewport,
+                scissors: &[],
+                blend_constant: [0; 4],
+                stencil_reference: [0; 2],
+                immediates: &[],
+                range: DrawRange::Vertices {
+                    first: 0,
+                    count,
+                    first_instance: 0,
+                    instances,
+                },
+            };
+            counter
+                .draw(&mut k.r, &mut passes, &call, &counting, false, false)
+                .unwrap();
+            passes.before_draw(&mut k.r, &[]).unwrap();
+            k.r.draw(&call);
+        }
+        let before = k.calls("draw");
+        let n = counter.end(&mut k.r, &mut passes).unwrap();
+        (n, k.calls("draw") - before)
+    };
+    let quad = k.quad;
+    let strip = Topology::TriangleStrip;
+    // One draw of 3,000 instances: counted whole (full), then as 1,500 and 1,500.
+    assert_eq!(counted(&mut k, &[(&quad, strip, 4, 3000)]), (12_000, 3));
+    // One list of 2,500 triangles: whole, then 1,250 and 1,250.
+    let list_draw = (&list, Topology::TriangleList, 7500, 1);
+    assert_eq!(counted(&mut k, &[list_draw]), (10_000, 3));
+    // Three draws of 1,000 instances: whole, then the first alone and the other two together.
+    let thousand = (&quad, strip, 4, 1000);
+    assert_eq!(
+        counted(&mut k, &[thousand, thousand, thousand]),
+        (12_000, 6)
+    );
+    // Below the bound, counted once.
+    assert_eq!(counted(&mut k, &[(&quad, strip, 4, 2000)]), (8_000, 1));
+    k.healthy();
+}
+
+/// On a four-sample target the counter counts samples: a rectangle whose right edge crosses pixel 1
+/// at x = 1.25 covers its sample 2 alone (the standard positions), so two rows hold 4 + 1 samples
+/// each.
+#[test]
+fn the_occlusion_counter_counts_the_samples_of_multisampled_targets() {
+    let mut k = Kit::new();
+    let mut passes = PassTracker::default();
+    let mut counter = OcclusionCounter::default();
+    let color = k.target_of(2, 2, Format::Rgba8Unorm, 4);
+    passes.set_targets(&mut k.r, colors(color)).unwrap();
+    let p = k.program("color");
+    let counting = k.program("counting");
+    let none = k.depth(None, false);
+    let set = k.params(0, [1.0; 4], 0.5);
+    let corners: Vec<u8> = [-1.0f32, -1.0, -1.0, 1.0, 0.25, -1.0, 0.25, 1.0]
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let rect =
+        k.r.create_buffer(&BufferDesc {
+            size: 32,
+            usage: BufferUsage::VERTEX | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    k.r.write_buffer(&rect, 0, &corners, WriteMode::Discard);
+    for (vertices, want) in [(rect, 10), (k.quad, 16)] {
+        let viewport = [Viewport {
+            x: 0f32.to_bits(),
+            y: 0f32.to_bits(),
+            width: 2f32.to_bits(),
+            height: 2f32.to_bits(),
+            min_depth: 0f32.to_bits(),
+            max_depth: 1f32.to_bits(),
+        }];
+        let streams = [Some(VertexBinding {
+            buffer: &vertices,
+            offset: 0,
+        })];
+        let call = DrawCall {
+            program: &p,
+            blend: &k.blend,
+            depth_stencil: &none,
+            raster: &k.raster,
+            vertex_layout: &k.layout,
+            bindings: [Some(&set), None, None, None],
+            vertex_buffers: &streams,
+            index: None,
+            topology: Topology::TriangleStrip,
+            restart: false,
+            viewports: &viewport,
+            scissors: &[],
+            blend_constant: [0; 4],
+            stencil_reference: [0; 2],
+            immediates: &[],
+            range: DrawRange::Vertices {
+                first: 0,
+                count: 4,
+                first_instance: 0,
+                instances: 1,
+            },
+        };
+        counter.begin(&mut k.r, &mut passes).unwrap();
+        counter
+            .draw(&mut k.r, &mut passes, &call, &counting, false, false)
+            .unwrap();
+        passes.before_draw(&mut k.r, &[]).unwrap();
+        k.r.draw(&call);
+        assert_eq!(counter.end(&mut k.r, &mut passes).unwrap(), want);
+    }
+    assert_eq!(k.calls("resolve"), 2);
     k.healthy();
 }
 

@@ -463,9 +463,11 @@ pub struct Targets {
     pub color: <B as Backend>::Texture,
     pub color_view: <B as Backend>::TextureView,
     depth_view: Option<<B as Backend>::TextureView>,
+    depth_format: Option<Format>,
 }
 
-pub fn targets(b: &mut B, depth: bool) -> Result<Targets> {
+/// The colour target, and a depth target of `depth`'s format if given.
+pub fn targets(b: &mut B, depth: Option<Format>) -> Result<Targets> {
     let (color, color_view) = texture_2d(
         b,
         Format::Rgba8Unorm,
@@ -473,15 +475,15 @@ pub fn targets(b: &mut B, depth: bool) -> Result<Targets> {
         HEIGHT,
         TextureUsage::RENDER | TextureUsage::COPY_SRC,
     )?;
-    let depth_view = if depth {
-        Some(texture_2d(b, Format::Depth32Float, WIDTH, HEIGHT, TextureUsage::RENDER)?.1)
-    } else {
-        None
+    let depth_view = match depth {
+        Some(format) => Some(texture_2d(b, format, WIDTH, HEIGHT, TextureUsage::RENDER)?.1),
+        None => None,
     };
     Ok(Targets {
         color,
         color_view,
         depth_view,
+        depth_format: depth,
     })
 }
 
@@ -500,7 +502,19 @@ pub fn begin(b: &mut B, t: &Targets, clear: bool) {
                 store: StoreOp::Store,
                 read_only: false,
             }),
-            stencil: None,
+            // A stencil the format has is cleared too, as Direct3D programs clear both.
+            stencil: t
+                .depth_format
+                .filter(|f| f.kind() == wcontainers_gpu::FormatKind::DepthStencil)
+                .map(|_| AspectOps {
+                    load: if clear {
+                        LoadOp::Clear(0)
+                    } else {
+                        LoadOp::Load
+                    },
+                    store: StoreOp::Store,
+                    read_only: false,
+                }),
         }),
         empty: None,
         occlusion: None,
@@ -537,10 +551,25 @@ pub fn read(b: &mut B, t: &Targets) -> Result<<B as Backend>::Readback> {
     }))
 }
 
-/// Draws a scene into fresh targets, starts its read back and submits.
-pub fn render(b: &mut B, which: Scene, twist: Twist) -> Result<<B as Backend>::Readback> {
+/// The pictures drawn and compared with Direct3D's: each scene with a 32-bit float depth target,
+/// and the quads again on depth and stencil, which most Direct3D programs draw with.
+pub const PICTURES: [(&str, Scene, Format); 4] = [
+    ("triangle", Scene::Triangle, Format::Depth32Float),
+    ("quads", Scene::Quads, Format::Depth32Float),
+    ("instanced", Scene::Instanced, Format::Depth32Float),
+    ("quads-d24s8", Scene::Quads, Format::Depth24PlusStencil8),
+];
+
+/// Draws a scene into fresh targets, with a depth target of `depth`'s format where the scene has one,
+/// starts its read back and submits.
+pub fn render_on(
+    b: &mut B,
+    which: Scene,
+    twist: Twist,
+    depth: Format,
+) -> Result<<B as Backend>::Readback> {
     let p = prepare(b, which, twist)?;
-    let t = targets(b, p.depth)?;
+    let t = targets(b, p.depth.then_some(depth))?;
     begin(b, &t, true);
     draw(b, &p);
     b.end_pass();

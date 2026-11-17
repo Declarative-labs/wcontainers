@@ -12,9 +12,10 @@ use std::collections::VecDeque;
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
     DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, FillMode, Format, FrontFace, GpuError,
-    LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, PassDesc, ProvokingVertex, RasterDesc,
-    RenderTargetBlend, ScissorRect, StageSet, StencilFace, StoreOp, TextureDesc, TextureDimension,
-    TextureUsage, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
+    LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, PassDesc, Program, ProvokingVertex,
+    RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule, ShaderStage, StageSet, StencilFace,
+    StoreOp, TextureDesc, TextureDimension, TextureUsage, TextureViewDesc, Topology,
+    VertexLayoutDesc, Viewport,
 };
 
 use crate::format::{BACK_BUFFER_FORMATS, dxgi_format, present_format};
@@ -134,14 +135,31 @@ fn encode(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// Whether a back buffer of `format` is presented through the encoding copy.
+/// Whether a back buffer of `format` is presented through the encoding copy: sRGB formats, and
+/// 16-bit float buffers, which hold linear light.
 fn encodes(format: Format) -> bool {
     format != format.linear() || format == Format::Rgba16Float
 }
 
 fn copy_program<B: Backend>(backend: &mut B, encode: bool) -> Result<B::Program, GpuError> {
     let fragment = if encode { "encode" } else { "copy" };
-    crate::program_from_wgsl(backend, PRESENT_WGSL, "vs", fragment)
+    let vs = backend.create_shader(&ShaderModule::from_wgsl(
+        PRESENT_WGSL,
+        "vs",
+        ShaderStage::Vertex,
+    )?)?;
+    let fs = backend.create_shader(&ShaderModule::from_wgsl(
+        PRESENT_WGSL,
+        fragment,
+        ShaderStage::Fragment,
+    )?)?;
+    let program = backend.create_program(&Program::Render {
+        vertex: &vs,
+        fragment: Some(&fs),
+    });
+    backend.destroy(Object::Shader(vs));
+    backend.destroy(Object::Shader(fs));
+    program
 }
 
 /// The blocks and program of the present copy.
@@ -250,22 +268,7 @@ impl<B: Backend> SwapChain<B> {
             1
         };
         for _ in 0..count {
-            let texture = backend.create_texture(&TextureDesc {
-                dimension: TextureDimension::D2,
-                format: self.format,
-                width: self.desc.width,
-                height: self.desc.height,
-                depth_or_layers: 1,
-                mip_levels: 1,
-                samples: 1,
-                usage: self.desc.usage
-                    | TextureUsage::RENDER
-                    | TextureUsage::SAMPLE
-                    | TextureUsage::COPY_SRC
-                    | TextureUsage::COPY_DST,
-                cube: false,
-                reinterpret: true,
-            })?;
+            let texture = backend.create_texture(&self.buffer_desc())?;
             let view = backend.create_view(
                 &texture,
                 &TextureViewDesc {
@@ -298,6 +301,27 @@ impl<B: Backend> SwapChain<B> {
 
     pub fn desc(&self) -> &SwapChainDesc {
         &self.desc
+    }
+
+    /// What each back buffer texture is: 2D, one level, one sample, views of other formats of its
+    /// group allowed so sRGB views work.
+    pub fn buffer_desc(&self) -> TextureDesc {
+        TextureDesc {
+            dimension: TextureDimension::D2,
+            format: self.format,
+            width: self.desc.width,
+            height: self.desc.height,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: self.desc.usage
+                | TextureUsage::RENDER
+                | TextureUsage::SAMPLE
+                | TextureUsage::COPY_SRC
+                | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: true,
+        }
     }
 
     /// The back buffer `index` (`GetBuffer`): any of a flip model's, buffer 0 of a blit model's.
@@ -464,13 +488,7 @@ impl<B: Backend> SwapChain<B> {
             desc.format = format;
         }
         let new_format = desc.check().map_err(SwapChainError::InvalidCall)?;
-        let encode = encodes(new_format);
-        if encode != self.encode {
-            let program = copy_program(backend, encode)?;
-            let old = std::mem::replace(&mut self.copy.program, program);
-            backend.destroy(Object::Program(old));
-            self.encode = encode;
-        }
+        self.set_encode(backend, encodes(new_format))?;
         self.drop_buffers(backend);
         self.desc = desc;
         self.format = new_format;
@@ -484,6 +502,16 @@ impl<B: Backend> SwapChain<B> {
         )?;
         self.current = 0;
         self.make_buffers(backend)?;
+        Ok(())
+    }
+
+    fn set_encode(&mut self, backend: &mut B, encode: bool) -> Result<(), GpuError> {
+        if encode != self.encode {
+            let program = copy_program(backend, encode)?;
+            let old = std::mem::replace(&mut self.copy.program, program);
+            backend.destroy(Object::Program(old));
+            self.encode = encode;
+        }
         Ok(())
     }
 

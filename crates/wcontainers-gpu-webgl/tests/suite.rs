@@ -1,4 +1,5 @@
-//! The shared back-end suite on ANGLE's OpenGL ES 3.0 (the desktop's test route). `WEBGL_ANGLE_DIR`
+//! The shared back-end suite, and the back end's own checks, on ANGLE's OpenGL ES 3.0 (the desktop's
+//! test route). `WEBGL_ANGLE_DIR`
 //! names the directory holding the libEGL.dll and libGLESv2.dll angle\build.cmd builds (default
 //! C:\wc\tools\angle-mozangle-0.7.1); `WEBGL_OFF` lists WebGL extensions to treat as missing,
 //! separated by spaces, to take the routes of browsers without them.
@@ -26,10 +27,28 @@ impl wcontainers_gpu_test::Host for Angle {
         0
     }
 
-    /// Surfaces are not built yet, so `present_shows_the_frame` fails before it asks (a known failure).
-    fn shown(_: &mut WebGl, _: u32) -> Vec<u8> {
-        unreachable!("webgl: surfaces are not built yet, so nothing was shown")
+    /// The EGL surface is off-screen, so the back end reads what it presented.
+    fn shown(b: &mut WebGl, _: u32) -> Vec<u8> {
+        b.read_presented()
     }
 }
 
 wcontainers_gpu_test::suite!(Angle);
+
+#[path = "../examples/common/checks.rs"]
+mod checks;
+
+#[test]
+fn vertex_and_instance_numbers_include_the_bases() {
+    checks::vertex_and_instance_numbers_include_the_bases::<Angle>();
+}
+
+#[test]
+fn discard_then_no_overwrite_writes() {
+    checks::discard_then_no_overwrite_writes::<Angle>();
+}
+
+#[test]
+fn depth_and_stencil_read_back() {
+    checks::depth_and_stencil_read_back::<Angle>();
+}

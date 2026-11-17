@@ -48,6 +48,22 @@ pub enum HeapType {
     Readback,
 }
 
+/// `D3D12_HEAP_FLAGS` this front honours: the deny flags (they only narrow what the heap holds),
+/// `CREATE_NOT_RESIDENT` (resources are always resident) and `CREATE_NOT_ZEROED` (memory is zeroed
+/// anyway).
+const HEAP_FLAGS_TAKEN: u32 = 0x4 | 0x40 | 0x80 | 0x800 | 0x1000;
+
+/// Refuses heap flags asking for an ability the front lacks: sharing, display, protected memory,
+/// write watching, cross-adapter atomics and manual write tracking.
+pub fn check_heap_flags(flags: u32) -> Result<(), Error> {
+    if flags & !HEAP_FLAGS_TAKEN != 0 {
+        return Err(Error::NotImplemented(
+            "heap flags for sharing, display, protection, write watching or atomics",
+        ));
+    }
+    Ok(())
+}
+
 impl HeapType {
     pub fn from_d3d12(value: u32) -> Result<HeapType, Error> {
         match value {
@@ -105,6 +121,27 @@ impl ResourceDesc {
     /// The interface format of a texture and whether its DXGI format is typeless.
     pub fn texture_format(&self) -> Result<(Format, bool), Error> {
         dxgi_format(self.format).ok_or(Error::Invalid("a format the front cannot store"))
+    }
+
+    /// `GetResourceAllocationInfo` for this resource: its size and alignment in a heap. Buffers and
+    /// textures take 64 KiB pages (4 MiB for multisampled textures); a texture's bytes are its
+    /// subresources' copyable footprints for each sample, the layout this front keeps them in.
+    pub fn allocation(&self) -> Result<(u64, u64), Error> {
+        const PAGE: u64 = 64 << 10;
+        const MSAA_PAGE: u64 = 4 << 20;
+        let align = if self.sample_count > 1 {
+            MSAA_PAGE
+        } else {
+            PAGE
+        };
+        let bytes = if self.dimension == DIMENSION_BUFFER {
+            self.width
+        } else {
+            self.texture_format()?;
+            self.footprints(0, self.mips() * self.layers(), 0)?.1
+                * u64::from(self.sample_count.max(1))
+        };
+        Ok((bytes.next_multiple_of(align), align))
     }
 
     /// The footprints of subresources `first..first + count`, laid out from `base_offset`, and the

@@ -5,8 +5,11 @@
 mod draw;
 pub mod program;
 mod recorder;
+pub mod sequence;
+pub mod stream;
 pub mod suite;
 pub mod texel;
 
 pub use recorder::{Frame, Id, Recorder};
+pub use stream::{Call, replay};
 pub use suite::Host;

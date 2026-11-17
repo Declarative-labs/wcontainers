@@ -23,13 +23,12 @@ use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
-use windows::Win32::System::Threading::SetEvent;
-use windows::core::{AsImpl, BOOL, GUID, Interface, Ref, Result, implement};
+use windows::core::{AsImpl, BOOL, GUID, HRESULT, Interface, Ref, Result, implement};
 
 use crate::gpu;
 
 /// The HRESULT for a front error.
-fn hr(e: Error) -> windows::core::Error {
+pub fn hr(e: Error) -> windows::core::Error {
     match e {
         Error::Invalid(s) => windows::core::Error::new(E_INVALIDARG, s),
         Error::NotImplemented(s) => windows::core::Error::new(E_NOTIMPL, s),
@@ -39,7 +38,7 @@ fn hr(e: Error) -> windows::core::Error {
 }
 
 /// Hands out `object` as the interface `riid` names.
-fn give<I: Interface>(object: I, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
+pub fn give<I: Interface>(object: I, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
     if riid.is_null() || out.is_null() {
         return Err(E_POINTER.into());
     }
@@ -61,6 +60,8 @@ macro_rules! not_implemented {
 not_implemented!(
     Factory,
     Adapter,
+    crate::present::Output,
+    crate::present::SwapChain,
     Device,
     Queue,
     Allocator,
@@ -74,8 +75,9 @@ not_implemented!(
 
 // ---- DXGI ----
 
+/// A DXGI factory, with the flags it was made with.
 #[implement(IDXGIFactory4)]
-pub struct Factory;
+pub struct Factory(pub u32);
 
 impl Factory {
     pub fn EnumAdapters1(&self, adapter: u32) -> Result<IDXGIAdapter1> {
@@ -89,6 +91,93 @@ impl Factory {
     pub fn EnumAdapters(&self, adapter: u32) -> Result<IDXGIAdapter> {
         self.EnumAdapters1(adapter)?.cast()
     }
+
+    pub fn EnumAdapterByLuid(
+        &self,
+        luid: &LUID,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        let ours = adapter_luid();
+        if (luid.LowPart, luid.HighPart) != (ours.LowPart, ours.HighPart) {
+            return Err(E_INVALIDARG.into());
+        }
+        give(self.EnumAdapters1(0)?, riid, out)
+    }
+
+    /// The adapter list never changes.
+    pub fn IsCurrent(&self) -> BOOL {
+        TRUE
+    }
+
+    pub fn GetCreationFlags(&self) -> DXGI_CREATE_FACTORY_FLAGS {
+        DXGI_CREATE_FACTORY_FLAGS(self.0)
+    }
+
+    /// No stereo output.
+    pub fn IsWindowedStereoEnabled(&self) -> BOOL {
+        FALSE
+    }
+
+    pub fn CreateSwapChainForHwnd(
+        &self,
+        device: Ref<windows::core::IUnknown>,
+        hwnd: HWND,
+        desc: *const DXGI_SWAP_CHAIN_DESC1,
+        fullscreen: *const DXGI_SWAP_CHAIN_FULLSCREEN_DESC,
+        _output: Ref<IDXGIOutput>,
+    ) -> Result<IDXGISwapChain1> {
+        // SAFETY: the caller's descriptions.
+        let (desc, fullscreen) = unsafe { (desc.as_ref(), fullscreen.as_ref()) };
+        crate::present::create(
+            device,
+            hwnd,
+            desc.ok_or(DXGI_ERROR_INVALID_CALL)?,
+            fullscreen,
+        )
+    }
+
+    pub fn CreateSwapChain(
+        &self,
+        device: Ref<windows::core::IUnknown>,
+        desc: *const DXGI_SWAP_CHAIN_DESC,
+        out: windows::core::OutRef<IDXGISwapChain>,
+    ) -> HRESULT {
+        // SAFETY: the caller's description.
+        let Some(d) = (unsafe { desc.as_ref() }) else {
+            return DXGI_ERROR_INVALID_CALL;
+        };
+        if !d.Windowed.as_bool() {
+            return DXGI_ERROR_NOT_CURRENTLY_AVAILABLE;
+        }
+        let desc1 = DXGI_SWAP_CHAIN_DESC1 {
+            Width: d.BufferDesc.Width,
+            Height: d.BufferDesc.Height,
+            Format: d.BufferDesc.Format,
+            Stereo: FALSE,
+            SampleDesc: d.SampleDesc,
+            BufferUsage: d.BufferUsage,
+            BufferCount: d.BufferCount,
+            Scaling: DXGI_SCALING_STRETCH,
+            SwapEffect: d.SwapEffect,
+            AlphaMode: DXGI_ALPHA_MODE_UNSPECIFIED,
+            Flags: d.Flags,
+        };
+        match crate::present::create(device, d.OutputWindow, &desc1, None)
+            .and_then(|c| c.cast::<IDXGISwapChain>())
+        {
+            Ok(c) => {
+                let _ = out.write(Some(c));
+                S_OK
+            }
+            Err(e) => e.code(),
+        }
+    }
+}
+
+/// The adapter's LUID, which the device reports too.
+pub fn adapter_luid() -> LUID {
+    luid(wcontainers_directx_graphics_infrastructure::ADAPTER_LUID)
 }
 
 #[implement(IDXGIAdapter1)]
@@ -128,6 +217,15 @@ impl Adapter {
             SharedSystemMemory: d.SharedSystemMemory,
             AdapterLuid: d.AdapterLuid,
         })
+    }
+
+    /// The host's monitors, the primary first.
+    pub fn EnumOutputs(&self, output: u32) -> Result<IDXGIOutput> {
+        let (desc, monitor) = crate::present::outputs()
+            .into_iter()
+            .nth(output as usize)
+            .ok_or(DXGI_ERROR_NOT_FOUND)?;
+        Ok(IDXGIOutput6::from(crate::present::Output { desc, monitor }).into())
     }
 }
 
@@ -175,6 +273,65 @@ unsafe fn code(b: &D3D12_SHADER_BYTECODE) -> Vec<u8> {
 impl Device {
     pub fn GetNodeCount(&self) -> u32 {
         1
+    }
+
+    pub fn GetAdapterLuid(&self) -> LUID {
+        adapter_luid()
+    }
+
+    /// Sizes and alignments of the resources together, as the front would place them; on an
+    /// invalid description, a size of `u64::MAX` as Direct3D 12 answers.
+    pub fn GetResourceAllocationInfo(
+        &self,
+        _mask: u32,
+        count: u32,
+        descs: *const D3D12_RESOURCE_DESC,
+    ) -> D3D12_RESOURCE_ALLOCATION_INFO {
+        let failed = D3D12_RESOURCE_ALLOCATION_INFO {
+            SizeInBytes: u64::MAX,
+            Alignment: 0,
+        };
+        if descs.is_null() {
+            return failed;
+        }
+        // SAFETY: `count` descriptions, as the API requires.
+        let descs = unsafe { std::slice::from_raw_parts(descs, count as usize) };
+        let (mut size, mut alignment) = (0u64, 0u64);
+        for d in descs {
+            let Ok((bytes, align)) = resource_desc(d).allocation() else {
+                return failed;
+            };
+            size = size.next_multiple_of(align) + bytes;
+            alignment = alignment.max(align);
+        }
+        D3D12_RESOURCE_ALLOCATION_INFO {
+            SizeInBytes: size,
+            Alignment: alignment,
+        }
+    }
+
+    /// The heap types as a discrete adapter has them, as `ARCHITECTURE` answers (no UMA): default
+    /// heaps in the adapter's own memory, upload and readback heaps in system memory.
+    pub fn GetCustomHeapProperties(
+        &self,
+        _mask: u32,
+        kind: D3D12_HEAP_TYPE,
+    ) -> D3D12_HEAP_PROPERTIES {
+        let (page, pool) = match kind {
+            D3D12_HEAP_TYPE_DEFAULT => {
+                (D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE, D3D12_MEMORY_POOL_L1)
+            }
+            D3D12_HEAP_TYPE_UPLOAD => (D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE, D3D12_MEMORY_POOL_L0),
+            D3D12_HEAP_TYPE_READBACK => (D3D12_CPU_PAGE_PROPERTY_WRITE_BACK, D3D12_MEMORY_POOL_L0),
+            _ => (D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN),
+        };
+        D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_CUSTOM,
+            CPUPageProperty: page,
+            MemoryPoolPreference: pool,
+            CreationNodeMask: 1,
+            VisibleNodeMask: 1,
+        }
     }
 
     pub fn CreateCommandQueue(
@@ -448,13 +605,15 @@ impl Device {
     pub fn CreateCommittedResource(
         &self,
         heap: *const D3D12_HEAP_PROPERTIES,
-        _flags: D3D12_HEAP_FLAGS,
+        flags: D3D12_HEAP_FLAGS,
         pdesc: *const D3D12_RESOURCE_DESC,
+        // The initial state and the optimised clear value change nothing this front does.
         _state: D3D12_RESOURCE_STATES,
         _clear: *const D3D12_CLEAR_VALUE,
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32).map_err(hr)?;
         // SAFETY: the API requires both.
         let (heap, desc) = unsafe {
             (
@@ -484,6 +643,7 @@ impl Device {
                 desc,
                 address,
                 host,
+                back_buffer: false,
             }
             .into(),
             riid,
@@ -499,15 +659,7 @@ impl Device {
         out: *mut *mut c_void,
     ) -> Result<()> {
         let id = gpu::call(move |d| d.create_fence(initial));
-        give::<ID3D12Fence>(
-            Fence {
-                id,
-                waiters: Mutex::new(Vec::new()),
-            }
-            .into(),
-            riid,
-            out,
-        )
+        give::<ID3D12Fence>(Fence { id }.into(), riid, out)
     }
 
     pub fn GetDeviceRemovedReason(&self) -> Result<()> {
@@ -798,9 +950,7 @@ impl Queue {
         // SAFETY: fences come from this library.
         let fence = unsafe { fence.ok()?.as_impl() };
         let id = fence.id;
-        gpu::call(move |d| d.queue_signal(id, value)).map_err(hr)?;
-        fence.release_waiters();
-        Ok(())
+        gpu::call(move |d| d.queue_signal(id, value)).map_err(hr)
     }
 }
 
@@ -817,8 +967,6 @@ impl Allocator {
 #[implement(ID3D12Fence)]
 pub struct Fence {
     id: FenceId,
-    /// Events to set when the fence reaches a value, as handle numbers.
-    waiters: Mutex<Vec<(u64, usize)>>,
 }
 
 impl Fence {
@@ -827,48 +975,35 @@ impl Fence {
         gpu::call(move |d| d.completed(id))
     }
 
-    /// Sets the event at once when submitted work reaches `value` (waiting for it on the device
-    /// thread); otherwise keeps it until a later signal can reach the value.
+    /// With an event, the device thread sets it once the fence reaches `value`, and nothing
+    /// waits here. With none, the call itself waits, as the API defines.
     pub fn SetEventOnCompletion(&self, value: u64, event: HANDLE) -> Result<()> {
         let id = self.id;
-        let reached = gpu::call(move |d| d.wait(id, value));
         if event.is_invalid() || event.0.is_null() {
-            return if reached {
-                Ok(())
-            } else {
-                Err(self.unsupported(
-                    "SetEventOnCompletion with no event for a value not yet signalled",
-                ))
-            };
+            // No event: the call returns when the fence reaches the value. The calling thread waits
+            // on an event of its own, so the device thread stays free for the signal (which may be a
+            // CPU signal from another thread).
+            use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
+            // SAFETY: an unnamed auto-reset event, closed below.
+            let own = unsafe { CreateEventW(None, false, false, None)? };
+            let token = own.0 as usize as u64;
+            gpu::call(move |d| d.add_waiter(id, value, token));
+            // SAFETY: `own` is open until closed here.
+            unsafe {
+                WaitForSingleObject(own, INFINITE);
+                let _ = CloseHandle(own);
+            }
+            return Ok(());
         }
-        if reached {
-            // SAFETY: the caller's event.
-            unsafe { SetEvent(event) }
-        } else {
-            self.waiters.lock().unwrap().push((value, event.0 as usize));
-            Ok(())
-        }
+        let token = event.0 as usize as u64;
+        gpu::call(move |d| d.add_waiter(id, value, token));
+        Ok(())
     }
 
     pub fn Signal(&self, value: u64) -> Result<()> {
         let id = self.id;
         gpu::call(move |d| d.cpu_signal(id, value));
-        self.release_waiters();
         Ok(())
-    }
-
-    fn release_waiters(&self) {
-        let mut waiters = self.waiters.lock().unwrap();
-        let id = self.id;
-        waiters.retain(|&(value, event)| {
-            if gpu::call(move |d| d.wait(id, value)) {
-                // SAFETY: the event the program gave.
-                let _ = unsafe { SetEvent(HANDLE(event as *mut c_void)) };
-                false
-            } else {
-                true
-            }
-        });
     }
 }
 
@@ -888,9 +1023,22 @@ pub struct Resource {
     address: u64,
     /// The memory of an upload or readback buffer, as a number.
     host: usize,
+    /// A swap chain's back buffer, which the swap chain releases.
+    back_buffer: bool,
 }
 
 impl Resource {
+    pub fn back_buffer(id: ResourceId, desc: D3D12_RESOURCE_DESC) -> ID3D12Resource {
+        Resource {
+            id,
+            desc,
+            address: 0,
+            host: 0,
+            back_buffer: true,
+        }
+        .into()
+    }
+
     pub fn GetDesc(&self) -> D3D12_RESOURCE_DESC {
         self.desc
     }
@@ -928,8 +1076,10 @@ impl Resource {
 
 impl Drop for Resource {
     fn drop(&mut self) {
-        let id = self.id;
-        gpu::call(move |d| d.destroy_resource(id));
+        if !self.back_buffer {
+            let id = self.id;
+            gpu::call(move |d| d.destroy_resource(id));
+        }
     }
 }
 
