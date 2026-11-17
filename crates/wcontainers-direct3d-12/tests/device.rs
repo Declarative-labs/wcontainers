@@ -192,6 +192,22 @@ fn fence_events_are_set_without_waiting() {
 }
 
 #[test]
+fn events_wait_for_every_fence_or_any_one() {
+    let mut device = Device::new(Recorder::new());
+    let (a, b) = (device.create_fence(0), device.create_fence(0));
+    device.add_waiter_many(vec![(a, 1), (b, 1)], false, 1);
+    device.add_waiter_many(vec![(a, 1), (b, 1)], true, 2);
+    device.cpu_signal(a, 1);
+    assert_eq!(device.reached_events(), [2]);
+    device.cpu_signal(b, 1);
+    assert_eq!(device.reached_events(), [1]);
+    // A destroyed fence takes the events waiting on it with it.
+    device.add_waiter_many(vec![(a, 2), (b, 1)], false, 3);
+    device.destroy_fence(a);
+    assert!(device.reached_events().is_empty() && !device.has_waiters());
+}
+
+#[test]
 fn back_buffers_are_resources_and_present_follows_the_work() {
     use wcontainers_directx_graphics_infrastructure::{Model, SwapChainDesc};
     let mut device = Device::new(Recorder::new());

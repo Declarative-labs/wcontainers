@@ -179,14 +179,101 @@ pub fn rtv(d: &D3D11_RENDER_TARGET_VIEW_DESC) -> Result<ViewDesc> {
                     (a.FirstWSlice, a.WSize),
                 )
             }
+            D3D11_RTV_DIMENSION_TEXTURE2DMS => view(f, ViewDim::Texture2DMS, (0, 1), (0, 1)),
+            D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY => {
+                let a = u.Texture2DMSArray;
+                let layers = (a.FirstArraySlice, a.ArraySize);
+                view(f, ViewDim::Texture2DMSArray, (0, 1), layers)
+            }
             other => {
                 return Err(other_view(
                     other == D3D11_RTV_DIMENSION_UNKNOWN,
-                    "render target views of buffers and multisampled textures",
+                    "render target views of buffers",
                 ));
             }
         })
     }
+}
+
+/// An unordered access view of a texture.
+pub fn uav(d: &D3D11_UNORDERED_ACCESS_VIEW_DESC) -> Result<ViewDesc> {
+    let f = d.Format;
+    unsafe {
+        let u = &d.Anonymous;
+        Ok(match d.ViewDimension {
+            D3D11_UAV_DIMENSION_TEXTURE1D => {
+                view(f, ViewDim::Texture1D, (u.Texture1D.MipSlice, 1), (0, 1))
+            }
+            D3D11_UAV_DIMENSION_TEXTURE1DARRAY => {
+                let a = u.Texture1DArray;
+                let layers = (a.FirstArraySlice, a.ArraySize);
+                view(f, ViewDim::Texture1DArray, (a.MipSlice, 1), layers)
+            }
+            D3D11_UAV_DIMENSION_TEXTURE2D => {
+                view(f, ViewDim::Texture2D, (u.Texture2D.MipSlice, 1), (0, 1))
+            }
+            D3D11_UAV_DIMENSION_TEXTURE2DARRAY => {
+                let a = u.Texture2DArray;
+                let layers = (a.FirstArraySlice, a.ArraySize);
+                view(f, ViewDim::Texture2DArray, (a.MipSlice, 1), layers)
+            }
+            D3D11_UAV_DIMENSION_TEXTURE3D => {
+                let a = u.Texture3D;
+                view(
+                    f,
+                    ViewDim::Texture3D,
+                    (a.MipSlice, 1),
+                    (a.FirstWSlice, a.WSize),
+                )
+            }
+            _ => return Err(E_INVALIDARG.into()),
+        })
+    }
+}
+
+/// The description of an unordered access view of a texture, as `GetDesc` answers it.
+pub fn uav_back(v: &ViewDesc) -> D3D11_UNORDERED_ACCESS_VIEW_DESC {
+    let r = rtv_back(v);
+    let mut d = D3D11_UNORDERED_ACCESS_VIEW_DESC {
+        Format: r.Format,
+        ..Default::default()
+    };
+    let (mip, first, size) = (v.first_mip, v.first_layer, v.layer_count);
+    match v.dimension {
+        ViewDim::Texture1D => {
+            d.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE1D;
+            d.Anonymous.Texture1D = D3D11_TEX1D_UAV { MipSlice: mip };
+        }
+        ViewDim::Texture1DArray => {
+            d.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE1DARRAY;
+            d.Anonymous.Texture1DArray = D3D11_TEX1D_ARRAY_UAV {
+                MipSlice: mip,
+                FirstArraySlice: first,
+                ArraySize: size,
+            };
+        }
+        ViewDim::Texture2D => {
+            d.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+            d.Anonymous.Texture2D = D3D11_TEX2D_UAV { MipSlice: mip };
+        }
+        ViewDim::Texture3D => {
+            d.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D;
+            d.Anonymous.Texture3D = D3D11_TEX3D_UAV {
+                MipSlice: mip,
+                FirstWSlice: first,
+                WSize: size,
+            };
+        }
+        _ => {
+            d.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
+            d.Anonymous.Texture2DArray = D3D11_TEX2D_ARRAY_UAV {
+                MipSlice: mip,
+                FirstArraySlice: first,
+                ArraySize: size,
+            };
+        }
+    }
+    d
 }
 
 pub fn rtv_back(v: &ViewDesc) -> D3D11_RENDER_TARGET_VIEW_DESC {
@@ -211,6 +298,14 @@ pub fn rtv_back(v: &ViewDesc) -> D3D11_RENDER_TARGET_VIEW_DESC {
         ViewDim::Texture2D => {
             d.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
             d.Anonymous.Texture2D = D3D11_TEX2D_RTV { MipSlice: mip };
+        }
+        ViewDim::Texture2DMS => d.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMS,
+        ViewDim::Texture2DMSArray => {
+            d.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY;
+            d.Anonymous.Texture2DMSArray = D3D11_TEX2DMS_ARRAY_RTV {
+                FirstArraySlice: first,
+                ArraySize: size,
+            };
         }
         ViewDim::Texture3D => {
             d.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE3D;
@@ -256,10 +351,16 @@ pub fn dsv(d: &D3D11_DEPTH_STENCIL_VIEW_DESC) -> Result<ViewDesc> {
                 let layers = (a.FirstArraySlice, a.ArraySize);
                 view(f, ViewDim::Texture2DArray, (a.MipSlice, 1), layers)
             }
+            D3D11_DSV_DIMENSION_TEXTURE2DMS => view(f, ViewDim::Texture2DMS, (0, 1), (0, 1)),
+            D3D11_DSV_DIMENSION_TEXTURE2DMSARRAY => {
+                let a = u.Texture2DMSArray;
+                let layers = (a.FirstArraySlice, a.ArraySize);
+                view(f, ViewDim::Texture2DMSArray, (0, 1), layers)
+            }
             other => {
                 return Err(other_view(
                     other == D3D11_DSV_DIMENSION_UNKNOWN,
-                    "depth-stencil views of multisampled textures",
+                    "depth-stencil views of an unknown dimension",
                 ));
             }
         })
@@ -288,6 +389,14 @@ pub fn dsv_back(v: &ViewDesc) -> D3D11_DEPTH_STENCIL_VIEW_DESC {
         ViewDim::Texture2D => {
             d.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
             d.Anonymous.Texture2D = D3D11_TEX2D_DSV { MipSlice: mip };
+        }
+        ViewDim::Texture2DMS => d.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DMS,
+        ViewDim::Texture2DMSArray => {
+            d.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DMSARRAY;
+            d.Anonymous.Texture2DMSArray = D3D11_TEX2DMS_ARRAY_DSV {
+                FirstArraySlice: first,
+                ArraySize: size,
+            };
         }
         _ => {
             d.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
@@ -378,10 +487,16 @@ pub fn srv(d: &D3D11_SHADER_RESOURCE_VIEW_DESC) -> Result<ViewDesc> {
                     (t.First2DArrayFace, faces),
                 )
             }
+            D3D_SRV_DIMENSION_TEXTURE2DMS => view(f, ViewDim::Texture2DMS, (0, 1), (0, 1)),
+            D3D_SRV_DIMENSION_TEXTURE2DMSARRAY => {
+                let a = u.Texture2DMSArray;
+                let layers = (a.FirstArraySlice, a.ArraySize);
+                view(f, ViewDim::Texture2DMSArray, (0, 1), layers)
+            }
             other => {
                 return Err(other_view(
                     other == D3D_SRV_DIMENSION_UNKNOWN,
-                    "shader resource views of buffers and multisampled textures",
+                    "shader resource views of an unknown dimension",
                 ));
             }
         })
@@ -449,6 +564,14 @@ pub fn srv_back(v: &ViewDesc) -> D3D11_SHADER_RESOURCE_VIEW_DESC {
                 MipLevels: mips,
                 First2DArrayFace: first,
                 NumCubes: size / 6,
+            };
+        }
+        ViewDim::Texture2DMS => d.ViewDimension = D3D_SRV_DIMENSION_TEXTURE2DMS,
+        ViewDim::Texture2DMSArray => {
+            d.ViewDimension = D3D_SRV_DIMENSION_TEXTURE2DMSARRAY;
+            d.Anonymous.Texture2DMSArray = D3D11_TEX2DMS_ARRAY_SRV {
+                FirstArraySlice: first,
+                ArraySize: size,
             };
         }
     }

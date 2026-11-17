@@ -78,15 +78,27 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     );
     let (code, ours) = run("own_refused", &place("refused-ours", true));
     assert_eq!(code, 0, "{ours}");
-    // E_NOTIMPL for each creation; no multisampling, so no quality level and E_INVALIDARG for a
-    // texture of 4 samples, as Direct3D answers a count it reports none for; and the unservable draw
-    // removes the device (DXGI_ERROR_DRIVER_INTERNAL_ERROR).
+    // E_NOTIMPL for geometry shaders and the two queries; structured views and 4 samples served
+    // as Direct3D serves them; and the unservable draw removes the device
+    // (DXGI_ERROR_DRIVER_INTERNAL_ERROR).
     assert_eq!(
         ours,
         "CreateGeometryShader 0x80004001\nCreateQuery(occlusion) 0x80004001\nCreateQuery(timestamp) 0x80004001\n\
-         CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x80004001\nCheckMultisampleQualityLevels(4) 0x00000000 0\n\
-         CreateTexture2D(4 samples) 0x80070057\nGetDeviceRemovedReason 0x887a0020\n"
+         CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x00000000\nCheckMultisampleQualityLevels(4) 0x00000000 1\n\
+         CreateTexture2D(4 samples) 0x00000000\nGetDeviceRemovedReason 0x887a0020\n"
     );
+}
+
+#[test]
+fn deferred_contexts_states_and_resolves_answer_as_direct3d_does() {
+    let (code, want) = run("own_deferred", &place("deferred-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_deferred", &place("deferred-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
 }
 
 #[test]

@@ -58,6 +58,9 @@ pub(crate) struct ProgramObj {
     pub fragment: Option<Rc<ShaderModule>>,
 }
 
+/// A binding set's entries: binding number, the stages named, and what is bound.
+pub(crate) type Entries = Vec<(u32, StageSet, Bound)>;
+
 pub(crate) enum Obj {
     Buffer(BufferObj),
     Texture(TextureObj),
@@ -69,7 +72,7 @@ pub(crate) enum Obj {
     DepthStencil(DepthStencilDesc),
     Raster(RasterDesc),
     VertexLayout(Box<VertexLayoutDesc>),
-    BindingSet(Vec<(u32, Bound)>, StageCounts),
+    BindingSet(Entries, StageCounts),
     QuerySet {
         kind: QueryKind,
         results: Vec<u64>,
@@ -111,6 +114,17 @@ pub(crate) struct Pass {
     pub other: Vec<Id>,
 }
 
+/// A range of bytes of a buffer (`sub` 0), or of one subresource of a texture as held (whole texels),
+/// and the submit the use belongs to.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Touched {
+    pub object: Id,
+    pub sub: usize,
+    pub start: u64,
+    pub end: u64,
+    pub submit: u64,
+}
+
 /// The recording back end.
 pub struct Recorder {
     caps: Caps,
@@ -124,9 +138,9 @@ pub struct Recorder {
     pub calls: Vec<Call>,
     /// How deep the calls being made are inside another base call, whose own entry is the one kept.
     nested: u32,
-    /// Buffer ranges commands read or wrote, and `Ordered` writes wrote, with the submit they belong
-    /// to, until the caller waits for that submit: what no `NoOverwrite` write may touch.
-    pub(crate) touched: Vec<(Id, u64, u64, u64)>,
+    /// Bytes commands read or wrote, and `Ordered` writes wrote, until the caller waits for their
+    /// submit: what no `NoOverwrite` write may touch.
+    pub(crate) touched: Vec<Touched>,
     /// Every rule of the interface a caller broke, and every call this back end could not carry out.
     /// Either loses the device.
     pub violations: Vec<String>,
@@ -655,6 +669,9 @@ impl Recorder {
         if (1..attached.len()).any(|i| attached[..i].contains(&attached[i])) {
             return Err("one subresource attached twice".into());
         }
+        for &(texture, sub, slice) in &attached {
+            self.touch_slice(texture, sub, slice)?;
+        }
         let (width, height, samples) = match (size, pass.empty) {
             (Some(s), None) => (s.0, s.1, count.unwrap_or(1)),
             (None, Some(e)) => {
@@ -790,6 +807,7 @@ impl Recorder {
             ReadSource::Texture { region, extent } => {
                 self.texture_for(*region.texture, TextureUsage::COPY_SRC, "a read back")?;
                 self.copies_out(*region.texture)?;
+                self.touch_region(region, *extent)?;
                 self.read_region(region, *extent)
             }
         }
@@ -826,9 +844,69 @@ impl Recorder {
         Ok(())
     }
 
-    /// Notes bytes a command recorded now reads or writes, part of the next submit.
+    /// Notes bytes of a buffer a command recorded now reads or writes, part of the next submit.
     pub(crate) fn touch(&mut self, buffer: Id, start: u64, end: u64) {
-        self.touched.push((buffer, start, end, self.submits + 1));
+        self.touch_in(buffer, 0, start, end);
+    }
+
+    pub(crate) fn touch_in(&mut self, object: Id, sub: usize, start: u64, end: u64) {
+        self.touched.push(Touched {
+            object,
+            sub,
+            start,
+            end,
+            submit: self.submits + 1,
+        });
+    }
+
+    /// Whether an unfinished use touches any of `ranges` of `object`.
+    fn in_use(&self, object: Id, ranges: &[(usize, u64, u64)]) -> bool {
+        self.touched.iter().any(|t| {
+            t.object == object
+                && ranges
+                    .iter()
+                    .any(|&(sub, s, e)| t.sub == sub && t.start < e && s < t.end)
+        })
+    }
+
+    /// The bytes of a texture region in its subresources as held, rows that meet made one range.
+    fn region_ranges(
+        &self,
+        region: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) -> Result<Vec<(usize, u64, u64)>, String> {
+        let t = self.texture(*region.texture)?;
+        let mut out: Vec<(usize, u64, u64)> = Vec::new();
+        for_rows(&t.desc, region, extent, |sub, at, len| {
+            let (at, end) = (at as u64, (at + len) as u64);
+            match out.last_mut() {
+                Some(last) if last.0 == sub && last.2 == at => last.2 = end,
+                _ => out.push((sub, at, end)),
+            }
+        })?;
+        Ok(out)
+    }
+
+    /// Notes a texture region a command recorded now reads or writes.
+    fn touch_region(
+        &mut self,
+        region: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) -> Result<(), String> {
+        for (sub, s, e) in self.region_ranges(region, extent)? {
+            self.touch_in(*region.texture, sub, s, e);
+        }
+        Ok(())
+    }
+
+    /// Notes one slice of a texture's subresource (all of it but for 3D) a command uses.
+    fn touch_slice(&mut self, texture: Id, sub: usize, slice: u32) -> Result<(), String> {
+        let t = self.texture(texture)?;
+        let mip = sub as u32 / layers(&t.desc);
+        let plane = t.subresources[sub].len() as u64 / u64::from(level_size(&t.desc, mip).2);
+        let at = u64::from(slice) * plane;
+        self.touch_in(texture, sub, at, at + plane);
+        Ok(())
     }
 
     fn readback(&mut self, bytes: Vec<u8>) -> Id {
@@ -854,6 +932,18 @@ fn aspect_size(format: Format, stencil: bool) -> Result<Option<usize>, String> {
         None if stencil => Err("a stencil region of a format without stencil".into()),
         None => Ok(None),
     }
+}
+
+/// The buffer side of a copy with a texture: its row pitch and offset whole numbers of `block`, the
+/// bytes of a block of the aspect moved.
+fn blocks_whole(side: &CopyBufferTexture<'_, Recorder>, block: u32) -> Result<(), String> {
+    if !side.row_pitch.is_multiple_of(block) {
+        return Err("a buffer-texture copy's row pitch is not a whole number of blocks".into());
+    }
+    if !side.offset.is_multiple_of(u64::from(block)) {
+        return Err("a buffer-texture copy's offset is not a whole number of blocks".into());
+    }
+    Ok(())
 }
 
 /// Every format, in the order of [`Caps::formats`].
@@ -1285,14 +1375,28 @@ impl Backend for Recorder {
                 ShaderStage::Fragment => naga::ShaderStage::Fragment,
                 ShaderStage::Compute => naga::ShaderStage::Compute,
             };
-            if !module
+            let Some(at) = module
                 .module
                 .entry_points
                 .iter()
-                .any(|e| e.name == module.entry_point && e.stage == stage)
-            {
+                .position(|e| e.name == module.entry_point && e.stage == stage)
+            else {
                 return Err(GpuError::Invalid(
                     "a shader naming an entry point of its stage its module lacks",
+                ));
+            };
+            let textures = SlotKind::Texture.first_binding()
+                ..SlotKind::Texture.first_binding() + SlotKind::Texture.slots();
+            let outside = |image: naga::Handle<naga::GlobalVariable>| {
+                module.module.global_variables[image]
+                    .binding
+                    .as_ref()
+                    .is_some_and(|b| !textures.contains(&b.binding))
+            };
+            let paired = &module.info.get_entry_point(at).sampling_set;
+            if paired.iter().any(|k| outside(k.image)) {
+                return Err(GpuError::Invalid(
+                    "a texture paired with a sampler outside the sampled-texture bindings",
                 ));
             }
             let id = self.add(Obj::Shader(Rc::new(module.clone())));
@@ -1643,7 +1747,7 @@ impl Backend for Recorder {
                         return Err(GpuError::Absent(Features::RESOURCE_TABLES));
                     }
                 };
-                if set.iter().any(|(b, _)| *b == e.binding) {
+                if set.iter().any(|(b, _, _)| *b == e.binding) {
                     return Err(GpuError::Invalid("two entries at one binding"));
                 }
                 let kind = match e.resource {
@@ -1660,7 +1764,7 @@ impl Backend for Recorder {
                         c[kind] += 1;
                     }
                 }
-                set.push((e.binding, bound));
+                set.push((e.binding, e.stages, bound));
             }
             let id = self.add(Obj::BindingSet(set, counts));
             Ok(id)
@@ -1730,11 +1834,7 @@ impl Backend for Recorder {
         self.check(|r| {
             r.buffer_for(*buffer, BufferUsage::COPY_DST, "write_buffer")?;
             let end = end(offset, data.len() as u64, "write")?;
-            if mode == WriteMode::NoOverwrite
-                && r.touched
-                    .iter()
-                    .any(|&(b, s, e, _)| b == *buffer && s < end && offset < e)
-            {
+            if mode == WriteMode::NoOverwrite && r.in_use(*buffer, &[(0, offset, end)]) {
                 return Err(format!(
                     "a NoOverwrite write over bytes of buffer {} an unfinished command or an \
                      ordered write touches",
@@ -1745,7 +1845,7 @@ impl Backend for Recorder {
                 WriteMode::Ordered => r.touch(*buffer, offset, end),
                 // Fresh storage: earlier commands keep the old bytes, and the rest is undefined.
                 WriteMode::Discard => {
-                    r.touched.retain(|t| t.0 != *buffer);
+                    r.touched.retain(|t| t.object != *buffer);
                     if end <= r.buffer(*buffer)?.bytes.len() as u64 {
                         r.buffer_mut(*buffer)?.bytes.fill(GARBAGE);
                     }
@@ -1779,7 +1879,31 @@ impl Backend for Recorder {
             mode,
         ));
         self.check(|r| {
-            r.texture_for(*region.texture, TextureUsage::COPY_DST, "write_texture")?;
+            let texture = *region.texture;
+            r.texture_for(texture, TextureUsage::COPY_DST, "write_texture")?;
+            let ranges = r.region_ranges(region, extent)?;
+            if mode == WriteMode::NoOverwrite && r.in_use(texture, &ranges) {
+                return Err(format!(
+                    "a NoOverwrite write over texels of texture {} an unfinished command or an \
+                     ordered write touches",
+                    texture.0
+                ));
+            }
+            match mode {
+                WriteMode::Ordered => {
+                    for (sub, s, e) in ranges {
+                        r.touch_in(texture, sub, s, e);
+                    }
+                }
+                // Fresh storage: earlier commands keep the old texels, and the rest is undefined.
+                WriteMode::Discard => {
+                    r.touched.retain(|t| t.object != texture);
+                    for s in &mut r.texture_mut(texture)?.subresources {
+                        s.fill(GARBAGE);
+                    }
+                }
+                WriteMode::NoOverwrite => {}
+            }
             r.write_region(region, extent, data, row_pitch, rows_per_layer)
         });
     }
@@ -1919,6 +2043,8 @@ impl Backend for Recorder {
                 height: extent.height.div_ceil(bh) * dbh,
                 depth_or_layers: extent.depth_or_layers,
             };
+            r.touch_region(src, extent)?;
+            r.touch_region(dst, dst_extent)?;
             r.write_texels(dst, dst_extent, &bytes, pitch, extent.height.div_ceil(bh))
         });
     }
@@ -1940,6 +2066,7 @@ impl Backend for Recorder {
             let format = r.texture(*dst.texture)?.desc.format;
             let (bw, bh, size) = format.block();
             let size = aspect_size(format, dst.stencil)?.map_or(size, |n| n as u32);
+            blocks_whole(src, size)?;
             let rows = u64::from(extent.height.div_ceil(bh));
             let pitch = u64::from(src.row_pitch);
             let rows_per_layer = u64::from(src.rows_per_layer).max(rows);
@@ -1960,6 +2087,7 @@ impl Backend for Recorder {
                 .get(src.offset as usize..)
                 .ok_or("copy from past the buffer's end")?
                 .to_vec();
+            r.touch_region(dst, extent)?;
             r.write_region(dst, extent, &bytes, src.row_pitch, src.rows_per_layer)
         });
     }
@@ -1985,9 +2113,11 @@ impl Backend for Recorder {
             r.buffer_for(*dst.buffer, BufferUsage::COPY_DST, "copy_texture_to_buffer")?;
             r.copies_out(*src.texture)?;
             let bytes = r.read_region(src, extent)?;
+            r.touch_region(src, extent)?;
             let format = r.texture(*src.texture)?.desc.format;
             let (bw, bh, size) = format.block();
             let size = aspect_size(format, src.stencil)?.map_or(size, |n| n as u32);
+            blocks_whole(dst, size)?;
             let len = (extent.width.div_ceil(bw) * size) as usize;
             let rows = extent.height.div_ceil(bh) as usize;
             let rows_per_layer = if dst.rows_per_layer == 0 {
@@ -2079,6 +2209,7 @@ impl Backend for Recorder {
                 return Err("a resolve between subresources of different sizes".into());
             }
             let sub = subresource(&d, dst.mip, dst.layer);
+            r.touch_slice(*dst.texture, sub, 0)?;
             r.average(*src.texture, 0, *dst.texture, sub, format)
         });
     }
@@ -2098,7 +2229,7 @@ impl Backend for Recorder {
     fn fence_done(&mut self, fence: &Id) -> bool {
         self.log(Call::FenceDone(*fence));
         match self.obj(*fence) {
-            Ok(&Obj::Fence(n)) => self.touched.retain(|t| t.3 > n),
+            Ok(&Obj::Fence(n)) => self.touched.retain(|t| t.submit > n),
             _ => self.violate("fence_done of an object that is not a fence"),
         }
         true
@@ -2182,7 +2313,7 @@ impl Backend for Recorder {
             self.nested -= 1;
         }
         if let Ok(&Obj::Readback { ready_at, .. }) = self.obj(*readback) {
-            self.touched.retain(|t| t.3 > ready_at);
+            self.touched.retain(|t| t.submit > ready_at);
         }
     }
 

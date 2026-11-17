@@ -59,10 +59,21 @@ fn query_interface_follows_identity_and_parents() {
     let adapter: IDXGIAdapter1 = unsafe { dxgi.GetAdapter() }.unwrap().cast().unwrap();
     let desc = unsafe { adapter.GetDesc1() }.unwrap();
     assert_eq!(desc.Flags, 0);
-    assert_eq!(
-        unsafe { adapter.EnumOutputs(0) }.err().map(|e| e.code()),
-        Some(DXGI_ERROR_NOT_FOUND)
-    );
+    // The host's monitors, each on a monitor and a child of the adapter, then none.
+    let mut index = 0;
+    let past = loop {
+        match unsafe { adapter.EnumOutputs(index) } {
+            Ok(output) => {
+                let d = unsafe { output.GetDesc() }.unwrap();
+                assert!(!d.Monitor.is_invalid());
+                let parent: IDXGIAdapter1 = unsafe { output.GetParent() }.unwrap();
+                assert_eq!(parent.as_raw(), adapter.as_raw());
+                index += 1;
+            }
+            Err(e) => break e.code(),
+        }
+    };
+    assert_eq!(past, DXGI_ERROR_NOT_FOUND);
     let b = buffer(&device);
     let _: ID3D11Resource = b.cast().unwrap();
     let _: ID3D11DeviceChild = b.cast().unwrap();
@@ -214,8 +225,7 @@ fn unserved_shaders_are_refused_not_faked() {
 fn the_forwarding_d3d11_reaches_the_library() {
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
     use windows::core::{HSTRING, s};
-    let dir = common::fresh("forwarder");
-    common::place_libraries(&dir);
+    let dir = common::libraries();
     let load = |name: &str| unsafe { LoadLibraryW(&HSTRING::from(dir.join(name).as_os_str())) };
     let library = load("wcontainers_directx.dll").unwrap();
     let forwarder = load("d3d11.dll").unwrap();
@@ -233,18 +243,56 @@ fn the_forwarding_d3d11_reaches_the_library() {
 
 #[test]
 fn device_creation_answers_as_direct3d() {
-    use wcontainers_directx::com::{D3D11CreateDevice, D3D11CreateDeviceAndSwapChain};
-    use windows::Win32::Foundation::{E_INVALIDARG, E_NOTIMPL, HMODULE};
+    // Through the built library, as a program calls it: the entry points pass calls from the
+    // library's own module (here the test, which links it in) on to the system's.
+    use std::ffi::c_void;
+    use windows::Win32::Foundation::{E_INVALIDARG, HMODULE};
     use windows::Win32::Graphics::Direct3D::*;
+    use windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL;
     use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGIAdapter};
-    let (device, _context) = device();
-    let adapter: IDXGIAdapter =
-        unsafe { device.cast::<IDXGIDevice>().unwrap().GetAdapter() }.unwrap();
-    let null: *mut std::ffi::c_void = std::ptr::null_mut();
-    let make = |adapter: *mut std::ffi::c_void,
-                driver: D3D_DRIVER_TYPE,
-                out: *mut *mut std::ffi::c_void| unsafe {
-        D3D11CreateDevice(
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows::core::{HRESULT, HSTRING, s};
+    type CreateDevice = unsafe extern "system" fn(
+        *mut c_void,
+        i32,
+        HMODULE,
+        u32,
+        *const D3D_FEATURE_LEVEL,
+        u32,
+        u32,
+        *mut *mut c_void,
+        *mut D3D_FEATURE_LEVEL,
+        *mut *mut c_void,
+    ) -> HRESULT;
+    type CreateBoth = unsafe extern "system" fn(
+        *mut c_void,
+        i32,
+        HMODULE,
+        u32,
+        *const D3D_FEATURE_LEVEL,
+        u32,
+        u32,
+        *const c_void,
+        *mut *mut c_void,
+        *mut *mut c_void,
+        *mut D3D_FEATURE_LEVEL,
+        *mut *mut c_void,
+    ) -> HRESULT;
+    let dir = common::libraries();
+    let library = unsafe {
+        LoadLibraryW(&HSTRING::from(
+            dir.join("wcontainers_directx.dll").as_os_str(),
+        ))
+    }
+    .unwrap();
+    let create: CreateDevice =
+        unsafe { std::mem::transmute(GetProcAddress(library, s!("D3D11CreateDevice")).unwrap()) };
+    let create_both: CreateBoth = unsafe {
+        std::mem::transmute(GetProcAddress(library, s!("D3D11CreateDeviceAndSwapChain")).unwrap())
+    };
+    let null: *mut c_void = std::ptr::null_mut();
+    let make = |adapter: *mut c_void, driver: D3D_DRIVER_TYPE, out: *mut *mut c_void| unsafe {
+        create(
             adapter,
             driver.0,
             HMODULE::default(),
@@ -257,6 +305,11 @@ fn device_creation_answers_as_direct3d() {
             null.cast(),
         )
     };
+    let mut out = null;
+    assert_eq!(make(null, D3D_DRIVER_TYPE_HARDWARE, &mut out).0, 0);
+    let device = unsafe { ID3D11Device::from_raw(out) };
+    let adapter: IDXGIAdapter =
+        unsafe { device.cast::<IDXGIDevice>().unwrap().GetAdapter() }.unwrap();
     // An adapter goes with an unknown driver type, and no adapter with a named one.
     assert_eq!(
         make(adapter.as_raw(), D3D_DRIVER_TYPE_HARDWARE, null.cast()),
@@ -274,9 +327,9 @@ fn device_creation_answers_as_direct3d() {
     drop(unsafe { ID3D11Device::from_raw(out) });
     // Without a swap chain asked for, the device as D3D11CreateDevice makes it.
     let both = |desc: *const DXGI_SWAP_CHAIN_DESC,
-                chain: *mut *mut std::ffi::c_void,
-                out: *mut *mut std::ffi::c_void| unsafe {
-        D3D11CreateDeviceAndSwapChain(
+                chain: *mut *mut c_void,
+                out: *mut *mut c_void| unsafe {
+        create_both(
             null,
             D3D_DRIVER_TYPE_HARDWARE.0,
             HMODULE::default(),
@@ -294,9 +347,13 @@ fn device_creation_answers_as_direct3d() {
     let mut out = null;
     assert_eq!(both(std::ptr::null(), null.cast(), &mut out).0, 0);
     drop(unsafe { ID3D11Device::from_raw(out) });
+    // A swap chain without a window is an invalid call, as DXGI answers it.
     let desc = DXGI_SWAP_CHAIN_DESC::default();
-    let mut chain: *mut std::ffi::c_void = std::ptr::NonNull::dangling().as_ptr();
-    assert_eq!(both(&desc, &mut chain, null.cast()), E_NOTIMPL);
+    let mut chain: *mut c_void = std::ptr::NonNull::dangling().as_ptr();
+    assert_eq!(
+        both(&desc, &mut chain, null.cast()),
+        DXGI_ERROR_INVALID_CALL
+    );
     assert!(chain.is_null());
     assert_eq!(
         both(std::ptr::null(), &mut chain, null.cast()),
@@ -528,11 +585,32 @@ fn capability_queries_claim_only_what_creation_serves() {
         let Ok(bits) = (unsafe { device.CheckFormatSupport(format) }) else {
             continue;
         };
+        // A quality level for 4 samples makes a texture of 4 samples drawn into, as a target or
+        // for depth (a typeless group's bits do not say which).
         let levels = unsafe { device.CheckMultisampleQualityLevels(format, 4) }.unwrap();
-        assert_eq!(
-            levels, 0,
-            "format {f}: multisampled textures are not served"
-        );
+        if levels > 0 {
+            let made = [D3D11_BIND_RENDER_TARGET, D3D11_BIND_DEPTH_STENCIL]
+                .iter()
+                .any(|bind| {
+                    let desc = D3D11_TEXTURE2D_DESC {
+                        Width: 4,
+                        Height: 4,
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: format,
+                        SampleDesc: DXGI_SAMPLE_DESC {
+                            Count: 4,
+                            Quality: 0,
+                        },
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: bind.0 as u32,
+                        ..Default::default()
+                    };
+                    let mut out = None;
+                    unsafe { device.CreateTexture2D(&desc, None, Some(&mut out)) }.is_ok()
+                });
+            assert!(made, "format {f} with 4 samples");
+        }
         if bits & D3D11_FORMAT_SUPPORT_TEXTURE2D.0 as u32 == 0 {
             continue;
         }

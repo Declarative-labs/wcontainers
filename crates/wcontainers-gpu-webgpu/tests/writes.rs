@@ -301,6 +301,7 @@ fn arena_buffers_keep_command_order() {
     assert_eq!(b.status(), DeviceStatus::Ok);
     let k = b.counters();
     assert_eq!((k.renames, k.slices, k.staged_writes), (0, 1, 1), "{k:?}");
+    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinBuffer), 1);
 }
 
 /// Seeded random buffer writes in every mode, copies between buffers and within one, and clears to
@@ -330,7 +331,7 @@ fn byte_granular_buffer_operations_match_a_model() {
         rng.fill(m);
         b.write_buffer(buf, 0, m, WriteMode::Ordered);
     }
-    let (mut no_overwrites, mut demoted) = (0, 0);
+    let (mut no_overwrites, mut demoted, mut within) = (0, 0, 0);
     for case in 0..cases {
         let i = rng.usize(0..2);
         let len = rng.usize(1..=64);
@@ -370,6 +371,7 @@ fn byte_granular_buffer_operations_match_a_model() {
                 let j = rng.usize(0..2);
                 let mut from = rng.usize(0..=SIZE - len);
                 if i == j {
+                    within += 1;
                     // Within one buffer the ranges do not overlap.
                     while from < at + len && at < from + len {
                         from = rng.usize(0..=SIZE - len);
@@ -408,8 +410,11 @@ fn byte_granular_buffer_operations_match_a_model() {
             }
         }
     }
-    eprintln!("{no_overwrites} no-overwrite writes, {demoted} made ordered");
+    eprintln!(
+        "{no_overwrites} no-overwrite writes, {demoted} made ordered, {within} copies within one buffer"
+    );
     assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinBuffer), within);
 }
 
 /// Writes of any length after a submit, so that none meets a recorded command, take effect in the
@@ -572,4 +577,87 @@ fn clears_take_patterns_of_any_length() {
         assert_eq!(first, None, "pattern of {len} bytes");
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Copies between non-overlapping ranges of one buffer, at places in a word alike and different,
+/// and between two buffers of the uniform arena (one GPU buffer), go through a temporary buffer,
+/// each counted once as `CopyWithinBuffer`.
+#[test]
+fn copies_within_one_buffer_are_exact_and_counted() {
+    let mut b = device();
+    let buf = buffer(&mut b, 64, BufferUsage::empty(), MapIntent::Rarely);
+    let mut model: Vec<u8> = (0..64).map(|i| i * 3 + 1).collect();
+    b.write_buffer(&buf, 0, &model, WriteMode::Ordered);
+    for (from, to, len) in [(1, 37, 20), (0, 48, 16), (40, 2, 9)] {
+        b.copy_buffer(&buf, from as u64, &buf, to as u64, len as u64);
+        model.copy_within(from..from + len, to);
+    }
+    let arena = |b: &mut WebGpu| {
+        b.create_buffer(&BufferDesc {
+            size: 16,
+            usage: BufferUsage::UNIFORM,
+            intent: MapIntent::Often,
+        })
+        .unwrap()
+    };
+    let (a, c) = (arena(&mut b), arena(&mut b));
+    b.write_buffer(&a, 0, &words(7), WriteMode::Ordered);
+    b.copy_buffer(&a, 0, &c, 0, 16);
+    let reads = [
+        read_buffer_back(&mut b, &buf, 64),
+        read_buffer_back(&mut b, &c, 16),
+    ];
+    b.submit();
+    let [whole, copied] = reads;
+    assert_eq!(finish(&mut b, whole, 64), model);
+    assert_eq!(finish(&mut b, copied, 16), words(7));
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinBuffer), 4);
+}
+
+/// A scripted scene of four frames, each drawing the triangle four times with a `Discard` write of
+/// its vertex buffer between draws: the first frame's three renames make GPU buffers, every later
+/// frame's take the storage the frame before gave up, and destroying the buffer destroys the three.
+#[test]
+fn renamed_buffers_reuse_the_pools_storage() {
+    let mut b = device();
+    let p = draw::prepare(&mut b, scene::Scene::Triangle, draw::Twist::None).unwrap();
+    let t = draw::targets(&mut b, None).unwrap();
+    let vertices: Vec<u8> = bytemuck::cast_slice(&scene::TRIANGLE).to_vec();
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        let before = *b.counters();
+        draw::begin(&mut b, &t, true);
+        draw::draw(&mut b, &p);
+        for _ in 0..3 {
+            b.write_buffer(&p.vertices, 0, &vertices, WriteMode::Discard);
+            draw::draw(&mut b, &p);
+        }
+        b.end_pass();
+        let rb = draw::read(&mut b, &t).unwrap();
+        let fence = b.submit();
+        b.wait_fence(&fence);
+        b.wait_read(&rb);
+        let mut rgba = vec![0; (scene::WIDTH * scene::HEIGHT * 4) as usize];
+        b.finish_read(rb, &mut rgba);
+        assert!(allowance::within(
+            &rgba,
+            &reference("triangle.png"),
+            "triangle.png"
+        ));
+        let c = b.counters();
+        seen.push((
+            c.renames - before.renames,
+            c.spares_reused - before.spares_reused,
+        ));
+    }
+    eprintln!("renames and spares reused per frame: {seen:?}");
+    assert_eq!(seen, [(3, 0), (3, 3), (3, 3), (3, 3)]);
+    b.destroy(Object::Buffer(p.vertices.clone()));
+    let fence = b.submit();
+    b.wait_fence(&fence);
+    b.submit();
+    assert_eq!(b.counters().spares_dropped, 3, "{:?}", b.counters());
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 0);
 }

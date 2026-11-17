@@ -196,7 +196,8 @@ pub struct DrawCall<'a, B: Backend> {
     /// One viewport: a front whose API draws through several splits the draw into one per viewport
     /// ([`crate::SlowPath::MultiViewportSplit`]).
     pub viewports: &'a [Viewport],
-    /// At most one scissor, and one where the raster block scissors.
+    /// At most one scissor, and one where the raster block scissors. It may reach past the pass's
+    /// attachments and is clipped to them; a back end whose API refuses such a scissor cuts it.
     pub scissors: &'a [ScissorRect],
     /// Blend constant as f32 bits.
     pub blend_constant: [u32; 4],
