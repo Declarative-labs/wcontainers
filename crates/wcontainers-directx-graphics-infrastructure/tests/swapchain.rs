@@ -115,13 +115,13 @@ fn resize_remakes_buffers_and_surface() {
     assert_eq!(chain.desc().width, 128);
     assert_eq!(chain.desc().height, 32);
     assert_eq!(chain.current_index(), 0);
-    assert_eq!(chain.surface_format(), Format::Rgba16Float);
+    assert_eq!(chain.surface_format(), Format::Rgba8Unorm);
     assert!(b.named("create").iter().any(|c| c.contains("\"encode\"")));
     assert!(
         b.named("configure_surface")
             .last()
             .unwrap()
-            .contains("Rgba16Float 128 32")
+            .contains("Rgba8Unorm 128 32")
     );
 }
 
@@ -135,7 +135,11 @@ fn the_adapter_answers_from_caps() {
     assert_eq!(adapter.description_utf16()[18], 0);
     assert_eq!(
         present_format(b.caps(), Format::Rgb10a2Unorm),
-        Format::Rgba16Float
+        Format::Rgba8Unorm
+    );
+    assert_eq!(
+        present_format(b.caps(), Format::Rgba16Float),
+        Format::Rgba8Unorm
     );
 }
 

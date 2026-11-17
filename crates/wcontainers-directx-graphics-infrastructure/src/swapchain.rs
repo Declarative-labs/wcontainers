@@ -12,9 +12,10 @@ use std::collections::VecDeque;
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
     DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, FillMode, Format, FrontFace, GpuError,
-    LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, PassDesc, ProvokingVertex, RasterDesc,
-    RenderTargetBlend, ScissorRect, StageSet, StencilFace, StoreOp, TextureDesc, TextureDimension,
-    TextureUsage, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
+    LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, PassDesc, Program, ProvokingVertex,
+    RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule, ShaderStage, StageSet, StencilFace,
+    StoreOp, TextureDesc, TextureDimension, TextureUsage, TextureViewDesc, Topology,
+    VertexLayoutDesc, Viewport,
 };
 
 use crate::format::{BACK_BUFFER_FORMATS, dxgi_format, present_format};
@@ -142,7 +143,23 @@ fn encodes(format: Format) -> bool {
 
 fn copy_program<B: Backend>(backend: &mut B, encode: bool) -> Result<B::Program, GpuError> {
     let fragment = if encode { "encode" } else { "copy" };
-    crate::program_from_wgsl(backend, PRESENT_WGSL, "vs", fragment)
+    let vs = backend.create_shader(&ShaderModule::from_wgsl(
+        PRESENT_WGSL,
+        "vs",
+        ShaderStage::Vertex,
+    )?)?;
+    let fs = backend.create_shader(&ShaderModule::from_wgsl(
+        PRESENT_WGSL,
+        fragment,
+        ShaderStage::Fragment,
+    )?)?;
+    let program = backend.create_program(&Program::Render {
+        vertex: &vs,
+        fragment: Some(&fs),
+    });
+    backend.destroy(Object::Shader(vs));
+    backend.destroy(Object::Shader(fs));
+    program
 }
 
 /// The blocks and program of the present copy.
