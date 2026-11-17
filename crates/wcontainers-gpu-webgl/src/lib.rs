@@ -1319,6 +1319,7 @@ impl WebGl {
             comp_read: 4,
             comp_kept: kept,
             n: 1,
+            swap: false,
         });
         let at = [region.origin.x as i32, region.origin.y as i32];
         for i in 0..extent.depth_or_layers {
@@ -1845,7 +1846,7 @@ impl WebGl {
         ))?;
         let texels = (extent.width * extent.height) as usize;
         let mut wide = Vec::new();
-        if read.texel_read() != read.texel_kept() {
+        if read.repacks() {
             wide.resize(texels * read.texel_read(), 0);
         }
         for i in 0..extent.depth_or_layers as usize {
@@ -3040,6 +3041,25 @@ impl Backend for WebGl {
                 return self.upload_blocks(region, extent);
             }
         }
+        if format::swapped(region.texture.desc.format) {
+            self.slow.hit(SlowPath::FormatConverted);
+            let mut swapped = data.to_vec();
+            let (row, rows) = (extent.width as usize * 4, extent.height as usize);
+            let layers = extent.depth_or_layers as usize;
+            for layer in 0..layers {
+                for r in 0..rows {
+                    let at = (layer * rows_per_layer as usize + r) * row_pitch as usize;
+                    format::swap_red_blue(&mut swapped[at..at + row]);
+                }
+            }
+            return self.upload(
+                region,
+                extent,
+                Texels::Bytes(&swapped),
+                row_pitch,
+                rows_per_layer,
+            );
+        }
         self.upload(
             region,
             extent,
@@ -3377,12 +3397,13 @@ impl Backend for WebGl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        let Some(data) = src.buffer.data else {
-            self.unbuilt("copies into textures from index-only buffers");
-            return;
-        };
-        if dst.texture.host.is_some() {
-            // The buffer's bytes read back, then written as a host write.
+        let data = src
+            .buffer
+            .data
+            .filter(|_| dst.texture.host.is_none() && !format::swapped(dst.texture.desc.format));
+        let Some(data) = data else {
+            // The buffer's bytes read back, then written as a host write: into textures kept on the
+            // host or swapped there, and from index-only buffers, which no unpack buffer can be.
             let (bw, bh, bytes) = dst.texture.desc.format.block();
             let (row, rows) = (
                 u64::from(extent.width.div_ceil(bw) * bytes),
@@ -3406,7 +3427,7 @@ impl Backend for WebGl {
                 self.write_texture(dst, extent, &bytes, pitch, per_layer, WriteMode::Ordered);
             }
             return;
-        }
+        };
         self.refresh(src.buffer, Some(false));
         self.fresh(dst.texture);
         self.written(dst.texture);
@@ -3429,30 +3450,6 @@ impl Backend for WebGl {
         dst: &CopyBufferTexture<'_, Self>,
         extent: Extent,
     ) {
-        if let Some(h) = &src.texture.host {
-            // From the host copy, each row of blocks written into the buffer in order.
-            let (bw, bh, bytes) = src.texture.desc.format.block();
-            let (row, rows) = (
-                (extent.width.div_ceil(bw) * bytes) as usize,
-                extent.height.div_ceil(bh) as usize,
-            );
-            let mut packed = vec![0; row * rows * extent.depth_or_layers as usize];
-            let size = [extent.width, extent.height, extent.depth_or_layers];
-            h.read(
-                &src.texture.desc,
-                src.mip,
-                Self::corner(src),
-                size,
-                &mut packed,
-            );
-            let (pitch, per_layer) = (u64::from(dst.row_pitch), u64::from(dst.rows_per_layer));
-            for (i, chunk) in packed.chunks_exact(row).enumerate() {
-                let (layer, r) = ((i / rows) as u64, (i % rows) as u64);
-                let at = dst.offset + (layer * per_layer + r) * pitch;
-                self.write_buffer(dst.buffer, at, chunk, WriteMode::Ordered);
-            }
-            return;
-        }
         if self
             .through_depth(src, extent, |b, colour| {
                 b.copy_texture_to_buffer(colour, dst, extent);
@@ -3462,17 +3459,45 @@ impl Backend for WebGl {
         {
             return;
         }
-        self.fresh(src.texture);
-        let read = src
-            .texture
-            .read
-            .filter(|r| r.texel_read() == r.texel_kept());
-        let (Some(read), Some(data)) = (read, dst.buffer.data) else {
-            self.unbuilt(
-                "copies into buffers of formats read wider than stored, and into index-only buffers",
+        let direct = src.texture.read.filter(|r| !r.repacks());
+        let (Some(read), Some(data), None) = (direct, dst.buffer.data, &src.texture.host) else {
+            // Read on the host (the host copy, or the GPU's texels read back now), then each row of
+            // blocks written into the buffer in order: for textures kept on the host, formats
+            // `readPixels` reads other than stored, and index-only buffers. Depth arrives here as the
+            // colour texture it was drawn into, whose texels keep the depth's own bytes.
+            let (bw, bh, bytes) = match (&src.texture.host, src.texture.read) {
+                (None, Some(r)) => (1, 1, r.texel_kept() as u32),
+                _ => src.texture.desc.format.block(),
+            };
+            let (row, rows) = (
+                (extent.width.div_ceil(bw) * bytes) as usize,
+                extent.height.div_ceil(bh) as usize,
             );
+            let mut packed = vec![0; row * rows * extent.depth_or_layers as usize];
+            if let Some(h) = &src.texture.host {
+                let size = [extent.width, extent.height, extent.depth_or_layers];
+                h.read(
+                    &src.texture.desc,
+                    src.mip,
+                    Self::corner(src),
+                    size,
+                    &mut packed,
+                );
+            } else {
+                self.slow.hit(SlowPath::HostCopyReadBack);
+                if self.read_texture_now(src, extent, &mut packed).is_err() {
+                    return self.invalid("a copy out of a format that cannot be read back".into());
+                }
+            }
+            let (pitch, per_layer) = (u64::from(dst.row_pitch), u64::from(dst.rows_per_layer));
+            for (i, chunk) in packed.chunks_exact(row).enumerate() {
+                let (layer, r) = ((i / rows) as u64, (i % rows) as u64);
+                let at = dst.offset + (layer * per_layer + r) * pitch;
+                self.write_buffer(dst.buffer, at, chunk, WriteMode::Ordered);
+            }
             return;
         };
+        self.fresh(src.texture);
         self.refresh(dst.buffer, None);
         let layer_bytes = dst.row_pitch as usize * dst.rows_per_layer as usize;
         for i in 0..extent.depth_or_layers {
@@ -3751,7 +3776,7 @@ impl Backend for WebGl {
             ReadSource::Texture { region, .. } => region.texture.read,
             ReadSource::Buffer { .. } => None,
         }
-        .filter(|r| r.texel_read() != r.texel_kept());
+        .filter(|r| r.repacks());
         Ok(Handle(Rc::new(core::cell::RefCell::new(ReadbackObj {
             pbo: Some(pbo),
             queries: Vec::new(),

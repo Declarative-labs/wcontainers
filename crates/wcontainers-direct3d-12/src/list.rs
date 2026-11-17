@@ -315,6 +315,15 @@ pub enum Command {
         area: Option<[u32; 6]>,
     },
     Dispatch([u32; 3]),
+    /// `ResolveSubresource`: the samples of subresource `src_index` averaged as `format` into
+    /// `dst_index`.
+    Resolve {
+        dst: ResourceId,
+        dst_index: u32,
+        src: ResourceId,
+        src_index: u32,
+        format: u32,
+    },
     /// `BeginQuery` and `EndQuery`, `D3D12_QUERY_TYPE` in `kind`.
     BeginQuery {
         heap: QueryHeapId,

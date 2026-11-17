@@ -148,20 +148,44 @@ impl ResourceDesc {
 
     /// `GetResourceAllocationInfo` for this resource: its size and alignment in a heap. Buffers and
     /// textures take 64 KiB pages (4 MiB for multisampled textures); a texture's bytes are its
-    /// subresources' copyable footprints for each sample, the layout this front keeps them in.
+    /// subresources' copyable footprints for each sample, the layout this front keeps them in. The
+    /// smaller alignment Direct3D 12 allows is taken when asked for and the most detailed level is
+    /// small enough: 4 KiB for textures that are no target with at most 64 KiB, 64 KiB for
+    /// multisampled ones with at most 4 MiB; any other alignment asked for is refused.
     pub fn allocation(&self) -> Result<(u64, u64), Error> {
+        const SMALL: u64 = 4 << 10;
         const PAGE: u64 = 64 << 10;
         const MSAA_PAGE: u64 = 4 << 20;
-        let align = if self.sample_count > 1 {
-            MSAA_PAGE
-        } else {
-            PAGE
-        };
+        /// `D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET` and `..._ALLOW_DEPTH_STENCIL`.
+        const TARGETS: u32 = 0x3;
+        let samples = u64::from(self.sample_count.max(1));
+        let natural = if samples > 1 { MSAA_PAGE } else { PAGE };
         let bytes = if self.dimension == DIMENSION_BUFFER {
+            if ![0, PAGE].contains(&self.alignment) {
+                return Err(Error::Invalid("a buffer's alignment"));
+            }
             self.width
         } else {
             self.texture_format()?;
-            self.footprints(0, self.subresources()?, 0)?.1 * u64::from(self.sample_count.max(1))
+            self.footprints(0, self.subresources()?, 0)?.1 * samples
+        };
+        let align = match self.alignment {
+            0 => natural,
+            a if a == natural => natural,
+            a if self.dimension != DIMENSION_BUFFER => {
+                let top = self.footprints(0, 1, 0)?.0[0];
+                let top = top.row_size * u64::from(top.rows) * u64::from(top.footprint.depth);
+                let small = match a {
+                    SMALL => samples == 1 && self.flags & TARGETS == 0 && top <= PAGE,
+                    PAGE => samples > 1 && top * samples <= MSAA_PAGE,
+                    _ => false,
+                };
+                if !small {
+                    return Err(Error::Invalid("a texture's alignment"));
+                }
+                a
+            }
+            _ => return Err(Error::Invalid("a buffer's alignment")),
         };
         Ok((bytes.next_multiple_of(align), align))
     }

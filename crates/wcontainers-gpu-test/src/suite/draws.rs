@@ -640,6 +640,209 @@ pub fn instances_start_at_the_first_instance<H: Host>() {
     ok(&mut b);
 }
 
+/// A vertex stream of stride zero gives every vertex and instance its first element: a quad drawn
+/// twice, its colour from a stream of three different colours of which only the first is read.
+pub fn a_stream_of_stride_zero_reads_its_first_element<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 2;
+    const COLOURED: &str = "
+    struct Out { @builtin(position) pos: vec4<f32>, @location(0) c: vec4<f32> }
+    @vertex fn vs(@location(0) p: vec2<f32>, @location(1) c: vec4<f32>) -> Out {
+        return Out(vec4<f32>(p, 0.5, 1.0), c);
+    }
+    @fragment fn fs(i: Out) -> @location(0) vec4<f32> {
+        return i.c;
+    }
+    ";
+    let (t, v) = rgba8_target(&mut b, N);
+    let quad = vertex_buffer(&mut b, &QUAD);
+    let colours = vertex_buffer(
+        &mut b,
+        &[0.25, 0.5, 0.75, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+    );
+    let p = program(&mut b, COLOURED, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let mut desc = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    desc.streams[0] = Some(VertexStream {
+        stride: 8,
+        step: StepMode::Vertex,
+    });
+    desc.streams[1] = Some(VertexStream {
+        stride: 0,
+        step: StepMode::Vertex,
+    });
+    desc.attributes[0] = Some(VertexAttribute {
+        location: 0,
+        stream: 0,
+        offset: 0,
+        format: VertexFormat::Float32x2,
+    });
+    desc.attributes[1] = Some(VertexAttribute {
+        location: 1,
+        stream: 1,
+        offset: 0,
+        format: VertexFormat::Float32x4,
+    });
+    let vl = b.create_vertex_layout(&desc).expect("create_vertex_layout");
+    let vp = viewport(N, N);
+    let streams = [
+        Some(VertexBinding {
+            buffer: &quad,
+            offset: 0,
+        }),
+        Some(VertexBinding {
+            buffer: &colours,
+            offset: 0,
+        }),
+    ];
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&call(
+        &p,
+        &bl,
+        &ds,
+        &rs,
+        &vl,
+        &streams,
+        &vp,
+        Topology::TriangleStrip,
+        DrawRange::Vertices {
+            first: 0,
+            count: 4,
+            first_instance: 0,
+            instances: 2,
+        },
+    ));
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let expected: Vec<u8> = (0..N * N).flat_map(|_| [64, 128, 191, 255]).collect();
+    assert_close(&got, &expected, 1, 4, N as usize);
+    ok(&mut b);
+}
+
+/// A comparison sampler compares the reference with the stored depth by its function: a
+/// `depth32float` texel cleared to 0.5, compared at each of four pixels with the pixel's x over 4
+/// (0.125, 0.375, 0.625, 0.875) by `Less` into red and `GreaterEqual` into green.
+pub fn comparison_samplers_compare_with_the_stored_depth<H: Host>() {
+    let mut b = H::make();
+    needs(
+        &b,
+        Format::Depth32Float,
+        FormatUse::DEPTH_STENCIL | FormatUse::SAMPLE,
+    );
+    const N: u32 = 4;
+    const COMPARED: &str = "
+    @group(0) @binding(16) var less: sampler_comparison;
+    @group(0) @binding(17) var greater_equal: sampler_comparison;
+    @group(0) @binding(32) var depth: texture_depth_2d;
+    @vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+        return vec4<f32>(p, 0.5, 1.0);
+    }
+    @fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+        let r = pos.x / 4.0;
+        let at = vec2<f32>(0.5);
+        return vec4<f32>(textureSampleCompareLevel(depth, less, at, r),
+                         textureSampleCompareLevel(depth, greater_equal, at, r), 0.0, 1.0);
+    }
+    ";
+    let d = texture(
+        &mut b,
+        Format::Depth32Float,
+        (1, 1),
+        1,
+        1,
+        TextureUsage::RENDER | TextureUsage::SAMPLE,
+    );
+    let dv = view(&mut b, &d, Format::Depth32Float);
+    b.begin_pass(&PassDesc {
+        colors: Default::default(),
+        depth: Some(DepthAttachment {
+            view: &dv,
+            depth: Some(AspectOps {
+                load: LoadOp::Clear(0.5f32.to_bits()),
+                store: StoreOp::Store,
+                read_only: false,
+            }),
+            stencil: None,
+        }),
+        empty: None,
+        occlusion: None,
+    });
+    b.end_pass();
+    let sampler = |b: &mut H::Backend, compare| {
+        b.create_sampler(&SamplerDesc {
+            min: Filter::Nearest,
+            mag: Filter::Nearest,
+            mip: Filter::Nearest,
+            address: [AddressMode::Clamp; 3],
+            lod_range: [0.0f32.to_bits(), 32.0f32.to_bits()],
+            anisotropy: 1,
+            compare: Some(compare),
+            border: BorderColor::TransparentBlack,
+        })
+        .expect("create_sampler")
+    };
+    let less = sampler(&mut b, CompareFn::Less);
+    let greater_equal = sampler(&mut b, CompareFn::GreaterEqual);
+    let set = b
+        .create_binding_set(&[
+            BindingEntry {
+                binding: 16,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Sampler(&less),
+            },
+            BindingEntry {
+                binding: 17,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Sampler(&greater_equal),
+            },
+            BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&dv),
+            },
+        ])
+        .expect("create_binding_set");
+    let (t, v) = rgba8_target(&mut b, N);
+    let quad = vertex_buffer(&mut b, &QUAD);
+    let p = program(&mut b, COMPARED, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let vp = viewport(N, 1);
+    let streams = [Some(VertexBinding {
+        buffer: &quad,
+        offset: 0,
+    })];
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        bindings: [Some(&set), None, None, None],
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+        )
+    });
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, 1, 1), 4);
+    let expected = [
+        255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
+    ];
+    assert_close(&got, &expected, 0, 4, N as usize);
+    ok(&mut b);
+}
+
 /// Indexed strips with 16 and 32-bit indices read from the index buffer's offset, restart at the
 /// largest index value, and add the base vertex: two quads, left and right, from one strip of nine
 /// indices. Where the back end has no [`Features::BASE_VERTEX_INSTANCE`] the base vertex is 0.

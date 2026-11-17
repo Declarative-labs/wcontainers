@@ -67,7 +67,9 @@ pub struct DepthAttachment<'a, B: Backend> {
 
 /// The size of a pass that has no attachments (Direct3D's rendering with only storage writes bound).
 /// A back end whose API needs an attachment adds one of its own, never stored, of this size and sample
-/// count; its pipelines are built for it.
+/// count; its pipelines are built for it. Width and height are 1 to [`crate::Limits::max_texture_2d`],
+/// and `samples` a count [`crate::FormatCaps::takes_samples`] gives for [`crate::Format::R8Unorm`], the
+/// format of that attachment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EmptyPass {
     pub width: u32,
@@ -191,7 +193,10 @@ pub struct DrawCall<'a, B: Backend> {
     /// a front's API allows turning it off, the front rewrites indices (slow path
     /// [`crate::SlowPath::RestartRewrite`]).
     pub restart: bool,
+    /// One viewport: a front whose API draws through several splits the draw into one per viewport
+    /// ([`crate::SlowPath::MultiViewportSplit`]).
     pub viewports: &'a [Viewport],
+    /// At most one scissor, and one where the raster block scissors.
     pub scissors: &'a [ScissorRect],
     /// Blend constant as f32 bits.
     pub blend_constant: [u32; 4],

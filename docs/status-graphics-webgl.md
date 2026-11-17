@@ -5,11 +5,11 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a is done. After run 7, G3 (section 12's pass bar) is met in Chrome and natively on ANGLE with
+G3a is done. After run 8, G3 (section 12's pass bar) is met in Chrome and natively on ANGLE with
 every extension. What remains cannot be fixed inside this crate:
-- Chrome's WebGL 2 passes the shared suite (24 tests) and the back end's 19 checks, 43 of 43, with
+- Chrome's WebGL 2 passes the shared suite (24 tests) and the back end's 20 checks, 44 of 44, with
   every extension and again without WEBGL_stencil_texturing and the four BC extensions.
-- Natively on ANGLE also 43 of 43 with every extension (since run 6 `present_shows_the_frame`
+- Natively on ANGLE also 44 of 44 with every extension (since run 6 `present_shows_the_frame`
   presents through an EGL window surface on a real window instead of a pbuffer).
 - Against the WebGPU back end, 5 of 6 comparisons pass. The one that fails is `r32float` filtered
   in the program here against WebGPU's hardware filter (one float step off in 5 of 16 values, from
@@ -18,6 +18,13 @@ every extension. What remains cannot be fixed inside this crate:
   blocks ask for what is absent, in Chrome and on ANGLE. G1 has to change that.
 - `TIMESTAMPS` is built but cannot run here: Chrome (every ANGLE back end) and mozangle give 0
   timestamp bits on the RTX 3080.
+
+Run 8 merged origin/phase-2-graphics (164ad69) and origin/phase-2-graphics-webgpu (cf2f03c), fixed
+`textureSize` of a texture a program only sizes (found by the shaders track: its `ps_size` read 1 by
+1 on WebGL 2), built `bgra8unorm` and `bgra8unorm-srgb` (stored as RGBA, red and blue swapped on the
+host), and built copies into buffers of formats `readPixels` reads wider than stored (depth
+included) and copies between textures and index-only buffers, through the host. Suite and checks: 44 of 44 in Chrome and on ANGLE with every extension; the
+known failures unchanged.
 
 Run 7 merged origin/phase-2-graphics (688aff2) and origin/phase-2-graphics-webgpu, declared the
 interface's new `INSTANCE_STEP_RATE` (and fixed expanded captures, which ignored step rates), refused
@@ -122,7 +129,9 @@ Chrome and on ANGLE with every extension.
     texture-to-buffer copies of formats read wider than stored (depth included), depth read backs of
     cube textures, both aspects of one depth-stencil texture fetched by one draw, vertex formats GL
     ES cannot read as stored (BGRA8, 10-10-10-2 integer, 11-11-10), negative stream offsets after a
-    base vertex, copies between an index-only and a data-only buffer, buffer-texture copies with an index-only buffer.
+    base vertex, copies between an index-only and a data-only buffer. (Run 8 built texture-to-buffer copies of
+    formats read wider than stored, depth included, and buffer-texture copies with an index-only
+    buffer.)
 - platform.rs: the context. In the browser `WebGl::on_canvas(WebGl2RenderingContext, off)`;
   natively `WebGl::on_angle(dir, off)` loads `libEGL` from `dir` with khronos-egl (EGL 1.0 calls only)
   and makes an OpenGL ES 3.0 context current on a 1 by 1 pbuffer. `off` names WebGL extensions to
@@ -358,6 +367,32 @@ Chrome and on ANGLE with every extension.
     `srgb_views_of_block_compressed_textures` (a grey BC1 block loads 131 to 133 through the
     texture's view and 58 to 60 through the sRGB one, then white after a later write).
 
+- G3 run 8:
+  - Merged origin/phase-2-graphics 164ad69 (one conflict in slow.rs, the same two slow paths in
+    the other order; the shared line's order kept, so slow.rs equals it) and
+    origin/phase-2-graphics-webgpu cf2f03c.
+  - `textureSize` of a texture a program only sizes: the size rewrite (run 4) leaves no other use of
+    the sampler uniform, so GL dropped it, the link gave the texture no unit, and its size uniform
+    stayed 0 (sizes of 1). Now such a texture still takes a unit, so its size uniform follows the
+    bound view. Found by the shaders track (`ps_size`, `GetDimensions` only). The check
+    `loads_count_levels_from_the_view` now also draws with a program that only sizes the texture.
+  - `bgra8unorm` and `bgra8unorm-srgb` (plan 5.8): stored as RGBA8 and SRGB8_ALPHA8; writes swap red
+    and blue on the host (`FormatConverted`, counted), read backs now and later swap them back while
+    repacking (`ReadAs::swap`). They sample, filter, render, blend, resolve, take GL's sample counts
+    and copy out. Copies between the two go through a pixel pack buffer as stored. Copies from a
+    buffer into them read the buffer back and write it as a host write; copies out of them into a
+    buffer read the texels back and write them into the buffer (`HostCopyReadBack`). `PRESENT`
+    stays on `rgba8unorm` only.
+  - The same host route now builds three copies that lost the device as not built: texture to
+    buffer of formats `readPixels` reads wider than stored (8 and 16-bit integers, and depth and
+    stencil through `DepthReadByDraw`), texture into an index-only buffer, and index-only buffer
+    into a texture. Copies out of formats without `COPY_OUT` (16-bit floats, packed formats) are
+    `Invalid`, as the interface's rule makes them.
+  - New check (Chrome and ANGLE): `bgra_textures_keep_their_byte_order` (both formats written, read
+    back now and later, loaded through a view, copied into a vertex and an index-only buffer and
+    back, cleared red as a target; an `r8uint` texture copied into a buffer). The typeless check
+    copies `bgra8unorm` to `bgra8unorm-srgb` and back.
+
 - G3 run 5:
   - The test tool: angle/build.cmd unpacks mozangle 0.7.1 into C:\wc\tools\mozangle-0.7.1-patched
     and applies angle/d3d11-clip-control.patch. The patch holds three upstream ANGLE fixes to the
@@ -497,7 +532,9 @@ every colour-renderable 8, 16 and 32-bit integer format, and R32F, RG32F and RGB
 EXT_color_buffer_float); not 16-bit floats, packed formats, depth or stencil. Since run 3, samples:
 1, 2, 4 and 8 for the colour formats that render and are not integers, and for depth formats (as
 GL reports them on the RTX 3080); integer formats take one.
-No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil8. Since run 4:
+No bits yet: 16-bit normalised, the swizzled formats other than BGRA8 (BGRX8, B5G5R5A1, BGRA4),
+A8, Stencil8. Since run 8: `bgra8unorm` and `bgra8unorm-srgb` as `rgba8unorm` and its sRGB form
+(sample, filter, render, blend, resolve, samples 1 to 8, copy out), red and blue swapped on the host. Since run 4:
 the 14 BC formats sample, filter and copy out (read back from the host copy) on every route, and
 RGB9E5 copies out too.
 Since G3 run 1: `PRESENT` on `rgba8unorm` (the canvas's drawing buffer), and `COPY_OUT` on every
@@ -686,6 +723,21 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   - The job before (11:01 to 11:10), with the step rates, `TEXEL_BUFFERS` and the absent check but
     without the host-kept copies and sRGB BC views: 41 of 41 with every extension in Chrome and on
     ANGLE, 26 of 41 on the routes without the extensions, the same 5 of 6 against WebGPU.
+- 2026-11-17, G3 run 8, same desktop (RTX 3080, driver 32.0.16.2101; desktop clock times, queued
+  jobs, not timed; other tracks' jobs queued beside them; the desktop refused SSH sessions for a
+  while at the start of the run, then answered). 24 suite tests and 20 checks (44).
+  - After the merges and the size fix, before BGRA (job 11:32 to 11:41): Chrome 43 of 43 with every
+    extension and without stencil texturing and BC; 28 of 43 on both routes without the clip
+    extensions; ANGLE the same; 5 of 6 against WebGPU; all scene verdicts as expected; lint clean.
+  - Final tree (job 11:48 to 11:58), lint clean on both targets in its build: Chrome 157.0.8103.78
+    44 of 44 with every extension and 44 of 44 without WEBGL_stencil_texturing and the BC
+    extensions, 29 of 44 without EXT_clip_control and 29 of 44 without it and
+    WEBGL_provoking_vertex; ANGLE (patched mozangle 0.7.1) 44 of 44 with every extension, 29 of 44
+    on both routes without the extensions (the same 15 known failures). The 4 unit tests of
+    src/capture.rs pass; all scene verdicts as expected; 5 of 6 against WebGPU (r32float against the
+    hardware filter, as before).
+  - The size fix was not first run without it here; the failure it fixes was seen by the shaders
+    track (`ps_size`: 2591 of 4096 texels differ on WebGL 2, every covered one sized 1 by 1).
 - Per-draw cost, run 5 (Chrome 157.0.8103.78 headless, RTX 3080; `gpu-job --alone`; the same scene
   and method as run 3). Since the merge, the cost page has to make the WebGPU device inside a JSPI
   export. Before that fix the page hung twice, once for 10 minutes and once for 2.
@@ -825,6 +877,9 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   twice; Direct3D runs it once, but a vertex program gives the same results each time. A capture
   past MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS fails
   its link and loses the device with GL's log; the interface has no limit for it.
+- Copies between BGRA textures and buffers go through the host (`HostCopyReadBack`): the bytes must
+  be swapped, and WebGL 2 has no BGRA upload or read format. A draw could swap them on the GPU;
+  not built, since buffer copies of render targets are rare next to texture writes and read backs.
 - The sRGB twin of a BC texture is refreshed from the host copy and counted `HostCopyKept` (run 7):
   none of the named slow paths is closer, and the twin route for other formats counts
   `CopyThroughBuffer`, which this is not.
@@ -905,7 +960,7 @@ What is left of G3's pass bar cannot be done in this crate:
   gives some is needed to run that route.
 
 After that, in about this order:
-1. BGRA (`FormatConverted`) and 16-bit normalised formats by EXT_texture_norm16.
+1. 16-bit normalised formats by EXT_texture_norm16; BGRA as a surface format (`PRESENT`).
 2. The `generateMipmap` override where GLES allows it, and `clear_texture` and `clear_rects` by
    `clearBuffer*` (plan 5.8). An override that falls back to the default needs the default's body
    as a public function of `wcontainers-gpu` first (an "interface:" commit).

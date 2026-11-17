@@ -250,3 +250,8 @@ fn copies_into_and_out_of_host_kept_textures() {
 fn srgb_views_of_block_compressed_textures() {
     checks::srgb_views_of_block_compressed_textures::<Angle>();
 }
+
+#[test]
+fn bgra_textures_keep_their_byte_order() {
+    checks::bgra_textures_keep_their_byte_order::<Angle>();
+}

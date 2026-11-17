@@ -741,6 +741,8 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::Rgba32Uint, Format::Rgba32Float),
         (Format::Rgba8Unorm, Format::Rgba8UnormSrgb),
         (Format::Rgba8UnormSrgb, Format::Rgba8Uint),
+        (Format::Bgra8Unorm, Format::Bgra8UnormSrgb),
+        (Format::Bgra8UnormSrgb, Format::Bgra8Unorm),
     ];
     let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for (i, (from, to)) in pairs.into_iter().enumerate() {
@@ -819,16 +821,21 @@ const LEVEL_LOAD: &str = "
     let level = i32(l.x);
     return vec4<u32>(textureLoad(t, vec2<i32>(p.xy), level).x, textureDimensions(t, level).x, 0u, 0u);
 }
+@fragment fn fs_size() -> @location(0) vec4<u32> {
+    return vec4<u32>(255u, textureDimensions(t, i32(l.x)).x, 0u, 0u);
+}
 ";
 
 /// Loads and sizes count levels from the view's first, as WGSL's `textureLoad` and
 /// `textureDimensions` do: each level of an `rgba8uint` texture holds its own number, and views
-/// starting at each level are loaded and sized at each of their levels.
+/// starting at each level are loaded and sized at each of their levels, also by a program that only
+/// sizes the texture.
 pub fn loads_count_levels_from_the_view<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
     let k = Kit::new(&mut b);
     let program = kit::program(&mut b, LEVEL_LOAD, "vs", "fs");
+    let sizing = kit::program(&mut b, LEVEL_LOAD, "vs", "fs_size");
     let f = Format::Rgba8Uint;
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST;
     let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 3, usage, false);
@@ -888,23 +895,25 @@ pub fn loads_count_levels_from_the_view<H: Host>() {
             let mut word = [0u8; 16];
             word[0] = level as u8;
             b.write_buffer(&params, 0, &word, WriteMode::Discard);
-            b.begin_pass(&kit::pass(&out_view, [9; 4], None));
-            b.draw(&kit::call(
-                &k,
-                &program,
-                Some(&set),
-                &vp,
-                Topology::TriangleList,
-                3,
-            ));
-            b.end_pass();
-            let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 4, false);
             let at = base + level;
-            assert_eq!(
-                got,
-                vec![at as u8, 4 >> at, 0, 0],
-                "level {level} of the view from level {base}: its number and width"
-            );
+            for (p, first, what) in [(&program, at as u8, "loaded"), (&sizing, 255, "sized only")] {
+                b.begin_pass(&kit::pass(&out_view, [9; 4], None));
+                b.draw(&kit::call(
+                    &k,
+                    p,
+                    Some(&set),
+                    &vp,
+                    Topology::TriangleList,
+                    3,
+                ));
+                b.end_pass();
+                let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 4, false);
+                assert_eq!(
+                    got,
+                    vec![first, 4 >> at, 0, 0],
+                    "level {level} of the view from level {base}, {what}: its number and width"
+                );
+            }
         }
         b.destroy(Object::BindingSet(set));
         b.destroy(Object::TextureView(view));
@@ -2858,5 +2867,197 @@ pub fn srgb_views_of_block_compressed_textures<H: Host>() {
         255,
         "after a later write"
     );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// BGRA textures keep their byte order through every route, stored as RGBA with red and blue
+/// swapped on the host (`FormatConverted`): written, read back now and later, loaded (red where the
+/// bytes put red), cleared as a target, and copied into a vertex buffer and an index-only one and
+/// back (`HostCopyReadBack`). An `r8uint` texture, which `readPixels` reads wider than stored,
+/// copies into a buffer the same way.
+pub fn bgra_textures_keep_their_byte_order<H: Host>() {
+    use crate::kit::{self, Kit};
+    use Format as F;
+    let mut b = H::make();
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, LOAD_CORNER, "vs", "fs");
+    macro_rules! region {
+        ($texture:expr) => {
+            TextureRegion {
+                texture: $texture,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            }
+        };
+    }
+    let extent = |width, height| Extent {
+        width,
+        height,
+        depth_or_layers: 1,
+    };
+    // Texel i of a 4 by 2 texture: blue 10 + i, green 100 + i, red 200 + i, alpha 250 - i.
+    let bgra: Vec<u8> = (0..8u8)
+        .flat_map(|i| [10 + i, 100 + i, 200 + i, 250 - i])
+        .collect();
+    let rgba8 = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        F::Rgba8Unorm,
+        [1, 1, 1],
+        1,
+        rgba8,
+        false,
+    );
+    let out_view = kit::target(&mut b, &out, F::Rgba8Unorm, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
+    let usage = TextureUsage::SAMPLE
+        | TextureUsage::RENDER
+        | TextureUsage::COPY_SRC
+        | TextureUsage::COPY_DST;
+    for format in [F::Bgra8Unorm, F::Bgra8UnormSrgb] {
+        let want = FormatUse::SAMPLE | FormatUse::RENDER | FormatUse::COPY_OUT;
+        assert!(
+            b.caps().formats.get(format).contains(want),
+            "{format:?}: {want:?}"
+        );
+        let before = b.slow_paths().count(SlowPath::FormatConverted);
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [4, 2, 1],
+            1,
+            usage,
+            false,
+        );
+        b.write_texture(&region!(&t), extent(4, 2), &bgra, 16, 2, WriteMode::Ordered);
+        assert!(b.slow_paths().count(SlowPath::FormatConverted) > before);
+        assert_eq!(
+            kit::read(&mut b, &t, 0, 0, [4, 2, 1], 4, false),
+            bgra,
+            "{format:?} now"
+        );
+        let rb = b
+            .read_back(&ReadSource::Texture {
+                region: region!(&t),
+                extent: extent(4, 2),
+            })
+            .expect("read_back");
+        b.submit();
+        b.wait_read(&rb);
+        let mut later = vec![0; 32];
+        b.finish_read(rb, &mut later);
+        assert_eq!(later, bgra, "{format:?} later");
+        // Loaded through a view of its own format, texel (0, 0) is red 200 (sRGB decoded for the
+        // sRGB format).
+        let view = kit::view(&mut b, &t, format, ViewDimension::D2, 0, 1, 0, 1);
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&view),
+            }])
+            .expect("create_binding_set");
+        b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            &program,
+            Some(&set),
+            &vp,
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 4, false);
+        let expected = if format == F::Bgra8Unorm {
+            [200, 100, 10, 250]
+        } else {
+            [147, 32, 1, 250]
+        };
+        for (c, (g, e)) in got.iter().zip(expected).enumerate() {
+            assert!(
+                g.abs_diff(e) <= 1,
+                "{format:?} loaded: {got:?}, expected {expected:?} ({c})"
+            );
+        }
+        // Copied into a vertex buffer and an index-only buffer, and from each into a second texture.
+        for usage in [BufferUsage::VERTEX, BufferUsage::INDEX] {
+            let buf = buffer(&mut b, usage, &[0; 64]);
+            let into = CopyBufferTexture {
+                buffer: &buf,
+                offset: 0,
+                row_pitch: 32,
+                rows_per_layer: 2,
+            };
+            b.copy_texture_to_buffer(&region!(&t), &into, extent(4, 2));
+            let got = read_buffer(&mut b, &buf, 64);
+            assert_eq!(
+                &got[..16],
+                &bgra[..16],
+                "{format:?} row 0 in a {usage:?} buffer"
+            );
+            assert_eq!(
+                &got[32..48],
+                &bgra[16..],
+                "{format:?} row 1 in a {usage:?} buffer"
+            );
+            let plain = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+            let t2 = kit::texture(
+                &mut b,
+                TextureDimension::D2,
+                format,
+                [4, 2, 1],
+                1,
+                plain,
+                false,
+            );
+            b.copy_buffer_to_texture(&into, &region!(&t2), extent(4, 2));
+            let back = kit::read(&mut b, &t2, 0, 0, [4, 2, 1], 4, false);
+            assert_eq!(back, bgra, "{format:?} from a {usage:?} buffer");
+            b.destroy(Object::Texture(t2));
+            b.destroy(Object::Buffer(buf));
+        }
+        // Cleared as a target to red, read back blue first.
+        let target = kit::target(&mut b, &t, format, 0, 0);
+        b.begin_pass(&kit::pass(
+            &target,
+            [1f32.to_bits(), 0, 0, 1f32.to_bits()],
+            None,
+        ));
+        b.end_pass();
+        let got = kit::read(&mut b, &t, 0, 0, [1, 1, 1], 4, false);
+        assert_eq!(got, [0, 0, 255, 255], "{format:?} cleared red");
+        b.destroy(Object::BindingSet(set));
+        b.destroy(Object::TextureView(view));
+        b.destroy(Object::TextureView(target));
+        b.destroy(Object::Texture(t));
+    }
+    // An r8uint texture's bytes, read back as RGBA integers, land in a buffer as stored.
+    let bytes: Vec<u8> = (0..8u8).map(|i| 7 * i + 3).collect();
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let t = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        F::R8Uint,
+        [4, 2, 1],
+        1,
+        usage,
+        false,
+    );
+    b.write_texture(&region!(&t), extent(4, 2), &bytes, 4, 2, WriteMode::Ordered);
+    let buf = buffer(&mut b, BufferUsage::VERTEX, &[0; 8]);
+    let into = CopyBufferTexture {
+        buffer: &buf,
+        offset: 0,
+        row_pitch: 4,
+        rows_per_layer: 2,
+    };
+    let before = b.slow_paths().count(SlowPath::HostCopyReadBack);
+    b.copy_texture_to_buffer(&region!(&t), &into, extent(4, 2));
+    assert!(b.slow_paths().count(SlowPath::HostCopyReadBack) > before);
+    assert_eq!(read_buffer(&mut b, &buf, 8), bytes, "r8uint in a buffer");
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
