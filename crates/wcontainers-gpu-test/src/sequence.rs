@@ -414,6 +414,11 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                     WriteMode::Discard,
                     WriteMode::NoOverwrite,
                 ][pick(*mode, 3)];
+                // No unfinished command may read what a NoOverwrite write touches: wait for all.
+                if mode == WriteMode::NoOverwrite {
+                    let fence = b.submit();
+                    b.wait_fence(&fence);
+                }
                 b.write_buffer(buffer, offset, &bytes(len as usize, *seed), mode);
             }
             Step::WriteTexture { which, at, seed } if !textures.is_empty() => {

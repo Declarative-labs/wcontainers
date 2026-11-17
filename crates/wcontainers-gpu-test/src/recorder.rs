@@ -26,6 +26,7 @@ pub struct Frame {
 
 pub(crate) struct BufferObj {
     pub bytes: Vec<u8>,
+    pub usage: BufferUsage,
 }
 
 pub(crate) struct TextureObj {
@@ -111,6 +112,9 @@ pub struct Recorder {
     pub calls: Vec<Call>,
     /// How deep the calls being made are inside another base call, whose own entry is the one kept.
     nested: u32,
+    /// Buffer ranges commands recorded since the last submit read: what no `NoOverwrite` write may
+    /// touch.
+    pub(crate) reads: Vec<(Id, u64, u64)>,
     /// Every rule of the interface a caller broke, and every call this back end could not carry out.
     /// Either loses the device.
     pub violations: Vec<String>,
@@ -222,6 +226,7 @@ impl Recorder {
             submits: 0,
             calls: Vec::new(),
             nested: 0,
+            reads: Vec::new(),
             violations: Vec::new(),
             shown: Vec::new(),
         }
@@ -281,6 +286,29 @@ impl Recorder {
         match self.objects.get_mut(id.0 as usize).and_then(Option::as_mut) {
             Some(Obj::Buffer(b)) => Ok(b),
             _ => Err(format!("object {} is not a live buffer", id.0)),
+        }
+    }
+
+    /// Checks a buffer was made with `usage` for what `what` does with it.
+    pub(crate) fn buffer_for(&self, id: Id, usage: BufferUsage, what: &str) -> Result<(), String> {
+        if self.buffer(id)?.usage.contains(usage) {
+            Ok(())
+        } else {
+            Err(format!("{what} of buffer {} made without {usage:?}", id.0))
+        }
+    }
+
+    /// Checks a texture was made with `usage` for what `what` does with it.
+    pub(crate) fn texture_for(
+        &self,
+        id: Id,
+        usage: TextureUsage,
+        what: &str,
+    ) -> Result<(), String> {
+        if self.texture(id)?.desc.usage.contains(usage) {
+            Ok(())
+        } else {
+            Err(format!("{what} of texture {} made without {usage:?}", id.0))
         }
     }
 
@@ -444,6 +472,11 @@ impl Recorder {
                 return Err("a depth format as a colour attachment".into());
             }
             self.attachment(*c.view, c.depth_slice)?;
+            self.texture_for(
+                self.view(*c.view)?.texture,
+                TextureUsage::RENDER,
+                "an attachment",
+            )?;
             colors[i] = Some((*c.view, c.depth_slice, c.store));
         }
         let mut depth = None;
@@ -460,6 +493,11 @@ impl Recorder {
                 return Err("depth attachment aspects differ from the format's".into());
             }
             self.attachment(*d.view, 0)?;
+            self.texture_for(
+                self.view(*d.view)?.texture,
+                TextureUsage::RENDER,
+                "an attachment",
+            )?;
             depth = Some((*d.view, d.depth, d.stencil));
         }
         let (width, height) = match (size, pass.empty) {
@@ -559,6 +597,8 @@ impl Recorder {
                 offset,
                 size,
             } => {
+                self.buffer_for(**buffer, BufferUsage::COPY_SRC, "a read back")?;
+                self.reads.push((**buffer, *offset, *offset + *size));
                 let b = self.buffer(**buffer)?;
                 let range = *offset as usize..(*offset + *size) as usize;
                 b.bytes
@@ -566,7 +606,10 @@ impl Recorder {
                     .map(<[u8]>::to_vec)
                     .ok_or_else(|| "read back past the buffer's end".into())
             }
-            ReadSource::Texture { region, extent } => self.read_region(region, *extent),
+            ReadSource::Texture { region, extent } => {
+                self.texture_for(*region.texture, TextureUsage::COPY_SRC, "a read back")?;
+                self.read_region(region, *extent)
+            }
         }
     }
 
@@ -793,6 +836,7 @@ impl Backend for Recorder {
             }
             let id = self.add(Obj::Buffer(BufferObj {
                 bytes: vec![0; desc.size as usize],
+                usage: desc.usage,
             }));
             Ok(id)
         })();
@@ -1024,6 +1068,34 @@ impl Backend for Recorder {
             let mut set = Vec::new();
             for e in entries {
                 let bound = match e.resource {
+                    BindingResource::UniformBuffer(r)
+                        if !self
+                            .buffer(*r.buffer)
+                            .is_ok_and(|b| b.usage.contains(BufferUsage::UNIFORM)) =>
+                    {
+                        return Err(GpuError::Invalid(
+                            "a uniform binding of a buffer without UNIFORM",
+                        ));
+                    }
+                    BindingResource::StorageBuffer { range: r, .. }
+                        if !self
+                            .buffer(*r.buffer)
+                            .is_ok_and(|b| b.usage.contains(BufferUsage::STORAGE)) =>
+                    {
+                        return Err(GpuError::Invalid(
+                            "a storage binding of a buffer without STORAGE",
+                        ));
+                    }
+                    BindingResource::Texture(v)
+                        if !self
+                            .view(*v)
+                            .and_then(|v| self.texture(v.texture))
+                            .is_ok_and(|t| t.desc.usage.contains(TextureUsage::SAMPLE)) =>
+                    {
+                        return Err(GpuError::Invalid(
+                            "a texture binding of a texture without SAMPLE",
+                        ));
+                    }
                     BindingResource::UniformBuffer(r) => Bound::Buffer {
                         buffer: *r.buffer,
                         offset: r.offset,
@@ -1127,6 +1199,18 @@ impl Backend for Recorder {
     fn write_buffer(&mut self, buffer: &Id, offset: u64, data: &[u8], mode: WriteMode) {
         self.log(Call::WriteBuffer(*buffer, offset, data.to_vec(), mode));
         self.check(|r| {
+            r.buffer_for(*buffer, BufferUsage::COPY_DST, "write_buffer")?;
+            let end = offset + data.len() as u64;
+            if mode == WriteMode::NoOverwrite
+                && r.reads
+                    .iter()
+                    .any(|&(b, s, e)| b == *buffer && s < end && offset < e)
+            {
+                return Err(format!(
+                    "a NoOverwrite write over bytes of buffer {} an unfinished command reads",
+                    buffer.0
+                ));
+            }
             let b = r.buffer_mut(*buffer)?;
             let end = offset as usize + data.len();
             b.bytes
@@ -1154,7 +1238,10 @@ impl Backend for Recorder {
             rows_per_layer,
             mode,
         ));
-        self.check(|r| r.write_region(region, extent, data, row_pitch, rows_per_layer));
+        self.check(|r| {
+            r.texture_for(*region.texture, TextureUsage::COPY_DST, "write_texture")?;
+            r.write_region(region, extent, data, row_pitch, rows_per_layer)
+        });
     }
 
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
@@ -1213,6 +1300,9 @@ impl Backend for Recorder {
         self.log(Call::CopyBuffer(*src, src_offset, *dst, dst_offset, size));
         self.check(|r| {
             r.outside_pass("copy_buffer")?;
+            r.buffer_for(*src, BufferUsage::COPY_SRC, "copy_buffer")?;
+            r.reads.push((*src, src_offset, src_offset + size));
+            r.buffer_for(*dst, BufferUsage::COPY_DST, "copy_buffer")?;
             if src == dst && src_offset < dst_offset + size && dst_offset < src_offset + size {
                 return Err("copy between overlapping ranges of one buffer".into());
             }
@@ -1241,12 +1331,14 @@ impl Backend for Recorder {
         self.log(Call::CopyTexture(Region::of(src), Region::of(dst), extent));
         self.check(|r| {
             r.outside_pass("copy_texture")?;
+            r.texture_for(*src.texture, TextureUsage::COPY_SRC, "copy_texture")?;
+            r.texture_for(*dst.texture, TextureUsage::COPY_DST, "copy_texture")?;
             let (sf, df) = (
                 r.texture(*src.texture)?.desc.format,
                 r.texture(*dst.texture)?.desc.format,
             );
-            if sf.block().2 != df.block().2 {
-                return Err("copy between formats of different block sizes".into());
+            if texel::bits_group(sf) != texel::bits_group(df) {
+                return Err("copy between formats of different typeless groups".into());
             }
             let bytes = r.read_region(src, extent)?;
             let (bw, bh, size) = sf.block();
@@ -1275,6 +1367,20 @@ impl Backend for Recorder {
         ));
         self.check(|r| {
             r.outside_pass("copy_buffer_to_texture")?;
+            r.buffer_for(*src.buffer, BufferUsage::COPY_SRC, "copy_buffer_to_texture")?;
+            let (bw, bh, size) = r.texture(*dst.texture)?.desc.format.block();
+            let rows = u64::from(extent.height.div_ceil(bh));
+            let pitch = u64::from(src.row_pitch);
+            let rows_per_layer = u64::from(src.rows_per_layer).max(rows);
+            let end = src.offset
+                + (u64::from(extent.depth_or_layers - 1) * rows_per_layer + rows - 1) * pitch
+                + u64::from(extent.width.div_ceil(bw) * size);
+            r.reads.push((*src.buffer, src.offset, end));
+            r.texture_for(
+                *dst.texture,
+                TextureUsage::COPY_DST,
+                "copy_buffer_to_texture",
+            )?;
             let bytes = r
                 .buffer(*src.buffer)?
                 .bytes
@@ -1298,6 +1404,12 @@ impl Backend for Recorder {
         ));
         self.check(|r| {
             r.outside_pass("copy_texture_to_buffer")?;
+            r.texture_for(
+                *src.texture,
+                TextureUsage::COPY_SRC,
+                "copy_texture_to_buffer",
+            )?;
+            r.buffer_for(*dst.buffer, BufferUsage::COPY_DST, "copy_texture_to_buffer")?;
             let bytes = r.read_region(src, extent)?;
             let format = r.texture(*src.texture)?.desc.format;
             let (bw, bh, size) = format.block();
@@ -1330,6 +1442,7 @@ impl Backend for Recorder {
         self.log(Call::ClearBuffer(*buffer, offset, size, pattern.to_vec()));
         self.check(|r| {
             r.outside_pass("clear_buffer")?;
+            r.buffer_for(*buffer, BufferUsage::COPY_DST, "clear_buffer")?;
             if !matches!(pattern.len(), 1 | 2 | 4 | 8 | 16)
                 || !size.is_multiple_of(pattern.len() as u64)
             {
@@ -1362,6 +1475,8 @@ impl Backend for Recorder {
             self.violate("submit inside a pass");
         }
         self.submits += 1;
+        // The recording back end finishes all work at a submit.
+        self.reads.clear();
         let id = self.add(Obj::Fence);
         self.log(Call::Submit(id));
         id

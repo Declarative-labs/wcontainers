@@ -634,8 +634,9 @@ impl Recorder {
         })
     }
 
-    /// Checks the usage-scope rule of a pass: a buffer any draw of the pass binds as writable storage
-    /// is used no other way by any draw of the pass (texture subresources cannot be storage here).
+    /// Checks the draw's buffers were made for how it uses them, and the usage-scope rule of a pass: a
+    /// buffer any draw of the pass binds as writable storage is used no other way by any draw of the
+    /// pass (texture subresources cannot be storage here).
     fn usage_scope(&mut self, call: &DrawCall<'_, Self>, state: &DrawState) -> Result<(), Error> {
         let mut uses: Vec<(crate::recorder::Id, bool)> = Vec::new();
         uses.extend(
@@ -658,6 +659,17 @@ impl Recorder {
                 uses.push((*buffer, *writable));
             }
         }
+        for v in call.vertex_buffers.iter().flatten() {
+            self.buffer_for(*v.buffer, BufferUsage::VERTEX, "a vertex stream")?;
+        }
+        if let Some(i) = &call.index {
+            self.buffer_for(*i.buffer, BufferUsage::INDEX, "an index binding")?;
+        }
+        if let DrawRange::Indirect { args, .. } | DrawRange::IndexedIndirect { args, .. } =
+            call.range
+        {
+            self.buffer_for(*args, BufferUsage::INDIRECT, "indirect arguments")?;
+        }
         let pass = self.pass.as_mut().ok_or("draw outside a pass")?;
         for &(buffer, writable) in &uses {
             let (mine, theirs) = if writable {
@@ -676,6 +688,67 @@ impl Recorder {
             }
         }
         Ok(())
+    }
+
+    /// The buffer bytes a draw reads: its index range, the elements its vertex streams fetch and the
+    /// ranges its binding sets bind.
+    fn draw_reads(
+        &self,
+        call: &DrawCall<'_, Self>,
+        state: &DrawState,
+    ) -> Result<Vec<(crate::recorder::Id, u64, u64)>, Error> {
+        let mut reads = Vec::new();
+        for (_, bound) in state.sets.iter().flatten().flatten() {
+            if let Bound::Buffer {
+                buffer,
+                offset,
+                size,
+                ..
+            } = *bound
+            {
+                reads.push((buffer, offset, offset + size));
+            }
+        }
+        if let (Some(i), DrawRange::Indexed { first, count, .. }) = (&call.index, &call.range) {
+            let size = u64::from(i.format.size());
+            let start = i.offset + u64::from(*first) * size;
+            reads.push((*i.buffer, start, start + u64::from(*count) * size));
+        }
+        let (list, first_instance, instances) = self.vertex_list(call)?;
+        let vertices = list.iter().flatten();
+        let (lo, hi) = (vertices.clone().min(), vertices.max());
+        for (n, stream) in state.layout.streams.iter().enumerate() {
+            let (Some(stream), Some(Some(binding))) = (stream, call.vertex_buffers.get(n)) else {
+                continue;
+            };
+            let (first, last) = match stream.step {
+                StepMode::Vertex => match (lo, hi) {
+                    (Some(&lo), Some(&hi)) => (lo, hi),
+                    _ => continue,
+                },
+                StepMode::Instance(k) if instances > 0 => {
+                    (first_instance, first_instance + (instances - 1) / k.max(1))
+                }
+                StepMode::Instance(_) => continue,
+            };
+            let mut ends = (u64::MAX, 0u64);
+            for a in state.layout.attributes.iter().flatten() {
+                if usize::from(a.stream) == n {
+                    let (count, size, _) = vertex_format(a.format)?;
+                    ends.0 = ends.0.min(u64::from(a.offset));
+                    ends.1 = ends.1.max(u64::from(a.offset) + (count * size) as u64);
+                }
+            }
+            if ends.1 > 0 {
+                let stride = u64::from(stream.stride);
+                reads.push((
+                    *binding.buffer,
+                    binding.offset + u64::from(first) * stride + ends.0,
+                    binding.offset + u64::from(last) * stride + ends.1,
+                ));
+            }
+        }
+        Ok(reads)
     }
 
     /// Every (texture, subresource) the bound texture views cover.
@@ -860,6 +933,8 @@ impl Recorder {
         self.pass.as_ref().ok_or("draw outside a pass")?;
         let state = self.gather(call)?;
         self.usage_scope(call, &state)?;
+        let reads = self.draw_reads(call, &state)?;
+        self.reads.extend(reads);
         let pass = self.pass.as_ref().ok_or("draw outside a pass")?;
         match call.topology {
             Topology::TriangleList | Topology::TriangleStrip => {}
