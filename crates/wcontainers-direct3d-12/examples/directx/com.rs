@@ -8,6 +8,7 @@ use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::*;
 
+use crate::base::HasBase;
 use crate::objects::*;
 use crate::present::*;
 
@@ -232,10 +233,10 @@ impl IDXGIObject_Impl for Adapter_Impl {
     }
     fn GetParent(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppparent: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetParent"))
+        Adapter::GetParent(self, riid, ppparent)
     }
 }
 
@@ -414,10 +415,10 @@ impl IDXGIObject_Impl for Output_Impl {
     }
     fn GetParent(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppparent: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetParent"))
+        Output::GetParent(self, riid, ppparent)
     }
 }
 
@@ -577,7 +578,7 @@ impl IDXGISwapChain_Impl for SwapChain_Impl {
         Err(self.unsupported("ResizeTarget"))
     }
     fn GetContainingOutput(&self) -> windows_core::Result<IDXGIOutput> {
-        Err(self.unsupported("GetContainingOutput"))
+        SwapChain::GetContainingOutput(self)
     }
     fn GetFrameStatistics(&self, _pstats: *mut DXGI_FRAME_STATISTICS) -> windows_core::Result<()> {
         Err(self.unsupported("GetFrameStatistics"))
@@ -623,10 +624,10 @@ impl IDXGIObject_Impl for SwapChain_Impl {
     }
     fn GetParent(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppparent: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppparent: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetParent"))
+        SwapChain::GetParent(self, riid, ppparent)
     }
 }
 
@@ -726,27 +727,27 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn CreateConstantBufferView(
         &self,
-        _pdesc: *const D3D12_CONSTANT_BUFFER_VIEW_DESC,
-        _destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        pdesc: *const D3D12_CONSTANT_BUFFER_VIEW_DESC,
+        destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("CreateConstantBufferView");
+        Device::CreateConstantBufferView(self, pdesc, destdescriptor)
     }
     fn CreateShaderResourceView(
         &self,
-        _presource: windows_core::Ref<ID3D12Resource>,
-        _pdesc: *const D3D12_SHADER_RESOURCE_VIEW_DESC,
-        _destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        presource: windows_core::Ref<ID3D12Resource>,
+        pdesc: *const D3D12_SHADER_RESOURCE_VIEW_DESC,
+        destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("CreateShaderResourceView");
+        Device::CreateShaderResourceView(self, presource, pdesc, destdescriptor)
     }
     fn CreateUnorderedAccessView(
         &self,
-        _presource: windows_core::Ref<ID3D12Resource>,
-        _pcounterresource: windows_core::Ref<ID3D12Resource>,
-        _pdesc: *const D3D12_UNORDERED_ACCESS_VIEW_DESC,
-        _destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        presource: windows_core::Ref<ID3D12Resource>,
+        pcounterresource: windows_core::Ref<ID3D12Resource>,
+        pdesc: *const D3D12_UNORDERED_ACCESS_VIEW_DESC,
+        destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("CreateUnorderedAccessView");
+        Device::CreateUnorderedAccessView(self, presource, pcounterresource, pdesc, destdescriptor)
     }
     fn CreateRenderTargetView(
         &self,
@@ -758,39 +759,54 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn CreateDepthStencilView(
         &self,
-        _presource: windows_core::Ref<ID3D12Resource>,
-        _pdesc: *const D3D12_DEPTH_STENCIL_VIEW_DESC,
-        _destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        presource: windows_core::Ref<ID3D12Resource>,
+        pdesc: *const D3D12_DEPTH_STENCIL_VIEW_DESC,
+        destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("CreateDepthStencilView");
+        Device::CreateDepthStencilView(self, presource, pdesc, destdescriptor)
     }
     fn CreateSampler(
         &self,
-        _pdesc: *const D3D12_SAMPLER_DESC,
-        _destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        pdesc: *const D3D12_SAMPLER_DESC,
+        destdescriptor: &D3D12_CPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("CreateSampler");
+        Device::CreateSampler(self, pdesc, destdescriptor)
     }
     fn CopyDescriptors(
         &self,
-        _numdestdescriptorranges: u32,
-        _pdestdescriptorrangestarts: *const D3D12_CPU_DESCRIPTOR_HANDLE,
-        _pdestdescriptorrangesizes: *const u32,
-        _numsrcdescriptorranges: u32,
-        _psrcdescriptorrangestarts: *const D3D12_CPU_DESCRIPTOR_HANDLE,
-        _psrcdescriptorrangesizes: *const u32,
-        _descriptorheapstype: D3D12_DESCRIPTOR_HEAP_TYPE,
+        numdestdescriptorranges: u32,
+        pdestdescriptorrangestarts: *const D3D12_CPU_DESCRIPTOR_HANDLE,
+        pdestdescriptorrangesizes: *const u32,
+        numsrcdescriptorranges: u32,
+        psrcdescriptorrangestarts: *const D3D12_CPU_DESCRIPTOR_HANDLE,
+        psrcdescriptorrangesizes: *const u32,
+        descriptorheapstype: D3D12_DESCRIPTOR_HEAP_TYPE,
     ) {
-        self.unsupported("CopyDescriptors");
+        Device::CopyDescriptors(
+            self,
+            numdestdescriptorranges,
+            pdestdescriptorrangestarts,
+            pdestdescriptorrangesizes,
+            numsrcdescriptorranges,
+            psrcdescriptorrangestarts,
+            psrcdescriptorrangesizes,
+            descriptorheapstype,
+        )
     }
     fn CopyDescriptorsSimple(
         &self,
-        _numdescriptors: u32,
-        _destdescriptorrangestart: &D3D12_CPU_DESCRIPTOR_HANDLE,
-        _srcdescriptorrangestart: &D3D12_CPU_DESCRIPTOR_HANDLE,
-        _descriptorheapstype: D3D12_DESCRIPTOR_HEAP_TYPE,
+        numdescriptors: u32,
+        destdescriptorrangestart: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        srcdescriptorrangestart: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        descriptorheapstype: D3D12_DESCRIPTOR_HEAP_TYPE,
     ) {
-        self.unsupported("CopyDescriptorsSimple");
+        Device::CopyDescriptorsSimple(
+            self,
+            numdescriptors,
+            destdescriptorrangestart,
+            srcdescriptorrangestart,
+            descriptorheapstype,
+        )
     }
     fn GetResourceAllocationInfo(
         &self,
@@ -971,29 +987,29 @@ impl ID3D12Device_Impl for Device_Impl {
 impl ID3D12Object_Impl for Device_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1074,39 +1090,39 @@ impl ID3D12Pageable_Impl for Queue_Impl {}
 impl ID3D12DeviceChild_Impl for Queue_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for Queue_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1121,39 +1137,39 @@ impl ID3D12Pageable_Impl for Allocator_Impl {}
 impl ID3D12DeviceChild_Impl for Allocator_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for Allocator_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1229,10 +1245,10 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn CopyResource(
         &self,
-        _pdstresource: windows_core::Ref<ID3D12Resource>,
-        _psrcresource: windows_core::Ref<ID3D12Resource>,
+        pdstresource: windows_core::Ref<ID3D12Resource>,
+        psrcresource: windows_core::Ref<ID3D12Resource>,
     ) {
-        self.unsupported("CopyResource");
+        List::CopyResource(self, pdstresource, psrcresource)
     }
     fn CopyTiles(
         &self,
@@ -1284,82 +1300,104 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn SetDescriptorHeaps(
         &self,
-        _numdescriptorheaps: u32,
-        _ppdescriptorheaps: *const Option<ID3D12DescriptorHeap>,
+        numdescriptorheaps: u32,
+        ppdescriptorheaps: *const Option<ID3D12DescriptorHeap>,
     ) {
-        self.unsupported("SetDescriptorHeaps");
+        List::SetDescriptorHeaps(self, numdescriptorheaps, ppdescriptorheaps)
     }
-    fn SetComputeRootSignature(&self, _prootsignature: windows_core::Ref<ID3D12RootSignature>) {
-        self.unsupported("SetComputeRootSignature");
+    fn SetComputeRootSignature(&self, prootsignature: windows_core::Ref<ID3D12RootSignature>) {
+        List::SetComputeRootSignature(self, prootsignature)
     }
     fn SetGraphicsRootSignature(&self, prootsignature: windows_core::Ref<ID3D12RootSignature>) {
         List::SetGraphicsRootSignature(self, prootsignature)
     }
     fn SetComputeRootDescriptorTable(
         &self,
-        _rootparameterindex: u32,
-        _basedescriptor: &D3D12_GPU_DESCRIPTOR_HANDLE,
+        rootparameterindex: u32,
+        basedescriptor: &D3D12_GPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("SetComputeRootDescriptorTable");
+        List::SetComputeRootDescriptorTable(self, rootparameterindex, basedescriptor)
     }
     fn SetGraphicsRootDescriptorTable(
         &self,
-        _rootparameterindex: u32,
-        _basedescriptor: &D3D12_GPU_DESCRIPTOR_HANDLE,
+        rootparameterindex: u32,
+        basedescriptor: &D3D12_GPU_DESCRIPTOR_HANDLE,
     ) {
-        self.unsupported("SetGraphicsRootDescriptorTable");
+        List::SetGraphicsRootDescriptorTable(self, rootparameterindex, basedescriptor)
     }
     fn SetComputeRoot32BitConstant(
         &self,
-        _rootparameterindex: u32,
-        _srcdata: u32,
-        _destoffsetin32bitvalues: u32,
+        rootparameterindex: u32,
+        srcdata: u32,
+        destoffsetin32bitvalues: u32,
     ) {
-        self.unsupported("SetComputeRoot32BitConstant");
+        List::SetComputeRoot32BitConstant(
+            self,
+            rootparameterindex,
+            srcdata,
+            destoffsetin32bitvalues,
+        )
     }
     fn SetGraphicsRoot32BitConstant(
         &self,
-        _rootparameterindex: u32,
-        _srcdata: u32,
-        _destoffsetin32bitvalues: u32,
+        rootparameterindex: u32,
+        srcdata: u32,
+        destoffsetin32bitvalues: u32,
     ) {
-        self.unsupported("SetGraphicsRoot32BitConstant");
+        List::SetGraphicsRoot32BitConstant(
+            self,
+            rootparameterindex,
+            srcdata,
+            destoffsetin32bitvalues,
+        )
     }
     fn SetComputeRoot32BitConstants(
         &self,
-        _rootparameterindex: u32,
-        _num32bitvaluestoset: u32,
-        _psrcdata: *const core::ffi::c_void,
-        _destoffsetin32bitvalues: u32,
+        rootparameterindex: u32,
+        num32bitvaluestoset: u32,
+        psrcdata: *const core::ffi::c_void,
+        destoffsetin32bitvalues: u32,
     ) {
-        self.unsupported("SetComputeRoot32BitConstants");
+        List::SetComputeRoot32BitConstants(
+            self,
+            rootparameterindex,
+            num32bitvaluestoset,
+            psrcdata,
+            destoffsetin32bitvalues,
+        )
     }
     fn SetGraphicsRoot32BitConstants(
         &self,
-        _rootparameterindex: u32,
-        _num32bitvaluestoset: u32,
-        _psrcdata: *const core::ffi::c_void,
-        _destoffsetin32bitvalues: u32,
+        rootparameterindex: u32,
+        num32bitvaluestoset: u32,
+        psrcdata: *const core::ffi::c_void,
+        destoffsetin32bitvalues: u32,
     ) {
-        self.unsupported("SetGraphicsRoot32BitConstants");
+        List::SetGraphicsRoot32BitConstants(
+            self,
+            rootparameterindex,
+            num32bitvaluestoset,
+            psrcdata,
+            destoffsetin32bitvalues,
+        )
     }
-    fn SetComputeRootConstantBufferView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetComputeRootConstantBufferView");
+    fn SetComputeRootConstantBufferView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetComputeRootConstantBufferView(self, rootparameterindex, bufferlocation)
     }
-    fn SetGraphicsRootConstantBufferView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetGraphicsRootConstantBufferView");
+    fn SetGraphicsRootConstantBufferView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetGraphicsRootConstantBufferView(self, rootparameterindex, bufferlocation)
     }
-    fn SetComputeRootShaderResourceView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetComputeRootShaderResourceView");
+    fn SetComputeRootShaderResourceView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetComputeRootShaderResourceView(self, rootparameterindex, bufferlocation)
     }
-    fn SetGraphicsRootShaderResourceView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetGraphicsRootShaderResourceView");
+    fn SetGraphicsRootShaderResourceView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetGraphicsRootShaderResourceView(self, rootparameterindex, bufferlocation)
     }
-    fn SetComputeRootUnorderedAccessView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetComputeRootUnorderedAccessView");
+    fn SetComputeRootUnorderedAccessView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetComputeRootUnorderedAccessView(self, rootparameterindex, bufferlocation)
     }
-    fn SetGraphicsRootUnorderedAccessView(&self, _rootparameterindex: u32, _bufferlocation: u64) {
-        self.unsupported("SetGraphicsRootUnorderedAccessView");
+    fn SetGraphicsRootUnorderedAccessView(&self, rootparameterindex: u32, bufferlocation: u64) {
+        List::SetGraphicsRootUnorderedAccessView(self, rootparameterindex, bufferlocation)
     }
     fn IASetIndexBuffer(&self, pview: *const D3D12_INDEX_BUFFER_VIEW) {
         List::IASetIndexBuffer(self, pview)
@@ -1397,14 +1435,22 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn ClearDepthStencilView(
         &self,
-        _depthstencilview: &D3D12_CPU_DESCRIPTOR_HANDLE,
-        _clearflags: D3D12_CLEAR_FLAGS,
-        _depth: f32,
-        _stencil: u8,
-        _numrects: u32,
-        _prects: *const windows::Win32::Foundation::RECT,
+        depthstencilview: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        clearflags: D3D12_CLEAR_FLAGS,
+        depth: f32,
+        stencil: u8,
+        numrects: u32,
+        prects: *const windows::Win32::Foundation::RECT,
     ) {
-        self.unsupported("ClearDepthStencilView");
+        List::ClearDepthStencilView(
+            self,
+            depthstencilview,
+            clearflags,
+            depth,
+            stencil,
+            numrects,
+            prects,
+        )
     }
     fn ClearRenderTargetView(
         &self,
@@ -1510,39 +1556,39 @@ impl ID3D12CommandList_Impl for List_Impl {
 impl ID3D12DeviceChild_Impl for List_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for List_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1567,39 +1613,39 @@ impl ID3D12Pageable_Impl for Fence_Impl {}
 impl ID3D12DeviceChild_Impl for Fence_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for Fence_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1643,10 +1689,10 @@ impl ID3D12Resource_Impl for Resource_Impl {
     }
     fn GetHeapProperties(
         &self,
-        _pheapproperties: *mut D3D12_HEAP_PROPERTIES,
-        _pheapflags: *mut D3D12_HEAP_FLAGS,
+        pheapproperties: *mut D3D12_HEAP_PROPERTIES,
+        pheapflags: *mut D3D12_HEAP_FLAGS,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetHeapProperties"))
+        Resource::GetHeapProperties(self, pheapproperties, pheapflags)
     }
 }
 
@@ -1655,39 +1701,39 @@ impl ID3D12Pageable_Impl for Resource_Impl {}
 impl ID3D12DeviceChild_Impl for Resource_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for Resource_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1696,39 +1742,39 @@ impl ID3D12RootSignature_Impl for RootSignature_Impl {}
 impl ID3D12DeviceChild_Impl for RootSignature_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for RootSignature_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1743,39 +1789,39 @@ impl ID3D12Pageable_Impl for PipelineState_Impl {}
 impl ID3D12DeviceChild_Impl for PipelineState_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for PipelineState_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 
@@ -1796,39 +1842,39 @@ impl ID3D12Pageable_Impl for DescriptorHeap_Impl {}
 impl ID3D12DeviceChild_Impl for DescriptorHeap_Impl {
     fn GetDevice(
         &self,
-        _riid: *const windows_core::GUID,
-        _ppvdevice: *mut *mut core::ffi::c_void,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetDevice"))
+        self.base().GetDevice(riid, ppvdevice)
     }
 }
 
 impl ID3D12Object_Impl for DescriptorHeap_Impl {
     fn GetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdatasize: *mut u32,
-        _pdata: *mut core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetPrivateData"))
+        self.base().GetPrivateData(guid, pdatasize, pdata)
     }
     fn SetPrivateData(
         &self,
-        _guid: *const windows_core::GUID,
-        _datasize: u32,
-        _pdata: *const core::ffi::c_void,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateData"))
+        self.base().SetPrivateData(guid, datasize, pdata)
     }
     fn SetPrivateDataInterface(
         &self,
-        _guid: *const windows_core::GUID,
-        _pdata: windows_core::Ref<windows_core::IUnknown>,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("SetPrivateDataInterface"))
+        self.base().SetPrivateDataInterface(guid, pdata)
     }
-    fn SetName(&self, _name: &windows_core::PCWSTR) -> windows_core::Result<()> {
-        Err(self.unsupported("SetName"))
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
     }
 }
 

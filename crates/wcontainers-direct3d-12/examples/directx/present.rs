@@ -147,6 +147,11 @@ unsafe fn fill<T>(modes: Vec<T>, count: *mut u32, list: *mut T) -> Result<()> {
 }
 
 impl Output {
+    /// The adapter the output belongs to.
+    pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
+        give(crate::objects::Factory(0).EnumAdapters1(0)?, riid, out)
+    }
+
     fn name(&self) -> [u16; 32] {
         let mut name = [0u16; 32];
         for (d, c) in name.iter_mut().zip(self.desc.name.encode_utf16().take(31)) {
@@ -328,6 +333,15 @@ pub fn create(
         .ok()?
         .cast()
         .map_err(|_| windows::core::Error::new(E_INVALIDARG, "not a Direct3D 12 queue"))?;
+    // SAFETY: a queue of this library.
+    if unsafe { queue.GetDesc() }.Type != D3D12_COMMAND_LIST_TYPE_DIRECT {
+        return Err(DXGI_ERROR_INVALID_CALL.into());
+    }
+    // The desktop's own window takes no swap chain.
+    // SAFETY: no arguments.
+    if hwnd == unsafe { windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow() } {
+        return Err(E_ACCESSDENIED.into());
+    }
     if fullscreen.is_some_and(|f| !f.Windowed.as_bool()) {
         return Err(DXGI_ERROR_NOT_CURRENTLY_AVAILABLE.into());
     }
@@ -588,6 +602,24 @@ impl SwapChain {
             SwapEffect: d.SwapEffect,
             Flags: d.Flags,
         })
+    }
+
+    /// A new factory: swap chains do not keep the one that made them.
+    pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
+        give::<IDXGIFactory4>(crate::objects::Factory(0).into(), riid, out)
+    }
+
+    /// The output showing most of the window.
+    pub fn GetContainingOutput(&self) -> Result<IDXGIOutput> {
+        use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
+        // SAFETY: any window handle; an invalid one gives no monitor.
+        let monitor =
+            unsafe { MonitorFromWindow(HWND(self.hwnd as *mut c_void), MONITOR_DEFAULTTONEAREST) };
+        let (desc, monitor) = outputs()
+            .into_iter()
+            .find(|(_, m)| *m == monitor.0 as isize)
+            .ok_or(DXGI_ERROR_NOT_FOUND)?;
+        Ok(IDXGIOutput6::from(Output { desc, monitor }).into())
     }
 
     pub fn GetHwnd(&self) -> Result<HWND> {
