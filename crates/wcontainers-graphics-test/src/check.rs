@@ -6,7 +6,8 @@
 //! 1/128 of a float one), and the pixels allowed beyond it are those WARP has beyond it, counted in
 //! each 16 by 16 tile on its own, so that WARP's freedom in one part of a picture allows nothing in
 //! another. Texts must match exactly. A real program's frames have no WARP picture; their allowance
-//! comes from repeated runs on the GPU instead (`Allowance::from_repeats`).
+//! comes from repeated runs on the GPU instead (`Allowance::from_repeats`); a frame that more than
+//! a twentieth of whose tiles changed from run to run is recorded as unrepeatable and not compared.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -108,14 +109,25 @@ pub fn tolerance_line(file: &str, allowance: &Allowance, warp: &Difference) -> S
     line
 }
 
+/// Whether a frame drew so differently from run to run on real Direct3D (more than a twentieth of
+/// its tiles) that comparing what is left of it would test little.
+pub fn unrepeatable(allowance: &Allowance, tiles: usize) -> bool {
+    allowance.tiles.len() * 20 > tiles
+}
+
+/// One line of a tolerance file for a frame that is not compared.
+pub fn unrepeatable_line(file: &str) -> String {
+    format!("{file} unrepeatable\n")
+}
+
 /// One line of a tolerance file for a text.
 pub fn text_line(file: &str, warp_same: bool) -> String {
     let warp = if warp_same { "same" } else { "differs" };
     format!("{file} exact warp {warp}\n")
 }
 
-/// Reads a tolerance file: each picture's allowance by file name.
-pub fn read_tolerances(path: &Path) -> anyhow::Result<BTreeMap<String, Allowance>> {
+/// Reads a tolerance file: each picture's allowance by file name, none for an unrepeatable frame.
+pub fn read_tolerances(path: &Path) -> anyhow::Result<BTreeMap<String, Option<Allowance>>> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let mut allowances = BTreeMap::new();
@@ -125,6 +137,10 @@ pub fn read_tolerances(path: &Path) -> anyhow::Result<BTreeMap<String, Allowance
     {
         let words: Vec<&str> = line.split_whitespace().collect();
         if words.get(1) == Some(&"exact") {
+            continue;
+        }
+        if let [file, "unrepeatable"] = words[..] {
+            allowances.insert(file.to_owned(), None);
             continue;
         }
         let [file, tolerance, pixels, ..] = words[..] else {
@@ -145,11 +161,11 @@ pub fn read_tolerances(path: &Path) -> anyhow::Result<BTreeMap<String, Allowance
         }
         allowances.insert(
             file.to_owned(),
-            Allowance {
+            Some(Allowance {
                 tolerance: tolerance.parse()?,
                 pixels: pixels.parse()?,
                 tiles,
-            },
+            }),
         );
     }
     Ok(allowances)
@@ -179,12 +195,18 @@ pub fn check_dir(reference: &Path, run: &Path) -> anyhow::Result<Vec<Verdict>> {
         } else if file.ends_with(".txt") {
             check_text(&reference.join(&file), &ours)?
         } else {
-            let allowance = allowances
+            match allowances
                 .get(&file)
-                .with_context(|| format!("{file} has no line in {TOLERANCES}"))?;
-            match check_picture(&reference.join(&file), &ours, allowance) {
-                Ok(verdict) => verdict,
-                Err(e) => (false, format!("{e:#}")),
+                .with_context(|| format!("{file} has no line in {TOLERANCES}"))?
+            {
+                None => (
+                    true,
+                    "not compared: drew differently on each run of real Direct3D".to_owned(),
+                ),
+                Some(allowance) => match check_picture(&reference.join(&file), &ours, allowance) {
+                    Ok(verdict) => verdict,
+                    Err(e) => (false, format!("{e:#}")),
+                },
             }
         };
         verdicts.push(Verdict { file, pass, detail });

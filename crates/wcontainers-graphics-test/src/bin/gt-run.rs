@@ -326,12 +326,22 @@ fn frames(args: &[String]) -> Result<bool> {
                     .collect::<Result<Vec<_>>>()?;
                 let allowance = Allowance::from_repeats(&first, &others)?;
                 let none = compare::compare(&first, &first, 0.0)?;
+                let unrepeatable = check::unrepeatable(&allowance, none.tiles.len());
                 println!(
-                    "{name}: {} of {} tiles drew differently from run to run",
+                    "{name}: {} of {} tiles drew differently from run to run{}",
                     allowance.tiles.len(),
-                    none.tiles.len()
+                    none.tiles.len(),
+                    if unrepeatable {
+                        ", so it is not compared"
+                    } else {
+                        ""
+                    }
                 );
-                tolerances.push_str(&check::tolerance_line(name, &allowance, &none));
+                tolerances.push_str(&if unrepeatable {
+                    check::unrepeatable_line(name)
+                } else {
+                    check::tolerance_line(name, &allowance, &none)
+                });
                 std::fs::copy(Path::new(&runs[0]).join(name), reference.join(name))?;
             }
             std::fs::write(reference.join(TOLERANCES), tolerances)?;
