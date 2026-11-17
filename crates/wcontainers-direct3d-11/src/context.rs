@@ -5,9 +5,10 @@ use std::rc::Rc;
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
     DepthAttachment, DrawCall, DrawRange, Extent, FormatKind, IndexBinding, IndexFormat, LoadOp,
-    MAX_BINDING_SETS, Object, Origin, PassDesc, Program, ReadSource, ScissorRect, SlotKind,
-    SlowPath, StageSet, StepMode, StoreOp, SystemValue, TextureRegion, Topology, VertexAttribute,
-    VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
+    MAX_BINDING_SETS, Object, Origin, PassDesc, Program, ReadSource, ReadState, ScissorRect,
+    SlotKind, SlowPath, StageSet, StepMode, StoreOp, SystemValue, TextureRegion, Topology,
+    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport,
+    WriteMode,
 };
 
 use crate::desc::{self, Box3, Viewport, map, topology, usage};
@@ -108,6 +109,22 @@ fn put<T: Clone>(slots: &mut [Option<T>], start: u32, items: &[Option<T>]) -> Re
     }
     slots[start..start + items.len()].clone_from_slice(items);
     Ok(())
+}
+
+/// Binds `items` from `start`; true if any slot changed.
+fn put_rc<T>(slots: &mut [Option<Rc<T>>], start: u32, items: &[Option<Rc<T>>]) -> Result<bool> {
+    let start = start as usize;
+    if start + items.len() > slots.len() {
+        return Err(Error::InvalidArg("slots past the stage's last"));
+    }
+    let mut changed = false;
+    for (slot, item) in slots[start..start + items.len()].iter_mut().zip(items) {
+        if !same(slot, item) {
+            *slot = item.clone();
+            changed = true;
+        }
+    }
+    Ok(changed)
 }
 
 fn same<T>(a: &Option<Rc<T>>, b: &Option<Rc<T>>) -> bool {
@@ -229,8 +246,9 @@ impl<B: Backend> Device<B> {
         start: u32,
         b: &[Option<Rc<Buffer<B>>>],
     ) -> Result<()> {
-        put(&mut self.ctx.constant_buffers[stage], start, b)?;
-        self.ctx.sets_dirty[stage] = true;
+        if put_rc(&mut self.ctx.constant_buffers[stage], start, b)? {
+            self.ctx.sets_dirty[stage] = true;
+        }
         Ok(())
     }
 
@@ -240,9 +258,31 @@ impl<B: Backend> Device<B> {
         start: u32,
         v: &[Option<Rc<View<B>>>],
     ) -> Result<()> {
-        put(&mut self.ctx.resources[stage], start, v)?;
-        self.ctx.sets_dirty[stage] = true;
+        // A view of a subresource bound as a target is bound as none, as Direct3D binds it.
+        let v: Vec<_> = v
+            .iter()
+            .map(|v| v.clone().filter(|v| !self.bound_as_target(v)))
+            .collect();
+        if put_rc(&mut self.ctx.resources[stage], start, &v)? {
+            self.ctx.sets_dirty[stage] = true;
+        }
         Ok(())
+    }
+
+    /// Whether a shader resource view is bound to `slot` of `stage`.
+    pub fn shader_resource_bound(&self, stage: usize, slot: u32) -> bool {
+        self.ctx.resources[stage]
+            .get(slot as usize)
+            .is_some_and(Option::is_some)
+    }
+
+    fn bound_as_target(&self, view: &View<B>) -> bool {
+        self.ctx
+            .targets
+            .iter()
+            .chain([&self.ctx.depth])
+            .flatten()
+            .any(|t| t.overlaps(view))
     }
 
     pub fn set_samplers(
@@ -251,8 +291,9 @@ impl<B: Backend> Device<B> {
         start: u32,
         s: &[Option<Rc<Sampler<B>>>],
     ) -> Result<()> {
-        put(&mut self.ctx.samplers[stage], start, s)?;
-        self.ctx.sets_dirty[stage] = true;
+        if put_rc(&mut self.ctx.samplers[stage], start, s)? {
+            self.ctx.sets_dirty[stage] = true;
+        }
         Ok(())
     }
 
@@ -272,6 +313,17 @@ impl<B: Backend> Device<B> {
             self.end_pass();
             self.ctx.targets = new;
             self.ctx.depth = depth;
+            // Binding a subresource as a target unbinds its shader resource views, as in Direct3D.
+            for stage in [VERTEX, PIXEL] {
+                let mut resources = std::mem::take(&mut self.ctx.resources[stage]);
+                for slot in &mut resources {
+                    if slot.as_ref().is_some_and(|v| self.bound_as_target(v)) {
+                        *slot = None;
+                        self.ctx.sets_dirty[stage] = true;
+                    }
+                }
+                self.ctx.resources[stage] = resources;
+            }
         }
         Ok(())
     }
@@ -404,7 +456,7 @@ impl<B: Backend> Device<B> {
                 layers,
                 c.value,
             ) {
-                self.lose(e.into());
+                let _ = self.gpu::<()>(Err(e));
             }
         }
     }
@@ -512,7 +564,8 @@ impl<B: Backend> Device<B> {
         let program = self.backend.create_program(&Program::Render {
             vertex: &vs.gpu.handle,
             fragment: ps.map(|p| &p.gpu.handle),
-        })?;
+        });
+        let program = self.gpu(program)?;
         let id = self.id();
         self.programs.insert(
             key,
@@ -557,7 +610,8 @@ impl<B: Backend> Device<B> {
                 });
             }
         }
-        let gpu = self.backend.create_vertex_layout(&desc)?;
+        let gpu = self.backend.create_vertex_layout(&desc);
+        let gpu = self.gpu(gpu)?;
         let id = self.id();
         self.layouts.insert(
             key,
@@ -608,7 +662,8 @@ impl<B: Backend> Device<B> {
         self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
         self.settle();
         let old = b.size.get();
-        let new = self.backend.create_buffer(&gpu_buffer(&b.desc, size))?;
+        let new = self.backend.create_buffer(&gpu_buffer(&b.desc, size));
+        let new = self.gpu(new)?;
         self.backend.clear_buffer(&new, old, size - old, &[0]);
         self.backend.copy_buffer(&b.handle(), 0, &new, 0, old);
         let id = self.id();
@@ -689,9 +744,10 @@ impl<B: Backend> Device<B> {
             });
         }
         // The entries borrow handles from the slot clones above, which live to the end of this call.
-        let set = self.backend.create_binding_set(&entries)?;
+        let set = self.backend.create_binding_set(&entries);
         drop(entries);
         drop(cbs);
+        let set = self.gpu(set)?;
         let id = self.id();
         self.ctx.sets[stage] = Some(Kept::new(set, id, Object::BindingSet, &self.graveyard));
         self.ctx.sets_dirty[stage] = false;
@@ -775,7 +831,8 @@ impl<B: Backend> Device<B> {
                     &[&bytes],
                     4,
                     &mut offsets,
-                )?;
+                );
+                let ring = self.gpu(ring)?;
                 let r = DrawRange::Indexed {
                     first: (offsets[0] / 4) as u32,
                     count: list.len() as u32,
@@ -901,7 +958,7 @@ impl<B: Backend> Device<B> {
                     0,
                     u64::from(s.desc.byte_width),
                 );
-                Ok(())
+                self.buffer_written(d)
             }
             (Resource::Texture2D(d), Resource::Texture2D(s)) => {
                 let (a, b) = (&d.desc, &s.desc);
@@ -948,7 +1005,7 @@ impl<B: Backend> Device<B> {
                     u64::from(at[0]),
                     u64::from(to - from),
                 );
-                Ok(())
+                self.buffer_written(d)
             }
             (Resource::Texture2D(d), Resource::Texture2D(s)) => {
                 if d.format != s.format {
@@ -1007,7 +1064,7 @@ impl<B: Backend> Device<B> {
                     },
                     extent,
                 );
-                Ok(())
+                self.texture_written(d, dst_sub)
             }
             _ => Err(Error::InvalidArg("a copy between a buffer and a texture")),
         }
@@ -1106,12 +1163,13 @@ impl<B: Backend> Device<B> {
         resource: &Resource<B>,
         sub: u32,
         kind: u32,
-        _flags: u32,
+        flags: u32,
     ) -> Result<Mapped> {
         self.live()?;
         let reads = matches!(kind, map::READ | map::READ_WRITE);
         let writes = kind != map::READ;
-        let mapped = self.map_any(resource, sub, kind, reads, writes);
+        let wait = flags & map::DO_NOT_WAIT == 0;
+        let mapped = self.map_any(resource, sub, kind, reads, writes, wait);
         if let Err(e @ Error::DeviceRemoved) = mapped {
             self.lose(e);
         }
@@ -1127,6 +1185,7 @@ impl<B: Backend> Device<B> {
         kind: u32,
         reads: bool,
         writes: bool,
+        wait: bool,
     ) -> Result<Mapped> {
         match resource {
             Resource::Buffer(b) => {
@@ -1143,15 +1202,14 @@ impl<B: Backend> Device<B> {
                     return Err(Error::InvalidArg("the resource cannot be mapped this way"));
                 }
                 if d.usage == usage::STAGING {
-                    self.settle();
                     let handle = b.handle();
                     let src = ReadSource::Buffer {
                         buffer: &handle,
                         offset: 0,
                         size: u64::from(d.byte_width),
                     };
-                    self.backend
-                        .read_back_now(&src, &mut b.shadow.borrow_mut())?;
+                    let mut staged = b.staged.borrow_mut();
+                    self.refresh(&mut staged, &src, &mut b.shadow.borrow_mut(), reads, wait)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(b) as usize, 0, kind));
                 let data = b.shadow.borrow_mut().as_mut_ptr();
@@ -1169,10 +1227,6 @@ impl<B: Backend> Device<B> {
                     && matches!(kind, map::READ | map::WRITE | map::READ_WRITE);
                 if !ok || sub >= d.mip_levels * d.array_size {
                     return Err(Error::InvalidArg("the resource cannot be mapped this way"));
-                }
-                self.settle();
-                if !reads {
-                    self.backend.slow_paths().hit(SlowPath::StagingRefreshed);
                 }
                 let (mip, layer) = (sub % d.mip_levels, sub / d.mip_levels);
                 let (w, h) = t.mip_size(mip);
@@ -1192,8 +1246,9 @@ impl<B: Backend> Device<B> {
                     },
                 };
                 let mut shadow = t.shadow.borrow_mut();
-                self.backend
-                    .read_back_now(&src, &mut shadow[sub as usize])?;
+                let mut staged = t.staged.borrow_mut();
+                let s = sub as usize;
+                self.refresh(&mut staged[s], &src, &mut shadow[s], reads, wait)?;
                 self.ctx.mapped.push((Rc::as_ptr(t) as usize, sub, kind));
                 Ok(Mapped {
                     data: shadow[sub as usize].as_mut_ptr(),
@@ -1202,6 +1257,94 @@ impl<B: Backend> Device<B> {
                 })
             }
         }
+    }
+
+    /// After a copy into `b`: a staging buffer the program can read starts its read back now (plan
+    /// 4.6), so a map frames later finds it ready.
+    fn buffer_written(&mut self, b: &Buffer<B>) -> Result<()> {
+        if b.desc.usage != usage::STAGING {
+            return Ok(());
+        }
+        let state = if b.desc.cpu_access_flags & desc::cpu::READ != 0 {
+            let handle = b.handle();
+            let r = self.backend.read_back(&ReadSource::Buffer {
+                buffer: &handle,
+                offset: 0,
+                size: u64::from(b.desc.byte_width),
+            });
+            Staged::Reading(self.gpu(r)?)
+        } else {
+            Staged::Written
+        };
+        *b.staged.borrow_mut() = state;
+        Ok(())
+    }
+
+    /// After a copy into subresource `sub` of `t`, as [`Self::buffer_written`].
+    fn texture_written(&mut self, t: &Texture2D<B>, sub: u32) -> Result<()> {
+        if t.desc.usage != usage::STAGING {
+            return Ok(());
+        }
+        let state = if t.desc.cpu_access_flags & desc::cpu::READ != 0 {
+            let (mip, layer) = (sub % t.desc.mip_levels, sub / t.desc.mip_levels);
+            let (w, h) = t.mip_size(mip);
+            let r = self.backend.read_back(&ReadSource::Texture {
+                region: TextureRegion {
+                    texture: &t.gpu.handle,
+                    mip,
+                    layer,
+                    origin: Origin { x: 0, y: 0, z: 0 },
+                    stencil: false,
+                },
+                extent: Extent {
+                    width: w,
+                    height: h,
+                    depth_or_layers: 1,
+                },
+            });
+            Staged::Reading(self.gpu(r)?)
+        } else {
+            Staged::Written
+        };
+        t.staged.borrow_mut()[sub as usize] = state;
+        Ok(())
+    }
+
+    /// Brings a staging subresource's shadow up to the GPU's bytes before a map hands it out: the
+    /// read back started at the copy, or one started now; a write-only map that needs it is
+    /// `StagingRefreshed`. Without `wait`, a read back not yet done answers `StillDrawing` (after
+    /// submitting, so it gets done).
+    fn refresh(
+        &mut self,
+        staged: &mut Staged<B>,
+        src: &ReadSource<'_, B>,
+        shadow: &mut [u8],
+        reads: bool,
+        wait: bool,
+    ) -> Result<()> {
+        let rb = match std::mem::replace(staged, Staged::Current) {
+            Staged::Current => return Ok(()),
+            Staged::Written => {
+                self.settle();
+                let r = self.backend.read_back(src);
+                self.gpu(r)?
+            }
+            Staged::Reading(rb) => rb,
+        };
+        if self.backend.read_state(&rb) == ReadState::Pending {
+            if !wait {
+                *staged = Staged::Reading(rb);
+                self.flush();
+                return Err(Error::StillDrawing);
+            }
+            self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+            self.backend.wait_read(&rb);
+        }
+        if !reads {
+            self.backend.slow_paths().hit(SlowPath::StagingRefreshed);
+        }
+        self.backend.finish_read(rb, shadow);
+        Ok(())
     }
 
     pub fn unmap(&mut self, resource: &Resource<B>, sub: u32) {

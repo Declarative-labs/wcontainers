@@ -62,6 +62,18 @@ pub struct Buffer<B: Backend> {
     /// The latest contents of a dynamic or staging buffer, which a map hands out; for a grown dynamic
     /// buffer, all of its bytes.
     pub shadow: RefCell<Vec<u8>>,
+    /// A staging buffer's shadow against the GPU's bytes.
+    pub staged: RefCell<Staged<B>>,
+}
+
+/// A staging subresource's shadow against the GPU's copy of it.
+pub enum Staged<B: Backend> {
+    /// The shadow holds the GPU's bytes.
+    Current,
+    /// The GPU wrote it since the shadow was filled; no read back started.
+    Written,
+    /// The GPU wrote it, and the read back started after that write.
+    Reading(B::Readback),
 }
 
 impl<B: Backend> Buffer<B> {
@@ -79,6 +91,8 @@ pub struct Texture2D<B: Backend> {
     pub gpu: Kept<B, B::Texture>,
     /// Per subresource of a staging texture, tightly packed rows a map hands out.
     pub shadow: RefCell<Vec<Vec<u8>>>,
+    /// Per subresource of a staging texture, its shadow against the GPU's copy.
+    pub staged: RefCell<Vec<Staged<B>>>,
 }
 
 impl<B: Backend> Texture2D<B> {
@@ -113,6 +127,28 @@ pub struct View<B: Backend> {
     pub desc: ViewDesc,
     pub format: Format,
     pub gpu: Kept<B, B::TextureView>,
+}
+
+impl<B: Backend> View<B> {
+    /// Whether the two views share a subresource.
+    pub fn overlaps(&self, other: &View<B>) -> bool {
+        fn meet(a: u32, n: u32, b: u32, m: u32) -> bool {
+            a < b + m && b < a + n
+        }
+        Rc::ptr_eq(&self.texture, &other.texture)
+            && meet(
+                self.desc.first_mip,
+                self.desc.mip_count,
+                other.desc.first_mip,
+                other.desc.mip_count,
+            )
+            && meet(
+                self.desc.first_layer,
+                self.desc.layer_count,
+                other.desc.first_layer,
+                other.desc.layer_count,
+            )
+    }
 }
 
 pub struct Sampler<B: Backend> {
