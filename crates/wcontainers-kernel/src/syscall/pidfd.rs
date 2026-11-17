@@ -27,6 +27,19 @@ pub(super) struct Named {
 }
 
 /// What a descriptor names; EBADF for a file that is not one (`pidfd_pid`).
+/// `pidfd_to_pid`: as [`named`], and a process's `/proc/<pid>` directory names it too
+/// (`tgid_pidfd_to_pid`; not one under `task`).
+fn signal_target(kernel: &Kernel, file: &OpenFile) -> Result<Named, Errno> {
+    if let Content::Proc(crate::fs::proc::Entry::Process(task)) = &file.node.borrow().content
+        && !task.own
+    {
+        let pid = task.tid;
+        let exists = kernel.threads.contains_key(&pid) || kernel.processes.contains_key(&pid);
+        return Ok(Named { pid, exists });
+    }
+    named(kernel, file)
+}
+
 pub(super) fn named(kernel: &Kernel, file: &OpenFile) -> Result<Named, Errno> {
     let Content::Pidfd(pid, _) = file.node.borrow().content else {
         return Err(Errno::EBADF);
@@ -198,7 +211,7 @@ pub(super) fn pidfd_send_signal(
         _ => {
             let file = super::io::open_file(kernel, tid, fd)?;
             let file = file.borrow();
-            let target = named(kernel, &file)?;
+            let target = signal_target(kernel, &file)?;
             let scope = if file.flags & PIDFD_THREAD != 0 {
                 Scope::Thread
             } else {
