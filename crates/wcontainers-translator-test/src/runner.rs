@@ -702,10 +702,12 @@ fn val_type(ty: wasm_encoder::ValType) -> wasmtime::ValType {
     }
 }
 
-/// A hook of the guest's own: its work by `Guest::run_hook` on the bytes of the thread's state it names,
-/// counted and warned as the slow path it says it was. `values` holds the arguments and takes the results.
-fn cpu_hook(caller: &mut Caller<'_, Host>, index: usize, values: &mut [MaybeUninit<ValRaw>]) {
-    let hook = &Arm64::HOOKS[index];
+/// The guest's own hook `I`: its work by `Guest::run_hook`, in place on the bytes of the thread's state it
+/// names, counted and warned as the slow path it says it was. `values` holds the arguments and takes the
+/// results. Made for each index at compile time (`REGISTER_CPU_HOOK`), so the hook's types and state range
+/// are constants here.
+fn cpu_hook<const I: usize>(caller: &mut Caller<'_, Host>, values: &mut [MaybeUninit<ValRaw>]) {
+    let hook = &Arm64::HOOKS[I];
     let mut args = [0i64; MAX_HOOK_ARGS];
     for (i, ty) in hook.params.iter().enumerate() {
         // SAFETY: wasmtime has checked the arguments against the hook's type.
@@ -715,13 +717,12 @@ fn cpu_hook(caller: &mut Caller<'_, Host>, index: usize, values: &mut [MaybeUnin
             _ => value.get_i64(),
         };
     }
-    let mut bytes = [0u8; MAX_HOOK_STATE];
-    let bytes = &mut bytes[..usize::from(hook.state.len)];
     let at = BLOCK_AT as usize + usize::from(hook.state.at);
-    let state = caller.data().state.clone().unwrap();
-    read_shared(&state, at, bytes);
-    let done = Arm64::run_hook(index, &args[..hook.params.len()], bytes);
-    write_shared(&state, at, bytes);
+    let cells = &caller.data().state.as_ref().unwrap().data()[at..][..usize::from(hook.state.len)];
+    // SAFETY: the range is inside the memory, and the guest thread is in this hook, so nothing else touches
+    // these bytes while the hook works on them in place.
+    let bytes = unsafe { std::slice::from_raw_parts_mut(cells.as_ptr() as *mut u8, cells.len()) };
+    let done = Arm64::run_hook(I, &args[..hook.params.len()], bytes);
     for (i, ty) in hook.results.iter().enumerate() {
         values[i] = MaybeUninit::new(match ty {
             wasm_encoder::ValType::I32 => ValRaw::i32(done.results[i] as i32),
@@ -741,19 +742,45 @@ fn cpu_hook(caller: &mut Caller<'_, Host>, index: usize, values: &mut [MaybeUnin
 
 /// The most arguments a guest's own hook has.
 const MAX_HOOK_ARGS: usize = 8;
-/// The most bytes of thread state a guest's own hook works on.
-const MAX_HOOK_STATE: usize = {
-    let mut most = 0;
+
+/// Registers the guest's own hook `I` with a closure made for that index.
+fn register_cpu_hook<const I: usize>(linker: &mut Linker<Host>) {
+    let hook = &Arm64::HOOKS[I];
+    let ty = wasmtime::FuncType::new(
+        linker.engine(),
+        hook.params.iter().map(|&t| val_type(t)),
+        hook.results.iter().map(|&t| val_type(t)),
+    );
+    // SAFETY: `cpu_hook` reads the arguments and writes the results of exactly this type.
+    unsafe {
+        linker.func_new_unchecked(contract::HOOKS, hook.name, ty, |mut caller, values| {
+            cpu_hook::<I>(&mut caller, values);
+            Ok(())
+        })
+    }
+    .unwrap();
+}
+
+/// `register_cpu_hook` for each index a guest's own hook may have.
+const REGISTER_CPU_HOOK: [fn(&mut Linker<Host>); 8] = [
+    register_cpu_hook::<0>,
+    register_cpu_hook::<1>,
+    register_cpu_hook::<2>,
+    register_cpu_hook::<3>,
+    register_cpu_hook::<4>,
+    register_cpu_hook::<5>,
+    register_cpu_hook::<6>,
+    register_cpu_hook::<7>,
+];
+const _: () = {
+    assert!(Arm64::HOOKS.len() <= REGISTER_CPU_HOOK.len());
     let mut i = 0;
     while i < Arm64::HOOKS.len() {
-        let hook = &Arm64::HOOKS[i];
-        assert!(hook.params.len() <= MAX_HOOK_ARGS && hook.results.len() <= 2);
-        if hook.state.len as usize > most {
-            most = hook.state.len as usize;
-        }
+        assert!(
+            Arm64::HOOKS[i].params.len() <= MAX_HOOK_ARGS && Arm64::HOOKS[i].results.len() <= 2
+        );
         i += 1;
     }
-    most
 };
 
 /// The guest's bytes from `pc`, as many as an instruction may take and the memory has.
@@ -995,36 +1022,26 @@ fn hooks(linker: &mut Linker<Host>) {
         .unwrap();
     for (index, hook) in Arm64::HOOKS.iter().enumerate() {
         match hook.body {
-            HookBody::Clock => linker
-                .func_wrap(HOOKS, hook.name, |caller: Caller<'_, Host>| -> i64 {
-                    caller.data().started.elapsed().as_nanos() as i64
-                })
-                .unwrap(),
-            HookBody::CodeChanged => linker
-                .func_wrap(
-                    HOOKS,
-                    hook.name,
-                    |mut caller: Caller<'_, Host>, address: i64| {
-                        forget_code(&mut caller, address as u64);
-                    },
-                )
-                .unwrap(),
-            HookBody::Cpu => {
-                let ty = wasmtime::FuncType::new(
-                    linker.engine(),
-                    hook.params.iter().map(|&t| val_type(t)),
-                    hook.results.iter().map(|&t| val_type(t)),
-                );
-                // SAFETY: `cpu_hook` reads the arguments and writes the results of exactly this type.
-                unsafe {
-                    linker.func_new_unchecked(HOOKS, hook.name, ty, move |mut caller, values| {
-                        cpu_hook(&mut caller, index, values);
-                        Ok(())
+            HookBody::Clock => {
+                linker
+                    .func_wrap(HOOKS, hook.name, |caller: Caller<'_, Host>| -> i64 {
+                        caller.data().started.elapsed().as_nanos() as i64
                     })
-                }
-                .unwrap()
+                    .unwrap();
             }
-        };
+            HookBody::CodeChanged => {
+                linker
+                    .func_wrap(
+                        HOOKS,
+                        hook.name,
+                        |mut caller: Caller<'_, Host>, address: i64| {
+                            forget_code(&mut caller, address as u64);
+                        },
+                    )
+                    .unwrap();
+            }
+            HookBody::Cpu => REGISTER_CPU_HOOK[index](linker),
+        }
     }
     linker
         .func_wrap(
