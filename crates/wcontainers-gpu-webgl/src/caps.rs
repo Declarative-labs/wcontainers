@@ -17,12 +17,6 @@ pub fn caps(
 ) -> Caps {
     // SAFETY: plain queries of the current context.
     let get = |name| unsafe { gl.get_parameter_i32(name) }.max(0) as u32;
-    let range = |name| {
-        let mut r = [1.0f32; 2];
-        // SAFETY: a plain query of a two-float range.
-        unsafe { gl.get_parameter_f32_slice(name, &mut r) };
-        r[1]
-    };
     let mut features = Features::READ_BACK_NOW
         // GL's provoking vertex is the last; its rule for every topology is Direct3D 9's and OpenGL's.
         | Features::PROVOKING_VERTEX_LAST
@@ -94,7 +88,8 @@ pub fn caps(
         max_dispatch: 0,
         // Programs write gl_PointSize 1 (POINT_SIZE is absent).
         max_point_size: 1.0,
-        max_line_width: range(glow::ALIASED_LINE_WIDTH_RANGE),
+        // Lines are drawn 1 wide (WIDE_LINES is absent), whatever range GL has.
+        max_line_width: 1.0,
         max_anisotropy: if anisotropic {
             // SAFETY: a plain query the extension defines.
             unsafe { gl.get_parameter_f32(glow::MAX_TEXTURE_MAX_ANISOTROPY_EXT) as u16 }
