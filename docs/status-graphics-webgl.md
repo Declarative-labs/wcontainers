@@ -19,6 +19,19 @@ every extension. What remains cannot be fixed inside this crate:
 - `TIMESTAMPS` is built but cannot run here: Chrome (every ANGLE back end) and mozangle give 0
   timestamp bits on the RTX 3080.
 
+Run 9 merged origin/phase-2-graphics (02ab37d; origin/phase-2-graphics-webgpu had nothing new) and
+built, all in this crate apart from one interface commit: `generate_mips` by `generateMipmap` and
+`clear_rects` by scissored `clearBuffer*` (plan 5.8's overrides), the 16-bit normalised formats
+with EXT_texture_norm16, signed normalised targets with EXT_render_snorm, `bgra8unorm` surfaces, and refusals the interface's rules ask for that the
+back end did not make (sampled views not of a whole texture, one texture through two mip ranges in
+a draw, indirect draws, immediates past the limit). Suite and checks (24 and 25, 49): Chrome 49 of
+49 with every extension and without stencil texturing and the format extensions, 34 of 49 on both
+routes without the clip extensions (the same 15 known failures); ANGLE 48 of 49 with every
+extension and 33 of 49 on both reduced routes. The new failure is
+`generate_mipmap_equals_the_draws` on ANGLE: mip draws into an odd-sized 2D array change level 0
+(see "Known failures"); it also found that Chrome's draws leave a layer of that array's level 1
+unwritten, which no test fails today. Against WebGPU 5 of 6 as before.
+
 Run 8 merged origin/phase-2-graphics (164ad69) and origin/phase-2-graphics-webgpu (cf2f03c), fixed
 `textureSize` of a texture a program only sizes (found by the shaders track: its `ps_size` read 1 by
 1 on WebGL 2), built `bgra8unorm` and `bgra8unorm-srgb` (stored as RGBA, red and blue swapped on the
@@ -393,6 +406,50 @@ Chrome and on ANGLE with every extension.
     back, cleared red as a target; an `r8uint` texture copied into a buffer). The typeless check
     copies `bgra8unorm` to `bgra8unorm-srgb` and back.
 
+- G3 run 9:
+  - Merged origin/phase-2-graphics 02ab37d. It brought the interface's rule that without
+    `TEXTURE_VIEWS` a draw reads each texture through one mip range, and that bound views are of
+    all layers in the texture's own dimension (the recording back end refuses both).
+  - Refusals the back end lacked: a binding set holding a texture view that is not the whole
+    texture in its own dimension (one layer of an array, a cube face, part of the layers, a cube as
+    an array) is `Absent(TEXTURE_VIEWS)` (before, the set was made and the draw bound the GL texture
+    whole, which GL then refused or sampled wrongly); a draw reading one texture through two mip
+    ranges loses the device naming it (before, the last range set on the texture won for both); an
+    indirect draw now names itself in `last_log` (it lost the device without a word); a draw with
+    immediates past `immediate_bytes` (0) loses the device (before, they were ignored).
+  - `generate_mips` overridden (plan 5.8): `generateMipmap` with the texture's base and max level
+    set to the levels asked, where `values` is the texture's own format, the format renders and
+    filters here, every layer is asked, the texture is not kept on the host, and it is a 2D or cube
+    texture; otherwise the interface's draws through `generate_mips_by_draws` (see "Interface
+    changes"). 2D arrays and 3D textures stay on the draws because the check below could not show
+    them equal (see "Known failures").
+  - `clear_rects` overridden (plan 5.8): one pass loading the view, then per rectangle the scissor
+    and one `clearBuffer*` (float, unsigned, signed, depth, stencil or both), in place of the
+    built-in programs' draws. `clear_texture` keeps the interface's default, which on this back end
+    already clears by `clearBuffer*` in its passes (see "Departures").
+  - EXT_texture_norm16 (enabled in the browser; `GL_EXT_texture_norm16` natively, both present on
+    the RTX 3080): `r16unorm`, `rg16unorm` and `rgba16unorm` sample, filter, render, blend, resolve,
+    take GL's sample counts and read back (`readPixels` as RGBA shorts, kept narrow on the host);
+    the three snorm formats sample and filter. Copies within their typeless groups go through the
+    existing routes (the draw route now knows 16-bit unorm). Without the extension they have no uses,
+    as before. all.cmd's reduced routes also switch the extension off.
+  - EXT_render_snorm (Chrome 157 on the RTX 3080 has it; mozangle 0.7.1 does not, so natively
+    the caps now differ from Chrome's in this): the signed normalised formats render and blend,
+    one sample only (Chrome's `getInternalformatParameter` refuses them with INVALID_ENUM, which
+    lost every device in the first job of this run). They never copy out: Chrome's `readPixels`
+    returned a written -128 as -127 (measured, first job), so read backs would not be exact.
+  - `PRESENT` on `bgra8unorm`: its storage is RGBA8 with the channels in their places, so the frame
+    blits into the RGBA drawing buffer as `rgba8unorm`'s does.
+  - New checks (Chrome and ANGLE): `sampled_views_are_whole_textures_of_one_mip_range`,
+    `generate_mipmap_equals_the_draws` (rgba8unorm, its sRGB form, bgra8unorm, r32float with
+    OES_texture_float_linear, rgba16unorm and r16unorm; 2D, odd-sized 2D array, cube and 3D; every
+    level and only the last two; against `generate_mips_by_draws` on the same texels),
+    `sixteen_bit_normalised_formats_follow_their_extension`,
+    `signed_normalised_formats_follow_their_extension` (a clear to -1, 0, 1 and 64 steps loads
+    back as those values; no `COPY_OUT`) and `bgra_surfaces_present`;
+    `absent_features_are_refused` also draws indirectly and with immediates; the typeless check
+    copies four 16-bit normalised pairs, and skips a pair whose source does not read back.
+
 - G3 run 5:
   - The test tool: angle/build.cmd unpacks mozangle 0.7.1 into C:\wc\tools\mozangle-0.7.1-patched
     and applies angle/d3d11-clip-control.patch. The patch holds three upstream ANGLE fixes to the
@@ -490,8 +547,9 @@ context draws on a 1 by 1 pbuffer.
 In the browser: `WebGl::on_canvas(canvas.getContext("webgl2"), &[])`; the canvas is the surface.
 Every page that loads the back end's WebAssembly must supply the module `wcontainers-device` (an
 import map to browser/device.js does) and call code that may wait through `WebAssembly.promising`.
-With every extension both report the same `Caps` on the RTX 3080 (compared on 2026-11-17: identical
-lists).
+With every extension both reported the same `Caps` on the RTX 3080 (compared on 2026-11-17:
+identical lists); since run 9 they differ in the signed normalised formats, which render only with
+EXT_render_snorm, which Chrome has and mozangle lacks.
 
 ## Capabilities
 
@@ -532,8 +590,11 @@ every colour-renderable 8, 16 and 32-bit integer format, and R32F, RG32F and RGB
 EXT_color_buffer_float); not 16-bit floats, packed formats, depth or stencil. Since run 3, samples:
 1, 2, 4 and 8 for the colour formats that render and are not integers, and for depth formats (as
 GL reports them on the RTX 3080); integer formats take one.
-No bits yet: 16-bit normalised, the swizzled formats other than BGRA8 (BGRX8, B5G5R5A1, BGRA4),
-A8, Stencil8. Since run 8: `bgra8unorm` and `bgra8unorm-srgb` as `rgba8unorm` and its sRGB form
+No bits yet: the swizzled formats other than BGRA8 (BGRX8, B5G5R5A1, BGRA4), A8, Stencil8. Since
+run 9, with EXT_texture_norm16 (Chrome 157 and mozangle on the RTX 3080): `r16unorm`, `rg16unorm`,
+`rgba16unorm` sample, filter, render, blend, resolve and copy out; the snorm ones sample and filter;
+without it none of the six has a use. With EXT_render_snorm (Chrome only) the signed normalised
+formats render and blend too (one sample, no copy out). `PRESENT` on `bgra8unorm` too. Since run 8: `bgra8unorm` and `bgra8unorm-srgb` as `rgba8unorm` and its sRGB form
 (sample, filter, render, blend, resolve, samples 1 to 8, copy out), red and blue swapped on the host. Since run 4:
 the 14 BC formats sample, filter and copy out (read back from the host copy) on every route, and
 RGB9E5 copies out too.
@@ -738,6 +799,20 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
     hardware filter, as before).
   - The size fix was not first run without it here; the failure it fixes was seen by the shaders
     track (`ps_size`: 2591 of 4096 texels differ on WebGL 2, every covered one sized 1 by 1).
+- 2026-11-17, G3 run 9, same desktop (RTX 3080, driver 32.0.16.2101; desktop clock times; queued
+  jobs, not timed; SSH refused new connections from before 12:00 to about 13:45 Pacific, the jobs
+  ran through the checkout's still open shared connection). Merged origin/phase-2-graphics
+  02ab37d. 24 suite tests and 25 checks (49).
+  - First job: every Chrome device was lost (each made INVALID_ENUM by asking the sample counts
+    of signed normalised formats); ANGLE 47 of 49 (the two new checks' own mistakes).
+    `readPixels` returned a written -128 of `r8snorm` as -127 in Chrome. With `generateMipmap`
+    on r32float (OES_texture_float_linear), the comparison with WebGPU's hardware filter passed.
+  - Final tree (job 14:18 to 14:26 desktop time), lint clean on both targets in its build, the 4
+    unit tests of src/capture.rs pass, all scene verdicts as expected: Chrome 157.0.8103.78 49 of
+    49 with every extension and 49 of 49 without WEBGL_stencil_texturing and the format
+    extensions, 34 of 49 without EXT_clip_control and 34 of 49 without it and
+    WEBGL_provoking_vertex; ANGLE (patched mozangle 0.7.1) 48 of 49 with every extension, 33 of
+    49 on both reduced routes; against WebGPU 5 of 6.
 - Per-draw cost, run 5 (Chrome 157.0.8103.78 headless, RTX 3080; `gpu-job --alone`; the same scene
   and method as run 3). Since the merge, the cost page has to make the WebGPU device inside a JSPI
   export. Before that fix the page hung twice, once for 10 minutes and once for 2.
@@ -801,6 +876,22 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   refuses as the interface says (`Absent(CLIP_DEPTH_ZERO_ONE)`, `Absent(PROVOKING_VERTEX_FIRST)`).
   The suite (G1's crate) should take both from the caps, as the built-in programs do.
 
+- New in run 9, `generate_mipmap_equals_the_draws`, on an odd-sized 2D array (13 by 7, 2 layers,
+  4 levels, rgba8unorm and its sRGB form), not found yet:
+  - On ANGLE (mozangle) the interface's mip draws (`generate_mips_by_draws`) change level 0, every
+    texel of both layers when generating from level 1, and levels 0 and 1 when generating from
+    level 2. The levels above must never change. With `generateMipmap` on the array (second job)
+    the same levels changed, so it may be how this back end writes or reads levels of such an
+    array, or mozangle's base level handling (which already misanswers `textureSize`).
+  - In Chrome the levels above stay as written, but in the second job (generateMipmap on the
+    array) the draws had left 18 of 36 texels of level 1 at 0, one layer's worth, where
+    generateMipmap wrote values. Since generateMipmap now leaves arrays to the draws, the check
+    compares the draws with themselves there and passes; the bug in the draws is still there.
+  - 3D (8 by 8 by 4): generateMipmap and the draws differed in every texel of levels 1 to 3 on
+    ANGLE; which is right is not known.
+  - 2D (16 by 16) and cube (8 by 8) textures are equal in every format of the check, on both.
+  So `generateMipmap` takes only 2D and cube textures, and the check fails on ANGLE.
+
 ## Departures from the plan
 
 - The suite crate `wcontainers-gpu-test` (G1's) takes proptest without its default features
@@ -853,6 +944,10 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   allows such views on every texture; plan 4.12 has fronts copy only for other formats
   (`ReinterpretCopy`). Counted as `CopyThroughBuffer`, the route plan 4.12 names for WebGL 2's copies
   within a typeless group.
+- `clear_texture` keeps the interface's default (run 9): plan 5.8 lists it among the overrides, but
+  the default opens one pass per level and layer whose load is a clear, and this back end's passes
+  clear by `clearBuffer*` on a cached framebuffer already; an override would repeat the pass's
+  bookkeeping (twins, discards) for no fewer GL calls.
 - Draws with a provoking vertex the raster block does not name: `draw_fan_or_loop` follows the raster
   block, as the default's converted list also assumes; its `provoking` argument is not used.
 
@@ -910,6 +1005,11 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   built-ins pass no flat values, so either gives the same picture. Shown by `triangle-clear_rects`
   in Chrome with and without WEBGL_provoking_vertex and EXT_clip_control, and on ANGLE without them.
 
+- 4e98cf5 (run 9) "interface: made the default body of generate_mips a public function, so an
+  override can keep it for the cases it does not take": `wcontainers_gpu::generate_mips_by_draws`,
+  the default's body moved unchanged; the trait's default calls it. Plan 4.3's `generate_mips`
+  text names it. The back end's override needs it for formats `generateMipmap` refuses.
+
 - (run 6) "interface: named the slow path of captures expanded into points in list order":
   `SlowPath::CaptureExpanded`, for draws an API's transform feedback cannot capture as they are
   (GLES 3.0 takes only lists without indices), and the plan's 5.8 text for it.
@@ -960,10 +1060,11 @@ What is left of G3's pass bar cannot be done in this crate:
   gives some is needed to run that route.
 
 After that, in about this order:
-1. 16-bit normalised formats by EXT_texture_norm16; BGRA as a surface format (`PRESENT`).
-2. The `generateMipmap` override where GLES allows it, and `clear_texture` and `clear_rects` by
-   `clearBuffer*` (plan 5.8). An override that falls back to the default needs the default's body
-   as a public function of `wcontainers-gpu` first (an "interface:" commit).
-3. Captures whose base vertex reaches below vertex 0 (now device loss naming it).
-4. Suite routes without EXT_clip_control or WEBGL_provoking_vertex stay known failures until G1's
-   suite takes clip depth and provoking vertex from the caps.
+0. Find why levels of an odd-sized 2D array change under the mip draws and `generateMipmap`, and
+   which side is right for 3D (`generate_mipmap_equals_the_draws`, Known failures); then let
+   `generateMipmap` take arrays and 3D if it is shown equal.
+1. Immediates as plain uniforms (plan 5.8; `immediate_bytes` is 0 until then, as on the WebGPU
+   back end).
+2. Vertex formats GL ES cannot read as stored (BGRA8, 10-10-10-2 integer, 11-11-10), by a program
+   variant per layout or a conversion; now device loss naming them.
+3. Draws and captures whose base vertex reaches below vertex 0 (now device loss naming it).
