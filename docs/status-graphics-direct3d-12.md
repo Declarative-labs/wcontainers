@@ -87,8 +87,11 @@ presenting in the Windows library, and the independent check's findings). Next i
 2. The frame latency waitable object (a semaphore the device thread releases as frames finish, as
    fence events are set now).
 3. Recording without allocating per command: recorded commands still own `Vec`s (vertex buffer
-   views, viewports, scissors, targets, clear rectangles) and each draw looks its vertex layout up in
-   a `HashMap`; a per-list arena and a last-layout cache would remove both.
+   views, viewports, scissors, targets, clear rectangles), `Close` copies the commands into a new
+   `Arc`, and each draw looks its vertex layout up in a `HashMap`; a per-list arena reused across
+   `Reset` and a last-layout cache would remove these. Run 4 removed the per-draw `Vec`s of vertex
+   buffers (fixed arrays now) and left the rest, a change to recording and replay together, for G5b
+   with a measurement of what it costs first (the independent check's finding, not yet measured).
 4. The call buffer of plan 4.8 in the Windows library (below, Departures).
 5. Move `examples/directx` into `crates/wcontainers-directx` (on the shared line now, the Direct3D 11
    track's) once the two tracks agree how its device thread serves both fronts.
