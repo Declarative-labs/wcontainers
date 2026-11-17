@@ -488,6 +488,30 @@ also checks every limit it declares that a call can pass. No format it
 
 ## Measurements
 
+- G1 run 5, all on the Linux laptop (i7-8750H):
+  - Random sequences on dda653b (the recorder and generator as they stand at the end of the run;
+    scratch `g1r5/sequences-100k.log`, `--release`), each 100,000 asked and run, recorded with no
+    rule broken and replayed identically: seed 0x5eed, 4,552,401 calls, 11,896 no-overwrite writes
+    without a wait, 40.4 s; seed 0xc0ffee, 4,552,312 calls, 40.1 s; seed 0xd15ca4d (new), 4,551,294
+    calls, 19,789 multisampled passes, 28,461 depth-stencil passes, 42,803 indexed draws, 28,355
+    queries, 39.8 s. Load 2.2 to 3.3 (the rule sweep ran beside them). Fewer calls than run 4,
+    as a discard now drops the generator's pending ranges and so needs fewer waits.
+  - Rule sweep with helper checks (scratch `g1r5/sweep.log`, on dda653b, its own build directory):
+    149 checks and parts (113 `if` checks and parts, 36 helper statements): 137 caught, 4 match
+    guards that do not build when turned off (each asserted by its message), 8 survived. Two of
+    those 8 were missing tests, now written and caught (`g1r5/sweep-rerun.log`: the depth
+    attachment's sample count, and a draw outside a pass checked before its other rules). The 6
+    left are run 4's, each with its reason (Next): the two block-grid parts, cube sampling, alpha to
+    coverage, and the two unreachable guards. About 10 to 40 s a check, load 0.2 to 4.7.
+  - Run 5's faults (scratch `g1r5/faults.log`, the final tree, load 4.6): the counter's instance
+    split without regard to step rates, and without `BASE_VERTEX_INSTANCE`; a discard keeping the
+    touched ranges, and keeping the old bytes; colour bytes counted by block size: each fails the
+    test written for it. The first one at first passed, because the test drew the stepped draw's
+    count with a counting program that did not read the shifts; fixed (c2bfd1e) and then caught.
+  - Suite on the recording back end 24 of 24; rules 82 of 82; helpers 15 of 15; fast paths 12 of
+    12; `tests/recorder.rs` 30 of 30; `wcontainers-gpu` 32 of 32; clippy and docs with warnings
+    denied clean (scratch `g1r5/end-check.log`).
+
 - G1 run 4, all on the Linux laptop (i7-8750H):
   - Random sequences on the final recorder (after the mid-run merges, 8f19e19; scratch
     `g1r4/sequences-100k.log`, `--release`), each 100,000 asked and run, recorded with no rule broken
@@ -566,6 +590,13 @@ also checks every limit it declares that a call can pass. No format it
 - Earlier: `naga` 30.0.2, `blake3` 1, `half` 2 (MIT OR Apache-2.0, CC0-1.0 OR Apache-2.0); plan 3.
 
 ## Departures from the plan
+
+- G1 run 5: the end merges brought a break between two other tracks: the rig made the tolerance
+  file's allowance optional (an unrepeatable frame has none) and the webgl track's scene example
+  still indexed it as a plain value, so the workspace did not build. To keep the shared line
+  building I changed that one statement in `crates/wcontainers-gpu-webgl/examples/webgl-scenes.rs`
+  (7a0feba): a scene without an allowance is an error naming it. The webgl track should take it as
+  it is or replace it.
 
 - From G0 and G1a: written in the plan and in this file's history.
 - G1 run 1 (each now written in the plan where it changes it):
