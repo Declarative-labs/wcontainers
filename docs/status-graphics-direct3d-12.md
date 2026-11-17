@@ -35,7 +35,17 @@ target views, three device-thread panics fixed, `GetClockCalibration` E_FAIL), t
 descriptors, custom heaps, `WriteToSubresource`/`ReadFromSubresource`, Direct3D 12's creation
 checks, bundles and the back buffers' shared reference on their swap chain (deee187 and after).
 New ssh logins to the desktop failed all through run 9 (see Departures for how the rig was
-reached). G5 is not complete: see "Test files", "Gap list" and "Next".
+reached). Run 10 (2026-11-17, sixth run of G5) merged the shared line (the interface's stated
+contracts for samplers, binding sizes, one viewport a draw and empty passes), the shaders and the
+webgl branches (no conflicts), and added: the newer interfaces (`ID3D12Device1` to
+`ID3D12Device8`, `ID3D12GraphicsCommandList1` and `2`, `ID3D12Resource1` and `2`) with pipeline
+state streams, waits on several fences, `WriteBufferImmediate`, `CreateCommandList1`, the `...1`
+and `...2` creation calls, `GetResourceAllocationInfo1`/`2`, no meta commands, residency calls;
+answers for every `CheckFeatureSupport` feature up to 34; quality levels as Direct3D 12 answers
+them; typeless R16/R32 textures allowing depth stored in depth formats; default depth views of
+every array slice; root signature deserializers giving null for empty arrays; and the
+`ALLOW_SHADER_ATOMICS` heap flag. New ssh logins still failed (Departures). G5 is not complete:
+see "Test files", "Gap list" and "Next".
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
@@ -115,9 +125,14 @@ reached). G5 is not complete: see "Test files", "Gap list" and "Next".
   timestamps (the WebGPU back end lacks `TIMESTAMPS`; `GetTimestampFrequency` answers E_FAIL as for
   a queue without them), pipeline and stream output statistics, stream output, rectangles in UAV
   clears, an occlusion query across passes, video command lists, buffers in custom heaps the CPU
-  sees. The newer interfaces
-  (`ID3D12Device1` and later, `ID3D12GraphicsCommandList1` and later) are not offered, so
-  `QueryInterface` answers E_NOINTERFACE for them.
+  sees, pipeline libraries (`DXGI_ERROR_UNSUPPORTED`), protected sessions, state objects (ray
+  tracing), depth bounds, programmable sample positions, view instancing, sampler feedback.
+- Newer interfaces (run 10): the device is `ID3D12Device8`, command lists
+  `ID3D12GraphicsCommandList2`, resources `ID3D12Resource2`; `ID3D12Device9` and later and
+  `ID3D12GraphicsCommandList3` and later are not offered (E_NOINTERFACE). Pipeline state streams
+  are read in `examples/directx/stream.rs` (absent subobjects take Direct3D 12's documented
+  defaults). abi.rs patches the newest interfaces' vtables, base entries included; `objects::ours`
+  reaches our resource behind any `ID3D12Resource`.
 - The Windows library (`examples/directx`, `d3d12.dll`, with `dxgi.dll` forwarding to it): as in run
   4, plus (run 5) `D3D12CreateRootSignatureDeserializer` and `D3D12CreateVersionedRootSignatureDeserializer`,
   the system library's export ordinals (101 for `D3D12CreateDevice`, and so on), one device per
@@ -143,7 +158,13 @@ Today the refusals listed above answer E_NOTIMPL when used, so a program trustin
 fail at those calls.
 Nothing answers success without the work.
 
-## The pass bar's cases against real Direct3D 12 (own program, run 7)
+## The pass bar's cases against real Direct3D 12 (own program, runs 7 and 10)
+
+Run 10 (RTX 3080, commit after a0760963, scratch run10/check.log): 12 of 13 equal. depth-planes is
+now equal (the webgpu branch reads 24-bit depth by draws, "depth read back through a draw"); only
+indirect-vertex-id differs, as below (G6's `DrawBaseFromArguments`).
+
+Run 7 follows.
 
 `check_d3d12 cases` runs each case in its own process with real Direct3D 12 and through ours and
 compares the lines (`examples/check/cases.rs`). Run 7, RTX 3080, commit 7f5e0ed: 11 of 13 equal.
@@ -178,6 +199,42 @@ The rig's rule is stricter since its fifth run (merged in run 9): a test that sk
 Direct3D 12 runs, or runs fewer checks, fails. Thirteen tests counted as passing in run 8 fail by
 that rule alone (they skip at an absent interface or feature: see the gap list); they are not
 regressions.
+
+Run 10 (2026-11-17, RTX 3080, desktop shared with other tracks; scratch run10/). At the start
+(merged tree, run10/wine1.log): vkd3d-d3d12 75 of 174. Full run after the newer interfaces and
+the window association (run10/full2.log), tests passing on real Direct3D 12 that pass through ours:
+- d3d12 (Wine): 7 of 7.
+- vkd3d-d3d12: 87 of 174, none lost. Newly passing: clear_depth_stencil_view,
+  create_command_list, create_committed_resource, create_heap, depth_read_only_view,
+  enumerate_meta_commands, get_copyable_footprints, multi_fence_event,
+  multisample_quality_levels, resource_allocation_info, sample_c_lz, write_buffer_immediate.
+- vkd3d-d3d12_invalid_usage: 1 of 3; vkd3d-hlsl_d3d12: 8 of 9 (test_thread_id: StorageImage).
+- After that run, on named tests only (run10/named4.log, with draws into default views checked
+  again: draw_instanced, multiple_render_targets, cube_maps, set_render_targets and others still
+  pass): create_committed_resource passes with the protected session answer;
+  clear_render_target_view fails 3 of 273 (multisampled array targets, absent in WebGPU).
+What the 87 failing vkd3d-d3d12 tests stop at first (run10/fail-reasons.txt):
+- The converter (G6), 34: StorageImage, TypedBuffer, Atomics, StorageCounter, RegisterSpace,
+  ClipDistance and the rest of run 9's list.
+- Geometry, hull and domain stages and stream output (G6's stage helper), 15.
+- Counted occlusion queries (G6's counting variant), 3: query_occlusion,
+  resolve_query_data_in_different/reordered_command_list.
+- Timestamps (G2), 3; pipeline statistics (absent in WebGPU), 3; logic operations (absent), 1;
+  dual-source blending (G6), 1.
+- WebGPU lacks instance step rates and zero strides (instance_id, zero_vertex_stride): slow paths
+  still to write.
+- Front refusals: component mappings (srv_component_mapping), typed buffer clears of some formats
+  (clear_unordered_access_view_buffer), UAV clears of a descriptor (clear_unordered_access_view_image).
+- No refusal printed, still to find: execute_indirect, conditional_rendering,
+  64kb_texture_alignment, check_feature_support (380 of 381 checks), clear_render_target_view,
+  clock_calibration, create_placed_resource (heap corruption 0xc0000374), depth_stencil_sampling
+  (28 checks), primitive_restart, render_a8, root_signature_byte_code (124: the deserializer must
+  not answer `IUnknown`, and pointers to compare), root_signature_limits, sample_instructions,
+  unknown_rtv_format, unknown_dsv_format, unused_interpolated_input, create_pipeline_state (no
+  topology type; stream output).
+- Reported absent, the test skipping (final gap list): create_reserved_resource,
+  get_resource_tiling, output_merger_logic_op, shader_instructions (float64),
+  unbounded_resource_arrays, unbounded_samplers.
 
 Run 9 (2026-11-17, full run after deee187, RTX 3080; scratch run9/wine2.log), tests passing on
 real Direct3D 12 that pass through ours:
@@ -356,6 +413,17 @@ made the device ("D3D12 11_0 - Forward+ - Using Device #0: NVIDIA - NVIDIA GeFor
   currently supported" (naga's SPIR-V reader; G6), so `CreateComputePipelineState` fails.
 Then it crashes, after those refusals.
 
+## Real program (run 10)
+
+Same command, build after a0760963 with the window association (13:18 Pacific): FAIL, exit
+0xc0000005 after 7.1 s, 1 frame, 0 of 3 saved. Gone since run 9: the heap flag refusal (Godot
+asks `ALLOW_SHADER_ATOMICS`), the D16 depth views WebGPU refused, `MakeWindowAssociation`.
+Godot now stops at the converter only (G6): its 2D canvas vertex shaders fail with
+`BindingsBeyondLimit` (7) and "unsupported image dimension %5" (buffer images, 6), so 13
+`CreateGraphicsPipelineState` calls answer E_NOTIMPL; compute shaders with storage images of no
+format fail as before; timestamps are absent (G2). Godot then draws with null pipelines and
+crashes in its own code. Matching frames wait on those G6 items.
+
 ## Gap list (run 9; the draft of the pass bar's written list)
 
 Each line is an absent feature behind failing tests, and who provides it. A gap belongs on the final
@@ -380,30 +448,30 @@ those tracks.
   (`SV_VertexID` with a base vertex in `ExecuteIndirect`), the stage helper (geometry, hull,
   domain, stream output).
 - G2 (WebGPU back end): `TIMESTAMPS`.
-- Front, this milestone: the newer interfaces (`ID3D12Device1` to `ID3D12Device8`,
-  `ID3D12GraphicsCommandList1` and later; abi.rs patches the `ID3D12Device` vtable only, so the
-  patch must move to the newest interface offered), depth views of `R32_TYPELESS` textures made
-  without the depth flag, the "still to find" tests under Test files, buffers in CPU-visible custom
-  heaps.
+- Front, this milestone: pipelines with no topology type, depth views of `R32_TYPELESS` textures
+  made without the depth flag, the "still to find" tests under Test files, buffers in CPU-visible
+  custom heaps, `ID3D12GraphicsCommandList3` and later (render passes in 4).
 
 ## Next, in this order
 
-1. A full run of the test files (`bin/wine-all.sh`) on the final tree of run 9: only the named
-   tests ran after the subresource calls, the feature answer and the mip clamp
-   (read_write_subresource and map_resource pass; create_heap and create_committed_resource have
-   no failed checks but run 191 of 192 and 80 of 85 checks: find which creations real Direct3D
-   takes that ours refuses).
-2. The real Direct3D 12 program, godot-platformer-2d-d3d12 (see "Real program" above): the heap
-   flag first, then what crashes it, then compare its frames with the rig's references.
-3. Offer the newer interfaces (Device1 to Device8, GraphicsCommandList1 to 4 at least): com.py
-   generates them; move abi.rs's vtable patch to the newest interface; methods not done answer
-   E_NOTIMPL with the reason. Five tests skip on them, and real programs ask for them.
-4. The "still to find" tests (Test files), create_placed_resource's heap corruption first.
-5. `check_d3d12 cases` again (depth-planes may now be equal: the webgpu branch reads 24-bit depth
-   by draws); add a case for the waitable object against real DXGI.
+1. The real program: godot-platformer-2d-d3d12 waits on G6 (`BindingsBeyondLimit` in its canvas
+   vertex shaders, buffer images, storage images of no format). Merge the shaders branch when it
+   has them and run it again (command under "Real program"); then compare its frames with the
+   rig's references. Also try godot-platformer-3d-d3d12.
+2. The "still to find" tests (Test files, run 10): create_placed_resource's heap corruption
+   first, then depth_stencil_sampling, execute_indirect, primitive_restart, render_a8,
+   root_signature_byte_code, check_feature_support's one missing check.
+3. Pipelines with no topology type (create_pipeline_state test 6): choose the topology class at
+   the draw.
+4. `check_d3d12 cases` again (run 10 result below if it finished) and a case for the waitable
+   object against real DXGI.
+5. Slow paths for what WebGPU lacks, or honest refusals: instance step rates and zero strides,
+   1D textures, multisampled array textures, vertex strides not a multiple of 4, vertices past
+   the bound buffer in `ExecuteIndirect`.
 6. Counted occlusion and timestamps against real Direct3D 12 when G6's counting variant and G2's
    `TIMESTAMPS` land; `SV_VertexID` with a base vertex when G6's `DrawBaseFromArguments` lands.
-7. vkd3d-shader_runner (302 files) through ours; recording without allocating per command, the
+7. `ID3D12GraphicsCommandList3` and later (render passes in 4), `ID3D12Fence1`.
+8. vkd3d-shader_runner (302 files) through ours; recording without allocating per command, the
    call buffer of plan 4.8, moving `examples/directx` into `crates/wcontainers-directx`.
 
 ## For the Direct3D 11 track: using the infrastructure crate
@@ -446,7 +514,8 @@ A working example of all of it is this track's Windows library: `examples/direct
 - Tests (one draws on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 --no-run" -- "cargo test
   -j 3 --no-fail-fast -p wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12"`
-  (29 tests: 9 infrastructure, 8 front, 9 device on the recorder, 1 on the GPU, 2 unit).
+  (30 tests: 9 infrastructure, 8 front, 10 device on the recorder, 1 on the GPU, 2 unit; run 10:
+  all pass). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
   `WEBGPU_API=dx12|vulkan` picks wgpu's path for the GPU test.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
@@ -484,6 +553,13 @@ A working example of all of it is this track's Windows library: `examples/direct
   `Fresh` and kept the old library (clippy then checked nothing new). When a result looks stale,
   `tools/graphics-rig/remote "cargo clean -p wcontainers-direct3d-12 && ..."`.
 - One case of the own program: `check_d3d12 case <name>` (names in `examples/check/cases.rs`).
+- Seen in run 10: running a `remote` command (clippy) while a queued test build used the same
+  source directory left the shaders library half-built (unresolved `wcs_dxil_constant_sizes` and
+  `anon.*` symbols). Run one rig command of this branch at a time; the test command needs
+  `set CARGO_INCREMENTAL=0&& ` in both its build and run parts; after such a failure,
+  `tools/graphics-rig/remote "cargo clean -p wcontainers-shaders -p wcontainers-direct3d-12"`.
+  `bin/test-and-named.sh <log> <files...>` in this track's scratch directory runs the crates'
+  tests and then the named test files that way.
 
 ## Interface changes
 
@@ -495,6 +571,15 @@ A working example of all of it is this track's Windows library: `examples/direct
   it could call this (G1 owns helpers.rs, so this track did not change it).
 
 ## Measurements
+
+- Run 10 (2026-11-17, RTX 3080, desktop shared with other tracks, not `--alone`, load not taken):
+  fence events, 2000 rounds: real first 11 µs, mean 2 µs, 99th percentile 3 µs, largest 11 µs;
+  ours first 57 µs, mean 22 µs, 99th percentile 32 µs, largest 151 µs. Not timings: own program
+  draw 0 of 4096 pixels beyond 1 (largest difference 0); outputs 22 of 110 and answers 7 of 25
+  differ, none beyond real; features 273 of 872 differ, and 4 were beyond real (`R1_UNORM`'s
+  quality levels, answered where real fails). After the fix (scratch run10/check2.log): features
+  269 of 872 differ, none beyond real; fence events real mean 2 µs, 99th percentile 4 µs; ours
+  mean 22 µs, 99th percentile 30 µs, largest 213 µs; the cases as before (12 of 13).
 
 - Run 7 (2026-11-17, RTX 3080, desktop shared with other tracks, not `--alone`, load not taken):
   fence events, 2000 rounds: real mean 1 µs, 99th percentile 1 µs, largest 7 µs; ours mean 17 µs,
@@ -646,6 +731,38 @@ A working example of all of it is this track's Windows library: `examples/direct
   connection that was still open (a symlink at this checkout's control socket path to it,
   ~/.ssh/wc-rig-78928cb75b0c7924, one session at a time), nothing in that checkout touched. The
   link was removed at the end of run 9; if new logins still fail, the rig waits up to 20 minutes.
+
+Run 10's entries:
+- The desktop refused new ssh logins all through run 10 too (reset right after key exchange, from
+  12:30 Pacific on; the desktop's OpenSSH log shows nothing after 11:45, so the resets never reach
+  sshd's logging). As in run 9, rig commands went over another checkout's shared connection that
+  was still open (a symlink at ~/.ssh/wc-rig-78928cb75b0c7924 to ~/.ssh/wc-rig-2c84cba95f04e27c),
+  one session at a time, nothing in that checkout touched; the link is removed at the end of the
+  run (done). Nothing on the desktop was changed to look into it.
+- `ALLOW_SHADER_ATOMICS` (0x400) is taken: atomics on one adapter need nothing of the heap. The
+  refused heap flags now each print their own reason.
+- `MakeResident`, `Evict`, `SetResidencyPriority` and `SetBackgroundProcessingMode` succeed and do
+  nothing (resources are always resident; the front has no background work);
+  `EnqueueMakeResident` signals its fence at once.
+- `CheckFeatureSupport` answers every feature up to 34: no protected sessions, no shader cache
+  abilities (so no `GetCachedBlob` or pipeline libraries), no existing heaps, heap serialization,
+  cross-node sharing or displayable textures, no meta commands (E_INVALIDARG), and queue priorities
+  normal and high supported (one submission order serves all queues, so priority changes
+  nothing); values naming no feature answer E_INVALIDARG.
+- Quality levels: one sample gives one level for any format but `R1_UNORM`, more samples a level
+  only where the format takes them, no samples and `R1_UNORM` E_FAIL (vkd3d's
+  test_multisample_quality_levels and check_d3d12 features against real).
+- Typeless `R32` and `R16` textures allowing depth-stencil views are stored as `Depth32Float` and
+  `Depth16Unorm` (as `R24G8` and `R32G8X24` already were); `R32_FLOAT` and `R16_UNORM` views of
+  them read the depth. Before, such depth views failed on WebGPU (Godot's `D16` targets).
+- A draw writes a target view's first array slice only, and gets the first viewport and scissor
+  only: no stage can choose another (`SV_RenderTargetArrayIndex` and `SV_ViewportArrayIndex` from
+  the vertex stage are reported absent, geometry shaders are refused). Clears, with or without
+  rectangles, cover every slice of the view. A depth view made with no description covers every
+  slice.
+- A pipeline state stream with no primitive topology subobject (type undefined) is refused
+  (E_INVALIDARG) where real Direct3D 12 takes it: the front builds pipelines for a topology class.
+  vkd3d's test_create_pipeline_state test 6 fails on it.
 
 The next entries came with run 8's patch, committed in run 9 (d89ad8d).
 - Views reinterpreting a typeless texture's bits (run 8) get a twin texture in the view's format,
