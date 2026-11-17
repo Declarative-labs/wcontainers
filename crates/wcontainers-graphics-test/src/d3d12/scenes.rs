@@ -29,6 +29,7 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("queries", queries),
     ("queues", queues),
     ("copies", copies),
+    ("swapchain", swapchain),
 ];
 
 pub fn find(name: &str) -> Option<Scene> {
@@ -1135,4 +1136,127 @@ fn copies(gpu: &Gpu) -> Result<Vec<Output>> {
             gpu.read(&resolved, 0, D3D12_RESOURCE_STATE_RESOLVE_DEST)?,
         ),
     ])
+}
+
+/// A flip-model swap chain of three buffers on a window that is never shown, on the direct queue:
+/// three frames, each drawn into the current back buffer between barriers from and to the present
+/// state and read before presenting, then ResizeBuffers and one more frame. Records the back
+/// buffer index of each frame, whether each present succeeded and the sizes after resizing; needs
+/// a session with a desktop (`gpu-job --desktop`).
+fn swapchain(gpu: &Gpu) -> Result<Vec<Output>> {
+    use windows::Win32::Graphics::Dxgi::*;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW,
+    };
+    use windows::core::w;
+    let window = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("STATIC"),
+            w!("swap chain"),
+            WS_OVERLAPPEDWINDOW,
+            0,
+            0,
+            200,
+            200,
+            None,
+            None,
+            None,
+            None,
+        )?
+    };
+    let factory: IDXGIFactory4 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? };
+    let desc = DXGI_SWAP_CHAIN_DESC1 {
+        Width: 128,
+        Height: 96,
+        Format: RGBA,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        BufferCount: 3,
+        SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+        Scaling: DXGI_SCALING_STRETCH,
+        ..Default::default()
+    };
+    let result = (|| -> Result<Vec<Output>> {
+        let chain: IDXGISwapChain3 = unsafe {
+            factory
+                .CreateSwapChainForHwnd(&gpu.queue, window, &desc, None, None)?
+                .cast()?
+        };
+        let root = root_1_1(gpu, &[], &[])?;
+        let pso = pipeline(
+            gpu,
+            &root,
+            dxil!("common.vs_color"),
+            dxil!("common.ps_color"),
+            &colored_layout(),
+        )?;
+        let heap = gpu.descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, false)?;
+        let mut outputs = Vec::new();
+        let mut text = String::new();
+        let frames = [(128, 96), (128, 96), (128, 96), (64, 80)];
+        for (frame, (width, height)) in frames.into_iter().enumerate() {
+            if frame == 3 {
+                unsafe {
+                    chain.ResizeBuffers(
+                        0,
+                        width,
+                        height,
+                        DXGI_FORMAT_UNKNOWN,
+                        DXGI_SWAP_CHAIN_FLAG(0),
+                    )?
+                };
+                let after = unsafe { chain.GetDesc1()? };
+                writeln!(
+                    text,
+                    "resized: {} by {}, {} buffers",
+                    after.Width, after.Height, after.BufferCount
+                )?;
+            }
+            let index = unsafe { chain.GetCurrentBackBufferIndex() };
+            let back: ID3D12Resource = unsafe { chain.GetBuffer(index)? };
+            let list = &gpu.list;
+            let [r, g, b] = hue(frame as u32, 4);
+            unsafe {
+                gpu.device
+                    .CreateRenderTargetView(&back, None, gpu.cpu(&heap, 0));
+                list.ResourceBarrier(&[transition(&back, D3D12_RESOURCE_STATE_PRESENT, RT)]);
+                list.SetPipelineState(&pso);
+                list.SetGraphicsRootSignature(&root);
+                gpu.begin(&heap, width, height);
+            }
+            draw(
+                gpu,
+                list,
+                &quad(-0.7, -0.6, 0.5, 0.8, 0.5, 0.5, [r, g, b, 1.0]),
+            )?;
+            draw(
+                gpu,
+                list,
+                &quad(-0.2, -0.9, 0.9, 0.1, 0.5, 0.5, [0.1, 0.4, 0.8, 0.5]),
+            )?;
+            let picture = gpu.read(&back, 0, RT)?;
+            unsafe { list.ResourceBarrier(&[transition(&back, RT, D3D12_RESOURCE_STATE_PRESENT)]) };
+            gpu.submit()?;
+            outputs.push(Output::picture(&format!("frame{frame}"), picture));
+            let presented = unsafe { chain.Present(0, DXGI_PRESENT(0)) };
+            gpu.wait(&gpu.queue)?;
+            writeln!(
+                text,
+                "frame {frame}: back buffer {index}, present {}",
+                if presented.is_ok() {
+                    "succeeded"
+                } else {
+                    "failed"
+                }
+            )?;
+        }
+        outputs.push(Output::text("results", text));
+        Ok(outputs)
+    })();
+    unsafe { DestroyWindow(window)? };
+    result
 }

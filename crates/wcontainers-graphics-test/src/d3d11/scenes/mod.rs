@@ -19,6 +19,7 @@ mod raster;
 mod samplers;
 mod stencil;
 mod streamout;
+mod swapchain;
 mod targets;
 mod tessellation;
 mod textures;
@@ -64,6 +65,7 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("streamout", streamout::run),
     ("deferred", deferred::run),
     ("levels", levels::run),
+    ("swapchain", swapchain::run),
 ];
 
 pub fn find(name: &str) -> Option<Scene> {
