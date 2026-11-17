@@ -1,0 +1,23 @@
+[package]
+name = "wcontainers-graphics-test-forward"
+description = "A d3d11.dll that logs each call and forwards it to the system's, to prove programs load a replacement placed beside them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Built as wcontainers_graphics_test_forward.dll and copied beside a program as d3d11.dll: built
+# under its own name, it would sit beside every program in the build directory and stand in for them all.
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_SystemInformation"] }
+
+[build-dependencies]
+object = { version = "0.41.0", default-features = false, features = ["read_core", "pe", "std"] }
+
+[lints]
+workspace = true
