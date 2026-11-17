@@ -605,9 +605,7 @@ impl<'a> Lowering<'a> {
     fn check_builtin(&self, b: u64, input: bool) -> Result<()> {
         let ok = match (self.stage, input, b) {
             (_, false, builtin::POSITION) => self.stage == SourceStage::Vertex,
-            (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => {
-                self.variant.draw_base != DrawBaseSource::Arguments
-            }
+            (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
             | (SourceStage::Pixel, true, builtin::SAMPLE_ID | builtin::SAMPLE_MASK)
@@ -635,16 +633,13 @@ impl<'a> Lowering<'a> {
             builtin::SAMPLE_POSITION => "SamplePosition",
             builtin::STENCIL_REF => "StencilRef",
             builtin::IS_FULLY_COVERED => "InnerCoverage",
-            builtin::VERTEX_ID | builtin::INSTANCE_ID => "DrawBaseFromArguments",
             _ => "BuiltIn",
         }))
     }
 
-    /// The vertex stage's helper constants: the draw's bases at offset 0.
+    /// The vertex stage's helper constants: the draw's bases at offset 0 (for bases from an indirect
+    /// draw's arguments too, which the variant pass then reads from them).
     fn helper_block(&mut self) -> Result<()> {
-        if self.variant.draw_base == DrawBaseSource::Arguments {
-            return Err(unsupported("DrawBaseFromArguments"));
-        }
         let i32_ty = self.scalar_ty(Scalar::I32);
         let u32_ty = self.scalar_ty(Scalar::U32);
         let members = vec![

@@ -10,8 +10,8 @@ use naga::{
     SampleLevel, Scalar, Span, Statement, StorageAccess, StructMember, Type, TypeInner, VectorSize,
 };
 use wcontainers_gpu::{
-    AddedBinding, HELPER_SET, HelperSlot, HelperValue, Reflection, ShaderStage, SlotKind,
-    StageExtras, VariantFlags, VariantKey, helper_binding,
+    AddedBinding, DRAW_ARGUMENTS_BINDING, DrawBaseSource, HELPER_SET, HelperSlot, HelperValue,
+    Reflection, ShaderStage, SlotKind, StageExtras, VariantFlags, VariantKey, helper_binding,
 };
 
 use crate::ConvertError;
@@ -27,6 +27,9 @@ pub(crate) fn apply(
 ) -> Result<()> {
     constants_as_storage(module, variant.constants_as_storage, reflection)?;
     let mut outlined = Outlined::default();
+    if variant.draw_base == DrawBaseSource::Arguments {
+        draw_arguments(module, reflection, &mut outlined)?;
+    }
     if variant.lod_bias != 0 {
         lod_bias(module, stage, variant.lod_bias, reflection, &mut outlined)?;
     }
@@ -61,7 +64,12 @@ pub(crate) fn apply(
             let counting = flags.contains(VariantFlags::COUNTING);
             let mask = flags.contains(VariantFlags::SAMPLE_MASK);
             let dual = flags.contains(VariantFlags::DUAL_SOURCE);
-            if counting || mask || dual {
+            let bias = flags.contains(VariantFlags::DEPTH_BIAS);
+            if counting || mask || dual || bias {
+                let bias = bias.then(|| {
+                    let vec4 = vector(module, 4, Scalar::F32);
+                    helper(module, reflection, stage, HelperValue::DepthBias, vec4, 16)
+                });
                 let mask = mask.then(|| {
                     let u32_ty = scalar(module, Scalar::U32);
                     helper(
@@ -79,6 +87,9 @@ pub(crate) fn apply(
                 }
                 if let Some(mask) = mask {
                     sample_mask(module, &mut w, mask);
+                }
+                if let Some(bias) = bias {
+                    depth_bias(module, &mut w, bias);
                 }
                 if counting {
                     counted(module, &mut w);
@@ -263,6 +274,10 @@ struct Output {
 struct Wrapped {
     f: Function,
     body: Block,
+    /// Statements run before the wrapped program, which compute from its inputs alone.
+    prologue: Block,
+    /// Where the call of the wrapped program is in `body`.
+    call_at: usize,
     outputs: Vec<Output>,
     /// The original result: one bound value, or a struct of them.
     original: Option<(Handle<Type>, bool)>,
@@ -299,6 +314,7 @@ impl Wrapped {
         let returned = result
             .as_ref()
             .map(|_| push(&mut f, &mut body, Expression::CallResult(callee)));
+        let call_at = body.len();
         body.push(
             Statement::Call {
                 function: callee,
@@ -338,6 +354,8 @@ impl Wrapped {
         Wrapped {
             f,
             body,
+            prologue: Block::new(),
+            call_at,
             outputs,
             original,
             changed: false,
@@ -348,7 +366,42 @@ impl Wrapped {
         self.outputs.iter().position(|o| is(&o.binding))
     }
 
+    /// The entry point's input bound as `is` says, read in the prologue; made an argument of type
+    /// `ty` bound by `binding` where the program has none.
+    fn input(
+        &mut self,
+        module: &Module,
+        is: impl Fn(&Binding) -> bool,
+        binding: Binding,
+        ty: Handle<Type>,
+    ) -> Handle<Expression> {
+        let (f, prologue) = (&mut self.f, &mut self.prologue);
+        for i in 0..f.arguments.len() {
+            let a = &f.arguments[i];
+            if a.binding.as_ref().is_some_and(&is) {
+                return push(f, prologue, Expression::FunctionArgument(i as u32));
+            }
+            if let TypeInner::Struct { members, .. } = &module.types[a.ty].inner
+                && let Some(m) = members
+                    .iter()
+                    .position(|m| m.binding.as_ref().is_some_and(&is))
+            {
+                let s = push(f, prologue, Expression::FunctionArgument(i as u32));
+                return index(f, prologue, s, m as u32);
+            }
+        }
+        f.arguments.push(FunctionArgument {
+            name: None,
+            ty,
+            binding: Some(binding),
+        });
+        let i = f.arguments.len() as u32 - 1;
+        push(f, prologue, Expression::FunctionArgument(i))
+    }
+
     fn finish(mut self, module: &mut Module) {
+        let prologue = core::mem::take(&mut self.prologue);
+        self.body.splice(self.call_at..self.call_at, prologue);
         let f = &mut self.f;
         let value = match self.original {
             Some((_, true)) if !self.changed => Some(self.outputs[0].value),
@@ -503,6 +556,101 @@ fn sample_mask(module: &mut Module, w: &mut Wrapped, helper: (Handle<GlobalVaria
             w.changed = true;
         }
     }
+}
+
+/// The fragment's depth written with Direct3D's depth bias added: constant units times the format's
+/// step plus the slope scale times the larger window depth slope, clamped as the bias clamp's sign
+/// says. A depth the program writes itself is kept, as the fixed function biases only the rasterised
+/// depth.
+fn depth_bias(module: &mut Module, w: &mut Wrapped, helper: (Handle<GlobalVariable>, u32)) {
+    use naga::BinaryOperator::{Add, Greater, Less, Multiply};
+    if w.output(|b| *b == Binding::BuiltIn(BuiltIn::FragDepth))
+        .is_some()
+    {
+        return;
+    }
+    let vec4 = vector(module, 4, Scalar::F32);
+    let position = w.input(
+        module,
+        |b| matches!(b, Binding::BuiltIn(BuiltIn::Position { .. })),
+        Binding::BuiltIn(BuiltIn::Position { invariant: false }),
+        vec4,
+    );
+    let (f, body) = (&mut w.f, &mut w.prologue);
+    let z = index(f, body, position, 2);
+    let bias = load_helper(f, body, helper);
+    let [units, scale, clamp, step] = [0, 1, 2, 3].map(|i| index(f, body, bias, i));
+    let slopes = [naga::DerivativeAxis::X, naga::DerivativeAxis::Y].map(|axis| {
+        let d = push(
+            f,
+            body,
+            Expression::Derivative {
+                axis,
+                ctrl: naga::DerivativeControl::None,
+                expr: z,
+            },
+        );
+        math(f, body, MathFunction::Abs, [d, d])
+    });
+    let slope = math(f, body, MathFunction::Max, slopes);
+    let constant = binary(f, body, Multiply, units, step);
+    let sloped = binary(f, body, Multiply, scale, slope);
+    let raw = binary(f, body, Add, constant, sloped);
+    let zero = f32_lit(f, 0.0);
+    let bounded = [
+        math(f, body, MathFunction::Min, [raw, clamp]),
+        math(f, body, MathFunction::Max, [raw, clamp]),
+    ];
+    let positive = binary(f, body, Greater, clamp, zero);
+    let negative = binary(f, body, Less, clamp, zero);
+    let clamped = push(
+        f,
+        body,
+        Expression::Select {
+            condition: negative,
+            accept: bounded[1],
+            reject: raw,
+        },
+    );
+    let clamped = push(
+        f,
+        body,
+        Expression::Select {
+            condition: positive,
+            accept: bounded[0],
+            reject: clamped,
+        },
+    );
+    let value = binary(f, body, Add, z, clamped);
+    let ty = scalar(module, Scalar::F32);
+    w.outputs.push(Output {
+        name: Some("depth".into()),
+        ty,
+        binding: Binding::BuiltIn(BuiltIn::FragDepth),
+        value,
+    });
+    w.changed = true;
+}
+
+/// A math function of one or two arguments (the second ignored for one-argument functions).
+fn math(
+    f: &mut Function,
+    body: &mut Block,
+    fun: MathFunction,
+    [arg, arg1]: [Handle<Expression>; 2],
+) -> Handle<Expression> {
+    let arg1 = (fun.argument_count() > 1).then_some(arg1);
+    push(
+        f,
+        body,
+        Expression::Math {
+            fun,
+            arg,
+            arg1,
+            arg2: None,
+            arg3: None,
+        },
+    )
 }
 
 /// The counting variant's outputs: 1.0 at location 0 with target 0's alpha (for alpha to coverage),
@@ -697,6 +845,149 @@ fn constants_as_storage(
         b.binding = next;
         b.added = Some(AddedBinding::ConstantsAsStorage(b.register));
         next += 1;
+    }
+    Ok(())
+}
+
+/// Bases read from an indirect draw's arguments: the draw bases' block (16 bytes at offset 0, made by
+/// either route) becomes [`HelperValue::DrawArguments`], and each read of the base vertex or first
+/// instance becomes a read of the argument buffer at [`DRAW_ARGUMENTS_BINDING`]. In words from the
+/// draw's offset, the base vertex is at 2 and the first instance at 3, one later when indexed.
+fn draw_arguments(
+    module: &mut Module,
+    reflection: &mut Reflection,
+    outlined: &mut Outlined,
+) -> Result<()> {
+    let Some(slot) = reflection
+        .helpers
+        .iter_mut()
+        .find(|s| s.value == HelperValue::DrawBase)
+    else {
+        return Ok(());
+    };
+    slot.value = HelperValue::DrawArguments;
+    let block = naga::ResourceBinding {
+        group: HELPER_SET,
+        binding: helper_binding(ShaderStage::Vertex),
+    };
+    let helpers = module
+        .global_variables
+        .iter()
+        .find(|(_, g)| g.binding == Some(block))
+        .map(|(h, _)| h)
+        .ok_or(ConvertError::Malformed(
+            "draw bases without their block".into(),
+        ))?;
+    let u32_ty = scalar(module, Scalar::U32);
+    let i32_ty = scalar(module, Scalar::I32);
+    let member = |name: &str, offset| StructMember {
+        name: Some(name.into()),
+        ty: u32_ty,
+        binding: None,
+        offset,
+    };
+    let ty = module.types.insert(
+        Type {
+            name: Some("Helpers".into()),
+            inner: TypeInner::Struct {
+                members: alloc::vec![
+                    member("arguments_offset", 0),
+                    member("indexed", 4),
+                    member("draw", 8),
+                ],
+                span: 16,
+            },
+        },
+        Span::UNDEFINED,
+    );
+    module.global_variables[helpers].ty = ty;
+    let words = module.types.insert(
+        Type {
+            name: None,
+            inner: TypeInner::Array {
+                base: u32_ty,
+                size: naga::ArraySize::Dynamic,
+                stride: 4,
+            },
+        },
+        Span::UNDEFINED,
+    );
+    let arguments = module.global_variables.append(
+        GlobalVariable {
+            name: Some("draw_arguments".into()),
+            space: AddressSpace::Storage {
+                access: StorageAccess::LOAD,
+            },
+            binding: Some(naga::ResourceBinding {
+                group: HELPER_SET,
+                binding: DRAW_ARGUMENTS_BINDING,
+            }),
+            ty: words,
+            init: None,
+            memory_decorations: Default::default(),
+        },
+        Span::UNDEFINED,
+    );
+    // The reader of word `first` (plus one when indexed), as the type the block's member had.
+    let reader = |first: u32, signed: bool| {
+        use naga::BinaryOperator::Add;
+        let mut f = Function {
+            name: Some(
+                if signed {
+                    "base_vertex"
+                } else {
+                    "first_instance"
+                }
+                .into(),
+            ),
+            result: Some(FunctionResult {
+                ty: if signed { i32_ty } else { u32_ty },
+                binding: None,
+            }),
+            ..Default::default()
+        };
+        let mut body = Block::new();
+        let at = load_helper(&mut f, &mut body, (helpers, 0));
+        let indexed = load_helper(&mut f, &mut body, (helpers, 1));
+        let first = f
+            .expressions
+            .append(Expression::Literal(Literal::U32(first)), Span::UNDEFINED);
+        let word = binary(&mut f, &mut body, Add, at, first);
+        let word = binary(&mut f, &mut body, Add, word, indexed);
+        let base = push(&mut f, &mut body, Expression::GlobalVariable(arguments));
+        let pointer = push(&mut f, &mut body, Expression::Access { base, index: word });
+        let mut value = push(&mut f, &mut body, Expression::Load { pointer });
+        if signed {
+            value = push(
+                &mut f,
+                &mut body,
+                Expression::As {
+                    expr: value,
+                    kind: naga::ScalarKind::Sint,
+                    convert: None,
+                },
+            );
+        }
+        body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
+        f.body = body;
+        f
+    };
+    let mut sites = Vec::new();
+    for (owner, f) in owners(module) {
+        for (h, e) in f.expressions.iter() {
+            let Expression::Load { pointer } = *e else {
+                continue;
+            };
+            if let Expression::AccessIndex { base, index } = f.expressions[pointer]
+                && index < 2
+                && f.expressions[base] == Expression::GlobalVariable(helpers)
+            {
+                sites.push((owner, h, index));
+            }
+        }
+    }
+    for (owner, h, index) in sites {
+        outlined.add(owner, h, reader(2 + index, index == 0), Vec::new());
     }
     Ok(())
 }

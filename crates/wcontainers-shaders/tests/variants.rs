@@ -30,10 +30,10 @@ fn unbuilt_variants_are_refused_by_name() {
     let cases: Vec<(VariantKey, &str)> = vec![
         (
             VariantKey {
-                flags: VariantFlags::DEPTH_BIAS,
+                flags: VariantFlags::PROVOKING_LAST,
                 ..Default::default()
             },
-            "DepthBiasInShader",
+            "ProvokingRewrite",
         ),
         (
             VariantKey {
@@ -337,5 +337,43 @@ fn the_sample_count_comes_from_the_variant() {
         );
         let text = wgsl(&convert(fixed, &key, None).unwrap());
         assert!(text.contains("4u"), "{text}");
+    }
+}
+
+/// Depth bias in the program writes the biased depth from its helper, on both routes, and leaves a
+/// depth the program writes itself as it is.
+#[test]
+fn depth_bias_writes_the_biased_depth() {
+    let key = VariantKey {
+        flags: VariantFlags::DEPTH_BIAS,
+        ..Default::default()
+    };
+    for c in both(&own_pair("ps_textured"), &key) {
+        assert_eq!(c.reflection.helpers, [slot(HelperValue::DepthBias, 0)]);
+        let text = wgsl(&c);
+        assert!(text.contains("@builtin(frag_depth)"), "{text}");
+        assert!(text.contains("dpdx("), "{text}");
+    }
+    let own = convert(Source::Dxbc(&read("tests/own/ps_depth.dxbc")), &key, None).unwrap();
+    let text = wgsl(&own);
+    assert_eq!(text.matches("@builtin(frag_depth)").count(), 1, "{text}");
+}
+
+/// Bases from an indirect draw's arguments: the bases' block becomes the arguments' place, and the
+/// argument buffer is read in set 3, on both routes.
+#[test]
+fn draw_bases_from_arguments_read_the_argument_buffer() {
+    let key = VariantKey {
+        draw_base: DrawBaseSource::Arguments,
+        ..Default::default()
+    };
+    for c in both(&own_pair("vs_transform"), &key) {
+        assert_eq!(c.reflection.helpers, [slot(HelperValue::DrawArguments, 0)]);
+        let text = wgsl(&c);
+        assert!(
+            text.contains("@group(3) @binding(11) \nvar<storage> draw_arguments: array<u32>"),
+            "{text}"
+        );
+        assert!(text.contains("arguments_offset"), "{text}");
     }
 }

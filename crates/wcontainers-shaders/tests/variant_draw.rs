@@ -11,8 +11,8 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    BlendComponent, BlendFactor, BlendOp, Format, HelperValue, ProvokingVertex, VariantFlags,
-    VariantKey, VertexFormat,
+    BlendComponent, BlendFactor, BlendOp, DrawBaseSource, Format, HelperValue, ProvokingVertex,
+    VariantFlags, VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -224,6 +224,156 @@ fn variants_draw_as_the_native_feature_does() {
                 // after it, each within two f32 steps of depths near 0.5.
                 (SIZE as usize * SIZE as usize, 4),
             ));
+        }
+
+        // Depth bias on a 24-bit depth buffer whose back end stores floats: real Direct3D 11 drawing
+        // into D24_UNORM_S8_UINT with the rasteriser's bias, and each back end drawing into a
+        // Depth32Float target with the program adding the bias with the 24-bit step; ours taken to
+        // 24-bit codes as Direct3D's buffer stores them. Window depth runs from 0.67 to 0.4 across
+        // the grid (w = x / 4 + 1), so the slope term shows; the clamps, just past the constant term,
+        // cut it wherever it shows, from above and (negated) from below.
+        let mut biased: Vec<Vec<u8>> = Vec::new();
+        for bias in [
+            (2000, 0.25f32, 0.0f32),
+            (2000, 0.25, 0.0002),
+            (-2000, -0.25, -0.0002),
+        ] {
+            let (reference, _) = direct3d_11(
+                &d3d,
+                "vs_transform",
+                "ps_textured",
+                Format::Rgba8Unorm,
+                [1.0, 0.75, 0.5, 1.5],
+                true,
+                &Reference {
+                    depth: Some([0.0, 1.0]),
+                    depth_bias: Some(bias),
+                    ..Default::default()
+                },
+            );
+            let mut variant = plain.clone();
+            variant.setup.depth = true;
+            variant.setup.ps_key.flags = VariantFlags::DEPTH_BIAS;
+            let step = 1.0 / 16_777_215.0f32;
+            variant.setup.helpers[1] = helper_block(
+                variant.ps,
+                &variant.setup.ps_key,
+                &[(
+                    HelperValue::DepthBias,
+                    &floats(&[bias.0 as f32, bias.1, bias.2, step]),
+                )],
+            );
+            for (back_end, texels) in [
+                ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
+                ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
+            ] {
+                let codes: Vec<u8> = texels
+                    .chunks(4)
+                    .flat_map(|t| {
+                        let z = f32::from_le_bytes(t.try_into().unwrap()).clamp(0.0, 1.0);
+                        ((z as f64 * 16_777_215.0).round() as u32).to_le_bytes()
+                    })
+                    .collect();
+                results.push(compare(
+                    format!(
+                        "depth_bias {bias:?} {route} {back_end} against direct3d 11, 24-bit codes"
+                    ),
+                    &reference,
+                    &codes,
+                    // Codes compare as integers this way.
+                    Format::Depth32Float,
+                    (SIZE as usize * SIZE as usize, 1),
+                ));
+            }
+            biased.push(reference);
+        }
+        // The clamp acts: Direct3D's two depth buffers differ where the slope is steepest.
+        let (clamped, _) = differ(&biased[0], &biased[1], Format::Depth32Float);
+        eprintln!("depth_bias {route}: the clamp changes {clamped} of Direct3D 11's texels");
+        assert!(clamped > 0);
+
+        // The vertex and instance numbers of draws with non-zero bases (Direct3D's `SV_VertexID` and
+        // `SV_InstanceID` leave the bases out where WebGPU's numbers include them), direct with the
+        // bases in the helper block and indirect with them read from the argument buffer, against
+        // real Direct3D 11 drawing the same ranges.
+        let ids = [
+            bytecode(&format!("vs_ids.{route}")),
+            bytecode(&format!("ps_ids.{route}")),
+        ];
+        let mut cases = Vec::new();
+        for indirect in [false, true] {
+            cases.push(Bases {
+                count: 48,
+                first: 48,
+                base_vertex: 0,
+                first_instance: 1,
+                instances: 2,
+                indexed: false,
+                indirect,
+            });
+            cases.push(Bases {
+                count: 42,
+                first: 6,
+                base_vertex: 48,
+                first_instance: 2,
+                instances: 2,
+                indexed: true,
+                indirect,
+            });
+        }
+        for bases in cases {
+            let (reference, _) = direct3d_11(
+                &d3d,
+                "vs_ids",
+                "ps_ids",
+                Format::Rgba8Unorm,
+                [1.0; 4],
+                true,
+                &Reference {
+                    bases: Some(bases),
+                    ..Default::default()
+                },
+            );
+            let mut variant = grid_draw(&ids, dxil, &grid);
+            variant.setup.bases = Some(bases);
+            let block = if bases.indirect {
+                variant.setup.vs_key.draw_base = DrawBaseSource::Arguments;
+                let words = [ARGUMENTS_WORD, bases.indexed as u32, 0, 0];
+                (HelperValue::DrawArguments, words)
+            } else {
+                variant.setup.vs_key.draw_base = DrawBaseSource::Helpers;
+                let first = if bases.indexed {
+                    bases.base_vertex
+                } else {
+                    bases.first as i32
+                };
+                (
+                    HelperValue::DrawBase,
+                    [first as u32, bases.first_instance, 0, 0],
+                )
+            };
+            let words: Vec<u8> = block.1.iter().flat_map(|w| w.to_le_bytes()).collect();
+            variant.setup.helpers[0] =
+                helper_block(variant.vs, &variant.setup.vs_key, &[(block.0, &words)]);
+            let mut drawn = vec![("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First))];
+            // WebGL 2 has no indirect draws (its front reads the arguments back and draws them
+            // directly) and no storage buffers to read them from.
+            if !bases.indirect {
+                drawn.push(("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)));
+            }
+            for (back_end, texels) in drawn {
+                results.push(compare(
+                    format!(
+                        "draw_base {route} {back_end} {}{} against direct3d 11",
+                        if bases.indirect { "indirect " } else { "" },
+                        if bases.indexed { "indexed" } else { "vertices" },
+                    ),
+                    &reference,
+                    &texels,
+                    Format::Rgba8Unorm,
+                    (0, 0),
+                ));
+            }
         }
 
         // The sample mask 0b0101 of four samples: natively on WebGPU, and written by the program on

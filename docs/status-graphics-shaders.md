@@ -8,9 +8,10 @@ Milestone G6a (first slice): done in run 3; runs 4, 5, 6, 8 and 9 fixed what the
 of runs 3, 4, 5, 7 and 8 found (listed under "Run 4" to "Run 9" below); run 7 drew run 6's fixes on
 the GPU. Milestone G6 in full (section 12's pass bar) is not done: run 9 (the first run on it) fixed
 the run 8 check's findings and built the cache of section 8; run 10 built ten of the variant key's
-rewrites with drawn tests and the corpus of real programs' shaders; what remains is under Next. Run
-10 merged origin/phase-2-graphics, -direct3d-11, -direct3d-12 and -webgpu (no conflicts; the
-others had nothing new).
+rewrites with drawn tests and the corpus of real programs' shaders; run 11 built depth bias and the
+draw bases from an indirect draw's arguments, with drawn tests; what remains is under Next. Run 11
+merged origin/phase-2-graphics, -webgl, -direct3d-11, -direct3d-12 and -rig (no conflicts; -webgpu
+had nothing new).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -299,12 +300,12 @@ Run 10 (variants and the real programs' shaders):
   on a 4-level texture, which shows Direct3D applies it to explicit levels too; comparisons refused
   `LodBiasOnComparison`, depth levels `LodBiasOnDepthLevel`), `constants_as_storage` (read-only
   storage at the first storage binding past the program's, `AddedBinding::ConstantsAsStorage`).
-- Still refused by name: the flags `ProvokingRewrite`, `DepthBiasInShader`, `EarlyTestsInShader`,
+- Still refused by name (run 11 built `DepthBiasInShader` and `DrawBaseFromArguments`): the flags
+  `ProvokingRewrite`, `EarlyTestsInShader`,
   `AntialiasedLinesAsQuads`, `ClipDistanceInShader`, `DepthClampInShader`, `PrimitiveIdAsGeometry`,
   and the fields `FilterInShader`, `BorderInShader`, `MirrorOnceInShader`, `ConstantsAsTexture`,
   `VertexPulledInShader`, `StorageFormats`, `TexelBufferRoute`, `StoragePacked`,
-  `TexelsThroughBuffer`, `NormAsInteger`, `TargetsInShader`, `MinLodClamp`, `RootSignatureLayout`,
-  `DrawBaseFromArguments`.
+  `TexelsThroughBuffer`, `NormAsInteger`, `TargetsInShader`, `MinLodClamp`, `RootSignatureLayout`.
 - The real programs' shaders: `examples/containers.rs` finds every DXBC and DXIL container in the
   files under a directory (header and chunk table checked, distinct ones by BLAKE3) and lists where
   each came from. Run over the rig's real programs (C:\wc\programs) it found 890: 529 DXBC and 361
@@ -324,11 +325,45 @@ Run 10 (variants and the real programs' shaders):
   draw with a `Reference` of its changes: texture levels, sampler bias, blending, an occlusion query,
   a depth buffer and range).
 
+Run 11 (variants):
+- `DEPTH_BIAS` (pixel programs): the wrapped entry point writes the fragment's depth plus Direct3D's
+  bias from `HelperValue::DepthBias` (units times the step, plus the slope scale times the larger
+  of `|dpdx(z)|` and `|dpdy(z)|`, clamped by the clamp's sign), computed in a prologue before the
+  program runs. A depth the program writes itself is left as written (the fixed function biases only
+  the rasterised depth; not measured against Direct3D). The wrapper gained a prologue and a way to
+  read an entry input, adding it as an argument where the program has none.
+- `DrawBaseSource::Arguments` (vertex programs), on both routes: each route builds the bases' block
+  as for `Helpers`, then one rewrite on the common form turns it into `HelperValue::DrawArguments`
+  (word offset, indexed, draw number) and replaces each load of the base vertex or first instance by
+  a call that reads the argument buffer bound read-only at `DRAW_ARGUMENTS_BINDING` in set 3: word
+  offset + 2 (base vertex, as i32) or + 3 (first instance), one more when indexed.
+- New own shaders `vs_ids`/`ps_ids` (`variants.hlsl`, fxc and dxc): the vertex and instance numbers
+  as colours, the triangle's number so the provoking vertex does not matter. Every other own shader
+  recompiled byte for byte as committed.
+- Drawn (`tests/variant_draw.rs`, numbers under Measurements): depth bias against real Direct3D 11
+  drawing into D24_UNORM_S8_UINT with the rasteriser's bias, ours into Depth32Float taken to 24-bit
+  codes, unclamped and clamped (the test also checks that the clamp changes Direct3D's depth); the
+  draw bases (direct by the helpers, indirect by the arguments; non-indexed with a first vertex,
+  indexed with a first index and base vertex; two instances from a first instance of 1 or 2) against
+  real Direct3D 11's `DrawInstanced`, `DrawIndexedInstanced` and their indirect forms.
+- The shared harness (`tests/common`) draws with bases, indices and indirect arguments
+  (`Setup::bases`, `Reference::bases`) and gives Direct3D 11 a biased 24-bit depth buffer.
+
 Next (in order):
-- The rest of the variants (the list above), each with a drawn test as run 10's: depth bias (against
-  Direct3D 11 on a 24-bit target), depth clamp and clip distances (against WebGPU's native features
-  where wgpu has them, otherwise Direct3D 11), the draw bases from an indirect draw's arguments, the
-  minimum level-of-detail clamp, filtering, border and mirror-once in the program, decoded textures
+- The rest of the variants (the list above), each with a drawn test as run 10's:
+- The minimum level-of-detail clamp: sample sites of clamped textures outlined as `lod_bias`
+  outlines them (the two must compose on one site: one callee that applies both), sampling through
+  the merged sampler at `CLAMPED_SAMPLER_BINDING` + pair index; loads and gathers compared with
+  `HelperValue::MinLod`; every access zero past the last level (read the exact rule in the
+  functional specification, scratch `downloads/d3d11spec/`, 5.8, first). Test against Direct3D 11's
+  `SetResourceMinLOD` with a fractional clamp, as G4's list asks.
+- Depth clamp and clip distances pass new values from the vertex to the pixel program, which are
+  converted apart: they need one rule for where those values live that both stages know (the pixel
+  program does not know the vertex program's registers). Decide it first (a fixed place, or a
+  variant field the front fills from the other stage's reflection, as `output_interpolation` does);
+  an interface change if a field. Test against WebGPU's native clip distances (wgpu's
+  `CLIP_DISTANCES`) and Direct3D 11's depth clip off.
+- Then filtering, border and mirror-once in the program, decoded textures
   and targets written in the program, pulled vertices, constants through a texture, typed buffers
   and storage formats (after the storage image and typed buffer support they need), early tests,
   line coverage, the provoking rewrite, the primitive index from the stage helper, root signature
@@ -374,15 +409,22 @@ let module: &wcontainers_gpu::ShaderModule = &converted.modules[0];  // hand to 
 let reflection = &converted.reflection;
 ```
 - `variant_key` is `wcontainers_gpu::VariantKey`; `VariantKey::default()` for the plain program. Built:
-  `draw_base` (`None`, `Helpers`), `output_interpolation`, `lod_bias`, `constants_as_storage`,
-  `samples`, and the flags `CLIP_DEPTH_REWRITE`, `VIEWPORT_DEPTH_FLIP`, `VIEWPORT_ADJUST` (vertex
-  programs; ignored on others), `COUNTING`, `SAMPLE_MASK`, `DUAL_SOURCE` (pixel programs) and
-  `TEXTURE_INFO`. Every other field or flag set, and a root signature, is refused by name (the list
+  `draw_base` (`None`, `Helpers`, `Arguments`), `output_interpolation`, `lod_bias`,
+  `constants_as_storage`, `samples`, and the flags `CLIP_DEPTH_REWRITE`, `VIEWPORT_DEPTH_FLIP`,
+  `VIEWPORT_ADJUST` (vertex programs; ignored on others), `COUNTING`, `SAMPLE_MASK`, `DUAL_SOURCE`,
+  `DEPTH_BIAS` (pixel programs) and `TEXTURE_INFO`. Every other field or flag set, and a root signature, is refused by name (the list
   is under Run 10). Each helper value a variant needs is in `reflection.helpers` at its offset in the
   stage's block (`helper_size` bytes, bound at `helper_binding(stage)` in set 3), after `DrawBase` when
   both are asked: the front writes `ViewportAdjust` as (scale x, scale y, offset x, offset y) of clip
   x and y (offsets times w), `SampleMask` as a u32, `LodBias { sampler }` as an f32,
-  `TextureLevels { texture }` as a u32.
+  `TextureLevels { texture }` as a u32, `DepthBias` as (constant units, slope scale, clamp, the depth
+  format's step) in f32, `DrawArguments` as (word offset of the draw's arguments, 1 when indexed, draw
+  number) in u32.
+- `DEPTH_BIAS` writes the depth itself, so the front draws with the raster block's bias at zero and
+  without early depth tests for those draws.
+- `draw_base: Arguments` reads the bases from the indirect argument buffer, bound read-only (storage)
+  at `DRAW_ARGUMENTS_BINDING` in set 3 for the vertex stage; the helper block holds where the draw's
+  arguments start.
 - `samples` is the targets' sample count where the program reads it (`GetRenderTargetSampleCount`);
   a program that reads it converts only with it set (`Unsupported("SampleCount")` otherwise).
 - `COUNTING` programs have no side effects left (`extras.side_effects` false); `DUAL_SOURCE` needs
@@ -416,9 +458,8 @@ let reflection = &converted.reflection;
   `reflection.extras` for pixel shaders: early tests, side effects (UAV writes), discards, per sample.
 - DXIL: `convert(Source::Dxil(bytecode), &variant_key, None)`, same result shape. Bindings are
   numbered as for Direct3D 11 for now (stage set, kind range + register; `space` kept in the
-  reflection), not yet by root signature. `draw_base` `None` (bases read as zero) and `Helpers` (the
-  vertex helper block as for DXBC above) are taken; `Arguments` is
-  `Unsupported("DrawBaseFromArguments")` on both routes. Inputs and outputs are listed as for DXBC
+  reflection), not yet by root signature. `draw_base` `None` (bases read as zero), `Helpers` and
+  `Arguments` are taken as for DXBC. Inputs and outputs are listed as for DXBC
   (semantic names from the container's signatures, location = register), but unlike DXBC each value
   keeps its own width and type (`vs_transform.dxil` writes `@location(1) vec2<f32>`), so a
   Direct3D 12 vertex shader writing a float4 that the pixel shader reads as float2 fails WebGPU's
@@ -450,7 +491,23 @@ let reflection = &converted.reflection;
 
 ## Measurements
 
-Run 10, 2026-11-17, counts only:
+Run 11, 2026-11-17, counts only:
+- `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, scratch
+  `run11/draw4.log`), each by the DXBC and the DXIL route: depth bias against Direct3D 11's
+  D24_UNORM_S8_UINT buffer, in 24-bit codes, on WebGPU and WebGL 2: (2000 units, slope 0.25, no
+  clamp) 355 of 4096 texels differ by 1 code, (clamp 0.0002) 471 by 1, (-2000, -0.25, clamp -0.0002)
+  478 by 1, never more than 1 (allowance 1); the clamp changes 1610 of Direct3D's texels. Draw bases
+  against Direct3D 11, 0 of 4096 differ in every case: vertices from 48 and indexed (first index 6,
+  base vertex 48), two instances from 1 or 2, directly on WebGPU and WebGL 2 and indirectly (the
+  arguments 4 words into their buffer) on WebGPU. Every run 10 comparison as in run 10. Windows clippy
+  with warnings denied passes. `tests/draw.rs` on the changed shared harness: all 3 tests pass
+  (`run11/draw-plain.log`).
+- Laptop (i7-8750H, load average 0.5 to 4.2): the whole suite with every corpus passes (`--skip
+  mutated`; corpus test 214 s), every verdict as recorded; own DXBC and DXIL each two more
+  (`vs_ids`, `ps_ids`, converting). Clippy with warnings denied passes.
+- Not re-run this run: Chrome's compile of the written files and the WebAssembly comparison (the
+  default conversions did not change; only the new variants' paths did).
+
 - `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, scratch
   `run10/draw8.log`), each by the DXBC and the DXIL route: equal texel for texel (or, for depth, in
   f32 steps) to the stated reference: viewport adjustment 0 of 4096 on WebGPU and WebGL 2; clip
@@ -911,6 +968,11 @@ were already there.
   its CMake does for that file.
 
 ## Known gaps found so far
+
+- `DEPTH_BIAS` leaves a depth the program writes as it is; that Direct3D does not bias a written
+  depth is expected (as Vulkan defines it), not measured.
+- `draw_base: Arguments` serves WebGPU only: WebGL 2 has no storage buffers to read the arguments
+  from (nor indirect draws; its front reads them back and draws directly with `Helpers`).
 
 - One real program shader (`d599fbc7efa911be.dxbc`, a bgfx shader) converts to a module whose
   expression order differs between the native and WebAssembly builds (run 10): the two results of

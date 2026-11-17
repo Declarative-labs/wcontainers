@@ -149,7 +149,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     } = variant;
     let unbuilt_flags = [
         (VariantFlags::PROVOKING_LAST, "ProvokingRewrite"),
-        (VariantFlags::DEPTH_BIAS, "DepthBiasInShader"),
         (VariantFlags::EARLY_TESTS, "EarlyTestsInShader"),
         (VariantFlags::LINE_COVERAGE, "AntialiasedLinesAsQuads"),
         (VariantFlags::CLIP_DISTANCE, "ClipDistanceInShader"),
