@@ -150,3 +150,44 @@ fn a_bad_list_fails_at_close() {
         Err(Error::NotImplemented("root descriptor tables"))
     );
 }
+
+#[test]
+fn a_rectangle_clear_comes_after_a_whole_clear_before_it() {
+    let mut device = Device::new(Recorder::new());
+    let desc = ResourceDesc {
+        dimension: DIMENSION_TEXTURE2D,
+        width: 64,
+        height: 64,
+        depth_or_array_size: 1,
+        mip_levels: 1,
+        format: RGBA8,
+        sample_count: 1,
+        flags: FLAG_RENDER_TARGET,
+        ..Default::default()
+    };
+    let target = device.create_committed(HeapType::Default, &desc).unwrap();
+    let view = Descriptor::RenderTarget(TargetView {
+        resource: target,
+        format: RGBA8,
+        mip: 0,
+        first_layer: 0,
+        layers: 1,
+    });
+    let mut list = CommandList::new();
+    for rects in [vec![], vec![[4, 40, 28, 60]]] {
+        list.record(Command::ClearTarget {
+            view,
+            color: [0.5; 4],
+            rects,
+        });
+    }
+    list.close().unwrap();
+    let start = device.backend().calls.len();
+    device.execute(&[list.commands().unwrap().clone()]).unwrap();
+    let passes: Vec<&String> = device.backend().calls[start..]
+        .iter()
+        .filter(|c| c.starts_with("begin_pass"))
+        .collect();
+    assert_eq!(passes.len(), 2, "{passes:#?}");
+    assert!(passes[0].contains("Clear(") && passes[1].contains("Load"));
+}

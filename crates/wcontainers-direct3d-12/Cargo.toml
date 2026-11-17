@@ -20,5 +20,32 @@ wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12"
 pollster = "1.0.1"
 png = "0.18.1"
 
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+windows-core = "0.62.2"
+
+# The Windows library and its forwarders (examples/directx/main.rs says why they are examples).
+[[example]]
+name = "wcontainers_directx"
+path = "examples/directx/main.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "d3d12"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "dxgi"
+crate-type = ["cdylib"]
+
 [lints]
 workspace = true

@@ -920,11 +920,14 @@ impl Replay {
                     ));
                 };
                 let value = clear_bits(dxgi(v.format)?, *color);
-                self.end_pass(d);
-                self.clears.retain(|(k, _)| k != v);
                 if rects.is_empty() {
+                    // A later whole clear of the view replaces one still waiting.
+                    self.end_pass(d);
+                    self.clears.retain(|(k, _)| k != v);
                     self.clears.push((*v, value));
                 } else {
+                    // Clears still waiting come first, so the rectangles land on them.
+                    self.settle(d)?;
                     let view = d.view(v)?;
                     let rects: Vec<_> = rects.iter().map(scissor).collect();
                     d.backend.clear_rects(
