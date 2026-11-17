@@ -36,9 +36,13 @@ pub type Chosen = wcontainers_gpu_webgpu::WebGpu;
 pub type Front = wcontainers_direct3d_11::Device<Chosen>;
 pub type Shared = Rc<RefCell<Front>>;
 
-/// Makes the back end on the most capable GPU `wgpu` finds, or none if there is none.
+/// Makes the back end on the most capable GPU `wgpu` finds through Direct3D 12, or none if there is
+/// none. Direct3D 12 is what browsers' WebGPU draws through on Windows, and it rasterises aliased
+/// lines by Direct3D's rule, which `wgpu`'s Vulkan path does not.
 pub fn backend() -> Option<Chosen> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = wgpu::Backends::DX12;
+    let instance = wgpu::Instance::new(desc);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         ..Default::default()
