@@ -47,6 +47,12 @@ Built in K3's fifth run (the K3 check's findings):
   made in `/dev/mqueue` that way shows its 80 bytes (measured; guest/posixmq.c). Seed 3015.
 - timerfd_settime and timerfd_gettime on an O_PATH descriptor are EBADF (`fdget`), not EINVAL
   (guest/timers.c). Seed 3018.
+- A pipe write whose buffer faults on a new page gives the slot back: the reader sees nothing, poll
+  shows no POLLIN and the pipe keeps all its room (measured on the reference's 7.0 kernel, which
+  differs from the older `pipe_write` that left an empty buffer; tests/write.rs
+  `faulted_pipe_writes_match_reference`, guest/pipefault.c). Seed 3021.
+- FUTEX_CMP_REQUEUE_PI reads the lock's word before looking for waiters
+  (`futex_proxy_trylock_atomic`), so a bad lock address is EFAULT with nobody waiting. Seed 3020.
 - jobs.c's hangup job waits for both SIGHUP and SIGCONT with them blocked outside `sigsuspend`; the
   reference could run the job between the two (the check's whole-suite failure).
 - The repeatable test clock charges each turn 0.5 to 1.5 ns an instruction, drawn per turn from the
