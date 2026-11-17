@@ -320,7 +320,8 @@ load average 24 to 51):
   `ordered_write_in_a_pass_splits_it` and `writes_ahead_of_a_pass_do_not_split_it` compare with
   the RTX 3080's references at tolerance 0 and differ; how far was not printed. fitted.rs and
   raster.rs were not yet written then.
-- `web/check`: all twelve pictures equal Direct3D 11's at tolerance 0; every twist differs natively
+- `web/check` (run twice, last at a561a61): all twelve pictures equal Direct3D 11's at tolerance
+  0; every twist differs natively
   on Direct3D 12 and on Vulkan and in Chrome (blend factor 16384 pixels by up to 92, depth function
   25016 by up to 204, on `quads` and `quads-d24s8` alike); Chrome's WebGPU adapter "NVIDIA GeForce
   RTX 3080", D3D12, discrete GPU, not a fallback.
