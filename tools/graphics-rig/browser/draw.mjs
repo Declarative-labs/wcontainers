@@ -1,8 +1,10 @@
 // Draws the triangle in Chrome through WebGPU and WebGL 2 and saves the pictures:
-//   node draw.mjs <out-dir>
-// writes chrome-webgpu-triangle.png and chrome-webgl2-triangle.png and prints the adapter each API
-// reports, and the adapters chrome://gpu lists for WebGPU and WebGL, so a fall back to software
-// drawing shows. Chrome is the newest one in C:\wc\chrome.
+//   node draw.mjs <scene.json> <out-dir>
+// with scene.json from `gt-scene triangle`. Writes chrome-webgpu-triangle.png and
+// chrome-webgl2-triangle.png, prints the adapter each API reports and the adapters chrome://gpu lists,
+// and fails unless WebGPU drew on a hardware adapter (a GPU, not a fallback or CPU one) and WebGL 2 on
+// the same GPU, so a fall back to software drawing fails the run. Chrome is the newest one in
+// C:\wc\chrome.
 import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
@@ -11,12 +13,13 @@ import { getInstalledBrowsers } from '@puppeteer/browsers';
 import { chromium } from 'playwright-core';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const [sceneFile, out] = process.argv.slice(2);
+if (!out) throw new Error('usage: node draw.mjs <scene.json> <out-dir>');
 const files = {
   '/triangle.html': [join(here, 'triangle.html'), 'text/html'],
   '/triangle.wgsl': [join(here, '../../../crates/wcontainers-graphics-test/src/triangle.wgsl'), 'text/plain'],
+  '/scene.json': [sceneFile, 'application/json'],
 };
-const out = process.argv[2];
-if (!out) throw new Error('usage: node draw.mjs <out-dir>');
 await mkdir(out, { recursive: true });
 
 const server = createServer(async (request, response) => {
@@ -39,6 +42,7 @@ const browser = await chromium.launch({
 console.log(`chrome ${browser.version()}`);
 const base = `http://127.0.0.1:${server.address().port}`;
 let failed = false;
+const adapters = {};
 try {
   await webgpuReady();
   for (const api of ['webgpu', 'webgl2']) {
@@ -49,19 +53,35 @@ try {
       const result = await page.evaluate(() => window.result);
       const path = join(out, `chrome-${api}-triangle.png`);
       await writeFile(path, Buffer.from(result.png.split(',')[1], 'base64'));
-      console.log(`${api} on ${result.adapter}: ${path}`);
+      adapters[api] = result.adapter;
+      console.log(`${api} on ${JSON.stringify(result.adapter)}: ${path}`);
     } catch (e) {
       console.log(`${api} failed: ${e.message}`);
       failed = true;
     }
     await page.close();
   }
+  failed ||= !hardwareUsed(adapters);
   await reportGpu();
 } finally {
   await browser.close();
   server.close();
 }
 process.exitCode = failed ? 1 : 0;
+
+// Whether WebGPU drew on a GPU adapter that is not a fallback one, and WebGL 2 on the same GPU;
+// prints why not.
+function hardwareUsed({ webgpu, webgl2 }) {
+  const problems = [];
+  if (webgpu) {
+    if (webgpu.fallback) problems.push('WebGPU used a fallback adapter');
+    if (!['discrete GPU', 'integrated GPU'].includes(webgpu.type)) problems.push(`WebGPU's adapter is of type ${webgpu.type}, not a GPU`);
+    if (!webgpu.description) problems.push('WebGPU gave no adapter description');
+    else if (webgl2 && !webgl2.renderer.includes(webgpu.description)) problems.push(`WebGL 2's renderer does not name WebGPU's ${webgpu.description}`);
+  }
+  for (const problem of problems) console.log(`chrome: ${problem}`);
+  return problems.length === 0;
+}
 
 // A WebGPU adapter request made just after Chrome starts can fail once while its GPU process
 // comes up ("A valid external Instance reference no longer exists"); later ones succeed. This waits

@@ -3,16 +3,17 @@
 <title>Triangle</title>
 <script type="module">
 // The triangle scene of crates/wcontainers-graphics-test/src/scene.rs, drawn by WebGPU or WebGL 2
-// (?api=webgpu or ?api=webgl2; nothing without one) into an offscreen 256 by 256 RGBA8 target and read back as a PNG.
-// window.result resolves to { adapter, png } with png a data URL.
-const SIZE = 256;
-const CLEAR = [26 / 255, 26 / 255, 38 / 255, 1];
-// position x, y and colour r, g, b
-const TRIANGLE = new Float32Array([
-  0.0, 0.8, 1.0, 0.0, 0.0,
-  0.8, -0.7, 0.0, 1.0, 0.0,
-  -0.8, -0.7, 0.0, 0.0, 1.0,
-]);
+// (?api=webgpu or ?api=webgl2; nothing without one) into an offscreen RGBA8 target and read back as
+// a PNG. Its size, clear colour and vertices come from scene.json, printed by `gt-scene triangle`.
+// window.result resolves to { adapter, png } with png a data URL; adapter is, for WebGPU, the
+// GPUAdapterInfo's description, backend, type and isFallbackAdapter, for WebGL 2 its renderer.
+let W, H, CLEAR, TRIANGLE;
+async function loadScene() {
+  const scene = await (await fetch('scene.json')).json();
+  ({ width: W, height: H, clear: CLEAR } = scene);
+  // position x, y and colour r, g, b
+  TRIANGLE = new Float32Array(scene.vertices.flat());
+}
 
 async function webgpu() {
   const adapter = await navigator.gpu?.requestAdapter();
@@ -33,8 +34,8 @@ async function webgpu() {
   });
   const vertices = device.createBuffer({ size: TRIANGLE.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(vertices, 0, TRIANGLE);
-  const target = device.createTexture({ size: [SIZE, SIZE], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
-  const readback = device.createBuffer({ size: SIZE * SIZE * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  const target = device.createTexture({ size: [W, H], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+  const readback = device.createBuffer({ size: W * H * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
   const encoder = device.createCommandEncoder();
   const pass = encoder.beginRenderPass({ colorAttachments: [{
     view: target.createView(), loadOp: 'clear', storeOp: 'store',
@@ -44,19 +45,18 @@ async function webgpu() {
   pass.setVertexBuffer(0, vertices);
   pass.draw(3);
   pass.end();
-  encoder.copyTextureToBuffer({ texture: target }, { buffer: readback, bytesPerRow: SIZE * 4 }, [SIZE, SIZE]);
+  encoder.copyTextureToBuffer({ texture: target }, { buffer: readback, bytesPerRow: W * 4 }, [W, H]);
   device.queue.submit([encoder.finish()]);
   await readback.mapAsync(GPUMapMode.READ);
   const texels = new Uint8ClampedArray(readback.getMappedRange().slice(0));
   if (window.gpuError) throw new Error(window.gpuError);
   const info = adapter.info;
-  const adapterName = [info.description || `${info.vendor} ${info.architecture}`, info.backend, info.type, info.isFallbackAdapter ? 'fallback' : '']
-    .filter(Boolean).join(', ');
-  return { adapter: adapterName, texels };
+  const adapterInfo = { description: info.description, backend: info.backend, type: info.type, fallback: info.isFallbackAdapter };
+  return { adapter: adapterInfo, texels };
 }
 
 function webgl2() {
-  const gl = new OffscreenCanvas(SIZE, SIZE).getContext('webgl2', { antialias: false });
+  const gl = new OffscreenCanvas(W, H).getContext('webgl2', { antialias: false });
   if (!gl) throw new Error('no WebGL 2 context');
   const shader = (type, source) => {
     const s = gl.createShader(type);
@@ -83,9 +83,9 @@ function webgl2() {
   gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
   const target = gl.createRenderbuffer();
   gl.bindRenderbuffer(gl.RENDERBUFFER, target);
-  gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, SIZE, SIZE);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, W, H);
   gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, target);
-  gl.viewport(0, 0, SIZE, SIZE);
+  gl.viewport(0, 0, W, H);
   gl.clearColor(...CLEAR);
   gl.clear(gl.COLOR_BUFFER_BIT);
 
@@ -99,21 +99,22 @@ function webgl2() {
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // WebGL reads rows bottom first; the other renderers' pictures start at the top.
-  const bottomUp = new Uint8Array(SIZE * SIZE * 4);
-  gl.readPixels(0, 0, SIZE, SIZE, gl.RGBA, gl.UNSIGNED_BYTE, bottomUp);
-  const texels = new Uint8ClampedArray(SIZE * SIZE * 4);
-  for (let y = 0; y < SIZE; y++) {
-    texels.set(bottomUp.subarray((SIZE - 1 - y) * SIZE * 4, (SIZE - y) * SIZE * 4), y * SIZE * 4);
+  const row = W * 4;
+  const bottomUp = new Uint8Array(row * H);
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, bottomUp);
+  const texels = new Uint8ClampedArray(row * H);
+  for (let y = 0; y < H; y++) {
+    texels.set(bottomUp.subarray((H - 1 - y) * row, (H - y) * row), y * row);
   }
   if (gl.getError() !== gl.NO_ERROR) throw new Error('WebGL error');
   const debug = gl.getExtension('WEBGL_debug_renderer_info');
-  const adapter = debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
-  return { adapter, texels };
+  const renderer = debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  return { adapter: { renderer }, texels };
 }
 
 async function png(texels) {
-  const canvas = new OffscreenCanvas(SIZE, SIZE);
-  canvas.getContext('2d').putImageData(new ImageData(texels, SIZE, SIZE), 0, 0);
+  const canvas = new OffscreenCanvas(W, H);
+  canvas.getContext('2d').putImageData(new ImageData(texels, W, H), 0, 0);
   const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer());
   let text = '';
   for (const b of bytes) text += String.fromCharCode(b);
@@ -122,6 +123,7 @@ async function png(texels) {
 
 const api = new URLSearchParams(location.search).get('api');
 window.result = api && (async () => {
+  await loadScene();
   const drawn = api === 'webgpu' ? await webgpu() : api === 'webgl2' ? webgl2() : null;
   if (!drawn) throw new Error(`unknown api ${api}`);
   return { adapter: drawn.adapter, png: await png(drawn.texels) };
