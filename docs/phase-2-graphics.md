@@ -206,6 +206,10 @@ Recording:
   texture, since the bytes a front hands over for it are 24-bit unorm depth in the low bits of a 32-bit
   word (Direct3D's `D24_UNORM_S8_UINT` depth, Vulkan's D24 depth aspect, GL's `UNSIGNED_INT_24_8`), and
   the draw writes `(v & 0xffffff) / 16777215`.
+  WebGPU copies depth and stencil only as whole subresources, so its back end writes part of a stencil
+  (from a buffer through an `r8uint` texture, or from a texture) by one draw per bit with that bit's
+  write mask (`StencilWrittenByDraw`), and reads part of either aspect, or 24-bit depth at all, into a
+  buffer by drawing it into a colour texture first (`DepthReadByDraw`).
   Buffer ranges are byte-granular in every call; a back end whose API copies
   in larger granules (`Limits::buffer_copy_alignment`, 4 on WebGPU for `writeBuffer`,
   `copyBufferToBuffer` and `clearBuffer`) does the aligned middle natively and merges the edge words with
