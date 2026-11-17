@@ -48,6 +48,7 @@ fn scripts_match_reference() {
                     working_directory: "/",
                     backend: None,
                     cached: false,
+                    published: &[],
                 },
                 0,
             );

@@ -134,9 +134,16 @@ impl Mapping {
     }
 
     /// Whether `mlock` and `munlock` leave the mapping as it is (`mlock_fixup`): secret memory stays
-    /// locked, droppable memory is never locked.
+    /// locked, droppable memory and `VM_SPECIAL` mappings are never locked.
     pub fn keeps_lock(&self) -> bool {
-        self.is_secret() || matches!(self.backing, Backing::Droppable)
+        self.is_secret() || self.is_special() || matches!(self.backing, Backing::Droppable)
+    }
+
+    /// Whether Linux marks it `VM_SPECIAL`: a TCP socket's mapping (`tcp_mmap`'s `VM_MIXEDMAP`
+    /// and `VM_DONTEXPAND`), never locked and never grown.
+    pub fn is_special(&self) -> bool {
+        matches!(&self.backing, Backing::File { node, .. }
+            if matches!(node.borrow().content, crate::fs::Content::Socket(_)))
     }
 
     /// The mapping in runs of pages, each with whether the page holds the mapping's own bytes: every

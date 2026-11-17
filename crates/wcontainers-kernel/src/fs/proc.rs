@@ -67,6 +67,12 @@ pub(crate) enum Entry {
     ProcessLink(Task, ProcessLink),
     Fds(Task),
     Fd(Task, i32),
+    /// A process's `fdinfo` directory, and a descriptor's file in it.
+    FdInfos(Task),
+    FdInfo(Task, i32),
+    /// A process's `net` directory (its network's), and the files in it.
+    Net(Task),
+    NetFile(Task, NetFile),
     /// A process's `task` directory, which holds a directory for each of its threads.
     Tasks(Pid),
     /// A directory or file outside the process directories, by its index in [`GLOBAL`].
@@ -113,6 +119,30 @@ pub(crate) enum ProcessFile {
     Cgroup,
 }
 
+/// The files of `/proc/net` built here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NetFile {
+    Dev,
+    IfInet6,
+    Route,
+    Tcp,
+    Tcp6,
+    Udp,
+    Udp6,
+    Unix,
+}
+
+const NET_FILES: &[(&[u8], NetFile)] = &[
+    (b"dev", NetFile::Dev),
+    (b"if_inet6", NetFile::IfInet6),
+    (b"route", NetFile::Route),
+    (b"tcp", NetFile::Tcp),
+    (b"tcp6", NetFile::Tcp6),
+    (b"udp", NetFile::Udp),
+    (b"udp6", NetFile::Udp6),
+    (b"unix", NetFile::Unix),
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProcessLink {
     Exe,
@@ -157,6 +187,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("loadavg", Global::File(0o444)),
     ("meminfo", Global::File(0o444)),
     ("mounts", Global::Link("self/mounts")),
+    ("net", Global::Link("self/net")),
     ("stat", Global::File(0o444)),
     ("sys", Global::Directory),
     ("sys/abi", Global::Directory),
@@ -222,6 +253,21 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
             "smaps smaps_rollup pagemap attr wchan stack schedstat cpuset cgroup oom_score ",
             "oom_adj oom_score_adj loginuid sessionid io uid_map gid_map projid_map ",
             "setgroups ksm_merging_pages ksm_stat",
+        ),
+    ),
+    (
+        "<net>",
+        concat!(
+            "arp dev raw rpc tcp udp icmp igmp raw6 sctp snmp stat tcp6 udp6 unix vlan icmp6 ",
+            "igmp6 ip_vs nfsfs pfkey pppoe ptype route snmp6 packet psched bonding netlink ",
+            "netstat rt_acct udplite anycast6 fib_trie if_inet6 mcfilter pppol2tp rt_cache ",
+            "sockstat udplite6 dev_mcast dev_snmp6 ip_mr_vif ip_vs_app mcfilter6 netfilter ",
+            "protocols rt6_stats sockstat6 xfrm_stat xt_recent ip_vs_conn ipv6_route ",
+            "ip_mr_cache ip_vs_stats fib_triestat nf_conntrack softnet_stat ip6_flowlabel ",
+            "ipt_hashlimit ip6t_hashlimit ip_tables_names ip_vs_conn_sync arp_tables_names ",
+            "ip6_tables_names ip_tables_matches ip_tables_targets arp_tables_matches ",
+            "arp_tables_targets ip6_tables_matches ip6_tables_targets ip_vs_stats_percpu ",
+            "nf_conntrack_expect",
         ),
     ),
     ("sys", "abi debug dev fs kernel net sunrpc user vm"),
@@ -346,6 +392,16 @@ pub(crate) fn root_links(processes: usize) -> u32 {
 }
 
 /// Whether a global entry is the `/proc/sys` directory itself.
+/// Whether a file of the tree has a poll (`file_can_poll`): the mount tables (`mounts_poll`) and
+/// sysctls (`proc_sys_poll`).
+pub(crate) fn polls(entry: &Entry) -> bool {
+    match entry {
+        Entry::ProcessFile(_, ProcessFile::Mounts) => true,
+        Entry::Global(index) => GLOBAL[*index].0.starts_with("sys/"),
+        _ => false,
+    }
+}
+
 pub(crate) fn is_sysctl_root(index: usize) -> bool {
     GLOBAL[index].0 == "sys"
 }
@@ -358,6 +414,8 @@ impl Entry {
             Entry::Root => Some(String::new()),
             Entry::Process(task) => Some(task.path()),
             Entry::Fds(task) => Some(format!("{}/fd", task.path())),
+            Entry::FdInfos(task) => Some(format!("{}/fdinfo", task.path())),
+            Entry::Net(task) => Some(format!("{}/net", task.path())),
             Entry::Tasks(pid) => Some(format!("/{pid}/task")),
             Entry::Global(index) => Some(format!("/{}", GLOBAL[index].0)),
             _ => None,
@@ -372,7 +430,11 @@ impl Entry {
             | Entry::ProcessFile(task, _)
             | Entry::ProcessLink(task, _)
             | Entry::Fds(task)
-            | Entry::Fd(task, _) => Some(task.pid),
+            | Entry::Fd(task, _)
+            | Entry::FdInfos(task)
+            | Entry::FdInfo(task, _)
+            | Entry::Net(task)
+            | Entry::NetFile(task, _) => Some(task.pid),
             Entry::Tasks(pid) => Some(pid),
             Entry::Root | Entry::SelfLink | Entry::ThreadSelfLink | Entry::Global(_) => None,
         }
@@ -413,7 +475,7 @@ impl Entry {
             Entry::ProcessFile(_, ProcessFile::Comm) => Writing::Comm,
             Entry::Global(_) if self.style() == Style::Sysctl => Writing::Sysctl,
             // `proc_reg_write` with no `proc_write` of the entry's own.
-            Entry::Global(_) => Writing::Io,
+            Entry::Global(_) | Entry::NetFile(..) => Writing::Io,
             _ => Writing::None,
         }
     }
@@ -423,17 +485,22 @@ impl Entry {
     pub fn loops(&self, writing: bool) -> bool {
         match self.style() {
             Style::Sysctl => false,
-            // `proc_reg_read_iter` reads the entries outside the process directories; their writes
-            // are `proc_reg_write`.
-            _ if matches!(self, Entry::Global(_)) => writing,
+            // `proc_reg_read_iter` reads the entries outside the process directories and the
+            // network's; their writes are `proc_reg_write`.
+            _ if matches!(self, Entry::Global(_) | Entry::NetFile(..)) => writing,
             _ => true,
         }
     }
 
     fn mode(&self) -> u32 {
         match self {
-            Entry::Root | Entry::Process(_) | Entry::Tasks(_) => S_IFDIR | 0o555,
+            Entry::Root | Entry::Process(_) | Entry::Tasks(_) | Entry::FdInfos(_) => {
+                S_IFDIR | 0o555
+            }
             Entry::Fds(_) => S_IFDIR | 0o500,
+            Entry::FdInfo(..) => S_IFREG | 0o444,
+            Entry::Net(_) => S_IFDIR | 0o555,
+            Entry::NetFile(..) => S_IFREG | 0o444,
             Entry::Global(index) => match GLOBAL[*index].1 {
                 Global::Directory => S_IFDIR | 0o555,
                 Global::File(permissions) => S_IFREG | permissions,
@@ -459,10 +526,14 @@ impl Entry {
             Entry::Global(index) => 16 + *index as u64,
             Entry::Process(t) => task(t, 1),
             Entry::Fds(t) => task(t, 2),
+            Entry::Net(t) => task(t, 4),
+            Entry::NetFile(t, file) => task(t, 128 + *file as u64),
             Entry::Tasks(pid) => ((*pid as u64) << 16) | 3,
             Entry::ProcessFile(t, file) => task(t, 16 + *file as u64),
             Entry::ProcessLink(t, link) => task(t, 64 + *link as u64),
             Entry::Fd(t, fd) => task(t, 0x1000 + *fd as u64 % 0xf000),
+            Entry::FdInfos(t) => task(t, 5),
+            Entry::FdInfo(t, fd) => task(t, 0x1000 + *fd as u64 % 0xf000) | 1 << 46,
         }
     }
 
@@ -472,9 +543,17 @@ impl Entry {
             | Entry::ProcessFile(task, _)
             | Entry::ProcessLink(task, _)
             | Entry::Fds(task)
-            | Entry::Fd(task, _) => task.tid,
+            | Entry::Fd(task, _)
+            | Entry::FdInfos(task)
+            | Entry::FdInfo(task, _) => task.tid,
             Entry::Tasks(pid) => pid,
-            Entry::Root | Entry::SelfLink | Entry::ThreadSelfLink | Entry::Global(_) => {
+            // The network's entries belong to its owner, root.
+            Entry::Root
+            | Entry::SelfLink
+            | Entry::ThreadSelfLink
+            | Entry::Global(_)
+            | Entry::Net(_)
+            | Entry::NetFile(..) => {
                 return (0, 0);
             }
         };
@@ -515,6 +594,51 @@ pub(crate) fn task_credentials<'a>(
     match threads.get(&tid) {
         Some(thread) => &thread.credentials,
         None => &processes[&tid].ended_leader.credentials,
+    }
+}
+
+/// Linux's `ptrace_may_access` with PTRACE_MODE_READ_FSCREDS: the caller's own process, or one
+/// whose ids all match the caller's file system ids, that may be dumped and whose permitted
+/// powers the caller's effective ones cover (`cap_ptrace_access_check`), unless the caller has
+/// CAP_SYS_PTRACE.
+pub(crate) fn ptrace_may_read(
+    processes: &BTreeMap<Pid, Process>,
+    threads: &BTreeMap<Tid, Thread>,
+    caller: Tid,
+    target: Pid,
+) -> bool {
+    if threads[&caller].process == target {
+        return true;
+    }
+    let Some(target_process) = processes.get(&target) else {
+        return false;
+    };
+    let (c, t) = (
+        &threads[&caller].credentials,
+        task_credentials(processes, threads, target),
+    );
+    let traces = c.has(CAP_SYS_PTRACE);
+    let same = [t.uid, t.euid, t.suid].iter().all(|id| *id == c.fsuid)
+        && [t.gid, t.egid, t.sgid].iter().all(|id| *id == c.fsgid);
+    if !same && !traces {
+        return false;
+    }
+    if target_process.ended.is_none() && !target_process.map.borrow().dumpable && !traces {
+        return false;
+    }
+    t.permitted & !c.effective == 0 || traces
+}
+
+/// Whether `caller` may see the descriptors of `entry`'s process through its `fdinfo` directory
+/// (`proc_fdinfo_access_allowed`).
+pub(crate) fn fdinfo_allowed(view: &View<'_>, entry: &Entry, caller: Tid) -> Result<(), Errno> {
+    match entry {
+        Entry::FdInfos(task) | Entry::FdInfo(task, _)
+            if !ptrace_may_read(view.processes, view.threads, caller, task.pid) =>
+        {
+            Err(Errno::EACCES)
+        }
+        _ => Ok(()),
     }
 }
 
@@ -595,6 +719,8 @@ pub(crate) fn node(view: &View<'_>, parent: Option<&Node>, name: &[u8], entry: E
     // subdirectories, a thread's five, `task` its threads, and the sysctl directories none.
     match entry {
         Entry::Process(task) => node.borrow_mut().nlink = if task.own { 7 } else { 9 },
+        // The network's directory counts Linux's eleven subdirectories.
+        Entry::Net(_) => node.borrow_mut().nlink = 13,
         Entry::Tasks(pid) => {
             node.borrow_mut().nlink = 2 + view
                 .processes
@@ -678,6 +804,7 @@ fn not_built(view: &View<'_>, entry: &Entry, name: &[u8]) {
     let directory = match entry {
         Entry::Root => "",
         Entry::Process(task) => task.listing(),
+        Entry::Net(_) => "<net>",
         Entry::Global(index) => GLOBAL[*index].0,
         _ => return,
     };
@@ -777,6 +904,8 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
                 add(name, Entry::ProcessLink(task, *link));
             }
             add(b"fd", Entry::Fds(task));
+            add(b"fdinfo", Entry::FdInfos(task));
+            add(b"net", Entry::Net(task));
             if !task.own {
                 add(b"task", Entry::Tasks(task.pid));
             }
@@ -797,15 +926,26 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
                 }
             }
         }
-        Entry::Fds(task) => {
+        Entry::Fds(task) | Entry::FdInfos(task) => {
             if let Some(thread) = view.threads.get(&task.tid) {
                 for (fd, _) in thread.files.borrow().iter() {
-                    out.push((
-                        format!("{fd}").into_bytes(),
-                        Entry::Fd(*task, fd),
-                        fd as u64 + 2,
-                    ));
+                    let child = if matches!(entry, Entry::Fds(_)) {
+                        Entry::Fd(*task, fd)
+                    } else {
+                        Entry::FdInfo(*task, fd)
+                    };
+                    out.push((format!("{fd}").into_bytes(), child, fd as u64 + 2));
                 }
+            }
+        }
+        Entry::Net(task) => {
+            for (name, file) in NET_FILES {
+                let text = core::str::from_utf8(name).unwrap_or_default();
+                out.push((
+                    name.to_vec(),
+                    Entry::NetFile(*task, *file),
+                    linux_position("<net>", text),
+                ));
             }
         }
         Entry::Global(index) => {
@@ -933,6 +1073,7 @@ pub(crate) fn follow(
             let thread = view.threads.get(&task.tid).ok_or(Errno::ENOENT)?;
             let file = thread.files.borrow().file(*fd).map_err(|_| Errno::ENOENT)?;
             let node = file.borrow().node.clone();
+            walk.internal.set(file.borrow().internal_mount);
             Ok(node)
         }
         _ => {

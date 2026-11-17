@@ -81,6 +81,68 @@ pub mod reason {
     /// do not cover): that answer and the ones after it were dropped and the question sent, so the
     /// backend may have done an earlier one's work too. Detail: the FUSE opcode.
     pub const BACKEND_ASKED_AGAIN: &str = "backend question asked again";
+    /// A socket of an address family that is not built. Detail: the family.
+    pub const FAMILY_NOT_BUILT: &str = "socket family not built";
+    /// A socket option that is not built. Detail: the level times 2^32 plus the option.
+    pub const OPTION_NOT_BUILT: &str = "socket option not built";
+    /// A socket of a built family whose kind or protocol is not built: raw packets, ping, SCTP,
+    /// MPTCP, UDP-Lite (plan section 15). Answered as Linux without the power or the protocol.
+    /// Detail: the family times 2^32, plus the kind times 2^16, plus the protocol.
+    pub const PROTOCOL_NOT_BUILT: &str = "socket protocol not built";
+    /// A blocking recvmmsg without MSG_WAITFORONE found fewer messages than asked for after the
+    /// first and returned those, where Linux waits for the rest. Detail: none.
+    pub const RECVMMSG_EARLY: &str = "recvmmsg returned early";
+    /// A netlink request Linux answers that is not built: answered EOPNOTSUPP, as Linux does
+    /// for a request with no handler. Detail: the message type, plus 2^16 for a dump.
+    pub const NETLINK_REQUEST_NOT_BUILT: &str = "netlink request not built";
+    /// The neighbour table was dumped after packets left by eth0: the entries those make on
+    /// Linux (the gateway's, which the host's own network stands for, and groups' and
+    /// broadcasts') are not built, so only the loopback entries were given. Detail: none.
+    pub const NEIGHBOURS_NOT_BUILT: &str = "neighbour entries not built";
+    /// A name query to the container's name server asked for something other than an address of
+    /// the Internet class, which the host's lookup cannot answer: "not implemented" was answered.
+    /// Detail: the query type (0 for a message with other than one standard question).
+    pub const NAME_QUERY_NOT_ANSWERED: &str = "name query not answered";
+    /// A netlink answer about an interface carried its traffic counters, which are not kept here
+    /// and read zero. Detail: none.
+    pub const INTERFACE_COUNTERS_NOT_KEPT: &str = "interface counters not kept";
+    /// A TCP send found no room: how much a connection holds is a fixed model here (the sender's
+    /// SO_SNDBUF of unread bytes), where Linux's depends on timing (window and buffer growth).
+    /// Detail: none.
+    pub const TCP_ROOM_MODELLED: &str = "tcp room modelled";
+    /// TCP_INFO was read of a connection: its round trip times, rates, windows past the
+    /// handshake, segment counts and the like come from this TCP's model (every segment arrives
+    /// and is acknowledged at once), where Linux's depend on timing. Detail: none.
+    pub const TCP_INFO_MODELLED: &str = "tcp info modelled";
+    /// A UDP datagram to a multicast group or a broadcast address left by eth0: the container's
+    /// own sockets were given it, but the host carries no multicast or broadcast, so the network
+    /// outside never sees it (plan section 15). Detail: none.
+    pub const MULTICAST_NOT_SENT_OUT: &str = "multicast or broadcast not sent outside";
+    /// A TCP connect found the listener's backlog full: it waits for room and completes when an
+    /// accept makes some, where Linux drops the handshake and retries after 1, 3, 7 seconds and so
+    /// on. Detail: none.
+    pub const TCP_BACKLOG_WAIT: &str = "tcp connect waits for backlog room";
+    /// A connection from outside came to a listener with TCP_DEFER_ACCEPT: the host has no way to
+    /// hold it back until data comes, so it is accepted at once. Detail: none.
+    pub const OUTSIDE_NOT_DEFERRED: &str = "outside connection not deferred";
+    /// A listener the outside could reach (bound to the any address or eth0's) was refused by the
+    /// host's listen, or an accept from it failed: the host cannot accept from outside (plan
+    /// section 9) or its port is taken there. It goes on listening inside the container. Detail:
+    /// the port.
+    pub const OUTSIDE_LISTEN_FAILED: &str = "listening outside failed";
+    /// A receiver asked for the TTL, hop limit, type of service or class of a datagram from
+    /// outside or from the name server, which the host does not report: 64 and 0 were given.
+    /// Detail: none.
+    pub const OUTSIDE_HEADER_MADE_UP: &str = "outside datagram header made up";
+    /// An outside destination refused a datagram from a socket that asked for queued errors: the
+    /// socket hears of it, but the host does not say what the datagram held, so no error is
+    /// queued. Detail: none.
+    pub const OUTSIDE_ERROR_NOT_QUEUED: &str = "outside datagram error not queued";
+    /// A notice from the backend that Linux refuses, with nothing done: a body of the wrong size,
+    /// or a DELETE whose parent and name are not the child's. Linux answers the backend's write of
+    /// it with the error; no hook carries that back. Detail: the notice's code times 2^32 plus the
+    /// error number.
+    pub const BACKEND_NOTICE_REFUSED: &str = "backend notice refused";
     /// An answer or notice from the backend that the kernel could not read or does not handle.
     /// Detail: the request number, or the notice's code.
     pub const BACKEND_UNEXPECTED: &str = "backend message unexpected";
@@ -108,6 +170,10 @@ pub mod reason {
         PROC_ENTRY_NOT_BUILT,
         SECCOMP_LISTENER_NOT_IMPLEMENTED,
         CROSS_PROCESS_NOT_BUILT,
+        FAMILY_NOT_BUILT,
+        OPTION_NOT_BUILT,
+        PROTOCOL_NOT_BUILT,
+        NETLINK_REQUEST_NOT_BUILT,
     ];
 }
 

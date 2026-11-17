@@ -31,7 +31,11 @@ pub(super) fn unique_mount_id(inode: &Inode) -> u64 {
 /// The words of a file's handle and their type: tmpfs's own encoding (generation, then the inode
 /// number), pidfs's (the inode number, `FILEID_KERNFS`), or, only when asked for an identifier, the
 /// generic one other file systems get (the inode number, then a generation of 0).
-fn encode(kernel: &Kernel, inode: &Inode, identifier: bool) -> Result<(i32, Vec<u32>), Errno> {
+pub(super) fn encode(
+    kernel: &Kernel,
+    inode: &Inode,
+    identifier: bool,
+) -> Result<(i32, Vec<u32>), Errno> {
     let ino = [inode.ino as u32, (inode.ino >> 32) as u32];
     match inode.fs.kind {
         Kind::Tmpfs => Ok((
@@ -44,14 +48,24 @@ fn encode(kernel: &Kernel, inode: &Inode, identifier: bool) -> Result<(i32, Vec<
             let nodeid = crate::fs::backend::remote_number(inode);
             Ok((0x81, alloc::vec![(nodeid >> 32) as u32, nodeid as u32, 0]))
         }
-        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem | Kind::Anon | Kind::Mqueue
+        Kind::Proc
+        | Kind::Devpts
+        | Kind::Pipe
+        | Kind::Secretmem
+        | Kind::Anon
+        | Kind::Mqueue
+        | Kind::Sockfs
             if identifier =>
         {
             Ok((FILEID_INO64_GEN, alloc::vec![ino[0], ino[1], 0]))
         }
-        Kind::Proc | Kind::Devpts | Kind::Pipe | Kind::Secretmem | Kind::Anon | Kind::Mqueue => {
-            Err(Errno::EOPNOTSUPP)
-        }
+        Kind::Proc
+        | Kind::Devpts
+        | Kind::Pipe
+        | Kind::Secretmem
+        | Kind::Anon
+        | Kind::Mqueue
+        | Kind::Sockfs => Err(Errno::EOPNOTSUPP),
     }
 }
 

@@ -290,6 +290,8 @@ pub(crate) struct Thread {
     pub alternate_stack: (u64, u64, i32),
     /// The call the thread is in, while it has not finished: what it waits for and how far it got.
     pub call: Call,
+    /// What the call took from its arguments, kept while it waits so each run takes the same.
+    pub taken: RefCell<Taken>,
     /// The futexes the call waits on, while it is a futex wait.
     pub futex: crate::syscall::futex::Wait,
     /// What `restart_syscall` continues, for a call interrupted by a handler.
@@ -391,6 +393,97 @@ pub(crate) struct Call {
     pub holds: [Option<Channel>; 2],
 }
 
+/// What a call took from its arguments, in order: the open files its descriptors named (`fdget`)
+/// and the paths it copied (`getname`). Linux takes each once per call; a call here runs again
+/// after each wait, and its later runs take these instead of reading the table and memory again.
+#[derive(Clone, Default)]
+pub(crate) struct Taken {
+    items: Vec<TakenItem>,
+    used: usize,
+}
+
+#[derive(Clone)]
+enum TakenItem {
+    File(i32, Result<crate::file::FileRef, crate::Errno>),
+    Path(u64, Result<Vec<u8>, crate::Errno>),
+    Value(u64),
+}
+
+impl Taken {
+    /// A run of the call starts: it takes from the start again.
+    pub fn rewind(&mut self) {
+        self.used = 0;
+    }
+
+    /// The call ended: what it took goes, its files given back (see `Kernel::give_back`).
+    pub fn clear(&mut self) -> Vec<crate::file::FileRef> {
+        self.used = 0;
+        self.items
+            .drain(..)
+            .filter_map(|item| match item {
+                TakenItem::File(_, Ok(file)) => Some(file),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What the next item taken is, if an earlier run took it for the same argument.
+    fn next(&mut self, same: impl Fn(&TakenItem) -> bool) -> Option<TakenItem> {
+        let item = self.items.get(self.used).filter(|item| same(item))?.clone();
+        self.used += 1;
+        Some(item)
+    }
+
+    fn push(&mut self, item: TakenItem) {
+        self.items.truncate(self.used);
+        self.items.push(item);
+        self.used += 1;
+    }
+
+    /// The open file descriptor `fd` named when the call first took it, else `look` now.
+    pub fn file(
+        &mut self,
+        fd: i32,
+        look: impl FnOnce() -> Result<crate::file::FileRef, crate::Errno>,
+    ) -> Result<crate::file::FileRef, crate::Errno> {
+        if let Some(TakenItem::File(_, file)) =
+            self.next(|item| matches!(item, TakenItem::File(known, _) if *known == fd))
+        {
+            return file;
+        }
+        let file = look();
+        self.push(TakenItem::File(fd, file.clone()));
+        file
+    }
+
+    /// A value the call settles once, such as where an append goes: the one an earlier run
+    /// settled, else `value`.
+    pub fn value(&mut self, value: u64) -> u64 {
+        if let Some(TakenItem::Value(known)) = self.next(|item| matches!(item, TakenItem::Value(_)))
+        {
+            return known;
+        }
+        self.push(TakenItem::Value(value));
+        value
+    }
+
+    /// The path copied from `address` when the call first took it, else `read` now.
+    pub fn path(
+        &mut self,
+        address: u64,
+        read: impl FnOnce() -> Result<Vec<u8>, crate::Errno>,
+    ) -> Result<Vec<u8>, crate::Errno> {
+        if let Some(TakenItem::Path(_, path)) =
+            self.next(|item| matches!(item, TakenItem::Path(known, _) if *known == address))
+        {
+            return path;
+        }
+        let path = read();
+        self.push(TakenItem::Path(address, path.clone()));
+        path
+    }
+}
+
 /// What a parked call waits for, besides its deadline and a signal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Channel {
@@ -416,6 +509,8 @@ pub(crate) enum Channel {
     /// A lock that another call holds while it waits (the address of what it guards); no signal
     /// ends this wait, as none ends Linux's `mutex_lock`.
     Held(usize),
+    /// An event for an epoll instance (its address), which wakes one waiter at a time.
+    Epoll(usize),
 }
 
 /// What `restart_syscall` runs again.
@@ -463,6 +558,7 @@ impl Thread {
             pending: Pending::default(),
             alternate_stack: (0, 0, 0),
             call: Call::default(),
+            taken: RefCell::default(),
             futex: Default::default(),
             restart: None,
             runtime: 0,

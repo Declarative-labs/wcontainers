@@ -139,8 +139,31 @@ fn as_started(files: &[File]) -> impl Iterator<Item = File> + '_ {
         if file.path == "etc/hostname" {
             file.kind = Kind::Regular(format!("{}\n", crate::reference::HOSTNAME).into_bytes());
         }
+        if file.path == "etc/hosts" {
+            file.kind = Kind::Regular(hosts().into_bytes());
+        }
+        if file.path == "etc/resolv.conf" {
+            file.kind = Kind::Regular(resolver().into_bytes());
+        }
         file
     })
+}
+
+/// `/etc/hosts` as Docker writes it, for the made-up network's address.
+fn hosts() -> String {
+    let [a, b, c, d] = wcontainers_kernel::network::ADDRESS;
+    format!(
+        "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\nfe00::\tip6-localnet\n\
+         ff00::\tip6-mcastprefix\nff02::1\tip6-allnodes\nff02::2\tip6-allrouters\n\
+         {a}.{b}.{c}.{d}\t{}\n",
+        crate::reference::HOSTNAME
+    )
+}
+
+/// `/etc/resolv.conf` naming the kernel's name server, as Docker names its own.
+fn resolver() -> String {
+    let [a, b, c, d] = wcontainers_kernel::network::NAME_SERVER;
+    format!("nameserver {a}.{b}.{c}.{d}\n")
 }
 
 /// A container's files as a tar archive, for unpacking into a backend's directory.

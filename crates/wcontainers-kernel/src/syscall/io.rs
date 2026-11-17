@@ -31,7 +31,7 @@ pub(super) const MAX_SEGMENTS: u64 = 1024;
 const END_OF_DIRECTORY: u64 = i32::MAX as u64;
 
 pub(super) fn file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
-    kernel.files(tid).file(fd as i32)
+    kernel.call_file(tid, fd as i32)
 }
 
 /// A descriptor's open file as `fdget` finds it: not an `O_PATH` one.
@@ -227,9 +227,9 @@ fn vectored2(
         };
         verify_area(position, total)?;
     }
-    // A file without Linux's iterating read or write (directories, message queues, and writes to
-    // `/dev/full`) is moved a segment at a time by `do_loop_readv_writev`, which takes no flag but
-    // RWF_HIPRI.
+    // A file without Linux's iterating read or write (directories, message queues, inotify
+    // instances, and writes to `/dev/full` and event descriptors) is moved a segment at a time by
+    // `do_loop_readv_writev`, which takes no flag but RWF_HIPRI.
     let looped = {
         let file = file.borrow();
         let inode = file.node.borrow();
@@ -239,17 +239,21 @@ fn vectored2(
                 && matches!(Device::from_number(inode.rdev), Some(Device::Full))
             || matches!(inode.content, Content::Proc(entry) if entry.loops(writing))
             || matches!(inode.content, Content::Mqueue(_))
+            || super::inotify::of(&file).is_some()
+            || writing && matches!(file.anon, Some(crate::file::Anon::Event(_)))
     };
     if looped && flags & !RWF_HIPRI != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
-    // `/proc`'s files, tmpfs's regular files and terminals do not take reads or writes that may
-    // not wait (`FMODE_NOWAIT` unset; measured: devices and pipes take them).
+    // `/proc`'s files, tmpfs's regular files, named pipes and terminals do not take reads or
+    // writes that may not wait (`FMODE_NOWAIT` unset; measured: devices and the pipes `pipe2`
+    // makes take them, a named pipe opened by its path does not).
     let waits = super::tty::end(&file).is_some() || {
         let file = file.borrow();
         let inode = file.node.borrow();
         matches!(inode.content, Content::Proc(_))
             || inode.fs.kind == crate::fs::Kind::Tmpfs && inode.file_type() == S_IFREG
+            || inode.file_type() == S_IFIFO && inode.fs.kind != crate::fs::Kind::Pipe
     };
     if waits && flags & RWF_NOWAIT != 0 {
         return Err(Errno::EOPNOTSUPP);
@@ -451,8 +455,10 @@ pub(super) fn positioned(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let sequence = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.style() == Style::Sequence);
     // Terminals are opened unseekable (`nonseekable_open`).
-    if matches!(inode.content, Content::Pipe(_) | Content::Anon)
-        || inode.is_secret()
+    if matches!(
+        inode.content,
+        Content::Pipe(_) | Content::Anon | Content::Socket(_)
+    ) || inode.is_secret()
         || (writing && sequence)
         || file.terminal.is_some()
     {
@@ -468,10 +474,14 @@ pub(super) fn moves_bytes(file: &FileRef, writing: bool) -> Result<(), Errno> {
     let inode = file.node.borrow();
     let no_write = matches!(inode.content, Content::Proc(entry)
         if inode.file_type() == S_IFREG && entry.writing() == Writing::None);
-    // A signal descriptor only reads; a process descriptor does neither.
-    let anon_write = writing && matches!(inode.content, Content::Anon | Content::Mqueue(_));
+    // A signal or timer descriptor only reads, an event descriptor does both, an epoll instance
+    // and a process descriptor neither.
+    let anon_write = writing
+        && matches!(inode.content, Content::Anon | Content::Mqueue(_))
+        && super::eventfd::of(&file).is_none();
+    let epoll = super::epoll::of(&file).is_some();
     let pidfd = matches!(inode.content, Content::Pidfd(..));
-    if inode.is_secret() || (writing && no_write) || anon_write || pidfd {
+    if inode.is_secret() || (writing && no_write) || anon_write || pidfd || epoll {
         return Err(Errno::EINVAL);
     }
     Ok(())
@@ -689,7 +699,34 @@ fn appends(file: &FileRef) -> bool {
     clippy::too_many_arguments,
     reason = "one call shape for every vectored read and write"
 )]
+/// As [`vectored_unwatched`], telling the file's inotify watches.
 fn vectored(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    parts: &[(u64, u64)],
+    offset: Option<u64>,
+    writing: Option<bool>,
+) -> Result<u64, Errno> {
+    let result = vectored_unwatched(kernel, cx, tid, file, parts, offset, writing);
+    if let Ok(count) = result
+        && count > 0
+    {
+        super::inotify::file_changed(
+            kernel,
+            file,
+            if writing.is_some() {
+                IN_MODIFY
+            } else {
+                IN_ACCESS
+            },
+        );
+    }
+    result
+}
+
+fn vectored_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -710,6 +747,12 @@ fn vectored(
             None => super::tty::read(kernel, cx, tid, file, parts),
         };
     }
+    if super::socket::of(file).is_some() {
+        return match writing {
+            Some(_) => super::socket::write(kernel, cx, tid, file, parts),
+            None => super::socket::read(kernel, cx, tid, file, parts),
+        };
+    }
     // A pipe takes or gives the whole vector in one go (`pipe_read`, `pipe_write`).
     if super::pipe::is_pipe(file) {
         return match writing {
@@ -719,6 +762,15 @@ fn vectored(
     }
     if writing.is_none() && super::signalfd::mask_of(&file.borrow()).is_some() {
         return super::signalfd::read(kernel, cx, tid, file, parts);
+    }
+    if writing.is_none() && super::inotify::of(&file.borrow()).is_some() {
+        return super::inotify::read(kernel, cx, tid, file, parts);
+    }
+    if super::eventfd::of(&file.borrow()).is_some() {
+        return match writing {
+            Some(_) => super::eventfd::write(kernel, cx, tid, file, parts),
+            None => super::eventfd::read(kernel, cx, tid, file, parts),
+        };
     }
     if writing.is_none() && super::timer::of(&file.borrow()).is_some() {
         return super::timer::read(kernel, cx, tid, file, parts);
@@ -822,7 +874,11 @@ pub(super) fn file_bytes(
             }
             _ => return Err(Errno::ENXIO),
         },
-        Content::Pipe(_) | Content::Symlink(_) | Content::Pidfd(..) | Content::Anon => {
+        Content::Pipe(_)
+        | Content::Symlink(_)
+        | Content::Pidfd(..)
+        | Content::Anon
+        | Content::Socket(_) => {
             return Err(Errno::EINVAL);
         }
         // `mqueue_read_file`: the queue's size and request, which a read that returns bytes marks
@@ -947,7 +1003,26 @@ pub(super) fn copy_to_segments(
 }
 
 /// Reads up to `count` bytes into the guest at the file's position, or at `at` without moving it.
+/// As [`read_at_unwatched`], telling the file's inotify watches of a read.
 pub(super) fn read_at(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    buffer: u64,
+    count: u64,
+    at: Option<u64>,
+) -> Result<u64, Errno> {
+    let result = read_at_unwatched(kernel, cx, tid, file, buffer, count, at);
+    if let Ok(count) = result
+        && count > 0
+    {
+        super::inotify::file_changed(kernel, file, IN_ACCESS);
+    }
+    result
+}
+
+fn read_at_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -962,11 +1037,20 @@ pub(super) fn read_at(
     if super::pipe::is_pipe(file) {
         return super::pipe::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
+    if super::socket::of(file).is_some() {
+        return super::socket::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     if super::signalfd::mask_of(&file.borrow()).is_some() {
         return super::signalfd::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
     if super::timer::of(&file.borrow()).is_some() {
         return super::timer::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
+    if super::eventfd::of(&file.borrow()).is_some() {
+        return super::eventfd::read(kernel, cx, tid, file, &[(buffer, count)]);
+    }
+    if super::inotify::of(&file.borrow()).is_some() {
+        return super::inotify::read(kernel, cx, tid, file, &[(buffer, count)]);
     }
     // The zero devices clear the buffer in place and keep no position. `/dev/zero` stops at the first
     // short clear (Linux's `read_zero`); `/dev/full` clears again from where it stopped until nothing
@@ -1118,7 +1202,7 @@ fn write_parts(
         crate::fs::backend::getattr(&node, Some(handle.fh))?;
     }
     let offset = if append {
-        node.borrow().size()
+        kernel.settle_once(tid, node.borrow().size())
     } else {
         at.unwrap_or(file.borrow().offset)
     };
@@ -1184,7 +1268,31 @@ pub(super) fn lock_position(kernel: &mut Kernel, tid: Tid, file: &FileRef) -> Re
 /// Writes up to `count` bytes from the guest at the file's position, or at `at` without moving it, or
 /// at the file's end if `append`.
 #[allow(clippy::too_many_arguments, reason = "every write names where it goes")]
+/// As [`write_at_unwatched`], telling the file's inotify watches of a write.
 pub(super) fn write_at(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    buffer: u64,
+    count: u64,
+    at: Option<u64>,
+    append: bool,
+) -> Result<u64, Errno> {
+    let result = write_at_unwatched(kernel, cx, tid, file, buffer, count, at, append);
+    if let Ok(count) = result
+        && count > 0
+    {
+        super::inotify::file_changed(kernel, file, IN_MODIFY);
+    }
+    result
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a write names its bytes, where they go and how"
+)]
+fn write_at_unwatched(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -1201,7 +1309,13 @@ pub(super) fn write_at(
     if super::pipe::is_pipe(file) {
         return super::pipe::write(kernel, cx, tid, file, &[(buffer, count)]);
     }
+    if super::socket::of(file).is_some() {
+        return super::socket::write(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     moves_bytes(file, true)?;
+    if super::eventfd::of(&file.borrow()).is_some() {
+        return super::eventfd::write(kernel, cx, tid, file, &[(buffer, count)]);
+    }
     let entry = match &node.borrow().content {
         Content::Proc(entry) => Some(*entry),
         _ => None,
@@ -1288,7 +1402,7 @@ pub(super) fn write_bytes(
         Content::Regular(regular) => regular,
         Content::Backend(remote) => {
             let offset = if append {
-                remote.size.get()
+                kernel.settle_once(tid, remote.size.get())
             } else {
                 at.unwrap_or(file.borrow().offset)
             };
@@ -1342,6 +1456,7 @@ pub(super) fn write_bytes(
         | Content::Symlink(_)
         | Content::Pidfd(..)
         | Content::Anon
+        | Content::Socket(_)
         | Content::Mqueue(_) => {
             return Err(Errno::EINVAL);
         }
@@ -1474,13 +1589,13 @@ fn send(
         if output.borrow().flags & O_APPEND != 0 {
             return Err(Errno::EINVAL);
         }
-        // A pipe, a terminal, secret memory and a process descriptor as input cannot seek
-        // (`FMODE_LSEEK`), even for nothing; timer and signal descriptors can, but have no
+        // A pipe, a socket, a terminal, secret memory and a process descriptor as input cannot
+        // seek (`FMODE_LSEEK`), even for nothing; timer and signal descriptors can, but have no
         // `splice_read`, so only nothing is moved from them (measured; into a pipe nothing is
         // moved without asking it).
         if matches!(
             input_node.borrow().content,
-            Content::Pipe(_) | Content::Pidfd(..)
+            Content::Pipe(_) | Content::Pidfd(..) | Content::Socket(_)
         ) || super::tty::end(&input).is_some()
             || input_node.borrow().is_secret()
         {
@@ -1590,6 +1705,23 @@ fn send(
             Err(Errno::EINVAL)
         } else if super::tty::end(&output).is_some() {
             super::tty::put(kernel, cx, tid, &output, &bytes)
+        } else if super::socket::of(&output).is_some() {
+            // A send that waits keeps what it sent in the call's progress; the call's rerun goes
+            // on after all that was moved.
+            let flags = if output.borrow().flags & O_NONBLOCK != 0 {
+                crate::linux::net::MSG_DONTWAIT
+            } else {
+                0
+            };
+            kernel.thread_mut(tid).call.progress = 0;
+            let held = core::cell::RefCell::new(core::mem::take(&mut bytes));
+            let sent = super::socket::send_bytes(kernel, cx, tid, &output, &held, flags);
+            if sent == Err(Errno::PARKED) {
+                let progress = kernel.threads[&tid].call.progress;
+                kernel.thread_mut(tid).call.progress = moved + progress;
+                return Err(Errno::PARKED);
+            }
+            sent
         } else if matches!(output_node.borrow().content, Content::Regular(_)) {
             let at = output.borrow().offset;
             write_limit(kernel, cx, tid, &output, at, bytes.len() as u64).and_then(|allowed| {
@@ -1686,7 +1818,7 @@ pub(super) fn lseek(
     let inode = file.node.borrow();
     let mut sequence = None;
     let new = match &inode.content {
-        Content::Pipe(_) | Content::Pidfd(..) => return Err(Errno::ESPIPE),
+        Content::Pipe(_) | Content::Pidfd(..) | Content::Socket(_) => return Err(Errno::ESPIPE),
         // Signal descriptors keep their position at 0 (`noop_llseek`).
         Content::Anon => file.offset as i64,
         // A queue seeks as `default_llseek` does over the size it shows.
@@ -1824,7 +1956,12 @@ pub(super) fn accessed(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::
 }
 
 /// Linux's `touch_atime` itself, which a splice also makes for a device it read.
-fn touch_atime(kernel: &Kernel, cx: &mut Context<'_>, node: &crate::fs::Node, flags: u32) {
+pub(super) fn touch_atime(
+    kernel: &Kernel,
+    cx: &mut Context<'_>,
+    node: &crate::fs::Node,
+    flags: u32,
+) {
     let now = kernel.now(cx);
     let mut inode = node.borrow_mut();
     if inode.fs.kind != crate::fs::Kind::Tmpfs
@@ -1967,7 +2104,7 @@ pub(super) fn getdents64(
                 let file = file.borrow();
                 let handle = file.backend.as_ref().ok_or(Errno::EBADF)?;
                 let mut own = position;
-                for entry in crate::fs::backend::readdir(handle, position)? {
+                for entry in crate::fs::backend::readdir(handle, position, count)? {
                     entries.push((entry.name, entry.ino, entry.kind, own, entry.next));
                     own = entry.next;
                 }
@@ -1985,7 +2122,7 @@ pub(super) fn getdents64(
                     let mut out = Vec::new();
                     for (name, child, position) in crate::fs::proc::list(walk.proc, &entry) {
                         let jumps = match child {
-                            Entry::Fd(..) | Entry::ThreadSelfLink => true,
+                            Entry::Fd(..) | Entry::FdInfo(..) | Entry::ThreadSelfLink => true,
                             Entry::Process(task) => !task.own,
                             _ => false,
                         };
@@ -1995,7 +2132,7 @@ pub(super) fn getdents64(
                         out.push((name, child_inode.ino, kind, position, jumps));
                     }
                     let end = match entry {
-                        Entry::Fds(task) => walk
+                        Entry::Fds(task) | Entry::FdInfos(task) => walk
                             .proc
                             .threads
                             .get(&task.tid)
@@ -2005,7 +2142,7 @@ pub(super) fn getdents64(
                     Ok((out, end))
                 })?;
                 let ino = node.borrow().ino;
-                let fds = matches!(entry, Entry::Fds(_));
+                let fds = matches!(entry, Entry::Fds(_) | Entry::FdInfos(_));
                 if position == 0 {
                     entries.push((b".".to_vec(), ino, DT_DIR as u8, 0, 1));
                 }
@@ -2139,20 +2276,21 @@ pub(super) fn close(
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
     let pid = kernel.threads[&tid].process;
-    // `filp_close`: a file on the backend is flushed there, and the descriptor goes whatever the
-    // flush answers.
-    let flushed = match kernel.files(tid).file(fd as i32) {
-        Ok(file) => match &file.borrow().backend {
-            Some(handle) => crate::fs::backend::flush(handle, kernel.files(tid).lock_owner()),
-            None => Ok(()),
-        },
-        Err(_) => Ok(()),
+    // `file_close_fd` takes the descriptor first; then `filp_close` flushes a file on the backend
+    // there, and the call waits for that answer.
+    let file = kernel.call_file(tid, fd as i32)?;
+    if kernel.threads[&tid].call.progress == 0 {
+        kernel.thread_mut(tid).call.progress = 1;
+        kernel.files_mut(tid).remove(fd as i32, pid, true)?;
+        kernel.files_released(cx);
+    }
+    let flushed = match &file.borrow().backend {
+        Some(handle) => crate::fs::backend::flush(handle, kernel.files(tid).lock_owner()),
+        None => Ok(()),
     };
     if flushed == Err(Errno::PARKED) {
         return Err(Errno::PARKED);
     }
-    kernel.files_mut(tid).remove(fd as i32, pid, true)?;
-    kernel.files_released(cx);
     flushed.map(|()| 0)
 }
 
@@ -2280,7 +2418,7 @@ fn fcntl_typed(
         command,
         F_GETLK | F_SETLK | F_SETLKW | F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW
     ) {
-        let file = kernel.files(tid).file(fd)?;
+        let file = kernel.call_file(tid, fd)?;
         if file.borrow().is_path() {
             return Err(Errno::EBADF);
         }
@@ -2378,6 +2516,7 @@ fn record_lock(
             LockOwner::Table(kernel.files(tid).lock_owner())
         },
         pid,
+        file: alloc::rc::Rc::downgrade(file),
         write,
         start: start as u64,
         end: end as u64,
@@ -2545,27 +2684,8 @@ fn fcntl_other(
         }
         // No lease can be taken, so a file never holds one.
         F_GETLEASE if !path_only => Ok(u64::from(F_UNLCK)),
-        F_GETOWN if !path_only => {
-            let owner = descriptor.file.borrow().owner;
-            Ok(owner.map_or(0, |owner| match owner_lives(kernel, &owner) {
-                true if owner.kind == OwnerKind::Group => -owner.pid,
-                true => owner.pid,
-                false => 0,
-            }) as i64 as u64)
-        }
-        F_SETOWN if !path_only => {
-            // `f_setown`: below zero names a group.
-            let who = argument as i32;
-            if who == i32::MIN {
-                return Err(Errno::EINVAL);
-            }
-            let kind = if who < 0 {
-                OwnerKind::Group
-            } else {
-                OwnerKind::Process
-            };
-            set_owner(kernel, tid, &descriptor.file, who.abs(), kind)
-        }
+        F_GETOWN if !path_only => Ok(get_owner(kernel, &descriptor.file) as i64 as u64),
+        F_SETOWN if !path_only => set_owner_number(kernel, tid, &descriptor.file, argument as i32),
         F_GETOWN_EX if !path_only => {
             let owner = descriptor.file.borrow().owner.unwrap_or_default();
             let pid = if owner_lives(kernel, &owner) {
@@ -2674,6 +2794,34 @@ fn fcntl_other(
     }
 }
 
+/// `f_getown`: the owner's number, below zero for a group, 0 for none or one that is gone.
+pub(super) fn get_owner(kernel: &Kernel, file: &FileRef) -> i32 {
+    let owner = file.borrow().owner;
+    owner.map_or(0, |owner| match owner_lives(kernel, &owner) {
+        true if owner.kind == OwnerKind::Group => -owner.pid,
+        true => owner.pid,
+        false => 0,
+    })
+}
+
+/// `f_setown`: below zero names a group.
+pub(super) fn set_owner_number(
+    kernel: &Kernel,
+    tid: Tid,
+    file: &FileRef,
+    who: i32,
+) -> Result<u64, Errno> {
+    if who == i32::MIN {
+        return Err(Errno::EINVAL);
+    }
+    let kind = if who < 0 {
+        OwnerKind::Group
+    } else {
+        OwnerKind::Process
+    };
+    set_owner(kernel, tid, file, who.abs(), kind)
+}
+
 /// Whether a number is in use by a thread, process, group or session (Linux's `find_vpid`).
 fn pid_in_use(kernel: &Kernel, pid: i32) -> bool {
     kernel.threads.contains_key(&pid)
@@ -2764,8 +2912,8 @@ fn sync_file(
         crate::fs::backend::fsync(handle, data_only)?;
         return Ok(0);
     }
-    // Only tmpfs's files and directories have a sync operation; pipes, devices and the process
-    // information tree have none.
+    // Only tmpfs's files and directories have a sync operation; pipes, devices, sockets and the
+    // process information tree have none.
     let file = file.borrow();
     let inode = file.node.borrow();
     match inode.content {
@@ -2774,7 +2922,8 @@ fn sync_file(
         | Content::Proc(_)
         | Content::Pidfd(..)
         | Content::Anon
-        | Content::Mqueue(_) => Err(Errno::EINVAL),
+        | Content::Mqueue(_)
+        | Content::Socket(_) => Err(Errno::EINVAL),
         _ if inode.is_secret() => Err(Errno::EINVAL),
         _ => Ok(0),
     }
@@ -2799,7 +2948,7 @@ pub(super) fn sync(_: &mut Kernel, _: &mut Context<'_>, _: Tid, _: Args) -> Resu
 
 /// What `poll` reports for an open file: Linux's `DEFAULT_POLLMASK` for files without a poll operation,
 /// or what the file's own says. The host's pipes always have room.
-fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
+pub(super) fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
     use crate::fs::proc::{Entry, ProcessFile};
     if super::tty::end(file).is_some() {
         return super::tty::poll(file);
@@ -2811,6 +2960,7 @@ fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
     let node = file.node.borrow();
     match &node.content {
         Content::Pipe(pipe) => crate::pipe::poll(pipe, &file),
+        Content::Socket(socket) => super::socket::poll(socket),
         // `random_poll`: the generator is ready from the start here. `/dev/urandom` has no poll.
         Content::Special if Device::from_number(node.rdev) == Some(Device::Random) => {
             (POLLIN | POLLRDNORM) as u16
@@ -2822,17 +2972,25 @@ fn poll_mask(kernel: &Kernel, tid: Tid, file: &FileRef) -> u16 {
             super::pidfd::poll(kernel, &file)
         }
         Content::Mqueue(queue) => queue.poll(),
-        Content::Anon => match (super::signalfd::mask_of(&file), super::timer::of(&file)) {
-            (Some(mask), _) => super::signalfd::poll(kernel, tid, mask),
-            (_, Some(timer)) => super::timer::poll(kernel, timer),
-            _ => 0,
+        Content::Anon => match &file.anon {
+            Some(crate::file::Anon::Signals(mask)) => super::signalfd::poll(kernel, tid, *mask),
+            Some(crate::file::Anon::Timer(timer)) => super::timer::poll(kernel, *timer),
+            Some(crate::file::Anon::Event(counter)) => super::eventfd::poll(&counter.borrow()),
+            Some(crate::file::Anon::Inotify(instance)) => super::inotify::poll(&instance.borrow()),
+            Some(crate::file::Anon::Epoll(epoll)) => {
+                let epoll = epoll.clone();
+                drop(node);
+                drop(file);
+                super::epoll::poll(kernel, tid, &epoll)
+            }
+            None => 0,
         },
         _ => (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) as u16,
     }
 }
 
 /// A wait's timeout as `poll_select_set_timeout` checks it: its length.
-fn read_timeout(
+pub(super) fn read_timeout(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,
@@ -2855,7 +3013,7 @@ fn read_timeout(
 /// The first run of `ppoll` or `pselect6`: when the wait ends (kept in the call's slot as the time
 /// asked for, and with `select_estimate_accuracy`'s slack as when the thread is woken), then the
 /// temporary signal mask (`set_user_sigmask`).
-fn start_wait(
+pub(super) fn start_wait(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
     tid: Tid,

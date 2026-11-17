@@ -39,6 +39,10 @@ int main(void) {
     write(p[1], "x", 1);
     nowait("pipe reader", p[0]);
     nowait("pipe writer", p[1]);
+    mkfifo("/dev/shm/w/fifo", 0600);
+    int named = open("/dev/shm/w/fifo", O_RDWR);
+    write(named, "x", 1);
+    nowait("named pipe", named);
     nowait("memfd", memfd_create("m", 0));
     nowait("proc comm", open("/proc/self/comm", O_RDWR));
     fd = open("/dev/shm/w/g", O_RDWR | O_CREAT, 0644);

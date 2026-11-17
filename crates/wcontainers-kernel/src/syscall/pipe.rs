@@ -337,7 +337,7 @@ pub(super) fn read(
         return Err(Errno::EFAULT);
     }
     let done = taken.len();
-    kernel.wake(channel(&node));
+    kernel.wake_poll(channel(&node), EPOLLOUT | EPOLLWRNORM);
     signal_ends(kernel, cx, &node, false);
     Ok(done as u64)
 }
@@ -452,12 +452,12 @@ pub(super) fn write(
         let thread = kernel.thread_mut(tid);
         thread.call.started = true;
         thread.call.progress = done;
-        kernel.wake(channel(&node));
+        kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
         kernel.park(tid, channel(&node));
         return Err(Errno::PARKED);
     };
     if done > 0 {
-        kernel.wake(channel(&node));
+        kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
     }
     signal_ends(kernel, cx, &node, true);
     match result {
@@ -493,7 +493,7 @@ pub(super) fn put(
         }
         done
     });
-    kernel.wake(channel(&node));
+    kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
     // `splice_file_to_pipe`'s `wakeup_pipe_readers`.
     if taken > 0 {
         signal_ends(kernel, cx, &node, true);

@@ -322,15 +322,6 @@ impl Guest<'_> {
         }
     }
 
-    /// A path argument, as `getname` reads it: at most `PATH_MAX` bytes with the zero, `ENOENT` if empty.
-    pub fn read_path(&mut self, address: u64) -> Result<Vec<u8>, Errno> {
-        let path = self.read_string(address, crate::linux::general::PATH_MAX.into())?;
-        if path.is_empty() {
-            return Err(Errno::ENOENT);
-        }
-        Ok(path)
-    }
-
     /// A path argument that may be empty (for `AT_EMPTY_PATH`).
     pub fn read_path_maybe_empty(&mut self, address: u64) -> Result<Vec<u8>, Errno> {
         self.read_string(address, crate::linux::general::PATH_MAX.into())

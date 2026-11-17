@@ -108,6 +108,9 @@ pub struct Backend {
     output: ChildStdout,
     /// Requests sent whose answers have not been read, in order: the server answers in order.
     outstanding: VecDeque<u64>,
+    /// Messages read from the server and not yet handed to the kernel: a host may hand them over
+    /// in any order, as a backend that answers from many threads does.
+    held: Vec<Message>,
     /// How many messages went each way.
     pub sent: u64,
 }
@@ -174,6 +177,7 @@ impl Backend {
             input,
             output,
             outstanding: VecDeque::new(),
+            held: Vec::new(),
             sent: 0,
         }
     }
@@ -185,6 +189,7 @@ impl Backend {
         while self.waiting() {
             self.receive();
         }
+        self.held.clear();
         let header = fuse_abi::linux::fuse_in_header {
             len: size_of::<fuse_abi::linux::fuse_in_header>() as u32,
             opcode: fuse_abi::linux::fuse_opcode::FUSE_DESTROY as u32,
@@ -238,9 +243,25 @@ impl Backend {
         }
     }
 
-    /// Whether an answer is still to come.
+    /// Whether an answer is still to come, read or not.
     pub fn waiting(&self) -> bool {
-        !self.outstanding.is_empty()
+        !self.outstanding.is_empty() || !self.held.is_empty()
+    }
+
+    /// The next message to hand to the kernel, chosen by `random` among those read so far, after
+    /// reading some more of the server's (at least one when none is held), waiting for them; none
+    /// when no answer is to come.
+    pub fn next(&mut self, random: &mut rand::rngs::StdRng) -> Option<Message> {
+        use rand::Rng;
+        while !self.outstanding.is_empty() && (self.held.is_empty() || random.random_bool(0.5)) {
+            let message = self.receive().expect("an answer is owed");
+            self.held.push(message);
+        }
+        if self.held.is_empty() {
+            return None;
+        }
+        let index = random.random_range(0..self.held.len());
+        Some(self.held.swap_remove(index))
     }
 
     /// Reads the server's next message, waiting for it; none when no answer is to come.
@@ -263,7 +284,7 @@ impl Backend {
             return Some(Message::Notice(message));
         }
         let expected = self.outstanding.pop_front();
-        assert_eq!(expected, Some(unique), "the backend answers in order");
+        assert_eq!(expected, Some(unique), "the server answers in order");
         Some(Message::Answer(unique, message))
     }
 }

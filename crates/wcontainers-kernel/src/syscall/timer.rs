@@ -57,6 +57,11 @@ enum Owner {
         tid: Tid,
         asked: u64,
     },
+    /// The end of a TCP connection's deferral (TCP_DEFER_ACCEPT) on a listener, or a held
+    /// connection's client sending again to a listener gone.
+    Deferral {
+        listener: Weak<RefCell<crate::syscall::socket::Socket>>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +95,8 @@ struct Timer {
     /// wall clock has canceled it since (`moffs` at `KTIME_MAX`).
     might_cancel: bool,
     canceled: bool,
+    /// A descriptor's flags as its last `settime` gave them (`settime_flags`), which fdinfo shows.
+    settime_flags: u32,
     /// A periodic POSIX timer whose signal was ignored when it fired, kept until the signal's
     /// handler stops being SIG_IGN (Linux's `ignored_posix_timers`).
     ignored: bool,
@@ -184,8 +191,8 @@ impl Timers {
     }
 
     fn descriptor(&self, file: &FileRef) -> Option<u64> {
-        match file.borrow().anon {
-            Some(Anon::Timer(id)) => Some(id),
+        match &file.borrow().anon {
+            Some(Anon::Timer(id)) => Some(*id),
             _ => None,
         }
     }
@@ -415,6 +422,12 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
         }
         // Disarmed, which tells the sleeper its time has come.
         Owner::Sleep { tid, .. } => kernel.wake_thread(tid),
+        Owner::Deferral { listener } => {
+            kernel.timers.remove(id);
+            if let Some(listener) = listener.upgrade() {
+                crate::syscall::socket::deferrals_due(kernel, cx, &listener);
+            }
+        }
     }
 }
 
@@ -508,7 +521,7 @@ pub(crate) fn process_end(kernel: &mut Kernel, pid: Pid, exec: bool) {
         .filter(|(_, timer)| match timer.owner {
             Owner::Posix { pid: owner, .. } => owner == pid,
             Owner::Interval { pid: owner, .. } => owner == pid && !exec,
-            Owner::Descriptor { .. } | Owner::Sleep { .. } => false,
+            Owner::Descriptor { .. } | Owner::Sleep { .. } | Owner::Deferral { .. } => false,
         })
         .map(|(id, _)| *id)
         .collect();
@@ -541,11 +554,41 @@ pub(super) fn start_cpu_sleep(
         charge: None,
         wall: false,
         might_cancel: false,
+        settime_flags: 0,
         canceled: false,
         ignored: false,
     });
     kernel.timers.arm(id, until);
     id
+}
+
+/// Starts a timer that ends a listener's connection deferral at `until` on the monotonic clock
+/// (or, on a client, sends again what its gone listener dropped).
+pub(crate) fn start_deferral(
+    kernel: &mut Kernel,
+    listener: Weak<RefCell<crate::syscall::socket::Socket>>,
+    until: u64,
+) {
+    let id = kernel.timers.add(Timer {
+        owner: Owner::Deferral { listener },
+        clock: Clock::Wall,
+        expires: None,
+        interval: 0,
+        overrun: 0,
+        overrun_last: 0,
+        ticks: 0,
+        expired: false,
+        clock_id: CLOCK_MONOTONIC as i32,
+        sequence: 0,
+        sent_at: None,
+        charge: None,
+        wall: false,
+        might_cancel: false,
+        settime_flags: 0,
+        canceled: false,
+        ignored: false,
+    });
+    kernel.timers.arm(id, until);
 }
 
 /// What is left of a sleep on a CPU clock: 0 once its timer fired or its clock reached the time; the
@@ -794,6 +837,7 @@ pub(super) fn timer_create(
         charge: Some(charge),
         wall: false,
         might_cancel: false,
+        settime_flags: 0,
         canceled: false,
         ignored: false,
         clock_id,
@@ -1011,6 +1055,7 @@ pub(super) fn setitimer(
             clock_id: CLOCK_MONOTONIC as i32,
             wall: false,
             might_cancel: false,
+            settime_flags: 0,
             canceled: false,
             ignored: false,
         }),
@@ -1065,6 +1110,7 @@ pub(super) fn timerfd_create(
         charge: None,
         wall: false,
         might_cancel: false,
+        settime_flags: 0,
         canceled: false,
         ignored: false,
         clock_id,
@@ -1131,8 +1177,10 @@ pub(super) fn timerfd_settime(
         kernel.timers.all[&id].clock_id as u32,
         CLOCK_REALTIME | CLOCK_REALTIME_ALARM
     );
-    kernel.timers.all.get_mut(&id).expect("timer").might_cancel =
+    let timer = kernel.timers.all.get_mut(&id).expect("timer");
+    timer.might_cancel =
         wall_clock && flags & TFD_TIMER_ABSTIME != 0 && flags & TFD_TIMER_CANCEL_ON_SET != 0;
+    timer.settime_flags = flags & (TFD_SETTIME_FLAGS | TFD_TIMER_CANCEL_ON_SET);
     if kernel.timers.all[&id].expired && kernel.timers.all[&id].interval > 0 {
         let timer = &kernel.timers.all[&id];
         let (expires, clock_now) = (timer.expires.unwrap_or(0), kernel.entry_now);
@@ -1218,10 +1266,27 @@ pub(super) fn timerfd_gettime(
     Ok(0)
 }
 
+/// `timerfd_show`: a descriptor's clock, expirations not yet read, flags, time left and interval,
+/// as they stand (no catching up on missed expirations, unlike `gettime`).
+pub(super) fn fdinfo(kernel: &Kernel, id: u64) -> alloc::string::String {
+    let timer = &kernel.timers.all[&id];
+    let (left, interval) = descriptor_remaining(kernel, id);
+    alloc::format!(
+        "clockid: {}\nticks: {}\nsettime flags: 0{:o}\nit_value: ({}, {})\nit_interval: ({}, {})\n",
+        timer.clock_id,
+        timer.ticks,
+        timer.settime_flags,
+        left / 1_000_000_000,
+        left % 1_000_000_000,
+        interval / 1_000_000_000,
+        interval % 1_000_000_000,
+    )
+}
+
 /// The descriptor's timer, if the file is one.
 pub(super) fn of(file: &OpenFile) -> Option<u64> {
-    match file.anon {
-        Some(Anon::Timer(id)) => Some(id),
+    match &file.anon {
+        Some(Anon::Timer(id)) => Some(*id),
         _ => None,
     }
 }

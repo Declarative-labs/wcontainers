@@ -4,279 +4,392 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 to K3 are done (their runs are in git history and below). K4 (files outside) is built in five
-runs: the first built the FUSE side with the backend as a volume; the second put the root file
-system on the backend, built extended attributes, access control lists and fallocate of backend
-files, FLUSH at every close, tests of backend notices and layer 1 on the backend; the third built
-mapped backend files as Linux's page cache holds them (shared and private mappings, programs) and
-layer 1 on a backend that opens files for the page cache; the fourth fixed the independent check's
-findings; the fifth ran the end-of-milestone seeds and fixed what they and new tests found
-(below). What is left is in Next.
+K0 to K4 are done. K5 (sockets and network) is built: every part of its milestone exists and is
+tested against the reference. The eighth run fixed every finding of the seventh run's check (the
+unstable deferred accept test, six option corners, connects to oneself, IPV6_ADDRFORM, the
+neighbour table, layer 1's missing calls, stale status entries) and one layer 1 find
+(SCM_PIDFD's order); the end-of-milestone seeds are under Measurements. What remains are single
+corner differences and options not built, each counted, listed under Next for later runs. At the fifth run's end (head f73d3aa) the fresh layer 1 seeds 5050448, 5050449
+and 5050450 passed 20000 sequences each with every fix in (see Measurements). The fuller run-by-run record of K4 and of K5's first two runs is in this file at
+commit fdf7001 (git history); what they built is summarised here.
 
-Built in K4's fifth run:
-- Truncation (truncate, ftruncate, and O_TRUNC through SETATTR when the backend does not truncate
-  at open) and fallocate that changes a file's size or bytes (not keep-size allocation) take the
-  backend file's write lock (`io::lock_backend_writes`) as Linux's `do_truncate` and
-  `fuse_file_fallocate` take `inode_lock`. Before, an O_APPEND write whose offset was computed
-  before a truncation's SETATTR was answered was sent at the old end; ours asked again ("backend
-  question asked again", WRITE). tests/backend.rs `truncations_and_appends_match_reference`
-  (guest/backendlocks.c, 2 saves) failed with that warning before and passes now.
-- splice from a pipe into a backend file was EINVAL (backend files were not counted as having
-  `splice_write`); now `iter_file_splice_write`: every slot's bytes up to the length go in one
-  write (one WRITE on the backend), and nothing leaves the pipe until it is answered. tmpfs files
-  and devices take the same one write, as Linux's gathers the slots into one `vfs_iter_write`
-  (`Pipe::unread_bytes`; `consume_front` takes across slots); terminals still take a slot at a
-  time. tests/backend.rs `transfers_match_reference`
-  (guest/backendtransfer.c: sendfile, splice, tee, copy_file_range with and without offsets,
-  from memory files, fadvise, readahead, cachestat; both server kinds) failed before.
-- Access control lists held on backend inodes (`Remote::acls`, Linux's `i_acl` and
-  `i_default_acl` through `__get_acl`): a read takes a held list (none is ENODATA), else asks the
-  backend and holds what it gives (errors are not held); a permission check by another than the
-  owner, when the group has bits, holds none for the access list (`acl_permission_check`,
-  `check_acl`, `fuse_get_inode_acl` without FUSE_POSIX_ACL); LOOKUP (`fuse_dentry_revalidate`),
-  GETATTR (`fuse_perm_getattr`, `fuse_update_get_attr`) and INVAL_INODE let go of both. Reading
-  a link's list is EOPNOTSUPP without asking, and so is setting one (`vfs_get_acl`, no
-  `set_acl`). Found by layer 1 seed 4040311 on the caching backend: lgetxattr(".",
-  "system.posix_acl_access") as uid 1000 was ENODATA on Linux (the walk's permission check on the
-  working directory held none) and EOPNOTSUPP ours (the server's answer). tests/backend.rs
-  `attributes_read_as_a_user_match_reference` (guest/backendacluser.c, both server kinds) failed
-  before. The server's directory has no lists (it answers EOPNOTSUPP), so a held list that is not
-  none is not reached by any test.
-- A backend directory seeks as `generic_file_llseek` over the size it holds: SEEK_END without
-  GETATTR, SEEK_DATA gives the offset and SEEK_HOLE the size below it, ENXIO at or past it (as an
-  unsigned offset). Before, SEEK_DATA and SEEK_HOLE were EINVAL. Found by layer 1 seed 4040312 on
-  the caching backend; guest/backendspecial.c now seeks in a directory (failed before).
-- Layer 1 on the backend did not find the splice failure in the seeds run so far; why its
-  sequences never reached it is not known (not looked into).
-- Layer 1 harness: plain seed 4040506 failed because the reference's caller died of SIGIO after a
-  write to a pseudo-terminal slave whose master had FIOASYNC: a terminal names the caller as owner
-  when none is set (`__tty_fasync`), and our caller is the container's first process, which Linux
-  keeps from signals it has no handler for. Both callers now ignore SIGPIPE, SIGIO and every
-  signal F_SETSIG may choose there (1, 5, 8, 22, 32, 64): the reference's in guest/layer1.c, ours
-  in `run_ours_on`'s setup calls (`IGNORED_SIGNALS`; our caller does not run that part of the
-  runner, so before only the reference's ignored SIGPIPE, which no generated call reads). Seeds
-  4040507 to 4040509 failed while only one side ignored them (rt_sigaction read SIGHUP's and
-  64's old action); they are not counted as passing runs. The kernel
-  was right: tests/sigio.rs `terminal_signals_without_an_owner_match_reference`
-  (guest/ptyasync.c, an owner named by FIOASYNC, its SIGIO handled and by default) passes.
+K5 built (all four runs):
+- Local sockets of every kind (stream, datagram, sequenced packets), names (paths and abstract),
+  listening, SCM_RIGHTS and SCM_CREDENTIALS, options and buffer limits as Linux; a connect by path
+  moves the socket node's access time.
+- epoll in full (level, edge, one-shot, exclusive, nesting, keyed wakes), poll, select and their
+  signal-mask forms over every descriptor kind; eventfd2; signalfd; inotify on the in-memory file
+  systems and the backend.
+- TCP and UDP over IPv4 and IPv6 between the container's own addresses, wholly in the kernel
+  (syscall/socket/inet.rs): ports, TIME_WAIT, connect states, resets, shutdown, poll and options at
+  every level with defaults measured on the reference. sendmmsg and recvmmsg.
+- Netlink route dumps (links, addresses, routes), the interface ioctls, FIONREAD and SIOCOUTQ,
+  from a made-up lo and eth0 (src/network.rs: eth0 172.17.0.2/16, gateway 172.17.0.1).
+- The outside through the Host hooks (syscall/socket/outside.rs): TCP connects and UDP flows;
+  bytes pulled into the kernel's own queue so poll answers locally; a name server at 127.0.0.11
+  answered with simple-dns through `Host::look_up`. After a restore outside connections read as
+  reset (plan section 12).
+- Third run:
+  - Accepting from outside: a TCP listener bound to the any address that takes IPv4 or to eth0's
+    address asks `Host::listen` for its port; each `ConnectionReady` on it is taken with
+    `Host::accept` into its backlog while there is room (and again after an accept makes room).
+    The accepted end is at eth0's address and its peer is the gateway with a random port, as
+    measured for Docker's published ports. Listeners listen again after a restore. A host that
+    refuses is counted "listening outside failed" and the socket listens inside alone. The test
+    host publishes ports as `docker run -p 127.0.0.1:outer:inner` does
+    (`driver::Container::published`, `run_ours_published`, `reference::run_published`).
+  - /proc/net (syscall/socket/procnet.rs): `/proc/net` links to `self/net`; each process
+    directory has `net` with dev, if_inet6, route, tcp, tcp6, udp, udp6 and unix in Linux's
+    formats (padding, states, queues, timers, inodes, local sockets' flags, states and reference
+    counts). The rest of Linux's names there are counted "proc entry not built". busybox netstat,
+    route and ifconfig read them.
+  - splice and sendfile with sockets at either end (a pipe into a socket in one message, a socket
+    into a pipe as a read; sendfile into a socket through its private pipe, a send that waits
+    resuming after what was sent). SPLICE_F_NONBLOCK keeps only local stream sockets from waiting
+    (measured). Socket calls take their bytes from the caller or from the kernel (`socket::Data`).
+  - UDP control messages: IP_PKTINFO, IP_RECVTTL, IP_RECVTOS, IPV6_RECVPKTINFO,
+    IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS, in Linux's order, with eth0's index for eth0's address;
+    control messages that do not fit are cut to the room as `put_cmsg` does.
+  - Receive timestamps: SO_TIMESTAMP and SO_TIMESTAMPNS, old and new, set and read back as
+    `sock_set_timestamp` and `sk_getsockopt` (measured); a packet is stamped as it is queued for
+    a receiver that asked, a datagram that came before is stamped as it is read, TCP gives the
+    last buffer's time and local streams none (measured). SO_TIMESTAMPING is still counted.
+  - inotify: IN_EXCL_UNLINK (events through an unlinked open file skip such watches), an
+    exchange sends two pairs of moves, a replaced target gets IN_ATTRIB then IN_DELETE_SELF at
+    its end, IN_MOVE_SELF and IN_DELETE_SELF carry no IN_ISDIR (measured), renames on the backend
+    send their events too, and a renamed file is told of under its new name.
+  - UDP true sizes measured (the small head cache: 896 bytes for small datagrams, the payload in
+    pages past SKB_MAX_ALLOC); the local sockets' model is unchanged (measured to differ).
+  - A TCP connection's FIN counts in its receive queue until the end is read, as Linux shows it.
 
-Built in K4's fourth run (the check's findings):
-- Locks a waiting call holds (`Kernel::take_lock`, `Call::holds`, `Channel::Held`): taken at a
-  call's start, kept while it parks, let go when it ends (or its thread does); another thread's
-  call parks until then, and no signal ends that wait (as `mutex_lock`). Used for an open file's
-  position (`io::lock_position`, Linux's `fdget_pos`/`f_pos_lock` for regular files and
-  directories: read, write, readv, writev, preadv2 and pwritev2 at -1, lseek, getdents64) and a
-  backend file's writes (`io::lock_backend_writes`, the `inode_lock` of FUSE writes without
-  FOPEN_PARALLEL_DIRECT_WRITES). The pipe lock uses the same slots. This was the blocking finding:
-  replies were handed to questions they were not sent for when a shared descriptor's position
-  moved while a call waited (lost writes, zero bytes, bytes read twice).
-- A parked call's earlier answers are taken only for the same question (`backend::Client::ask`
-  compares a hash of opcode, node and body): one asked in its place drops that answer and the
-  ones after it (giving back lookups and handles they held) and asks afresh, counted and warned
-  as "backend question asked again" (new reason). Seen since only where a truncation moved the
-  end under an append (fixed in the fifth run).
-- Attribute versions (`fc->attr_version`, `fi->attr_version`): an answer to a request sent before
-  the inode last changed (a write's new size, a truncation, INVAL_INODE, or the same answer
-  taken by an earlier run of the call) no longer overwrites what the inode holds.
-- readv, writev and the rest move a backend file's whole vector as one read or write
-  (`io::read_parts`, `io::write_parts`), as FUSE takes the iterator whole; before, the position
-  moved between segments of a parked call, so its next run asked at a moved offset.
-- READDIR asks for one page whatever the caller's buffer (`fuse_readdir_uncached`), and its
-  entries are read with fuse-abi's `fuse_dirent` (name length checked against FUSE_NAME_MAX, a
-  name with `/` is EIO, as `parse_dirfile`). A 64-byte getdents64 buffer listed nothing before.
-- Closing a backend directory sends no FLUSH (`fuse_dir_operations` has none).
-- open with O_CREAT through a link to a missing file on the backend creates the target (the
-  link's target is read with READLINK; ours sends one more READLINK and LOOKUP than Linux here).
-- A named pipe on the backend keeps its backend inode under its buffer (`Pipe::backend`): opening
-  it dropped the inode (FORGET was sent) and its attributes were then looked up locally
-  (getxattr through the open pipe was ENODATA, Linux's EINVAL).
-- getxattr of `security.capability` on the backend: traced at the reference's server, no
-  GETXATTR reaches it (the answer is EINVAL, set or not), while other `security.` names reach it;
-  ours sends none either. The reference's FUSE mount is `nosuid,nodev,noatime`, so exec there
-  reads no file capabilities; our volume is mounted the same way and sends none.
-- Backend files read whole when mapped or run are counted and warned ("backend file read whole
-  when mapped", new reason, detail the bytes read).
-- Notices are counted as handled ("backend notice", measured, per code). The notices test now
-  draws moments 1 to 10 turns apart, sends RETRIEVE too (the test host keeps the kernel's
-  NOTIFY_REPLY, as the backend that asked would), and asserts every kind was handled and every
-  RETRIEVE answered.
-- New tests: tests/backend.rs `shared_positions_match_reference` (guest/sharedpos.c: writes after
-  fork, two writer threads, two reader threads, two directory listers, two appending descriptors;
-  4 saves) and `special_files_match_reference` (guest/backendspecial.c: creating through dangling
-  links, attributes of a named pipe by path, descriptor and /proc). Both failed before the fixes
-  as the check reported.
+- Fourth run:
+  - Urgent bytes on local streams (MSG_OOB) as Linux 7.0 with CONFIG_AF_UNIX_OOB: the last byte
+    of a send is the receiver's mark (`Packet::urgent`), read out of band once (it stays in the
+    queue emptied), a read stops at the mark and passes an unread urgent byte (dropping it unless
+    SO_OOBINLINE; Linux's queued count keeps it, `skipped_urgent`), SIOCATMARK, POLLPRI, SIGURG
+    to the file's owner (`send_urgent_signal`) and a chosen signal with POLL_PRI.
+  - I/O signals from local sockets with O_ASYNC (`wake_async`): data, room after a send found
+    none, a peer's shutdown and close, a connection on a listener; none for data while a reader
+    waits (internet and netlink sockets' since the fifth run).
+  - SO_PEERPIDFD, SO_PASSPIDFD with SCM_PIDFD (a process reaped since gets a descriptor that
+    names it gone), SO_PASSRIGHTS (EPERM to senders of descriptors), SO_INQ with SCM_INQ;
+    SO_PASSCRED, SO_PASSPIDFD and SO_PASSRIGHTS refused on internet sockets as Linux. A message
+    carries credentials only when either end passes them or the receiver is not yet accepted
+    (`unix_maybe_add_creds`), else the overflow ids.
+  - The `system.sockprotoname` attribute of every socket's inode, and sockfs's refusals of other
+    names (a removal of a `security.` name is EAGAIN, measured).
+  - Internet sends read their control messages where Linux does: TCP the socket level only, UDP
+    over IPv4 also IP_TTL and IP_TOS, which the datagram carries; descriptors and credentials are
+    passed over; what is not built (marks, priorities, transmit times, IPv4 options and packet
+    information, IPv6 messages) is refused and counted.
+  - Found by layer 1 once it reached sockets (below) and fixed, each measured: fsync on a socket
+    (EINVAL), socketpair writes its numbers before it makes anything, accept4's and connect's
+    order of checks, sendto and recvfrom check the buffer before the descriptor, a stream read of
+    nothing from an empty queue waits (EAGAIN), epoll_pwait takes the descriptor first, sendfile
+    from a socket into a non-pipe is EINVAL, a read of nothing from a socket is 0, UDP's length
+    and urgent flag come first and a datagram that cannot be copied out is dropped, a local
+    connect finds the listener before its own state, a datagram's bytes are taken before its
+    receiver is looked up, a nonblocking read of a datagram socket shut for reading is EAGAIN, a
+    send to a receiver shut for reading is EPIPE for every kind, only streams send SIGPIPE,
+    every socket-level option is at least an int, and a local socket answers other levels with
+    EOPNOTSUPP before reading the length. TCP's MSG_OOB on receive is EINVAL (no urgent byte can
+    come), a send of nothing with it is 0, and an unconnected socket fails before the refusal.
+    Later in the run: an event descriptor's write takes exactly eight bytes and a vector is
+    written a segment at a time (measured: 13, 16 and 4+4 are EINVAL; pwritev2 with flags is
+    EOPNOTSUPP), eventfd's poll has no RDNORM or WRNORM, UDP peeks start at SO_PEEK_OFF, epoll
+    answers EPIOCSPARAMS and EPIOCGPARAMS (kept, nothing busy-polls here) and EINVAL to other
+    requests, a stream send that faults part way returns what went, a local datagram that cannot
+    be copied out is gone, a failed stream read with SO_PASSCRED still writes empty credentials
+    into the control area, an internet protocol's option writes its length before its value and
+    answers an unknown level before reading the length, mmap of a socket checks MAP_GROWSDOWN
+    before ENODEV, MSG_ERRQUEUE on an internet socket is EAGAIN, preadv2 with flags on inotify is
+    EOPNOTSUPP. Last: a stream send of nothing sends no descriptor either (measured), sequenced
+    packets check their connection before control messages and urgent flags, inotify refuses
+    O_PATH descriptors with EBADF, an IPv6 UDP socket sends to an IPv4 address through IPv4's
+    checks and control messages, IPv6, TCP and UDP options take a negative length as unsigned,
+    and an empty IPv4 option value is 0 (IP_TTL's is EINVAL).
 
-Built in K4's third run:
-- A mapped backend file's pages (`fs::backend::Pages`, held in `Remote::pages`; shared.rs): while
-  any mapping shows the file, its first pages are a block of shared pages, as a tmpfs file's are.
-  mmap asks GETATTR, then READs what the block lacks before anything changes
-  (`shared::backend_block`; the call parks and runs again); a program or interpreter on the
-  backend gets its block from the bytes exec read (`shared::backend_block_of`). Private mappings
-  show the block until a page is written (copy on write as for tmpfs), so MADV_DONTNEED and
-  MREMAP_DONTUNMAP show the file again and mremap growth reads the next pages first; both were
-  refused before. Shared mappings of files the backend opens without FOPEN_DIRECT_IO are built;
-  with FOPEN_DIRECT_IO they stay ENODEV as Linux.
-- While mapped, reads through a handle the backend opened for the page cache ask GETATTR (as
-  `fuse_cache_read_iter` with FUSE_AUTO_INVAL_DATA) and take the block's bytes, READ beyond it;
-  writes go to the backend (write-through, as Linux without writeback cache) and into the block.
-  Direct-IO handles bypass the block both ways, as Linux's direct IO bypasses the page cache.
-  Writes and fallocate move the held size (`fuse_write_update_attr`); truncation (truncate,
-  ftruncate, O_TRUNC) and punched or zeroed ranges zero the block (`truncate_pagecache_range`);
-  every such change sets the mappings' file end (SIGBUS past it).
-- Written back with WRITE (FUSE_WRITE_CACHE) through the handle of the last shared writable
-  mapping (`fuse_write_file_get`): at msync with MS_SYNC (then FSYNC with datasync, as
-  `vfs_fsync_range`), at fsync and fdatasync before FSYNC (waited), and when the last mapping goes
-  (munmap, exec, exit; sent with nothing waiting, before the handle's RELEASE). The whole block up
-  to the file's end is written each time: which pages a mapping wrote is not known (counted
-  "backend pages written whole", a new reason, with a warning).
-- Notices with mapped pages: STORE writes its bytes into the block and grows the size; RETRIEVE
-  answers the block's bytes up to the file's end (no bytes for an unmapped file, as before);
-  INVAL_INODE of a mapped file keeps the block (plan section 15) and is counted "backend change not
-  seen by mapped pages" (new reason). Not tested: the test driver sends no RETRIEVE and its notices
-  reach mapped files only by chance.
-- mremap of any file mapping sets its file end from the file's size afterwards (`shared::changed`);
-  before, the grown part of a tmpfs or backend mapping kept the old end and faulted with SIGBUS.
-- statx with no field FUSE has (mask without STATX_BASIC_STATS or STATX_BTIME) or with
-  AT_STATX_DONT_SYNC takes the attributes the inode holds from the backend's last answer, without
-  GETATTR, as `fuse_update_get_attr` (`sync = false`). This was layer 1 backend seed 4040103.
-- "backend call not built" is gone: nothing answers it any more.
-- The test server takes `--cached` (fuse-backend-rs `CachePolicy::Auto`: no FOPEN_DIRECT_IO, so
-  Linux's FUSE caches pages; names and attributes still time out at once). `driver::Container`
-  has `cached`; `backend::reference_run` and `Backend::start` take it. tests/backend.rs
-  `cached_file_mappings_match_reference` (guest/backendmap.c, 4 saves) and
-  `cached_mappings_share_pages_as_reference` (guest/backendshared.c, 6 saves: coherence of
-  mappings, reads and writes, fork, two descriptors, msync, fsync, shrink and grow with SIGBUS,
-  MADV_DONTNEED, mremap growth, write-back at munmap and exit, the bytes left on the backend).
-  tests/layer1.rs `sequences_on_cached_backend_match_reference` (`LAYER1_CACHED_CASES`, default
-  32).
-- Harness: the server is built once per test binary (a lock; parallel tests raced to build it).
+- Fifth run (each against the reference):
+  - I/O signals from internet and netlink sockets with O_ASYNC (`wake_async` for every family):
+    data (`sock_def_readable`; TCP's only while the receiver's buffer had room, as bytes past it
+    are still on their way under Linux's window), a TCP FIN (`tcp_fin`'s POLL_IN or POLL_HUP,
+    then the data wake), a finished connect (POLL_OUT), a connection on a listener, errors and
+    resets (`sock_def_error_report`, POLL_ERR), room after a send found none
+    (`sk_stream_write_space`, `sock_def_write_space`), netlink replies, the name server's answers
+    and the outside's bytes, ends, refusals and room. A waiting TCP reader's data sends none
+    (`sk_wait_data`). The counter "socket i/o signals not built" is gone.
+  - Netlink dumps come a part at a time (`netlink_dump`): the first at the request, the next
+    once a read leaves the queue at most half full (a peek too); a second dump while one runs is
+    EBUSY; a read that faults still takes its message; MSG_OOB on a read is EOPNOTSUPP; poll
+    has EPOLLWRBAND.
+  - `mmap` of a TCP socket (`tcp_mmap`): read only (EPERM for writing or running, and mprotect
+    can never add them), no pages, so a touch is SIGBUS; never locked or grown (EFAULT),
+    `mincore` shows nothing resident, msync with MS_SYNC of a shared one is EINVAL (sockfs has
+    no fsync); `/proc/<pid>/maps` names it `socket:[inode]`. Other sockets stay ENODEV.
+  - UDP's error queue under IP_RECVERR and IPV6_RECVERR: a datagram to a port nothing holds
+    queues a port unreachable error (520 bytes of it over IPv4, 1184 over IPv6, measured) and
+    sets the socket's error, connected or not; MSG_ERRQUEUE reads take it (a peek too), name its
+    destination, give the error message's own control messages (packet information with no
+    local address, TTL 64 and TOS 0xc0, or hop limit 64 and class 0) and then the extended error
+    with its offender; the socket's error becomes the next queued one's or none; poll shows
+    EPOLLERR while any is queued; turning the option off empties the queue. An IPv6 socket
+    sending to an IPv4 address goes by IP_RECVERR. A refusal from outside to such a socket sets
+    its error but queues nothing, counted "outside datagram error not queued" (the host does
+    not say what the datagram held).
+  - IPv4 packet information is kept for a datagram only if its receiver asked for it when it
+    came (`ipv4_pktinfo_prepare`): asked for later, it names no interface or local address.
+  - Local sockets passed over themselves: when a local socket is released, cycles of local
+    sockets that only the queues of such sockets hold are collected (`unix_gc`) and what their
+    queues carry is let go; releases cascade within one call (a socket's queue, a collected
+    cycle). A user with more descriptors in flight than its RLIMIT_NOFILE sends no more
+    (ETOOMANYREFS, `too_many_unix_fds`), unless it has CAP_SYS_RESOURCE or CAP_SYS_ADMIN.
+  - TCP's urgent data between the container's own sockets (`tcp_mark_urg`, `tcp_check_urg`,
+    `tcp_recv_urg`): the last byte of a MSG_OOB send is the receiver's mark; a read stops before
+    it, and one at it reads it with SO_OOBINLINE or else passes over it (the urgent data ends);
+    MSG_OOB reads it once (a peek leaves it; no room gives 0 with MSG_TRUNC; EINVAL with none,
+    inline or once read); a second urgent byte makes the first ordinary, or drops it when it is
+    next and not inline; SIOCATMARK, POLLPRI while unread, POLLIN wanting a byte past an
+    urgent one at the front, FIONREAD counting only up to it (`tcp_inq`), SIGURG to the owner.
+    To the outside a send with MSG_OOB and bytes is still refused (the hooks carry no urgent
+    data), counted "call flag not built".
+  - Layer 1 found (fixed, measured): MSG_OOB reads on netlink sockets, a mapping of a TCP
+    socket, netlink's EPOLLWRBAND, packet information asked for after a datagram came, a pending
+    error before a queued local datagram or sequenced packet (`__skb_try_recv_datagram`), an IPv6
+    UDP socket connecting to a `sockaddr_in` (`__ip6_datagram_connect`; EAFNOSUPPORT for
+    IPV6_V6ONLY), an empty netlink message (ENODATA), netlink's option levels refused before
+    the value or length is read (ENOPROTOOPT), and a nonblocking read of a UDP socket shut for
+    reading (EAGAIN; a waiting one ends with 0), netlink's urgent and empty messages refused
+    before their control messages are read, descriptors refused with EINVAL on sockets that
+    are not local (`__scm_send`), a local datagram socket's end read giving no credentials or
+    process descriptor (and SCM_PIDFD wanting a sender before it looks for room), and sendfile
+    from a socket into a pipe reading the socket (`sock_splice_read`; EAGAIN when empty),
+    netlink's shutdown EOPNOTSUPP before the mode is checked, local datagram and sequenced
+    packet peeks starting at SO_PEEK_OFF past whole messages (the offset moving on with peeks
+    and back with reads), UDP corking, and a process's `/proc/<pid>` directory naming it to
+    pidfd_send_signal (`tgid_pidfd_to_pid`; not to the other process descriptor calls, nor a
+    `task/<tid>` directory: EBADF).
+  - UDP corking (`up->pending`): MSG_MORE or UDP_CORK hold a datagram; later sends add to it
+    whatever destination they name (over UDP's largest is EMSGSIZE, a fault part way EFAULT,
+    and both drop it), and the first send without MSG_MORE, or UDP_CORK turned off, sends it.
+    UDP_NO_CHECK6_TX and UDP_NO_CHECK6_RX are kept (no wire, no checksums); UDP_SEGMENT,
+    UDP_GRO and UDP_ENCAP are counted "socket option not built" (ENOPROTOOPT, as a Linux
+    without them).
 
-Built in K4's second run:
-- Root file system on the backend. `Start::backend` (was `volume`) names where the backend is
-  mounted; `/` makes it the root (mounted `relatime`, as Docker's root), any other path a volume as
-  before. The test driver (`driver::Container::backend`) unpacks the container's files (the image
-  plus test programs, as a tar from `image::to_tar`) into the server's tmpfs with busybox tar before
-  the server starts, and reads them back after the run with `docker exec tar` (`Backend::files`,
-  `image::records`) to compare the files left behind.
-- The container's start is a parked call like any other (`Kernel::run_start`, container.rs): the
-  first thread has no registers yet, so `settle` runs the start again from where it got when the
-  backend answers. It has two parts, each asking afresh: the mount points `/dev` and `/proc`, found
-  on the root (made there when missing, as runc makes mount points) and held while mounted
-  (`Files::mount_points`), then the first program (working directory, made when missing as Docker
-  does; the program loaded; then the standard descriptors). `Kernel::start` returns nothing now;
-  a start that fails ends the container with the exit status `docker run` gives (measured: 127 not
-  found, 126 not permitted, 125 otherwise) and `Kernel::start_failure` says why.
-- Layer 2 on a backend root: `busybox::compare` (busybox.rs and shell.rs tests, 30 + 13 + 18 + 10
-  commands) now runs ours twice, root in memory and root on the backend, each against the one
-  reference run, and checks the backend run sent messages. tests/threads.rs
-  `threads_match_reference_on_backend_root` (3 seeds, 6 saves each). All pass.
-- Extended attributes on backend files: GETXATTR, SETXATTR (the compat 8-byte header: INIT does
-  not ask for FUSE_SETXATTR_EXT), LISTXATTR (no trusted filtering, names checked as
-  `fuse_verify_xattr_list`), REMOVEXATTR; every name goes to the backend (`fuse_xattr_handler`);
-  ENOSYS is EOPNOTSUPP. File capabilities of a program on the backend are read at exec
-  (`get_vfs_caps_from_disk`, one GETXATTR into 24 bytes) unless the mount is nosuid. Reading
-  `security.capability` with getxattr is EINVAL, as measured on the reference with it set and not
-  (see Known issues). Access control lists as Linux's FUSE on a host mount without
-  FUSE_POSIX_ACL: reading one is ENODATA; setting one is checked (`posix_acl_valid`, default lists
-  only on directories, owner or CAP_FOWNER) and handed to the backend as the attribute, or
-  removed with an empty value. tests/backend.rs `attributes_and_allocation_match_reference`
-  (guest/backendattrs.c), `file_capabilities_match_reference` (guest/backendcaps.c).
-- O_DIRECT opens of backend regular files are allowed (`FMODE_CAN_ODIRECT` in `fuse_open`).
-- Layer 1 on the backend: tests/layer1.rs `sequences_on_backend_match_reference`
-  (`LAYER1_BACKEND_CASES`, default 32; `LAYER1_SEED`). The sequences are built as layer 1's
-  (`layer1::build_on_backend`) with `/backend` in place of `/dev/shm` in the path pool (same length,
-  so every offset holds) and calls from `BACKEND_CALLS`: layer 1's file, memory and identity calls,
-  none that Docker's seccomp profile lets through only with CAP_SYS_ADMIN (the reference's
-  container needs it to mount FUSE). The reference runs the runner under `wc-backend mount`; ours
-  keeps one server for every sequence, sends it DESTROY after each (as Linux's unmount) and empties
-  its directory (`Backend::destroy`, `Backend::empty`), as the runner empties `/backend`
-  (guest/layer1.c takes the directory as its argument, which ours passes too). The reference's
-  container gets the FUSE device at `/wcdev/fuse`, linked from `/dev/fuse` until mounted
-  (`backend::FUSE_DEVICE`), so its `/dev` has a default container's inode count. Found and fixed on
-  the way: the reference's command ran with the server's umask 0 (now Docker's 022, set in
-  `wc-backend mount`); O_DIRECT opens; access control lists (read through `__fuse_get_acl`, which
-  asks the backend into a page); file capability reads; a read of a file the backend opened for
-  direct IO takes the buffer's pages first (`fuse_direct_io`: EFAULT before any message when none
-  can be written, else only as many bytes as can).
-- fallocate on backend files: FALLOCATE with keep-size, punch-hole and zero-range; other modes
-  EOPNOTSUPP (`fuse_file_fallocate`), after the generic checks.
-- Mappings of backend files (replaced in the third run by the file's pages, above): a shared
-  mapping of a file the backend opened with FOPEN_DIRECT_IO is ENODEV, as Linux
-  (`fuse_file_mmap`; the first backend opens every file so, so the reference refuses too,
-  measured). tests/backend.rs `file_mappings_match_reference` (guest/backendmap.c, 4 saves).
-- FLUSH at every close of a backend descriptor (`FdTable::closed`): `close` asks and waits as
-  before; dup2/dup3 over it, close_range, exec and exit send it with nothing waiting
-  (`backend::flush_unwaited`). Lock owner is the table's.
-- Backend notices tested: the test driver sends POLL, INVAL_INODE, INVAL_ENTRY, DELETE and STORE
-  notices about node ids 1 to 11 at seeded moments (`Injections::notices`); tests/backend.rs
-  `backend_notices_are_handled` (18 notices reached the three seeds' runs). RETRIEVE is not sent:
-  the kernel's NOTIFY_REPLY would reach a server that never asked (fuse-backend-rs answers it,
-  which breaks the test host's in-order check).
-- Fixed: `BACKEND_CALL_NOT_BUILT` was missing from `reason::NOT_BUILT` (a debug assertion fired).
+- Sixth run (each against the reference):
+  - TCP_INFO (`tcp_get_info`, 280 bytes as Linux 7.0): a fresh socket's and a listener's
+    exactly as Linux (a listener's queue and limit, a fresh socket's starting values and
+    `tcp_jiffies32` times); a connection's from a model of this TCP's traffic (`Traffic` in
+    syscall/socket/inet.rs: every segment arrives and is acknowledged at once, a send goes in
+    segments of the MSS, each data segment and FIN draws one acknowledgement; the handshake's
+    numbers, options, window scales, MSS, windows and MTUs are Linux's on loopback, measured).
+    Round trips, rates and the RTO are a fixed short loopback round trip. Counted "tcp info
+    modelled". TCP_MAXSEG gives the same MSS (32741 or 32732 for a connector until the other end
+    has sent, 32768 after and for an accepted end, as measured). TCP refuses a negative option
+    length (EINVAL), where IPv6 and UDP take it as unsigned.
+  - Internet send control messages: IP_PKTINFO and IPV6_PKTINFO (a source must be the
+    container's own and not multicast or broadcast, ENETUNREACH or EINVAL; an interface must
+    exist, ENODEV; IPv6 has no route out of eth0; a loopback source cannot leave through eth0;
+    through lo every destination is delivered inside, with lo's index; to a loopback address out
+    of eth0 the datagram is lost), an IPv6 socket's IPv6 packet information naming an IPv4
+    address for an IPv4 destination, IP_PROTOCOL (checked, raw sockets only), IPV6_HOPLIMIT,
+    IPV6_TCLASS (-1 sends 255, measured), IPV6_DONTFRAG, IPV6_FLOWINFO (checked; labels are
+    sent only with IPV6_FLOWINFO_SEND), SO_MARK and SO_PRIORITY (CAP_NET_RAW or CAP_NET_ADMIN,
+    or priorities 0 to 6), SCM_TXTIME (with SO_TXTIME). IPv4 options (IP_RETOPTS), IPv6
+    extension headers and send timestamps stay refused and counted.
+  - SO_MARK and SO_PRIORITY as Linux: root in Docker has CAP_NET_RAW, so both are set (they were
+    EPERM before, which was wrong); IP_TOS sets the priority it gives when it changes
+    (`rt_tos2priority`); SO_RCVMARK and SO_RCVPRIORITY give a UDP datagram's mark and priority
+    after its timestamp; SO_TXTIME set and read (CLOCK_MONOTONIC, or others with
+    CAP_NET_ADMIN: EPERM in Docker). An IPv6 socket's own IP_TTL and IP_TOS apply to its
+    datagrams over IPv4.
+  - UDP_SEGMENT as an option and a control message (`udp_cmsg_send` reads UDP's messages
+    first): a longer datagram goes as segments, at most 128 (EINVAL past), each a datagram to
+    its receiver or to the outside; a receiver with UDP_GRO takes it whole with a UDP_GRO
+    message naming the segment size (`udp_unexpected_gso`). UDP_ENCAP stays counted (IPsec and
+    L2TP encapsulation need the kernel's IPsec, which is not built).
+  - SO_TIMESTAMPING (old and new): the flags checked and kept as `sock_set_timestamping` (an
+    int or `struct so_timestamping`; unknown bits, OPT_ID_TCP without OPT_ID, OPT_STATS without
+    OPT_TSONLY, OPT_ID on an unconnected TCP socket: EINVAL; a bound clock: EOPNOTSUPP) and read
+    back; software receive timestamps (SCM_TIMESTAMPING: the time and two empty ones) on UDP,
+    TCP (the last buffer's) and local datagrams beside SO_TIMESTAMP, as measured; hardware flags
+    are kept and give nothing, as on Linux's loopback. Software send timestamps on UDP with
+    OPT_TSONLY: per datagram that leaves, a SCHED then a SND entry on the error queue (ENOMSG,
+    SO_EE_ORIGIN_TIMESTAMPING, no bytes, SCM_TIMESTAMPING before IP_RECVERR or IPV6_RECVERR,
+    EPOLLERR while queued, the socket's error left alone), keyed by OPT_ID's count of sends that
+    asked for any send timestamp (hardware ones too) or by SCM_TS_OPT_ID, as an option and per
+    send (measured). Local and netlink sockets take the flags and make none, as Linux. TCP's
+    send timestamps, TX_COMPLETION and copies of the packet (no OPT_TSONLY) are refused and
+    counted.
+  - A connect waiting for a full backlog's room (SYN_SENT) gives TCP_MAXSEG 524 and TCP_INFO's
+    SYN-sent values (measured).
+  - IPv4 multicast and broadcast inside the container: IP_ADD_MEMBERSHIP, IP_DROP_MEMBERSHIP,
+    MCAST_JOIN_GROUP and MCAST_LEAVE_GROUP (`ip_mc_join_group`'s checks; at most 20 groups,
+    ENOBUFS; EPROTO on TCP), IP_MULTICAST_IF (an address, `ip_mreq` or `ip_mreqn`), a group's
+    datagram given to every socket on its port bound to the any address or the group (connected
+    to none or the sender) that joined it on the interface it left by or takes every group
+    (IP_MULTICAST_ALL), while some socket joined it there and the sender loops it back, with
+    IP_MULTICAST_TTL; broadcasts (255.255.255.255 and eth0's) need SO_BROADCAST (EACCES) and go
+    to every socket on the port. The copies the outside would get are not sent, counted
+    "multicast or broadcast not sent outside" (the host carries neither). They were dropped
+    without a count before.
+  - statfs through `/proc/self/fd/N` of an mq_open queue gives the kernel's own mount's flags
+    (the walk keeps whether the last descriptor link followed named such a file), fixing the
+    fifth run's open layer 1 difference (seed 5050446).
 
-Built in K4's first run:
-- The K3 check's findings (each tested against the reference unless said otherwise):
-  - A periodic POSIX timer whose signal is ignored when it fires waits, as Linux's
-    `posixtimer_sig_ignore`, and sends it again when the signal's action stops being SIG_IGN
-    (`timer::unignore` from `rt_sigaction`; a SIG_DFL that ignores does not count, as
-    `do_sigaction`'s `was_ignored`). A one-shot timer is disarmed when it fires
-    (`posix_timer_queue_signal`), so `timer_gettime` gives 0 once it fired, 1 ns only while due
-    and not fired. ITIMER_REAL that fired and waits for SIGALRM to be taken reports 0
-    (`hrtimer_active`), so `alarm(0)` returns 0 then. tests/timers.rs
-    `ignored_and_blocked_timer_signals_match_reference` (guest/timerignore.c, the check's tignore,
-    tblocked and aignore, each part in its own child).
-  - Layer 1: the reference's caller ignores SIGPIPE (guest/layer1.c), which Linux keeps from our
-    caller, the container's first process; no generated call reads SIGPIPE's action. Seed 9393002
-    passed 30000 (below).
-  - Signals arriving from outside are injected at seeded moments (`driver::Injections::signal`,
-    through the new `Kernel::kill`, which sends from outside the container as `docker kill` does;
-    SIGKILL ends the first process). tests/procsignals.rs `injected_signals_change_nothing`
-    (guest/interrupted.c: pipes, sleeps, threads and waits written not to notice SIGUSR1; 40 signals
-    and 3 saves per seed, compared with a reference that gets none). `run_saving` became
-    `run_injected`.
-  - jobs.c `leader_exit`'s reference race and the stale status lines (Known issues; Partial list).
-- The FUSE side (fs/backend.rs). Every operation on the backend is the FUSE message Linux sends
-  (layouts from `fuse-abi` 0.2.0, protocol 7.40), handed to the host by `Host::backend_send`; the
-  answer comes back as `Event::BackendReply`. A call that needs an answer asks and parks on
-  `Channel::Backend`; when the answer comes, the call runs again from its start and every question
-  it asks again is answered from the replies its runs had, in order (`Client::ask`), so each
-  message goes once. The inodes and handles a call's answers give are held until the call ends.
-  No signal ends a wait for the backend (Linux's FUSE waits once a request is sent).
-- INIT asks for Linux's own flags less those that cache, hand locks to the backend or read
-  directories with attributes. Locks stay in the kernel, as Linux's FUSE without POSIX_LOCKS.
-- Built over the backend: path walks (LOOKUP; attributes asked again with GETATTR when this run of
-  the call has not had them), stat, fstat, statx, open (OPEN, OPENDIR, CREATE; O_TRUNC with the open
-  when the backend takes it, SETATTR otherwise), read and write (READ and WRITE in pieces of what
-  INIT allowed), lseek (GETATTR for SEEK_END, LSEEK for data and holes), getdents64 (READDIR),
-  close (FLUSH, then RELEASE when the last holder goes), fsync and fdatasync, mkdir, mknod,
-  symlink, link, unlink, rmdir, rename and renameat2 (RENAME, RENAME2), readlink, chmod, chown,
-  utimensat, truncate and ftruncate (SETATTR, with the set-user and set-group bits sent cleared as
-  `fuse_setattr` does when the backend does not kill them), statfs (STATFS), name_to_handle_at
-  (`fuse_encode_fh`), and execve of programs and scripts on the backend (read whole; each page is
-  the process's own copy).
-- Inodes the kernel holds no more are forgotten (FORGET with the lookups counted); an answer no
-  call takes gives back what it handed out (FORGET, RELEASE).
-- Notices: POLL wakes every wait on readiness; INVAL_INODE makes a held inode's attributes stale;
-  INVAL_ENTRY has nothing to drop; DELETE leaves a held inode with no links; STORE has nothing to
-  keep; RETRIEVE is answered with no bytes (NOTIFY_REPLY). RESEND and unknown codes are counted
-  "backend message unexpected". Not tested yet (the passthrough server sends none).
-- `Start::volume` mounts the backend at a path, as `docker run -v` (flags nosuid, nodev, noatime,
-  as the reference's FUSE mount shows).
-- The first backend: crates/wcontainers-kernel-test/backend, fuse-backend-rs 0.14.0's passthrough
-  file system and server (no file system written here), built for ARM64 Linux in a
-  `rust:1.91-alpine3.22` container (`backend::server`; fuse-backend-rs's build script cannot cross
-  build from macOS). `wc-backend pipe <dir>` serves over standard streams for our kernel;
-  `wc-backend mount <dir> <at> <command>` mounts it through Linux's FUSE with default_permissions
-  and allow_other and runs the command there without CAP_SYS_ADMIN, for the reference. The
-  directory is a tmpfs in the server's container. The test host answers in the server's order at
-  moments drawn from the seed (`driver::deliver`), and a save hands the server and the answers owed
-  to the copy.
-- Tests: tests/backend.rs `file_calls_match_reference` (guest/backendfiles.c, 3 seeds),
-  `file_calls_survive_saves` (12 saves a seed), `messages_per_call` (Measurements),
-  `file_mappings_match_reference` (ignored: mappings not built).
+- Seventh run (each against the reference):
+  - `/proc/<pid>/fdinfo` (syscall/fdinfo.rs): the directory (0555, listed and positioned as
+    `fd`, refused with EACCES to a caller that may not trace the process, at lookup and open),
+    each file (0444, made at each read, ENOENT once its descriptor is closed) with `pos`,
+    `flags` (O_CLOEXEC from the descriptor), `mnt_id`, `ino`, the locks taken through the file
+    (`show_fd_locks`: its flock, then its POSIX locks of this table and OFD locks, as
+    `/proc/locks` prints them), and each kind's lines: eventfd's count, number (the lowest free,
+    `eventfd_ida`) and semaphore flag; epoll's items (events with ERR and HUP, a fired one-shot
+    item's 0x40000000); inotify's watches newest first with the watched inode, kernel device
+    number, mask and file handle (as `name_to_handle_at` with AT_HANDLE_FID); signalfd's mask;
+    timerfd's clock, unread expirations, settime flags and time left; a process descriptor's
+    `Pid` and `NSpid` (-1 once reaped); local sockets' `scm_fds` (descriptors in flight to it,
+    or to its connections not yet accepted); the pseudo-terminal master's `tty-index`. Record
+    locks now keep the file they were taken through (`flc_file`) and a joined lock keeps the
+    held one's taker and file (`posix_lock_inode` grows the held lock); flock keeps its taker.
+  - TCP_DEFER_ACCEPT: set as seconds of whole SYN-ACK retransmits (`secs_to_retrans` and back:
+    2 reads 3, 1000 reads 1087, at most 29887); a listener with it holds each new connection
+    (`acked` request) out of its accept queue until data or a FIN comes or the deferral ends
+    (accepted at exactly the value read back, measured 1 s and 3 s), while its held requests are
+    not over its backlog (past it Linux answers with SYN cookies, which are not held); data or
+    a FIN finding the accept queue full stays held and tries again 200 ms later (the client's
+    retransmit after TCP_RTO_MIN; Linux doubles that wait at each try, here it stays 200 ms), a
+    deferral's end finding it full tries at the next SYN-ACK timer; a reset drops a held
+    connection; a closed listener drops held ones without a reset; held ones show in
+    `/proc/net/tcp` as SYN_RECV requests (`get_openreq4`: timer 1, time to the next SYN-ACK
+    timer, timers fired); an accepted socket reads 0. Connections from outside are not held
+    (counted "outside connection not deferred").
+  - Found by the end-of-milestone seed 5050453 (fixed, measured): a named pipe opened by its
+    path refuses RWF_NOWAIT (EOPNOTSUPP), where a pipe from `pipe2` takes it (guest/rwmodes.c
+    now has one).
 
-Built in K2's and K3's runs: what they built is under What exists; their run-by-run record is in
-this file at commit aecc367 (git history).
+- Eighth run (the seventh run's check, each against the reference):
+  - TCP_DEFER_ACCEPT: when a listener closes, its held connections go without a word, as
+    `inet_csk_listen_stop` drops requests; a client's next send draws a reset (its write
+    succeeds, its next read is ECONNRESET), and a client whose data or FIN was dropped while
+    the accept queue was full gets the reset at its retransmit (the timer on the client). The
+    seventh run sent a FIN instead.
+  - Options read back as Linux keeps them: SO_BUSY_POLL (never negative) and SO_INCOMING_CPU
+    keep their values; TCP_LINGER2 of 0 reads as `tcp_fin_timeout` (60); TCP_WINDOW_CLAMP is
+    set at the handshake to half the receive buffer unless a smaller clamp was asked
+    (`tcp_init_buffer_space`), and 0 is refused (EINVAL) unless closed; TCP_QUICKACK is the
+    opposite of the pingpong model /proc/net/tcp shows, and setting it moves that model.
+  - SO_BINDTODEVICE and SO_BINDTOIFINDEX on every socket (`sock_setbindtodevice`,
+    `sock_bindtoindex_locked`, `sock_getbindtodevice`): the bound interface kept as its number;
+    names cut to 15 bytes, unknown ones ENODEV, empty or none lets go; any number not negative
+    is kept (unknown ones read back as ENODEV by name); a name reads back with its NUL and
+    wants room for 16 bytes (EINVAL); binding again wants CAP_NET_RAW.
+  - A TCP connect to the socket's own address and port with no listener there is a
+    simultaneous open: the socket is its own peer, reads what it writes, and its FIN and reset
+    come back to itself.
+  - IPV6_ADDRFORM: a connected IPv6 TCP or UDP socket whose peer is IPv4-mapped becomes an IPv4
+    socket (ENOTCONN unless established, EADDRNOTAVAIL for IPv6 peers or IPV6_V6ONLY, EINVAL
+    for other families, EBUSY for a corked UDP datagram); reading it gives AF_INET6 while
+    established.
+  - The neighbour table (`ip neigh`, RTM_GETNEIGH dumps, `Ports::neighbours`): each family's
+    first packet through lo makes Linux's loopback entry (0.0.0.0 on lo for IPv4, as ARP keys
+    every loopback neighbour, and ::1 for IPv6; NOARP, all-zero hardware address), with its
+    times since made and since TCP last confirmed it; NLMSG_DONE comes in the same read as
+    the entries (neighbours are not split as links, addresses and routes are). Entries that
+    packets leaving by eth0 make on Linux (the gateway's, groups', broadcasts') are not built:
+    a dump after such packets is counted "neighbour entries not built". Proxy dumps are empty.
+  - Found by layer 1 seed 5050458 (with the new calls; measured in scratch k5r8/pidfd):
+    SCM_PIDFD comes after SCM_RIGHTS in a read, and too little room left for it is MSG_CTRUNC
+    whether or not the message names its sender (`scm_pidfd_recv` checks the room first).
+  - Layer 1 generates sendmmsg (one or two send headers), recvmmsg (one receive header) and
+    epoll_pwait2 (a zero timeout).
+
+Tests added in the eighth run (each against the reference):
+- tests/inet.rs `option_corners_and_neighbours_match_reference` (guest/inetcorners.c: the
+  options above, the bound device by name and number on internet and local sockets, a
+  connection to oneself, IPV6_ADDRFORM on UDP and TCP, neighbour dumps of each family; eth0's
+  number differs between hosts, so it is shown as "eth0's").
+- guest/tcpdefer.c's last part waits 600 ms after the listener closes (past the client's
+  retransmit) and reads every client after writing: the reference raced there before (below).
+- guest/sockpidfd.c: descriptors with SO_PASSPIDFD set before and after the send, with room for
+  both messages and for one, on streams and datagrams.
+
+Tests added in the seventh run (each against the reference):
+- tests/procstatus.rs `fdinfo_matches_reference` (guest/fdinfo.c: every descriptor kind, locks
+  joined across two files, a user refused another's, a zombie's and a reaped child's process
+  descriptor, a descriptor closed after its fdinfo was opened; machine numbers checked against
+  statx, stat and name_to_handle_at and shown as "same").
+- tests/inet.rs `deferred_accepts_match_reference` (guest/tcpdefer.c: values, deferral ends at
+  1 s and 3 s, data and FIN before the end, a reset, six connects on a backlog of 2, the
+  listener closed under them).
+
+Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
+call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
+and those calls are at its end. The third run's claim that seed 5050003 had them among its calls
+was wrong. At K4's end the list had 257 entries, so only its last (timerfd_gettime) was never
+made. The kind is now a `u16`; seeds made before this make different sequences now.
+
+Tests added in the sixth run (each against the reference):
+- tests/inet.rs `tcp_info_matches_reference` (guest/tcpinfo.c: exact fields through a
+  connection's life over IPv4 and IPv6, timing fields only as plausible),
+  `send_control_messages_match_reference` (guest/inetsend.c, as root and a user),
+  `udp_segmentation_matches_reference` (guest/udpsegment.c), `timestamping_matches_reference`
+  (guest/timestamping.c; each receiver waits 100 ms after asking, as Linux turns stamping on
+  for the machine through deferred work), `multicast_and_broadcast_match_reference`
+  (guest/multicast.c).
+- Layer 1 sets SO_MARK, SO_PRIORITY, SO_RCVMARK, SO_RCVPRIORITY, SO_TXTIME and IP_TOS, and sends
+  IPv4 packet information naming 127.0.0.5 as the source.
+
+Tests added in the fifth run (each against the reference):
+- tests/inet.rs `io_signals_match_reference` (guest/inetasync.c: TCP connect, listener, data,
+  filling and draining, shut, reset, refused, chosen signals, a waiting reader; UDP data and
+  refusals; netlink dump parts, a second dump, a faulting read), `socket_mappings_match_reference`
+  (guest/tcpmap.c), `error_queue_matches_reference` (guest/recverr.c).
+- tests/inet.rs `orders_of_checks_match_reference` (guest/sockorder.c).
+- tests/inet.rs `tcp_urgent_data_matches_reference` (guest/tcpoob.c); guest/unixsock.c: a
+  pending error before queued messages; guest/udpcontrol.c: IPv6 sockets connecting to IPv4.
+- tests/unixsock.rs `cycles_are_collected_as_linux` (guest/unixgc.c: a socket in its own queue,
+  two pairs in each other's, a cycle reached from an open socket, ETOOMANYREFS at a limit of 16).
+  Linux collects on a work queue at the release of any local socket on the whole machine (other
+  containers' too), so the test shows only states after the program released one, waiting up to
+  10 s for the pipe's end.
+- guest/udpcontrol.c: packet information asked for after datagrams came; guest/pollmask.c:
+  fresh netlink, UDP and TCP sockets.
+
+Tests added in the fourth run (each against the reference):
+- tests/unixsock.rs `urgent_bytes_and_io_signals_match_reference` (guest/unixoob.c: the mark,
+  peeks, two urgent bytes, inline, descriptors with an urgent byte, epoll and poll for POLLPRI,
+  SIGURG, O_ASYNC signals with and without a chosen signal, a reader waiting in a read, SIGPIPE
+  by kind, a listener closed with a connection waiting) and
+  `process_descriptor_and_queue_options_match_reference` (guest/sockpidfd.c: SO_PEERPIDFD of a
+  pair, a child and a reaped child, SCM_PIDFD with and without room and with credentials,
+  SO_PASSRIGHTS, SO_INQ, the protocol name attribute and attribute rights as root and a user).
+- tests/inet.rs `urgent_flags_match_reference` (guest/inetoob.c).
+- guest/epoll.c: event descriptor write and read sizes and poll bits, epoll's requests;
+  guest/unixoob.c: a long write over a buffer that ends part way; guest/sockpidfd.c: failed
+  reads with credentials asked for, a datagram read into a bad buffer.
+- Layer 1 makes accept4, sendmsg and recvmsg (headers in the arena with destinations, vectors and
+  control messages: descriptors, credentials, a bare header, IP_TTL; receives with room from none
+  to 128 bytes, their control area zeroed by both runners after each call, the sender's process
+  number and times masked), more socket options (SO_OOBINLINE, SO_PEEK_OFF, SO_PASSPIDFD,
+  SO_PEERPIDFD, SO_PASSRIGHTS, SO_INQ, timestamps, SO_LINGER, IP_PKTINFO, IP_RECVTTL,
+  IP_RECVTOS, IPV6_RECVPKTINFO). A quarter of the sequences start with a local socket pair of one
+  kind and a message from one end, ended by a recvmsg at the other; an eighth with a UDP socket at
+  127.0.0.1:5099 that sends itself a datagram, ended by a recvmsg. The test prints how many sends
+  with control messages and receives went well.
+
+Tests added in the third run (each against the reference):
+- tests/outside.rs `servers_inside_accept_clients_outside_as_linux` and
+  `listeners_listen_again_after_a_restore` (guest/outsideserve.c; seed 1's save falls after the
+  listens and before the clients, checked by tracing the test host's listens once).
+- tests/inet.rs `proc_net_matches_reference` (guest/procnet.c: machine-specific numbers shown as
+  what they are), `transfers_with_sockets_match_reference` (guest/sockxfer.c),
+  `datagram_control_messages_match_reference` (guest/udpcontrol.c),
+  `receive_timestamps_match_reference` (guest/timestamps.c: each time checked to fall between
+  the send and the receive).
+- tests/netprograms.rs `socket_and_route_tables` (busybox netstat -tulnp, netstat -lx, route -n,
+  ifconfig lo).
+- guest/inotify.c: unlinked files with IN_EXCL_UNLINK, exchanges, a replaced target.
+
 Layer 2 runs repeat exactly for a seed: the test host's clock moves only by a seeded 0.5 to 1.5 us per
 turn on the CPU side and by skipped waits, and the stand-in ends a turn after the slice's length in
 instructions (one a nanosecond); tests/shell.rs `runs_repeat_for_a_seed` checks it.
@@ -442,6 +555,14 @@ What layer 1 does not generate, and why:
   instruction pointer (the runners' differ); alternate signal stacks that could hold either caller's
   stack pointer; rseq areas where other calls write.
 - brk (its values are addresses that differ by layout; tests/memory.rs and tests/limits.rs test it).
+- recvmmsg with more than one header (the arena holds one receive header for it; more would
+  read the generated values as headers), with a timeout or blocking (every receive is
+  nonblocking, so MSG_WAITFORONE, which only changes waiting, is not generated); sendmmsg with
+  more than two headers; epoll_pwait2 with a timeout other than zero (a sequence never waits).
+  tests/inet.rs (guest/inet.c) and tests/epoll.rs compare them.
+- Socket addresses read back (getsockname, getpeername, accept's and a receive's sender): an
+  automatic local name and an ephemeral port are random. Sends to the loopback port 5099 only from
+  the UDP socket a sequence starts with. tests/unixsock.rs and tests/inet.rs compare addresses.
 - CPU clock ids of process 1 (our caller is process 1, the reference's is not); those of the
   caller's own process and thread (encoded pid 0), of a missing process, and clock devices are
   generated. Sleeps on the profiling and user time CPU clocks: Linux samples those times at ticks, so
@@ -626,7 +747,7 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
 
 ## System calls
 
-Done (220): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
+Done (246): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
 clock_nanosleep, clone, close, close_range, copy_file_range, dup, dup3, execve, execveat, exit,
 exit_group, faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2,
 fchown, fchownat, fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat,
@@ -756,13 +877,16 @@ file_getattr, file_setattr, acct, vhangup, swapoff, init_module, finit_module, r
 fspick, fsmount, move_mount, sethostname, setdomainname, fanotify_init. (sethostname and
 setdomainname keep handlers the profile keeps out of reach.)
 
-Missing (40, each counted "system call not implemented" and ENOSYS), with what each needs:
+Built in K5 (26, in the Done count above): eventfd2, epoll_create1, epoll_ctl, epoll_pwait,
+epoll_pwait2, inotify_init1, inotify_add_watch, inotify_rm_watch, socket, socketpair, bind, listen,
+accept, accept4, connect, getsockname, getpeername, sendto, recvfrom, sendmsg, recvmsg, sendmmsg,
+recvmmsg, shutdown, setsockopt, getsockopt. Socket families: local (AF_UNIX), IPv4 and IPv6 (TCP
+and UDP), netlink (NETLINK_ROUTE); others counted "socket family not built".
+
+Missing (14, each counted "system call not implemented" and ENOSYS), with what each needs:
 - Processes: ptrace (tracing is out of phase one).
-- Waiting on many things (K5): epoll_create1, epoll_ctl, epoll_pwait, epoll_pwait2, eventfd2,
-  inotify_init1, inotify_add_watch, inotify_rm_watch, fanotify_mark.
-- Sockets (K5): socket, socketpair, bind, listen, accept, accept4, connect, getsockname, getpeername,
-  sendto, recvfrom, setsockopt, getsockopt, shutdown, sendmsg, recvmsg, recvmmsg, sendmmsg.
-- Asynchronous I/O (K5 or later, needs the waiting design for many requests): io_setup, io_destroy,
+- fanotify_mark (fanotify_init is refused by Docker's profile, so no group can exist; see Next).
+- Asynchronous I/O (needs the waiting design for many requests): io_setup, io_destroy,
   io_submit, io_cancel, io_getevents, io_pgetevents.
 - Single-process calls not built, each before K6's bar: adjtimex and clock_adjtime (reading the
   clock's adjustment state: the made-up machine's values; setting needs CAP_SYS_TIME, which Docker's
@@ -792,7 +916,7 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
   `/proc/<pid>/status` has only some of Linux's lines (no memory, SigQ, SigPnd, ShdPnd or context
   switch lines). Each open of these is counted "proc fields not tracked". Built with K2's processes,
   before K6's bar.
-- About 330 of Linux's `/proc` entries are not built (mountinfo, mem, fdinfo, task, oom_score_adj,
+- About 330 of Linux's `/proc` entries are not built (mountinfo, mem, task, oom_score_adj,
   uid_map, smaps, entropy_avail and more; proclist prints them): ENOENT, counted "proc entry not
   built" with the entry in the detail. Those programs commonly read come before K6's bar.
 - `/proc/<pid>/fd` links of files opened by a path keep that path; a rename afterwards is not seen
@@ -818,6 +942,9 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
   each record as the reader reaches it, so a change between two reads of one open file can show
   partly there and not here.
 - FIONREAD on the standard output pipes is always 0: the host takes bytes as they are written.
+- The error queue (IP_RECVERR, IPV6_RECVERR, MSG_ERRQUEUE) holds UDP's port unreachable errors
+  and UDP's software send timestamps; TCP's send timestamps are not built (see Next), and an
+  outside destination's refusal is counted, not queued (the host does not say what was sent).
 - sendfile waiting for a terminal's room reads the rest of its round from the input again when it
   runs again; Linux keeps the round in its private pipe, so a change to the input file during the
   wait shows here and not there. splice from a pipe into a terminal holds the pipe's lock in Linux
@@ -828,8 +955,8 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
   with `put_user` that are not listed under "Where things stand" are copied whole here.
 - sendfile into the standard stream pipes moves at most an empty pipe's worth (the host drains them);
   a reference pipe Docker has not drained holds less room.
-- busybox `su` fails here (`can't set groups: Function not implemented`): musl's `initgroups` asks
-  nscd through a socket, and sockets are K5; `adjtimex` fails (missing, above).
+- busybox `adjtimex` fails (missing, above). busybox `su` failed before K5 because musl's
+  `initgroups` asks nscd through a local socket; with sockets built it has not been run again.
 - A memory fault's syndrome in a handler's frame: whether the page was present and the level of the
   missing table are Linux's page tables' own; given as a level 3 translation fault for a page that
   allows nothing or is unmapped, a level 3 permission fault otherwise (counted "fault syndrome
@@ -1386,6 +1513,96 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K5, eighth run, end of the milestone's layer 1 bar: at 090feaf (every fix of the run in) the
+  fresh seeds 5050459, 5050460 and 5050461 passed 20000 sequences each (326 s each, three side
+  by side beside the whole suite's build, load 38.6 at the start and 67.0 at the end). Before
+  that, seed 5050458 found the SCM_PIDFD order (the first 3000 run, 38.6 s) and passed 3000
+  with it fixed (47.1 s, load about 33).
+- K5, eighth run: whole suite at d3cf740 (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -j 4
+  -p wcontainers-kernel -p wcontainers-kernel-test` in a clean copy with its own build, beside
+  the three seeds): 185 passed, 1 failed, 5 ignored, 17 min 24 s with the build, load 48.5 at
+  the start and 60.3 at the end. The failure was the run's own: the SCM_PIDFD change set
+  MSG_CTRUNC on a local datagram read that found its end (guest/sockorder.c), where Linux
+  gives such a read no control messages; fixed at b70a418.
+- K5, eighth run: whole suite at b70a418 (the run's last code; same command, clean copy, own
+  build, beside seed 5050462): 186 passed, 0 failed, 5 ignored, 17 min 3 s with the build,
+  load 84.1 at the start and 29.9 at the end. Seed 5050462 passed 20000 at b70a418 (335.6 s,
+  load 82.5 at the start, 48.5 at the end).
+
+- K5, seventh run: whole suite at 187f214 (the run's last code; same command, clean copy, own
+  build): 184 passed, 1 failed, 5 ignored, 21 min 51 s with the build (ten of them a hung
+  reference), load 24.8 at the start and 29.4 at the end. The failure is terminal's
+  `job_control`: the reference container hung (Known issues) and was removed; two reruns alone
+  passed.
+
+- K5, seventh run, end of the milestone's layer 1 bar: at 8e896aa seeds 5050454 and 5050455
+  passed 20000 each (325 s each) and 5050453 found RWF_NOWAIT on a named pipe (181 s), three
+  side by side, load 27 at the start and 35 to 61 at the end. With that fixed (187f214's
+  kernel) 5050453, 5050456 and 5050457 passed 20000 each (315 s each, three side by side, load
+  37 at the start and 14 at the end).
+- K5, seventh run: whole suite at 8e896aa (same command, clean copy, own build, beside the three
+  seeds): 184 passed, 1 failed, 5 ignored, 13 min 6 s with the build, load 27.3 at the start and
+  25.1 at the end. The failure is the reference's race in threads `clone_tables_match_reference`
+  (Known issues); two reruns alone passed.
+
+- K5, seventh run: whole suite at 2d60f92 (the sixth run's end; `RUST_TEST_THREADS=3 cargo
+  test --no-fail-fast -j 4 -p wcontainers-kernel -p wcontainers-kernel-test` in a clean copy
+  with its own build): 182 passed, 1 failed, 5 ignored, 13 min 39 s with the build, load 53.1
+  at the start and 26.6 at the end. The failure is busybox `system` crossing a minute's turn
+  (Known issues).
+
+- K5, sixth run, layer 1: seed 5050451 passed 3000 sequences at 47d0230 (51 s, load about 33);
+  the fifth run's open seed 5050446 passed 20000 with the statfs fix (338 s) and the fresh seed
+  5050452 passed 20000 at 9835ab5 (341 s), side by side, load about 30 to 40.
+- K5, fifth run, layer 1 at 20000 sequences each: on 3063305 (the fourth run's end) 5050423
+  passed, 5050422 and 5050424 found netlink's MSG_OOB read; on 5a254ef 5050422, 5050424 and
+  5050425 failed (netlink's MSG_OOB, then the late packet information); on f9509e3 5050424 and
+  5050426 passed (338 s and 339 s, three side by side, load 65 to 52), 5050425 found netlink's
+  EPOLLWRBAND; on 94f7d0d 5050429 passed (317 s, load 51 to 54), 5050427 found the pending
+  error before a queued sequenced packet and 5050428 the IPv6 connect to a `sockaddr_in`; on
+  8b58c43 5050430 (291 s), 5050431 (144 s) and 5050432 (59 s) found the empty netlink message,
+  the shut UDP read and netlink's getsockopt level (load 44 to 59); on 2aefa16 5050435 passed
+  (334 s, load 59 to 34), 5050433 and 5050434 found netlink's empty sendmsg with control
+  messages; on 60d3703 5050436 and 5050438 passed (332 s and 331 s, load 23 to 39), 5050437
+  found the credentials at a sequenced packet socket's end; on 77abb06 5050439 and 5050441
+  passed (337 s and 340 s, load 39 to 18), 5050440 found sendfile from a datagram socket; on
+  c1bf7c3 5050442 found netlink's shutdown, 5050443 UDP's MSG_MORE and 5050444 local datagram
+  peeks at SO_PEEK_OFF (71 to 282 s, load 38 to 53); on 619f3d0 5050445 passed (347 s),
+  5050446 found statfs of `/proc/self/fd/N` naming an mq_open queue (not fixed, see Next) and
+  5050447 pidfd_send_signal on `/proc/self` (load 46 to 78).
+- K5, fifth run, end of the milestone's layer 1 bar: on f73d3aa (every fix in) the fresh seeds
+  5050448, 5050449 and 5050450 passed 20000 sequences each (339 s, 336 s and 399 s, three side
+  by side, load 74 at the start and 49 at the end).
+- K5, fifth run: whole suite at f73d3aa (the run's last code; same command, clean copy, own
+  build): 177 passed, 1 failed, 5 ignored, 11 min 18 s with the build, load 22.8 at the start
+  and 27.8 at the end. The failure is the reference's known race in threads
+  `process_signal_takers_match_reference` (theirs "main willing: taken by thread 1", see Known
+  issues); two reruns alone passed.
+- K5, fifth run: whole suite at 619f3d0 (same command, clean copy, own build, beside three layer
+  1 runs): 178 passed, 0 failed, 5 ignored, 13 min 54 s with the build, load 25.6 at the start
+  and 56.3 at the end.
+- K5, fifth run: whole suite at 60d3703 (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -j 4
+  -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy with its own build, beside
+  three layer 1 runs): 178 passed, 0 failed, 5 ignored, 10 min 34 s with the build, load 27.7 at
+  the start and 35.1 at the end.
+- K5, fourth run: whole suite at ebf9420 (the third run's end; `RUST_TEST_THREADS=3 cargo test
+  --no-fail-fast -j 4 -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy in
+  scratch with its own build): 169 passed, 0 failed, 5 ignored, 10 min 7 s with the build, load
+  59.6 at the start and 43.4 at the end.
+- K5, fourth run, layer 1 once sockets were reached: seeds 5050401 (1000), 5050402 (2000),
+  5050403 and 5050404 (3000) ran before the reach fix (no socket calls). After it, 5050405 to
+  5050417 each failed first and were fixed in turn (the findings under Where things stand); with
+  every fix in, 5050405 and 5050406 passed 2000, 5050411 to 5050417 passed 5000 each (70 to 117
+  s each, three side by side, load 15 to 40). At 10000: 5050421 passed at 6d071c7 (168 s), 5050418
+  passed with the fixes before 6d071c7's (171 s), and with every fix in (65ae145) 5050419 and
+  5050420 passed (170 s and 168 s, side by side, load 33 to 24).
+- K5, fourth run: whole suite at 65ae145 (every fix in; same command, clean copy, own build): 171
+  passed, 1 failed, 5 ignored, 10 min 45 s with the build, load 26.8 at the start and 34.1 at the
+  end. The failure is the reference's known race in threads `process_signal_takers_match_reference`
+  (theirs "main willing: taken by thread 1", see Known issues, K3 sixth run); two reruns alone
+  passed. Sequences report how many sends with control
+  messages and receives went well: about 100 to 300 and 300 to 4000 per 5000.
+
 - K4, fifth run, final, at head deb0e5c (every fix in): plain layer 1 seeds 4040510, 4040511,
   4040512 each passed 20000 (328.1 s, 388.0 s, 327.3 s) and the harness's failing seed 4040506
   passed 20000 (326.7 s), four side by side with the whole suite, load 17.8 at the start and 18.5 to
@@ -1552,6 +1769,75 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- K5, seventh run: eventfd's number in fdinfo is the lowest free among the container's event
+  descriptors; Linux's is the lowest free on the whole machine, so it differs from the
+  reference's whenever other containers hold some (the test shows it as N). epoll's items are
+  listed in this kernel's order (by descriptor); Linux's follow kernel addresses.
+- K5, eighth run: TCP_QUICKACK and /proc/net/tcp's pingpong flag are a model: an end enters
+  pingpong mode when it sends after it has received, and stays there; Linux enters it when it
+  sends within the delayed acknowledgement time of the last receive and leaves it when its
+  delayed acknowledgement timer fires (40 ms or more after unanswered data), so on Linux the
+  answer depends on timing.
+- K5, eighth run: the neighbour table holds only the loopback entries; its times are a model
+  (made at the first packet, confirmed at each TCP segment), where Linux's depend on when
+  acknowledgements come. Interface numbers differ from the reference's (see below), so a
+  socket bound by number to 2 is eth0 here and Docker Desktop's tunl0 there.
+- K5, seventh run: TCP_DEFER_ACCEPT is not applied to connections from outside (counted
+  "outside connection not deferred"): the host completes those and has no hook to hold one
+  back.
+
+- K5, sixth run: Linux stamps received packets once any socket on the machine asks for receive
+  timestamps (a global switch, turned on a moment later); here a packet is stamped when its
+  receiver asked, so SOF_TIMESTAMPING_SOFTWARE without RX_SOFTWARE reports a time only when the
+  receiver also has SO_TIMESTAMP, which is what a quiet Linux machine does.
+- K5, sixth run: TCP_INFO of a connection is a model (counted "tcp info modelled"): Linux's
+  round trips, rates, RTO, delayed acknowledgements, window growth and segment counts depend on
+  timing and load (retransmissions were measured on a loaded reference), so they cannot be
+  matched. The model is that every segment arrives and is acknowledged at once over a 10 us
+  round trip; what Linux gives the same on every quiet loopback run is given exactly.
+
+- K5, fifth run: Linux collects cycles of local sockets on a work queue when any local socket on
+  the machine is released (other containers' too), so when a cycle goes depends on the whole
+  machine; here it goes at once when a local socket of the container is released, which is
+  what a quiet Linux does. A TCP sender's data is told to the receiver's I/O signal only while
+  the receiver's queue holds less than its receive buffer (Linux's window keeps the rest on its
+  way and tells of it as it comes, which depends on timing). Netlink dumps are split into the
+  answers and NLMSG_DONE, where Linux splits by its own message sizes (ours carry fewer
+  attributes), so a dump takes two reads here and may take more on Linux.
+
+- K5, second run, the made-up network (plan section 15 allows it; these are its choices): lo
+  (1) and eth0 (2) only, where the reference's kernel (Docker Desktop's linuxkit) also shows
+  eight tunnel devices and numbers eth0 11; eth0 is 172.17.0.2/16 with hardware address
+  02:42:ac:11:00:02 and MTU 65535 (the reference's), where Docker gives each container its own
+  address and a random hardware address; traffic counters read zero (counted). The name server
+  is 127.0.0.11, as Docker's own for user networks, where the reference's default bridge names
+  Docker Desktop's 192.168.65.7. Tests hide what Docker chooses per container.
+- K5, second run, TCP between the container's own addresses: how much a connection holds is the
+  sender's SO_SNDBUF of unread bytes (counted "tcp room modelled" when a send finds none), where
+  Linux's depends on timing (windows, buffer growth); writable at two thirds empty as
+  `__sk_stream_is_writeable`. A connect to a full backlog waits and is completed by the accept
+  that makes room (counted "tcp connect waits for backlog room"), where Linux drops the SYN and
+  retries after 1, 3, 7 seconds and so on. Nagle and delayed acknowledgements are not modelled:
+  every send arrives at once. An end that closes first holds its port for TIME_WAIT from the
+  moment both FINs are sent, or from its release if the other end's FIN never came (Linux:
+  FIN_WAIT2, then TIME_WAIT). UDP true sizes are near Linux's, not equal (92 of 1000-byte
+  datagrams fill the reference's receive buffer).
+- K5, second run, the outside: a UDP socket has one host connection per outside destination
+  (the hooks carry no source address). What an outside connection's bytes look like to poll comes
+  from the kernel's own queue, pulled on `ConnectionReady` and at each read. Name queries are
+  answered with TTL 0 (the lookup hook gives none) and only for A and AAAA (others "not
+  implemented", counted). The test host maps `host.docker.internal` and its address to this
+  machine's loopback, so one server serves the reference and ours.
+- K5, second run: inotify's directory for a call by path is where the inode was made or last
+  moved to (inodes keep no other dentries), so after a hard link Linux may name the other link;
+  IN_DELETE_SELF waits for the last open file (descriptor tables are searched), not for
+  mappings.
+- K5, first run: a backend directory's later pages are listed with plain READDIR. Linux also
+  uses READDIRPLUS for them when a name in the directory was looked up afresh, or first
+  revalidated after READDIRPLUS made it, since its last listing (`FUSE_I_ADVISE_RDPLUS`); which
+  names Linux's dentry cache holds is not modelled. INIT asks for no lock flags and the kernel
+  sends no COPY_FILE_RANGE, IOCTL or POLL (above).
 
 - K4, fifth run: a backend inode holds its access control lists between reads, as Linux's
   `i_acl` does, although the plan says the kernel caches nothing in phase one: without it, which
@@ -1748,6 +2034,23 @@ All on this shared Mac; noisy, not benchmarks.
   slot beside the call slot (the plan's one fixed slot holds only plain values): the file must count
   as an end while it waits, as Linux's does. It is given up when the call ends any other way or the
   thread ends.
+- K5, third run: an outside connection accepted through `Host::accept` shows the gateway
+  (172.17.0.1) and a random port as its peer and eth0's address as its own, as measured for
+  Docker's published ports; `Host::accept` gives no peer address, so the real client is not seen.
+- K5, third run: /proc/net shows the made-up network (lo and eth0 only; the reference also has
+  tunl0, gre0 and other tunnel devices and eth0's traffic). Interface counters read zero (counted
+  "interface counters not kept"). Kernel pointers are a number unique to each socket (Linux
+  prints a hashed address), UDP lines are numbered by port modulo 16384 (Linux mixes in a random
+  value per network), TCP lines list listeners first then connections in port order (Linux:
+  hash order), TCP's reference count is 2 with a file and 1 without (Linux holds one more while a
+  timer is pending), and the delayed acknowledgement fields (ato, quick, pingpong) are a model
+  (4, 30 and pingpong once data came and was answered; Linux's depend on timing). Local sockets
+  are those open in some process and those waiting in a backlog (Linux also lists sockets in
+  flight in SCM_RIGHTS). A write to a /proc/net file is EIO here; the reference refuses the open
+  for writing with EACCES even for root (cause not found).
+- K5, third run: the TTL and type of service of datagrams from outside and of the name server's
+  answers are not reported by the host: 64 and 0 are given when asked for (counted "outside
+  datagram header made up").
 
 ## Not built, by counter
 
@@ -1778,7 +2081,36 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "proc entry not built": the `/proc` entries not built (detail: directory and name index).
 - "seccomp listener not implemented": SECCOMP_FILTER_FLAG_NEW_LISTENER.
 - "call on another process not built": process_vm_readv and process_vm_writev on another process.
-Approximations that are not refusals have their own counters: "page residency not tracked", "proc
+- "socket family not built": socket and socketpair of a family other than AF_UNIX, AF_INET,
+  AF_INET6 and AF_NETLINK, such as AF_PACKET (detail: the family; EAFNOSUPPORT).
+- "socket protocol not built": raw sockets (EPERM), ping sockets (EACCES), SCTP
+  (ESOCKTNOSUPPORT for SOCK_SEQPACKET, EPROTONOSUPPORT in a stream), MPTCP and UDP-Lite
+  (EPROTONOSUPPORT), netlink protocols other than NETLINK_ROUTE (EPROTONOSUPPORT), and netlink
+  messages to another socket's port (ECONNREFUSED); detail family times 2^32 plus kind times 2^16
+  plus protocol.
+- "socket option not built": socket options not built (detail: level times 2^32 plus option;
+  ENOPROTOOPT), among them TCP_ZEROCOPY_RECEIVE, TCP_SAVE_SYN,
+  TCP_MD5SIG, TCP_ULP, UDP_ENCAP, IP_RECVOPTS, IP_RETOPTS, IP_RECVORIGDSTADDR, IP_MINTTL,
+  IP_UNICAST_IF, the source-specific multicast options and IPv6's group and extension header
+  options; SO_TIMESTAMPING with software send flags; and as send control messages (EINVAL)
+  IP_RETOPTS, IPv6 extension headers and per-send software send timestamps.
+- "netlink request not built": rtnetlink requests other than RTM_GETLINK, RTM_GETADDR and
+  RTM_GETROUTE dumps, RTM_GETNEIGH dumps and RTM_GETLINK of one link (EOPNOTSUPP; detail the
+  type plus 2^16 for a dump), such as `ip route get`, one neighbour, rules and queue
+  disciplines.
+- "ioctl request not built" also covers SIOCGSTAMP and its forms on internet sockets (ENOENT),
+  and the requests that change interfaces for a caller with CAP_NET_ADMIN (Docker gives none,
+  so EPERM as in the reference).
+Notices the backend sends that Linux refuses are counted "backend notice refused" (not a
+refusal of the guest).
+Approximations that are not refusals have their own counters: "outside datagram error not
+queued", "tcp room modelled", "tcp info modelled", "multicast or broadcast not sent outside",
+"neighbour entries not built" (a neighbour dump after packets left by eth0),
+"tcp
+connect waits for backlog room", "interface counters not kept", "name query not answered",
+"recvmmsg returned early", "listening outside failed" (a host that cannot accept from outside
+or whose port is taken), "outside datagram header made up",
+"page residency not tracked", "proc
 fields not tracked", "fault syndrome approximated", "core dump not
 written", "vmsplice pages copied", "backend pages written whole", "backend change not seen by
 mapped pages". "wake to run" is a measurement (count and total nanoseconds), not a slow path. "host cannot do
@@ -1786,6 +2118,28 @@ this" counts a CPU side that answered it cannot make a memory, thread or shared 
 guest).
 
 ## Changes to the shared crate (wcontainers-abi)
+
+- K5, eighth run: none.
+- K5, seventh run: none.
+- K5, sixth run: none.
+- K5, fifth run: none.
+- K5, fourth run: none.
+- K5, third run (host.rs): documentation only. `Host::listen` now says its port is the
+  container's TCP port, that `ConnectionReady` comes on the listener once after the call and again
+  after `accept` answered `WouldBlock`, and that `close` on the listener stops it; `Host::accept`
+  says the new connection is then used as one made by `connect`, and that `WouldBlock` means none
+  waits. No signature changed.
+
+- K5, second run (host.rs, which the kernel owns): added `Host::finish(connection)` (no more
+  bytes will be sent on a TCP connection; the program's SHUT_WR), a required method, so any
+  other `Host` implementor must add it. `Event::LookedUp`'s `addresses` are now 16 bytes each,
+  IPv4 ones mapped (the old mix of 4 and 16 byte addresses could not be split). Documented what
+  `error` means in `LookedUp` and `Connected`, when `ConnectionReady` comes, that a UDP connection
+  is usable at once with one datagram per send and receive, and that `receive`'s
+  `HostError::Closed` is a reset.
+
+- K5, first run: none. (The network hooks and `Event::Connected`, `ConnectionReady` and
+  `LookedUp` exist from K0 and are not used yet.)
 
 - K4, fifth run: none.
 - K4, fourth run: none.
@@ -1829,6 +2183,51 @@ guest).
 None open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- K5, eighth run (fixed): tests/inet.rs `deferred_accepts_match_reference` failed now and then
+  because the reference raced: after the listener closed, client 0's write came 100 ms later
+  and its retransmit of data dropped while the queue was full (about 200 ms after it was sent)
+  came about then too, so the reference printed `write 1` or a reset (the check ran it six
+  times: five and one). The guest now waits 600 ms, past the retransmit; the reference gave the
+  same output in four runs side by side (load about 30), and ours now resets at the retransmit.
+
+- K5, seventh run: terminal's `job_control` (guest/jobs.c) hung in the reference once in the
+  whole suite at 187f214 (load about 30): after ten minutes one of its processes was stopped
+  (`do_signal_stop`) and the others waited on it and on a pipe. Ours does not hang; two reruns
+  alone passed. Likely the same family as the K4 entry below (the reference's job control
+  timing on several CPUs); not looked into further. A test that hangs in the reference waits
+  for ever, as the reference runner has no time limit.
+
+- K5, seventh run: threads `clone_tables_match_reference` (guest/clonetables.c) failed once in
+  the whole suite at 8e896aa (load about 30, beside three layer 1 runs): the reference showed a
+  thread's SEM_UNDO adjustment not yet undone after joining it ("now 4", ours 5). Linux wakes the
+  joiner at `mm_release` (clearing the thread's id) before `exit_sem` undoes, so on several CPUs
+  the joiner can look first; ours, one thread at a time, always shows it undone. Two reruns
+  alone passed. Left as it is.
+
+- K5, seventh run: busybox `system` failed once in the whole suite at 2d60f92 (load about 45):
+  `ls -l /dev/null` showed 18:19 for ours and 18:18 for the reference. The time shown is when
+  each container was made, and the two runs fell on either side of a minute's turn. The test
+  compares wall clock minutes of two separate runs, so a minute's turn between them fails it;
+  not fixed yet (the harness could give our container the reference's start time).
+
+- K5, fifth run: the sigpick reference race came once more in the whole suite at f73d3aa (load
+  about 25); two reruns alone passed.
+
+- K5, fourth run: threads `process_signal_takers_match_reference` (sigpick) failed once more in
+  the whole suite at 65ae145 (load about 30): the reference gave the process signal to thread 1.
+  Two reruns alone passed. The same race as the K3 sixth run's entry below.
+- K5, fourth run: tests/inet.rs `internet_sockets_match_reference` failed once in a run of three
+  test binaries (load about 30): the reference showed `peer closed poll 0x4` where ours (and every
+  other run of the reference) shows the peer's FIN (0x2005); Linux handles a loopback FIN in its
+  softirq, which under load can come after the poll. Two reruns passed. Left as it is.
+
+- K5, second run (not reproduced in the third): tests/saving.rs once failed for guest/unixsock.c
+  seed 1 ("after connect atime moved 0" where the reference prints 1). In the third run the
+  program alone under saves passed 3 times with 6 seeds each and the whole saving test passed
+  twice (load 28 to 40). The access time check is right for any wall clock after 1970; the likely
+  cause is test binaries building the same guest program into one shared directory while another
+  runs it (see the K2 entries below). Left as it is.
 
 - K4, second run (fixed in the third): layer 1 on the backend seed 4040103 differed on
   statx(AT_FDCWD, "", AT_EMPTY_PATH, mask 0): Linux's FUSE does not sync attributes for a mask with
@@ -1901,6 +2300,39 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
+K5's corners, none holding the milestone (what the seven runs built is under Where things
+stand), in this order:
+1. The rest of the send timestamps (refused and counted now): TCP's (SCHED, SND and ACK per
+   send, keyed by byte; needs MSG_ERRQUEUE and EPOLLERR on TCP sockets) and copies of the packet
+   without OPT_TSONLY (the frame from its Ethernet header: 14 zero bytes, then IPv4 and UDP
+   headers whose checksum and id are hard to match; measured in scratch k5r6/tsing.c). Then
+   the other options under Not built.
+2. Urgent data to the outside (a send with MSG_OOB and bytes on an outside connection is
+   refused, counted): the Host hooks carry no urgent data.
+3. Local sockets left: a SCM_PIDFD
+   or SO_PEERPIDFD for a reaped process whose number was given again would name the new one
+   (numbers are kept, not Linux's `struct pid`). ETOOMANYREFS is checked just before the
+   message is queued, where Linux checks it right after the buffer is made (before the bytes
+   are copied in and, for datagrams, before the receiver is found); an order difference only
+   with more descriptors in flight than RLIMIT_NOFILE.
+4. /proc/net's other files (netstat, snmp, sockstat, protocols, packet, raw and the rest) are
+   counted "proc entry not built". fanotify_mark is still "system call not implemented"
+   (fanotify_init is refused by Docker's profile, so no group can exist; Linux's flag checks come
+   before EBADF and EINVAL, and linux-raw-sys has no FAN_MARK_* to check them with).
+5. inotify gaps: a mapping does not hold its file open here (Linux's `vm_file` does), so an
+   unlinked file's IN_DELETE_SELF and a mapped file's IN_CLOSE_* come at the last close, where
+   Linux sends them at the last unmap; events of files changed on the backend from outside are
+   not seen (plan section 15's kind). IN_UNMOUNT is never sent, as nothing in a default Docker
+   container can unmount (umount needs CAP_SYS_ADMIN).
+6. IPv6 multicast (IPV6_JOIN_GROUP and the rest are counted; a send to an IPv6 group is
+   ENETUNREACH, as eth0 has no IPv6).
+7. The per-milestone layer 1 bar was met again at the eighth run's end (seeds 5050459, 5050460,
+   5050461 at 090feaf, with sendmmsg, recvmmsg and epoll_pwait2 now generated; 5050462 at the
+   run's last code b70a418). Fresh seeds start at 5050463.
+8. Left from the eighth run: a client whose held request went with its listener sends its
+   FIN (shutdown or close) without drawing the reset Linux's FIN draws; neighbour entries for
+   eth0 traffic (counted); TCP_QUICKACK's timing (a departure); busybox `su` not rerun.
+
 K4's parts are built, the check's findings are fixed, and the fifth run's end-of-milestone seeds
 found and fixed two more (Built in K4's fifth run). Left, none of it blocking:
 1. Notices about mapped files are not tested with a program that sees them: STORE and INVAL_INODE
@@ -1919,7 +2351,7 @@ found and fixed two more (Built in K4's fifth run). Left, none of it blocking:
 Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
-737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, and the
-checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
+5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.

@@ -23,8 +23,8 @@ use crate::process::Tid;
 const MINOR: u32 = FUSE_KERNEL_MINOR_VERSION;
 
 /// What INIT asks the backend for: Linux's own `fuse_send_init` flags, less the ones that let it
-/// keep names, attributes or bytes (no cache in phase one), hand locks to the backend (they are
-/// kept here) or read directories with attributes.
+/// keep names, attributes or bytes (no cache in phase one) or hand locks to the backend (they are
+/// kept here).
 const INIT_FLAGS: u32 = FUSE_ASYNC_READ
     | FUSE_ATOMIC_O_TRUNC
     | FUSE_EXPORT_SUPPORT
@@ -32,6 +32,8 @@ const INIT_FLAGS: u32 = FUSE_ASYNC_READ
     | FUSE_DONT_MASK
     | FUSE_AUTO_INVAL_DATA
     | FUSE_ASYNC_DIO
+    | FUSE_DO_READDIRPLUS
+    | FUSE_READDIRPLUS_AUTO
     | FUSE_PARALLEL_DIROPS
     | FUSE_ABORT_ERROR
     | FUSE_MAX_PAGES
@@ -514,6 +516,11 @@ impl Client {
                 });
             }
             // Each entry answered is one more lookup the backend counts.
+            if sent.opcode == fuse_opcode::FUSE_READDIRPLUS as u32 {
+                for (entry, _) in counted_entries(body) {
+                    *state.lookups.entry(entry.nodeid).or_default() += 1;
+                }
+            }
             if gives_entry(sent.opcode)
                 && let Ok((entry, _)) = fuse_entry_out::read_from_prefix(body)
                 && entry.nodeid != 0
@@ -550,6 +557,13 @@ impl Client {
         let Ok(body) = result else {
             return;
         };
+        if opcode == fuse_opcode::FUSE_READDIRPLUS as u32 {
+            for (entry, _) in counted_entries(body) {
+                if !self.holds(entry.nodeid) {
+                    self.forget(entry.nodeid);
+                }
+            }
+        }
         if gives_entry(opcode)
             && let Ok((entry, _)) = fuse_entry_out::read_from_prefix(body)
             && entry.nodeid != 0
@@ -669,6 +683,7 @@ impl Client {
                 xattrs: BTreeMap::new(),
                 fsflags: 0,
                 write_hint: 0,
+                watches: Vec::new(),
             }));
             self.state
                 .borrow_mut()
@@ -749,6 +764,30 @@ impl Client {
         let mut state = self.state.borrow_mut();
         state.attr_version += 1;
         state.attr_version
+    }
+
+    /// Whether a listing from `offset` asks for attributes too (`fuse_use_readdirplus`): when INIT
+    /// granted it, always, or with READDIRPLUS_AUTO for a listing from the start.
+    pub fn uses_readdirplus(&self, offset: u64) -> bool {
+        let flags = self.settled().flags;
+        flags & FUSE_DO_READDIRPLUS != 0 && (flags & FUSE_READDIRPLUS_AUTO == 0 || offset == 0)
+    }
+
+    /// An entry a READDIRPLUS answer gave (`fuse_direntplus_link`): a node the kernel holds takes
+    /// its attributes; one it does not is forgotten, as nothing here keeps names.
+    fn link_entry(&self, entry: &fuse_entry_out, name: &[u8]) {
+        if entry.nodeid == 0 || name == b"." || name == b".." {
+            return;
+        }
+        match self.node_of(entry.nodeid) {
+            Some(node) => {
+                if let Content::Backend(remote) = &node.borrow().content {
+                    remote.forget_acls();
+                }
+                self.refresh(&node, &entry.attr);
+            }
+            None => self.forget(entry.nodeid),
+        }
     }
 
     /// Whether a node's attributes came from an answer this run of a call had.
@@ -1330,35 +1369,57 @@ pub(crate) struct Entry {
     pub name: Vec<u8>,
 }
 
-/// `fuse_readdir_uncached`: the entries from position `offset`, one page of them, as
-/// `parse_dirfile` takes them.
-pub(crate) fn readdir(handle: &Handle, offset: u64) -> Result<Vec<Entry>, Errno> {
+/// `fuse_readdir_uncached`: the entries from position `offset` that an answer the size of the
+/// caller's `count` holds, with their attributes when READDIRPLUS is used (`parse_dirplusfile`).
+pub(crate) fn readdir(handle: &Handle, offset: u64, count: u64) -> Result<Vec<Entry>, Errno> {
+    let client = &handle.client;
+    let plus = client.uses_readdirplus(offset);
+    // As much as the caller's buffer holds, from a page up to the most one message carries.
+    let page = wcontainers_abi::PAGE_SIZE;
+    let size = count.clamp(page, u64::from(client.settled().max_read).max(page));
     let input = fuse_read_in {
         fh: handle.fh,
         offset,
-        size: wcontainers_abi::PAGE_SIZE as u32,
+        size: size as u32,
         read_flags: 0,
         lock_owner: 0,
         flags: handle.flags,
         padding: 0,
     };
-    let body = handle.client.ask(
-        fuse_opcode::FUSE_READDIR,
-        handle.nodeid,
-        &[input.as_bytes()],
-    )?;
+    let opcode = if plus {
+        fuse_opcode::FUSE_READDIRPLUS
+    } else {
+        fuse_opcode::FUSE_READDIR
+    };
+    let body = client.ask(opcode, handle.nodeid, &[input.as_bytes()])?;
     let mut entries = Vec::new();
     let mut rest: &[u8] = &body;
-    while let Ok((dirent, after)) = fuse_dirent::read_from_prefix(rest) {
+    loop {
+        // `parse_dirplusfile`: each entry's lookup and attributes come before its name.
+        let (entry_out, after) = if plus {
+            match fuse_entry_out::read_from_prefix(rest) {
+                Ok((entry, after)) => (Some(entry), after),
+                Err(_) => break,
+            }
+        } else {
+            (None, rest)
+        };
+        let Ok((dirent, after)) = fuse_dirent::read_from_prefix(after) else {
+            break;
+        };
         let length = dirent.namelen as usize;
         // Each entry's name is padded to eight bytes (`FUSE_DIRENT_ALIGN`).
-        let record = (size_of::<fuse_dirent>() + length).next_multiple_of(8);
+        let head = rest.len() - after.len();
+        let record = (head + length).next_multiple_of(8);
         if record > rest.len() {
             break;
         }
         let name = &after[..length];
         if length == 0 || length > crate::linux_extra::FUSE_NAME_MAX || name.contains(&b'/') {
             return Err(Errno::EIO);
+        }
+        if let Some(entry_out) = &entry_out {
+            client.link_entry(entry_out, name);
         }
         entries.push(Entry {
             ino: dirent.ino,
@@ -1369,6 +1430,28 @@ pub(crate) fn readdir(handle: &Handle, offset: u64) -> Result<Vec<Entry>, Errno>
         rest = &rest[record..];
     }
     Ok(entries)
+}
+
+/// The entries of a READDIRPLUS answer that name a node the backend counted a lookup for: all
+/// but `.`, `..` and those with no node (`fuse_direntplus_link`).
+fn counted_entries(body: &[u8]) -> impl Iterator<Item = (fuse_entry_out, &[u8])> {
+    let mut rest = body;
+    core::iter::from_fn(move || {
+        loop {
+            let (entry, after) = fuse_entry_out::read_from_prefix(rest).ok()?;
+            let (dirent, after) = fuse_dirent::read_from_prefix(after).ok()?;
+            let length = dirent.namelen as usize;
+            let record = (rest.len() - after.len() + length).next_multiple_of(8);
+            if record > rest.len() || length > after.len() {
+                return None;
+            }
+            let name = &after[..length];
+            rest = &rest[record..];
+            if entry.nodeid != 0 && name != b"." && name != b".." {
+                return Some((entry, name));
+            }
+        }
+    })
 }
 
 /// `fuse_lseek`: the next data or hole from `offset`; a backend without LSEEK has no holes
@@ -1610,66 +1693,117 @@ impl crate::Kernel {
             return;
         };
         let code = header.error;
-        let handled = match code {
+        // The notice's own size, as `fuse_notify` reads it.
+        let size = (header.len as usize)
+            .saturating_sub(size_of::<fuse_out_header>())
+            .min(body.len());
+        let body = &body[..size];
+        // Each notice's body must have its exact size (`fuse_notify_*`), else EINVAL.
+        fn exact<T: FromBytes>(body: &[u8]) -> Result<T, Errno> {
+            if body.len() != size_of::<T>() {
+                return Err(Errno::EINVAL);
+            }
+            first(body)
+        }
+        // A notice about a name: its header, then the name and a zero byte.
+        fn named<T: FromBytes>(
+            body: &[u8],
+            namelen: impl Fn(&T) -> u32,
+        ) -> Result<(T, &[u8]), Errno> {
+            let (out, rest) = T::read_from_prefix(body).map_err(|_| Errno::EINVAL)?;
+            let length = namelen(&out) as usize;
+            if length > crate::linux_extra::FUSE_NAME_MAX {
+                return Err(Errno::ENAMETOOLONG);
+            }
+            if rest.len() != length + 1 {
+                return Err(Errno::EINVAL);
+            }
+            Ok((out, &rest[..length]))
+        }
+        let handled: Option<Result<(), Errno>> = match code {
             // A poll's readiness changed: every wait on readiness looks again.
             code if code == fuse_notify_code::FUSE_NOTIFY_POLL as i32 => {
-                self.wake(crate::process::Channel::Readiness);
-                true
+                Some(exact::<fuse_notify_poll_wakeup_out>(body).map(|_| {
+                    self.wake(crate::process::Channel::Readiness);
+                }))
             }
             // An inode's attributes or bytes changed: what this run of a call had of its
             // attributes is stale. A mapped file's pages keep their bytes (section 15 of the plan),
             // where Linux would read them again.
             code if code == fuse_notify_code::FUSE_NOTIFY_INVAL_INODE as i32 => {
-                if let Ok((out, _)) = fuse_notify_inval_inode_out::read_from_prefix(body)
-                    && let Some(node) = client.node_of(out.ino)
-                    && let Content::Backend(remote) = &node.borrow().content
-                {
-                    remote.fresh.set(0);
-                    remote.changed();
-                    remote.forget_acls();
-                    if out.off >= 0 && remote.pages.is_some() {
-                        self.counters.count(
-                            cx.host,
-                            crate::reason::BACKEND_CHANGE_NOT_MAPPED,
-                            out.ino,
-                        );
+                Some(exact::<fuse_notify_inval_inode_out>(body).map(|out| {
+                    if let Some(node) = client.node_of(out.ino)
+                        && let Content::Backend(remote) = &node.borrow().content
+                    {
+                        remote.fresh.set(0);
+                        remote.changed();
+                        remote.forget_acls();
+                        if out.off >= 0 && remote.pages.is_some() {
+                            self.counters.count(
+                                cx.host,
+                                crate::reason::BACKEND_CHANGE_NOT_MAPPED,
+                                out.ino,
+                            );
+                        }
                     }
-                }
-                true
+                }))
             }
             // A name changed: no names are kept.
-            code if code == fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY as i32 => true,
-            // A name is gone: the inode it named, if held, has no links left
-            // (`fuse_reverse_inval_entry`'s `clear_nlink`).
-            code if code == fuse_notify_code::FUSE_NOTIFY_DELETE as i32 => {
-                if let Ok((out, _)) = fuse_notify_delete_out::read_from_prefix(body)
-                    && let Some(node) = client.node_of(out.child)
-                {
-                    node.borrow_mut().nlink = 0;
-                }
-                true
+            code if code == fuse_notify_code::FUSE_NOTIFY_INVAL_ENTRY as i32 => {
+                Some(named::<fuse_notify_inval_entry_out>(body, |out| out.namelen).map(|_| ()))
             }
+            // A name is gone: the inode it named, if held, has no links left
+            // (`fuse_reverse_inval_entry`'s `clear_nlink`), once the parent is a directory and
+            // the name the child's, where the kernel knows them.
+            code if code == fuse_notify_code::FUSE_NOTIFY_DELETE as i32 => Some(
+                named::<fuse_notify_delete_out>(body, |out| out.namelen).and_then(|(out, name)| {
+                    let parent = client.node_of(out.parent);
+                    if parent
+                        .as_ref()
+                        .is_some_and(|parent| !parent.borrow().is_directory())
+                    {
+                        return Err(Errno::ENOTDIR);
+                    }
+                    let Some(child) = client.node_of(out.child) else {
+                        return Ok(());
+                    };
+                    let mut inode = child.borrow_mut();
+                    if let Some(above) = inode.place.parent.as_ref().and_then(Weak::upgrade) {
+                        let same_parent = parent
+                            .as_ref()
+                            .is_some_and(|parent| Rc::ptr_eq(parent, &above));
+                        if !same_parent || inode.place.name != name {
+                            return Err(Errno::ENOENT);
+                        }
+                    }
+                    inode.nlink = 0;
+                    Ok(())
+                }),
+            ),
             // Bytes to keep (`fuse_notify_store`): a mapped file's pages take them, and the file
             // ends at least where they do; otherwise nothing is kept and the backend has them.
             code if code == fuse_notify_code::FUSE_NOTIFY_STORE as i32 => {
-                if let Ok((out, data)) = fuse_notify_store_out::read_from_prefix(body)
-                    && let Some(node) = client.node_of(out.nodeid)
-                    && node.borrow().content.block().is_some()
-                {
-                    let data = &data[..(out.size as usize).min(data.len())];
-                    crate::shared::backend_written(cx, &node, out.offset, data);
-                    if let Content::Backend(remote) = &node.borrow().content {
-                        let end = out.offset + data.len() as u64;
-                        remote.set_size(remote.size.get().max(end));
+                Some(match fuse_notify_store_out::read_from_prefix(body) {
+                    Ok((out, data)) if data.len() == out.size as usize => {
+                        if let Some(node) = client.node_of(out.nodeid)
+                            && node.borrow().content.block().is_some()
+                        {
+                            crate::shared::backend_written(cx, &node, out.offset, data);
+                            if let Content::Backend(remote) = &node.borrow().content {
+                                let end = out.offset + data.len() as u64;
+                                remote.set_size(remote.size.get().max(end));
+                            }
+                            let _ = crate::shared::changed(self, cx, &node);
+                        }
+                        Ok(())
                     }
-                    let _ = crate::shared::changed(self, cx, &node);
-                }
-                true
+                    _ => Err(Errno::EINVAL),
+                })
             }
             // The backend asks for the bytes kept (`fuse_retrieve`): a mapped file's, up to its
             // end; none of any other file.
             code if code == fuse_notify_code::FUSE_NOTIFY_RETRIEVE as i32 => {
-                if let Ok((out, _)) = fuse_notify_retrieve_out::read_from_prefix(body) {
+                Some(exact::<fuse_notify_retrieve_out>(body).map(|out| {
                     let bytes = client
                         .node_of(out.nodeid)
                         .and_then(|node| {
@@ -1694,17 +1828,22 @@ impl crate::Kernel {
                     let mut body = reply.as_bytes().to_vec();
                     body.extend_from_slice(&bytes);
                     client.notify_reply(out.notify_unique, out.nodeid, &body);
-                }
-                true
+                }))
             }
-            _ => false,
+            _ => None,
         };
-        if handled {
-            self.counters
-                .measure(crate::reason::BACKEND_NOTICE, code as u64, 0);
-        } else {
-            self.counters
-                .count(cx.host, crate::reason::BACKEND_UNEXPECTED, code as u64);
+        match handled {
+            Some(Ok(())) => self
+                .counters
+                .measure(crate::reason::BACKEND_NOTICE, code as u64, 0),
+            Some(Err(errno)) => self.counters.count(
+                cx.host,
+                crate::reason::BACKEND_NOTICE_REFUSED,
+                ((code as u64) << 32) | u64::from(errno.0),
+            ),
+            None => self
+                .counters
+                .count(cx.host, crate::reason::BACKEND_UNEXPECTED, code as u64),
         }
     }
 }

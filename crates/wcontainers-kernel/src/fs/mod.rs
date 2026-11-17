@@ -179,7 +179,12 @@ impl FileSystem {
         self.flags & crate::linux_extra::ST_NOEXEC != 0
             || matches!(
                 self.kind,
-                Kind::Secretmem | Kind::Pipe | Kind::Pidfs | Kind::Anon | Kind::Mqueue
+                Kind::Secretmem
+                    | Kind::Pipe
+                    | Kind::Pidfs
+                    | Kind::Anon
+                    | Kind::Mqueue
+                    | Kind::Sockfs
             )
     }
 }
@@ -202,6 +207,8 @@ pub(crate) enum Kind {
     Mqueue,
     /// A file system outside the kernel, reached with FUSE messages.
     Fuse,
+    /// Sockets, an inode each.
+    Sockfs,
 }
 
 impl Kind {
@@ -219,9 +226,13 @@ impl Kind {
     /// secret memory), and for the rest `MAX_NON_LFS`, which `alloc_super` sets and they keep.
     pub fn max_bytes(self) -> u64 {
         match self {
-            Kind::Tmpfs | Kind::Pidfs | Kind::Pipe | Kind::Secretmem | Kind::Anon | Kind::Fuse => {
-                i64::MAX as u64
-            }
+            Kind::Tmpfs
+            | Kind::Pidfs
+            | Kind::Pipe
+            | Kind::Secretmem
+            | Kind::Anon
+            | Kind::Fuse
+            | Kind::Sockfs => i64::MAX as u64,
             Kind::Devpts | Kind::Proc | Kind::Mqueue => i32::MAX as u64,
         }
     }
@@ -238,6 +249,7 @@ impl Kind {
             Kind::Anon => ANON_INODE_FS_MAGIC.into(),
             Kind::Mqueue => crate::linux_extra::MQUEUE_MAGIC.into(),
             Kind::Fuse => FUSE_SUPER_MAGIC.into(),
+            Kind::Sockfs => SOCKFS_MAGIC.into(),
         }
     }
 }
@@ -261,7 +273,11 @@ pub(crate) struct Inode {
     pub content: Content,
     /// `flock` locks: the open file holding each, and whether it is exclusive. An entry whose open file
     /// is gone was released when it closed.
-    pub flocks: Vec<(alloc::rc::Weak<RefCell<crate::file::OpenFile>>, bool)>,
+    pub flocks: Vec<(
+        alloc::rc::Weak<RefCell<crate::file::OpenFile>>,
+        bool,
+        crate::process::Pid,
+    )>,
     /// Record locks (`fcntl`'s).
     pub record_locks: Vec<crate::locks::RecordLock>,
     /// Extended attributes by full name, for file systems that keep them.
@@ -270,6 +286,8 @@ pub(crate) struct Inode {
     pub fsflags: u32,
     /// How long data written is expected to live (`RWH_WRITE_LIFE_*`, Linux's `i_write_hint`).
     pub write_hint: u64,
+    /// The inotify watches on it.
+    pub watches: Vec<crate::syscall::inotify::Mark>,
 }
 
 impl Drop for Inode {
@@ -318,6 +336,8 @@ pub(crate) enum Content {
     Mqueue(alloc::boxed::Box<crate::syscall::mqueue::MessageQueue>),
     /// An inode of a file system outside the kernel, whatever its type.
     Backend(backend::Remote),
+    /// A socket's own inode.
+    Socket(crate::syscall::socket::SocketRef),
 }
 
 /// A regular file's bytes, which pages have been written (holes take no space), and tmpfs's seals.
@@ -798,7 +818,11 @@ impl Inode {
             Content::Proc(entry) => entry.size(),
             Content::Mqueue(queue) => queue.size,
             Content::Backend(remote) => remote.size.get(),
-            Content::Special | Content::Pipe(_) | Content::Pidfd(..) | Content::Anon => 0,
+            Content::Special
+            | Content::Pipe(_)
+            | Content::Pidfd(..)
+            | Content::Anon
+            | Content::Socket(_) => 0,
         }
     }
 
@@ -1129,6 +1153,7 @@ pub(crate) fn new_inode(fs: FileSystem, ino: u64, new: New) -> Result<Node, Errn
         xattrs: BTreeMap::new(),
         fsflags: 0,
         write_hint: 0,
+        watches: Vec::new(),
     })))
 }
 
@@ -1138,6 +1163,9 @@ pub(crate) struct Walk<'a> {
     pub root: &'a Node,
     pub credentials: &'a Credentials,
     pub proc: &'a proc::View<'a>,
+    /// The last descriptor link followed named a file opened through the kernel's own mount of
+    /// its file system (mq_open's), whose mount has no flags.
+    pub internal: core::cell::Cell<bool>,
 }
 
 /// The result of walking all but the last part of a path.
@@ -1310,7 +1338,11 @@ impl<'a> Walk<'a> {
         if !directory.is_directory() {
             return Err(Errno::ENOTDIR);
         }
-        permission(&directory, self.credentials, X_OK, self.proc.caller)
+        permission(&directory, self.credentials, X_OK, self.proc.caller)?;
+        if let Content::Proc(entry) = &directory.content {
+            proc::fdinfo_allowed(self.proc, entry, self.proc.caller_thread)?;
+        }
+        Ok(())
     }
 
     /// One step from a directory to a name in it, crossing mounts.

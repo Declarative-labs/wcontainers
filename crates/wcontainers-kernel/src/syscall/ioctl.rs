@@ -27,7 +27,7 @@ pub(super) fn ioctl(
     [fd, request, argument, ..]: Args,
 ) -> Result<u64, Errno> {
     let fd = fd as i32;
-    let file = kernel.files(tid).file(fd)?;
+    let file = kernel.call_file(tid, fd)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -228,12 +228,13 @@ pub(super) fn set_async(
     let has_fasync = {
         let file = file.borrow();
         let inode = file.node.borrow();
-        match inode.content {
+        match &inode.content {
             Content::Pipe(_) => true,
             Content::Special => matches!(
                 Device::from_number(inode.rdev),
                 Some(Device::Random | Device::Urandom)
             ),
+            Content::Socket(_) => true,
             _ => false,
         }
     };
@@ -269,7 +270,7 @@ fn clone_range(
     destination: &FileRef,
     source: i32,
 ) -> Result<u64, Errno> {
-    let source = kernel.files(tid).file(source)?;
+    let source = kernel.call_file(tid, source)?;
     if source.borrow().is_path() {
         return Err(Errno::EBADF);
     }
@@ -377,6 +378,17 @@ fn own(
     }
     if matches!(file.borrow().node.borrow().content, Content::Pidfd(..)) {
         return super::pidfd::ioctl(kernel, cx, tid, file, request, argument);
+    }
+    let epoll = super::epoll::of(&file.borrow());
+    if let Some(epoll) = epoll {
+        return super::epoll::ioctl(kernel, cx, tid, &epoll, request, argument);
+    }
+    let inotify = super::inotify::of(&file.borrow());
+    if let Some(instance) = inotify {
+        return super::inotify::ioctl(kernel, cx, tid, &instance, request, argument);
+    }
+    if let Some(socket) = super::socket::of(file) {
+        return super::socket::ioctl(kernel, cx, tid, file, &socket, request, argument);
     }
     // `timerfd_ioctl`.
     if super::timer::of(&file.borrow()).is_some() {

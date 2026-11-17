@@ -1,5 +1,6 @@
-//! `/proc/self/status`'s descriptor table size and groups, and the maps lines of shared anonymous
-//! memory, compared with real ARM64 Linux; and the counted approximations of `/proc`.
+//! `/proc/self/status`'s descriptor table size and groups, the maps lines of shared anonymous
+//! memory and `/proc/<pid>/fdinfo` for every kind of descriptor, compared with real ARM64 Linux;
+//! and the counted approximations of `/proc`.
 
 use std::path::Path;
 
@@ -15,6 +16,12 @@ fn status_and_maps_match_reference() {
             .iter()
             .any(|counter| counter.reason == reason::PROC_FIELDS_NOT_TRACKED && counter.detail == 2)
     );
+}
+
+#[test]
+fn fdinfo_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "fdinfo", &[]);
 }
 
 #[test]

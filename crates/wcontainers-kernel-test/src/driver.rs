@@ -1,6 +1,6 @@
 //! The driver loop and a host for tests: runs a program on the kernel with the stand-in CPU.
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
@@ -72,6 +72,8 @@ pub struct TestHost {
     schedule: StdRng,
     /// The file backend, for a container with a volume.
     pub(crate) backend: Option<crate::backend::Backend>,
+    /// Connections to the outside and lookups.
+    network: crate::network::Network,
 }
 
 impl TestHost {
@@ -88,6 +90,7 @@ impl TestHost {
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
             backend: None,
+            network: Default::default(),
         }
     }
 
@@ -144,6 +147,8 @@ impl TestHost {
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
             // The backend and the answers it owes go on with the copy.
             backend: self.backend.take(),
+            // A new host has none of the old one's connections; its published ports go on.
+            network: self.network.moved(),
         };
         host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
@@ -210,30 +215,47 @@ impl Host for TestHost {
         }
     }
 
-    fn connect(&mut self, _: ConnectionId, _: &[u8], _: u16, _: bool) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn connect(
+        &mut self,
+        connection: ConnectionId,
+        address: &[u8],
+        port: u16,
+        stream: bool,
+    ) -> Result<(), HostError> {
+        self.network.connect(connection.0, address, port, stream)
     }
 
-    fn send(&mut self, _: ConnectionId, _: &[u8]) -> Result<usize, HostError> {
-        Err(HostError::NotSupported)
+    fn send(&mut self, connection: ConnectionId, bytes: &[u8]) -> Result<usize, HostError> {
+        self.network.send(connection.0, bytes)
     }
 
-    fn receive(&mut self, _: ConnectionId, _: &mut [u8]) -> Result<usize, HostError> {
-        Err(HostError::NotSupported)
+    fn receive(&mut self, connection: ConnectionId, into: &mut [u8]) -> Result<usize, HostError> {
+        self.network.receive(connection.0, into)
     }
 
-    fn close(&mut self, _: ConnectionId) {}
-
-    fn look_up(&mut self, _: u64, _: &str) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn finish(&mut self, connection: ConnectionId) {
+        self.network.finish(connection.0);
     }
 
-    fn listen(&mut self, _: ConnectionId, _: u16) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn close(&mut self, connection: ConnectionId) {
+        self.network.close(connection.0);
     }
 
-    fn accept(&mut self, _: ConnectionId, _: ConnectionId) -> Result<(), HostError> {
-        Err(HostError::NotSupported)
+    fn look_up(&mut self, request: u64, name: &str) -> Result<(), HostError> {
+        self.network.look_up(request, name);
+        Ok(())
+    }
+
+    fn listen(&mut self, listener: ConnectionId, port: u16) -> Result<(), HostError> {
+        self.network.listen(listener.0, port)
+    }
+
+    fn accept(
+        &mut self,
+        listener: ConnectionId,
+        connection: ConnectionId,
+    ) -> Result<(), HostError> {
+        self.network.accept(listener.0, connection.0)
     }
 }
 
@@ -259,6 +281,9 @@ pub struct Container<'a> {
     pub backend: Option<&'a str>,
     /// Whether the backend opens files for the page cache rather than for direct reads and writes.
     pub cached: bool,
+    /// Ports of this machine's loopback that reach the container's ports, as (container port,
+    /// outside port), as `docker run -p` publishes them.
+    pub published: &'a [(u16, u16)],
 }
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
@@ -322,6 +347,7 @@ pub fn run_injected(
     let mut report: Option<i32> = None;
     let mut cpu = StandIn::new();
     let mut host = TestHost::repeatable(seed);
+    host.network.published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some("/");
     if container.backend.is_some() {
         let image = root_on_backend.then_some(container.files);
@@ -365,8 +391,18 @@ pub fn run_injected(
             } => {
                 // The seed chooses where in its slice each turn ends, so a run repeats for a seed
                 // and threads interleave differently under different seeds.
-                let slice_nanoseconds =
+                let mut slice_nanoseconds =
                     slice_nanoseconds.map(|slice| host.schedule.random_range(1..=slice.max(1)));
+                // An answer owed arrives during the turn, at a moment drawn from the seed: the
+                // host raises the running thread's stop flag then, as the boundary says.
+                if host
+                    .backend
+                    .as_ref()
+                    .is_some_and(|backend| backend.waiting())
+                {
+                    let arrival = host.schedule.random_range(1..=ANSWER_ARRIVES_WITHIN);
+                    slice_nanoseconds = Some(slice_nanoseconds.map_or(arrival, |s| s.min(arrival)));
+                }
                 let exit = match cpu.run(thread, resume, slice_nanoseconds) {
                     Ok(exit) => exit,
                     // A copy cannot hand a failure back; it says what it was and ends.
@@ -379,7 +415,8 @@ pub fn run_injected(
 
                 kernel.exit(&mut cpu, &mut host, exit);
                 turns += 1;
-                // The backend's answers arrive at moments drawn from the seed, in its order.
+                network_events(&mut kernel, &mut cpu, &mut host, Duration::ZERO);
+                // The backend's answers arrive at moments and in an order drawn from the seed.
                 while host
                     .backend
                     .as_ref()
@@ -422,6 +459,8 @@ pub fn run_injected(
                             }
                             copy => {
                                 libc::close(ends[1]);
+                                // The copy alone holds the network from here on.
+                                drop(std::mem::take(&mut host.network));
                                 return Ok(finish(copied_run(copy, ends[0]), report));
                             }
                         }
@@ -440,6 +479,17 @@ pub fn run_injected(
                 {
                     deliver(&mut kernel, &mut cpu, &mut host);
                     continue;
+                }
+                // The outside answers in real time: a wait for it goes on as long as the kernel's
+                // next timer, and at most ten seconds.
+                if host.network.waiting() {
+                    let now = host.monotonic_nanoseconds();
+                    let wait = until_nanoseconds.map_or(NETWORK_PATIENCE, |until| {
+                        Duration::from_nanos(until.saturating_sub(now)).min(NETWORK_PATIENCE)
+                    });
+                    if network_events(&mut kernel, &mut cpu, &mut host, wait) {
+                        continue;
+                    }
                 }
                 let Some(until) = until_nanoseconds else {
                     panic!(
@@ -478,11 +528,35 @@ pub fn run_injected(
     Ok(finish(run, report))
 }
 
+/// The longest the driver waits for the outside when nothing else can happen.
+const NETWORK_PATIENCE: Duration = Duration::from_secs(10);
+
+/// Hands the kernel what the outside sent, after waiting up to `wait` for something; whether
+/// anything came.
+fn network_events(
+    kernel: &mut Kernel,
+    cpu: &mut dyn wcontainers_abi::Cpu,
+    host: &mut TestHost,
+    wait: Duration,
+) -> bool {
+    if !host.network.waiting() {
+        return false;
+    }
+    let owed = host.network.take(wait);
+    for event in &owed {
+        event.with(|event| kernel.event(cpu, host, event));
+    }
+    !owed.is_empty()
+}
+
+/// The longest a turn runs while the backend owes an answer, in nanoseconds of the CPU side.
+const ANSWER_ARRIVES_WITHIN: u64 = 50_000;
+
 /// The request numbers of RETRIEVE notices this host sends: above any the kernel numbers.
 const RETRIEVED: u64 = 1 << 62;
 
 /// A notice a backend sends unasked (`fuse_notify`), of a kind and about a node (one of the first
-/// few the backend numbers, some never looked up) drawn from `random`. The kernel's NOTIFY_REPLY to
+/// few the backend numbers, some never looked up) drawn from `random`, sometimes cut short. The kernel's NOTIFY_REPLY to
 /// a RETRIEVE comes back to this host, which sent it, not to the server ([`RETRIEVED`]).
 fn notice(random: &mut StdRng) -> Vec<u8> {
     use fuse_abi::linux::*;
@@ -490,7 +564,7 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
     let node: u64 = random.random_range(1..12);
     let name = b"backend-file\0";
     let namelen = (name.len() - 1) as u32;
-    let (code, body): (fuse_notify_code, Vec<u8>) = match random.random_range(0..6) {
+    let (code, mut body): (fuse_notify_code, Vec<u8>) = match random.random_range(0..6) {
         0 => (
             fuse_notify_code::FUSE_NOTIFY_POLL,
             fuse_notify_poll_wakeup_out { kh: node }.as_bytes().to_vec(),
@@ -553,6 +627,10 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
             (fuse_notify_code::FUSE_NOTIFY_STORE, body)
         }
     };
+    // One in eight is cut short, which Linux refuses.
+    if random.random_ratio(1, 8) {
+        body.truncate(random.random_range(0..body.len()));
+    }
     let header = fuse_out_header {
         len: (size_of::<fuse_out_header>() + body.len()) as u32,
         error: code as i32,
@@ -563,13 +641,18 @@ fn notice(random: &mut StdRng) -> Vec<u8> {
     notice
 }
 
-/// Hands the kernel the backend's next answer or notice, waiting for it.
+/// Hands the kernel one of the backend's answers or notices, in an order drawn from the seed,
+/// waiting for it.
 pub(crate) fn deliver(
     kernel: &mut Kernel,
     cpu: &mut dyn wcontainers_abi::Cpu,
     host: &mut TestHost,
 ) {
-    let Some(message) = host.backend.as_mut().and_then(|backend| backend.receive()) else {
+    let Some(message) = host
+        .backend
+        .as_mut()
+        .and_then(|backend| backend.next(&mut host.schedule))
+    else {
         return;
     };
     match message {

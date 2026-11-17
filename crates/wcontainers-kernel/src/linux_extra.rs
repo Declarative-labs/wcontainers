@@ -622,3 +622,55 @@ pub(crate) struct mq_attr {
 /// The longest name a FUSE backend may answer with (`FUSE_NAME_MAX`, Linux's internal
 /// `fs/fuse/fuse_i.h`).
 pub(crate) const FUSE_NAME_MAX: usize = 1024;
+
+// Values from Linux's kernel-side `linux/net.h`, which no uapi header carries.
+
+/// One more than the largest socket kind (`SOCK_PACKET` is 10).
+pub(crate) const SOCK_MAX: u32 = 11;
+
+/// `recvmmsg`'s flag to wait only for the first message (`linux/socket.h`, not in uapi).
+pub(crate) const MSG_WAITFORONE: u32 = 0x10000;
+
+/// epoll's requests for busy polling's parameters, `_IOW` and `_IOR` of an 8 byte
+/// `struct epoll_params` (`linux/eventpoll.h`, which linux-raw-sys does not generate).
+pub(crate) const EPIOCSPARAMS: u32 = 0x4008_8a01;
+pub(crate) const EPIOCGPARAMS: u32 = 0x8008_8a02;
+
+/// The control message carrying a sender's process descriptor (`linux/socket.h`, not in uapi).
+pub(crate) const SCM_PIDFD: u32 = 0x04;
+
+/// The one extended attribute a socket's inode has, its protocol's name (`linux/xattr.h`, not in
+/// uapi).
+pub(crate) const XATTR_NAME_SOCKPROTONAME: &[u8] = b"system.sockprotoname";
+
+/// TCP's states as `/proc/net/tcp` shows them (`net/tcp_states.h`, which only the kernel's own
+/// headers hold); UDP shows the first and seventh.
+pub(crate) const TCP_ESTABLISHED: u8 = 1;
+pub(crate) const TCP_SYN_SENT: u8 = 2;
+pub(crate) const TCP_SYN_RECV: u8 = 3;
+pub(crate) const TCP_FIN_WAIT2: u8 = 5;
+pub(crate) const TCP_TIME_WAIT: u8 = 6;
+pub(crate) const TCP_CLOSE: u8 = 7;
+pub(crate) const TCP_CLOSE_WAIT: u8 = 8;
+pub(crate) const TCP_LISTEN: u8 = 10;
+
+/// Where a queued socket error came from (`linux/errqueue.h`, which linux-raw-sys does not
+/// generate).
+pub(crate) const SO_EE_ORIGIN_ICMP: u8 = 2;
+pub(crate) const SO_EE_ORIGIN_ICMP6: u8 = 3;
+pub(crate) const SO_EE_ORIGIN_TIMESTAMPING: u8 = 4;
+/// Which send timestamp an error queue entry carries (`linux/errqueue.h`).
+pub(crate) const SCM_TSTAMP_SND: u32 = 0;
+pub(crate) const SCM_TSTAMP_SCHED: u32 = 1;
+/// The ICMP and ICMPv6 type and code of an unreachable port (`linux/icmp.h`, `linux/icmpv6.h`).
+pub(crate) const ICMP_DEST_UNREACH: u8 = 3;
+pub(crate) const ICMP_PORT_UNREACH: u8 = 3;
+pub(crate) const ICMPV6_DEST_UNREACH: u8 = 1;
+pub(crate) const ICMPV6_PORT_UNREACH: u8 = 4;
+
+/// UDP's own options (`linux/udp.h`, which linux-raw-sys does not generate).
+pub(crate) const UDP_CORK: u32 = 1;
+pub(crate) const UDP_NO_CHECK6_TX: u32 = 101;
+pub(crate) const UDP_NO_CHECK6_RX: u32 = 102;
+pub(crate) const UDP_SEGMENT: u32 = 103;
+pub(crate) const UDP_GRO: u32 = 104;

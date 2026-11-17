@@ -45,15 +45,23 @@ pub(crate) struct OpenFile {
     pub backend: Option<Rc<crate::fs::backend::Handle>>,
     /// The thread whose call took its position last (`io::lock_position`).
     pub position_holder: Option<crate::process::Tid>,
+    /// The directory and name it was opened by, for its directory's inotify watches.
+    pub dentry: Option<(alloc::rc::Weak<RefCell<crate::fs::Inode>>, Vec<u8>)>,
 }
 
 /// The state of a file on the shared anonymous inode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) enum Anon {
     /// A signal descriptor and the signals it reads.
     Signals(u64),
     /// A timer descriptor and its timer.
     Timer(u64),
+    /// An event counter (`eventfd`).
+    Event(Rc<RefCell<crate::syscall::eventfd::Counter>>),
+    /// An epoll instance.
+    Epoll(crate::syscall::epoll::EpollRef),
+    /// An inotify instance.
+    Inotify(Rc<RefCell<crate::syscall::inotify::Instance>>),
 }
 
 /// The terminal side an open file reads and writes, and whether a hangup cut the file off.
@@ -105,6 +113,7 @@ impl OpenFile {
             internal_mount: false,
             backend: None,
             position_holder: None,
+            dentry: None,
         }))
     }
 

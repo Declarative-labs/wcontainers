@@ -21,6 +21,7 @@ mod linux_extra;
 mod loader;
 mod locks;
 mod memory;
+pub mod network;
 mod pipe;
 mod process;
 mod schedule;
@@ -101,10 +102,14 @@ pub(crate) struct Files {
     pub pidfs: Option<FileSystem>,
     /// The anonymous inode, once a file needs it.
     pub anon: Option<crate::fs::Node>,
+    /// The file system sockets are on, once one is made.
+    pub sockfs: Option<FileSystem>,
     /// Files whose bytes are partly in a block of shared pages, while a mapping shares them.
     pub shared: Vec<Node>,
     /// The key tmpfs inodes' generation numbers are made from, as Linux draws each at random.
     pub generation_key: [u8; 16],
+    /// Every event descriptor's counter, for the lowest free number a new one takes.
+    pub event_counters: Vec<alloc::rc::Weak<core::cell::RefCell<syscall::eventfd::Counter>>>,
     /// Changed attributes of the `/proc` entries that keep them.
     pub proc_kept: BTreeMap<u64, fs::proc::Kept>,
     /// Every tmpfs's count of what it holds, for the machine's memory in use.
@@ -175,6 +180,10 @@ pub struct Kernel {
     futexes: syscall::futex::Futexes,
     /// Every timer.
     timers: syscall::timer::Timers,
+    /// The epoll items watching each file's readiness.
+    poll_watches: syscall::epoll::Watches,
+    /// The names local sockets are bound to.
+    sockets: syscall::socket::Names,
     machine: Machine,
     hostname: Vec<u8>,
     domainname: Vec<u8>,
@@ -182,6 +191,8 @@ pub struct Kernel {
     boot: Time,
     boot_monotonic: u64,
     boot_id: [u8; 16],
+    /// The last cookie that ties a rename's two inotify events together.
+    move_cookie: u32,
 }
 
 impl Default for Kernel {
@@ -231,6 +242,8 @@ impl Kernel {
             ipc: Default::default(),
             futexes: Default::default(),
             timers: Default::default(),
+            poll_watches: Default::default(),
+            sockets: Default::default(),
             signal_users: BTreeMap::new(),
             files: Files {
                 numbers,
@@ -246,8 +259,10 @@ impl Kernel {
                 secretmem_fs: None,
                 pidfs: None,
                 anon: None,
+                sockfs: None,
                 shared: Vec::new(),
                 generation_key: [0; 16],
+                event_counters: Vec::new(),
                 proc_kept: BTreeMap::new(),
                 spaces,
                 terminals: BTreeMap::new(),
@@ -264,6 +279,7 @@ impl Kernel {
             boot: Time::default(),
             boot_monotonic: 0,
             boot_id: [0; 16],
+            move_cookie: 0,
         }
     }
 
@@ -339,9 +355,21 @@ impl Kernel {
                 return;
             }
             Event::Connected { connection, .. } | Event::ConnectionReady { connection } => {
+                self.entry_now = cx.monotonic();
+                if syscall::socket::outside_event(self, &mut cx, &event) {
+                    self.settle(&mut cx);
+                    return;
+                }
                 u64::from(connection.0)
             }
-            Event::LookedUp { request, .. } => request,
+            Event::LookedUp { request, .. } => {
+                self.entry_now = cx.monotonic();
+                if syscall::socket::outside_event(self, &mut cx, &event) {
+                    self.settle(&mut cx);
+                    return;
+                }
+                request
+            }
             Event::TerminalInput { .. } | Event::TerminalResized { .. } => 0,
         };
         self.counters
@@ -416,6 +444,8 @@ impl Kernel {
         if moved != 0 {
             self.clock_was_set(moved, &tids);
         }
+        // The new host knows none of the old one's connections.
+        syscall::socket::restored(self, &mut cx);
         self.settle(&mut cx);
     }
 
@@ -499,6 +529,22 @@ impl Kernel {
         self.threads[&tid].files.borrow()
     }
 
+    /// The open file descriptor `fd` names, taken once per call (`fdget`): a call that waits
+    /// takes the same file in its later runs, whatever the table holds by then.
+    pub(crate) fn call_file(&self, tid: Tid, fd: i32) -> Result<file::FileRef, Errno> {
+        let thread = &self.threads[&tid];
+        thread
+            .taken
+            .borrow_mut()
+            .file(fd, || thread.files.borrow().file(fd))
+    }
+
+    /// A value `tid`'s call settles once, such as where an append goes (Linux computes it once
+    /// under the inode's lock): an earlier run's, else `value`.
+    pub(crate) fn settle_once(&self, tid: Tid, value: u64) -> u64 {
+        self.threads[&tid].taken.borrow_mut().value(value)
+    }
+
     pub(crate) fn files_mut(&self, tid: Tid) -> core::cell::RefMut<'_, file::FdTable> {
         self.threads[&tid].files.borrow_mut()
     }
@@ -558,11 +604,11 @@ impl Kernel {
             root: &context.root,
             credentials: &thread.credentials,
             proc: &view,
+            internal: core::cell::Cell::new(false),
         };
         f(&walk, &context)
     }
 
-    /// The time now on the wall clock.
     /// The memory in use, in bytes, and how much of it tmpfs holds: every mapped page and every
     /// tmpfs page, counted as present, since which pages a program has touched is not known.
     pub(crate) fn memory_in_use(&self) -> (u64, u64) {
@@ -592,6 +638,7 @@ impl Kernel {
         ((tmpfs + mapped).min(self.machine.memory_bytes), tmpfs)
     }
 
+    /// The time now on the wall clock.
     pub(crate) fn now(&self, cx: &mut Context<'_>) -> Time {
         Time::from_nanoseconds(cx.host.realtime_nanoseconds())
     }
