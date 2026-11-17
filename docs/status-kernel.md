@@ -52,6 +52,13 @@ said otherwise):
   (guest/wallset.c; the test host moves its wall clock two hours at each of 20 saves). Not compared
   with the reference (see Departures); the test fails without the change.
 - CSIGNAL comes from the generated constants.
+- A POSIX timer takes its signal's place in its maker's RLIMIT_SIGPENDING count when it is made
+  (`Timer::charge`, Linux's preallocated `sigqueue`): none left is EAGAIN before a timer number is
+  used, and its signal is always queued with its information, not charged again
+  (`Kernel::send_from_timer`). Found by fresh layer 1 seed 3030 (timer_create at a limit of 0: ours
+  EFAULT for a bad address, the reference EAGAIN); guest/timers.c `pending_limit`.
+- Layer 1 harness: the IPC status calls' sequence numbers and times are cleared after the call
+  (`machine_bytes`), which was seed 3023's difference (Known issues).
 - Not changed: a timer set to a time already past fires by the very next call here, where the
   reference's interrupt usually comes just after it (the check's tpast.c). The plan's section 15
   gives clock and timer precision to the host, and the reference itself races there (timercorner).
@@ -1737,6 +1744,16 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K3, sixth run: layer 1 fresh seeds 3030, 3031, 3032 at 20000 each, side by side (load 13 to 32):
+  3031 passed (318.4 s), 3032 passed (317.8 s), 3030 failed at its timer_create (fixed above).
+  Seed 3023 passed 20000 after the harness fix (313.8 s, load 13.8 to 14.3); the checker's seed
+  5150002 passed 25000 after the splice fix (384.7 s, load 36 to 120).
+- K3, sixth run: whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p wcontainers-kernel
+  -p wcontainers-kernel-test`) at head 1712fe7, beside three layer 1 runs: 129 passed, 1 failed, 5
+  ignored, 6 min 6 s, load 15.8 at the start and 67.8 at the end. The failure was terminal's
+  `splice_holds_the_pipe` (ours printed `cat /dev/tty | cat`'s line once, the reference twice); it
+  passed 3 reruns alone (load 55). See Known issues.
+
 - K3, fifth run: layer 1 with every fix in, fresh seeds 3025, 3026 and 3027 passed 20000 sequences
   each (304 to 307 s, four side by side with seed 3023; load 17 to 22). Along the way, 20000 each:
   3013 and 3014 passed (before the sendfile fix); 3015, 3016, 3018, 3020, 3021 failed and were
@@ -2114,15 +2131,15 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
-- K3, fifth run: layer 1 seed 3023 fails at 20000 in a whole run (twice, same place):
-  process_vm_readv(SELF, 0x7000526d, 16, NULL, 3) after semctl(SEMAPHORES, 1, SEM_STAT_ANY,
-  0x7000534d), whose struct the local vector's last two entries overlap; ours 0 (every length 0),
-  theirs EFAULT. A replay of the shrunk case alone (fresh containers, three times) gives 0 on both
-  sides. Suspected: SEM_STAT_ANY takes an index, layer 1 gives it the set's identifier, and the
-  reference's identifiers carry over from earlier sequences (`idr_alloc_cyclic` indexes and
-  sequence numbers), so its call reads another set or none. Not resolved; the next run should
-  check what the reference wrote there in the whole run (scratch: k3r5/case3023.txt and the replay
-  bin in check-k3/harness).
+- K3, sixth run: layer 1 seed 3023 (open since the fifth run) was the harness: the IPC status calls
+  (IPC_STAT, SEM_STAT, SEM_STAT_ANY and the shm and msg ones) write sequence numbers and times
+  that the comparison skips but nothing cleared, and a later call read them (process_vm_readv took
+  a set's sequence number as a vector length: the reference's is not 0 after earlier sequences).
+  `machine_bytes` now clears them after the call; seed 3023 passed 20000 (313.8 s, load 13.8 to
+  14.3). Reproduced first with the old harness (failed at the same call, load 23 to 15).
+- K3, sixth run: terminal's `splice_holds_the_pipe` (ttylock) failed once in a whole-suite run
+  beside three layer 1 runs (ours showed `abc` once where the reference echoed and printed it);
+  three reruns alone passed. Not looked into further.
 - K3, fourth run: sigio's reference race came again once in a whole-suite run beside three layer 1
   runs (load 47): it counted the raw byte's signal with the next section's (0 and 2 where ours, and
   every rerun, has 1 and 1).
@@ -2160,8 +2177,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K3 is complete (fifth run: the K3 check's findings fixed). Next is K4 (see the plan). Left open:
-- Layer 1 seed 3023 (Known issues).
+K3 is complete (sixth run: the second K3 check's findings fixed). Next is K4 (see the plan). Left
+open:
+- Poll and select waiters watching descriptors share one channel (Known gaps).
+- A host wall clock step during a run is not seen as a setting (Departures).
 - The futex queues still allocate when a futex first gets waiters (Departures); the cost of a wait
   was not measured.
 
