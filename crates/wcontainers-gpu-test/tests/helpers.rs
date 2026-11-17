@@ -839,6 +839,179 @@ fn the_occlusion_counter_counts_exactly() {
     k.healthy();
 }
 
+/// Where a sample of the counting target reaches the counting format's exact bound (2048 in
+/// `r16float`, which a back end without blendable `r32float` counts in), the draws are counted again
+/// in halves: of the draws, of one draw's instances, or of one list's primitives.
+#[test]
+fn the_occlusion_counter_counts_past_its_formats_bound_in_halves() {
+    let mut k = Kit::on(Recorder::with_caps(|c| {
+        let at = Format::R32Float.index();
+        c.formats.uses[at].remove(FormatUse::BLEND);
+    }));
+    let mut passes = PassTracker::default();
+    let mut counter = OcclusionCounter::default();
+    let color = k.target(2, 2, Format::Rgba8Unorm);
+    passes.set_targets(&mut k.r, colors(color)).unwrap();
+    let p = k.program("color");
+    let counting = k.program("counting");
+    let none = k.depth(None, false);
+    let set = k.params(0, [1.0; 4], 0.5);
+    // 2,500 copies of one triangle over the whole target, as a list.
+    let corners: Vec<u8> = [-1.0f32, -1.0, 3.0, -1.0, -1.0, 3.0]
+        .repeat(2500)
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let list =
+        k.r.create_buffer(&BufferDesc {
+            size: corners.len() as u64,
+            usage: BufferUsage::VERTEX | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    k.r.write_buffer(&list, 0, &corners, WriteMode::Discard);
+
+    // Each draw: (vertex buffer, topology, vertices, instances).
+    let mut counted = |k: &mut Kit, draws: &[(&Id, Topology, u32, u32)]| {
+        counter.begin(&mut k.r, &mut passes).unwrap();
+        for &(vertices, topology, count, instances) in draws {
+            let viewport = [Viewport {
+                x: 0f32.to_bits(),
+                y: 0f32.to_bits(),
+                width: 2f32.to_bits(),
+                height: 2f32.to_bits(),
+                min_depth: 0f32.to_bits(),
+                max_depth: 1f32.to_bits(),
+            }];
+            let streams = [Some(VertexBinding {
+                buffer: vertices,
+                offset: 0,
+            })];
+            let call = DrawCall {
+                program: &p,
+                blend: &k.blend,
+                depth_stencil: &none,
+                raster: &k.raster,
+                vertex_layout: &k.layout,
+                bindings: [Some(&set), None, None, None],
+                vertex_buffers: &streams,
+                index: None,
+                topology,
+                restart: false,
+                viewports: &viewport,
+                scissors: &[],
+                blend_constant: [0; 4],
+                stencil_reference: [0; 2],
+                immediates: &[],
+                range: DrawRange::Vertices {
+                    first: 0,
+                    count,
+                    first_instance: 0,
+                    instances,
+                },
+            };
+            counter
+                .draw(&mut k.r, &mut passes, &call, &counting, false, false)
+                .unwrap();
+            passes.before_draw(&mut k.r, &[]).unwrap();
+            k.r.draw(&call);
+        }
+        let before = k.calls("draw");
+        let n = counter.end(&mut k.r, &mut passes).unwrap();
+        (n, k.calls("draw") - before)
+    };
+    let quad = k.quad;
+    let strip = Topology::TriangleStrip;
+    // One draw of 3,000 instances: counted whole (full), then as 1,500 and 1,500.
+    assert_eq!(counted(&mut k, &[(&quad, strip, 4, 3000)]), (12_000, 3));
+    // One list of 2,500 triangles: whole, then 1,250 and 1,250.
+    let list_draw = (&list, Topology::TriangleList, 7500, 1);
+    assert_eq!(counted(&mut k, &[list_draw]), (10_000, 3));
+    // Three draws of 1,000 instances: whole, then the first alone and the other two together.
+    let thousand = (&quad, strip, 4, 1000);
+    assert_eq!(
+        counted(&mut k, &[thousand, thousand, thousand]),
+        (12_000, 6)
+    );
+    // Below the bound, counted once.
+    assert_eq!(counted(&mut k, &[(&quad, strip, 4, 2000)]), (8_000, 1));
+    k.healthy();
+}
+
+/// On a four-sample target the counter counts samples: a rectangle whose right edge crosses pixel 1
+/// at x = 1.25 covers its sample 2 alone (the standard positions), so two rows hold 4 + 1 samples
+/// each.
+#[test]
+fn the_occlusion_counter_counts_the_samples_of_multisampled_targets() {
+    let mut k = Kit::new();
+    let mut passes = PassTracker::default();
+    let mut counter = OcclusionCounter::default();
+    let color = k.target_of(2, 2, Format::Rgba8Unorm, 4);
+    passes.set_targets(&mut k.r, colors(color)).unwrap();
+    let p = k.program("color");
+    let counting = k.program("counting");
+    let none = k.depth(None, false);
+    let set = k.params(0, [1.0; 4], 0.5);
+    let corners: Vec<u8> = [-1.0f32, -1.0, -1.0, 1.0, 0.25, -1.0, 0.25, 1.0]
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let rect =
+        k.r.create_buffer(&BufferDesc {
+            size: 32,
+            usage: BufferUsage::VERTEX | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    k.r.write_buffer(&rect, 0, &corners, WriteMode::Discard);
+    for (vertices, want) in [(rect, 10), (k.quad, 16)] {
+        let viewport = [Viewport {
+            x: 0f32.to_bits(),
+            y: 0f32.to_bits(),
+            width: 2f32.to_bits(),
+            height: 2f32.to_bits(),
+            min_depth: 0f32.to_bits(),
+            max_depth: 1f32.to_bits(),
+        }];
+        let streams = [Some(VertexBinding {
+            buffer: &vertices,
+            offset: 0,
+        })];
+        let call = DrawCall {
+            program: &p,
+            blend: &k.blend,
+            depth_stencil: &none,
+            raster: &k.raster,
+            vertex_layout: &k.layout,
+            bindings: [Some(&set), None, None, None],
+            vertex_buffers: &streams,
+            index: None,
+            topology: Topology::TriangleStrip,
+            restart: false,
+            viewports: &viewport,
+            scissors: &[],
+            blend_constant: [0; 4],
+            stencil_reference: [0; 2],
+            immediates: &[],
+            range: DrawRange::Vertices {
+                first: 0,
+                count: 4,
+                first_instance: 0,
+                instances: 1,
+            },
+        };
+        counter.begin(&mut k.r, &mut passes).unwrap();
+        counter
+            .draw(&mut k.r, &mut passes, &call, &counting, false, false)
+            .unwrap();
+        passes.before_draw(&mut k.r, &[]).unwrap();
+        k.r.draw(&call);
+        assert_eq!(counter.end(&mut k.r, &mut passes).unwrap(), want);
+    }
+    assert_eq!(k.calls("resolve"), 2);
+    k.healthy();
+}
+
 #[test]
 fn the_combination_tracker_picks_the_tuples_drawn() {
     // Vertex shaders are letters, programs pairs, tuples numbers; tuple 30 has a vertex layout the
