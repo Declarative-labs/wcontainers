@@ -83,3 +83,56 @@ fn file_calls_survive_saves() {
         assert!(run.saved > 0);
     }
 }
+
+/// The messages each kind of file call sends to the backend (every call goes there in phase one;
+/// this is what the cache will be measured against). Prints them; run with `--nocapture`.
+#[test]
+fn messages_per_call() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let program = guest::build("backendcosts", &[], &out);
+    let mut files = image::reference_image().to_vec();
+    files.extend(image::host_directory(
+        program.parent().expect("a directory"),
+        "wc",
+    ));
+    let count = |kind: &str| -> std::collections::BTreeMap<u64, u64> {
+        let container = driver::Container {
+            files: &files,
+            path: "/wc/backendcosts",
+            arguments: &["/wc/backendcosts", kind],
+            environment: reference::ENVIRONMENT,
+            working_directory: AT,
+            volume: Some(AT),
+        };
+        let run = driver::run(&container, 1).expect("an outcome on our kernel");
+        assert_eq!(run.outcome.stdout, format!("{kind} done\n").into_bytes());
+        run.counters
+            .iter()
+            .filter(|counter| counter.reason == wcontainers_kernel::reason::BACKEND_MESSAGE)
+            .map(|counter| (counter.detail, counter.count))
+            .collect()
+    };
+    let none = count("none");
+    for kind in [
+        "stat",
+        "fstat",
+        "open-close",
+        "read",
+        "write",
+        "list",
+        "create-unlink",
+        "mkdir-rmdir",
+        "rename",
+    ] {
+        let counts = count(kind);
+        let per_call: Vec<String> = counts
+            .iter()
+            .filter_map(|(opcode, total)| {
+                let extra = total.saturating_sub(none.get(opcode).copied().unwrap_or(0));
+                (extra > 0).then(|| format!("opcode {opcode}: {:.2}", extra as f64 / 100.0))
+            })
+            .collect();
+        eprintln!("{kind}: {}", per_call.join(", "));
+        assert!(!per_call.is_empty(), "{kind} sent nothing to the backend");
+    }
+}
