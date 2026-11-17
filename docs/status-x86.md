@@ -7,7 +7,7 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 
 - X0 (the plan, and the x86 reference machine proven): done in run 1, 2026-11-17; the first independent
   check's findings fixed in run 2, the second check's in run 3, the third's in run 4, the fourth's in
-  run 5, the fifth's in run 6 and the sixth's in run 7, the same day (below).
+  run 5, the fifth's in run 6, the sixth's in run 7 and the seventh's in run 8, the same day (below).
 - Next: X1, the interface crate `wcontainers-guest-cpu` with ARM64 moved onto it and its output proven byte
   for byte the same (plan section 9). No code of this track exists yet.
 
@@ -263,7 +263,45 @@ Each was first repeated and widened on the reference with `stepper5` (`cases11.s
   excluded from layer 1 with `int 0x80`'s reason and checked by the designed answers (2, 5.2, 5.10, 6,
   7.2 to 7.4, X2, 12).
 
+## X0, run 8 (2026-11-17): the seventh independent check's findings, all fixed in the plan
+
+Each was first repeated and widened on the reference with `stepper6` (scratch `run8/`: `cases14.sh`,
+`cases15.sh`, `smc.c`, `copyuser.c`; x86 load 0.00 to 0.16, nothing timed):
+- Blocking, code written on its own page: `smc` prints `eax 1 sum 20100` (the check's result). Plan 5.7:
+  the step also sets a one-shot mark; the bottom loop runs the faulting instruction once from a
+  look-ahead-none piece that is not entered in the lookup and protects no page, and the next instruction
+  is translated afresh. Any stop clears the mark; each repeat clears one page's mark, so it ends. Decision
+  4.6 and the X6 pass bar (three such programs, among them `smc.c`) say so.
+- Blocking, `bt`/`bts`/`btr`/`btc` and `xlat`: `MemoryAccess::index` is now `Index` (`Register` with
+  `Extend` from 8 to 64 bits, `BitOffset { reg, width }`, `Lanes` for VSIB). Seen: offsets read signed at
+  the operand's width (64, 32, 16), bits above it ignored, rbp base gives the stack fault. The check
+  analysis and loop proofs use only accesses ARM64 has today (index `None` or a 32/64-bit `Register`,
+  `Fixed` bytes); every other access is checked by its meaning each time (plan 3.2, 3.3, 3.4, 5.4).
+- Blocking, gathers and masked moves: `AccessBytes` gains `Masked { element, count }` (and `Counted`
+  names its element). Seen and designed (plan 5.4): gathers go in lane order, a fault leaves the earlier
+  elements gathered and their mask lanes clear and names the faulting element's first byte not allowed;
+  `vmaskmov`/`vpmaskmov` never fault on masked-off elements, are all or nothing, a load reports its first
+  byte not allowed and a store the first selected byte when it is not allowed, else the last selected byte
+  (two one-byte checks); `maskmovdqu` ignores the mask for faults, stores nothing on a fault, and reports
+  as if it checked rdi + 8 first, then rdi. `memory_fault` works out each access's real range.
+- `Machine::unfinished` now takes the instruction's bytes and steps on only for a rep string instruction
+  or a gather (which under the trap flag stops once, with RF, before its fault), up to `Machine::limit`;
+  a branch to CODE is finished (plan 5.6, 7.2, 7.3).
+- gzip figures: run 1's were Apple gzip storing the file names (12 bytes more than the check's names).
+  The plan now gives `/usr/bin/gzip -9 -n -c`: decoder 60,682, with `instr_info` 82,697, base 208,
+  browser 412,037; GNU gzip 1.14 `-n`: 60,831 and 82,541. Brotli is Homebrew's 1.2.1, figures unchanged
+  (Mac load 20.4).
+- Kernel side, copy routines: each CPU gets its own measured model. x86 (Linux 7.3.4, ERMS, no FSRM):
+  pipe `read`, `/dev/zero` `read` and `uname` write every byte up to the page not allowed, for buffers
+  ending 1 to 389 bytes before it (plan 6, X10 repeats it).
+
 ## How to run
+
+- Run 8's experiments: build `stepper6.c`, `smc.c`, `copyuser.c` in scratch `run8/` like the steppers
+  below, copy them and `cases14.sh`, `cases15.sh` to `~/wcontainers-x86/proof8/` and run each there.
+  `NOTF=1`, `STEPS=n` and `DUMP=offset` in the environment change how `stepper6` runs (its header says
+  how). gzip sizes: `/usr/bin/gzip -9 -n -c <file> | wc -c` on scratch
+  `iced-size/target/wasm32-unknown-unknown/release/size_*.stripped.wasm`.
 
 - Run 7's experiments: build `stepper5.c` like the steppers below, copy `stepper5`, `cases11.sh`,
   `cases12.sh` and `cases13.sh` to `~/wcontainers-x86/proof/` and run each there. `SECCOMP=1` in the
@@ -303,10 +341,12 @@ Each was first repeated and widened on the reference with `stepper5` (`cases11.s
 - Installed on it by this track: nothing. Already there before this track and not used by it: Rust
   (`~/.rustup` dated 2026-11-14, rustc 1.100.0). Files of this track: `~/wcontainers-x86/proof/` (hello,
   stepper, stepper3, stepper4, stepper5, the scripts cases.sh, cases2.sh, cases4.sh, cases5.sh, cases7.sh,
-  cases8.sh, sweep15.sh, cases9.sh, cases10.sh, cases11.sh, cases12.sh, cases13.sh, and approx, approx_dump, approx_formula, approx_mxcsr
-  with approx.out, approx_formula.out and approx_mxcsr.out). The cases scripts' outputs are kept only in
-  the Mac's scratch `reference-proof/`. The independent checks' files are in `~/wcontainers-x86/check`,
-  `check2`, `check3`, `check4`, `check5` and `check6`. Installed in runs 2 to 7: nothing.
+  cases8.sh, sweep15.sh, cases9.sh, cases10.sh, cases11.sh, cases12.sh, cases13.sh, and approx,
+  approx_dump, approx_formula, approx_mxcsr with approx.out, approx_formula.out and approx_mxcsr.out) and
+  `~/wcontainers-x86/proof8/` (stepper6, smc, copyuser, cases14.sh, cases15.sh and their outputs). The
+  cases scripts' outputs before run 8 are kept only in the Mac's scratch `reference-proof/`. The
+  independent checks' files are in `~/wcontainers-x86/check` and `check2` to `check7`. Installed in runs
+  2 to 8: nothing.
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
   times. The independent check saw load about 1.04. Run 2 saw 0.07. Record `/proc/loadavg` with every
   timing there.
@@ -319,11 +359,13 @@ Each was first repeated and widened on the reference with `stepper5` (`cases11.s
   run 5, 21 hand-written cases (`cases7.sh`, `cases8.sh`) and the 1,024-opcode sweep twice over (each
   opcode at the boundary and alone, 2,048 runs), plus one ARM64 `brk` in Docker; in run 6, 46 hand-written
   cases (`cases9.sh` 38, `cases10.sh` 8); in run 7, 45 hand-written cases (`cases11.sh` 15, `cases12.sh`
-  18, `cases13.sh` 12).
+  18, `cases13.sh` 12); in run 8, 41 hand-written cases (`cases14.sh` 24, `cases15.sh` 17), one run of
+  `smc` and 42 copy cases (`copyuser`: 14 buffer placements for each of three calls). `cases14.sh` ran
+  twice: the first run did not pass its environment settings to `stepper6` and was discarded.
 
 ## Measurements
 
-All in the "X0, run 1" to "run 7" sections above.
+All in the "X0, run 1" to "run 8" sections above.
 
 ## Licences of what this track uses
 
@@ -374,6 +416,13 @@ None yet (no milestone of the plan has been built).
   32-bit mode is built.
 - `sysenter` also gives general protection (as `int 0x80`), while SEP is claimed: the instruction exists,
   the kernel has no 32-bit calls behind it, as on Linux without 32-bit emulation.
+- Code written on the page that writes it costs one fault, one step and two translations per write (the
+  faulting instruction runs once from an unprotected one-instruction piece), counted with "code written
+  without announcement".
+- Accesses that are not base plus scaled index (`bt` with a register offset, gathers, masked moves, 8-
+  and 16-bit indexes such as `xlat`'s) are checked every time by their own meanings and never grouped or
+  proven; expected to cost little, measured at X5 and X8.
+- The kernel's copy routines get a measured model per CPU; x86's writes every byte up to the fault.
 - Glibc programs without `BIND_NOW` fire the counter "MXCSR's exception flags read while not kept" at each
   lazy binding (the loader's `fxsave`), warning once; a state restore never moves a program off the fast
   path, only `ldmxcsr` or a non-default mode does.

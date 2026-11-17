@@ -1,7 +1,7 @@
 # wcontainers, phase two: one guest CPU interface, and x86-64
 
 Status: plan written 2026-11-17 from the owner's brief (decisions of 2026-11-16) and the map of today's
-ARM64 assumptions, and revised after each of the six independent checks of X0 (2026-11-17). Nothing of it
+ARM64 assumptions, and revised after each of the seven independent checks of X0 (2026-11-17). Nothing of it
 is built yet. The research and the two experiments of milestone X0 are done; what they found is in section 2.
 
 Words used here (phase one's words still hold: guest, host, engine, look-ahead, piece):
@@ -60,14 +60,18 @@ for x86-64, with ARM64's own long runs still passing.
 - What it adds to a wasm32 release build, measured on 2026-11-17 (Mac load 15 to 21) with a small cdylib
   that decodes a buffer and uses the decoded fields, after `wasm-tools strip`. The cdylib's total sizes
   with iced:
-  - `no_std` + `decoder`: 227,228 bytes raw, 60,705 gzip -9, 47,058 brotli -q 11.
-  - `no_std` + `decoder` + `instr_info`: 353,374 raw, 82,721 gzip, 64,947 brotli.
-  The same cdylib without iced is 257 bytes raw, 232 gzip and 178 brotli, so what iced adds is these
-  totals less that: 226,971 / 60,473 / 46,880 for the decoder alone and 353,117 / 82,489 / 64,769 with
-  `instr_info` (the fifth independent check rebuilt the base and the decoder build and got the same
-  bytes; run 6 measured both stripped files again).
+  - `no_std` + `decoder`: 227,228 bytes raw, 60,682 gzip, 47,058 brotli.
+  - `no_std` + `decoder` + `instr_info`: 353,374 raw, 82,697 gzip, 64,947 brotli.
+  gzip is the Mac's `/usr/bin/gzip` (Apple gzip 487.40.2) as `gzip -9 -n -c`, so no file name is stored in
+  the header; brotli is `brotli -q 11 -c` (Homebrew's brotli 1.2.1). (Run 1 wrote 60,705 and 82,721: the
+  same gzip storing the files' names, `size_dec.stripped.wasm` and `size_info.stripped.wasm`, 12 bytes more
+  than the names the seventh check used; found in run 8. The Nix shell's GNU gzip 1.14 gives 60,831 and
+  82,541 with `-n`.) The same cdylib without iced is 257 bytes raw, 208 gzip and 178 brotli, so what iced
+  adds is these totals less that: 226,971 / 60,474 / 46,880 for the decoder alone and 353,117 / 82,489 /
+  64,769 with `instr_info` (the fifth and seventh independent checks rebuilt the decoder build and got the
+  same bytes; runs 6 and 8 measured the stripped files again).
   - For scale, today's browser translator (`wcontainers-browser`, ARM64, release, stripped) is 2,170,386
-    bytes raw, 412,059 gzip and 312,302 brotli (measured the same day, load 21 to 28). So the decoder alone
+    bytes raw, 412,037 gzip and 312,302 brotli (measured the same day, load 21 to 28). So the decoder alone
     adds about 15% to the compressed download, before anything ARM64-only leaves the x86 build.
 - Decision: the shipped x86 crate uses `no_std` + `decoder` only. The translator learns what an
   instruction reads and writes by recording its meaning (as for ARM64), so `instr_info` is not shipped.
@@ -311,6 +315,38 @@ are static binaries copied to `~/wcontainers-x86/proof`.
      trampolines, which save and restore the whole vector state, MXCSR included, at every lazy binding
      (section 5.8).
 
+   Run 8 (2026-11-17, x86 load 0.00 to 0.16, nothing timed), after the seventh independent check, with
+   `stepper6.c` (`stepper5.c` that can also run without the trap flag, `NOTF=1`, step on while a
+   `TRAP_TRACE` stop leaves rip at CODE, `STEPS=n`, and print any 32 bytes of the data area, `DUMP=`),
+   `cases14.sh`, `cases15.sh`, `smc.c` and `copyuser.c`, all in scratch `run8/` with their outputs. DATA
+   is 0x20000000 to 0x20010000; the pages just below and above it are unmapped:
+   - Code written on its own page: `smc.c` loops 200 times over `mov [rip + 1], cl` (writing the immediate
+     of the next instruction, `mov eax, imm32`), `add edx, eax`, `dec ecx`, `jnz`, all on one page: it
+     prints `eax 1 sum 20100`, so every pass's write is seen by the very next instruction (section 5.7).
+   - `bt`, `bts` with a register bit offset address whole operands far from the operand: `bt [rax], rcx`
+     with rcx 0x80000 faults at rax + 0x10000 (64-bit), as does the 32-bit form with ecx 0x80000; a
+     32-bit offset of 0x80000000 is read signed (no fault where the unsigned reading would reach an
+     unmapped page); a 16-bit offset of 0x8000 likewise, and rcx 0xffffffff00007fff reads only cx.
+     Reaching past 2^47: through rbp a stack fault (`SIGBUS`, `SI_KERNEL`), through rax general
+     protection. `xlat` with al 0xFF reads rbx + 0xFF.
+   - Gathers (`vgatherdps xmm0, [rax + xmm1 * 4], xmm2`): in lane order, each element gathered clears its
+     mask lane; when an element faults, the ones before it are gathered and their mask lanes clear and the
+     rest untouched, and without the trap flag the page fault names the faulting element's first byte not
+     allowed. With the trap flag, the CPU first stops with `TRAP_TRACE` at the gather (rflags with RF)
+     after the elements before the faulting one, and the next step gives the page fault, state unchanged.
+     With elements 1 and 3 unmapped, only element 0 is gathered and the fault names element 1. An element
+     across the page end faults at the page's end, nothing gathered. A masked-off unmapped element does
+     not fault and the mask ends all zero.
+   - Masked moves: `vmaskmovps` and `vpmaskmovd` (128 and 256 bits) never fault on masked-off elements and
+     store or load nothing when a selected element faults. A load reports the first byte not allowed; a
+     store reports the first byte of the first selected element when it is not allowed, else the last
+     byte of the last selected element (nine cases, section 5.4). `maskmovdqu` faults whatever the mask
+     (all-zero included), stores nothing on a fault, and reports as if it checked rdi + 8 to rdi + 15
+     first and then rdi to rdi + 7, each at its first byte not allowed (thirteen cases, section 5.4).
+   - Copies into user memory that run into a page that may not be written (`copyuser.c`): a pipe's
+     `read`, `/dev/zero`'s `read` and `uname`, with the buffer ending 1 to 389 bytes before the page,
+     write every byte before it (section 6).
+
    What this teaches the reference runner (section 7.3): write every vector register and the whole x87
    component (FCW, FSW, the abridged tag byte, FOP and the last-instruction pointers as zero, the eight
    slots in stack order) (else the runner's own values leak in), set the x87, SSE and AVX bits of the
@@ -318,8 +354,9 @@ are static binaries copied to `~/wcontainers-x86/proof`.
    component as its first state when its `xstate_bv` bit is clear, find the
    upper ymm halves at the offset CPUID leaf 0xD sub-leaf 2 gives, mask `TF`, `RF` (bit 16) and `IF` out of
    the comparison of rflags, mask `TF` out of every copy of rflags an instruction makes (the word
-   `pushf` stores, r11 after `syscall`), enter NT and ID through its own rflags (run 7), and stop every
-   32-bit call by its arch.
+   `pushf` stores, r11 after `syscall`), enter NT and ID through its own rflags (run 7), stop every
+   32-bit call by its arch, and step on after `TRAP_TRACE` at CODE only for a rep string instruction or a
+   gather (run 8).
 3. **Round trips.** A new SSH connection from the Mac: 0.24 to 0.32 s, five runs of `time ssh ... true`
    (Mac load 9.2, 2026-11-17, run 3; the first run saw about 344 ms at Mac load 57; the fourth independent
    check 0.24 to 0.40 s at Mac load 34). Run 5, with the x86 machine at load 5 to 7 from another job and
@@ -520,7 +557,8 @@ pub trait Guest: Sized + 'static {
 
     // --- facts about one instruction, for the analyses ---
     fn flow(i: &Self::Instruction) -> Flow<Self::Reg>;
-    /// Up to two memory accesses, in the order the instruction makes them.
+    /// Up to two memory accesses, in the order the instruction makes them, each described exactly (an
+    /// access that is not base plus scaled index says so through its `Index` or `AccessBytes`).
     fn accesses(i: &Self::Instruction) -> [Option<MemoryAccess<Self::Reg>>; 2];
     fn stack_move(i: &Self::Instruction) -> StackMove;
     /// The blob offset of an address the instruction `i` at blob offset `at` builds into a register (adr,
@@ -635,21 +673,42 @@ pub struct MemoryAccess<R> {
     /// the base and index are (`fs:[rdx + rax * 4]`); `None` on ARM64 and RISC-V.
     pub segment: Option<R>,
     pub base: Option<Base<R>>,
-    /// The index register, its shift, and how it is read (ARM64 `uxtw`, `sxtw`; x86 and RISC-V all 64
-    /// bits, `Extend { from_bits: 64, signed: false }`).
-    pub index: Option<(R, u8, Extend)>,
+    pub index: Option<Index<R>>,
     pub displacement: i64,
     /// The address is worked out modulo 2^this: 64, except 32 for x86's 0x67 prefix. The loop proofs and
     /// check grouping leave a 32-bit one alone (it is checked by itself).
     pub address_bits: u8,
     pub write_back: WriteBack,     // None, Before(by), After(by)
-    pub bytes: AccessBytes,        // Fixed(n) or Counted (a rep string instruction: rcx elements)
+    pub bytes: AccessBytes,
     pub kind: AccessKind,          // Read, Write, ReadWrite
 }
 pub enum Base<R> { Register(R), Pc }
-/// How a register is read as an index: its low `from_bits` (32 or 64), zero- or sign-extended (today's
-/// `wcontainers_arm64::Extend`, moved).
+/// What the index adds to the address.
+pub enum Index<R> {
+    /// A general register, read as `extend` says, shifted left by `shift` (ARM64 `uxtw`, `sxtw`, `lsl`;
+    /// x86 `[b + i * s]` all 64 bits, and `xlat`'s al, `Extend { from_bits: 8, signed: false }`).
+    Register { reg: R, shift: u8, extend: Extend },
+    /// x86 `bt`, `bts`, `btr`, `btc` with a register bit offset: whole operands of `width` bits from the
+    /// operand's address, the register read signed at `width` (16, 32 or 64) and shifted right
+    /// arithmetically by log2(width), then left by log2(width / 8). Far from the operand: `bt [rax], rcx`
+    /// with rcx 0x80000 faults 64 KiB past rax on the reference (section 2, run 8).
+    BitOffset { reg: R, width: u8 },
+    /// x86 VSIB (the gathers): each element's address takes one lane of this vector register, `lane_bits`
+    /// (32 or 64) read signed, shifted left by `shift`.
+    Lanes { reg: R, lane_bits: u8, shift: u8 },
+}
+/// How a register is read as an index: its low `from_bits` (8, 16, 32 or 64), zero- or sign-extended
+/// (today's `wcontainers_arm64::Extend`, moved; ARM64 uses 32 and 64 only).
 pub struct Extend { pub from_bits: u8, pub signed: bool }
+pub enum AccessBytes {
+    Fixed(u16),
+    /// A rep string instruction: rcx elements of this size.
+    Counted { element: u8 },
+    /// Elements of `element` bytes, `count` of them from the address (or one per lane of a `Lanes`
+    /// index), of which only those a mask register selects at run time are accessed: x86 `vmaskmov`,
+    /// `vpmaskmov` and the gathers. Masked-off elements never fault (section 5.4).
+    Masked { element: u8, count: u8 },
+}
 
 /// A constant or a register, as the loop-proof recognisers name operands.
 pub enum Value<R> { Imm(i64), Reg(R) }
@@ -709,7 +768,9 @@ an i64 for MMX; RISC-V's f registers are i64.
 Changes to the methods' contract, each needed by a CPU named here:
 - `check(address, bytes, access)` becomes `check(address, bytes, access, which: u8)`: which of the
   instruction's accesses (0 or 1) this is, so plans are kept per access (x86 `movs`, `push [m]`, `call [m]`
-  make two). ARM64 always passes 0.
+  make two). ARM64 always passes 0. A meaning may check one access more than once (a gather's check per
+  element, a masked store's two one-byte checks, section 5.4); such accesses are the ones the analyses
+  leave alone (section 3.4), so they have no plan and every check is made as written.
 - `check_range(address, length, access) -> i32 local`: whether a run-time length of bytes may be accessed,
   without stopping. Used by the x86 string instructions to choose the bulk path (section 5.6).
 - `call(target)` and `ret(target)` follow `G::RETURN_ADDRESS`. With `Register` nothing changes from
@@ -925,13 +986,20 @@ check of its own when the stack pointer is back at its entry value. `SP_ALIGNMEN
 and RISC-V, where the "aligned after" analysis is never run.
 
 Memory accesses (T32, T33). `accesses(i)` replaces "the one memory access": up to two, each with an
-optional segment base (x86 `fs:` and `gs:`), base (register or pc), index with scale and extension,
-displacement, write-back, size or "counted" (rep), and read, write or both. Check plans are keyed by
+optional segment base (x86 `fs:` and `gs:`), base (register or pc), index (a register with shift and
+extension, x86's bit offset of `bt` and its kin, or a vector register's lanes for the gathers),
+displacement, write-back, size ("counted" for rep, "masked" for the masked moves and gathers), and read,
+write or both. Check plans are keyed by
 (offset, which). An access that reads and writes the same place (x86 `add [m], r`) is one access of kind
 `ReadWrite`, checked once for writing before anything changes. The base key of the check analysis becomes
 the pair (segment, base), so all `fs:[...]` accesses of a function with the same base group under the FS
 base, which no instruction in the function changes unless it writes FS (`wrfsbase`). ARM64's segment is
-always `None`, so its keys, and its output, stay as today.
+always `None`, so its keys, and its output, stay as today. The check analysis and the loop proofs use an
+access only when its index is `None` or `Index::Register` with `from_bits` 32 or 64 and its bytes are
+`Fixed`, exactly the accesses ARM64 has today; every other access (a `BitOffset` or `Lanes` index, an
+8- or 16-bit index, `Counted` or `Masked` bytes, a 32-bit address) is checked by its own meaning every
+time it runs and is covered by no group and no proof, so nothing can skip a check those accesses need.
+They are rare in hot code, so this costs little; the cost is measured at X5 and X8.
 
 Code changes (T34). `CodeChanges::Announced` (ARM64 `ic ivau`, RISC-V `fence.i` and the flush system call)
 or `Detected` (x86): section 5.7.
@@ -947,7 +1015,7 @@ from which the translator makes both the counting exit (negating the relation, `
 `Below { i }` and `Above { !i }` swapped, when the loop goes on along the fall-through edge, as today's
 `cond ^ 1`) and the bound a switch's guard puts on an index (an unsigned `Below` on the edge into the
 block); and `loaded_max` ("a load into r zero-extends to at most m"). How an index is read comes with the
-access (`MemoryAccess::index`'s `Extend`), so it needs no function of its own. Comparisons at widths other
+access (the `Extend` of `Index::Register`), so it needs no function of its own. Comparisons at widths other
 than 32 and 64 bits give no proof (the proof module's `Domain` has only those two), which costs only
 speed. `NARROW_WRITE` says what a narrow write does to the rest of the register: ARM64 `[None, None,
 Some(Zero)]` (only 32-bit writes exist); RISC-V `[None, None, Some(Sign)]` (the `*W` instructions); x86
@@ -1039,9 +1107,14 @@ Translator:
    (sections 3.3 and 5.3). "Flags wanted" lives in bit 62.
 3. **Lazy flags as a CPU-supplied model.** Section 3.4 "Flags" and section 5.1.
 4. **Memory access description.** Up to two accesses, base plus index times scale plus displacement, FS and
-   GS segment bases, plans per access (section 3.4).
+   GS segment bases, plans per access; the forms that are not base plus scaled index (x86's bit offsets,
+   gathers, masked moves) are described exactly and checked only by their own meanings, never grouped or
+   proven (sections 3.4 and 5.4).
 5. **Passed registers.** CPU-chosen, different in and out (section 3.4).
-6. **Unannounced code changes.** Write protection through the permission table (section 5.7).
+6. **Unannounced code changes.** Write protection through the permission table; a write faults, the
+   page's pieces are dropped, the page becomes writable, and the faulting instruction runs once from a
+   look-ahead-none piece that protects nothing, so writes into the running piece, even into the next
+   instruction on the writer's own page, take effect at once and always make progress (section 5.7).
 7. **The red zone.** Part of every frame (section 3.4, "Stack moves and frames").
 8. **x87 and AVX registers.** x87 lives in the thread block behind a software hook; ymm upper halves are
    register bits (sections 5.8 and 5.10).
@@ -1302,6 +1375,47 @@ Tests (section 7 gives the detail):
   anything changes, so a page fault on either leaves exact state (a `call`'s general protection for a
   non-canonical target comes after its push, section 5.3). `pop [m]` computes m with rsp already moved, as
   the manual says.
+- **Accesses that are not one operand** (section 2, run 8, all on the reference). Each is described
+  exactly by `accesses`, checked by its own meaning only (section 3.4), and its meaning makes the checks
+  and changes in the CPU's order, so a fault leaves the CPU's state and the CPU's address:
+  - **`bt`, `bts`, `btr`, `btc` with a register bit offset and a memory operand**: one access of the
+    operand's size (`Fixed`, read for `bt`, `ReadWrite` for the others) at the operand's address plus
+    `Index::BitOffset`: the register read signed at the operand's width, shifted right by log2(width) and
+    left by log2(width / 8). `bt [rax], rcx` with rcx 0x80000 faults at rax + 0x10000; a 32-bit offset of
+    0x80000000 reaches 256 MiB below the operand and a 16-bit one of 0x8000 4 KiB below; the register's
+    bits above the width are ignored. With a base of rbp the access goes through the stack segment
+    (`bt [rbp], rcx` reaching past 2^47 is a stack fault, through rax general protection). The immediate
+    forms address the operand itself.
+  - **`xlat`**: one byte read at rbx + al, `Index::Register` with `Extend { from_bits: 8, signed: false }`
+    (al 0xFF reads rbx + 0xFF).
+  - **The gathers** (`vgatherdps`, `vgatherqps`, `vpgatherdd` and the rest, AVX2): one access with an
+    `Index::Lanes` index and `Masked` bytes. The meaning goes through the elements in lane order; for each
+    element whose mask lane is set it checks the element's range (reporting its first byte not allowed),
+    loads it, writes the destination lane and clears the mask lane. A fault therefore leaves what the CPU
+    leaves: the elements before it gathered and their mask lanes clear, the rest untouched, rip at the
+    gather, and the fault at the first byte not allowed of the faulting element (seen: elements 0 and 1
+    gathered and their mask lanes cleared when element 2 faults; with elements 1 and 3 unmapped only
+    element 0 is gathered and the fault names element 1; an element across the page end faults at the
+    page's end with nothing gathered). Masked-off elements never fault. When all are done the whole mask
+    register is zero (seen). A gather is one instruction for the stop check; the program's
+    signal handler may map the page and return, and the gather goes on from the mask it left.
+  - **`vmaskmovps`, `vmaskmovpd`, `vpmaskmovd`, `vpmaskmovq`** (AVX setting): one access with `Masked`
+    bytes. Masked-off elements never fault, and nothing is loaded or stored when a selected one faults
+    (seen: lane 0 not stored when lane 3 faults; the load leaves its destination unchanged). With S the
+    first byte of the first selected element and E the last byte of the last one: a load checks [S, E] for
+    reading and reports its first byte not allowed; a store reports S when S is not allowed and E otherwise
+    (seen in nine store cases, 128-bit and 256-bit, `vmaskmovps` and `vpmaskmovd`, including elements across
+    the page end: lanes 0 and 3 from 0x2000fff4 fault at 0x20010003, lane 3 alone at 0x20010000). Since [S,
+    E] is at most 32 bytes it crosses at most one page boundary, so the store's meaning makes two one-byte
+    write checks, at S and then at E, which give exactly that address, and then stores the selected
+    elements.
+  - **`maskmovdqu`** (SSE2, offered by default): the CPU ignores the mask for faults. Its accesses are two
+    8-byte writes in this order: rdi + 8, then rdi. Both are checked (each reporting its first byte not
+    allowed) before any byte is stored, then the bytes the mask selects are stored (seen: an all-zero mask
+    faults; rdi 0x2000fffc faults at rdi + 8 whatever the mask, with byte 0 not stored; rdi 0x2000fff4
+    faults at 0x20010000; rdi 0x1ffffffc and 0x1ffffff8, low half below a mapped page, fault at rdi).
+  Which fault a non-canonical gather element, masked span or `maskmovdqu` half gives is decided by the
+  rule below, on the range `memory_fault` works out; layer 1 draws those addresses near 2^47 too.
 - **Non-canonical data addresses** stop the thread at the permission table (they are above every page it
   covers). The CPU faults on any access that reaches a non-canonical address, also one that starts at a
   canonical one: on the reference an 8-byte load at 0x7ffffffffffc and a 4-byte load at 0x7ffffffffffe
@@ -1320,27 +1434,29 @@ Tests (section 7 gives the detail):
     instructions' rsi and rdi, anything with `fs:` or `gs:`) gives general protection (`SIGSEGV`,
     `SI_KERNEL`, address 0).
   One instruction can have one of each: `pop [rbx]` gives the stack fault when rsp is not canonical and
-  general protection when rbx is not. The meanings' own checks (the alignment of `movaps`, `cmpxchg16b`
-  and the like, a branch's canonical target) give general protection whatever the segment. An alignment
-  check comes before the access's own fault: a misaligned non-canonical `movaps xmm0, [rsp]` is general
-  protection on the reference. A call's canonical check comes after its push (section 5.3). The meanings
-  add nothing for this (no cost on any access): the permission table already stops every such access,
-  since the last page below 2^47 is never mapped: Linux's x86-64 user space ends at 0x7ffffffff000
-  (`TASK_SIZE_MAX`), and the x86 personality gives our kernel that same limit (section 6), so no mapping
-  reaches the last page and an access reaching 2^47 always faults. The registers are exact at the fault,
-  so `X86_64::memory_fault(address, code, block)` works out the instruction's accesses (`accesses` of
-  the instruction at `code`, with their start addresses from the block's registers and segment bases, and
-  their sizes: an element for `rep` and gather forms). The two accesses of one instruction may differ in
-  size (`call far [m]` reads 10 bytes and pushes 16), so it takes the access that faulted: the first, in
-  the instruction's order (the order the CPU and the meaning check them), whose range holds the reported
-  address (the first byte not allowed). When that range is not wholly canonical (its start is not
-  canonical, or its last byte is above 0x7fffffffffff), `Stack` if the access goes through the stack
-  segment by the rule above, else `GeneralProtection`; otherwise a page fault at the address. No access
-  is longer than a page (the largest offered, `xsave` with x87, SSE and AVX state, is 832 bytes in the
-  manual's layout), so no access reaching 2^47 starts below the last page. Layer 1 places a share of its
-  memory operands' bases (rsp and rbp among them), of its stack pointers, and of the other base
-  registers, in the last 64 bytes below 2^47 and at non-canonical values, so that all three answers are
-  compared with the reference.
+  general protection when rbx is not. The meanings' own checks (the alignment of `movaps`, `cmpxchg16b` and
+  the like, a branch's canonical target) give general protection whatever the segment. An alignment check
+  comes before the access's own fault: a misaligned non-canonical `movaps xmm0, [rsp]` is general protection
+  on the reference. A call's canonical check comes after its push (section 5.3). The meanings add nothing
+  for this (no cost on any access): the permission table already stops every such access, since the last
+  page below 2^47 is never mapped: Linux's x86-64 user space ends at 0x7ffffffff000 (`TASK_SIZE_MAX`), and
+  the x86 personality gives our kernel that same limit (section 6), so no mapping reaches the last page and
+  an access reaching 2^47 always faults. The registers are exact at the fault, so
+  `X86_64::memory_fault(address, code, block)` works out the instruction's accesses (`accesses` of the
+  instruction at `code`) and the range each really touches, from the block's registers and segment bases:
+  for `Fixed` bytes the address and size; for a `BitOffset` index the operand the bit offset selects; for
+  `Counted` bytes the current element (rsi or rdi); for `Masked` bytes the span from the first to the last
+  element the mask selects, which for a gather is the first element whose mask bit is still set (the
+  elements before it are done and their bits clear at the fault, next item). The two accesses of one
+  instruction may differ in size (`call far [m]` reads 10 bytes and pushes 16), so it takes the access that
+  faulted: the first, in the instruction's order (the order the CPU and the meaning check them), whose range
+  holds the reported address. When that range is not wholly canonical (its start is not canonical, or its
+  last byte is above 0x7fffffffffff), `Stack` if the access goes through the stack segment by the rule
+  above, else `GeneralProtection`; otherwise a page fault at the address. No access is longer than a page
+  (the largest offered, `xsave` with x87, SSE and AVX state, is 832 bytes in the manual's layout), so no
+  access reaching 2^47 starts below the last page. Layer 1 places a share of its memory operands' bases (rsp
+  and rbp among them), of its stack pointers, and of the other base registers, in the last 64 bytes below
+  2^47 and at non-canonical values, so that all three answers are compared with the reference.
 - **Addresses through a segment** (`fs:`, `gs:`): `MemoryAccess::segment` names the segment base added,
   whatever base and index the operand has (`fs:[rdx + rax * 4]`, a thread-local array).
 - **Alignment**: x86 allows unaligned access except for a few instructions (`movaps`, `movdqa` and the
@@ -1373,8 +1489,9 @@ value is one Linux allows, decided by layer 1.
   reason (direction flag set, overlap, range not all allowed).
 - **repe and repne cmps and scas** stop on data, so they are always one element per pass.
 - What the reference does (section 2): the trap flag stops it after each element, so layer 1 lets the
-  reference step on while rip stays on the instruction, up to the case's rcx (kept small by the generator),
-  and compares the end state.
+  reference step on while rip stays on a rep string instruction, up to the case's rcx (kept small by the
+  generator), and compares the end state (`Machine::unfinished`, section 7.2, which steps on only for rep
+  string instructions and gathers, never for a branch whose target is CODE).
 
 ### 5.7 Code written without an announcement
 
@@ -1403,9 +1520,26 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
     Counted and warned "code translated from a live stack frame". This is rare (an executable stack), so
     its cost does not matter.
 - A write to such a page reaches the memory fault hook with exact registers. The CPU side sees the page is
-  only write-protected for code, drops every piece translated from the page, sets the write bits back, and
-  continues the thread at the faulting instruction, which writes again. Counter and warning: "code written
-  without announcement", with the page.
+  only write-protected for code and takes the step (below): it drops every piece translated from the page
+  and sets the write bits back. Counter and warning: "code written without announcement", with the page.
+- **Making progress: the faulting instruction runs once unprotected.** The thread goes on at the faulting
+  instruction, which writes again. It must not be translated the ordinary way, since translating its bytes
+  protects its page anew: when the instruction sits on the page it writes (a loop that writes the
+  immediate of its own next instruction, section 2, run 8), the retried write would fault again forever.
+  So the step also sets a one-shot mark in the thread's state: "run once unprotected at A", A the faulting
+  instruction's address. The bottom loop, entering A with the mark set, clears it and translates A with
+  the one primitive at look-ahead none (one instruction), into a piece that is not entered in the lookup
+  and protects no page, calls it once and drops it. Like every piece at none it passes control to the next
+  address through the lookup, so the next instruction is translated afresh from the bytes as written,
+  which protects the page again. The instruction itself runs as it was read before its write, as the CPU
+  runs an instruction it has already fetched (expected from the manual, checked at X6 by a program that
+  writes into its own instruction); every later instruction sees the new bytes, as on the reference.
+  Each such write costs one fault, one step and two translations, counted with the step. It always makes
+  progress: any stop of the thread clears the mark, so it applies to that one entry only; and when the
+  one-shot piece's write faults on another marked page (an access across two pages of code, a `rep movs`
+  pass), that step clears that page's mark and sets the one-shot mark again, so each repeat removes one
+  mark and the repeats end. With threads in parallel (section 8) the other threads stay stopped from the
+  step until the one-shot piece has run, so none protects the page again in between.
 - Pieces in progress on the WebAssembly stack may have come from that page, including the running one. So
   dropping pieces unwinds to the bottom loop (as after a lost stack); functions in progress continue from
   their return addresses, translated afresh ("continued after stack loss").
@@ -1684,6 +1818,19 @@ resolved at compile time like the translator (the kernel generic over a personal
 - **Code coherence**: nothing for the kernel to do on x86. Its writes into guest memory and the aliases of
   shared pages are seen by the CPU side, which owns `Cpu::write`, `zero`, `shared_write` and the shared
   mappings (section 5.7); the kernel keeps announcing mappings through `code_changed` as now.
+- **The copy routines' partial faults**: each CPU gets its own measured model, since a program can see
+  what a failed copy left (the bytes before the fault, and `read`'s count). ARM64 keeps today's model in
+  user.rs exactly (`stored_before_fault`, `clear_partial`, the measured kernel-buffer offsets). The x86-64
+  model is simpler and was measured on the reference (Linux 7.3.4 on the i7-8750H, which has ERMS and not
+  FSRM; section 2, run 8): `copy_to_user` and `clear_user` write every byte up to the first byte not
+  allowed, whatever the start's alignment and the length. Seen for a pipe's `read` (`copy_to_user`; the
+  call returns `EFAULT`, as `pipe_read` does for a short copy), `/dev/zero`'s `read` (`clear_user`;
+  returns the bytes cleared) and `uname` (a struct copied out; `EFAULT`), each with the buffer ending
+  1, 3, 7, 8, 9, 13, 15, 16, 17, 31, 33, 64, 100 and 389 bytes before a page it may not write: every byte
+  before that page written, none after. So the personality's copy model is a function the kernel calls
+  where user.rs calls `stored_before_fault` and `clear_partial` today: x86's answers "all bytes before
+  the first one not allowed". What each call returns stays the kernel's own, shared code. The kernel
+  test of X10 repeats these three cases against the reference.
 - **System call numbering and decode**: the number and argument registers, the result register, how a call
   is restarted (pc back by the system call instruction's length: 4 on ARM64, 2 for x86 `syscall`), and the
   dispatch table built from the guest's own generated Linux constants (x86-64's numbers, its 57 legacy
@@ -1908,9 +2055,15 @@ trait Machine {
     /// Read the frame back into a state (a component whose `xstate_bv` bit is clear as its first state),
     /// after giving the runner its own thread pointer back.
     fn leave(context: &libc::ucontext_t, state: &mut [u128]);
-    /// Whether the stop is a repeated string instruction that has not finished (x86: `TRAP_TRACE` with
-    /// rip still at CODE), which the runner steps on.
-    fn unfinished(context: &libc::ucontext_t, signal: &libc::siginfo_t) -> bool;
+    /// Whether the stop leaves the case's instruction `code` unfinished, so the runner steps on (at most
+    /// `limit(code, state)` times). x86: `TRAP_TRACE` with rip still at CODE, and `code` (decoded with
+    /// iced) is a rep string instruction or a gather, the only instructions the trap flag stops part way
+    /// (section 2, run 8). A `ret`, `call` or `jmp` whose target is CODE stops there finished and is
+    /// never stepped on. ARM64 never.
+    fn unfinished(code: &[u8], context: &libc::ucontext_t, signal: &libc::siginfo_t) -> bool;
+    /// How many steps an unfinished instruction can take: x86 the case's rcx for a rep string
+    /// instruction, the element count for a gather.
+    fn limit(code: &[u8], state: &[u128]) -> u64;
     /// Make written code visible to the CPU: ARM64 `dc cvau` and `ic ivau`, x86 nothing.
     fn synchronise(code: &[u8]);
     /// A blob's starting registers (x86: rflags 0x202, MXCSR 0x1F80, FCW 0x037F, rsp at argc, rdx 0).
@@ -1990,8 +2143,12 @@ so; it is never skipped silently.
     system call, for `syscall`, `int 0x80` and `sysenter` (whose `SIGSYS` arrives with rip in the vDSO,
     section 2, run 7), which never runs.
   Anything else (a stop elsewhere, a signal not listed) is reported as such and fails the case; nothing is
-  mapped by guesswork. A repeated string instruction is stepped on while rip stays at CODE. The runner's
-  own FS base is set back before anything else.
+  mapped by guesswork. A `TRAP_TRACE` stop with rip still at CODE is stepped on only when the instruction
+  is a rep string instruction (one element per step) or a gather (stopped after the elements before a
+  faulting one, rflags with RF, then the fault on the next step: section 2, run 8), up to `Machine::limit`
+  steps, through `Machine::unfinished`, which is given the instruction's bytes; any other instruction
+  landing at CODE (a `ret`, `call` or `jmp` to CODE) is finished there. The runner's own FS base is set
+  back before anything else.
 - **Blobs** (layers 2 and 3 natives): the runner forks per blob, maps it and runs it with the blob start
   state, and reports output and status in-band. Docker is not used on the x86 machine.
 - **Recorded results**: every reference result is stored under `target/reference/x86_64/` keyed by the
@@ -2004,31 +2161,37 @@ so; it is never skipped silently.
 ### 7.4 The three layers for x86-64
 
 **Layer 1: one instruction at a time.** The forms list comes from iced-x86's own tables: one form per iced
-`Code` whose `OpCodeInfo` says it is valid in 64-bit mode (`mode64()`), is an instruction (`is_instruction()`,
-not a directive), has an encoding that is not 3DNow, XOP, MVEX or EVEX (`encoding()`), and whose every
-`Code::cpuid_features()` entry is in the offered set: one list for the default claims and one for the AVX
-setting. Forms that `is_privileged()` marks kernel-only stay in the list as their own group: their case passes
-when the translator stops with the fault the reference CPU gives (section 5.2). The forms not offered are a
-third list, whose cases must stop with illegal instruction. Its name (the `Code` name) is the seed key; its
-group is its mnemonic and encoding. A case is a random `Instruction` for the `Code`, with operands from
-`op_kind(i)` (registers, immediates weighted toward edges, memory operands whose base and index point into
-DATA), encoded by iced's `Encoder`, which gives the bytes and length. A share of the cases instead puts a
-memory operand's base, or rsp for the implicit stack accesses, in the last 64 bytes below 2^47 or at a
-non-canonical value (section 5.4), with every base register drawn, rsp and rbp and r12 and r13 among
-them and `fs:` and `gs:` prefixes among the operands, so that the page fault, general protection and
-the stack fault are each compared with the reference. Random registers, flags, vector, x87 and
-MXCSR values are weighted toward edge values; MXCSR is the default in half the cases, and tracking (section
-5.8) is on in half, as ARM64's is today. The starting rflags holds what user code can hold: the six flags, DF,
-NT and ID drawn, bits 1 and 9 set, and AC, TF, IOPL, RF, VIF and VIP clear (AC because the translator never
-holds it, section 5.1; NT and ID are entered as section 7.3 says). The reference runs it by
+`Code` whose `OpCodeInfo` says it is valid in 64-bit mode (`mode64()`), is an instruction
+(`is_instruction()`, not a directive), has an encoding that is not 3DNow, XOP, MVEX or EVEX (`encoding()`),
+and whose every `Code::cpuid_features()` entry is in the offered set: one list for the default claims and
+one for the AVX setting. Forms that `is_privileged()` marks kernel-only stay in the list as their own group:
+their case passes when the translator stops with the fault the reference CPU gives (section 5.2). The forms
+not offered are a third list, whose cases must stop with illegal instruction. Its name (the `Code` name) is
+the seed key; its group is its mnemonic and encoding. A case is a random `Instruction` for the `Code`, with
+operands from `op_kind(i)` (registers, immediates weighted toward edges, memory operands whose base and
+index point into DATA), encoded by iced's `Encoder`, which gives the bytes and length. A share of the cases
+instead puts a memory operand's base, or rsp for the implicit stack accesses, in the last 64 bytes below
+2^47 or at a non-canonical value (section 5.4), with every base register drawn, rsp and rbp and r12 and r13
+among them and `fs:` and `gs:` prefixes among the operands, so that the page fault, general protection and
+the stack fault are each compared with the reference. The accesses that are not one operand (section 5.4)
+get draws of their own: bit offsets of `bt` and its kin of every sign and size, a share reaching an unmapped
+page or past 2^47; gather indexes and masks with a share of the elements on an unmapped page, across the
+page end or masked off there; masks of the masked moves and `maskmovdqu` (all-zero among them) with the
+operand placed across the end of DATA, below its start or near 2^47. A gather that faults part way is
+stepped on by the reference runner (section 7.3) and compared at its fault. Random registers, flags, vector,
+x87 and MXCSR values are weighted toward edge values; MXCSR is the default in half the cases, and tracking
+(section 5.8) is on in half, as ARM64's is today. The starting rflags holds what user code can hold: the six
+flags, DF, NT and ID drawn, bits 1 and 9 set, and AC, TF, IOPL, RF, VIF and VIP clear (AC because the
+translator never holds it, section 5.1; NT and ID are entered as section 7.3 says). The reference runs it by
 the trap flag; the translator runs it at look-ahead none; every register, every flag (including undefined
 ones), the touched memory and the stop are compared. Random byte strings that iced decodes as `INVALID` are
 compared with the CPU's stop: SIGILL, or general protection for the ones past 15 bytes (section 5.2), which
-`no_form` draws on purpose as runs of prefixes before a body (a legacy one, or a VEX or EVEX one after a
-66, F2, F3 or REX that makes it invalid); valid ones also check the length (where the CPU lands).
-Exclusions, each with a reason: a jump to itself; the instructions answered by design (CPUID, rdtsc, rdtscp, xgetbv), which a
-designed-answers test checks instead; and `int 0x80` and `sysenter`, which the reference kernel runs as 32-bit
-system calls and this phase does not provide (section 5.2), also checked by the designed-answers test.
+`no_form` draws on purpose as runs of prefixes before a body (a legacy one, or a VEX or EVEX one after a 66,
+F2, F3 or REX that makes it invalid); valid ones also check the length (where the CPU lands). Exclusions,
+each with a reason: a jump to itself; the instructions answered by design (CPUID, rdtsc, rdtscp, xgetbv),
+which a designed-answers test checks instead; and `int 0x80` and `sysenter`, which the reference kernel runs
+as 32-bit system calls and this phase does not provide (section 5.2), also checked by the designed-answers
+test.
 
 **Layer 2: random small programs**, from the shared program model (loops with counters, calls, bounded
 recursion, tail calls, calls and jumps through registers, jump tables in both x86 compiler styles, frames,
@@ -2137,9 +2300,12 @@ Measured throughout, recorded with machine and load: translation speed, output s
   reference CPU on all 2^32 inputs of `rcpss` and of `rsqrtss`.
 - **X6, bounded look-ahead, the rare paths and code written without announcement.** Translating from any
   byte address, the bottom loop, go to address, adding code while running, injection tests, write
-  protection of translated pages with the unwind, both runners' stand-ins of it, a test program that writes
-  and runs code with no announcement; setjmp, C++ exception and Rust panic programs. Pass bar: those tests
-  pass at every look-ahead, in wasmtime and Chrome.
+  protection of translated pages with the unwind and the one-shot unprotected piece, both runners'
+  stand-ins of it, test programs that write and run code with no announcement (one that writes code on
+  another page and runs it; one whose loop writes the immediate of its own next instruction on the same
+  page, scratch `run8/smc.c`, which prints `eax 1 sum 20100` on the reference; one whose instruction writes
+  into its own bytes); setjmp, C++ exception and Rust panic programs. Pass bar: those tests pass at every
+  look-ahead, in wasmtime and Chrome, with the native output.
 - **X7, x87 and MMX.** The x87 hook with `X87DoubleExtended`, precision control by rounding to odd,
   `fsqrt` by section 5.8's root, the
   transcendental instructions with `astro-float`, MMX registers, `fxsave` and `fxrstor`. Pass
@@ -2210,33 +2376,42 @@ apply unchanged.
 - Not seen, expected from sources: `sysenter` giving general protection on a kernel without 32-bit
   emulation (section 5.2), and Linux keeping NT and ID across signal delivery (section 6). Where rip's
   read falls in `iretq`'s order (section 5.3), settled at X5.
+- The cost of checking the accesses that no group or proof covers (bit offsets, gathers, masked moves,
+  8- and 16-bit indexes, section 3.4) on real programs, measured at X5 and X8; and the cost of code
+  written on the page that writes it (one fault, one step and two translations a write, section 5.7),
+  measured at X6.
+- Not seen, expected: which fault a gather element, a masked span or a `maskmovdqu` half that reaches a
+  non-canonical address gives (section 5.4 applies the stack-segment rule to it); that an instruction
+  writing into its own bytes runs as it was read (section 5.7). Layer 1 and X6's programs check both.
 - A known gap shared with ARM64 today: a signal handler that reads the sticky float flags from its
   frame (MXCSR on x86, FPSR on ARM64) while they are not kept sees the flags last written, and nothing
   counts it (section 5.8).
 
 ## 13. Where the evidence is
 
-Experiments and downloads of milestone X0 are in `pyro-parked/wcontainers-scratch/x86`: `iced-size` (the size
-builds), `dis` (an iced-based disassembler used to check encodings), `reference-proof` (`hello.c`,
-`stepper.c`, `cases.sh`, `cases2.sh` and their outputs), `sources` (the relaxed SIMD overview and sandsifter's
-`injector.c`, and in run 3 RISU's source in `sources/risu`), `x87-crate` and `x87-crate-base` (astro-float's
-size in a wasm32 cdylib), `x87-nostd` (astro-float without the standard library), `apfloat-pc` (precision
-control by rounding to odd with rustc_apfloat); run 3 added to `reference-proof` `stepper3.c`, `approx.c`,
-`approx_dump.c` with its output `approx_tables.txt`, `approx_formula.c` and `approx_mxcsr.c`. The second
-independent check's seccomp stepper is `check2/exp/stepper_sc.c`. Run 4 added to `reference-proof`
-`stepper4.c` (made from `stepper3.c` by `scripts/make_stepper4.py`), `cases4.sh`, `cases5.sh` and their
-outputs, and `cases6.out`. Run 5 added `cases7.sh`, `cases8.sh` and `sweep15.sh` with their outputs
-(the 15-byte limit, `clflush`, invalid opcodes' lengths; `sweep15.iced` and `sweep15.classes` set the
-sweep beside iced's decoding) and `brk.c` (ARM64's breakpoint `si_code`); the fourth independent check's
-cases are in `check4`. Run 6 added `cases9.sh` and `cases10.sh` with their outputs (the stack fault
+Experiments and downloads of milestone X0 are in `pyro-parked/wcontainers-scratch/x86`: `iced-size` (the
+size builds), `dis` (an iced-based disassembler used to check encodings), `reference-proof` (`hello.c`,
+`stepper.c`, `cases.sh`, `cases2.sh` and their outputs), `sources` (the relaxed SIMD overview and
+sandsifter's `injector.c`, and in run 3 RISU's source in `sources/risu`), `x87-crate` and `x87-crate-base`
+(astro-float's size in a wasm32 cdylib), `x87-nostd` (astro-float without the standard library),
+`apfloat-pc` (precision control by rounding to odd with rustc_apfloat); run 3 added to `reference-proof`
+`stepper3.c`, `approx.c`, `approx_dump.c` with its output `approx_tables.txt`, `approx_formula.c` and
+`approx_mxcsr.c`. The second independent check's seccomp stepper is `check2/exp/stepper_sc.c`. Run 4 added
+to `reference-proof` `stepper4.c` (made from `stepper3.c` by `scripts/make_stepper4.py`), `cases4.sh`,
+`cases5.sh` and their outputs, and `cases6.out`. Run 5 added `cases7.sh`, `cases8.sh` and `sweep15.sh` with
+their outputs (the 15-byte limit, `clflush`, invalid opcodes' lengths; `sweep15.iced` and `sweep15.classes`
+set the sweep beside iced's decoding) and `brk.c` (ARM64's breakpoint `si_code`); the fourth independent
+check's cases are in `check4`. Run 6 added `cases9.sh` and `cases10.sh` with their outputs (the stack fault
 against general protection, alignment first, MMX writes and the x87 registers); the fifth independent
-check's cases are in `check5`. Run 7 added `stepper5.c` (NT and ID entered, the seccomp filter with its
-arch test), `cases11.sh`, `cases12.sh` and `cases13.sh` with their outputs (NT and ID, `sysenter`, a
-legacy prefix before VEX and EVEX, `iretq`'s order); the sixth independent check's cases are in `check6`.
-The x86 machine holds copies of the programs and scripts in
-`~/wcontainers-x86/proof` (with `approx.out`, `approx_formula.out`, `approx_mxcsr.out`; the cases
-scripts' outputs are kept only on the Mac), and the independent checks' own files in
-`~/wcontainers-x86/check`, `check2`, `check3`, `check4`, `check5` and `check6`.
+check's cases are in `check5`. Run 7 added `stepper5.c` (NT and ID entered, the seccomp filter with its arch
+test), `cases11.sh`, `cases12.sh` and `cases13.sh` with their outputs (NT and ID, `sysenter`, a legacy
+prefix before VEX and EVEX, `iretq`'s order); the sixth independent check's cases are in `check6`. Run 8's
+are in `run8`: `stepper6.c`, `cases14.sh` and `cases15.sh` (bit offsets, `xlat`, gathers, masked moves),
+`smc.c` (code written on its own page) and `copyuser.c` (partial copies to user memory), with their outputs;
+the seventh independent check's cases are in `check7`. The x86 machine holds copies of the programs and
+scripts in `~/wcontainers-x86/proof` and, for run 8, `~/wcontainers-x86/proof8` (with `approx.out`,
+`approx_formula.out`, `approx_mxcsr.out`; the cases scripts' outputs are kept only on the Mac), and the
+independent checks' own files in `~/wcontainers-x86/check`, `check2` to `check7`.
 
 ## Appendix A. Every kind b and c place of the seam map, and where it is covered
 
@@ -2371,7 +2546,7 @@ Translator (24 items, in the seam map's order):
 7. Addresses built into registers: 3.2 `built_address`; 3.4.
 8. Switch recognition: 3.2 `jump_table`; 3.4 Switches (indexed by target address, so no case-number
    register is needed).
-9. Memory accesses: 3.2 `accesses`, `MemoryAccess`, `Base`; 3.4 Memory accesses; 5.4.
+9. Memory accesses: 3.2 `accesses`, `MemoryAccess`, `Base`, `Index`, `AccessBytes`; 3.4 Memory accesses; 5.4.
 10. Stack moves: 3.2 `stack_move`, `StackMove`; 3.4 Stack moves and frames.
 11. Stack facts: 3.2 `SP_ALIGNMENT_CHECKED`, `RED_ZONE`, `RETURN_ADDRESS`; 5.3.
 12. Untagging and the address no return reaches: 3.2 `data_address`, `branch_target`, `UNREACHABLE_RETURN`
