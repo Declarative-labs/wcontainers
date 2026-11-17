@@ -69,6 +69,54 @@ branches into it at the start and end of every run.
   checks after them. The end merges brought webgpu, webgl, direct3d-11 and shaders in (direct3d-12
   and rig had nothing new); the webgl branch held the same two slow paths in the other order, kept
   in ours. None of them changed the interface; the whole workspace checks after them.
+- G1, run 7 (2026-11-17): the seven findings of G1's fifth independent check settled (below). The
+  start merges brought direct3d-12 and rig in without conflict and without touching the interface
+  (the others had nothing new); the end merge brought webgl in (the others had nothing new), again
+  without conflict or interface change. The whole workspace checks after each.
+
+## G1's fifth check, and how each finding was settled (run 7)
+
+- A sampler's kind against the program (blocking): the recording back end now checks, at each
+  draw, every sampler binding the program's entry points use against naga's type: a
+  `sampler_comparison` binding takes a sampler with `compare` set, a `sampler` binding one without.
+  A comparison through a sampler without `compare` is no longer made up as `Always`; the guard left
+  in `sample_view` cannot be reached through the interface. Tests:
+  `samplers_compare_exactly_where_the_program_compares` (Less gives 1, Greater 0, linear comparison
+  of `depth32float` drawn, and both mismatches refused) and the suite's new
+  `comparison_samplers_compare_with_the_stored_depth` (Less and GreaterEqual against 0.5 at four
+  references, every back end).
+- The filter rule by sampler, not by level (blocking): the check now runs on naga's `sampling_set`
+  (every texture and sampler pair the entry point uses, through function calls) at each draw: a
+  sampler that does not compare, with any of min, mag or mip linear, paired with a texture whose
+  view's format lacks `FILTER`, is refused, whatever level the draw samples. The old per-sample check
+  is gone. Test: `linear_filters_pair_only_with_textures_the_back_end_filters` (min, mag, mip each
+  linear refused on `r32float` without `FILTER`; all nearest drawn).
+- Several viewports (blocking): `DrawCall::viewports` and `scissors` now state one viewport and at
+  most one scissor (`MultiViewportSplit`), as does plan 4.4; the recording back end refuses more
+  (`a_draw_has_one_viewport_and_at_most_one_scissor`, two viewports, two scissors, one scissor with
+  scissoring off drawn).
+- A uniform binding smaller than the program's block (minor): `BindingResource::UniformBuffer` and
+  `StorageBuffer` docs and plan 4.5 now state it (WebGPU's `minBindingSize`, WebGL 2's
+  `UNIFORM_BLOCK_DATA_SIZE`; a runtime-sized array counts as one element), and the recording back
+  end checks each buffer binding the program uses against naga's size of its type
+  (`buffer_bindings_cover_the_programs_blocks`: 16 bytes for a 32-byte uniform block or a storage
+  block of a `u32` and a `vec4` array refused, 32 drawn).
+- An empty pass's size and sample count (minor): `EmptyPass` docs and plan 4.7: width and height 1
+  to `max_texture_2d`, and a count `takes_samples` gives for `r8unorm` (the attachment WebGPU adds).
+  Checked and tested (`an_empty_pass_has_a_size_and_a_sample_count_r8unorm_takes`: 0 each way,
+  one past the limit each way, 0, 3 and 8 samples refused; 1 and 4 samples and the largest size
+  taken).
+- Offsets near 2^64 (minor): every buffer range a call names now ends through a checked add
+  (`end` in `recorder.rs`), refused as past the buffer where it does not fit; a draw's index and
+  vertex addresses saturate, so they fall past the buffer. Test:
+  `ranges_ending_past_the_largest_offset_are_refused` (write, clear, both sides of `copy_buffer`,
+  read back, both buffer-texture copies, a binding set, an index binding and a vertex stream).
+- Stride zero in the suite (minor): `a_stream_of_stride_zero_reads_its_first_element` (a quad drawn
+  twice with a colour stream of stride 0 holding three colours; every pixel the first). Suite 26.
+- The form of 2de3a6b (minor): that run-5 commit changed a public helper item and touched a test
+  and the plan, without the `interface:` prefix. It cannot be changed without rewriting history,
+  which the project forbids; it is listed under Interface changes (run 5), and this run's interface
+  change (1362848) touches only `crates/wcontainers-gpu` and the plan.
 
 ## G1's fourth check, and how each finding was settled (run 6)
 
@@ -297,8 +345,9 @@ branches into it at the start and end of every run.
   answer, same bytes in every buffer and texture, same frames, no rule broken): in run 3, on the
   widened generator, seeds 0x5eed, 0xc0ffee and 0x7a11ed, 100,000 each; in run 4, on the recorder
   with the new checks, 0x5eed, 0xc0ffee and 0x9e4a11 (new), 100,000 each; in run 5, with discards
-  giving fresh contents and the new checks, 0x5eed, 0xc0ffee and 0xd15ca4d (new), 100,000 each
-  (Measurements).
+  giving fresh contents and the new checks, 0x5eed, 0xc0ffee and 0xd15ca4d (new), 100,000 each;
+  in run 6, 0x5eed, 0xc0ffee and 0x51de6 (new); in run 7, on the recorder with the program binding
+  checks, 0x5eed, 0xc0ffee and 0x5a3d7 (new), 100,000 each (Measurements).
 
 ## G1a's second check, and how each finding was settled
 
@@ -371,6 +420,11 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   `TEXTURE_VIEWS`, shaders naming entry points of their stage that their modules have, programs of
   shaders of their stages, vertex inputs with attributes, and each part of a check the check
   found unbroken (G1's fourth check, above);
+- since run 7: samplers of the kind the program uses (comparison or not), no linear filter paired
+  with a texture the back end does not filter (by the program's pairs, whatever level is sampled),
+  buffer bindings at least the program's block, one viewport and at most one scissor a draw, empty
+  passes of a size and sample count the back end takes, and buffer ranges past the largest offset
+  refused, not wrapped (G1's fifth check, above);
 - multisampled textures 2D, one level and layer, no storage
   (`a_multisampled_texture_is_2d_with_one_level_and_layer_and_no_storage`); their bytes moved only by
   draws, resolves and whole copies between equal sample counts
@@ -381,6 +435,16 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   when its texture is multisampled (an error of the draw).
 
 ## Interface changes
+
+- G1 run 7:
+  - 1362848 ("interface: stated the sampler a program's comparisons and filtered textures take,
+    ..."): documentation only, of `BindingResource::Sampler` (a comparison sampler exactly where the
+    program compares; no linear filter paired with a texture whose format lacks `FILTER`),
+    `UniformBuffer` and `StorageBuffer` (at least the program's block), `DrawCall::viewports` and
+    `scissors` (one viewport, at most one scissor) and `EmptyPass` (size 1 to `max_texture_2d`, a
+    sample count `r8unorm` takes); plan 4.4, 4.5 and 4.7 say the same. For the other tracks: the
+    webgpu back end already refuses several viewports; the Direct3D fronts should grow small
+    constant buffers (`ConstantBufferGrown`) and take `FilterInShader` for any linear filter.
 
 - G1 run 6:
   - abecce6 ("interface: stated that format reinterpretation is between colour formats only"):
@@ -494,7 +558,9 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   from vertex programs, pointers to a function's locals passed to another function.
   `texture_bytes` gives a texture's bytes as held (samples as planes), for tests on back ends that
   cannot read samples in programs.
-- Suite tests (24, `src/suite.rs` and `src/suite/draws.rs`): the 13 of G1a plus
+- Suite tests (26, `src/suite.rs` and `src/suite/draws.rs`; run 7 added
+  `a_stream_of_stride_zero_reads_its_first_element` and
+  `comparison_samplers_compare_with_the_stored_depth`): the 13 of G1a plus
   `values_are_interpolated_with_perspective`, `the_scissor_bounds_the_draw`,
   `stencil_operations_and_tests`, `near_clipping_and_the_viewport_depth_range`,
   `linear_filtering_and_address_modes`, `instances_start_at_the_first_instance`,
@@ -503,12 +569,17 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   `multisampled_targets_cover_their_samples_and_resolve` (where `rgba8unorm` takes four samples),
   `programs_run_per_sample_and_read_samples` (and `SAMPLE_SHADING` and `MULTISAMPLE_READ`),
   `occlusion_queries_answer_whether_samples_passed`. Suite programs are validated with naga's
-  `MULTISAMPLED_SHADING`. The webgpu track's host lists its tests by name
-  (`suite!(@each ...)`), so it runs the new ones once it adds them; the webgl host runs them all.
+  `MULTISAMPLED_SHADING`. The webgpu and webgl hosts run them all (`suite!`).
 
 ## Next
 
-- The independent check of G1 (run 6's fixes).
+- The independent check of G1 (run 7's fixes).
+- The webgpu and webgl hosts run the whole suite through `suite!`, so they take the two new tests
+  (`a_stream_of_stride_zero_reads_its_first_element`,
+  `comparison_samplers_compare_with_the_stored_depth`) when they merge this branch; neither has been
+  run on a GPU by this track.
+- One more guard no call through the interface reaches: `sample_view`'s refusal of a comparison
+  through a sampler without `compare` (the draw's binding check refuses it first).
 - Recording back end limitations, each refused with an error naming it and so left without a
   breaking test: cube sampling, alpha to coverage, implicit level of detail over several levels.
   Two checks are unreachable through the interface and stay as guards: storage writes from vertex
@@ -530,7 +601,6 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 - More suite tests, beyond G1's pass bar: every format's clear and read back (needs reference bytes
   from real Direct3D through the rig, not the recorder's own encoder), mip levels, layered and 3D
   targets, fans and loops through `draw_fan_or_loop` on back ends that draw lines.
-- The webgpu track's host lists suite tests by name: it runs the three new ones once it adds them.
 
 ## How to run
 
@@ -549,7 +619,8 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     `python3 -I breaks.py <tree> <work dir>` there (it copies the tree, changes one line, runs
     `tests/recorder.rs` and `tests/helpers.rs`); 18 faults, five of them added in run 2 for
     multisampling and the counter's halving.
-  - the rule sweep: copy `g1r6/sweep.py` from scratch to the laptop, copy the tree beside it, and
+  - the rule sweep: copy `g1r7/sweep.py` (run 6's, with `program_bindings` among the helpers) from
+    scratch to the laptop, copy the tree beside it, and
     run `python3 -I sweep.py <tree> <target dir>` there (`list` in place of names prints the
     sites; names run only those); it turns each `if` that refuses something in `src/recorder.rs`
     and `src/draw.rs` off (whole, and each top-level `||` operand), removes each statement that
@@ -557,7 +628,9 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     runs `cargo test -p wcontainers-gpu-test`, printing CAUGHT, SURVIVED or BUILD FAILED (the
     match guards). About 20 to 40 s a site at 4 jobs.
   - run 5's faults (the counter's instance split, the discard, the colour byte measure):
-    `g1r5/faults.py`, run the same way (`python3 -I faults.py <tree> <target dir>`).
+    `g1r5/faults.py`, run the same way (`python3 -I faults.py <tree> <target dir>`); run 7's (the
+    sampler kind, the filter rule, unchecked ends, stride zero): `g1r7/faults.py`, `faults2.py`
+    and `faults3.py` the same way.
   - Rust there: rustup with the 1.99.0 toolchain the repository names, installed by another track;
     this run installed nothing.
 - A back end runs the suite with a test file holding a `Host` implementation and
@@ -565,6 +638,29 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 - On the Mac only formatting: `nix develop -c cargo fmt -p wcontainers-gpu -p wcontainers-gpu-test`.
 
 ## Measurements
+
+- G1 run 7, all on the Linux laptop (i7-8750H):
+  - Random sequences on b329a34 (the recorder as it ends the run; scratch
+    `g1r7/sequences-100k.log`, `--release`), each 100,000 asked and run, recorded with no rule broken
+    and replayed identically: seed 0x5eed, 4,552,401 calls, 35.3 s; seed 0xc0ffee, 4,552,312 calls,
+    36.9 s; seed 0x5a3d7 (new), 4,548,760 calls, 20,263 multisampled passes, 28,461 depth-stencil
+    passes, 42,585 indexed draws, 28,603 queries, 11,954 no-overwrite writes without a wait, 35.8 s.
+    Load 1.4 to 2.3. The first two give run 5's and 6's counts: the generator did not change.
+  - The sweep of the new checks (scratch `g1r7/sweep.log`, load about 1.4 to 2.2): 12 sites (the
+    empty pass's size check whole and by its four operands, its sample check, the viewport check
+    whole and by both operands, the block size check, the filter check, and the
+    `program_bindings` call): 12 caught. The comparison check is an `if let` chain the sweep does
+    not turn off, so it is a fault instead.
+  - Run 7's faults (scratch `g1r7/faults*.log`): the comparison kind unchecked, comparison samplers
+    held to the filter rule, the filter rule on mag only, the write's, clear's and index range's
+    ends unchecked, the draw's counted index and vertex ranges unchecked, stride zero read as packed:
+    each caught by the test written for it. Two first attempts were wrong faults, not misses
+    (`faults.log`: an index fault that never overflowed; `faults2.log`: a stride fault that changed
+    every stride), each written again in `faults3.py` and caught.
+  - End check after the end merges (scratch `g1r7/end-check.log`, load 1.9 to 4.2): the whole
+    workspace checks; suite on the recording back end 26 of 26 (`tests/recorder.rs` 32 of 32);
+    rules 97 of 97; helpers 15 of 15; fast paths 12 of 12; sequences 1 of 1 (1,000 at seed 0x5eed);
+    `wcontainers-gpu` 32 of 32; clippy and docs with warnings denied clean.
 
 - G1 run 6, all on the Linux laptop (i7-8750H):
   - Rule sweep (scratch `g1r6/sweep.log`, on c52b3fe, its own build directory, 4 jobs, load 1.4 to

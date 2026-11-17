@@ -35,6 +35,21 @@ struct P { c: vec4<f32> }
 @fragment fn loads_sample() -> @location(0) vec4<f32> {
     return textureLoad(m, vec2<i32>(0, 0), 0);
 }
+@group(0) @binding(34) var dt: texture_depth_2d;
+@group(0) @binding(17) var c: sampler_comparison;
+@fragment fn compared() -> @location(0) vec4<f32> {
+    return vec4<f32>(textureSampleCompareLevel(dt, c, vec2<f32>(0.5), 0.4));
+}
+struct Q { c: vec4<f32>, d: vec4<f32> }
+@group(0) @binding(1) var<uniform> q: Q;
+@fragment fn first_of_two() -> @location(0) vec4<f32> {
+    return q.c;
+}
+struct R { n: u32, a: array<vec4<f32>> }
+@group(0) @binding(160) var<storage, read> r: R;
+@fragment fn first_element() -> @location(0) vec4<f32> {
+    return r.a[0];
+}
 struct Out { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> }
 @vertex fn vs_out(@location(0) v: vec2<f32>) -> Out {
     return Out(vec4<f32>(v, 0.5, 1.0), vec4<f32>(1.0));
@@ -3605,4 +3620,413 @@ fn draws_need_the_topologies_and_indirect_draws_the_back_end_has() {
         }
     });
     d.refused("indirect draws, which this back end reports absent");
+}
+
+/// A sampler of the filters given, comparing with `compare` if given.
+fn sampler_of(r: &mut Recorder, filters: [Filter; 3], compare: Option<CompareFn>) -> Id {
+    r.create_sampler(&SamplerDesc {
+        min: filters[0],
+        mag: filters[1],
+        mip: filters[2],
+        address: [AddressMode::Clamp; 3],
+        lod_range: [0.0f32.to_bits(), 32.0f32.to_bits()],
+        anisotropy: 1,
+        compare,
+        border: BorderColor::TransparentBlack,
+    })
+    .unwrap()
+}
+
+#[test]
+fn samplers_compare_exactly_where_the_program_compares() {
+    use Filter::{Linear as L, Nearest as N};
+    // A depth32float texture cleared to 0.5, compared with 0.4 through binding 17; binding 32's
+    // rgba8unorm texture sampled plainly through binding 16. A comparison filters linearly a format
+    // without FILTER (depth here), as WebGPU's comparison samplers do.
+    type Case<'a> = (&'a str, [Filter; 3], Option<CompareFn>, Option<&'a str>, u8);
+    let cases: [Case; 6] = [
+        ("compared", [N; 3], Some(CompareFn::Less), None, 255),
+        ("compared", [L; 3], Some(CompareFn::Less), None, 255),
+        ("compared", [N; 3], Some(CompareFn::Greater), None, 0),
+        (
+            "compared",
+            [N; 3],
+            None,
+            Some("a program comparing through a sampler that does not compare"),
+            0,
+        ),
+        ("sampled", [N; 3], None, None, 0),
+        (
+            "sampled",
+            [N; 3],
+            Some(CompareFn::Less),
+            Some("a comparison sampler where the program samples without comparing"),
+            0,
+        ),
+    ];
+    for (fragment, filters, compare, violation, want) in cases {
+        let mut d = Drawing::new();
+        let depth = texture(
+            &mut d.r,
+            Format::Depth32Float,
+            2,
+            TextureUsage::RENDER | TextureUsage::SAMPLE,
+        );
+        let depth_view = view(&mut d.r, &depth, Format::Depth32Float);
+        d.r.begin_pass(&PassDesc {
+            depth: Some(DepthAttachment {
+                view: &depth_view,
+                depth: Some(AspectOps {
+                    load: LoadOp::Clear(0.5f32.to_bits()),
+                    store: StoreOp::Store,
+                    read_only: false,
+                }),
+                stencil: None,
+            }),
+            ..pass_of([])
+        });
+        d.r.end_pass();
+        let t = texture(&mut d.r, Format::Rgba8Unorm, 2, TextureUsage::SAMPLE);
+        let v = view(&mut d.r, &t, Format::Rgba8Unorm);
+        let s = sampler_of(&mut d.r, filters, compare);
+        let (texture_at, sampler_at) = if fragment == "compared" {
+            (34, 17)
+        } else {
+            (32, 16)
+        };
+        let set =
+            d.r.create_binding_set(&[
+                BindingEntry {
+                    binding: texture_at,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(if fragment == "compared" {
+                        &depth_view
+                    } else {
+                        &v
+                    }),
+                },
+                BindingEntry {
+                    binding: sampler_at,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Sampler(&s),
+                },
+            ])
+            .unwrap();
+        let p = d.program(fragment);
+        d.begin();
+        d.draw(&p, Some(&set), Topology::TriangleList, false);
+        match violation {
+            Some(v) => d.refused(v),
+            None => {
+                assert!(d.r.violations.is_empty(), "{:?}", d.r.violations);
+                let got = d.r.texture_bytes(d.target).unwrap();
+                assert!(got.iter().all(|&b| b == want), "{compare:?}: {got:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn linear_filters_pair_only_with_textures_the_back_end_filters() {
+    use Filter::{Linear as L, Nearest as N};
+    // Any linear filter, whichever level the draw samples, against r32float without FILTER.
+    for (filters, refused) in [
+        ([L, N, N], true),
+        ([N, L, N], true),
+        ([N, N, L], true),
+        ([N, N, N], false),
+    ] {
+        let mut d = Drawing::with_caps(|c| {
+            c.formats.uses[Format::R32Float.index()].remove(FormatUse::FILTER)
+        });
+        let t = texture(&mut d.r, Format::R32Float, 2, TextureUsage::SAMPLE);
+        let v = view(&mut d.r, &t, Format::R32Float);
+        let s = sampler_of(&mut d.r, filters, None);
+        let set =
+            d.r.create_binding_set(&[
+                BindingEntry {
+                    binding: 32,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(&v),
+                },
+                BindingEntry {
+                    binding: 16,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Sampler(&s),
+                },
+            ])
+            .unwrap();
+        let p = d.program("sampled");
+        d.begin();
+        d.draw(&p, Some(&set), Topology::TriangleList, false);
+        if refused {
+            d.refused("R32Float filtered, which this back end does not filter");
+        } else {
+            assert!(d.r.violations.is_empty(), "{:?}", d.r.violations);
+        }
+    }
+}
+
+#[test]
+fn buffer_bindings_cover_the_programs_blocks() {
+    // A uniform block of 32 bytes read only at its start, and a storage block of a u32 and a
+    // runtime-sized array of vec4, 32 bytes with one element.
+    let cases: [(&str, u32, bool, u64, Option<&str>); 4] = [
+        (
+            "first_of_two",
+            1,
+            false,
+            16,
+            Some("a buffer binding of 16 bytes for a block of 32"),
+        ),
+        ("first_of_two", 1, false, 32, None),
+        (
+            "first_element",
+            160,
+            true,
+            16,
+            Some("a buffer binding of 16 bytes for a block of 32"),
+        ),
+        ("first_element", 160, true, 32, None),
+    ];
+    for (fragment, binding, storage, size, violation) in cases {
+        let mut d = Drawing::new();
+        let b = buffer(&mut d.r, 256, BufferUsage::UNIFORM | BufferUsage::STORAGE);
+        let range = BufferRange {
+            buffer: &b,
+            offset: 0,
+            size,
+        };
+        let set =
+            d.r.create_binding_set(&[BindingEntry {
+                binding,
+                stages: StageSet::FRAGMENT,
+                resource: if storage {
+                    BindingResource::StorageBuffer {
+                        range,
+                        writable: false,
+                    }
+                } else {
+                    BindingResource::UniformBuffer(range)
+                },
+            }])
+            .unwrap();
+        let p = d.program(fragment);
+        d.begin();
+        d.draw(&p, Some(&set), Topology::TriangleList, false);
+        match violation {
+            Some(v) => d.refused(v),
+            None => assert!(d.r.violations.is_empty(), "{:?}", d.r.violations),
+        }
+    }
+}
+
+#[test]
+fn a_draw_has_one_viewport_and_at_most_one_scissor() {
+    const fn viewport(x: f32) -> Viewport {
+        Viewport {
+            x: x.to_bits(),
+            y: 0f32.to_bits(),
+            width: 1f32.to_bits(),
+            height: 1f32.to_bits(),
+            min_depth: 0f32.to_bits(),
+            max_depth: 1f32.to_bits(),
+        }
+    }
+    const TWO: [Viewport; 2] = [viewport(0.0), viewport(1.0)];
+    const SCISSORS: [ScissorRect; 2] = [
+        ScissorRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        },
+        ScissorRect {
+            x: 1,
+            y: 1,
+            width: 1,
+            height: 1,
+        },
+    ];
+    let violation =
+        "several viewports or scissors in one draw, which fronts split (MultiViewportSplit)";
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
+        c.viewports = &TWO
+    });
+    d.refused(violation);
+
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
+        c.scissors = &SCISSORS
+    });
+    d.refused(violation);
+
+    // One scissor with the raster block's scissor off is a draw.
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
+        c.scissors = &SCISSORS[..1]
+    });
+    assert!(d.r.violations.is_empty(), "{:?}", d.r.violations);
+}
+
+#[test]
+fn an_empty_pass_has_a_size_and_a_sample_count_r8unorm_takes() {
+    let size = "an empty pass of no size or wider or taller than max_texture_2d";
+    let samples = "an empty pass of a sample count r8unorm does not take";
+    let most = Recorder::new().caps().limits.max_texture_2d;
+    let cases = [
+        (0, 2, 1, Some(size)),
+        (2, 0, 1, Some(size)),
+        (most + 1, 2, 1, Some(size)),
+        (2, most + 1, 1, Some(size)),
+        (2, 2, 0, Some(samples)),
+        (2, 2, 3, Some(samples)),
+        (2, 2, 8, Some(samples)),
+        (2, 2, 1, None),
+        (2, 2, 4, None),
+        (most, most, 1, None),
+    ];
+    for (width, height, count, violation) in cases {
+        let mut r = Recorder::new();
+        r.begin_pass(&PassDesc {
+            empty: Some(EmptyPass {
+                width,
+                height,
+                samples: count,
+            }),
+            ..pass_of([])
+        });
+        assert_eq!(
+            r.violations,
+            violation.as_slice(),
+            "{width}x{height}, {count} samples"
+        );
+    }
+}
+
+#[test]
+fn ranges_ending_past_the_largest_offset_are_refused() {
+    // Offsets near 2^64, where offset plus size does not fit: refused as past the buffer, not
+    // wrapped. A binding set's refusal is its error; the others are violations.
+    type Call = fn(&mut Recorder, &Id, &Id, &Id) -> Option<GpuError>;
+    const HUGE: u64 = u64::MAX - 3;
+    let cases: [(&str, Call); 8] = [
+        ("write past the buffer's end", |r, a, _, _| {
+            r.write_buffer(a, HUGE, &[0; 8], WriteMode::Ordered);
+            None
+        }),
+        ("clear past the buffer's end", |r, a, _, _| {
+            r.clear_buffer(a, HUGE, 8, &[0]);
+            None
+        }),
+        ("copy from past the buffer's end", |r, a, b, _| {
+            r.copy_buffer(a, HUGE, b, 0, 8);
+            None
+        }),
+        ("copy to past the buffer's end", |r, a, b, _| {
+            r.copy_buffer(a, 0, b, HUGE, 8);
+            None
+        }),
+        ("read back past the buffer's end", |r, a, _, _| {
+            r.read_back(&ReadSource::Buffer {
+                buffer: a,
+                offset: HUGE,
+                size: 8,
+            })
+            .err()
+        }),
+        ("copy from past the buffer's end", |r, a, _, t| {
+            let from = CopyBufferTexture {
+                buffer: a,
+                offset: HUGE,
+                row_pitch: 8,
+                rows_per_layer: 2,
+            };
+            r.copy_buffer_to_texture(&from, &region(t), extent(2));
+            None
+        }),
+        ("copy to past the buffer's end", |r, a, _, t| {
+            let to = CopyBufferTexture {
+                buffer: a,
+                offset: HUGE,
+                row_pitch: 8,
+                rows_per_layer: 2,
+            };
+            r.copy_texture_to_buffer(&region(t), &to, extent(2));
+            None
+        }),
+        ("", |r, a, _, _| {
+            r.create_binding_set(&[BindingEntry {
+                binding: 0,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: a,
+                        offset: u64::MAX - 255,
+                        size: 512,
+                    },
+                    writable: false,
+                },
+            }])
+            .err()
+        }),
+    ];
+    for (violation, call) in cases {
+        let mut r = Recorder::new();
+        let uses = COPIES | BufferUsage::STORAGE;
+        let a = buffer(&mut r, 16, uses);
+        let b = buffer(&mut r, 16, uses);
+        let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+        let error = call(&mut r, &a, &b, &t);
+        if violation.is_empty() {
+            assert_eq!(
+                error,
+                Some(GpuError::Invalid("a buffer binding past the buffer's end"))
+            );
+            assert!(r.violations.is_empty());
+        } else {
+            assert_eq!(r.violations, [violation]);
+        }
+    }
+
+    // A draw's index and vertex bindings at such offsets.
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, spare| {
+        c.index = Some(IndexBinding {
+            buffer: spare,
+            offset: HUGE,
+            format: IndexFormat::U32,
+        });
+        c.range = DrawRange::Indexed {
+            first: 0,
+            count: 3,
+            base_vertex: 0,
+            first_instance: 0,
+            instances: 1,
+        };
+    });
+    d.refused("an index past the buffer's end");
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    // The call's change outlives this function's borrows, so the stream is leaked.
+    let vertices: &'static Id = Box::leak(Box::new(d.vertices));
+    let streams: &'static [Option<VertexBinding<'static, Recorder>>] =
+        Box::leak(Box::new([Some(VertexBinding {
+            buffer: vertices,
+            offset: HUGE,
+        })]));
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
+        c.vertex_buffers = streams
+    });
+    d.refused("a vertex past the buffer's end");
 }

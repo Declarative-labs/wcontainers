@@ -657,7 +657,18 @@ impl Recorder {
         }
         let (width, height, samples) = match (size, pass.empty) {
             (Some(s), None) => (s.0, s.1, count.unwrap_or(1)),
-            (None, Some(e)) => (e.width, e.height, e.samples),
+            (None, Some(e)) => {
+                let most = self.caps.limits.max_texture_2d;
+                if e.width == 0 || e.height == 0 || e.width > most || e.height > most {
+                    return Err(
+                        "an empty pass of no size or wider or taller than max_texture_2d".into(),
+                    );
+                }
+                if !self.caps.formats.takes_samples(Format::R8Unorm, e.samples) {
+                    return Err("an empty pass of a sample count r8unorm does not take".into());
+                }
+                (e.width, e.height, e.samples)
+            }
             (Some(_), Some(_)) => return Err("a pass with attachments and `empty`".into()),
             (None, None) => return Err("a pass with no attachment and no `empty`".into()),
         };
@@ -767,9 +778,10 @@ impl Recorder {
                 size,
             } => {
                 self.buffer_for(**buffer, BufferUsage::COPY_SRC, "a read back")?;
-                self.touch(**buffer, *offset, *offset + *size);
+                let last = end(*offset, *size, "read back")?;
+                self.touch(**buffer, *offset, last);
                 let b = self.buffer(**buffer)?;
-                let range = *offset as usize..(*offset + *size) as usize;
+                let range = *offset as usize..last as usize;
                 b.bytes
                     .get(range)
                     .map(<[u8]>::to_vec)
@@ -828,6 +840,13 @@ impl Recorder {
 /// Bytes per texel of the aspect a buffer copy or read back of a region of `format` moves, where the
 /// format has both depth and stencil: one for stencil, four for depth (32-bit float, or 24-bit unorm
 /// in the low bits of a word). None where the region moves whole texels.
+/// The end of `size` bytes from `offset`, refused as past the buffer where it passes the largest offset.
+fn end(offset: u64, size: u64, what: &str) -> Result<u64, String> {
+    offset
+        .checked_add(size)
+        .ok_or_else(|| format!("{what} past the buffer's end"))
+}
+
 fn aspect_size(format: Format, stencil: bool) -> Result<Option<usize>, String> {
     match texel::stencil_byte(format) {
         Some(at) if at > 0 => Ok(Some(if stencil { 1 } else { 4 })),
@@ -1520,10 +1539,11 @@ impl Backend for Recorder {
                     if r.size > max {
                         return Err(GpuError::Invalid("a buffer binding larger than the limit"));
                     }
-                    if self
-                        .buffer(*r.buffer)
-                        .is_ok_and(|b| r.offset + r.size > b.bytes.len() as u64)
-                    {
+                    if self.buffer(*r.buffer).is_ok_and(|b| {
+                        r.offset
+                            .checked_add(r.size)
+                            .is_none_or(|e| e > b.bytes.len() as u64)
+                    }) {
                         return Err(GpuError::Invalid("a buffer binding past the buffer's end"));
                     }
                 }
@@ -1709,7 +1729,7 @@ impl Backend for Recorder {
         self.log(Call::WriteBuffer(*buffer, offset, data.to_vec(), mode));
         self.check(|r| {
             r.buffer_for(*buffer, BufferUsage::COPY_DST, "write_buffer")?;
-            let end = offset + data.len() as u64;
+            let end = end(offset, data.len() as u64, "write")?;
             if mode == WriteMode::NoOverwrite
                 && r.touched
                     .iter()
@@ -1733,9 +1753,8 @@ impl Backend for Recorder {
                 WriteMode::NoOverwrite => {}
             }
             let b = r.buffer_mut(*buffer)?;
-            let end = offset as usize + data.len();
             b.bytes
-                .get_mut(offset as usize..end)
+                .get_mut(offset as usize..end as usize)
                 .ok_or("write past the buffer's end")?
                 .copy_from_slice(data);
             Ok(())
@@ -1826,13 +1845,15 @@ impl Backend for Recorder {
         self.check(|r| {
             r.outside_pass("copy_buffer")?;
             r.buffer_for(*src, BufferUsage::COPY_SRC, "copy_buffer")?;
-            r.touch(*src, src_offset, src_offset + size);
-            r.touch(*dst, dst_offset, dst_offset + size);
+            let src_end = end(src_offset, size, "copy from")?;
+            let dst_end = end(dst_offset, size, "copy to")?;
+            r.touch(*src, src_offset, src_end);
+            r.touch(*dst, dst_offset, dst_end);
             r.buffer_for(*dst, BufferUsage::COPY_DST, "copy_buffer")?;
-            if src == dst && src_offset < dst_offset + size && dst_offset < src_offset + size {
+            if src == dst && src_offset < dst_end && dst_offset < src_end {
                 return Err("copy between overlapping ranges of one buffer".into());
             }
-            let range = src_offset as usize..(src_offset + size) as usize;
+            let range = src_offset as usize..src_end as usize;
             let bytes = r
                 .buffer(*src)?
                 .bytes
@@ -1841,7 +1862,7 @@ impl Backend for Recorder {
                 .to_vec();
             let d = r.buffer_mut(*dst)?;
             d.bytes
-                .get_mut(dst_offset as usize..(dst_offset + size) as usize)
+                .get_mut(dst_offset as usize..dst_end as usize)
                 .ok_or("copy to past the buffer's end")?
                 .copy_from_slice(&bytes);
             Ok(())
@@ -1922,10 +1943,12 @@ impl Backend for Recorder {
             let rows = u64::from(extent.height.div_ceil(bh));
             let pitch = u64::from(src.row_pitch);
             let rows_per_layer = u64::from(src.rows_per_layer).max(rows);
-            let end = src.offset
-                + (u64::from(extent.depth_or_layers - 1) * rows_per_layer + rows - 1) * pitch
+            let span = (u64::from(extent.depth_or_layers.saturating_sub(1)) * rows_per_layer
+                + rows.saturating_sub(1))
+                * pitch
                 + u64::from(extent.width.div_ceil(bw) * size);
-            r.touch(*src.buffer, src.offset, end);
+            let last = end(src.offset, span, "copy from")?;
+            r.touch(*src.buffer, src.offset, last);
             r.texture_for(
                 *dst.texture,
                 TextureUsage::COPY_DST,
@@ -1976,9 +1999,12 @@ impl Backend for Recorder {
                 return Err("copy pitch smaller than the region".into());
             }
             let span = bytes.len().div_ceil(len.max(1)).saturating_sub(1);
-            let last = dst.offset
-                + ((span / rows * rows_per_layer + span % rows) * dst.row_pitch as usize + len)
-                    as u64;
+            let last = end(
+                dst.offset,
+                ((span / rows * rows_per_layer + span % rows) * dst.row_pitch as usize + len)
+                    as u64,
+                "copy to",
+            )?;
             r.touch(*dst.buffer, dst.offset, last);
             let b = r.buffer_mut(*dst.buffer)?;
             for (n, row) in bytes.chunks_exact(len.max(1)).enumerate() {
@@ -2000,7 +2026,8 @@ impl Backend for Recorder {
         self.check(|r| {
             r.outside_pass("clear_buffer")?;
             r.buffer_for(*buffer, BufferUsage::COPY_DST, "clear_buffer")?;
-            r.touch(*buffer, offset, offset + size);
+            let last = end(offset, size, "clear")?;
+            r.touch(*buffer, offset, last);
             if !matches!(pattern.len(), 1 | 2 | 4 | 8 | 16)
                 || !size.is_multiple_of(pattern.len() as u64)
             {
@@ -2009,7 +2036,7 @@ impl Backend for Recorder {
             let b = r.buffer_mut(*buffer)?;
             let range = b
                 .bytes
-                .get_mut(offset as usize..(offset + size) as usize)
+                .get_mut(offset as usize..last as usize)
                 .ok_or("clear past the buffer's end")?;
             for chunk in range.chunks_exact_mut(pattern.len()) {
                 chunk.copy_from_slice(pattern);

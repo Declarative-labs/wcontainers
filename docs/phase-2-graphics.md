@@ -352,8 +352,10 @@ would add a fast path then, not before.
 
 A draw names (`DrawCall`): a program, a blend block, a depth-stencil block, a raster block, a vertex
 layout block, up to four binding sets, the vertex streams and index buffer (buffer plus offset, plain data),
-the topology, whether strips restart, viewports and scissors, blend constant, stencil reference, small
-immediate constants, and the range (direct, indexed, or indirect from a buffer). In every back end the
+the topology, whether strips restart, one viewport and at most one scissor (one where the raster block
+scissors; several viewports are split into one draw each, `MultiViewportSplit`, 4.12), blend constant,
+stencil reference, small immediate constants, and the range (direct, indexed, or indirect from a
+buffer). In every back end the
 program's `vertex_index` and `instance_index` include the range's first or base vertex and first
 instance, as WebGPU and Vulkan count them; APIs that count otherwise are served by a program variant
 (4.12, vertex and instance numbers).
@@ -451,7 +453,12 @@ takes every sampler that does not compare, and `"non-filtering"` is needed only 
 pairs the sampler with an `"unfilterable-float"` texture, which the texture bits and the program
 already say. So a sampler binding is `"comparison"` where the program compares with it,
 `"non-filtering"` where the program pairs it with a texture whose bit is set, and `"filtering"`
-otherwise; a game binding one program with a point sampler and then a linear one keeps one pipeline.
+otherwise; a game binding one program with a point sampler and then a linear one keeps one pipeline. The sampler
+bound follows from this: one that compares exactly where the program compares through that binding,
+and none with a linear filter (min, mag or mip) where the program pairs it with a texture whose bit is
+set. A uniform or storage binding is at least the size of the block the program declares there (a
+runtime-sized array counted as one element), as WebGPU's `minBindingSize` and WebGL 2's
+`UNIFORM_BLOCK_DATA_SIZE` require (`ConstantBufferGrown`, 5.1).
 `prepare` takes the layout keys too (`PrepareDesc::layouts`; the zero key, every texture filterable, is
 what a Direct3D 12 pipeline state is prepared with before any descriptor is known), and the cache
 records them, so a combination first seen with other keys is prepared at the next start. The pipeline
@@ -671,7 +678,7 @@ Rules a pass description follows:
 - A pass with no attachment at all (Direct3D 11's drawing with only pixel shader storage writes bound)
   gives its size and sample count in `empty`. The WebGPU back end adds an attachment of its own of that
   size (`r8unorm`, writes masked off, store `Discard`), because a WebGPU pass needs one; its pipelines are
-  built for it. Direct3D 11.1's forced sample counts above one are reported absent (section 9).
+  built for it. So the size is 1 to `max_texture_2d` each way and the count one `r8unorm` takes. Direct3D 11.1's forced sample counts above one are reported absent (section 9).
 - One pass is one usage scope, as WebGPU defines it (its specification: "one render pass is one usage
   scope", covering every resource any `setBindGroup`, `setVertexBuffer` or `setIndexBuffer` of the pass
   references; binding a buffer as storage and as input in one pass is "a non-compatible usage list"). A

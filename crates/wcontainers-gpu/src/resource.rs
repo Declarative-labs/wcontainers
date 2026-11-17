@@ -256,9 +256,13 @@ pub struct BufferRange<H> {
 pub enum BindingResource<'a, B: Backend> {
     /// The offset is a multiple of [`crate::Limits::min_uniform_offset_alignment`] and the size at most
     /// [`crate::Limits::max_uniform_buffer_size`]; a buffer range in a binding lies inside its buffer.
+    /// A draw binds at least the size of the block the program declares at that binding (WebGPU's
+    /// `minBindingSize`, WebGL 2's `UNIFORM_BLOCK_DATA_SIZE`); a front whose API binds less grows the
+    /// buffer ([`crate::SlowPath::ConstantBufferGrown`]).
     UniformBuffer(BufferRange<&'a B::Buffer>),
     /// The offset is a multiple of [`crate::Limits::min_storage_offset_alignment`] and the size at most
-    /// [`crate::Limits::max_storage_buffer_size`]. A front whose API
+    /// [`crate::Limits::max_storage_buffer_size`], and at least the size of the program's block, a
+    /// runtime-sized array counted as one element. A front whose API
     /// binds at any offset binds from the aligned offset below it and writes the rest into the program's
     /// helper constants ([`crate::HelperValue::StorageOffset`]), which the program adds to its addresses.
     StorageBuffer {
@@ -270,6 +274,10 @@ pub enum BindingResource<'a, B: Backend> {
         view: &'a B::TextureView,
         writable: bool,
     },
+    /// A sampler that compares ([`crate::SamplerDesc::compare`] set) exactly where the program compares
+    /// through that binding. One any of whose filters is linear is never paired in the program with a
+    /// texture whose view's format lacks [`crate::FormatUse::FILTER`]; the front binds the program
+    /// variant that filters that texture itself ([`crate::SlowPath::FilterInShader`]).
     Sampler(&'a B::Sampler),
     /// A buffer read as typed texels (Direct3D's typed buffer views, OpenGL's buffer textures), where
     /// [`crate::Features::TEXEL_BUFFERS`] is present.

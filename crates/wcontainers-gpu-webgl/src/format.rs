@@ -72,6 +72,9 @@ pub fn gl_format(format: Format) -> Option<GlFormat> {
         F::Rg16Float => f(RG16F, RG, HALF_FLOAT, Half),
         F::Rgba8Unorm => f(RGBA8, RGBA, UNSIGNED_BYTE, norm),
         F::Rgba8UnormSrgb => f(SRGB8_ALPHA8, RGBA, UNSIGNED_BYTE, norm),
+        // Stored as RGBA: red and blue are swapped on the host on the way in and out.
+        F::Bgra8Unorm => f(RGBA8, RGBA, UNSIGNED_BYTE, norm),
+        F::Bgra8UnormSrgb => f(SRGB8_ALPHA8, RGBA, UNSIGNED_BYTE, norm),
         F::Rgba8Snorm => f(RGBA8_SNORM, RGBA, BYTE, snorm),
         F::Rgba8Uint => f(RGBA8UI, RGBA_INTEGER, UNSIGNED_BYTE, int),
         F::Rgba8Sint => f(RGBA8I, RGBA_INTEGER, BYTE, int),
@@ -110,6 +113,19 @@ pub fn gl_format(format: Format) -> Option<GlFormat> {
             Depth,
         ),
         _ => None,
+    }
+}
+
+/// Whether the interface's bytes of `format` hold blue first, where GL stores red first
+/// ([`wcontainers_gpu::SlowPath::FormatConverted`] on the way in and out).
+pub fn swapped(format: Format) -> bool {
+    matches!(format, Format::Bgra8Unorm | Format::Bgra8UnormSrgb)
+}
+
+/// Swaps red and blue in each 4-byte texel of `texels`.
+pub fn swap_red_blue(texels: &mut [u8]) {
+    for t in texels.as_chunks_mut::<4>().0 {
+        t.swap(0, 2);
     }
 }
 
@@ -175,7 +191,8 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
 }
 
 /// How `readPixels` reads a format's texels: always four components of `ty` (`comp_read` bytes each),
-/// of which the texel keeps the first `n`, each the low `comp_kept` bytes.
+/// of which the texel keeps the first `n`, each the low `comp_kept` bytes, red and blue swapped
+/// where `swap` is set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadAs {
     pub format: u32,
@@ -183,6 +200,7 @@ pub struct ReadAs {
     pub comp_read: usize,
     pub comp_kept: usize,
     pub n: usize,
+    pub swap: bool,
 }
 
 impl ReadAs {
@@ -194,8 +212,18 @@ impl ReadAs {
         self.n * self.comp_kept
     }
 
+    /// Whether `readPixels`' bytes differ from the texels' own.
+    pub fn repacks(self) -> bool {
+        self.texel_read() != self.texel_kept() || self.swap
+    }
+
     /// Keeps each texel's stored bytes of `read`, texels as `readPixels` wrote them, in `kept`.
     pub fn repack(self, read: &[u8], kept: &mut [u8]) {
+        if self.swap {
+            let n = read.len().min(kept.len());
+            kept[..n].copy_from_slice(&read[..n]);
+            return swap_red_blue(&mut kept[..n]);
+        }
         let (r, k) = (self.texel_read(), self.texel_kept());
         for (from, to) in read.chunks_exact(r).zip(kept.chunks_exact_mut(k)) {
             for c in 0..self.n {
@@ -235,5 +263,6 @@ pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
         comp_read,
         comp_kept,
         n: texel as usize / comp_kept,
+        swap: swapped(format),
     })
 }
