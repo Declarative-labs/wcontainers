@@ -949,11 +949,11 @@ impl ID3D12Device_Impl for Device_Impl {
     }
     fn CreateQueryHeap(
         &self,
-        _pdesc: *const D3D12_QUERY_HEAP_DESC,
-        _riid: *const windows_core::GUID,
-        _ppvheap: *mut *mut core::ffi::c_void,
+        pdesc: *const D3D12_QUERY_HEAP_DESC,
+        riid: *const windows_core::GUID,
+        ppvheap: *mut *mut core::ffi::c_void,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("CreateQueryHeap"))
+        Device::CreateQueryHeap(self, pdesc, riid, ppvheap)
     }
     fn SetStablePowerState(&self, _enable: windows_core::BOOL) -> windows_core::Result<()> {
         Err(self.unsupported("SetStablePowerState"))
@@ -1067,7 +1067,7 @@ impl ID3D12CommandQueue_Impl for Queue_Impl {
         Queue::Wait(self, pfence, value)
     }
     fn GetTimestampFrequency(&self) -> windows_core::Result<u64> {
-        Err(self.unsupported("GetTimestampFrequency"))
+        Queue::GetTimestampFrequency(self)
     }
     fn GetClockCalibration(
         &self,
@@ -1509,38 +1509,46 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn BeginQuery(
         &self,
-        _pqueryheap: windows_core::Ref<ID3D12QueryHeap>,
+        pqueryheap: windows_core::Ref<ID3D12QueryHeap>,
         r#type: D3D12_QUERY_TYPE,
-        _index: u32,
+        index: u32,
     ) {
-        self.unsupported("BeginQuery");
+        List::BeginQuery(self, pqueryheap, r#type, index)
     }
     fn EndQuery(
         &self,
-        _pqueryheap: windows_core::Ref<ID3D12QueryHeap>,
+        pqueryheap: windows_core::Ref<ID3D12QueryHeap>,
         r#type: D3D12_QUERY_TYPE,
-        _index: u32,
+        index: u32,
     ) {
-        self.unsupported("EndQuery");
+        List::EndQuery(self, pqueryheap, r#type, index)
     }
     fn ResolveQueryData(
         &self,
-        _pqueryheap: windows_core::Ref<ID3D12QueryHeap>,
+        pqueryheap: windows_core::Ref<ID3D12QueryHeap>,
         r#type: D3D12_QUERY_TYPE,
-        _startindex: u32,
-        _numqueries: u32,
-        _pdestinationbuffer: windows_core::Ref<ID3D12Resource>,
-        _aligneddestinationbufferoffset: u64,
+        startindex: u32,
+        numqueries: u32,
+        pdestinationbuffer: windows_core::Ref<ID3D12Resource>,
+        aligneddestinationbufferoffset: u64,
     ) {
-        self.unsupported("ResolveQueryData");
+        List::ResolveQueryData(
+            self,
+            pqueryheap,
+            r#type,
+            startindex,
+            numqueries,
+            pdestinationbuffer,
+            aligneddestinationbufferoffset,
+        )
     }
     fn SetPredication(
         &self,
-        _pbuffer: windows_core::Ref<ID3D12Resource>,
-        _alignedbufferoffset: u64,
-        _operation: D3D12_PREDICATION_OP,
+        pbuffer: windows_core::Ref<ID3D12Resource>,
+        alignedbufferoffset: u64,
+        operation: D3D12_PREDICATION_OP,
     ) {
-        self.unsupported("SetPredication");
+        List::SetPredication(self, pbuffer, alignedbufferoffset, operation)
     }
     fn SetMarker(&self, _metadata: u32, _pdata: *const core::ffi::c_void, _size: u32) {
         self.unsupported("SetMarker");
@@ -1814,6 +1822,49 @@ impl ID3D12DeviceChild_Impl for PipelineState_Impl {
 }
 
 impl ID3D12Object_Impl for PipelineState_Impl {
+    fn GetPrivateData(
+        &self,
+        guid: *const windows_core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        self.base().GetPrivateData(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows_core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        self.base().SetPrivateData(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows_core::GUID,
+        pdata: windows_core::Ref<windows_core::IUnknown>,
+    ) -> windows_core::Result<()> {
+        self.base().SetPrivateDataInterface(guid, pdata)
+    }
+    fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
+        self.base().SetName(name)
+    }
+}
+
+impl ID3D12QueryHeap_Impl for QueryHeap_Impl {}
+
+impl ID3D12Pageable_Impl for QueryHeap_Impl {}
+
+impl ID3D12DeviceChild_Impl for QueryHeap_Impl {
+    fn GetDevice(
+        &self,
+        riid: *const windows_core::GUID,
+        ppvdevice: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        self.base().GetDevice(riid, ppvdevice)
+    }
+}
+
+impl ID3D12Object_Impl for QueryHeap_Impl {
     fn GetPrivateData(
         &self,
         guid: *const windows_core::GUID,

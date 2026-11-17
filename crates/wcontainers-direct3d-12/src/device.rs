@@ -49,10 +49,13 @@ id!(
     /// A descriptor heap.
     HeapId,
     /// A command queue.
-    QueueId
+    QueueId,
+    /// A query heap.
+    QueryHeapId
 );
 
 mod bind;
+mod query;
 
 /// Where GPU virtual addresses start, far from zero so a null address is never a buffer.
 const ADDRESS_BASE: u64 = 1 << 32;
@@ -194,6 +197,8 @@ pub struct Device<B: Backend> {
     /// Each queue's held work, in order, numbered by the call that made it.
     queues: Slab<VecDeque<(u64, Work)>>,
     calls: u64,
+    query_heaps: Slab<query::QueryHeap<B>>,
+    programs: query::Programs<B>,
     /// Messages not yet shown, such as why a shader did not convert.
     messages: Vec<String>,
     removed: Option<&'static str>,
@@ -224,6 +229,8 @@ impl<B: Backend> Device<B> {
             chains: Slab::new(),
             queues: Slab::new(),
             calls: 0,
+            query_heaps: Slab::new(),
+            programs: query::Programs::default(),
             messages: Vec::new(),
             removed: None,
         }
@@ -464,10 +471,7 @@ impl<B: Backend> Device<B> {
         desc: &GraphicsPipelineDesc<'_>,
     ) -> Result<PipelineId, Error> {
         self.live()?;
-        let root = desc
-            .root
-            .filter(|r| self.roots.contains(r.0 as usize))
-            .ok_or(Error::Invalid("a pipeline needs its root signature"))?;
+        let root = self.pipeline_root(desc.root, &[desc.vs, desc.ps])?;
         let vs = self.convert(desc.vs, ShaderStage::Vertex)?;
         let ps = if desc.ps.is_empty() {
             None
@@ -524,7 +528,7 @@ impl<B: Backend> Device<B> {
         if let Some(ps) = &ps {
             bindings.extend(bind::stage_bindings(ps, StageSet::FRAGMENT));
         }
-        bind::check(&self.roots[root.0 as usize], &bindings)?;
+        bind::check(&root, &bindings)?;
         let caps = self.backend.caps();
         let blend = desc.blend.block(caps, desc.rtv_formats.len())?;
         let raster = desc.raster.block(
@@ -602,15 +606,13 @@ impl<B: Backend> Device<B> {
         cs: &[u8],
     ) -> Result<PipelineId, Error> {
         self.live()?;
-        let root = root
-            .filter(|r| self.roots.contains(r.0 as usize))
-            .ok_or(Error::Invalid("a pipeline needs its root signature"))?;
+        let root = self.pipeline_root(root, &[cs])?;
         if !self.backend.caps().has(Features::COMPUTE) {
             return Err(Error::NotImplemented("compute shaders on this back end"));
         }
         let cs = self.convert(cs, ShaderStage::Compute)?;
         let bindings = bind::stage_bindings(&cs, StageSet::COMPUTE);
-        bind::check(&self.roots[root.0 as usize], &bindings)?;
+        bind::check(&root, &bindings)?;
         let shader = self.backend.create_shader(&cs.modules[0])?;
         let program = self.backend.create_program(&Program::Compute(&shader));
         self.backend.destroy(Object::Shader(shader));
@@ -619,6 +621,26 @@ impl<B: Backend> Device<B> {
             render: None,
             bindings,
         }) as u32))
+    }
+
+    /// The root signature a pipeline is made with: the one given, else one a shader carries.
+    fn pipeline_root(
+        &self,
+        root: Option<RootId>,
+        shaders: &[&[u8]],
+    ) -> Result<Arc<RootSignatureDesc>, Error> {
+        if let Some(r) = root {
+            return self
+                .roots
+                .get(r.0 as usize)
+                .cloned()
+                .ok_or(Error::Invalid("no such root signature"));
+        }
+        let code = shaders
+            .iter()
+            .find(|c| container_has(c, *b"RTS0"))
+            .ok_or(Error::Invalid("a pipeline needs its root signature"))?;
+        Ok(Arc::new(deserialize(code).map_err(Error::Invalid)?))
     }
 
     /// A DXIL or DXBC shader in the common form. Shaders reading helper constants wait for the
@@ -856,6 +878,8 @@ impl<B: Backend> Device<B> {
 
     /// `ID3D12Fence::Signal` from the CPU; queues waiting for it go on.
     pub fn cpu_signal(&mut self, id: FenceId, value: u64) {
+        // Queue signals already done come first; those still to come land after it.
+        self.completed(id);
         if let Some(f) = self.fences.get_mut(id.0 as usize) {
             f.value = value;
         }
@@ -1041,7 +1065,12 @@ impl<B: Backend> Device<B> {
         let first_read = self.reads.len();
         let result = lists.iter().try_for_each(|l| {
             let mut replay = Replay::new();
-            l.iter().try_for_each(|c| replay.run(self, c))?;
+            for (i, c) in l.iter().enumerate() {
+                match c {
+                    Command::Predication(p) => replay.set_predicate(self, *p, &l[i + 1..])?,
+                    c => replay.run(self, c)?,
+                }
+            }
             replay.finish(self)
         });
         let submission = self.backend.submit();
@@ -1354,7 +1383,7 @@ impl From<GpuError> for Error {
 
 /// The state a command list's replay carries from command to command. A list starts with none of
 /// the previous list's state, as Direct3D 12 defines.
-struct Replay {
+struct Replay<B: Backend> {
     pipeline: Option<PipelineId>,
     topology: Topology,
     vertex_buffers: [VertexBufferView; MAX_VERTEX_STREAMS],
@@ -1371,9 +1400,25 @@ struct Replay {
     /// Whole-view clears not yet done: each becomes the next pass's `Clear` load, or a clear of its
     /// own before anything else reads the texture.
     clears: Vec<(TargetView, ClearValue)>,
+    /// The occlusion query begun and not ended: heap, index, and whether it counts in the open
+    /// pass, or counted in a pass already ended.
+    query: Option<(QueryHeapId, u32, QueryState)>,
+    /// The heap whose query set the open pass counts in.
+    pass_heap: Option<QueryHeapId>,
+    predicate: Option<query::Predicate<B>>,
 }
 
-impl Replay {
+/// A predicated draw's or dispatch's argument record: buffer and offset.
+type Record<B> = Option<(<B as Backend>::Buffer, u64)>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueryState {
+    Waiting,
+    Running,
+    Ended,
+}
+
+impl<B: Backend> Replay<B> {
     fn new() -> Self {
         Replay {
             pipeline: None,
@@ -1395,18 +1440,26 @@ impl Replay {
             graphics: bind::RootState::default(),
             compute: bind::RootState::default(),
             clears: Vec::new(),
+            query: None,
+            pass_heap: None,
+            predicate: None,
         }
     }
 
-    fn end_pass<B: Backend>(&mut self, d: &mut Device<B>) {
+    fn end_pass(&mut self, d: &mut Device<B>) {
         if self.pass_open {
+            if let Some((_, _, state @ QueryState::Running)) = &mut self.query {
+                d.backend.end_query();
+                *state = QueryState::Ended;
+            }
             d.backend.end_pass();
             self.pass_open = false;
+            self.pass_heap = None;
         }
     }
 
     /// Ends any pass and does the clears still waiting, so copies see them.
-    fn settle<B: Backend>(&mut self, d: &mut Device<B>) -> Result<(), Error> {
+    fn settle(&mut self, d: &mut Device<B>) -> Result<(), Error> {
         self.end_pass(d);
         for (v, value) in std::mem::take(&mut self.clears) {
             let (texture, desc) = d.texture(v.resource)?;
@@ -1423,11 +1476,59 @@ impl Replay {
         Ok(())
     }
 
-    fn finish<B: Backend>(&mut self, d: &mut Device<B>) -> Result<(), Error> {
+    fn finish(&mut self, d: &mut Device<B>) -> Result<(), Error> {
+        if let Some(p) = self.predicate.take() {
+            d.drop_predicate(p);
+        }
         self.settle(d)
     }
 
-    fn run<B: Backend>(&mut self, d: &mut Device<B>, c: &Command) -> Result<(), Error> {
+    /// Whether a predicate skips a clear, copy or resolve, which have no indirect form.
+    fn skipped(&mut self, d: &mut Device<B>) -> Result<bool, Error> {
+        if self.predicate.is_none() {
+            return Ok(false);
+        }
+        self.end_pass(d);
+        d.skips(self.predicate.as_mut().expect("a predicate"))
+    }
+
+    /// `SetPredication`, with the commands that follow it in the list.
+    fn set_predicate(
+        &mut self,
+        d: &mut Device<B>,
+        predicate: Option<(ResourceId, u64, u32)>,
+        rest: &[Command],
+    ) -> Result<(), Error> {
+        self.settle(d)?;
+        if let Some(p) = self.predicate.take() {
+            d.drop_predicate(p);
+        }
+        if let Some((resource, offset, op)) = predicate {
+            let end = rest
+                .iter()
+                .position(|c| matches!(c, Command::Predication(_)))
+                .unwrap_or(rest.len());
+            self.predicate = Some(d.predicate(resource, offset, op, &rest[..end])?);
+        }
+        Ok(())
+    }
+
+    /// For a draw or dispatch under a predicate: its argument record, or whether it is skipped.
+    /// None when it is skipped.
+    fn predicated(&mut self, d: &mut Device<B>) -> Result<Option<Record<B>>, Error> {
+        let Some(p) = &mut self.predicate else {
+            return Ok(Some(None));
+        };
+        if let Some(record) = Device::<B>::next_record(p) {
+            return Ok(Some(Some(record)));
+        }
+        if d.skips(p)? {
+            return Ok(None);
+        }
+        Ok(Some(None))
+    }
+
+    fn run(&mut self, d: &mut Device<B>, c: &Command) -> Result<(), Error> {
         match c {
             Command::Pipeline(p) => self.pipeline = Some(*p),
             Command::RootSignature { compute, root } => {
@@ -1489,6 +1590,12 @@ impl Replay {
                     self.depth = *depth;
                 }
             }
+            Command::ClearTarget { .. }
+            | Command::ClearDepth { .. }
+            | Command::CopyBuffer { .. }
+            | Command::CopyTexture { .. }
+            | Command::ClearStorage { .. }
+                if self.skipped(d)? => {}
             Command::ClearTarget { view, color, rects } => {
                 let Descriptor::RenderTarget(v) = view else {
                     return Err(Error::Invalid(
@@ -1563,31 +1670,35 @@ impl Replay {
                 instances,
                 first_vertex,
                 first_instance,
-            } => self.draw(
-                d,
-                DrawRange::Vertices {
-                    first: *first_vertex,
-                    count: *vertices,
-                    first_instance: *first_instance,
-                    instances: *instances,
-                },
-            )?,
+            } => {
+                if let Some(record) = self.predicated(d)? {
+                    let range = DrawRange::Vertices {
+                        first: *first_vertex,
+                        count: *vertices,
+                        first_instance: *first_instance,
+                        instances: *instances,
+                    };
+                    self.draw(d, range, record.as_ref())?;
+                }
+            }
             Command::DrawIndexed {
                 indices,
                 instances,
                 first_index,
                 base_vertex,
                 first_instance,
-            } => self.draw(
-                d,
-                DrawRange::Indexed {
-                    first: *first_index,
-                    count: *indices,
-                    base_vertex: *base_vertex,
-                    first_instance: *first_instance,
-                    instances: *instances,
-                },
-            )?,
+            } => {
+                if let Some(record) = self.predicated(d)? {
+                    let range = DrawRange::Indexed {
+                        first: *first_index,
+                        count: *indices,
+                        base_vertex: *base_vertex,
+                        first_instance: *first_instance,
+                        instances: *instances,
+                    };
+                    self.draw(d, range, record.as_ref())?;
+                }
+            }
             Command::CopyBuffer {
                 dst,
                 dst_offset,
@@ -1610,7 +1721,29 @@ impl Replay {
                 self.settle(d)?;
                 copy_texture(d, dst, *at, src, *area)?;
             }
-            Command::Dispatch(groups) => self.dispatch(d, *groups)?,
+            Command::Dispatch(groups) => {
+                if let Some(record) = self.predicated(d)? {
+                    self.dispatch(d, *groups, record.as_ref())?;
+                }
+            }
+            Command::BeginQuery { heap, kind, index } => {
+                self.begin_query(d, *heap, *kind, *index)?
+            }
+            Command::EndQuery { heap, kind, index } => self.end_query(d, *heap, *kind, *index)?,
+            Command::ResolveQueries {
+                heap,
+                kind,
+                first,
+                count,
+                dst,
+                offset,
+            } => {
+                self.settle(d)?;
+                d.resolve_query_data(*heap, *kind, *first, *count, *dst, *offset)?;
+            }
+            Command::Predication(_) => {
+                return Err(Error::Invalid("a predicate outside a list's replay"));
+            }
             Command::ClearStorage {
                 view,
                 values,
@@ -1632,7 +1765,80 @@ impl Replay {
         }
     }
 
-    fn dispatch<B: Backend>(&mut self, d: &mut Device<B>, groups: [u32; 3]) -> Result<(), Error> {
+    fn begin_query(
+        &mut self,
+        d: &mut Device<B>,
+        heap: QueryHeapId,
+        kind: u32,
+        index: u32,
+    ) -> Result<(), Error> {
+        match kind {
+            query::QUERY_BINARY_OCCLUSION => {}
+            query::QUERY_OCCLUSION => {
+                return Err(Error::NotImplemented("counted occlusion queries"));
+            }
+            _ => return Err(Error::Invalid("BeginQuery of this query type")),
+        }
+        d.occlusion_set(heap)?;
+        if self.query.is_some() {
+            return Err(Error::Invalid("an occlusion query begun inside another"));
+        }
+        if self.pass_open && self.pass_heap == Some(heap) {
+            d.backend.begin_query(index);
+            self.query = Some((heap, index, QueryState::Running));
+        } else {
+            // The next pass counts in this heap's query set.
+            self.end_pass(d);
+            self.query = Some((heap, index, QueryState::Waiting));
+        }
+        Ok(())
+    }
+
+    fn end_query(
+        &mut self,
+        d: &mut Device<B>,
+        heap: QueryHeapId,
+        kind: u32,
+        index: u32,
+    ) -> Result<(), Error> {
+        if kind == query::QUERY_TIMESTAMP {
+            self.end_pass(d);
+            return d.timestamp(heap, index);
+        }
+        match self.query.take() {
+            Some((h, i, state)) if (h, i) == (heap, index) => match state {
+                QueryState::Running => d.backend.end_query(),
+                QueryState::Ended => {}
+                QueryState::Waiting => {
+                    // No pass drew while it ran: an empty pass writes its zero.
+                    self.end_pass(d);
+                    let set = d.occlusion_set(heap)?;
+                    d.backend.begin_pass(&PassDesc {
+                        colors: Default::default(),
+                        depth: None,
+                        empty: Some(wcontainers_gpu::EmptyPass {
+                            width: 1,
+                            height: 1,
+                            samples: 1,
+                        }),
+                        occlusion: Some(&set),
+                    });
+                    d.backend.begin_query(index);
+                    d.backend.end_query();
+                    d.backend.end_pass();
+                }
+            },
+            _ => return Err(Error::Invalid("EndQuery of a query not begun")),
+        }
+        Ok(())
+    }
+
+    fn dispatch(
+        &mut self,
+        d: &mut Device<B>,
+        groups: [u32; 3],
+        record: Option<&(B::Buffer, u64)>,
+    ) -> Result<(), Error> {
         let Some(pid) = self.pipeline else {
             return Ok(());
         };
@@ -1648,16 +1854,24 @@ impl Replay {
             program: &d.pipelines[pid.0 as usize].program,
             bindings: sets.each_ref().map(Option::as_ref),
             immediates: &[],
-            groups: DispatchGroups::Direct(groups),
+            groups: match record {
+                Some((args, offset)) => DispatchGroups::Indirect {
+                    args,
+                    offset: *offset,
+                },
+                None => DispatchGroups::Direct(groups),
+            },
         };
         d.backend.dispatch(&call)?;
         Ok(())
     }
 
-    fn draw<B: Backend>(
+    /// A draw; with `record`, its arguments are read from that argument record instead.
+    fn draw(
         &mut self,
         d: &mut Device<B>,
         range: DrawRange<'_, B>,
+        record: Option<&(B::Buffer, u64)>,
     ) -> Result<(), Error> {
         // A draw with no pipeline state draws nothing, as the hardware does.
         let Some(pid) = self.pipeline else {
@@ -1685,7 +1899,37 @@ impl Replay {
                 "SV_VertexID or SV_InstanceID in a draw with a first vertex or instance",
             ));
         }
+        if let (Some(_), DrawRange::Vertices { first_instance, .. })
+        | (Some(_), DrawRange::Indexed { first_instance, .. }) = (record, &range)
+            && *first_instance != 0
+            && !d.backend.caps().has(Features::INDIRECT_FIRST_INSTANCE)
+        {
+            return Err(Error::NotImplemented(
+                "a predicated draw with a first instance on this back end",
+            ));
+        }
+        let range = match (record, range) {
+            (Some((args, offset)), DrawRange::Indexed { .. }) => DrawRange::IndexedIndirect {
+                args,
+                offset: *offset,
+            },
+            (Some((args, offset)), _) => DrawRange::Indirect {
+                args,
+                offset: *offset,
+            },
+            (None, range) => range,
+        };
+        if let Some((heap, _, QueryState::Ended)) = self.query
+            && !self.pass_open
+            && self.pass_heap != Some(heap)
+        {
+            return Err(Error::NotImplemented("an occlusion query across passes"));
+        }
         if !self.pass_open {
+            let occlusion = match self.query {
+                Some((heap, _, QueryState::Waiting)) => Some((heap, d.occlusion_set(heap)?)),
+                _ => None,
+            };
             let mut views = Vec::with_capacity(self.colors.len());
             let mut loads = Vec::with_capacity(self.colors.len());
             for c in &self.colors {
@@ -1743,7 +1987,7 @@ impl Replay {
                         stencil: *stencil,
                     }),
                 empty: None,
-                occlusion: None,
+                occlusion: occlusion.as_ref().map(|(_, set)| set),
             };
             for (i, (view, load)) in views.iter().zip(loads).enumerate() {
                 pass.colors[i] = Some(ColorAttachment {
@@ -1759,6 +2003,11 @@ impl Replay {
             }
             d.backend.begin_pass(&pass);
             self.pass_open = true;
+            if let (Some((heap, _)), Some((_, index, state))) = (&occlusion, &mut self.query) {
+                d.backend.begin_query(*index);
+                *state = QueryState::Running;
+                self.pass_heap = Some(*heap);
+            }
         }
         let mut strides = [0; MAX_VERTEX_STREAMS];
         for (s, v) in strides.iter_mut().zip(&self.vertex_buffers) {
