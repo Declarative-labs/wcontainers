@@ -812,7 +812,9 @@ the adapter):
   and the texture atomics proposal (gpuweb issue 4329) is open.
 - WebGL 2: `TRANSFORM_FEEDBACK`, `READ_BACK_NOW`, `FAN_AND_LOOP`, `PROVOKING_VERTEX_LAST`,
   `CLIP_DEPTH_MINUS_ONE`, `POINT_SIZE` (up to the device's range), `INDEX_U8` (`UNSIGNED_BYTE`
-  indices), `FRACTIONAL_DEPTH_BIAS` (`polygonOffset` takes float units), `BLEND_CONSTANT_ALPHA`, `DEPTH24_UNORM` where the probe below finds it, and by extension where present:
+  indices), `FRACTIONAL_DEPTH_BIAS` (`polygonOffset` takes float units), `BLEND_CONSTANT_ALPHA` (but WebGL forbids the constant colour
+  and constant alpha as one colour blend's two factors, so such a block is refused as absent and blended
+  in the program), `DEPTH24_UNORM` where the probe below finds it, and by extension where present:
   `POLYGON_MODE` (WEBGL_polygon_mode), `PROVOKING_VERTEX_FIRST` (WEBGL_provoking_vertex),
   `CLIP_DISTANCE` and `CULL_DISTANCE` (WEBGL_clip_cull_distance), `DEPTH_CLAMP` (EXT_depth_clamp),
   `DUAL_SOURCE_BLEND` (WEBGL_blend_func_extended), `INDEPENDENT_BLEND` (OES_draw_buffers_indexed),

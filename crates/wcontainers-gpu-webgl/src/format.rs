@@ -1,0 +1,160 @@
+//! How each interface format is stored in GL ES 3.0, and what GL lets it do.
+
+use glow::*;
+use wcontainers_gpu::{Format, FormatUse};
+
+/// A format's GL sized internal format and the format and type its texels are written in.
+#[derive(Clone, Copy, Debug)]
+pub struct GlFormat {
+    pub internal: u32,
+    pub format: u32,
+    pub ty: u32,
+    /// What GLES 3.0's own table (texture-filterable, colour-renderable) and the extensions give.
+    pub class: Class,
+}
+
+/// Which row of GLES 3.0's format table a format is in, which decides its uses with the extensions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    /// Normalised fixed point: filterable, and renderable and blendable where `render` is set.
+    Norm {
+        render: bool,
+    },
+    /// 16-bit float: filterable; renderable and blendable with EXT_color_buffer_float.
+    Half,
+    /// 32-bit float: filterable with OES_texture_float_linear, renderable with EXT_color_buffer_float,
+    /// blendable with EXT_float_blend as well.
+    Single,
+    /// R11F_G11F_B10F: filterable; renderable and blendable with EXT_color_buffer_float.
+    SmallFloat,
+    /// RGB9_E5: filterable, never renderable.
+    SharedExponent,
+    /// Integer: renderable where `render` is set, never filtered or blended.
+    Int {
+        render: bool,
+    },
+    Depth,
+}
+
+/// The GL storage of `format`, or None when GL ES 3.0 does not hold it as it is.
+pub fn gl_format(format: Format) -> Option<GlFormat> {
+    use Class::*;
+    use Format as F;
+    let f = |internal, format, ty, class| {
+        Some(GlFormat {
+            internal,
+            format,
+            ty,
+            class,
+        })
+    };
+    let norm = Norm { render: true };
+    let snorm = Norm { render: false };
+    let int = Int { render: true };
+    let int3 = Int { render: false };
+    match format {
+        F::R8Unorm => f(R8, RED, UNSIGNED_BYTE, norm),
+        F::R8Snorm => f(R8_SNORM, RED, BYTE, snorm),
+        F::R8Uint => f(R8UI, RED_INTEGER, UNSIGNED_BYTE, int),
+        F::R8Sint => f(R8I, RED_INTEGER, BYTE, int),
+        F::R16Uint => f(R16UI, RED_INTEGER, UNSIGNED_SHORT, int),
+        F::R16Sint => f(R16I, RED_INTEGER, SHORT, int),
+        F::R16Float => f(R16F, RED, HALF_FLOAT, Half),
+        F::Rg8Unorm => f(RG8, RG, UNSIGNED_BYTE, norm),
+        F::Rg8Snorm => f(RG8_SNORM, RG, BYTE, snorm),
+        F::Rg8Uint => f(RG8UI, RG_INTEGER, UNSIGNED_BYTE, int),
+        F::Rg8Sint => f(RG8I, RG_INTEGER, BYTE, int),
+        F::R32Uint => f(R32UI, RED_INTEGER, UNSIGNED_INT, int),
+        F::R32Sint => f(R32I, RED_INTEGER, INT, int),
+        F::R32Float => f(R32F, RED, FLOAT, Single),
+        F::Rg16Uint => f(RG16UI, RG_INTEGER, UNSIGNED_SHORT, int),
+        F::Rg16Sint => f(RG16I, RG_INTEGER, SHORT, int),
+        F::Rg16Float => f(RG16F, RG, HALF_FLOAT, Half),
+        F::Rgba8Unorm => f(RGBA8, RGBA, UNSIGNED_BYTE, norm),
+        F::Rgba8UnormSrgb => f(SRGB8_ALPHA8, RGBA, UNSIGNED_BYTE, norm),
+        F::Rgba8Snorm => f(RGBA8_SNORM, RGBA, BYTE, snorm),
+        F::Rgba8Uint => f(RGBA8UI, RGBA_INTEGER, UNSIGNED_BYTE, int),
+        F::Rgba8Sint => f(RGBA8I, RGBA_INTEGER, BYTE, int),
+        // Direct3D's packed formats put the first channel in the lowest bits, as GL's _REV types do.
+        F::Rgb10a2Unorm => f(RGB10_A2, RGBA, UNSIGNED_INT_2_10_10_10_REV, norm),
+        F::Rgb10a2Uint => f(RGB10_A2UI, RGBA_INTEGER, UNSIGNED_INT_2_10_10_10_REV, int),
+        F::Rg11b10Float => f(
+            R11F_G11F_B10F,
+            RGB,
+            UNSIGNED_INT_10F_11F_11F_REV,
+            SmallFloat,
+        ),
+        F::Rgb9e5Float => f(RGB9_E5, RGB, UNSIGNED_INT_5_9_9_9_REV, SharedExponent),
+        // Direct3D's B5G6R5 has red in the top bits, as GL's 5_6_5 does.
+        F::B5g6r5Unorm => f(RGB565, RGB, UNSIGNED_SHORT_5_6_5, norm),
+        F::Rg32Uint => f(RG32UI, RG_INTEGER, UNSIGNED_INT, int),
+        F::Rg32Sint => f(RG32I, RG_INTEGER, INT, int),
+        F::Rg32Float => f(RG32F, RG, FLOAT, Single),
+        F::Rgba16Uint => f(RGBA16UI, RGBA_INTEGER, UNSIGNED_SHORT, int),
+        F::Rgba16Sint => f(RGBA16I, RGBA_INTEGER, SHORT, int),
+        F::Rgba16Float => f(RGBA16F, RGBA, HALF_FLOAT, Half),
+        F::Rgb32Uint => f(RGB32UI, RGB_INTEGER, UNSIGNED_INT, int3),
+        F::Rgb32Sint => f(RGB32I, RGB_INTEGER, INT, int3),
+        F::Rgb32Float => f(RGB32F, RGB, FLOAT, Single),
+        F::Rgba32Uint => f(RGBA32UI, RGBA_INTEGER, UNSIGNED_INT, int),
+        F::Rgba32Sint => f(RGBA32I, RGBA_INTEGER, INT, int),
+        F::Rgba32Float => f(RGBA32F, RGBA, FLOAT, Single),
+        F::Depth16Unorm => f(DEPTH_COMPONENT16, DEPTH_COMPONENT, UNSIGNED_SHORT, Depth),
+        F::Depth24Plus => f(DEPTH_COMPONENT24, DEPTH_COMPONENT, UNSIGNED_INT, Depth),
+        F::Depth24PlusStencil8 => f(DEPTH24_STENCIL8, DEPTH_STENCIL, UNSIGNED_INT_24_8, Depth),
+        F::Depth32Float => f(DEPTH_COMPONENT32F, DEPTH_COMPONENT, FLOAT, Depth),
+        F::Depth32FloatStencil8 => f(
+            DEPTH32F_STENCIL8,
+            DEPTH_STENCIL,
+            FLOAT_32_UNSIGNED_INT_24_8_REV,
+            Depth,
+        ),
+        _ => None,
+    }
+}
+
+/// The extensions that change what formats can do.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FormatExtensions {
+    pub color_buffer_float: bool,
+    pub float_linear: bool,
+    pub float_blend: bool,
+}
+
+/// What `format` can be used for on a context with `ext`. Copies out to the host are declared only for
+/// the formats [`crate::WebGl`] reads back today.
+pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
+    let Some(gl) = gl_format(format) else {
+        return FormatUse::empty();
+    };
+    let target = FormatUse::RENDER | FormatUse::BLEND;
+    let mut uses = FormatUse::SAMPLE
+        | match gl.class {
+            Class::Norm { render: true } => FormatUse::FILTER | target,
+            Class::Norm { render: false } | Class::SharedExponent => FormatUse::FILTER,
+            Class::Half | Class::SmallFloat if ext.color_buffer_float => FormatUse::FILTER | target,
+            Class::Half | Class::SmallFloat => FormatUse::FILTER,
+            Class::Single => {
+                let mut u = FormatUse::empty();
+                u.set(FormatUse::FILTER, ext.float_linear);
+                // RGB32F is never colour-renderable.
+                if ext.color_buffer_float && gl.format != RGB {
+                    u |= FormatUse::RENDER;
+                    u.set(FormatUse::BLEND, ext.float_blend);
+                }
+                u
+            }
+            Class::Int { render } if render => FormatUse::RENDER,
+            Class::Int { .. } => FormatUse::empty(),
+            Class::Depth => FormatUse::DEPTH_STENCIL,
+        };
+    // The stencil aspect of a combined format is not yet sampled (neither WEBGL_stencil_texturing nor
+    // its copy by draws is built), so such formats are not declared sampleable.
+    if gl.format == DEPTH_STENCIL {
+        uses.remove(FormatUse::SAMPLE);
+    }
+    if matches!(format, Format::Rgba8Unorm | Format::Rgba8UnormSrgb) {
+        uses |= FormatUse::COPY_OUT;
+    }
+    uses
+}
