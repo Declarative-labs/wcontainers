@@ -19,6 +19,8 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>, renderer: &str) ->
     let mut features = Features::READ_BACK_NOW
         // GL's provoking vertex is the last; its rule for every topology is Direct3D 9's and OpenGL's.
         | Features::PROVOKING_VERTEX_LAST
+        // TRIANGLE_FAN and LINE_LOOP are WebGL 2 topologies.
+        | Features::FAN_AND_LOOP
         // GL's own clip depth; with EXT_clip_control set per raster block.
         | Features::CLIP_DEPTH_MINUS_ONE
         | Features::INDEX_U8
@@ -28,6 +30,10 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>, renderer: &str) ->
     features.set(
         Features::CLIP_DEPTH_ZERO_ONE,
         ext.contains("EXT_clip_control"),
+    );
+    features.set(
+        Features::PROVOKING_VERTEX_FIRST,
+        ext.contains("WEBGL_provoking_vertex"),
     );
     let anisotropic = ext.contains("EXT_texture_filter_anisotropic");
     let units_vertex = get(glow::MAX_VERTEX_TEXTURE_IMAGE_UNITS);
@@ -66,7 +72,8 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>, renderer: &str) ->
         compute_invocations: 0,
         compute_size: [0; 3],
         max_dispatch: 0,
-        max_point_size: range(glow::ALIASED_POINT_SIZE_RANGE),
+        // Programs write gl_PointSize 1 (POINT_SIZE is absent).
+        max_point_size: 1.0,
         max_line_width: range(glow::ALIASED_LINE_WIDTH_RANGE),
         max_anisotropy: if anisotropic {
             // SAFETY: a plain query the extension defines.
