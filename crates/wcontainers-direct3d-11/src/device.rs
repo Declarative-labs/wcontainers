@@ -581,11 +581,10 @@ impl<B: Backend> Device<B> {
             && (d.dimension != TexDim::D2
                 || mips != 1
                 || d.usage != usage::DEFAULT
-                || d.bind_flags & (bind::RENDER_TARGET | bind::DEPTH_STENCIL) == 0
                 || d.bind_flags & bind::UNORDERED_ACCESS != 0)
         {
             return Err(Error::InvalidArg(
-                "a multisampled texture is 2D, of one level and default usage, drawn into",
+                "a multisampled texture is 2D, of one level and default usage",
             ));
         }
         let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
@@ -679,6 +678,10 @@ impl<B: Backend> Device<B> {
             if d.bind_flags & flag != 0 {
                 usage |= u;
             }
+        }
+        // The back end multisamples only textures drawn into, which Direct3D does not require.
+        if d.sample_count > 1 {
+            usage |= TextureUsage::RENDER;
         }
         // Unordered access views are cleared by clearing passes where the format can be drawn into.
         if d.bind_flags & bind::UNORDERED_ACCESS != 0
