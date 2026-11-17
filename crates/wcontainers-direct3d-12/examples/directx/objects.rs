@@ -10,7 +10,9 @@ use wcontainers_direct3d_12::list::{
     Command, CommandList, CopyLocation, Descriptor, IndexBufferView, IndirectArgument,
     ResourceView, RootArgument, SamplerView, TargetView, VertexBufferView, ViewportF,
 };
-use wcontainers_direct3d_12::resource::{Footprint, HeapType, ResourceDesc, check_creation};
+use wcontainers_direct3d_12::resource::{
+    Footprint, HeapType, ResourceDesc, check_creation, check_state,
+};
 use wcontainers_direct3d_12::state::{
     Blend, DepthStencil, InputElement, Raster, StencilOps, TargetBlend,
 };
@@ -18,7 +20,9 @@ use wcontainers_direct3d_12::{
     Error, FenceId, GraphicsPipelineDesc, HeapId, MemoryId, PipelineId, QueryHeapId, QueueId,
     ResourceId, RootId, features,
 };
-use wcontainers_directx_graphics_infrastructure::{AdapterDesc, format_support, plane_count};
+use wcontainers_directx_graphics_infrastructure::{
+    AdapterDesc, dxgi_format, format_support, plane_count,
+};
 use wcontainers_gpu::{Backend, Extent, Origin};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::*;
@@ -2567,7 +2571,6 @@ unsafe fn descriptor(h: D3D12_CPU_DESCRIPTOR_HANDLE) -> Descriptor {
 /// texture viewed in a format the back end cannot reinterpret its bits as, its twin in that format
 /// (`Device::view_holder`).
 fn holder(r: &Resource, format: u32) -> ResourceId {
-    use wcontainers_directx_graphics_infrastructure::dxgi_format;
     let reinterprets = match (dxgi_format(r.desc.Format.0 as u32), dxgi_format(format)) {
         (Some((stored, true)), Some((view, _))) => stored.linear() != view.linear(),
         _ => false,
@@ -2823,7 +2826,26 @@ impl List {
     }
 
     /// Both back ends order their own work; plan section 5.2.
-    pub fn ResourceBarrier(&self, _count: u32, _barriers: *const D3D12_RESOURCE_BARRIER) {}
+    /// Barriers order nothing here (the device runs work in submission order); transitions are
+    /// checked as Direct3D 12 checks them at `Close`.
+    pub fn ResourceBarrier(&self, count: u32, barriers: *const D3D12_RESOURCE_BARRIER) {
+        // SAFETY: `count` barriers, as the API requires.
+        for b in unsafe { many(barriers, count) } {
+            if b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION {
+                continue;
+            }
+            // SAFETY: the member the type names.
+            let t = unsafe { &b.Anonymous.Transition };
+            let checked = if t.pResource.is_none() {
+                Err(Error::Invalid("a transition of no resource"))
+            } else {
+                check_state(t.StateBefore.0 as u32).and(check_state(t.StateAfter.0 as u32))
+            };
+            if let Err(e) = checked {
+                self.rec.lock().unwrap().fail(e);
+            }
+        }
+    }
 
     pub fn IASetPrimitiveTopology(&self, topology: D3D_PRIMITIVE_TOPOLOGY) {
         self.record(Command::Topology(topology.0 as u32));
@@ -3333,6 +3355,33 @@ impl List {
                 }
             })
         };
+        // Block-compressed copies start, and boxes start and end, at a block's corner, as
+        // Direct3D 12 checks at `Close` even for levels smaller than a block.
+        let block = |l: &D3D12_TEXTURE_COPY_LOCATION| {
+            let format = if l.Type == D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX {
+                // SAFETY: resources come from this library.
+                unsafe { ours(l.pResource.as_ref()?) }.desc.Format.0 as u32
+            } else {
+                // SAFETY: the union member `Type` names.
+                unsafe { l.Anonymous.PlacedFootprint }.Footprint.Format.0 as u32
+            };
+            let (w, h, _) = dxgi_format(format)?.0.block();
+            Some((w, h))
+        };
+        let (dw, dh) = dst.and_then(block).unwrap_or((1, 1));
+        let (sw, sh) = src.and_then(block).unwrap_or((1, 1));
+        let unaligned = !x.is_multiple_of(dw)
+            || !y.is_multiple_of(dh)
+            || area.is_some_and(|b| {
+                [b.left, b.right].iter().any(|v| !v.is_multiple_of(sw))
+                    || [b.top, b.bottom].iter().any(|v| !v.is_multiple_of(sh))
+            });
+        if unaligned {
+            self.rec.lock().unwrap().fail(Error::Invalid(
+                "a block-compressed copy not at a block's corner",
+            ));
+            return;
+        }
         match (dst.and_then(location), src.and_then(location)) {
             (Some(dst), Some(src)) => self.record(Command::CopyTexture {
                 dst,
@@ -3506,6 +3555,8 @@ fn unordered_access_view(
     };
     let Some(d) = d else {
         v.dimension = match r.desc.Dimension {
+            D3D12_RESOURCE_DIMENSION_TEXTURE1D if r.desc.DepthOrArraySize > 1 => 3,
+            D3D12_RESOURCE_DIMENSION_TEXTURE1D => 2,
             D3D12_RESOURCE_DIMENSION_TEXTURE2D if r.desc.DepthOrArraySize > 1 => 5,
             D3D12_RESOURCE_DIMENSION_TEXTURE2D => 4,
             D3D12_RESOURCE_DIMENSION_TEXTURE3D => 8,
@@ -3527,6 +3578,11 @@ fn unordered_access_view(
                 v.count = b.NumElements;
                 v.stride = b.StructureByteStride;
                 v.flags = b.Flags.0 as u32;
+            }
+            D3D12_UAV_DIMENSION_TEXTURE1D => v.mip = d.Anonymous.Texture1D.MipSlice,
+            D3D12_UAV_DIMENSION_TEXTURE1DARRAY => {
+                let t = d.Anonymous.Texture1DArray;
+                (v.mip, v.first_layer, v.layers) = (t.MipSlice, t.FirstArraySlice, t.ArraySize);
             }
             D3D12_UAV_DIMENSION_TEXTURE2D => v.mip = d.Anonymous.Texture2D.MipSlice,
             D3D12_UAV_DIMENSION_TEXTURE2DARRAY => {
