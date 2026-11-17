@@ -1,0 +1,4 @@
+# Stored outputs and compiled shaders are compared byte for byte; no line ending conversion.
+references/** binary
+shaders/dxbc/** binary
+shaders/dxil/** binary

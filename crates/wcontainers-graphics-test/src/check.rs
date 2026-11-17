@@ -145,6 +145,9 @@ fn check_text(reference: &Path, ours: &Path) -> anyhow::Result<(bool, String)> {
     if want == got {
         return Ok((true, "same".to_owned()));
     }
+    if want.lines().eq(got.lines()) {
+        return Ok((false, "same lines, different line endings".to_owned()));
+    }
     let line = want
         .lines()
         .zip(got.lines())
