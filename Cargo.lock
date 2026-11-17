@@ -1911,6 +1911,7 @@ dependencies = [
  "rayon",
  "rustc-hash",
  "wasm-encoder 0.263.0",
+ "wasmparser 0.263.0",
  "wcontainers-abi",
  "wcontainers-guest-cpu",
 ]
