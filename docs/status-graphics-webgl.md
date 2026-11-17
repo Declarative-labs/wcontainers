@@ -5,18 +5,26 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a is done. G3 (section 12's pass bar) is done except one item that waits on G1, after run 4.
-Run 4 merged the shared line (d31a49e) and the WebGPU branch (2fddc0e). It built transform feedback
-(`capture_vertices` with and without rasterising, and captured indices drawn both ways), BC and
-RGB9E5 textures read back as written (a host copy; BC native with WebGL's extensions, else decoded
-by bcdec_rs), and exact texture size queries above a view's first level (ANGLE answered for the
-wrong level). In Chrome's WebGL 2 the shared suite (24 tests) and the back end's 15 checks pass 39
-of 39 with every extension, and again with WEBGL_stencil_texturing and the four BC extensions off.
-Against the WebGPU back end 4 of 5 comparisons pass. The fractional viewport and the integer twin's
-mips now pass. The one failure is `r32float` mips without OES_texture_float_linear, one float step
-off, which comes from G1's in-shader filter (see "Known failures"). Routes without EXT_clip_control
-or WEBGL_provoking_vertex still fail the suite tests whose own raster blocks ask for what is
-absent, also G1's to change.
+G3a is done. After run 5, G3 (section 12's pass bar) is met in Chrome. Three things remain, and
+none can be fixed inside this crate:
+- In Chrome's WebGL 2, the shared suite (24 tests) and the back end's 15 checks pass 39 of 39. They
+  pass with every extension, and again with WEBGL_stencil_texturing and the four BC extensions off.
+- Natively on ANGLE they pass 38 of 39 with every extension, since run 5 patched the test tool's
+  ANGLE (below). The one failure is `present_shows_the_frame`, because this ANGLE reads its pbuffer
+  wrongly (see "Known failures").
+- Against the WebGPU back end, 5 of 6 comparisons pass. Run 5 added one: `r32float` mips filtered
+  in the program on both back ends, which are byte-equal.
+- The one comparison that fails is `r32float` filtered in the program here against WebGPU's
+  hardware filter. It is one float step off in 5 of 16 values, because G1's in-shader filter does
+  its arithmetic in a different order from the hardware's.
+- Routes without EXT_clip_control or WEBGL_provoking_vertex fail the 15 suite tests whose own raster
+  blocks ask for what is absent. G1 has to change that.
+
+Run 5 merged the shared line (f107eb5) and the WebGPU branch (5054e1a). It built mozangle's ANGLE
+with three of upstream ANGLE's EXT_clip_control fixes. That fixed the scissor mirroring and the
+fragment depth that had failed natively. The native back end can now run with every extension, as
+section 10 asks. The desktop's clock had gone back by about eight hours, which left cargo trusting
+stale builds; see "How to run".
 
 ## Done
 
@@ -290,9 +298,39 @@ absent, also G1's to change.
   - all.cmd's Chrome run without WEBGL_stencil_texturing, and its ANGLE run without both clip
     extensions, also switch off the four BC extensions, so the decoded route runs.
 
+- G3 run 5:
+  - The test tool: angle/build.cmd unpacks mozangle 0.7.1 into C:\wc\tools\mozangle-0.7.1-patched
+    and applies angle/d3d11-clip-control.patch. The patch holds three upstream ANGLE fixes to the
+    Direct3D 11 renderer, written against mozangle's older code:
+    - ba845fcf25d0: the scissor is not mirrored under the upper-left origin.
+    - 6092e0b75c22: a change of the clip depth mode reaches the shaders. This change makes it do so
+      by marking the viewport dirty.
+    - 1dd3a4c4053a: `gl_FragCoord.z` is taken from the built-in position.
+    The tool then builds ANGLE from nothing into `%CARGO_TARGET_DIR%\angle-patched`. Natively, every
+    test that had failed under EXT_clip_control now passes, apart from `present_shows_the_frame`.
+  - tests/against_webgpu.rs: `generate_mips_of_r32float_filtered_in_the_program_on_both_equals_webgpu`.
+    It compares this back end without OES_texture_float_linear against the WebGPU back end on a
+    device made without float32-filterable (and without adapter-specific format features, as G2's own
+    Direct3D comparison makes it). Both must count `FilterInShader`, and every level must be
+    byte-equal. The older comparison against WebGPU's hardware filter stays as it was, as a known
+    failure.
+  - examples/draw-cost.rs: `gpu_cost` is now a JSPI export (`#[wasm_bindgen(jspi)]`) that makes the
+    adapter and device with the WebGPU back end's `block_on`. That back end now runs its depth
+    probe in the browser and waits for it by suspending. Called from a plain async export, the
+    page hung. wasm-bindgen-futures is no longer used. Lint the example for WebAssembly by adding
+    `--example draw-cost` to the wasm32 clippy command.
+
 ## How to run
 
 All from the checkout root on the Mac.
+
+- The desktop's clock: on 2026-11-17 the target directory held files written at 17:18 desktop time,
+  while the clock read 09:27. The clock had gone back by about eight hours. Cargo then took every
+  freshly checked-out source as older than its build, and ran stale test programs without saying so.
+  The first job of run 5 ran run 4's binaries. If a build finishes at once after a change, clean
+  our crates first:
+  `tools/graphics-rig/remote "cargo clean -p wcontainers-gpu-webgl -p wcontainers-gpu -p wcontainers-gpu-test -p wcontainers-gpu-webgpu -p wcontainers-graphics-test"`
+  (and again with `--target wasm32-unknown-unknown`).
 
 - Everything at once (both scene routes in Chrome and on ANGLE; the suite with the checks in
   Chrome four ways (every extension, without EXT_clip_control, without it and WEBGL_provoking_vertex,
@@ -311,9 +349,11 @@ All from the checkout root on the Mac.
   `tools/graphics-rig/gpu-job -- "cargo test -j 3 -p wcontainers-gpu-webgl --test against_webgpu -- --test-threads=1"`.
 - The suite in Chrome alone (after build.cmd and a `--list` into a file, as all.cmd does):
   `node crates\wcontainers-gpu-webgl\browser\suite.mjs "%CARGO_TARGET_DIR%\webgl-pkg" <out-file> <list-file> [<extensions off>]`.
-- Once per desktop (done; about 4 minutes):
+- Once per desktop, and again whenever angle/ changes (done in run 5; 4 m 30 s of compiling):
   `tools/graphics-rig/remote "crates\wcontainers-gpu-webgl\angle\build.cmd"` builds ANGLE's
-  libEGL.dll and libGLESv2.dll from the mozangle crate into C:\wc\tools\angle-mozangle-0.7.1.
+  libEGL.dll and libGLESv2.dll from the patched mozangle crate into C:\wc\tools\angle-mozangle-0.7.1.
+  It downloads the crate from static.crates.io with curl.exe, unpacks it with tar.exe and patches it
+  with `git apply`.
 - The scenes, natively through ANGLE and in Chrome's WebGL 2, each checked against the rig's stored
   Direct3D 11 pictures (crates/wcontainers-graphics-test/references/d3d11, with their tolerances):
   `tools/graphics-rig/gpu-job --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "crates\wcontainers-gpu-webgl\browser\run.cmd C:\wc\out\webgl\g3a"`
@@ -337,12 +377,12 @@ All from the checkout root on the Mac.
 
 How another track uses the back end natively (G4's Windows library on WebGL 2): depend on
 `wcontainers-gpu-webgl`, and make the back end on the device thread with
-`WebGl::on_angle(Path::new(r"C:\wc\tools\angle-mozangle-0.7.1"), &["EXT_clip_control"])` after
-running angle\build.cmd once. Switch EXT_clip_control off natively: this ANGLE mirrors scissor
-rectangles vertically under it (see "Known failures"), which breaks every scissored draw; without it
-the front rewrites clip depth (`ClipDepthRewrite`), as it must for browsers without the extension.
-The caps then lack `CLIP_DEPTH_ZERO_ONE`, which Chrome on the same GPU has (see "Departures"). The
-context is current on the calling thread, which must be the device thread. Natively the surface is
+`WebGl::on_angle(Path::new(r"C:\wc\tools\angle-mozangle-0.7.1"), &[])` after running
+angle\build.cmd (run 5's version, with the patch). With every extension, the caps equal Chrome's on
+the same GPU, as section 10 asks. Before run 5 this paragraph said to switch EXT_clip_control off,
+because the unpatched ANGLE mirrored scissors under it. That is no longer needed: rebuild ANGLE
+instead. The `&["EXT_clip_control"]` route still works and is the route of browsers without the
+extension. The context is current on the calling thread, which must be the device thread. Natively the surface is
 an off-screen pbuffer; a real window needs an EGL window surface, not built yet.
 In the browser: `WebGl::on_canvas(canvas.getContext("webgl2"), &[])`; the canvas is the surface.
 Every page that loads the back end's WebAssembly must supply the module `wcontainers-device` (an
@@ -527,6 +567,42 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   - Both Chrome and mozangle report the four BC extensions, so `BLOCK_COMPRESSION` is declared on
     both with every extension.
   - Lint clean on both targets (final tree checked at 17:08).
+- 2026-11-17, G3 run 5, same desktop (RTX 3080, driver 32.0.16.2101; desktop clock times, queued
+  jobs, not timed, about 100 s each between 09:29 and 09:42). Merged origin/phase-2-graphics f107eb5
+  and origin/phase-2-graphics-webgpu 5054e1a. The suite has 24 tests and there are 15 checks (39):
+  - The first job of the run (before any change) ran stale binaries, because of the clock (see "How
+    to run"). Its verdicts were run 4's, and they are not counted.
+  - After cleaning, with ANGLE patched (job 09:40 to 09:42):
+    - Chrome 157.0.8103.78: 39 of 39 with every extension, and 39 of 39 without
+      WEBGL_stencil_texturing and the BC extensions. Without EXT_clip_control, 24 of 39; without
+      it and WEBGL_provoking_vertex, 24 of 39.
+    - ANGLE with every extension: 38 of 39 (`present_shows_the_frame`). Before the patch it was 34
+      of 39. Without EXT_clip_control, 23 of 39; without both and the BC extensions, 23 of 39.
+    - All 64 scene verdicts are as expected, so `triangle-clear_rects` now passes on ANGLE with
+      EXT_clip_control.
+    - Against the WebGPU back end: 5 of 6. The new route-against-route r32float comparison passes;
+      the comparison against the hardware filter fails as before.
+  - With only the scissor and depth-mode fixes (job ending 09:31), ANGLE with every extension was 37
+    of 39: `fragment_depth_follows_the_clip_convention` still read 0.75. The third fix (1dd3a4c4053a)
+    made it pass.
+  - Lint is clean on both targets.
+- Per-draw cost, run 5 (Chrome 157.0.8103.78 headless, RTX 3080; `gpu-job --alone`; the same scene
+  and method as run 3). Since the merge, the cost page has to make the WebGPU device inside a JSPI
+  export. Before that fix the page hung twice, once for 10 minutes and once for 2.
+  - First measured run, ending 10:01:35, CPU load 13% just after. The WebGL 2 medians were noisy
+    against their fastest frames:
+    - WebGL 2, 10,000 draws: one set 6.4 ms (fastest 1.4 ms); a set per draw 10.8 ms (fastest
+      3.8 ms).
+    - WebGL 2, 50,000 draws: one set 9.6 ms; a set per draw 16.5 ms.
+    - WebGPU: 1.6, 3.8, 7.8 and 18.0 ms.
+    - Chrome's first launch in this run kept no WebGL context.
+  - Second run, alone from 10:06:04, CPU load 10% just after:
+    - WebGL 2, 10,000 draws: one set 1.5 ms (0.150 us a draw); a set per draw 4.3 ms (0.430 us).
+    - WebGL 2, 50,000 draws: one set 5.7 ms (0.114 us); a set per draw 17.9 ms (0.358 us).
+    - WebGPU, 10,000 draws: 1.6 ms (0.160 us) and 4.0 ms (0.400 us).
+    - WebGPU, 50,000 draws: 7.8 ms (0.156 us) and 19.1 ms (0.382 us).
+  The second run agrees with run 3 to within about 15%. Why the first run's WebGL 2 frames stalled
+  was not found. Only the first run followed a Chrome launch that had failed.
 - In the first full check of G3 run 1, Chrome's first launch kept no WebGL 2 context in ten tries
   and was closed; the second launch worked. In the other launches one context was lost first.
 - Chrome's GPU process restarted once just after Chrome started in most runs (the first WebGL
@@ -542,26 +618,22 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   OES_texture_float_linear: 5 of 16 values of level 1 differ from WebGPU's by one float step. The
   built-in mip program filters in the shader (`FilterInShader`, G1's helper) while WebGPU's sampler
   filters in hardware; the order of the arithmetic differs. With the extension (hardware filtering
-  on both) they are equal. A property of the helper; for G1 (helpers.rs is G1's alone). It is the
-  one item of the pass bar that still fails. Matching it exactly would mean the helper does its
-  arithmetic in the order this GPU's filter does, which other GPUs need not share.
-- `fragment_depth_follows_the_clip_convention` on native ANGLE with EXT_clip_control: the
-  fragment's position z reads 0.75 for clip z 0.5 in zero-to-one, where Chrome's ANGLE reads 0.5
-  (as WebGPU did when run 3 first saw this). It passes in Chrome on every route, and natively without the extension, which is the
-  route the native back end is documented to use. It is a bug of the test tool, like the scissor
-  mirroring below; left failing.
-
-- `triangle-clear_rects` and the suite's `the_scissor_bounds_the_draw` on native ANGLE with
-  EXT_clip_control. mozangle 0.7.1's ANGLE mirrors the scissor rectangle vertically when the clip
-  origin is upper-left, though EXT_clip_control leaves scissors in window coordinates (in its
-  source, StateManager11.cpp turns on `presentPathFastActive` for an upper-left origin, lines 871 to
-  874, and then sets `scissorY = height - scissor.height - scissor.y`, lines 1415 to 1418). In the
-  suite, the scissor x 1, y 2, w 2, h 1 on a 4 by 4 target drew row 1 instead of row 2. The check
-  `depth_and_stencil_read_back` fails the same way: its `clear_rects` into a depth-only framebuffer
-  missed the target altogether (the mirrored height seems to be the 1 by 1 pbuffer's). Chrome 157's
-  ANGLE draws all three right, and so does this ANGLE without EXT_clip_control. A bug of the test
-  tool; left failing.
-- Suite `present_shows_the_frame` on native ANGLE: reading this ANGLE's pbuffer default framebuffer
+  on both) they are equal. This comes from the helper, so it is for G1 (helpers.rs is G1's alone).
+  Matching it exactly would mean doing the helper's arithmetic in the order this GPU's filter
+  does, and other GPUs need not share that order.
+  Since run 5 the pass bar's own wording (exact against G2, for a format generateMipmap refuses) is
+  also checked route against route. The new
+  `generate_mips_of_r32float_filtered_in_the_program_on_both_equals_webgpu` passes: every level is
+  byte-equal with the WebGPU back end on a device without float32-filterable. The comparison
+  against the hardware filter is left failing, unchanged.
+- Fixed in run 5, by patching the test tool: on native ANGLE with EXT_clip_control,
+  - `fragment_depth_follows_the_clip_convention` read 0.75 for clip z 0.5. mozangle's pixel shaders
+    computed `gl_FragCoord.z` from clip z by the minus-one-to-one formula.
+  - `triangle-clear_rects`, the suite's `the_scissor_bounds_the_draw`, `depth_and_stencil_read_back`
+    and `stencil_sampled_and_read_back` failed because mozangle mirrored scissors under the
+    upper-left origin.
+  Upstream ANGLE had fixed both; see run 5 under "Done".
+- Suite `present_shows_the_frame` on native ANGLE (still failing after the patch): reading this ANGLE's pbuffer default framebuffer
   gives 72 in every byte whatever was drawn into it, even right after a `glClear` of it, with no GL
   error, a complete framebuffer, an RGBA8 configuration with no samples, and reads in RGBA and in
   the implementation's BGRA format alike. In Chrome the same test passes (the canvas read through a
@@ -614,11 +686,10 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   made the fast-path defaults usable here; G1 should take it over.
 - The last merge of origin/phase-2-graphics in run 1 was undone before it was pushed (see "Next"):
   its suite crate no longer builds for WebAssembly, and the Chrome host of the suite needs it.
-- Natively the back end is to be made with EXT_clip_control switched off (above), so its caps lack
-  `CLIP_DEPTH_ZERO_ONE`, which Chrome on the same GPU reports; section 10 says the native route
-  reports the Caps the browser would. The reason: this ANGLE mirrors every scissored draw under the
-  extension (checked in its source), and the browser route without the extension is one the front
-  must serve anyway. With every extension both report identical caps.
+- The native test tool is mozangle 0.7.1's ANGLE with three of upstream ANGLE's fixes applied by a
+  patch in angle/ (run 5). It is still not Chrome's ANGLE. The patch is ANGLE's own code under its
+  BSD-3-Clause licence, applied to a test tool that is never shipped. Before run 5, the native back
+  end was to run with EXT_clip_control off; that departure is gone.
 - Presenting copies the frame once more than WebGPU does: WebGL's drawing buffer is not a texture,
   so `current_texture` is a texture of the back end's and `present` blits it into the drawing buffer
   (one full-size copy per frame, expected cheap, not measured). Not counted as a slow path: it is
@@ -685,7 +756,10 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 - C:\wc\tools\libclang-18.1.1: libclang.dll (84 MB) from the PyPI `libclang` 18.1.1 wheel (Apache-2.0
   with LLVM exception), which mozangle's bindgen needs to build ANGLE.
 - C:\wc\tools\angle-mozangle-0.7.1: libEGL.dll and libGLESv2.dll (7.1 MB), built by angle\build.cmd.
-- The mozangle build's objects in C:\wc\target\phase-2-graphics-webgl\release.
+- The mozangle build's objects in C:\wc\target\phase-2-graphics-webgl\release (the unpatched build of
+  runs 1 to 4, now unused) and C:\wc\target\phase-2-graphics-webgl\angle-patched (run 5).
+- C:\wc\tools\mozangle-0.7.1-patched (run 5): the mozangle crate's sources, unpacked and patched by
+  angle\build.cmd. Its size was not measured.
 - Left by the independent check of the first run (not ours to remove without asking): the pictures
   in C:\wc\out\webgl-check and an empty lock file C:\wc\locks\phase-2-graphics-webgl-check.
 
@@ -705,12 +779,21 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   Apache-2.0; on Windows wgpu 30.0.2 (`dx12`) and pollster 1.0.1: MIT OR Apache-2.0 (their
   Cargo.toml), and the WebGPU back end of this workspace.
 - mozangle 0.7.1 (the ANGLE build tool in angle/, outside the workspace, never a dependency of the
-  back end): BSD-3-Clause (its Cargo.toml and LICENSE, ANGLE's).
+  back end): BSD-3-Clause (its Cargo.toml and LICENSE, ANGLE's). angle/d3d11-clip-control.patch
+  carries upstream ANGLE's changes ba845fcf25d0, 6092e0b75c22 and 1dd3a4c4053a (BSD-3-Clause,
+  github.com/google/angle), adapted to mozangle's older code.
 
 ## Next
 
-G3's pass bar has one item left, and it is G1's: the r32float in-shader mip filter's one-step
-difference. After that, in about this order:
+What is left of G3's pass bar cannot be done in this crate:
+- G1's suite should take clip depth and provoking vertex from the caps. Until it does, the routes
+  without the extensions fail 15 suite tests.
+- The r32float comparison against WebGPU's hardware filter stays one float step off.
+- `present_shows_the_frame` fails natively. This ANGLE's pbuffer reads back 72. An EGL window
+  surface (item 5) would replace the pbuffer natively and is the next thing to try for it.
+- `TIMESTAMPS` cannot run on the RTX 3080, which gives zero timestamp bits.
+
+After that, in about this order:
 1. Captures of strips, fans, loops and indexed draws (now device loss as not built), if a front
    needs them on WebGL 2.
 2. Copies into and out of host-kept textures (RGB9E5, BC): from them as host writes (plan 5.8),

@@ -4,8 +4,9 @@
 //! swap chains and factories have their method tables patched with counting thunks the first time
 //! an object using one is created through this library. Contexts are handed to the program wrapped
 //! instead, since Direct3D 11 rewrites entries of a context's table as it runs: each wrapper method
-//! counts and jumps through the context's own table as it is at that moment. WC_CAPTURE lists frame numbers (comma separated): the back buffer is
-//! saved as <WC_OUT>\frame-<n>.png before those presents, and the process ends after the last.
+//! counts and jumps through the context's own table as it is at that moment. WC_CAPTURE lists frame
+//! numbers (comma separated): the back buffer is saved as <WC_OUT>\frame-<n>.png before those
+//! presents, the process ends after the last, and the program runs on the clock of clock.rs.
 
 use std::ffi::c_void;
 use std::fmt::Write as _;
@@ -155,7 +156,7 @@ fn methods(interface: &str) -> &'static [&'static str] {
         .1
 }
 
-fn note(text: String) {
+pub fn note(text: String) {
     NOTES.lock().unwrap().push(text);
 }
 
@@ -200,6 +201,7 @@ fn wrapper_tables() -> &'static [Vec<usize>; 2] {
                 .map(|k| thunks + 32 * (t * CONTEXT_SLOTS + k))
                 .collect();
             table[0] = wrapper_query as *const () as usize;
+            table[get_data_slot()] = wrapper_get_data as *const () as usize;
             table
         })
     })
@@ -258,6 +260,72 @@ unsafe extern "system" fn wrapper_query(
         unsafe { *out = this };
     }
     result
+}
+
+/// Where GetData sits in a context's method table.
+fn get_data_slot() -> usize {
+    let (_, interface) = Table::Immediate.chain()[0];
+    methods(interface)
+        .iter()
+        .position(|n| *n == "GetData")
+        .expect("a context has GetData")
+}
+
+/// GetData of a wrapper: the context's own answer, except that while the frame clock runs a
+/// timestamp query is answered at once from that clock (in 100-nanosecond ticks, never disjoint),
+/// so the timings and query latency a program shows are the same on every run.
+unsafe extern "system" fn wrapper_get_data(
+    this: *mut c_void,
+    query: *mut c_void,
+    data: *mut c_void,
+    size: u32,
+    flags: u32,
+) -> HRESULT {
+    let wrapper = unsafe { &*(this as *const Wrapper) };
+    let index = usize::from(wrapper.vtable == wrapper_tables()[1].as_ptr());
+    let k = get_data_slot();
+    WRAPPED_COUNTS[index * CONTEXT_SLOTS + k].fetch_add(1, Ordering::Relaxed);
+    let kind = if crate::clock::running() {
+        unsafe { IUnknown::from_raw_borrowed(&query) }
+            .and_then(|q| q.cast::<ID3D11Query>().ok())
+            .map(|q| unsafe { q.GetDesc() }.Query)
+    } else {
+        None
+    };
+    match kind {
+        Some(D3D11_QUERY_TIMESTAMP) if data.is_null() || size as usize >= size_of::<u64>() => {
+            if !data.is_null() {
+                unsafe { *(data as *mut u64) = crate::clock::now() };
+            }
+            windows::Win32::Foundation::S_OK
+        }
+        Some(D3D11_QUERY_TIMESTAMP_DISJOINT)
+            if data.is_null()
+                || size as usize >= size_of::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>() =>
+        {
+            if !data.is_null() {
+                unsafe {
+                    *(data as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT) =
+                        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT {
+                            Frequency: crate::clock::FREQUENCY,
+                            Disjoint: false.into(),
+                        }
+                };
+            }
+            windows::Win32::Foundation::S_OK
+        }
+        _ => {
+            let own: unsafe extern "system" fn(
+                *mut c_void,
+                *mut c_void,
+                *mut c_void,
+                u32,
+                u32,
+            ) -> HRESULT =
+                unsafe { std::mem::transmute(*(*(wrapper.context as *const *const usize)).add(k)) };
+            unsafe { own(wrapper.context, query, data, size, flags) }
+        }
+    }
 }
 
 fn install(table: Table, vtable: usize, interface: &'static str) {
@@ -534,6 +602,7 @@ pub unsafe fn created(device: *mut c_void, context: *mut *mut c_void, chain: *mu
 /// Counts a present and saves or ends at the frames WC_CAPTURE names.
 fn frame(chain: *mut c_void) {
     let frame = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+    crate::clock::frame();
     let Some(config) = config() else { return };
     if config.capture.binary_search(&frame).is_err() {
         return;

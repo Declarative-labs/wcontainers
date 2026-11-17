@@ -178,12 +178,13 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     }
     let d: D3D11_QUERY_DATA_TIMESTAMP_DISJOINT = result(gpu, &disjoint.cast()?)?;
     let (t0, t1): (u64, u64) = (result(gpu, &start.cast()?)?, result(gpu, &end.cast()?)?);
+    // A disjoint interval (the clock changed) makes the timestamps meaningless, which Direct3D
+    // allows at any time; then only the frequency is a fact.
     writeln!(
         text,
-        "timestamps: frequency above zero {}, disjoint {}, in order {}",
+        "timestamps: frequency above zero {}, in order or disjoint {}",
         d.Frequency > 0,
-        d.Disjoint.as_bool(),
-        t1 >= t0
+        d.Disjoint.as_bool() || t1 >= t0
     )?;
     Ok(vec![
         Output::text("results", text),

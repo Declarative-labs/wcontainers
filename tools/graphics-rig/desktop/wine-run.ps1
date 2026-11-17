@@ -6,7 +6,10 @@
 # one line per test: "<test> <pass|fail|crash|timeout> <checks run> <checks failed> <skipped> <seconds>",
 # and keeps each test's output in <Out>\logs. Without -Record, compares every result with the
 # baseline recorded on real Direct3D (<Baseline>\<file>-<driver>.txt): a test that passed there must
-# pass here; a test that did not is reported but not counted. Exits 1 if any counted test fails.
+# pass here, running at least as many checks and skipping no more (a library that refuses to make a
+# device skips nearly everything with no failure); a test that did not is reported but not counted.
+# Exits 1 if any counted test fails. Each test runs through gt-launch (-Launch), which reports where
+# it loaded each replacement from: a test that loaded one from anywhere else fails.
 param(
     [Parameter(Mandatory)][string]$Out,
     [Parameter(Mandatory)][string]$Baseline,
@@ -16,7 +19,8 @@ param(
     [string]$Tests = 'd3d11,d3d10core,dxgi,d3d12,vkd3d-d3d12,vkd3d-d3d12_invalid_usage,vkd3d-hlsl_d3d12,vkd3d-shader_runner',
     # Libraries put beside the test programs, as name=path pairs separated by semicolons.
     [string]$Dlls = '',
-    [int]$Limit = 120
+    [int]$Limit = 120,
+    [Parameter(Mandatory)][string]$Launch
 )
 $ErrorActionPreference = 'Stop'
 trap { [Console]::Error.WriteLine("wine-run: $_"); exit 2 }
@@ -27,10 +31,16 @@ Get-ChildItem $bin | Remove-Item -Force
 Get-ChildItem "$Out\*.txt" | Remove-Item -Force
 # The SDK's DXIL compiler and validator, which vkd3d's tests load to compile shader model 6 shaders.
 Copy-Item "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.26100.0\x64\dxcompiler.dll", "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.26100.0\x64\dxil.dll" $bin
+$replacements = @()
 foreach ($pair in ($Dlls.Split(';') | Where-Object { $_ })) {
     $name, $path = $pair.Split('=', 2)
     Copy-Item $path "$bin\$name"
+    $replacements += $name.ToLower()
 }
+$wanted = if ($replacements) { $replacements -join ',' } else { '-' }
+$loadedBy = @{}
+foreach ($name in $replacements) { $loadedBy[$name] = 0 }
+$launched = 0
 $excluded = @{}
 foreach ($line in Get-Content tools\graphics-rig\wine-excluded.txt) {
     if ($line -match '^(\w+) (\w+): (.*)$') { $excluded["$($Matches[1]) $($Matches[2])"] = $Matches[3] }
@@ -61,7 +71,8 @@ foreach ($choice in $Tests.Split(',')) {
         # VKD3D_TEST_FILTER, and its shader runner takes the .shader_test file.
         $arguments = @(if ($vkd3d) { } else { $file }) + @(if ($Warp) { '--warp' })
         if ($file -eq 'vkd3d-shader_runner') { $arguments += "C:\wc\wine\vkd3d\tests\$($name.Replace('+', '\'))" }
-        $info = New-Object Diagnostics.ProcessStartInfo "$bin\${file}_test.exe", ($arguments -join ' ')
+        $report = "$Out\logs\$file-$name-$driver.loaded"
+        $info = New-Object Diagnostics.ProcessStartInfo $Launch, ("`"$report`" $wanted `"$bin\${file}_test.exe`" " + ($arguments -join ' '))
         $info.UseShellExecute = $false
         $info.WorkingDirectory = $bin
         $info.RedirectStandardOutput = $true
@@ -96,20 +107,35 @@ foreach ($choice in $Tests.Split(',')) {
             $verdict = if (-not $summary.Success -or $process.ExitCode -gt 255 -or $process.ExitCode -lt 0) { 'crash' }
                        elseif ($failures -eq 0 -and $process.ExitCode -eq 0) { 'pass' } else { 'fail' }
         }
+        # Where the test loaded each replacement from, if it loaded it at all.
+        $elsewhere = @()
+        $launched++
+        if ($replacements -and (Test-Path $report)) {
+            foreach ($line in Get-Content $report) {
+                $library, $from = $line -split ' from ', 2
+                if ($from -eq 'not loaded') { continue }
+                if ($from -ieq "$bin\$library") { $loadedBy[$library]++ } else { $elsewhere += "$library from $from" }
+            }
+        }
         $results.Add("$name $verdict $checks $failures $skipped $seconds")
         $what = "$verdict, $checks checks, $failures failed, $skipped skipped, $seconds s"
         if ($verdict -eq 'crash') { $what += (', exit 0x{0:x8}' -f $process.ExitCode) }
         if ($Record) { "$file ${name}: $what"; continue }
         $before = $expected[$name]
-        if (-not $before) { "$file ${name}: FAIL, not in the baseline; $what"; $failed++; $counted++ }
+        if ($elsewhere) { "$file ${name}: FAIL, did not load the replacement: $($elsewhere -join ', ')"; $failed++; $counted++ }
+        elseif (-not $before) { "$file ${name}: FAIL, not in the baseline; $what"; $failed++; $counted++ }
         elseif ($before[1] -ne 'pass') { "$file ${name}: known, $($before[1]) on real Direct3D ($($before[3]) of $($before[2]) checks failed); here $what" }
-        elseif ($verdict -eq 'pass') { "$file ${name}: pass, $checks checks (real Direct3D $($before[2])), $skipped skipped (real Direct3D $($before[4])), $seconds s"; $counted++ }
-        else { "$file ${name}: FAIL, passes on real Direct3D; here $what"; $failed++; $counted++ }
+        elseif ($verdict -ne 'pass') { "$file ${name}: FAIL, passes on real Direct3D; here $what"; $failed++; $counted++ }
+        elseif ($checks -lt [int]$before[2] -or $skipped -gt [int]$before[4]) {
+            "$file ${name}: FAIL, ran $checks checks (real Direct3D $($before[2])) and skipped $skipped (real Direct3D $($before[4])), $seconds s"; $failed++; $counted++
+        }
+        else { "$file ${name}: pass, $checks checks (real Direct3D $($before[2])), $skipped skipped (real Direct3D $($before[4])), $seconds s"; $counted++ }
     }
     [IO.File]::WriteAllLines("$Out\$file-$driver.txt", [string[]]$results)
     $passed = @($results | Where-Object { $_.Split(' ')[1] -eq 'pass' }).Count
     "$file on ${driver}: $($results.Count) tests run, $passed passed, $([math]::Round($fileClock.Elapsed.TotalSeconds, 1)) s"
 }
+foreach ($name in $replacements) { "replacement ${name}: loaded from $bin by $($loadedBy[$name]) of $launched tests run" }
 if (-not $Record) {
     "$counted tests counted (passing on real Direct3D), $failed FAIL"
     if ($failed) { exit 1 }

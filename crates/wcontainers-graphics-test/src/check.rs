@@ -3,8 +3,12 @@
 //! The allowance comes from WARP: a renderer passes a picture when it is at least as close to the
 //! GPU's picture as WARP is. With `largest` the largest channel difference between the GPU and WARP,
 //! the channel tolerance is `largest` capped at 8 steps of an 8-bit channel (2056 of a 16-bit one,
-//! 1/128 of a float one), and the pixels allowed beyond it are those WARP has beyond it. Texts must
-//! match exactly.
+//! 1/128 of a float one), and the pixels allowed beyond it are those WARP has beyond it, counted in
+//! each 16 by 16 tile on its own, so that WARP's freedom in one part of a picture allows nothing in
+//! another. Texts must match exactly. A real program's frames have no WARP picture; their allowance
+//! comes from repeated runs on the GPU instead (`Allowance::from_repeats`); a program one of whose
+//! frames had more than a twentieth of its tiles changed from run to run has all its frames
+//! recorded as unrepeatable, and they are not compared.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -12,15 +16,17 @@ use std::path::Path;
 
 use anyhow::Context;
 
-use crate::compare::{self, Depth, Difference};
+use crate::compare::{self, Depth, Difference, TILE};
 
 pub const TOLERANCES: &str = "tolerances.txt";
 
 /// How far a picture may differ from its reference.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Allowance {
     pub tolerance: f64,
     pub pixels: u64,
+    /// Pixels allowed beyond the tolerance in each tile that allows any, by tile index.
+    pub tiles: BTreeMap<usize, u32>,
 }
 
 impl Allowance {
@@ -30,23 +36,101 @@ impl Allowance {
         warp: &image::DynamicImage,
     ) -> anyhow::Result<(Allowance, Difference)> {
         let exact = compare::compare(gpu, warp, 0.0)?;
-        let cap = match exact.depth {
-            Depth::Eight => 8.0,
-            Depth::Sixteen => 8.0 * 257.0,
-            Depth::Float => 1.0 / 128.0,
-        };
-        let tolerance = exact.largest.min(cap);
-        let pixels = compare::compare(gpu, warp, tolerance)?.differing;
-        Ok((Allowance { tolerance, pixels }, exact))
+        let tolerance = exact.largest.min(cap(exact.depth));
+        let beyond = compare::compare(gpu, warp, tolerance)?;
+        let tiles = beyond
+            .tiles
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n > 0)
+            .map(|(i, n)| (i, *n))
+            .collect();
+        Ok((
+            Allowance {
+                tolerance,
+                pixels: beyond.differing,
+                tiles,
+            },
+            exact,
+        ))
+    }
+
+    /// The allowance of a program's frame recorded on several runs of real Direct3D: the channel
+    /// tolerance is the cap, and a tile where any other run differs from the first beyond it is not
+    /// compared (the program draws it differently each time), nor one that meets a rectangle
+    /// (x, y, width, height) in `ignored`, where the program shows what each implementation
+    /// answers differently (a GPU memory readout).
+    pub fn from_repeats(
+        first: &image::DynamicImage,
+        others: &[image::DynamicImage],
+        ignored: &[[u32; 4]],
+    ) -> anyhow::Result<Allowance> {
+        let tolerance = cap(compare::Depth::of(first)?);
+        let columns = Difference::tile_columns(first.width()) as usize;
+        let mut changed = vec![false; compare::compare(first, first, 0.0)?.tiles.len()];
+        for other in others {
+            let d = compare::compare(first, other, tolerance)?;
+            for (c, n) in changed.iter_mut().zip(&d.tiles) {
+                *c |= *n > 0;
+            }
+        }
+        let mut tiles = BTreeMap::new();
+        for (i, changed) in changed.into_iter().enumerate() {
+            let (x, y) = ((i % columns) as u32 * TILE, (i / columns) as u32 * TILE);
+            let (w, h) = (TILE.min(first.width() - x), TILE.min(first.height() - y));
+            let meets = |&[rx, ry, rw, rh]: &[u32; 4]| {
+                x < rx + rw && rx < x + w && y < ry + rh && ry < y + h
+            };
+            if changed || ignored.iter().any(meets) {
+                tiles.insert(i, w * h);
+            }
+        }
+        Ok(Allowance {
+            tolerance,
+            pixels: tiles.values().map(|&n| u64::from(n)).sum(),
+            tiles,
+        })
+    }
+}
+
+/// The largest channel tolerance an allowance has: 8 steps of an 8-bit channel, 2056 of a 16-bit
+/// one, 1/128 of a float one.
+fn cap(depth: Depth) -> f64 {
+    match depth {
+        Depth::Eight => 8.0,
+        Depth::Sixteen => 8.0 * 257.0,
+        Depth::Float => 1.0 / 128.0,
     }
 }
 
 /// One line of a tolerance file for a picture.
-pub fn tolerance_line(file: &str, allowance: Allowance, warp: &Difference) -> String {
-    format!(
-        "{file} {} {} warp {} {}\n",
+pub fn tolerance_line(file: &str, allowance: &Allowance, warp: &Difference) -> String {
+    let mut line = format!(
+        "{file} {} {} warp {} {}",
         allowance.tolerance, allowance.pixels, warp.differing, warp.largest
-    )
+    );
+    if !allowance.tiles.is_empty() {
+        line.push_str(" tiles ");
+        let tiles: Vec<String> = allowance
+            .tiles
+            .iter()
+            .map(|(i, n)| format!("{i}:{n}"))
+            .collect();
+        line.push_str(&tiles.join(","));
+    }
+    line.push('\n');
+    line
+}
+
+/// Whether a frame drew so differently from run to run on real Direct3D (more than a twentieth of
+/// its tiles) that comparing what is left of it would test little.
+pub fn unrepeatable(allowance: &Allowance, tiles: usize) -> bool {
+    allowance.tiles.len() * 20 > tiles
+}
+
+/// One line of a tolerance file for a frame that is not compared.
+pub fn unrepeatable_line(file: &str) -> String {
+    format!("{file} unrepeatable\n")
 }
 
 /// One line of a tolerance file for a text.
@@ -55,8 +139,8 @@ pub fn text_line(file: &str, warp_same: bool) -> String {
     format!("{file} exact warp {warp}\n")
 }
 
-/// Reads a tolerance file: each picture's allowance by file name.
-pub fn read_tolerances(path: &Path) -> anyhow::Result<BTreeMap<String, Allowance>> {
+/// Reads a tolerance file: each picture's allowance by file name, none for an unrepeatable frame.
+pub fn read_tolerances(path: &Path) -> anyhow::Result<BTreeMap<String, Option<Allowance>>> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let mut allowances = BTreeMap::new();
@@ -68,15 +152,33 @@ pub fn read_tolerances(path: &Path) -> anyhow::Result<BTreeMap<String, Allowance
         if words.get(1) == Some(&"exact") {
             continue;
         }
+        if let [file, "unrepeatable"] = words[..] {
+            allowances.insert(file.to_owned(), None);
+            continue;
+        }
         let [file, tolerance, pixels, ..] = words[..] else {
             anyhow::bail!("bad line in {}: {line}", path.display());
         };
+        let mut tiles = BTreeMap::new();
+        if let Some(at) = words.iter().position(|w| *w == "tiles") {
+            for tile in words
+                .get(at + 1)
+                .with_context(|| format!("no tiles after `tiles` in {line}"))?
+                .split(',')
+            {
+                let (i, n) = tile
+                    .split_once(':')
+                    .with_context(|| format!("bad tile {tile} in {line}"))?;
+                tiles.insert(i.parse()?, n.parse()?);
+            }
+        }
         allowances.insert(
             file.to_owned(),
-            Allowance {
+            Some(Allowance {
                 tolerance: tolerance.parse()?,
                 pixels: pixels.parse()?,
-            },
+                tiles,
+            }),
         );
     }
     Ok(allowances)
@@ -106,12 +208,18 @@ pub fn check_dir(reference: &Path, run: &Path) -> anyhow::Result<Vec<Verdict>> {
         } else if file.ends_with(".txt") {
             check_text(&reference.join(&file), &ours)?
         } else {
-            let allowance = allowances
+            match allowances
                 .get(&file)
-                .with_context(|| format!("{file} has no line in {TOLERANCES}"))?;
-            match check_picture(&reference.join(&file), &ours, *allowance) {
-                Ok(verdict) => verdict,
-                Err(e) => (false, format!("{e:#}")),
+                .with_context(|| format!("{file} has no line in {TOLERANCES}"))?
+            {
+                None => (
+                    true,
+                    "not compared: drew differently on each run of real Direct3D".to_owned(),
+                ),
+                Some(allowance) => match check_picture(&reference.join(&file), &ours, allowance) {
+                    Ok(verdict) => verdict,
+                    Err(e) => (false, format!("{e:#}")),
+                },
             }
         };
         verdicts.push(Verdict { file, pass, detail });
@@ -122,21 +230,39 @@ pub fn check_dir(reference: &Path, run: &Path) -> anyhow::Result<Vec<Verdict>> {
 fn check_picture(
     reference: &Path,
     ours: &Path,
-    allowance: Allowance,
+    allowance: &Allowance,
 ) -> anyhow::Result<(bool, String)> {
-    let d = compare::compare(
-        &crate::load(reference)?,
-        &crate::load(ours)?,
-        allowance.tolerance,
-    )?;
+    let reference = crate::load(reference)?;
+    let d = compare::compare(&reference, &crate::load(ours)?, allowance.tolerance)?;
     let mut detail = format!(
-        "{} of {} pixels beyond {} (allowed {}), largest difference {}",
+        "{} of {} pixels beyond {} (WARP {}), largest difference {}",
         d.differing, d.pixels, allowance.tolerance, allowance.pixels, d.largest
     );
     if let Some((x, y)) = d.first {
         write!(detail, ", first at {x},{y}")?;
     }
-    Ok((d.differing <= allowance.pixels, detail))
+    let over = tiles_over(&d, allowance);
+    if let Some(&(i, n, allowed)) = over.iter().max_by_key(|(_, n, allowed)| n - allowed) {
+        let columns = Difference::tile_columns(reference.width()) as usize;
+        write!(
+            detail,
+            "; {} tiles of {TILE} by {TILE} beyond WARP's count, the worst at {},{}: {n} pixels, WARP {allowed}",
+            over.len(),
+            i % columns * TILE as usize,
+            i / columns * TILE as usize
+        )?;
+    }
+    Ok((over.is_empty(), detail))
+}
+
+/// The tiles where `d` has more pixels beyond the tolerance than the allowance: index, count, allowed.
+fn tiles_over(d: &Difference, allowance: &Allowance) -> Vec<(usize, u32, u32)> {
+    d.tiles
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| (i, n, allowance.tiles.get(&i).copied().unwrap_or(0)))
+        .filter(|(_, n, allowed)| n > allowed)
+        .collect()
 }
 
 fn check_text(reference: &Path, ours: &Path) -> anyhow::Result<(bool, String)> {
@@ -182,8 +308,48 @@ mod tests {
             allowance,
             Allowance {
                 tolerance: 8.0,
-                pixels: 1
+                pixels: 1,
+                tiles: BTreeMap::from([(0, 1)]),
             }
         );
+    }
+
+    #[test]
+    fn repeats_leave_out_changing_tiles() {
+        let first = RgbaImage::from_pixel(40, 16, Rgba([100, 100, 100, 255]));
+        let mut second = first.clone();
+        second.put_pixel(35, 2, Rgba([200, 100, 100, 255]));
+        second.put_pixel(3, 2, Rgba([105, 100, 100, 255]));
+        let first = DynamicImage::from(first);
+        let allowance =
+            Allowance::from_repeats(&first, &[DynamicImage::from(second.clone())], &[]).unwrap();
+        assert_eq!(allowance.tolerance, 8.0);
+        assert_eq!(allowance.tiles, BTreeMap::from([(2, 8 * 16)]));
+        assert_eq!(allowance.pixels, 128);
+        let allowance =
+            Allowance::from_repeats(&first, &[DynamicImage::from(second)], &[[15, 0, 2, 1]])
+                .unwrap();
+        assert_eq!(
+            allowance.tiles,
+            BTreeMap::from([(0, 256), (1, 256), (2, 8 * 16)])
+        );
+    }
+
+    #[test]
+    fn allowance_holds_per_tile() {
+        let gpu = RgbaImage::from_pixel(32, 16, Rgba([100, 100, 100, 255]));
+        let mut warp = gpu.clone();
+        warp.put_pixel(0, 0, Rgba([140, 100, 100, 255]));
+        warp.put_pixel(1, 0, Rgba([140, 100, 100, 255]));
+        let gpu = DynamicImage::from(gpu);
+        let (allowance, exact) = Allowance::from_warp(&gpu, &DynamicImage::from(warp)).unwrap();
+        let line = tolerance_line("a.png", &allowance, &exact);
+        assert_eq!(line, "a.png 8 2 warp 2 40 tiles 0:2\n");
+        // Two pixels off in the second tile: as many as WARP has in all, but none allowed there.
+        let mut ours = gpu.to_rgba8();
+        ours.put_pixel(20, 3, Rgba([0, 100, 100, 255]));
+        ours.put_pixel(21, 3, Rgba([0, 100, 100, 255]));
+        let d = compare::compare(&gpu, &DynamicImage::from(ours), allowance.tolerance).unwrap();
+        assert_eq!(tiles_over(&d, &allowance), vec![(1, 2, 0)]);
     }
 }

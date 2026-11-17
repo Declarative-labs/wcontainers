@@ -4,14 +4,14 @@
 # counted device as ID3D11Device5
 # counted swap-chain as IDXGISwapChain4
 # counted immediate-context and deferred-context through 1 wrapped contexts
-device QueryInterface 865
-device AddRef 851
-device Release 851
-device GetPrivateData 846
+device QueryInterface 866
+device AddRef 852
+device Release 852
+device GetPrivateData 847
 device CreateQuery 448
 device CheckMultisampleQualityLevels 208
 device CheckFeatureSupport 164
-device CreateBuffer 34
+device CreateBuffer 32
 device CreatePixelShader 14
 device CheckFormatSupport 7
 device CheckMultisampleQualityLevels1 7
@@ -28,15 +28,15 @@ device CreateDepthStencilView 1
 device CreateRenderTargetView 1
 device CreateSamplerState 1
 device SetPrivateDataInterface 1
-immediate-context UpdateSubresource 2266
+immediate-context UpdateSubresource 2476
 immediate-context IASetVertexBuffers 1078
 immediate-context RSSetState 717
-immediate-context OMSetRenderTargetsAndUnorderedAccessViews 604
+immediate-context OMSetRenderTargetsAndUnorderedAccessViews 603
 immediate-context IASetInputLayout 599
-immediate-context GetData 491
 immediate-context OMSetBlendState 478
 immediate-context OMSetDepthStencilState 478
-immediate-context End 375
+immediate-context End 372
+immediate-context GetData 372
 immediate-context DrawIndexedInstanced 360
 immediate-context PSSetConstantBuffers 359
 immediate-context PSSetSamplers 359
@@ -47,17 +47,17 @@ immediate-context VSSetSamplers 359
 immediate-context VSSetShader 359
 immediate-context VSSetShaderResources 359
 immediate-context IASetIndexBuffer 358
-immediate-context IASetPrimitiveTopology 245
+immediate-context IASetPrimitiveTopology 244
 immediate-context Map 239
 immediate-context RSSetViewports 239
 immediate-context Unmap 239
 immediate-context DrawIndexed 238
 immediate-context RSSetScissorRects 238
-immediate-context OMSetRenderTargets 126
-immediate-context Begin 125
+immediate-context OMSetRenderTargets 125
+immediate-context Begin 124
 immediate-context ClearDepthStencilView 120
 immediate-context ClearRenderTargetView 120
-immediate-context Flush 5
+immediate-context Flush 4
 immediate-context QueryInterface 1
 swap-chain Present 120
 swap-chain AddRef 3

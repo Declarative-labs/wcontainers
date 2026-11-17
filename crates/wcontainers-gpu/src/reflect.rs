@@ -408,7 +408,7 @@ pub enum DrawBaseSource {
 /// How a program reads typed buffers (Direct3D's `Buffer` and `RWBuffer`, OpenGL's texture buffers).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TexelBufferRoute {
-    /// As texel buffers, where the back end's language has them.
+    /// As texel buffers, where [`crate::Features::TEXEL_BUFFERS`] is present.
     #[default]
     Native,
     /// From storage buffers, the format decoded in the program

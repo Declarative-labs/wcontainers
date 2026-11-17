@@ -776,6 +776,115 @@ fn the_ring_writes_without_waiting() {
     healthy(&mut r);
 }
 
+/// Where the parts do not fit after the head, the ring starts again at zero with a discard, so its
+/// later parts land over bytes an unfinished draw read without waiting, and that draw keeps what it
+/// read.
+#[test]
+fn the_ring_wraps_with_a_discard() {
+    let mut r = Recorder::new();
+    let k = blocks(&mut r);
+    let (t, _) = texture(&mut r, 2, 1, 1);
+    let v = view(&mut r, &t);
+    // A triangle over the target's left column, then one over all of it.
+    let left: Vec<u8> = [-1.0f32, -1.0, 0.0, -1.0, -1.0, 3.0]
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let all: Vec<u8> = [-1.0f32, -1.0, 3.0, -1.0, -1.0, 3.0]
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+    let mut first = vec![0u8; (4 << 20) - 16];
+    first[..24].copy_from_slice(&left);
+    let mut at = [0u64; 1];
+    let ring = r
+        .write_buffer_ring(RingKind::Data, &[&first], 16, &mut at)
+        .unwrap();
+    assert_eq!(at, [0]);
+    let draw = |r: &mut Recorder, offset| {
+        let viewport = [Viewport {
+            x: 0f32.to_bits(),
+            y: 0f32.to_bits(),
+            width: 2f32.to_bits(),
+            height: 2f32.to_bits(),
+            min_depth: 0f32.to_bits(),
+            max_depth: 1f32.to_bits(),
+        }];
+        let streams = [Some(VertexBinding {
+            buffer: &ring,
+            offset,
+        })];
+        r.begin_pass(&pass_on(&v, LoadOp::Clear([0; 4])));
+        r.draw(&DrawCall {
+            program: &k.program,
+            blend: &k.blend,
+            depth_stencil: &k.depth,
+            raster: &k.raster,
+            vertex_layout: &k.layout,
+            bindings: [None; MAX_BINDING_SETS],
+            vertex_buffers: &streams,
+            index: None,
+            topology: Topology::TriangleList,
+            restart: false,
+            viewports: &viewport,
+            scissors: &[],
+            blend_constant: [0; 4],
+            stencil_reference: [0; 2],
+            immediates: &[],
+            range: DrawRange::Vertices {
+                first: 0,
+                count: 3,
+                first_instance: 0,
+                instances: 1,
+            },
+        });
+        r.end_pass();
+    };
+    draw(&mut r, 0);
+    let mut copy = [0u8; 16];
+    let rb = r
+        .read_back(&ReadSource::Texture {
+            region: TextureRegion {
+                texture: &t,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            extent: Extent {
+                width: 2,
+                height: 2,
+                depth_or_layers: 1,
+            },
+        })
+        .unwrap();
+    let from = r.calls.len();
+    let mut two = [0u64; 2];
+    let again = r
+        .write_buffer_ring(RingKind::Data, &[&[5; 8], &all], 16, &mut two)
+        .unwrap();
+    assert_eq!((again, two), (ring, [0, 16]));
+    let modes: Vec<WriteMode> = r.calls[from..]
+        .iter()
+        .map(|c| match c {
+            Call::WriteBuffer(_, _, _, mode) => *mode,
+            other => panic!("{} in the ring's write", other.name()),
+        })
+        .collect();
+    assert_eq!(modes, [WriteMode::Discard, WriteMode::NoOverwrite]);
+    healthy(&mut r);
+    // The draw before the wrap drew the left column; the one after draws the new part.
+    r.submit();
+    r.wait_read(&rb);
+    r.finish_read(rb, &mut copy);
+    let red = [255, 0, 0, 255];
+    let none = [0; 4];
+    assert_eq!(copy[..], [red, none, red, none].concat());
+    draw(&mut r, 16);
+    assert_eq!(read(&mut r, &t, 0, 0, 2), red.repeat(4));
+    healthy(&mut r);
+}
+
 #[test]
 fn resolve_queries_reads_them_back_and_writes_them_in_order() {
     let mut r = Recorder::new();

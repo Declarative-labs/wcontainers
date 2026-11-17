@@ -46,7 +46,12 @@ fn verdict(
     let name = file(scene, change);
     save(&ours, &out.join(format!("{name}.png")))?;
     let reference = format!("{}.png", scene.name());
-    let mut allowance = check::read_tolerances(&references().join(check::TOLERANCES))?[&reference];
+    let Some(mut allowance) = check::read_tolerances(&references().join(check::TOLERANCES))?
+        .remove(&reference)
+        .flatten()
+    else {
+        bail!("{reference} has no allowance: missing, or unrepeatable on real Direct3D");
+    };
     let mut theirs = load(&references().join(&reference))?;
     let red = [255, 0, 0, 255];
     let empty = |texels: &[u8]| {

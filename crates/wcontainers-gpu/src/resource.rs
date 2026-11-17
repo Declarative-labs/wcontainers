@@ -271,7 +271,8 @@ pub enum BindingResource<'a, B: Backend> {
         writable: bool,
     },
     Sampler(&'a B::Sampler),
-    /// A buffer read as typed texels (Direct3D's typed buffer views, OpenGL's buffer textures).
+    /// A buffer read as typed texels (Direct3D's typed buffer views, OpenGL's buffer textures), where
+    /// [`crate::Features::TEXEL_BUFFERS`] is present.
     TexelBuffer {
         range: BufferRange<&'a B::Buffer>,
         format: Format,

@@ -12,6 +12,9 @@ struct Params { color: vec4<f32>, depth: f32 }
 @vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
     return vec4<f32>(p, params.depth, 1.0);
 }
+@vertex fn shifted(@location(0) p: vec2<f32>, @location(1) s: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p + s, params.depth, 1.0);
+}
 @fragment fn color() -> @location(0) vec4<f32> {
     return params.color;
 }
@@ -795,7 +798,12 @@ fn the_occlusion_counter_counts_exactly() {
             };
             let writes_depth = std::ptr::eq(ds, &writes);
             counter
-                .draw(&mut k.r, &mut passes, &call, &counting, false, writes_depth)
+                .draw(
+                    &mut k.r,
+                    &mut passes,
+                    &call,
+                    &facts(&counting, writes_depth),
+                )
                 .unwrap();
             passes.before_draw(&mut k.r, &[]).unwrap();
             k.r.draw(&call);
@@ -887,7 +895,7 @@ fn the_occlusion_counter_counts_past_its_formats_bound_in_halves() {
                 },
             };
             counter
-                .draw(&mut k.r, &mut passes, &call, &counting, false, false)
+                .draw(&mut k.r, &mut passes, &call, &facts(&counting, false))
                 .unwrap();
             passes.before_draw(&mut k.r, &[]).unwrap();
             k.r.draw(&call);
@@ -912,6 +920,210 @@ fn the_occlusion_counter_counts_past_its_formats_bound_in_halves() {
     // Below the bound, counted once.
     assert_eq!(counted(&mut k, &[(&quad, strip, 4, 2000)]), (8_000, 1));
     k.healthy();
+}
+
+/// One draw's halves keep what each instance reads. Where the first instance cannot be raised (no
+/// `BASE_VERTEX_INSTANCE`, or a per-instance stream stepping other than by one) the draw is split by
+/// its primitives, each half drawn for every instance; one primitive's instances past the bound are
+/// refused.
+#[test]
+fn the_occlusion_counter_splits_instances_only_where_each_reads_the_same() {
+    for bases in [true, false] {
+        let mut k = Kit::on(Recorder::with_caps(|c| {
+            c.formats.uses[Format::R32Float.index()].remove(FormatUse::BLEND);
+            if !bases {
+                c.features.remove(Features::BASE_VERTEX_INSTANCE);
+            }
+        }));
+        let mut passes = PassTracker::default();
+        let mut counter = OcclusionCounter::default();
+        let color = k.target(2, 2, Format::Rgba8Unorm);
+        passes.set_targets(&mut k.r, colors(color)).unwrap();
+        let counting = k.program("counting");
+        let none = k.depth(None, false);
+        let set = k.params(0, [1.0; 4], 0.5);
+        let floats = |v: &[f32]| -> Vec<u8> { v.iter().flat_map(|f| f.to_le_bytes()).collect() };
+        let buffer = |k: &mut Kit, bytes: &[u8]| {
+            let b =
+                k.r.create_buffer(&BufferDesc {
+                    size: bytes.len() as u64,
+                    usage: BufferUsage::VERTEX | BufferUsage::COPY_DST,
+                    intent: MapIntent::Rarely,
+                })
+                .unwrap();
+            k.r.write_buffer(&b, 0, bytes, WriteMode::Discard);
+            b
+        };
+        // 1,000 triangles over the whole target, as a list.
+        let list = buffer(
+            &mut k,
+            &floats(&[-1.0, -1.0, 3.0, -1.0, -1.0, 3.0].repeat(1000)),
+        );
+        // Per-instance shifts read with a step rate of zero: every instance reads the first, which
+        // leaves the triangles in place; the others move them off the target.
+        let shifts = buffer(&mut k, &floats(&[0.0, 0.0, 10.0, 10.0, 10.0, 10.0]));
+        let mut desc = VertexLayoutDesc {
+            streams: [None; MAX_VERTEX_STREAMS],
+            attributes: [None; MAX_VERTEX_STREAMS],
+        };
+        for (i, step) in [StepMode::Vertex, StepMode::Instance(0)]
+            .into_iter()
+            .enumerate()
+        {
+            desc.streams[i] = Some(VertexStream { stride: 8, step });
+            desc.attributes[i] = Some(VertexAttribute {
+                location: i as u32,
+                stream: i as u8,
+                offset: 0,
+                format: VertexFormat::Float32x2,
+            });
+        }
+        let stepped = k.r.create_vertex_layout(&desc).unwrap();
+        let v = shader(&mut k.r, "shifted", ShaderStage::Vertex);
+        let f = shader(&mut k.r, "color", ShaderStage::Fragment);
+        let shifted =
+            k.r.create_program(&Program::Render {
+                vertex: &v,
+                fragment: Some(&f),
+            })
+            .unwrap();
+        // Its counting variant reads the shifts as it does.
+        let f = shader(&mut k.r, "counting", ShaderStage::Fragment);
+        let shifted_counting =
+            k.r.create_program(&Program::Render {
+                vertex: &v,
+                fragment: Some(&f),
+            })
+            .unwrap();
+        let p = k.program("color");
+
+        // One draw: (program and its counting variant, layout, its streams, topology, vertices,
+        // instances, step by one).
+        type Draw<'a> = ([&'a Id; 2], &'a Id, &'a [&'a Id], Topology, u32, u32, bool);
+        let mut counted = |k: &mut Kit,
+                           (
+            [program, counting],
+            layout,
+            streams,
+            topology,
+            count,
+            instances,
+            by_one,
+        ): Draw| {
+            counter.begin(&mut k.r, &mut passes).unwrap();
+            let viewport = [Viewport {
+                x: 0f32.to_bits(),
+                y: 0f32.to_bits(),
+                width: 2f32.to_bits(),
+                height: 2f32.to_bits(),
+                min_depth: 0f32.to_bits(),
+                max_depth: 1f32.to_bits(),
+            }];
+            let streams: Vec<_> = streams
+                .iter()
+                .map(|&buffer| Some(VertexBinding { buffer, offset: 0 }))
+                .collect();
+            let call = DrawCall {
+                program,
+                blend: &k.blend,
+                depth_stencil: &none,
+                raster: &k.raster,
+                vertex_layout: layout,
+                bindings: [Some(&set), None, None, None],
+                vertex_buffers: &streams,
+                index: None,
+                topology,
+                restart: false,
+                viewports: &viewport,
+                scissors: &[],
+                blend_constant: [0; 4],
+                stencil_reference: [0; 2],
+                immediates: &[],
+                range: DrawRange::Vertices {
+                    first: 0,
+                    count,
+                    first_instance: 0,
+                    instances,
+                },
+            };
+            let facts = CountedDraw {
+                instances_step_by_one: by_one,
+                ..facts(counting, false)
+            };
+            counter.draw(&mut k.r, &mut passes, &call, &facts).unwrap();
+            passes.before_draw(&mut k.r, &[]).unwrap();
+            k.r.draw(&call);
+            let before = k.calls("draw");
+            let n = counter.end(&mut k.r, &mut passes);
+            (n, k.calls("draw") - before)
+        };
+        let list_streams = [&list, &shifts];
+        // 1,000 triangles, 3 instances each, all in place: 3,000 a pixel, counted whole, then by
+        // 500 triangles for all three instances twice.
+        let stepped_list = (
+            [&shifted, &shifted_counting],
+            &stepped,
+            &list_streams[..],
+            Topology::TriangleList,
+            3000,
+            3,
+            false,
+        );
+        assert_eq!(
+            counted(&mut k, stepped_list),
+            (Ok(12_000), 3),
+            "bases {bases}"
+        );
+        let (quad, layout) = (k.quad, k.layout);
+        let plain_list = (
+            [&p, &counting],
+            &layout,
+            &list_streams[..1],
+            Topology::TriangleList,
+            3000,
+            3,
+            true,
+        );
+        assert_eq!(
+            counted(&mut k, plain_list),
+            (Ok(12_000), 3),
+            "bases {bases}"
+        );
+        // The quad's two triangles 3,000 times: by instances where the first can be raised; one
+        // triangle's 3,000 instances cannot be split otherwise.
+        let quads = (
+            [&p, &counting],
+            &layout,
+            &[&quad][..],
+            Topology::TriangleStrip,
+            4,
+            3000,
+            true,
+        );
+        if bases {
+            assert_eq!(counted(&mut k, quads), (Ok(12_000), 3));
+        } else {
+            let (n, _) = counted(&mut k, quads);
+            assert_eq!(
+                n,
+                Err(GpuError::Invalid(
+                    "a draw reaching the counting format's bound at a pixel that cannot be split: a fan, a strip with restart, an indirect draw, or one primitive's instances where the first instance cannot be raised"
+                ))
+            );
+        }
+        k.healthy();
+    }
+}
+
+/// What the counter needs of a draw of these tests: its counting program, no alpha to coverage, and
+/// whether it writes depth; the layouts here have no per-instance stream.
+fn facts(counting: &Id, writes_depth_stencil: bool) -> CountedDraw<'_, Recorder> {
+    CountedDraw {
+        counting,
+        alpha_to_coverage: false,
+        writes_depth_stencil,
+        instances_step_by_one: true,
+    }
 }
 
 /// One draw of a counted query: `count` vertices of `vertices` (the quad where None) as a strip,
@@ -963,7 +1175,7 @@ fn counted_draw(
             instances,
         },
     };
-    counter.draw(&mut k.r, passes, &call, counting, false, writes)?;
+    counter.draw(&mut k.r, passes, &call, &facts(counting, writes))?;
     passes.before_draw(&mut k.r, &[])?;
     k.r.draw(&call);
     Ok(())
@@ -1299,7 +1511,7 @@ fn the_occlusion_counter_counts_the_samples_of_multisampled_targets() {
         };
         counter.begin(&mut k.r, &mut passes).unwrap();
         counter
-            .draw(&mut k.r, &mut passes, &call, &counting, false, false)
+            .draw(&mut k.r, &mut passes, &call, &facts(&counting, false))
             .unwrap();
         passes.before_draw(&mut k.r, &[]).unwrap();
         k.r.draw(&call);
