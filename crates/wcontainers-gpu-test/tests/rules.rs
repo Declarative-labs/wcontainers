@@ -332,6 +332,13 @@ fn draws_happen_inside_a_pass() {
     let p = d.program("plain");
     d.draw(&p, None, Topology::TriangleList, false);
     d.refused("draw outside a pass");
+    // Before any other rule the draw breaks.
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
+        c.viewports = &[]
+    });
+    d.refused("draw outside a pass");
 }
 
 #[test]
@@ -1377,6 +1384,36 @@ fn attachments_share_one_sample_count() {
             store: StoreOp::Store,
         });
     }
+    r.begin_pass(&pass);
+    assert_eq!(r.violations, ["attachments of different sample counts"]);
+
+    // The depth attachment too.
+    let mut r = Recorder::new();
+    let ms = multisampled(&mut r, Format::Depth32Float, 2).unwrap();
+    let ms = view(&mut r, &ms, Format::Depth32Float);
+    let single = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let single = view(&mut r, &single, Format::Rgba8Unorm);
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: Some(DepthAttachment {
+            view: &ms,
+            depth: Some(AspectOps {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+                read_only: false,
+            }),
+            stencil: None,
+        }),
+        empty: None,
+        occlusion: None,
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &single,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Load,
+        store: StoreOp::Store,
+    });
     r.begin_pass(&pass);
     assert_eq!(r.violations, ["attachments of different sample counts"]);
 }
