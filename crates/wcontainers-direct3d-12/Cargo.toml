@@ -1,0 +1,15 @@
+[package]
+name = "wcontainers-direct3d-12"
+description = "The wcontainers Direct3D 12 front, written from Microsoft's documentation, on the wcontainers graphics interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-gpu = { path = "../wcontainers-gpu" }
+wcontainers-directx-graphics-infrastructure = { path = "../wcontainers-directx-graphics-infrastructure" }
+
+[lints]
+workspace = true
