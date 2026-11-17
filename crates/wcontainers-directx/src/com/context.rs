@@ -1440,6 +1440,27 @@ impl Context {
         });
     }
 
+    pub(super) fn draw_instanced_indirect(&self, args: Ref<ID3D11Buffer>, offset: u32) {
+        self.draw_indirect("DrawInstancedIndirect", args, offset, false);
+    }
+
+    pub(super) fn draw_indexed_instanced_indirect(&self, args: Ref<ID3D11Buffer>, offset: u32) {
+        self.draw_indirect("DrawIndexedInstancedIndirect", args, offset, true);
+    }
+
+    fn draw_indirect(
+        &self,
+        what: &'static str,
+        args: Ref<ID3D11Buffer>,
+        offset: u32,
+        indexed: bool,
+    ) {
+        let Some(b) = front_of(&args, |b: &Buffer| &*b.front) else {
+            return;
+        };
+        self.run(what, move |f| f.draw_indirect(&b, offset, indexed));
+    }
+
     pub(super) fn dispatch_indirect(&self, args: Ref<ID3D11Buffer>, offset: u32) {
         let Some(b) = front_of(&args, |b: &Buffer| &*b.front) else {
             return;

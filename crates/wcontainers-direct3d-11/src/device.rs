@@ -21,6 +21,10 @@ use crate::format;
 use crate::object::*;
 use crate::shader;
 
+/// Helper constants written into the back end's data ring: what they hold (base vertex, first
+/// instance, block size, offset of the bases) and the set binding them.
+pub(crate) type HelperBlock<B> = ([u32; 4], Kept<B, <B as Backend>::BindingSet>);
+
 /// A Direct3D 11 device and its immediate context on back end `B`.
 pub struct Device<B: Backend> {
     pub backend: B,
@@ -34,6 +38,9 @@ pub struct Device<B: Backend> {
     pub(crate) programs: HashMap<(u64, u64), Kept<B, B::Program>>,
     /// The vertex shaders converted for one pixel shader's interpolation, by the program's ids.
     pub(crate) interpolated: HashMap<(u64, u64), Kept<B, B::Shader>>,
+    /// The vertex stage's helper constants as last written. The front is the only writer of the
+    /// back end's data ring, so the block stays as written until the front's next write.
+    pub(crate) draw_base: Option<HelperBlock<B>>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
     pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
     /// Vertex shaders' input signatures by the blake3 of their bytecode, for input layouts.
@@ -161,6 +168,7 @@ impl<B: Backend> Device<B> {
             queries: crate::query::Queries::new(),
             programs: HashMap::new(),
             interpolated: HashMap::new(),
+            draw_base: None,
             layouts: HashMap::new(),
             vertex_inputs: HashMap::new(),
             zeros: Zeros {

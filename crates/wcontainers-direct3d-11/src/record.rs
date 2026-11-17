@@ -46,6 +46,11 @@ impl std::fmt::Debug for Recorder {
 }
 
 impl Recorder {
+    /// The bytes buffer `id` holds now.
+    pub fn buffer_bytes(&self, id: Id) -> Option<&[u8]> {
+        self.buffers.get(&id).map(Vec::as_slice)
+    }
+
     /// A recorder declaring the abilities WebGPU in Chrome declares on the development desktop (plan
     /// 4.11), with every format able to do everything; `echo` also receives each line.
     pub fn new(echo: Option<fn(&str)>) -> Self {

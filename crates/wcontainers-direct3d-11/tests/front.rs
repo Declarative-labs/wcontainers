@@ -741,8 +741,36 @@ fn depth_stencil_copies_are_whole_and_of_both_aspects() {
     assert!(dev.removed.is_none());
 }
 
+/// Per draw, the vertex helper set it binds and the bases (base vertex, first instance) that set's
+/// block holds; none for a draw without one.
+fn draw_bases(dev: &Dev) -> Vec<Option<(String, i32, u32)>> {
+    let log = &dev.backend.log;
+    let bases = |line: &str| -> Option<(String, i32, u32)> {
+        let sets = line.split_once("sets [")?.1.split_once(']')?.0;
+        let set = sets
+            .split(", ")
+            .nth(3)?
+            .strip_prefix("Some(")?
+            .strip_suffix(')')?;
+        let prefix = format!("create_binding_set {set} 0=uniform ");
+        let made = log.iter().find_map(|m| m.strip_prefix(prefix.as_str()))?;
+        let (buffer, rest) = made.split_once('+')?;
+        let (offset, size) = rest.split_once(':')?;
+        assert_eq!(size, "16", "{made}");
+        let bytes = dev.backend.buffer_bytes(buffer.parse().ok()?)?;
+        let at: usize = offset.parse().ok()?;
+        let word =
+            |i: usize| u32::from_le_bytes(bytes[at + 4 * i..at + 4 * i + 4].try_into().unwrap());
+        Some((set.to_string(), word(0) as i32, word(1)))
+    };
+    log.iter()
+        .filter(|l| l.starts_with("draw "))
+        .map(|l| bases(l))
+        .collect()
+}
+
 #[test]
-fn vertex_ids_with_a_start_location_are_not_served() {
+fn vertex_ids_read_the_draws_bases_from_the_helper_constants() {
     let mut dev = device();
     let target = dev
         .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
@@ -754,27 +782,89 @@ fn vertex_ids_with_a_start_location_are_not_served() {
         .unwrap();
     dev.vs_set_shader(Some(vs));
     dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let indices = immutable(&mut dev, &[0; 12], bind::INDEX_BUFFER);
+    dev.ia_set_index_buffer(Some(indices), 57, 0).unwrap();
+    // SV_VertexID and SV_InstanceID leave out the start and base locations the common form's
+    // indices include; the front writes them into the helper block when they change.
     dev.draw(3, 0);
+    dev.draw(3, 3);
+    dev.draw_instanced(3, 2, 3, 0);
+    dev.draw_instanced(3, 1, 0, 4);
+    dev.draw_indexed(3, 0, -2);
+    dev.draw_indexed_instanced(3, 1, 3, 5, 6);
+    assert!(dev.removed.is_none());
+    let bases = draw_bases(&dev);
+    let values: Vec<_> = bases
+        .iter()
+        .map(|b| b.as_ref().map(|b| (b.1, b.2)))
+        .collect();
+    assert_eq!(
+        values,
+        [
+            Some((0, 0)),
+            Some((3, 0)),
+            Some((3, 0)),
+            Some((0, 4)),
+            Some((-2, 0)),
+            Some((5, 6)),
+        ]
+    );
+    // Equal bases keep their block: one write per change.
+    let sets: Vec<_> = bases.iter().flatten().map(|b| &b.0).collect();
+    assert_eq!(sets[1], sets[2]);
+    assert_ne!(sets[0], sets[1]);
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::DrawBaseInHelpers),
+        5
+    );
+
+    // Indirect arguments are read back where the back end cannot take the bases from them.
+    let words: Vec<u8> = [3u32, 1, 7, 2, 0, 0, 0, 0]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    let desc = BufferDesc {
+        byte_width: 32,
+        usage: usage::DEFAULT,
+        misc_flags: MISC_DRAWINDIRECT_ARGS,
+        ..Default::default()
+    };
+    let args = dev.create_buffer(&desc, Some(&words)).unwrap();
+    dev.draw_indirect(&args, 0, false).unwrap();
     assert!(dev.removed.is_none());
     assert_eq!(
+        draw_bases(&dev)
+            .last()
+            .unwrap()
+            .as_ref()
+            .map(|b| (b.1, b.2)),
+        Some((7, 2))
+    );
+    assert!(
         dev.backend
             .log
-            .iter()
-            .filter(|l| l.starts_with("draw "))
-            .count(),
-        1
+            .last()
+            .unwrap()
+            .contains("Vertices { first: 7, count: 3, first_instance: 2, instances: 1 }"),
+        "{:?}",
+        dev.backend.log.last()
     );
-    // SV_VertexID leaves the start location out; the front cannot take it off yet.
-    dev.draw(3, 3);
-    assert!(dev.removed.is_some());
     assert_eq!(
-        dev.backend
-            .log
-            .iter()
-            .filter(|l| l.starts_with("draw "))
-            .count(),
+        dev.backend.slow_paths().count(SlowPath::IndirectReadBack),
         1
     );
+    // A buffer not made for arguments, an offset off a word or arguments past the end are invalid
+    // and draw nothing.
+    let draws = draw_bases(&dev).len();
+    let plain = immutable(&mut dev, &words, bind::VERTEX_BUFFER);
+    assert!(matches!(
+        dev.draw_indirect(&plain, 0, false),
+        Err(Error::InvalidArg(_))
+    ));
+    assert!(dev.draw_indirect(&args, 2, false).is_err());
+    assert!(dev.draw_indirect(&args, 16, true).is_err());
+    assert_eq!(draw_bases(&dev).len(), draws);
+    assert!(dev.removed.is_none());
 }
 
 #[test]

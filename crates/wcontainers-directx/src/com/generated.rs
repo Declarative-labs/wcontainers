@@ -1133,7 +1133,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         alignedbyteoffsetforargs: u32,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::DrawIndexedInstancedIndirect")
+        self.draw_indexed_instanced_indirect(pbufferforargs, alignedbyteoffsetforargs)
     }
     fn DrawInstancedIndirect(
         &self,
@@ -1141,7 +1141,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         alignedbyteoffsetforargs: u32,
     ) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::DrawInstancedIndirect")
+        self.draw_instanced_indirect(pbufferforargs, alignedbyteoffsetforargs)
     }
     fn Dispatch(&self, threadgroupcountx: u32, threadgroupcounty: u32, threadgroupcountz: u32) {
         let _call = self.call();

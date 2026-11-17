@@ -1,7 +1,7 @@
 //! DXBC handed to the device: its stage from the container, and its conversion through the shaders
 //! crate into the common form.
 
-use wcontainers_gpu::{SourceStage, VariantKey};
+use wcontainers_gpu::{DrawBaseSource, HelperValue, SourceStage, VariantKey};
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
 use crate::error::{Error, Result, not_implemented};
@@ -41,7 +41,20 @@ pub fn stage(bytecode: &[u8]) -> Result<SourceStage> {
 /// Converts a shader of `expected` stage. Bytecode the converter refuses is invalid to Direct3D too;
 /// what it cannot convert yet is not implemented.
 pub fn convert(bytecode: &[u8], expected: SourceStage) -> Result<Converted> {
-    convert_variant(bytecode, expected, &VariantKey::default())
+    convert_variant(bytecode, expected, &base_key(expected))
+}
+
+/// The variant every shader of `stage` is converted as: vertex shaders read the draw's bases from
+/// the helper constants, since `SV_VertexID` and `SV_InstanceID` leave them out (programs that read
+/// neither get no helper block).
+pub fn base_key(stage: SourceStage) -> VariantKey {
+    VariantKey {
+        draw_base: match stage {
+            SourceStage::Vertex => DrawBaseSource::Helpers,
+            _ => DrawBaseSource::None,
+        },
+        ..VariantKey::default()
+    }
 }
 
 /// Converts a shader of `expected` stage as the variant `key` asks.
@@ -59,8 +72,13 @@ pub fn convert_variant(
         Ok(c) if c.modules.len() != 1 => {
             not_implemented("shaders converted into several program stages")
         }
-        Ok(c) if !c.reflection.helpers.is_empty() => {
-            not_implemented("shaders that read the helper constants")
+        Ok(c)
+            if c.reflection
+                .helpers
+                .iter()
+                .any(|h| h.value != HelperValue::DrawBase) =>
+        {
+            not_implemented("shaders that read helper constants other than the draw's bases")
         }
         Ok(c) => Ok(c),
         Err(ConvertError::Rejected(why)) => {

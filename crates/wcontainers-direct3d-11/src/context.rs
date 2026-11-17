@@ -5,10 +5,11 @@ use std::rc::Rc;
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
     DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features, Format,
-    FormatKind, IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin,
-    PassDesc, Program, ReadSource, ReadState, ScissorRect, SlotKind, SlowPath, SourceStage,
-    StageSet, StepMode, StoreOp, SystemValue, TextureUsage, Topology, VariantKey, VertexAttribute,
-    VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
+    FormatKind, HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp,
+    MAX_BINDING_SETS, Object, Origin, PassDesc, Program, ReadSource, ReadState, RingKind,
+    ScissorRect, ShaderStage, SlotKind, SlowPath, SourceStage, StageSet, StepMode, StoreOp,
+    TextureUsage, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, Viewport as GpuViewport, WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -241,8 +242,25 @@ enum Zero<B: Backend> {
 /// How a draw names its range before the front picks the interface's form.
 #[derive(Clone, Copy)]
 enum Range {
-    Vertices { count: u32, start: u32 },
-    Indexed { count: u32, start: u32, base: i32 },
+    Vertices {
+        count: u32,
+        start: u32,
+    },
+    Indexed {
+        count: u32,
+        start: u32,
+        base: i32,
+    },
+    /// The arguments are in a buffer, at a byte offset.
+    Indirect {
+        indexed: bool,
+        offset: u32,
+    },
+}
+
+/// Bytes of one indirect draw's arguments: four words, five for an indexed draw.
+const fn indirect_bytes(indexed: bool) -> u32 {
+    if indexed { 20 } else { 16 }
 }
 
 impl<B: Backend> Device<B> {
@@ -712,9 +730,102 @@ impl<B: Backend> Device<B> {
         );
     }
 
+    /// `DrawInstancedIndirect` (`indexed` false) and `DrawIndexedInstancedIndirect`. Arguments
+    /// Direct3D does not read are invalid; a draw this front cannot serve removes the device.
+    pub fn draw_indirect(
+        &mut self,
+        args: &Rc<Buffer<B>>,
+        offset: u32,
+        indexed: bool,
+    ) -> Result<()> {
+        self.check_indirect(args, offset, indexed)?;
+        if self.removed.is_some() {
+            return Ok(());
+        }
+        let reads_bases = self
+            .ctx
+            .vs
+            .as_ref()
+            .is_some_and(|vs| vs.reflection.helper_size > 0);
+        let r = if self
+            .backend
+            .caps()
+            .has(Features::INDIRECT | Features::INDIRECT_FIRST_INSTANCE)
+            && !reads_bases
+        {
+            self.try_draw(Range::Indirect { indexed, offset }, 0, 1, Some(args))
+        } else {
+            self.read_indirect(args, offset, indexed)
+                .and_then(|(range, first, n)| self.try_draw(range, first, n, None))
+        };
+        if let Err(e) = r {
+            self.lose(e);
+        }
+        Ok(())
+    }
+
+    /// An indirect draw's arguments read back (`IndirectReadBack`), as the range, first instance and
+    /// instance count of a direct draw: for back ends without indirect draws or without a first
+    /// instance in them, and for vertex programs reading the draw's bases, which the converter does
+    /// not yet take from the arguments (`DrawBaseFromArguments`).
+    fn read_indirect(
+        &mut self,
+        args: &Buffer<B>,
+        offset: u32,
+        indexed: bool,
+    ) -> Result<(Range, u32, u32)> {
+        self.backend.slow_paths().hit(SlowPath::IndirectReadBack);
+        self.settle();
+        let size = indirect_bytes(indexed) as usize;
+        let handle = args.handle();
+        let rb = self.backend.read_back(&ReadSource::Buffer {
+            buffer: &handle,
+            offset: u64::from(offset),
+            size: size as u64,
+        });
+        let rb = self.gpu(rb)?;
+        if self.backend.read_state(&rb) == ReadState::Pending {
+            self.backend.wait_read(&rb);
+        }
+        let mut bytes = [0u8; 20];
+        self.backend.finish_read(rb, &mut bytes[..size]);
+        let word = |i: usize| u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into().unwrap());
+        // D3D11_DRAW_INSTANCED_INDIRECT_ARGS and D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS.
+        Ok(if indexed {
+            let range = Range::Indexed {
+                count: word(0),
+                start: word(2),
+                base: word(3) as i32,
+            };
+            (range, word(4), word(1))
+        } else {
+            let range = Range::Vertices {
+                count: word(0),
+                start: word(2),
+            };
+            (range, word(3), word(1))
+        })
+    }
+
+    /// Direct3D reads indirect arguments only from buffers made for them, at whole words inside it.
+    fn check_indirect(&self, args: &Buffer<B>, offset: u32, indexed: bool) -> Result<()> {
+        if args.desc.misc_flags & desc::MISC_DRAWINDIRECT_ARGS == 0 {
+            return Err(Error::InvalidArg(
+                "indirect arguments in a buffer not made for them",
+            ));
+        }
+        if !offset.is_multiple_of(4)
+            || u64::from(offset) + u64::from(indirect_bytes(indexed))
+                > u64::from(args.desc.byte_width)
+        {
+            return Err(Error::InvalidArg("indirect arguments past the buffer"));
+        }
+        Ok(())
+    }
+
     /// Draws; a draw this front cannot serve removes the device, the only answer Direct3D has for it.
     fn draw_any(&mut self, range: Range, first_instance: u32, instances: u32) {
-        if let Err(e) = self.try_draw(range, first_instance, instances) {
+        if let Err(e) = self.try_draw(range, first_instance, instances, None) {
             self.lose(e);
         }
     }
@@ -737,7 +848,7 @@ impl<B: Backend> Device<B> {
         if !interpolation.is_empty() && !self.interpolated.contains_key(&key) {
             let variant = VariantKey {
                 output_interpolation: interpolation,
-                ..VariantKey::default()
+                ..crate::shader::base_key(SourceStage::Vertex)
             };
             let mut converted =
                 crate::shader::convert_variant(&vs.bytecode, SourceStage::Vertex, &variant)?;
@@ -1270,7 +1381,53 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    fn try_draw(&mut self, range: Range, first_instance: u32, instances: u32) -> Result<()> {
+    /// Writes the vertex program's helper constants, `[base vertex, first instance, block size,
+    /// offset of the bases]`, where they differ from the last written (`DrawBaseInHelpers`), and
+    /// keeps the set binding them.
+    fn write_draw_base(&mut self, key: [u32; 4]) -> Result<()> {
+        if self.draw_base.as_ref().is_some_and(|(k, _)| *k == key) {
+            return Ok(());
+        }
+        self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
+        let [base, first_instance, size, at] = key;
+        let mut block = [0u8; 256];
+        let at = at as usize;
+        if size as usize > block.len() || at + 12 > size as usize {
+            return not_implemented("a helper block laid out past the draw's bases");
+        }
+        let block = &mut block[..size as usize];
+        // HelperValue::DrawBase: base vertex, first instance, draw number (always 0 here).
+        block[at..at + 4].copy_from_slice(&base.to_le_bytes());
+        block[at + 4..at + 8].copy_from_slice(&first_instance.to_le_bytes());
+        let align = self.backend.caps().limits.min_uniform_offset_alignment;
+        let mut offsets = [0u64];
+        let ring = self
+            .backend
+            .write_buffer_ring(RingKind::Data, &[block], align, &mut offsets);
+        let ring = self.gpu(ring)?;
+        let set = self.backend.create_binding_set(&[BindingEntry {
+            binding: helper_binding(ShaderStage::Vertex),
+            stages: StageSet::VERTEX,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &ring,
+                offset: offsets[0],
+                size: u64::from(size),
+            }),
+        }]);
+        let set = self.gpu(set)?;
+        let id = self.id();
+        self.draw_base = Some((key, Kept::new(set, id, Object::BindingSet, &self.graveyard)));
+        Ok(())
+    }
+
+    /// A draw; `args` holds an indirect draw's arguments.
+    fn try_draw(
+        &mut self,
+        range: Range,
+        first_instance: u32,
+        instances: u32,
+        args: Option<&Rc<Buffer<B>>>,
+    ) -> Result<()> {
         if self.removed.is_some() {
             return Ok(());
         }
@@ -1296,20 +1453,6 @@ impl<B: Backend> Device<B> {
         let all = u32::MAX >> (32 - samples.min(32));
         if samples > 1 && self.ctx.sample_mask & all != all {
             return not_implemented("a sample mask leaving out samples of multisampled targets");
-        }
-        // The common form's vertex and instance indices include the draw's bases, which SV_VertexID
-        // and SV_InstanceID leave out; the helper constants that take them off are not served yet.
-        let vertex_base = match range {
-            Range::Vertices { start, .. } => start != 0,
-            Range::Indexed { base, .. } => base != 0,
-        };
-        let reads = |sv| vs.reflection.inputs.iter().any(|i| i.system == Some(sv));
-        if (vertex_base && reads(SystemValue::VertexId))
-            || (first_instance != 0 && reads(SystemValue::InstanceId))
-        {
-            return not_implemented(
-                "SV_VertexID or SV_InstanceID with a non-zero start or base location",
-            );
         }
         // The converter writes no program whose second output feeds the blend yet.
         if self
@@ -1338,11 +1481,41 @@ impl<B: Backend> Device<B> {
         self.grow_constants()?;
         self.update_set(VERTEX)?;
         self.update_set(PIXEL)?;
+        // SV_VertexID and SV_InstanceID leave out the draw's bases, which the common form's indices
+        // include: a vertex program reading them takes the bases from its helper constants.
+        let reads_bases = vs.reflection.helper_size > 0;
+        if reads_bases {
+            let base = match range {
+                Range::Vertices { start, .. } => start,
+                Range::Indexed { base, .. } => base as u32,
+                Range::Indirect { .. } => unreachable!("read back by draw_indirect"),
+            };
+            let at = vs
+                .reflection
+                .helpers
+                .iter()
+                .find(|h| h.value == HelperValue::DrawBase)
+                .map_or(0, |h| h.offset);
+            self.write_draw_base([base, first_instance, vs.reflection.helper_size, at])?;
+        }
 
-        let indexed = matches!(range, Range::Indexed { .. });
+        let indexed = matches!(
+            range,
+            Range::Indexed { .. } | Range::Indirect { indexed: true, .. }
+        );
+        let args = args.map(|b| b.gpu.borrow());
         let (topology, gpu_range, generated) = match plain_topology(self.ctx.topology) {
             Some(t) => {
                 let r = match range {
+                    Range::Indirect { indexed, offset } => {
+                        let args = &args.as_ref().expect("indirect arguments").handle;
+                        let offset = u64::from(offset);
+                        if indexed {
+                            DrawRange::IndexedIndirect { args, offset }
+                        } else {
+                            DrawRange::Indirect { args, offset }
+                        }
+                    }
                     Range::Vertices { count, start } => DrawRange::Vertices {
                         first: start,
                         count,
@@ -1361,7 +1534,9 @@ impl<B: Backend> Device<B> {
             }
             None => {
                 let Range::Vertices { count, start } = range else {
-                    return not_implemented("indexed adjacency draws without a geometry shader");
+                    return not_implemented(
+                        "indexed or indirect adjacency draws without a geometry shader",
+                    );
                 };
                 let Some((t, list)) = adjacency_indices(self.ctx.topology, count) else {
                     return not_implemented("a topology without a geometry or hull shader");
@@ -1492,6 +1667,9 @@ impl<B: Backend> Device<B> {
         let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
         bindings[0] = ctx.sets[VERTEX].as_ref().map(|k| &k.handle);
         bindings[1] = ctx.sets[PIXEL].as_ref().map(|k| &k.handle);
+        if reads_bases {
+            bindings[HELPER_SET as usize] = self.draw_base.as_ref().map(|(_, k)| &k.handle);
+        }
         let strip = matches!(topology, Topology::LineStrip | Topology::TriangleStrip);
         let call = DrawCall {
             program: &program,
