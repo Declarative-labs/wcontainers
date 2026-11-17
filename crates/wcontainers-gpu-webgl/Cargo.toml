@@ -30,6 +30,9 @@ naga = { workspace = true, features = ["wgsl-in"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 wcontainers-graphics-test = { path = "../wcontainers-graphics-test" }
 
+[target.'cfg(windows)'.dev-dependencies]
+wcontainers-gpu-test = { path = "../wcontainers-gpu-test" }
+
 [[example]]
 name = "browser"
 crate-type = ["cdylib"]

@@ -121,8 +121,17 @@ pub struct FormatExtensions {
     pub float_blend: bool,
 }
 
-/// What `format` can be used for on a context with `ext`. Copies out to the host are declared only for
-/// the formats [`crate::WebGl`] reads back today.
+impl FormatExtensions {
+    pub fn found(ext: &std::collections::BTreeSet<&'static str>) -> FormatExtensions {
+        FormatExtensions {
+            color_buffer_float: ext.contains("EXT_color_buffer_float"),
+            float_linear: ext.contains("OES_texture_float_linear"),
+            float_blend: ext.contains("EXT_float_blend"),
+        }
+    }
+}
+
+/// What `format` can be used for on a context with `ext`.
 pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     let Some(gl) = gl_format(format) else {
         return FormatUse::empty();
@@ -153,8 +162,72 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     if gl.format == DEPTH_STENCIL {
         uses.remove(FormatUse::SAMPLE);
     }
-    if matches!(format, Format::Rgba8Unorm | Format::Rgba8UnormSrgb) {
+    if read_as(format, ext).is_some() {
         uses |= FormatUse::COPY_OUT;
     }
     uses
+}
+
+/// How `readPixels` reads a format's texels: always four components of `ty` (`comp_read` bytes each),
+/// of which the texel keeps the first `n`, each the low `comp_kept` bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadAs {
+    pub format: u32,
+    pub ty: u32,
+    pub comp_read: usize,
+    pub comp_kept: usize,
+    pub n: usize,
+}
+
+impl ReadAs {
+    pub fn texel_read(self) -> usize {
+        4 * self.comp_read
+    }
+
+    pub fn texel_kept(self) -> usize {
+        self.n * self.comp_kept
+    }
+
+    /// Keeps each texel's stored bytes of `read`, texels as `readPixels` wrote them, in `kept`.
+    pub fn repack(self, read: &[u8], kept: &mut [u8]) {
+        let (r, k) = (self.texel_read(), self.texel_kept());
+        for (from, to) in read.chunks_exact(r).zip(kept.chunks_exact_mut(k)) {
+            for c in 0..self.n {
+                to[c * self.comp_kept..(c + 1) * self.comp_kept].copy_from_slice(
+                    &from[c * self.comp_read..c * self.comp_read + self.comp_kept],
+                );
+            }
+        }
+    }
+}
+
+/// How GLES 3.0's `readPixels` reads `format` back exactly (its always-supported pairs: normalised
+/// bytes as RGBA bytes, integers as RGBA 32-bit integers, and floats as RGBA floats with
+/// EXT_color_buffer_float), or None where it cannot: formats that are not colour-renderable, packed
+/// ones and 16-bit floats.
+pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
+    let gl = gl_format(format)?;
+    let comp_kept = match gl.ty {
+        UNSIGNED_BYTE | BYTE => 1,
+        UNSIGNED_SHORT | SHORT => 2,
+        UNSIGNED_INT | INT | FLOAT => 4,
+        _ => return None,
+    };
+    let (format_read, ty, comp_read) = match gl.class {
+        Class::Norm { render: true } if gl.ty == UNSIGNED_BYTE => (RGBA, UNSIGNED_BYTE, 1),
+        Class::Int { render: true } if matches!(gl.ty, BYTE | SHORT | INT) => {
+            (RGBA_INTEGER, INT, 4)
+        }
+        Class::Int { render: true } => (RGBA_INTEGER, UNSIGNED_INT, 4),
+        Class::Single if ext.color_buffer_float && gl.format != RGB => (RGBA, FLOAT, 4),
+        _ => return None,
+    };
+    let (_, _, texel) = format.block();
+    Some(ReadAs {
+        format: format_read,
+        ty,
+        comp_read,
+        comp_kept,
+        n: texel as usize / comp_kept,
+    })
 }

@@ -37,7 +37,6 @@ const builds = (await readdir(root)).filter((d) => d.startsWith('win64-'));
 if (builds.length !== 1) throw new Error(`${root} holds ${builds.length} Chrome builds, not one`);
 const browser = await chromium.launch({ executablePath: join(root, builds[0], 'chrome-win64', 'chrome.exe'), headless: true });
 console.log(`chrome ${browser.version()}`);
-const scenes = [['triangle', ''], ['quads', ''], ['instanced', ''], ['quads', 'blend_factor'], ['quads', 'depth_function']];
 let failed = false;
 try {
   await gpuReady(browser);
@@ -48,7 +47,7 @@ try {
   await page.waitForFunction(() => window.ready === true);
   let report = await page.evaluate(() => window.report());
   console.log(report.split('\n')[0]);
-  for (const [scene, change] of scenes) {
+  for (const [scene, change = ''] of await page.evaluate(() => window.pictures())) {
     const name = change ? `${scene}-${change}` : scene;
     try {
       const texels = await page.evaluate(([s, c]) => window.run(s, c), [scene, change]);
@@ -72,17 +71,22 @@ async function gpuReady(browser) {
   const page = await browser.newPage();
   for (let attempt = 1; attempt <= 10; attempt++) {
     const survived = await page.evaluate(async () => {
+      // No context at all while the GPU process restarts counts as one lost.
       const gl = document.createElement('canvas').getContext('webgl2');
+      if (!gl) return false;
       gl.clear(gl.COLOR_BUFFER_BIT);
       await new Promise((resolve) => setTimeout(resolve, 500));
       return !gl.isContextLost();
     });
     if (survived) {
       if (attempt > 1) console.log(`chrome: ${attempt - 1} WebGL contexts were lost while the GPU process started`);
-      break;
+      await page.close();
+      return;
     }
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
   await page.close();
+  throw new Error('no WebGL 2 context survived half a second in ten tries');
 }
 
 // The adapters chrome://gpu reports for WebGL (ANGLE) and WebGPU (Dawn).

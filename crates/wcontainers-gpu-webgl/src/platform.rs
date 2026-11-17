@@ -10,11 +10,15 @@ pub const ZERO_TO_ONE: u32 = 0x935F;
 pub const NEGATIVE_ONE_TO_ONE: u32 = 0x935E;
 
 /// The WebGL extension names, with the GL names ANGLE reports for each natively.
-const EXTENSIONS: [(&str, &str); 5] = [
+const EXTENSIONS: [(&str, &str); 6] = [
     ("EXT_clip_control", "GL_EXT_clip_control"),
     ("EXT_color_buffer_float", "GL_EXT_color_buffer_float"),
     ("OES_texture_float_linear", "GL_OES_texture_float_linear"),
     ("EXT_float_blend", "GL_EXT_float_blend"),
+    (
+        "KHR_parallel_shader_compile",
+        "GL_KHR_parallel_shader_compile",
+    ),
     (
         "EXT_texture_filter_anisotropic",
         "GL_EXT_texture_filter_anisotropic",
@@ -168,6 +172,31 @@ mod native {
         Ok((gl, platform))
     }
 
+    /// Copies bytes of the buffer bound at `target` into `dst`, waiting for the GPU: what WebGL's
+    /// `getBufferSubData` does, by mapping the range for reading, as GLES does.
+    ///
+    /// # Safety
+    /// A buffer at least `offset + dst.len()` bytes long is bound at `target`.
+    pub unsafe fn get_buffer_sub_data(
+        gl: &glow::Context,
+        target: u32,
+        offset: i32,
+        dst: &mut [u8],
+    ) {
+        if dst.is_empty() {
+            return;
+        }
+        // SAFETY: the caller's range is inside the bound buffer; a failed map is a GL error, which
+        // submit reports as device loss.
+        unsafe {
+            let p = gl.map_buffer_range(target, offset, dst.len() as i32, glow::MAP_READ_BIT);
+            if !p.is_null() {
+                core::ptr::copy_nonoverlapping(p, dst.as_mut_ptr(), dst.len());
+            }
+            gl.unmap_buffer(target);
+        }
+    }
+
     /// The renderer string, which names the GPU and ANGLE's own back end.
     pub fn renderer(gl: &glow::Context) -> String {
         // SAFETY: a plain string query.
@@ -193,6 +222,21 @@ mod web {
                 let _ = f.call2(ext, &JsValue::from(origin), &JsValue::from(depth));
             }
         }
+    }
+
+    /// Copies bytes of the buffer bound at `target` into `dst` (WebGL's `getBufferSubData`, which
+    /// waits for the GPU).
+    ///
+    /// # Safety
+    /// A buffer at least `offset + dst.len()` bytes long is bound at `target`.
+    pub unsafe fn get_buffer_sub_data(
+        gl: &glow::Context,
+        target: u32,
+        offset: i32,
+        dst: &mut [u8],
+    ) {
+        // SAFETY: as the caller promises.
+        unsafe { gl.get_buffer_sub_data(target, offset, dst) }
     }
 
     /// Wraps a canvas's WebGL 2 context, enabling the extensions glow does not enable itself.

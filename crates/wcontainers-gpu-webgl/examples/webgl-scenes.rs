@@ -2,13 +2,15 @@
 //! against the stored real Direct3D pictures, with each picture's recorded tolerance.
 //!
 //!   webgl-scenes angle <angle-dir> <out-dir> [--off <extension>]...
-//!       draws on ANGLE's OpenGL ES 3.0 from <angle-dir> (Chrome's own libEGL.dll and libGLESv2.dll),
-//!       writes the pictures and the capability list to <out-dir>, and checks them.
+//!       draws on ANGLE's OpenGL ES 3.0 from <angle-dir> (the libEGL.dll and libGLESv2.dll that
+//!       angle\build.cmd builds from mozangle), writes the pictures and the capability list to
+//!       <out-dir>, and checks them.
 //!   webgl-scenes check <dir>
 //!       checks the pictures browser/run.mjs wrote from Chrome's WebGL 2 (<scene>[-<change>].rgba).
 //!
 //! Besides the scenes, the quads scene is drawn with a changed blend factor and a changed depth function,
-//! each of which must fail the comparison. Exits 1 if a scene fails or a changed one passes.
+//! each of which must fail the comparison, and each scene is drawn by other routes to the same picture
+//! (`Change`), which must pass. Exits 1 on any other verdict.
 
 #[path = "common/scenes.rs"]
 mod scenes;
@@ -29,13 +31,6 @@ fn file(scene: Scene, change: Change) -> String {
     }
 }
 
-/// Every picture the run draws: the three scenes, then the changed quads.
-fn pictures() -> Vec<(Scene, Change)> {
-    let mut all: Vec<_> = Scene::ALL.iter().map(|s| (*s, Change::None)).collect();
-    all.extend(Change::ALTERED.iter().map(|c| (Scene::Quads, *c)));
-    all
-}
-
 /// Compares one drawn picture with its scene's reference; returns whether the verdict is the one wanted.
 fn verdict(scene: Scene, change: Change, texels: Vec<u8>, out: &Path) -> Result<bool> {
     let (w, h) = (scene::WIDTH, scene::HEIGHT);
@@ -48,7 +43,7 @@ fn verdict(scene: Scene, change: Change, texels: Vec<u8>, out: &Path) -> Result<
     let d = compare::compare(&theirs, &ours, allowance.tolerance)?;
     let exact = compare::compare(&theirs, &ours, 0.0)?;
     let pass = d.differing <= allowance.pixels;
-    let wanted = pass == (change == Change::None);
+    let wanted = pass != change.altered();
     println!(
         "{} {name}: {} of {} pixels beyond {} (allowed {}); exactly equal but {} pixels, largest difference {}{}",
         if wanted { "ok  " } else { "FAIL" },
@@ -58,10 +53,10 @@ fn verdict(scene: Scene, change: Change, texels: Vec<u8>, out: &Path) -> Result<
         allowance.pixels,
         exact.differing,
         exact.largest,
-        if change == Change::None {
-            ""
-        } else {
+        if change.altered() {
             " (a changed scene, which must not pass)"
+        } else {
+            ""
         },
     );
     Ok(wanted)
@@ -83,7 +78,7 @@ fn angle(dir: &Path, out: &Path, off: &[&str]) -> Result<bool> {
     );
     std::fs::write(out.join("caps-angle.txt"), report)?;
     let mut all = true;
-    for (scene, change) in pictures() {
+    for (scene, change) in Change::PICTURES {
         let texels = scenes::draw(&mut gl, scene, change)
             .map_err(anyhow::Error::msg)
             .with_context(|| format!("{} (GL log: {})", file(scene, change), gl.last_log()))?;
@@ -94,7 +89,7 @@ fn angle(dir: &Path, out: &Path, off: &[&str]) -> Result<bool> {
 
 fn check_browser(dir: &Path) -> Result<bool> {
     let mut all = true;
-    for (scene, change) in pictures() {
+    for (scene, change) in Change::PICTURES {
         let raw = dir.join(format!("{}.rgba", file(scene, change)));
         let texels = std::fs::read(&raw).with_context(|| format!("reading {}", raw.display()))?;
         all &= verdict(scene, change, texels, dir)?;
