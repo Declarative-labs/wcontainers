@@ -117,6 +117,41 @@ fn changed_blend_factor_and_depth_function_fail() {
     }
 }
 
+/// The quads drawn with each depth format of at least 24 bits the device holds, stencil cleared too
+/// where the format has one, equal Direct3D's picture.
+#[test]
+fn quads_match_direct3d_on_every_depth_format() {
+    use wcontainers_gpu::{Format, FormatUse};
+    let mut b = device();
+    let reference = reference(Scene::Quads);
+    for format in [
+        Format::Depth24Plus,
+        Format::Depth24PlusStencil8,
+        Format::Depth32Float,
+        Format::Depth32FloatStencil8,
+    ] {
+        if !b
+            .caps()
+            .formats
+            .get(format)
+            .contains(FormatUse::DEPTH_STENCIL)
+        {
+            eprintln!("{format:?}: not held by this device");
+            continue;
+        }
+        let rb = draw::render_on(&mut b, Scene::Quads, Twist::None, format).unwrap();
+        b.wait_read(&rb);
+        let mut rgba = vec![0; (scene::WIDTH * scene::HEIGHT * 4) as usize];
+        b.finish_read(rb, &mut rgba);
+        assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
+        let (beyond, worst) = compare(&rgba, &reference);
+        eprintln!(
+            "quads on {format:?}: {beyond} pixels beyond {TOLERANCE}, largest difference {worst}"
+        );
+        assert_eq!(beyond, 0, "quads on {format:?} differ from Direct3D");
+    }
+}
+
 /// Repeated draws of one combination build one pipeline and one bind group, and equal blocks made
 /// twice are one block.
 #[test]
@@ -132,7 +167,7 @@ fn pipelines_and_bind_groups_are_cached() {
         "equal blocks made twice must be one block"
     );
     assert!(first.program != again.program);
-    let t = draw::targets(&mut b, true).unwrap();
+    let t = draw::targets(&mut b, Some(wcontainers_gpu::Format::Depth32Float)).unwrap();
     let before = *b.counters();
     draw::begin(&mut b, &t, true);
     for _ in 0..10 {

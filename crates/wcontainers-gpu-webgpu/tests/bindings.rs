@@ -13,10 +13,11 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor, BlendOp,
-    BufferDesc, BufferRange, BufferUsage, ColorAttachment, DeviceStatus, DrawCall, DrawRange,
-    Extent, Format, FormatUse, LoadOp, MapIntent, Origin, PassDesc, ReadSource, StageSet, StoreOp,
-    TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
+    AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor,
+    BlendOp, BufferDesc, BufferRange, BufferUsage, ColorAttachment, DepthAttachment, DeviceStatus,
+    DrawCall, DrawRange, Extent, Format, FormatUse, LoadOp, MapIntent, Origin, PassDesc,
+    ReadSource, StageSet, StoreOp, TextureRegion, TextureUsage, TextureViewDesc, Topology,
+    ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -361,4 +362,103 @@ fn load_only_textures_keep_one_pipeline_for_any_view() {
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert_eq!(got, [200, 0, 0, 255, 0, 0, 0, 255]);
     assert_eq!(b.counters().pipelines - before.pipelines, 1);
+}
+
+const ASPECTS_WGSL: &str = r#"
+@group(1) @binding(32) var d: texture_2d<f32>;
+@group(1) @binding(33) var s: texture_2d<u32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn ps() -> @location(0) vec4f {
+    let stencil = f32(textureLoad(s, vec2i(0), 0).r) / 255.0;
+    return vec4f(textureLoad(d, vec2i(0), 0).r, stencil, 0.0, 1.0);
+}
+"#;
+
+/// A texture with depth and stencil is drawn into through a view, and then that view and a stencil
+/// view of it are read by a program: each binding sees its own aspect.
+#[test]
+fn combined_depth_stencil_views_draw_and_read_each_aspect() {
+    let mut b = device();
+    let mut ran = 0;
+    for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
+        if !b
+            .caps()
+            .formats
+            .get(format)
+            .contains(FormatUse::DEPTH_STENCIL | FormatUse::SAMPLE)
+        {
+            eprintln!("{format:?}: not held by this device");
+            continue;
+        }
+        let (texture, depth_view) = draw::texture_2d(
+            &mut b,
+            format,
+            1,
+            1,
+            TextureUsage::RENDER | TextureUsage::SAMPLE,
+        )
+        .unwrap();
+        let stencil_view = b
+            .create_view(
+                &texture,
+                &TextureViewDesc {
+                    format,
+                    dimension: ViewDimension::D2,
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: 0,
+                    layer_count: 1,
+                    stencil: true,
+                },
+            )
+            .unwrap();
+        b.begin_pass(&PassDesc {
+            colors: Default::default(),
+            depth: Some(DepthAttachment {
+                view: &depth_view,
+                depth: Some(AspectOps {
+                    load: LoadOp::Clear(0.25f32.to_bits()),
+                    store: StoreOp::Store,
+                    read_only: false,
+                }),
+                stencil: Some(AspectOps {
+                    load: LoadOp::Clear(7),
+                    store: StoreOp::Store,
+                    read_only: false,
+                }),
+            }),
+            empty: None,
+            occlusion: None,
+        });
+        b.end_pass();
+        let k = Kit {
+            program: draw::program(&mut b, ASPECTS_WGSL).unwrap(),
+            ..kit(&mut b, Format::Rgba8Unorm, 1, &draw::opaque())
+        };
+        let set = b
+            .create_binding_set(&[
+                BindingEntry {
+                    binding: 32,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(&depth_view),
+                },
+                BindingEntry {
+                    binding: 33,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(&stencil_view),
+                },
+            ])
+            .unwrap();
+        begin(&mut b, &k, [0.0; 4]);
+        draw_at(&mut b, &k, &set, None);
+        let got = finish(&mut b, &k, 4);
+        assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
+        // Depth 0.25 is 63.75 of 255, stored as 64.
+        assert_eq!(got, [64, 7, 0, 255], "{format:?}");
+        ran += 1;
+    }
+    assert!(ran > 0, "every device holds depth24plus-stencil8");
 }

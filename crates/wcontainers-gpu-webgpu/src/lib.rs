@@ -156,7 +156,10 @@ struct ViewObj {
     format: Format,
     /// None for a surface's texture.
     texture: Option<Texture>,
+    /// Every aspect: what a pass draws into.
     raw: wgpu::TextureView,
+    /// The aspect the view reads: what a binding names.
+    read: wgpu::TextureView,
     width: u32,
     height: u32,
     samples: u32,
@@ -252,8 +255,20 @@ struct ReadbackObj {
 #[derive(Debug)]
 struct SurfaceObj {
     raw: wgpu::Surface<'static>,
-    current: RefCell<Option<wgpu::SurfaceTexture>>,
+    /// The frame handed out by `current_texture`, shown by `present`.
+    current: RefCell<Option<Frame>>,
     format: Cell<Format>,
+    config: RefCell<Option<wgpu::SurfaceConfiguration>>,
+    /// Drawn into while the window shows nothing (occluded, or no texture in time); kept at the
+    /// configured size.
+    unshown: RefCell<Option<wgpu::Texture>>,
+}
+
+/// This frame's texture: the window's, or the unshown one when the window has none to give.
+#[derive(Debug)]
+enum Frame {
+    Shown(wgpu::SurfaceTexture),
+    Unshown,
 }
 
 /// The encoder a command is recorded in.
@@ -290,7 +305,8 @@ impl WebGpu {
             | wgpu::Features::DUAL_SOURCE_BLENDING
             | wgpu::Features::CLIP_DISTANCES
             | wgpu::Features::DEPTH32FLOAT_STENCIL8
-            | wgpu::Features::RG11B10UFLOAT_RENDERABLE;
+            | wgpu::Features::RG11B10UFLOAT_RENDERABLE
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
         wgpu::DeviceDescriptor {
             label: None,
             required_features: adapter.features() & wanted,
@@ -394,18 +410,34 @@ impl WebGpu {
         b.lead_in.get() == self.serial && self.lead.is_some()
     }
 
-    fn raw_view(&self, texture: &TextureObj, desc: &TextureViewDesc) -> Option<wgpu::TextureView> {
-        Some(texture.raw.create_view(&wgpu::TextureViewDescriptor {
-            label: None,
-            format: Some(convert::texture_format(desc.format)?),
-            dimension: Some(convert::view_dimension(desc.dimension)),
-            usage: None,
-            aspect: convert::aspect(desc.stencil, desc.format),
-            base_mip_level: desc.base_mip,
-            mip_level_count: Some(desc.mip_count),
-            base_array_layer: desc.base_layer,
-            array_layer_count: Some(desc.layer_count),
-        }))
+    /// The view a pass draws into (every aspect) and the view a binding reads (the aspect `stencil`
+    /// names, in that aspect's own format); one view where the two are the same.
+    fn raw_views(
+        &self,
+        texture: &TextureObj,
+        desc: &TextureViewDesc,
+    ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
+        let format = convert::texture_format(desc.format)?;
+        let aspect = convert::aspect(desc.stencil, desc.format);
+        let view = |aspect, format| {
+            texture.raw.create_view(&wgpu::TextureViewDescriptor {
+                label: None,
+                format: Some(format),
+                dimension: Some(convert::view_dimension(desc.dimension)),
+                usage: None,
+                aspect,
+                base_mip_level: desc.base_mip,
+                mip_level_count: Some(desc.mip_count),
+                base_array_layer: desc.base_layer,
+                array_layer_count: Some(desc.layer_count),
+            })
+        };
+        let whole = view(wgpu::TextureAspect::All, format);
+        if aspect == wgpu::TextureAspect::All {
+            return Some((whole.clone(), whole));
+        }
+        let read = view(aspect, format.aspect_specific_format(aspect)?);
+        Some((whole, read))
     }
 }
 
@@ -467,12 +499,15 @@ fn caps(
         if !raw.required_features().is_empty() && !f.contains(raw.required_features()) {
             continue;
         }
+        let guaranteed = raw.guaranteed_format_features(f);
         let ff = if adapter_specific {
             adapter.get_texture_format_features(raw)
         } else {
-            raw.guaranteed_format_features(f)
+            guaranteed
         };
-        let u = ff.allowed_usages;
+        // Copies follow WebGPU's rules whatever the adapter has: `depth24plus` is never copied.
+        let copies = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
+        let u = (ff.allowed_usages - copies) | (guaranteed.allowed_usages & copies);
         *allowed = u;
         let flags = ff.flags;
         let mut uses = FormatUse::empty();
@@ -830,9 +865,9 @@ impl Backend for WebGpu {
         texture: &Texture,
         desc: &TextureViewDesc,
     ) -> Result<TextureView, GpuError> {
-        let raw = self
-            .raw_view(&texture.0, desc)
-            .ok_or(GpuError::Invalid("view format this back end does not hold"))?;
+        let (raw, read) = self.raw_views(&texture.0, desc).ok_or(GpuError::Invalid(
+            "view format or aspect this back end does not hold",
+        ))?;
         let t = &texture.0.desc;
         let size = |n: u32| (n >> desc.base_mip).max(1);
         Ok(TextureView(Rc::new(ViewObj {
@@ -840,6 +875,7 @@ impl Backend for WebGpu {
             format: desc.format,
             texture: Some(texture.clone()),
             raw,
+            read,
             width: size(t.width),
             height: size(t.height),
             samples: t.samples,
@@ -1007,9 +1043,10 @@ impl Backend for WebGpu {
         }
         for a in desc.attributes.iter().flatten() {
             if convert::vertex_format(a.format).is_none() {
-                return Err(GpuError::Invalid(
-                    "vertex format WebGPU lacks; the front converts it",
-                ));
+                self.fail(
+                    "a vertex format WebGPU lacks, which this back end converts (VertexFormatConverted), is not built yet",
+                );
+                return Err(GpuError::DeviceLost);
             }
             if desc
                 .streams
@@ -1203,7 +1240,7 @@ impl Backend for WebGpu {
         if let Some(a) = &mut self.arena {
             a.submitted();
         }
-        self.caches.prune_groups();
+        self.caches.prune();
         for rb in self.to_map.drain(..) {
             let state = rb.0.state.clone();
             rb.0.buffer
@@ -1290,6 +1327,8 @@ impl Backend for WebGpu {
             raw,
             current: RefCell::new(None),
             format: Cell::new(Format::Rgba8Unorm),
+            config: RefCell::new(None),
+            unshown: RefCell::new(None),
         })))
     }
 
@@ -1305,44 +1344,89 @@ impl Backend for WebGpu {
             return Err(GpuError::Invalid("surface format without PRESENT"));
         }
         let raw = convert::texture_format(format).ok_or(GpuError::Invalid("surface format"))?;
-        surface.0.raw.configure(
-            &self.device,
-            &wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
-                format: raw,
-                width,
-                height,
-                present_mode: if vsync {
-                    wgpu::PresentMode::AutoVsync
-                } else {
-                    wgpu::PresentMode::AutoNoVsync
-                },
-                desired_maximum_frame_latency: 2,
-                alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                view_formats: vec![],
-                color_space: wgpu::SurfaceColorSpace::Srgb,
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
+            format: raw,
+            width,
+            height,
+            present_mode: if vsync {
+                wgpu::PresentMode::AutoVsync
+            } else {
+                wgpu::PresentMode::AutoNoVsync
             },
-        );
+            desired_maximum_frame_latency: 2,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Srgb,
+        };
+        surface.0.raw.configure(&self.device, &config);
         surface.0.format.set(format);
+        *surface.0.config.borrow_mut() = Some(config);
+        *surface.0.unshown.borrow_mut() = None;
         Ok(())
     }
 
     fn current_texture(&mut self, surface: &Surface) -> Result<TextureView, GpuError> {
-        let texture = match surface.0.raw.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            _ => return Err(GpuError::DeviceLost),
+        let config = surface.0.config.borrow().clone().ok_or(GpuError::Invalid(
+            "current_texture before configure_surface",
+        ))?;
+        use wgpu::CurrentSurfaceTexture as C;
+        let mut got = surface.0.raw.get_current_texture();
+        if matches!(got, C::Outdated) {
+            // The window changed under the configuration: configure it again as it was.
+            surface.0.raw.configure(&self.device, &config);
+            got = surface.0.raw.get_current_texture();
+        }
+        let (texture, width, height) = match got {
+            C::Success(t) | C::Suboptimal(t) => {
+                let view = t.texture.create_view(&Default::default());
+                let size = (t.texture.width(), t.texture.height());
+                *surface.0.current.borrow_mut() = Some(Frame::Shown(t));
+                (view, size.0, size.1)
+            }
+            // The window shows nothing now, as a real swap chain's occluded window: the frame is
+            // drawn into a texture of the same size and not shown.
+            C::Timeout | C::Occluded | C::Outdated => {
+                let device = &self.device;
+                let view = surface
+                    .0
+                    .unshown
+                    .borrow_mut()
+                    .get_or_insert_with(|| {
+                        device.create_texture(&wgpu::TextureDescriptor {
+                            label: None,
+                            size: wgpu::Extent3d {
+                                width: config.width,
+                                height: config.height,
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format: config.format,
+                            usage: config.usage,
+                            view_formats: &[],
+                        })
+                    })
+                    .create_view(&Default::default());
+                *surface.0.current.borrow_mut() = Some(Frame::Unshown);
+                (view, config.width, config.height)
+            }
+            C::Lost => {
+                self.fail("the window's surface was lost; making it again is not built yet");
+                return Err(GpuError::DeviceLost);
+            }
+            C::Validation => {
+                self.fail("getting the window's texture failed validation");
+                return Err(GpuError::DeviceLost);
+            }
         };
-        let raw = texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let (width, height) = (texture.texture.width(), texture.texture.height());
-        *surface.0.current.borrow_mut() = Some(texture);
         Ok(TextureView(Rc::new(ViewObj {
             id: self.id(),
             format: surface.0.format.get(),
             texture: None,
-            raw,
+            raw: texture.clone(),
+            read: texture,
             width,
             height,
             samples: 1,
@@ -1352,13 +1436,15 @@ impl Backend for WebGpu {
 
     fn present(&mut self, surface: &Surface) -> Result<(), GpuError> {
         self.submit();
-        let texture = surface
+        let frame = surface
             .0
             .current
             .borrow_mut()
             .take()
             .ok_or(GpuError::Invalid("present without current_texture"))?;
-        self.queue.present(texture);
+        if let Frame::Shown(texture) = frame {
+            self.queue.present(texture);
+        }
         Ok(())
     }
 
