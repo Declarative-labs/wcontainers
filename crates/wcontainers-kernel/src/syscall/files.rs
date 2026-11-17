@@ -1663,7 +1663,13 @@ pub(super) fn statx(
             flags & AT_SYMLINK_NOFOLLOW == 0,
         )?
     };
-    crate::fs::backend::fresh(&node)?;
+    // `fuse_update_get_attr`: asking for nothing FUSE has, or not to sync, takes the attributes the
+    // inode holds from the backend's last answer.
+    if mask as u32 & (STATX_BASIC_STATS | STATX_BTIME) != 0
+        && flags & AT_STATX_SYNC_TYPE != AT_STATX_DONT_SYNC
+    {
+        crate::fs::backend::fresh(&node)?;
+    }
     count_unknown_blocks(kernel, cx, &node);
     let plain = stat_of(kernel, &node);
     let inode = node.borrow();

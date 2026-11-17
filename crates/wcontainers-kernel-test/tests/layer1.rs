@@ -1,7 +1,8 @@
 //! Layer 1: random sequences of system calls against the reference, comparing every value and every byte
 //! written back. `LAYER1_CASES` sets how many sequences run (default 64) and `LAYER1_SEED` the seed
 //! (default 0); a failure is shrunk and printed with its seed. On the file backend,
-//! `LAYER1_BACKEND_CASES` sets how many (default 32), with the same seed.
+//! `LAYER1_BACKEND_CASES` sets how many (default 32), and on a backend that opens files for the
+//! page cache `LAYER1_CACHED_CASES` (default 32), with the same seed.
 
 use std::path::Path;
 
@@ -18,22 +19,28 @@ fn knob(name: &str, default: u64) -> u64 {
 
 #[test]
 fn sequences_match_reference() {
-    sequences(knob("LAYER1_CASES", 64) as u32, false);
+    sequences(knob("LAYER1_CASES", 64) as u32, false, false);
 }
 
 /// Sequences of file calls whose work directory is on the file backend, against the reference
 /// with the same server mounted through Linux's FUSE.
 #[test]
 fn sequences_on_backend_match_reference() {
-    sequences(knob("LAYER1_BACKEND_CASES", 32) as u32, true);
+    sequences(knob("LAYER1_BACKEND_CASES", 32) as u32, true, false);
 }
 
-fn sequences(cases: u32, backend: bool) {
+/// The same with the server opening files for the page cache, as Linux's FUSE then caches them.
+#[test]
+fn sequences_on_cached_backend_match_reference() {
+    sequences(knob("LAYER1_CACHED_CASES", 32) as u32, true, true);
+}
+
+fn sequences(cases: u32, backend: bool, cached: bool) {
     let seed = knob("LAYER1_SEED", 0);
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     let runner = layer1::runner(&out);
     let program = std::fs::read(&runner).expect("reading the runner");
-    let reference = std::cell::RefCell::new(layer1::Reference::start(&runner, backend));
+    let reference = std::cell::RefCell::new(layer1::Reference::start(&runner, backend, cached));
     let server = std::cell::RefCell::new(None);
     let mut seed_bytes = [0u8; 32];
     seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
@@ -63,7 +70,7 @@ fn sequences(cases: u32, backend: bool) {
     let children = std::cell::Cell::new(0u64);
     let result = runner.run(&strategy, |(values, raw)| {
         let sequence = if backend {
-            layer1::build_on_backend(&values, &raw)
+            layer1::build_on_backend(&values, &raw, cached)
         } else {
             layer1::build(&values, &raw)
         };

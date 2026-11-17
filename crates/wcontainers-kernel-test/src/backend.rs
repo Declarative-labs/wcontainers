@@ -86,7 +86,7 @@ pub fn server(out: &Path) -> PathBuf {
 }
 
 /// The server as its container runs it: opening files for the page cache if `cached`.
-fn serve_command(cached: bool) -> &'static str {
+pub fn serve_command(cached: bool) -> &'static str {
     if cached {
         "/wcb/wc-backend --cached"
     } else {

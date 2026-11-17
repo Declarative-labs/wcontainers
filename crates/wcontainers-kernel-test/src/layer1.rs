@@ -319,6 +319,9 @@ pub struct Sequence {
     pub calls: Vec<Call>,
     /// Whether its work directory is on the file backend, mounted at [`BACKEND_ROOT`].
     pub backend: bool,
+    /// Whether that backend opens files for the page cache rather than for direct reads and
+    /// writes.
+    pub cached: bool,
 }
 
 /// Where the file backend is mounted for sequences on it: a name as long as `/dev/shm`, which it
@@ -411,8 +414,11 @@ pub fn build(values: &[u64], raw: &[Raw]) -> Sequence {
 
 /// As [`build`], for a work directory on the file backend: the calls are those of
 /// [`BACKEND_CALLS`] and the paths under `/dev/shm` are under [`BACKEND_ROOT`].
-pub fn build_on_backend(values: &[u64], raw: &[Raw]) -> Sequence {
-    build_on(values, raw, true)
+pub fn build_on_backend(values: &[u64], raw: &[Raw], cached: bool) -> Sequence {
+    Sequence {
+        cached,
+        ..build_on(values, raw, true)
+    }
 }
 
 fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
@@ -881,6 +887,7 @@ fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
         arena,
         calls,
         backend,
+        cached: false,
     }
 }
 
@@ -3562,12 +3569,17 @@ pub struct Reference {
 
 impl Reference {
     /// The runner in the reference; `backend` mounts the first file backend through Linux's FUSE
-    /// at [`BACKEND_ROOT`] and runs the runner there without the power to mount.
-    pub fn start(runner: &Path, backend: bool) -> Self {
+    /// at [`BACKEND_ROOT`] and runs the runner there without the power to mount, the server
+    /// opening files for the page cache if `cached`.
+    pub fn start(runner: &Path, backend: bool, cached: bool) -> Self {
         let name = format!(
             "wc-kernel-layer1-{}{}",
             std::process::id(),
-            if backend { "-backend" } else { "" }
+            match (backend, cached) {
+                (false, _) => "",
+                (true, false) => "-backend",
+                (true, true) => "-cached",
+            }
         );
         let directory = runner
             .parent()
@@ -3592,8 +3604,9 @@ impl Reference {
         if backend {
             let server = crate::backend::server(&crate::backend::out());
             let script = format!(
-                "{} && mkdir -p {BACKEND_ROOT} && exec /wcb/wc-backend mount {} {BACKEND_ROOT} {} {BACKEND_ROOT}",
+                "{} && mkdir -p {BACKEND_ROOT} && exec {} mount {} {BACKEND_ROOT} {} {BACKEND_ROOT}",
                 crate::backend::FUSE_DEVICE_LINK,
+                crate::backend::serve_command(cached),
                 crate::backend::SERVED,
                 program.display()
             );
@@ -3751,7 +3764,7 @@ pub fn run_ours_with(
     let mut host = TestHost::new(0);
     if sequence.backend {
         host.backend = Some(backend.take().unwrap_or_else(|| {
-            crate::backend::Backend::start(&crate::backend::out(), None, false)
+            crate::backend::Backend::start(&crate::backend::out(), None, sequence.cached)
         }));
     }
     let (result, mut host) = run_ours_on(sequence, runner, theirs, host);
