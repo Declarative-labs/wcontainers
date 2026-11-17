@@ -497,6 +497,13 @@ waits costs the reference's deadline). A sequence that runs past 60 s in the ref
 
 Everything a reviewer should know about what is not compared, in one place.
 
+- K6a: LTP compares verdicts only (from exit codes), not output or the counts in each test's
+  summary. The reference ran once, so its own flaky tests (timing tests under load, such as
+  clock_nanosleep02 failing there) are in the bar as they came. Our runs used LTP_LIMIT=300 for
+  the groups after syscalls in the first run and for the whole second run; a test past it is a
+  timeout, not a verdict. The first ~900 tests of the first run ran before the crash and hang
+  fixes; the second run (scratch ltp/ours-2.tsv) is wholly at 8a3d41f.
+
 Ignored tests (each attribute gives the reason):
 - busybox `root_file_system`: `ls -la /`, `ls -ln /etc`, `stat /etc`, `find /etc`, `du /etc/apk` show
   the root file system's own kind (overlayfs over ext4 in the reference; tmpfs here, in memory or
@@ -1597,6 +1604,18 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K6a, first run, end of the milestone's layer 1 bar: at 8a3d41f (every fix of the run in) the
+  fresh seeds 5050464, 5050465 and 5050466 passed 20000 sequences each (328.8 s, 328.5 s and
+  328.6 s, three side by side beside an LTP run of 3 jobs, load 19.9 at the start and 22.7 at
+  the end). Earlier in the run seed 5050463 passed 20000 at e7b79ef (310.5 s, load about 20).
+  Fresh seeds start at 5050467.
+- K6a, first run, whole suite of both crates at 8a3d41f (`cargo test -p wcontainers-kernel -p
+  wcontainers-kernel-test -- --test-threads=3`): 191 passed, 0 failed, 5 ignored, in 18 min 47 s,
+  beside an LTP run of 3 jobs (load 20.4 at the start, 21.8 at the end).
+- K6a, first run: the LTP image's build took 83 s for configure, compile and install (load
+  about 25). On ours most tests take 0.2 to 0.5 s each (the stand-in's speed with the
+  repeatable clock skipping sleeps); the reference takes about 1.6 s each with Docker's start.
+
 - K5, eighth run, end of the milestone's layer 1 bar: at 090feaf (every fix of the run in) the
   fresh seeds 5050459, 5050460 and 5050461 passed 20000 sequences each (326 s each, three side
   by side beside the whole suite's build, load 38.6 at the start and 67.0 at the end). Before
@@ -2466,7 +2485,7 @@ stand), in this order:
    container can unmount (umount needs CAP_SYS_ADMIN).
 6. IPv6 multicast (IPV6_JOIN_GROUP and the rest are counted; a send to an IPv6 group is
    ENETUNREACH, as eth0 has no IPv6).
-7. The per-milestone layer 1 bar was met again at the eighth run's end (seeds 5050459, 5050460,
+7. (Superseded: see Measurements, K6a.) The per-milestone layer 1 bar was met again at the eighth run's end (seeds 5050459, 5050460,
    5050461 at 090feaf, with sendmmsg, recvmmsg and epoll_pwait2 now generated; 5050462 at the
    run's last code b70a418). Fresh seeds start at 5050463.
 8. Left from the eighth run: a client whose held request went with its listener sends its
@@ -2492,6 +2511,6 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
