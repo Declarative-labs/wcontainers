@@ -23,15 +23,20 @@ impl Device {
         Device(WebGl::on_canvas(context, &off))
     }
 
-    /// Draws a scene (`change` empty, or the name of a change to the quads) and returns its texels.
+    /// Draws a scene (`change` empty, or the name of a change) and returns its texels.
     pub fn draw(&mut self, scene: &str, change: &str) -> Result<Vec<u8>, JsError> {
         let scene = Scene::from_name(scene).ok_or_else(|| JsError::new("unknown scene"))?;
-        let change = std::iter::once(Change::None)
-            .chain(Change::ALTERED)
-            .find(|c| c.name() == change)
-            .ok_or_else(|| JsError::new("unknown change"))?;
+        let change = Change::from_name(change).ok_or_else(|| JsError::new("unknown change"))?;
         scenes::draw(&mut self.0, scene, change)
             .map_err(|e| JsError::new(&format!("{e}; GL log: {}", self.0.last_log())))
+    }
+
+    /// Every picture to draw, one `<scene> <change>` per line.
+    pub fn pictures() -> String {
+        Change::PICTURES
+            .iter()
+            .map(|(s, c)| format!("{} {}\n", s.name(), c.name()))
+            .collect()
     }
 
     /// The renderer, the extensions, and the capability list, as text.

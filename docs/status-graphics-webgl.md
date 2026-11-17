@@ -5,15 +5,14 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a (a first slice: real pictures through the interface on WebGL 2) is done. The rig's three
-Direct3D 11 reference scenes (triangle; textured, depth-tested, blended quads; an instanced draw
-reading a constant buffer) are drawn by small programs that call the interface directly, with WGSL
-programs written to GLSL ES 3.00 by naga, in Chrome's WebGL 2 on the RTX 3080 and natively through
-ANGLE, and every picture equals real Direct3D 11's exactly. The rest of G3 (section 12's pass bar) is
-not started; see "Next".
-
-The shared back-end suite (G1, `wcontainers-gpu-test`) does not exist yet on origin/phase-2-graphics
-(checked 2026-11-17: the branch had nothing past the rig merge), so it was not run.
+G3a (a first slice: real pictures through the interface on WebGL 2) is done, with the second run's
+fixes of the independent check. The rig's three Direct3D 11 reference scenes (triangle; textured,
+depth-tested, blended quads; an instanced draw reading a constant buffer) are drawn by small programs
+that call the interface directly, with WGSL programs written to GLSL ES 3.00 by naga, in Chrome's
+WebGL 2 on the RTX 3080 and natively through ANGLE, and every picture equals real Direct3D 11's
+exactly, on both window-origin routes. Four more routes to the same pictures guard what the check
+found (see "Done"). The shared suite from origin/phase-2-graphics runs on ANGLE: 4 of 7 pass; the
+3 failures are listed under "Known failures". The rest of G3 (section 12's pass bar) is "Next".
 
 ## Done
 
@@ -34,34 +33,69 @@ The shared back-end suite (G1, `wcontainers-gpu-test`) does not exist yet on ori
     changed, and each texture unit, sampler and uniform block point is rebound only when it differs.
     Vertex attributes are respecified only when the layout, a stream's buffer or its offset changed.
     Clears open the masks and scissor through the same record, and mark the blocks for reapplying.
+    Creating a texture or writing one binds it on unit 0, so the next draw walks its bindings again
+    (fixed in the second run: before, a draw with the same program and set after an upload sampled
+    the uploaded texture). No allocation per draw or per pass.
   - Shaders: naga 30 writes GLSL ES 3.00 (WebGL flavour, `FORCE_POINT_SIZE`); each combined sampler
-    gets a unit and each uniform block a binding point at link time; programs are linked once per
-    (vertex, fragment) pair and counted per handle. `instance_index` reads
+    gets a unit and each uniform block a binding point when the link is read; programs are linked
+    once per (vertex, fragment) pair and counted per handle. `instance_index` reads
     `gl_InstanceID + naga_vs_first_instance`, set per draw only when it changes. Base vertex and
     first instance move the vertex streams (`BaseVertexRebind`, counted).
   - Window origin (plan 6.5): with EXT_clip_control the device draws upper-left and zero-to-one
     (minus-one-to-one per raster block that asks for it); without it the GLSL's last vertex step
-    negates `gl_Position.y` and the front face is swapped. Both routes draw the three scenes exactly.
+    negates `gl_Position.y` and the front face is swapped, and only minus-one-to-one is taken. Both
+    routes draw every picture exactly; on the second the test programs rewrite clip z as 2z - w, as
+    a front's `ClipDepthRewrite` does.
   - Refused as absent at creation: logic ops, per-target blends, second-source factors, constant
     colour with constant alpha in one blend, depth bounds, per-face stencil masks, fill modes, first
     provoking vertex, depth clamp, bias clamp, wide lines, partial sample masks, storage bindings,
     border and mirror-once samplers, compute, texture views beyond the base ones.
+  - Refused as `Absent(CLIP_DEPTH_ZERO_ONE)` without EXT_clip_control: a raster block with
+    `depth_minus_one` false (the interface's rule; the front rewrites clip depth instead).
+  - Second run: texture copies by `copyTexSubImage2D/3D` from a read framebuffer (colour formats a
+    framebuffer can read); buffer-to-texture copies through the pixel unpack buffer; texture-to-
+    buffer copies by `readPixels` into the pixel pack buffer, with `PACK_ROW_LENGTH` for the pitch;
+    buffer clears as host writes of the pattern into every GL buffer of the buffer; read backs of
+    every format `readPixels` reads exactly (format.rs `read_as`: 8-bit normalised read as RGBA
+    bytes, integers as RGBA 32-bit integers, 32-bit floats as RGBA floats), kept narrow on the host.
+  - Index twins (plan 4.6): a GPU write that reaches only one of a buffer's two GL buffers marks the
+    other stale for that range; a draw reading it as indices (or other data), a copy from it and a
+    read back first refresh it with a read back (`IndexTwinReadBack`, counted). Draws look only
+    when some buffer is stale (a device count). Every GPU write refreshes its destination first, so
+    at most one side is stale.
+  - Programs: `linkProgram` is issued at creation and read at the first draw (plan 5.8); that draw
+    counts `PipelineMiss` when it must wait (always without KHR_parallel_shader_compile, otherwise
+    when `COMPLETION_STATUS_KHR` is still false). A failed link loses the device and leaves GL's log
+    in `last_log`.
+  - `vertex_index` with a base vertex: naga's `naga_vs_base_vertex` is set per draw, only when it
+    changes, as `naga_vs_first_instance` is (built; no test reads `vertex_index` under a base vertex
+    yet).
   - Not built yet, and loud when reached (`unimplemented!` naming the missing piece): queries,
-    surfaces and present, texture copies and buffer-texture copies, buffer clears, resolves,
-    multisampled textures, sRGB-twin and stencil views, empty passes, read backs of formats other
-    than RGBA8, vertex formats GL ES cannot read as stored (BGRA8, 10-10-10-2 integer, 11-11-10),
-    negative stream offsets after a base vertex, copies between an index-only and another buffer.
+    surfaces and present, resolves, multisampled textures, sRGB-twin and stencil views, empty
+    passes, copies of depth and of formats a framebuffer cannot read, texture-to-buffer copies of
+    formats read wider than stored, vertex formats GL ES cannot read as stored (BGRA8, 10-10-10-2
+    integer, 11-11-10), negative stream offsets after a base vertex, copies between an index-only
+    and a data-only buffer, buffer-texture copies with an index-only buffer.
 - platform.rs: the context. In the browser `WebGl::on_canvas(WebGl2RenderingContext, off)`;
   natively `WebGl::on_angle(dir, off)` loads `libEGL` from `dir` with khronos-egl (EGL 1.0 calls only)
   and makes an OpenGL ES 3.0 context current on a 1 by 1 pbuffer. `off` names WebGL extensions to
   treat as missing, so tests take the routes of browsers without them. `clipControlEXT` (which glow
   lacks) is called through the extension object in the browser and `glClipControlEXT` natively.
-  WebGL extension names map to ANGLE's `GL_` names in one table.
+  WebGL extension names map to ANGLE's `GL_` names in one table. GLES has no `glGetBufferSubData`,
+  so natively buffers are read by `glMapBufferRange` for reading (`platform::get_buffer_sub_data`);
+  in the browser by WebGL's `getBufferSubData`.
 - Test programs (examples/): `common/scenes.rs` draws each scene through the interface, generic over
   `Backend`, with the rig's own scene data (scene.rs included by path) and WGSL programs
   (triangle.wgsl from the rig, quads.wgsl and instanced.wgsl here, as the rig's HLSL);
   `webgl-scenes` draws natively on ANGLE and checks pictures; `browser` is the same for WebAssembly,
-  driven by browser/run.mjs and page.html.
+  driven by browser/run.mjs and page.html. The list of pictures (`Change::PICTURES`) is shared by
+  both: the three scenes; two altered quads that must fail (blend factor One, depth test Greater);
+  and four routes that must still equal the reference: `stale_unit` (the quads drawn into another
+  target, then a new texture made and written magenta, then the same draw with the same program and
+  set), `twin_copy` (the index buffer made INDEX|VERTEX and given its indices by `copy_buffer` from a
+  data buffer), `base_vertex` (the quads after four other vertices, drawn with base vertex 4) and
+  `clear_near` (the triangle, clip z 0, over depth cleared to 0.25 and tested Less).
+- tests/suite.rs: the shared suite (`wcontainers_gpu_test::suite!`) on ANGLE, Windows only.
 - Independent check, all done on 2026-11-17: drew the three scenes and compared (exactly equal, both
   on ANGLE and in Chrome, with and without EXT_clip_control); the quads with the colour blend's
   destination factor One fails (25016 pixels differ, largest 38) and with the depth test Greater
@@ -84,6 +118,10 @@ All from the checkout root on the Mac.
   Add a second argument to run.cmd to switch extensions off, for example
   `run.cmd C:\wc\out\webgl\g3a-noclip EXT_clip_control`. Exit 1 on any unexpected verdict. About 4
   s as a job once built.
+- The shared suite on ANGLE (built by build.cmd too):
+  `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p wcontainers-gpu-webgl --test suite --no-run" -- "cargo test -j 3 -p wcontainers-gpu-webgl --test suite -- --test-threads=1"`.
+  `WEBGL_ANGLE_DIR` overrides the ANGLE directory; `WEBGL_OFF=EXT_clip_control` takes the route
+  without clip control. About 1 to 4 s.
   - build.cmd: installs the rig's browser packages, builds the native example `webgl-scenes` and the
     WebAssembly example `browser`, and runs wasm-bindgen into `%CARGO_TARGET_DIR%\webgl-pkg`.
   - run.cmd: `webgl-scenes angle <dir> <out>\angle` draws on ANGLE and checks (pictures and
@@ -93,7 +131,7 @@ All from the checkout root on the Mac.
   `nix develop -c cargo check -j 2 -p wcontainers-gpu-webgl [--target wasm32-unknown-unknown]` on the
   Mac; clippy on the desktop:
   `tools/graphics-rig/remote "cargo clippy -j 3 -p wcontainers-gpu-webgl --all-targets -- -D warnings && cargo clippy -j 3 -p wcontainers-gpu-webgl --lib --example browser --target wasm32-unknown-unknown -- -D warnings"`.
-  The crate has no unit tests yet; its tests are the scene runs above.
+  The crate's tests are the scene runs and the suite above.
 
 How another track uses the back end natively (G4's Windows library on WebGL 2): depend on
 `wcontainers-gpu-webgl`, and make the back end on the device thread with
@@ -112,7 +150,9 @@ what WebGL 2 or Chrome's extensions have but this back end does not build yet: `
 `FAN_AND_LOOP`, `POINT_SIZE`, `TIMESTAMPS`, `DEPTH24_UNORM` (the probe), and by extension (all
 reported by Chrome on the RTX 3080) `POLYGON_MODE`, `PROVOKING_VERTEX_FIRST`, `CLIP_DISTANCE`,
 `CULL_DISTANCE`, `DEPTH_CLAMP`, `DUAL_SOURCE_BLEND`, `INDEPENDENT_BLEND`, `MIRROR_ONCE`,
-`DEPTH_BIAS_CLAMP`, `BLOCK_COMPRESSION`, `SAMPLE_SHADING`.
+`DEPTH_BIAS_CLAMP`, `BLOCK_COMPRESSION`, `SAMPLE_SHADING`. The adapter is WebGL's renderer string
+(unmasked in Chrome), PCI numbers 0 (WebGL gives none), software when it names SwiftShader,
+llvmpipe or Microsoft Basic Render Driver.
 
 Limits on the RTX 3080, Chrome 157 and ANGLE alike: 16384 2D and cube, 2048 3D and layers, 12
 uniform blocks per stage of 65536 bytes (the plan's 16384 was the Mac), 16 texture units per stage,
@@ -124,7 +164,9 @@ EXT_float_blend (all present here): every sized colour format GLES 3.0 holds as 
 normalised ones filter, and render and blend unless signed or RGB9E5; 16-bit float and
 R11G11B10 filter, render and blend; 32-bit float filter, render and blend (RGB32F does not render);
 integers render (not RGB32), never filter or blend; depth formats are depth targets, and those
-without stencil also sample. Copy out (read back) only RGBA8 and its sRGB twin. One sample only.
+without stencil also sample. Copy out (read back): R8, RG8 and RGBA8 normalised and RGBA8 sRGB,
+every colour-renderable 8, 16 and 32-bit integer format, and R32F, RG32F and RGBA32F (with
+EXT_color_buffer_float); not 16-bit floats, packed formats, depth or stencil. One sample only.
 No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil8, block-compressed.
 
 ## Measurements
@@ -136,9 +178,32 @@ No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil
   steps, from WARP) is not used up. Exactness is expected here because ANGLE draws on the same GPU
   through Direct3D 11 and the programs do the same float operations; other GPUs and browsers may
   need the recorded allowance.
-- Chrome's GPU process restarted once just after Chrome started in every run (the first WebGL
-  context lost); run.mjs waits for a context to survive half a second first and says how many did
-  not.
+- 2026-11-17, second run, same desktop (queued jobs, not timed; jobs near 14:00 desktop time): all 9 pictures as
+  expected in all four runs (ANGLE and Chrome, with and without EXT_clip_control): the 3 scenes and
+  the 4 same-picture routes exactly equal (0 pixels), the 2 altered quads failing (25016 pixels,
+  largest differences 38 and 204). Before the fixes the check found `stale_unit`, `twin_copy` and
+  (without clip control) `clear_near` failing (25016, 25016 and 19738 pixels).
+- Shared suite on ANGLE, second run: 4 of 7 pass, on both routes (buffer writes and read backs,
+  texture writes and read backs, copies, clears). Once, with the suite's raster block changed
+  locally (not committed) to take provoking vertex Last and clip depth by the caps, 6 of 7 passed
+  on both routes; only `present_shows_the_frame` failed.
+- Chrome's GPU process restarted once just after Chrome started in most runs (the first WebGL
+  context lost, or none made); run.mjs waits for a context to survive half a second first and says
+  how many did not.
+- The headless Chrome the rig drives reports in chrome://gpu "WebGL: Hardware accelerated but at
+  reduced performance" (and the same for WebGPU). Per-draw timings taken there (G3's later work)
+  must say so; whether a headed Chrome differs is not measured.
+
+## Known failures
+
+- Suite `present_shows_the_frame`: surfaces and present are not built, so `Rgba8Unorm` lacks
+  `PRESENT`. G3's next work.
+- Suite `triangle_covers_the_pixels_whose_centres_it_holds` and
+  `textured_draw_with_depth_and_blending`: the suite's raster block asks for provoking vertex First
+  and clip depth from zero; WebGL 2 lacks `PROVOKING_VERTEX_FIRST` (GL's rule is last) and, without
+  EXT_clip_control, `CLIP_DEPTH_ZERO_ONE`, and refuses the block as the interface says. The suite
+  (G1's crate) should take both from the caps, as the built-ins now do; with that change both pass
+  here (see "Measurements").
 
 ## Departures from the plan
 
@@ -153,9 +218,15 @@ No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil
   stale; revisit with `IndexTwinReadBack`.
 - `wait_fence` in the browser calls `finish()`, because WebGL's longest wait on a sync object is zero;
   the plan's JSPI suspension belongs to the device thread's event loop, not built yet.
-- A raster block with `depth_minus_one` false on a device without EXT_clip_control is accepted as it
-  is: the interface does not say whether a front that rewrote clip depth (`ClipDepthRewrite`) sets
-  the flag, so the back end does nothing with it there.
+- Programs are linked at creation, not at the first draw, even without KHR_parallel_shader_compile;
+  only the reading of the link waits for the first draw. Issuing the link early can only help, and
+  the first draw still counts `PipelineMiss` as the plan says. A link failure is device loss at that
+  draw rather than an error from `create_program`: the modules are validated, so a failure is a bug
+  of ours.
+- Natively the read of a buffer maps it (GLES 3.0 has no `glGetBufferSubData`); WebGL reads it with
+  `getBufferSubData`. Same bytes, same wait.
+- Buffer clears are host writes of the pattern, into both GL buffers of a twin, not GPU writes; WebGL
+  2 has no buffer clear, and this keeps both twins whole.
 
 ## Interface changes
 
@@ -165,6 +236,11 @@ No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil
   With Constant Color"); the back end answers `Absent(BLEND_CONSTANT_ALPHA)` for such a block and the
   front blends it in the program.
 
+- 4b71023 "interface: drew the built-in programs in the clip depth convention the back end has":
+  the built-in raster block takes `depth_minus_one` from `CLIP_DEPTH_ZERO_ONE`. The built-ins write
+  clip z 0, which both conventions hold; before it a back end without zero-to-one (WebGL 2 without
+  EXT_clip_control) had to refuse the built-ins' raster block.
+
 ## Installed on the desktop
 
 - C:\wc\tools\wasm-bindgen-0.2.130-x86_64-pc-windows-msvc (20 MB): the wasm-bindgen command, from its release
@@ -173,6 +249,8 @@ No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil
   with LLVM exception), which mozangle's bindgen needs to build ANGLE.
 - C:\wc\tools\angle-mozangle-0.7.1: libEGL.dll and libGLESv2.dll (7.1 MB), built by angle\build.cmd.
 - The mozangle build's objects in C:\wc\target\phase-2-graphics-webgl\release.
+- Left by the independent check of the first run (not ours to remove without asking): the pictures
+  in C:\wc\out\webgl-check and an empty lock file C:\wc\locks\phase-2-graphics-webgl-check.
 
 ## Licences
 
@@ -188,14 +266,14 @@ No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil
 ## Next
 
 G3's pass bar (plan section 12), in about this order:
-1. The shared suite from G1, once origin/phase-2-graphics has it.
-2. Read backs of every `COPY_OUT` format (float and integer `readPixels` with repacking), then
-   texture copies (`blitFramebuffer`, `copyTexSubImage`, `CopyThroughBuffer`), buffer-texture
-   copies, buffer clears, resolves and multisampled renderbuffers.
-3. Queries (`OcclusionAny`, timestamps with `timestamps_disjoint`), surfaces and present.
-4. The extension features of "Capabilities", each with its route and a test; the fast paths
+1. Surfaces and present (the suite's last test), with `Host::shown` reading the canvas or the pbuffer.
+2. A test that reads `vertex_index` under a base vertex (built, untested).
+3. Depth copies (`blitFramebuffer`), `CopyThroughBuffer` for formats a framebuffer cannot read,
+   resolves and multisampled renderbuffers, 16-bit float read backs.
+4. Queries (`OcclusionAny`, timestamps with `timestamps_disjoint`).
+5. The extension features of "Capabilities", each with its route and a test; the fast paths
    `draw_fan_or_loop`, `clear_texture`, `clear_rects`, `generate_mips`; transform feedback.
-5. BC formats (native or `BlockDecoded`), BGRA by `FormatConverted`, 16-bit normalised by
+6. BC formats (native or `BlockDecoded`), BGRA by `FormatConverted`, 16-bit normalised by
    EXT_texture_norm16, stencil views (WEBGL_stencil_texturing and `StencilCopiedByDraw`),
    `DepthReadByDraw`, the 24-bit depth probe.
-6. The rest of section 12's G3 list, and per-draw cost against G2.
+7. The rest of section 12's G3 list, and per-draw cost against G2.

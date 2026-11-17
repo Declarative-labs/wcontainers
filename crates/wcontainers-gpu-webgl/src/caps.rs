@@ -3,11 +3,11 @@
 
 use glow::HasContext;
 use std::collections::BTreeSet;
-use wcontainers_gpu::{Caps, Features, Format, FormatCaps, FormatUse, Limits};
+use wcontainers_gpu::{AdapterInfo, Caps, Features, Format, FormatCaps, FormatUse, Limits};
 
 use crate::format::{self, FormatExtensions};
 
-pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>) -> Caps {
+pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>, renderer: &str) -> Caps {
     // SAFETY: plain queries of the current context.
     let get = |name| unsafe { gl.get_parameter_i32(name) }.max(0) as u32;
     let range = |name| {
@@ -76,11 +76,7 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>) -> Caps {
         },
         capture_buffers: 0,
     };
-    let format_ext = FormatExtensions {
-        color_buffer_float: ext.contains("EXT_color_buffer_float"),
-        float_linear: ext.contains("OES_texture_float_linear"),
-        float_blend: ext.contains("EXT_float_blend"),
-    };
+    let format_ext = FormatExtensions::found(ext);
     let mut formats = FormatCaps {
         uses: [FormatUse::empty(); Format::COUNT],
         // Multisampled targets (renderbuffers) are not built yet: one sample only.
@@ -94,8 +90,17 @@ pub fn caps(gl: &glow::Context, ext: &BTreeSet<&'static str>) -> Caps {
             formats.samples[i] = 1;
         }
     }
+    // WebGL names the GPU only in its renderer string; the software renderers say so in it.
+    let software = ["SwiftShader", "llvmpipe", "Microsoft Basic Render Driver"]
+        .iter()
+        .any(|s| renderer.contains(s));
     Caps {
-        adapter: Default::default(),
+        adapter: AdapterInfo {
+            name: renderer.into(),
+            vendor: 0,
+            device: 0,
+            software,
+        },
         features,
         limits,
         formats,
