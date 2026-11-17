@@ -25,6 +25,7 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::core::{AsImpl, BOOL, GUID, HRESULT, Interface, Ref, Result, implement};
 
+use crate::base::{Base, HasBase};
 use crate::gpu;
 
 /// The HRESULT for a front error.
@@ -220,6 +221,11 @@ impl Adapter {
     }
 
     /// The host's monitors, the primary first.
+    /// A new factory: adapters do not keep the one that enumerated them.
+    pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
+        give::<IDXGIFactory4>(Factory(0).into(), riid, out)
+    }
+
     pub fn EnumOutputs(&self, output: u32) -> Result<IDXGIOutput> {
         let (desc, monitor) = crate::present::outputs()
             .into_iter()
@@ -239,7 +245,24 @@ fn luid(value: u64) -> LUID {
 // ---- The device ----
 
 #[implement(ID3D12Device)]
-pub struct Device;
+#[derive(Default)]
+pub struct Device {
+    base: Base,
+}
+
+macro_rules! based {
+    ($($t:ty => $f:tt),*) => {$(
+        impl HasBase for $t {
+            fn base(&self) -> &Base {
+                &self.$f
+            }
+        }
+    )*};
+}
+based!(
+    Device => base, Queue => 1, Allocator => 1, Fence => base, Resource => base,
+    RootSignature => 1, PipelineState => 1, DescriptorHeap => base, List => base
+);
 
 /// The front's description of a resource.
 fn resource_desc(d: &D3D12_RESOURCE_DESC) -> ResourceDesc {
@@ -342,7 +365,11 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let desc = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
-        give::<ID3D12CommandQueue>(Queue(*desc).into(), riid, out)
+        give::<ID3D12CommandQueue>(
+            crate::abi::fixed(Queue(*desc, Base::child()).into()),
+            riid,
+            out,
+        )
     }
 
     pub fn CreateCommandAllocator(
@@ -351,7 +378,7 @@ impl Device {
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
-        give::<ID3D12CommandAllocator>(Allocator(r#type).into(), riid, out)
+        give::<ID3D12CommandAllocator>(Allocator(r#type, Base::child()).into(), riid, out)
     }
 
     pub fn CreateCommandList(
@@ -366,6 +393,7 @@ impl Device {
         let list = List {
             kind: r#type,
             rec: Mutex::new(CommandList::new()),
+            base: Base::child(),
         };
         list.start(initial);
         give::<ID3D12GraphicsCommandList>(list.into(), riid, out)
@@ -381,11 +409,14 @@ impl Device {
         let desc = *unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
         let slots = vec![[0u64; DESCRIPTOR_SIZE as usize / 8]; desc.NumDescriptors.max(1) as usize];
         give::<ID3D12DescriptorHeap>(
-            DescriptorHeap {
-                desc,
-                slots: slots.into_boxed_slice(),
-            }
-            .into(),
+            crate::abi::fixed(
+                DescriptorHeap {
+                    desc,
+                    slots: slots.into_boxed_slice(),
+                    base: Base::child(),
+                }
+                .into(),
+            ),
             riid,
             out,
         )
@@ -409,7 +440,7 @@ impl Device {
         // SAFETY: the caller's blob of `length` bytes.
         let bytes = unsafe { std::slice::from_raw_parts(blob.cast::<u8>(), length) }.to_vec();
         let id = gpu::call(move |d| d.create_root_signature(&bytes)).map_err(hr)?;
-        give::<ID3D12RootSignature>(RootSignature(id).into(), riid, out)
+        give::<ID3D12RootSignature>(RootSignature(id, Base::child()).into(), riid, out)
     }
 
     pub fn CreateGraphicsPipelineState(
@@ -537,7 +568,7 @@ impl Device {
             })
         })
         .map_err(hr)?;
-        give::<ID3D12PipelineState>(PipelineState(id).into(), riid, out)
+        give::<ID3D12PipelineState>(PipelineState(id, Base::child()).into(), riid, out)
     }
 
     pub fn CreateRenderTargetView(
@@ -601,6 +632,58 @@ impl Device {
         unsafe { *(dest.ptr as *mut Descriptor) = descriptor };
     }
 
+    pub fn CreateDepthStencilView(
+        &self,
+        resource: Ref<ID3D12Resource>,
+        pdesc: *const D3D12_DEPTH_STENCIL_VIEW_DESC,
+        dest: &D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        let descriptor = resource.as_ref().and_then(|r| {
+            // SAFETY: resources come from this library.
+            let r = unsafe { r.as_impl() };
+            let own = r.desc.Format.0 as u32;
+            // SAFETY: an optional description, as the API allows.
+            let (format, mip, first_layer, layers, read_only) = match unsafe { pdesc.as_ref() } {
+                None => (own, 0, 0, 1, 0),
+                Some(v) => {
+                    let format = if v.Format.0 == 0 {
+                        own
+                    } else {
+                        v.Format.0 as u32
+                    };
+                    // SAFETY: the member the dimension names.
+                    let (mip, first, count) = unsafe {
+                        match v.ViewDimension {
+                            D3D12_DSV_DIMENSION_TEXTURE2D => (v.Anonymous.Texture2D.MipSlice, 0, 1),
+                            D3D12_DSV_DIMENSION_TEXTURE2DARRAY => {
+                                let t = v.Anonymous.Texture2DArray;
+                                (t.MipSlice, t.FirstArraySlice, t.ArraySize)
+                            }
+                            D3D12_DSV_DIMENSION_TEXTURE2DMS => (0, 0, 1),
+                            _ => {
+                                self.unsupported("CreateDepthStencilView of this dimension");
+                                return None;
+                            }
+                        }
+                    };
+                    (format, mip, first, count, v.Flags.0 as u32)
+                }
+            };
+            Some(Descriptor::DepthStencil {
+                view: TargetView {
+                    resource: r.id,
+                    format,
+                    mip,
+                    first_layer,
+                    layers,
+                },
+                read_only,
+            })
+        });
+        // SAFETY: CPU descriptor handles point into a heap of this library.
+        unsafe { *(dest.ptr as *mut Descriptor) = descriptor.unwrap_or_default() };
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn CreateCommittedResource(
         &self,
@@ -638,14 +721,17 @@ impl Device {
             desc.MipLevels = front.mips() as u16;
         }
         give::<ID3D12Resource>(
-            Resource {
-                id,
-                desc,
-                address,
-                host,
-                back_buffer: false,
-            }
-            .into(),
+            crate::abi::fixed(
+                Resource {
+                    id,
+                    desc,
+                    address,
+                    host,
+                    back_buffer: false,
+                    base: Base::child(),
+                }
+                .into(),
+            ),
             riid,
             out,
         )
@@ -659,7 +745,15 @@ impl Device {
         out: *mut *mut c_void,
     ) -> Result<()> {
         let id = gpu::call(move |d| d.create_fence(initial));
-        give::<ID3D12Fence>(Fence { id }.into(), riid, out)
+        give::<ID3D12Fence>(
+            Fence {
+                id,
+                base: Base::child(),
+            }
+            .into(),
+            riid,
+            out,
+        )
     }
 
     pub fn GetDeviceRemovedReason(&self) -> Result<()> {
@@ -908,7 +1002,7 @@ impl Device {
 // ---- Queues, allocators, fences ----
 
 #[implement(ID3D12CommandQueue)]
-pub struct Queue(D3D12_COMMAND_QUEUE_DESC);
+pub struct Queue(D3D12_COMMAND_QUEUE_DESC, Base);
 
 impl Queue {
     pub fn GetDesc(&self) -> D3D12_COMMAND_QUEUE_DESC {
@@ -955,7 +1049,7 @@ impl Queue {
 }
 
 #[implement(ID3D12CommandAllocator)]
-pub struct Allocator(#[allow(dead_code)] D3D12_COMMAND_LIST_TYPE);
+pub struct Allocator(#[allow(dead_code)] D3D12_COMMAND_LIST_TYPE, Base);
 
 impl Allocator {
     /// Lists keep their own commands, so there is nothing to free here.
@@ -967,6 +1061,7 @@ impl Allocator {
 #[implement(ID3D12Fence)]
 pub struct Fence {
     id: FenceId,
+    base: Base,
 }
 
 impl Fence {
@@ -1025,18 +1120,22 @@ pub struct Resource {
     host: usize,
     /// A swap chain's back buffer, which the swap chain releases.
     back_buffer: bool,
+    base: Base,
 }
 
 impl Resource {
     pub fn back_buffer(id: ResourceId, desc: D3D12_RESOURCE_DESC) -> ID3D12Resource {
-        Resource {
-            id,
-            desc,
-            address: 0,
-            host: 0,
-            back_buffer: true,
-        }
-        .into()
+        crate::abi::fixed(
+            Resource {
+                id,
+                desc,
+                address: 0,
+                host: 0,
+                back_buffer: true,
+                base: Base::child(),
+            }
+            .into(),
+        )
     }
 
     pub fn GetDesc(&self) -> D3D12_RESOURCE_DESC {
@@ -1084,7 +1183,7 @@ impl Drop for Resource {
 }
 
 #[implement(ID3D12RootSignature)]
-pub struct RootSignature(pub RootId);
+pub struct RootSignature(pub RootId, Base);
 
 impl Drop for RootSignature {
     fn drop(&mut self) {
@@ -1094,7 +1193,7 @@ impl Drop for RootSignature {
 }
 
 #[implement(ID3D12PipelineState)]
-pub struct PipelineState(pub PipelineId);
+pub struct PipelineState(pub PipelineId, Base);
 
 impl Drop for PipelineState {
     fn drop(&mut self) {
@@ -1108,6 +1207,7 @@ pub struct DescriptorHeap {
     desc: D3D12_DESCRIPTOR_HEAP_DESC,
     /// One slot of `DESCRIPTOR_SIZE` bytes per descriptor; CPU handles point into it.
     slots: Box<[[u64; DESCRIPTOR_SIZE as usize / 8]]>,
+    base: Base,
 }
 
 impl DescriptorHeap {
@@ -1147,6 +1247,7 @@ impl Blob {
 pub struct List {
     kind: D3D12_COMMAND_LIST_TYPE,
     rec: Mutex<CommandList>,
+    base: Base,
 }
 
 /// The descriptor a CPU handle points at.
@@ -1360,6 +1461,28 @@ impl List {
         self.record(Command::ClearTarget {
             view,
             color,
+            rects: rects
+                .iter()
+                .map(|r| [r.left, r.top, r.right, r.bottom])
+                .collect(),
+        });
+    }
+
+    pub fn ClearDepthStencilView(
+        &self,
+        view: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        flags: D3D12_CLEAR_FLAGS,
+        depth: f32,
+        stencil: u8,
+        count: u32,
+        rects: *const RECT,
+    ) {
+        // SAFETY: a handle of this library's heaps and `count` rectangles.
+        let (view, rects) = unsafe { (descriptor(*view), many(rects, count)) };
+        self.record(Command::ClearDepth {
+            view,
+            depth: (flags.0 & D3D12_CLEAR_FLAG_DEPTH.0 != 0).then_some(depth),
+            stencil: (flags.0 & D3D12_CLEAR_FLAG_STENCIL.0 != 0).then_some(stencil),
             rects: rects
                 .iter()
                 .map(|r| [r.left, r.top, r.right, r.bottom])

@@ -7,13 +7,13 @@ use std::sync::Arc;
 use slab::Slab;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, CopyBufferTexture, DrawCall,
-    DrawRange, Extent, Features, FormatKind, GpuError, IndexBinding, IndexFormat, LoadOp,
-    MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object, Origin, PassDesc, PrepareDesc,
-    Program, ReadSource, ReadState, ScissorRect, ShaderStage, SlowPath, StepMode, StoreOp,
-    TargetLayout, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream,
-    ViewDimension, Viewport, WriteMode,
+    AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, CopyBufferTexture,
+    DepthAttachment, DrawCall, DrawRange, Extent, Features, FormatKind, GpuError, IndexBinding,
+    IndexFormat, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object, Origin,
+    PassDesc, PrepareDesc, Program, ReadSource, ReadState, ScissorRect, ShaderStage, SlowPath,
+    StepMode, StoreOp, TargetLayout, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
+    TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -488,27 +488,30 @@ impl<B: Backend> Device<B> {
         Ok(PipelineId(self.pipelines.insert(pipeline) as u32))
     }
 
-    /// A DXIL shader in the common form. Shaders reading resources wait for root parameters, which
-    /// the front does not bind yet; the converter's own refusals are kept as messages.
+    /// A DXIL or DXBC shader in the common form. Shaders reading resources wait for root
+    /// parameters, which the front does not bind yet; the converter's own refusals are kept as
+    /// messages.
     fn convert(&mut self, code: &[u8], stage: ShaderStage) -> Result<Converted, Error> {
-        let converted =
-            wcontainers_shaders::convert(Source::Dxil(code), &VariantKey::default(), None)
-                .map_err(|e| {
-                    let error = match e {
-                        ConvertError::Rejected(_) => {
-                            Error::Invalid("the shader bytecode was refused")
-                        }
-                        ConvertError::Unsupported(_) | ConvertError::Reader(_) => {
-                            Error::NotImplemented("a shader feature the converter lacks")
-                        }
-                        ConvertError::Malformed(_) | ConvertError::Invalid(_) => {
-                            Error::NotImplemented("a shader the converter got wrong")
-                        }
-                    };
-                    self.messages
-                        .push(format!("a {stage:?} shader did not convert: {e}"));
-                    error
-                })?;
+        let source = if container_has(code, *b"DXIL") {
+            Source::Dxil(code)
+        } else {
+            Source::Dxbc(code)
+        };
+        let converted = wcontainers_shaders::convert(source, &VariantKey::default(), None)
+            .map_err(|e| {
+                let error = match e {
+                    ConvertError::Rejected(_) => Error::Invalid("the shader bytecode was refused"),
+                    ConvertError::Unsupported(_) | ConvertError::Reader(_) => {
+                        Error::NotImplemented("a shader feature the converter lacks")
+                    }
+                    ConvertError::Malformed(_) | ConvertError::Invalid(_) => {
+                        Error::NotImplemented("a shader the converter got wrong")
+                    }
+                };
+                self.messages
+                    .push(format!("a {stage:?} shader did not convert: {e}"));
+                error
+            })?;
         if converted.modules.len() != 1 || converted.modules[0].stage != stage {
             return Err(Error::Invalid("a shader of another stage"));
         }
@@ -986,6 +989,38 @@ fn adopt_buffers<B: Backend>(
     out
 }
 
+/// What a pass does with one aspect of its depth-stencil target: clears it or loads it, and keeps
+/// it read only where the view says so and nothing clears it.
+fn aspect_ops<V>(clear: Option<V>, read_only: bool) -> AspectOps<V> {
+    AspectOps {
+        read_only: read_only && clear.is_none(),
+        load: clear.map_or(LoadOp::Load, LoadOp::Clear),
+        store: StoreOp::Store,
+    }
+}
+
+/// Whether a depth-stencil format has a depth and a stencil aspect.
+fn aspects(format: wcontainers_gpu::Format) -> (bool, bool) {
+    use wcontainers_gpu::Format::*;
+    match format {
+        Stencil8 => (false, true),
+        Depth24PlusStencil8 | Depth32FloatStencil8 => (true, true),
+        _ => (true, false),
+    }
+}
+
+/// Whether the DXBC container `code` holds a part named `fourcc`.
+fn container_has(code: &[u8], fourcc: [u8; 4]) -> bool {
+    let word = |at: usize| {
+        code.get(at..at + 4)
+            .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+    };
+    (0..word(28)).any(|i| {
+        code.get(word(32 + i * 4)..)
+            .is_some_and(|p| p.starts_with(&fourcc))
+    })
+}
+
 /// The interface format of a DXGI format a view or target names.
 fn dxgi(value: u32) -> Result<wcontainers_gpu::Format, Error> {
     wcontainers_directx_graphics_infrastructure::dxgi_format(value)
@@ -1031,7 +1066,7 @@ struct Replay {
     pass_open: bool,
     /// Whole-view clears not yet done: each becomes the next pass's `Clear` load, or a clear of its
     /// own before anything else reads the texture.
-    clears: Vec<(TargetView, [u32; 4])>,
+    clears: Vec<(TargetView, ClearValue)>,
 }
 
 impl Replay {
@@ -1076,7 +1111,7 @@ impl Replay {
                 dxgi(v.format)?,
                 v.mip..v.mip + 1,
                 v.first_layer..v.first_layer + v.layers.max(1),
-                ClearValue::Color(value),
+                value,
             )?;
         }
         Ok(())
@@ -1126,7 +1161,7 @@ impl Replay {
                     // A later whole clear of the view replaces one still waiting.
                     self.end_pass(d);
                     self.clears.retain(|(k, _)| k != v);
-                    self.clears.push((*v, value));
+                    self.clears.push((*v, ClearValue::Color(value)));
                 } else {
                     // Clears still waiting come first, so the rectangles land on them.
                     self.settle(d)?;
@@ -1136,6 +1171,50 @@ impl Replay {
                         &view,
                         dxgi(v.format)?,
                         ClearValue::Color(value),
+                        &rects,
+                    )?;
+                }
+            }
+            Command::ClearDepth {
+                view,
+                depth,
+                stencil,
+                rects,
+            } => {
+                let Descriptor::DepthStencil { view: v, .. } = view else {
+                    return Err(Error::Invalid(
+                        "clearing a descriptor that is no depth-stencil view",
+                    ));
+                };
+                let format = dxgi(v.format)?;
+                let (has_depth, has_stencil) = aspects(format);
+                let depth = depth.filter(|_| has_depth).map(f32::to_bits);
+                let stencil = stencil.filter(|_| has_stencil);
+                if rects.is_empty() {
+                    // A whole clear joins one still waiting for the view: the newer aspects win.
+                    self.end_pass(d);
+                    let (mut old_depth, mut old_stencil) = (None, None);
+                    if let Some(i) = self.clears.iter().position(|(k, _)| k == v)
+                        && let (_, ClearValue::DepthStencil { depth, stencil }) =
+                            self.clears.swap_remove(i)
+                    {
+                        (old_depth, old_stencil) = (depth, stencil);
+                    }
+                    self.clears.push((
+                        *v,
+                        ClearValue::DepthStencil {
+                            depth: depth.or(old_depth),
+                            stencil: stencil.or(old_stencil),
+                        },
+                    ));
+                } else {
+                    self.settle(d)?;
+                    let view = d.view(v)?;
+                    let rects: Vec<_> = rects.iter().map(scissor).collect();
+                    d.backend.clear_rects(
+                        &view,
+                        format,
+                        ClearValue::DepthStencil { depth, stencil },
                         &rects,
                     )?;
                 }
@@ -1234,16 +1313,51 @@ impl Replay {
                 views.push(d.view(v)?);
                 let clear = self.clears.iter().position(|(k, _)| k == v);
                 loads.push(match clear {
-                    Some(i) => LoadOp::Clear(self.clears.swap_remove(i).1),
+                    Some(i) => match self.clears.swap_remove(i).1 {
+                        ClearValue::Color(value) => LoadOp::Clear(value),
+                        ClearValue::DepthStencil { .. } => LoadOp::Load,
+                    },
                     None => LoadOp::Load,
                 });
             }
-            if self.depth.is_some() {
-                return Err(Error::NotImplemented("depth-stencil targets"));
-            }
+            let depth = match self.depth {
+                None | Some(Descriptor::Empty) => None,
+                Some(Descriptor::DepthStencil { view: v, read_only }) => {
+                    let view = d.view(&v)?;
+                    let (has_depth, has_stencil) = aspects(dxgi(v.format)?);
+                    let (mut depth, mut stencil) = (None, None);
+                    if let Some(i) = self.clears.iter().position(|(k, _)| *k == v)
+                        && let (
+                            _,
+                            ClearValue::DepthStencil {
+                                depth: d,
+                                stencil: s,
+                            },
+                        ) = self.clears.swap_remove(i)
+                    {
+                        (depth, stencil) = (d, s);
+                    }
+                    Some((
+                        view,
+                        has_depth.then(|| aspect_ops(depth, read_only & 1 != 0)),
+                        has_stencil.then(|| aspect_ops(stencil, read_only & 2 != 0)),
+                    ))
+                }
+                Some(_) => {
+                    return Err(Error::Invalid(
+                        "the depth-stencil slot holds no depth-stencil view",
+                    ));
+                }
+            };
             let mut pass = PassDesc {
                 colors: Default::default(),
-                depth: None,
+                depth: depth
+                    .as_ref()
+                    .map(|(view, depth, stencil)| DepthAttachment {
+                        view,
+                        depth: *depth,
+                        stencil: *stencil,
+                    }),
                 empty: None,
                 occlusion: None,
             };
@@ -1256,7 +1370,7 @@ impl Replay {
                     store: StoreOp::Store,
                 });
             }
-            if views.is_empty() {
+            if views.is_empty() && depth.is_none() {
                 return Err(Error::NotImplemented("drawing with no render target"));
             }
             d.backend.begin_pass(&pass);
@@ -1319,6 +1433,15 @@ impl Replay {
                     "the pipeline's target formats differ from the bound targets",
                 ));
             }
+        }
+        let bound_depth = match &self.depth {
+            Some(Descriptor::DepthStencil { view, .. }) => Some(dxgi(view.format)?),
+            _ => None,
+        };
+        if p.targets.depth_stencil.is_some() && p.targets.depth_stencil != bound_depth {
+            return Err(Error::Invalid(
+                "the pipeline's depth-stencil format differs from the bound one",
+            ));
         }
         let restart = p.strip_cut != 0;
         let call = DrawCall {

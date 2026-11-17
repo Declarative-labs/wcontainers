@@ -26,7 +26,11 @@ pub enum Descriptor {
     #[default]
     Empty,
     RenderTarget(TargetView),
-    DepthStencil(TargetView),
+    DepthStencil {
+        view: TargetView,
+        /// `D3D12_DSV_FLAGS`: 1 depth read only, 2 stencil read only.
+        read_only: u32,
+    },
 }
 
 const _: () = assert!(size_of::<Descriptor>() <= crate::address::DESCRIPTOR_SIZE as usize);
@@ -96,6 +100,13 @@ pub enum Command {
     ClearTarget {
         view: Descriptor,
         color: [f32; 4],
+        rects: Vec<Rect>,
+    },
+    /// `ClearDepthStencilView`: None leaves that aspect.
+    ClearDepth {
+        view: Descriptor,
+        depth: Option<f32>,
+        stencil: Option<u8>,
         rects: Vec<Rect>,
     },
     Draw {

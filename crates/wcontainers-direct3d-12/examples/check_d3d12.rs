@@ -10,6 +10,7 @@
 //!   check_d3d12 outputs <out.txt>   (output 0's `GetDesc1` and swap chains' colour spaces, for
 //!   compare-features)
 //!   check_d3d12 fence-wait [rounds]   (time from a queue's signal to its fence event, waited for)
+//!   check_d3d12 answers <out.txt>   (results of calls at the edges of the API, for compare-features)
 //! It draws with the rig's triangle shaders.
 
 #[cfg(windows)]
@@ -81,6 +82,9 @@ fn main() -> windows::core::Result<()> {
         }
         Some("outputs") => {
             std::fs::write(&args[2], outputs()?).expect("writing the answers");
+        }
+        Some("answers") => {
+            std::fs::write(&args[2], answers()?).expect("writing the answers");
         }
         Some("compare-features") => {
             let real = std::fs::read_to_string(&args[2]).expect("real Direct3D 12's answers");
@@ -272,6 +276,149 @@ fn outputs() -> windows::core::Result<String> {
         }
     }
     unsafe { DestroyWindow(window)? };
+    Ok(out)
+}
+
+/// Results of calls at the edges of the API, a line each: `ok` for success, `notimpl` for a call
+/// this front refuses as not done (accepted by compare-features as a refusal), else the HRESULT.
+/// Swap chains with each alpha mode, presents of a 16-bit float swap chain, a fence waited for with
+/// no event until another thread signals it, and committed resources with each heap flag.
+#[cfg(windows)]
+fn answers() -> windows::core::Result<String> {
+    use std::fmt::Write;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Graphics::Direct3D::*;
+    use windows::Win32::Graphics::Direct3D12::*;
+    use windows::Win32::Graphics::Dxgi::Common::*;
+    use windows::Win32::Graphics::Dxgi::*;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW,
+    };
+    use windows::core::{HRESULT, w};
+    let mut out = String::new();
+    let mut line = |key: &str, r: HRESULT| {
+        let v = match r.0 {
+            0.. => "ok".to_owned(),
+            -0x7fff_bfff => "notimpl".to_owned(),
+            c => format!("{:#x}", c as u32),
+        };
+        writeln!(out, "{key} {v} eq").unwrap();
+    };
+    let code = |r: windows::core::Result<()>| r.map_or_else(|e| e.code(), |()| HRESULT(0));
+    let factory: IDXGIFactory4 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? };
+    let mut device: Option<ID3D12Device> = None;
+    unsafe { D3D12CreateDevice(None, D3D_FEATURE_LEVEL_11_0, &mut device)? };
+    let device = device.unwrap();
+    let queue: ID3D12CommandQueue =
+        unsafe { device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC::default())? };
+    let window = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("STATIC"),
+            w!("answers"),
+            WS_OVERLAPPEDWINDOW,
+            0,
+            0,
+            100,
+            100,
+            None,
+            None,
+            None,
+            None,
+        )?
+    };
+    let chain_desc = |format, alpha| DXGI_SWAP_CHAIN_DESC1 {
+        Width: 64,
+        Height: 64,
+        Format: format,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        BufferCount: 2,
+        SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+        Scaling: DXGI_SCALING_STRETCH,
+        AlphaMode: alpha,
+        ..Default::default()
+    };
+    for (name, alpha) in [
+        ("unspecified", DXGI_ALPHA_MODE_UNSPECIFIED),
+        ("premultiplied", DXGI_ALPHA_MODE_PREMULTIPLIED),
+        ("straight", DXGI_ALPHA_MODE_STRAIGHT),
+        ("ignore", DXGI_ALPHA_MODE_IGNORE),
+    ] {
+        let desc = chain_desc(DXGI_FORMAT_R8G8B8A8_UNORM, alpha);
+        let r = unsafe { factory.CreateSwapChainForHwnd(&queue, window, &desc, None, None) };
+        line(&format!("alpha_{name}"), code(r.map(drop)));
+    }
+    let desc = chain_desc(DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_ALPHA_MODE_UNSPECIFIED);
+    match unsafe { factory.CreateSwapChainForHwnd(&queue, window, &desc, None, None) } {
+        Ok(chain) => {
+            line("float_chain", HRESULT(0));
+            for i in 0..3 {
+                line(&format!("float_chain_present_{i}"), unsafe {
+                    chain.Present(0, DXGI_PRESENT(0))
+                });
+            }
+        }
+        Err(e) => line("float_chain", e.code()),
+    }
+    unsafe { DestroyWindow(window)? };
+
+    // A fence waited for with no event; another thread signals it 200 ms later.
+    let fence: ID3D12Fence = unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE)? };
+    let signaller = {
+        let fence = fence.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            unsafe { fence.Signal(7) }.unwrap();
+        })
+    };
+    let start = std::time::Instant::now();
+    line(
+        "null_event_wait",
+        code(unsafe { fence.SetEventOnCompletion(7, HANDLE::default()) }),
+    );
+    let waited = start.elapsed().as_millis();
+    signaller.join().unwrap();
+    // Ok when the call returned after the signal; 0x1 when it returned early.
+    line("null_event_waited", HRESULT(i32::from(waited < 150)));
+    line(
+        "null_event_value",
+        HRESULT((unsafe { fence.GetCompletedValue() } != 7) as i32),
+    );
+
+    for bit in 0..14 {
+        let flags = D3D12_HEAP_FLAGS(1 << bit);
+        let mut r: Option<ID3D12Resource> = None;
+        let result = unsafe {
+            device.CreateCommittedResource(
+                &D3D12_HEAP_PROPERTIES {
+                    Type: D3D12_HEAP_TYPE_DEFAULT,
+                    ..Default::default()
+                },
+                flags,
+                &D3D12_RESOURCE_DESC {
+                    Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                    Width: 65536,
+                    Height: 1,
+                    DepthOrArraySize: 1,
+                    MipLevels: 1,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                    ..Default::default()
+                },
+                D3D12_RESOURCE_STATE_COMMON,
+                None,
+                &mut r,
+            )
+        };
+        line(&format!("heap_flag_{:#x}", 1 << bit), code(result));
+    }
     Ok(out)
 }
 
