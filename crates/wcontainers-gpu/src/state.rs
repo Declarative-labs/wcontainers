@@ -314,7 +314,10 @@ pub struct TargetLayout {
 }
 
 /// Primitive topology. Fans and loops go through [`crate::Backend::draw_fan_or_loop`], never
-/// [`crate::Backend::draw`].
+/// [`crate::Backend::draw`]. Adjacency topologies (Direct3D 10 and 11, OpenGL) are not here: with a
+/// geometry shader the stage helper reads them; without one, as OpenGL allows, the front draws the list
+/// or strip from indices that leave out the adjacent vertices (slow path
+/// [`crate::SlowPath::AdjacencyDropped`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Topology {
     PointList,
@@ -329,6 +332,9 @@ pub enum Topology {
 /// Width of index values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IndexFormat {
+    /// 8-bit indices (OpenGL's `GL_UNSIGNED_BYTE`), where [`crate::Features::INDEX_U8`] is present;
+    /// otherwise a front widens them to 16 bits in the index ring ([`crate::SlowPath::IndexWidened`]).
+    U8,
     U16,
     U32,
 }
@@ -337,8 +343,18 @@ impl IndexFormat {
     /// Bytes per index.
     pub fn size(self) -> u32 {
         match self {
+            IndexFormat::U8 => 1,
             IndexFormat::U16 => 2,
             IndexFormat::U32 => 4,
+        }
+    }
+
+    /// The largest value, which restarts strips when restart is on.
+    pub fn restart_value(self) -> u32 {
+        match self {
+            IndexFormat::U8 => 0xff,
+            IndexFormat::U16 => 0xffff,
+            IndexFormat::U32 => 0xffff_ffff,
         }
     }
 }

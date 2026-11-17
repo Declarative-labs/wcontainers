@@ -120,6 +120,21 @@ bitflags! {
         /// maps positions onto the fractional one, with the scissor cut to the pixels whose centres it
         /// covers (slow path [`crate::SlowPath::ViewportInShader`]).
         const FRACTIONAL_VIEWPORT = 1 << 48;
+        /// [`crate::Format::Depth24Plus`] and [`crate::Format::Depth24PlusStencil8`] are stored as 24-bit
+        /// unsigned normalised depth, so a constant depth bias moves depth by that many steps of 2^-24,
+        /// as Direct3D defines it for its 24-bit formats. Neither browser API says how it stores them, so
+        /// a back end learns it with a probe draw when its device is made (plan section 4.11). Without it
+        /// they are stored as 32-bit float, whose constant bias scales with each primitive's depth, and a
+        /// front drawing into one with a constant bias applies the bias in the program (slow path
+        /// [`crate::SlowPath::DepthBiasInShader`]).
+        const DEPTH24_UNORM = 1 << 49;
+        /// Programs can ask a texture its level count and a multisampled texture its sample count (WGSL's
+        /// `textureNumLevels` and `textureNumSamples`). Without it fronts bind the variant that reads them
+        /// from the helper constants ([`crate::VariantFlags::TEXTURE_INFO`], slow path
+        /// [`crate::SlowPath::TextureInfoInHelpers`]).
+        const TEXTURE_LEVEL_QUERY = 1 << 50;
+        /// 8-bit index values ([`crate::IndexFormat::U8`]).
+        const INDEX_U8 = 1 << 51;
     }
 }
 

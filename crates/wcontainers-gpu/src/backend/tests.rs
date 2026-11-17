@@ -25,6 +25,8 @@ struct Recorder {
     samplers: Vec<(Id, Filter)>,
     /// The samplers the last binding set holds.
     bound_samplers: Vec<Id>,
+    /// Each buffer's usage, by id.
+    usages: Vec<(Id, BufferUsage)>,
 }
 
 type Id = u32;
@@ -114,6 +116,7 @@ impl Backend for Recorder {
         let id = self.id();
         self.log
             .push(format!("create_buffer {id} size {}", desc.size));
+        self.usages.push((id, desc.usage));
         self.buffers.resize(id as usize + 1, Vec::new());
         self.buffers[id as usize] = vec![0; desc.size as usize];
         Ok(id)
@@ -327,7 +330,10 @@ fn call<'a>(viewports: &'a [Viewport]) -> DrawCall<'a, Recorder> {
 
 /// The indices written into the ring so far.
 fn indices(r: &Recorder, id: Id) -> Vec<u32> {
-    let head = r.helpers.ring.as_ref().unwrap().head as usize;
+    let head = r.helpers.rings[RingKind::Indices as usize]
+        .as_ref()
+        .unwrap()
+        .head as usize;
     r.buffers[id as usize][..head]
         .as_chunks::<4>()
         .0
@@ -609,7 +615,12 @@ fn ring_aligns_parts_pads_tails_and_wraps_with_discard() {
     let mut r = Recorder::new();
     let mut offsets = [0; 2];
     let ring = r
-        .write_buffer_ring(&[&[1, 2, 3, 4, 5], &[6; 8]], 256, &mut offsets)
+        .write_buffer_ring(
+            RingKind::Data,
+            &[&[1, 2, 3, 4, 5], &[6; 8]],
+            256,
+            &mut offsets,
+        )
         .unwrap();
     assert_eq!(offsets, [0, 256]);
     assert_eq!(&r.buffers[ring as usize][..6], [1, 2, 3, 4, 5, 0]);
@@ -626,7 +637,8 @@ fn ring_aligns_parts_pads_tails_and_wraps_with_discard() {
     // Too little room left: the ring starts again at zero, dropping its old contents by renaming.
     let big = vec![9u8; RING_SIZE as usize - 256];
     let mut one = [0];
-    r.write_buffer_ring(&[&big], 256, &mut one).unwrap();
+    r.write_buffer_ring(RingKind::Data, &[&big], 256, &mut one)
+        .unwrap();
     assert_eq!(one, [0]);
     assert_eq!(
         r.log.last().unwrap(),
@@ -634,7 +646,9 @@ fn ring_aligns_parts_pads_tails_and_wraps_with_discard() {
     );
     // Larger than the ring: a larger ring replaces it.
     let huge = vec![1u8; RING_SIZE as usize + 4];
-    let ring = r.write_buffer_ring(&[&huge], 4, &mut one).unwrap();
+    let ring = r
+        .write_buffer_ring(RingKind::Data, &[&huge], 4, &mut one)
+        .unwrap();
     assert_eq!(ring, 2);
     assert!(r.log.contains(&"destroy_buffer 1".into()));
     assert!(r.log.contains(&"create_buffer 2 size 8388608".into()));
@@ -644,16 +658,19 @@ fn ring_aligns_parts_pads_tails_and_wraps_with_discard() {
 fn ring_gives_empty_parts_an_aligned_offset() {
     let mut r = Recorder::new();
     let mut o = [0];
-    r.write_buffer_ring(&[&[0u8; 145]], 256, &mut o).unwrap();
+    r.write_buffer_ring(RingKind::Data, &[&[0u8; 145]], 256, &mut o)
+        .unwrap();
     assert_eq!(o, [0]);
-    r.write_buffer_ring(&[&[]], 256, &mut o).unwrap();
+    r.write_buffer_ring(RingKind::Data, &[&[]], 256, &mut o)
+        .unwrap();
     assert_eq!(o, [256]);
     let writes = r
         .log
         .iter()
         .filter(|l| l.starts_with("write_buffer"))
         .count();
-    r.write_buffer_ring(&[&[], &[]], 64, &mut [0, 0]).unwrap();
+    r.write_buffer_ring(RingKind::Data, &[&[], &[]], 64, &mut [0, 0])
+        .unwrap();
     assert_eq!(
         r.log
             .iter()
@@ -763,7 +780,10 @@ fn generate_mips_of_a_volume_draws_each_slice_at_its_centre() {
     assert_eq!(passes.len(), 2);
     assert!(passes[0].contains(", 0, DontCare"));
     assert!(passes[1].contains(", 1, DontCare"));
-    let ring = r.helpers.ring.as_ref().unwrap().buffer;
+    let ring = r.helpers.rings[RingKind::Data as usize]
+        .as_ref()
+        .unwrap()
+        .buffer;
     assert_eq!(read_f32(&r, ring, 16), 0.25);
     assert_eq!(read_f32(&r, ring, 256 + 16), 0.75);
 }
@@ -782,7 +802,10 @@ fn generate_mips_of_a_cube_reads_whole_cube_views_and_names_the_face() {
     assert_eq!(views[0], "50 Cube mip 0+1 layer 0+6");
     assert!(views[1..].iter().all(|v| v.starts_with("50 D2 mip 1+1")));
     assert_eq!(views.len(), 7);
-    let ring = r.helpers.ring.as_ref().unwrap().buffer;
+    let ring = r.helpers.rings[RingKind::Data as usize]
+        .as_ref()
+        .unwrap()
+        .buffer;
     let face = |n: usize| {
         let at = n * 256 + 24;
         u32::from_le_bytes(r.buffers[ring as usize][at..at + 4].try_into().unwrap())
@@ -838,7 +861,10 @@ fn clear_rects_draws_one_scissored_triangle_per_rectangle() {
     assert!(passes[1].ends_with("scissor Some((1, 2, 3, 4)) stencil 0"));
     assert!(passes[2].ends_with("scissor Some((10, 0, 5, 5)) stencil 0"));
     assert_eq!(passes[3], "end_pass");
-    let ring = r.helpers.ring.as_ref().unwrap().buffer;
+    let ring = r.helpers.rings[RingKind::Data as usize]
+        .as_ref()
+        .unwrap()
+        .buffer;
     assert_eq!(
         &r.buffers[ring as usize][..16],
         [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0]
@@ -861,7 +887,10 @@ fn clear_rects_draws_one_scissored_triangle_per_rectangle() {
         "begin_pass color None depth Some((Some(Load), Some(Load)))"
     );
     assert!(lines[1].ends_with("stencil 5"));
-    let ring = r.helpers.ring.as_ref().unwrap().buffer;
+    let ring = r.helpers.rings[RingKind::Data as usize]
+        .as_ref()
+        .unwrap()
+        .buffer;
     assert_eq!(read_f32(&r, ring, 20), 1.0);
 
     // An aspect the format lacks is not cleared, and nothing is drawn.
@@ -890,7 +919,7 @@ fn absent_features_say_which() {
         GpuError::Absent(Features::COMPUTE)
     );
     assert_eq!(
-        r.capture_vertices(&call(&[]), &[]).unwrap_err(),
+        r.capture_vertices(&call(&[]), &[], false).unwrap_err(),
         GpuError::Absent(Features::TRANSFORM_FEEDBACK)
     );
     assert_eq!(
@@ -905,6 +934,92 @@ fn absent_features_say_which() {
         r.write_timestamp(&BLOCK, 0).unwrap_err(),
         GpuError::Absent(Features::TIMESTAMPS)
     );
+    assert_eq!(
+        r.timestamps_disjoint().unwrap_err(),
+        GpuError::Absent(Features::TIMESTAMPS)
+    );
+}
+
+#[test]
+fn resolve_queries_default_reads_back_and_writes_in_order() {
+    let mut r = Recorder::new();
+    let desc = BufferDesc {
+        size: 64,
+        usage: BufferUsage::COPY_DST,
+        intent: MapIntent::Rarely,
+    };
+    let dst = r.create_buffer(&desc).unwrap();
+    // The recorder's query read back answers from the buffer of the same id: made next, holding the
+    // results.
+    let results = r.create_buffer(&desc).unwrap();
+    let rb = results + 1;
+    r.buffers.resize(rb as usize + 1, Vec::new());
+    r.buffers[rb as usize] = [7u64, 0, 1 << 40]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    r.resolve_queries(&99, 0, 3, &dst, 16).unwrap();
+    assert_eq!(
+        &r.log[2..],
+        [
+            "wait_read 3",
+            "finish_read 3",
+            "write_buffer 1 24 bytes Ordered"
+        ]
+    );
+    assert_eq!(&r.buffers[dst as usize][16..24], 7u64.to_le_bytes());
+    assert_eq!(&r.buffers[dst as usize][32..40], (1u64 << 40).to_le_bytes());
+    assert_eq!(r.slow_paths().count(SlowPath::QueryResolveWait), 1);
+}
+
+#[test]
+fn indices_and_other_data_never_share_a_ring() {
+    let mut r = Recorder::new();
+    let mut o = [0];
+    let data = r
+        .write_buffer_ring(RingKind::Data, &[&[1; 16]], 4, &mut o)
+        .unwrap();
+    r.draw_fan_or_loop(
+        &call(&[]),
+        FanOrLoop::TriangleFan,
+        IndexSource::Sequential { first: 0, count: 4 },
+        ProvokingVertex::First,
+        0,
+        1,
+    )
+    .unwrap();
+    let index = r.helpers.rings[RingKind::Indices as usize]
+        .as_ref()
+        .unwrap()
+        .buffer;
+    assert_ne!(data, index);
+    let usage = |id| r.usages.iter().find(|(b, _)| *b == id).unwrap().1;
+    assert_eq!(
+        usage(data),
+        BufferUsage::VERTEX | BufferUsage::UNIFORM | BufferUsage::COPY_DST
+    );
+    assert_eq!(usage(index), BufferUsage::INDEX | BufferUsage::COPY_DST);
+}
+
+#[test]
+fn byte_indices_convert_and_restart_at_their_largest_value() {
+    let mut r = Recorder::new();
+    let guest = [3u8, 4, 5, 6, 0xff, 1, 2];
+    let src = IndexSource::Guest {
+        indices: &guest,
+        format: IndexFormat::U8,
+        base_vertex: 0,
+    };
+    r.draw_fan_or_loop(
+        &call(&[]),
+        FanOrLoop::LineLoop,
+        src,
+        ProvokingVertex::First,
+        0,
+        1,
+    )
+    .unwrap();
+    assert_eq!(indices(&r, 1), [3, 4, 4, 5, 5, 6, 6, 3, 1, 2, 2, 1]);
 }
 
 /// The built-in programs made so far.
@@ -954,7 +1069,10 @@ fn generate_mips_of_an_integer_twin_decodes_and_encodes() {
         made(&r),
         [Builtin::Mip(ViewDimension::D2Array, MipRead::Unorm)]
     );
-    let ring = r.helpers.ring.as_ref().unwrap().buffer;
+    let ring = r.helpers.rings[RingKind::Data as usize]
+        .as_ref()
+        .unwrap()
+        .buffer;
     let scale = u32::from_le_bytes(r.buffers[ring as usize][..4].try_into().unwrap());
     assert_eq!(scale, 65535);
 

@@ -36,8 +36,8 @@ pub enum SlowPath {
     RestartRewrite,
     /// The provoking vertex was changed by rewriting the program or the indices.
     ProvokingRewrite,
-    /// Depth bias applied in the program: on lines and points (WebGPU allows none), or with a clamp the
-    /// back end lacks.
+    /// Depth bias applied in the program: on lines and points (WebGPU allows none), with a clamp the
+    /// back end lacks, or into 24-bit depth the back end stores as float.
     DepthBiasInShader,
     /// Sampler border color applied in the program.
     BorderInShader,
@@ -77,7 +77,7 @@ pub enum SlowPath {
     PointsAsQuads,
     /// 64-bit float arithmetic emulated with 32-bit operations.
     F64Emulated,
-    /// A predicated draw waited for its query's answer on the device thread.
+    /// A predicated operation waited for its predicate's value on the device thread.
     PredicationWait,
     /// Depth or stencil read back by drawing it into a color texture first.
     DepthReadByDraw,
@@ -171,11 +171,31 @@ pub enum SlowPath {
     /// A staging resource the GPU wrote, mapped for writing only, read back first so the bytes the
     /// program leaves alone keep the GPU's values.
     StagingRefreshed,
+    /// Attachments of different sizes drawn through temporaries of one size, copied in and out, with
+    /// every draw scissored to their common area.
+    AttachmentsFitted,
+    /// A buffer used both for indices and for other data kept as two buffers, since WebGL 2 lets no
+    /// buffer hold both, every host write made to both.
+    IndexBufferTwin,
+    /// The index twin of a buffer the GPU wrote refreshed through a read back before drawing with it.
+    IndexTwinReadBack,
+    /// Query results written into a buffer through a read back, pausing the device thread.
+    QueryResolveWait,
+    /// Predicated draws and dispatches recorded as indirect ones, whose arguments a small compute
+    /// program zeroes where the predicate says skip.
+    PredicationIndirect,
+    /// 8-bit indices widened to 16 bits.
+    IndexWidened,
+    /// A draw with an adjacency topology and no geometry shader drawn from indices without the
+    /// adjacent vertices.
+    AdjacencyDropped,
+    /// Texture level and sample counts passed to the program in the helper constants.
+    TextureInfoInHelpers,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 71] = [
+    pub const ALL: [SlowPath; 79] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -247,6 +267,14 @@ impl SlowPath {
         SlowPath::MinLodClamp,
         SlowPath::ViewportInShader,
         SlowPath::StagingRefreshed,
+        SlowPath::AttachmentsFitted,
+        SlowPath::IndexBufferTwin,
+        SlowPath::IndexTwinReadBack,
+        SlowPath::QueryResolveWait,
+        SlowPath::PredicationIndirect,
+        SlowPath::IndexWidened,
+        SlowPath::AdjacencyDropped,
+        SlowPath::TextureInfoInHelpers,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -285,7 +313,7 @@ impl SlowPath {
             SlowPath::MultiViewportSplit => "draw split per viewport",
             SlowPath::PointsAsQuads => "large points drawn as quads",
             SlowPath::F64Emulated => "64-bit floats emulated",
-            SlowPath::PredicationWait => "predicated draw waited for its query",
+            SlowPath::PredicationWait => "predicated operation waited for its predicate",
             SlowPath::DepthReadByDraw => "depth read back through a draw",
             SlowPath::StencilFacesSplit => "draw split per stencil face",
             SlowPath::MirrorOnceInShader => "mirror once addressing applied in the shader",
@@ -331,6 +359,16 @@ impl SlowPath {
             }
             SlowPath::ViewportInShader => "fractional viewport applied in the shader",
             SlowPath::StagingRefreshed => "staging resource read back before a write-only map",
+            SlowPath::AttachmentsFitted => {
+                "attachments of different sizes fitted through temporaries"
+            }
+            SlowPath::IndexBufferTwin => "buffer kept twice for indices and other data",
+            SlowPath::IndexTwinReadBack => "index twin refreshed through a read back",
+            SlowPath::QueryResolveWait => "query results resolved through a read back",
+            SlowPath::PredicationIndirect => "predicated draws recorded as indirect draws",
+            SlowPath::IndexWidened => "8-bit indices widened",
+            SlowPath::AdjacencyDropped => "adjacent vertices dropped from a draw",
+            SlowPath::TextureInfoInHelpers => "texture level counts passed in helper constants",
         }
     }
 }

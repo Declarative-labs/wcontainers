@@ -42,7 +42,7 @@ mod shader;
 mod slow;
 mod state;
 
-pub use backend::{Backend, ClearValue, FanOrLoop, IndexSource, Object, PrepareDesc};
+pub use backend::{Backend, ClearValue, FanOrLoop, IndexSource, Object, PrepareDesc, RingKind};
 pub use caps::{Caps, Features, FormatCaps, FormatUse, Limits};
 pub use draw::{
     AspectOps, CaptureTargets, ColorAttachment, DepthAttachment, DispatchCall, DispatchGroups,

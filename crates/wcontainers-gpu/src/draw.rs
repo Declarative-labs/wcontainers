@@ -74,7 +74,12 @@ pub struct EmptyPass {
     pub samples: u32,
 }
 
-/// A pass to begin. Either at least one attachment is given, or `empty` is.
+/// A pass to begin. Either at least one attachment is given, or `empty` is. Every attachment and resolve
+/// target has the same width and height, as both browser APIs require (WebGPU's render extent, WebGL 2's
+/// `FRAMEBUFFER_INCOMPLETE_DIMENSIONS`). A front whose API draws into attachments of different sizes,
+/// limited to their common area (Direct3D 9 to 11 with a larger depth buffer, OpenGL, Vulkan), passes
+/// them through the shared pass tracker, which puts temporaries of one size in their place (slow path
+/// [`crate::SlowPath::AttachmentsFitted`], plan section 4.7).
 #[derive(Debug)]
 pub struct PassDesc<'a, B: Backend> {
     pub colors: [Option<ColorAttachment<'a, B>>; MAX_COLOR_TARGETS],

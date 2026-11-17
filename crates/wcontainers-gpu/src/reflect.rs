@@ -222,9 +222,10 @@ pub enum HelperValue {
     /// A sampler's state, for programs that filter or address in the program: min, mag and mip filter
     /// and the three address modes as u32 codes, anisotropy (u32), then the level range (two f32).
     SamplerState { sampler: u32 },
-    /// A texture's mip level count (u32), where the back end's language cannot ask.
+    /// The bound view's mip level count (u32), in programs made with [`VariantFlags::TEXTURE_INFO`].
     TextureLevels { texture: u32 },
-    /// A multisampled texture's sample count (u32), where the back end's language cannot ask.
+    /// The bound texture's sample count (u32, one for a texture that is not multisampled), in programs
+    /// made with [`VariantFlags::TEXTURE_INFO`].
     TextureSamples { texture: u32 },
     /// Depth bias added in the program: constant units, slope scale, clamp, and the depth format's
     /// smallest step (four f32).
@@ -306,6 +307,11 @@ bitflags! {
         /// The last vertex stage maps clip x and y by [`HelperValue::ViewportAdjust`]
         /// ([`crate::SlowPath::ViewportInShader`]).
         const VIEWPORT_ADJUST = 1 << 8;
+        /// Texture level and sample counts (Direct3D's `resinfo` and `sampleinfo`, `GetDimensions`)
+        /// read from [`HelperValue::TextureLevels`] and [`HelperValue::TextureSamples`], which the front
+        /// writes from the bound views, instead of asked of the texture: for back ends without
+        /// [`crate::Features::TEXTURE_LEVEL_QUERY`] ([`crate::SlowPath::TextureInfoInHelpers`]).
+        const TEXTURE_INFO = 1 << 9;
     }
 }
 

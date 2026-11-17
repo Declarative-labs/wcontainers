@@ -60,7 +60,9 @@ pub enum Format {
     A8Unorm,
     Stencil8,
     Depth16Unorm,
-    /// 24-bit depth; a back end may store more bits, never fewer.
+    /// 24-bit depth: stored as 24-bit unsigned normalised where [`crate::Features::DEPTH24_UNORM`],
+    /// otherwise as 32-bit float (more bits, never fewer). The same holds for the depth of
+    /// [`Format::Depth24PlusStencil8`].
     Depth24Plus,
     Depth24PlusStencil8,
     Depth32Float,

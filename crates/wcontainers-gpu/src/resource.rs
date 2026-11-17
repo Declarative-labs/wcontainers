@@ -6,8 +6,12 @@ use crate::shader::StageSet;
 use bitflags::bitflags;
 
 bitflags! {
-    /// How a buffer will be used. A back end may refuse a combination it cannot hold in one object only
-    /// if it can build it from several; it never refuses one a front's API allows.
+    /// How a buffer will be used. Every combination is valid; a back end whose API cannot hold one in one
+    /// object builds it from several. WebGL 2, where one buffer never holds both indices and other data,
+    /// keeps a buffer that is both `INDEX` and anything but `COPY_SRC`, `COPY_DST` and `READ_BACK` as two
+    /// GL buffers, each made when first used its way, every write from the host made to both and every
+    /// GPU write to the one it can reach (slow paths [`crate::SlowPath::IndexBufferTwin`],
+    /// [`crate::SlowPath::IndexTwinReadBack`]; plan section 4.6).
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
     pub struct BufferUsage: u16 {
         const VERTEX = 1 << 0;
@@ -342,6 +346,7 @@ pub enum QueryKind {
     /// [`crate::Features::OCCLUSION_COUNT`]; without it fronts count by replaying the query's draws into
     /// a counting target (plan section 4.12, slow path [`crate::SlowPath::OcclusionCountReplay`]).
     Occlusion,
-    /// GPU time in nanoseconds, where [`crate::Features::TIMESTAMPS`] is present.
+    /// GPU time in nanoseconds, where [`crate::Features::TIMESTAMPS`] is present;
+    /// [`crate::Backend::timestamps_disjoint`] says when a stretch of them is meaningless.
     Timestamp,
 }

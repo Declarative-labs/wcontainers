@@ -40,6 +40,16 @@ pub enum IndexSource<'a> {
     },
 }
 
+/// Which ring [`Backend::write_buffer_ring`] writes into. Indices have a ring of their own because WebGL 2
+/// never lets one buffer hold both indices and other data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RingKind {
+    /// Index values, bound as [`DrawCall::index`].
+    Indices,
+    /// Vertex data and uniform blocks.
+    Data,
+}
+
 /// The primitive kinds [`Backend::draw_fan_or_loop`] draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FanOrLoop {
@@ -258,7 +268,7 @@ pub trait Backend: Sized {
 
     /// Starts reading data back. The copy is recorded now and finishes after a later [`Backend::submit`].
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Self::Readback, GpuError>;
-    /// Starts reading query results back, one u64 per query.
+    /// Starts reading query results back to the host, one u64 per query.
     fn read_queries(
         &mut self,
         set: &Self::QuerySet,
@@ -322,13 +332,17 @@ pub trait Backend: Sized {
         first_instance: u32,
         instances: u32,
     ) -> Result<(), GpuError> {
-        let (indices, base_vertex) = fan_or_loop_indices(kind, source, call.restart, provoking);
-        if indices.is_empty() {
-            return Ok(());
-        }
-        let bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
+        let mut bytes = core::mem::take(&mut self.helpers().scratch);
+        bytes.clear();
+        let base_vertex = fan_or_loop_indices(kind, source, call.restart, provoking, &mut bytes);
+        let count = (bytes.len() / 4) as u32;
         let mut offset = [0];
-        let buffer = self.write_buffer_ring(&[&bytes], 4, &mut offset)?;
+        let ring = (count > 0)
+            .then(|| self.write_buffer_ring(RingKind::Indices, &[&bytes], 4, &mut offset));
+        self.helpers().scratch = bytes;
+        let Some(buffer) = ring.transpose()? else {
+            return Ok(());
+        };
         let (topology, path) = match kind {
             FanOrLoop::TriangleFan => (Topology::TriangleList, SlowPath::FanConverted),
             FanOrLoop::LineLoop => (Topology::LineList, SlowPath::LoopConverted),
@@ -344,7 +358,7 @@ pub trait Backend: Sized {
             restart: false,
             range: DrawRange::Indexed {
                 first: 0,
-                count: indices.len() as u32,
+                count,
                 base_vertex,
                 first_instance,
                 instances,
@@ -520,7 +534,7 @@ pub trait Backend: Sized {
         } else {
             let align = self.caps().limits.min_uniform_offset_alignment;
             let mut offset = [0];
-            let ring = self.write_buffer_ring(&[&params], align, &mut offset)?;
+            let ring = self.write_buffer_ring(RingKind::Data, &[&params], align, &mut offset)?;
             Some(self.create_binding_set(&[BindingEntry {
                 binding: 0,
                 stages: StageSet::FRAGMENT,
@@ -713,7 +727,8 @@ pub trait Backend: Sized {
                         params[24..28].copy_from_slice(&layer.to_le_bytes());
                         let align = self.caps().limits.min_uniform_offset_alignment;
                         let mut offset = [0];
-                        ring = self.write_buffer_ring(&[&params], align, &mut offset)?;
+                        ring =
+                            self.write_buffer_ring(RingKind::Data, &[&params], align, &mut offset)?;
                         entries.push(BindingEntry {
                             binding: 0,
                             stages: StageSet::FRAGMENT,
@@ -757,14 +772,16 @@ pub trait Backend: Sized {
         Ok(())
     }
 
-    /// Writes the data one draw needs (Direct3D 9's vertices from user memory, OpenGL's client arrays,
-    /// spilled immediates) into a ring buffer usable as vertices, indices and uniforms. Each part starts
-    /// at a multiple of `align`; its offset goes into `offsets`. The returned buffer and offsets stay
-    /// valid for commands recorded before the next call. The default writes with
-    /// [`WriteMode::NoOverwrite`], and with [`WriteMode::Discard`] when it wraps, so nothing waits. No
-    /// back end overrides it today; a native back end would map the ring.
+    /// Writes the data one draw needs (Direct3D 9's vertices and indices from user memory, OpenGL's
+    /// client arrays, converted fans, spilled immediates and helper constants) into the ring of `kind`:
+    /// one for indices, one for vertex data and uniform blocks, so no buffer ever holds both (WebGL 2
+    /// forbids it). Each part starts at a multiple of `align`; its offset goes into `offsets`. The
+    /// returned buffer and offsets stay valid for commands recorded before the next call into the same
+    /// ring. The default writes with [`WriteMode::NoOverwrite`], and with [`WriteMode::Discard`] when it
+    /// wraps, so nothing waits. No back end overrides it today; a native back end would map the ring.
     fn write_buffer_ring(
         &mut self,
+        kind: RingKind,
         parts: &[&[u8]],
         align: u32,
         offsets: &mut [u64],
@@ -774,18 +791,20 @@ pub trait Backend: Sized {
             .iter()
             .map(|p| (p.len() as u64).next_multiple_of(align))
             .sum();
-        let fits = matches!(&self.helpers().ring, Some(r) if r.size >= total);
+        let slot = kind as usize;
+        let fits = matches!(&self.helpers().rings[slot], Some(r) if r.size >= total);
         if !fits {
             let size = total.max(RING_SIZE).next_power_of_two();
+            let usage = match kind {
+                RingKind::Indices => BufferUsage::INDEX,
+                RingKind::Data => BufferUsage::VERTEX | BufferUsage::UNIFORM,
+            };
             let buffer = self.create_buffer(&BufferDesc {
                 size,
-                usage: BufferUsage::VERTEX
-                    | BufferUsage::INDEX
-                    | BufferUsage::UNIFORM
-                    | BufferUsage::COPY_DST,
+                usage: usage | BufferUsage::COPY_DST,
                 intent: MapIntent::Often,
             })?;
-            let old = self.helpers().ring.replace(Ring {
+            let old = self.helpers().rings[slot].replace(Ring {
                 buffer,
                 size,
                 head: 0,
@@ -794,7 +813,7 @@ pub trait Backend: Sized {
                 self.destroy(Object::Buffer(old.buffer));
             }
         }
-        let Some(ring) = &self.helpers().ring else {
+        let Some(ring) = &self.helpers().rings[slot] else {
             unreachable!("the ring was made above")
         };
         let (buffer, size, mut head) = (ring.buffer.clone(), ring.size, ring.head);
@@ -826,10 +845,38 @@ pub trait Backend: Sized {
             }
             head += part.len() as u64;
         }
-        if let Some(ring) = &mut self.helpers().ring {
+        if let Some(ring) = &mut self.helpers().rings[slot] {
             ring.head = head;
         }
         Ok(buffer)
+    }
+
+    /// Writes the results of queries `first` to `first + count - 1` into `dst` on the GPU, one u64 per
+    /// query at `dst_offset` (a multiple of 8; `dst` has [`BufferUsage::COPY_DST`]), outside a pass and
+    /// ordered with the work around it: Direct3D 12's ResolveQueryData, Vulkan's
+    /// vkCmdCopyQueryPoolResults, OpenGL's query buffer objects. The default reads the results back to
+    /// the host, pausing the device thread until the GPU has them ([`SlowPath::QueryResolveWait`]), and
+    /// writes them with [`WriteMode::Ordered`]. WebGPU overrides it with resolveQuerySet.
+    fn resolve_queries(
+        &mut self,
+        set: &Self::QuerySet,
+        first: u32,
+        count: u32,
+        dst: &Self::Buffer,
+        dst_offset: u64,
+    ) -> Result<(), GpuError> {
+        let rb = self.read_queries(set, first, count)?;
+        if self.read_state(&rb) == ReadState::Pending {
+            self.slow_paths().hit(SlowPath::QueryResolveWait);
+            self.wait_read(&rb);
+        }
+        let mut bytes = core::mem::take(&mut self.helpers().scratch);
+        bytes.clear();
+        bytes.resize(count as usize * 8, 0);
+        self.finish_read(rb, &mut bytes);
+        self.write_buffer(dst, dst_offset, &bytes, WriteMode::Ordered);
+        self.helpers().scratch = bytes;
+        Ok(())
     }
 
     // ---- Present or absent: no cheap default ----
@@ -840,14 +887,17 @@ pub trait Backend: Sized {
         Err(GpuError::Absent(Features::COMPUTE))
     }
 
-    /// Draws with nothing rasterised, writing the last vertex stage's outputs to `targets` in order.
-    /// Outside a pass. Needs [`Features::TRANSFORM_FEEDBACK`].
+    /// Draws `call` writing the last vertex stage's outputs to `targets` in order. With `rasterize`
+    /// false nothing is drawn and the call comes outside a pass; with it true the primitives are also
+    /// drawn, inside a pass, in the same run of the vertex work (Direct3D's rasterized stream, OpenGL's
+    /// transform feedback without rasterizer discard). Needs [`Features::TRANSFORM_FEEDBACK`].
     fn capture_vertices(
         &mut self,
         call: &DrawCall<'_, Self>,
         targets: CaptureTargets<'_, Self>,
+        rasterize: bool,
     ) -> Result<(), GpuError> {
-        let _ = (call, targets);
+        let _ = (call, targets, rasterize);
         Err(GpuError::Absent(Features::TRANSFORM_FEEDBACK))
     }
 
@@ -874,6 +924,14 @@ pub trait Backend: Sized {
     /// [`Features::TIMESTAMPS`].
     fn write_timestamp(&mut self, set: &Self::QuerySet, index: u32) -> Result<(), GpuError> {
         let _ = (set, index);
+        Err(GpuError::Absent(Features::TIMESTAMPS))
+    }
+
+    /// Whether something since the last call (a clock change, a context switch) made the timestamps
+    /// written in that time meaningless, clearing the condition: WebGL 2's `GPU_DISJOINT_EXT`, from which
+    /// fronts answer Direct3D's disjoint query and OpenGL's `GL_GPU_DISJOINT`. A back end whose API never
+    /// reports one (WebGPU) answers false. Needs [`Features::TIMESTAMPS`].
+    fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
         Err(GpuError::Absent(Features::TIMESTAMPS))
     }
 }
@@ -952,68 +1010,85 @@ fn builtin_draw<'a, B: Backend>(
     }
 }
 
-/// The index list that draws a fan as a triangle list or a loop as a line list, honouring restart in
-/// guest indices, and the base vertex to draw it with. Each fan triangle keeps the fan's winding and
-/// puts the vertex `provoking` names where the list's own provoking vertex is: first for
-/// [`ProvokingVertex::First`] (vertex i + 1 of the fan), last for [`ProvokingVertex::Last`] (vertex i + 2).
+/// Appends to `out`, as little-endian u32, the index list that draws a fan as a triangle list or a loop
+/// as a line list, honouring restart in guest indices, and returns the base vertex to draw it with. Each
+/// fan triangle keeps the fan's winding and puts the vertex `provoking` names where the list's own
+/// provoking vertex is: first for [`ProvokingVertex::First`] (vertex i + 1 of the fan), last for
+/// [`ProvokingVertex::Last`] (vertex i + 2).
 fn fan_or_loop_indices(
     kind: FanOrLoop,
     source: IndexSource<'_>,
     restart: bool,
     provoking: ProvokingVertex,
-) -> (Vec<u32>, i32) {
-    let (values, restart_value, base): (Vec<u32>, Option<u32>, i32) = match source {
+    out: &mut Vec<u8>,
+) -> i32 {
+    let mut walk = |values: &mut dyn Iterator<Item = u32>, restart_value: Option<u32>| {
+        let mut push = |v: [u32; 3], n: usize| {
+            for i in &v[..n] {
+                out.extend_from_slice(&i.to_le_bytes());
+            }
+        };
+        // The piece's first vertex, the previous one, and how many it has had. A loop closes when its
+        // piece ends.
+        let (mut first, mut prev, mut n) = (0, 0, 0usize);
+        let closes = |n: usize| kind == FanOrLoop::LineLoop && n >= 2;
+        for v in values {
+            if Some(v) == restart_value {
+                if closes(n) {
+                    push([prev, first, 0], 2);
+                }
+                n = 0;
+                continue;
+            }
+            match (kind, n) {
+                (_, 0) => first = v,
+                (FanOrLoop::TriangleFan, 1) => {}
+                (FanOrLoop::TriangleFan, _) => match provoking {
+                    ProvokingVertex::First => push([prev, v, first], 3),
+                    ProvokingVertex::Last => push([first, prev, v], 3),
+                },
+                (FanOrLoop::LineLoop, _) => push([prev, v, 0], 2),
+            }
+            prev = v;
+            n += 1;
+        }
+        if closes(n) {
+            push([prev, first, 0], 2);
+        }
+    };
+    match source {
         IndexSource::Sequential { first, count } => {
-            ((first..first.saturating_add(count)).collect(), None, 0)
+            walk(&mut (first..first.saturating_add(count)), None);
+            0
         }
         IndexSource::Guest {
             indices,
             format,
             base_vertex,
         } => {
-            let v: Vec<u32> = match format {
-                IndexFormat::U16 => indices
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|b| u16::from_le_bytes(*b) as u32)
-                    .collect(),
-                IndexFormat::U32 => indices
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|b| u32::from_le_bytes(*b))
-                    .collect(),
-            };
-            let r = restart.then_some(match format {
-                IndexFormat::U16 => 0xffff,
-                IndexFormat::U32 => 0xffff_ffff,
-            });
-            (v, r, base_vertex)
-        }
-    };
-    let mut out = Vec::new();
-    for piece in values.split(|&i| Some(i) == restart_value) {
-        match kind {
-            FanOrLoop::TriangleFan => {
-                for w in piece.windows(2).skip(1) {
-                    match provoking {
-                        ProvokingVertex::First => out.extend_from_slice(&[w[0], w[1], piece[0]]),
-                        ProvokingVertex::Last => out.extend_from_slice(&[piece[0], w[0], w[1]]),
-                    }
-                }
+            let restart_value = restart.then(|| format.restart_value());
+            match format {
+                IndexFormat::U8 => walk(&mut indices.iter().map(|&b| u32::from(b)), restart_value),
+                IndexFormat::U16 => walk(
+                    &mut indices
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|b| u32::from(u16::from_le_bytes(*b))),
+                    restart_value,
+                ),
+                IndexFormat::U32 => walk(
+                    &mut indices
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|b| u32::from_le_bytes(*b)),
+                    restart_value,
+                ),
             }
-            FanOrLoop::LineLoop => {
-                if piece.len() < 2 {
-                    continue;
-                }
-                for (k, &v) in piece.iter().enumerate() {
-                    out.extend_from_slice(&[v, piece[(k + 1) % piece.len()]]);
-                }
-            }
+            base_vertex
         }
     }
-    (out, base)
 }
 
 #[cfg(test)]

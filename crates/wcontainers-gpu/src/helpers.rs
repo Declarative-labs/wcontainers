@@ -258,7 +258,7 @@ impl<B: Backend> Clone for Builtins<B> {
     }
 }
 
-/// The ring [`crate::Backend::write_buffer_ring`] writes into.
+/// One ring [`crate::Backend::write_buffer_ring`] writes into.
 #[derive(Debug)]
 pub(crate) struct Ring<B: Backend> {
     pub buffer: B::Buffer,
@@ -272,7 +272,11 @@ pub struct Helpers<B: Backend> {
     pub(crate) builtins: Option<Builtins<B>>,
     /// Built-in programs made so far.
     pub(crate) programs: Vec<(Builtin, B::Program)>,
-    pub(crate) ring: Option<Ring<B>>,
+    /// The rings, by [`crate::RingKind`].
+    pub(crate) rings: [Option<Ring<B>>; 2],
+    /// Bytes a default builds before one ring write (a converted fan's indices), kept so no draw
+    /// allocates once it has grown.
+    pub(crate) scratch: Vec<u8>,
 }
 
 impl<B: Backend> Default for Helpers<B> {
@@ -280,7 +284,8 @@ impl<B: Backend> Default for Helpers<B> {
         Helpers {
             builtins: None,
             programs: Vec::new(),
-            ring: None,
+            rings: [None, None],
+            scratch: Vec::new(),
         }
     }
 }
