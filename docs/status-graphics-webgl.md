@@ -5,16 +5,16 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a is done. G3 (section 12's pass bar) is about half done after run 2. Run 2 merged the shared line
-(2684d97 and later, with the WebGPU and Direct3D 12 branches), sampled and read back stencil with
-and without WEBGL_stencil_texturing, copied between formats of one typeless group and between depth
-formats, added the 24-bit depth probe, fixed loads of integer and depth textures (they read zeros)
-and of levels above the view's first, and compared drawings with the WebGPU back end natively
-(window origin on both routes, cube, array and 3D textures, generate_mips). The shared suite (21
-tests at 2684d97) and the 7 checks of the back end's own pass 27 of 28 in Chrome's WebGL 2 with
-every extension; the one failure is `loads_count_levels_from_the_view` (see "Known failures").
-Not built yet: queries, transform feedback, multisampling, BC and RGB9E5 read backs, the per-draw
-cost measurement, and the fractional viewport and depth bias tests (see "Next").
+G3a is done. G3 (section 12's pass bar) is about two thirds done after run 3. Run 3 merged the
+shared line (528db9c) and the WebGPU branch (33949c3), and built occlusion queries (waited for in
+Chrome through JSPI), timestamps where the GPU writes them (it does not here), multisampled textures
+as renderbuffers with resolves and `MultisampleCopyResolved` copies, and a probe that declares
+`FRACTIONAL_DEPTH_BIAS` only where GL keeps a fractional bias (ANGLE on Direct3D 11 does not: it was
+declared before without being true). It measured the per-draw cost against the WebGPU back end in
+Chrome. The shared suite (24 tests at 528db9c) and the 11 checks of the back end's own pass 34 of 35
+in Chrome's WebGL 2 with every extension; the one failure is `loads_count_levels_from_the_view` (see
+"Known failures"). Not built yet: transform feedback (and the index twin written by it), BC and
+RGB9E5 read backs, BGRA and 16-bit normalised formats (see "Next").
 
 ## Done
 
@@ -208,6 +208,52 @@ cost measurement, and the fractional viewport and depth bias tests (see "Next").
   against the WebGL 2 specification, GLES 3.0's format table and the extensions Chrome reports (see
   "Capabilities").
 
+- G3 run 3:
+  - Occlusion queries (`QueryKind::OcclusionAny`, `ANY_SAMPLES_PASSED`): a set holds one GL query
+    per index, made at its first begin; a read back holds the query objects it reads, so a query
+    begun again before the read finished gets a new one. `resolve_queries` is the interface's
+    default (`QueryResolveWait`). `Occlusion` (exact counts) is `Absent(OCCLUSION_COUNT)`: GL ES
+    answers only whether any sample passed. WebGL hands out query results only between tasks, so
+    `wait_read` of queries suspends the device thread until the browser's next task through JSPI:
+    the back end imports `next_task` from the module `wcontainers-device`, which the host supplies
+    as a `WebAssembly.Suspending` function (browser/device.js), and the host calls the code that
+    waits through `WebAssembly.promising` (suite.html calls the plain export `suite_run`). Natively
+    the wait spins on `QUERY_RESULT_AVAILABLE`.
+  - Timestamps (`write_timestamp` by `queryCounterEXT`, `timestamps_disjoint` from
+    `GPU_DISJOINT_EXT`), declared only where EXT_disjoint_timer_query_webgl2 is present and
+    `QUERY_COUNTER_BITS_EXT` for `TIMESTAMP_EXT` is above zero. On the RTX 3080 both Chrome and
+    mozangle give zero bits (ANGLE's Direct3D 11 back end writes no timestamps; it has elapsed-time
+    queries only), so `TIMESTAMPS` is absent there and the route with it is built but not run.
+  - Multisampled textures are renderbuffers (WebGL 2 has no multisampled textures), made by
+    `renderbufferStorageMultisample` with the counts GL reports per format (`getInternalformatParameter`
+    `SAMPLES`; in WebGL that answer is the whole list). `RESOLVE` on colour formats that are not
+    integers. Pass resolve targets and `resolve` by `blitFramebuffer`; a resolve in a format other
+    than the source's stored one counts `ResolveInStoredFormat`. Whole copies between multisampled
+    textures resolve the source into a temporary texture and draw it into every sample of the
+    destination (`MultisampleCopyResolved`). `MULTISAMPLE_READ` and `SAMPLE_SHADING` are absent: a
+    draw reading a multisampled texture loses the device naming it; integer samples cannot be
+    copied (a loss naming `MULTISAMPLE_READ`); multisampled depth, stencil and sRGB copies lose the
+    device as not built. The texture's storage is an enum (`Storage`), so every GL texture use
+    handles the renderbuffer case.
+  - `FRACTIONAL_DEPTH_BIAS` by a probe when the back end is made (beside the 24-bit one): a
+    triangle 0.45 of a step above step 1000 of `depth16unorm`, without and with a bias of 0.1
+    units; declared only when it then stores 1001. Without it a raster block with a fractional bias
+    is `Absent(FRACTIONAL_DEPTH_BIAS)` (the front adds the bias in the program).
+  - New checks (examples/common/checks.rs, in Chrome and on ANGLE): `timestamps_and_their_disjoint_flag`,
+    `multisampled_copies_resolve_as_their_source` (a partly covered diagonal, resolved at the pass's
+    end and by `resolve`, and the copy's resolve equal to the source's, `MultisampleCopyResolved`
+    counted once), `fractional_depth_bias` (the refusal where the probe found none),
+    `constant_alpha_blends` (`ConstantAlpha` natively at alphas 0.5 and 0.25, within one step, and
+    a blend of the constant colour with the constant alpha refused as absent). The browser host runs
+    the suite's three new tests (multisampled targets, per-sample programs, occlusion queries).
+  - tests/against_webgpu.rs: `a_fractional_viewport_in_the_program_equals_webgpu_native` (a
+    triangle in a viewport at x 2.5, y 1.25, 11 by 12.5 of 16 by 16, drawn here over the whole
+    target by a WGSL variant moving the positions as the viewport would, `ViewportInShader`). It
+    fails today: the WebGPU back end does not declare `FRACTIONAL_VIEWPORT` yet (see "Known
+    failures").
+  - examples/draw-cost.rs, browser/cost.html and cost.mjs: the per-draw cost of both back ends in one
+    Chrome (see "Measurements").
+
 ## How to run
 
 All from the checkout root on the Mac.
@@ -220,6 +266,10 @@ All from the checkout root on the Mac.
   `tools/graphics-rig/gpu-job --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "crates\wcontainers-gpu-webgl\browser\all.cmd C:\wc\out\webgl\<name>"`.
   About 60 s as a job once built. Lint as part of the build:
   `tools/graphics-rig/gpu-job --build "crates\wcontainers-gpu-webgl\browser\build.cmd && cargo clippy -j 3 -p wcontainers-gpu-webgl --all-targets -- -D warnings && cargo clippy -j 3 -p wcontainers-gpu-webgl --lib --example browser --target wasm32-unknown-unknown -- -D warnings" -- "crates\wcontainers-gpu-webgl\browser\all.cmd C:\wc\out\webgl\<name>"`.
+- The per-draw cost of both back ends in Chrome, as an exclusive job (build.cmd builds the
+  example, in release, into `%CARGO_TARGET_DIR%\webgl-cost-pkg`):
+  `tools/graphics-rig/gpu-job --alone --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "node crates\wcontainers-gpu-webgl\browser\cost.mjs %CARGO_TARGET_DIR%\webgl-cost-pkg C:\wc\out\webgl\cost.txt 30 \"10000 50000\""`
+  (frames timed per case, then the draw counts). About 15 s.
 - The comparisons with the WebGPU back end alone (build.cmd builds them):
   `tools/graphics-rig/gpu-job -- "cargo test -j 3 -p wcontainers-gpu-webgl --test against_webgpu -- --test-threads=1"`.
 - The suite in Chrome alone (after build.cmd and a `--list` into a file, as all.cmd does):
@@ -258,6 +308,8 @@ The caps then lack `CLIP_DEPTH_ZERO_ONE`, which Chrome on the same GPU has (see 
 context is current on the calling thread, which must be the device thread. Natively the surface is
 an off-screen pbuffer; a real window needs an EGL window surface, not built yet.
 In the browser: `WebGl::on_canvas(canvas.getContext("webgl2"), &[])`; the canvas is the surface.
+Every page that loads the back end's WebAssembly must supply the module `wcontainers-device` (an
+import map to browser/device.js does) and call code that may wait through `WebAssembly.promising`.
 With every extension both report the same `Caps` on the RTX 3080 (compared on 2026-11-17: identical
 lists).
 
@@ -266,12 +318,15 @@ lists).
 Declared today (each one built): `READ_BACK_NOW`, `FAN_AND_LOOP` (WebGL 2 topologies),
 `PROVOKING_VERTEX_LAST` (GL's rule), `PROVOKING_VERTEX_FIRST` (with WEBGL_provoking_vertex),
 `CLIP_DEPTH_MINUS_ONE`, `CLIP_DEPTH_ZERO_ONE` (with EXT_clip_control), `INDEX_U8`, `DEPTH24_UNORM`
-(by the probe: set in Chrome 157 and on mozangle on the RTX 3080),
-`FRACTIONAL_DEPTH_BIAS` (`polygonOffset` units are floats), `BLEND_CONSTANT_ALPHA` (GLES 3.0 core;
-mixed with the constant colour refused, as WebGL requires). Everything else is absent, including
+(by the probe: set in Chrome 157 and on mozangle on the RTX 3080), `FRACTIONAL_DEPTH_BIAS` (by its
+probe: absent in Chrome 157 and on mozangle on the RTX 3080, where ANGLE's Direct3D 11 rounds the
+units), `TIMESTAMPS` (with EXT_disjoint_timer_query_webgl2 and timestamp bits above zero: absent
+on the RTX 3080, zero bits), `BLEND_CONSTANT_ALPHA` (GLES 3.0 core; mixed with the constant colour
+refused, as WebGL requires). Everything else is absent, including
 what WebGL 2 or Chrome's extensions have but this back end does not build yet: `TRANSFORM_FEEDBACK`,
 `POINT_SIZE` (WGSL has no point size; a front would need a program variant writing it),
-`TIMESTAMPS` (Chrome has EXT_disjoint_timer_query_webgl2 here), and by extension (all reported by Chrome on the RTX 3080)
+`OCCLUSION_COUNT`, `MULTISAMPLE_READ` and `SAMPLE_SHADING` (WebGL 2 has none of them), and by
+extension (all reported by Chrome on the RTX 3080)
 `POLYGON_MODE`, `CLIP_DISTANCE`,
 `CULL_DISTANCE`, `DEPTH_CLAMP`, `DUAL_SOURCE_BLEND`, `INDEPENDENT_BLEND`, `MIRROR_ONCE`,
 `DEPTH_BIAS_CLAMP`, `BLOCK_COMPRESSION`, `SAMPLE_SHADING`. The adapter is WebGL's renderer string
@@ -291,7 +346,9 @@ R11G11B10 filter, render and blend; 32-bit float filter, render and blend (RGB32
 integers render (not RGB32), never filter or blend; depth formats are depth targets, and those
 without stencil also sample. Copy out (read back): R8, RG8 and RGBA8 normalised and RGBA8 sRGB,
 every colour-renderable 8, 16 and 32-bit integer format, and R32F, RG32F and RGBA32F (with
-EXT_color_buffer_float); not 16-bit floats, packed formats, depth or stencil. One sample only.
+EXT_color_buffer_float); not 16-bit floats, packed formats, depth or stencil. Since run 3, samples:
+1, 2, 4 and 8 for the colour formats that render and are not integers, and for depth formats (as
+GL reports them on the RTX 3080); integer formats take one.
 No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil8, block-compressed.
 Since G3 run 1: `PRESENT` on `rgba8unorm` (the canvas's drawing buffer), and `COPY_OUT` on every
 depth format (by `DepthReadByDraw`). Since run 2: `SAMPLE` and `COPY_OUT` on `depth24plus-stencil8`
@@ -372,6 +429,43 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   - Lint clean on both targets.
   - Then with `fractional_viewports_are_refused` (job 16:09 to 16:10): every count above one higher
     (Chrome 27 of 28, ANGLE 23 of 28 and 13 of 28); the new check passes on every route.
+- 2026-11-17, G3 run 3, same desktop (RTX 3080, driver 32.0.16.2101; queued jobs, not timed,
+  about 60 s each between 16:15 and 16:39 desktop time), after merging origin/phase-2-graphics
+  528db9c and origin/phase-2-graphics-webgpu 33949c3; 24 suite tests and 11 checks (35). Final tree
+  (job ending 16:39):
+  - Chrome 157.0.8103.78 with every extension: 34 of 35 (`loads_count_levels_from_the_view`
+    fails). Without WEBGL_stencil_texturing: 34 of 35, the same one. Without EXT_clip_control: 19
+    of 35; without it and WEBGL_provoking_vertex: 19 of 35 (the rest refused by the suite's raster
+    blocks, and the same one).
+  - ANGLE (mozangle 0.7.1) with every extension: 30 of 35 (`present_shows_the_frame`,
+    `the_scissor_bounds_the_draw`, `depth_and_stencil_read_back`, `stencil_sampled_and_read_back`,
+    `loads_count_levels_from_the_view`, as before). Without EXT_clip_control: 18 of 35; without
+    both: 18 of 35.
+  - Against the WebGPU back end: 2 of 5 (window origins; cube, array and 3D textures); the two
+    generate_mips comparisons fail as before, the fractional viewport one as listed below.
+  - The occlusion query test passes in Chrome and on ANGLE (with the extensions it needs); both
+    multisample tests pass in Chrome and on ANGLE with 4 samples.
+  - The new fractional bias probe found the bias lost in Chrome and on ANGLE: `depth16unorm` stored
+    step 1000 with and without a bias of 0.1 units (the check found it first, when the feature was
+    still declared).
+  - `ConstantAlpha` at 0.5 on white gave 127 where 127.5 was expected (this GPU's blend rounds it
+    down), so the check allows one step.
+  - Lint clean on both targets.
+- Per-draw cost, 2026-11-17 16:39 desktop time, as `gpu-job --alone` (RTX 3080, driver
+  32.0.16.2101, CPU load 10% just after; Chrome 157.0.8103.78 headless, whose chrome://gpu says
+  WebGL and WebGPU are "hardware accelerated but at reduced performance"; both back ends built for
+  WebAssembly in release, in one page). The scene: one pass into a 256 by 256 `rgba8unorm`
+  target, N quads of 4 vertices from `vertex_index`, each draw naming one uniform binding set or
+  each its own (1024 sets over one buffer), then a submit. Timed by the page around each frame's
+  recording and submission (`performance.now()`, which Chrome rounds to 0.1 ms here), 5 frames
+  untimed then 30 timed, 20 ms between frames. Median per frame, and per draw:
+  - 10,000 draws, one set: WebGL 2 1.5 ms (0.150 us a draw), WebGPU 1.6 ms (0.160 us).
+  - 10,000 draws, a set per draw: WebGL 2 3.9 ms (0.390 us), WebGPU 3.8 ms (0.380 us).
+  - 50,000 draws, one set: WebGL 2 4.9 ms (0.098 us), WebGPU 7.4 ms (0.148 us).
+  - 50,000 draws, a set per draw: WebGL 2 16.6 ms (0.332 us), WebGPU 18.1 ms (0.362 us).
+  These are the device thread's costs only (both APIs hand the work to Chrome's GPU process, whose
+  cost is not in them). An earlier run of the same scene was void: the WebGL device had been lost
+  at creation by a bug in the new probe.
 - In the first full check of G3 run 1, Chrome's first launch kept no WebGL 2 context in ten tries
   and was closed; the second launch worked. In the other launches one context was lost first.
 - Chrome's GPU process restarted once just after Chrome started in most runs (the first WebGL
@@ -382,6 +476,11 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   must say so; whether a headed Chrome differs is not measured.
 
 ## Known failures
+
+- `a_fractional_viewport_in_the_program_equals_webgpu_native` (tests/against_webgpu.rs): the WebGPU
+  back end does not declare `FRACTIONAL_VIEWPORT` yet (its status: it waits on its own half-pixel
+  test), so there is no native fractional viewport to compare with. Run it again when G2 declares
+  it.
 
 - `loads_count_levels_from_the_view`, in Chrome and on ANGLE: `textureDimensions(t, 0)` of a view
   starting at level 1 of a 4-wide `rgba8uint` texture gives 1 (level 2's width) instead of 2; the
@@ -480,6 +579,17 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 - Draws with a provoking vertex the raster block does not name: `draw_fan_or_loop` follows the raster
   block, as the default's converted list also assumes; its `provoking` argument is not used.
 
+- The back end's WebAssembly imports `next_task` from a module `wcontainers-device` (JSPI, plan
+  4.8): the plan has the device thread suspend through JSPI but names no import; the call channel
+  (second batch) should supply the same one. Only query waits use it today; fence and pixel read
+  waits still call `finish()`.
+- `FRACTIONAL_DEPTH_BIAS` and `TIMESTAMPS` come from probes of the context rather than from the
+  extension list alone: GL takes float bias units and EXT_disjoint_timer_query advertises
+  timestamps, but ANGLE on Direct3D 11 rounds the one and gives zero bits for the other.
+- Copies of multisampled integer, depth, stencil and sRGB textures lose the device (integers as
+  needing `MULTISAMPLE_READ`, the others as not built); plan 5.8 names `MultisampleCopyResolved`
+  for copies in general.
+
 ## Interface changes
 
 - db2c406 "interface: said that a webgl back end refuses a blend block using the constant colour and
@@ -516,6 +626,8 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 - naga 30.0.2 (`glsl-out`; `wgsl-in` for the test programs): MIT OR Apache-2.0.
 - wasm-bindgen 0.2.130, js-sys and web-sys 0.3.107 (wasm32 only): MIT OR Apache-2.0.
 - anyhow (test programs): MIT OR Apache-2.0.
+- Tests only, WebAssembly (the per-draw cost example): wasm-bindgen-futures 0.4.80, wgpu 30.0.2
+  (`webgpu`) and the WebGPU back end of this workspace: MIT OR Apache-2.0 (their Cargo.toml).
 - Tests only: getrandom 0.4.3 with `wasm_js` (wasm32, for proptest in the suite crate): MIT OR
   Apache-2.0; on Windows wgpu 30.0.2 (`dx12`) and pollster 1.0.1: MIT OR Apache-2.0 (their
   Cargo.toml), and the WebGPU back end of this workspace.
@@ -524,28 +636,31 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Next
 
-G3's pass bar (plan section 12), in about this order:
-1. Isolate and fix the size query of views starting above level 0 (dump naga's GLSL for the
-   `loads_count_levels_from_the_view` program; then the integer twin's generate_mips against G2).
-2. The `generateMipmap` override where GLES allows it, and `clear_texture` and `clear_rects` by
-   `clearBuffer*` (plan 5.8).
-3. Queries: occlusion (`OcclusionAny`, ANY_SAMPLES_PASSED), timestamps and `timestamps_disjoint`
-   (EXT_disjoint_timer_query_webgl2, present in Chrome here); WebGL gives results only between
-   tasks, so a wait needs the device thread's event loop (plan 4.8's JSPI).
-4. Transform feedback (`capture_vertices` with and without rasterising; programs linked with
-   `transformFeedbackVaryings`), and the index twin written by it.
-5. Multisampled textures (renderbuffers), resolves, `MultisampleCopyResolved`.
-6. Per-draw cost against G2 on the same scene, in Chrome (G2's web harness:
-   crates/wcontainers-gpu-webgpu/web), as `gpu-job --alone`.
-7. A test of the `ViewportInShader` route against
-   G2's native fractional viewport (the variant is G6's; until it exists, the test writes it in
-   WGSL); fractional `depth_bias` (with `depth16unorm`, a depth 0.45 of a step above a step and a
-   bias of 0.1 must round up) and `ConstantAlpha` checks.
-8. BC and RGB9E5 read back as written (`HostCopyKept`, `BlockDecoded`), BGRA, 16-bit normalised by
-   EXT_texture_norm16 (present in Chrome here).
-9. `gl_FragCoord.z` (WGSL's position z in fragments) read 0.75 for clip z 0.5 on ANGLE with
-   EXT_clip_control in zero-to-one, where WebGPU reads 0.5: found by the origin comparison (taken
-   out of it); needs a check of its own and a fix or a named loss.
-10. An EGL window surface natively, for G4's Windows library.
-11. Suite routes without EXT_clip_control or WEBGL_provoking_vertex stay known failures until G1's
-    suite takes clip depth and provoking vertex from the caps.
+G3's pass bar (plan section 12), what is left, in about this order:
+1. Transform feedback: `capture_vertices` with and without rasterising (programs linked again with
+   `transformFeedbackVaryings`, kept per program and captured layout; `RASTERIZER_DISCARD` when not
+   rasterising), the `TRANSFORM_FEEDBACK` feature and `capture_buffers` limit, and the index twin a
+   capture writes (`IndexBufferTwin`, `IndexTwinReadBack`, drawn both ways). The interface leaves
+   open which outputs go to which target (`CaptureTargets` is a list of ranges): settle it with G1
+   (interleaved into one target, or one output per target in GL's separate mode) before building.
+2. BC and RGB9E5 read back as written (`HostCopyKept`, `BlockDecoded` with `bcdec_rs` as G2 does,
+   BC natively with WEBGL_compressed_texture_s3tc and EXT_texture_compression_rgtc/bptc), BGRA
+   (`FormatConverted`), 16-bit normalised by EXT_texture_norm16 (present in Chrome here).
+3. The size query of views starting above level 0: naga writes plain `textureSize(t, level)`, so
+   the wrong level comes from ANGLE after the texture's base level changed (a fresh texture with
+   base level 1 answers right). Try making the view's own GL texture state fresh (or note it as an
+   ANGLE bug with a reduced case); then the integer twin's generate_mips against G2.
+4. The `generateMipmap` override where GLES allows it, and `clear_texture` and `clear_rects` by
+   `clearBuffer*` (plan 5.8). An override that falls back to the default for other formats needs the
+   default callable: Rust cannot call a trait's default from its override, so the default's body
+   must move into a public function of `wcontainers-gpu` first (an "interface:" commit, in the
+   interface's fast-path-with-a-default style).
+5. Run `a_fractional_viewport_in_the_program_equals_webgpu_native` once G2 declares
+   `FRACTIONAL_VIEWPORT`.
+6. `gl_FragCoord.z` (WGSL's position z in fragments) read 0.75 for clip z 0.5 on ANGLE with
+   EXT_clip_control in zero-to-one, where WebGPU reads 0.5: needs a check of its own and a fix or a
+   named loss.
+7. An EGL window surface natively, for G4's Windows library.
+8. Suite routes without EXT_clip_control or WEBGL_provoking_vertex stay known failures until G1's
+   suite takes clip depth and provoking vertex from the caps; the r32float in-shader mip filter's
+   one-step difference is G1's helper.
