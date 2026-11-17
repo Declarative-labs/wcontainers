@@ -12,8 +12,60 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 - X1 (the interface, with ARM64 moved onto it): run 1 moved ARM64 and the translator onto the interface;
   run 2 (2026-11-17) fixed what the independent check of X1 found, above all building the whole of section
   3 with the translator's side of every item; run 3 (the same day) fixed what the second check found: a CPU
-  without flags, grouping through a segment base, a test guest that now runs, the browser's hook path.
-  Every part of the pass bar holds (see "X1, run 3"). Next: X2, the shared test harness (plan section 9).
+  without flags, grouping through a segment base, a test guest that now runs, the browser's hook path;
+  run 4 (the same day) fixed what the third check found: overlapping instruction streams that meet again,
+  the translate time the move added, an alias of the abi crate. Every part of the pass bar holds (see "X1,
+  run 4"). Next: X2, the shared test harness (plan section 9).
+
+## X1, run 4 (2026-11-17)
+
+The third check of X1 found one blocking problem and five smaller ones. What was done about each:
+- Blocking, two overlapping streams that meet again panicked (`at[&t]`, "no entry found for key", in
+  `Finder::explore`): an offset that two instructions fall into was joined to one of their blocks, so the
+  other's fall-through had no block to go to. Now such an offset leads a block of its own; the cut keeps
+  the furthest end of the earlier instructions, so the look back over `MAX_LENGTH` offsets runs only where
+  instructions overlap, never for ARM64. `before` also answers `None` there (two instructions fall in), as
+  at a jump target. Two test guest cases: a jump into `inc r0`'s second byte that ends where the `inc` ends,
+  and a jump past an instruction's first byte (x86's `je 1f; lock; 1: cmpxchg`). Without the fix both fail
+  with the check's panic; with it the test guest passes 16 of 16. Plan 3.4 says so.
+- Translate time: measured, not only expected. python and busybox at full, bounded 256 and bounded 4096, one
+  thread, old (2274314) and new alternating (scratch `x1/run4/translate-time.sh`, `count.sh`; Mac):
+  - before this run's change, 6 rounds (load 26.6 to 57.2): best old 28.18 s user, new 28.97 s (1.03);
+    new slower in all 6.
+  - `/usr/bin/time -l` counts: instructions retired the same within their run-to-run spread (old 470.2 to
+    475.8 G, new 468.4 to 476.0 G), but more cycles. ARM64's small per-instruction queries (`decode`, `flow`,
+    `accesses`, `reg_bit` and so on, 16 of them) were not inlined across the crate boundary (no LTO in
+    release). Marked `#[inline]`, 3 rounds of old, without and with (load 19.9 to 25.4): best cycles old
+    115.15 G, without 121.44 G (1.055), with 117.76 G (1.023); with them 1.008 to 1.028 a round.
+  - 6 rounds of wall time with them (load 21.1 to 33.1): best old 26.63 s user, new 27.83 s; too noisy at
+    this load to say more than the cycle counts do.
+  So the move costs ARM64 about 1 to 3 percent of translate time, as cycles; the output is the same bytes.
+  The plan (3.1) now says this instead of "nothing beyond what ARM64 pays today". Not found: where the rest
+  comes from (the cycle counts move by about 2 percent between runs of one binary).
+- The guard missed `use wcontainers_abi as abi;`: in Rust source every `wcontainers_abi` not followed by
+  `::PAGE_SIZE` or `::Permissions` is now named, whatever follows (`as`, `{`, `;`); the manifest is checked
+  for crate names only. Tested with the alias and with `extern crate wcontainers_abi as abi;`.
+- `ReturnAddress::Register` no longer carries a register bit nobody read (plan 3.2 and 3.5: the meaning
+  writes the link register; RV64GC's `jalr` may link to any register).
+- The test guest's programs now run at none, bounded 1, 5, 17, 64, 256, 4096 and full (the comparison's
+  list, and 5), plan section 9 says so.
+- The check's confirmation of run 3's proof: nothing to do.
+
+Proof after run 4 (machine: the Mac, Apple M5; loads as given):
+- Merged origin/phase-1-translator (8b5e420, which changed only docs/status-translator.md) at 0ef82c6;
+  fetched again at the end of the run: nothing new.
+- Byte for byte against 2274314 with `same-output.sh`, at 0ef82c6 (the overlap fix; `x1/run4/same-all.log`):
+  bench 127 modules, busybox 34, musl 30, python 34, rg 34, git 34, java 40, go 28 (2 minutes, load 22.8 to
+  18.4), node 62 (alone, 4 minutes), bun 74 (alone, 6 minutes, load 36.4 to 26.4): all the same.
+  Again at bc66759 (with the inline hints; `x1/run4/same-final.log`): every set the same, the same module
+  counts (small sets 2 minutes, load 28.0 to 58.4; node 4 minutes; bun 6 minutes, load 27.3 to 39.3).
+- Suite: `cargo test -p wcontainers-guest-cpu -p wcontainers-arm64 -p wcontainers-translator -p
+  wcontainers-translator-test` at bc66759 (`x1/run4/suite.log`): 92 passed, 0 failed, 10 ignored (the
+  measuring ones), 29 result lines, Chrome and Docker included, 25 minutes (load 39.3 at start, 43.5 at end).
+- Clippy with `-D warnings` on the four crates (tests and bins) and on the interface and ARM64 crates
+  without `translate`, and `cargo fmt --check`: clean.
+- Benchmark run times: not timed again; the modules are the same bytes and the host runner is unchanged
+  since run 2's timing, so run 2's figures stand.
 
 ## X1, run 3 (2026-11-17)
 
@@ -589,6 +641,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 - The suite of what this track owns: `nix develop -c cargo test -p wcontainers-guest-cpu -p wcontainers-arm64
   -p wcontainers-translator -p wcontainers-translator-test` (Chrome and Docker needed), and the browser
   crate's lint as in docs/status-translator.md.
+- Translate time, old against new: build both sides' `tests/output.rs` (the comparison does), then
+  `<scratch>/x1/run4/translate-time.sh <rounds>` (wall and user seconds) or `<scratch>/x1/run4/count.sh
+  <rounds>` (instructions retired and cycles from `/usr/bin/time -l`; edit the binaries' paths at its top).
 - The no-std check is `tests/no_std.rs` of the test crate (part of the suite); by hand: `nix develop -c
   cargo build -p wcontainers-guest-cpu -p wcontainers-arm64 --no-default-features --target wasm32v1-none
   --target-dir <scratch>/x1/nostd-target`.
@@ -678,7 +733,8 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Measurements
 
-All in the "X0, run 1" to "run 10" sections above (runs 9 and 10 timed nothing).
+All in the run sections above (X0 runs 9 and 10 timed nothing; X1's benchmark times are in run 2, the
+float hook's in runs 2 and 3, translate time in run 4).
 
 ## Licences of what this track uses
 
@@ -754,6 +810,11 @@ X1 (each also written into the plan's text in the same commit):
 - The translator's flag states are bits of a `u128`, so a CPU has at most 126 shapes, checked at compile
   time (plan 3.4).
 - A segment access with no base or index (`fs:[d]`) groups under the segment alone (plan 3.4).
+- `ReturnAddress::Register` has no register bit (the plan had `Register(u32)`): nothing reads it, since a
+  call's meaning writes the link register itself (plan 3.2).
+- The test guest runs at the comparison's look-aheads and bounded 5 (plan 9).
+- The move is not free at translate time: about 1 to 3 percent more cycles for ARM64, measured (run 4);
+  the plan said nothing beyond today's cost (plan 3.1).
 - No intentional change of ARM64's output at X1: the stop check's raised branch changes at X6 (plan 5.1),
   so the whole move is compared byte for byte against one "before".
 
