@@ -90,6 +90,18 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
 }
 
 #[test]
+fn deferred_contexts_states_and_resolves_answer_as_direct3d_does() {
+    let (code, want) = run("own_deferred", &place("deferred-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_deferred", &place("deferred-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
 fn own_edges_read_and_copy_as_direct3d_does() {
     let (code, want) = run("own_edges", &place("edges-system", false));
     assert_eq!(code, 0, "{want}");
