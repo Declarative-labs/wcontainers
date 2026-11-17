@@ -211,7 +211,11 @@ pub struct DrawCall<'a, B: Backend> {
     pub range: DrawRange<'a, B>,
 }
 
-/// One compute dispatch.
+/// One compute dispatch, outside a pass. Each dispatch is one usage scope (WebGPU's): a buffer it binds
+/// as writable storage it binds no other way. Each count of [`DispatchGroups::Direct`] is at most
+/// [`crate::Limits::max_dispatch`]; the program's workgroup is at most [`crate::Limits::compute_size`]
+/// on each axis, [`crate::Limits::compute_invocations`] in all, and its workgroup variables at most
+/// [`crate::Limits::compute_workgroup_storage`] bytes.
 #[derive(Debug)]
 pub struct DispatchCall<'a, B: Backend> {
     pub program: &'a B::Program,
@@ -227,5 +231,7 @@ pub enum DispatchGroups<'a, B: Backend> {
     Indirect { args: &'a B::Buffer, offset: u64 },
 }
 
-/// Where captured vertices go, for [`crate::Backend::capture_vertices`].
+/// Where captured vertices go, for [`crate::Backend::capture_vertices`]: ranges of buffers with
+/// [`crate::BufferUsage::CAPTURE`], each holding every vertex the draw makes, and used no other way by
+/// the call (WebGL 2 refuses a buffer bound for capture and for anything else at once).
 pub type CaptureTargets<'a, B> = &'a [BufferRange<&'a <B as Backend>::Buffer>];

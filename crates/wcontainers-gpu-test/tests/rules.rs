@@ -3496,7 +3496,7 @@ fn textures_are_of_held_formats_and_not_empty() {
             ..desc
         }),
         Err(GpuError::Invalid(
-            "cube texture whose layers are not whole cubes"
+            "cube texture that is not 2D and square with whole cubes of layers"
         ))
     );
     assert!(
@@ -3507,6 +3507,121 @@ fn textures_are_of_held_formats_and_not_empty() {
         })
         .is_ok()
     );
+}
+
+#[test]
+fn cube_textures_are_square_and_levels_end_at_the_full_chain() {
+    let mut r = Recorder::new();
+    let cube = TextureDesc {
+        cube: true,
+        depth_or_layers: 6,
+        ..texture_desc(Format::Rgba8Unorm, 4)
+    };
+    assert!(r.create_texture(&cube).is_ok());
+    for wrong in [
+        TextureDesc { height: 2, ..cube },
+        TextureDesc {
+            dimension: TextureDimension::D3,
+            ..cube
+        },
+    ] {
+        assert_eq!(
+            r.create_texture(&wrong),
+            Err(GpuError::Invalid(
+                "cube texture that is not 2D and square with whole cubes of layers"
+            )),
+            "{wrong:?}"
+        );
+    }
+    // 4x4 has three levels; a 2x8 2D array four, its layers not counting; a 4x4x16 3D texture five.
+    let square = texture_desc(Format::Rgba8Unorm, 4);
+    let tall = TextureDesc {
+        width: 2,
+        height: 8,
+        depth_or_layers: 16,
+        ..square
+    };
+    let deep = TextureDesc {
+        dimension: TextureDimension::D3,
+        depth_or_layers: 16,
+        ..square
+    };
+    for (desc, chain) in [(square, 3), (tall, 4), (deep, 5)] {
+        assert!(
+            r.create_texture(&TextureDesc {
+                mip_levels: chain,
+                ..desc
+            })
+            .is_ok(),
+            "{desc:?}"
+        );
+        for past in [chain + 1, 40] {
+            assert_eq!(
+                r.create_texture(&TextureDesc {
+                    mip_levels: past,
+                    ..desc
+                }),
+                Err(GpuError::Invalid("more levels than the full chain")),
+                "{desc:?} {past}"
+            );
+        }
+    }
+}
+
+#[test]
+fn view_dimensions_fit_their_texture_and_layers() {
+    let mut r = Recorder::new();
+    let array = shaped(&mut r, TextureDimension::D2, 4, 12, 1);
+    let cube = r
+        .create_texture(&TextureDesc {
+            cube: true,
+            depth_or_layers: 12,
+            ..texture_desc(Format::Rgba8Unorm, 4)
+        })
+        .unwrap();
+    let volume = shaped(&mut r, TextureDimension::D3, 4, 4, 1);
+    let desc = |dimension, layer_count| TextureViewDesc {
+        format: Format::Rgba8Unorm,
+        dimension,
+        base_mip: 0,
+        mip_count: 1,
+        base_layer: 0,
+        layer_count,
+        stencil: false,
+    };
+    use ViewDimension::*;
+    let fitting = [
+        (&array, desc(D2, 1)),
+        (&array, desc(D2Array, 3)),
+        (&cube, desc(D2, 1)),
+        (&cube, desc(D2Array, 12)),
+        (&cube, desc(Cube, 6)),
+        (&cube, desc(CubeArray, 12)),
+        (&volume, desc(D3, 1)),
+    ];
+    for (t, view) in fitting {
+        assert!(r.create_view(t, &view).is_ok(), "{view:?}");
+    }
+    let unfitting = [
+        (&array, desc(D2, 3)),
+        (&array, desc(Cube, 6)),
+        (&array, desc(CubeArray, 12)),
+        (&array, desc(D3, 1)),
+        (&cube, desc(Cube, 4)),
+        (&cube, desc(CubeArray, 8)),
+        (&volume, desc(D2, 1)),
+        (&volume, desc(D2Array, 1)),
+        (&volume, desc(Cube, 1)),
+    ];
+    for (t, view) in unfitting {
+        assert_eq!(
+            r.create_view(t, &view),
+            Err(GpuError::Invalid(
+                "view dimension that does not fit its texture and layers"
+            )),
+            "{view:?}"
+        );
+    }
 }
 
 #[test]
@@ -3559,9 +3674,29 @@ fn depth_bounds_and_border_and_mirror_once_samplers_are_absent() {
         }),
         Err(GpuError::Absent(Features::DEPTH_BOUNDS))
     );
-    for mode in [AddressMode::Border, AddressMode::MirrorOnce] {
-        let mut address = [AddressMode::Clamp; 3];
-        address[2] = mode;
+    // Each mode names the feature it needs, and only that one.
+    for (address, absent) in [
+        (
+            [AddressMode::Clamp, AddressMode::Clamp, AddressMode::Border],
+            Features::BORDER_COLOR,
+        ),
+        (
+            [
+                AddressMode::MirrorOnce,
+                AddressMode::Clamp,
+                AddressMode::Clamp,
+            ],
+            Features::MIRROR_ONCE,
+        ),
+        (
+            [
+                AddressMode::Border,
+                AddressMode::MirrorOnce,
+                AddressMode::Clamp,
+            ],
+            Features::BORDER_COLOR | Features::MIRROR_ONCE,
+        ),
+    ] {
         assert_eq!(
             r.create_sampler(&SamplerDesc {
                 min: Filter::Nearest,
@@ -3573,10 +3708,8 @@ fn depth_bounds_and_border_and_mirror_once_samplers_are_absent() {
                 compare: None,
                 border: BorderColor::TransparentBlack,
             }),
-            Err(GpuError::Absent(
-                Features::BORDER_COLOR | Features::MIRROR_ONCE
-            )),
-            "{mode:?}"
+            Err(GpuError::Absent(absent)),
+            "{address:?}"
         );
     }
 }
@@ -3629,6 +3762,7 @@ fn query_sets_of_absent_kinds_are_refused() {
         r.create_query_set(QueryKind::Occlusion, 1),
         Err(GpuError::Absent(Features::OCCLUSION_COUNT))
     );
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::TIMESTAMPS));
     assert_eq!(
         r.create_query_set(QueryKind::Timestamp, 1),
         Err(GpuError::Absent(Features::TIMESTAMPS))

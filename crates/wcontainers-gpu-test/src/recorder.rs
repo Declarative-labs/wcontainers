@@ -68,6 +68,7 @@ pub(crate) enum Obj {
     Sampler(SamplerDesc),
     Shader(Rc<ShaderModule>),
     Program(ProgramObj),
+    ComputeProgram(Rc<ShaderModule>),
     Blend(Box<BlendDesc>),
     DepthStencil(DepthStencilDesc),
     Raster(RasterDesc),
@@ -134,6 +135,8 @@ pub struct Recorder {
     pub(crate) objects: Vec<Option<Obj>>,
     pub(crate) pass: Option<Pass>,
     submits: u64,
+    /// The time timestamps give, in nanoseconds: one for each call run, nested ones too.
+    pub(crate) clock: u64,
     /// Every base call, in order, with its answer.
     pub calls: Vec<Call>,
     /// How deep the calls being made are inside another base call, whose own entry is the one kept.
@@ -211,14 +214,15 @@ impl Recorder {
             min_storage_offset_alignment: 256,
             buffer_copy_alignment: 1,
             immediate_bytes: 0,
+            // Workgroup variables are not run: programs run one invocation at a time.
             compute_workgroup_storage: 0,
-            compute_invocations: 0,
-            compute_size: [0; 3],
-            max_dispatch: 0,
+            compute_invocations: 256,
+            compute_size: [256, 256, 64],
+            max_dispatch: 65535,
             max_point_size: 1.0,
             max_line_width: 1.0,
             max_anisotropy: 1,
-            capture_buffers: 0,
+            capture_buffers: 4,
         };
         Recorder {
             caps: Caps {
@@ -246,7 +250,10 @@ impl Recorder {
                     | Features::BASE_VERTEX_INSTANCE
                     | Features::INSTANCE_STEP_RATE
                     | Features::CLIP_DEPTH_ZERO_ONE
-                    | Features::FRAGMENT_STORAGE_WRITE,
+                    | Features::FRAGMENT_STORAGE_WRITE
+                    | Features::COMPUTE
+                    | Features::TRANSFORM_FEEDBACK
+                    | Features::TIMESTAMPS,
                 limits,
                 formats: FormatCaps { uses, samples },
             },
@@ -256,6 +263,7 @@ impl Recorder {
             objects: Vec::new(),
             pass: None,
             submits: 0,
+            clock: 0,
             calls: Vec::new(),
             nested: 0,
             touched: Vec::new(),
@@ -308,7 +316,25 @@ impl Recorder {
         self.lost = Some(LossReason::Error);
     }
 
+    /// The answer of a call that may be refused: a broken rule (`Err(Ok(why))`) loses the device and
+    /// answers [`GpuError::Invalid`] with `what`; an absent feature (`Err(Err(e))`) answers `e`.
+    fn refused(
+        &mut self,
+        done: Result<(), Result<String, GpuError>>,
+        what: &'static str,
+    ) -> Result<(), GpuError> {
+        match done {
+            Ok(()) => Ok(()),
+            Err(Ok(why)) => {
+                self.violate(why);
+                Err(GpuError::Invalid(what))
+            }
+            Err(Err(e)) => Err(e),
+        }
+    }
+
     fn log(&mut self, call: Call) {
+        self.clock += 1;
         if self.nested == 0 {
             self.calls.push(call);
         }
@@ -398,7 +424,7 @@ impl Recorder {
         }
     }
 
-    fn outside_pass(&self, what: &str) -> Result<(), String> {
+    pub(crate) fn outside_pass(&self, what: &str) -> Result<(), String> {
         match self.pass {
             Some(_) => Err(format!("{what} inside a pass")),
             None => Ok(()),
@@ -1047,10 +1073,12 @@ pub(crate) fn clear_values(format: Format, v: [u32; 4]) -> [f64; 4] {
 
 /// Bindings of a set the vertex and the fragment stage see: uniform buffers, sampled textures,
 /// samplers and storage buffers, against the limits per stage.
-pub(crate) type StageCounts = [[u32; 4]; 2];
+/// Bindings of each kind (uniform, texture, sampler, storage) for the vertex, fragment and compute
+/// stages.
+pub(crate) type StageCounts = [[u32; 4]; 3];
 
 /// Values a vertex program passes on to the fragment stage, each one inter-stage slot.
-fn varyings(s: &ShaderModule) -> usize {
+pub(crate) fn varyings(s: &ShaderModule) -> usize {
     let Some(ep) = s
         .module
         .entry_points
@@ -1086,7 +1114,7 @@ pub(crate) fn subresource(desc: &TextureDesc, mip: u32, layer: u32) -> usize {
 
 /// Width, height and depth (3D slices, else one) of a level.
 pub(crate) fn level_size(desc: &TextureDesc, mip: u32) -> (u32, u32, u32) {
-    let s = |n: u32| (n >> mip).max(1);
+    let s = |n: u32| n.checked_shr(mip).unwrap_or(0).max(1);
     let depth = match desc.dimension {
         TextureDimension::D3 => s(desc.depth_or_layers),
         TextureDimension::D2 => 1,
@@ -1265,10 +1293,18 @@ impl Backend for Recorder {
             {
                 return Err(GpuError::Invalid("empty texture"));
             }
-            if desc.cube && !desc.depth_or_layers.is_multiple_of(6) {
+            if desc.cube
+                && (desc.dimension != TextureDimension::D2
+                    || desc.width != desc.height
+                    || !desc.depth_or_layers.is_multiple_of(6))
+            {
                 return Err(GpuError::Invalid(
-                    "cube texture whose layers are not whole cubes",
+                    "cube texture that is not 2D and square with whole cubes of layers",
                 ));
+            }
+            let (w, h, d) = level_size(desc, 0);
+            if desc.mip_levels > 32 - w.max(h).max(d).leading_zeros() {
+                return Err(GpuError::Invalid("more levels than the full chain"));
             }
             // A multisampled level holds its samples as consecutive planes.
             let mut subresources = Vec::new();
@@ -1321,6 +1357,19 @@ impl Backend for Recorder {
             {
                 return Err(GpuError::Invalid("view range outside the texture"));
             }
+            let d2 = t.desc.dimension == TextureDimension::D2;
+            let fits = match desc.dimension {
+                ViewDimension::D2 => d2 && desc.layer_count == 1,
+                ViewDimension::D2Array => d2,
+                ViewDimension::Cube => t.desc.cube && desc.layer_count == 6,
+                ViewDimension::CubeArray => t.desc.cube && desc.layer_count.is_multiple_of(6),
+                ViewDimension::D3 => !d2,
+            };
+            if !fits {
+                return Err(GpuError::Invalid(
+                    "view dimension that does not fit its texture and layers",
+                ));
+            }
             // Without TEXTURE_VIEWS: views to draw into of one level and one layer or all layers,
             // and views of all layers in the texture's own dimension.
             let all_layers = desc.base_layer == 0 && desc.layer_count == layers(&t.desc);
@@ -1346,14 +1395,14 @@ impl Backend for Recorder {
         self.nested += 1;
         #[allow(clippy::redundant_closure_call)]
         let made = (|| -> Result<Id, GpuError> {
-            if desc
-                .address
-                .iter()
-                .any(|a| matches!(a, AddressMode::Border | AddressMode::MirrorOnce))
-            {
-                return Err(GpuError::Absent(
-                    Features::BORDER_COLOR | Features::MIRROR_ONCE,
-                ));
+            // The features the sampler asks for, each named only when one of its modes needs it.
+            let asked = desc.address.iter().fold(Features::empty(), |f, a| match a {
+                AddressMode::Border => f | Features::BORDER_COLOR,
+                AddressMode::MirrorOnce => f | Features::MIRROR_ONCE,
+                _ => f,
+            });
+            if !asked.is_empty() {
+                return Err(GpuError::Absent(asked));
             }
             if desc.anisotropy > self.caps.limits.max_anisotropy {
                 return Err(GpuError::Invalid("a sampler's anisotropy past the limit"));
@@ -1422,7 +1471,18 @@ impl Backend for Recorder {
                     vertex: shader(self, vertex)?,
                     fragment: fragment.map(|f| shader(self, f)).transpose()?,
                 },
-                Program::Compute(_) => return Err(GpuError::Absent(Features::COMPUTE)),
+                Program::Compute(_) if !self.caps.has(Features::COMPUTE) => {
+                    return Err(GpuError::Absent(Features::COMPUTE));
+                }
+                Program::Compute(c) => {
+                    let c = shader(self, c)?;
+                    if c.stage != ShaderStage::Compute {
+                        return Err(GpuError::Invalid("a program of shaders of other stages"));
+                    }
+                    self.workgroup_limits(&c).map_err(GpuError::Invalid)?;
+                    let id = self.add(Obj::ComputeProgram(c));
+                    return Ok(id);
+                }
             };
             if obj.vertex.stage != ShaderStage::Vertex
                 || obj
@@ -1756,7 +1816,7 @@ impl Backend for Recorder {
                     BindingResource::Sampler(_) => 2,
                     _ => 3,
                 };
-                for (stage, c) in [StageSet::VERTEX, StageSet::FRAGMENT]
+                for (stage, c) in [StageSet::VERTEX, StageSet::FRAGMENT, StageSet::COMPUTE]
                     .iter()
                     .zip(&mut counts)
                 {
@@ -1791,7 +1851,10 @@ impl Backend for Recorder {
             match kind {
                 QueryKind::OcclusionAny => {}
                 QueryKind::Occlusion => return Err(GpuError::Absent(Features::OCCLUSION_COUNT)),
-                QueryKind::Timestamp => return Err(GpuError::Absent(Features::TIMESTAMPS)),
+                QueryKind::Timestamp if !self.caps.has(Features::TIMESTAMPS) => {
+                    return Err(GpuError::Absent(Features::TIMESTAMPS));
+                }
+                QueryKind::Timestamp => {}
             }
             let id = self.add(Obj::QuerySet {
                 kind,
@@ -2437,6 +2500,54 @@ impl Backend for Recorder {
         self.nested -= 1;
         self.log(Call::CurrentTexture(*surface, made));
         made
+    }
+
+    fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {
+        self.nested += 1;
+        let done = self.dispatch_call(call);
+        self.nested -= 1;
+        let done = self.refused(done, "dispatch refused");
+        self.log(Call::Dispatch(Box::new(stream::Dispatch::of(call)), done));
+        done
+    }
+
+    fn capture_vertices(
+        &mut self,
+        call: &DrawCall<'_, Self>,
+        targets: CaptureTargets<'_, Self>,
+        rasterize: bool,
+    ) -> Result<(), GpuError> {
+        self.nested += 1;
+        let done = self.capture_call(call, targets, rasterize);
+        self.nested -= 1;
+        let done = self.refused(done, "capture_vertices refused");
+        self.log(Call::CaptureVertices(
+            Box::new(Draw::of(call)),
+            targets
+                .iter()
+                .map(|t| (*t.buffer, t.offset, t.size))
+                .collect(),
+            rasterize,
+            done,
+        ));
+        done
+    }
+
+    fn write_timestamp(&mut self, set: &Id, index: u32) -> Result<(), GpuError> {
+        self.nested += 1;
+        let done = self.timestamp_call(*set, index);
+        self.nested -= 1;
+        let done = self.refused(done, "write_timestamp refused");
+        self.log(Call::WriteTimestamp(*set, index, done));
+        done
+    }
+
+    fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
+        self.log(Call::TimestampsDisjoint);
+        if !self.caps.has(Features::TIMESTAMPS) {
+            return Err(GpuError::Absent(Features::TIMESTAMPS));
+        }
+        Ok(false)
     }
 
     fn present(&mut self, surface: &Id) -> Result<(), GpuError> {

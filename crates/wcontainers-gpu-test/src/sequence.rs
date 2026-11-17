@@ -79,6 +79,15 @@ pub enum Step {
     },
     Destroy(u16),
     Submit,
+    /// A dispatch updating each word of a buffer, where the back end has compute.
+    Dispatch(u16),
+    /// Vertices captured into a buffer, one to three triangles, where it has vertex capture.
+    Capture {
+        which: u16,
+        triangles: u8,
+    },
+    /// A timestamp written into one of two, both read back, where it has timestamps.
+    Timestamp(u8),
 }
 
 /// What else a pass does, each where present: a depth-stencil target (its cleared depth and
@@ -208,6 +217,10 @@ pub fn steps(max: usize) -> impl Strategy<Value = Vec<Step>> {
             .prop_map(|(which, value)| Step::ClearTexture { which, value }),
         any::<u16>().prop_map(Step::Destroy),
         Just(Step::Submit),
+        any::<u16>().prop_map(Step::Dispatch),
+        (any::<u16>(), any::<u8>())
+            .prop_map(|(which, triangles)| Step::Capture { which, triangles }),
+        any::<u8>().prop_map(Step::Timestamp),
     ];
     prop::collection::vec(step, 1..=max)
 }
@@ -229,6 +242,14 @@ struct V { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> }
 @group(0) @binding(0) var<uniform> tint: vec4<f32>;
 @fragment fn tinted(v: V) -> @location(0) vec4<f32> {
     return v.c * tint;
+}
+@group(0) @binding(1) var<storage, read_write> words: array<u32>;
+@compute @workgroup_size(1) fn step(@builtin(global_invocation_id) g: vec3<u32>) {
+    words[g.x] = words[g.x] * 3u + g.x + 1u;
+}
+struct Counted { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> }
+@vertex fn counted(@builtin(vertex_index) i: u32, @builtin(instance_index) k: u32) -> Counted {
+    return Counted(vec4<f32>(f32(i), f32(k), 0.5, 1.0), vec4<f32>(f32(i) * 0.25, f32(k), 0.0, 1.0));
 }
 ";
 
@@ -260,6 +281,11 @@ struct Kit<B: Backend> {
     raster: B::Raster,
     scissored: B::Raster,
     layout: B::VertexLayout,
+    /// The dispatch's program, where the back end has compute.
+    step: Option<B::Program>,
+    /// A vertex program reading no stream, with a layout of none, where it has vertex capture.
+    counted: Option<(B::Program, B::VertexLayout)>,
+    timestamps: Option<B::QuerySet>,
 }
 
 fn kit<B: Backend>(b: &mut B) -> Result<Kit<B>, GpuError> {
@@ -380,7 +406,36 @@ fn kit<B: Backend>(b: &mut B) -> Result<Kit<B>, GpuError> {
         format: VertexFormat::Float32x4,
     });
     let layout = b.create_vertex_layout(&desc)?;
+    let has = b.caps().features;
+    let step = if has.contains(Features::COMPUTE) {
+        let c = shader(b, "step", ShaderStage::Compute)?;
+        Some(b.create_program(&Program::Compute(&c))?)
+    } else {
+        None
+    };
+    let counted = if has.contains(Features::TRANSFORM_FEEDBACK) {
+        let v = shader(b, "counted", ShaderStage::Vertex)?;
+        let program = b.create_program(&Program::Render {
+            vertex: &v,
+            fragment: None,
+        })?;
+        let none = b.create_vertex_layout(&VertexLayoutDesc {
+            streams: [None; MAX_VERTEX_STREAMS],
+            attributes: [None; MAX_VERTEX_STREAMS],
+        })?;
+        Some((program, none))
+    } else {
+        None
+    };
+    let timestamps = if has.contains(Features::TIMESTAMPS) {
+        Some(b.create_query_set(QueryKind::Timestamp, 2)?)
+    } else {
+        None
+    };
     Ok(Kit {
+        step,
+        counted,
+        timestamps,
         float_program,
         uint_program,
         sint_program,
@@ -502,7 +557,11 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
     let mut buffers: Vec<(B::Buffer, u64)> = Vec::new();
     let mut textures: Vec<(B::Texture, TextureDesc)> = Vec::new();
     let mut read = Vec::new();
-    let all = BufferUsage::COPY_SRC | BufferUsage::COPY_DST | BufferUsage::VERTEX;
+    let all = BufferUsage::COPY_SRC
+        | BufferUsage::COPY_DST
+        | BufferUsage::VERTEX
+        | BufferUsage::STORAGE
+        | BufferUsage::CAPTURE;
     let drawn = FormatUse::RENDER | FormatUse::SAMPLE;
     let formats: Vec<Format> = FORMATS
         .into_iter()
@@ -537,13 +596,16 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                 layers,
                 mips,
             } => {
+                let (width, height) = (1 + u32::from(size[0] % 8), 1 + u32::from(size[1] % 8));
+                // A second level where the full chain has one.
+                let second = width.max(height) > 1 && *mips % 2 == 1;
                 let desc = TextureDesc {
                     dimension: TextureDimension::D2,
                     format: formats[pick(*format, formats.len())],
-                    width: 1 + u32::from(size[0] % 8),
-                    height: 1 + u32::from(size[1] % 8),
+                    width,
+                    height,
                     depth_or_layers: 1 + u32::from(*layers % 2),
-                    mip_levels: 1 + u32::from(*mips % 2),
+                    mip_levels: 1 + u32::from(second),
                     samples: 1,
                     usage: TextureUsage::RENDER
                         | TextureUsage::SAMPLE
@@ -835,6 +897,84 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
             }
             Step::Submit => {
                 b.submit();
+            }
+            Step::Dispatch(which) if kit.step.is_some() && !buffers.is_empty() => {
+                let i = pick(*which, buffers.len());
+                let (buffer, size) = &buffers[i];
+                let words = size / 4;
+                let set = b.create_binding_set(&[BindingEntry {
+                    binding: 1,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::StorageBuffer {
+                        range: BufferRange {
+                            buffer,
+                            offset: 0,
+                            size: words * 4,
+                        },
+                        writable: true,
+                    },
+                }])?;
+                pending.push((i, 0, words * 4));
+                b.dispatch(&DispatchCall {
+                    program: kit.step.as_ref().ok_or(GpuError::Invalid("no compute"))?,
+                    bindings: [Some(&set), None, None, None],
+                    immediates: &[],
+                    groups: DispatchGroups::Direct([words as u32, 1, 1]),
+                })?;
+                b.destroy(Object::BindingSet(set));
+            }
+            Step::Capture { which, triangles } if kit.counted.is_some() && !buffers.is_empty() => {
+                let i = pick(*which, buffers.len());
+                let (buffer, size) = &buffers[i];
+                // One vec4 of 16 bytes a vertex, as many triangles as fit, at most three.
+                let triangles = u64::from(1 + triangles % 3).min(size / 48);
+                let (program, none) = kit
+                    .counted
+                    .as_ref()
+                    .ok_or(GpuError::Invalid("no capture"))?;
+                if triangles > 0 {
+                    pending.push((i, 0, triangles * 48));
+                    b.capture_vertices(
+                        &DrawCall {
+                            program,
+                            blend: &kit.opaque,
+                            depth_stencil: &kit.depth,
+                            raster: &kit.raster,
+                            vertex_layout: none,
+                            bindings: [None; MAX_BINDING_SETS],
+                            vertex_buffers: &[],
+                            index: None,
+                            topology: Topology::TriangleList,
+                            restart: false,
+                            viewports: &[],
+                            scissors: &[],
+                            blend_constant: [0; 4],
+                            stencil_reference: [0; 2],
+                            immediates: &[],
+                            range: DrawRange::Vertices {
+                                first: 0,
+                                count: triangles as u32 * 3,
+                                first_instance: 0,
+                                instances: 1,
+                            },
+                        },
+                        &[BufferRange {
+                            buffer,
+                            offset: 0,
+                            size: triangles * 48,
+                        }],
+                        false,
+                    )?;
+                }
+            }
+            Step::Timestamp(n) if kit.timestamps.is_some() => {
+                let set = kit
+                    .timestamps
+                    .as_ref()
+                    .ok_or(GpuError::Invalid("no timestamps"))?;
+                b.write_timestamp(set, u32::from(*n % 2))?;
+                let rb = b.read_queries(set, 0, 2)?;
+                finish(b, rb, 16, &mut read);
             }
             _ => {}
         }

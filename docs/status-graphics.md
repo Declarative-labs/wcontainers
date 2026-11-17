@@ -77,10 +77,73 @@ branches into it at the start and end of every run.
   more rules of the interface found unchecked by a reading of its docs, now checked. The other
   branches had nothing new at the start; at the end direct3d-12, shaders and rig were merged without
   conflict and without touching the interface, the suite or the plan. The whole workspace checks.
+- G1, run 10 (2026-11-17): the six findings of G1's eighth check settled (below). The start merge
+  brought the shaders branch in (the others had nothing new), with two interface commits of serde
+  derives, kept (Interface changes). At the end direct3d-11 (twice) and direct3d-12 were merged.
+  There was no conflict and no change to the interface. The whole workspace checks. The fronts'
+  tests on the recording back end pass with its new rules: direct3d-11 `front` 31, direct3d-12
+  `device` 10, infrastructure `swapchain` 9. This run also added the generator's dispatch, capture
+  and timestamp steps.
 - G1, run 9 (2026-11-17): the three findings of G1's seventh independent check settled (below).
   The other branches had nothing new at the start. At the end webgpu, direct3d-11 and direct3d-12
   were merged without conflict (webgl, shaders and rig had nothing new); webgpu brought two
   interface commits of its own (below), kept. The whole workspace checks.
+
+## G1's eighth check, and how each finding was settled (run 10)
+
+- The present-or-absent operations (blocking): the recording back end now declares and runs
+  `COMPUTE`, `TRANSFORM_FEEDBACK` and `TIMESTAMPS` (`src/compute.rs`), so their rules are checked
+  and each is broken by a test (`tests/compute.rs`, 8 tests).
+  - Dispatches run every invocation of every group, with the five compute built-ins. Storage writes
+    are applied when the dispatch ends, as for fragments. The recorder refuses a dispatch inside a
+    pass, a program that is not a compute program, more groups than `max_dispatch`, an entry that
+    leaves out the compute stage, immediates past the limit, and a buffer bound writable and another
+    way in one dispatch. A workgroup past `compute_size` or `compute_invocations` is refused at
+    `create_program`, and so are workgroup variables past `compute_workgroup_storage`. Indirect
+    arguments answer `Absent(INDIRECT)`. A dispatch counts as a command for no-overwrite writes.
+  - `capture_vertices` writes each vertex of each whole primitive, instance after instance, into
+    one target interleaved or one target per output. The recorder refuses: a rasterised capture
+    outside a pass; one without rasterising inside a pass; no targets, or more than
+    `capture_buffers` (4); several targets that are not one per output; a target without `CAPTURE`;
+    a target past its buffer; targets too small for every vertex; a target the call also uses as a
+    vertex, index or bound buffer; fans and loops. With rasterising on it also draws. Points and line
+    strips are captured, though not drawn.
+  - `write_timestamp` writes the recorder's clock, one nanosecond per call it has run (nested ones
+    too), so results are deterministic and increase. It refuses a write inside a pass, into a set
+    that is not a timestamp set, and at an index outside the set; a timestamp set is not a pass's
+    occlusion set. `timestamps_disjoint` answers false.
+  - Each of the three answers `Absent` on a recorder made without its feature
+    (`each_operation_is_absent_without_its_feature`).
+  - The interface did not state several of these rules. They are now stated (22cede2, documentation
+    only): a dispatch is one usage scope and keeps to the compute limits; capture targets have
+    `CAPTURE`, hold every vertex and are used no other way by the call (WebGL 2's rule); the order
+    strips are captured in (odd triangles `(i, i + 2, i + 1)`, or `(i + 1, i, i + 2)` with the last
+    vertex provoking, the order the recorder's rasteriser already drew); fans and loops need
+    `FAN_AND_LOOP`; timestamps go into a timestamp set.
+  - The random sequences now dispatch, capture and write timestamps (below).
+  - Resource tables stay absent on the recording back end (Departures).
+- Texture and view shapes (blocking): `create_texture` refuses a cube texture that is not 2D and
+  square, and more levels than the full chain. `create_view` refuses a dimension that does not fit:
+  `D2` is one layer of a 2D texture, `D2Array` any layers of one, `Cube` six layers of a cube
+  texture, `CubeArray` a multiple of six, `D3` only a 3D texture. The interface and plan 4.2 now state
+  this (9feebfd). Tests: `cube_textures_are_square_and_levels_end_at_the_full_chain`, and
+  `view_dimensions_fit_their_texture_and_layers` (7 fitting and 9 unfitting views). The generator
+  no longer gives a 1x1 texture two levels.
+- Scissors past 2^32 (minor): `cut_scissors`, the `clear_rects` default and the recorder's
+  rasteriser now saturate the scissor's end. Tests: `scissors_reaching_past_the_largest_offset_are_cut_to_the_area`
+  (`tests/helpers.rs`), and a new suite test, `a_scissor_past_the_target_is_clipped_to_it` (a
+  scissor from (1, 2) of `u32::MAX` square; suite 28). Before the fix each of these panicked, as
+  the check showed.
+- 32 or more levels (minor): refused by the full-chain check, and `level_size` no longer shifts past
+  31 bits. Tested above with 40 levels.
+- The shaders merge (minor): merged at the start of this run. Its two interface commits give the
+  variant key, the reflection and the state blocks serde derives, for the cache's postcard records.
+  I kept them: the cache of section 8 needs these records, and serde is the established crate for
+  them. Plan section 3 now names `serde` among the interface's dependencies, with its licence
+  (d7d4ca4).
+- Sampler features (minor): a sampler now reports absent only the bits its modes ask for. Border
+  gives `BORDER_COLOR`, MirrorOnce gives `MIRROR_ONCE`, and both give both. The test now expects
+  exactly that (`depth_bounds_and_border_and_mirror_once_samplers_are_absent`).
 
 ## G1's seventh check, and how each finding was settled (run 9)
 
@@ -393,8 +456,12 @@ branches into it at the start and end of every run.
 
 ## G1's pass bar, item by item
 
-- Every rule of section 4 the recording back end checks has a test that breaks it (the list under
-  "The rules and their tests"), shown by the sweep that turns each check off in turn: since run 4
+- Every rule of section 4 is checked by the recording back end and has a test that breaks it (the
+  list under "The rules and their tests"), with one named exception: resource tables, absent on the
+  recording back end (Departures), whose one checkable rule (`RESOURCE_TABLES` needed) is tested.
+  Until run 10 this line read "every rule the recording back end checks", which was narrower than
+  the pass bar: the present-or-absent operations were absent on the recorder, so their rules were
+  checked by nothing. Run 10 fixed that (G1's eighth check, above). This is shown by the sweep that turns each check off in turn: since run 4
   the `if` checks, since run 5 also the checks written as a helper call ending in `?`, since run 6
   also each top-level `||` operand of a condition and each slice range refused by `ok_or`
   (Measurements); refusals of other forms are asserted by message (run 6's audit). A sweep cannot
@@ -524,6 +591,13 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   (`textures_paired_with_samplers_lie_in_the_sampled_texture_range`), and binding entries naming
   every stage that reads them (`binding_entries_name_every_stage_that_reads_them`) (G1's seventh
   check, above);
+- since run 10 (`tests/compute.rs` unless named): dispatches outside a pass, of compute programs,
+  within `max_dispatch`, with entries naming the compute stage, one usage scope each; workgroups and
+  workgroup variables within the compute limits; captures outside a pass without rasterising and
+  inside one with it, 1 to `capture_buffers` targets, one per output when several, with `CAPTURE`,
+  inside their buffers, holding every vertex, used no other way; timestamps outside a pass, into a
+  timestamp set, inside it; each absent without its feature; cube textures 2D and square, levels
+  within the full chain, view dimensions fitting texture and layers (`tests/rules.rs`);
 - multisampled textures 2D, one level and layer, no storage
   (`a_multisampled_texture_is_2d_with_one_level_and_layer_and_no_storage`); their bytes moved only by
   draws, resolves and whole copies between equal sample counts
@@ -535,6 +609,20 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 
 ## Interface changes
 
+- G1 run 10 (each documentation only, touching only `crates/wcontainers-gpu` and the plan):
+  - d7d4ca4: plan section 3 names `serde` among the interface's dependencies (the shaders track's
+    derives, kept; above).
+  - 9feebfd: `TextureDesc::cube` (2D, square, layers a multiple of six), `TextureDesc::mip_levels`
+    (one to the full chain), `ViewDimension` (each kind's texture and layer count); plan 4.2.
+  - 22cede2: `DispatchCall` (one usage scope; the compute limits), `CaptureTargets` (`CAPTURE`,
+    every vertex held, used no other way by the call), `capture_vertices` (the order strips are
+    captured in; fans and loops need `FAN_AND_LOOP`), `write_timestamp` (into a timestamp set); plan
+    4.3. For the other tracks: the WebGL back end's capture of a strip, which WebGL 2 takes only as
+    a list, must write odd triangles in this order. A front whose stream output names a buffer it
+    also draws from must copy it first.
+  - From the shaders track (3428d7c, a17eca9, merged at the start): serde derives on the variant
+    key, the reflection, the state blocks and the comparison. Kept: they serve the cache of every
+    front, and they cost nothing at run time.
 - G1 run 9:
   - 4a8f7a7 ("interface: stated that textures paired with samplers lie at bindings 32 to 159, ..."):
     documentation only. `BindingEntry::binding`: a texture the program pairs with a sampler lies in
@@ -683,8 +771,9 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   programs call functions, and it refuses everything its own capabilities leave out; since run 4 it
   also checks every limit it declares that a call can pass; since run 6 it declares
   `FORMAT_REINTERPRET` and `SEPARATE_SAMPLERS`, which it serves. No format it holds has storage uses, so storage textures are refused. Still not drawn, each refused with an
-  error naming it: points and lines, sample counts other than one and four, cube sampling, implicit
-  level of detail over several levels, compute, indirect draws, alpha to coverage, storage writes
+  error naming it: points and lines drawn (they are captured), sample counts other than one and
+  four, cube sampling, implicit level of detail over several levels, workgroup variables, barriers
+  and atomics in compute, indirect draws and dispatches, alpha to coverage, storage writes
   from vertex programs, pointers to a function's locals passed to another function.
   `texture_bytes` gives a texture's bytes as held (samples as planes), for tests on back ends that
   cannot read samples in programs.
@@ -704,7 +793,10 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 
 ## Next
 
-- The independent check of G1 (run 9's fixes).
+- The independent check of G1 (run 10's fixes).
+- The webgpu and webgl hosts take the new suite test `a_scissor_past_the_target_is_clipped_to_it`
+  when they merge. WebGL 2's `glScissor` takes signed sizes, so that back end must cut a scissor of
+  `u32::MAX` to the target. Nobody has run the test on a GPU yet.
 - The webgpu and webgl hosts run the whole suite through `suite!`, so they take the three newest
   tests (`a_stream_of_stride_zero_reads_its_first_element`,
   `comparison_samplers_compare_with_the_stored_depth`, `resolves_average_in_the_format_named`)
@@ -728,8 +820,7 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
   binding, a vertex program without a position or that discards, a flat value missing) are not
   rules of section 4.
 - Limits the recording back end does not check because nothing they bound is drawn: point size
-  and line width (lines and points are not drawn; `WIDE_LINES` is checked), compute and transform
-  feedback (absent).
+  and line width (lines and points are not drawn; `WIDE_LINES` is checked).
 - Not G1's: the occlusion counter's sum by a dispatch on WebGPU is G2's (plan 4.12 step 4); until
   then it reads back (`ReadBackWait`).
 - More suite tests, beyond G1's pass bar: every format's clear and read back (needs reference bytes
@@ -766,6 +857,11 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
     the resolve's format, the generator): `g1r8/faults.py`. Started detached over ssh, these need
     `export PATH=$HOME/.cargo/bin:$PATH` first (without it every fault reads as caught with no test
     named: cargo was not found).
+  - run 10's sweep of its new sites: `g1r10/sweep.py` (run 9's, also over `src/compute.rs`, with
+    `feature`, `binding_limits`, `stream_usages`, `workgroup_limits` and `touch_bound` among the
+    helpers, and refusals written `Err(Ok(..))` counted as sites), run with the names in
+    `g1r10/names.txt`; `g1r10/long.sh` runs the three 100,000-sequence seeds and then that sweep,
+    detached on the laptop (`nohup ./long.sh &` in `~/wcontainers-graphics/g1r10`).
   - run 9's sweep of its two new sites: `g1r9/sweep.py` (run 8's, unchanged), run the same way
     with the site names `recorder.rs:1397 draw.rs:778` (as `list` prints them on 046bce6).
   - run 5's faults (the counter's instance split, the discard, the colour byte measure):
@@ -779,6 +875,27 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 - On the Mac only formatting: `nix develop -c cargo fmt -p wcontainers-gpu -p wcontainers-gpu-test`.
 
 ## Measurements
+
+- G1 run 10, all on the Linux laptop (i7-8750H), on b8a34f0:
+  - Random sequences (scratch `g1r10/sequences-100k.log`, `--release`, 4 jobs, nothing else of
+    ours running). Each seed had 100,000 cases asked and run, recorded with no rule broken and
+    replayed identically:
+    - seed 0x5eed: 5,223,851 calls, 42,596 dispatches, 35,310 vertex captures, 114,375
+      timestamps; 97.4 s with the build, load 3.8 at the start;
+    - seed 0xc0ffee: 5,219,824 calls, 42,461 dispatches, 35,480 captures, 113,724 timestamps;
+      65.6 s, load 5.4;
+    - seed 0xd15ba7 (new): 5,197,691 calls, 14,985 multisampled passes, 21,287 depth-stencil
+      passes, 32,218 indexed draws, 21,319 queries, 7,453 no-overwrite buffer writes and 8,553
+      no-overwrite texture writes without a wait, 14,124 discarding texture writes, 42,835
+      dispatches, 35,586 vertex captures, 113,496 timestamps; 66.9 s, load 4.5.
+    The generator changed (new steps, no two-level 1x1 texture), so the old seeds give new counts.
+  - Sweep of this run's new sites (scratch `g1r10/sweep.log`, `sweep2.log`; load 0.1 to 2): 37
+    sites. 32 were caught at once. The other five survived: a workgroup past one axis but not the
+    total, and four captures that broke a draw rule, a binding's stages, a stream's usage, or the
+    no-overwrite rule through a bound resource. Tests for all five were added. On the second sweep
+    four were caught. The fifth, `touch_bound` in a capture, was redundant for buffers, which the
+    capture's reads already mark. It now marks only textures, and a test covers that: turned off,
+    it is caught (`g1r10/fault-texture-touch.log`). Final count: 37 of 37 caught.
 
 - G1 run 9, all on the Linux laptop (i7-8750H):
   - Random sequences on 046bce6 (scratch `g1r9/sequences-100k.log`, `--release`, 2 jobs, the rule
@@ -975,6 +1092,9 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 
 ## The laptop's disk
 
+- Run 10 filled the disk with a workspace check (12 MB free). It deleted our incremental cache, its
+  own `g1r9` and the finished seventh check's `check-g1-7`. That left 8 GB free, and 14 GB later as
+  others freed space. Run 10's own `g1r10` (tree copy and sweep target) is left for the check.
 - Run 9 found 776 MB free. It deleted its own finished folders (`g1`, `g1r4` to `g1r6`,
   `g1a-run2`, `work-g1r2`, `g1-check`, `g1-check2`), the folders of G1's finished fifth and sixth
   checks (`check-g1-5`, `check-g1-6`) and our incremental cache: 10 GB free after. Left alone: the
@@ -991,9 +1111,21 @@ creation) and broken once in a test (`tests/rules.rs` unless named):
 - This run: `proptest` 1.12.0 in `wcontainers-gpu-test` (MIT OR Apache-2.0, its `Cargo.toml`;
   already in the workspace's lock through the kernel and translator test crates); `half` 2 in
   `wcontainers-gpu` (MIT OR Apache-2.0; already in the lock through `wcontainers-gpu-test`).
+- Run 10 (through the shaders merge, in `wcontainers-gpu`): `serde` 1.0.229 with `serde_core` and
+  `serde_derive` (MIT OR Apache-2.0, each crate's `Cargo.toml`); bitflags' `serde` feature.
 - Earlier: `naga` 30.0.2, `blake3` 1, `half` 2 (MIT OR Apache-2.0, CC0-1.0 OR Apache-2.0); plan 3.
 
 ## Departures from the plan
+
+- G1 run 10: resource tables stay absent on the recording back end. The interface does not yet say
+  how a program reads a table (naga's binding arrays, or something else), and both browsers lack
+  them, so there is nothing to check them against. Their one stated rule is tested: they need
+  `RESOURCE_TABLES` (`resource_tables_are_absent`). Whoever first serves them on a back end should
+  write the binding rule into the interface and the recorder.
+- G1 run 10: the recording back end declares `compute_workgroup_storage` 0, because it runs one
+  invocation at a time and so cannot run workgroup variables or barriers. Barriers and atomics are
+  refused when a program reaches them, each with an error naming the statement. Programs that use
+  none of these run.
 
 - G1 run 9: section 11 lists "binding numbers" among the rules the recording back end checks. Only
   one binding number rule is checked: a texture a shader pairs with a sampler lies at 32 to 159.

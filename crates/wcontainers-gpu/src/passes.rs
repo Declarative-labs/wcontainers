@@ -728,8 +728,11 @@ pub fn cut_scissors(scissors: &[ScissorRect], area: ScissorRect, out: &mut Vec<S
     for s in scissors {
         let x = s.x.max(area.x);
         let y = s.y.max(area.y);
-        let right = (s.x + s.width).min(area.x + area.width).max(x);
-        let bottom = (s.y + s.height).min(area.y + area.height).max(y);
+        let right = s.x.saturating_add(s.width).min(area.x + area.width).max(x);
+        let bottom =
+            s.y.saturating_add(s.height)
+                .min(area.y + area.height)
+                .max(y);
         out.push(ScissorRect {
             x,
             y,
