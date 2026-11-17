@@ -11,9 +11,55 @@ G5a (first slice) is in progress, run 1.
   from the back end's `Caps`, output descriptions and their modes, DXGI format numbers to interface
   formats, swap chains (flip sequential, flip discard, blit discard, blit sequential), presenting by
   one copy into the host surface (sRGB and float back buffers encoded on the way), resizing, and frame
-  pacing by the maximum frame latency. 7 tests on a recording back end.
-- Not done yet: the Windows `dxgi.dll` shell (COM objects over this core), the Direct3D 12 front,
-  `d3d12.dll`, and running the rig's Direct3D 12 scene through them.
+  pacing by the maximum frame latency. 7 tests on a recording back end. Pushed for the Direct3D 11
+  track (see below).
+- Done in `wcontainers-direct3d-12`: serialized root signatures (`root.rs`: a DXBC container with
+  one `RTS0` part, versions 1.0 and 1.1, read and written), the answers of `D3D12CreateDevice` and
+  `CheckFeatureSupport` from `Caps` per plan section 9 (`features.rs`: 11_0 with compute and the
+  11_0 sizes, otherwise no device; 11_1 and binding tier 3 only with `RESOURCE_TABLES`; heap tier 2;
+  every absent feature zero or FALSE; shader model 6.0; one quality level per sample count
+  `FormatCaps` allows), and the map from GPU virtual addresses and descriptor handles to their
+  owners (`address.rs`). 8 tests.
+- Not done: the Direct3D 12 device itself, the Windows shells (`dxgi.dll`, `d3d12.dll`), and the
+  rig's scene through them. Nothing has drawn yet: no back end is on any branch (checked
+  2026-11-17: only phase-2-graphics, -rig, -shaders and this branch exist; G1's recording back end
+  and G2's WebGPU back end are not pushed).
+
+## Next, in this order
+
+1. `Device<B>` in `wcontainers-direct3d-12` (plain Rust, generic over the back end), enough for
+   the rig's `triangle` scene (crates/wcontainers-graphics-test/src/d3d12/scenes.rs and mod.rs):
+   command queue, allocator, graphics command list recording into a front-side list of commands,
+   root signature from `root::deserialize`, graphics pipeline state (blocks plus `prepare`),
+   RTV descriptor heap (descriptors are front-side structs at `address.rs` handles), committed
+   resources (default heap textures with a clear value; upload and readback heap buffers whose
+   bytes live in front-owned memory handed out by `Map`), `ResourceBarrier` (nothing on either back
+   end, 5.2), `ClearRenderTargetView` (a pass `Clear` load, or `clear_rects` for rectangles),
+   `OMSetRenderTargets`, viewports, scissors, `IASetVertexBuffers` through the address map,
+   `DrawInstanced`, `CopyTextureRegion` both ways with `GetCopyableFootprints` (rows of 256-byte
+   pitch), `ExecuteCommandLists` replaying into the back end (upload bytes written first,
+   `MappedUploadWhole`), `Signal`, `SetEventOnCompletion` and `GetCompletedValue` with read backs
+   finished into readback memory when their fence completes (4.6). Test it on the recorder by
+   replaying the triangle scene's calls and checking the recorded stream.
+2. Shaders: DXIL needs G6's `convert` (origin/phase-2-graphics-shaders exists now; merge it and
+   look). Until then, the triangle scene's two shaders are replaced by hand-written WGSL chosen by
+   the exact DXIL bytes of the stored corpus (crates/wcontainers-graphics-test/shaders/dxil),
+   counted and warned, and any other DXIL refused at pipeline creation with `E_INVALIDARG`.
+3. The Windows shells. The rig's gt-d3d12.exe imports from d3d12.dll exactly
+   `D3D12CreateDevice`, `D3D12SerializeVersionedRootSignature` and `D3D12GetDebugInterface` (the
+   last answers `E_NOINTERFACE`: there is no debug layer), and from dxgi.dll `CreateDXGIFactory2`
+   (read with llvm-objdump from C:\wc\out\phase-2-graphics-rig\scenes\bin\gt-d3d12.exe). Plan
+   section 10 puts the one library in G4's crate `wcontainers-directx` with `.def` forwarders;
+   until it exists, build the COM objects (the `windows` crate's `implement`, MIT OR Apache-2.0,
+   already in the lock file through the rig) as a `windows` module of each of the two crates
+   here, and a small cdylib inside crates/wcontainers-direct3d-12 that chooses `B`, so G4's
+   library can take the modules over. One device thread owns the back end; COM methods send it
+   closures and wait (the call buffer of 4.8 comes in the second batch).
+4. Run the scene: `tools/graphics-rig/scenes --build "<build>" --dll d3d12.dll=... --dll
+   dxgi.dll=... --api d3d12 triangle`, on the recorder first, then on G2's back end against the
+   stored reference.
+5. The independent check: a small Direct3D 12 program of our own, CheckFeatureSupport answers
+   against real Direct3D's on the desktop, and reading the code for anything faked.
 
 ## For the Direct3D 11 track: using the infrastructure crate
 
@@ -36,9 +82,11 @@ Depend on `wcontainers-directx-graphics-infrastructure` (path `../wcontainers-di
 
 ## How to run
 
-- Tests: `tools/graphics-rig/remote "cargo test -j 3 -p wcontainers-directx-graphics-infrastructure"`.
+- Tests: `tools/graphics-rig/remote "cargo test -j 3 -p wcontainers-directx-graphics-infrastructure
+  -p wcontainers-direct3d-12"` (15 tests: 7 infrastructure, 6 front, 2 unit; all pass on
+  2026-11-17).
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p
-  wcontainers-directx-graphics-infrastructure -- -D warnings"`.
+  wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
 - On the Mac only `nix develop -c cargo fmt` (the Mac is overloaded).
 
 ## Interface changes
@@ -60,6 +108,11 @@ None yet.
 - Sync intervals 2 to 4 show each frame for at least one refresh, not exactly that many: the host
   surface has only "wait for the display" or not. A listed loss.
 - DXGI's memory sizes in the adapter description are zero (no browser API reports memory).
+- The checksum of a root signature container written by our `D3D12SerializeVersionedRootSignature`
+  is zero: only our runtime reads it, and it does not check it. A blob saved by a program and later
+  given to real Direct3D 12 would be refused there.
+- Wave lane counts, where the back end has subgroups, are WebGPU's bounds (4 to 128), since `Limits`
+  holds no subgroup sizes.
 
 ## Licences
 
