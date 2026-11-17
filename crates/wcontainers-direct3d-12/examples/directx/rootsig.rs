@@ -1,9 +1,12 @@
 //! Root signature deserializers: a serialized root signature read back into the API's structures.
 
+use std::ffi::c_void;
+use std::sync::OnceLock;
 use wcontainers_direct3d_12::root::{RootParameterKind, RootSignatureDesc, StaticSampler};
-use windows::Win32::Foundation::E_INVALIDARG;
+
+use windows::Win32::Foundation::{E_INVALIDARG, E_NOINTERFACE};
 use windows::Win32::Graphics::Direct3D12::*;
-use windows::core::{Result, implement};
+use windows::core::{GUID, HRESULT, IUnknown, Interface, Result, implement};
 
 /// The API's structures of one root signature at one version; the description points into the
 /// vectors, which never change after construction.
@@ -229,7 +232,9 @@ impl ID3D12VersionedRootSignatureDeserializer_Impl for VersionedDeserializer_Imp
         &self,
         version: D3D_ROOT_SIGNATURE_VERSION,
     ) -> Result<*mut D3D12_VERSIONED_ROOT_SIGNATURE_DESC> {
+        // The version serialized is answered by the unconverted description itself.
         let t = match version {
+            v if v == self.unconverted.desc.Version => &self.unconverted,
             D3D_ROOT_SIGNATURE_VERSION_1_0 => &self.at[0],
             D3D_ROOT_SIGNATURE_VERSION_1_1 => &self.at[1],
             _ => return Err(E_INVALIDARG.into()),
@@ -249,4 +254,64 @@ fn array<T>(items: &[T]) -> *const T {
     } else {
         items.as_ptr()
     }
+}
+
+/// Deserializers answer no `IUnknown`, as Direct3D 12's do: `$object`'s vtable is replaced by a
+/// copy whose `QueryInterface` refuses it.
+macro_rules! without_unknown {
+    ($object:expr, $vtbl:ty) => {{
+        static ORIGINAL: OnceLock<
+            unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+        > = OnceLock::new();
+        static VTBL: OnceLock<$vtbl> = OnceLock::new();
+        unsafe extern "system" fn query(
+            this: *mut c_void,
+            iid: *const GUID,
+            out: *mut *mut c_void,
+        ) -> HRESULT {
+            // SAFETY: COM's pointers, passed on.
+            unsafe {
+                if !iid.is_null() && *iid == IUnknown::IID {
+                    if !out.is_null() {
+                        *out = std::ptr::null_mut();
+                    }
+                    return E_NOINTERFACE;
+                }
+                ORIGINAL.get().expect("set before the vtable is used")(this, iid, out)
+            }
+        }
+        let object = $object;
+        let slot = object.as_raw() as *mut *const $vtbl;
+        // SAFETY: an interface pointer points to its vtable pointer, in the object's own memory;
+        // the copy is a bitwise copy of a table of function pointers.
+        unsafe {
+            let original = &**slot;
+            ORIGINAL.get_or_init(|| original.base__.QueryInterface);
+            let patched = VTBL.get_or_init(|| {
+                let mut v = std::ptr::read(original);
+                v.base__.QueryInterface = query;
+                v
+            });
+            *slot = patched;
+        }
+        object
+    }};
+}
+
+/// A deserializer answering as Direct3D 12's: no `IUnknown`.
+pub fn deserializer(desc: &RootSignatureDesc) -> ID3D12RootSignatureDeserializer {
+    without_unknown!(
+        ID3D12RootSignatureDeserializer::from(Deserializer::new(desc)),
+        ID3D12RootSignatureDeserializer_Vtbl
+    )
+}
+
+/// A versioned deserializer answering as Direct3D 12's: no `IUnknown`.
+pub fn versioned_deserializer(
+    desc: &RootSignatureDesc,
+) -> ID3D12VersionedRootSignatureDeserializer {
+    without_unknown!(
+        ID3D12VersionedRootSignatureDeserializer::from(VersionedDeserializer::new(desc)),
+        ID3D12VersionedRootSignatureDeserializer_Vtbl
+    )
 }

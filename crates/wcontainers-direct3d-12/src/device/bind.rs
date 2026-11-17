@@ -595,11 +595,14 @@ impl<B: Backend> Device<B> {
             _ => 1,
         };
         self.note(v.resource, false);
-        let (format, stencil) = match v.format {
-            // The stencil of a depth-stencil texture, read as integers.
-            47 | 21 => (texture_desc.format, true),
-            f => (dxgi(f)?, false),
-        };
+        // The stencil of a depth-stencil texture, which Direct3D gives in the second component
+        // and the interface's stencil views in the first: refused until views can swizzle.
+        if matches!(v.format, 22 | 47) {
+            return Err(Error::NotImplemented(
+                "stencil read through a view (its component needs a view swizzle)",
+            ));
+        }
+        let format = dxgi(v.format)?;
         self.texture_view(
             v.resource,
             TextureViewDesc {
@@ -609,7 +612,7 @@ impl<B: Backend> Device<B> {
                 mip_count,
                 base_layer: v.first_layer,
                 layer_count,
-                stencil,
+                stencil: false,
             },
         )
     }

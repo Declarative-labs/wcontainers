@@ -38,6 +38,12 @@ impl<B: Backend> Device<B> {
                 self.aliased += 1;
             }
             r.inherits.push(id);
+            // Writes made while nothing was noted are not stamped: the new resource takes the
+            // bytes the old one holds now.
+            if r.written == 0 {
+                self.stamp += 1;
+                r.written = self.stamp;
+            }
         }
         if !pairs.is_empty() {
             self.aliased += 1;

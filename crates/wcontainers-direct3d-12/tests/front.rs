@@ -72,6 +72,26 @@ fn signature(version: u32) -> RootSignatureDesc {
     }
 }
 
+/// The checksum Microsoft's compiler wrote into its containers (the shaders crate's fxc output,
+/// with last blocks of 4 to 60 bytes, both of DXBC's paddings).
+#[test]
+fn dxbc_checksums_are_the_ones_fxc_writes() {
+    let dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../wcontainers-shaders/tests/own"
+    );
+    let mut checked = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "dxbc") {
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(dxbc_checksum(&bytes), bytes[4..20], "{}", path.display());
+            checked += 1;
+        }
+    }
+    assert!(checked >= 5, "{checked} containers");
+}
+
 #[test]
 fn root_signatures_round_trip_in_both_versions() {
     for version in [1, 2] {
@@ -176,6 +196,12 @@ fn root_signatures_binding_a_register_twice_for_a_stage_are_refused() {
     // vertex stages: allowed.
     assert!(!check(vec![constants(0, 0), constants(0, 1)]));
     assert!(check(vec![constants(0, 5), constants(0, 1)]));
+    // Root arguments of 64 dwords: allowed; of 65: refused (tables 1 each, constants 4 each).
+    let tables = |n: u32| (0..n).map(|i| table(vec![range(0, 1, i, 0, 0)], 0));
+    assert!(check(tables(64).collect()));
+    assert!(!check(tables(65).collect()));
+    assert!(check(tables(60).chain([constants(0, 0)]).collect()));
+    assert!(!check(tables(61).chain([constants(0, 0)]).collect()));
 }
 
 #[test]
@@ -192,6 +218,7 @@ fn webgpu_reports_11_0_and_tier_1() {
     let o1 = options1(&caps);
     assert!(!o1.wave_ops && !o1.int64_shader_ops);
     assert_eq!(shader_model(0x66), Ok(SHADER_MODEL_6_0));
+    assert!(shader_model(0x67).is_err());
     assert_eq!(shader_model(0x51), Ok(0x51));
     for named_nothing in [0, 0x52, 0x89] {
         assert!(shader_model(named_nothing).is_err());
