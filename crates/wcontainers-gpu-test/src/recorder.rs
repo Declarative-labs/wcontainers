@@ -69,7 +69,7 @@ pub(crate) enum Obj {
     DepthStencil(DepthStencilDesc),
     Raster(RasterDesc),
     VertexLayout(Box<VertexLayoutDesc>),
-    BindingSet(Vec<(u32, Bound)>),
+    BindingSet(Vec<(u32, Bound)>, StageCounts),
     QuerySet {
         kind: QueryKind,
         results: Vec<u64>,
@@ -584,21 +584,30 @@ impl Recorder {
         };
         let mut colors = [None; MAX_COLOR_TARGETS];
         let mut resolves = Vec::new();
+        // Every (texture, subresource, slice) attached, to find one attached twice.
+        let mut attached = Vec::new();
+        let mut bytes = 0;
         for (i, c) in pass.colors.iter().enumerate() {
             let Some(c) = c else { continue };
+            if i >= self.caps.limits.color_targets as usize {
+                return Err("a colour attachment past the limit".into());
+            }
             let (w, h) = self.view_size(*c.view)?;
             same(w, h)?;
             let format = self.view(*c.view)?.desc.format;
             if format.is_depth_stencil() {
                 return Err("a depth format as a colour attachment".into());
             }
-            let (texture, _, _) = self.attachment(*c.view, c.depth_slice)?;
+            bytes += format.block().2;
+            let (texture, sub, slice) = self.attachment(*c.view, c.depth_slice)?;
+            attached.push((texture, sub, slice));
             let samples = self.texture(texture)?.desc.samples;
             same_samples(samples)?;
             if let Some(r) = c.resolve {
                 let (rw, rh) = self.view_size(*r)?;
                 same(rw, rh)?;
-                let (rt, _, _) = self.attachment(*r, 0)?;
+                let (rt, sub, slice) = self.attachment(*r, 0)?;
+                attached.push((rt, sub, slice));
                 if samples == 1 || self.texture(rt)?.desc.samples != 1 {
                     return Err(
                         "a resolve from a single-sampled attachment or into a multisampled one"
@@ -628,9 +637,16 @@ impl Recorder {
             if d.depth.is_some() != has_depth || d.stencil.is_some() != has_stencil {
                 return Err("depth attachment aspects differ from the format's".into());
             }
-            let (texture, _, _) = self.attachment(*d.view, 0)?;
+            let (texture, sub, slice) = self.attachment(*d.view, 0)?;
+            attached.push((texture, sub, slice));
             same_samples(self.texture(texture)?.desc.samples)?;
             depth = Some((*d.view, d.depth, d.stencil));
+        }
+        if bytes > self.caps.limits.color_bytes_per_sample {
+            return Err("colour attachments of more bytes a sample than the limit".into());
+        }
+        if (1..attached.len()).any(|i| attached[..i].contains(&attached[i])) {
+            return Err("one subresource attached twice".into());
         }
         let (width, height, samples) = match (size, pass.empty) {
             (Some(s), None) => (s.0, s.1, count.unwrap_or(1)),
@@ -912,6 +928,33 @@ pub(crate) fn clear_values(format: Format, v: [u32; 4]) -> [f64; 4] {
     }
 }
 
+/// Bindings of a set the vertex and the fragment stage see: uniform buffers, sampled textures,
+/// samplers and storage buffers, against the limits per stage.
+pub(crate) type StageCounts = [[u32; 4]; 2];
+
+/// Values a vertex program passes on to the fragment stage, each one inter-stage slot.
+fn varyings(s: &ShaderModule) -> usize {
+    let Some(ep) = s
+        .module
+        .entry_points
+        .iter()
+        .find(|e| e.name == s.entry_point)
+    else {
+        return 0;
+    };
+    let Some(r) = &ep.function.result else {
+        return 0;
+    };
+    match (&r.binding, &s.module.types[r.ty].inner) {
+        (Some(naga::Binding::Location { .. }), _) => 1,
+        (None, naga::TypeInner::Struct { members, .. }) => members
+            .iter()
+            .filter(|m| matches!(m.binding, Some(naga::Binding::Location { .. })))
+            .count(),
+        _ => 0,
+    }
+}
+
 /// Layers per level: array layers, or one for a 3D texture.
 pub(crate) fn layers(desc: &TextureDesc) -> u32 {
     match desc.dimension {
@@ -1055,6 +1098,34 @@ impl Backend for Recorder {
                     "texture of a format this back end does not hold",
                 ));
             }
+            if desc.samples > 1
+                && (desc.dimension != TextureDimension::D2
+                    || desc.mip_levels != 1
+                    || desc.depth_or_layers != 1
+                    || desc.usage.contains(TextureUsage::STORAGE))
+            {
+                return Err(GpuError::Invalid(
+                    "a multisampled texture that is not 2D with one level and one layer, or is storage",
+                ));
+            }
+            let l = self.caps.limits;
+            let fits = match desc.dimension {
+                TextureDimension::D3 => {
+                    desc.width.max(desc.height).max(desc.depth_or_layers) <= l.max_texture_3d
+                }
+                TextureDimension::D2 => {
+                    let most = if desc.cube {
+                        l.max_texture_cube
+                    } else {
+                        l.max_texture_2d
+                    };
+                    desc.width.max(desc.height) <= most
+                        && desc.depth_or_layers <= l.max_texture_layers
+                }
+            };
+            if !fits {
+                return Err(GpuError::Invalid("a texture past the size limits"));
+            }
             let render = FormatUse::RENDER | FormatUse::DEPTH_STENCIL;
             if (desc.usage.contains(TextureUsage::RENDER) && !uses.intersects(render))
                 || (desc.usage.contains(TextureUsage::SAMPLE) && !uses.contains(FormatUse::SAMPLE))
@@ -1080,16 +1151,6 @@ impl Backend for Recorder {
             if desc.cube && !desc.depth_or_layers.is_multiple_of(6) {
                 return Err(GpuError::Invalid(
                     "cube texture whose layers are not whole cubes",
-                ));
-            }
-            if desc.samples > 1
-                && (desc.dimension != TextureDimension::D2
-                    || desc.mip_levels != 1
-                    || desc.depth_or_layers != 1
-                    || desc.usage.contains(TextureUsage::STORAGE))
-            {
-                return Err(GpuError::Invalid(
-                    "a multisampled texture that is not 2D with one level and one layer, or is storage",
                 ));
             }
             // A multisampled level holds its samples as consecutive planes.
@@ -1166,6 +1227,9 @@ impl Backend for Recorder {
                     Features::BORDER_COLOR | Features::MIRROR_ONCE,
                 ));
             }
+            if desc.anisotropy > self.caps.limits.max_anisotropy {
+                return Err(GpuError::Invalid("a sampler's anisotropy past the limit"));
+            }
             let id = self.add(Obj::Sampler(*desc));
             Ok(id)
         })();
@@ -1203,6 +1267,11 @@ impl Backend for Recorder {
                 },
                 Program::Compute(_) => return Err(GpuError::Absent(Features::COMPUTE)),
             };
+            if varyings(&obj.vertex) > self.caps.limits.inter_stage_slots as usize {
+                return Err(GpuError::Invalid(
+                    "vertex outputs past the inter-stage limit",
+                ));
+            }
             let id = self.add(Obj::Program(obj));
             Ok(id)
         })();
@@ -1342,6 +1411,26 @@ impl Backend for Recorder {
         self.nested += 1;
         #[allow(clippy::redundant_closure_call)]
         let made = (|| -> Result<Id, GpuError> {
+            let l = self.caps.limits;
+            let streams = desc
+                .streams
+                .iter()
+                .rposition(Option::is_some)
+                .map_or(0, |i| i + 1);
+            let attributes = desc.attributes.iter().flatten().count();
+            if streams > l.vertex_streams as usize || attributes > l.vertex_attributes as usize {
+                return Err(GpuError::Invalid(
+                    "a vertex layout of more streams or attributes than the limits",
+                ));
+            }
+            if desc
+                .streams
+                .iter()
+                .flatten()
+                .any(|s| s.stride > l.max_vertex_stride)
+            {
+                return Err(GpuError::Invalid("a vertex stride past the limit"));
+            }
             let id = self.add(Obj::VertexLayout(Box::new(*desc)));
             Ok(id)
         })();
@@ -1355,6 +1444,7 @@ impl Backend for Recorder {
         #[allow(clippy::redundant_closure_call)]
         let made = (|| -> Result<Id, GpuError> {
             let mut set = Vec::new();
+            let mut counts = StageCounts::default();
             let (limits, has) = (self.caps.limits, self.caps.features);
             for e in entries {
                 let range = match e.resource {
@@ -1485,9 +1575,23 @@ impl Backend for Recorder {
                 if set.iter().any(|(b, _)| *b == e.binding) {
                     return Err(GpuError::Invalid("two entries at one binding"));
                 }
+                let kind = match e.resource {
+                    BindingResource::UniformBuffer(_) => 0,
+                    BindingResource::Texture(_) => 1,
+                    BindingResource::Sampler(_) => 2,
+                    _ => 3,
+                };
+                for (stage, c) in [StageSet::VERTEX, StageSet::FRAGMENT]
+                    .iter()
+                    .zip(&mut counts)
+                {
+                    if e.stages.contains(*stage) {
+                        c[kind] += 1;
+                    }
+                }
                 set.push((e.binding, bound));
             }
-            let id = self.add(Obj::BindingSet(set));
+            let id = self.add(Obj::BindingSet(set, counts));
             Ok(id)
         })();
         self.nested -= 1;

@@ -31,6 +31,14 @@ struct P { c: vec4<f32> }
 @fragment fn per_sample(@builtin(sample_index) i: u32) -> @location(0) vec4<f32> {
     return vec4<f32>(f32(i));
 }
+@group(0) @binding(33) var m: texture_multisampled_2d<f32>;
+@fragment fn loads_sample() -> @location(0) vec4<f32> {
+    return textureLoad(m, vec2<i32>(0, 0), 0);
+}
+struct Out { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> }
+@vertex fn vs_out(@location(0) v: vec2<f32>) -> Out {
+    return Out(vec4<f32>(v, 0.5, 1.0), vec4<f32>(1.0));
+}
 ";
 
 fn buffer(r: &mut Recorder, size: u64, usage: BufferUsage) -> Id {
@@ -101,6 +109,8 @@ struct Drawing {
     target: Id,
     target_view: Id,
     vertices: Id,
+    /// 8 bytes a draw's change may name as indices, vertices or indirect arguments.
+    spare: Id,
     layout: Id,
     blend: Id,
     depth: Id,
@@ -126,6 +136,8 @@ impl Drawing {
             .flat_map(|f| f.to_le_bytes())
             .collect();
         r.write_buffer(&vertices, 0, &corners, WriteMode::Discard);
+        let uses = BufferUsage::VERTEX | BufferUsage::INDEX | BufferUsage::INDIRECT;
+        let spare = buffer(&mut r, 8, uses | BufferUsage::COPY_DST);
         let mut desc = VertexLayoutDesc {
             streams: [None; MAX_VERTEX_STREAMS],
             attributes: [None; MAX_VERTEX_STREAMS],
@@ -183,6 +195,7 @@ impl Drawing {
             target,
             target_view,
             vertices,
+            spare,
             layout,
             blend,
             depth,
@@ -191,6 +204,11 @@ impl Drawing {
     }
 
     fn program(&mut self, fragment: &str) -> Id {
+        self.program_of("vs", fragment)
+    }
+
+    /// The program of the entry points named.
+    fn program_of(&mut self, vertex: &str, fragment: &str) -> Id {
         let module = naga::front::wgsl::parse_str(PROGRAM).unwrap();
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
@@ -209,7 +227,7 @@ impl Drawing {
                 })
                 .unwrap()
         };
-        let v = shader("vs", ShaderStage::Vertex);
+        let v = shader(vertex, ShaderStage::Vertex);
         let f = shader(fragment, ShaderStage::Fragment);
         self.r
             .create_program(&Program::Render {
@@ -238,17 +256,30 @@ impl Drawing {
 
     /// Draws one triangle over the target with `program`, the binding set and topology given.
     fn draw(&mut self, program: &Id, set: Option<&Id>, topology: Topology, restart: bool) {
-        self.draw_with(program, set, topology, restart, |_| {});
+        self.draw_with(program, set, topology, restart, |_, _| {});
     }
 
-    /// Draws as [`Drawing::draw`] with the call changed by `change` first.
+    /// Draws as [`Drawing::draw`] with the call changed by `change` first, which is also given
+    /// [`Drawing::spare`].
     fn draw_with(
         &mut self,
         program: &Id,
         set: Option<&Id>,
         topology: Topology,
         restart: bool,
-        change: impl FnOnce(&mut DrawCall<'_, Recorder>),
+        change: impl for<'c> FnOnce(&mut DrawCall<'c, Recorder>, &'c Id),
+    ) {
+        self.draw_sets(program, [set, None, None, None], topology, restart, change);
+    }
+
+    /// Draws as [`Drawing::draw_with`] with the binding sets given.
+    fn draw_sets(
+        &mut self,
+        program: &Id,
+        sets: [Option<&Id>; MAX_BINDING_SETS],
+        topology: Topology,
+        restart: bool,
+        change: impl for<'c> FnOnce(&mut DrawCall<'c, Recorder>, &'c Id),
     ) {
         let viewport = [Viewport {
             x: 0f32.to_bits(),
@@ -268,7 +299,7 @@ impl Drawing {
             depth_stencil: &self.depth,
             raster: &self.raster,
             vertex_layout: &self.layout,
-            bindings: [set, None, None, None],
+            bindings: sets,
             vertex_buffers: &streams,
             index: None,
             topology,
@@ -285,7 +316,7 @@ impl Drawing {
                 instances: 1,
             },
         };
-        change(&mut call);
+        change(&mut call, &self.spare);
         self.r.draw(&call);
     }
 
@@ -637,11 +668,13 @@ fn writes_copies_and_clears_stay_inside_their_buffers() {
     r.write_buffer(&b, 12, &[0; 8], WriteMode::Ordered);
     r.copy_buffer(&b, 0, &b, 4, 8);
     r.clear_buffer(&b, 0, 6, &[1, 2, 3, 4]);
+    r.clear_buffer(&b, 0, 6, &[1, 2, 3]);
     assert_eq!(
         r.violations,
         [
             "write past the buffer's end",
             "copy between overlapping ranges of one buffer",
+            "clear pattern of a size the interface does not take",
             "clear pattern of a size the interface does not take",
         ]
     );
@@ -826,15 +859,20 @@ fn a_multisampled_texture_is_2d_with_one_level_and_layer_and_no_storage() {
             ..desc
         },
     ] {
-        assert!(
-            matches!(r.create_texture(&broken), Err(GpuError::Invalid(_))),
+        assert_eq!(
+            r.create_texture(&broken),
+            Err(GpuError::Invalid(
+                "a multisampled texture that is not 2D with one level and one layer, or is storage"
+            )),
             "{broken:?}"
         );
     }
     // A count the format does not take.
-    assert!(
-        r.create_texture(&TextureDesc { samples: 2, ..desc })
-            .is_err()
+    assert_eq!(
+        r.create_texture(&TextureDesc { samples: 2, ..desc }),
+        Err(GpuError::Invalid(
+            "texture sample count the format does not take"
+        ))
     );
 }
 
@@ -993,6 +1031,54 @@ fn resolves_go_from_many_samples_to_one_of_an_averaging_format() {
         f(&mut r);
         assert_eq!(r.violations, [violation]);
     }
+    // `resolve` from one sample, or into many.
+    for samples in [(1, 1), (4, 4)] {
+        let mut r = Recorder::new();
+        let mut make = |n| {
+            if n > 1 {
+                multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap()
+            } else {
+                texture(&mut r, Format::Rgba8Unorm, 2, ALL)
+            }
+        };
+        let (a, b) = (make(samples.0), make(samples.1));
+        r.resolve(&region(&a), &region(&b), Format::Rgba8Unorm);
+        assert_eq!(
+            r.violations,
+            ["a resolve from a single-sampled texture or into a multisampled one"]
+        );
+    }
+    // `resolve` into level 1 of a 4 by 4 texture of two layers fits; past its levels or layers, or
+    // from a region other than the source's one level and layer, it does not.
+    let at = [
+        ([0, 0, 1, 1], true),
+        ([0, 0, 2, 0], false),
+        ([0, 0, 1, 2], false),
+        ([1, 0, 1, 0], false),
+        ([0, 1, 1, 0], false),
+    ];
+    for ([src_mip, src_layer, mip, layer], fits) in at {
+        let mut r = Recorder::new();
+        let a = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
+        let b = shaped(&mut r, TextureDimension::D2, 4, 2, 2);
+        let src = TextureRegion {
+            mip: src_mip,
+            layer: src_layer,
+            ..region(&a)
+        };
+        let dst = TextureRegion {
+            mip,
+            layer,
+            ..region(&b)
+        };
+        r.resolve(&src, &dst, Format::Rgba8Unorm);
+        let want: &[&str] = if fits {
+            &[]
+        } else {
+            &["a resolve between subresources of different sizes"]
+        };
+        assert_eq!(r.violations, want, "{src_mip} {src_layer} {mip} {layer}");
+    }
 }
 
 /// A blend block where every target writes everything, blended as `blend` says.
@@ -1071,7 +1157,7 @@ fn stencil_references_differ_per_face_only_with_stencil_per_face() {
     let mut d = Drawing::new();
     let p = d.program("plain");
     d.begin();
-    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
         c.stencil_reference = [1, 2]
     });
     d.refused("stencil references per face without STENCIL_PER_FACE");
@@ -1096,7 +1182,7 @@ fn raster_blocks_need_the_features_they_use() {
         depth_minus_one: false,
         sample_mask: !0,
     };
-    let cases: [(Features, Change); 7] = [
+    let cases: [(Features, Change); 10] = [
         (Features::PROVOKING_VERTEX_FIRST, |_| {}),
         (Features::PROVOKING_VERTEX_LAST, |d| {
             d.provoking = ProvokingVertex::Last
@@ -1110,6 +1196,9 @@ fn raster_blocks_need_the_features_they_use() {
         (Features::SAMPLE_MASK, |d| d.sample_mask = 0b1110),
         (Features::CLIP_DEPTH_ZERO_ONE, |_| {}),
         (Features::WIDE_LINES, |d| d.line_width = 2.0f32.to_bits()),
+        (Features::POLYGON_MODE, |d| d.fill = FillMode::Line),
+        (Features::DEPTH_CLAMP, |d| d.depth_clip = false),
+        (Features::CLIP_DEPTH_MINUS_ONE, |d| d.depth_minus_one = true),
     ];
     for (feature, change) in cases {
         let mut desc = base;
@@ -1286,7 +1375,7 @@ fn viewports_keep_min_depth_at_most_max_depth() {
     let mut d = Drawing::new();
     let p = d.program("plain");
     d.begin();
-    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
         c.viewports = &REVERSED
     });
     d.refused("a viewport whose min_depth is above its max_depth");
@@ -1305,7 +1394,7 @@ fn fractional_viewports_need_fractional_viewport() {
     let mut d = Drawing::with_caps(|c| c.features.remove(Features::FRACTIONAL_VIEWPORT));
     let p = d.program("plain");
     d.begin();
-    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
         c.viewports = &HALF
     });
     d.refused("a fractional viewport without FRACTIONAL_VIEWPORT");
@@ -1316,7 +1405,7 @@ fn draw_bases_need_base_vertex_instance() {
     let mut d = Drawing::with_caps(|c| c.features.remove(Features::BASE_VERTEX_INSTANCE));
     let p = d.program("plain");
     d.begin();
-    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
         c.range = DrawRange::Vertices {
             first: 0,
             count: 3,
@@ -1331,11 +1420,10 @@ fn draw_bases_need_base_vertex_instance() {
 fn eight_bit_indices_need_index_u8() {
     let mut d = Drawing::with_caps(|c| c.features.remove(Features::INDEX_U8));
     let p = d.program("plain");
-    let indices: &'static Id = Box::leak(Box::new(buffer(&mut d.r, 4, BufferUsage::INDEX)));
     d.begin();
-    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, spare| {
         c.index = Some(IndexBinding {
-            buffer: indices,
+            buffer: spare,
             offset: 0,
             format: IndexFormat::U8,
         });
@@ -1356,7 +1444,7 @@ fn immediates_stay_within_the_limit() {
     assert_eq!(d.r.caps().limits.immediate_bytes, 0);
     let p = d.program("plain");
     d.begin();
-    d.draw_with(&p, None, Topology::TriangleList, false, |c| {
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
         c.immediates = &[0; 4]
     });
     d.refused("immediates past the limit");
@@ -1603,4 +1691,1049 @@ fn views_of_other_shapes_need_texture_views() {
         bind(&mut r, &layer),
         Err(GpuError::Absent(Features::TEXTURE_VIEWS))
     );
+}
+
+/// A colour attachment that loads and stores `view`.
+fn color(view: &Id) -> ColorAttachment<'_, Recorder> {
+    ColorAttachment {
+        view,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Load,
+        store: StoreOp::Store,
+    }
+}
+
+fn pass_of<'a, const N: usize>(
+    colors: [ColorAttachment<'a, Recorder>; N],
+) -> PassDesc<'a, Recorder> {
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: None,
+        empty: None,
+        occlusion: None,
+    };
+    for (slot, c) in pass.colors.iter_mut().zip(colors) {
+        *slot = Some(c);
+    }
+    pass
+}
+
+/// An `rgba8unorm` texture of the shape given, with every usage but storage and one sample.
+fn shaped(
+    r: &mut Recorder,
+    dimension: TextureDimension,
+    size: u32,
+    depth_or_layers: u32,
+    mips: u32,
+) -> Id {
+    r.create_texture(&TextureDesc {
+        dimension,
+        format: Format::Rgba8Unorm,
+        width: size,
+        height: size,
+        depth_or_layers,
+        mip_levels: mips,
+        samples: 1,
+        usage: ALL,
+        cube: false,
+        reinterpret: false,
+    })
+    .unwrap()
+}
+
+fn view_of(
+    r: &mut Recorder,
+    t: &Id,
+    dimension: ViewDimension,
+    (base_mip, mip_count): (u32, u32),
+    (base_layer, layer_count): (u32, u32),
+) -> Id {
+    r.create_view(
+        t,
+        &TextureViewDesc {
+            format: Format::Rgba8Unorm,
+            dimension,
+            base_mip,
+            mip_count,
+            base_layer,
+            layer_count,
+            stencil: false,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn an_attachment_view_is_one_level_and_one_layer() {
+    let one = "an attachment view must be one level and one layer";
+    let mut r = Recorder::new();
+    let t = shaped(&mut r, TextureDimension::D2, 4, 1, 2);
+    let levels = view_of(&mut r, &t, ViewDimension::D2, (0, 2), (0, 1));
+    r.begin_pass(&pass_of([color(&levels)]));
+    assert_eq!(r.violations, [one]);
+
+    let mut r = Recorder::new();
+    let t = shaped(&mut r, TextureDimension::D2, 4, 2, 1);
+    let layers = view_of(&mut r, &t, ViewDimension::D2Array, (0, 1), (0, 2));
+    r.begin_pass(&pass_of([color(&layers)]));
+    assert_eq!(r.violations, [one]);
+}
+
+/// A 3D texture's depth halves with each level: level 1 of a 4-deep texture has slices 0 and 1.
+#[test]
+fn a_3d_attachment_slice_lies_inside_its_levels_depth() {
+    let mut r = Recorder::new();
+    let t = shaped(&mut r, TextureDimension::D3, 4, 4, 2);
+    let level = view_of(&mut r, &t, ViewDimension::D3, (1, 1), (0, 1));
+    let slice = |depth_slice| ColorAttachment {
+        depth_slice,
+        ..color(&level)
+    };
+    r.begin_pass(&pass_of([slice(1)]));
+    r.end_pass();
+    assert!(r.violations.is_empty());
+    r.begin_pass(&pass_of([slice(2)]));
+    assert_eq!(r.violations, ["an attachment's slice outside its level"]);
+}
+
+#[test]
+fn a_subresource_is_attached_once() {
+    let mut d = Drawing::new();
+    let v = d.target_view;
+    d.r.begin_pass(&pass_of([color(&v), color(&v)]));
+    d.refused("one subresource attached twice");
+
+    // Two resolves into one view.
+    let mut r = Recorder::new();
+    let a = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
+    let a = view(&mut r, &a, Format::Rgba8Unorm);
+    let b = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
+    let b = view(&mut r, &b, Format::Rgba8Unorm);
+    let into = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let into = view(&mut r, &into, Format::Rgba8Unorm);
+    let resolved = |v| ColorAttachment {
+        resolve: Some(&into),
+        ..color(v)
+    };
+    r.begin_pass(&pass_of([resolved(&a), resolved(&b)]));
+    assert_eq!(r.violations, ["one subresource attached twice"]);
+}
+
+#[test]
+fn a_pass_has_attachments_or_empty_but_not_both() {
+    let empty = EmptyPass {
+        width: 2,
+        height: 2,
+        samples: 1,
+    };
+    let mut d = Drawing::new();
+    let v = d.target_view;
+    d.r.begin_pass(&PassDesc {
+        empty: Some(empty),
+        ..pass_of([color(&v)])
+    });
+    d.refused("a pass with attachments and `empty`");
+
+    let mut r = Recorder::new();
+    r.begin_pass(&pass_of([]));
+    assert_eq!(r.violations, ["a pass with no attachment and no `empty`"]);
+    // `empty` alone is a pass.
+    let mut r = Recorder::new();
+    r.begin_pass(&PassDesc {
+        empty: Some(empty),
+        ..pass_of([])
+    });
+    r.end_pass();
+    assert!(r.violations.is_empty());
+}
+
+#[test]
+fn the_depth_attachment_has_a_depth_format() {
+    let mut d = Drawing::new();
+    let other = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
+    let other = view(&mut d.r, &other, Format::Rgba8Unorm);
+    let v = d.target_view;
+    d.r.begin_pass(&PassDesc {
+        depth: Some(DepthAttachment {
+            view: &other,
+            depth: Some(AspectOps {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+                read_only: false,
+            }),
+            stencil: None,
+        }),
+        ..pass_of([color(&v)])
+    });
+    d.refused("a colour format as the depth attachment");
+}
+
+/// A depth-stencil block that writes depth (compare `Always`) or stencil (replace on pass).
+fn writing(d: &mut Drawing, depth: bool, stencil: bool) -> Id {
+    let face = StencilFace {
+        compare: CompareFn::Always,
+        fail: StencilOp::Keep,
+        depth_fail: StencilOp::Keep,
+        pass: if stencil {
+            StencilOp::Replace
+        } else {
+            StencilOp::Keep
+        },
+    };
+    d.r.create_depth_stencil(&DepthStencilDesc {
+        depth_compare: Some(CompareFn::Always),
+        depth_write: depth,
+        stencil: Some((face, face)),
+        stencil_read_mask: [0xff; 2],
+        stencil_write_mask: [0xff; 2],
+        depth_bounds: None,
+    })
+    .unwrap()
+}
+
+/// Draws with `block` in a pass whose depth-stencil attachment has its depth or its stencil
+/// read-only.
+fn draw_read_only(depth_read_only: bool, depth: bool, stencil: bool) -> Drawing {
+    let mut d = Drawing::new();
+    let ds = texture(&mut d.r, Format::Depth24PlusStencil8, 2, ALL);
+    let ds = view(&mut d.r, &ds, Format::Depth24PlusStencil8);
+    let block = writing(&mut d, depth, stencil);
+    d.depth = block;
+    let p = d.program("plain");
+    let v = d.target_view;
+    d.r.begin_pass(&PassDesc {
+        depth: Some(DepthAttachment {
+            view: &ds,
+            depth: Some(AspectOps {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+                read_only: depth_read_only,
+            }),
+            stencil: Some(AspectOps {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+                read_only: !depth_read_only,
+            }),
+        }),
+        ..pass_of([color(&v)])
+    });
+    d.draw(&p, None, Topology::TriangleList, false);
+    d
+}
+
+#[test]
+fn a_draw_writes_no_read_only_aspect() {
+    draw_read_only(true, true, false).refused("a draw writing depth into a read-only attachment");
+    draw_read_only(false, false, true)
+        .refused("a draw writing stencil into a read-only attachment");
+    // Each aspect written where the other is read-only.
+    for (depth_read_only, depth, stencil) in [(true, false, true), (false, true, false)] {
+        let mut d = draw_read_only(depth_read_only, depth, stencil);
+        d.r.end_pass();
+        assert!(d.r.violations.is_empty());
+    }
+}
+
+#[test]
+fn a_pass_ends_with_no_query_running() {
+    let mut d = Drawing::new();
+    let set = d.r.create_query_set(QueryKind::OcclusionAny, 1).unwrap();
+    let v = d.target_view;
+    d.r.begin_pass(&PassDesc {
+        occlusion: Some(&set),
+        ..pass_of([color(&v)])
+    });
+    d.r.begin_query(0);
+    d.r.end_pass();
+    d.refused("a pass ended with its query running");
+}
+
+#[test]
+fn present_happens_outside_a_pass() {
+    let mut d = Drawing::new();
+    let s = d.r.create_surface(1).unwrap();
+    d.r.configure_surface(&s, Format::Rgba8Unorm, 2, 2, true)
+        .unwrap();
+    d.r.current_texture(&s).unwrap();
+    d.begin();
+    let _ = d.r.present(&s);
+    // Presenting submits the frame's work, so the submit is refused too.
+    assert_eq!(
+        d.r.violations,
+        ["present inside a pass", "submit inside a pass"]
+    );
+}
+
+#[test]
+fn a_surface_takes_a_format_it_can_present() {
+    let mut r = Recorder::new();
+    let s = r.create_surface(1).unwrap();
+    assert_eq!(
+        r.configure_surface(&s, Format::R32Float, 2, 2, true),
+        Err(GpuError::Invalid("surface format without PRESENT"))
+    );
+}
+
+#[test]
+fn regions_lie_inside_their_texture() {
+    let write = |r: &mut Recorder, t: &Id, mip, layer, origin, n: u32, layers: u32| {
+        r.write_texture(
+            &TextureRegion {
+                texture: t,
+                mip,
+                layer,
+                origin,
+                stencil: false,
+            },
+            Extent {
+                width: n,
+                height: n,
+                depth_or_layers: layers,
+            },
+            &vec![0; (n * n * 4 * layers) as usize],
+            n * 4,
+            n,
+            WriteMode::Ordered,
+        );
+    };
+    let at = |x, y, z| Origin { x, y, z };
+    let mut r = Recorder::new();
+    let flat = shaped(&mut r, TextureDimension::D2, 4, 2, 2);
+    let deep = shaped(&mut r, TextureDimension::D3, 4, 4, 2);
+    // Inside: level 1 is 2 by 2 (by 2 slices for the 3D one).
+    write(&mut r, &flat, 1, 1, at(0, 0, 0), 2, 1);
+    write(&mut r, &deep, 1, 0, at(0, 0, 1), 2, 1);
+    assert!(r.violations.is_empty());
+    write(&mut r, &flat, 2, 0, at(0, 0, 0), 1, 1);
+    write(&mut r, &flat, 0, 1, at(0, 0, 0), 4, 2);
+    write(&mut r, &deep, 1, 0, at(0, 0, 1), 2, 2);
+    write(&mut r, &flat, 1, 0, at(1, 0, 0), 2, 1);
+    write(&mut r, &flat, 1, 0, at(0, 1, 0), 2, 1);
+    assert_eq!(
+        r.violations,
+        [
+            "a region past the last level",
+            "a region past the last layer",
+            "a region past the last slice",
+            "a region outside its level or off the block grid",
+            "a region outside its level or off the block grid",
+        ]
+    );
+}
+
+#[test]
+fn a_load_names_a_sample_exactly_when_its_texture_is_multisampled() {
+    let mismatch =
+        "a load naming a sample from a single-sampled texture, or none from a multisampled one";
+    for (fragment, binding, samples) in [("loads", 32, 4), ("loads_sample", 33, 1)] {
+        let mut d = Drawing::new();
+        let t = if samples > 1 {
+            multisampled(&mut d.r, Format::Rgba8Unorm, 2).unwrap()
+        } else {
+            texture(&mut d.r, Format::Rgba8Unorm, 2, ALL)
+        };
+        let v = view(&mut d.r, &t, Format::Rgba8Unorm);
+        let set =
+            d.r.create_binding_set(&[BindingEntry {
+                binding,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&v),
+            }])
+            .unwrap();
+        let p = d.program(fragment);
+        d.begin();
+        d.draw(&p, Some(&set), Topology::TriangleList, false);
+        d.refused(mismatch);
+    }
+}
+
+#[test]
+fn buffers_and_textures_stay_within_the_size_limits() {
+    let mut r = Recorder::with_caps(|c| {
+        c.limits.max_buffer_size = 64;
+        c.limits.max_texture_2d = 8;
+        c.limits.max_texture_cube = 4;
+        c.limits.max_texture_3d = 2;
+        c.limits.max_texture_layers = 6;
+    });
+    let buffer = |size| BufferDesc {
+        size,
+        usage: COPIES,
+        intent: MapIntent::Rarely,
+    };
+    assert!(r.create_buffer(&buffer(64)).is_ok());
+    assert_eq!(
+        r.create_buffer(&buffer(65)),
+        Err(GpuError::Invalid("buffer larger than the limit"))
+    );
+    let desc = |dimension, width, height, depth_or_layers, cube| TextureDesc {
+        dimension,
+        format: Format::Rgba8Unorm,
+        width,
+        height,
+        depth_or_layers,
+        mip_levels: 1,
+        samples: 1,
+        usage: ALL,
+        cube,
+        reinterpret: false,
+    };
+    use TextureDimension::{D2, D3};
+    for fits in [
+        desc(D2, 8, 8, 6, false),
+        desc(D2, 4, 4, 6, true),
+        desc(D3, 2, 2, 2, false),
+    ] {
+        assert!(r.create_texture(&fits).is_ok(), "{fits:?}");
+    }
+    for past in [
+        desc(D2, 9, 1, 1, false),
+        desc(D2, 1, 9, 1, false),
+        desc(D2, 1, 1, 7, false),
+        desc(D2, 8, 8, 6, true),
+        desc(D3, 3, 1, 1, false),
+        desc(D3, 1, 1, 3, false),
+    ] {
+        assert_eq!(
+            r.create_texture(&past),
+            Err(GpuError::Invalid("a texture past the size limits")),
+            "{past:?}"
+        );
+    }
+}
+
+#[test]
+fn vertex_layouts_stay_within_the_limits() {
+    let mut r = Recorder::with_caps(|c| {
+        c.limits.vertex_streams = 2;
+        c.limits.vertex_attributes = 2;
+        c.limits.max_vertex_stride = 16;
+    });
+    let stream = |stride| {
+        Some(VertexStream {
+            stride,
+            step: StepMode::Vertex,
+        })
+    };
+    let attribute = |location, stream| {
+        Some(VertexAttribute {
+            location,
+            stream,
+            offset: 0,
+            format: VertexFormat::Float32x2,
+        })
+    };
+    let layout = |streams: &[(usize, u32)], attributes: &[(u32, u8)]| {
+        let mut desc = VertexLayoutDesc {
+            streams: [None; MAX_VERTEX_STREAMS],
+            attributes: [None; MAX_VERTEX_STREAMS],
+        };
+        for &(at, stride) in streams {
+            desc.streams[at] = stream(stride);
+        }
+        for (slot, &(location, s)) in desc.attributes.iter_mut().zip(attributes) {
+            *slot = attribute(location, s);
+        }
+        desc
+    };
+    assert!(
+        r.create_vertex_layout(&layout(&[(1, 16)], &[(0, 1), (1, 1)]))
+            .is_ok()
+    );
+    let more = Err(GpuError::Invalid(
+        "a vertex layout of more streams or attributes than the limits",
+    ));
+    assert_eq!(r.create_vertex_layout(&layout(&[(2, 8)], &[(0, 2)])), more);
+    assert_eq!(
+        r.create_vertex_layout(&layout(&[(0, 8)], &[(0, 0), (1, 0), (2, 0)])),
+        more
+    );
+    assert_eq!(
+        r.create_vertex_layout(&layout(&[(0, 20)], &[(0, 0)])),
+        Err(GpuError::Invalid("a vertex stride past the limit"))
+    );
+}
+
+#[test]
+fn samplers_stay_within_the_anisotropy_limit() {
+    let mut r = Recorder::new();
+    let sampler = |anisotropy| SamplerDesc {
+        min: Filter::Linear,
+        mag: Filter::Linear,
+        mip: Filter::Linear,
+        address: [AddressMode::Clamp; 3],
+        lod_range: [0.0f32.to_bits(), 32.0f32.to_bits()],
+        anisotropy,
+        compare: None,
+        border: BorderColor::TransparentBlack,
+    };
+    let most = r.caps().limits.max_anisotropy;
+    assert!(r.create_sampler(&sampler(most)).is_ok());
+    assert_eq!(
+        r.create_sampler(&sampler(most + 1)),
+        Err(GpuError::Invalid("a sampler's anisotropy past the limit"))
+    );
+}
+
+#[test]
+fn a_programs_vertex_outputs_stay_within_the_inter_stage_limit() {
+    let mut d = Drawing::with_caps(|c| c.limits.inter_stage_slots = 1);
+    d.program_of("vs_out", "plain");
+    let mut d = Drawing::with_caps(|c| c.limits.inter_stage_slots = 0);
+    let module = naga::front::wgsl::parse_str(PROGRAM).unwrap();
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::MULTISAMPLED_SHADING,
+    )
+    .validate(&module)
+    .unwrap();
+    let v =
+        d.r.create_shader(&ShaderModule {
+            module,
+            info,
+            entry_point: "vs_out".into(),
+            stage: ShaderStage::Vertex,
+            key: *blake3::hash(b"vs_out").as_bytes(),
+        })
+        .unwrap();
+    assert_eq!(
+        d.r.create_program(&Program::Render {
+            vertex: &v,
+            fragment: None,
+        }),
+        Err(GpuError::Invalid(
+            "vertex outputs past the inter-stage limit"
+        ))
+    );
+}
+
+#[test]
+fn passes_stay_within_the_colour_target_limits() {
+    let mut d = Drawing::with_caps(|c| c.limits.color_targets = 1);
+    let other = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
+    let other = view(&mut d.r, &other, Format::Rgba8Unorm);
+    let v = d.target_view;
+    d.r.begin_pass(&pass_of([color(&v), color(&other)]));
+    d.refused("a colour attachment past the limit");
+
+    let mut d = Drawing::with_caps(|c| c.limits.color_bytes_per_sample = 7);
+    let other = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
+    let other = view(&mut d.r, &other, Format::Rgba8Unorm);
+    let v = d.target_view;
+    d.r.begin_pass(&pass_of([color(&v), color(&other)]));
+    d.refused("colour attachments of more bytes a sample than the limit");
+}
+
+#[test]
+fn a_draws_bindings_stay_within_the_limits_per_stage() {
+    let mut d = Drawing::with_caps(|c| c.limits.uniform_buffers_per_stage = 1);
+    let b = buffer(&mut d.r, 512, BufferUsage::UNIFORM);
+    let mut set = |stages, binding| {
+        d.r.create_binding_set(&[BindingEntry {
+            binding,
+            stages,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &b,
+                offset: 256,
+                size: 16,
+            }),
+        }])
+        .unwrap()
+    };
+    let (vertex, fragment, also) = (
+        set(StageSet::VERTEX, 0),
+        set(StageSet::FRAGMENT, 0),
+        set(StageSet::FRAGMENT, 1),
+    );
+    let p = d.program("colored");
+    d.begin();
+    // One for each stage fits.
+    let list = Topology::TriangleList;
+    let sets = |other| [Some(&fragment), Some(other), None, None];
+    d.draw_sets(&p, sets(&vertex), list, false, |_, _| {});
+    assert!(d.r.violations.is_empty());
+    d.draw_sets(&p, sets(&also), list, false, |_, _| {});
+    d.refused("bindings of one stage past a limit per stage");
+}
+
+#[test]
+fn texture_writes_take_pitches_covering_the_region() {
+    let short = "write or copy pitch smaller than the region";
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    let ds = texture(&mut r, Format::Depth24PlusStencil8, 2, ALL);
+    let b = buffer(&mut r, 64, COPIES);
+    // A row of two texels is 8 bytes; two rows per layer.
+    r.write_texture(&region(&t), extent(2), &[0; 16], 8, 2, WriteMode::Ordered);
+    assert!(r.violations.is_empty());
+    r.write_texture(&region(&t), extent(2), &[0; 16], 4, 2, WriteMode::Ordered);
+    r.write_texture(&region(&t), extent(2), &[0; 16], 8, 1, WriteMode::Ordered);
+    let from = |row_pitch| CopyBufferTexture {
+        buffer: &b,
+        offset: 0,
+        row_pitch,
+        rows_per_layer: 2,
+    };
+    r.copy_buffer_to_texture(&from(4), &region(&t), extent(2));
+    // The stencil aspect moves one byte a texel: a row of two is 2 bytes.
+    let stencil = TextureRegion {
+        stencil: true,
+        ..region(&ds)
+    };
+    r.write_texture(&stencil, extent(2), &[0; 4], 1, 2, WriteMode::Ordered);
+    assert_eq!(r.violations, [short; 4]);
+    r.violations.clear();
+    r.write_texture(&stencil, extent(2), &[0; 4], 2, 2, WriteMode::Ordered);
+    assert!(r.violations.is_empty());
+}
+
+#[test]
+fn colour_attachments_have_colour_formats() {
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Depth32Float, 2, ALL);
+    let v = view(&mut r, &t, Format::Depth32Float);
+    r.begin_pass(&pass_of([color(&v)]));
+    assert_eq!(r.violations, ["a depth format as a colour attachment"]);
+}
+
+#[test]
+fn textures_are_of_held_formats_and_not_empty() {
+    let mut r =
+        Recorder::with_caps(|c| c.formats.uses[Format::R8Unorm.index()] = FormatUse::empty());
+    let desc = TextureDesc {
+        dimension: TextureDimension::D2,
+        format: Format::Rgba8Unorm,
+        width: 2,
+        height: 2,
+        depth_or_layers: 1,
+        mip_levels: 1,
+        samples: 1,
+        usage: ALL,
+        cube: false,
+        reinterpret: false,
+    };
+    assert_eq!(
+        r.create_texture(&TextureDesc {
+            format: Format::R8Unorm,
+            ..desc
+        }),
+        Err(GpuError::Invalid(
+            "texture of a format this back end does not hold"
+        ))
+    );
+    for empty in [
+        TextureDesc { width: 0, ..desc },
+        TextureDesc { height: 0, ..desc },
+        TextureDesc {
+            depth_or_layers: 0,
+            ..desc
+        },
+        TextureDesc {
+            mip_levels: 0,
+            ..desc
+        },
+    ] {
+        assert_eq!(
+            r.create_texture(&empty),
+            Err(GpuError::Invalid("empty texture")),
+            "{empty:?}"
+        );
+    }
+    assert_eq!(
+        r.create_texture(&TextureDesc {
+            cube: true,
+            depth_or_layers: 4,
+            ..desc
+        }),
+        Err(GpuError::Invalid(
+            "cube texture whose layers are not whole cubes"
+        ))
+    );
+    assert!(
+        r.create_texture(&TextureDesc {
+            cube: true,
+            depth_or_layers: 12,
+            ..desc
+        })
+        .is_ok()
+    );
+}
+
+#[test]
+fn views_cover_at_least_one_level_and_layer_inside_the_texture() {
+    let mut r = Recorder::new();
+    let t = shaped(&mut r, TextureDimension::D2, 4, 2, 2);
+    let desc = TextureViewDesc {
+        format: Format::Rgba8Unorm,
+        dimension: ViewDimension::D2Array,
+        base_mip: 0,
+        mip_count: 2,
+        base_layer: 0,
+        layer_count: 2,
+        stencil: false,
+    };
+    assert!(r.create_view(&t, &desc).is_ok());
+    for outside in [
+        TextureViewDesc {
+            base_layer: 1,
+            ..desc
+        },
+        TextureViewDesc {
+            mip_count: 0,
+            ..desc
+        },
+        TextureViewDesc {
+            layer_count: 0,
+            ..desc
+        },
+    ] {
+        assert_eq!(
+            r.create_view(&t, &outside),
+            Err(GpuError::Invalid("view range outside the texture")),
+            "{outside:?}"
+        );
+    }
+}
+
+#[test]
+fn depth_bounds_and_border_and_mirror_once_samplers_are_absent() {
+    let mut r = Recorder::new();
+    assert_eq!(
+        r.create_depth_stencil(&DepthStencilDesc {
+            depth_compare: None,
+            depth_write: false,
+            stencil: None,
+            stencil_read_mask: [0xff; 2],
+            stencil_write_mask: [0xff; 2],
+            depth_bounds: Some([0.0f32.to_bits(), 1.0f32.to_bits()]),
+        }),
+        Err(GpuError::Absent(Features::DEPTH_BOUNDS))
+    );
+    for mode in [AddressMode::Border, AddressMode::MirrorOnce] {
+        let mut address = [AddressMode::Clamp; 3];
+        address[2] = mode;
+        assert_eq!(
+            r.create_sampler(&SamplerDesc {
+                min: Filter::Nearest,
+                mag: Filter::Nearest,
+                mip: Filter::Nearest,
+                address,
+                lod_range: [0.0f32.to_bits(), 32.0f32.to_bits()],
+                anisotropy: 1,
+                compare: None,
+                border: BorderColor::TransparentBlack,
+            }),
+            Err(GpuError::Absent(
+                Features::BORDER_COLOR | Features::MIRROR_ONCE
+            )),
+            "{mode:?}"
+        );
+    }
+}
+
+#[test]
+fn storage_bindings_need_storage_usage() {
+    let mut r = Recorder::new();
+    let b = buffer(&mut r, 256, BufferUsage::UNIFORM);
+    assert_eq!(
+        r.create_binding_set(&[BindingEntry {
+            binding: 160,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer: &b,
+                    offset: 0,
+                    size: 16,
+                },
+                writable: false,
+            },
+        }]),
+        Err(GpuError::Invalid(
+            "a storage binding of a buffer without STORAGE"
+        ))
+    );
+}
+
+#[test]
+fn texture_writes_carry_the_whole_region() {
+    let mut r = Recorder::new();
+    let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+    r.write_texture(&region(&t), extent(2), &[0; 15], 8, 2, WriteMode::Ordered);
+    assert_eq!(r.violations, ["data shorter than the region"]);
+}
+
+#[test]
+fn passes_and_queries_end_only_where_they_began() {
+    let mut r = Recorder::new();
+    r.end_pass();
+    assert_eq!(r.violations, ["end_pass without a pass"]);
+    let mut r = Recorder::new();
+    r.end_query();
+    assert_eq!(r.violations, ["end_query outside a pass"]);
+}
+
+#[test]
+fn query_sets_of_absent_kinds_are_refused() {
+    let mut r = Recorder::new();
+    assert_eq!(
+        r.create_query_set(QueryKind::Occlusion, 1),
+        Err(GpuError::Absent(Features::OCCLUSION_COUNT))
+    );
+    assert_eq!(
+        r.create_query_set(QueryKind::Timestamp, 1),
+        Err(GpuError::Absent(Features::TIMESTAMPS))
+    );
+}
+
+#[test]
+fn queries_are_read_from_inside_their_set_outside_a_pass() {
+    let refused = "read_queries of a range outside a live set, or inside a pass";
+    let mut d = Drawing::new();
+    let set = d.r.create_query_set(QueryKind::OcclusionAny, 2).unwrap();
+    assert!(d.r.read_queries(&set, 0, 2).is_ok());
+    assert!(d.r.read_queries(&set, 1, 2).is_err());
+    assert_eq!(d.r.violations, [refused]);
+    let mut d = Drawing::new();
+    let set = d.r.create_query_set(QueryKind::OcclusionAny, 2).unwrap();
+    d.begin();
+    assert!(d.r.read_queries(&set, 0, 1).is_err());
+    assert_eq!(d.r.violations, [refused]);
+}
+
+#[test]
+fn buffer_copies_and_clears_stay_inside_their_buffers() {
+    type Copies = fn(&mut Recorder, &Id, &Id, &Id);
+    let cases: [(&str, Copies); 6] = [
+        ("copy from past the buffer's end", |r, a, b, _| {
+            r.copy_buffer(a, 12, b, 0, 8)
+        }),
+        ("copy to past the buffer's end", |r, a, b, _| {
+            r.copy_buffer(a, 0, b, 12, 8)
+        }),
+        ("copy from past the buffer's end", |r, a, _, t| {
+            let from = CopyBufferTexture {
+                buffer: a,
+                offset: 20,
+                row_pitch: 8,
+                rows_per_layer: 2,
+            };
+            r.copy_buffer_to_texture(&from, &region(t), extent(2))
+        }),
+        ("data shorter than the region", |r, a, _, t| {
+            let from = CopyBufferTexture {
+                buffer: a,
+                offset: 4,
+                row_pitch: 8,
+                rows_per_layer: 2,
+            };
+            r.copy_buffer_to_texture(&from, &region(t), extent(2))
+        }),
+        ("copy to past the buffer's end", |r, a, _, t| {
+            let to = CopyBufferTexture {
+                buffer: a,
+                offset: 4,
+                row_pitch: 8,
+                rows_per_layer: 2,
+            };
+            r.copy_texture_to_buffer(&region(t), &to, extent(2))
+        }),
+        ("clear past the buffer's end", |r, a, _, _| {
+            r.clear_buffer(a, 8, 12, &[0])
+        }),
+    ];
+    for (violation, f) in cases {
+        let mut r = Recorder::new();
+        let a = buffer(&mut r, 16, COPIES);
+        let b = buffer(&mut r, 16, COPIES);
+        let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
+        f(&mut r, &a, &b, &t);
+        assert_eq!(r.violations, [violation]);
+    }
+}
+
+#[test]
+fn a_surface_gives_a_texture_once_configured() {
+    let mut r = Recorder::new();
+    let s = r.create_surface(1).unwrap();
+    assert_eq!(
+        r.current_texture(&s),
+        Err(GpuError::Invalid(
+            "current_texture of an unconfigured surface"
+        ))
+    );
+}
+
+#[test]
+fn bindings_hold_the_kind_of_resource_the_program_reads() {
+    // Each binding holds a texture (true) or a uniform buffer (false): a buffer where a texture is
+    // read, a texture where a buffer is, a texture where a sampler is.
+    type Case = (&'static str, &'static [(u32, bool)], &'static str);
+    let cases: [Case; 3] = [
+        ("loads", &[(32, false)], "no texture at (0, 32)"),
+        ("colored", &[(0, true)], "no buffer at group 0 binding 0"),
+        (
+            "sampled",
+            &[(32, true), (16, true)],
+            "no sampler at (0, 16)",
+        ),
+    ];
+    for (fragment, bindings, violation) in cases {
+        let mut d = Drawing::new();
+        let b = buffer(&mut d.r, 256, BufferUsage::UNIFORM);
+        let t = texture(&mut d.r, Format::Rgba8Unorm, 2, ALL);
+        let v = view(&mut d.r, &t, Format::Rgba8Unorm);
+        let entries: Vec<_> = bindings
+            .iter()
+            .map(|&(binding, texture)| BindingEntry {
+                binding,
+                stages: StageSet::FRAGMENT,
+                resource: if texture {
+                    BindingResource::Texture(&v)
+                } else {
+                    BindingResource::UniformBuffer(BufferRange {
+                        buffer: &b,
+                        offset: 0,
+                        size: 16,
+                    })
+                },
+            })
+            .collect();
+        let set = d.r.create_binding_set(&entries).unwrap();
+        let p = d.program(fragment);
+        d.begin();
+        d.draw(&p, Some(&set), Topology::TriangleList, false);
+        d.refused(violation);
+    }
+}
+
+#[test]
+fn draws_read_vertices_and_indices_inside_their_buffers() {
+    // The spare buffer's 8 bytes hold one vertex of two floats: vertex 2 starts past them, vertex 1
+    // at their end has none of its bytes.
+    let cases: [(&str, u64); 2] = [
+        ("a vertex past the buffer's end", 2),
+        ("a vertex read past the buffer's end", 0),
+    ];
+    for (violation, first) in cases {
+        let mut d = Drawing::new();
+        d.vertices = d.spare;
+        let p = d.program("plain");
+        d.begin();
+        d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
+            c.range = DrawRange::Vertices {
+                first: first as u32,
+                count: 3,
+                first_instance: 0,
+                instances: 1,
+            }
+        });
+        d.refused(violation);
+    }
+    let indexed = |count| DrawRange::Indexed {
+        first: 0,
+        count,
+        base_vertex: 0,
+        first_instance: 0,
+        instances: 1,
+    };
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
+        c.range = indexed(3)
+    });
+    d.refused("an indexed draw without indices");
+    // Five 16-bit indices are 10 bytes.
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, spare| {
+        c.index = Some(IndexBinding {
+            buffer: spare,
+            offset: 0,
+            format: IndexFormat::U16,
+        });
+        c.range = indexed(6);
+    });
+    d.refused("an index past the buffer's end");
+}
+
+#[test]
+fn a_draw_names_its_viewport_scissor_streams_and_buffers() {
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
+        c.viewports = &[]
+    });
+    d.refused("a draw without a viewport");
+
+    let mut d = Drawing::new();
+    d.raster =
+        d.r.create_raster(&RasterDesc {
+            fill: FillMode::Solid,
+            cull: CullMode::None,
+            front: FrontFace::CounterClockwise,
+            depth_bias: 0,
+            depth_bias_slope: 0,
+            depth_bias_clamp: 0,
+            depth_clip: true,
+            scissor: true,
+            line_width: 1.0f32.to_bits(),
+            provoking: ProvokingVertex::First,
+            depth_minus_one: false,
+            sample_mask: !0,
+        })
+        .unwrap();
+    let p = d.program("plain");
+    d.begin();
+    d.draw(&p, None, Topology::TriangleList, false);
+    d.refused("scissor on without a scissor");
+
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, _| {
+        c.vertex_buffers = &[]
+    });
+    d.refused("an attribute of a stream with no buffer bound");
+
+    // A layout whose attribute names a stream it does not describe.
+    let mut d = Drawing::new();
+    let mut desc = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    desc.attributes[0] = Some(VertexAttribute {
+        location: 0,
+        stream: 1,
+        offset: 0,
+        format: VertexFormat::Float32x2,
+    });
+    d.layout = d.r.create_vertex_layout(&desc).unwrap();
+    let p = d.program("plain");
+    d.begin();
+    d.draw(&p, None, Topology::TriangleList, false);
+    d.refused("an attribute of an unused stream");
+}
+
+#[test]
+fn draws_need_the_topologies_and_indirect_draws_the_back_end_has() {
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw(&p, None, Topology::TriangleFan, false);
+    d.refused("fans and loops go through draw_fan_or_loop on a back end without FAN_AND_LOOP");
+
+    let mut d = Drawing::new();
+    let p = d.program("plain");
+    d.begin();
+    d.draw_with(&p, None, Topology::TriangleList, false, |c, spare| {
+        c.range = DrawRange::Indirect {
+            args: spare,
+            offset: 0,
+        }
+    });
+    d.refused("indirect draws, which this back end reports absent");
 }
