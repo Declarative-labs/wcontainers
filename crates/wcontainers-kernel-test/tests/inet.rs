@@ -93,3 +93,9 @@ fn udp_segmentation_matches_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "udpsegment", &[]);
 }
+
+#[test]
+fn timestamping_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "timestamping", &[]);
+}

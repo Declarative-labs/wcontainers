@@ -136,6 +136,8 @@ pub(crate) struct Socket {
     owner_uid: u32,
     /// SO_TIMESTAMP and SO_TIMESTAMPNS (`SOCK_RCVTSTAMP`, `SOCK_RCVTSTAMPNS`, `SOCK_TSTAMP_NEW`).
     stamps: u8,
+    /// SO_TIMESTAMPING's flags (`sk_tsflags`).
+    tsflags: u32,
     /// Its inode's number and owner, once it has a file (`sock_i_ino`, `sock_i_uid`).
     ino: u64,
     uid: u32,
@@ -188,6 +190,7 @@ impl Socket {
             send_timeout: 0,
             owner_uid: 0,
             stamps: 0,
+            tsflags: 0,
             ino: 0,
             uid: 0,
             file: Weak::new(),
@@ -2909,6 +2912,30 @@ pub(super) fn recvmsg(
         data.extend_from_slice(&part.to_le_bytes());
         put_control(&mut control, room, SOL_SOCKET, kind, &data, &mut out_flags);
     }
+    // `__sock_recv_timestamp` and `tcp_recv_timestamp`: software timestamping gives the time
+    // with two empty ones after it (the old and hardware places); local sockets give it only
+    // beside SO_TIMESTAMP, and local streams never.
+    use crate::linux::net::{
+        SOF_TIMESTAMPING_OPT_RX_FILTER, SOF_TIMESTAMPING_RX_SOFTWARE, SOF_TIMESTAMPING_SOFTWARE,
+    };
+    let tsflags = socket.borrow().tsflags;
+    let local = socket.borrow().family == AF_UNIX;
+    let reported = tsflags & tsflag(SOF_TIMESTAMPING_SOFTWARE) != 0
+        && (tsflags & tsflag(SOF_TIMESTAMPING_RX_SOFTWARE) != 0
+            || tsflags & tsflag(SOF_TIMESTAMPING_OPT_RX_FILTER) == 0)
+        && (!local || (stamps & STAMP != 0 && datagram));
+    if let Some(time) = time.filter(|_| reported) {
+        use crate::linux::net::{SO_TIMESTAMPING_NEW, SO_TIMESTAMPING_OLD};
+        let kind = if stamps & STAMP_NEW != 0 {
+            SO_TIMESTAMPING_NEW
+        } else {
+            SO_TIMESTAMPING_OLD
+        };
+        let mut data = time.seconds.to_le_bytes().to_vec();
+        data.extend_from_slice(&i64::from(time.nanoseconds).to_le_bytes());
+        data.resize(48, 0);
+        put_control(&mut control, room, SOL_SOCKET, kind, &data, &mut out_flags);
+    }
     // `sock_recv_mark` and `sock_recv_priority` for a datagram (an error read gives neither).
     if let Some(arrival) = received.arrival.filter(|arrival| !arrival.error) {
         use crate::linux::net::{SO_MARK, SO_PRIORITY, SO_RCVMARK, SO_RCVPRIORITY};
@@ -3098,7 +3125,18 @@ const STAMP_NEW: u8 = 4;
 /// The time a packet comes, if its receiver asked for timestamps (Linux stamps buffers as they
 /// arrive while some socket wants them).
 fn stamp(kernel: &Kernel, cx: &mut Context<'_>, receiver: &SocketRef) -> Option<crate::fs::Time> {
-    (receiver.borrow().stamps & STAMP != 0).then(|| kernel.now(cx))
+    use crate::linux::net::SOF_TIMESTAMPING_RX_SOFTWARE;
+    let own = receiver.borrow();
+    // Internet packets are stamped as they come for receive timestamping too; local ones only
+    // for SO_TIMESTAMP (`unix_dgram_sendmsg`).
+    let asked = own.stamps & STAMP != 0
+        || (own.family != AF_UNIX && own.tsflags & tsflag(SOF_TIMESTAMPING_RX_SOFTWARE) != 0);
+    asked.then(|| kernel.now(cx))
+}
+
+/// One SO_TIMESTAMPING flag as a number.
+fn tsflag(flag: crate::linux::net::_bindgen_ty_10) -> u32 {
+    flag as u32
 }
 
 /// `put_cmsg`: a control message padded to the next one; one that does not fit whole is cut to
@@ -3276,15 +3314,49 @@ pub(super) fn setsockopt(
                 (true, true) => STAMP | STAMP_NS | new,
             };
         }
-        // SO_TIMESTAMPING's reports are not built: answered as a Linux without them.
+        // `sock_set_timestamping`: an int, or `struct so_timestamping` naming a clock to bind.
         SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW => {
-            drop(own);
-            return Err(kernel.counters.refuse(
-                cx.host,
-                crate::reason::OPTION_NOT_BUILT,
-                (u64::from(level) << 32) | u64::from(name),
-                Errno::ENOPROTOOPT,
-            ));
+            let flags = int()? as u32;
+            if flags & !tsflag(SOF_TIMESTAMPING_MASK) != 0 {
+                return Err(Errno::EINVAL);
+            }
+            let id = tsflag(SOF_TIMESTAMPING_OPT_ID);
+            if flags & tsflag(SOF_TIMESTAMPING_OPT_ID_TCP) != 0 && flags & id == 0 {
+                return Err(Errno::EINVAL);
+            }
+            let tcp = own.inet.is_some() && own.kind == SOCK_STREAM;
+            if flags & id != 0 && own.tsflags & id == 0 && tcp && own.state != State::Connected {
+                return Err(Errno::EINVAL);
+            }
+            let tsonly = flags & tsflag(SOF_TIMESTAMPING_OPT_TSONLY) != 0;
+            if flags & tsflag(SOF_TIMESTAMPING_OPT_STATS) != 0 && !tsonly {
+                return Err(Errno::EINVAL);
+            }
+            // No device here has a hardware clock to bind to.
+            if flags & tsflag(SOF_TIMESTAMPING_BIND_PHC) != 0 {
+                return Err(Errno::EOPNOTSUPP);
+            }
+            // Send timestamps are not built (hardware ones never come on these interfaces, as
+            // on Linux's loopback): answered as a Linux without the option.
+            let software_sends = tsflag(SOF_TIMESTAMPING_TX_SOFTWARE)
+                | tsflag(SOF_TIMESTAMPING_TX_SCHED)
+                | tsflag(SOF_TIMESTAMPING_TX_ACK)
+                | tsflag(SOF_TIMESTAMPING_TX_COMPLETION);
+            if flags & software_sends != 0 {
+                drop(own);
+                return Err(kernel.counters.refuse(
+                    cx.host,
+                    crate::reason::OPTION_NOT_BUILT,
+                    (u64::from(level) << 32) | u64::from(name),
+                    Errno::ENOPROTOOPT,
+                ));
+            }
+            own.tsflags = flags;
+            own.stamps = if name == SO_TIMESTAMPING_NEW {
+                own.stamps | STAMP_NEW
+            } else {
+                own.stamps & !STAMP_NEW
+            };
         }
         SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE | SO_DONTROUTE
         | SO_PASSSEC | SO_RCVLOWAT | SO_ZEROCOPY | SO_BUSY_POLL | SO_INCOMING_CPU | SO_RCVMARK
@@ -3495,6 +3567,12 @@ pub(super) fn getsockopt(
                     SO_TIMESTAMP_NEW => stamp && new,
                     _ => ns && new,
                 }))
+            }
+            // `struct so_timestamping`: the flags and no bound clock.
+            SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW => {
+                let mut bytes = own.tsflags.to_le_bytes().to_vec();
+                bytes.extend_from_slice(&0u32.to_le_bytes());
+                bytes
             }
             SO_PEERNAME => {
                 let peer = own.peer.clone().ok_or(Errno::ENOTCONN)?;

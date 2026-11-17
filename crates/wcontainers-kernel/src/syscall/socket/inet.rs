@@ -2272,8 +2272,33 @@ fn sent_control(
                         return Err(Errno::EINVAL);
                     }
                 }
-                SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW | SCM_TS_OPT_ID => {
-                    return refuse(level, kind);
+                // Send timestamps for one send: only the recording flags; software ones are
+                // not built.
+                SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW => {
+                    let flags = int()? as u32;
+                    let hardware = SOF_TIMESTAMPING_TX_HARDWARE as u32;
+                    let software = SOF_TIMESTAMPING_TX_SOFTWARE as u32
+                        | SOF_TIMESTAMPING_TX_SCHED as u32
+                        | SOF_TIMESTAMPING_TX_ACK as u32
+                        | SOF_TIMESTAMPING_TX_COMPLETION as u32;
+                    if flags & !(hardware | software) != 0 {
+                        return Err(Errno::EINVAL);
+                    }
+                    if flags & software != 0 {
+                        return refuse(level, kind);
+                    }
+                }
+                // The key of this send's timestamps, which only sockets with OPT_ID that are
+                // not TCP name.
+                SCM_TS_OPT_ID => {
+                    let own = socket.borrow();
+                    let tcp = own
+                        .inet
+                        .as_deref()
+                        .is_some_and(|inet| inet.protocol == Protocol::Tcp);
+                    if tcp || own.tsflags & SOF_TIMESTAMPING_OPT_ID as u32 == 0 || data.len() != 4 {
+                        return Err(Errno::EINVAL);
+                    }
                 }
                 _ => return Err(Errno::EINVAL),
             },
