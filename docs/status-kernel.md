@@ -1748,6 +1748,12 @@ each sequence the runner puts back what a sequence can change outside its direct
   3031 passed (318.4 s), 3032 passed (317.8 s), 3030 failed at its timer_create (fixed above).
   Seed 3023 passed 20000 after the harness fix (313.8 s, load 13.8 to 14.3); the checker's seed
   5150002 passed 25000 after the splice fix (384.7 s, load 36 to 120).
+- K3, sixth run, with every fix in (head after the timer charge): fresh layer 1 seeds 3033 and
+  3034 passed 20000 each (306.4 s and 306.3 s, side by side with the suite; load 31 to 144), and
+  3030 passed 20000 on rerun (317.0 s, load 67 to 32). Whole suite, same command as below: 129
+  passed, 1 failed, 5 ignored, 6 min 18 s, load 44.1 at the start and 25.0 at the end; the failure
+  was `process_signal_takers_match_reference`, where the one-CPU reference chose thread 1 (Known
+  issues).
 - K3, sixth run: whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p wcontainers-kernel
   -p wcontainers-kernel-test`) at head 1712fe7, beside three layer 1 runs: 129 passed, 1 failed, 5
   ignored, 6 min 6 s, load 15.8 at the start and 67.8 at the end. The failure was terminal's
@@ -2137,6 +2143,12 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
   a set's sequence number as a vector length: the reference's is not 0 after earlier sequences).
   `machine_bytes` now clears them after the call; seed 3023 passed 20000 (313.8 s, load 13.8 to
   14.3). Reproduced first with the old harness (failed at the same call, load 23 to 15).
+- K3, sixth run: sigpick's reference (tests/threads.rs `process_signal_takers_match_reference`)
+  sometimes gives the process signal to thread 1 instead of the first thread that does not block
+  it: once in about ten multi-CPU runs at load 30 to 90, and once on one CPU in a whole-suite run
+  beside two layer 1 runs (load up to 144); 8 of 8 one-CPU runs alone gave thread 0, as ours does.
+  Cause in the reference not found (`complete_signal` should pick the first thread while it wants
+  the signal). The test is left as it is.
 - K3, sixth run: terminal's `splice_holds_the_pipe` (ttylock) failed once in a whole-suite run
   beside three layer 1 runs (ours showed `abc` once where the reference echoed and printed it);
   three reruns alone passed. Not looked into further.
