@@ -8,6 +8,7 @@ ps_ftoi.dxbc	ok
 ps_integer.dxbc	ok-wgsl glsl-compile
 ps_local.dxbc	ok
 ps_loop.dxbc	ok
+ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok
 ps_rows.dxbc	ok
