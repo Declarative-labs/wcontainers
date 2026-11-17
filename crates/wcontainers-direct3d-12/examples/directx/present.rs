@@ -340,10 +340,14 @@ pub fn create(
     if desc.Stereo.as_bool() || desc.SampleDesc.Count != 1 {
         return Err(DXGI_ERROR_INVALID_CALL.into());
     }
-    if desc.Scaling != DXGI_SCALING_STRETCH || desc.AlphaMode.0 > DXGI_ALPHA_MODE_IGNORE.0 {
+    // A window's swap chain shows no alpha: DXGI refuses premultiplied and straight alpha for it.
+    if desc.AlphaMode != DXGI_ALPHA_MODE_UNSPECIFIED && desc.AlphaMode != DXGI_ALPHA_MODE_IGNORE {
+        return Err(DXGI_ERROR_INVALID_CALL.into());
+    }
+    if desc.Scaling != DXGI_SCALING_STRETCH {
         return Err(windows::core::Error::new(
             E_NOTIMPL,
-            "scaling other than stretching, or a shown alpha",
+            "scaling other than stretching",
         ));
     }
     let model = Model::from_dxgi(desc.SwapEffect.0 as u32).ok_or(DXGI_ERROR_INVALID_CALL)?;

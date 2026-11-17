@@ -438,6 +438,12 @@ impl<B: Backend> Device<B> {
             4 => return Err(Error::NotImplemented("patch topologies")),
             _ => return Err(Error::Invalid("a pipeline needs a topology type")),
         };
+        // Alpha-antialiased lines need the stage helper's covered rectangles
+        // (`AntialiasedLinesAsQuads`), which the front does not route yet.
+        let draws_lines = topology == Topology::LineList || desc.raster.fill == 2;
+        if draws_lines && desc.raster.antialiased_line && !desc.raster.multisample {
+            return Err(Error::NotImplemented("alpha-antialiased lines"));
+        }
         let vs_shader = self.backend.create_shader(&vs.modules[0])?;
         let ps_shader = match &ps {
             Some(ps) => match self.backend.create_shader(&ps.modules[0]) {
@@ -805,11 +811,11 @@ impl<B: Backend> Device<B> {
             }
         }
         let first_read = self.reads.len();
-        let mut replay = Replay::new();
-        let result = lists
-            .iter()
-            .try_for_each(|l| l.iter().try_for_each(|c| replay.run(self, c)))
-            .and_then(|()| replay.finish(self));
+        let result = lists.iter().try_for_each(|l| {
+            let mut replay = Replay::new();
+            l.iter().try_for_each(|c| replay.run(self, c))?;
+            replay.finish(self)
+        });
         let submission = self.backend.submit();
         for r in &mut self.reads[first_read..] {
             r.submission = Some(submission.clone());
