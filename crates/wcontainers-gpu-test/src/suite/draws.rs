@@ -801,3 +801,329 @@ pub fn fragments_write_storage_buffers<H: Host>() {
     assert_eq!(got, expected);
     ok(&mut b);
 }
+
+const COVER: &str = "
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn white() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
+";
+
+const PER_SAMPLE: &str = "
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn index(@builtin(sample_index) i: u32) -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(i) / 3.0, 0.0, 0.0, 1.0);
+}
+";
+
+/// Writes the red of samples 0 to 3 of a four-sample texture into red, green, blue and alpha.
+const SAMPLES_OF: &str = "
+@group(0) @binding(32) var samples: texture_multisampled_2d<f32>;
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = vec2<i32>(p.xy);
+    return vec4<f32>(
+        textureLoad(samples, c, 0).r,
+        textureLoad(samples, c, 1).r,
+        textureLoad(samples, c, 2).r,
+        textureLoad(samples, c, 3).r,
+    );
+}
+";
+
+/// A four-sample `rgba8unorm` target of n by n, or none where the back end has no such texture.
+fn four_sample_target<B: Backend>(b: &mut B, n: u32) -> Option<(B::Texture, B::TextureView)> {
+    if !b.caps().formats.takes_samples(Format::Rgba8Unorm, 4) {
+        return None;
+    }
+    let t = b
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: n,
+            height: n,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 4,
+            usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
+            cube: false,
+            reinterpret: false,
+        })
+        .expect("create_texture");
+    let v = view(b, &t, Format::Rgba8Unorm);
+    Some((t, v))
+}
+
+/// Reads sample 0 to 3 of each texel of a four-sample target through [`SAMPLES_OF`] into a
+/// single-sampled one, and gives its bytes.
+fn samples_of<B: Backend>(b: &mut B, ms: &B::TextureView, n: u32) -> Vec<u8> {
+    let (t, v) = rgba8_target(b, n);
+    let vb = vertex_buffer(b, &QUAD);
+    let p = program(b, SAMPLES_OF, "vs", "fs");
+    let bl = blend(b, opaque());
+    let ds = depth_test(b, None, false);
+    let rs = b
+        .create_raster(&raster_desc(ProvokingVertex::First))
+        .expect("create_raster");
+    let vl = positions(b);
+    let vp = viewport(n, n);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(ms),
+        }])
+        .expect("create_binding_set");
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        bindings: [Some(&set), None, None, None],
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+        )
+    });
+    b.end_pass();
+    read_texture(b, region(&t, 0, 0, 0, 0), extent(n, n, 1), 4)
+}
+
+/// Four samples at the standard positions WebGPU, Direct3D and Vulkan share ((0.375, 0.125),
+/// (0.875, 0.375), (0.125, 0.625), (0.625, 0.875) in the pixel): rectangles whose right edges cross
+/// pixel 1 of rows 0 to 2 at 1.25, 1.5 and 1.75 cover one, two and three of its samples, so its
+/// resolved value is 1/4, 1/2 and 3/4 of white, one step of tolerance; resolved at the pass's end and
+/// by `resolve`, alike. Where the back end reads samples in programs, each sample's own coverage is
+/// checked too: pixel 1 of row 0 covers sample 2 alone.
+pub fn multisampled_targets_cover_their_samples_and_resolve<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 4;
+    let Some((ms, msv)) = four_sample_target(&mut b, N) else {
+        return;
+    };
+    let (resolved, resolved_view) = rgba8_target(&mut b, N);
+    let (again, _) = rgba8_target(&mut b, N);
+    // Rows 0 to 3, each from x = 0 to its right edge, in pixels.
+    let edges = [1.25f32, 1.5, 1.75, 4.0];
+    let mut quads = Vec::new();
+    for (row, edge) in edges.iter().enumerate() {
+        let x = |px: f32| px / 2.0 - 1.0;
+        let y = |py: f32| 1.0 - py / 2.0;
+        let (top, bottom) = (y(row as f32), y(row as f32 + 1.0));
+        quads.extend_from_slice(&[
+            x(0.0),
+            top,
+            x(*edge),
+            top,
+            x(0.0),
+            bottom,
+            x(*edge),
+            top,
+            x(*edge),
+            bottom,
+            x(0.0),
+            bottom,
+        ]);
+    }
+    let vb = vertex_buffer(&mut b, &quads);
+    let p = program(&mut b, COVER, "vs", "white");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = b
+        .create_raster(&raster_desc(ProvokingVertex::First))
+        .expect("create_raster");
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let mut pass = color_pass::<H::Backend>(&msv, LoadOp::Clear([0; 4]));
+    if let Some(c) = &mut pass.colors[0] {
+        c.resolve = Some(&resolved_view);
+    }
+    b.begin_pass(&pass);
+    b.draw(&call(
+        &p,
+        &bl,
+        &ds,
+        &rs,
+        &vl,
+        &streams,
+        &vp,
+        Topology::TriangleList,
+        vertices(0, 24),
+    ));
+    b.end_pass();
+    let at = |t| region(t, 0, 0, 0, 0);
+    b.resolve(&at(&ms), &at(&again), Format::Rgba8Unorm);
+    let mut expected = Vec::new();
+    for row in 0..N as usize {
+        for x in 0..N {
+            let v = match (row, x) {
+                (_, 0) | (3, _) => 255,
+                (_, 1) => [64, 128, 191][row],
+                _ => 0,
+            };
+            expected.extend_from_slice(&[v; 4]);
+        }
+    }
+    for t in [&resolved, &again] {
+        let got = read_texture(&mut b, at(t), extent(N, N, 1), 4);
+        assert_close(&got, &expected, 1, 4, N as usize);
+    }
+    if b.caps().features.contains(Features::MULTISAMPLE_READ) {
+        let got = samples_of(&mut b, &msv, N);
+        let mut expected = Vec::new();
+        for row in 0..N as usize {
+            for x in 0..N {
+                expected.extend_from_slice(&match (row, x) {
+                    (_, 0) | (3, _) => [255; 4],
+                    (0, 1) => [0, 0, 255, 0],
+                    (1, 1) => [255, 0, 255, 0],
+                    (2, 1) => [255, 0, 255, 255],
+                    _ => [0; 4],
+                });
+            }
+        }
+        assert_close(&got, &expected, 0, 4, N as usize);
+    }
+    ok(&mut b);
+}
+
+/// A program reading the sample index runs once per sample and writes that sample alone: each
+/// sample i of every texel holds i / 3, read back by a program loading each sample.
+pub fn programs_run_per_sample_and_read_samples<H: Host>() {
+    let mut b = H::make();
+    let features = b.caps().features;
+    if !features.contains(Features::SAMPLE_SHADING | Features::MULTISAMPLE_READ) {
+        return;
+    }
+    const N: u32 = 2;
+    let Some((_ms, msv)) = four_sample_target(&mut b, N) else {
+        return;
+    };
+    let vb = vertex_buffer(&mut b, &QUAD);
+    let p = program(&mut b, PER_SAMPLE, "vs", "index");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = b
+        .create_raster(&raster_desc(ProvokingVertex::First))
+        .expect("create_raster");
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    b.begin_pass(&color_pass::<H::Backend>(&msv, LoadOp::Clear([0; 4])));
+    b.draw(&call(
+        &p,
+        &bl,
+        &ds,
+        &rs,
+        &vl,
+        &streams,
+        &vp,
+        Topology::TriangleStrip,
+        vertices(0, 4),
+    ));
+    b.end_pass();
+    let got = samples_of(&mut b, &msv, N);
+    assert_close(&got, &[0, 85, 170, 255].repeat(4), 0, 4, N as usize);
+    ok(&mut b);
+}
+
+/// Occlusion queries of "any" kind answer non-zero where a sample passed and zero where none did (a
+/// quad drawn, a quad clipped away, no draw), read back by `read_queries` and written to a buffer at
+/// an offset by `resolve_queries`, alike.
+pub fn occlusion_queries_answer_whether_samples_passed<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 4;
+    let (_t, v) = rgba8_target(&mut b, N);
+    // On screen, then wholly right of it.
+    let vb = vertex_buffer(
+        &mut b,
+        &[
+            -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, //
+            2.0, -1.0, 2.0, 1.0, 3.0, -1.0, 3.0, 1.0,
+        ],
+    );
+    let p = program(&mut b, CONSTANT, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = b
+        .create_raster(&raster_desc(ProvokingVertex::First))
+        .expect("create_raster");
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let set = b
+        .create_query_set(QueryKind::OcclusionAny, 3)
+        .expect("create_query_set");
+    let mut pass = color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4]));
+    pass.occlusion = Some(&set);
+    b.begin_pass(&pass);
+    for (query, first) in [(0, Some(0)), (1, Some(4)), (2, None)] {
+        b.begin_query(query);
+        if let Some(first) = first {
+            b.draw(&call(
+                &p,
+                &bl,
+                &ds,
+                &rs,
+                &vl,
+                &streams,
+                &vp,
+                Topology::TriangleStrip,
+                vertices(first, 4),
+            ));
+        }
+        b.end_query();
+    }
+    b.end_pass();
+    let answers = |bytes: &[u8]| -> Vec<bool> {
+        bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_le_bytes(*c) != 0)
+            .collect()
+    };
+    let rb = b.read_queries(&set, 0, 3).expect("read_queries");
+    b.submit();
+    b.wait_read(&rb);
+    let mut out = [0u8; 24];
+    b.finish_read(rb, &mut out);
+    assert_eq!(answers(&out), [true, false, false], "read_queries");
+    let dst = buffer(&mut b, 40, BufferUsage::COPY_DST | BufferUsage::COPY_SRC);
+    b.write_buffer(&dst, 0, &[0xab; 40], WriteMode::Discard);
+    b.resolve_queries(&set, 0, 3, &dst, 8)
+        .expect("resolve_queries");
+    let got = read_buffer(&mut b, &dst, 0, 40);
+    assert_eq!(
+        answers(&got[8..32]),
+        [true, false, false],
+        "resolve_queries"
+    );
+    assert_eq!(&got[..8], [0xab; 8]);
+    assert_eq!(&got[32..], [0xab; 8]);
+    ok(&mut b);
+}
