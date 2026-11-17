@@ -7,11 +7,12 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 G3a is done. G3 (section 12's pass bar) is under way: run 1 of G3 fixed every finding of the last
 check, ran the shared suite in Chrome as well as on ANGLE, and built surfaces and present, depth read
-backs by draws and views in the sRGB twin. The shared suite (20 tests, origin/phase-2-graphics
-975c55c) passes 20 of 20 in Chrome's WebGL 2 with every extension, and 18 of 20 natively on ANGLE (the
-two failures are bugs of the ANGLE test build; see "Known failures"). Two checks of the back end's own
-(vertex and instance numbers under bases with 8, 16 and 32-bit indices; Discard then NoOverwrite
-writes) pass on every route. Without EXT_clip_control or WEBGL_provoking_vertex the suite's own raster
+backs (depth, and stencil with WEBGL_stencil_texturing) by draws and views in the sRGB twin. The
+shared suite (20 tests, origin/phase-2-graphics 975c55c) passes 20 of 20 in Chrome's WebGL 2 with
+every extension, and 18 of 20 natively on ANGLE (the two failures are bugs of the ANGLE test build;
+see "Known failures"). Three checks of the back end's own (vertex and instance numbers under bases
+with 8, 16 and 32-bit indices; Discard then NoOverwrite writes; depth and stencil read back) pass in
+Chrome on every route and on ANGLE but for one ANGLE bug. Without EXT_clip_control or WEBGL_provoking_vertex the suite's own raster
 blocks ask for what the back end refuses (known failures, G1's suite). Most of the pass bar is still
 "Next".
 
@@ -29,7 +30,8 @@ blocks ask for what the back end refuses (known failures, G1's suite). Most of t
     `getBufferSubData`), submit (with a `getError` check that turns a GL error into device loss) and
     fences.
   - State applied only where it changed (plan 4.4): each draw compares block handles with the last
-    applied ones; for a changed block only the GL values that differ from what GL holds are set (state.rs, `GlValues`). Bindings are walked only when the program or a set
+    applied ones; for a changed block only the GL values that differ from what GL holds are set
+    (state.rs, `GlValues`). Bindings are walked only when the program or a set
     changed, and each texture unit, sampler and uniform block point is rebound only when it differs.
     Vertex attributes are respecified only when the layout, a stream's buffer or its offset changed.
     Clears open the masks and scissor through the same record, and mark the blocks for reapplying.
@@ -92,7 +94,11 @@ blocks ask for what the back end refuses (known failures, G1's suite). Most of t
     backs (`DepthReadByDraw`, counted): a full-screen triangle fetches each depth texel of a 2D or 2D
     array texture and writes its stored value (16-bit unorm, 24-bit unorm in a 32-bit word, or a
     float's bits) into an `r32uint` texture, which reads back like any colour texture; it draws with
-    GL's lower-left origin so rows match on both window-origin routes. Views in the sRGB twin: the
+    GL's lower-left origin so rows match on both window-origin routes. The depth of depth-stencil
+    formats reads the same way; their stencil with WEBGL_stencil_texturing (enabled by the back end;
+    `GL_ANGLE_stencil_texturing` natively, which mozangle 0.7.1 lacks), fetched as unsigned integers
+    with the texture's `DEPTH_STENCIL_TEXTURE_MODE` set to `STENCIL_INDEX` for the draw and put back.
+    Views in the sRGB twin: the
     twin is a second GL texture of the same shape, made at the first such view; each side records
     when it was written (passes drawing into it, writes, copies) and is brought up to date from the
     other before it is read, sampled or written, every level and layer through a pixel pack buffer
@@ -103,8 +109,8 @@ blocks ask for what the back end refuses (known failures, G1's suite). Most of t
     multisampled texture is refused as `Invalid` (the caps give one sample). Not built: queries,
     surfaces and present, resolves, multisampled textures, sRGB-twin and stencil views, empty
     passes, copies of depth and of formats a framebuffer cannot read, texture-to-buffer copies of
-    formats read wider than stored (depth included), read backs of stencil and of depth-stencil
-    formats, depth read backs of cube textures, stencil views, vertex formats GL ES cannot read as stored (BGRA8, 10-10-10-2
+    formats read wider than stored (depth included), stencil read backs without
+    WEBGL_stencil_texturing, depth read backs of cube textures, stencil views, vertex formats GL ES cannot read as stored (BGRA8, 10-10-10-2
     integer, 11-11-10), negative stream offsets after a base vertex, copies between an index-only
     and a data-only buffer, buffer-texture copies with an index-only buffer.
 - platform.rs: the context. In the browser `WebGl::on_canvas(WebGl2RenderingContext, off)`;
@@ -144,7 +150,10 @@ blocks ask for what the back end refuses (known failures, G1's suite). Most of t
   `vertex_index`, `instance_index` and the elements a per-vertex and a per-instance stream read into
   an `rgba32uint` target; non-indexed and 8, 16 and 32-bit indexed instanced draws with first vertex,
   base vertex and first instance), `discard_then_no_overwrite_writes` (a read back recorded before a
-  `Discard` write of part of a buffer sees the old bytes; `NoOverwrite` writes above the part land).
+  `Discard` write of part of a buffer sees the old bytes; `NoOverwrite` writes above the part land),
+  `depth_and_stencil_read_back` (every depth format with `COPY_OUT` cleared to 0.25 and stencil 0x5a,
+  the middle 2 by 2 set to 0.75 and 0xc3 by `clear_rects`, read back as stored: unorm depth within
+  one step, float depth and stencil exactly).
 - browser/chrome.mjs: what run.mjs and suite.mjs share. Chrome is launched again (up to three times)
   when no WebGL 2 context survives half a second in ten tries, which once made the whole check fail.
 - Independent check, all done on 2026-11-17: drew the three scenes and compared (exactly equal, both
@@ -237,8 +246,9 @@ every colour-renderable 8, 16 and 32-bit integer format, and R32F, RG32F and RGB
 EXT_color_buffer_float); not 16-bit floats, packed formats, depth or stencil. One sample only.
 No bits yet: 16-bit normalised, BGRA and the other swizzled formats, A8, Stencil8, block-compressed.
 Since G3 run 1: `PRESENT` on `rgba8unorm` (the canvas's drawing buffer), and `COPY_OUT` on
-`depth16unorm`, `depth24plus` and `depth32float` (by `DepthReadByDraw`); not yet on the depth-stencil
-formats, whose stencil cannot be read back yet.
+`depth16unorm`, `depth24plus` and `depth32float` (by `DepthReadByDraw`), and on `depth24plus-stencil8`
+and `depth32float-stencil8` where WEBGL_stencil_texturing is present (Chrome on the RTX 3080: yes;
+mozangle natively: no).
 
 ## Measurements
 
@@ -283,6 +293,12 @@ formats, whose stencil cannot be read back yet.
   - The 16 scene pictures: as in run 3 (all as expected in Chrome on both routes and on ANGLE without
     the extensions; `triangle-clear_rects` fails on ANGLE with EXT_clip_control).
   - Lint clean on both targets.
+- Later the same day (job 15:23 to 15:24 desktop time, queued, not timed), with stencil read backs
+  and the third check: Chrome with every extension 23 of 23; without EXT_clip_control 10 of 23,
+  without both 10 of 23 (the third check passes on all three, with all five depth formats). ANGLE
+  with every extension 20 of 23 (`depth_and_stencil_read_back` fails too: `Depth16Unorm: depth at 5
+  is 0x4000, expected 0xbfff`, the scissor bug below); without the extensions 9 of 23 (the check
+  passes, depth-only formats only).
 - In the first full check of this run, Chrome's first launch kept no WebGL 2 context in ten tries
   and was closed; the second launch worked. In the other launches one context was lost first.
 - Chrome's GPU process restarted once just after Chrome started in most runs (the first WebGL
@@ -299,9 +315,11 @@ formats, whose stencil cannot be read back yet.
   origin is upper-left, though EXT_clip_control leaves scissors in window coordinates (in its
   source, StateManager11.cpp turns on `presentPathFastActive` for an upper-left origin, lines 871 to
   874, and then sets `scissorY = height - scissor.height - scissor.y`, lines 1415 to 1418). In the
-  suite, the scissor x 1, y 2, w 2, h 1 on a 4 by 4 target drew row 1 instead of row 2. Chrome 157's
-  ANGLE draws both right, and so does this ANGLE without EXT_clip_control. A bug of the test tool;
-  left failing.
+  suite, the scissor x 1, y 2, w 2, h 1 on a 4 by 4 target drew row 1 instead of row 2. The check
+  `depth_and_stencil_read_back` fails the same way: its `clear_rects` into a depth-only framebuffer
+  missed the target altogether (the mirrored height seems to be the 1 by 1 pbuffer's). Chrome 157's
+  ANGLE draws all three right, and so does this ANGLE without EXT_clip_control. A bug of the test
+  tool; left failing.
 - Suite `present_shows_the_frame` on native ANGLE: reading this ANGLE's pbuffer default framebuffer
   gives 72 in every byte whatever was drawn into it, even right after a `glClear` of it, with no GL
   error, a complete framebuffer, an RGBA8 configuration with no samples, and reads in RGBA and in
@@ -407,10 +425,9 @@ formats, whose stencil cannot be read back yet.
 G3's pass bar (plan section 12), in about this order:
 1. Per-draw cost against G2 on the same scene, in Chrome (a scene of many small draws changing a
    uniform range and a texture per draw, timed in both back ends as `gpu-job --alone`).
-2. Stencil: read backs of stencil and depth-stencil formats (`DepthReadByDraw` with
-   WEBGL_stencil_texturing, `GL_ANGLE_stencil_texturing` natively; without it the eight-draw bit
-   route of plan 4.12), stencil views (`StencilCopiedByDraw`), then `COPY_OUT` and `SAMPLE` on the
-   depth-stencil formats; a test reading both ways with equal answers.
+2. Stencil without WEBGL_stencil_texturing (the eight-draw bit route of plan 4.12, for read backs
+   and for stencil views, `StencilCopiedByDraw`), stencil views with it, then `SAMPLE` on the
+   depth-stencil formats; the pass bar's test reading both ways with equal answers.
 3. Copies within a typeless group (`CopyThroughBuffer`; by a draw where the widths differ, since
    `readPixels` reads integers and floats four components wide), and depth copies by `blitFramebuffer`.
 4. Queries: occlusion (`OcclusionAny`), timestamps and `timestamps_disjoint` (EXT_disjoint_timer_query
