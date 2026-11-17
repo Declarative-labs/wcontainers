@@ -4,13 +4,49 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 to K3 are done (their runs are in git history and below). K4 (files outside) is built in four
+K0 to K3 are done (their runs are in git history and below). K4 (files outside) is built in five
 runs: the first built the FUSE side with the backend as a volume; the second put the root file
 system on the backend, built extended attributes, access control lists and fallocate of backend
 files, FLUSH at every close, tests of backend notices and layer 1 on the backend; the third built
 mapped backend files as Linux's page cache holds them (shared and private mappings, programs) and
 layer 1 on a backend that opens files for the page cache; the fourth fixed the independent check's
-findings (below). What is left is in Next.
+findings; the fifth ran the end-of-milestone seeds and fixed what they and new tests found
+(below). What is left is in Next.
+
+Built in K4's fifth run:
+- Truncation (truncate, ftruncate, and O_TRUNC through SETATTR when the backend does not truncate
+  at open) and fallocate that changes a file's size or bytes (not keep-size allocation) take the
+  backend file's write lock (`io::lock_backend_writes`) as Linux's `do_truncate` and
+  `fuse_file_fallocate` take `inode_lock`. Before, an O_APPEND write whose offset was computed
+  before a truncation's SETATTR was answered was sent at the old end; ours asked again ("backend
+  question asked again", WRITE). tests/backend.rs `truncations_and_appends_match_reference`
+  (guest/backendlocks.c, 2 saves) failed with that warning before and passes now.
+- splice from a pipe into a backend file was EINVAL (backend files were not counted as having
+  `splice_write`); now `iter_file_splice_write`: every slot's bytes up to the length go in one
+  write (one WRITE on the backend), and nothing leaves the pipe until it is answered. tmpfs files
+  and devices take the same one write (`Pipe::unread_bytes`; `consume_front` takes across slots);
+  terminals still take a slot at a time. tests/backend.rs `transfers_match_reference`
+  (guest/backendtransfer.c: sendfile, splice, tee, copy_file_range with and without offsets,
+  from memory files, fadvise, readahead, cachestat; both server kinds) failed before.
+- Access control lists held on backend inodes (`Remote::acls`, Linux's `i_acl` and
+  `i_default_acl` through `__get_acl`): a read takes a held list (none is ENODATA), else asks the
+  backend and holds what it gives (errors are not held); a permission check by another than the
+  owner, when the group has bits, holds none for the access list (`acl_permission_check`,
+  `check_acl`, `fuse_get_inode_acl` without FUSE_POSIX_ACL); LOOKUP (`fuse_dentry_revalidate`),
+  GETATTR (`fuse_perm_getattr`, `fuse_update_get_attr`) and INVAL_INODE let go of both. Reading
+  a link's list is EOPNOTSUPP without asking, and so is setting one (`vfs_get_acl`, no
+  `set_acl`). Found by layer 1 seed 4040311 on the caching backend: lgetxattr(".",
+  "system.posix_acl_access") as uid 1000 was ENODATA on Linux (the walk's permission check on the
+  working directory held none) and EOPNOTSUPP ours (the server's answer). tests/backend.rs
+  `attributes_read_as_a_user_match_reference` (guest/backendacluser.c, both server kinds) failed
+  before. The server's directory has no lists (it answers EOPNOTSUPP), so a held list that is not
+  none is not reached by any test.
+- A backend directory seeks as `generic_file_llseek` over the size it holds: SEEK_END without
+  GETATTR, SEEK_DATA gives the offset and SEEK_HOLE the size below it, ENXIO at or past it (as an
+  unsigned offset). Before, SEEK_DATA and SEEK_HOLE were EINVAL. Found by layer 1 seed 4040312 on
+  the caching backend; guest/backendspecial.c now seeks in a directory (failed before).
+- Layer 1 on the backend did not find the splice failure in the seeds run so far; why its
+  sequences never reached it is not known (not looked into).
 
 Built in K4's fourth run (the check's findings):
 - Locks a waiting call holds (`Kernel::take_lock`, `Call::holds`, `Channel::Held`): taken at a
@@ -25,7 +61,8 @@ Built in K4's fourth run (the check's findings):
 - A parked call's earlier answers are taken only for the same question (`backend::Client::ask`
   compares a hash of opcode, node and body): one asked in its place drops that answer and the
   ones after it (giving back lookups and handles they held) and asks afresh, counted and warned
-  as "backend question asked again" (new reason). Not seen in any run since.
+  as "backend question asked again" (new reason). Seen since only where a truncation moved the
+  end under an append (fixed in the fifth run).
 - Attribute versions (`fc->attr_version`, `fi->attr_version`): an answer to a request sent before
   the inode last changed (a write's new size, a truncation, INVAL_INODE, or the same answer
   taken by an earlier run of the call) no longer overwrites what the inode holds.
@@ -226,635 +263,8 @@ Built in K4's first run:
   `file_calls_survive_saves` (12 saves a seed), `messages_per_call` (Measurements),
   `file_mappings_match_reference` (ignored: mappings not built).
 
-Built in K3's sixth run (the second K3 check's findings, each tested against the reference unless
-said otherwise):
-- A call that a stop interrupted keeps its restart code across a save (`Kernel::restore` leaves a
-  `Resume::Return` of an ERESTART code alone; the signals acted on at SIGCONT turn it into the call
-  again or EINTR). Before, a restore wrote 512 or 516 into x0 and the call answered it (the check's
-  blocking finding: cpusleep under seeds 507 and 520, stopread). tests/procsignals.rs
-  `stopped_calls_go_on_match_reference` (guest/stopread.c, 6 saves) fails without the fix under
-  seed 2 and passes with it; seeds 507 and 520 of cpusleep pass.
-- ppoll and pselect6 that watch no descriptor (musl's `pause` is ppoll(NULL, 0, NULL, NULL)) park
-  on `Channel::Nothing`, so only their time or a signal ends them; before, every object change woke
-  them and an idle thread took a process signal Linux gives the first thread. tests/threads.rs
-  `process_signal_takers_match_reference` (guest/sigpick.c). The reference runs on one CPU there:
-  on several CPUs its choice raced once in about ten runs (thread 1 instead of 0, under load 30 to
-  90; 8 of 8 one-CPU runs matched).
-- A child belongs to the thread that made it (`Process::parent_thread`, Linux's `real_parent`): at
-  that thread's end its children go to the first live thread of the process with their parent
-  death signals (`hand_children_to`, as `forget_original_parent`), a wait with __WNOTHREAD sees only
-  the caller's own children (ECHILD for another thread's), a wait looks at the caller's children
-  before the other threads' in turn (`do_wait`), and an exec from another thread renumbers them.
-  tests/threads.rs `parent_threads_match_reference` (guest/threadparent.c).
-- SCHED_FLAG_RESET_ON_FORK as `sched_fork`: real-time and deadline become SCHED_OTHER at nice 0,
-  other policies stay with a negative nice raised to 0, and the custom slice goes (guest/schedattr.c
-  now forks a SCHED_BATCH child).
-- Shared futex keys as `get_futex_key` on pages the futex cannot write: a read-only private file
-  page not yet copied is keyed by the file (a MAP_SHARED mapping of it wakes it); a read-only
-  anonymous page or copied private page is EFAULT. tests/threads.rs `futex_keys_match_reference`
-  (the check's guest/futexkeys.c, 2 saves).
-- splice into a file without `splice_write` (process, timer and signal descriptors, message queues,
-  `/proc`, secret memory, `/dev/full`) is EINVAL before the pipe is looked at (`do_splice_from`);
-  guest/sendanon.c. Layer 1 seed 5150002 then passed 25000 sequences.
-- A restore that finds the wall clock moved against the monotonic clock is a setting of the wall
-  clock, as Linux's resume from suspend (`Kernel::clock_was_set`, `timer::clock_was_set`): timers on
-  the wall clock's base (timer descriptors on CLOCK_REALTIME, absolute POSIX timers on it, POSIX
-  timers on CLOCK_TAI) and calls waiting for a wall clock time (`Call::wall`: absolute futex waits,
-  FUTEX_LOCK_PI, absolute clock_nanosleep, message queue time-outs, and a futex restart) move with
-  it, and timer descriptors set with TFD_TIMER_CANCEL_ON_SET are canceled (read and settime answer
-  ECANCELED once, poll shows them readable). tests/timers.rs `wall_clock_setting_moves_its_timers`
-  (guest/wallset.c; the test host moves its wall clock two hours at each of 20 saves). Not compared
-  with the reference (see Departures); the test fails without the change.
-- CSIGNAL comes from the generated constants.
-- A POSIX timer takes its signal's place in its maker's RLIMIT_SIGPENDING count when it is made
-  (`Timer::charge`, Linux's preallocated `sigqueue`): none left is EAGAIN before a timer number is
-  used, and its signal is always queued with its information, not charged again
-  (`Kernel::send_from_timer`). Found by fresh layer 1 seed 3030 (timer_create at a limit of 0: ours
-  EFAULT for a bad address, the reference EAGAIN); guest/timers.c `pending_limit`.
-- Layer 1 harness: the IPC status calls' sequence numbers and times are cleared after the call
-  (`machine_bytes`), which was seed 3023's difference (Known issues).
-- Not changed: a timer set to a time already past fires by the very next call here, where the
-  reference's interrupt usually comes just after it (the check's tpast.c). The plan's section 15
-  gives clock and timer precision to the host, and the reference itself races there (timercorner).
-
-Built in K3's fifth run (the K3 check's findings):
-- clock_nanosleep on a CPU clock (the process's, another thread's, another process's) is a timer
-  on that clock that wakes the sleeper (`Owner::Sleep`, timer.rs; `cpu_sleep`, time.rs), as Linux's
-  `do_cpu_nanosleep`: time used by other threads or processes ends it, a handled signal ends a
-  relative one with what is left written (EFAULT if that write fails) and a handler-less one goes on
-  from `restart_syscall` (`Restart::CpuSleep`, to the same time on the clock), an absolute one runs
-  again. A sleep on the clock of a process whose only thread sleeps never ends, as in Linux. The
-  sleeper's timer goes when its thread ends. Before, every such sleep not already over parked with
-  nothing to end it (the check's procsleep.c and cpusleep.c hung).
-- Futex waits keep their record in the thread's entry (`Thread::futex`, see Departures): which
-  entry a wake took is a bit there, so a vector wait naming one futex twice answers the entry taken
-  (0, then 1 when both are), where it waited until its time-out before. Wakes and requeues walk the
-  queue in place instead of copying it.
-- A thread that ends holding priority inheriting locks hands each to its first waiter with
-  FUTEX_OWNER_DIED set, as Linux's `__fixup_pi_state_owner` does when the owner is gone (measured in
-  futexpi.c: the reference sets it with no robust list). FUTEX_WAIT_REQUEUE_PI takes the lock's key,
-  then the condition's key and value, then compares the keys (EAGAIN before EINVAL for one futex
-  through two addresses); FUTEX_CMP_REQUEUE_PI refuses one address for both before the keys. A shared
-  futex's page must be readable, and writable for the calls that change the word (`FUTEX_WRITE`:
-  the PI calls, wake-op's second word, a PI requeue's target), else EFAULT.
-- Layer 1 generates the PI calls: the lock, unlock and trylock calls with misaligned, null and kernel
-  addresses only (unlock with null and kernel ones only, since it reads the word first), and
-  FUTEX_WAIT_REQUEUE_PI and FUTEX_CMP_REQUEUE_PI with any words (a sequence never has a waiter, so
-  they write nothing).
-- sendfile from a timer or signal descriptor (which seek, `noop_llseek`) moves nothing and answers
-  0 for a count of 0, EINVAL otherwise; a process descriptor or secret memory (which cannot seek)
-  is EINVAL even for 0 (measured; tests/splice.rs `sending_from_anonymous_files_matches_reference`,
-  guest/sendanon.c). Found by layer 1 seed 3015.
-- Pipes, timer and signal descriptors and secret memory have the pseudo file systems' largest file,
-  `MAX_LFS_FILESIZE` (`pseudo_fs_fill_super`; measured with sendfile at 2 GiB: a pipe takes the
-  byte, a timer descriptor is EINVAL, not EOVERFLOW). Found by layer 1 seed 3016.
-- An open with O_CREAT|O_TRUNC that makes the file does not truncate it (`FMODE_CREATED`): a queue
-  made in `/dev/mqueue` that way shows its 80 bytes (measured; guest/posixmq.c). Seed 3015.
-- timerfd_settime and timerfd_gettime on an O_PATH descriptor are EBADF (`fdget`), not EINVAL
-  (guest/timers.c). Seed 3018.
-- A pipe write whose buffer faults on a new page gives the slot back: the reader sees nothing, poll
-  shows no POLLIN and the pipe keeps all its room (measured on the reference's 7.0 kernel, which
-  differs from the older `pipe_write` that left an empty buffer; tests/write.rs
-  `faulted_pipe_writes_match_reference`, guest/pipefault.c). Seed 3021.
-- FUTEX_CMP_REQUEUE_PI reads the lock's word before looking for waiters
-  (`futex_proxy_trylock_atomic`), so a bad lock address is EFAULT with nobody waiting. Seed 3020.
-- jobs.c's hangup job waits for both SIGHUP and SIGCONT with them blocked outside `sigsuspend`; the
-  reference could run the job between the two (the check's whole-suite failure).
-- The repeatable test clock charges each turn 0.5 to 1.5 ns an instruction, drawn per turn from the
-  seed (driver.rs `ran`). Measured with the check's interleave.c: the first switch points were 228,
-  298, 291, 290 under seeds 1 to 4 (before: 249, 250, 250).
-- Status corrections: proclist's thread listing is not ignored (5 ignored tests); threads, clone's
-  sharing flags, PIDFD_THREAD and rseq's preemption abort are built (stale lines removed).
-
-Built in K3's fourth run:
-- Woken calls run again when their thread's turn comes, not at once (`settle`, `next_to_run`,
-  `give_way`, `take_turn` in task.rs). `wake_thread` puts the thread in line with
-  `Resume::FromRegisters` and keeps it in `woken`; `settle` runs a woken call only when its thread is
-  the one `pick` would choose, and a call that goes back to its program then has the turn. A woken
-  thread of a stopped process goes back in line when the process is continued. `pipe::lock` counts a
-  woken holder as holding. This fixes the K2 check's `cat /dev/tty | cat` (the splicer takes the
-  pipe's lock again before the woken reader runs; ttylock's first case, tests/terminal.rs).
-- Lock waiters are woken only when locks change: a record lock request wakes them only when it cut,
-  joined or let go of one of its owner's locks (`locks::set` says so), a close only when it let go of
-  record locks (`FdTable::take_let_go_locks`) or an open file's last close let go of its record or
-  flock locks (`locks::release_dead`, in `files_released`). Before, every close (even of a `/proc`
-  file) woke every lock waiter; with calls run at their turn, a waiter woken for nothing dropped out
-  of `posix_locks_deadlock`'s loops until it ran again, and lockwaits' "two processes in a loop" then
-  missed its EDEADLK (measured: the reference answers EDEADLK in both loops, 3 of 3 runs).
-- RLIMIT_CPU (timer.rs `cpu_limit`, as `check_process_timers`): at the hard limit SIGKILL, at the
-  soft limit SIGXCPU with the soft limit raised a second; the running thread's turn ends when the
-  limit is due. tests/cpulimit.rs (guest/cpulimit.c: a soft limit of 0 kills by SIGXCPU's default
-  action; soft 1 and hard 2 give one SIGXCPU with the soft limit then 2, then SIGKILL). The kernel's
-  `exit` no longer touches a thread that a timer's signal or the limit killed.
-- PR_SET_DUMPABLE's flag lives in the address map (`AddressMap::dumpable`, Linux's `mm->flags`), so
-  processes made with CLONE_VM share it (guest/clonevm.c, measured: the caller reads 0 after the
-  child clears it), fork copies it and an ended process's `/proc` owner is its credentials' as
-  Linux's `task_dump_owner` without a memory.
-- Test fixes: clonevm and threadcreds waited for a thread id to be cleared with a value read twice,
-  which in the reference could read 0 the second time and wait for ever (seen once in 8 runs); and
-  clonevm polled a thread's descriptor after its id was cleared but before Linux released it (the
-  reference showed POLLIN without POLLHUP once in 9 runs); it now waits until
-  `/proc/self/task/<tid>` is gone. 12 reference runs of each gave identical output after.
-
-Built in K3's third run:
-- clone's last combinations. The address map is shared (`process::Map`, Linux's `mm_struct`) by
-  processes made with CLONE_VM, with or without CLONE_VFORK (a vfork child no longer copies the map
-  back at its end; the memory goes with the last process showing it, `memory_in_use_elsewhere`).
-  Signal handlers are shared (`process::Handlers`, `sighand_struct`) by processes made with
-  CLONE_SIGHAND, copied otherwise, and copied before `execve` resets them (`unshare_sighand`). A
-  process on the caller's memory without CLONE_VFORK has no alternate stack (a thread with
-  CLONE_VFORK keeps it). CLONE_THREAD|CLONE_PIDFD gives a PIDFD_THREAD descriptor; pidfd_open takes
-  PIDFD_THREAD for any thread (a thread other than the first without it: ENOENT, measured). A thread
-  other than the first holds its own pidfs inode (`Thread::pidfd`), woken at its end; poll, signals,
-  PIDFD_GET_INFO (pid the thread, tgid its process), process_mrelease and the namespace requests
-  find a thread's process. tests/threads.rs `clone_sharing_matches_reference` (guest/clonevm.c:
-  both processes running on one memory and taking turns by futex, mappings made and removed by the
-  child, the child's thread id cleared; handlers set by one seen by the other, a child's `execve`
-  leaving the caller's; thread descriptors live, ended and reaped; the first thread's descriptor
-  with PIDFD_THREAD while it has ended alone and when the process ends).
-- Credentials and personality per thread (`Thread::credentials`, `Thread::personality`;
-  `Kernel::credentials(tid)` for the caller, `Kernel::task_credentials(pid)` for a task a number
-  names, which a first thread that ended keeps in `Leader`). The id and power changes, `capget`
-  and `/proc/<pid>/task/<tid>/status` are the thread's; `/proc` owners, kill permission, SIGCHLD's
-  uid and pidfd information are the named task's; RLIMIT_NPROC and PRIO_USER count threads by
-  their own user. tests/threads.rs `thread_credentials_match_reference` (guest/threadcreds.c, raw
-  setresuid and personality in one thread).
-- A message queue's notification request goes at a close by any thread of its process: descriptor
-  closes are told the closing process (`FdTable::remove`, `set`, `close_all`, `close_on_exec`),
-  not the table's lock owner (in threadcreds).
-- Tried and taken back: woken calls run again at their thread's turn (built in the fourth run).
-
-Built in K3's second run:
-- `/proc/<pid>/task/<tid>/` (Linux's `tid_base_stuff` order and positions; the files built for a
-  process, per thread), `/proc/thread-self`, and `/proc/<tid>` for any thread (a process directory
-  showing that thread, as `proc_pid_lookup` finds any task). `stat`, `status` and `comm` show the
-  directory's thread: its number, name, state, scheduling values, blocked signals and filters. A
-  first thread that ended while others go on shows state Z, no umask, FDSize 0, and still counts in
-  Threads and in `task` (measured). The `comm` name is per thread (`Thread::name`): PR_SET_NAME and
-  PR_GET_NAME are the caller's, a write to a thread's `comm` names that thread (musl's
-  pthread_setname_np for another thread), execve names the caller. Path walks know the walking
-  thread (`with_walk(tid, ..)`). tests/threads.rs `proc_task_matches_reference` (guest/proctask.c),
-  tests/proclist.rs `thread_listings_are_a_subset_of_the_reference` (no longer ignored).
-- clone's sharing flags: each thread holds its descriptor table (`Thread::files`, Linux's
-  `files_struct`) and its root, working directory and umask (`Thread::fs`, `fs_struct`), shared by
-  CLONE_FILES and CLONE_FS and copied otherwise, for threads and processes alike; semaphore undo
-  lists are per thread (`list_of` by thread), shared by CLONE_SYSVSEM, undone when a thread's own
-  list's last holder ends. The last holder's end closes a table (`Kernel::put_files`); execve gives
-  the caller a table of its own before closing on exec (`unshare_files`), as close_range's
-  CLOSE_RANGE_UNSHARE now does. `/proc` reads a task's table and context. tests/threads.rs
-  `clone_tables_match_reference` (guest/clonetables.c, raw clone for threads since musl's wrapper
-  refuses CLONE_THREAD with EINVAL).
-- A thread made with CLONE_VFORK: the maker waits until it ends or starts a program
-  (`Thread::vfork_parent`, which a vfork child process's thread holds too; `release_vfork` at each
-  thread's end and at execve). Measured in clonetables: the thread's number is cleared before the
-  maker's clone returns.
-- Descriptor searches start at Linux's `next_fd` (every descriptor below it in use): libc-test's
-  daemon-failure fills the whole 2^20 table with dup, which took quadratic time before.
-- Layer 2: musl's libc-test (MIT; its common, functional and regression tests vendored in
-  crates/wcontainers-kernel-test/libc-test from repo.or.cz commit 63e36e9, less those that load
-  shared libraries), each test run by the suite's own `runtest -t 600` as the container's first
-  process here and in the reference (src/libctest.rs, tests/libctest.rs). Threads, signals, timers
-  and IPC tests (43) under `SCHEDULE_SEEDS` seeds, with and without saves; the rest (97) under one
-  seed. `LIBC_TEST` picks tests by name, `LIBC_TEST_JOBS` sets how many run side by side (4).
-  Known failure: functional-socket (sockets are K5).
-- Scheduling between threads compared on one CPU under seeds (tests/turns.rs
-  `thread_scheduling_matches_one_cpu_reference`, guest/threadsched.c): setpriority and
-  getpriority by thread number (one thread's nice value is its own; raising it back is EACCES under
-  RLIMIT_NICE 0), PRIO_PGRP and PRIO_USER over threads, sched_setscheduler and getscheduler by
-  thread (FIFO and RR EPERM, leaving SCHED_IDLE EPERM), sched_getparam, sched_rr_get_interval
-  against the thread's slice, affinity by thread, two threads taking turns with sched_yield (15 or
-  more changes of turn in 19), and two threads that only compute sharing the CPU by weight (nice 0
-  against nice 10 gets 80 to 97 per cent of the CPU time; 1024/1134 is 90).
-- The test driver's repeatable host moves its wall clock with its monotonic clock (both from the
-  instructions run and the seed), and a host brought back from a save goes on from the save's wall
-  clock. Before, CLOCK_REALTIME was the machine's own, so the time a save took (a fork of the test
-  process, 0.1 s to 2 s under load) and the stand-in's slowness under load passed in the guest's
-  wall clock: libc-test's pthread_cond-smasher (0.5 s timeouts), pthread_mutex and pthread_mutex_pi
-  (0.1 s) timed out in 11 of 430 saved runs and once in a whole-suite run.
-
-Built in K3's first run:
-- The K2 check's findings: preadv2 and pwritev2 with RWF_NOWAIT refuse every regular tmpfs file
-  (EOPNOTSUPP; devices and pipes take it; measured, tests/rwmodes.rs); fallocate's modes follow Linux
-  7.0's switch on FALLOC_FL_MODE_MASK (FALLOC_FL_WRITE_ZEROES known; every mode 0 to 255 compared in
-  rwmodes); a continued child's CLD_CONTINUED SIGCHLD is sent when one of its threads next comes back
-  from running (`get_signal`), or at once if every thread is parked, while a wait sees it at once
-  (`Process::continued_unsent`, tests/procsignals.rs `continued`); a splice or sendfile from a terminal
-  into a pipe holds the pipe's lock while it waits (`Pipe::held_by` and `Call::holds`; reads, writes,
-  splices and sendfile into that pipe wait, signals do not end that wait; tests/terminal.rs
-  `splice_holds_the_pipe`), see Known gaps for what is left; a CPU side that cannot make a memory,
-  thread or shared block is counted "host cannot do this" (`Context::cpu_error`); the missing count
-  in the status file is fixed.
-- Threads (src/syscall/clone.rs `make_thread`): clone with CLONE_THREAD on the caller's process and
-  memory, its own stack and thread pointer, CLONE_PARENT_SETTID, CLONE_CHILD_SETTID,
-  CLONE_CHILD_CLEARTID, no alternate stack and no rseq area, a reset scheduling policy with
-  SCHED_RESET_ON_FORK; Linux's flag checks (CLONE_THREAD needs CLONE_SIGHAND, which needs CLONE_VM;
-  CLONE_NEWPID and CLONE_NEWUSER with it EINVAL). A thread ending alone runs `mm_release` (its robust
-  list, its priority inheriting locks handed on, its thread id address cleared and woken); the last
-  thread's status is the group's (`synchronize_group_exit`, measured: the first thread exiting with 3
-  and the last with 7 reports 7). exit_group and fatal signals end every thread, each through
-  `mm_release`. execve from any thread ends the others and the caller takes the process's number
-  (`Kernel::only_thread`, `de_thread`). A stopped process's parked threads stay parked (before, a
-  stop took them out of the parked index and they were never woken). tests/threads.rs `threadlife`.
-- Futexes (src/syscall/futex.rs): FUTEX_WAIT, WAKE, WAIT_BITSET, WAKE_BITSET, REQUEUE, CMP_REQUEUE,
-  WAKE_OP (every op and comparison), LOCK_PI, LOCK_PI2, UNLOCK_PI, TRYLOCK_PI, WAIT_REQUEUE_PI,
-  CMP_REQUEUE_PI; futex_waitv, futex_wake, futex_wait and futex_requeue. Keys as `get_futex_key`
-  (private: memory and address; shared in a shared mapping: the file and offset). Waiters queue in
-  arrival order (all threads have one priority here, so Linux's priority list is that order) and park
-  on `Channel::Futex`; a wake takes the waiter off its queue first, so the call run again knows. Time
-  outs on both clocks with the thread's slack for FUTEX_WAIT and none for futex2; a signal ends a wait
-  with ERESTARTSYS, or with a timeout continues from `restart_syscall` (`Restart::Futex`); LOCK_PI
-  answers ERESTARTNOINTR. tests/threads.rs `futexes` (every operation's checks, waits, requeues,
-  wake-op, PI handover, futex2) and `threads` (pthread locks, conditions, barriers, read-write locks,
-  semaphores, robust locks between threads and between processes, a PI mutex).
-- Timers (src/syscall/timer.rs) on the kernel's one timer queue: getitimer and setitimer (ITIMER_REAL
-  rearmed when SIGALRM is taken, the CPU ones on the process's CPU time), timer_create (every clock,
-  SIGEV_NONE, SIGEV_SIGNAL, SIGEV_THREAD, SIGEV_THREAD_ID, the default event, numbers taken even by a
-  failed create), timer_settime, timer_gettime, timer_getoverrun (overruns counted until the signal is
-  taken, then rearmed as `posixtimer_deliver_signal` does; a signal sent before the timer was set
-  again or deleted is dropped when taken, measured), timer_delete; timerfd_create, timerfd_settime,
-  timerfd_gettime, reads, poll, TFD_IOC_SET_TICKS. A CPU timer ends the running thread's turn when it
-  is due (`timer::cpu_slice`). CLOCK_THREAD_CPUTIME_ID and per-thread CPU clocks read the thread's own
-  time (they read the process's before). tests/timers.rs.
-- Layer 1 generates futex (WAIT, WAKE, REQUEUE, CMP_REQUEUE, WAKE_OP, WAIT_BITSET, WAKE_BITSET, the
-  removed FUTEX_FD and an unknown command, with and without the private and wall clock flags, on words
-  of `VALUES`, misaligned and bad ones; every wait has one of the sleeps as its timeout),
-  futex_waitv, futex_wake, futex_wait and futex_requeue (vectors at `FUTEX_VECTORS`), getitimer,
-  setitimer, timer_create (every clock, the `SIGEVENTS` requests), timer_settime, timer_gettime,
-  timer_getoverrun, timer_delete, timerfd_create (always nonblocking), timerfd_settime and
-  timerfd_gettime, with values from `ITIMERS` whose times never come within a sequence; what is left
-  of a timer is masked. The priority inheriting futex operations stay in layer 2: they write the
-  caller's thread number, which differs between the runners. Found and fixed by it: futex_requeue
-  needs both futexes' flags equal; futex2 timeouts are checked as `timespec64_valid`; wake-op refuses
-  an unknown operation before touching the word.
-- rseq: a thread taken off the CPU after its turn ended in its own code (a stop with a switch due)
-  leaves its critical section for the abort handler (`Kernel::rseq_preempted`);
-  tests/rseqabort.rs `preempted_sections_match_reference` against the reference on one CPU.
-- The stand-in never ended a turn in code it had translated while no turn had a length: unicorn adds
-  its instruction counting hook without translating again (it drops its blocks only when counting
-  stops), so a loop first run without a slice ran on past every later slice, and two threads that
-  only compute never took turns. The stand-in now drops its translated blocks when counting starts
-  (`Memory::counting`). Found by guest/rseqpreempt.c.
-- Seeded schedules: the test driver ends each turn at a point in its slice drawn from the seed
-  (driver.rs), and its repeatable clock charges each turn 0.5 to 1.5 ns an instruction, drawn per
-  turn (K3's fifth run; before, 1 ns, so seeds moved switch points by about one stop's jitter), so a
-  run repeats for a seed and threads interleave differently under different seeds. `assert_same_output_seeded` runs ours under `SCHEDULE_SEEDS` seeds (3 if unset) from
-  `SCHEDULE_SEED` (1 if unset), optionally with saves; tests/threads.rs `threads_survive_saving` saves
-  and brings back 6 times per seed with threads waiting and running.
-
-Built in K2's tenth run (the second check's findings):
-- A child that has ended and is not yet reaped (tests/zombie.rs, guest/zombie.c, all measured):
-  `/proc/<pid>/stat` and `status` keep its first thread's scheduling values, blocked signals and
-  filter count (`Leader`, kept at its end), show one thread, state Z, the wait status as `exit_code`
-  (stat's last field), no umask or memory lines and a table size of 0; its `cmdline` and `environ`
-  read empty once its memory is gone, `environ` and `auxv` refuse the open (ESRCH) and `mounts`
-  (EINVAL); `exe`, `cwd` and `root` lead nowhere (ENOENT). Its CPU clock reads its time (a thread
-  clock of it is EINVAL); tkill and tgkill find it and drop what they send; setpgid moves it, and a
-  group or session check counts it as a member; prlimit names it. Before, stat and status panicked
-  the kernel and cmdline read a dropped memory. stat's `rsslim` is now RLIMIT_RSS.
-- prlimit names any process (`check_prlimit_permission`: all three ids the caller's, or
-  CAP_SYS_RESOURCE); before it named only the caller.
-- The scheduler's tick is checked at every return from the CPU side, not only at a stop: a thread
-  that has had its share and keeps coming back by system calls gives way. sched_yield puts the caller
-  behind every thread waiting for its turn and gives way (see Departures). tests/turns.rs compares
-  with the reference pinned to one CPU (`reference::run_one_cpu`).
-- RLIMIT_SIGPENDING: every queued signal holds a place in its receiving user's count (`Charge`, given
-  back when it goes); over the limit a real-time signal with information of its own (sigqueue,
-  tkill) is refused with EAGAIN, other signals go without their information (taken as SI_USER from
-  nobody), the kernel's standard signals always fit, and an I/O signal that does not fit becomes
-  SIGIO. RLIMIT_NPROC: fork counts the user's live threads and unreaped processes with the new one
-  (root, CAP_SYS_RESOURCE and CAP_SYS_ADMIN pass), a change of real user over the limit is flagged
-  and the next execve refuses with EAGAIN while it still is. tests/userlimits.rs.
-- fcntl and prctl count as not built only what Linux has: leases, directory notification,
-  F_GETOWNER_UIDS and the delegation commands; every prctl option up to Linux 7.0's newest (79,
-  measured) and PR_SET_VMA except those Linux has only for other architectures. Others are a plain
-  EINVAL. tests/unknown.rs.
-- Saving: a save is a new process holding a copy of the whole test process (fork), which goes on
-  with a new CPU side made from the saved memories and registers and a new host whose monotonic
-  clock starts earlier; the process that was copied only waits for the copy's run. `Kernel::restore`
-  now carries the kernel's monotonic clock over (an offset on the host's, so it never goes back and
-  parked deadlines keep their meaning). tests/saving.rs runs `processes`, `deadlines` and a new
-  `clockwatch` (clocks never go back, sleeps and timeouts last) with 8 saves for each of 3 seeds;
-  with `restore` made a no-op it fails (`the clocks held: 0`), checked by hand.
-
-Built in K2's ninth run (the first check's findings):
-- Deadlines while others compute: a parked call's deadline now ends the running thread's turn (the
-  turn's slice is the nearer of the fair share and the earliest deadline), and due calls are woken at
-  every return from the CPU side, not only when the kernel is idle. Before, a sleeper waited until
-  every other thread parked, so a process that computed kept a sleeping one asleep for ever.
-  tests/deadlines.rs: nanosleep, clock_nanosleep, ppoll, pselect6, sigtimedwait, semtimedop and
-  mq_timedreceive time out beside one or two children that compute with and without system calls.
-- Lock waits between processes: any record lock change (a lock, unlock or change of kind) and a
-  flock unlock or conversion wake the lock waiters, which try again (`locks_wake_up_blocks`; closes
-  already woke them). F_SETLKW refuses a wait that closes a loop of descriptor tables with EDEADLK
-  (`posix_locks_deadlock`, at most 11 steps, open file locks never followed); each waiting request
-  keeps its table and the table holding the lock in its way in the call slot. tests/lockwaits.rs.
-- pidfs's requests (`pidfd_ioctl`): FS_IOC_GETVERSION (generation 0), PIDFD_GET_INFO in every size
-  from 64 bytes (numbers, credentials, cgroup, the wait status once reaped, the core dump bits, the
-  supported mask, `copy_struct_to_user`'s tail), and the ten namespace requests with their checks
-  (ESRCH, EINVAL, EACCES by `ptrace_may_access`); nsfs is not built, so a request that passes them is
-  counted "ioctl request not built", EOPNOTSUPP (Linux's answer for a namespace it lacks). The made-up
-  machine's cgroup id is 1. Before, every pidfs request answered ENOTTY without a count.
-- Orphaned groups: a dying process's own group is checked at its end (`kill_orphaned_pgrp` at
-  exit); the container's first process counts as a parent outside a group (it is not the machine's
-  init); an orphan's exit signal becomes SIGCHLD (`reparent_leader`). tests/orphans.rs.
-- fstatfs of a queue mq_open gives reports no mount flags (it lies on the IPC namespace's own mount);
-  one opened by path under `/dev/mqueue` keeps Docker's. tests/posixmq.rs.
-- Parked threads are found by channel and by deadline, and queued threads by number, through indexes
-  (`schedule::Parked`, the run queue's positions) instead of walks over every thread.
-- Writes and copy_file_range follow `generic_write_check_limits`: a file opened without O_LARGEFILE
-  is held to `MAX_NON_LFS`, others to their file system's largest file, and copy_file_range checks
-  its output position even when there is nothing to copy (layer 1 seed 729).
-- A pass over every catch-all answer in the kernel
- for requests, commands, flags and entries Linux
-  has: the only silent one left was pidfs's (above); the others answer values Linux does not know.
-
-Built in K2's eighth run:
-- TIOCSETD as `tty_set_ldisc`: a number outside 0 to 30 EINVAL, `n_tty` kept as it is, `N_MOUSE`
-  (2) EPERM without CAP_SYS_ADMIN (`serport_ldisc_open`'s check; the reference has serport
-  registered), every other discipline counted "line discipline not built" and EINVAL, as a Linux
-  that has not registered it answers. The reference also has 3 (PPP), 14 (sync PPP) and 27 (N_NULL)
-  registered and accepts them; here they are refused and counted. Layer 1 takes TIOCSETD's
-  discipline from a table no call writes (0, 1, 2, 4, -1, 31, 256), never from memory other calls
-  write. tests/terminal.rs. Seed 711 then passed 20000 (345 s alone, load 31 to 44).
-- Pipe releases one by one: a closed descriptor's file goes to its table's list of files given up,
-  and `files_released` runs `pipe_release` for each one that was its last holder, last given up first
-  (measured: Linux's `fput` runs the releases as task works on the way back to the program, newest
-  first, so close_range over two readers and then the writer sends three signals and over the writer
-  and then two readers one). dup2 over a pipe's end now counts as its release. tests/sigio.rs.
-- sendfile and splice into a full terminal whose file blocks wait for room as `tty_write` does: the
-  call parks on the terminal with what it wrote in the call slot and goes on when run again; a
-  signal ends it with what was written (ERESTARTSYS if nothing). tests/terminal.rs
-  `waiting_for_room`.
-- A process's state in `/proc/<pid>/stat` and `status` is its first thread's: Z ended and not reaped,
-  T stopped, D a `vfork` parent's wait, S parked, R otherwise (it was always R).
-
-Built in K2's seventh run:
-- System V semaphores (src/syscall/sem.rs) as `ipc/sem.c`: semget (with `newary`'s and
-  `sem_more_checks`' limits), semop and semtimedop (the timeout read first, E2BIG, the operations,
-  then `find_alloc_undo` before the set is looked up, so a failed call still leaves an undo entry,
-  EFBIG, EACCES), both forms of `perform_atomic_semop` (a set named twice after a change takes the
-  slow form), IPC_NOWAIT per operation, waiting operations kept as data in Linux's queues (per
-  semaphore and per set, `merge_queues` and `unmerge_queues` as the lock's release does, complex
-  count) and completed by `update_queue`, `wake_const_ops` and `do_smart_update` in their order, the
-  waiter told its result in `Semaphores::told` and woken; a timeout ends with EAGAIN, a signal with
-  EINTR (never restarted), removal with EIDRM. SEM_UNDO adjustments in undo lists (most recently used
-  first), shared through CLONE_SYSVSEM, undone at the end of the last sharer (held to 0 and SEMVMX,
-  the time of the last operation set), cleared by SETVAL and SETALL, dropped with their set. Every
-  semctl command (IPC_STAT, SEM_STAT, SEM_STAT_ANY, IPC_INFO, SEM_INFO, GETALL, SETALL, GETVAL,
-  SETVAL, GETPID, GETNCNT, GETZCNT with `check_qop`'s rule, IPC_SET, IPC_RMID). A thread that ends
-  leaves its queue. tests/sysvsem.rs.
-- POSIX message queues (src/syscall/mqueue.rs) as `ipc/mqueue.c`: the mqueue file system mounted at
-  `/dev/mqueue` (`Kind::Mqueue`, root 01777, listed by count as `dcache_readdir`, statfs's magic,
-  in the mount table), queues as `Content::Mqueue` files (size 80 that only truncation changes, the
-  `QSIZE:... NOTIFY_PID:...` text on read, poll, write EINVAL, mmap ENODEV, fsync EINVAL, fallocate
-  EOPNOTSUPP, `default_llseek`). mq_open (names checked as `lookup_noperm`, the limits of
-  `mqueue_get_inode`, 256 queues, each user's bytes against RLIMIT_MSGQUEUE with the arm64 sizes of
-  `msg_msg` and the tree node, EMFILE; always close-on-exec, no O_LARGEFILE, O_DIRECT refused), open
-  with O_CREAT and mknod of a plain file in `/dev/mqueue` make a default queue, mkdir, symlink,
-  link, rename and other nodes there EPERM; mq_unlink with `may_delete`'s checks. mq_timedsend and
-  mq_timedreceive by priority (oldest first in each), absolute real time timeouts (ETIMEDOUT), waiting
-  senders and receivers kept in `wq_add`'s order (task priority, then first come) and handed what
-  they wait for (`pipelined_send`, `pipelined_receive`; a receiver's message kept until its call runs
-  again), ERESTARTSYS on a signal. mq_notify (SIGEV_NONE, SIGEV_SIGNAL with SI_MESGQ and the value,
-  sent once when a message comes to an empty queue with no receiver waiting, not after the owner's
-  exec; SIGEV_THREAD reads its cookie and then needs a netlink socket, so a descriptor that is not
-  one is ENOTSOCK as on Linux; a close by the owner takes the request away). mq_getsetattr.
-  tests/posixmq.rs.
-- Layer 1 generates semget, semop, semtimedop and semctl (operations from a table in the arena; those
-  semop reaches always carry IPC_NOWAIT, and semtimedop reaches the others only with a timeout of a
-  microsecond, none or a refused one; a placeholder `SEMAPHORES` is the last semget identifier; the
-  reference's runner removes every set after each sequence as its creator), and mq_open, mq_unlink,
-  mq_timedsend, mq_timedreceive, mq_notify and mq_getsetattr (names from the path pool, opens always
-  O_NONBLOCK, sends and receives always with a time already past or refused, attributes and
-  notification requests from arena tables with only signals whose default action is nothing). The
-  path pool has `/dev/mqueue` and `/dev/mqueue/a`. A read of a queue's file is zeroed by both
-  runners as a random device's is (its text holds the requester's process number); the reference's
-  runner unlinks every queue after each sequence and gives the root back its owner and mode.
-- The sched_* calls and the affinity calls find a process that has ended and is not yet reaped, as
-  Linux does (its scheduling values kept as `getpriority` keeps them); tests/priorities.rs.
-- Seed 701 passed 20000 sequences with semaphores in; seed 710 passed 2000 with message queues in.
-- Seed 711 (20000, message queues in) failed at its 18th call, a difference older than this run:
-  TIOCSETD on `/dev/ptmx` with a generated discipline answers EINVAL here and 0 in the reference.
-  Probed on the reference: disciplines 0, 3, 14 and 27 are accepted (registered in linuxkit's
-  kernel), 2 is EPERM, the rest of -1 to 31 EINVAL (scratch `ldisc/l.c`). Fixed in the eighth run.
-
-Built in K2's sixth run:
-- The three open layer 1 findings: MADV_DODUMP and MADV_KEEPONFORK refused on droppable memory and
-  DODUMP on the kernel's own pages, mapping by mapping (`madvise_vma_behavior`: the mappings before the
-  refusing one keep the change; MADV_WIPEONFORK the same way); sendfile takes the largest file of
-  either side's file system from `Kind::max_bytes` (proc's is `MAX_NON_LFS`) and checks the output's
-  position before it; and the priority calls (getpriority, setpriority, ioprio_get, ioprio_set) name
-  every process now, not only the caller: one thread, a group (newest member first, as the group's list
-  holds them), a user's processes, ended ones not yet reaped with the nice value they had and no I/O
-  priority, with `set_one_prio`'s and `set_task_ioprio`'s permission and limit checks.
-  tests/priorities.rs. Seeds 516, 517 and 518 then passed 20000 each.
-- Process descriptors (src/syscall/pidfd.rs): pidfd_open (PIDFD_NONBLOCK, PIDFD_THREAD; built for
-  threads other than the first in K3's third run), pidfd_send_signal (the
-  caller's own numbers PIDFD_SELF_THREAD and PIDFD_SELF_THREAD_GROUP, the three scope flags, information
-  checked as `do_pidfd_send_signal`), waitid's P_PIDFD (a nonblocking descriptor answers EAGAIN),
-  clone's CLONE_PIDFD (its number written before the child exists), process_mrelease (a fatal signal
-  ends a process here at once, so there is never a dying process: EINVAL for a running one, ESRCH for
-  an ended one). One pidfs inode per process (regular inside, shown with no type, mode 0700, root's,
-  `anon_inode:[pidfd]` in `/proc`, file handles of type `FILEID_KERNFS`), readable once the process
-  ends and hung up once reaped, pollers woken at both. No read, write, attribute change, fallocate or
-  mapping, as measured. tests/pidfd.rs.
-- Signal descriptors (src/syscall/signalfd.rs) on one shared anonymous inode (`Content::Anon`, mode 0600
-  with no type; what each file is lies in `OpenFile::anon`): signalfd4 (size, mask, then flags; an
-  existing descriptor takes a new mask), reads of the reader's own pending signals of the mask as
-  `signalfd_siginfo` filled by `siginfo_layout` (measured for every layout), several per read, a record
-  that cannot be stored lost, waits parked on the thread's signals, poll readable while one is pending
-  (a queued signal wakes its process's pollers), lseek staying at 0, reopen through `/proc` ENXIO.
-  tests/signalfd.rs.
-- System V message queues (src/syscall/ipc.rs) as `ipc/msg.c`: msgget, msgsnd (waits for room parked
-  on the queue's senders' address, EIDRM if removed meanwhile, ERESTARTNOHAND on a signal), msgrcv with
-  every search (type, except, lowest at or below, MSG_COPY's position), MSG_NOERROR, E2BIG, waits for a
-  message: receivers queue in order and a send hands its message to the first one it suits
-  (`pipelined_send`, kept in `Ipc::handed` until the receiver's call runs again; E2BIG handed to one
-  whose buffer is too small), a removal hands EIDRM; msgctl's IPC_STAT, MSG_STAT, MSG_STAT_ANY,
-  IPC_INFO, MSG_INFO, IPC_SET (qbytes above MSGMNB needs CAP_SYS_RESOURCE), IPC_RMID. tests/sysvmsg.rs.
-- Layer 1 generates pidfd_open, pidfd_send_signal, process_mrelease, CLONE_PIDFD, signalfd4 (always
-  nonblocking), msgget, msgsnd, msgrcv and msgctl (always IPC_NOWAIT; a placeholder `QUEUE` is the
-  sequence's last msgget identifier, as `SEGMENT` is shmget's; the reference's runner removes every
-  queue after each sequence as its creator).
-
-Built in K2's fifth run:
-- System V shared memory (src/syscall/ipc.rs) as `ipc/shm.c` in a container's own IPC namespace:
-  identifiers as `ipc_idr_alloc` hands them out (slots in a cycle of at least 64, the sequence number
-  grows when a slot at or below the last comes round; measured), keys, `ipcperms` (Docker's root has
-  no CAP_IPC_OWNER, so a segment's mode binds root too; measured), `newseg`'s limits (SHMMAX, SHMALL,
-  4096 segments, `MAX_LFS_FILESIZE`; no memory reservation, as the reference's `overcommit_memory` is
-  1, which `/proc/sys/vm/overcommit_memory` now says too), segments as removed files `SYSVxxxxxxxx` on
-  the internal tmpfs whose inode number is the identifier, shmat through mmap's `do_mmap` (SHM_RND,
-  SHM_REMAP, SHM_RDONLY, SHM_EXEC, the overlap check), shmdt as `ksys_shmdt` (pieces left by mprotect
-  and munmap), every shmctl command (IPC_STAT, SHM_STAT, SHM_STAT_ANY, IPC_INFO, SHM_INFO, IPC_SET,
-  IPC_RMID with SHM_DEST and the key hidden, SHM_LOCK and SHM_UNLOCK with the locked pages counted per
-  user against RLIMIT_MEMLOCK). A segment's attachments are its mappings in every memory (never
-  merged, as `shm_vm_ops` has a `close`), counted after every call and process end: a count that grew
-  sets the attach time and process, one that fell the detach time and process, and a removed segment
-  nothing shows goes then. tests/sysvshm.rs.
-- splice, tee and vmsplice (src/syscall/splice.rs) as `fs/splice.c`: pipe to pipe (whole slots move as
-  they are, a part is a copy), file to pipe (`splice_file_to_pipe`: room first, one slot per file page,
-  `/dev/null`, directories, secret memory and process files refused), pipe to file
-  (`iter_file_splice_write` and `splice_write_null`: tmpfs files, terminals, the devices; `/dev/full`
-  and `/proc` refused), offsets and their write back, O_NONBLOCK and SPLICE_F_NONBLOCK as each path
-  takes them, SIGPIPE, waits that park before anything moves, tee's copies, vmsplice both ways. Slots
-  spliced into a pipe (also by sendfile) are ones no later write adds to (`PIPE_BUF_FLAG_CAN_MERGE`),
-  measured. vmsplice copies the caller's pages when called (counted "vmsplice pages copied"); Linux
-  puts the pages themselves in the pipe. sendfile into a pipe is now `splice_file_to_pipe` itself, so
-  it waits for room in a full blocking pipe as Linux does. tests/splice.rs.
-- A regular file holds its bytes only up to the last one written; past that it reads as zero up to its
-  size, so a large size costs nothing (a 1 TiB segment, measured to succeed in the reference).
-- Layer 1 generates shmget, shmat, shmdt, shmctl, splice, tee and vmsplice (see Layer 1).
-
-Built in K2's fourth run:
-- What a call leaves in a buffer that runs into memory it cannot write, measured call by call against
-  the reference (tests/partialcopy.rs, guest/partialcopy.c: 47 kinds of call at every count of
-  writable bytes). `Guest::write` is now arm64's `copy_to_user` (src/user.rs `stored_before_fault`):
-  stores of 1, 2, 4 and 8 bytes that align the kernel's source, then pairs of 8, then the rest; a
-  store that would cross into the page faults whole (measured); the first half of a pair that faults
-  stays stored but is not counted (measured: the random devices' reads answer 8, 24, 40 where the
-  memory shows 8, 16, 24); when nothing was counted one byte is tried (the fixup). `write_from` names
-  where the kernel's source lies when it matters: uname (1 past 16-byte alignment, measured), the
-  random devices' 64-byte block (8 past, measured), `d_path`'s page end for getcwd and `/proc` links.
-  `Guest::put` is `put_user` (one store, whole or not): getresuid, getgroups (one per group), getcpu,
-  wait4's status, gettimeofday (each field), sendfile's offset, prctl's and ioctl's integers, the
-  robust list, clone's thread ids. ppoll stores only each entry's `revents`; getdents64 stores as
-  `filldir64` does (the previous entry's `d_off` first, padding never written, a fault ends the
-  listing with the entries before it counted). Copies of whole pages (file and pipe reads, cmdline)
-  stop exactly at the fault (measured); a pipe's piece that does not fit stays in the pipe (copied up
-  to the fault, EFAULT if nothing before it), as `pipe_read`. `seq_file`s, sysctls, terminal reads
-  and the random devices copy with the routine. The transfer test's known failure passes now, and
-  layer 1 compares a random device's short read count again. Seed 410's difference is fixed (it
-  passed 20000).
-- Terminals in layer 1: `/dev/ptmx`, `/dev/pts/0`, `/dev/pts/1` and `/dev/tty` in the path pool, a
-  quarter of the sequences start with a pair open on descriptors 3 and 4 (slave unlocked), and the
-  terminal requests (settings in every form, sizes, flushes, flow, packet mode, locks, numbers, peers,
-  exclusive mode, line discipline, signals, soft carrier, hangup) with three settings structures (the
-  default, raw, generated). The reference's runner polls every descriptor twice after each call in
-  such sequences, which runs Linux's buffer work (`n_tty_poll`), so both sides agree between calls;
-  each call writes at most 256 bytes there so nothing fills within a call, and every descriptor stays
-  nonblocking. Every open in layer 1 is O_NOCTTY. Found and fixed: O_DIRECT on a terminal is refused
-  after its open (ENXIO first for `/dev/tty`), a terminal as sendfile's input is EINVAL (no
-  `FMODE_LSEEK`), RWF_NOWAIT on a terminal is EOPNOTSUPP.
-- Fork in layer 1: clone with fork, vfork, no or other exit signals, the child's thread id flags,
-  TLS, and refused flags. The child ends at once with status 7 (the reference's runner does it in the
-  same assembly as the call, before touching a stack vfork shares), and both runners wait for it to
-  end without reaping it (`waitid` with WNOWAIT and __WALL), so waits never wait (WNOHANG is added in
-  such sequences). The buffer CPU now duplicates memories. Found and fixed: a wait for stops or
-  continues alone finds no child in one that has ended (`notask_error`): ECHILD, not 0. The runner
-  now reaps the orphans a sequence leaves, which `kill(-1)` reached in later sequences.
-- A terminal writer that found no room hears of it by its I/O signal when the other side's reader
-  leaves 128 bytes or fewer (`TTY_DO_WRITE_WAKEUP`, `n_tty_check_unthrottle`); tests/sigio.rs.
-
-Built in K2's third run:
-- Private file mappings as Linux's copy on write: a private mapping shows the file's block of shared
-  pages (the same one shared mappings use, src/shared.rs), with writing turned off at the CPU side
-  for each page not yet written; the first write faults and the page becomes the process's own copy
-  (`Backing::File`'s `copied`, by file page number). The kernel's own writes into such pages (read
-  into a mapping, signal frames) copy first, as do MAP_POPULATE, MAP_LOCKED, mlock, mlockall and
-  MADV_POPULATE_WRITE on writable mappings (`__mm_populate` with FOLL_WRITE); MADV_DONTNEED drops the
-  copies; truncation drops copies wholly past the new end (`even_cows`), a hole punch keeps them; mremap
-  takes copies along; a fork's child shares the pages neither has written. Programs and their loader
-  are mapped the same way (exec's padzero page is a copy). MADV_POPULATE_* past a file's end is
-  EFAULT. The counter "private file mapping is a copy" is gone. tests/privatemap.rs.
-- Named pipes as `fifo_open`: a buffer made at the first open and dropped when the last end closes,
-  open counters for readers and writers, a reader waiting for a writer and a writer for a reader
-  (parked, counted as an end while waiting, its file kept in the thread's `opening` slot), ENXIO for a
-  nonblocking writer with no reader, never a wait for reading and writing, EINVAL for access mode 3,
-  ERESTARTSYS on a signal (the end given up), POLLHUP held back for a nonblocking reader until a writer
-  has opened (`f_pipe`), and `/proc/<pid>/fd` showing the path. tests/fifo.rs.
-- Device opens by Docker's device rules (measured): no block device and only the standard character
-  devices may be opened, the rest EPERM; the console (5:1) and `/dev/net/tun` (10:200), which Docker
-  allows, are not built: counted "device not built", ENODEV. tests/devopen.rs.
-- I/O signals (`kill_fasync`, `send_sigio`): pipes signal their readers after a write and before a
-  writer waits, their writers after a read and before a reader waits, both when the last end of one
-  kind closes, and readers for spliced bytes; a terminal side signals when a line (or, not canonical,
-  any byte) comes in. The descriptor O_ASYNC was set through is kept (`fa_fd`); O_ASYNC given at open
-  arms nothing, as on Linux; a terminal with no owner takes its foreground group or the caller;
-  F_SETSIG's signal carries the band and descriptor (SI_SIGIO for signals with codes of their own);
-  owners keep the users of whoever named them (`sigio_perm`). tests/sigio.rs.
-- close_range and dup3 over an open descriptor now wake waiters on files (they did not, so a reader
-  waiting for a pipe's end missed a writer closed that way).
-- A test of restartable sequences aborted by a handler: a signal after a call inside the section and
-  a fault inside it move the thread to the abort address, a signal outside does not, and an abort
-  address without the signature kills with SIGSEGV (tests/rseqabort.rs).
-- Layer 1 generates named pipes: a quarter of the sequences start with one made at one name, which
-  mknodat and openat choose (opens of it are nonblocking unless for reading and writing).
-
-Built in K2's second run:
-- Pseudo-terminals (src/tty.rs for the pair and `n_tty`, src/syscall/tty.rs for files, waits and job
-  control): `/dev/ptmx` makes a pair with the lowest free number and its slave node in devpts
-  (`devpts_pty_new`: inode number+3, mode 0620, the opener's fsuid, group 5), locked until
-  TIOCSPTLCK; slaves open through devpts, `/dev/tty` and TIOCGPTPEER. The line discipline follows
-  `n_tty.c` function by function: the read ring and its line flags, canonical editing (erase, word
-  erase, kill with every ECHO* setting, literal next, reprint, end of file, the two line ends),
-  echo through the echo buffer with its operations and columns, signal keys with the input and
-  output flush (NOFLSH), flow control (IXON, IXANY, TCOOFF/TCOON, TCIOFF/TCION), input flags
-  (ICRNL, INLCR, IGNCR, ISTRIP, IUCLC, PARMRK doubling, IUTF8), output processing (OPOST, ONLCR,
-  OCRNL, ONOCR, ONLRET, OLCUC, XTABS), non-canonical VMIN/VTIME reads, packet mode with every
-  status byte, TIOCINQ, the 64-byte read pieces and 2048-byte write pieces. Every request of
-  `tty_ioctl`, `pty_unix98_ioctl`, `n_tty_ioctl` and `tty_mode_ioctl` (TCGETS/TCSETS*, the 2 and
-  termio forms with speeds loaded as `tty_baudrate.c` does, TIOCGWINSZ/TIOCSWINSZ with SIGWINCH, TIOCSTI,
-  TIOCEXCL, TIOCGETD/TIOCSETD, TIOCGDEV, TIOCSIG, TIOCSCTTY, TIOCNOTTY, TIOCGPGRP, TIOCSPGRP,
-  TIOCGSID and the rest). Controlling terminals and job control as `tty_jobctrl.c`: the session
-  leader's open takes one, background reads stop with SIGTTIN and writes (TOSTOP) and setting
-  changes with SIGTTOU, EIO when ignored, blocked or orphaned; a hung-up file reads 0 and answers EIO
-  (TIOCSPGRP ENOTTY); the master's last close removes the slave's node and hangs up the slave
-  (the session leader gets SIGHUP and SIGCONT and keeps the foreground group in `tty_old_pgrp`); a
-  session leader's end sends SIGHUP to the foreground group (`disassociate_ctty`). `/proc/<pid>/stat`
-  shows tty_nr and tpgid.
-- A shell's job control through a terminal, compared with the reference (tests/terminal.rs
-  `interactive_shell`): `sh -i` on a pseudo-terminal, jobs stopped with the suspend key, `jobs`,
-  `fg`, interrupt keys, background reads and TOSTOP writes stopped, traps.
-- A fault found by the terminal tests and fixed: a thread of a process continued after a stop never
-  ran again (settle only resumed threads waiting in line).
-- The test clock moves by a nanosecond for each instruction a turn ran plus the seeded 0.5 to 1.5
-  us (the stand-in counts the instructions of the blocks it enters). Before this, a turn of any
-  length cost about 1 us, so a forked child waited behind two processes that kept waking each other.
-
-Built in K2's first run:
-- One counted and warned path for everything Linux has that is not built: `Counters::refuse` and
-  `refuse_flag` (src/counters.rs), with the reasons in `reason::NOT_BUILT`. The list "Not built, by
-  counter" below is made from those names.
-- Processes: clone's fork and vfork forms (through `Cpu::memory_duplicate` and `Cpu::thread_new`),
-  exec from any process, exit statuses, zombies, wait4 and waitid with every option, orphans handed to
-  the nearest subreaper or the first process, the parent death signal, process groups and sessions
-  (setpgid of a child, orphaned groups sent SIGHUP and SIGCONT), fork advice (MADV_DONTFORK,
-  MADV_WIPEONFORK, droppable memory wiped).
-- The waiting rule: a call that cannot finish parks its thread on a `Channel` (src/process.rs) and
-  returns; when the channel changes, its deadline comes or a signal arrives, the same call runs again
-  from the thread's saved registers, with what it must remember in the thread's one `Call` slot.
-  A deadline ends the running thread's turn as a timer interrupt would (since the ninth run).
-  Going cold is `Next::Idle` with the earliest deadline. src/task.rs holds the main loop.
-- The scheduler: Linux's CFS for one CPU (src/schedule.rs): weights by nice value, virtual runtime,
-  sleepers placed half a period back, new children a slice back, wakeup preemption by granularity,
-  slices from `sched_slice`. The wake-to-run wait is measured ("wake to run" counter, with time).
-- Pipes (src/pipe.rs, src/syscall/pipe.rs) as `fs/pipe.c`: page slots, merged small writes, packet
-  mode, partial and blocking reads and writes, SIGPIPE, FIONREAD, F_GETPIPE_SZ and F_SETPIPE_SZ, poll.
-  The container's standard output pipes are pipes whose reader is the host.
-- Signals in full (src/signal.rs): process and thread pending sets with queued `siginfo`, kill to
-  processes, groups and everyone, tkill, tgkill, sigqueue, handlers with arm64's exact frame (records,
-  fault address, syndrome, alternate stack, mask), SA_RESTART and the restart answers,
-  restart_syscall for sleeps, sigsuspend, sigtimedwait, ppoll and pselect6 masks, stop and continue
-  with reports to the parent, SIGCHLD, seccomp's SIGSYS trap with its information. A fault's code and
-  address (BUS_ADRALN and the pc or stack pointer for an alignment fault) reach a handler.
-- The vDSO (src/vdso.rs): `[vvar]` and `[vdso]` mapped as Linux maps them, with
-  `__kernel_rt_sigreturn`, AT_SYSINFO_EHDR and AT_MINSIGSTKSZ.
-- Memory shared between processes: shared anonymous memory and shared `/dev/zero` are shared mappings
-  of a removed file on the internal tmpfs (Linux's `shmem_zero_setup`), so children see the same pages.
-- A shell (busybox sh) runs pipelines, subshells, background jobs, traps, kills and waits, and matches
-  the reference (tests/shell.rs).
-
-- Saving and bringing back (section 12): `Kernel::restore` after the CPU side is restored from the
-  same save (`StandIn::restored`: every memory, block and register block copied under the same
-  handles onto new emulator instances): every thread starts from its saved registers (a value a call
-  was to return is put in x0 first) and every parked call runs again. tests/saving.rs saves the
-  processes program 8 times at seeded moments and compares it with the reference
-  (`SAVING_SEEDS`, default 3; 20 seeds passed).
-- Layer 1 generates pipe2 (always nonblocking), wait4, waitid, rt_sigqueueinfo, rt_tgsigqueueinfo
-  and rt_sigtimedwait (always with a timeout).
-
-Not done yet in K2: see Next.
+Built in K2's and K3's runs: what they built is under What exists; their run-by-run record is in
+this file at commit aecc367 (git history).
 Layer 2 runs repeat exactly for a seed: the test host's clock moves only by a seeded 0.5 to 1.5 us per
 turn on the CPU side and by skipped waits, and the stand-in ends a turn after the slice's length in
 instructions (one a nanosecond); tests/shell.rs `runs_repeat_for_a_seed` checks it.
@@ -864,7 +274,10 @@ Known failures are `#[ignore]`d with their reason; see them with `-- --include-i
 Needs Docker running; the reference uses alpine:3.22. Containers are named `wc-kernel-*` and removed.
 
 Layer 1 long run (one command, for the orchestrator):
-`LAYER1_CASES=1000000 LAYER1_SEED=<n> nix develop -c cargo test -p wcontainers-kernel-test --test layer1`
+`LAYER1_CASES=1000000 LAYER1_SEED=<n> nix develop -c cargo test -p wcontainers-kernel-test --test layer1 -- --exact sequences_match_reference`
+(without the filter the two backend tests run too, at their own counts). On the backend:
+`LAYER1_BACKEND_CASES=<count>` with `sequences_on_backend_match_reference`, `LAYER1_CACHED_CASES=<count>`
+with `sequences_on_cached_backend_match_reference`, the same `LAYER1_SEED`.
 `LAYER1_CASES` is the number of sequences (default 64), `LAYER1_SEED` the seed (default 0). A failure is
 shrunk and printed call by call with the seed; shrinking stops after 30 minutes (a step whose sequence
 waits costs the reference's deadline). A sequence that runs past 60 s in the reference is killed there
@@ -1429,7 +842,9 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
 
 ## Tests (counts and the last whole-suite run under Measurements)
 
-All pass except the ignored known failures listed above. Added in K3's fifth run: timers
+All pass except the ignored known failures listed above. Added in K4's fifth run: tests/backend.rs
+`truncations_and_appends_match_reference`, `transfers_match_reference` and
+`attributes_read_as_a_user_match_reference` (Built in K4's fifth run). Added in K3's fifth run: timers
 `cpu_clock_sleeps_match_reference` (guest/cpusleep.c, with 2 saves a seed: sleeps on the process's
 clock, another thread's and another process's, relative and absolute, passed and zero times, a
 handled signal with what is left, a bad address for it, a stop and continue); threads
@@ -1955,6 +1370,17 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K4, fifth run, at head aecc367 (the fourth run's end): plain layer 1 seeds 4040401, 4040402,
+  4040403 each passed 20000 (330.0 s, 330.7 s, 329.6 s; side by side with each other and the
+  suite; load 16.2 at the start, 28.6 at the end). Backend seed 4040111 passed 2000 (144.3 s,
+  load 15 to 25). Caching backend seed 4040311 failed (the access control list finding above).
+- K4, fifth run, at head c5b36f8 (lock, splice and list fixes in): plain layer 1 seeds 4040501,
+  4040502, 4040503 each passed 20000 (322.0 s, 322.4 s, 323.0 s; side by side with each other, the
+  suite and two backend runs; load 23.3 at the start, 30.6 at the end). Caching backend 4040311
+  passed 2000 (164.7 s); backend 4040112 passed 2000 (191.0 s); caching backend 4040312 failed (the
+  directory seek above). Whole suite (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -p
+  wcontainers-kernel -p wcontainers-kernel-test`): 150 passed, 0 failed, 5 ignored, 8 min 18 s,
+  load 23.3 at the start and 17.1 at the end.
 - K4, third run: layer 1 on the backend seed 4040103 (failing before on statx) passed 2000
   (1723.7 s; docker execs were slow then, load 14 to 18). On the backend that opens files for the
   page cache (`sequences_on_cached_backend_match_reference`): seed 0 passed 32, 4040301 passed
@@ -2092,83 +1518,7 @@ each sequence the runner puts back what a sequence can change outside its direct
   the end).
 
 All on this shared Mac; noisy, not benchmarks.
-- K2 tenth run: the whole test suite of both crates 102 passed, 0 failed, 6 ignored, 3 min 2 s wall
-  beside three 20000-sequence layer 1 runs (load 32 at the start, 30 at the end), head d4731cf.
-  Layer 1 fresh seeds 735, 736 and 737 passed 20000 sequences each with every fix in (394, 330 and
-  331 s, three side by side, load 35 at the start, 16 to 24 at the end). tests/saving.rs (three
-  programs, 3 seeds, 8 saves each by fork) about 19 s; turns, zombie, userlimits and unknown under
-  1 s each.
-- K2 ninth run: the whole test suite of both crates 96 passed, 0 failed, 6 ignored, 166 s wall alone
-  (load 25 at the start, 35 at the end), on the final head. An earlier whole run beside four layer 1
-  runs (170 s, load 36 to 18) had sigio fail once in the reference (Known issues). Layer 1 at
-  20000: 303 to 333 s each, three or four side by side (load 19 to 33); 30000: 507 s. tests/deadlines.rs
-  about 4 s (its children compute 20 ms of virtual time per wait, about 20 million emulated
-  instructions each), lockwaits, orphans and pidfd under 1 s each.
-- K2 eighth run: the whole test suite of both crates 93 passed, 0 failed, 6 ignored, 2 min 25 s wall
-  beside four 20000-sequence layer 1 runs (load 22 at the start, 28 at the end), head b01b1de. An
-  earlier run beside three layer 1 runs (load 39 to 42) had sigio fail in the reference (its echo
-  came in two parts; the test now reads it until whole). Layer 1 at 20000: 329 to 393 s
-  each, three side by side (load 20 to 44).
-- K2 seventh run: the whole test suite of both crates 92 passed, 0 failed, 6 ignored: one run of
-  2 min 44 s wall with two test threads beside one 20000-sequence layer 1 run (load 56 at the start,
-  35 at the end) had terminal's `making_pairs` fail in the reference (`exec /wc/tty: no such file`,
-  the known race of test binaries sharing the guest directory; see Known issues), and cargo stopped
-  there; terminal and the four test binaries after it then passed alone. Layer 1: seed 701, 20000
-  sequences, 349 s (load 44 to 92); seed 711 failed after 373 s with shrinking (load 37 to 74); seed 710, 2000 sequences, 36 s (load 78). tests/sysvsem.rs 3.7 to
-  3.9 s, tests/posixmq.rs 2.6 to 3.3 s (their waits sleep 0.1 s in places).
-- K2 sixth run: the whole test suite of both crates 90 passed, 0 failed, 6 ignored, 144 s wall beside
-  four 20000-sequence layer 1 runs (load 16 at the start, 34 at the end), on head 1f9cffe. Layer 1 at
-  3000: 36 to 58 s each, three side by side (load 8 to 60). tests/pidfd.rs, signalfd.rs,
-  priorities.rs under 1.1 s each, sysvmsg.rs 1.5 s (its waits sleep 0.1 s in places).
-- K2 fifth run: the whole test suite of both crates 86 passed, 0 failed, 6 ignored, 155 s wall with
-  two test threads beside three layer 1 runs (load 49 at the start, 53 at the end), on head 006b4af
-  (before the last layer 1 fixes, which were checked with the tests they touch). Layer 1 at 20000:
-  335 to 466 s (load 25 to 95). tests/sysvshm.rs and tests/splice.rs under 1 s each.
-- K2 fourth run: the whole test suite of both crates 84 passed, 0 failed, 6 ignored, 180 s wall with
-  two test threads beside three layer 1 runs (load 39 at the start, 31 at the end); on the final head
-  again 84 passed, 0 failed, 6 ignored, 155 s (load 99 at the start, 131 at the end). Layer 1, 20000
-  sequences, three side by side: 325 to 331 s each (load 20 to 63).
-  Layer 1, 5000 sequences, three side by side: 82 to 86 s each (load 50 to 90);
-  20000 sequences alone: 337 s (load 60 to 90); 2000 sequences alone: 34 to 67 s (load 50 to 90).
-  tests/partialcopy.rs 2.3 to 3 s (load 60 to 90).
-- K2 third run: the whole test suite of both crates 82 passed, 0 failed, 7 ignored, 129 s wall with
-  two test threads beside four layer 1 runs (load 48 at the start, 20 at the end); earlier 77
-  passed, 118 s (load up to 283, the other half's heavy run). Layer 1, 20000 sequences, five side by
-  side: 335 to 393 s each (load 74 to 79); a failing seed stopped after 90 to 255 s. The load reached
-  224 to 283 at times this run.
-- K2 second run: the whole test suite of both crates 76 passed, 0 failed, 8 ignored, 131 s wall
-  (load 25 at the start, 29 at the end; three layer 1 runs started part way). Layer 1, 20000
-  sequences, four side by side: 320 s each (load 84 to 31). tests/terminal.rs 1.5 to 1.7 s (load 30
-  to 100).
-- K2 first run: the whole test suite of both crates (before sigframe and shell were added) 64
-  passed, 0 failed, 8 ignored, 197 s wall (load 75 at the start, 67 at the end). At the end of the
-  run (head 10645dd): 69 passed, 0 failed, 8 ignored, 94 s wall (load 10 at the start, 13 at the end).
-  Layer 1, 3000 sequences, three side by side: 48 to 50 s each (load 16 to 10). The shell test 9.4 s,
-  processes 2 s, sigframe 1.1 s (load 60 to 90).
-- Thirteenth run: the whole test suite of both crates 88 s wall (load 13 to 18), 181 s (load 59 to
-  69); layer 1 20000 sequences: two side by side 303 s each (load 10 to 17), six side by side 322 s
-  (load 12 to 15), four side by side 334 to 384 s (load 34 to 83); 1500 sequences alone 23 s (load
-  15).
-- Twelfth run, layer 1 20000 sequences: three side by side 297 s each (load 20 to 14); five side by
-  side 320 s each (load 22 to 16); 3000 sequences alone 48 s (load 16 to 22). The whole test suite of
-  both crates: 88 s wall (load 10 to 20).
-- Tenth run, layer 1 20000 sequences, three side by side: 318 s each (load 4.6 to 10.2); 1500
-  sequences alone: 24 to 25 s (load about 5). The whole test suite of both crates: 77 s wall (load 9).
-- Ninth run, layer 1 20000 sequences, four side by side: 294 to 312 s each (load 8 to 15); three
-  side by side: 298 to 305 s (load 10 to 45). 4000 sequences, three side by side: 60 s each (load 27
-  to 44). The whole test suite of both crates passed under load 100 to 157 (not timed).
-- Eighth run, layer 1 20000 sequences, six side by side: 303 s each (load 18 to 20); two side by
-  side: 305 s each (load 8 to 17).
-- The whole test suite of both crates, eighth run: 69 s wall (load about 9).
-- Seventh run, layer 1 20000 sequences, three side by side: 294 to 311 s each (load 5 to 18).
-  Seeds 91 to 93: 301 s each (load 10 to 15).
-- Sixth run, layer 1 20000 sequences, three side by side: about 290 to 330 s each (load 6 to 15).
-- Fourth run, layer 1, 3000 sequences, seed 57: 85.6 s (load 5.8 to 9.5); the filter test: 2.0 s
-  (load about 10).
-- Third run, layer 1 20000 sequences, seed 48: 599 s (load 4 to 42).
-- busybox test binary (4 tests in parallel, about 85 commands, each in both runners): 11 to 18 s
-  (load about 7 to 15).
-- The whole test suite of both crates: 57 s (load 18 at the start, seventh run).
+- K2 and earlier: in this file at commit aecc367 (git history).
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
@@ -2402,6 +1752,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K4, fifth run: none.
 - K4, fourth run: none.
 - K4, third run: none.
 - K4, second run: none.
@@ -2515,22 +1866,25 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-K4's parts are built and the check's findings are fixed (Built in K4's fourth run). Left, none of
-it blocking:
+K4's parts are built, the check's findings are fixed, and the fifth run's end-of-milestone seeds
+found and fixed two more (Built in K4's fifth run). Left, none of it blocking:
 1. Notices about mapped files are not tested with a program that sees them: STORE and INVAL_INODE
    reach mapped files only by chance (node numbers 1 to 11), and a STORE that does changes what the
-   program reads, which the reference cannot be made to match. RETRIEVE is now sent and answered.
-2. splice, tee, cachestat, copy_file_range, sendfile and fadvise on backend files are reached
-   only through layer 1 on the backend (both server kinds); no layer 2 program uses them there.
-3. Calls that move a position without Linux's `f_pos_lock` (sendfile, splice and copy_file_range
+   program reads, which the reference cannot be made to match. RETRIEVE is sent and answered.
+2. Calls that move a position without Linux's `f_pos_lock` (sendfile, splice and copy_file_range
    with no offset given) can still see it move while they wait for the backend, as on Linux; ours
    then asks again (counted "backend question asked again") where Linux's would race.
-4. Other inode locks Linux holds across FUSE requests (truncate, fallocate, directory changes) are
-   not held across waits; only writes and positions are.
+3. Directory changes (create, unlink, rename, mkdir, rmdir on the backend) do not hold the parent
+   directory's lock across waits as Linux's `inode_lock` on the parent does; writes, positions,
+   truncation and fallocate do. Two threads changing one backend directory at once can interleave
+   their questions where Linux's cannot; not seen in any test.
+4. Held access control lists that are not none are not reached: the test server's directory has
+   no lists. Layer 1 on the backend did not reach a pipe spliced into a backend file.
 
 Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
-737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, and the checks' 91001 to 91003,
-8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend: 0, 4040101 to 4040105,
-4040111; on the caching backend: 0, 4040301 to 4040303, 4040311, and the check's 7171002.
+737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040506, and the
+checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+0, 4040101 to 4040105, 4040111 to 4040113; on the caching backend: 0, 4040301 to 4040303, 4040311,
+4040312, and the check's 7171002.
