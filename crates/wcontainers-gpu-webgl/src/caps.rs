@@ -44,6 +44,17 @@ pub fn caps(
         Features::PROVOKING_VERTEX_FIRST,
         ext.contains("WEBGL_provoking_vertex"),
     );
+    features.set(
+        Features::BLOCK_COMPRESSION,
+        [
+            "WEBGL_compressed_texture_s3tc",
+            "WEBGL_compressed_texture_s3tc_srgb",
+            "EXT_texture_compression_rgtc",
+            "EXT_texture_compression_bptc",
+        ]
+        .iter()
+        .all(|e| ext.contains(e)),
+    );
     let anisotropic = ext.contains("EXT_texture_filter_anisotropic");
     let units_vertex = get(glow::MAX_VERTEX_TEXTURE_IMAGE_UNITS);
     let units_fragment = get(glow::MAX_TEXTURE_IMAGE_UNITS);

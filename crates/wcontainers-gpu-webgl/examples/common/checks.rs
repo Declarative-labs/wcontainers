@@ -1549,3 +1549,247 @@ pub fn captured_indices_drawn_both_ways<H: Host>() {
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
+
+/// Loads texel (0, 0) of level 0.
+const LOAD_CORNER: &str = "
+@group(0) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return textureLoad(t, vec2<i32>(0, 0), 0);
+}
+";
+
+/// RGB9E5 and every block-compressed format the back end serves read back exactly as written (on
+/// WebGL 2 from the host copy, `HostCopyKept`): two layers of three levels of an 8 by 8 texture, the
+/// last level smaller than a block, then one block of level 0 written again, read back now and
+/// later. A solid BC1 block and an RGB9E5 texel load as their colour, whichever way the back end
+/// stores them (natively, or decoded: `BlockDecoded`).
+pub fn block_compressed_and_shared_exponent_textures_read_back_as_written<H: Host>() {
+    use crate::kit::{self, Kit};
+    use Format as F;
+    let mut b = H::make();
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, LOAD_CORNER, "vs", "fs");
+    let out_format = F::Rgba8Unorm;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        out_format,
+        [1, 1, 1],
+        1,
+        usage,
+        false,
+    );
+    let out_view = kit::target(&mut b, &out, out_format, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
+    let formats = [
+        F::Rgb9e5Float,
+        F::Bc1RgbaUnorm,
+        F::Bc1RgbaUnormSrgb,
+        F::Bc2RgbaUnorm,
+        F::Bc2RgbaUnormSrgb,
+        F::Bc3RgbaUnorm,
+        F::Bc3RgbaUnormSrgb,
+        F::Bc4RUnorm,
+        F::Bc4RSnorm,
+        F::Bc5RgUnorm,
+        F::Bc5RgSnorm,
+        F::Bc6hRgbUfloat,
+        F::Bc6hRgbFloat,
+        F::Bc7RgbaUnorm,
+        F::Bc7RgbaUnormSrgb,
+    ];
+    let mut served = 0;
+    for (n, format) in formats.into_iter().enumerate() {
+        let want = FormatUse::SAMPLE | FormatUse::COPY_OUT;
+        if !b.caps().formats.get(format).contains(want) {
+            continue;
+        }
+        served += 1;
+        let (bw, bh, bytes) = format.block();
+        let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::COPY_SRC;
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [8, 8, 2],
+            3,
+            usage,
+            false,
+        );
+        // Each level's two layers, as rows of blocks.
+        let mut kept = Vec::new();
+        for mip in 0..3u32 {
+            let size = (8 >> mip) as u32;
+            let row = (size.div_ceil(bw) * bytes) as usize;
+            let rows = size.div_ceil(bh) as usize;
+            let mut level = pattern(row * rows * 2, 0x9e37 + n as u32 * 7 + mip);
+            if mip == 0 {
+                // Block (0, 0) of layer 0 solid: red in BC1, (1, 0, 0.25) in RGB9E5 (exponent 16), whose
+                // unorm values (255, 0, 63.75) round without a tie.
+                match format {
+                    F::Bc1RgbaUnorm => level[..8].copy_from_slice(&[0, 0xf8, 0, 0xf8, 0, 0, 0, 0]),
+                    F::Rgb9e5Float => {
+                        let texel: u32 = 256 | (64 << 18) | (16 << 27);
+                        level[..4].copy_from_slice(&texel.to_le_bytes());
+                    }
+                    _ => {}
+                }
+            }
+            b.write_texture(
+                &TextureRegion {
+                    texture: &t,
+                    mip,
+                    layer: 0,
+                    origin: Origin::default(),
+                    stencil: false,
+                },
+                Extent {
+                    width: size,
+                    height: size,
+                    depth_or_layers: 2,
+                },
+                &level,
+                row as u32,
+                rows as u32,
+                WriteMode::Ordered,
+            );
+            kept.push((row, rows, level));
+        }
+        // One block of layer 1 of level 0 again, at the second column and row of blocks.
+        let again = pattern(bytes as usize, 0x51ed + n as u32);
+        b.write_texture(
+            &TextureRegion {
+                texture: &t,
+                mip: 0,
+                layer: 1,
+                origin: Origin { x: bw, y: bh, z: 0 },
+                stencil: false,
+            },
+            Extent {
+                width: bw,
+                height: bh,
+                depth_or_layers: 1,
+            },
+            &again,
+            bytes,
+            1,
+            WriteMode::Ordered,
+        );
+        let (row, rows, level) = &mut kept[0];
+        let at = *row * *rows + *row + bytes as usize;
+        level[at..at + bytes as usize].copy_from_slice(&again);
+        for (mip, (row, rows, level)) in kept.iter().enumerate() {
+            let size = (8 >> mip) as u32;
+            let mut got = vec![0; row * rows * 2];
+            b.read_back_now(
+                &ReadSource::Texture {
+                    region: TextureRegion {
+                        texture: &t,
+                        mip: mip as u32,
+                        layer: 0,
+                        origin: Origin::default(),
+                        stencil: false,
+                    },
+                    extent: Extent {
+                        width: size,
+                        height: size,
+                        depth_or_layers: 2,
+                    },
+                },
+                &mut got,
+            )
+            .expect("read_back_now");
+            assert_eq!(&got, level, "{format:?} level {mip}, read back now");
+        }
+        // Level 1 again through a read back waited for.
+        let (row, rows, level) = &kept[1];
+        let rb = b
+            .read_back(&ReadSource::Texture {
+                region: TextureRegion {
+                    texture: &t,
+                    mip: 1,
+                    layer: 0,
+                    origin: Origin::default(),
+                    stencil: false,
+                },
+                extent: Extent {
+                    width: 4,
+                    height: 4,
+                    depth_or_layers: 2,
+                },
+            })
+            .expect("read_back");
+        b.wait_read(&rb);
+        let mut got = vec![0; row * rows * 2];
+        b.finish_read(rb, &mut got);
+        assert_eq!(&got, level, "{format:?} level 1, read back later");
+        let expected: Option<[u8; 4]> = match format {
+            F::Bc1RgbaUnorm => Some([255, 0, 0, 255]),
+            F::Rgb9e5Float => Some([255, 0, 64, 255]),
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            let flat = kit::texture(
+                &mut b,
+                TextureDimension::D2,
+                format,
+                [8, 8, 1],
+                1,
+                usage,
+                false,
+            );
+            let (row, rows, level) = &kept[0];
+            b.write_texture(
+                &TextureRegion {
+                    texture: &flat,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin::default(),
+                    stencil: false,
+                },
+                Extent {
+                    width: 8,
+                    height: 8,
+                    depth_or_layers: 1,
+                },
+                &level[..row * rows],
+                *row as u32,
+                *rows as u32,
+                WriteMode::Ordered,
+            );
+            let flat_view = kit::view(&mut b, &flat, format, ViewDimension::D2, 0, 1, 0, 1);
+            let set = b
+                .create_binding_set(&[BindingEntry {
+                    binding: 32,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(&flat_view),
+                }])
+                .expect("create_binding_set");
+            b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+            b.draw(&kit::call(
+                &k,
+                &program,
+                Some(&set),
+                &vp,
+                Topology::TriangleList,
+                3,
+            ));
+            b.end_pass();
+            let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 4, false);
+            assert_eq!(got, expected, "{format:?}: texel (0, 0) loaded");
+        }
+    }
+    assert!(
+        served > 0
+            || !b
+                .caps()
+                .formats
+                .get(F::Rgb9e5Float)
+                .contains(FormatUse::SAMPLE)
+    );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}

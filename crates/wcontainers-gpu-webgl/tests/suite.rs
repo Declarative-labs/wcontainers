@@ -109,6 +109,11 @@ fn vertices_captured_with_and_without_rasterising() {
 }
 
 #[test]
+fn block_compressed_and_shared_exponent_textures_read_back_as_written() {
+    checks::block_compressed_and_shared_exponent_textures_read_back_as_written::<Angle>();
+}
+
+#[test]
 fn captured_indices_drawn_both_ways() {
     checks::captured_indices_drawn_both_ways::<Angle>();
 }

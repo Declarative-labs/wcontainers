@@ -146,6 +146,7 @@ suite!(
     constant_alpha_blends,
     vertices_captured_with_and_without_rasterising,
     captured_indices_drawn_both_ways,
+    block_compressed_and_shared_exponent_textures_read_back_as_written,
 );
 
 thread_local! {
