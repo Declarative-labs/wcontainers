@@ -119,6 +119,14 @@ pass through ours:
   thread: "attempt to add with overflow" inside core's integer code (a `next_multiple_of` or the
   like; the library has no symbols in the backtrace), not found yet.
 
+Run 6, after heaps (commit after f757cb7): vkd3d-d3d12 66 of 172 (test_suballocate_small_textures
+newly passes); d3d12, invalid_usage and hlsl_d3d12 unchanged. The heap tests still fail:
+test_create_heap and test_create_placed_resource crash after our E_NOTIMPL for custom heaps and the
+display/sharing heap flags (the tests then use the absent object); test_map_placed_resources draws
+with no render target ("drawing with no render target", a refusal to lift: an empty pass);
+test_create_committed_resource fails 21 checks (23 before the clear-value check), mostly heap
+flags we refuse.
+
 Run 5 (2026-11-17), tests passing on real Direct3D 12 that pass through ours:
 - d3d12 (Wine): 6 of 7. Fails: test_swapchain_refcount (10 of 39 checks: references the swap
   chain and its buffers hold). Two tests real Direct3D fails here (test_swapchain_draw,

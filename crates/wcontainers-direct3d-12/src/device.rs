@@ -409,7 +409,13 @@ impl<B: Backend> Device<B> {
         desc: &ResourceDesc,
     ) -> Result<ResourceId, Error> {
         self.live()?;
-        let (size, align) = desc.allocation()?;
+        let (padded, align) = desc.allocation()?;
+        // A buffer takes its own bytes of the heap; a texture its whole allocation.
+        let size = if desc.dimension == resource::DIMENSION_BUFFER {
+            desc.width
+        } else {
+            padded
+        };
         let m = self
             .memory
             .get(memory.0 as usize)

@@ -291,6 +291,11 @@ fn resource_desc(d: &D3D12_RESOURCE_DESC) -> ResourceDesc {
 ///
 /// # Safety
 /// The bytecode points to `BytecodeLength` readable bytes, as the API requires.
+/// Buffers take no optimised clear value.
+fn is_buffer(d: &D3D12_RESOURCE_DESC) -> bool {
+    d.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER
+}
+
 unsafe fn code(b: &D3D12_SHADER_BYTECODE) -> Vec<u8> {
     if b.pShaderBytecode.is_null() {
         return Vec::new();
@@ -877,8 +882,15 @@ impl Device {
         out: *mut *mut c_void,
     ) -> Result<()> {
         // SAFETY: the API requires a description.
-        let desc = *unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let mut desc = *unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
         let kind = HeapType::from_d3d12(desc.Properties.Type.0 as u32).map_err(hr)?;
+        // Zeros read as the defaults: the one node, and 64 KiB alignment.
+        let p = &mut desc.Properties;
+        p.CreationNodeMask = p.CreationNodeMask.max(1);
+        p.VisibleNodeMask = p.VisibleNodeMask.max(1);
+        if desc.Alignment == 0 {
+            desc.Alignment = 64 << 10;
+        }
         let (size, flags) = (desc.SizeInBytes, desc.Flags.0 as u32);
         let id = gpu::call(move |d| d.create_heap(size, kind, flags)).map_err(hr)?;
         give::<ID3D12Heap>(
@@ -895,10 +907,14 @@ impl Device {
         offset: u64,
         pdesc: *const D3D12_RESOURCE_DESC,
         _state: D3D12_RESOURCE_STATES,
-        _clear: *const D3D12_CLEAR_VALUE,
+        clear: *const D3D12_CLEAR_VALUE,
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        // SAFETY: an optional pointer the API defines.
+        if !clear.is_null() && unsafe { pdesc.as_ref() }.is_some_and(is_buffer) {
+            return Err(E_INVALIDARG.into());
+        }
         // SAFETY: heaps come from this library; the API requires a description.
         let (heap, desc) = unsafe { (heap.ok()?.as_impl(), *pdesc.as_ref().ok_or(E_INVALIDARG)?) };
         let (memory, heap_desc) = (heap.1, heap.0);
@@ -945,10 +961,14 @@ impl Device {
         pdesc: *const D3D12_RESOURCE_DESC,
         // The initial state and the optimised clear value change nothing this front does.
         _state: D3D12_RESOURCE_STATES,
-        _clear: *const D3D12_CLEAR_VALUE,
+        clear: *const D3D12_CLEAR_VALUE,
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
+        // SAFETY: an optional pointer the API defines.
+        if !clear.is_null() && unsafe { pdesc.as_ref() }.is_some_and(is_buffer) {
+            return Err(E_INVALIDARG.into());
+        }
         wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32, true).map_err(hr)?;
         // SAFETY: the API requires both.
         let (heap, desc) = unsafe {
