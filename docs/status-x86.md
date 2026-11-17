@@ -7,8 +7,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 
 - X0 (the plan, and the x86 reference machine proven): done in run 1, 2026-11-17; the first independent
   check's findings fixed in run 2, the second check's in run 3, the third's in run 4, the fourth's in
-  run 5, the fifth's in run 6, the sixth's in run 7, the seventh's in run 8 and the eighth's in run 9,
-  the same day (below).
+  run 5, the fifth's in run 6, the sixth's in run 7, the seventh's in run 8, the eighth's in run 9 and
+  the ninth's in run 10, the same day (below).
 - Next: X1, the interface crate `wcontainers-guest-cpu` with ARM64 moved onto it and its output proven byte
   for byte the same (plan section 9). No code of this track exists yet.
 
@@ -332,7 +332,49 @@ Repeated and widened on the reference first where the finding was about the CPU 
   `run9/iced-strict-nostd`), with a control using `std` that fails on a duplicate `panic_impl`
   (`run9/iced-strict-std`) (plan 2).
 
+## X0, run 10 (2026-11-17): the ninth independent check's findings, all fixed in the plan
+
+Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, with `stepper6` for
+`umip.out` and `branch-unmapped.out`; x86 load 0.00 to 0.24, nothing timed):
+- Blocking, the trap flag had no state: TF set by a program now behaves as seen with `tf.c` (popf or
+  iretq setting TF: the next instruction runs, then `TRAP_TRACE`; popf clearing TF still stops after
+  itself; `syscall` with TF: the instruction after it runs before the stop; `int3` and a fault give only
+  their own signal; TF kept across `rt_sigreturn`; handlers start with TF clear; `pushfq` stores TF).
+  Plan 5.1: TF is bit 8 of `Control::Rflags`; while it is set the stop flag stays raised and a new
+  `Guest::step` (default `Off` for ARM64 and RV64GC) runs each instruction alone through phase one's exact
+  path and answers `Trap` at the next stop check. New `Emitter::raise_stop` (only x86's `popf` and `iretq`
+  call it), `StepAt` and `Step` types, x86 private words `Step`, `StepAt`, `StepHeld` (`mov ss`). The stop
+  hook returns the unwind payload from X6, like the memory fault hook. `SingleStep` is no longer a
+  `TrapKind` (no meaning raises it). rep string instructions take the bulk path only with DF and TF clear.
+  One known difference recorded: a gather faulting part way under TF (designed-answers case at X8).
+  Section 6: TF from the sigreturn frame goes into the control and steps; RF is put in fault frames only
+  (seen with `rf.c`) and not kept at sigreturn (no program can see it). Tests: X6 trap-flag blobs compared
+  with the reference (the blob runner now records a fatal signal's rip and registers, 7.3); X10 runs
+  `tf.c` and `rf.c` against the reference's output.
+- `CODE_SPAN`'s comment: a branch beyond the code area stops by `TRAP_TRACE` at the target before any
+  fetch (repeated: `jmp rel32`, `jmp rax` to two unmapped addresses), so on x86 it matters only for fall
+  through and rip-relative operands.
+- SSE3 (`fisttp`) and CMOV (`fcmovcc`, `fcomi`, `fcomip`, `fucomi`, `fucomip`) contain x87 instructions:
+  plan 5.10 extends the FPU reading to them, with the reason.
+- The claim lists now name iced's own `CpuidFeature` values (plan 5.10 gives both lists), with the
+  baseline names `INTEL8086` to `INTEL486`, `X64`, `CPUID`, `PAUSE`, `MULTIBYTENOP`, and `FPU287`,
+  `FPU387`, `CLFSH`, `CMPXCHG16B`, `SEP`, `SYSCALL`. The claim table gains a fourth value, "kernel only",
+  for every `is_privileged()` Code (plan 2, 5.2). Counted in `run10/feat.out`. `sldt`, `str`, `smsw`
+  (baseline `INTEL286`) run in user mode on the reference (no UMIP).
+- Layer 1's forms now cover every encoding but MVEX (and the `KNC` VEX Codes, which iced decodes only with
+  its `KNC` option), split into default, AVX setting, never-claimed and kernel-only lists by the decoded
+  Code's claim group; the never-claimed list (EVEX, XOP, 3DNow and the rest) runs on the reference at 100
+  cases a form; X5's pass bar includes it (plan 7.4, 9).
+- The plan's header now counts nine checks.
+
 ## How to run
+
+- Run 10's experiments: `nix develop -c zig cc -target x86_64-linux-musl -static -O1 -fno-stack-protector
+  -o <scratch>/run10/tf <scratch>/run10/tf.c` (and `rf` likewise), copy both to
+  `~/wcontainers-x86/proof10/` and run each there; `umip.out` and `branch-unmapped.out` are `stepper6` in
+  `~/wcontainers-x86/proof8` with `0f00c0`, `0f00c8`, `0f01e0`, and `e900000010`, `ffe0
+  rax=0x700000000000`, `ffe0 rax=0x7ffffffff000`. iced's feature names: `nix develop -c cargo run
+  --release --manifest-path <scratch>/run10/feat/Cargo.toml --target-dir <scratch>/run10/feat/target`.
 
 - Run 9's experiments: copy run 8's `stepper6` and `run9/cases16.sh` to `~/wcontainers-x86/proof9/` and
   run `./cases16.sh` there. Decoding: `nix develop -c cargo build --release --manifest-path
@@ -387,10 +429,11 @@ Repeated and widened on the reference first where the finding was about the CPU 
   cases8.sh, sweep15.sh, cases9.sh, cases10.sh, cases11.sh, cases12.sh, cases13.sh, and approx,
   approx_dump, approx_formula, approx_mxcsr with approx.out, approx_formula.out and approx_mxcsr.out) and
   `~/wcontainers-x86/proof8/` (stepper6, smc, copyuser, cases14.sh, cases15.sh and their outputs) and
-  `~/wcontainers-x86/proof9/` (stepper6, cases16.sh, cases16.out). The
+  `~/wcontainers-x86/proof9/` (stepper6, cases16.sh, cases16.out) and `~/wcontainers-x86/proof10/` (tf,
+  rf, tf.c, rf.c, tf.out, rf.out). The
   cases scripts' outputs before run 8 are kept only in the Mac's scratch `reference-proof/`. The
-  independent checks' files are in `~/wcontainers-x86/check` and `check2` to `check8`. Installed in runs
-  2 to 9: nothing.
+  independent checks' files are in `~/wcontainers-x86/check` and `check2` to `check9`. Installed in runs
+  2 to 10: nothing.
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
   times. The independent check saw load about 1.04. Run 2 saw 0.07. Record `/proc/loadavg` with every
   timing there.
@@ -406,11 +449,12 @@ Repeated and widened on the reference first where the finding was about the CPU 
   18, `cases13.sh` 12); in run 8, 41 hand-written cases (`cases14.sh` 24, `cases15.sh` 17), one run of
   `smc` and 42 copy cases (`copyuser`: 14 buffer placements for each of three calls). `cases14.sh` ran
   twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
-  41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2).
+  41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2); in run 10, one run each of `tf`
+  (8 trap-flag scenarios in 9 runs, 20 stops) and `rf` (8 signal frames), and 6 `stepper6` cases.
 
 ## Measurements
 
-All in the "X0, run 1" to "run 9" sections above (run 9 timed nothing).
+All in the "X0, run 1" to "run 10" sections above (runs 9 and 10 timed nothing).
 
 ## Licences of what this track uses
 
@@ -455,8 +499,9 @@ None yet (no milestone of the plan has been built).
 - Every x86 `ret` and every jump or call through a register or memory pays a canonical-address check.
   It is about four operations each.
 - astro-float adds about 41 KB brotli to the x86 browser build (scratch measurement).
-- `TrapKind` (and later the abi's `Exit`) grow divide error, general protection, float exception and single
-  step; the abi's `Exit` and the runners' memory faults also gain x86's stack fault (SIGBUS), which the
+- `TrapKind` (and later the abi's `Exit`) grow divide error, general protection and float exception; the
+  abi's `Exit` also gains single step (from the stepping of section 5.1, not a `TrapKind`), and it and the
+  runners' memory faults gain x86's stack fault (SIGBUS), which the
   i7-8750H gives for a non-canonical access through rsp or rbp.
 - Alignment checking (rflags AC) is not provided: `popf` leaves AC clear, as on a CPU without it, counted
   and warned. A real x86 Linux would fault misaligned accesses while AC is set.
@@ -484,3 +529,11 @@ None yet (no milestone of the plan has been built).
   per fault site (behaviour unchanged).
 - x86 layer 1's code area is 64 KiB around the instruction, filled with `int3` on both sides; ARM64's stays
   256 MiB of zeros.
+- A program's own trap flag is held and stepped exactly: each instruction then runs alone through the exact
+  path, counted ("trap flag set by the program" and "left to address"). From X6 the stop hook returns the
+  unwind payload, which changes ARM64's output inside each stop check's raised-flag branch (behaviour
+  unchanged). One known difference: a gather faulting part way under TF gets no extra SIGTRAP first.
+- SSE3 and CMOV are claimed although each holds a few x87 instructions (`fisttp`; `fcmov`, `fcomi`), which
+  run in software like all x87, under the same reading as FPU.
+- Layer 1 runs the never-claimed forms (EVEX, XOP, 3DNow and the rest) on the reference at 100 cases a
+  form, not 1,000, since an instruction the CPU lacks stops before touching its operands.

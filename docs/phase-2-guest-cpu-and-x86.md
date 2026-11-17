@@ -1,7 +1,7 @@
 # wcontainers, phase two: one guest CPU interface, and x86-64
 
 Status: plan written 2026-11-17 from the owner's brief (decisions of 2026-11-16) and the map of today's
-ARM64 assumptions, and revised after each of the seven independent checks of X0 (2026-11-17). Nothing of it
+ARM64 assumptions, and revised after each of the nine independent checks of X0 (2026-11-17). Nothing of it
 is built yet. The research and the two experiments of milestone X0 are done; what they found is in section 2.
 
 Words used here (phase one's words still hold: guest, host, engine, look-ahead, piece):
@@ -88,9 +88,14 @@ for x86-64, with ARM64's own long runs still passing.
   1.22.0). The shipped crate still needs, per `Code`, which claim group it belongs to (section 5.10).
   That comes from iced's own tables at build time, never a hand copy: the
   build script of `wcontainers-x86` has iced-x86 as a build-dependency with `std` and `instr_info`, and for
-  each of the 4,936 `Code` values writes one byte: its claim group (default, the AVX setting, never) from
-  its `cpuid_features()` against the claim lists. The claim lists are
-  one source file that the build script and the crate both include. Cargo's resolver 3 (the workspace's)
+  each of the 4,936 `Code` values writes one byte: its claim group (default, the AVX setting, never, or
+  kernel only) from its `cpuid_features()` against the claim lists. The claim lists are
+  one source file that the build script and the crate both include, and they name iced's own
+  `CpuidFeature` values, not CPUID bits (section 5.10 gives both lists in iced's names, run 10 above why):
+  a `Code` is in the default group when every one of its features is in the default list, else in the AVX
+  setting's group when every one is in the default or the AVX list, else never. A `Code` that
+  `is_privileged()` marks kernel-only gets a fourth value, "kernel only", whatever its features (its
+  meaning gives the fault Linux gives a program, section 5.2). Cargo's resolver 3 (the workspace's)
   keeps a build-dependency's features apart from the normal dependency, so the shipped decoder stays
   `decoder` only. The table is about 5 KB before compression (expected; measured at X3). A test checks the
   table against iced's `instr_info` answers for every `Code`.
@@ -377,6 +382,44 @@ are static binaries copied to `~/wcontainers-x86/proof`.
    - Prefixes a CPU without their feature ignores are ignored: `xacquire lock add [rdi], eax` leaves
      1 + 5 = 6 in memory, as `lock add` does (`run9/xacquire.out`); `bnd jmp` and `notrack jmp rax` jump.
 
+   Run 10 (2026-11-17, x86 load 0.00 to 0.24, nothing timed), after the ninth independent check, with
+   scratch `run10/tf.c` (a program that sets TF itself, with a SIGTRAP handler that records every stop
+   and keeps TF in the frame for a chosen number of stops; output `run10/tf.out`), `run10/rf.c` (which
+   signal frames carry RF; `run10/rf.out`) and `run10/feat` (iced 1.22.0's `cpuid_features()` over every
+   `Code` valid in 64-bit mode; `run10/feat.out`):
+   - A trap flag a program sets stops it after every instruction that **starts** with TF set, with
+     SIGTRAP `TRAP_TRACE` and rip at the next instruction (at the target for a `jmp`):
+     - `popf` that sets TF does not stop itself; the instruction after it runs and then stops. `iretq`
+       that sets TF likewise: the first instruction at its target runs, then stops.
+     - `popf` that clears TF while TF is set does stop after itself; the frame shows TF clear.
+     - `syscall` with TF set does not stop after itself: the instruction after it runs and then stops (r11
+       holds rflags with TF). Linux returns from a system call with TF set through `iret`, which is a
+       return into the program with TF set, so the first instruction runs before the stop.
+     - `int3` with TF set gives its own SIGTRAP `SI_KERNEL` and no `TRAP_TRACE`; a load from address 0
+       gives SIGSEGV and no `TRAP_TRACE`. In both the frame keeps TF, and when the handler returns with TF
+       still in the frame, the first instruction runs and then stops (as after `popf`).
+     - A handler runs with TF clear (its own `pushf`: 0x246), and `pushfq` with TF set stores it (0x346).
+   - A branch to an unmapped address stops by the trap flag at the target, before any fetch there: `jmp
+     rel32` 256 MiB ahead, and `jmp rax` to 0x700000000000 and to 0x7ffffffff000 each give SIGTRAP
+     `TRAP_TRACE` with rip at the target (`stepper6`, `run10/branch-unmapped.out`; the ninth check saw
+     the same for `ret` to 0). `sldt eax`, `str eax` and `smsw eax` run in user mode (the reference has
+     no UMIP; `run10/umip.out`).
+   - RF (bit 16) is set in the frame of every signal from a fault: `ud2` (SIGILL), a divide by zero
+     (SIGFPE), a page fault, general protection and the stack fault. It is clear for traps (`int3`, `int1`,
+     the trap flag) and for a signal sent by `kill`.
+   - iced's feature names are not CPUID's: of the 4,690 Codes valid in 64-bit mode, the baseline ones carry
+     `INTEL8086` (217), `INTEL186` (26), `INTEL286` (15, among them `ud2`, `ud0`, `ud1` and the user-mode
+     `sldt`, `str`, `smsw`, `lar`, `lsl`, `verr`, `verw`), `INTEL386` (204), `INTEL486` (11), `X64` (215),
+     `CPUID` (1), `PAUSE` (1) and `MULTIBYTENOP` (30); x87 carries `FPU` (145), `FPU287` (4: `fstsw ax`,
+     `fnstsw ax`, `fsetpm`, `fnsetpm`) and `FPU387` (11: `fsin`, `fcos`, `fsincos`, `fprem1`, `fucompp` and
+     the 108- and 28-byte `fsave`, `fnsave`, `frstor`, `fstenv`, `fnstenv`, `fldenv`); CLFLUSH is `CLFSH`,
+     CX16 is `CMPXCHG16B`, SSE4.1 and 4.2 are `SSE4_1` and `SSE4_2`; `syscall` carries `SYSCALL` and
+     `sysenter` `SEP`. Fifteen x87 Codes also carry a non-x87 feature: `fcmovcc` (8), `fcomi`, `fcomip`,
+     `fucomi` and `fucomip` carry `CMOV`, and the three `fisttp` carry `SSE3`. By encoding: 1,627 legacy,
+     996 VEX, 1,733 EVEX, 103 XOP, 24 3DNow (`femms` is `0F 0E`, the rest `0F 0F`), 207 MVEX. The MVEX
+     Codes and the 48 VEX Codes of feature `KNC` (Knights Corner) are decoded by iced only with its `KNC`
+     decoder option (`DecoderOptions::KNC`, decoder.rs), which the translator does not set.
+
    What this teaches the reference runner (section 7.3): write every vector register and the whole x87
    component (FCW, FSW, the abridged tag byte, FOP and the last-instruction pointers as zero, the eight
    slots in stack order) (else the runner's own values leak in), set the x87, SSE and AVX bits of the
@@ -475,7 +518,7 @@ pub trait Guest: Sized + 'static {
     type Flag: Copy + Eq + core::fmt::Debug;
     /// The flags the translator tracks lazily, each with its bit in the saved flags word and its register
     /// bit, in the order the flags word is put together. The flags word holds these and nothing else
-    /// (x86's DF, NT and ID and the bits rflags always has are not in it, section 5.1).
+    /// (x86's TF, DF, NT and ID and the bits rflags always has are not in it, section 5.1).
     const FLAGS: &'static [(Self::Flag, u32, u32)];
     /// How flags were last set: a shape with the locals holding its operands.
     type Flags: Copy + core::fmt::Debug;
@@ -583,6 +626,18 @@ pub trait Guest: Sized + 'static {
     /// (section 5.4). The runner calls this before it tells the kernel about the fault, so the kernel
     /// needs no CPU crate.
     fn memory_fault(address: u64, code: &[u8], block: &Self::Block) -> MemoryFault;
+
+    // --- single stepping by a trap flag the program sets ---
+    /// What the stop hook does about single stepping (x86's TF, section 5.1), worked out on the thread's
+    /// state (`BLOCK_SIZE + PRIVATE_BYTES` bytes from the block). The runner asks it first at every stop
+    /// hook call, with `StepAt::Stop(pc)`, and with `StepAt::Kernel` whenever the kernel has had the thread
+    /// (after the system call hook returns, and before each entry into `run`). The default, kept by ARM64
+    /// and RV64GC, which have no single stepping a user program can turn on, answers `Step::Off`, so the
+    /// runner's call compiles to nothing for them.
+    fn step(state: &mut [u8], at: StepAt) -> Step {
+        let _ = (state, at);
+        Step::Off
+    }
 
     // --- meanings ---
     fn emit<E: Emitter<Self>>(e: &mut E, i: &Self::Instruction);
@@ -757,6 +812,13 @@ pub enum NarrowWrite { Zero, Sign, Merge }
 /// The fault a memory fault is: a page fault at the address, general protection (address 0), or a
 /// stack fault (x86 #SS, address 0: a non-canonical access through the stack segment).
 pub enum MemoryFault { Page, GeneralProtection, Stack }
+/// When `Guest::step` is asked: at a stop hook call with pc, or after the kernel has had the thread.
+pub enum StepAt { Stop(u64), Kernel }
+/// What the runner then does. `Off`: carry on, with the stop flag lowered unless another reason holds it.
+/// `Run`: carry on with the stop flag kept raised. `Exact`: run the instruction at pc alone (the stop hook
+/// returns `UNWIND_GO_TO_EXACT`), the flag kept raised. `Trap`: stop the thread with a single step at pc
+/// (SIGTRAP, `TRAP_TRACE`), before any other reason the flag was raised for.
+pub enum Step { Off, Run, Exact, Trap }
 pub enum StackMove { None, By { delta: i64, before_access: bool }, Unknown }
 pub enum ReturnAddress { Register(u32 /* bit */), Stack { bytes: u8 } }
 pub struct SyscallRegisters<R> { pub number: R, pub args: [R; 6], pub result: R }
@@ -777,9 +839,10 @@ pub struct HookDone { pub results: [i64; 2], pub reason: Option<u32> }
 
 `TrapKind` moves from the translator's contract into the interface (the contract re-exports it) and gains
 the kinds x86 needs, numbered after ARM64's four so ARM64's numbers do not change: `DivideError` (4),
-`GeneralProtection` (5), `FloatException` (6, detail the `si_code`), `SingleStep` (7). Each comes with the
-signal Linux sends (section 6). A stack fault is not a `TrapKind`: no meaning raises one. It comes only
-from the memory fault hook, classified by `memory_fault` as `MemoryFault::Stack`, because every check a
+`GeneralProtection` (5) and `FloatException` (6, detail the `si_code`). Each comes with the signal Linux
+sends (section 6). A single step is not a `TrapKind`: no meaning raises one; the runner stops the thread
+with it when `Guest::step` answers `Step::Trap` (section 5.1), and the abi's `Exit` and the tests' `Stop`
+carry it. Nor is a stack fault a `TrapKind`, for the same reason. It comes only from the memory fault hook, classified by `memory_fault` as `MemoryFault::Stack`, because every check a
 meaning makes before its access (alignment, a canonical branch target) gives general protection on the
 reference even where the access is through the stack segment (section 2, run 6: a misaligned
 non-canonical `movaps xmm0, [rsp]` is general protection). The runner turns `MemoryFault::Stack` into the
@@ -805,6 +868,12 @@ Changes to the methods' contract, each needed by a CPU named here:
   leave alone (section 3.4), so they have no plan and every check is made as written.
 - `check_range(address, length, access) -> i32 local`: whether a run-time length of bytes may be accessed,
   without stopping. Used by the x86 string instructions to choose the bulk path (section 5.6).
+- `raise_stop()` (new): pop an i32; when it is not zero, raise the thread's stop flag (a store of 1 at
+  `G::STOP_FLAG_OFFSET`), so that the stop hook is called before the next instruction runs. The emitter
+  makes sure of that: an instruction that goes on to the next one ends with a stop check there (pc at the
+  next instruction, as after a system call today); one that leaves through the bottom loop meets the stop
+  check at its target piece's entry. Only x86's `popf` and `iretq` call it, when they set TF (section
+  5.1); ARM64 and RV64GC never do, so their output does not change.
 - `call(target)` and `ret(target)` follow `G::RETURN_ADDRESS`. With `Register` nothing changes from
   today. With `Stack { bytes }` the meaning does the CPU's own steps itself, in the CPU's order, before it
   calls `call`, so the emitter adds no order of its own: for x86 (section 5.3) it reads a memory target,
@@ -996,7 +1065,11 @@ after instantiating the cdylib (and, as for `output`, makes its byte view of the
 the memory grows). Per hook call runner.js copies `threadStateSize` bytes from the thread's state memory at
 its block to that address, calls `cpu_hook` with the hook's index (from the contract's `hooks`) and its
 arguments (unused ones 0), reads `cpu_hook_result(i)` for each of the hook's results and `cpu_hook_reason()`
-(a `Reason` number, or -1 for none), and copies the bytes back. The kernel never runs a hook (the runner owns
+(a `Reason` number, or -1 for none), and copies the bytes back. `Guest::step` reaches the browser the same
+way from X6: an export `cpu_step(kind, pc) -> i32` (kind 0 for `StepAt::Stop`, 1 for `StepAt::Kernel`; the
+answer is `Step`'s index) over the same buffer, which runner.js calls first in its stop hook and at its
+returns from the kernel only while the guest's contract says the CPU steps (`steps: true` for x86), so an
+ARM64 page never copies anything for it. The kernel never runs a hook (the runner owns
 the instance whose imports they are), so the CPU crates stay `std` crates and the `no_std` kernel never
 depends on one; x86's hooks may use `astro-float` with the standard library (section 5.8). Should a `no_std`
 user ever need them, astro-float 0.9.6 does build without the standard library once `lazy_static`'s
@@ -1104,9 +1177,11 @@ x86-64 (`wcontainers_x86::X86_64`, section 5 gives the reasons):
   register. SP_BIT 4.
 - Flags: the six arithmetic flags at their rflags positions (CF 0, PF 2, AF 4, ZF 6, SF 7, OF 11); shapes
   in section 5.1. FLAGS_WANTED 1 << 62.
-- Block: `X86Block` (section 5.9). Controls: `Rflags` (DF, NT and ID, section 5.1), MXCSR, MXCSR tracking, the
-  x87 control, status (with TOP) and tag words, the x87 last-instruction pointers, and `X87High(0..8)`,
-  the sign and exponent of R0 to R7 (section 5.8, MMX).
+- Block: `X86Block` (section 5.9). Controls: `Rflags` (TF, DF, NT and ID, section 5.1), MXCSR, MXCSR
+  tracking, the x87 control, status (with TOP) and tag words, the x87 last-instruction pointers, and
+  `X87High(0..8)`, the sign and exponent of R0 to R7 (section 5.8, MMX); and, in the private bytes, `Step`
+  (i32), `StepAt` (i64) and `StepHeld` (i32) for single stepping (section 5.1).
+- step: the single-stepping machine of section 5.1. ARM64 and RV64GC keep the default (`Off`).
 - Hooks: Float (SSE exact path, with MXCSR), X87 `(op: i32, low: i64, high: i64) -> (i64, i64)` reading and
   writing the x87 area and the MMX bits (both body `Cpu`, run by `run_hook` on the state), Clock.
 - RETURN_ADDRESS `Stack { bytes: 8 }`; RED_ZONE 128; SP_ALIGNMENT_CHECKED false; data_address nothing (a
@@ -1224,11 +1299,12 @@ Tests (section 7 gives the detail):
   of `FLAGS` keeps the liveness test per flag exact (section 3.4): no arithmetic instruction sets DF, so
   with DF among the flags no flag update could ever be found dead, and every string instruction would
   count as a flag reader. It lives in `Control::Rflags`, an i64 in the block holding the bits of rflags
-  outside the flags word that user code changes and keeps, at their rflags positions: DF (bit 10), NT
-  (bit 14, nested task) and ID (bit 21, which programs toggle to see that CPUID exists). At CPL 3 `popf`
-  and `iretq` write exactly these three of the bits outside the six flags, besides AC (below) and TF
-  (below), and the reference keeps them (section 2, run 7: `popf` of 0x3FFFFF leaves 0x244ED7, so IOPL,
-  RF, VIF and VIP are not written). A string instruction reads DF with one load and a shift per pass.
+  outside the flags word that user code changes and keeps, at their rflags positions: TF (bit 8, the trap
+  flag, below), DF (bit 10), NT (bit 14, nested task) and ID (bit 21, which programs toggle to see that
+  CPUID exists). At CPL 3 `popf` and `iretq` write exactly these four of the bits outside the six flags,
+  besides AC (below), and the reference keeps them (section 2, run 7: `popf` of 0x3FFFFF leaves NT, AC
+  and ID set and IOPL, RF, VIF and VIP not written; run 10 for TF). A string instruction reads DF with one
+  load and a shift per pass.
 - **NT** means nothing to a 64-bit user program except one rule: `iretq` while NT is set gives general
   protection (Intel's `iret` pseudo-code for IA-32e mode; seen on the reference, section 2, run 7), before
   it reads its frame. So `iretq`'s meaning tests NT in `Control::Rflags` first. Nothing else reads it;
@@ -1236,11 +1312,60 @@ Tests (section 7 gives the detail):
 - **The flags word** in the block holds the six arithmetic flags at their rflags positions and nothing
   else. The user-visible rflags is that word, or `Control::Rflags`, or bits 1 and 9 (IF), which user code
   always sees set: `pushf` puts it together in its meaning; `popf` and `iretq` split it (the six flags as a
-  `Packed` shape, DF, NT and ID into the control, IOPL, IF, RF, VIF and VIP ignored as user mode does);
+  `Packed` shape, TF, DF, NT and ID into the control, IOPL, IF, RF, VIF and VIP ignored as user mode does);
   the kernel's personality does the same at signal frames and `ptrace` (section 6). So the interface needs
-  no item for bits a CPU always has. When `popf` sets TF the instruction after it runs and
-  then stops with `SingleStep` (SIGTRAP, `TRAP_TRACE`), as on the CPU; that path is a counted slow path
-  ("trap flag set by the program").
+  no item for bits a CPU always has.
+- **TF, the trap flag**, is held exactly, in `Control::Rflags` bit 8, and stepped exactly as the reference
+  steps (section 2, run 10). The rule the CPU keeps: an instruction that **starts** with TF set and
+  finishes stops the thread right after it with a single step (SIGTRAP, `TRAP_TRACE`, rip at the next
+  instruction or the branch's target). So the instruction that sets TF (`popf`, `iretq`) does not stop,
+  the one after it does, and `popf` that clears TF still stops after itself. An instruction that faults or
+  traps (`int3`, a page fault) gives only its own signal. A system call does not stop after itself: Linux
+  returns from it with TF set through `iret`, so the instruction after it runs first; the same holds after
+  every return from the kernel with TF set (`rt_sigreturn` of a frame with TF, a signal handler's return
+  after a fault). `pushf`, the r11 of `syscall` and signal frames show TF, as they are put together from
+  `Control::Rflags`; a signal handler starts with TF clear (section 6).
+  How it is done, with no cost to any instruction while TF is clear:
+  - The stop flag carries it. While TF is set, the thread's stop flag stays raised, and every stop hook
+    call goes first to `Guest::step` (section 3.2), which x86 fills in as a small machine on three words of
+    the CPU side's private bytes (controls `Step`, `StepAt` and `StepHeld`, which start zero): idle, one
+    instruction about to run alone at an address, or that instruction running.
+  - Entering stepping. `popf` and `iretq` call `Emitter::raise_stop` with the new TF bit, and count it
+    ("trap flag set by the program", x86's own reason, warned); the kernel's personality, when it returns
+    to a thread with TF set, makes the runner ask `step` with `StepAt::Kernel`, which answers `Run` while
+    TF is set and the runner raises the flag. Either way the next instruction's stop check calls the stop
+    hook.
+  - Each step. At a stop hook call while idle with TF set, `step` notes the pc and answers `Exact`; the
+    stop hook returns `UNWIND_GO_TO_EXACT`, and the bottom loop runs that one instruction from the piece
+    of look-ahead none in `EXACT_SLOT` (phase one's exact path, as in section 5.7). The next stop hook call
+    is that piece's entry stop check, at the noted pc (the bottom loop calls only `warn` and `load_code`
+    in between; if `load_code` says leave, the thread leaves and `StepAt::Kernel` makes the machine idle):
+    `step` marks the instruction running and answers `Run`.
+    The instruction runs; the next stop check is the next piece's entry (any look-ahead), or the stop check
+    after a rep string instruction's pass (section 5.6), and there `step` answers `Trap`: the runner stops
+    the thread with the single step at that pc, ahead of any other reason the flag was raised for, as
+    Linux delivers the synchronous SIGTRAP first. Every step also counts phase one's "left to address".
+  - Back to idle. `StepAt::Kernel` (after the system call hook, before each entry into `run`) sets the
+    machine idle, so after a system call, a fault, a trap or a signal the first instruction runs alone
+    before the next stop, as on the reference. A stop with TF clear and nothing running answers `Off`, and
+    the flag is lowered unless another reason holds it. When `step` answers `Run` or `Exact` and another
+    reason holds the flag too (a signal to deliver, the thread asked to stop), that reason is dealt with
+    first, as today, and the thread leaves; the return makes the machine idle.
+  - `mov ss` holds a trap back one instruction (section 2): its meaning writes 1 to `StepHeld`; when the
+    instruction running was such a one, `step` clears `StepHeld` and answers `Exact` for the next
+    instruction instead of `Trap`, so the trap comes after that one. `StepHeld` is cleared whenever an
+    instruction starts to run alone, so a stale 1 from a `mov ss` run without TF does nothing.
+  - What the stop hook returns: at X6 it returns the unwind payload, as the memory fault hook does
+    (section 5.7): 0 to carry on, `UNWIND_LEAVE` to leave, `UNWIND_GO_TO_EXACT` to run the instruction at pc
+    alone; its call sites unwind with what it returns. ARM64's runners return only 0 and `UNWIND_LEAVE`, so
+    ARM64 behaves as today; its output changes only inside each stop check's branch taken when the flag is
+    raised (the returned payload is unwound with instead of the constant), and its whole suite runs again
+    at X6.
+  - One known difference: a gather that faults part way while TF is set. The reference first stops with
+    `TRAP_TRACE` after the elements gathered (rflags with RF, section 2, run 8) and faults only when run
+    again; the translated gather faults at once with the same elements gathered. A program sees the extra
+    SIGTRAP only if it sets TF around a faulting gather, which only the AVX setting offers. Recorded as a
+    known difference with that reason and checked by a designed-answers case at X8.
 - **AC** (bit 18, alignment checking, which Linux's CR0.AM makes work in user mode) is not provided:
   testing every access's alignment would cost every access. It is reported as absent the way a program
   tests for it, which is the 386 test: `popf` and `iretq` leave AC clear, so it reads back 0, as on a
@@ -1327,8 +1452,9 @@ Tests (section 7 gives the detail):
     the instruction, and its meaning ignores them, as the reference does (section 2, run 9).
 - Kernel-only instructions (hlt, in and out, cli and sti, lgdt and the rest, mov to control registers,
   rdmsr, wrmsr, rdpmc while Linux does not allow it, `int n` other than 3, 0x80 and the `int1` and `int3`
-  forms): the fault Linux gives a user program, which for most is general protection (SIGSEGV, SI_KERNEL,
-  address 0) and for some #UD (SIGILL); layer 1 decides each against the reference.
+  forms; every `Code` in the claim table's "kernel only" group, section 2, whatever its feature): the fault
+  Linux gives a user program, which for most is general protection (SIGSEGV, SI_KERNEL, address 0) and
+  for some #UD (SIGILL); layer 1 decides each against the reference.
 - Breakpoints: `int3` (`CC`) and `int 3` (`CD 03`) stop with `Breakpoint`, SIGTRAP with `SI_KERNEL`, rip
   after the instruction; `int1` (`F1`) stops with `Breakpoint`, SIGTRAP with `TRAP_BRKPT`, rip after it
   (section 2). The trap's detail carries the `si_code`, and layer 1 compares it (`Stop::Breakpoint` holds
@@ -1374,7 +1500,8 @@ Tests (section 7 gives the detail):
     the native cost.
 - `mov ss` and `pop ss`: `pop ss` does not exist in 64-bit mode (iced decodes it as `INVALID`); `mov ss`
   with a selector Linux allows changes nothing a user program sees, except that a trap flag the program
-  set (section 5.1) stops after the instruction after it, as on the CPU.
+  set stops after the instruction after it, as on the CPU: its meaning writes 1 to the `StepHeld` control
+  (section 5.1).
 
 ### 5.3 Calls and returns
 
@@ -1546,7 +1673,9 @@ value is one Linux allows, decided by layer 1.
 ### 5.6 String instructions
 
 - **One element** (no rep prefix): an ordinary instruction with its accesses.
-- **rep movs and rep stos, bulk path**: when DF is clear and the ranges do not overlap in a way that changes
+- **rep movs and rep stos, bulk path**: when DF and TF are clear (one test of `Control::Rflags` against
+  both bits, from the load the meaning makes for DF anyway; with TF set each pass moves one element and
+  then stops, as on the reference, section 5.1) and the ranges do not overlap in a way that changes
   the result (a forward copy onto a destination that starts inside the source), the meaning checks the
   whole source range for reading and the whole destination for writing with `check_range`, and then does
   WebAssembly's `memory.copy` (for movs) or `memory.fill` (for stos with one repeated byte, which includes
@@ -1556,7 +1685,7 @@ value is one Linux allows, decided by layer 1.
 - **Otherwise, one element per pass**: the meaning moves one element, updates rcx, rsi and rdi with a
   `select` (unchanged when rcx is 0), and jumps to itself while rcx is not 0. Faults and stops are then
   exact to the element. This is the slow twin, counted "string instruction one element at a time" with the
-  reason (direction flag set, overlap, range not all allowed).
+  reason (direction flag set, trap flag set, overlap, range not all allowed).
 - **repe and repne cmps and scas** stop on data, so they are always one element per pass.
 - What the reference does (section 2): the trap flag stops it after each element, so layer 1 lets the
   reference step on while rip stays on a rep string instruction, up to the case's rcx (kept small by the
@@ -1827,7 +1956,7 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
 
 `X86Block`, defined in `wcontainers-x86` until the kernel milestone moves it next to ARM64's in the abi: 16
 general registers in hardware order, rip, the flags word (the six arithmetic flags, section 5.1), the `Rflags`
-control (DF, NT and ID at their rflags positions), FS base, GS base, a 512-byte area in the FXSAVE layout (x87
+control (TF, DF, NT and ID at their rflags positions), FS base, GS base, a 512-byte area in the FXSAVE layout (x87
 control, status and tag words, last-instruction pointers, MXCSR and its mask, eight 16-byte x87 register
 slots, sixteen xmm registers) except that the x87 slots are in physical order R0 to R7, then the upper halves
 of the sixteen ymm registers. The stop flag follows, padded to a multiple of 16. The kernel rotates the x87
@@ -1847,7 +1976,19 @@ slots by TOP when it fills an FXSAVE or XSAVE image (a signal frame, `ptrace`, a
   CMOV, MMX, FXSR, SSE, SSE2, SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CX16, LAHF-SAHF in 64-bit mode, LZCNT,
   BMI1, ADX, MOVBE, RDTSCP, FSGSBASE, CLFLUSH, SEP (whose `sysenter` gives general protection as on a
   kernel without 32-bit emulation, section 5.2), and the 64-bit basics (SYSCALL, NX, LM). This covers the
-  x86-64-v2 level. `clflush` is a checked one-byte read of its address, which faults as a load there does
+  x86-64-v2 level.
+- **The claim lists in iced's names** (the source file of section 2, which names `iced_x86::CpuidFeature`
+  values; run 10 shows the names). The default list: `INTEL8086`, `INTEL186`, `INTEL286`, `INTEL386`,
+  `INTEL486`, `X64`, `CPUID`, `PAUSE`, `MULTIBYTENOP` (the instructions every x86-64 CPU has, which iced
+  files by the CPU that brought them), `FPU`, `FPU287`, `FPU387` (all of x87, under the reading below),
+  `TSC`, `CX8`, `CMOV`, `MMX`, `FXSR`, `SSE`, `SSE2`, `SSE3`, `SSSE3`, `SSE4_1`, `SSE4_2`, `POPCNT`,
+  `CMPXCHG16B`, `LZCNT`, `BMI1`, `ADX`, `MOVBE`, `RDTSCP`, `FSGSBASE`, `CLFSH`, `SEP` and `SYSCALL`. NX,
+  LM and LAHF-SAHF in 64-bit mode are CPUID bits with no iced feature of their own (`lahf` and `sahf` are
+  `INTEL8086`). The AVX setting's list: `AVX`, `AVX2`, `FMA`, `F16C`, `BMI2` and `XSAVE` (`xgetbv`,
+  `xsave`, `xrstor`; `xsetbv` is kernel only). Every other name is never claimed, and a `Code` the claim
+  table puts in "kernel only" (section 2) is not judged by these lists at all. The 15 baseline Codes of
+  `INTEL286` include `sldt`, `str`, `smsw`, `lar`, `lsl`, `verr` and `verw`, which run in user mode on the
+  reference (it has no UMIP); their meanings give what layer 1 finds there. `clflush` is a checked one-byte read of its address, which faults as a load there does
   (a page fault where nothing readable is mapped, general protection where the address is not canonical),
   and then nothing, since there is no cache to flush; the Intel manual gives it a byte load's checks and
   the reference agrees (section 2, run 5). The prefetch hints (`prefetchnta`, `prefetcht0` to `t2`) do
@@ -1858,7 +1999,13 @@ slots by TOP when it fills an FXSAVE or XSAVE image (a signal frame, `ptrace`, a
   without it: the System V ABI puts C's `long double` in x87 registers, every x86-64 compiler and C
   library uses it without asking CPUID, so not claiming it would change no program's path, only make
   the answer untrue. The brief itself plans x87 "as a counted slow path", which is the same reading. The
-  owner is told (status file). The other baseline instructions that cost more than one WebAssembly
+  owner is told (status file). The same reading covers the x87 instructions iced files under other
+  features (section 2, run 10): SSE3 holds the three `fisttp` and CMOV holds `fcmovcc`, `fcomi`, `fcomip`,
+  `fucomi` and `fucomip`. They run through the x87 hook like every x87 instruction, counted with it, and
+  SSE3 and CMOV are claimed: every other instruction of both maps onto WebAssembly directly, no CPU has
+  SSE3 or CMOV without these x87 forms, and a program that tests either bit wants the SSE3 or `cmov`
+  instructions, not the x87 ones (which a compiler emits only for `long double`). The other baseline
+  instructions that cost more than one WebAssembly
   operation (64-bit `div` and `idiv` of a 128-bit dividend, section 5.2; `rcpps` and `rsqrtps`, section
   5.8) are done entirely in WebAssembly arithmetic and are not slow paths.
 - **Not claimed by default**: AVX, AVX2, FMA, F16C, BMI2 (its `pdep` and `pext` have no WebAssembly form),
@@ -1916,10 +2063,17 @@ resolved at compile time like the translator (the kernel generic over a personal
 `&mut dyn Cpu`). It contains:
 - **The register block** type and its conversions (the abi's `Cpu` trait becomes generic over it). ARM64's
   `RegisterBlock` stays; `X86Block` moves into the abi. The user-visible rflags (in `sigcontext`, for
-  `ptrace`) is put together from the flags word, the `Rflags` control (DF, NT, ID) and bits 1 and 9, and
-  split back at sigreturn as Linux does: only the `FIX_EFLAGS` bits come from the frame (the six flags,
-  TF, DF, RF and AC, with AC left clear, section 5.1); NT and ID keep the values the thread had when it
-  called `rt_sigreturn` (section 2, run 7). The frame's MXCSR is the `Mxcsr` control, and sigreturn
+  `ptrace`) is put together from the flags word, the `Rflags` control (TF, DF, NT, ID) and bits 1 and 9,
+  with RF (bit 16) added in the frame of a signal for a fault (page fault, general protection, stack
+  fault, divide error, illegal instruction, float exception) and not for a trap (single step, `int3`,
+  `int1`) or a signal sent by another (section 2, run 10). It is split back at sigreturn as Linux does:
+  only the `FIX_EFLAGS` bits come from the frame (the six flags, TF, DF, RF and AC). TF goes into the
+  `Rflags` control, and the return into the thread asks `Guest::step` with `StepAt::Kernel`, so a frame
+  with TF set runs one instruction and then stops (section 5.1; seen in run 10). AC is left clear (section
+  5.1). RF is not kept: it only holds off an instruction breakpoint for one instruction, no instruction
+  breakpoint is offered, `pushf` never stores it and the CPU clears it after the next instruction, so no
+  program can see it. NT and ID keep the values the thread had when it called `rt_sigreturn` (section 2,
+  run 7). The trap flag a frame sets is counted as "trap flag set by the program". The frame's MXCSR is the `Mxcsr` control, and sigreturn
   writes it back as `fxrstor` does, without turning tracking on (section 5.8).
 - **The address space**: the user address limit, `TASK_SIZE_MAX`, which is 0x7ffffffff000 on x86-64
   (2^47 less one page) against ARM64's 2^48 (today's `user::ADDRESS_LIMIT`, used by `mmap`, `mremap`,
@@ -1956,7 +2110,8 @@ resolved at compile time like the translator (the kernel generic over a personal
   `sigcontext`, the FXSAVE/XSAVE image (x87 slots rotated by TOP, ymm upper halves when AVX is claimed),
   the 128-byte red zone skipped below rsp, and the frame aligned so rsp + 8 is a multiple of 16 at the
   handler's entry. DF (with TF and RF) is cleared on entry and NT and ID are kept, as Linux's
-  `handle_signal` does (from its source; checked against the reference at X10).
+  `handle_signal` does (from its source; TF's clearing seen in run 10, the rest checked against the
+  reference at X10).
 - **Clone, exec and the auxiliary vector**: x86 `clone`'s argument order (flags, stack, parent tid, child
   tid, tls); the child's registers (rax 0, the new stack, FS base from tls); exec's start registers (rsp at
   argc, rdx 0); AT_HWCAP (CPUID leaf 1 edx), AT_HWCAP2 (FSGSBASE), AT_PLATFORM "x86_64", AT_MINSIGSTKSZ.
@@ -2077,7 +2232,7 @@ pub trait GuestTest: Guest {
     /// FCW, FSW, FTW, R0 to R7, xmm0 to xmm15, the ymm upper halves).
     const FIELDS: &'static [Field];
     /// The thread state (`BLOCK_SIZE + PRIVATE_BYTES` bytes) as field values in `FIELDS` order, and back.
-    /// x86 puts rflags together from the flags word, `Rflags` (DF, NT, ID) and bits 1 and 9 (section
+    /// x86 puts rflags together from the flags word, `Rflags` (TF, DF, NT, ID) and bits 1 and 9 (section
     /// 5.1). Tracking is not a field: the case's `tracking`, drawn at random, is written beside the
     /// fields (ARM64 `FloatTracking` as today, x86 `MxcsrTracking`).
     fn to_state(thread: &[u8]) -> State;
@@ -2169,8 +2324,10 @@ trait Machine {
     /// The byte the code area is filled with: ARM64 0 (`udf #0`), x86 0xCC (`int3`).
     const FILLER: u8;
     /// How far the code area reaches either side of CODE: ARM64 128 MiB (today's `CODE_SPAN`, a branch's
-    /// reach), x86 32 KiB (the steppers' area, section 2; a target beyond it is a fetch fault at the
-    /// target, `Landed` on both sides as today's `reference_outcome` maps it).
+    /// reach), x86 32 KiB (the steppers' area, section 2). On x86 it matters only for falling through
+    /// and for rip-relative operands: a branch to any address beyond it, mapped or not, stops with the
+    /// trap flag's `TRAP_TRACE` at the target before anything is fetched there (section 2, run 10),
+    /// which is `Landed` on both sides.
     const CODE_SPAN: u64;
     /// Bytes after CODE that the seccomp filter treats as the case's own: ARM64 4, x86 16. The filter
     /// also stops every call whose arch is not the guest's (x86: `AUDIT_ARCH_I386`), made anywhere.
@@ -2292,7 +2449,12 @@ so; it is never skipped silently.
   landing at CODE (a `ret`, `call` or `jmp` to CODE) is finished there. The runner's own FS base is set
   back before anything else.
 - **Blobs** (layers 2 and 3 natives): the runner forks per blob, maps it and runs it with the blob start
-  state, and reports output and status in-band. Docker is not used on the x86 machine.
+  state, and reports output and status in-band. When a signal ends the blob, the record also holds the
+  signal, its `si_code`, rip and the general registers from the frame: before it enters the blob, the child
+  installs one handler for SIGTRAP, SIGILL, SIGSEGV, SIGBUS and SIGFPE that writes them out and ends the
+  child with that signal's status. Flat blobs make no system calls but the stand-in's, so they never
+  install handlers of their own. The translated side reports the same from its stop (X6's trap-flag
+  blobs compare these, section 9). Docker is not used on the x86 machine.
 - **Recorded results**: every reference result is stored under `target/reference/x86_64/` keyed by the
   reference CPU's model string, the runner's content hash and the case's hash, so a replay or a run while
   the machine is off uses the real CPU's recorded answer. A case with no recorded answer and no machine
@@ -2303,21 +2465,28 @@ so; it is never skipped silently.
 ### 7.4 The three layers for x86-64
 
 **Layer 1: one instruction at a time.** The forms list comes from iced-x86's own tables: one form per iced
-`Code` whose `OpCodeInfo` says it is valid in 64-bit mode (`mode64()`), is an instruction (`is_instruction()`,
-not a directive), has an encoding that is not 3DNow, XOP, MVEX or EVEX (`encoding()`), and whose every
-`cpuid_features()` entry is in the offered set: one list for the default claims and one for the AVX setting.
-The features are those of the `Code` the translator's own decoder gives for the form's encoding
-(`FORCE_RESERVED_NOP`, section 5.2), not of the form's own `Code`: so `endbr64`, `rdsspq`, `cldemote`, MPX's
+`Code` whose `OpCodeInfo` says it is valid in 64-bit mode (`mode64()`) and is an instruction
+(`is_instruction()`, not a directive), of every encoding (legacy, VEX, EVEX, XOP, 3DNow) but MVEX: the MVEX
+Codes and the `KNC` VEX Codes exist only on Knights Corner, iced decodes them only with its `KNC` option,
+which the translator does not set, and their bytes decode as other Codes or `INVALID`, which the forms and
+`no_form` cover (section 2, run 10). Each form goes into one of four lists by the claim group (section 2's
+table, with section 5.10's lists in iced's names) of the `Code` the translator's own decoder gives for the
+form's encoding (`FORCE_RESERVED_NOP`, section 5.2), not of the form's own `Code`: the default list, the AVX
+setting's list, the never-claimed list, and the kernel-only list. So `endbr64`, `rdsspq`, `cldemote`, MPX's
 forms and the prefetches, which decode as `Reservednop_*`, are in the default list and compared with the
 reference like any other form; the `Reservednop_*` forms' cases are drawn with random `66`, `F2`, `F3` and
 REX.W prefixes and every ModRM, so they reach every encoding of the space, those of features not yet known
-included. Forms that `is_privileged()` marks kernel-only stay in the list as their own group: their case
-passes when the translator stops with the fault the reference CPU gives (section 5.2). The forms not offered
-are a third list, also run on the reference and compared: where the reference lacks the feature too (TSX,
-WAITPKG, CLWB, PTWRITE, SERIALIZE, MOVDIRI, RDPID and the rest; run 9 saw SIGILL for each of these), both
-sides must stop with illegal instruction; where the reference has it (`GuestTest::REFERENCE_HAS`: AES,
-PCLMULQDQ, RDRAND, RDSEED, CLFLUSHOPT, XSAVEOPT, XSAVEC, and the AVX setting's group while it is off), the
-translated side must stop with illegal instruction and the reference's run is recorded, not compared. A form's
+included. The kernel-only list's cases pass when the translator stops with the fault the reference CPU
+gives (section 5.2). The never-claimed list (every EVEX form, AVX-512 and all, every XOP and 3DNow form,
+`femms` among them, and every legacy or VEX form of a feature in neither claim list, such as AES, SHA, TSX,
+AVX-VNNI and VAES) is also run on the reference and compared, at 100 cases a form (the knob of every list),
+since an instruction the CPU lacks stops before it touches its operands. Where the reference lacks the
+feature too (AVX-512 and the other EVEX forms, seen in run 7; TSX, WAITPKG, CLWB, PTWRITE, SERIALIZE,
+MOVDIRI and RDPID, run 9; 3DNow and XOP, which Intel CPUs never had, expected to give SIGILL there too),
+both sides must stop with illegal instruction. Where the reference has it (`GuestTest::REFERENCE_HAS`: AES,
+PCLMULQDQ, RDRAND, RDSEED, CLFLUSHOPT, XSAVEOPT, XSAVEC, and the AVX setting's list while the setting is
+off), the translated side must stop with illegal instruction and the reference's run is recorded, not
+compared. A form's
 name (the `Code` name) is the seed key; its group is its mnemonic and encoding. A case is a random
 `Instruction` for the `Code`, with operands from `op_kind(i)` (registers, immediates weighted toward edges,
 memory operands whose base and index point into DATA), encoded by iced's `Encoder`, which gives the bytes and
@@ -2335,8 +2504,9 @@ the elements on an unmapped page, across the page end or masked off there; masks
 fault. Random registers, flags, vector, x87 and MXCSR values are weighted toward edge values; MXCSR is the
 default in half the cases, and tracking (section 5.8) is on in half, as ARM64's is today. The starting rflags
 holds what user code can hold: the six flags, DF, NT and ID drawn, bits 1 and 9 set, and AC, TF, IOPL, RF, VIF
-and VIP clear (AC because the translator never holds it, section 5.1; NT and ID are entered as section 7.3
-says). The reference runs it by the trap flag; the translator runs it at look-ahead none; every register,
+and VIP clear (AC because the translator never holds it, section 5.1; TF because the reference runner's
+own trap flag is what stops the case, so a case cannot start with the program's TF; NT and ID are entered as
+section 7.3 says). Single stepping is tested by the trap-flag programs of X6 and X10 instead (section 9). The reference runs it by the trap flag; the translator runs it at look-ahead none; every register,
 every flag (including undefined ones), the touched memory and the stop are compared. Random byte strings that
 iced decodes as `INVALID` are compared with the CPU's stop: SIGILL, or general protection for the ones past 15
 bytes (section 5.2), which `no_form` draws on purpose as runs of prefixes before a body (a legacy one, or a
@@ -2449,7 +2619,8 @@ Measured throughout, recorded with machine and load: translation speed, output s
   designed answers, NaN rules and the probe, CPUID and its designed answers, rep string
   instructions (bulk and one element), FS and GS, the approximate reciprocals by section 5.8's formula. The
   passed-register lists measured and chosen. Pass bar: layer 1 complete for the default forms at 1,000
-  cases a form, layer 3 Csmith at 1,000 programs, zero mismatches; the reciprocal formula equal to the
+  cases a form and for the never-claimed list (section 7.4) at 100 cases a form, layer 3 Csmith at 1,000
+  programs, zero mismatches; the reciprocal formula equal to the
   reference CPU on all 2^32 inputs of `rcpss` and of `rsqrtss`.
 - **X6, bounded look-ahead, the rare paths and code written without announcement.** Translating from any
   byte address, the bottom loop, go to address, adding code while running, injection tests, write
@@ -2458,15 +2629,25 @@ Measured throughout, recorded with machine and load: translation speed, output s
   stand-ins of it, test programs that write and run code with no announcement (one that writes code on
   another page and runs it; one whose loop writes the immediate of its own next instruction on the same
   page, scratch `run8/smc.c`, which prints `eax 1 sum 20100` on the reference; one whose instruction writes
-  into its own bytes); setjmp, C++ exception and Rust panic programs. Pass bar: those tests pass at every
-  look-ahead, in wasmtime and Chrome, with the native output.
+  into its own bytes); setjmp, C++ exception and Rust panic programs; single stepping by the trap flag
+  (section 5.1: TF in `Rflags`, `raise_stop`, `Guest::step` and its private words, the stop hook returning
+  the unwind payload, in both runners), with trap-flag blobs run on the reference and translated and their
+  stops and registers compared: `popf` setting TF before a `nop`, a `jmp`, a `call`, a `ret`, a `syscall`
+  (getpid; the stop comes after the instruction after it), a `popf` that clears TF, a `rep movsb` (one
+  element, rip on the instruction), `mov ss` (held back one instruction) and an `iretq` setting TF; each
+  stops by SIGTRAP `TRAP_TRACE`, and the blob runner's record of the stop (rip and the general registers,
+  section 7.3) must equal the translated side's. Pass bar: those tests pass at every
+  look-ahead, in wasmtime and Chrome, with the native output (the trap-flag blobs with the reference's
+  stop).
 - **X7, x87 and MMX.** The x87 hook with `X87DoubleExtended`, precision control by rounding to odd,
   `fsqrt` by section 5.8's root, the
   transcendental instructions with `astro-float`, MMX registers, `fxsave` and `fxrstor`. Pass
   bar: layer 1 for every x87 and MMX form at 1,000 cases a form, zero mismatches except known failures
   recorded with their reasons; a C program using `long double` gives the native output.
 - **X8, the AVX setting.** AVX, AVX2, FMA, F16C, BMI2, XSAVE in the setting, the two counters, the setting
-  in the cache key, the instructions of the setting's claim group trapping with the counter when it is off.
+  in the cache key, the instructions of the setting's claim group trapping with the counter when it is off,
+  and the designed-answers case of a gather that faults part way with TF set (section 5.1's known
+  difference).
   Pass bar: layer 1 for every
   form of the AVX list at 1,000 cases a form, zero mismatches; the benchmark set built for x86-64-v3 runs
   with the setting on, and with it off stops with illegal instruction and the counter.
@@ -2475,7 +2656,10 @@ Measured throughout, recorded with machine and load: translation speed, output s
   both engines. Recorded: sizes, translation time, engine memory, the lookup array's memory, how many
   switch tables were over the limit or had absolute entries.
 - **X10, the kernel's x86-64 personality** (after the kernel track's milestones): section 6, and the
-  kernel's tests for x86-64 against the x86 machine; the CPU side's part of code written without
+  kernel's tests for x86-64 against the x86 machine, among them scratch `run10/tf.c` (single stepping with
+  a SIGTRAP handler, faults and `int3` under TF, TF kept across `rt_sigreturn`) and `run10/rf.c` (RF in
+  fault frames only) as programs whose output must equal the reference's (`run10/tf.out`, `run10/rf.out`
+  apart from addresses); the CPU side's part of code written without
   announcement for the kernel's writes and shared pages (section 5.7) with its three tests; the address
   limit and its designed-answers test.
 
@@ -2543,6 +2727,10 @@ apply unchanged.
 - A known gap shared with ARM64 today: a signal handler that reads the sticky float flags from its
   frame (MXCSR on x86, FPSR on ARM64) while they are not kept sees the flags last written, and nothing
   counts it (section 5.8).
+- The cost of a single step (a trip to the bottom loop, a translation of one instruction and two stop hook
+  calls, section 5.1), measured at X6; only programs that set TF pay it. Not seen, expected from Intel's
+  manual (a float exception is a fault): RF in the frame of a SIMD or x87 float exception's signal, checked
+  at X10 beside `rf.c`'s cases.
 
 ## 13. Where the evidence is
 
@@ -2570,11 +2758,14 @@ and `xacquire.out` (the reserved-NOP space and other features not offered), `cpu
 features), `dis` (iced's decoding with and without `FORCE_RESERVED_NOP`), `iced-strict-nostd` and
 `iced-strict-std` (iced without the standard library, and the control that fails), and `sf`, `sfprobe`,
 `sfc` (Berkeley SoftFloat's crates and its C for wasm32); the eighth independent check's cases are in
-`check8`. The x86 machine holds copies of the programs and
-scripts in `~/wcontainers-x86/proof`, for run 8 `~/wcontainers-x86/proof8` and for run 9
-`~/wcontainers-x86/proof9` (with `approx.out`,
-`approx_formula.out`, `approx_mxcsr.out`; the cases scripts' outputs are kept only on the Mac), and the
-independent checks' own files in `~/wcontainers-x86/check`, `check2` to `check8`.
+`check8`. Run 10's are in `run10`: `tf.c` and `tf.out` (the trap flag a program sets), `rf.c` and `rf.out`
+(RF in signal frames), `feat` and `feat.out` (iced's feature names per `Code`), `umip.out` and
+`branch-unmapped.out`; the ninth independent check's are in `check9`. The x86 machine holds copies of the
+programs and scripts in `~/wcontainers-x86/proof` (with `approx.out`, `approx_formula.out`,
+`approx_mxcsr.out`; the outputs of the cases scripts up to run 7 are kept only on the Mac), for run 8 in
+`~/wcontainers-x86/proof8`, for run 9 in `~/wcontainers-x86/proof9` and for run 10 in
+`~/wcontainers-x86/proof10` (`tf`, `rf`, their sources and outputs), and the independent checks' own files
+in `~/wcontainers-x86/check`, `check2` to `check9`.
 
 ## Appendix A. Every kind b and c place of the seam map, and where it is covered
 
@@ -2631,7 +2822,8 @@ Tests area:
   (x86's from iced's tables); 4 decision 19.
 - E2 `Form` and "covered": 7.2 forms list (name, group, generate, presented).
 - E3 system register bias: 7.2 per-form operand shaping (CPUID leaves for x86).
-- E4 of a feature not offered: 7.2 offered features; 7.4 (`cpuid_features()` against the offered set).
+- E4 of a feature not offered: 7.2 offered features; 7.4 (the claim group of the decoded `Code`, from
+  section 5.10's lists in iced's names).
 - E5 exclusions: 7.2 per-instance exclusions; 7.4 (jump to itself, designed answers).
 - E6 `Case`: 7.2 `FIELDS`; 4 decision 15.
 - E7 branch-target values 4-aligned: 7.2 (from `G::ALIGN`); 4 decision 13.
