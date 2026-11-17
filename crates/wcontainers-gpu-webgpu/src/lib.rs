@@ -12,6 +12,7 @@ mod edge;
 mod fill;
 mod layout;
 mod memory;
+mod probe;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -30,6 +31,7 @@ use wcontainers_gpu::{
 };
 
 pub use draw::Counters;
+pub use probe::Depth24;
 
 /// Readback states, set by the map callback.
 const MAP_PENDING: u8 = 0;
@@ -66,6 +68,7 @@ pub struct WebGpu {
     arena: Option<memory::Arena>,
     edge: Option<edge::EdgeProgram>,
     fills: fill::Fills,
+    depth24: Option<Depth24>,
     /// Colour clears reach the API as floats, so integers past 2^24 cannot be cleared exactly.
     float_clears: bool,
     /// Changed whenever a buffer a binding set names moves so that a bind group made with it may no
@@ -338,7 +341,16 @@ impl WebGpu {
             };
             on_lost.lock().unwrap().get_or_insert(reason);
         });
-        let (caps, usages) = caps(adapter, &device);
+        let (mut caps, usages) = caps(adapter, &device);
+        // The browser cannot wait for the probe's answer yet (plan 4.8), so there the bit stays clear
+        // and fronts bias in the program, which is right for either storage.
+        #[cfg(not(target_arch = "wasm32"))]
+        let depth24 = Some(probe::run(&device, &queue));
+        #[cfg(target_arch = "wasm32")]
+        let depth24 = None;
+        if let Some(Depth24::Unorm(_)) = depth24 {
+            caps.features |= Features::DEPTH24_UNORM;
+        }
         // wgpu's Direct3D 12 clears colour targets through 32-bit floats.
         let float_clears = adapter.get_info().backend == wgpu::Backend::Dx12;
         WebGpu {
@@ -367,7 +379,13 @@ impl WebGpu {
             windows: HashMap::new(),
             counters: Counters::default(),
             usages,
+            depth24,
         }
+    }
+
+    /// What the probe of how `depth24plus` is stored found, where it ran.
+    pub fn depth24(&self) -> Option<Depth24> {
+        self.depth24
     }
 
     /// Registers a host window for [`Backend::create_surface`] under the number the graphics hook
