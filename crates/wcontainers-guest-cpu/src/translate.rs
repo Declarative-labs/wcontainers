@@ -550,11 +550,11 @@ pub enum StackMove {
     Unknown,
 }
 
-/// Where a call leaves the return address: in a register (its bit), or written on the stack below the stack
-/// pointer, `bytes` long.
+/// Where a call leaves the return address: in a register, which the call's meaning writes like any other,
+/// or written on the stack below the stack pointer, `bytes` long.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReturnAddress {
-    Register(u32),
+    Register,
     Stack { bytes: u8 },
 }
 

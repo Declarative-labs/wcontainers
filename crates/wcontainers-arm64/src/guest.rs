@@ -709,7 +709,7 @@ impl Guest for Arm64 {
     }
 
     /// `bl` and `blr` leave the return address in x30.
-    const RETURN_ADDRESS: ReturnAddress = ReturnAddress::Register(30);
+    const RETURN_ADDRESS: ReturnAddress = ReturnAddress::Register;
     const RED_ZONE: u64 = 0;
 
     /// Linux checks sp's alignment when it is the base of an access.
