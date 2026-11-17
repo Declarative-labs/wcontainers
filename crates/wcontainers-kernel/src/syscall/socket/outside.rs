@@ -204,6 +204,11 @@ pub(super) fn take(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketR
             address: mapped(network::GATEWAY),
             port: low + u16::from_le_bytes(port) % (high - low + 1),
         };
+        if super::inet::deferral_seconds(&listener.borrow()) > 0 {
+            kernel
+                .counters
+                .count(cx.host, crate::reason::OUTSIDE_NOT_DEFERRED, 0);
+        }
         let embryo = super::inet::embryo(kernel, listener, mapped(network::ADDRESS), remote);
         if let Some(inet) = embryo.borrow_mut().inet.as_deref_mut() {
             inet.outside = Some(id);

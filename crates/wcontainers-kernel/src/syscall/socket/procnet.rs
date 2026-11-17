@@ -12,7 +12,9 @@ use super::inet::{Endpoint, Protocol, v4_of};
 use super::{SocketRef, State};
 use crate::fs::proc::NetFile;
 use crate::linux::net::{AF_INET, AF_INET6, AF_UNIX};
-use crate::linux_extra::{TCP_CLOSE, TCP_ESTABLISHED, TCP_LISTEN, TCP_SYN_SENT, TCP_TIME_WAIT};
+use crate::linux_extra::{
+    TCP_CLOSE, TCP_ESTABLISHED, TCP_LISTEN, TCP_SYN_RECV, TCP_SYN_SENT, TCP_TIME_WAIT,
+};
 use crate::{Context, Kernel, network};
 
 /// `TMPSZ`: the width IPv4 TCP lines are padded to, less one.
@@ -187,6 +189,32 @@ fn tcp(kernel: &Kernel, family: u32) -> String {
     for socket in listening.iter().chain(&others) {
         let own = socket.borrow();
         let inet = own.inet.as_deref().unwrap();
+        // A connection held back by TCP_DEFER_ACCEPT is still a request (`get_openreq4`), owned
+        // by its listener's user.
+        if let Some((left, fires)) = super::inet::deferred_request(&own, kernel.entry_now) {
+            let (local, remote) = (inet.local, inet.remote.unwrap_or_default());
+            let uid = inet
+                .deferral
+                .as_ref()
+                .and_then(|(listener, ..)| listener.upgrade())
+                .map_or(0, |listener| listener.borrow().uid);
+            drop(own);
+            line(&mut out, &|out: &mut String| {
+                endpoint(out, family, &local);
+                out.push(' ');
+                endpoint(out, family, &remote);
+                let _ = write!(
+                    out,
+                    " {TCP_SYN_RECV:02X} {:08X}:{:08X} 01:{:08X} {fires:08X} {uid:5} {:8} 0 0 {:016x}",
+                    0,
+                    0,
+                    left.div_ceil(10_000_000),
+                    0,
+                    pointer(socket)
+                );
+            });
+            continue;
+        }
         let (state, rx, tail) = if own.state == State::Listening {
             (
                 TCP_LISTEN,

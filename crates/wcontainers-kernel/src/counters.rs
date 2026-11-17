@@ -118,6 +118,9 @@ pub mod reason {
     /// accept makes some, where Linux drops the handshake and retries after 1, 3, 7 seconds and so
     /// on. Detail: none.
     pub const TCP_BACKLOG_WAIT: &str = "tcp connect waits for backlog room";
+    /// A connection from outside came to a listener with TCP_DEFER_ACCEPT: the host has no way to
+    /// hold it back until data comes, so it is accepted at once. Detail: none.
+    pub const OUTSIDE_NOT_DEFERRED: &str = "outside connection not deferred";
     /// A listener the outside could reach (bound to the any address or eth0's) was refused by the
     /// host's listen, or an accept from it failed: the host cannot accept from outside (plan
     /// section 9) or its port is taken there. It goes on listening inside the container. Detail:

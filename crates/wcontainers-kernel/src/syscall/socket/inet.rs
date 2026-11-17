@@ -139,6 +139,12 @@ pub(crate) struct Inet {
     pub connecting: Option<Weak<RefCell<Socket>>>,
     /// For a listener: the connects waiting for room, first first.
     pub waiting: VecDeque<Weak<RefCell<Socket>>>,
+    /// For a listener with TCP_DEFER_ACCEPT: its connections held back until data comes
+    /// (requests acknowledged but not yet established, `inet_rsk(req)->acked`), oldest first.
+    pub deferred: Vec<SocketRef>,
+    /// For a connection held back: its listener, and when it was made and when its deferral ends,
+    /// on the monotonic clock.
+    pub deferral: Option<(Weak<RefCell<Socket>>, u64, u64)>,
     /// The other end's FIN came (`SOCK_DONE`).
     pub done: bool,
     /// It sent its FIN before the other end (it closes actively and holds the ports a while).
@@ -196,6 +202,8 @@ impl Inet {
             v6only: false,
             connecting: None,
             waiting: VecDeque::new(),
+            deferred: Vec::new(),
+            deferral: None,
             done: false,
             closed_first: false,
             sndbuf_set: false,
@@ -1129,7 +1137,8 @@ fn disconnect_tcp(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef)
     match state {
         State::Listening => {
             super::outside::stop_listening(kernel, socket);
-            let backlog = core::mem::take(&mut socket.borrow_mut().backlog);
+            let mut backlog = core::mem::take(&mut socket.borrow_mut().backlog);
+            backlog.extend(core::mem::take(&mut inet(socket).deferred));
             for embryo in backlog {
                 super::released(kernel, cx, &embryo);
             }
@@ -1172,8 +1181,20 @@ fn reset_peer(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
     }
 }
 
-/// `tcp_reset`: an RST came.
+/// `tcp_reset`: an RST came. A connection held back by TCP_DEFER_ACCEPT is only a request,
+/// which goes (`tcp_check_req`'s reset path), never to be accepted.
 fn reset(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
+    let deferral = inet(socket).deferral.take();
+    if let Some((listener, ..)) = deferral {
+        if let Some(listener) = listener.upgrade() {
+            inet(&listener)
+                .deferred
+                .retain(|held| !Rc::ptr_eq(held, socket));
+        }
+        socket.borrow_mut().state = State::Closed;
+        super::released(kernel, cx, socket);
+        return;
+    }
     {
         let mut own = socket.borrow_mut();
         let close_wait = own.shutdown & RCV_SHUTDOWN != 0 && own.state == State::Connected;
@@ -1441,10 +1462,119 @@ fn join(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, listener:
     }
     inet(socket).traffic = Traffic::made(true, kernel.entry_now);
     inet(&embryo).traffic = Traffic::made(false, kernel.entry_now);
-    listener.borrow_mut().backlog.push_back(embryo);
-    super::data_ready(kernel, cx, listener, EPOLLIN | EPOLLRDNORM);
+    // TCP_DEFER_ACCEPT holds the connection back until data comes, while the listener's requests
+    // are not over its backlog (past it Linux answers with a SYN cookie, which is not deferred).
+    let defer = deferral_seconds(&listener.borrow());
+    let requests = inet_ref(listener).deferred.len();
+    if defer > 0 && requests <= listener.borrow().max_backlog as usize {
+        let now = kernel.entry_now;
+        let until = now + defer * 1_000_000_000;
+        inet(&embryo).deferral = Some((Rc::downgrade(listener), now, until));
+        inet(listener).deferred.push(embryo);
+        crate::syscall::timer::start_deferral(kernel, Rc::downgrade(listener), until);
+    } else {
+        listener.borrow_mut().backlog.push_back(embryo);
+        super::data_ready(kernel, cx, listener, EPOLLIN | EPOLLRDNORM);
+    }
     kernel.wake_poll(channel(socket), EPOLLOUT | EPOLLWRNORM);
     super::wake_async(kernel, cx, socket, super::Wake::Io, POLL_OUT);
+}
+
+/// A listener's TCP_DEFER_ACCEPT in seconds, as getsockopt gives it back.
+pub(super) fn deferral_seconds(listener: &Socket) -> u64 {
+    listener
+        .options
+        .get(&(SOL_TCP, TCP_DEFER_ACCEPT))
+        .map_or(0, |bytes| {
+            u64::from(u32::from_le_bytes(bytes[..4].try_into().expect("4 bytes")))
+        })
+}
+
+/// `secs_to_retrans` and `retrans_to_secs` with Linux's first SYN-ACK timeout (1 s) and largest
+/// (120 s): the seconds of whole retransmits that cover `seconds`, which is how long a deferred
+/// connection waits for data (its last retransmit is answered, and then it is accepted).
+fn deferral_rounded(seconds: i32) -> i32 {
+    if seconds <= 0 {
+        return 0;
+    }
+    let (mut timeout, mut period, mut retransmits) = (1, 1, 1);
+    while seconds > period && retransmits < 255 {
+        retransmits += 1;
+        timeout = (timeout * 2).min(120);
+        period += timeout;
+    }
+    period
+}
+
+/// A deferred connection's data or FIN came, or its deferral ended: it is established and joins
+/// the accept queue (`tcp_check_req` creating the child). If that queue is full Linux drops the
+/// segment and the request stays until the next try: the client's retransmit of its data or FIN
+/// (after TCP_RTO_MIN, 200 ms, on loopback), or the next SYN-ACK timer.
+fn arrived(kernel: &mut Kernel, cx: &mut Context<'_>, embryo: &SocketRef) {
+    let listener = inet_ref(embryo)
+        .deferral
+        .as_ref()
+        .and_then(|(listener, ..)| listener.upgrade());
+    if let Some(listener) = listener
+        && backlog_full(&listener.borrow())
+    {
+        let now = kernel.entry_now;
+        let sent = !embryo.borrow().queue.is_empty() || inet_ref(embryo).done;
+        let next = if sent {
+            now + 200_000_000
+        } else {
+            now + deferred_request(&embryo.borrow(), now).map_or(0, |(left, _)| left)
+        };
+        if let Some((_, _, until)) = inet(embryo).deferral.as_mut() {
+            *until = next;
+        }
+        crate::syscall::timer::start_deferral(kernel, Rc::downgrade(&listener), next);
+        return;
+    }
+    let Some(deferral) = inet(embryo).deferral.take() else {
+        return;
+    };
+    if let Some(listener) = deferral.0.upgrade() {
+        inet(&listener)
+            .deferred
+            .retain(|held| !Rc::ptr_eq(held, embryo));
+        listener.borrow_mut().backlog.push_back(embryo.clone());
+        super::data_ready(kernel, cx, &listener, EPOLLIN | EPOLLRDNORM);
+    }
+}
+
+/// A listener's deferral timer fired: the connections whose deferral ended are accepted, oldest
+/// first (the SYN-ACK retransmitted at its end is answered at once on loopback).
+pub(super) fn deferrals_due(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRef) {
+    let now = kernel.entry_now;
+    let due: Vec<SocketRef> = inet_ref(listener)
+        .deferred
+        .iter()
+        .filter(|embryo| {
+            inet_ref(embryo)
+                .deferral
+                .as_ref()
+                .is_some_and(|(_, _, until)| *until <= now)
+        })
+        .cloned()
+        .collect();
+    for embryo in due {
+        arrived(kernel, cx, &embryo);
+    }
+}
+
+/// A connection held back by TCP_DEFER_ACCEPT, as `/proc/net/tcp` shows it (`get_openreq4`):
+/// SYN_RECV, the time to its next SYN-ACK timer and the timers fired so far.
+pub(super) fn deferred_request(socket: &Socket, now: u64) -> Option<(u64, u64)> {
+    let (_, made, _) = socket.inet.as_deref()?.deferral.as_ref()?;
+    let elapsed = now.saturating_sub(*made);
+    let (mut fires, mut at, mut timeout) = (0u64, 1_000_000_000u64, 1_000_000_000u64);
+    while at <= elapsed {
+        fires += 1;
+        timeout = (timeout * 2).min(120_000_000_000);
+        at += timeout;
+    }
+    Some((at - elapsed, fires))
 }
 
 /// The listener's end of a new connection to `address` on its port from `remote`, holding the
@@ -1461,6 +1591,8 @@ pub(super) fn embryo(
         let mut new = Socket::new(them.family, SOCK_STREAM, TCP);
         new.state = State::Connected;
         new.options = them.options.clone();
+        // The accept queue's settings are not the new socket's (`inet_csk_clone_lock`).
+        new.options.remove(&(SOL_TCP, TCP_DEFER_ACCEPT));
         new.owner_uid = them.owner_uid;
         new.receive_timeout = them.receive_timeout;
         new.send_timeout = them.send_timeout;
@@ -1644,6 +1776,7 @@ fn send_fin(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
         inet(socket).closed_first = true;
     }
     carry_between(kernel, socket, &peer, 0, true);
+    arrived(kernel, cx, &peer);
     if !peer.borrow().dead {
         let mut other = peer.borrow_mut();
         other.shutdown |= RCV_SHUTDOWN;
@@ -1792,6 +1925,18 @@ pub(super) fn released(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &Socke
     if protocol == Protocol::Tcp {
         match state {
             State::Listening => {
+                // Requests held back go without a reset (`inet_csk_listen_stop` resets only the
+                // accept queue); their clients learn of it when they next send.
+                let deferred = core::mem::take(&mut inet(socket).deferred);
+                for embryo in deferred {
+                    inet(&embryo).deferral = None;
+                    // What the client sent was never taken in, so it draws no reset here.
+                    let packets = core::mem::take(&mut embryo.borrow_mut().queue);
+                    for packet in packets {
+                        super::drop_packet(kernel, cx, packet);
+                    }
+                    super::released(kernel, cx, &embryo);
+                }
                 let backlog = core::mem::take(&mut socket.borrow_mut().backlog);
                 for embryo in backlog {
                     reset_peer(kernel, cx, &embryo);
@@ -2036,6 +2181,9 @@ fn tcp_send(
             size + u64::from(last.is_some()),
             false,
         );
+        if size > 0 || last.is_some() {
+            arrived(kernel, cx, &peer);
+        }
         sent += size;
         if let Some(byte) = last {
             urgent_arrives(kernel, cx, tid, socket, &peer, byte);
@@ -3805,6 +3953,7 @@ pub(super) fn set_option(
                     store(socket, value)
                 }
                 TCP_LINGER2 => store(socket, value.clamp(-1, 120)),
+                TCP_DEFER_ACCEPT => store(socket, deferral_rounded(value)),
                 TCP_WINDOW_CLAMP => {
                     if value != 0 && value < (super::MIN_RCVBUF / 2) as i32 {
                         return store(socket, (super::MIN_RCVBUF / 2) as i32);

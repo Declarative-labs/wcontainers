@@ -57,6 +57,10 @@ enum Owner {
         tid: Tid,
         asked: u64,
     },
+    /// The end of a TCP connection's deferral (TCP_DEFER_ACCEPT) on a listener.
+    Deferral {
+        listener: Weak<RefCell<crate::syscall::socket::Socket>>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -417,6 +421,12 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
         }
         // Disarmed, which tells the sleeper its time has come.
         Owner::Sleep { tid, .. } => kernel.wake_thread(tid),
+        Owner::Deferral { listener } => {
+            kernel.timers.remove(id);
+            if let Some(listener) = listener.upgrade() {
+                crate::syscall::socket::deferrals_due(kernel, cx, &listener);
+            }
+        }
     }
 }
 
@@ -510,7 +520,7 @@ pub(crate) fn process_end(kernel: &mut Kernel, pid: Pid, exec: bool) {
         .filter(|(_, timer)| match timer.owner {
             Owner::Posix { pid: owner, .. } => owner == pid,
             Owner::Interval { pid: owner, .. } => owner == pid && !exec,
-            Owner::Descriptor { .. } | Owner::Sleep { .. } => false,
+            Owner::Descriptor { .. } | Owner::Sleep { .. } | Owner::Deferral { .. } => false,
         })
         .map(|(id, _)| *id)
         .collect();
@@ -549,6 +559,34 @@ pub(super) fn start_cpu_sleep(
     });
     kernel.timers.arm(id, until);
     id
+}
+
+/// Starts a timer that ends a listener's connection deferral at `until` on the monotonic clock.
+pub(crate) fn start_deferral(
+    kernel: &mut Kernel,
+    listener: Weak<RefCell<crate::syscall::socket::Socket>>,
+    until: u64,
+) {
+    let id = kernel.timers.add(Timer {
+        owner: Owner::Deferral { listener },
+        clock: Clock::Wall,
+        expires: None,
+        interval: 0,
+        overrun: 0,
+        overrun_last: 0,
+        ticks: 0,
+        expired: false,
+        clock_id: CLOCK_MONOTONIC as i32,
+        sequence: 0,
+        sent_at: None,
+        charge: None,
+        wall: false,
+        might_cancel: false,
+        settime_flags: 0,
+        canceled: false,
+        ignored: false,
+    });
+    kernel.timers.arm(id, until);
 }
 
 /// What is left of a sleep on a CPU clock: 0 once its timer fired or its clock reached the time; the

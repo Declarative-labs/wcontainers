@@ -647,6 +647,7 @@ pub(crate) const XATTR_NAME_SOCKPROTONAME: &[u8] = b"system.sockprotoname";
 /// headers hold); UDP shows the first and seventh.
 pub(crate) const TCP_ESTABLISHED: u8 = 1;
 pub(crate) const TCP_SYN_SENT: u8 = 2;
+pub(crate) const TCP_SYN_RECV: u8 = 3;
 pub(crate) const TCP_FIN_WAIT2: u8 = 5;
 pub(crate) const TCP_TIME_WAIT: u8 = 6;
 pub(crate) const TCP_CLOSE: u8 = 7;

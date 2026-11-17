@@ -382,6 +382,11 @@ pub(crate) fn fdinfo(socket: &SocketRef) -> Option<u64> {
     })
 }
 
+/// A listener's deferral timer fired ([`inet::deferrals_due`]).
+pub(crate) fn deferrals_due(kernel: &mut Kernel, cx: &mut Context<'_>, listener: &SocketRef) {
+    inet::deferrals_due(kernel, cx, listener);
+}
+
 /// After a restore: connections to the outside read as closed.
 pub(crate) fn restored(kernel: &mut Kernel, cx: &mut Context<'_>) {
     outside::restored(kernel, cx);

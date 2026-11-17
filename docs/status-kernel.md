@@ -4,8 +4,7 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K0 to K4 are done. K5 (sockets and network) has had six runs and is not complete: what is left
-is under Next. At the fifth run's end (head f73d3aa) the fresh layer 1 seeds 5050448, 5050449
+K0 to K4 are done. K5 (sockets and network) has had seven runs; what is left is under Next. At the fifth run's end (head f73d3aa) the fresh layer 1 seeds 5050448, 5050449
 and 5050450 passed 20000 sequences each with every fix in (see Measurements). The fuller run-by-run record of K4 and of K5's first two runs is in this file at
 commit fdf7001 (git history); what they built is summarised here.
 
@@ -231,6 +230,43 @@ K5 built (all four runs):
   - statfs through `/proc/self/fd/N` of an mq_open queue gives the kernel's own mount's flags
     (the walk keeps whether the last descriptor link followed named such a file), fixing the
     fifth run's open layer 1 difference (seed 5050446).
+
+- Seventh run (each against the reference):
+  - `/proc/<pid>/fdinfo` (syscall/fdinfo.rs): the directory (0555, listed and positioned as
+    `fd`, refused with EACCES to a caller that may not trace the process, at lookup and open),
+    each file (0444, made at each read, ENOENT once its descriptor is closed) with `pos`,
+    `flags` (O_CLOEXEC from the descriptor), `mnt_id`, `ino`, the locks taken through the file
+    (`show_fd_locks`: its flock, then its POSIX locks of this table and OFD locks, as
+    `/proc/locks` prints them), and each kind's lines: eventfd's count, number (the lowest free,
+    `eventfd_ida`) and semaphore flag; epoll's items (events with ERR and HUP, a fired one-shot
+    item's 0x40000000); inotify's watches newest first with the watched inode, kernel device
+    number, mask and file handle (as `name_to_handle_at` with AT_HANDLE_FID); signalfd's mask;
+    timerfd's clock, unread expirations, settime flags and time left; a process descriptor's
+    `Pid` and `NSpid` (-1 once reaped); local sockets' `scm_fds` (descriptors in flight to it,
+    or to its connections not yet accepted); the pseudo-terminal master's `tty-index`. Record
+    locks now keep the file they were taken through (`flc_file`) and a joined lock keeps the
+    held one's taker and file (`posix_lock_inode` grows the held lock); flock keeps its taker.
+  - TCP_DEFER_ACCEPT: set as seconds of whole SYN-ACK retransmits (`secs_to_retrans` and back:
+    2 reads 3, 1000 reads 1087, at most 29887); a listener with it holds each new connection
+    (`acked` request) out of its accept queue until data or a FIN comes or the deferral ends
+    (accepted at exactly the value read back, measured 1 s and 3 s), while its held requests are
+    not over its backlog (past it Linux answers with SYN cookies, which are not held); data or
+    a FIN finding the accept queue full stays held and tries again 200 ms later (the client's
+    retransmit after TCP_RTO_MIN; Linux doubles that wait at each try, here it stays 200 ms), a
+    deferral's end finding it full tries at the next SYN-ACK timer; a reset drops a held
+    connection; a closed listener drops held ones without a reset; held ones show in
+    `/proc/net/tcp` as SYN_RECV requests (`get_openreq4`: timer 1, time to the next SYN-ACK
+    timer, timers fired); an accepted socket reads 0. Connections from outside are not held
+    (counted "outside connection not deferred").
+
+Tests added in the seventh run (each against the reference):
+- tests/procstatus.rs `fdinfo_matches_reference` (guest/fdinfo.c: every descriptor kind, locks
+  joined across two files, a user refused another's, a zombie's and a reaped child's process
+  descriptor, a descriptor closed after its fdinfo was opened; machine numbers checked against
+  statx, stat and name_to_handle_at and shown as "same").
+- tests/inet.rs `deferred_accepts_match_reference` (guest/tcpdefer.c: values, deferral ends at
+  1 s and 3 s, data and FIN before the end, a reset, six connects on a backlog of 2, the
+  listener closed under them).
 
 Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
 call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
@@ -823,7 +859,7 @@ Missing before K5 (40, each counted "system call not implemented" and ENOSYS), w
   `/proc/<pid>/status` has only some of Linux's lines (no memory, SigQ, SigPnd, ShdPnd or context
   switch lines). Each open of these is counted "proc fields not tracked". Built with K2's processes,
   before K6's bar.
-- About 330 of Linux's `/proc` entries are not built (mountinfo, mem, fdinfo, task, oom_score_adj,
+- About 330 of Linux's `/proc` entries are not built (mountinfo, mem, task, oom_score_adj,
   uid_map, smaps, entropy_avail and more; proclist prints them): ENOENT, counted "proc entry not
   built" with the entry in the detail. Those programs commonly read come before K6's bar.
 - `/proc/<pid>/fd` links of files opened by a path keep that path; a rename afterwards is not seen
@@ -1419,6 +1455,12 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K5, seventh run: whole suite at 2d60f92 (the sixth run's end; `RUST_TEST_THREADS=3 cargo
+  test --no-fail-fast -j 4 -p wcontainers-kernel -p wcontainers-kernel-test` in a clean copy
+  with its own build): 182 passed, 1 failed, 5 ignored, 13 min 39 s with the build, load 53.1
+  at the start and 26.6 at the end. The failure is busybox `system` crossing a minute's turn
+  (Known issues).
+
 - K5, sixth run, layer 1: seed 5050451 passed 3000 sequences at 47d0230 (51 s, load about 33);
   the fifth run's open seed 5050446 passed 20000 with the statfs fix (338 s) and the fresh seed
   5050452 passed 20000 at 9835ab5 (341 s), side by side, load about 30 to 40.
@@ -1637,6 +1679,16 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- K5, seventh run: eventfd's number in fdinfo is the lowest free among the container's event
+  descriptors; Linux's is the lowest free on the whole machine, so it differs from the
+  reference's whenever other containers hold some (the test shows it as N). epoll's items are
+  listed in this kernel's order (by descriptor); Linux's follow kernel addresses.
+- K5, seventh run: TCP_DEFER_ACCEPT is not applied to connections from outside (counted
+  "outside connection not deferred"): the host completes those and has no hook to hold one
+  back. A held connection whose listener closes is let go with a FIN to its client, where
+  Linux sends nothing until the client's next segment draws a reset (the client's next write
+  succeeds either way; what it reads after differs).
 
 - K5, sixth run: Linux stamps received packets once any socket on the machine asks for receive
   timestamps (a global switch, turned on a moment later); here a packet is stamped when its
@@ -1940,7 +1992,7 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   messages to another socket's port (ECONNREFUSED); detail family times 2^32 plus kind times 2^16
   plus protocol.
 - "socket option not built": socket options not built (detail: level times 2^32 plus option;
-  ENOPROTOOPT), among them TCP_ZEROCOPY_RECEIVE, TCP_DEFER_ACCEPT (set), TCP_SAVE_SYN,
+  ENOPROTOOPT), among them TCP_ZEROCOPY_RECEIVE, TCP_SAVE_SYN,
   TCP_MD5SIG, TCP_ULP, UDP_ENCAP, IP_RECVOPTS, IP_RETOPTS, IP_RECVORIGDSTADDR, IP_MINTTL,
   IP_UNICAST_IF, the source-specific multicast options and IPv6's group and extension header
   options; SO_TIMESTAMPING with software send flags; and as send control messages (EINVAL)
@@ -1968,6 +2020,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K5, seventh run: none.
 - K5, sixth run: none.
 - K5, fifth run: none.
 - K5, fourth run: none.
@@ -2030,6 +2083,12 @@ guest).
 None open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- K5, seventh run: busybox `system` failed once in the whole suite at 2d60f92 (load about 45):
+  `ls -l /dev/null` showed 18:19 for ours and 18:18 for the reference. The time shown is when
+  each container was made, and the two runs fell on either side of a minute's turn. The test
+  compares wall clock minutes of two separate runs, so a minute's turn between them fails it;
+  not fixed yet (the harness could give our container the reference's start time).
 
 - K5, fifth run: the sigpick reference race came once more in the whole suite at f73d3aa (load
   about 25); two reruns alone passed.
@@ -2125,11 +2184,10 @@ K5, in this order (what the six runs built is under Where things stand):
    send, keyed by byte; needs MSG_ERRQUEUE and EPOLLERR on TCP sockets) and copies of the packet
    without OPT_TSONLY (the frame from its Ethernet header: 14 zero bytes, then IPv4 and UDP
    headers whose checksum and id are hard to match; measured in scratch k5r6/tsing.c). Then
-   TCP_DEFER_ACCEPT (an accept and a listener's poll wait for data or the deferral's
-   end; `secs_to_retrans` for the value), the other options under Not built.
+   the other options under Not built.
 2. Urgent data to the outside (a send with MSG_OOB and bytes on an outside connection is
    refused, counted): the Host hooks carry no urgent data.
-3. Local sockets left: a socket's `/proc/<pid>/fdinfo` (fdinfo is not built at all). A SCM_PIDFD
+3. Local sockets left: a SCM_PIDFD
    or SO_PEERPIDFD for a reaped process whose number was given again would name the new one
    (numbers are kept, not Linux's `struct pid`). ETOOMANYREFS is checked just before the
    message is queued, where Linux checks it right after the buffer is made (before the bytes

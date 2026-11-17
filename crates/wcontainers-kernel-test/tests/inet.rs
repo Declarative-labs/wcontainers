@@ -77,6 +77,12 @@ fn orders_of_checks_match_reference() {
 }
 
 #[test]
+fn deferred_accepts_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "tcpdefer", &[]);
+}
+
+#[test]
 fn tcp_info_matches_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "tcpinfo", &[]);
