@@ -3744,6 +3744,20 @@ const SCRATCH_ZEROS: u64 = 0x1000;
 const SCRATCH_PLAY: u64 = 0x11000;
 const SCRATCH_SIZE: u64 = SCRATCH_PLAY + PLAY_PAGES * 4096;
 const MAX_RW_COUNT: u64 = 0x7fff_f000;
+
+/// Signals both runners' callers ignore, as guest/layer1.c's does: at their default Linux keeps
+/// them from our caller, the container's first process, and not from the reference's. SIGPIPE,
+/// SIGIO, and those F_SETSIG may choose.
+const IGNORED_SIGNALS: [u32; 8] = [
+    linux::SIGPIPE,
+    linux::SIGHUP,
+    linux::SIGTRAP,
+    linux::SIGFPE,
+    linux::SIGTTOU,
+    linux::SIGIO,
+    32,
+    64,
+];
 /// The reference runner's `DEADLINE_SECONDS`.
 const DEADLINE_SECONDS: u64 = 60;
 /// The status a child made by clone ends with at once (the runner's `CHILD_STATUS`).
@@ -3936,6 +3950,21 @@ fn run_ours_on(
         call(&mut kernel, &mut cpu, &mut host, scratch),
         Ok(SCRATCH as i64)
     );
+    // An action of SIG_IGN at the scratch area's start, which the zeroing's vectors take later.
+    cpu.write(
+        memory,
+        SCRATCH,
+        &(linux_raw_sys::signal_macros::sig_ign().map_or(0, |handler| handler as usize) as u64)
+            .to_le_bytes(),
+    )
+    .expect("writing an action");
+    for signal in IGNORED_SIGNALS {
+        let ignore = Call {
+            number: linux::__NR_rt_sigaction,
+            arguments: [signal.into(), SCRATCH, 0, 8, 0, 0],
+        };
+        assert_eq!(call(&mut kernel, &mut cpu, &mut host, ignore), Ok(0));
+    }
     // The reference's runner has remade `/dev/null` before every sequence while the container's first
     // one stays held, so it is remade here too, while descriptor 0 holds the first one.
     let null = ARENA + PATHS + path_offset("/dev/null");
