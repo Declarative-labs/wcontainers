@@ -13,6 +13,7 @@ naga = { workspace = true, features = ["spv-in"] }
 blake3 = { version = "1", default-features = false }
 
 [build-dependencies]
+blake3 = "1"
 cc = { version = "1", features = ["parallel"] }
 
 [dev-dependencies]
@@ -29,6 +30,7 @@ windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi_Common",
 ] }
 

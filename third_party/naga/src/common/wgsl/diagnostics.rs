@@ -12,6 +12,16 @@ impl Severity {
     const INFO: &'static str = "info";
     const OFF: &'static str = "off";
 
+    /// The sentinel word in WGSL for this [`Severity`].
+    pub const fn to_wgsl_ident(self) -> &'static str {
+        match self {
+            Self::Error => Self::ERROR,
+            Self::Warning => Self::WARNING,
+            Self::Info => Self::INFO,
+            Self::Off => Self::OFF,
+        }
+    }
+
     /// Convert from a sentinel word in WGSL into its associated [`Severity`], if possible.
     pub fn from_wgsl_ident(s: &str) -> Option<Self> {
         Some(match s {

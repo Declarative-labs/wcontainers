@@ -69,6 +69,7 @@ pub(crate) fn lower(
     let mut module = naga::front::spv::Frontend::new(spirv.iter().copied(), &options)
         .parse()
         .map_err(|e| ConvertError::Reader(format!("{e}")))?;
+    unconverted(&module)?;
     let ep = module
         .entry_points
         .first()
@@ -83,10 +84,14 @@ pub(crate) fn lower(
         ShaderStage::Compute => StageExtras::Compute {
             workgroup_size: ep.workgroup_size,
         },
+        ShaderStage::Fragment => pixel_extras(&module),
         _ => StageExtras::None,
     };
     module.entry_points[0].name = "main".into();
     module.entry_points[0].early_depth_test = None;
+    if stage == ShaderStage::Vertex {
+        output_interpolation(&mut module, &variant.output_interpolation);
+    }
     let mut reflection = Reflection {
         stage: source_stage,
         inputs: Vec::new(),
@@ -113,6 +118,186 @@ pub(crate) fn lower(
     reflection.sampled_pairs = sampled_pairs(&module, &registers)?;
     draw_bases(&mut module, variant, &mut reflection)?;
     Ok((module, reflection, stage))
+}
+
+/// What a pixel program asks of the pipeline beyond its code: early tests (reported, since WGSL cannot
+/// force them), writes to storage, discards, and running once per sample.
+fn pixel_extras(module: &Module) -> StageExtras {
+    let ep = &module.entry_points[0];
+    let functions =
+        || core::iter::once(&ep.function).chain(module.functions.iter().map(|(_, f)| f));
+    let storage = |f: &Function, pointer: Handle<Expression>| {
+        let mut e = pointer;
+        loop {
+            match f.expressions[e] {
+                Expression::Access { base, .. } | Expression::AccessIndex { base, .. } => e = base,
+                Expression::GlobalVariable(g) => {
+                    return matches!(
+                        module.global_variables[g].space,
+                        AddressSpace::Storage { .. }
+                    );
+                }
+                _ => return false,
+            }
+        }
+    };
+    let mut side_effects = false;
+    let mut discards = false;
+    for f in functions() {
+        let mut stack = vec![&f.body];
+        while let Some(block) = stack.pop() {
+            for s in block.iter() {
+                match s {
+                    Statement::Kill => discards = true,
+                    Statement::ImageStore { .. } | Statement::Atomic { .. } => side_effects = true,
+                    Statement::Store { pointer, .. } if storage(f, *pointer) => side_effects = true,
+                    Statement::Block(b) => stack.push(b),
+                    Statement::If { accept, reject, .. } => stack.extend([accept, reject]),
+                    Statement::Loop {
+                        body, continuing, ..
+                    } => stack.extend([body, continuing]),
+                    Statement::Switch { cases, .. } => stack.extend(cases.iter().map(|c| &c.body)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let per_sample = ep.function.arguments.iter().any(|a| {
+        let sampled = |b: &Binding| {
+            matches!(
+                b,
+                Binding::BuiltIn(BuiltIn::SampleIndex)
+                    | Binding::Location {
+                        sampling: Some(naga::Sampling::Sample),
+                        ..
+                    }
+            )
+        };
+        a.binding.as_ref().is_some_and(sampled)
+            || matches!(&module.types[a.ty].inner, TypeInner::Struct { members, .. }
+                if members.iter().any(|m| m.binding.as_ref().is_some_and(sampled)))
+    });
+    StageExtras::Pixel {
+        // `Allow` is conservative depth, only a hint.
+        early_tests: ep.early_depth_test == Some(naga::EarlyDepthTest::Force),
+        side_effects,
+        discards,
+        per_sample,
+    }
+}
+
+/// Refuses by name what the reader's module has that the common form cannot take as it stands.
+fn unconverted(module: &Module) -> Result<(), ConvertError> {
+    let ep = module
+        .entry_points
+        .first()
+        .ok_or(ConvertError::Malformed("no entry point".into()))?;
+    if module.global_variables.iter().any(|(_, v)| {
+        matches!(
+            module.types[v.ty].inner,
+            TypeInner::Image {
+                dim: naga::ImageDimension::D1,
+                arrayed: true,
+                ..
+            }
+        )
+    }) {
+        return Err(ConvertError::Unsupported("Texture1DArray"));
+    }
+    // Every built-in the entry point reads or writes, with its type.
+    let mut builtins = Vec::new();
+    let mut add =
+        |ty: Handle<Type>, binding: Option<&Binding>| match (binding, &module.types[ty].inner) {
+            (Some(Binding::BuiltIn(b)), _) => builtins.push((*b, ty)),
+            (None, TypeInner::Struct { members, .. }) => {
+                builtins.extend(members.iter().filter_map(|m| match m.binding {
+                    Some(Binding::BuiltIn(b)) => Some((b, m.ty)),
+                    _ => None,
+                }))
+            }
+            _ => {}
+        };
+    for a in &ep.function.arguments {
+        add(a.ty, a.binding.as_ref());
+    }
+    let result = ep.function.result.as_ref();
+    if let Some(r) = result {
+        add(r.ty, r.binding.as_ref());
+    }
+    if builtins.iter().any(|(b, _)| *b == BuiltIn::PrimitiveIndex) {
+        return Err(ConvertError::Unsupported("PrimitiveId"));
+    }
+    if ep.stage == naga::ShaderStage::Vertex
+        && !builtins
+            .iter()
+            .any(|(b, _)| matches!(b, BuiltIn::Position { .. }))
+    {
+        return Err(ConvertError::Unsupported("VertexWithoutPosition"));
+    }
+    if builtins.iter().any(|(b, ty)| {
+        *b == BuiltIn::SampleMask && matches!(module.types[*ty].inner, TypeInner::Array { .. })
+    }) {
+        return Err(ConvertError::Reader(
+            "the sample mask stays an array".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Writes the vertex program's float outputs with the interpolation the variant asks for their locations.
+fn output_interpolation(module: &mut Module, asked: &[(u32, Interpolation)]) {
+    let types = &mut module.types;
+    let ep = &mut module.entry_points[0].function;
+    let Some(result) = ep.result.as_mut() else {
+        return;
+    };
+    let set = |binding: &mut Binding, ty: &TypeInner| {
+        if let Binding::Location {
+            location,
+            interpolation,
+            sampling,
+            ..
+        } = binding
+            && ty.scalar_kind() == Some(ScalarKind::Float)
+        {
+            (*interpolation, *sampling) =
+                crate::lower::naga_interpolation(crate::lower::output_modes(asked, *location));
+        }
+    };
+    if let Some(binding) = result.binding.as_mut() {
+        set(binding, &types[result.ty].inner);
+        return;
+    }
+    let old = result.ty;
+    let TypeInner::Struct { mut members, span } = types[old].inner.clone() else {
+        return;
+    };
+    for m in &mut members {
+        if let Some(binding) = m.binding.as_mut() {
+            set(binding, &types[m.ty].inner);
+        }
+    }
+    let name = types[old].name.clone();
+    let new = types.insert(
+        Type {
+            name,
+            inner: TypeInner::Struct { members, span },
+        },
+        Span::UNDEFINED,
+    );
+    result.ty = new;
+    for (_, e) in ep.expressions.iter_mut() {
+        if let Expression::Compose { ty, .. } | Expression::ZeroValue(ty) = e
+            && *ty == old
+        {
+            *ty = new;
+        }
+    }
+    for (_, v) in ep.local_variables.iter_mut() {
+        if v.ty == old {
+            v.ty = new;
+        }
+    }
 }
 
 /// dxil-spirv reads `SV_VertexID` and `SV_InstanceID` as `VertexIndex - BaseVertex` and `InstanceIndex -
@@ -513,6 +698,10 @@ fn bindings(
             _ => return Err(ConvertError::Unsupported("ResourceKind")),
         };
         let (space, register) = (binding.group, binding.binding);
+        // Direct3D 11's numbering knows one space; other spaces are numbered by a root signature.
+        if space != 0 {
+            return Err(ConvertError::Unsupported("RegisterSpace"));
+        }
         let number = kind
             .binding(register)
             .ok_or(ConvertError::Unsupported("BindingsBeyondLimit"))?;
