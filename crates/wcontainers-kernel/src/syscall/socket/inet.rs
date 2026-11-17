@@ -1848,7 +1848,8 @@ pub(super) fn send(
         Protocol::Tcp => {
             // `tcp_sendmsg_locked` reads only the socket-level messages, and any fault is EINVAL.
             if let Some(control) = &message.control {
-                sent_control(kernel, cx, control, true, false).map_err(|_| Errno::EINVAL)?;
+                sent_control(kernel, cx, tid, socket, control, true, false)
+                    .map_err(|_| Errno::EINVAL)?;
             }
             // Urgent data to the outside is refused only where it would go: an unconnected
             // socket fails first (`sk_stream_wait_connect`).
@@ -2154,27 +2155,50 @@ pub(super) fn datagram_truesize(size: u64) -> u64 {
     allocated + SK_BUFF
 }
 
-/// What a send's control messages set for its datagram: its TTL and type of service.
+/// What a send's control messages set for its datagram.
 #[derive(Clone, Copy, Default)]
 struct SentControl {
+    /// IPv4's TTL or IPv6's hop limit, and the type of service or traffic class.
     ttl: Option<u8>,
     tos: Option<u8>,
+    /// Its mark and priority (`sockcm_cookie`'s), which receivers with SO_RCVMARK and
+    /// SO_RCVPRIORITY are told.
+    mark: Option<u32>,
+    priority: Option<u32>,
+    /// The source address packet information names, if not the any address.
+    source: Option<[u8; 16]>,
+    /// The interface packet information names, if any.
+    interface: Option<u32>,
 }
 
-/// The control messages of an internet send (`sock_cmsg_send` for TCP, `ip_cmsg_send` for UDP
-/// over IPv4): descriptors and credentials are passed over, what Linux does not know is EINVAL,
-/// and what it knows that is not built here (marks, priorities, transmit times and timestamping,
-/// IPv4 options and packet information, every IPv6 message) is refused and counted. `v4`: the
-/// datagram goes over IPv4, whose messages are read.
+/// Whether an interface number names one of the container's interfaces.
+fn interface_known(index: u32) -> bool {
+    index == network::LOOPBACK_INDEX || index == network::ETHERNET_INDEX
+}
+
+/// `rt_tos2priority`: the queueing priority a type of service gives.
+fn tos_priority(tos: u8) -> u32 {
+    const BY_TOS: [u32; 16] = [0, 0, 0, 0, 2, 2, 2, 2, 6, 6, 6, 6, 4, 4, 4, 4];
+    BY_TOS[usize::from((tos & 0x1e) >> 1)]
+}
+
+/// The control messages of an internet send: `sock_cmsg_send` for TCP, `ip_cmsg_send` for a
+/// datagram over IPv4 (`v4`) and `ip6_datagram_send_ctl` over IPv6. Descriptors and credentials
+/// are passed over, what Linux does not know is EINVAL, and what it knows that is not built here
+/// (send timestamps, IPv4 options, IPv6 extension headers) is refused and counted.
 fn sent_control(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
+    tid: Tid,
+    socket: &SocketRef,
     bytes: &[u8],
     socket_level_only: bool,
     v4: bool,
 ) -> Result<SentControl, Errno> {
     let mut out = SentControl::default();
     let mut at = 0usize;
+    let credentials = kernel.credentials(tid);
+    let powerful = credentials.has(CAP_NET_RAW) || credentials.has(CAP_NET_ADMIN);
     let mut refuse = |level: u32, kind: u32| {
         Err(kernel.counters.refuse(
             cx.host,
@@ -2183,6 +2207,11 @@ fn sent_control(
             Errno::EINVAL,
         ))
     };
+    let txtime = socket
+        .borrow()
+        .options
+        .contains_key(&(SOL_SOCKET, SO_TXTIME));
+    let family = socket.borrow().family;
     while at + 16 <= bytes.len() {
         let length = u64::from_le_bytes(bytes[at..at + 8].try_into().expect("8 bytes"));
         let level = u32::from_le_bytes(bytes[at + 8..at + 12].try_into().expect("4 bytes"));
@@ -2191,19 +2220,54 @@ fn sent_control(
             return Err(Errno::EINVAL);
         }
         let data = &bytes[at + 16..at + length as usize];
-        // `ip_cmsg_send`'s readings of an int, and of the type of service as an int or a byte.
+        // The readings of an int that must fill the message.
         let int = || match data.len() {
             4 => Ok(i32::from_le_bytes(data.try_into().expect("4 bytes"))),
             _ => Err(Errno::EINVAL),
         };
         match level {
+            // `__sock_cmsg_send`.
             SOL_SOCKET => match kind {
                 SCM_RIGHTS | SCM_CREDENTIALS => {}
-                SO_MARK | SO_PRIORITY | SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW | SCM_TXTIME
-                | SCM_TS_OPT_ID => return refuse(level, kind),
+                SO_MARK => {
+                    if !powerful {
+                        return Err(Errno::EPERM);
+                    }
+                    out.mark = Some(int()? as u32);
+                }
+                SO_PRIORITY => {
+                    let priority = int()?;
+                    if !(powerful || (0..=6).contains(&priority)) {
+                        return Err(Errno::EPERM);
+                    }
+                    out.priority = Some(priority as u32);
+                }
+                // The transmit time means nothing here: no queue discipline holds packets.
+                SCM_TXTIME => {
+                    if !txtime || data.len() != 8 {
+                        return Err(Errno::EINVAL);
+                    }
+                }
+                SO_TIMESTAMPING_OLD | SO_TIMESTAMPING_NEW | SCM_TS_OPT_ID => {
+                    return refuse(level, kind);
+                }
                 _ => return Err(Errno::EINVAL),
             },
             _ if socket_level_only => {}
+            // An IPv6 socket sending over IPv4 takes IPv6 packet information naming an IPv4
+            // address.
+            SOL_IPV6 if v4 && family == AF_INET6 && kind == IPV6_PKTINFO => {
+                if data.len() < 20 {
+                    return Err(Errno::EINVAL);
+                }
+                let address: [u8; 16] = data[..16].try_into().expect("16 bytes");
+                let Some(v4) = v4_of(&address) else {
+                    return Err(Errno::EINVAL);
+                };
+                let index = u32::from_le_bytes(data[16..20].try_into().expect("4 bytes"));
+                out.interface = (index != 0).then_some(index).or(out.interface);
+                out.source = (v4 != [0; 4]).then_some(address);
+            }
             SOL_IP if v4 => match kind {
                 IP_TTL => {
                     let ttl = int()?;
@@ -2221,11 +2285,90 @@ fn sent_control(
                         return Err(Errno::EINVAL);
                     }
                     out.tos = Some(tos as u8);
+                    out.priority = Some(tos_priority(tos as u8));
                 }
-                IP_RETOPTS | IP_PKTINFO | IP_PROTOCOL => return refuse(level, kind),
+                IP_PKTINFO => {
+                    // `struct in_pktinfo`: the interface, the source, and an address unused here.
+                    if data.len() != 12 {
+                        return Err(Errno::EINVAL);
+                    }
+                    let index = u32::from_le_bytes(data[..4].try_into().expect("4 bytes"));
+                    if index != 0 {
+                        out.interface = Some(index);
+                    }
+                    let source: [u8; 4] = data[4..8].try_into().expect("4 bytes");
+                    out.source = (source != [0; 4]).then(|| mapped(source));
+                }
+                // Only raw sockets use the protocol.
+                IP_PROTOCOL => {
+                    if !(1..=255).contains(&int()?) {
+                        return Err(Errno::EINVAL);
+                    }
+                }
+                IP_RETOPTS => return refuse(level, kind),
                 _ => return Err(Errno::EINVAL),
             },
-            SOL_IPV6 if !v4 => return refuse(level, kind),
+            SOL_IPV6 if !v4 => match kind {
+                IPV6_PKTINFO | IPV6_2292PKTINFO => {
+                    if data.len() < 20 {
+                        return Err(Errno::EINVAL);
+                    }
+                    let index = u32::from_le_bytes(data[16..20].try_into().expect("4 bytes"));
+                    if index != 0 {
+                        if out.interface.is_some_and(|before| before != index) {
+                            return Err(Errno::EINVAL);
+                        }
+                        out.interface = Some(index);
+                    }
+                    if out.interface.is_some_and(|index| !interface_known(index)) {
+                        return Err(Errno::ENODEV);
+                    }
+                    let address: [u8; 16] = data[..16].try_into().expect("16 bytes");
+                    if address != ANY6 {
+                        // Link-local addresses need an interface; none is the container's.
+                        if out.interface.is_none()
+                            && address[0] == 0xfe
+                            && address[1] & 0xc0 == 0x80
+                        {
+                            return Err(Errno::EINVAL);
+                        }
+                        if !is_own(&address) || v4_of(&address).is_some() {
+                            return Err(Errno::EINVAL);
+                        }
+                        out.source = Some(address);
+                    }
+                }
+                // Flow labels are sent only with IPV6_FLOWINFO_SEND, which is not built.
+                IPV6_FLOWINFO => {
+                    if data.len() < 4 {
+                        return Err(Errno::EINVAL);
+                    }
+                }
+                IPV6_HOPLIMIT | IPV6_2292HOPLIMIT => {
+                    let hops = int()?;
+                    if !(-1..=255).contains(&hops) {
+                        return Err(Errno::EINVAL);
+                    }
+                    out.ttl = (hops >= 0).then_some(hops as u8);
+                }
+                IPV6_TCLASS => {
+                    let class = int()?;
+                    if !(-1..=255).contains(&class) {
+                        return Err(Errno::EINVAL);
+                    }
+                    // -1 is kept as it is, so the class sent is 255 (measured).
+                    out.tos = Some(class as u8);
+                }
+                // Nothing here fragments.
+                IPV6_DONTFRAG => {
+                    if !(0..=1).contains(&int()?) {
+                        return Err(Errno::EINVAL);
+                    }
+                }
+                IPV6_HOPOPTS | IPV6_2292HOPOPTS | IPV6_DSTOPTS | IPV6_2292DSTOPTS
+                | IPV6_RTHDRDSTOPTS | IPV6_RTHDR | IPV6_2292RTHDR => return refuse(level, kind),
+                _ => return Err(Errno::EINVAL),
+            },
             _ => {}
         }
         at += length.next_multiple_of(8) as usize;
@@ -2339,7 +2482,7 @@ fn udp_send(
     let sent = match &message.control {
         Some(control) => {
             let v4 = v4_of(&to.address).is_some();
-            sent_control(kernel, cx, control, false, v4)?
+            sent_control(kernel, cx, tid, socket, control, false, v4)?
         }
         None => SentControl::default(),
     };
@@ -2372,7 +2515,14 @@ fn udp_send(
     if family == AF_INET6 && v4_of(&to.address).is_none() && v4_of(&from.address).is_some() {
         from.address = LOOPBACK6;
     }
+    let route = route(&to, &sent)?;
+    if let Some(source) = sent.source {
+        from.address = source;
+    }
     let data = gather(kernel, cx, tid, message.data, 0, total)?;
+    if route == Route::Lost {
+        return Ok(total);
+    }
     if corking {
         inet(socket).cork = Some(Corked {
             to,
@@ -2384,6 +2534,52 @@ fn udp_send(
     }
     udp_deliver(kernel, cx, tid, socket, to, from, data, sent)?;
     Ok(total)
+}
+
+/// Where a datagram goes by the interface and source its packet information name.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// By its destination.
+    Usual,
+    /// Out of eth0 to a loopback address, where nothing answers: it is lost.
+    Lost,
+}
+
+/// `ip_route_output_flow` and `ip6_dst_lookup_flow` for a datagram whose packet information
+/// names a source or an interface: a source must be the container's own and not multicast or
+/// broadcast, the interface must exist, IPv6 has no route out of eth0, and a loopback source
+/// cannot leave through eth0.
+fn route(to: &Endpoint, sent: &SentControl) -> Result<Route, Errno> {
+    let via = sent.interface;
+    let Some(destination) = v4_of(&to.address) else {
+        if via == Some(network::ETHERNET_INDEX) {
+            return Err(Errno::ENETUNREACH);
+        }
+        return Ok(Route::Usual);
+    };
+    let source = sent.source.and_then(|source| v4_of(&source));
+    if let Some(source) = source {
+        if (224..=239).contains(&source[0]) || source == [255; 4] {
+            return Err(Errno::EINVAL);
+        }
+        if !is_own(&mapped(source)) {
+            return Err(Errno::ENETUNREACH);
+        }
+    }
+    if via.is_some_and(|index| !interface_known(index)) {
+        return Err(Errno::ENODEV);
+    }
+    // The container's own addresses are reached through lo, except loopback ones named out of
+    // eth0.
+    let out_of_eth0 = via == Some(network::ETHERNET_INDEX) && destination[0] == 127;
+    let leaves = via != Some(network::LOOPBACK_INDEX) && (!is_own(&to.address) || out_of_eth0);
+    if source.is_some_and(|source| source[0] == 127) && leaves {
+        return Err(Errno::EINVAL);
+    }
+    if out_of_eth0 {
+        return Ok(Route::Lost);
+    }
+    Ok(Route::Usual)
 }
 
 /// What a UDP datagram is held as while corked (MSG_MORE or UDP_CORK): its destination, source,
@@ -2469,7 +2665,8 @@ fn udp_deliver(
     sent: SentControl,
 ) -> Result<(), Errno> {
     let total = data.len() as u64;
-    if !is_own(&to.address) {
+    // Through lo every destination is the container's own.
+    if !is_own(&to.address) && sent.interface != Some(network::LOOPBACK_INDEX) {
         if !unicast(&to.address) {
             return Ok(());
         }
@@ -2658,6 +2855,8 @@ fn read_error(
             known: true,
             error: true,
             prepared: true,
+            mark: 0,
+            priority: 0,
         }),
         error: Some((level, kind, extended)),
         time: error.time,
@@ -2876,29 +3075,35 @@ fn arrival_from(sender: &SocketRef, to: &Endpoint, sent: SentControl) -> Arrival
             .filter(|value| *value >= 0)
             .unwrap_or(default)
     };
-    let (ttl, tos) = if v4_of(&to.address).is_some() && own.family == AF_INET {
+    // Over IPv4 an IPv6 socket's own IPv4 options apply too (`udp_sendmsg`).
+    let (ttl, tos) = if v4_of(&to.address).is_some() {
         (
             sent.ttl
                 .map_or_else(|| option(SOL_IP, IP_TTL, 64), i32::from),
             sent.tos
                 .map_or_else(|| option(SOL_IP, IP_TOS, 0), i32::from),
         )
-    } else if v4_of(&to.address).is_some() {
-        (
-            sent.ttl.map_or(64, i32::from),
-            sent.tos.map_or(0, i32::from),
-        )
     } else {
         (
-            option(SOL_IPV6, IPV6_UNICAST_HOPS, 64),
-            option(SOL_IPV6, IPV6_TCLASS, 0),
+            sent.ttl
+                .map_or_else(|| option(SOL_IPV6, IPV6_UNICAST_HOPS, 64), i32::from),
+            sent.tos
+                .map_or_else(|| option(SOL_IPV6, IPV6_TCLASS, 0), i32::from),
         )
     };
-    let index = if v4_of(&to.address) == Some(network::ADDRESS) {
+    let through_lo = sent.interface == Some(network::LOOPBACK_INDEX);
+    let index = if v4_of(&to.address) == Some(network::ADDRESS) && !through_lo {
         network::ETHERNET_INDEX
     } else {
         network::LOOPBACK_INDEX
     };
+    let word = |name: u32| {
+        own.options.get(&(SOL_SOCKET, name)).map_or(0, |value| {
+            u32::from_le_bytes(value[..4].try_into().expect("4 bytes"))
+        })
+    };
+    let mark = sent.mark.unwrap_or_else(|| word(SO_MARK));
+    let priority = sent.priority.unwrap_or_else(|| word(SO_PRIORITY));
     Arrival {
         destination: to.address,
         index,
@@ -2907,6 +3112,8 @@ fn arrival_from(sender: &SocketRef, to: &Endpoint, sent: SentControl) -> Arrival
         known: true,
         error: false,
         prepared: true,
+        mark,
+        priority,
     }
 }
 
@@ -2920,6 +3127,8 @@ pub(super) fn arrival_outside() -> Arrival {
         known: false,
         error: false,
         prepared: true,
+        mark: 0,
+        priority: 0,
     }
 }
 
@@ -2937,6 +3146,9 @@ pub(crate) struct Arrival {
     /// Whether its receiver asked for packet information when it came (`ipv4_pktinfo_prepare`):
     /// if not, an IPv4 datagram's names no interface or local address.
     pub prepared: bool,
+    /// The sender's mark and priority, for SO_RCVMARK and SO_RCVPRIORITY.
+    pub mark: u32,
+    pub priority: u32,
 }
 
 /// What `ipv4_pktinfo_prepare` keeps of a datagram as it is queued for `receiver`.
@@ -3202,13 +3414,26 @@ pub(super) fn set_option(
                     }
                     store(socket, value)
                 }
+                // `__ip_sock_set_tos`: a new type of service sets the priority it gives.
                 IP_TOS => {
                     let value = if protocol == Protocol::Tcp {
                         value & !3
                     } else {
                         value
-                    };
-                    store(socket, value & 0xff)
+                    } & 0xff;
+                    let old = socket
+                        .borrow()
+                        .options
+                        .get(&(level, name))
+                        .map_or(0, |bytes| bytes[0]);
+                    if old != value as u8 {
+                        let priority = tos_priority(value as u8);
+                        socket
+                            .borrow_mut()
+                            .options
+                            .insert((SOL_SOCKET, SO_PRIORITY), priority.to_le_bytes().to_vec());
+                    }
+                    store(socket, value)
                 }
                 IP_MULTICAST_TTL => {
                     let value = if value == -1 { 1 } else { value };

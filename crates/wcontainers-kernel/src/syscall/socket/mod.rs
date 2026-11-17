@@ -2909,6 +2909,38 @@ pub(super) fn recvmsg(
         data.extend_from_slice(&part.to_le_bytes());
         put_control(&mut control, room, SOL_SOCKET, kind, &data, &mut out_flags);
     }
+    // `sock_recv_mark` and `sock_recv_priority` for a datagram (an error read gives neither).
+    if let Some(arrival) = received.arrival.filter(|arrival| !arrival.error) {
+        use crate::linux::net::{SO_MARK, SO_PRIORITY, SO_RCVMARK, SO_RCVPRIORITY};
+        let own = socket.borrow();
+        let on = |name: u32| {
+            own.options
+                .get(&(SOL_SOCKET, name))
+                .is_some_and(|value| value.iter().any(|&byte| byte != 0))
+        };
+        let (mark, priority) = (on(SO_RCVMARK), on(SO_RCVPRIORITY));
+        drop(own);
+        if mark {
+            put_control(
+                &mut control,
+                room,
+                SOL_SOCKET,
+                SO_MARK,
+                &arrival.mark.to_le_bytes(),
+                &mut out_flags,
+            );
+        }
+        if priority {
+            put_control(
+                &mut control,
+                room,
+                SOL_SOCKET,
+                SO_PRIORITY,
+                &arrival.priority.to_le_bytes(),
+                &mut out_flags,
+            );
+        }
+    }
     if let Some(arrival) = &received.arrival {
         for (level, kind, data) in inet::arrival_messages(kernel, cx, &socket, arrival) {
             put_control(&mut control, room, level, kind, &data, &mut out_flags);
@@ -3127,7 +3159,38 @@ pub(super) fn setsockopt(
                 own.rcvbuf = wanted.max(MIN_RCVBUF);
             }
         }
-        SO_SNDBUFFORCE | SO_RCVBUFFORCE | SO_MARK => return Err(Errno::EPERM),
+        SO_SNDBUFFORCE | SO_RCVBUFFORCE => return Err(Errno::EPERM),
+        // `sk_setsockopt`: a mark wants CAP_NET_RAW or CAP_NET_ADMIN, as does a priority past
+        // the ones anyone may choose (`sk_set_prio_allowed`).
+        SO_MARK | SO_PRIORITY => {
+            let value = int()?;
+            let credentials = kernel.credentials(tid);
+            let powerful = credentials.has(CAP_NET_RAW) || credentials.has(CAP_NET_ADMIN);
+            if !(powerful || (name == SO_PRIORITY && (0..=6).contains(&value))) {
+                return Err(Errno::EPERM);
+            }
+            own.options
+                .insert((level, name), value.to_le_bytes().to_vec());
+        }
+        // The transmit time each send may name is kept for nothing: no queue discipline holds
+        // packets here. Clocks other than CLOCK_MONOTONIC want CAP_NET_ADMIN.
+        SO_TXTIME => {
+            if bytes.len() != 8 {
+                return Err(Errno::EINVAL);
+            }
+            let clock = int()?;
+            let flags = u32::from_le_bytes(bytes[4..8].try_into().expect("4 bytes"));
+            if flags & !(txtime_flags::SOF_TXTIME_FLAGS_MASK as u32) != 0 {
+                return Err(Errno::EINVAL);
+            }
+            if clock != CLOCK_MONOTONIC as i32 && !kernel.credentials(tid).has(CAP_NET_ADMIN) {
+                return Err(Errno::EPERM);
+            }
+            if ![CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_TAI].contains(&(clock as u32)) {
+                return Err(Errno::EINVAL);
+            }
+            own.options.insert((level, name), bytes[..8].to_vec());
+        }
         // `sk_may_scm_recv` and `sk_is_unix`.
         SO_PASSCRED if own.inet.is_some() => return Err(Errno::EOPNOTSUPP),
         SO_PASSPIDFD | SO_PASSRIGHTS if own.family != AF_UNIX => return Err(Errno::EOPNOTSUPP),
@@ -3200,17 +3263,14 @@ pub(super) fn setsockopt(
             ));
         }
         SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE | SO_DONTROUTE
-        | SO_PASSSEC | SO_RCVLOWAT | SO_PRIORITY | SO_ZEROCOPY | SO_BUSY_POLL | SO_INCOMING_CPU => {
+        | SO_PASSSEC | SO_RCVLOWAT | SO_ZEROCOPY | SO_BUSY_POLL | SO_INCOMING_CPU | SO_RCVMARK
+        | SO_RCVPRIORITY => {
             let value = int()?;
-            if name == SO_PRIORITY && !(0..=6).contains(&value) {
-                return Err(Errno::EPERM);
-            }
             let kept = if name == SO_RCVLOWAT {
                 value.max(1)
             } else {
                 i32::from(value != 0)
             };
-            let kept = if name == SO_PRIORITY { value } else { kept };
             own.options
                 .insert((level, name), kept.to_le_bytes().to_vec());
         }
@@ -3375,7 +3435,7 @@ pub(super) fn getsockopt(
                 bytes.extend_from_slice(&cred.gid.to_le_bytes());
                 bytes
             }
-            SO_LINGER => own
+            SO_LINGER | SO_TXTIME => own
                 .options
                 .get(&(level, name))
                 .cloned()
@@ -3392,7 +3452,7 @@ pub(super) fn getsockopt(
             }
             SO_REUSEADDR | SO_REUSEPORT | SO_KEEPALIVE | SO_BROADCAST | SO_OOBINLINE
             | SO_DONTROUTE | SO_PASSSEC | SO_PRIORITY | SO_ZEROCOPY | SO_BUSY_POLL
-            | SO_INCOMING_CPU | SO_MARK => own
+            | SO_INCOMING_CPU | SO_MARK | SO_RCVMARK | SO_RCVPRIORITY => own
                 .options
                 .get(&(level, name))
                 .cloned()

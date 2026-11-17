@@ -81,3 +81,9 @@ fn tcp_info_matches_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "tcpinfo", &[]);
 }
+
+#[test]
+fn send_control_messages_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "inetsend", &[]);
+}
