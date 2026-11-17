@@ -3038,9 +3038,9 @@ pub(super) fn recvmsg(
     }
     // A datagram read that found none (its end) gives no control messages
     // (`__unix_dgram_recvmsg`); a stream read that examined nothing has empty credentials.
-    let passcred = socket.borrow().passcred
-        && socket.borrow().family == AF_UNIX
+    let local_control = socket.borrow().family == AF_UNIX
         && (received.cred.is_some() || socket.borrow().kind == SOCK_STREAM);
+    let passcred = socket.borrow().passcred && local_control;
     if passcred {
         let cred = received.cred.unwrap_or(Cred {
             pid: 0,
@@ -3099,7 +3099,7 @@ pub(super) fn recvmsg(
     // sender, made only when its whole message fits; too little room is MSG_CTRUNC whether or
     // not the message carries a sender.
     let sender = received.cred.map(|cred| cred.pid).filter(|pid| *pid != 0);
-    if socket.borrow().pass_pidfd {
+    if socket.borrow().pass_pidfd && local_control {
         if room.saturating_sub(control.len()) < CMSG_HEADER as usize + 4 {
             out_flags |= MSG_CTRUNC;
         } else if let Some(pid) = sender {
