@@ -1524,22 +1524,25 @@ x86 programs may write code and run it without telling the CPU. Decision, as the
   and sets the write bits back. Counter and warning: "code written without announcement", with the page.
 - **Making progress: the faulting instruction runs once unprotected.** The thread goes on at the faulting
   instruction, which writes again. It must not be translated the ordinary way, since translating its bytes
-  protects its page anew: when the instruction sits on the page it writes (a loop that writes the
-  immediate of its own next instruction, section 2, run 8), the retried write would fault again forever.
-  So the step also sets a one-shot mark in the thread's state: "run once unprotected at A", A the faulting
-  instruction's address. The bottom loop, entering A with the mark set, clears it and translates A with
-  the one primitive at look-ahead none (one instruction), into a piece that is not entered in the lookup
-  and protects no page, calls it once and drops it. Like every piece at none it passes control to the next
-  address through the lookup, so the next instruction is translated afresh from the bytes as written,
-  which protects the page again. The instruction itself runs as it was read before its write, as the CPU
-  runs an instruction it has already fetched (expected from the manual, checked at X6 by a program that
-  writes into its own instruction); every later instruction sees the new bytes, as on the reference.
-  Each such write costs one fault, one step and two translations, counted with the step. It always makes
-  progress: any stop of the thread clears the mark, so it applies to that one entry only; and when the
-  one-shot piece's write faults on another marked page (an access across two pages of code, a `rep movs`
-  pass), that step clears that page's mark and sets the one-shot mark again, so each repeat removes one
-  mark and the repeats end. With threads in parallel (section 8) the other threads stay stopped from the
-  step until the one-shot piece has run, so none protects the page again in between.
+  protects its page anew: when the instruction sits on the page it writes (a loop that writes the immediate
+  of its own next instruction, section 2, run 8), the retried write would fault again forever. So the fault
+  path, after the step, also sets a one-shot mark in the thread's state (a kernel write, which has no
+  faulting instruction, sets none): "run once unprotected at A", A the faulting instruction's address. The
+  bottom loop, entering A with the mark set, clears it and translates A with the one primitive at look-ahead
+  none (one instruction), into a piece that is not entered in the lookup and protects no page, calls it once
+  and drops it. Like every piece at none it passes control to the next address through the lookup, so the
+  next instruction is translated afresh from the bytes as written, which protects the page again. The
+  instruction itself runs as it was read before its write, as the CPU runs an instruction it has already
+  fetched (expected from the manual, checked at X6 by a program that writes into its own instruction); every
+  later instruction sees the new bytes, as on the reference. Each such write costs one fault, one step and
+  two translations, counted with the step. It always makes progress: any stop of the thread clears the mark,
+  so it applies to that one entry only; and when the one-shot piece's write faults on another marked page
+  (an access across two pages of code, a `rep movs` pass), that step clears that page's mark and sets the
+  one-shot mark again, so each repeat removes one mark and the repeats end. A rep string instruction that
+  writes its own page runs one pass in the one-shot piece and then jumps to itself through the lookup, so
+  each fault moves it on by at least one element and it ends with rcx. With threads in parallel (section 8)
+  the other threads stay stopped from the step until the one-shot piece has run, so none protects the page
+  again in between.
 - Pieces in progress on the WebAssembly stack may have come from that page, including the running one. So
   dropping pieces unwinds to the bottom loop (as after a lost stack); functions in progress continue from
   their return addresses, translated afresh ("continued after stack loss").
