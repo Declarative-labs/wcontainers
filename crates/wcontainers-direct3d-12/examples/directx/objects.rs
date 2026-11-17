@@ -1,0 +1,1148 @@
+//! The COM objects' own methods: each turns its call into the front's and back. Every other method
+//! of their interfaces is in com.rs and reports itself as not implemented.
+
+use std::ffi::c_void;
+use std::sync::{Arc, Mutex};
+
+use wcontainers_direct3d_12::address::DESCRIPTOR_SIZE;
+use wcontainers_direct3d_12::list::{
+    Command, CommandList, CopyLocation, Descriptor, IndexBufferView, TargetView, VertexBufferView,
+    ViewportF,
+};
+use wcontainers_direct3d_12::resource::{Footprint, HeapType, ResourceDesc};
+use wcontainers_direct3d_12::state::{
+    Blend, DepthStencil, InputElement, Raster, StencilOps, TargetBlend,
+};
+use wcontainers_direct3d_12::{
+    Error, FenceId, GraphicsPipelineDesc, PipelineId, ResourceId, RootId,
+};
+use wcontainers_directx_graphics_infrastructure::AdapterDesc;
+use wcontainers_gpu::Backend;
+use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Direct3D::*;
+use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::Dxgi::Common::*;
+use windows::Win32::Graphics::Dxgi::*;
+use windows::Win32::System::Threading::SetEvent;
+use windows::core::{AsImpl, BOOL, GUID, Interface, Ref, Result, implement};
+
+use crate::gpu;
+
+/// The HRESULT for a front error.
+fn hr(e: Error) -> windows::core::Error {
+    match e {
+        Error::Invalid(s) => windows::core::Error::new(E_INVALIDARG, s),
+        Error::NotImplemented(s) => windows::core::Error::new(E_NOTIMPL, s),
+        Error::OutOfMemory => E_OUTOFMEMORY.into(),
+        Error::DeviceRemoved => DXGI_ERROR_DEVICE_REMOVED.into(),
+    }
+}
+
+/// Hands out `object` as the interface `riid` names.
+fn give<I: Interface>(object: I, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
+    if riid.is_null() || out.is_null() {
+        return Err(E_POINTER.into());
+    }
+    // SAFETY: both pointers were checked; COM passes them from the caller.
+    unsafe { object.query(riid, out).ok() }
+}
+
+macro_rules! not_implemented {
+    ($($t:ty),*) => {$(
+        impl $t {
+            /// A method the front does not do yet: reported, never answered as success.
+            pub fn unsupported(&self, name: &str) -> windows::core::Error {
+                eprintln!("wcontainers: {}::{name} is not implemented", stringify!($t));
+                windows::core::Error::new(E_NOTIMPL, name)
+            }
+        }
+    )*};
+}
+not_implemented!(
+    Factory,
+    Adapter,
+    Device,
+    Queue,
+    Allocator,
+    Fence,
+    Resource,
+    RootSignature,
+    PipelineState,
+    DescriptorHeap,
+    Blob
+);
+
+// ---- DXGI ----
+
+#[implement(IDXGIFactory4)]
+pub struct Factory;
+
+impl Factory {
+    pub fn EnumAdapters1(&self, adapter: u32) -> Result<IDXGIAdapter1> {
+        if adapter != 0 {
+            return Err(DXGI_ERROR_NOT_FOUND.into());
+        }
+        let desc = gpu::call(|d| AdapterDesc::from_caps(d.backend().caps()));
+        Ok(Adapter(desc).into())
+    }
+
+    pub fn EnumAdapters(&self, adapter: u32) -> Result<IDXGIAdapter> {
+        self.EnumAdapters1(adapter)?.cast()
+    }
+}
+
+#[implement(IDXGIAdapter1)]
+pub struct Adapter(AdapterDesc);
+
+impl Adapter {
+    pub fn GetDesc1(&self) -> Result<DXGI_ADAPTER_DESC1> {
+        let d = &self.0;
+        Ok(DXGI_ADAPTER_DESC1 {
+            Description: d.description_utf16(),
+            VendorId: d.vendor_id,
+            DeviceId: d.device_id,
+            SubSysId: d.sub_sys_id,
+            Revision: d.revision,
+            DedicatedVideoMemory: d.dedicated_video_memory as usize,
+            DedicatedSystemMemory: d.dedicated_system_memory as usize,
+            SharedSystemMemory: d.shared_system_memory as usize,
+            AdapterLuid: luid(d.luid),
+            Flags: if d.software {
+                DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32
+            } else {
+                0
+            },
+        })
+    }
+
+    pub fn GetDesc(&self) -> Result<DXGI_ADAPTER_DESC> {
+        let d = self.GetDesc1()?;
+        Ok(DXGI_ADAPTER_DESC {
+            Description: d.Description,
+            VendorId: d.VendorId,
+            DeviceId: d.DeviceId,
+            SubSysId: d.SubSysId,
+            Revision: d.Revision,
+            DedicatedVideoMemory: d.DedicatedVideoMemory,
+            DedicatedSystemMemory: d.DedicatedSystemMemory,
+            SharedSystemMemory: d.SharedSystemMemory,
+            AdapterLuid: d.AdapterLuid,
+        })
+    }
+}
+
+fn luid(value: u64) -> LUID {
+    LUID {
+        LowPart: value as u32,
+        HighPart: (value >> 32) as i32,
+    }
+}
+
+// ---- The device ----
+
+#[implement(ID3D12Device)]
+pub struct Device;
+
+/// The front's description of a resource.
+fn resource_desc(d: &D3D12_RESOURCE_DESC) -> ResourceDesc {
+    ResourceDesc {
+        dimension: d.Dimension.0 as u32,
+        alignment: d.Alignment,
+        width: d.Width,
+        height: d.Height,
+        depth_or_array_size: d.DepthOrArraySize,
+        mip_levels: d.MipLevels,
+        format: d.Format.0 as u32,
+        sample_count: d.SampleDesc.Count,
+        sample_quality: d.SampleDesc.Quality,
+        layout: d.Layout.0 as u32,
+        flags: d.Flags.0 as u32,
+    }
+}
+
+/// The bytes of a shader the pipeline names.
+///
+/// # Safety
+/// The bytecode points to `BytecodeLength` readable bytes, as the API requires.
+unsafe fn code(b: &D3D12_SHADER_BYTECODE) -> Vec<u8> {
+    if b.pShaderBytecode.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: as the caller promises.
+    unsafe { std::slice::from_raw_parts(b.pShaderBytecode.cast::<u8>(), b.BytecodeLength) }.to_vec()
+}
+
+impl Device {
+    pub fn GetNodeCount(&self) -> u32 {
+        1
+    }
+
+    pub fn CreateCommandQueue(
+        &self,
+        pdesc: *const D3D12_COMMAND_QUEUE_DESC,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: the API requires a description.
+        let desc = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        give::<ID3D12CommandQueue>(Queue(*desc).into(), riid, out)
+    }
+
+    pub fn CreateCommandAllocator(
+        &self,
+        r#type: D3D12_COMMAND_LIST_TYPE,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        give::<ID3D12CommandAllocator>(Allocator(r#type).into(), riid, out)
+    }
+
+    pub fn CreateCommandList(
+        &self,
+        _nodemask: u32,
+        r#type: D3D12_COMMAND_LIST_TYPE,
+        _allocator: Ref<ID3D12CommandAllocator>,
+        initial: Ref<ID3D12PipelineState>,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        let list = List {
+            kind: r#type,
+            rec: Mutex::new(CommandList::new()),
+        };
+        list.start(initial);
+        give::<ID3D12GraphicsCommandList>(list.into(), riid, out)
+    }
+
+    pub fn CreateDescriptorHeap(
+        &self,
+        pdesc: *const D3D12_DESCRIPTOR_HEAP_DESC,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: the API requires a description.
+        let desc = *unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        let slots = vec![[0u64; DESCRIPTOR_SIZE as usize / 8]; desc.NumDescriptors.max(1) as usize];
+        give::<ID3D12DescriptorHeap>(
+            DescriptorHeap {
+                desc,
+                slots: slots.into_boxed_slice(),
+            }
+            .into(),
+            riid,
+            out,
+        )
+    }
+
+    pub fn GetDescriptorHandleIncrementSize(&self, _type: D3D12_DESCRIPTOR_HEAP_TYPE) -> u32 {
+        DESCRIPTOR_SIZE as u32
+    }
+
+    pub fn CreateRootSignature(
+        &self,
+        _nodemask: u32,
+        blob: *const c_void,
+        length: usize,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        if blob.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
+        // SAFETY: the caller's blob of `length` bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(blob.cast::<u8>(), length) }.to_vec();
+        let id = gpu::call(move |d| d.create_root_signature(&bytes)).map_err(hr)?;
+        give::<ID3D12RootSignature>(RootSignature(id).into(), riid, out)
+    }
+
+    pub fn CreateGraphicsPipelineState(
+        &self,
+        pdesc: *const D3D12_GRAPHICS_PIPELINE_STATE_DESC,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: the API requires a description.
+        let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
+        if d.StreamOutput.NumEntries != 0
+            || !d.GS.pShaderBytecode.is_null()
+            || !d.HS.pShaderBytecode.is_null()
+            || !d.DS.pShaderBytecode.is_null()
+        {
+            return Err(hr(Error::NotImplemented(
+                "geometry, hull and domain stages and stream output",
+            )));
+        }
+        let root = d.pRootSignature.as_ref().map(|r| {
+            // SAFETY: root signatures come from this library.
+            unsafe { r.as_impl() }.0
+        });
+        // SAFETY: the API requires valid bytecode and input layout pointers.
+        let (vs, ps) = unsafe { (code(&d.VS), code(&d.PS)) };
+        let elements = if d.InputLayout.NumElements == 0 {
+            &[][..]
+        } else {
+            // SAFETY: as the API requires.
+            unsafe {
+                std::slice::from_raw_parts(
+                    d.InputLayout.pInputElementDescs,
+                    d.InputLayout.NumElements as usize,
+                )
+            }
+        };
+        let inputs = elements
+            .iter()
+            .map(|e| InputElement {
+                // SAFETY: semantic names are C strings, as the API requires.
+                semantic: unsafe { e.SemanticName.to_string() }.unwrap_or_default(),
+                semantic_index: e.SemanticIndex,
+                format: e.Format.0 as u32,
+                slot: e.InputSlot,
+                offset: e.AlignedByteOffset,
+                per_instance: e.InputSlotClass == D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+                step_rate: e.InstanceDataStepRate,
+            })
+            .collect();
+        let b = &d.BlendState;
+        let mut blend = Blend {
+            alpha_to_coverage: b.AlphaToCoverageEnable.as_bool(),
+            independent: b.IndependentBlendEnable.as_bool(),
+            targets: Default::default(),
+        };
+        for (t, s) in blend.targets.iter_mut().zip(&b.RenderTarget) {
+            *t = TargetBlend {
+                blend_enable: s.BlendEnable.as_bool(),
+                logic_op_enable: s.LogicOpEnable.as_bool(),
+                src: s.SrcBlend.0 as u32,
+                dst: s.DestBlend.0 as u32,
+                op: s.BlendOp.0 as u32,
+                src_alpha: s.SrcBlendAlpha.0 as u32,
+                dst_alpha: s.DestBlendAlpha.0 as u32,
+                op_alpha: s.BlendOpAlpha.0 as u32,
+                logic_op: s.LogicOp.0 as u32,
+                write_mask: s.RenderTargetWriteMask,
+            };
+        }
+        let r = &d.RasterizerState;
+        let raster = Raster {
+            fill: r.FillMode.0 as u32,
+            cull: r.CullMode.0 as u32,
+            front_counter_clockwise: r.FrontCounterClockwise.as_bool(),
+            depth_bias: r.DepthBias,
+            depth_bias_clamp: r.DepthBiasClamp,
+            slope_scaled_depth_bias: r.SlopeScaledDepthBias,
+            depth_clip: r.DepthClipEnable.as_bool(),
+            multisample: r.MultisampleEnable.as_bool(),
+            antialiased_line: r.AntialiasedLineEnable.as_bool(),
+            forced_sample_count: r.ForcedSampleCount,
+            conservative: r.ConservativeRaster.0 as u32,
+        };
+        let s = &d.DepthStencilState;
+        let ops = |o: &D3D12_DEPTH_STENCILOP_DESC| StencilOps {
+            fail: o.StencilFailOp.0 as u32,
+            depth_fail: o.StencilDepthFailOp.0 as u32,
+            pass: o.StencilPassOp.0 as u32,
+            func: o.StencilFunc.0 as u32,
+        };
+        let depth_stencil = DepthStencil {
+            depth_enable: s.DepthEnable.as_bool(),
+            depth_write_all: s.DepthWriteMask == D3D12_DEPTH_WRITE_MASK_ALL,
+            depth_func: s.DepthFunc.0 as u32,
+            stencil_enable: s.StencilEnable.as_bool(),
+            stencil_read_mask: s.StencilReadMask,
+            stencil_write_mask: s.StencilWriteMask,
+            front: ops(&s.FrontFace),
+            back: ops(&s.BackFace),
+        };
+        let targets = d.NumRenderTargets.min(8) as usize;
+        let rtv_formats: Vec<u32> = d.RTVFormats[..targets].iter().map(|f| f.0 as u32).collect();
+        let (sample_mask, strip_cut, topology_type, dsv_format, samples) = (
+            d.SampleMask,
+            d.IBStripCutValue.0 as u32,
+            d.PrimitiveTopologyType.0 as u32,
+            d.DSVFormat.0 as u32,
+            d.SampleDesc.Count,
+        );
+        let id = gpu::call(move |dev| {
+            dev.create_graphics_pipeline(&GraphicsPipelineDesc {
+                root,
+                vs: &vs,
+                ps: &ps,
+                blend,
+                sample_mask,
+                raster,
+                depth_stencil,
+                inputs,
+                strip_cut,
+                topology_type,
+                rtv_formats,
+                dsv_format,
+                samples,
+            })
+        })
+        .map_err(hr)?;
+        give::<ID3D12PipelineState>(PipelineState(id).into(), riid, out)
+    }
+
+    pub fn CreateRenderTargetView(
+        &self,
+        resource: Ref<ID3D12Resource>,
+        pdesc: *const D3D12_RENDER_TARGET_VIEW_DESC,
+        dest: &D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        let descriptor = match resource.as_ref() {
+            Some(r) => {
+                // SAFETY: resources come from this library.
+                let r = unsafe { r.as_impl() };
+                // SAFETY: an optional description, as the API allows.
+                match unsafe { pdesc.as_ref() } {
+                    None => Some(TargetView {
+                        resource: r.id,
+                        format: r.desc.Format.0 as u32,
+                        mip: 0,
+                        first_layer: 0,
+                        layers: 1,
+                    }),
+                    Some(v) if v.ViewDimension == D3D12_RTV_DIMENSION_TEXTURE2D => {
+                        // SAFETY: the member the dimension names.
+                        let t = unsafe { v.Anonymous.Texture2D };
+                        Some(TargetView {
+                            resource: r.id,
+                            format: v.Format.0 as u32,
+                            mip: t.MipSlice,
+                            first_layer: 0,
+                            layers: 1,
+                        })
+                    }
+                    Some(v) if v.ViewDimension == D3D12_RTV_DIMENSION_TEXTURE2DARRAY => {
+                        // SAFETY: the member the dimension names.
+                        let t = unsafe { v.Anonymous.Texture2DArray };
+                        Some(TargetView {
+                            resource: r.id,
+                            format: v.Format.0 as u32,
+                            mip: t.MipSlice,
+                            first_layer: t.FirstArraySlice,
+                            layers: t.ArraySize,
+                        })
+                    }
+                    Some(_) => {
+                        self.unsupported("CreateRenderTargetView of this dimension");
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        let own = resource
+            .as_ref()
+            .map_or(0, |r| unsafe { r.as_impl() }.desc.Format.0 as u32);
+        let descriptor = descriptor.map_or(Descriptor::Empty, |v| {
+            // A view of format UNKNOWN reads the resource's own format.
+            let format = if v.format == 0 { own } else { v.format };
+            Descriptor::RenderTarget(TargetView { format, ..v })
+        });
+        // SAFETY: CPU descriptor handles point into a heap of this library.
+        unsafe { *(dest.ptr as *mut Descriptor) = descriptor };
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn CreateCommittedResource(
+        &self,
+        heap: *const D3D12_HEAP_PROPERTIES,
+        _flags: D3D12_HEAP_FLAGS,
+        pdesc: *const D3D12_RESOURCE_DESC,
+        _state: D3D12_RESOURCE_STATES,
+        _clear: *const D3D12_CLEAR_VALUE,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        // SAFETY: the API requires both.
+        let (heap, desc) = unsafe {
+            (
+                heap.as_ref().ok_or(E_INVALIDARG)?,
+                *pdesc.as_ref().ok_or(E_INVALIDARG)?,
+            )
+        };
+        let kind = HeapType::from_d3d12(heap.Type.0 as u32).map_err(hr)?;
+        let front = resource_desc(&desc);
+        let (id, address, host) = gpu::call(move |d| {
+            let id = d.create_committed(kind, &front)?;
+            let host = if kind == HeapType::Default {
+                0
+            } else {
+                d.map(id)? as usize
+            };
+            Ok::<_, Error>((id, d.address(id), host))
+        })
+        .map_err(hr)?;
+        let mut desc = desc;
+        if desc.MipLevels == 0 {
+            desc.MipLevels = front.mips() as u16;
+        }
+        give::<ID3D12Resource>(
+            Resource {
+                id,
+                desc,
+                address,
+                host,
+            }
+            .into(),
+            riid,
+            out,
+        )
+    }
+
+    pub fn CreateFence(
+        &self,
+        initial: u64,
+        _flags: D3D12_FENCE_FLAGS,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        let id = gpu::call(move |d| d.create_fence(initial));
+        give::<ID3D12Fence>(
+            Fence {
+                id,
+                waiters: Mutex::new(Vec::new()),
+            }
+            .into(),
+            riid,
+            out,
+        )
+    }
+
+    pub fn GetDeviceRemovedReason(&self) -> Result<()> {
+        match gpu::call(|d| d.removed()) {
+            None => Ok(()),
+            Some(why) => Err(windows::core::Error::new(
+                DXGI_ERROR_DRIVER_INTERNAL_ERROR,
+                why,
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn GetCopyableFootprints(
+        &self,
+        pdesc: *const D3D12_RESOURCE_DESC,
+        first: u32,
+        count: u32,
+        base: u64,
+        layouts: *mut D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+        rows: *mut u32,
+        row_sizes: *mut u64,
+        total: *mut u64,
+    ) {
+        // SAFETY: the API requires a description.
+        let Some(desc) = (unsafe { pdesc.as_ref() }) else {
+            return;
+        };
+        let result = resource_desc(desc).footprints(first, count, base);
+        // SAFETY: each output, where given, has room for `count` entries, as the API requires.
+        unsafe {
+            match result {
+                Ok((infos, bytes)) => {
+                    for (i, f) in infos.iter().enumerate() {
+                        let p = f.footprint;
+                        if !layouts.is_null() {
+                            *layouts.add(i) = D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                                Offset: p.offset,
+                                Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+                                    Format: DXGI_FORMAT(p.format as i32),
+                                    Width: p.width,
+                                    Height: p.height,
+                                    Depth: p.depth,
+                                    RowPitch: p.row_pitch,
+                                },
+                            };
+                        }
+                        if !rows.is_null() {
+                            *rows.add(i) = f.rows;
+                        }
+                        if !row_sizes.is_null() {
+                            *row_sizes.add(i) = f.row_size;
+                        }
+                    }
+                    if !total.is_null() {
+                        *total = bytes;
+                    }
+                }
+                Err(_) => {
+                    if !total.is_null() {
+                        *total = u64::MAX;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---- Queues, allocators, fences ----
+
+#[implement(ID3D12CommandQueue)]
+pub struct Queue(D3D12_COMMAND_QUEUE_DESC);
+
+impl Queue {
+    pub fn GetDesc(&self) -> D3D12_COMMAND_QUEUE_DESC {
+        self.0
+    }
+
+    pub fn ExecuteCommandLists(&self, count: u32, lists: *const Option<ID3D12CommandList>) {
+        if lists.is_null() {
+            return;
+        }
+        // SAFETY: `count` lists, as the API requires.
+        let lists = unsafe { std::slice::from_raw_parts(lists, count as usize) };
+        let mut commands = Vec::with_capacity(lists.len());
+        for l in lists.iter().flatten() {
+            let Ok(l) = l.cast::<ID3D12GraphicsCommandList>() else {
+                self.unsupported("ExecuteCommandLists of a list of another kind");
+                return;
+            };
+            // SAFETY: command lists come from this library.
+            let list = unsafe { l.as_impl() };
+            match list.rec.lock().unwrap().commands() {
+                Some(c) => commands.push(Arc::clone(c)),
+                None => {
+                    eprintln!("wcontainers: ExecuteCommandLists of a list that is not closed");
+                    return;
+                }
+            }
+        }
+        if let Err(e) = gpu::call(move |d| d.execute(&commands)) {
+            eprintln!(
+                "wcontainers: the device was removed: {:?}",
+                gpu::call(|d| d.removed()).unwrap_or("?")
+            );
+            let _ = e;
+        }
+    }
+
+    pub fn Signal(&self, fence: Ref<ID3D12Fence>, value: u64) -> Result<()> {
+        // SAFETY: fences come from this library.
+        let fence = unsafe { fence.ok()?.as_impl() };
+        let id = fence.id;
+        gpu::call(move |d| d.queue_signal(id, value)).map_err(hr)?;
+        fence.release_waiters();
+        Ok(())
+    }
+}
+
+#[implement(ID3D12CommandAllocator)]
+pub struct Allocator(#[allow(dead_code)] D3D12_COMMAND_LIST_TYPE);
+
+impl Allocator {
+    /// Lists keep their own commands, so there is nothing to free here.
+    pub fn Reset(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[implement(ID3D12Fence)]
+pub struct Fence {
+    id: FenceId,
+    /// Events to set when the fence reaches a value, as handle numbers.
+    waiters: Mutex<Vec<(u64, usize)>>,
+}
+
+impl Fence {
+    pub fn GetCompletedValue(&self) -> u64 {
+        let id = self.id;
+        gpu::call(move |d| d.completed(id))
+    }
+
+    /// Sets the event at once when submitted work reaches `value` (waiting for it on the device
+    /// thread); otherwise keeps it until a later signal can reach the value.
+    pub fn SetEventOnCompletion(&self, value: u64, event: HANDLE) -> Result<()> {
+        let id = self.id;
+        let reached = gpu::call(move |d| d.wait(id, value));
+        if event.is_invalid() || event.0.is_null() {
+            return if reached {
+                Ok(())
+            } else {
+                Err(self.unsupported(
+                    "SetEventOnCompletion with no event for a value not yet signalled",
+                ))
+            };
+        }
+        if reached {
+            // SAFETY: the caller's event.
+            unsafe { SetEvent(event) }
+        } else {
+            self.waiters.lock().unwrap().push((value, event.0 as usize));
+            Ok(())
+        }
+    }
+
+    pub fn Signal(&self, value: u64) -> Result<()> {
+        let id = self.id;
+        gpu::call(move |d| d.cpu_signal(id, value));
+        self.release_waiters();
+        Ok(())
+    }
+
+    fn release_waiters(&self) {
+        let mut waiters = self.waiters.lock().unwrap();
+        let id = self.id;
+        waiters.retain(|&(value, event)| {
+            if gpu::call(move |d| d.wait(id, value)) {
+                // SAFETY: the event the program gave.
+                let _ = unsafe { SetEvent(HANDLE(event as *mut c_void)) };
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
+impl Drop for Fence {
+    fn drop(&mut self) {
+        let id = self.id;
+        gpu::call(move |d| d.destroy_fence(id));
+    }
+}
+
+// ---- Resources and descriptors ----
+
+#[implement(ID3D12Resource)]
+pub struct Resource {
+    id: ResourceId,
+    desc: D3D12_RESOURCE_DESC,
+    address: u64,
+    /// The memory of an upload or readback buffer, as a number.
+    host: usize,
+}
+
+impl Resource {
+    pub fn GetDesc(&self) -> D3D12_RESOURCE_DESC {
+        self.desc
+    }
+
+    pub fn GetGPUVirtualAddress(&self) -> u64 {
+        self.address
+    }
+
+    /// Upload and readback memory stays mapped; the pointer is the same every time. Readback
+    /// memory holds the bytes of every copy whose fence the program has seen.
+    pub fn Map(
+        &self,
+        _subresource: u32,
+        _range: *const D3D12_RANGE,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        if self.host == 0 {
+            return Err(windows::core::Error::new(
+                E_INVALIDARG,
+                "only upload and readback buffers map",
+            ));
+        }
+        let id = self.id;
+        gpu::call(move |d| d.map(id).map(|_| ())).map_err(hr)?;
+        if !out.is_null() {
+            // SAFETY: the caller's out pointer.
+            unsafe { *out = self.host as *mut c_void };
+        }
+        Ok(())
+    }
+
+    /// Written bytes reach the GPU when a list reading them is executed.
+    pub fn Unmap(&self, _subresource: u32, _range: *const D3D12_RANGE) {}
+}
+
+impl Drop for Resource {
+    fn drop(&mut self) {
+        let id = self.id;
+        gpu::call(move |d| d.destroy_resource(id));
+    }
+}
+
+#[implement(ID3D12RootSignature)]
+pub struct RootSignature(pub RootId);
+
+impl Drop for RootSignature {
+    fn drop(&mut self) {
+        let id = self.0;
+        gpu::call(move |d| d.destroy_root_signature(id));
+    }
+}
+
+#[implement(ID3D12PipelineState)]
+pub struct PipelineState(pub PipelineId);
+
+impl Drop for PipelineState {
+    fn drop(&mut self) {
+        let id = self.0;
+        gpu::call(move |d| d.destroy_pipeline(id));
+    }
+}
+
+#[implement(ID3D12DescriptorHeap)]
+pub struct DescriptorHeap {
+    desc: D3D12_DESCRIPTOR_HEAP_DESC,
+    /// One slot of `DESCRIPTOR_SIZE` bytes per descriptor; CPU handles point into it.
+    slots: Box<[[u64; DESCRIPTOR_SIZE as usize / 8]]>,
+}
+
+impl DescriptorHeap {
+    pub fn GetDesc(&self) -> D3D12_DESCRIPTOR_HEAP_DESC {
+        self.desc
+    }
+
+    pub fn GetCPUDescriptorHandleForHeapStart(&self) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+        D3D12_CPU_DESCRIPTOR_HANDLE {
+            ptr: self.slots.as_ptr() as usize,
+        }
+    }
+
+    pub fn GetGPUDescriptorHandleForHeapStart(&self) -> D3D12_GPU_DESCRIPTOR_HANDLE {
+        D3D12_GPU_DESCRIPTOR_HANDLE {
+            ptr: self.slots.as_ptr() as u64,
+        }
+    }
+}
+
+#[implement(ID3DBlob)]
+pub struct Blob(pub Vec<u8>);
+
+impl Blob {
+    pub fn GetBufferPointer(&self) -> *mut c_void {
+        self.0.as_ptr() as *mut c_void
+    }
+
+    pub fn GetBufferSize(&self) -> usize {
+        self.0.len()
+    }
+}
+
+// ---- Command lists ----
+
+#[implement(ID3D12GraphicsCommandList)]
+pub struct List {
+    kind: D3D12_COMMAND_LIST_TYPE,
+    rec: Mutex<CommandList>,
+}
+
+/// The descriptor a CPU handle points at.
+///
+/// # Safety
+/// The handle points into a descriptor heap of this library.
+unsafe fn descriptor(h: D3D12_CPU_DESCRIPTOR_HANDLE) -> Descriptor {
+    // SAFETY: as the caller promises.
+    unsafe { *(h.ptr as *const Descriptor) }
+}
+
+/// The resource behind an interface pointer of this library.
+fn id(r: &Ref<ID3D12Resource>) -> Option<ResourceId> {
+    // SAFETY: resources come from this library.
+    r.as_ref().map(|r| unsafe { r.as_impl() }.id)
+}
+
+/// # Safety
+/// `p` points to `n` values, or `n` is zero.
+unsafe fn many<'a, T>(p: *const T, n: u32) -> &'a [T] {
+    if n == 0 || p.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(p, n as usize) }
+    }
+}
+
+impl List {
+    /// A method the front does not do yet: the list's `Close` fails with it.
+    pub fn unsupported(&self, name: &str) -> windows::core::Error {
+        eprintln!("wcontainers: ID3D12GraphicsCommandList::{name} is not implemented");
+        self.rec.lock().unwrap().fail(Error::NotImplemented(
+            "a command list method the front does not do yet",
+        ));
+        windows::core::Error::new(E_NOTIMPL, name)
+    }
+
+    fn record(&self, c: Command) {
+        self.rec.lock().unwrap().record(c);
+    }
+
+    fn start(&self, initial: Ref<ID3D12PipelineState>) {
+        if let Some(p) = initial.as_ref() {
+            // SAFETY: pipeline states come from this library.
+            self.record(Command::Pipeline(unsafe { p.as_impl() }.0));
+        }
+    }
+
+    pub fn GetType(&self) -> D3D12_COMMAND_LIST_TYPE {
+        self.kind
+    }
+
+    pub fn Close(&self) -> Result<()> {
+        self.rec.lock().unwrap().close().map_err(hr)
+    }
+
+    pub fn Reset(
+        &self,
+        _allocator: Ref<ID3D12CommandAllocator>,
+        initial: Ref<ID3D12PipelineState>,
+    ) -> Result<()> {
+        self.rec.lock().unwrap().reset();
+        self.start(initial);
+        Ok(())
+    }
+
+    pub fn SetPipelineState(&self, pipeline: Ref<ID3D12PipelineState>) {
+        match pipeline.as_ref() {
+            // SAFETY: pipeline states come from this library.
+            Some(p) => self.record(Command::Pipeline(unsafe { p.as_impl() }.0)),
+            None => self
+                .rec
+                .lock()
+                .unwrap()
+                .fail(Error::Invalid("SetPipelineState with no pipeline")),
+        }
+    }
+
+    /// Bindings of an empty root signature need nothing; root parameters are set by methods the
+    /// front does not do yet, which fail the list.
+    pub fn SetGraphicsRootSignature(&self, _root: Ref<ID3D12RootSignature>) {}
+
+    /// Both back ends order their own work; plan section 5.2.
+    pub fn ResourceBarrier(&self, _count: u32, _barriers: *const D3D12_RESOURCE_BARRIER) {}
+
+    pub fn IASetPrimitiveTopology(&self, topology: D3D_PRIMITIVE_TOPOLOGY) {
+        self.record(Command::Topology(topology.0 as u32));
+    }
+
+    pub fn IASetVertexBuffers(
+        &self,
+        start: u32,
+        count: u32,
+        views: *const D3D12_VERTEX_BUFFER_VIEW,
+    ) {
+        // SAFETY: `count` views, as the API requires; none unbinds.
+        let given = unsafe { many(views, count) };
+        let views = if given.is_empty() {
+            vec![VertexBufferView::default(); count as usize]
+        } else {
+            given
+                .iter()
+                .map(|v| VertexBufferView {
+                    address: v.BufferLocation,
+                    size: v.SizeInBytes,
+                    stride: v.StrideInBytes,
+                })
+                .collect()
+        };
+        self.record(Command::VertexBuffers { start, views });
+    }
+
+    pub fn IASetIndexBuffer(&self, view: *const D3D12_INDEX_BUFFER_VIEW) {
+        // SAFETY: an optional view, as the API allows.
+        let view = unsafe { view.as_ref() }.map(|v| IndexBufferView {
+            address: v.BufferLocation,
+            size: v.SizeInBytes,
+            format: v.Format.0 as u32,
+        });
+        self.record(Command::IndexBuffer(view));
+    }
+
+    pub fn RSSetViewports(&self, count: u32, viewports: *const D3D12_VIEWPORT) {
+        // SAFETY: `count` viewports, as the API requires.
+        let v = unsafe { many(viewports, count) };
+        self.record(Command::Viewports(
+            v.iter()
+                .map(|v| ViewportF {
+                    x: v.TopLeftX,
+                    y: v.TopLeftY,
+                    width: v.Width,
+                    height: v.Height,
+                    min_depth: v.MinDepth,
+                    max_depth: v.MaxDepth,
+                })
+                .collect(),
+        ));
+    }
+
+    pub fn RSSetScissorRects(&self, count: u32, rects: *const RECT) {
+        // SAFETY: `count` rectangles, as the API requires.
+        let r = unsafe { many(rects, count) };
+        self.record(Command::Scissors(
+            r.iter()
+                .map(|r| [r.left, r.top, r.right, r.bottom])
+                .collect(),
+        ));
+    }
+
+    pub fn OMSetBlendFactor(&self, factor: *const f32) {
+        // SAFETY: four floats or none, as the API allows.
+        let f = if factor.is_null() {
+            [1.0; 4]
+        } else {
+            unsafe { *(factor as *const [f32; 4]) }
+        };
+        self.record(Command::BlendFactor(f));
+    }
+
+    pub fn OMSetStencilRef(&self, value: u32) {
+        self.record(Command::StencilRef(value));
+    }
+
+    pub fn OMSetRenderTargets(
+        &self,
+        count: u32,
+        targets: *const D3D12_CPU_DESCRIPTOR_HANDLE,
+        single_range: BOOL,
+        depth: *const D3D12_CPU_DESCRIPTOR_HANDLE,
+    ) {
+        // SAFETY: handles of this library's heaps, as many as the API says.
+        let colors = unsafe {
+            if targets.is_null() || count == 0 {
+                Vec::new()
+            } else if single_range.as_bool() {
+                let first = (*targets).ptr;
+                (0..count as usize)
+                    .map(|i| {
+                        descriptor(D3D12_CPU_DESCRIPTOR_HANDLE {
+                            ptr: first + i * DESCRIPTOR_SIZE as usize,
+                        })
+                    })
+                    .collect()
+            } else {
+                many(targets, count)
+                    .iter()
+                    .map(|h| descriptor(*h))
+                    .collect()
+            }
+        };
+        // SAFETY: an optional handle of this library's heaps.
+        let depth = unsafe { depth.as_ref() }.map(|h| unsafe { descriptor(*h) });
+        self.record(Command::Targets { colors, depth });
+    }
+
+    pub fn ClearRenderTargetView(
+        &self,
+        view: &D3D12_CPU_DESCRIPTOR_HANDLE,
+        color: *const f32,
+        count: u32,
+        rects: *const RECT,
+    ) {
+        // SAFETY: a handle of this library's heaps, four floats and `count` rectangles.
+        let (view, color, rects) = unsafe {
+            (
+                descriptor(*view),
+                *(color as *const [f32; 4]),
+                many(rects, count),
+            )
+        };
+        self.record(Command::ClearTarget {
+            view,
+            color,
+            rects: rects
+                .iter()
+                .map(|r| [r.left, r.top, r.right, r.bottom])
+                .collect(),
+        });
+    }
+
+    pub fn DrawInstanced(
+        &self,
+        vertices: u32,
+        instances: u32,
+        first_vertex: u32,
+        first_instance: u32,
+    ) {
+        self.record(Command::Draw {
+            vertices,
+            instances,
+            first_vertex,
+            first_instance,
+        });
+    }
+
+    pub fn DrawIndexedInstanced(
+        &self,
+        indices: u32,
+        instances: u32,
+        first_index: u32,
+        base_vertex: i32,
+        first_instance: u32,
+    ) {
+        self.record(Command::DrawIndexed {
+            indices,
+            instances,
+            first_index,
+            base_vertex,
+            first_instance,
+        });
+    }
+
+    pub fn CopyBufferRegion(
+        &self,
+        dst: Ref<ID3D12Resource>,
+        dst_offset: u64,
+        src: Ref<ID3D12Resource>,
+        src_offset: u64,
+        size: u64,
+    ) {
+        match (id(&dst), id(&src)) {
+            (Some(dst), Some(src)) => self.record(Command::CopyBuffer {
+                dst,
+                dst_offset,
+                src,
+                src_offset,
+                size,
+            }),
+            _ => self
+                .rec
+                .lock()
+                .unwrap()
+                .fail(Error::Invalid("CopyBufferRegion with no buffer")),
+        }
+    }
+
+    pub fn CopyTextureRegion(
+        &self,
+        dst: *const D3D12_TEXTURE_COPY_LOCATION,
+        x: u32,
+        y: u32,
+        z: u32,
+        src: *const D3D12_TEXTURE_COPY_LOCATION,
+        area: *const D3D12_BOX,
+    ) {
+        // SAFETY: the API requires both locations; the box is optional.
+        let (dst, src, area) = unsafe { (dst.as_ref(), src.as_ref(), area.as_ref()) };
+        let location = |l: &D3D12_TEXTURE_COPY_LOCATION| {
+            // SAFETY: resources come from this library; the union member is the one `Type` names.
+            let resource = unsafe { l.pResource.as_ref()?.as_impl() }.id;
+            Some(if l.Type == D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX {
+                CopyLocation::Subresource {
+                    resource,
+                    index: unsafe { l.Anonymous.SubresourceIndex },
+                }
+            } else {
+                let p = unsafe { l.Anonymous.PlacedFootprint };
+                let f = p.Footprint;
+                CopyLocation::Footprint {
+                    resource,
+                    footprint: Footprint {
+                        offset: p.Offset,
+                        format: f.Format.0 as u32,
+                        width: f.Width,
+                        height: f.Height,
+                        depth: f.Depth,
+                        row_pitch: f.RowPitch,
+                    },
+                }
+            })
+        };
+        match (dst.and_then(location), src.and_then(location)) {
+            (Some(dst), Some(src)) => self.record(Command::CopyTexture {
+                dst,
+                at: [x, y, z],
+                src,
+                area: area.map(|b| [b.left, b.top, b.front, b.right, b.bottom, b.back]),
+            }),
+            _ => self
+                .rec
+                .lock()
+                .unwrap()
+                .fail(Error::Invalid("CopyTextureRegion with no resource")),
+        }
+    }
+}
