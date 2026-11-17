@@ -77,3 +77,8 @@ fn copies_within_a_typeless_group() {
 fn loads_count_levels_from_the_view() {
     checks::loads_count_levels_from_the_view::<Angle>();
 }
+
+#[test]
+fn fractional_viewports_are_refused() {
+    checks::fractional_viewports_are_refused::<Angle>();
+}

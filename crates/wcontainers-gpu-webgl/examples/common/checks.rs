@@ -888,3 +888,51 @@ pub fn loads_count_levels_from_the_view<H: Host>() {
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
+
+/// A triangle covering the target, writing 1.
+const WRITE_ONE: &str = "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<u32> {
+    return vec4<u32>(1u);
+}
+";
+
+/// Without `FRACTIONAL_VIEWPORT` a draw with a viewport at a fraction of a pixel breaks the
+/// interface's rule: the device is lost rather than the viewport rounded.
+pub fn fractional_viewports_are_refused<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if b.caps().has(Features::FRACTIONAL_VIEWPORT) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, WRITE_ONE, "vs", "fs");
+    let f = Format::R32Uint;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    let fraction = [kit::viewport(0.5, 0.0, 3.0, 4.0)];
+    b.begin_pass(&kit::pass(&v, [0; 4], None));
+    b.draw(&kit::call(
+        &k,
+        &program,
+        None,
+        &whole,
+        Topology::TriangleList,
+        3,
+    ));
+    assert_eq!(b.status(), DeviceStatus::Ok, "a whole-pixel viewport draws");
+    b.draw(&kit::call(
+        &k,
+        &program,
+        None,
+        &fraction,
+        Topology::TriangleList,
+        3,
+    ));
+    b.end_pass();
+    assert_eq!(b.status(), DeviceStatus::Lost(LossReason::Error));
+}

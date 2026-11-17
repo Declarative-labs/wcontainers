@@ -2570,12 +2570,15 @@ impl Backend for WebGl {
         // SAFETY: plain GL state calls.
         unsafe {
             if let Some(vp) = call.viewports.first() {
-                let rect = [
-                    f(vp.x) as i32,
-                    f(vp.y) as i32,
-                    f(vp.width) as i32,
-                    f(vp.height) as i32,
-                ];
+                let floats = [f(vp.x), f(vp.y), f(vp.width), f(vp.height)];
+                let rect = floats.map(|v| v as i32);
+                // FRACTIONAL_VIEWPORT is absent: the front draws such a viewport in the program.
+                if floats.iter().zip(&rect).any(|(v, r)| *v != *r as f32) {
+                    self.invalid(format!(
+                        "the fractional viewport {floats:?} without FRACTIONAL_VIEWPORT"
+                    ));
+                    return;
+                }
                 if v.viewport != rect {
                     gl.viewport(rect[0], rect[1], rect[2], rect[3]);
                     v.viewport = rect;

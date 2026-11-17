@@ -11,7 +11,7 @@ and without WEBGL_stencil_texturing, copied between formats of one typeless grou
 formats, added the 24-bit depth probe, fixed loads of integer and depth textures (they read zeros)
 and of levels above the view's first, and compared drawings with the WebGPU back end natively
 (window origin on both routes, cube, array and 3D textures, generate_mips). The shared suite (21
-tests at 2684d97) and the 6 checks of the back end's own pass 26 of 27 in Chrome's WebGL 2 with
+tests at 2684d97) and the 7 checks of the back end's own pass 27 of 28 in Chrome's WebGL 2 with
 every extension; the one failure is `loads_count_levels_from_the_view` (see "Known failures").
 Not built yet: queries, transform feedback, multisampling, BC and RGB9E5 read backs, the per-draw
 cost measurement, and the fractional viewport and depth bias tests (see "Next").
@@ -188,7 +188,9 @@ cost measurement, and the fractional viewport and depth bias tests (see "Next").
     and read back, twice with the stencil changed between), `copies_within_a_typeless_group` (13
     pairs, every bit pattern from a fixed xorshift sequence, two layers, a region moved),
     `loads_count_levels_from_the_view` (loads and `textureDimensions` of every level of views starting
-    at levels 0, 1 and 2).
+    at levels 0, 1 and 2), `fractional_viewports_are_refused` (without `FRACTIONAL_VIEWPORT` a draw
+    with a viewport at a fraction of a pixel loses the device as a broken rule, naming the viewport,
+    instead of being rounded as before).
   - tests/against_webgpu.rs (Windows): the same drawings on ANGLE, with and without
     EXT_clip_control, and through the WebGPU back end on wgpu's Direct3D 12, read back and compared
     byte for byte: `both_window_origins_equal_webgpu` (a culled one-sided pair of triangles, a
@@ -368,6 +370,8 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
     (integer textures incomplete without a sampler), and the first level check read level 0 for
     every level of a view (fetches reached only the base level).
   - Lint clean on both targets.
+  - Then with `fractional_viewports_are_refused` (job 16:09 to 16:10): every count above one higher
+    (Chrome 27 of 28, ANGLE 23 of 28 and 13 of 28); the new check passes on every route.
 - In the first full check of G3 run 1, Chrome's first launch kept no WebGL 2 context in ten tries
   and was closed; the second launch worked. In the other launches one context was lost first.
 - Chrome's GPU process restarted once just after Chrome started in most runs (the first WebGL
@@ -533,8 +537,7 @@ G3's pass bar (plan section 12), in about this order:
 5. Multisampled textures (renderbuffers), resolves, `MultisampleCopyResolved`.
 6. Per-draw cost against G2 on the same scene, in Chrome (G2's web harness:
    crates/wcontainers-gpu-webgpu/web), as `gpu-job --alone`.
-7. A fractional viewport is a broken rule without `FRACTIONAL_VIEWPORT` (the back end truncates it
-   today; make it lose the device as invalid), and a test of the `ViewportInShader` route against
+7. A test of the `ViewportInShader` route against
    G2's native fractional viewport (the variant is G6's; until it exists, the test writes it in
    WGSL); fractional `depth_bias` (with `depth16unorm`, a depth 0.45 of a step above a step and a
    bias of 0.1 must round up) and `ConstantAlpha` checks.
