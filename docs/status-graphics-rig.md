@@ -6,15 +6,15 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 ## Where things stand
 
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done. The second
-run fixed what the independent check found (listed under "Second run"). Everything below was run from
-this Mac against the desktop on 2026-11-17.
+and third runs fixed what the independent checks found (listed under "Second run" and "Third run").
+Everything below was run from this Mac against the desktop on 2026-11-17.
 
 - The desktop has Git, Rust, the C++ build tools and Windows SDK, Node, Chrome for Testing, Windows'
   Graphics Tools (the Direct3D debug layers) and pueue, all listed under "The desktop".
 - `remote` sends the working tree (committed or not) to the desktop and runs a command there.
 - A pueue job queue on the desktop shares the GPU: short jobs by priority, at most 4 at once,
-  timings alone. `gpu-job` submits, waits and returns output and exit code. `queue-check` proves
-  the rules.
+  timings alone. `gpu-job` submits (building first with `--build`), waits and returns standard
+  output, standard error and exit code. `queue-check` proves the rules.
 - crates/wcontainers-graphics-test draws three scenes (a coloured triangle; two textured,
   depth-tested quads with blending; a 16-instance draw placed and coloured from a constant buffer)
   with real Direct3D 11 on the RTX 3080 and on WARP, the triangle with Direct3D 12 on both, the
@@ -24,8 +24,12 @@ this Mac against the desktop on 2026-11-17.
   functions and forwards it to the system one (calls on the COM objects those return go through their
   vtables straight to the system library and are not seen); a scene program placed beside it runs
   through it and draws the same picture.
+- The three Direct3D 11 scenes as drawn on the RTX 3080 are stored in
+  crates/wcontainers-graphics-test/references, so a change to a scene is caught even when every
+  renderer changes alike.
 - `loop` does all of it in one command and fails if a picture leaves its tolerance, if the forwarding
-  run's device was not created through the replacement d3d11.dll, or if Chrome did not draw on a GPU.
+  run did not load the replacement d3d11.dll or create its device through it, or if a GPU renderer
+  (Direct3D 11 or 12 hardware, wgpu, Chrome) drew on a software adapter.
 
 ## How to run
 
@@ -39,32 +43,47 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   cmd.exe, with `CARGO_TARGET_DIR=C:\wc\target\<branch>`. Example:
   `tools/graphics-rig/remote cargo build -p wcontainers-graphics-test`. Runs of one branch take turns,
   and wait for that branch's running GPU jobs (each job holds the branch's lock shared).
-- `tools/graphics-rig/gpu-job [--priority N] [--alone] -- <command>`: runs a command as a GPU job in
-  C:\wc\src\<branch>. That copy must hold this working tree as it is now (send it with `remote`
-  first); the job checks the git tree id when it starts and fails with 125 and a message if it differs,
-  so a job never runs code other than what is on the Mac. N is any integer, higher starts first;
-  `--alone` waits until no other job runs and holds new ones back until it ends. Prints the job's
-  output, then its timing line on standard error; exits with the job's code (125: the queue client
-  or the job's wrapper failed, with a message saying which).
+- `tools/graphics-rig/gpu-job [--priority N] [--alone] [--build <command>] -- <command>`: runs a
+  command as a GPU job in C:\wc\src\<branch>. That copy must hold this working tree as it is now; the
+  job checks the git tree id when it starts and fails with 125 and a message if it differs.
+  `--build <command>` sends the working tree and runs the build command there first, as `remote`
+  does (not in a GPU slot), and the job then also fails with 125 unless the build directory still
+  holds that build: `remote` removes the stamp the build writes (C:\wc\target\<branch>\built-tree)
+  before each command. Use it whenever the job runs programs built from the tree, for example
+  `gpu-job --build "cargo build -p wcontainers-graphics-test" -- "%CARGO_TARGET_DIR%\debug\gt-d3d11
+  all hardware C:\wc\out\x"`. Without it the job runs whatever the build directory holds, which may
+  have been built from an earlier tree. N is any integer, higher starts first; `--alone` waits until
+  no other job runs and holds new ones back until it ends. The command is any cmd.exe command line,
+  quotes and backslashes included. Prints the job's standard output on standard output and its
+  standard error, the wrapper's messages and a timing line on standard error; exits with the job's
+  code (125: the queue client or the job's wrapper failed, with a message saying which).
 - `tools/graphics-rig/queue-check`: sends the working tree, then on an idle queue submits sleeping jobs
   and checks that two jobs run together, that of twice as many jobs as slots submitted together
   exactly as many as there are slots run at once, that a later priority-10 job starts before an
   earlier priority-0 one when every slot is taken, and that an alone job runs with nothing beside it.
   About 40 s.
-- `tools/graphics-rig/loop [picture-dir]`: builds the rig on the desktop, then one GPU job
-  (tools/graphics-rig/loop.cmd) draws every scene with every renderer into C:\wc\out\<branch>, runs
-  the forwarding test and compares: GPU pictures against the GPU's Direct3D 11 picture at tolerance
-  0, GPU against WARP at tolerance 1. It also fails unless the forwarding run logged
+- `tools/graphics-rig/loop [picture-dir]`: one `gpu-job --build` that builds the rig on the desktop,
+  then (tools/graphics-rig/loop.cmd) draws every scene with every renderer into C:\wc\out\<branch>,
+  runs the forwarding test and compares: the GPU's Direct3D 11 pictures against the stored references
+  (reference-<scene>.png) at tolerance 0, other GPU pictures of the triangle against the GPU's
+  Direct3D 11 one at tolerance 0, GPU against WARP at tolerance 1. It also fails unless the
+  forwarding run printed "d3d11.dll from <its own directory>\d3d11.dll" and logged
   "d3d11 forward: D3D11CreateDevice..." (the program's device creation went through the replacement),
   and unless Chrome's WebGPU adapter is a GPU (type discrete or integrated, not a fallback) and its
-  WebGL 2 renderer names the same GPU. With a directory, the pictures are also copied there.
+  WebGL 2 renderer names the same GPU. gt-d3d11 and gt-d3d12 fail when a hardware device lands on a
+  software adapter (DXGI's software flag: WARP or the Microsoft Basic Render Driver), and gt-wgpu
+  when its adapter is a CPU one. With a directory, the pictures are also copied there.
+- Changing a scene on purpose: `loop <dir>` fails at the reference comparison; check the new
+  pictures in <dir>, copy d3d11-hardware-<scene>.png over
+  crates/wcontainers-graphics-test/references/reference-<scene>.png and commit them with the change.
 - `tools/graphics-rig/inventory`: prints the desktop's installed programs, root scheduled tasks,
   services, Graphics Tools state, PATHs and C:\wc, to compare with "The desktop" below. The listing
   taken before anything was installed is in the scratch directory
   (pyro-parked/wcontainers-scratch/graphics-rig/baseline/programs-before.txt and state-before.txt),
   not in this public repository, as it lists the owner's software.
 - Single renderers, on the desktop (in a job): `gt-d3d11 <triangle|quads|instanced|all>
-  <hardware|warp> <dir>`, `gt-d3d12 <hardware|warp> <dir>`, `gt-wgpu <dx12|vulkan|gl> <dir>`,
+  <hardware|warp> <dir>` (also prints which d3d11.dll and dxgi.dll it ran through),
+  `gt-d3d12 <hardware|warp> <dir>`, `gt-wgpu <dx12|vulkan|gl> <dir>`,
   `gt-scene triangle > triangle.json` then `node tools\graphics-rig\browser\draw.mjs triangle.json
   <dir>` (the page takes the triangle's size, clear colour and vertices from scene.rs through
   gt-scene, and the shader from triangle.wgsl). `gt-wgpu metal <dir>` also runs on the Mac.
@@ -95,7 +114,17 @@ Installed (by tools/graphics-rig/desktop/install-tools.ps1, direct installers):
   1.69 GB in C:\Program Files (x86)\Windows Kits. It also installed the Visual Studio Installer, about
   70 SDK and VS parts in the programs list, two manual-start services (VSInstallerElevationService,
   VSStandardCollectorService150), and upgraded the shared Visual C++ 2015-2022 x86 runtime from
-  14.42.34438 to 14.44.35211 and added the x64 and x86 debug runtimes.
+  14.42.34438 to 14.44.35211 and added the x64 and x86 debug runtimes. Among the parts are
+  vs_filehandler_amd64 and vs_filehandler_x86 (17.14.36024), vs_githubprotocolhandlermsi (17.14.36015)
+  and vs_vswebprotocolselectormsi (17.14.36323): they register the URL protocols vsweb, vsweb+diag,
+  vsweb+githubsi, vsweb+mcp, vsweb+teamstoolkit and git-client, about 150 VisualStudio.* file types
+  (ProgIDs such as VisualStudio.cpp.72b06fc8 and VisualStudio.Launcher.sln), and make .sln files open
+  with the Visual Studio launcher. Of .cpp, .h, .cs, .hlsl, .config, .dmp, .xml, .html, .htm, .bmp,
+  .ico and .sln, only .sln has one of these as its default; the owner's chosen programs for .xml,
+  .html, .htm and .bmp are unchanged. Installer caches outside its folders: C:\ProgramData\Package
+  Cache 0.46 GB (70 folders created on 2026-11-17), C:\ProgramData\Microsoft\VisualStudio\Packages
+  0.04 GB, C:\Windows\Installer 0.08 GB, and files created that day in C:\Windows\WinSxS (0.14 GB),
+  System32 (0.05 GB) and SysWOW64 (0.03 GB), from these installs and Graphics Tools.
 - rustup 1.29.3 with RUSTUP_HOME=C:\wc\rustup and CARGO_HOME=C:\wc\cargo (user variables);
   C:\wc\cargo\bin is on the user PATH. Stable 1.100.0 is the default; the checkout's
   rust-toolchain.toml brings 1.99.0 with its wasm32 and aarch64-musl targets. 1.75 GB.
@@ -108,9 +137,16 @@ Installed (by tools/graphics-rig/desktop/install-tools.ps1, direct installers):
 - Chrome for Testing 157.0.8103.78 in C:\wc\chrome (0.43 GB), downloaded by @puppeteer/browsers.
   Not installed into Windows: no updater, no services, no shortcuts. Never signed in.
 
-C:\wc also holds downloads (0.12 GB), checkouts (C:\wc\src\<branch>), build output
-(C:\wc\target\<branch>, 1.9 GB now), pictures (C:\wc\out), the desktop scripts (C:\wc\rig) and the
-remote locks. Free space went from 521.7 GB to 509.2 GB.
+C:\wc holds, besides the tools above (bin, cargo, chrome, rustup, pueue): the installers in
+downloads (0.12 GB), the Graphics Tools task's log in setup, checkouts (C:\wc\src\<branch>, 0.02 GB),
+build output (C:\wc\target\<branch>, 2.13 GB), pictures (C:\wc\out\<branch>), the desktop scripts
+(C:\wc\rig), scripts in transit (C:\wc\incoming) and the branch locks (C:\wc\locks); 4.5 GB in all.
+Leftovers of the earlier measurements and checks (C:\wc\target\abi-x and measure-abi, C:\wc\out\queue
+and s0, two export listings) were removed in the third run. Free space went from 521.7 GB before
+anything was installed to 508.8 GB now, a drop of 12.9 GB. The items sized here add up to about
+11.0 GB (C:\wc 4.5, Visual Studio 3.51, Windows Kits 1.69, Git 0.40, Node 0.10, the caches and system
+files above 0.8, the user's Temp folder 0.07); the other 1.9 GB are not accounted for and may not be
+ours (the machine is in use, and C:\agent belongs to someone else).
 
 Not installed: CMake and Ninja (nothing needs them yet). Nothing touched partitions, boot settings,
 Windows Update settings, the GPU driver, games or the owner's files; no reboot. Seen between the
@@ -181,6 +217,25 @@ Second run (desktop CPU about 4 %, Mac load average 11 to 16):
 - `loop`, everything built: 18 s end to end with the remote build step; the GPU job itself 3.7 to
   5.9 s.
 
+Third run (desktop CPU 1 %, Mac load average 28 to 33, other tracks building):
+- `gpu-job` with the commands the check found broken: `echo "hello world"` prints "hello world";
+  `dir "C:\Program Files\Git\cmd\git.exe" /b` prints git.exe; `echo trailing\` prints trailing\;
+  a command whose 120-character label ends in a backslash runs; `echo hello out & echo hello err 1>&2
+  & exit 7` gives "hello out" on standard output, "hello err" on standard error and exit 7.
+- With the quads sampler set to point filtering, `loop` fails: d3d11-hardware-quads against
+  reference-quads, 10728 pixels differ, by up to 94.
+- Stale build: after building the point-filtering quads, reverting and `remote "exit 0"`, a job
+  without `--build` still drew the point-filtered quads (equal to the earlier point picture); with
+  `--build "cargo build -q -p wcontainers-graphics-test"` it drew the reverted ones (within 1 of the
+  reference). With the queue full and a `--build` job waiting, a `remote "exit 0"` made the job fail
+  with 125: "C:\wc\target\phase-2-graphics-rig holds a build of nothing, not of <tree>; another remote
+  ran after this job's build".
+- `queue-check`, one run, all five rules pass (8 jobs submitted together: 4 started at 20.436 to
+  20.534, the other 4 at 24.941 to 25.028).
+- `loop`, everything built: 9.0 s end to end including the build check; the GPU job itself 4.0 s.
+- The software-adapter checks were not seen to fire: making the GPU's adapter fall back would mean
+  disabling its driver, which this machine's rules forbid.
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -193,10 +248,12 @@ registers and jumps to it, so the caller's stack and stack arguments are untouch
 or an export without a name would stop the build; d3d11 has neither.
 
 Proof: loop.cmd copies gt-d3d11.exe and the built DLL (as d3d11.dll) into one directory and runs the
-triangle there. The log shows D3D11CreateDevice, D3D11CoreRegisterLayers,
-D3D11CoreGetLayeredDeviceSize and D3D11CoreCreateLayeredDevice, and the picture equals the direct one.
-The picture alone proves nothing (the system d3d11.dll draws the same), so loop.cmd fails unless the
-log has the program's device creation in it.
+triangle there. The program prints "d3d11.dll from C:\wc\out\<branch>\forward\d3d11.dll, dxgi.dll
+from C:\Windows\SYSTEM32\dxgi.dll" (GetModuleFileNameW of the loaded modules), the log shows
+D3D11CreateDevice, D3D11CoreRegisterLayers, D3D11CoreGetLayeredDeviceSize and
+D3D11CoreCreateLayeredDevice, and the picture equals the direct one. The picture alone proves nothing
+(the system d3d11.dll draws the same), so loop.cmd fails unless both the path and the log show the
+replacement.
 
 Traps:
 - Search order: d3d11.dll, d3d12.dll and dxgi.dll are not in the desktop's KnownDLLs list, so the program's own directory is searched
@@ -208,9 +265,13 @@ Traps:
   calls D3D11CoreRegisterLayers, D3D11CoreGetLayeredDeviceSize and D3D11CoreCreateLayeredDevice
   through it. A replacement must therefore serve calls from Windows' own libraries, not only from
   the program.
-- The same applies to dxgi.dll: the system d3d11.dll imports dxgi.dll by name, so a dxgi.dll beside
-  the program is what the real d3d11 would use as well (expected from the search order, not yet
-  tried).
+- The same applies to dxgi.dll, tried in the third run with a copy of the system dxgi.dll placed
+  beside gt-d3d11: with the system d3d11.dll the program printed "d3d11.dll from
+  C:\Windows\SYSTEM32\d3d11.dll, dxgi.dll from C:\wc\out\dxgi-trial\a\dxgi.dll", and with the
+  forwarding d3d11.dll as well, both came from the program's directory. So the system d3d11.dll, loaded
+  by full path, still takes dxgi.dll from the program's directory: a replacement dxgi.dll serves the
+  real d3d11 too, and a replacement d3d11.dll that loads the system one gets the replacement dxgi.dll
+  beneath it. The pictures were identical.
 - A DLL built under the name d3d11 lands in the build directory beside every program built there, and
   all of them silently ran through it (seen in the first loop run). So the crate builds
   wcontainers_graphics_test_forward.dll, copied as d3d11.dll only where a test wants it.
@@ -243,27 +304,34 @@ There is no plan document in this checkout; these depart from the task or brief 
 - The forwarding DLL is a second crate, crates/wcontainers-graphics-test-forward, since a crate has one
   library and this one must be a cdylib with its own exports.
 - The references are drawn with the Direct3D debug layer on, and any error it reports fails the run.
+- The reference pictures are kept in the repository (three PNGs, 41 KB) so the loop catches a change
+  that affects every renderer alike.
 - Only the triangle is drawn by Direct3D 12, wgpu and Chrome, as the task asks; the other two scenes
   are Direct3D 11 only so far.
 
 ## Known issues
 
-- SSH to the desktop has twice refused new connections (reset right after key exchange) for about
-  9 to 10 minutes and then recovered by itself, with no reboot and nothing in the OpenSSH or System
-  logs; the second time came after about 30 ssh sessions in 10 minutes. Cause unknown; sshd_config
-  sets no limits of its own. The scripts now share one connection and wait up to 20 minutes for it
-  (see How to run); not yet seen against a real outage.
-- The quads and instanced scenes are drawn only by d3d11.rs, so the loop compares them only GPU
-  against WARP: a change or bug in those scenes passes, as does any difference of at most 1 per
-  channel. A scene change is caught only by comparing with earlier pictures (`loop <dir>` keeps
-  them; `gt-compare` the two). The same holds for the triangle now that the browser page takes it
-  from scene.rs: every renderer draws the same changed triangle. Fronts drawing these scenes will be
-  the second renderer that makes these comparisons mean something.
+- SSH to the desktop has refused new connections (reset right after key exchange) for about 9 to 10
+  minutes at a time and then recovered by itself, with no reboot and nothing in the OpenSSH or System
+  logs. It happened twice in the first run (once after about 30 ssh sessions in 10 minutes) and
+  again during the second independent check, when the checker had opened only about 4 new
+  connections and an already open shared connection kept working throughout. So it is not this rig's
+  connection count alone; other users of the machine may be the cause. Cause unknown; sshd_config sets
+  no limits of its own. The scripts share one connection and wait up to 20 minutes for it (see How
+  to run); in the third run the first connection was refused once and came up 15 s later.
+- A job without `--build` runs whatever the build directory holds, which can be a build of an earlier
+  tree; `--build` closes this. A `--build` job is still fooled if, between its build and its start,
+  two other runs of the same branch build a different tree and send this one back (the second
+  writes the stamp again); only runs of the same branch, normally one agent's, can do that.
+- The stored references are pictures from this RTX 3080 and its driver (NVIDIA 621.01); a driver
+  update may change them, and the loop would then fail at the reference comparison until they are
+  checked and stored again.
 - The branch lock is per branch: two agents sharing a branch still take turns correctly, but one
   agent's `remote` between another's `remote` and `gpu-job` makes the later job fail its tree check
   (it never runs the wrong code).
 - If a `gpu-job` client is cut off, its job still runs; its output stays in
-  C:\wc\pueue\data\task_logs and the finished task stays listed until `pueue clean`.
+  C:\wc\pueue\data\task_logs and its standard error in C:\wc\pueue\errors, and the finished task
+  stays listed until `pueue clean`.
 - If the queue daemon restarts with jobs left, it pauses its groups; `setup-desktop` cleans those jobs
   and resumes the groups when it starts the daemon.
 - An alone job pauses the default group and resumes it when it ends, also when its command fails;
