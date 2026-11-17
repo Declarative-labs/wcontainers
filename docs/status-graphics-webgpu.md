@@ -5,11 +5,48 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 
 ## Where things stand
 
-G2 (the whole milestone, section 12): every pass bar item has now been run and passes, the
-shared suite included natively on this Mac (present too), on the RTX 3080 (Direct3D 12 and
-Vulkan) and in Chrome there. G2 runs 1 to 5 are below as "Run 5" to "Run 9". What 5.7 gives the
-back end beyond the pass bar and is not built yet is under "Not carried out yet". Earlier runs
-(G2a, the first slice, runs 1 to 4) follow them.
+G2 (the whole milestone, section 12): see Run 10 for what the independent check of run 9 found
+and what was done about it. G2 runs 1 to 6 are below as "Run 5" to "Run 10". What 5.7 gives the
+back end beyond the pass bar (texture formats WebGPU lacks, packed-pair formats, immediates,
+asynchronous `prepare`, the staging ring) is not part of the G2 pass bar and is not built; it is
+under "Not carried out yet". Earlier runs (G2a, the first slice, runs 1 to 4) follow them.
+
+Run 10 = G2 run 6, 2026-11-17 (fixes from the independent check of run 9):
+- Merged origin/phase-2-graphics (at 3e9db91, a fast-forward). It brought interface doc rules (one
+  viewport a draw, least binding sizes, comparison samplers, empty pass sizes) and suite tests
+  (stride zero, comparison sampling) and `SlowPath::CaptureExpanded` (WebGL 2's).
+- Renamed buffers are now shown to come from the pool. `Counters::spares_reused` counts renames
+  that took pooled storage instead of making a GPU buffer, `spares_dropped` pooled storage
+  destroyed. Test writes.rs `renamed_buffers_reuse_the_pools_storage`: four frames, each drawing
+  the triangle four times with a `Discard` write of its vertex buffer between draws: the first
+  frame's three renames make buffers, each later frame's three take the pool's, the picture is
+  Direct3D's triangle every frame.
+- The pool is bounded: each buffer counts the GPU buffers its renames made; destroying it destroys
+  that many pooled buffers of its size and usage (at once if free, else when their work is done).
+  So the pool holds at most what live buffers made. The same test destroys the buffer and sees
+  three dropped.
+- Textures written with `Discard` while recorded work uses them are renamed from a pool as plan
+  4.6 says (was: staged and copied). Views and bind groups of the texture are made again at their
+  next use (views carry the texture's generation, and so does a bind group's key). A texture the
+  open pass draws or resolves into is not renamed (the pass keeps drawing into its storage): that
+  write is ordered in the pass, `WriteSplitPass`. Test bindings.rs
+  `discarded_textures_are_renamed_from_the_pool` (four frames of four draws each after a
+  `Discard` of the texture they load; three texture renames a frame, all from the pool after the
+  first; then a discard of the pass's own target splits the pass; destroying drops three).
+- 32-bit float depth copied in (`DepthWrittenByDraw`) keeps only what a draw can write: values
+  outside 0 to 1 are clamped, denormals and NaN become zero (the independent check measured this
+  on the RTX 3080 against Direct3D, which keeps every bit). It is now a listed loss in plan 4.12
+  (interface change below), and copies.rs `float_depth_copies_keep_what_a_draw_can_write` checks
+  exactly that, from a texture and from a buffer. The earlier claim that these copies are exact
+  held only for values in 0 to 1, which the other tests use.
+- `CopyWithinBuffer` is checked: writes.rs `copies_within_one_buffer_are_exact_and_counted` (three
+  copies within one buffer, at places in a word alike and different, and one between two arena
+  buffers: four counted), the arena test counts one, and the random byte test counts its copies
+  within one buffer and requires the slow path count to equal them.
+- tests/depth.rs runs under libtest-mimic, so where `DEPTH24_UNORM` is absent (wgpu on Vulkan,
+  Metal, browsers) the bias picture is reported as ignored with the reason instead of passing.
+- tests/blocks.rs takes `WEBGPU_CASES` (textures of seeded blocks per format, default 1) beside
+  `WEBGPU_SEED`, in both random tests.
 
 Run 9 = G2 run 5, 2026-11-17:
 - Merged origin/phase-2-graphics (at 385604f). The lock file conflicted (our libtest-mimic and
@@ -412,8 +449,9 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   `wcontainers_gpu_webgpu::block_on` runs a future (the adapter and device requests) the same way.
 - Uniform-only buffers made with `MapIntent::Often` live in the uniform arena: give constant
   buffers rewritten per draw that intent and write them with `Discard`.
-- `WebGpu::counters()` says how many pipelines, bind groups, layouts, renames and staged writes
-  were made; `slow_paths()` the slow paths taken.
+- `WebGpu::counters()` says how many pipelines, bind groups, layouts, buffer and texture renames
+  (and how many took pooled storage, how much pooled storage was destroyed) and staged writes were
+  made; `slow_paths()` the slow paths taken.
 - Anything the back end does not carry out yet (list below) marks the device lost with
   `LossReason::Error` and prints `webgpu: <reason>` on standard error, so `status()` shows it.
 
@@ -438,6 +476,8 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   wcontainers-gpu-webgpu -p naga -p wcontainers-gpu -p wcontainers-gpu-test --target
   wasm32-unknown-unknown & cargo clean -p wcontainers-gpu-webgpu -p naga -p wcontainers-gpu -p
   wcontainers-gpu-test"`.
+- The BC tests with other blocks: `set WEBGPU_SEED=<n>&& set WEBGPU_CASES=<textures per
+  format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test blocks -- --nocapture`.
 - The BC comparison with Direct3D and WARP with other blocks: `set WEBGPU_SEED=<n>&& set
   WEBGPU_CASES=<textures per format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test
   direct3d bc_ -- --nocapture` as the job's command (prints each format's distances).
@@ -478,6 +518,42 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 10 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
+CPU load not sampled; SSH to it refused connections from about 12:09 to 12:24 Mac time; Mac load
+average 42 to 66):
+- All tests at ad1a593 after a clean build of this crate and `wcontainers-gpu-test`: Vulkan 71
+  passed, 2 ignored (the old BC one-step comparison; the depth bias picture, `DEPTH24_UNORM` being
+  clear there); Direct3D 12 72 passed, 1 ignored (the BC one). bindings 12, blocks 2, copies 5,
+  depth 2, direct3d 4, fitted 1, prepare 1, raster 1, scenes 4, suite 26 (two new from the shared
+  line), vertices 1, writes 13. Clippy with warnings denied passes natively on Windows and for
+  WebAssembly.
+- This Mac (Apple M5 Max, Metal), single jobs from the committed tree: at c5fe867 every file
+  passed but three tests (bindings 11 of 12, copies 4 of 5, writes 12 of 13; blocks 2 with one
+  ignored, depth 1 with the bias picture ignored, fitted, prepare, present, raster, scenes 4,
+  suite 23, vertices). The three failures were found here and fixed at ad1a593: a renamed texture
+  then took the staged route's check and its next writes went to the queue ahead of the draws (each
+  pixel read the frame's last write); Metal keeps a denormal copied into float depth and makes -0
+  zero, the opposite of the RTX 3080; the test's arena buffers were not arena buffers. At ad1a593
+  bindings 12, copies 5, writes 13 pass. Renames per frame, buffers and textures alike: (3, 0),
+  (3, 3), (3, 3), (3, 3) (renames, of which from the pool). Float depth copied in, both routes:
+  [3e800000, 3f800000, 0, 0, 00001234, 0, 3f800000, 3dfcd6ea] for the words 0.25, 2, -0.5, -0, a
+  denormal, NaN, 1, 0.1234. The random byte test there (seed 0x5eed, 400 operations): 78 copies
+  within one buffer, all counted.
+- New seed on the RTX 3080: the random byte test, seed 4242 at 3000 operations on Vulkan (232
+  no-overwrite writes, 93 made ordered, 514 copies within one buffer, all counted), and both BC
+  tests, seed 4242 at 3 textures per format on Vulkan and on Direct3D 12: all pass.
+- `web/check` after cleaning this crate, naga, `wcontainers-gpu` and `wcontainers-gpu-test` on both
+  targets: the pictures, twists and viewports passed, but the suite in Chrome was 24 of 26: the two
+  suite tests the shared line added were missing from examples/scenes/names.rs (the check caught
+  it, as it is meant to; the Mac's suite run had silently run 23). Added at 0ab72939; then `web/check`
+  passes: all twelve pictures equal Direct3D 11's at tolerance 0, the twists differ as before
+  (16384 pixels by up to 92; 25016 by up to 204), the viewports equal (whole pixels: 2540 differ by
+  up to 229), the suite in Chrome 26 of 26, Chrome's adapter the RTX 3080 (D3D12, discrete, not a
+  fallback). `prepare` in Chrome: unprepared frame of 16 first draws 237.5 ms with 16 pipelines
+  built while drawing; after 1.0 ms of `prepare` calls and 240.1 ms waiting for the compiles, the
+  frame 4.5 ms with none built.
+- This Mac at 0ab72939: suite 25 of 25 and present 1 of 1 (two frames through `PresentConverted`).
 
 Run 9 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
 load not sampled; Mac load average 29 to 75):
@@ -705,19 +781,21 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 - Formats WebGPU lacks other than BC are declared without bits (no `FormatConverted` or
   packed-pair `BlockDecoded` yet), though 5.7 has the back end convert them.
 - Declared absent until built or measured: `TIMESTAMPS`.
-- Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), renaming
-  textures on `Discard` (staged instead), and freeing cached layouts and pipelines of destroyed
-  programs (and the shadow plans of vertex layouts no longer held).
+- Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), and freeing
+  cached layouts and pipelines of destroyed programs (and the shadow plans of vertex layouts no
+  longer held).
+- A buffer or texture renamed many times within one frame keeps that many spares in the pool until
+  it is destroyed (bounded by what it made, not trimmed by age).
 - Arena slices of buffers dropped without `destroy` are not reused until the arena is replaced.
 
 ## Next (G2)
 
-Every pass bar item passes (Run 9). What is left is what 5.7 gives the back end beyond the pass
-bar, in "Not carried out yet", most useful first: texture formats WebGPU lacks (`FormatConverted`:
-B5G6R5 and the other 16-bit packed formats, A8) and the packed-pair formats (`BlockDecoded`);
-immediates; splitting a pass with a running occlusion query; making a lost surface again; the
-staging ring and texture renaming of 4.6; `TIMESTAMPS`. The vertex conversion has not run in
-Chrome (no page draws it yet).
+Run 10 fixed what the independent check of run 9 found (see Run 10 for what ran where). What is
+left is what 5.7 gives the back end beyond the pass bar, in "Not carried out yet", most useful
+first: texture formats WebGPU lacks (`FormatConverted`: B5G6R5 and the other 16-bit packed
+formats, A8) and the packed-pair formats (`BlockDecoded`); immediates; splitting a pass with a
+running occlusion query; making a lost surface again; the staging ring of 4.6; `TIMESTAMPS`. The
+vertex conversion and texture renaming have not run in Chrome (no page draws them yet).
 
 ## Departures from the plan
 
@@ -780,6 +858,10 @@ Chrome (no page draws it yet).
   unshown frame, and DXGI answers it with a success code (`DXGI_STATUS_OCCLUDED`).
 
 ## Interface changes
+
+- 578a3fc `interface: listed as a loss float depth copied from values a draw cannot write`: a
+  4.12 entry and a sentence in `copy_buffer_to_texture`'s doc. WebGPU writes depth from other
+  formats only by a draw, which clamps depth to 0 to 1 and flushes denormals.
 
 - 8f7db1b `interface: named the slow path of a surface format the window lacks converted by a draw
   at present`: `SlowPath::PresentConverted`, and the plan's 4.9 sentence on surface formats.
