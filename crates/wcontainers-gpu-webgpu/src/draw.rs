@@ -1055,14 +1055,21 @@ impl WebGpu {
         &mut self,
         src: &wcontainers_gpu::TextureRegion<'_, Self>,
         dst: &wcontainers_gpu::TextureRegion<'_, Self>,
+        format: wcontainers_gpu::Format,
     ) {
         if self.pass.is_some() {
             self.fail("resolve inside a pass");
             return;
         }
+        // Both views in the resolve format, so an sRGB twin averages in linear light.
+        let Some(format) = convert::texture_format(format) else {
+            self.fail("resolve in a format this back end does not hold");
+            return;
+        };
         let view = |r: &wcontainers_gpu::TextureRegion<'_, Self>| {
             r.texture.0.used_in.set(self.serial);
             r.texture.0.raw.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(format),
                 dimension: Some(wgpu::TextureViewDimension::D2),
                 base_mip_level: r.mip,
                 mip_level_count: Some(1),

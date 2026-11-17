@@ -1056,8 +1056,13 @@ impl Backend for WebGpu {
         self.clear_buffer_impl(buffer, offset, size, pattern);
     }
 
-    fn resolve(&mut self, src: &TextureRegion<'_, Self>, dst: &TextureRegion<'_, Self>) {
-        self.resolve_impl(src, dst);
+    fn resolve(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        format: Format,
+    ) {
+        self.resolve_impl(src, dst, format);
     }
 
     fn submit(&mut self) -> Fence {

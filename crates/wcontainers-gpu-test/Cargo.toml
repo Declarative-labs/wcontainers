@@ -1,0 +1,18 @@
+[package]
+name = "wcontainers-gpu-test"
+description = "The recording back end and the test suite every wcontainers graphics back end runs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+wcontainers-gpu = { path = "../wcontainers-gpu" }
+naga = { workspace = true, features = ["wgsl-in"] }
+blake3 = { version = "1", default-features = false }
+half = { version = "2", default-features = false }
+
+[lints]
+workspace = true
