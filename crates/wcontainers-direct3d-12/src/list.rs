@@ -102,6 +102,99 @@ pub struct IndexBufferView {
     pub format: u32,
 }
 
+/// One argument of a command signature (`D3D12_INDIRECT_ARGUMENT_DESC`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndirectArgument {
+    Draw,
+    DrawIndexed,
+    Dispatch,
+    VertexBuffer {
+        slot: u32,
+    },
+    IndexBuffer,
+    /// `count` root constants of root parameter `root` from the 32-bit value `offset`.
+    Constants {
+        root: u32,
+        offset: u32,
+        count: u32,
+    },
+    /// A root constant buffer, shader resource or unordered access view's address.
+    RootView {
+        root: u32,
+    },
+}
+
+impl IndirectArgument {
+    /// The bytes it takes in each command.
+    pub fn size(self) -> u32 {
+        match self {
+            IndirectArgument::Draw => 16,
+            IndirectArgument::DrawIndexed => 20,
+            IndirectArgument::Dispatch => 12,
+            IndirectArgument::VertexBuffer { .. } | IndirectArgument::IndexBuffer => 16,
+            IndirectArgument::Constants { count, .. } => 4 * count,
+            IndirectArgument::RootView { .. } => 8,
+        }
+    }
+}
+
+/// A command signature (`ID3D12CommandSignature`): each command of `ExecuteIndirect`'s argument
+/// buffer is these arguments, packed in order, ending with its draw or dispatch, `stride` bytes
+/// apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandSignature {
+    pub stride: u32,
+    pub arguments: Vec<IndirectArgument>,
+}
+
+impl CommandSignature {
+    /// Checks the description as `CreateCommandSignature` does. `root` says whether a root
+    /// signature was given, which arguments that change root parameters need.
+    pub fn new(stride: u32, arguments: Vec<IndirectArgument>, root: bool) -> Result<Self, Error> {
+        use IndirectArgument::*;
+        let calls = arguments
+            .iter()
+            .filter(|a| matches!(a, Draw | DrawIndexed | Dispatch))
+            .count();
+        if calls != 1 || !matches!(arguments.last(), Some(Draw | DrawIndexed | Dispatch)) {
+            return Err(Error::Invalid(
+                "a command signature must end with its one draw or dispatch",
+            ));
+        }
+        let size: u32 = arguments.iter().map(|a| a.size()).sum();
+        if stride < size || !stride.is_multiple_of(4) {
+            return Err(Error::Invalid("a command signature's stride"));
+        }
+        let changes_root = arguments
+            .iter()
+            .any(|a| matches!(a, Constants { .. } | RootView { .. }));
+        if changes_root && !root {
+            return Err(Error::Invalid(
+                "a command signature changing root parameters without a root signature",
+            ));
+        }
+        if arguments.last() == Some(&Dispatch)
+            && arguments
+                .iter()
+                .any(|a| matches!(a, VertexBuffer { .. } | IndexBuffer))
+        {
+            return Err(Error::Invalid(
+                "vertex or index buffers in a dispatch's command signature",
+            ));
+        }
+        Ok(CommandSignature { stride, arguments })
+    }
+
+    /// The draw or dispatch alone: commands the back end's indirect calls take as they are.
+    pub fn call_only(&self) -> bool {
+        self.arguments.len() == 1
+    }
+
+    pub fn dispatches(&self) -> bool {
+        self.arguments.last() == Some(&IndirectArgument::Dispatch)
+    }
+}
+
 /// `D3D12_VIEWPORT`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViewportF {
@@ -231,6 +324,15 @@ pub enum Command {
         count: u32,
         dst: ResourceId,
         offset: u64,
+    },
+    /// `ExecuteIndirect`: up to `max` commands of `signature` from the argument buffer, as many as
+    /// the 32-bit count in the count buffer says where one is given.
+    ExecuteIndirect {
+        signature: Arc<CommandSignature>,
+        max: u32,
+        args: ResourceId,
+        args_offset: u64,
+        count: Option<(ResourceId, u64)>,
     },
     /// `SetPredication`: the buffer, offset and `D3D12_PREDICATION_OP`, or none.
     Predication(Option<(ResourceId, u64, u32)>),
