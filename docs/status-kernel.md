@@ -154,8 +154,10 @@ K5 built (all four runs):
     IPV6_V6ONLY), an empty netlink message (ENODATA), netlink's option levels refused before
     the value or length is read (ENOPROTOOPT), and a nonblocking read of a UDP socket shut for
     reading (EAGAIN; a waiting one ends with 0), netlink's urgent and empty messages refused
-    before their control messages are read, and descriptors refused with EINVAL on sockets that
-    are not local (`__scm_send`).
+    before their control messages are read, descriptors refused with EINVAL on sockets that
+    are not local (`__scm_send`), a local datagram socket's end read giving no credentials or
+    process descriptor (and SCM_PIDFD wanting a sender before it looks for room), and sendfile
+    from a socket into a pipe reading the socket (`sock_splice_read`; EAGAIN when empty).
 
 Layer 1 before the fourth run never generated sockets, epoll, eventfd or inotify: the generated
 call kind was a `u8`, so only the first 256 entries of the call list (285 now) could be chosen,
@@ -1342,7 +1344,13 @@ each sequence the runner puts back what a sequence can change outside its direct
   8b58c43 5050430 (291 s), 5050431 (144 s) and 5050432 (59 s) found the empty netlink message,
   the shut UDP read and netlink's getsockopt level (load 44 to 59); on 2aefa16 5050435 passed
   (334 s, load 59 to 34), 5050433 and 5050434 found netlink's empty sendmsg with control
-  messages.
+  messages; on 60d3703 5050436 and 5050438 passed (332 s and 331 s, load 23 to 39), 5050437
+  found the credentials at a sequenced packet socket's end; on 77abb06 5050439 and 5050441
+  passed (337 s and 340 s, load 39 to 18), 5050440 found sendfile from a datagram socket.
+- K5, fifth run: whole suite at 60d3703 (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -j 4
+  -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy with its own build, beside
+  three layer 1 runs): 178 passed, 0 failed, 5 ignored, 10 min 34 s with the build, load 27.7 at
+  the start and 35.1 at the end.
 - K5, fourth run: whole suite at ebf9420 (the third run's end; `RUST_TEST_THREADS=3 cargo test
   --no-fail-fast -j 4 -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy in
   scratch with its own build): 169 passed, 0 failed, 5 ignored, 10 min 7 s with the build, load
@@ -2037,6 +2045,6 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002, 5050401 to 5050435 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050444 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
