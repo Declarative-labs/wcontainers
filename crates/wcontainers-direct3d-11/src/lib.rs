@@ -9,7 +9,7 @@ mod error;
 pub mod format;
 pub mod object;
 pub mod record;
-pub mod standin;
+pub mod shader;
 
 pub use context::{Mapped, PIXEL, VERTEX};
 pub use device::{Device, top_level};

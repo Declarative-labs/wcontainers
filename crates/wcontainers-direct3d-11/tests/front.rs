@@ -7,7 +7,7 @@ use std::rc::Rc;
 use wcontainers_direct3d_11::desc::*;
 use wcontainers_direct3d_11::object::{Buffer, Resource, Texture2D, View};
 use wcontainers_direct3d_11::record::Recorder;
-use wcontainers_direct3d_11::{Device, Error, PIXEL, VERTEX, standin};
+use wcontainers_direct3d_11::{Device, Error, PIXEL, VERTEX, shader};
 use wcontainers_gpu::{Backend, SlowPath, SourceStage};
 
 type Dev = Device<Recorder>;
@@ -138,18 +138,36 @@ fn solid(dev: &mut Dev) {
 }
 
 #[test]
-fn stand_in_keys_name_the_corpus_shaders() {
-    let mut wrong = Vec::new();
-    for (source, key) in standin::sources() {
-        let actual: String = standin::key(&corpus(source))
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        if actual != key {
-            wrong.push(format!("{source}: {actual}"));
-        }
+fn shader_stages_are_read_from_the_container() {
+    let dir = format!(
+        "{}/../wcontainers-graphics-test/shaders/dxbc",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut count = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let kind = name.split('.').nth(1).unwrap();
+        let want = match &kind[..2] {
+            "vs" => SourceStage::Vertex,
+            "ps" => SourceStage::Pixel,
+            "gs" => SourceStage::Geometry,
+            "hs" => SourceStage::Hull,
+            "ds" => SourceStage::Domain,
+            "cs" => SourceStage::Compute,
+            _ => panic!("{name}"),
+        };
+        assert_eq!(
+            shader::stage(&std::fs::read(&path).unwrap()),
+            Ok(want),
+            "{name}"
+        );
+        count += 1;
     }
-    assert!(wrong.is_empty(), "keys differ:\n{}", wrong.join("\n"));
+    assert!(count > 50);
+    let mut cut = corpus("triangle.vs");
+    cut.truncate(40);
+    assert!(matches!(shader::stage(&cut), Err(Error::InvalidArg(_))));
 }
 
 #[test]
@@ -307,8 +325,11 @@ fn quads_scene() {
     let log = log_from(&dev, start);
     let set = find(&log, "create_binding_set");
     let (view_id, sampler_id) = (view.gpu.handle, sampler.gpu.handle);
+    // Two entries, in whatever order the reflection lists them.
     assert!(
-        log[set].ends_with(&format!(" 32=texture {view_id} 16=sampler {sampler_id}")),
+        log[set].contains(&format!(" 32=texture {view_id}"))
+            && log[set].contains(&format!(" 16=sampler {sampler_id}"))
+            && log[set].matches('=').count() == 2,
         "{}",
         log[set]
     );
@@ -514,8 +535,13 @@ fn creation_checks_refuse_what_direct3d_refuses() {
         Err(Error::InvalidArg(_))
     ));
     assert!(matches!(
-        dev.create_shader(&corpus("blend.vs"), SourceStage::Vertex),
-        Err(Error::NotImplemented(_))
+        dev.create_shader(&corpus("geometry.gs_points"), SourceStage::Vertex),
+        Err(Error::InvalidArg(_))
+    ));
+    // Valid, but read a value the converter does not provide yet.
+    assert!(matches!(
+        dev.create_shader(&corpus("geometry.ps_id"), SourceStage::Pixel),
+        Err(Error::NotImplemented("PrimitiveId"))
     ));
     let missing = dev.create_input_layout(&[element("POSITION", RG32F, 0)], &corpus("triangle.vs"));
     assert!(matches!(missing, Err(Error::InvalidArg(_))));

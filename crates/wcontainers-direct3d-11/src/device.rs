@@ -9,8 +9,9 @@ use wcontainers_gpu::{
     BufferDesc as GpuBuffer, BufferUsage, ColorWrites, CompareFn, CullMode,
     DepthStencilDesc as GpuDepthStencil, Extent, Features, FillMode, Filter, Format, FormatKind,
     FormatUse, FrontFace, MAX_COLOR_TARGETS, MapIntent, Object, Origin, ProvokingVertex,
-    RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, StencilFace, StencilOp, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
+    RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, StageValue, StencilFace, StencilOp,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
+    WriteMode,
 };
 
 use crate::context::ContextState;
@@ -18,7 +19,7 @@ use crate::desc::*;
 use crate::error::{Error, Result, not_implemented};
 use crate::format;
 use crate::object::*;
-use crate::standin;
+use crate::shader;
 
 /// A Direct3D 11 device and its immediate context on back end `B`.
 pub struct Device<B: Backend> {
@@ -32,6 +33,8 @@ pub struct Device<B: Backend> {
     pub(crate) programs: HashMap<(u64, u64), Kept<B, B::Program>>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
     pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
+    /// Vertex shaders' input signatures by the blake3 of their bytecode, for input layouts.
+    vertex_inputs: HashMap<[u8; 32], Vec<StageValue>>,
     /// Set once the device is lost; later work is dropped and the API reports the removal.
     pub removed: bool,
 }
@@ -106,6 +109,7 @@ impl<B: Backend> Device<B> {
             ctx: ContextState::new(),
             programs: HashMap::new(),
             layouts: HashMap::new(),
+            vertex_inputs: HashMap::new(),
             removed: false,
         })
     }
@@ -612,26 +616,20 @@ impl<B: Backend> Device<B> {
         bytecode: &[u8],
         stage: wcontainers_gpu::SourceStage,
     ) -> Result<Rc<Shader<B>>> {
-        if bytecode.len() < 32 || &bytecode[..4] != b"DXBC" {
-            return Err(Error::InvalidArg("not DXBC bytecode"));
-        }
-        let Some(converted) = standin::convert(bytecode) else {
-            return not_implemented(
-                "shaders without a conversion (the shaders crate is not built in)",
-            );
-        };
-        if converted.reflection.stage != stage {
-            return Err(Error::InvalidArg(
-                "the bytecode is a shader of another stage",
-            ));
-        }
+        let mut converted = shader::convert(bytecode, stage)?;
+        let module = converted.modules.pop().expect("one module");
         self.bury();
-        let gpu = self.backend.create_shader(&converted.module)?;
+        let gpu = self.backend.create_shader(&module)?;
+        if stage == wcontainers_gpu::SourceStage::Vertex {
+            self.vertex_inputs.insert(
+                *blake3::hash(bytecode).as_bytes(),
+                converted.reflection.inputs.clone(),
+            );
+        }
         let id = self.id();
         Ok(Rc::new(Shader {
             gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
             reflection: converted.reflection,
-            bytecode_key: converted.module.key,
         }))
     }
 
@@ -643,8 +641,16 @@ impl<B: Backend> Device<B> {
         if elements.is_empty() || elements.len() > 32 {
             return Err(Error::InvalidArg("an input layout has 1 to 32 elements"));
         }
-        let Some(vs) = standin::convert(vs_bytecode) else {
-            return not_implemented("input layouts for shaders without a conversion");
+        let key = *blake3::hash(vs_bytecode).as_bytes();
+        let inputs = match self.vertex_inputs.get(&key) {
+            Some(inputs) => inputs.clone(),
+            None => {
+                let inputs = shader::convert(vs_bytecode, wcontainers_gpu::SourceStage::Vertex)?
+                    .reflection
+                    .inputs;
+                self.vertex_inputs.insert(key, inputs.clone());
+                inputs
+            }
         };
         let mut next_offset = [0u32; 32];
         let mut instance_steps = [None; 32];
@@ -669,7 +675,7 @@ impl<B: Backend> Device<B> {
                 return Err(Error::InvalidArg("elements of one slot step differently"));
             }
             instance_steps[slot] = step;
-            let input = vs.reflection.inputs.iter().find(|i| {
+            let input = inputs.iter().find(|i| {
                 i.system.is_none()
                     && i.semantic.eq_ignore_ascii_case(&e.semantic)
                     && i.semantic_index == e.semantic_index
@@ -683,7 +689,7 @@ impl<B: Backend> Device<B> {
                 });
             }
         }
-        for input in vs.reflection.inputs.iter().filter(|i| i.system.is_none()) {
+        for input in inputs.iter().filter(|i| i.system.is_none()) {
             if !resolved.iter().any(|r| r.location == input.location) {
                 return Err(Error::InvalidArg(
                     "the layout lacks an input the shader reads",

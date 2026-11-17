@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 wcontainers-gpu = { path = "../wcontainers-gpu" }
-naga = { workspace = true, features = ["wgsl-in"] }
+wcontainers-shaders = { path = "../wcontainers-shaders" }
 blake3 = { version = "1", default-features = false }
 
 [lints]

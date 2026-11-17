@@ -141,5 +141,4 @@ pub struct InputLayout {
 pub struct Shader<B: Backend> {
     pub gpu: Kept<B, B::Shader>,
     pub reflection: Reflection,
-    pub bytecode_key: [u8; 32],
 }
