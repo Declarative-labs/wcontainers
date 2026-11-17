@@ -2664,6 +2664,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "naga",
+ "wcontainers-directx-graphics-infrastructure",
  "wcontainers-gpu",
  "wcontainers-shaders",
 ]
@@ -2743,6 +2744,7 @@ dependencies = [
  "naga",
  "pollster",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wcontainers-gpu",
  "wcontainers-gpu-test",
  "wcontainers-gpu-webgpu",

@@ -19,6 +19,19 @@ pub(super) struct StageBinding {
     binding: ReflectedBinding,
     /// Uniform blocks: the size the program declares.
     declared: u64,
+    /// How the program reads the resource.
+    form: Form,
+}
+
+/// The form of a resource binding in the converted program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Form {
+    /// A uniform block, sampler or sampled texture.
+    Plain,
+    /// A buffer of the storage address space (raw and structured views); writable or not.
+    Buffer { writable: bool },
+    /// A storage texture; writable or not.
+    Image { writable: bool },
 }
 
 /// The bindings of a converted stage, with the sizes its uniform blocks declare.
@@ -28,22 +41,41 @@ pub(super) fn stage_bindings(c: &Converted, stages: StageSet) -> Vec<StageBindin
         .bindings
         .iter()
         .map(|b| {
-            let declared = module
-                .global_variables
-                .iter()
-                .find(|(_, v)| {
-                    v.space == naga::AddressSpace::Uniform
-                        && v.binding
-                            .as_ref()
-                            .is_some_and(|r| (r.group, r.binding) == (b.set, b.binding))
-                })
-                .map_or(0, |(_, v)| {
-                    u64::from(module.types[v.ty].inner.size(module.to_ctx()))
-                });
+            let global = module.global_variables.iter().find(|(_, v)| {
+                v.binding
+                    .as_ref()
+                    .is_some_and(|r| (r.group, r.binding) == (b.set, b.binding))
+            });
+            let (mut declared, mut form) = (0, Form::Plain);
+            if let Some((_, v)) = global {
+                match (v.space, &module.types[v.ty].inner) {
+                    (naga::AddressSpace::Uniform, ty) => {
+                        declared = u64::from(ty.size(module.to_ctx()));
+                    }
+                    (naga::AddressSpace::Storage { access }, _) => {
+                        form = Form::Buffer {
+                            writable: access.contains(naga::StorageAccess::STORE),
+                        };
+                    }
+                    (
+                        _,
+                        naga::TypeInner::Image {
+                            class: naga::ImageClass::Storage { access, .. },
+                            ..
+                        },
+                    ) => {
+                        form = Form::Image {
+                            writable: access.contains(naga::StorageAccess::STORE),
+                        };
+                    }
+                    _ => {}
+                }
+            }
             StageBinding {
                 stages,
                 binding: b.clone(),
                 declared,
+                form,
             }
         })
         .collect()
@@ -63,6 +95,7 @@ enum Source {
 fn visible(visibility: u32, stages: StageSet) -> bool {
     match visibility {
         0 => true,
+        _ if stages == StageSet::COMPUTE => false,
         1 => stages == StageSet::VERTEX,
         5 => stages == StageSet::FRAGMENT,
         _ => false,
@@ -139,8 +172,8 @@ pub(super) fn check(root: &RootSignatureDesc, bindings: &[StageBinding]) -> Resu
         if b.binding.added.is_some() || b.binding.count != 1 {
             return Err(Error::NotImplemented("arrays of resources in a shader"));
         }
-        if matches!(b.binding.kind, SlotKind::Storage | SlotKind::Counter) {
-            return Err(Error::NotImplemented("unordered access views in a shader"));
+        if b.binding.kind == SlotKind::Counter {
+            return Err(Error::NotImplemented("unordered access view counters"));
         }
         if locate(root, b).is_none() {
             return Err(Error::Invalid(
@@ -183,6 +216,13 @@ enum Held<B: Backend> {
     Uniform(B::Buffer, u64, u64),
     Texture(B::TextureView),
     Sampler(B::Sampler),
+    Storage {
+        buffer: B::Buffer,
+        offset: u64,
+        size: u64,
+        writable: bool,
+    },
+    StorageTexture(B::TextureView, bool),
 }
 
 impl<B: Backend> Device<B> {
@@ -224,6 +264,23 @@ impl<B: Backend> Device<B> {
                         }
                         Held::Texture(view) => BindingResource::Texture(view),
                         Held::Sampler(sampler) => BindingResource::Sampler(sampler),
+                        Held::Storage {
+                            buffer,
+                            offset,
+                            size,
+                            writable,
+                        } => BindingResource::StorageBuffer {
+                            range: BufferRange {
+                                buffer,
+                                offset: *offset,
+                                size: *size,
+                            },
+                            writable: *writable,
+                        },
+                        Held::StorageTexture(view, writable) => BindingResource::StorageTexture {
+                            view,
+                            writable: *writable,
+                        },
                     },
                 })
                 .collect();
@@ -278,14 +335,18 @@ impl<B: Backend> Device<B> {
                     )?;
                     Held::Uniform(buffer, offset[0], bytes.len() as u64)
                 }
-                (SlotKind::Uniform, Source::Descriptor(i)) => match argument(i)? {
-                    RootArgument::Descriptor(address) => {
-                        self.constant_buffer(address, b.declared)?
-                    }
-                    RootArgument::Table(_) => {
+                (kind, Source::Descriptor(i)) => {
+                    let RootArgument::Descriptor(address) = argument(i)? else {
                         return Err(Error::Invalid("a table set for a root descriptor"));
+                    };
+                    match (kind, b.form) {
+                        (SlotKind::Uniform, _) => self.constant_buffer(address, b.declared)?,
+                        (_, Form::Buffer { writable }) => self.root_buffer(address, writable)?,
+                        _ => {
+                            return Err(Error::Invalid("a root descriptor for a shader's texture"));
+                        }
                     }
-                },
+                }
                 (kind, Source::Table(i, index)) => {
                     let RootArgument::Table(start) = argument(i)? else {
                         return Err(Error::Invalid("a root descriptor set for a table"));
@@ -295,9 +356,21 @@ impl<B: Backend> Device<B> {
                         (SlotKind::Uniform, Descriptor::ConstantBuffer { address, .. }) => {
                             self.constant_buffer(address, b.declared)?
                         }
+                        (SlotKind::Texture, Descriptor::ShaderResource(v))
+                            if b.form != Form::Plain =>
+                        {
+                            self.buffer_view(&v, false)?
+                        }
                         (SlotKind::Texture, Descriptor::ShaderResource(v)) => {
                             Held::Texture(self.shader_resource(&v)?)
                         }
+                        (SlotKind::Storage, Descriptor::UnorderedAccess(v)) => match b.form {
+                            Form::Buffer { writable } => self.buffer_view(&v, writable)?,
+                            Form::Image { writable } => {
+                                Held::StorageTexture(self.storage_texture(&v)?, writable)
+                            }
+                            Form::Plain => return Err(Error::Invalid("a storage binding")),
+                        },
                         (SlotKind::Sampler, Descriptor::Sampler(v)) => {
                             Held::Sampler(self.sampler(&v)?)
                         }
@@ -332,6 +405,106 @@ impl<B: Backend> Device<B> {
         }
         self.upload(id);
         Ok(Held::Uniform(self.buffer(id)?.0.clone(), offset, size))
+    }
+
+    /// A root shader resource or unordered access view: the buffer from `address` to its end.
+    fn root_buffer(&mut self, address: u64, writable: bool) -> Result<Held<B>, Error> {
+        let (id, offset) = self
+            .addresses
+            .find(address)
+            .ok_or(Error::Invalid("a root buffer view of no buffer"))?;
+        let size = self.resources[id.0 as usize].desc.width - offset;
+        self.storage_range(id, offset, size, writable)
+    }
+
+    /// A raw or structured buffer view, read or written as a storage buffer.
+    fn buffer_view(&mut self, v: &ResourceView, writable: bool) -> Result<Held<B>, Error> {
+        let raw = v.flags & 1 != 0;
+        let element = match (raw, v.stride) {
+            (true, _) => 4,
+            (false, 0) => {
+                return Err(Error::NotImplemented(
+                    "typed buffer views bound as storage buffers",
+                ));
+            }
+            (false, stride) => u64::from(stride),
+        };
+        if !matches!(
+            self.resources.get(v.resource.0 as usize),
+            Some(Resource {
+                storage: Storage::Buffer { .. },
+                ..
+            })
+        ) {
+            return Err(Error::Invalid("a buffer view of a texture"));
+        }
+        let offset = v.first_element * element;
+        let size = u64::from(v.count) * element;
+        self.storage_range(v.resource, offset, size, writable)
+    }
+
+    /// A storage binding of bytes `offset..offset + size` of buffer `id`.
+    fn storage_range(
+        &mut self,
+        id: ResourceId,
+        offset: u64,
+        size: u64,
+        writable: bool,
+    ) -> Result<Held<B>, Error> {
+        let align = u64::from(self.backend.caps().limits.min_storage_offset_alignment);
+        if !offset.is_multiple_of(align) {
+            // The program would add the rest from its helper constants (`StorageOffset`), a
+            // variant the converter does not build yet.
+            return Err(Error::NotImplemented(
+                "a buffer view at an offset the back end cannot bind",
+            ));
+        }
+        if offset + size > self.resources[id.0 as usize].desc.width.next_multiple_of(4) {
+            return Err(Error::Invalid("a buffer view past its buffer's end"));
+        }
+        self.upload(id);
+        Ok(Held::Storage {
+            buffer: self.buffer(id)?.0.clone(),
+            offset,
+            size: size.next_multiple_of(4),
+            writable,
+        })
+    }
+
+    /// The texture view an unordered access view of a texture names.
+    fn storage_texture(&mut self, v: &ResourceView) -> Result<B::TextureView, Error> {
+        let dimension = match v.dimension {
+            4 => ViewDimension::D2,
+            5 => ViewDimension::D2Array,
+            8 => ViewDimension::D3,
+            1 => {
+                return Err(Error::NotImplemented(
+                    "typed buffer views bound as storage textures",
+                ));
+            }
+            _ => return Err(Error::NotImplemented("one-dimensional storage textures")),
+        };
+        let layer_count = match dimension {
+            ViewDimension::D2Array => v.layers,
+            _ => 1,
+        };
+        if dimension == ViewDimension::D3 && v.first_layer != 0 {
+            return Err(Error::NotImplemented(
+                "storage views of part of a 3D texture",
+            ));
+        }
+        self.texture_view(
+            v.resource,
+            TextureViewDesc {
+                format: dxgi(v.format)?,
+                dimension,
+                base_mip: v.mip,
+                mip_count: 1,
+                base_layer: v.first_layer,
+                layer_count,
+                stencil: false,
+            },
+        )
     }
 
     /// The texture view a shader resource view names.

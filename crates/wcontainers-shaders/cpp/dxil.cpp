@@ -50,8 +50,11 @@ struct LogScope {
 };
 
 int convert(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
+  // dxbc-spirv's container reader reports into this, not to stderr.
+  wcs::ErrorLog container;
   if (!signed_or_bypassed(data, size)) {
-    *error = wcs::copy("the container's checksum does not match its bytes");
+    *error = wcs::copy(container.first.empty() ? "the container's checksum does not match its bytes"
+                                               : container.first);
     return 1;
   }
   std::string first;

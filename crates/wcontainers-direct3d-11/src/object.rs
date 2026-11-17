@@ -24,7 +24,9 @@ pub type SharedGraveyard<B> = Rc<RefCell<Graveyard<B>>>;
 pub struct Kept<B: Backend, H: Clone> {
     pub handle: H,
     pub id: u64,
-    wrap: fn(H) -> Object<B>,
+    /// How the handle is destroyed; `None` for a handle another owner destroys (a swap chain's
+    /// back buffers).
+    wrap: Option<fn(H) -> Object<B>>,
     graveyard: SharedGraveyard<B>,
 }
 
@@ -38,7 +40,17 @@ impl<B: Backend, H: Clone> Kept<B, H> {
         Kept {
             handle,
             id,
-            wrap,
+            wrap: Some(wrap),
+            graveyard: graveyard.clone(),
+        }
+    }
+
+    /// A handle this object uses but another owner destroys.
+    pub fn borrowed(handle: H, id: u64, graveyard: &SharedGraveyard<B>) -> Self {
+        Kept {
+            handle,
+            id,
+            wrap: None,
             graveyard: graveyard.clone(),
         }
     }
@@ -47,7 +59,9 @@ impl<B: Backend, H: Clone> Kept<B, H> {
 impl<B: Backend, H: Clone> Drop for Kept<B, H> {
     fn drop(&mut self) {
         let mut g = self.graveyard.borrow_mut();
-        g.objects.push((self.wrap)(self.handle.clone()));
+        if let Some(wrap) = self.wrap {
+            g.objects.push(wrap(self.handle.clone()));
+        }
         g.ids.push(self.id);
     }
 }

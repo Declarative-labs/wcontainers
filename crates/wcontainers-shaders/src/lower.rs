@@ -53,6 +53,25 @@ pub(crate) fn output_modes(asked: &[(u32, Interpolation)], location: u32) -> u64
     }
 }
 
+/// Turns off WGSL's derivative uniformity check for the module: Direct3D takes derivatives and
+/// implicit-level samples in any control flow, giving helper lanes their values.
+pub(crate) fn derivatives_anywhere(module: &mut Module) {
+    use naga::diagnostic_filter as d;
+    let filter = module.diagnostic_filters.append(
+        d::DiagnosticFilterNode {
+            inner: d::DiagnosticFilter {
+                new_severity: d::Severity::Off,
+                triggering_rule: d::FilterableTriggeringRule::Standard(
+                    d::StandardFilterableTriggeringRule::DerivativeUniformity,
+                ),
+            },
+            parent: None,
+        },
+        Span::UNDEFINED,
+    );
+    module.diagnostic_filter_leaf = Some(filter);
+}
+
 /// naga's interpolation and sampling for interpolation mode bits (`ir::interp`).
 pub(crate) fn naga_interpolation(
     modes: u64,
@@ -191,19 +210,7 @@ impl<'a> Lowering<'a> {
             _ => 0,
         };
         let mut module = Module::default();
-        let filter = module.diagnostic_filters.append(
-            naga::diagnostic_filter::DiagnosticFilterNode {
-                inner: naga::diagnostic_filter::DiagnosticFilter {
-                    new_severity: naga::diagnostic_filter::Severity::Off,
-                    triggering_rule: naga::diagnostic_filter::FilterableTriggeringRule::Standard(
-                        naga::diagnostic_filter::StandardFilterableTriggeringRule::DerivativeUniformity,
-                    ),
-                },
-                parent: None,
-            },
-            Span::UNDEFINED,
-        );
-        module.diagnostic_filter_leaf = Some(filter);
+        derivatives_anywhere(&mut module);
         Ok(Lowering {
             ir,
             variant,
@@ -1370,6 +1377,8 @@ struct FunctionLowering<'l, 'a> {
     block_of: HashMap<u32, u32>,
     params: Vec<u32>,
     cur: u32,
+    /// The switch exit flags (`Targets::switch_exit`) some case has set.
+    switch_exits: Vec<Handle<LocalVariable>>,
 }
 
 /// Where branches go inside a construct.
@@ -1378,7 +1387,9 @@ struct Targets {
     brk: Option<u32>,
     cont: Option<u32>,
     header: Option<u32>,
-    in_switch: bool,
+    /// Inside a switch within a loop: set before a case leaves the switch for the loop's break, and
+    /// tested after the switch, since a break in a case leaves only the switch.
+    switch_exit: Option<Handle<LocalVariable>>,
 }
 
 impl<'l, 'a> FunctionLowering<'l, 'a> {
@@ -1418,6 +1429,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             block_of: HashMap::default(),
             params: fop.refs.clone(),
             cur: 0,
+            switch_exits: Vec::new(),
         };
         let entry = fl.scan(id)?;
         let mut body = Block::new();
@@ -1726,7 +1738,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             brk: Some(merge),
             cont: Some(cont),
             header: Some(header),
-            in_switch: false,
+            switch_exit: None,
         };
         let _ = outer;
         self.e.flush(&self.f, out);
@@ -1914,8 +1926,11 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             return Ok(true);
         }
         if Some(target) == t.brk {
-            if t.in_switch {
-                return Err(unsupported("LoopBreakInSwitch"));
+            if let Some(flag) = t.switch_exit {
+                let pointer = self.add(out, Expression::LocalVariable(flag));
+                let value = self.lit(out, Literal::Bool(true));
+                self.stmt(out, Statement::Store { pointer, value });
+                self.switch_exits.push(flag);
             }
             self.stmt(out, Statement::Break);
             return Ok(true);
@@ -1968,11 +1983,22 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             .unwrap();
         let last = targets.remove(d);
         targets.push(last);
+        let exit = t.brk.map(|_| {
+            let ty = self.l.scalar_ty(Scalar::BOOL);
+            self.f.local_variables.append(
+                LocalVariable {
+                    name: Some(format!("exit{merge}")),
+                    ty,
+                    init: None,
+                },
+                Span::UNDEFINED,
+            )
+        });
         let inner = Targets {
             brk: t.brk,
             cont: t.cont,
             header: t.header,
-            in_switch: true,
+            switch_exit: exit,
         };
         let mut cases = Vec::new();
         for (values, target) in targets {
@@ -2003,7 +2029,29 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 });
             }
         }
+        let exit = exit.filter(|flag| self.switch_exits.contains(flag));
+        if let Some(flag) = exit {
+            let pointer = self.add(out, Expression::LocalVariable(flag));
+            let value = self.lit(out, Literal::Bool(false));
+            self.stmt(out, Statement::Store { pointer, value });
+        }
         self.stmt(out, Statement::Switch { selector, cases });
+        if let (Some(flag), Some(brk)) = (exit, t.brk) {
+            let pointer = self.add(out, Expression::LocalVariable(flag));
+            let condition = self.add(out, Expression::Load { pointer });
+            self.e.flush(&self.f, out);
+            let mut accept = Block::new();
+            self.jump(brk, t, None, &mut accept)?;
+            self.e.flush(&self.f, &mut accept);
+            self.stmt(
+                out,
+                Statement::If {
+                    condition,
+                    accept,
+                    reject: Block::new(),
+                },
+            );
+        }
         Ok(())
     }
 

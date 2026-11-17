@@ -5,7 +5,7 @@
 use alloc::{format, vec, vec::Vec};
 
 use crate::front::spv::{
-    convert::{map_binary_operator, map_relational_fun},
+    convert::{glsl_signedness, map_binary_operator, map_relational_fun, op_signedness},
     image, resolve_constant, BlockContext, Body, BodyFragment, Constant, Error, Frontend,
     LookupExpression, LookupHelper as _, LookupLoadOverride, MergeBlockInformation, PhiExpression,
     SignAnchor,
@@ -78,8 +78,27 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                 self.parse_expr_binary_op(ctx, &mut emitter, &mut block, block_id, body_idx, $op)
             };
 
-            ($op:expr, SHIFT) => {
-                self.parse_expr_shift_op(ctx, &mut emitter, &mut block, block_id, body_idx, $op)
+            ($op:expr, $kind:expr, SHIFT) => {
+                self.parse_expr_shift_op(
+                    ctx,
+                    &mut emitter,
+                    &mut block,
+                    block_id,
+                    body_idx,
+                    $op,
+                    $kind,
+                )
+            };
+            ($op:expr, $kind:expr, SIGNED) => {
+                self.parse_expr_signed_binary_op(
+                    ctx,
+                    &mut emitter,
+                    &mut block,
+                    block_id,
+                    body_idx,
+                    $op,
+                    $kind,
+                )
             };
             ($op:expr, UNARY) => {
                 self.parse_expr_unary_op(ctx, &mut emitter, &mut block, block_id, body_idx, $op)
@@ -809,9 +828,7 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                 | Op::IMul
                 | Op::BitwiseOr
                 | Op::BitwiseXor
-                | Op::BitwiseAnd
-                | Op::SDiv
-                | Op::SRem => {
+                | Op::BitwiseAnd => {
                     inst.expect(5)?;
                     let operator = map_binary_operator(inst.op)?;
                     self.parse_expr_binary_op_sign_adjusted(
@@ -849,13 +866,29 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     inst.expect(5)?;
                     parse_expr_op!(crate::BinaryOperator::Multiply, BINARY)?;
                 }
-                Op::UDiv | Op::FDiv => {
+                Op::FDiv => {
                     inst.expect(5)?;
                     parse_expr_op!(crate::BinaryOperator::Divide, BINARY)?;
                 }
-                Op::UMod | Op::FRem => {
+                Op::FRem => {
                     inst.expect(5)?;
                     parse_expr_op!(crate::BinaryOperator::Modulo, BINARY)?;
+                }
+                Op::UDiv | Op::SDiv => {
+                    inst.expect(5)?;
+                    parse_expr_op!(
+                        crate::BinaryOperator::Divide,
+                        op_signedness(inst.op).unwrap(),
+                        SIGNED
+                    )?;
+                }
+                Op::UMod | Op::SRem => {
+                    inst.expect(5)?;
+                    parse_expr_op!(
+                        crate::BinaryOperator::Modulo,
+                        op_signedness(inst.op).unwrap(),
+                        SIGNED
+                    )?;
                 }
                 Op::SMod => {
                     inst.expect(5)?;
@@ -888,10 +921,17 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                         body_idx,
                     );
 
+                    let kind = crate::ScalarKind::Sint;
+                    let left_kind = self.int_kind(ctx, p1_lexp.type_id)?;
+                    let right_kind = self.int_kind(ctx, p2_lexp.type_id)?;
+                    let result_kind = self.int_kind(ctx, result_type_id)?;
+                    let left = Self::retype_int(ctx, left, left_kind, Some(kind), span);
+                    let right = Self::retype_int(ctx, right, right_kind, Some(kind), span);
                     let result_ty = self.lookup_type.lookup(result_type_id)?;
-                    let inner = &ctx.module.types[result_ty.handle].inner;
-                    let kind = inner.scalar_kind().unwrap();
-                    let size = inner.size(ctx.gctx()) as u8;
+                    let size = ctx.module.types[result_ty.handle]
+                        .inner
+                        .scalar_width()
+                        .unwrap_or(4);
 
                     let left_cast = ctx.expressions.append(
                         crate::Expression::As {
@@ -951,6 +991,7 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                         },
                         span,
                     );
+                    let sub = Self::retype_int(ctx, sub, Some(kind), result_kind, span);
                     self.lookup_expression.insert(
                         result_id,
                         LookupExpression {
@@ -1220,6 +1261,11 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                         count_handle
                     };
 
+                    // Sign or zero extension follows the instruction, not the base's type.
+                    let signedness = op_signedness(inst.op);
+                    let base_kind = self.int_kind(ctx, base_lexp.type_id)?;
+                    let base_handle =
+                        Self::retype_int(ctx, base_handle, base_kind, signedness, span);
                     let expr = crate::Expression::Math {
                         fun: crate::MathFunction::ExtractBits,
                         arg: base_handle,
@@ -1227,10 +1273,13 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                         arg2: Some(count_cast_handle),
                         arg3: None,
                     };
+                    let extracted = ctx.expressions.append(expr, span);
+                    let result_kind = self.int_kind(ctx, result_type_id)?;
+                    let handle = Self::retype_int(ctx, extracted, signedness, result_kind, span);
                     self.lookup_expression.insert(
                         result_id,
                         LookupExpression {
-                            handle: ctx.expressions.append(expr, span),
+                            handle,
                             type_id: result_type_id,
                             block_id,
                         },
@@ -1303,19 +1352,17 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                         crate::UnaryOperator::BitwiseNot,
                     )?;
                 }
-                Op::ShiftRightLogical => {
+                Op::ShiftRightLogical | Op::ShiftRightArithmetic => {
                     inst.expect(5)?;
-                    //TODO: convert input and result to unsigned
-                    parse_expr_op!(crate::BinaryOperator::ShiftRight, SHIFT)?;
-                }
-                Op::ShiftRightArithmetic => {
-                    inst.expect(5)?;
-                    //TODO: convert input and result to signed
-                    parse_expr_op!(crate::BinaryOperator::ShiftRight, SHIFT)?;
+                    parse_expr_op!(
+                        crate::BinaryOperator::ShiftRight,
+                        op_signedness(inst.op),
+                        SHIFT
+                    )?;
                 }
                 Op::ShiftLeftLogical => {
                     inst.expect(5)?;
-                    parse_expr_op!(crate::BinaryOperator::ShiftLeft, SHIFT)?;
+                    parse_expr_op!(crate::BinaryOperator::ShiftLeft, None, SHIFT)?;
                 }
                 // Sampling
                 Op::Image => {
@@ -1619,9 +1666,26 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                         _ => return Err(Error::InvalidAsType(ty_lookup.handle)),
                     };
 
+                    // The operand's integers are read, and the result's made, in the signedness
+                    // the instruction names; the result is then given the result type's.
+                    let signedness = op_signedness(inst.op);
+                    let value = get_expr_handle!(value_id, value_lexp);
+                    let value_kind = self.int_kind(ctx, value_lexp.type_id)?;
+                    let value = match inst.op {
+                        Op::ConvertSToF | Op::ConvertUToF | Op::SConvert | Op::UConvert => {
+                            Self::retype_int(ctx, value, value_kind, signedness, span)
+                        }
+                        _ => value,
+                    };
+                    let kind = match inst.op {
+                        Op::ConvertFToS | Op::ConvertFToU | Op::SConvert | Op::UConvert => {
+                            signedness.unwrap()
+                        }
+                        _ => scalar.kind,
+                    };
                     let expr = crate::Expression::As {
-                        expr: get_expr_handle!(value_id, value_lexp),
-                        kind: scalar.kind,
+                        expr: value,
+                        kind,
                         convert: if scalar.kind == crate::ScalarKind::Bool {
                             Some(crate::BOOL_WIDTH)
                         } else if inst.op == Op::Bitcast {
@@ -1630,10 +1694,13 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                             Some(scalar.width)
                         },
                     };
+                    let converted = ctx.expressions.append(expr, span);
+                    let result_kind = self.int_kind(ctx, result_type_id)?;
+                    let handle = Self::retype_int(ctx, converted, Some(kind), result_kind, span);
                     self.lookup_expression.insert(
                         result_id,
                         LookupExpression {
-                            handle: ctx.expressions.append(expr, span),
+                            handle,
                             type_id: result_type_id,
                             block_id,
                         },
@@ -1781,44 +1848,33 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
 
                     let arg_count = fun.argument_count();
                     inst.expect(base_wc + arg_count as u16)?;
-                    let arg = {
+                    // Integer arguments are read, and the result made, in the signedness the
+                    // instruction names; the result is then given the result type's.
+                    let signedness = glsl_signedness(gl_op);
+                    let mut args = [None; 4];
+                    for slot in args.iter_mut().take(arg_count) {
                         let arg_id = self.next()?;
                         let lexp = self.lookup_expression.lookup(arg_id)?;
-                        get_expr_handle!(arg_id, lexp)
-                    };
-                    let arg1 = if arg_count > 1 {
-                        let arg_id = self.next()?;
-                        let lexp = self.lookup_expression.lookup(arg_id)?;
-                        Some(get_expr_handle!(arg_id, lexp))
-                    } else {
-                        None
-                    };
-                    let arg2 = if arg_count > 2 {
-                        let arg_id = self.next()?;
-                        let lexp = self.lookup_expression.lookup(arg_id)?;
-                        Some(get_expr_handle!(arg_id, lexp))
-                    } else {
-                        None
-                    };
-                    let arg3 = if arg_count > 3 {
-                        let arg_id = self.next()?;
-                        let lexp = self.lookup_expression.lookup(arg_id)?;
-                        Some(get_expr_handle!(arg_id, lexp))
-                    } else {
-                        None
-                    };
+                        let handle = get_expr_handle!(arg_id, lexp);
+                        let kind = self.int_kind(ctx, lexp.type_id)?;
+                        *slot = Some(Self::retype_int(ctx, handle, kind, signedness, span));
+                    }
+                    let [arg, arg1, arg2, arg3] = args;
 
                     let expr = crate::Expression::Math {
                         fun,
-                        arg,
+                        arg: arg.ok_or(Error::InvalidOperandCount(inst.op, inst.wc))?,
                         arg1,
                         arg2,
                         arg3,
                     };
+                    let value = ctx.expressions.append(expr, span);
+                    let result_kind = self.int_kind(ctx, result_type_id)?;
+                    let handle = Self::retype_int(ctx, value, signedness, result_kind, span);
                     self.lookup_expression.insert(
                         result_id,
                         LookupExpression {
-                            handle: ctx.expressions.append(expr, span),
+                            handle,
                             type_id: result_type_id,
                             block_id,
                         },
@@ -2638,6 +2694,11 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
 
                     let argument_lookup = self.lookup_expression.lookup(argument_id)?;
                     let argument_handle = get_expr_handle!(argument_id, argument_lookup);
+                    if let Some(kind) = op_signedness(inst.op) {
+                        if self.int_kind(ctx, argument_lookup.type_id)? != Some(kind) {
+                            return Err(Error::UnsupportedSignedness(inst.op));
+                        }
+                    }
 
                     let exec_scope_const = self.lookup_constant.lookup(exec_scope_id)?;
                     let _exec_scope = resolve_constant(ctx.gctx(), &exec_scope_const.inner)

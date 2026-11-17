@@ -1,5 +1,6 @@
-//! Builds the C++ converters into the crate with the `cc` crate, and names their sources' contents in
-//! `WCS_CONVERTER_SOURCES` for the content key. The file lists come from their meson and CMake files.
+//! Builds the C++ converters into the crate with the `cc` crate, and names the whole converter's
+//! sources (the C++, this crate's Rust and the carried naga) in `WCS_CONVERTER_SOURCES` for the
+//! content key. The file lists come from the converters' meson and CMake files.
 
 use std::path::{Path, PathBuf};
 
@@ -101,6 +102,40 @@ fn main() {
         root.join("meson.build").exists(),
         "dxbc-spirv is missing: run `git submodule update --init` in the repository"
     );
+    let dxil = Path::new("dxil-spirv");
+    assert!(
+        dxil.join("third_party/spirv-headers/include").exists(),
+        "dxil-spirv is missing: run `git submodule update --init --recursive crates/wcontainers-shaders/dxil-spirv`"
+    );
+    // Everything that makes the C++ objects: its sources (dxil-spirv's top directory alone, its
+    // subdirectories are listed), this script, and the SDK for WebAssembly.
+    let cpp = [
+        (root.join("dxbc"), true),
+        (root.join("ir"), true),
+        (root.join("util"), true),
+        (dxil.to_path_buf(), false),
+        (dxil.join("bc"), true),
+        (dxil.join("debug"), true),
+        (dxil.join("util"), true),
+        (dxil.join("opcodes"), true),
+        (dxil.join("third_party/glslang-spirv"), true),
+        (dxil.join("third_party/bc-decoder"), true),
+        (
+            dxil.join("third_party/spirv-headers/include/spirv/unified1"),
+            true,
+        ),
+        (PathBuf::from("cpp"), true),
+        (PathBuf::from("build.rs"), false),
+    ];
+    let mut objects = blake3::Hasher::new();
+    hash_files(&mut objects, &cpp);
+    objects.update(
+        std::env::var("WASI_SDK_PATH")
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    let objects = objects.finalize().to_hex().to_string();
+
     let mut build = base();
     build
         .std("c++17")
@@ -109,15 +144,12 @@ fn main() {
     for file in DXBC_SPIRV {
         build.file(root.join(file));
     }
-    build.file("cpp/dxbc.cpp").compile("dxbc_spirv");
+    build.file("cpp/dxbc.cpp");
+    compile(&build, "dxbc_spirv", &objects);
 
-    // dxil-spirv (C++14, built as C++17 as its CMake does where it reads dxbc-spirv), with its own glslang SPIR-V builder, bitcode reader and SPIRV-Headers. Its
-    // bitcode module also reads dxbc-spirv's IR, from our one copy of dxbc-spirv.
-    let dxil = Path::new("dxil-spirv");
-    assert!(
-        dxil.join("third_party/spirv-headers/include").exists(),
-        "dxil-spirv is missing: run `git submodule update --init --recursive crates/wcontainers-shaders/dxil-spirv`"
-    );
+    // dxil-spirv (C++14, built as C++17 as its CMake does where it reads dxbc-spirv), with its own
+    // glslang SPIR-V builder, bitcode reader and SPIRV-Headers. Its bitcode module also reads
+    // dxbc-spirv's IR, from our one copy of dxbc-spirv.
     let mut build = base();
     build
         .std("c++17")
@@ -138,53 +170,86 @@ fn main() {
     for file in DXIL_SPIRV {
         build.file(dxil.join(file));
     }
-    build.file("cpp/dxil.cpp").compile("dxil_spirv");
+    build.file("cpp/dxil.cpp");
+    compile(&build, "dxil_spirv", &objects);
     // Linked after both, which call it.
-    base().file("cpp/assertion.cpp").compile("wcs_assertion");
+    let mut build = base();
+    build.file("cpp/assertion.cpp");
+    compile(&build, "wcs_assertion", &objects);
 
-    let sources = [
-        root.join("dxbc"),
-        root.join("ir"),
-        root.join("util"),
-        dxil.to_path_buf(),
-        dxil.join("bc"),
-        dxil.join("debug"),
-        dxil.join("util"),
-        dxil.join("opcodes"),
-        dxil.join("third_party/glslang-spirv"),
-        dxil.join("third_party/bc-decoder"),
-        dxil.join("third_party/spirv-headers/include/spirv/unified1"),
-        PathBuf::from("cpp"),
-    ];
+    // The converter as a whole: the C++ above, this crate's Rust, and the naga carried in the
+    // workspace, whose readers and writers make the module.
+    let naga = Path::new("../../third_party/naga/src");
+    let mut converter = blake3::Hasher::new();
+    converter.update(objects.as_bytes());
+    hash_files(
+        &mut converter,
+        &[(PathBuf::from("src"), true), (naga.into(), true)],
+    );
     println!(
         "cargo:rustc-env=WCS_CONVERTER_SOURCES={}",
-        contents_hash(&sources)
+        converter.finalize().to_hex()
     );
     println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
-    println!("cargo:rerun-if-changed=cpp");
-    println!("cargo:rerun-if-changed=dxbc-spirv");
-    println!("cargo:rerun-if-changed=dxil-spirv");
+    for watched in ["cpp", "dxbc-spirv", "dxil-spirv", "src"] {
+        println!("cargo:rerun-if-changed={watched}");
+    }
+    if naga.exists() {
+        println!("cargo:rerun-if-changed={}", naga.display());
+    }
 }
 
-/// BLAKE3 over the C++ sources under `dirs` (those directories' own files, and the whole tree of
-/// `opcodes`), by path and contents with carriage returns left out, so every checkout of the same
-/// sources names the same converter.
-fn contents_hash(dirs: &[PathBuf]) -> String {
+/// Compiles `build` into the static library `name`, reusing the objects of an earlier run while
+/// `hash` (of everything that makes them) is unchanged, so that a change to the Rust sources alone,
+/// which reruns this script for the content key, compiles no C++.
+fn compile(build: &cc::Build, name: &str, hash: &str) {
+    let dir = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(format!("{name}-objects"));
+    let stamp = dir.join("hash");
+    let list = |dir: &Path| -> Vec<PathBuf> {
+        let mut objects: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p != &stamp)
+            .collect();
+        objects.sort();
+        objects
+    };
+    let objects = if std::fs::read_to_string(&stamp).ok().as_deref() == Some(hash) {
+        list(&dir)
+    } else {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, object) in build.compile_intermediates().iter().enumerate() {
+            let file = object.file_name().unwrap().to_string_lossy();
+            std::fs::copy(object, dir.join(format!("{i:03}-{file}"))).unwrap();
+        }
+        std::fs::write(&stamp, hash).unwrap();
+        list(&dir)
+    };
+    base().objects(objects).compile(name);
+}
+
+/// Hashes the files under each `(path, recursive)` (a path may be one file) by name and contents,
+/// carriage returns left out, so every checkout of the same sources gives the same hash.
+fn hash_files(hasher: &mut blake3::Hasher, paths: &[(PathBuf, bool)]) {
     let mut files = Vec::new();
-    for dir in dirs {
-        let recursive = dir.ends_with("opcodes");
-        let mut stack = vec![dir.clone()];
+    for (path, recursive) in paths {
+        if path.is_file() {
+            files.push(path.clone());
+            continue;
+        }
+        let mut stack = vec![path.clone()];
         while let Some(d) = stack.pop() {
-            for entry in std::fs::read_dir(&d).unwrap() {
+            let Ok(entries) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for entry in entries {
                 let path = entry.unwrap().path();
                 if path.is_dir() {
-                    if recursive {
+                    if *recursive {
                         stack.push(path);
                     }
-                } else if path.extension().is_some_and(|e| {
-                    ["c", "cpp", "h", "hpp", "inc"].contains(&&*e.to_string_lossy())
-                }) || path.parent() == Some(Path::new("cpp/assert"))
-                {
+                } else {
                     files.push(path);
                 }
             }
@@ -192,7 +257,6 @@ fn contents_hash(dirs: &[PathBuf]) -> String {
     }
     files.sort();
     files.dedup();
-    let mut hasher = blake3::Hasher::new();
     for file in files {
         let name = file.to_string_lossy().replace('\\', "/");
         let bytes: Vec<u8> = std::fs::read(&file)
@@ -204,7 +268,6 @@ fn contents_hash(dirs: &[PathBuf]) -> String {
         hasher.update(&(bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
     }
-    hasher.finalize().to_hex().to_string()
 }
 
 /// The common C++ setup: the converters' assertions as `cpp/assert` defines them, C++ exceptions on

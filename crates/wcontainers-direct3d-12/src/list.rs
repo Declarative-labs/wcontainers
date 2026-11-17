@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use crate::Error;
-use crate::device::{PipelineId, ResourceId, RootId};
+use crate::device::{PipelineId, QueryHeapId, ResourceId, RootId};
 
 /// A render target view as a descriptor holds it (`D3D12_RENDER_TARGET_VIEW_DESC` resolved against
 /// its resource): the program copies descriptors as bytes, so this is plain data.
@@ -211,6 +211,36 @@ pub enum Command {
         src: CopyLocation,
         /// left, top, front, right, bottom, back.
         area: Option<[u32; 6]>,
+    },
+    Dispatch([u32; 3]),
+    /// `BeginQuery` and `EndQuery`, `D3D12_QUERY_TYPE` in `kind`.
+    BeginQuery {
+        heap: QueryHeapId,
+        kind: u32,
+        index: u32,
+    },
+    EndQuery {
+        heap: QueryHeapId,
+        kind: u32,
+        index: u32,
+    },
+    ResolveQueries {
+        heap: QueryHeapId,
+        kind: u32,
+        first: u32,
+        count: u32,
+        dst: ResourceId,
+        offset: u64,
+    },
+    /// `SetPredication`: the buffer, offset and `D3D12_PREDICATION_OP`, or none.
+    Predication(Option<(ResourceId, u64, u32)>),
+    /// `ClearUnorderedAccessViewUint` (`float` false: the values are integers) or `...Float` (the
+    /// values are f32 bits).
+    ClearStorage {
+        view: ResourceView,
+        values: [u32; 4],
+        float: bool,
+        rects: Vec<Rect>,
     },
 }
 

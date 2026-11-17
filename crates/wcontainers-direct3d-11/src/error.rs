@@ -15,6 +15,8 @@ pub enum Error {
     OutOfMemory,
     /// The device is lost (`DXGI_ERROR_DEVICE_REMOVED`).
     DeviceRemoved,
+    /// A call DXGI refuses in the object's present state (`DXGI_ERROR_INVALID_CALL`).
+    InvalidCall(&'static str),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
