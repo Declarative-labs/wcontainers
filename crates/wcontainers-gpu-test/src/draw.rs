@@ -269,20 +269,6 @@ fn sample_view(
         Level::Bias(b) => b,
     };
     let filter = if lod > 0.0 { s.min } else { s.mag };
-    let linear = Filter::Linear;
-    if (filter == linear || (s.mip == linear && levels > 1))
-        && reference.is_none()
-        && !rec
-            .caps()
-            .formats
-            .get(v.desc.format)
-            .contains(FormatUse::FILTER)
-    {
-        return Err(format!(
-            "{:?} filtered, which this back end does not filter",
-            v.desc.format
-        ));
-    }
     let lod = f64::from(lod)
         .clamp(
             f64::from(f32::from_bits(s.lod_range[0])),
@@ -309,7 +295,13 @@ fn sample_view(
         _ => v.desc.base_layer,
     };
     let three_d = v.desc.dimension == ViewDimension::D3;
-    let reference = reference.map(|r| (s.compare.unwrap_or(CompareFn::Always), f64::from(r)));
+    let reference = match (reference, s.compare) {
+        (Some(r), Some(f)) => Some((f, f64::from(r))),
+        (Some(_), None) => {
+            return Err("a comparison through a sampler that does not compare".into());
+        }
+        (None, _) => None,
+    };
     let mut out = [0.0; 4];
     for (l, weight) in picks {
         if weight == 0.0 {
@@ -657,6 +649,12 @@ impl Recorder {
     /// Checks the draw's own values against the rules and the features this back end declares.
     fn draw_rules(&self, call: &DrawCall<'_, Self>) -> Result<(), Error> {
         let has = self.caps().features;
+        if call.viewports.len() > 1 || call.scissors.len() > 1 {
+            return Err(
+                "several viewports or scissors in one draw, which fronts split (MultiViewportSplit)"
+                    .into(),
+            );
+        }
         for v in call.viewports {
             if f32::from_bits(v.min_depth) > f32::from_bits(v.max_depth) {
                 return Err("a viewport whose min_depth is above its max_depth".into());
@@ -743,6 +741,84 @@ impl Recorder {
         Ok(())
     }
 
+    /// Checks what the program's bindings take of the resources bound there: a sampler that compares
+    /// exactly where the program compares, no linear filter paired with a texture this back end does
+    /// not filter, and buffers at least the size of the program's blocks. Bindings missing or of
+    /// another kind are refused where the program reads them.
+    fn program_bindings(&self, state: &DrawState) -> Result<(), Error> {
+        let bound = |rb: &naga::ResourceBinding| {
+            state.sets[rb.group as usize]
+                .as_ref()
+                .and_then(|s| s.iter().find(|(b, _)| *b == rb.binding))
+                .map(|(_, r)| r)
+        };
+        let sampler = |rb: &naga::ResourceBinding| -> Result<Option<SamplerDesc>, Error> {
+            match bound(rb) {
+                Some(Bound::Sampler(s)) => match self.obj(*s)? {
+                    Obj::Sampler(d) => Ok(Some(*d)),
+                    _ => Ok(None),
+                },
+                _ => Ok(None),
+            }
+        };
+        for shader in std::iter::once(&state.vertex).chain(&state.fragment) {
+            let m = &shader.module;
+            let info = shader.info.get_entry_point(entry(shader)?);
+            for (h, g) in m.global_variables.iter() {
+                let Some(rb) = &g.binding else { continue };
+                if info[h].is_empty() {
+                    continue;
+                }
+                match m.types[g.ty].inner {
+                    TypeInner::Sampler { comparison } => {
+                        if let Some(d) = sampler(rb)?
+                            && d.compare.is_some() != comparison
+                        {
+                            return Err(if comparison {
+                                "a program comparing through a sampler that does not compare"
+                            } else {
+                                "a comparison sampler where the program samples without comparing"
+                            }
+                            .into());
+                        }
+                    }
+                    ref ty => {
+                        if let Some(Bound::Buffer { size, .. }) = bound(rb) {
+                            let need = u64::from(ty.size(m.to_ctx()));
+                            if *size < need {
+                                return Err(format!(
+                                    "a buffer binding of {size} bytes for a block of {need}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            for key in &info.sampling_set {
+                let (image, with) = (
+                    &m.global_variables[key.image],
+                    &m.global_variables[key.sampler],
+                );
+                let (Some(ib), Some(sb)) = (&image.binding, &with.binding) else {
+                    continue;
+                };
+                let (Some(Bound::Texture(view)), Some(d)) = (bound(ib), sampler(sb)?) else {
+                    continue;
+                };
+                let format = self.view(*view)?.desc.format;
+                if d.compare.is_none()
+                    && [d.min, d.mag, d.mip].contains(&Filter::Linear)
+                    && !self.caps().formats.get(format).contains(FormatUse::FILTER)
+                {
+                    return Err(format!(
+                        "{format:?} filtered, which this back end does not filter"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Checks the draw's buffers were made for how it uses them, and the usage-scope rule of a pass: a
     /// buffer any draw of the pass binds as writable storage is used no other way by any draw of the
     /// pass (texture subresources cannot be storage here).
@@ -820,8 +896,12 @@ impl Recorder {
         }
         if let (Some(i), DrawRange::Indexed { first, count, .. }) = (&call.index, &call.range) {
             let size = u64::from(i.format.size());
-            let start = i.offset + u64::from(*first) * size;
-            reads.push((*i.buffer, start, start + u64::from(*count) * size));
+            let start = i.offset.saturating_add(u64::from(*first) * size);
+            reads.push((
+                *i.buffer,
+                start,
+                start.saturating_add(u64::from(*count) * size),
+            ));
         }
         let (list, first_instance, instances) = self.vertex_list(call)?;
         let vertices = list.iter().flatten();
@@ -852,8 +932,12 @@ impl Recorder {
                 let stride = u64::from(stream.stride);
                 reads.push((
                     *binding.buffer,
-                    binding.offset + u64::from(first) * stride + ends.0,
-                    binding.offset + u64::from(last) * stride + ends.1,
+                    binding
+                        .offset
+                        .saturating_add(u64::from(first) * stride + ends.0),
+                    binding
+                        .offset
+                        .saturating_add(u64::from(last) * stride + ends.1),
                 ));
             }
         }
@@ -916,9 +1000,9 @@ impl Recorder {
                 let size = index.format.size() as usize;
                 let mut list = Vec::new();
                 for k in first..first + count {
-                    let at = index.offset as usize + k as usize * size;
+                    let at = (index.offset as usize).saturating_add(k as usize * size);
                     let b = bytes
-                        .get(at..at + size)
+                        .get(at..at.saturating_add(size))
                         .ok_or("an index past the buffer's end")?;
                     let v = b.iter().rev().fold(0u32, |a, &x| (a << 8) | u32::from(x));
                     if call.restart && v == index.format.restart_value() {
@@ -970,9 +1054,8 @@ impl Recorder {
                     StepMode::Instance(0) => first_instance,
                     StepMode::Instance(n) => first_instance + (instance - first_instance) / n,
                 };
-                let at = bound.offset as usize
-                    + element as usize * stream.stride as usize
-                    + a.offset as usize;
+                let at = (bound.offset as usize)
+                    .saturating_add(element as usize * stream.stride as usize + a.offset as usize);
                 let bytes = self
                     .buffer(*bound.buffer)?
                     .bytes
@@ -1042,6 +1125,7 @@ impl Recorder {
         self.pass.as_ref().ok_or("draw outside a pass")?;
         let state = self.gather(call)?;
         self.draw_rules(call)?;
+        self.program_bindings(&state)?;
         self.usage_scope(call, &state)?;
         for (buffer, start, end) in self.draw_reads(call, &state)? {
             self.touch(buffer, start, end);
