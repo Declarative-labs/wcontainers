@@ -67,6 +67,33 @@ pub fn lock() -> ReentrantMutexGuard<'static, ()> {
     LOCK.lock()
 }
 
+/// Held through each method of the device and the context: the library's lock and, on leaving, the
+/// front's new slow-path warnings shown.
+pub struct Call<'a> {
+    front: &'a Shared,
+    _lock: ReentrantMutexGuard<'static, ()>,
+}
+
+impl<'a> Call<'a> {
+    pub fn new(front: &'a Shared) -> Self {
+        Call {
+            _lock: lock(),
+            front,
+        }
+    }
+}
+
+impl Drop for Call<'_> {
+    fn drop(&mut self) {
+        // A call made from inside another (a drop releasing objects) leaves the warnings to it.
+        if let Ok(mut front) = self.front.try_borrow_mut() {
+            for w in front.take_warnings() {
+                eprintln!("wcontainers direct3d 11: slow path taken: {w}");
+            }
+        }
+    }
+}
+
 /// A value shared between COM objects that is touched only under the library's lock, dropped
 /// under it too (COM objects are released on any thread).
 pub struct Locked<T>(ManuallyDrop<T>);
@@ -112,6 +139,26 @@ pub fn missing(what: &'static str) -> Error {
 /// or context: warned, and nothing else changes.
 pub fn missing_void(what: &'static str) {
     warn_once(what);
+}
+
+/// What `GetDeviceRemovedReason` answers for a removal.
+pub fn removal(r: Option<wcontainers_direct3d_11::Removal>) -> Result<()> {
+    use wcontainers_direct3d_11::Removal;
+    use wcontainers_gpu::LossReason;
+    use windows::Win32::Graphics::Dxgi::{
+        DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_DRIVER_INTERNAL_ERROR,
+    };
+    match r {
+        None => Ok(()),
+        Some(Removal::Lost(LossReason::Reset)) => Err(DXGI_ERROR_DEVICE_RESET.into()),
+        Some(Removal::Lost(LossReason::Removed)) => Err(DXGI_ERROR_DEVICE_REMOVED.into()),
+        // A request the front cannot serve, an invalid command on the back end's API and memory the
+        // back end ran out of are the driver's failures to the program (Direct3D 11 lists no memory
+        // reason).
+        Some(Removal::Unserved | Removal::Lost(LossReason::Error | LossReason::OutOfMemory)) => {
+            Err(DXGI_ERROR_DRIVER_INTERNAL_ERROR.into())
+        }
+    }
 }
 
 /// The HRESULT of a front error.

@@ -11,7 +11,7 @@ use wcontainers_gpu::{
 };
 
 use crate::desc::{self, Box3, Viewport, map, topology, usage};
-use crate::device::{Device, integer_format};
+use crate::device::{Device, gpu_buffer, integer_format};
 use crate::error::{Error, Result, not_implemented};
 use crate::format;
 use crate::object::*;
@@ -470,12 +470,6 @@ impl<B: Backend> Device<B> {
         self.ctx.pass_open = true;
     }
 
-    /// Records that the device is lost, as Direct3D reports it from then on.
-    pub(crate) fn lose(&mut self, e: Error) {
-        eprintln!("wcontainers direct3d 11: device removed: {e:?}");
-        self.removed = true;
-    }
-
     pub fn draw(&mut self, count: u32, start: u32) {
         self.draw_any(Range::Vertices { count, start }, 0, 1);
     }
@@ -572,6 +566,62 @@ impl<B: Backend> Device<B> {
         Ok(gpu)
     }
 
+    /// Grows each constant buffer a stage whose binding set changed reads that is smaller than its
+    /// shader declares (`ConstantBufferGrown`). A grown buffer is a new back-end buffer, so every set
+    /// is made again.
+    fn grow_constants(&mut self) -> Result<()> {
+        let mut small = Vec::new();
+        for stage in [VERTEX, PIXEL] {
+            let shader = if stage == VERTEX {
+                &self.ctx.vs
+            } else {
+                &self.ctx.ps
+            };
+            let Some(shader) = shader.as_ref().filter(|_| self.ctx.sets_dirty[stage]) else {
+                continue;
+            };
+            for b in &shader.reflection.bindings {
+                let bound = self.ctx.constant_buffers[stage].get(b.register as usize);
+                if let (SlotKind::Uniform, Some(Some(c))) = (b.kind, bound)
+                    && b.set as usize == stage
+                    && let Some(&(_, declared)) =
+                        shader.constant_sizes.iter().find(|(n, _)| *n == b.binding)
+                    && declared > c.size.get()
+                {
+                    small.push((c.clone(), declared));
+                }
+            }
+        }
+        for (c, declared) in &small {
+            if *declared > c.size.get() {
+                self.grow(c, *declared)?;
+            }
+        }
+        if !small.is_empty() {
+            self.ctx.sets_dirty = [true; 2];
+        }
+        Ok(())
+    }
+
+    /// Moves a buffer into a back-end buffer of `size` bytes whose bytes past its own are zero.
+    fn grow(&mut self, b: &Buffer<B>, size: u64) -> Result<()> {
+        self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
+        self.settle();
+        let old = b.size.get();
+        let new = self.backend.create_buffer(&gpu_buffer(&b.desc, size))?;
+        self.backend.clear_buffer(&new, old, size - old, &[0]);
+        self.backend.copy_buffer(&b.handle(), 0, &new, 0, old);
+        let id = self.id();
+        *b.gpu.borrow_mut() = Kept::new(new, id, Object::Buffer, &self.graveyard);
+        b.size.set(size);
+        b.grown.set(true);
+        let mut shadow = b.shadow.borrow_mut();
+        if !shadow.is_empty() {
+            shadow.resize(size as usize, 0);
+        }
+        Ok(())
+    }
+
     /// Makes the binding set of `stage` from its slots and its shader's reflection, when it changed.
     fn update_set(&mut self, stage: usize) -> Result<()> {
         if !self.ctx.sets_dirty[stage] {
@@ -602,18 +652,21 @@ impl<B: Backend> Device<B> {
         } else {
             StageSet::FRAGMENT
         };
-        let cbs = self.ctx.constant_buffers[stage].clone();
+        let cbs: Vec<_> = self.ctx.constant_buffers[stage]
+            .iter()
+            .map(|c| c.as_ref().map(|c| (c.gpu.borrow(), c.size.get())))
+            .collect();
         let views = self.ctx.resources[stage].clone();
         let samplers = self.ctx.samplers[stage].clone();
         let mut entries = Vec::with_capacity(wanted.len());
         for b in &wanted {
             let slot = b.register as usize;
             let resource = match b.kind {
-                SlotKind::Uniform => cbs.get(slot).and_then(Option::as_ref).map(|c| {
+                SlotKind::Uniform => cbs.get(slot).and_then(Option::as_ref).map(|(c, size)| {
                     BindingResource::UniformBuffer(BufferRange {
-                        buffer: &c.gpu.handle,
+                        buffer: &c.handle,
                         offset: 0,
-                        size: u64::from(c.desc.byte_width),
+                        size: *size,
                     })
                 }),
                 SlotKind::Texture => views
@@ -638,6 +691,7 @@ impl<B: Backend> Device<B> {
         // The entries borrow handles from the slot clones above, which live to the end of this call.
         let set = self.backend.create_binding_set(&entries)?;
         drop(entries);
+        drop(cbs);
         let id = self.id();
         self.ctx.sets[stage] = Some(Kept::new(set, id, Object::BindingSet, &self.graveyard));
         self.ctx.sets_dirty[stage] = false;
@@ -645,7 +699,7 @@ impl<B: Backend> Device<B> {
     }
 
     fn try_draw(&mut self, range: Range, first_instance: u32, instances: u32) -> Result<()> {
-        if self.removed {
+        if self.removed.is_some() {
             return Ok(());
         }
         self.bury();
@@ -670,9 +724,19 @@ impl<B: Backend> Device<B> {
                 "SV_VertexID or SV_InstanceID with a non-zero start or base location",
             );
         }
+        // The converter writes no program whose second output feeds the blend yet.
+        if self
+            .ctx
+            .blend
+            .as_ref()
+            .is_some_and(|b| b.desc.dual_source())
+        {
+            return not_implemented("dual-source blending");
+        }
         let ps = self.ctx.ps.clone();
         let program = self.program(&vs, ps.as_ref())?;
         let vertex_layout = self.vertex_layout()?;
+        self.grow_constants()?;
         self.update_set(VERTEX)?;
         self.update_set(PIXEL)?;
 
@@ -745,16 +809,21 @@ impl<B: Backend> Device<B> {
         self.open_pass();
 
         let ctx = &self.ctx;
-        let vertex_buffers: Vec<Option<VertexBinding<'_, B>>> = ctx
+        let vertex_handles: Vec<_> = ctx
             .vertex_buffers
             .iter()
+            .map(|s| s.as_ref().map(|(b, _, offset)| (b.gpu.borrow(), *offset)))
+            .collect();
+        let vertex_buffers: Vec<Option<VertexBinding<'_, B>>> = vertex_handles
+            .iter()
             .map(|s| {
-                s.as_ref().map(|(b, _, offset)| VertexBinding {
-                    buffer: &b.gpu.handle,
+                s.as_ref().map(|(b, offset)| VertexBinding {
+                    buffer: &b.handle,
                     offset: u64::from(*offset),
                 })
             })
             .collect();
+        let index_handle = ctx.index.as_ref().map(|(b, _, _)| b.gpu.borrow());
         let used = vertex_buffers
             .iter()
             .rposition(Option::is_some)
@@ -765,8 +834,8 @@ impl<B: Backend> Device<B> {
                 offset: 0,
                 format: IndexFormat::U32,
             }),
-            (None, Some((b, f, offset))) if indexed => Some(IndexBinding {
-                buffer: &b.gpu.handle,
+            (None, Some((_, f, offset))) if indexed => Some(IndexBinding {
+                buffer: &index_handle.as_ref().expect("an index buffer").handle,
                 offset: u64::from(*offset),
                 format: *f,
             }),
@@ -826,9 +895,9 @@ impl<B: Backend> Device<B> {
                 }
                 self.settle();
                 self.backend.copy_buffer(
-                    &s.gpu.handle,
+                    &s.handle(),
                     0,
-                    &d.gpu.handle,
+                    &d.handle(),
                     0,
                     u64::from(s.desc.byte_width),
                 );
@@ -873,9 +942,9 @@ impl<B: Backend> Device<B> {
                 }
                 self.settle();
                 self.backend.copy_buffer(
-                    &s.gpu.handle,
+                    &s.handle(),
                     u64::from(from),
-                    &d.gpu.handle,
+                    &d.handle(),
                     u64::from(at[0]),
                     u64::from(to - from),
                 );
@@ -962,18 +1031,26 @@ impl<B: Backend> Device<B> {
                 if to <= from || to > b.desc.byte_width {
                     return Ok(());
                 }
-                let whole = from == 0 && to == b.desc.byte_width;
-                let mode = if whole {
-                    WriteMode::Discard
+                let bytes = &bytes[..(to - from) as usize];
+                if from == 0 && to == b.desc.byte_width {
+                    // A whole write discards; a grown buffer's bytes past the program's stay zero.
+                    if b.grown.get() {
+                        let mut padded = bytes.to_vec();
+                        padded.resize(b.size.get() as usize, 0);
+                        self.backend
+                            .write_buffer(&b.handle(), 0, &padded, WriteMode::Discard);
+                    } else {
+                        self.backend
+                            .write_buffer(&b.handle(), 0, bytes, WriteMode::Discard);
+                    }
                 } else {
-                    WriteMode::Ordered
-                };
-                self.backend.write_buffer(
-                    &b.gpu.handle,
-                    u64::from(from),
-                    &bytes[..(to - from) as usize],
-                    mode,
-                );
+                    self.backend.write_buffer(
+                        &b.handle(),
+                        u64::from(from),
+                        bytes,
+                        WriteMode::Ordered,
+                    );
+                }
                 Ok(())
             }
             Resource::Texture2D(t) => {
@@ -1031,8 +1108,26 @@ impl<B: Backend> Device<B> {
         kind: u32,
         _flags: u32,
     ) -> Result<Mapped> {
+        self.live()?;
         let reads = matches!(kind, map::READ | map::READ_WRITE);
         let writes = kind != map::READ;
+        let mapped = self.map_any(resource, sub, kind, reads, writes);
+        if let Err(e @ Error::DeviceRemoved) = mapped {
+            self.lose(e);
+        }
+        // A read back the back end failed is a loss it reports through its status.
+        self.live()?;
+        mapped
+    }
+
+    fn map_any(
+        &mut self,
+        resource: &Resource<B>,
+        sub: u32,
+        kind: u32,
+        reads: bool,
+        writes: bool,
+    ) -> Result<Mapped> {
         match resource {
             Resource::Buffer(b) => {
                 let d = &b.desc;
@@ -1049,8 +1144,9 @@ impl<B: Backend> Device<B> {
                 }
                 if d.usage == usage::STAGING {
                     self.settle();
+                    let handle = b.handle();
                     let src = ReadSource::Buffer {
-                        buffer: &b.gpu.handle,
+                        buffer: &handle,
                         offset: 0,
                         size: u64::from(d.byte_width),
                     };
@@ -1134,7 +1230,7 @@ impl<B: Backend> Device<B> {
                     _ => WriteMode::Ordered,
                 };
                 self.backend
-                    .write_buffer(&b.gpu.handle, 0, &b.shadow.borrow(), mode);
+                    .write_buffer(&b.handle(), 0, &b.shadow.borrow(), mode);
             }
             Resource::Texture2D(t) => {
                 let mips = t.desc.mip_levels;
@@ -1180,5 +1276,6 @@ impl<B: Backend> Device<B> {
         self.settle();
         self.bury();
         let _ = self.backend.submit();
+        self.poll_removed();
     }
 }

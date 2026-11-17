@@ -12,5 +12,5 @@ pub mod record;
 pub mod shader;
 
 pub use context::{Mapped, PIXEL, VERTEX};
-pub use device::{Device, top_level};
+pub use device::{Device, Removal, top_level};
 pub use error::{Error, Result};

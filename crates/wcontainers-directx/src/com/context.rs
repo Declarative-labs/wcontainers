@@ -1,6 +1,6 @@
 //! The immediate context.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::rc::Rc;
 
@@ -8,7 +8,7 @@ use windows::Win32::Foundation::{E_INVALIDARG, RECT};
 use windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
-use windows::core::{IUnknownImpl, Interface, Ref, Result, implement};
+use windows::core::{IUnknownImpl, Interface, OutRef, Ref, Result, implement};
 
 use wcontainers_direct3d_11::desc::{Box3, Viewport};
 use wcontainers_direct3d_11::object::Resource;
@@ -22,6 +22,74 @@ pub struct Context {
     pub(super) child: Child,
     /// The device's pointer to this context, cleared when the context goes.
     slot: Locked<Rc<Cell<*mut c_void>>>,
+    /// What is bound, as the program's objects, for the `Get` methods; holding a reference on each,
+    /// as Direct3D's context does.
+    bound: RefCell<Bound>,
+}
+
+/// The objects and values bound to the context.
+struct Bound {
+    vs: Option<ID3D11VertexShader>,
+    ps: Option<ID3D11PixelShader>,
+    /// Per stage (vertex, pixel), per slot.
+    constant_buffers: [Vec<Option<ID3D11Buffer>>; 2],
+    resources: [Vec<Option<ID3D11ShaderResourceView>>; 2],
+    samplers: [Vec<Option<ID3D11SamplerState>>; 2],
+    layout: Option<ID3D11InputLayout>,
+    /// Per slot: buffer, stride and offset.
+    vertex_buffers: Vec<(Option<ID3D11Buffer>, u32, u32)>,
+    index: (Option<ID3D11Buffer>, DXGI_FORMAT, u32),
+    topology: D3D_PRIMITIVE_TOPOLOGY,
+    targets: Vec<Option<ID3D11RenderTargetView>>,
+    depth: Option<ID3D11DepthStencilView>,
+    blend: (Option<ID3D11BlendState>, [f32; 4], u32),
+    depth_stencil: (Option<ID3D11DepthStencilState>, u32),
+    raster: Option<ID3D11RasterizerState>,
+    viewports: Vec<D3D11_VIEWPORT>,
+    scissors: Vec<RECT>,
+}
+
+impl Default for Bound {
+    fn default() -> Self {
+        Bound {
+            vs: None,
+            ps: None,
+            constant_buffers: Default::default(),
+            resources: Default::default(),
+            samplers: Default::default(),
+            layout: None,
+            vertex_buffers: Vec::new(),
+            index: (None, DXGI_FORMAT(0), 0),
+            topology: D3D_PRIMITIVE_TOPOLOGY(0),
+            targets: Vec::new(),
+            depth: None,
+            blend: (None, [1.0; 4], u32::MAX),
+            depth_stencil: (None, 0),
+            raster: None,
+            viewports: Vec::new(),
+            scissors: Vec::new(),
+        }
+    }
+}
+
+/// Stores `items` into `slots` from `start`, growing it as needed.
+fn store<T: Clone>(slots: &mut Vec<Option<T>>, start: u32, items: &[Option<T>]) {
+    let end = start as usize + items.len();
+    if slots.len() < end {
+        slots.resize(end, None);
+    }
+    slots[start as usize..end].clone_from_slice(items);
+}
+
+/// Writes `count` slots from `start` of `slots` (unbound past its end) to the program's array `out`.
+fn load<T: Clone>(slots: &[Option<T>], start: u32, count: u32, out: *mut Option<T>) {
+    if out.is_null() {
+        return;
+    }
+    for i in 0..count as usize {
+        let item = slots.get(start as usize + i).cloned().flatten();
+        unsafe { out.add(i).write(item) };
+    }
 }
 
 impl Context {
@@ -30,6 +98,7 @@ impl Context {
             front: Locked::new(front),
             child: Child::new(device),
             slot: Locked::new(slot),
+            bound: RefCell::new(Bound::default()),
         }
     }
 }
@@ -82,15 +151,30 @@ where
 }
 
 impl Context {
-    pub(super) fn unserved(&self, what: &'static str) {
-        missing_void(what);
-        self.front.borrow_mut().removed = true;
+    pub(super) fn call(&self) -> Call<'_> {
+        Call::new(&self.front)
     }
 
-    /// Runs a front call whose error Direct3D cannot report, warning instead.
-    fn quiet(&self, what: &'static str, r: wcontainers_direct3d_11::Result<()>) {
-        if let Err(e) = r {
-            eprintln!("wcontainers direct3d 11: {what}: {e:?}");
+    pub(super) fn unserved(&self, what: &'static str) {
+        missing_void(what);
+        self.front
+            .borrow_mut()
+            .lose(wcontainers_direct3d_11::Error::NotImplemented(what));
+    }
+
+    /// The end of a front call that has no result: an invalid one is dropped, as Direct3D drops it
+    /// (its debug layer reports it); one the front cannot serve removes the device. True if it ran.
+    fn quiet(&self, what: &'static str, r: wcontainers_direct3d_11::Result<()>) -> bool {
+        match r {
+            Ok(()) => true,
+            Err(wcontainers_direct3d_11::Error::InvalidArg(why)) => {
+                eprintln!("wcontainers direct3d 11: {what} dropped: {why}");
+                false
+            }
+            Err(e) => {
+                self.front.borrow_mut().lose(e);
+                false
+            }
         }
     }
 
@@ -102,6 +186,7 @@ impl Context {
     ) {
         let s = front_of(&shader, |s: &VertexShader| s.front.clone());
         self.front.borrow_mut().vs_set_shader(s);
+        self.bound.borrow_mut().vs = shader.cloned();
     }
 
     pub(super) fn ps_set_shader(
@@ -112,6 +197,7 @@ impl Context {
     ) {
         let s = front_of(&shader, |s: &PixelShader| s.front.clone());
         self.front.borrow_mut().ps_set_shader(s);
+        self.bound.borrow_mut().ps = shader.cloned();
     }
 
     fn set_constant_buffers(
@@ -126,7 +212,13 @@ impl Context {
             .front
             .borrow_mut()
             .set_constant_buffers(stage, start, &b);
-        self.quiet("SetConstantBuffers", r);
+        if self.quiet("SetConstantBuffers", r) {
+            store(
+                &mut self.bound.borrow_mut().constant_buffers[stage],
+                start,
+                items(list, n),
+            );
+        }
     }
 
     pub(super) fn vs_set_constant_buffers(
@@ -159,7 +251,13 @@ impl Context {
             .front
             .borrow_mut()
             .set_shader_resources(stage, start, &v);
-        self.quiet("SetShaderResources", r);
+        if self.quiet("SetShaderResources", r) {
+            store(
+                &mut self.bound.borrow_mut().resources[stage],
+                start,
+                items(list, n),
+            );
+        }
     }
 
     pub(super) fn vs_set_shader_resources(
@@ -189,7 +287,13 @@ impl Context {
     ) {
         let s = fronts(list, n, |s: &SamplerState| s.front.clone());
         let r = self.front.borrow_mut().set_samplers(stage, start, &s);
-        self.quiet("SetSamplers", r);
+        if self.quiet("SetSamplers", r) {
+            store(
+                &mut self.bound.borrow_mut().samplers[stage],
+                start,
+                items(list, n),
+            );
+        }
     }
 
     pub(super) fn vs_set_samplers(
@@ -213,12 +317,14 @@ impl Context {
     pub(super) fn ia_set_input_layout(&self, layout: Ref<ID3D11InputLayout>) {
         let l = front_of(&layout, |l: &InputLayout| l.front.clone());
         self.front.borrow_mut().ia_set_input_layout(l);
+        self.bound.borrow_mut().layout = layout.cloned();
     }
 
     pub(super) fn ia_set_primitive_topology(&self, topology: D3D_PRIMITIVE_TOPOLOGY) {
         self.front
             .borrow_mut()
             .ia_set_primitive_topology(topology.0 as u32);
+        self.bound.borrow_mut().topology = topology;
     }
 
     pub(super) fn ia_set_vertex_buffers(
@@ -241,7 +347,16 @@ impl Context {
             .map(|(b, (&s, &o))| b.map(|b| (b, s, o)))
             .collect();
         let r = self.front.borrow_mut().ia_set_vertex_buffers(start, &slots);
-        self.quiet("IASetVertexBuffers", r);
+        if self.quiet("IASetVertexBuffers", r) {
+            let mut bound = self.bound.borrow_mut();
+            let end = (start + n) as usize;
+            if bound.vertex_buffers.len() < end {
+                bound.vertex_buffers.resize(end, (None, 0, 0));
+            }
+            for (i, b) in items(list, n).iter().enumerate() {
+                bound.vertex_buffers[start as usize + i] = (b.clone(), strides[i], offsets[i]);
+            }
+        }
     }
 
     pub(super) fn ia_set_index_buffer(
@@ -255,7 +370,9 @@ impl Context {
             .front
             .borrow_mut()
             .ia_set_index_buffer(b, format.0 as u32, offset);
-        self.quiet("IASetIndexBuffer", r);
+        if self.quiet("IASetIndexBuffer", r) {
+            self.bound.borrow_mut().index = (buffer.cloned(), format, offset);
+        }
     }
 
     pub(super) fn om_set_render_targets(
@@ -267,7 +384,11 @@ impl Context {
         let targets = fronts(list, n, |v: &RenderTargetView| v.front.clone());
         let d = front_of(&depth, |v: &DepthStencilView| v.front.clone());
         let r = self.front.borrow_mut().om_set_render_targets(&targets, d);
-        self.quiet("OMSetRenderTargets", r);
+        if self.quiet("OMSetRenderTargets", r) {
+            let mut bound = self.bound.borrow_mut();
+            bound.targets = items(list, n).to_vec();
+            bound.depth = depth.cloned();
+        }
     }
 
     pub(super) fn om_set_blend_state(
@@ -279,6 +400,7 @@ impl Context {
         let s = front_of(&state, |s: &BlendState| s.front.clone());
         let f = (!factor.is_null()).then(|| unsafe { *factor.cast::<[f32; 4]>() });
         self.front.borrow_mut().om_set_blend_state(s, f, mask);
+        self.bound.borrow_mut().blend = (state.cloned(), f.unwrap_or([1.0; 4]), mask);
     }
 
     pub(super) fn om_set_depth_stencil_state(
@@ -290,11 +412,13 @@ impl Context {
         self.front
             .borrow_mut()
             .om_set_depth_stencil_state(s, reference);
+        self.bound.borrow_mut().depth_stencil = (state.cloned(), reference);
     }
 
     pub(super) fn rs_set_state(&self, state: Ref<ID3D11RasterizerState>) {
         let s = front_of(&state, |s: &RasterizerState| s.front.clone());
         self.front.borrow_mut().rs_set_state(s);
+        self.bound.borrow_mut().raster = state.cloned();
     }
 
     pub(super) fn rs_set_viewports(&self, n: u32, viewports: *const D3D11_VIEWPORT) {
@@ -315,6 +439,7 @@ impl Context {
             })
             .collect();
         self.front.borrow_mut().rs_set_viewports(&v);
+        self.bound.borrow_mut().viewports = list.to_vec();
     }
 
     pub(super) fn rs_set_scissor_rects(&self, n: u32, rects: *const RECT) {
@@ -328,6 +453,7 @@ impl Context {
             .map(|r| [r.left, r.top, r.right, r.bottom])
             .collect();
         self.front.borrow_mut().rs_set_scissor_rects(&r);
+        self.bound.borrow_mut().scissors = list.to_vec();
     }
 
     pub(super) fn clear_render_target_view(
@@ -514,10 +640,196 @@ impl Context {
 
     pub(super) fn clear_state(&self) {
         self.front.borrow_mut().clear_state();
+        // The old bindings are released after the borrow ends: their drops may reach the context.
+        let old = std::mem::take(&mut *self.bound.borrow_mut());
+        drop(old);
     }
 
     pub(super) fn flush(&self) {
         self.front.borrow_mut().flush();
+    }
+
+    pub(super) fn vs_get_shader(
+        &self,
+        out: OutRef<ID3D11VertexShader>,
+        _c: OutRef<ID3D11ClassInstance>,
+        count: *mut u32,
+    ) {
+        no_instances(count);
+        let _ = out.write(self.bound.borrow().vs.clone());
+    }
+
+    pub(super) fn ps_get_shader(
+        &self,
+        out: OutRef<ID3D11PixelShader>,
+        _c: OutRef<ID3D11ClassInstance>,
+        count: *mut u32,
+    ) {
+        no_instances(count);
+        let _ = out.write(self.bound.borrow().ps.clone());
+    }
+
+    pub(super) fn vs_get_constant_buffers(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11Buffer>,
+    ) {
+        load(&self.bound.borrow().constant_buffers[VERTEX], start, n, out);
+    }
+
+    pub(super) fn ps_get_constant_buffers(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11Buffer>,
+    ) {
+        load(&self.bound.borrow().constant_buffers[PIXEL], start, n, out);
+    }
+
+    pub(super) fn vs_get_shader_resources(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11ShaderResourceView>,
+    ) {
+        load(&self.bound.borrow().resources[VERTEX], start, n, out);
+    }
+
+    pub(super) fn ps_get_shader_resources(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11ShaderResourceView>,
+    ) {
+        load(&self.bound.borrow().resources[PIXEL], start, n, out);
+    }
+
+    pub(super) fn vs_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
+        load(&self.bound.borrow().samplers[VERTEX], start, n, out);
+    }
+
+    pub(super) fn ps_get_samplers(&self, start: u32, n: u32, out: *mut Option<ID3D11SamplerState>) {
+        load(&self.bound.borrow().samplers[PIXEL], start, n, out);
+    }
+
+    pub(super) fn ia_get_input_layout(&self, out: OutRef<ID3D11InputLayout>) {
+        let _ = out.write(self.bound.borrow().layout.clone());
+    }
+
+    pub(super) fn ia_get_vertex_buffers(
+        &self,
+        start: u32,
+        n: u32,
+        buffers: OutRef<ID3D11Buffer>,
+        strides: *mut u32,
+        offsets: *mut u32,
+    ) {
+        // The out reference is the program's array of `n` buffers.
+        let buffers: *mut Option<ID3D11Buffer> = unsafe { std::mem::transmute(buffers) };
+        let bound = self.bound.borrow();
+        for i in 0..n as usize {
+            let (b, stride, offset) = bound
+                .vertex_buffers
+                .get(start as usize + i)
+                .cloned()
+                .unwrap_or((None, 0, 0));
+            unsafe {
+                if !buffers.is_null() {
+                    buffers.add(i).write(b);
+                }
+                if !strides.is_null() {
+                    strides.add(i).write(stride);
+                }
+                if !offsets.is_null() {
+                    offsets.add(i).write(offset);
+                }
+            }
+        }
+    }
+
+    pub(super) fn ia_get_index_buffer(
+        &self,
+        out: OutRef<ID3D11Buffer>,
+        format: *mut DXGI_FORMAT,
+        offset: *mut u32,
+    ) {
+        let (b, f, o) = self.bound.borrow().index.clone();
+        let _ = out.write(b);
+        unsafe {
+            if let Some(format) = format.as_mut() {
+                *format = f;
+            }
+            if let Some(offset) = offset.as_mut() {
+                *offset = o;
+            }
+        }
+    }
+
+    pub(super) fn ia_get_primitive_topology(&self, out: *mut D3D_PRIMITIVE_TOPOLOGY) {
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = self.bound.borrow().topology;
+        }
+    }
+
+    pub(super) fn om_get_render_targets(
+        &self,
+        n: u32,
+        targets: *mut Option<ID3D11RenderTargetView>,
+        depth: OutRef<ID3D11DepthStencilView>,
+    ) {
+        let bound = self.bound.borrow();
+        load(&bound.targets, 0, n, targets);
+        let _ = depth.write(bound.depth.clone());
+    }
+
+    pub(super) fn om_get_blend_state(
+        &self,
+        out: OutRef<ID3D11BlendState>,
+        factor: *mut f32,
+        mask: *mut u32,
+    ) {
+        let (b, f, m) = self.bound.borrow().blend.clone();
+        let _ = out.write(b);
+        unsafe {
+            if !factor.is_null() {
+                factor.cast::<[f32; 4]>().write(f);
+            }
+            if let Some(mask) = mask.as_mut() {
+                *mask = m;
+            }
+        }
+    }
+
+    pub(super) fn om_get_depth_stencil_state(
+        &self,
+        out: OutRef<ID3D11DepthStencilState>,
+        reference: *mut u32,
+    ) {
+        let (d, r) = self.bound.borrow().depth_stencil.clone();
+        let _ = out.write(d);
+        if let Some(reference) = unsafe { reference.as_mut() } {
+            *reference = r;
+        }
+    }
+
+    pub(super) fn rs_get_state(&self, out: OutRef<ID3D11RasterizerState>) {
+        let _ = out.write(self.bound.borrow().raster.clone());
+    }
+
+    pub(super) fn rs_get_viewports(&self, count: *mut u32, out: *mut D3D11_VIEWPORT) {
+        get_list(&self.bound.borrow().viewports, count, out);
+    }
+
+    pub(super) fn rs_get_scissor_rects(&self, count: *mut u32, out: *mut RECT) {
+        get_list(&self.bound.borrow().scissors, count, out);
+    }
+
+    /// A call on a stage or feature the front does not serve, which is served while it binds nothing.
+    pub(super) fn only_unbinding(&self, what: &'static str, binds: bool) {
+        if binds {
+            self.unserved(what);
+        }
     }
 
     pub(super) fn get_type(&self) -> D3D11_DEVICE_CONTEXT_TYPE {
@@ -526,6 +838,42 @@ impl Context {
 
     pub(super) fn get_context_flags(&self) -> u32 {
         0
+    }
+}
+
+/// Whether any of `count` items of a COM array argument is an object.
+pub(super) fn binds<T>(list: *const Option<T>, count: u32) -> bool {
+    items(list, count).iter().any(Option::is_some)
+}
+
+/// Writes `count` empty slots to the program's array `out` (a stage or feature nothing is bound to).
+pub(super) fn nothing_bound<T>(out: *mut Option<T>, count: u32) {
+    if !out.is_null() {
+        for i in 0..count as usize {
+            unsafe { out.add(i).write(None) };
+        }
+    }
+}
+
+/// The class instances of a bound shader: none.
+pub(super) fn no_instances(count: *mut u32) {
+    if let Some(count) = unsafe { count.as_mut() } {
+        *count = 0;
+    }
+}
+
+/// `RSGetViewports` and `RSGetScissorRects`: the bound count when `out` is null, else up to `*count`
+/// items, the slots past the bound ones zeroed.
+fn get_list<T: Copy + Default>(list: &[T], count: *mut u32, out: *mut T) {
+    let Some(count) = (unsafe { count.as_mut() }) else {
+        return;
+    };
+    if out.is_null() {
+        *count = list.len() as u32;
+        return;
+    }
+    for i in 0..*count as usize {
+        unsafe { out.add(i).write(list.get(i).copied().unwrap_or_default()) };
     }
 }
 

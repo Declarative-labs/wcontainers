@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 wcontainers-direct3d-11 = { path = "../wcontainers-direct3d-11" }
+wcontainers-directx-graphics-infrastructure = { path = "../wcontainers-directx-graphics-infrastructure" }
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
 wgpu = { version = "30.0.2", default-features = false }
