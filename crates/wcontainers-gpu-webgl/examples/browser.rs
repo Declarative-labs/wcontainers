@@ -126,6 +126,7 @@ suite!(
     linear_filtering_and_address_modes,
     instances_start_at_the_first_instance,
     indexed_strips_restart_and_add_the_base_vertex,
+    fragments_write_storage_buffers,
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,

@@ -31,6 +31,9 @@ wcontainers-gpu-test = { path = "../wcontainers-gpu-test" }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 wcontainers-graphics-test = { path = "../wcontainers-graphics-test" }
 
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+
 [[example]]
 name = "browser"
 crate-type = ["cdylib"]
