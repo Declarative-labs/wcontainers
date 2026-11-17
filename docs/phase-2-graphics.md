@@ -74,8 +74,9 @@ back end; the guest stand-in libraries and the call channel; sound and input.
 ## 3. Crates and which way they depend
 
 - `wcontainers-gpu`: the interface (section 4). Depends on `naga` (the common form), `bitflags`,
-  `blake3` (content keys of the built-in programs, as of every key, section 8) and `half` (the
-  occlusion counter's `r16float` sums) only.
+  `blake3` (content keys of the built-in programs, as of every key, section 8), `half` (the
+  occlusion counter's `r16float` sums) and `serde` (derives on the variant key, the reflection and the
+  state blocks, which the cache records, section 8) only.
 - `wcontainers-gpu-webgpu`: the WebGPU back end, written on the `wgpu` crate, which runs natively (Metal,
   Direct3D 12, Vulkan) for tests and on the browser's WebGPU when built for WebAssembly. Depends on the
   interface only (plus `wgpu`).
@@ -115,6 +116,8 @@ ScanMountGoat/image_dds, "Copyright (c) 2023 SMG"), a port of iOrange's bcdec (M
 LICENSE), `no_std`, read on 2026-11-17. `blake3` 1.8.7: CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH
 LLVM-exception (its repository's `Cargo.toml` and `LICENSE_CC0`), with `arrayvec`, `cfg-if`, `cc`
 (MIT OR Apache-2.0) and `constant_time_eq` (CC0-1.0 OR MIT-0 OR Apache-2.0), read on 2026-11-17.
+`serde` 1.0.229 with `serde_core` and `serde_derive` (and their `proc-macro2`, `quote`, `syn`): MIT OR
+Apache-2.0 (each crate's `Cargo.toml`, read on 2026-11-17).
 `glow` 0.18: MIT OR Apache-2.0 OR Zlib (its repository's `Cargo.toml`; the brief says MIT, which is
 one of the three); `khronos-egl` 6.0: MIT or Apache-2.0 (its repository); ANGLE, a desktop test tool
 only (section 10): BSD-3-Clause (its `LICENSE`). `wgpu` is confirmed by the milestone that adds it.
