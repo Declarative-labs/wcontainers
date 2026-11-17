@@ -5,8 +5,8 @@ Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
 ## Where things stand
 
 M0 to M5, S1 and P1 are built; their work is recorded below, newest first. P2 (the long runs to the plan's
-pass bars) is under way: see "P2" just below for whether the driver is running, how to watch it and how to
-restart it. Refinements of M5 that remain are listed under "M5, fourth run, what comes next".
+pass bars) is under way and its driver is running detached (layer 3 now): see "P2" just below for how to
+check it is alive (do that first; never start a second one), watch it, restart it, and what is left. Refinements of M5 that remain are listed under "M5, fourth run, what comes next".
 
 ## P2: the long runs to the pass bars
 
@@ -58,7 +58,14 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   docker rm -f`).
 - Restarted 2026-11-16 16:44 on 92b0866 (the square root fix below) with `WC_LONG_ACCEPT=c38b4ad`: layer 1
   chunks 1, 2 and 4 kept from c38b4ad, chunk 3 run again. Chunk 5 had started on c38b4ad and was stopped
-  (no ledger line). Use `WC_LONG_ACCEPT=c38b4ad` on any later restart too.
+  (no ledger line). Restarted again 2026-11-16 22:59 on 445e3cf (the layer 2 generator fix), same command;
+  it is that run (driver pid 87380 at the time of writing) that is going now. Use `WC_LONG_ACCEPT=c38b4ad`
+  on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
+  `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
+- Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
+  s+=c[2]} END {print s}' .../p2/long/ledger.txt`. Any chunk that did not pass: `grep -v result=pass
+  .../p2/long/ledger.txt` (two lines so far: layer 1 chunk 3 and layer 2 chunk 22, both fixed and passed
+  again).
 - After the last fix: the confirmation, 5 percent of each layer on the final commit with base seed 200 (not
   used before): the same command with `WC_LONG_PERCENT=5 WC_LONG_SEED=200` and a new `WC_LONG_DIR`.
 - Expected length (from P1's 1 percent rates at load about 30, not measured): about 50 hours, more at higher
@@ -73,7 +80,22 @@ Progress (from the ledger):
   on the CPU and 200 in Chrome (at none, and full in both settings); chunks 1 to 21 and 23 on 92b0866, 22
   and 24 to 40 on 445e3cf; 29,589 s of chunks (628 to 1,230 s each), load mostly 8 to 35, peaks of 111 and
   64 from other jobs. Chunk 22 failed once on 92b0866 (failure 2 below) and passed on 445e3cf.
-- Layer 3 started 2026-11-17 02:37 (chunks of 500 until 100,000 compared).
+- Layer 3 started 2026-11-17 02:37 (chunks of 500 until 100,000 compared), on 445e3cf. At 05:56: 12 chunks
+  passed, 5,246 compared (of 6,000 made; 12.6 percent did not end on Linux in time), 60 also in Chrome, 0
+  mismatches; 573 to 2,384 s a chunk (most 620 to 770; chunk 8 took 2,384 s and chunk 11 1,263 s at load
+  30 to 130, no failure), load 12 to 130. At about 440 compared in about 700 s a chunk, the rest (about 216
+  chunks) is expected to take about 42 hours more (an extrapolation).
+
+What is left of P2, in order:
+1. Let layer 3 run to 100,000 compared. Look at the ledger now and then; treat any failing chunk as a real
+   mismatch: replay it with the ledger's `replay=` command, shrink, find the cause, write a failing test,
+   fix, commit, stop the driver between chunks, restart it with the command above.
+2. After the last fix, the confirmation run on the final commit at 5 percent of each layer with base seed
+   200 (one command above), in a new directory.
+3. The whole suite of the three crates on the final code once the driver has ended (not run at the end of
+   this run: the driver holds the 6 jobs this machine allows; the crates' own unit tests, `exact` and
+   `binaries` were run on the final code, and layers 1 and 2 of the long run cover the rest of the changes).
+4. Record the totals, the commits each chunk ran on (in the ledger), and the wall-clock time and load here.
 
 Failures found by the run, each with its cause and fix:
 1. Layer 1 chunk 3 (seed 100002, c38b4ad): `FSQRT_D_floatdp1`, the root of a denormal (0x19) rounding up
