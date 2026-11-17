@@ -53,6 +53,14 @@ built, linked, run or tested on Windows. What it did:
   - f2a7656: a vertex shader is converted again (`VariantKey::output_interpolation`) for each pixel
     shader that interpolates its inputs other than by perspective, since WebGPU requires the two
     stages to agree (test_shader_interstage_interface's failure).
+  - bc0897e: outputs: `EnumOutputs` gives the host's monitors (primary first) as `IDXGIOutput`
+    (`GetDesc`, `GetDisplayModeList` and `FindClosestMatchingMode` from the infrastructure crate's
+    `OutputDesc`: the one current mode; the rest `E_NOTIMPL`, warned). com.rs's identity test now
+    walks them (each on a monitor, the adapter its parent, then `DXGI_ERROR_NOT_FOUND`).
+  - 560f681: `CreateDeviceContextState` (Direct3D 11's interfaces; Direct3D 10's `E_NOTIMPL`,
+    warned) and `SwapDeviceContextState`: the immediate context's bindings go into the state
+    object it had (one holding the device's first state, made at the first swap) and the new
+    one's are bound; a deferred context swaps nothing and hands back none.
 
 G4 run 3 merged origin/phase-2-graphics, -webgpu, -webgl, -direct3d-12 and -shaders, cleanly. The
 WebGPU back end now copies both aspects of depth with stencil (interface change c8a7be9), so the
@@ -439,13 +447,12 @@ After G4 run 4, first, once the desktop answers again:
    the topology scene, run 2). Then chocolate-doom (SDL), bgfx-01-cubes and Godot (ANGLE): why each
    fails, and compare frames for the three chosen (the rig now gives captured programs a clock
    that moves by frames, so bgfx may be comparable too).
-4. Outputs (`EnumOutputs`, `GetDisplayModeList`, `FindClosestMatchingMode`, `GetDesc`) from the
-   infrastructure crate's `OutputDesc`; many engines ask for them.
+4. Outputs beyond what bc0897e serves (`IDXGIOutput1` and later, `WaitForVBlank`, frame
+   statistics) as programs ask for them.
 5. Multisampled textures (the interface has sample counts, `resolve` and `takes_samples`): 5 Wine
    tests and the rig's msaa scene; `ResolveSubresource`.
-6. `CreateDeviceContextState`/`SwapDeviceContextState` (test_deferred_context_swap_state needs only
-   the creation and a swap that does nothing on a deferred context; test_device_context_state also
-   needs geometry, hull and domain shaders and Direct3D 10's interfaces).
+6. test_device_context_state also needs geometry, hull and domain shaders and Direct3D 10's
+   interfaces (context states for them answer `E_NOTIMPL`); it stays failing until those exist.
 7. Then the rest of the list below (geometry shaders and stream output wait on the shaders crate,
    which refuses geometry, hull and domain shaders, storage images and counters; typed buffer
    views wait on its TypedBuffer).
