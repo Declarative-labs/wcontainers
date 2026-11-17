@@ -97,6 +97,32 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   - Renamed: `LogicOpPerPrimitive` to `TargetReadPerPrimitive`, `BlockCopyReadBack` to
     `HostCopyReadBack`. 66 slow path reasons.
 
+- G0, run 5 (2026-11-17): every finding of the fourth independent check fixed:
+  - Built-in programs: each is now its own module holding only its own bindings and types, validated
+    with only the abilities it needs (cube arrays only for the cube-array ones). naga's GLSL writer asks
+    for every type a module declares, so the old shared module could not be written for WebGL 2 at all.
+    A new test writes all 21 as WGSL and the 19 WebGL 2 makes as GLSL ES 3.00; Chrome compiled all of
+    them (Measurements).
+  - `generate_mips` takes `values` (the format the texels hold) and reads the level above by one of
+    three programs: the linear sampler where the format has `FILTER`; otherwise samples at texel centres
+    through a nearest sampler, blended in the program; or, for integer twins (`NormAsInteger`), integer
+    loads decoded, blended and encoded. Integer cubes are read through a 2D array view, or a copy
+    without `TEXTURE_VIEWS`. Tests for each route.
+  - `[earlydepthstencil]`: `EarlyTestsInShader` (depth and stencil read from the read-only attachment
+    and tested in the program) and `EarlyTestsPerPrimitive` (draws that write depth or stencil), with
+    `VariantFlags::EARLY_TESTS`, `HelperValue::EarlyTests`, `EARLY_DEPTH_BINDING`,
+    `EARLY_STENCIL_BINDING`, and `side_effects` and `discards` in `StageExtras::Pixel` (plan 4.12).
+  - Per-resource minimum level of detail, by Microsoft's functional specification 5.8: `MinLodClamp`,
+    `VariantKey::min_lod_clamped`, `HelperValue::MinLod`, `CLAMPED_SAMPLER_BINDING`,
+    `Reflection::sampled_pairs` (plan 4.12, 5.1, 5.2).
+  - Direct3D 12 with several queues, GPU waits and CPU signals: ordering rule in plan 5.2 and 4.8.
+  - `copy_buffer` within one buffer: documented, `CopyWithinBuffer` on WebGPU.
+  - Fractional viewports: `Features::FRACTIONAL_VIEWPORT` (WebGPU, which G2 must confirm),
+    `ViewportInShader` on WebGL 2, with a listed loss on the edges of multisampled targets.
+  - Staging `Map(WRITE)` after GPU writes: `StagingRefreshed`; the 4.6 claim narrowed.
+  - `WideLinesAsTriangles` removed (no use). The fan and loop default writes into the ring.
+  - 71 slow path reasons.
+
 ## Partly done
 
 - Nothing in G0. Designed for G1, not in the crate yet: the pass tracker (plan 4.7), the occlusion
@@ -104,16 +130,19 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 
 ## Next
 
-- G0's independent check, again.
+- G0's independent check, again (the fifth).
 - G1 to G6 as in plan section 12; they can run in parallel. G1 is short and every other milestone builds
   its tests on it, so start it first.
 
 ## How to run
 
-- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (20 tests) and
+- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (25 tests) and
   `nix develop -c cargo clippy -p wcontainers-gpu --all-targets -- -D warnings`, and
   `RUSTDOCFLAGS="-D warnings" nix develop -c cargo doc -p wcontainers-gpu --no-deps`. It also builds for
   `wasm32-unknown-unknown`.
+- Built-in programs in Chrome: `WCONTAINERS_GPU_BUILTINS_OUT=<scratch>/g0-run5/builtins nix develop -c
+  cargo test -p wcontainers-gpu`, then `nix develop -c sh -c 'cd <scratch>/tools && node
+  chrome-compile.mjs ../g0-run5/builtins'`.
 - Shader corpus (scratch, `/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics`):
   - dxbc-spirv built with `nix shell nixpkgs#meson nixpkgs#ninja nixpkgs#clang -c sh -c 'meson setup
     build/dxbc-spirv -Denable_tools=true -Dbuildtype=release && ninja -C build/dxbc-spirv'` from
@@ -142,6 +171,9 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   measurements (load average 13.02, 14.76, 17.39 when its tests ran). Run 4 took no new measurements
   (load average 27.52, 27.98, 24.45 when its tests ran); facts it used were read in Microsoft's format
   tables in `downloads/msdocs/` and the WebGPU specification copy in `check-g0/spec/` (scratch).
+- Run 5, on the Mac, load average 25.87, 28.86, 35.02: Chrome compiled the interface's built-in
+  programs, 21 WGSL modules and 37 GLSL ES 3.00 files, none failed. Counts, not timings. Microsoft's
+  Direct3D 11.3 functional specification saved in `downloads/d3d11spec/` (scratch) for the clamp rules.
 - Run 3, on the Mac, load average 14.71, 16.16, 16.39: Chrome's adapter limits (plan 4.11), counts not
   timings. WebGPU: 16384 2D, 2048 3D and layers, 8 vertex buffers, 30 attributes, 12 uniform buffers, 10
   storage buffers, 48 sampled textures, 28 inter-stage slots, 64 immediate bytes, BC and BC sliced 3D
@@ -152,7 +184,8 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
 
 ## Dependencies added and their licences
 
-- `naga` 30.0.2 (MIT OR Apache-2.0), with its `wgsl-in` feature since run 2, used by `wcontainers-gpu`.
+- `naga` 30.0.2 (MIT OR Apache-2.0), with its `wgsl-in` feature since run 2, used by `wcontainers-gpu`;
+  its `glsl-out` and `wgsl-out` features in the crate's tests only (run 5), same licence, no new crates.
   Its tree, from `cargo tree`: all MIT or Apache-2.0 except `foldhash` (Zlib), `zerocopy`
   (BSD-2-Clause OR Apache-2.0 OR MIT), `unicode-ident` ((MIT OR Apache-2.0) AND Unicode-3.0),
   `codespan-reporting` (Apache-2.0), `libm` (MIT).
@@ -212,6 +245,11 @@ Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orches
   and made by the shaders crate; back ends never rewrite programs.
 - One more counted refusal beside `BindingsBeyondLimit`: `VaryingsBeyondLimit` (more stage values
   than the back end has after packing). Texture sizes beyond the adapter's lower the reported level.
+- Direct3D 12's and Vulkan's several queues are ordered into the back end's one submission order, so
+  their work never runs at once on the GPU (async compute and copy queues lose their overlap, not their
+  results; plan 4.8, 5.2).
+- One more listed loss: fractional viewports on WebGL 2 with multisampled targets (edge samples follow
+  their pixel's centre; plan 4.12).
 - `wcontainers-gpu` gained naga's `wgsl-in` feature, for the built-in programs of the fast-path
   defaults.
 - The workspace root `Cargo.toml` gained the `naga` workspace dependency (outside the crates this track
