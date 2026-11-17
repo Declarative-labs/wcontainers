@@ -284,6 +284,10 @@ pub fn exit_code(wait_status: i32) -> i32 {
     }
 }
 
+/// How many turns on the CPU side this process's runs have ended, for a watchdog that tells a
+/// run that is slow from one stuck inside a single call or turn.
+pub static TURNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// What a container starts with: its files and its first process.
 pub struct Container<'a> {
     pub files: &'a [image::File],
@@ -463,6 +467,7 @@ pub fn run_prepared(
 
                 kernel.exit(&mut cpu, &mut host, exit);
                 turns += 1;
+                TURNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 network_events(&mut kernel, &mut cpu, &mut host, Duration::ZERO);
                 // The backend's answers arrive at moments and in an order drawn from the seed.
                 while host

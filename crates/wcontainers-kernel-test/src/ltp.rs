@@ -270,10 +270,10 @@ pub fn run_reference(test: &Test, limit: Duration, logs: &Path) -> Line {
 
 /// Runs tests on our kernel, `jobs` at a time, each under `seed` in a process of its own forked
 /// from one that holds the image's files in a prepared kernel, so the files are loaded once. A
-/// test that runs past `limit` is killed and reported as a hang, as is one whose processes all
-/// wait with nothing to wake them; one whose kernel fails is a crash, and one the stand-in CPU
-/// cannot run is unsupported. Each
-/// finished test's line goes to `report` as it ends.
+/// test that runs past `limit` is killed and reported as a timeout; one whose kernel ends no turn
+/// for [`STUCK`], or whose processes all wait with nothing to wake them, is a hang; one whose
+/// kernel fails is a crash, and one the stand-in CPU cannot run is unsupported. Each finished
+/// test's line goes to `report` as it ends.
 pub fn run_ours(
     tests: &[Test],
     tar: &Path,
@@ -341,7 +341,7 @@ pub fn run_ours(
             let (index, started) = running.remove(&pid).expect("a running test");
             let line = Line {
                 id: tests[index].id(),
-                verdict: "hang".into(),
+                verdict: "timeout".into(),
                 exit_code: -1,
                 seconds: started.elapsed().as_secs_f64(),
                 warnings: "-".into(),
@@ -370,6 +370,9 @@ fn container<'a>(files: &'a [image::File], arguments: &'a [&'a str]) -> driver::
     }
 }
 
+/// How long a run on our kernel may end no turn before it counts as hung.
+const STUCK: Duration = Duration::from_secs(120);
+
 /// Where a test's process leaves its line.
 fn result_path(log: &Path) -> PathBuf {
     log.with_extension("result")
@@ -386,6 +389,34 @@ fn run_one(mut prepared: driver::Prepared, test: &Test, seed: u64, log: &Path) -
         libc::dup2(file.as_raw_fd(), 2);
     }
     let started = Instant::now();
+    // A run whose kernel ends no turn for this long is stuck in one call or one turn: a hang.
+    // One that goes on ending turns past the harness's limit is only slow (a timeout).
+    {
+        let log = log.to_path_buf();
+        let id = test.id();
+        std::thread::spawn(move || {
+            let mut last = (driver::TURNS.load(Ordering::Relaxed), Instant::now());
+            loop {
+                std::thread::sleep(Duration::from_secs(5));
+                let turns = driver::TURNS.load(Ordering::Relaxed);
+                if turns != last.0 {
+                    last = (turns, Instant::now());
+                } else if last.1.elapsed() > STUCK {
+                    eprintln!("no turn ended for {STUCK:?}");
+                    let line = Line {
+                        id: id.clone(),
+                        verdict: "hang".into(),
+                        exit_code: -1,
+                        seconds: started.elapsed().as_secs_f64(),
+                        warnings: "-".into(),
+                    };
+                    let _ = std::fs::write(result_path(&log), line.to_text());
+                    // SAFETY: ends this process at once, its run abandoned.
+                    unsafe { libc::_exit(0) }
+                }
+            }
+        });
+    }
     let arguments = test.arguments();
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         driver::run_prepared(
@@ -526,6 +557,7 @@ pub fn compare(reference: &[Line], ours: &[Line]) -> String {
         let cause = match line.verdict.as_str() {
             "crash" => "a crash of the kernel",
             "hang" => "a hang",
+            "timeout" => "slower than the time limit (still ending turns)",
             "unsupported" => "an instruction the stand-in CPU does not run",
             _ if !new.is_empty() => "a part not built (a warning no matching test gave)",
             _ => "a wrong answer",
