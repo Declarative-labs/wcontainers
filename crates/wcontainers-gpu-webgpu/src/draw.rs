@@ -10,7 +10,8 @@ use std::rc::{Rc, Weak};
 use wcontainers_gpu::{
     BindingEntry, BindingLayoutKey, BindingResource, BlendDesc, DepthStencilDesc, DispatchCall,
     DispatchGroups, DrawCall, DrawRange, FormatKind, FormatUse, GpuError, LoadOp, MAX_BINDING_SETS,
-    MAX_COLOR_TARGETS, PassDesc, RasterDesc, SlowPath, StepMode, TargetLayout, VertexLayoutDesc,
+    MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc, SlowPath, StepMode, TargetLayout,
+    VertexLayoutDesc,
 };
 
 use crate::{Buffer, Sampler, TextureView, WebGpu, convert, layout};
@@ -605,7 +606,7 @@ impl WebGpu {
     fn render_pipeline(
         &mut self,
         key: &PipelineKey,
-        call: &DrawCall<'_, Self>,
+        call: &PrepareDesc<'_, Self>,
     ) -> Result<(u64, wgpu::RenderPipeline, Rc<ProgramLayout>), &'static str> {
         let crate::ProgramObj::Render {
             vertex, fragment, ..
@@ -962,6 +963,49 @@ impl WebGpu {
         self.pass = Some(pass);
     }
 
+    /// Builds the pipeline of a combination before its first draw, as that draw would (plan 4.4).
+    /// Strip topologies are built for draws without indices, whose strips need no index format.
+    pub(crate) fn prepare_impl(&mut self, desc: &PrepareDesc<'_, Self>) {
+        let Some(topology) = convert::topology(desc.topology) else {
+            return;
+        };
+        let targets = desc.targets;
+        let own_target =
+            targets.colors.iter().all(Option::is_none) && targets.depth_stencil.is_none();
+        let key = PipelineKey {
+            program: desc.program.0.id(),
+            blend: desc.blend.0.id,
+            depth_stencil: desc.depth_stencil.0.id,
+            raster: desc.raster.0.id,
+            vertex_layout: desc.vertex_layout.0.id,
+            targets: if own_target {
+                TargetLayout {
+                    colors: {
+                        let mut c = [None; MAX_COLOR_TARGETS];
+                        c[0] = Some(wcontainers_gpu::Format::R8Unorm);
+                        c
+                    },
+                    ..targets
+                }
+            } else {
+                targets
+            },
+            own_target,
+            topology,
+            strip_index: None,
+            layouts: desc.program.0.own_keys(desc.layouts),
+        };
+        if self.caches.pipelines.contains_key(&key) {
+            return;
+        }
+        match self.render_pipeline(&key, desc) {
+            Ok(p) => {
+                self.caches.pipelines.insert(key, p);
+            }
+            Err(why) => self.fail(why),
+        }
+    }
+
     pub(crate) fn draw_impl(&mut self, call: &DrawCall<'_, Self>) {
         let Some(mut pass) = self.pass.take() else {
             self.fail("draw outside a pass");
@@ -1019,7 +1063,19 @@ impl WebGpu {
                 Some(p) => p.clone(),
                 None => {
                     self.slow.hit(SlowPath::PipelineMiss);
-                    let p = self.render_pipeline(&key, call)?;
+                    let p = self.render_pipeline(
+                        &key,
+                        &PrepareDesc {
+                            program: call.program,
+                            blend: call.blend,
+                            depth_stencil: call.depth_stencil,
+                            raster: call.raster,
+                            vertex_layout: call.vertex_layout,
+                            targets: key.targets,
+                            topology: call.topology,
+                            layouts,
+                        },
+                    )?;
                     self.caches.pipelines.insert(key, p.clone());
                     p
                 }

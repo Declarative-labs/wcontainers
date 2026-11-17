@@ -254,8 +254,11 @@ pub struct BufferRange<H> {
 /// One resource in a binding set.
 #[derive(Debug)]
 pub enum BindingResource<'a, B: Backend> {
+    /// The offset is a multiple of [`crate::Limits::min_uniform_offset_alignment`] and the size at most
+    /// [`crate::Limits::max_uniform_buffer_size`]; a buffer range in a binding lies inside its buffer.
     UniformBuffer(BufferRange<&'a B::Buffer>),
-    /// The offset is a multiple of [`crate::Limits::min_storage_offset_alignment`]. A front whose API
+    /// The offset is a multiple of [`crate::Limits::min_storage_offset_alignment`] and the size at most
+    /// [`crate::Limits::max_storage_buffer_size`]. A front whose API
     /// binds at any offset binds from the aligned offset below it and writes the rest into the program's
     /// helper constants ([`crate::HelperValue::StorageOffset`]), which the program adds to its addresses.
     StorageBuffer {
@@ -327,9 +330,9 @@ pub struct TextureRegion<'a, B: Backend> {
     /// First layer for array textures, ignored for 3D (use `origin.z`).
     pub layer: u32,
     pub origin: Origin,
-    /// Depth or stencil, for combined depth-stencil textures in copies to and from buffers. A copy
-    /// between two textures copies both aspects of a combined format, with `stencil` false on both
-    /// sides.
+    /// For a format with both depth and stencil, the aspect a buffer copy or read back moves: the
+    /// stencil byte, or depth in four bytes (32-bit float, or 24-bit unorm in the low bits of a word).
+    /// A copy between textures moves both aspects and names neither. Only such formats name stencil.
     pub stencil: bool,
 }
 

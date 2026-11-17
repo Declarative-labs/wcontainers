@@ -135,6 +135,7 @@ enum Flow {
 /// One running invocation of an entry point.
 pub struct Invocation<'a, R: Resources> {
     module: &'a Module,
+    module_info: &'a naga::valid::ModuleInfo,
     info: &'a naga::valid::FunctionInfo,
     fun: &'a Function,
     args: Vec<Value>,
@@ -154,11 +155,25 @@ pub fn run<R: Resources>(
     resources: &R,
     writes: &mut Vec<StorageWrite>,
 ) -> Result<Option<Value>, Error> {
-    let ep = &module.entry_points[index];
-    let fun = &ep.function;
+    let fun = &module.entry_points[index].function;
+    let fun_info = info.get_entry_point(index);
+    invoke(module, info, fun, fun_info, args, resources, writes)
+}
+
+/// Runs one function with its arguments; None when the invocation was discarded.
+fn invoke<R: Resources>(
+    module: &Module,
+    module_info: &naga::valid::ModuleInfo,
+    fun: &Function,
+    info: &naga::valid::FunctionInfo,
+    args: Vec<Value>,
+    resources: &R,
+    writes: &mut Vec<StorageWrite>,
+) -> Result<Option<Value>, Error> {
     let mut inv = Invocation {
         module,
-        info: info.get_entry_point(index),
+        module_info,
+        info,
         fun,
         args,
         locals: Vec::new(),
@@ -440,6 +455,45 @@ impl<R: Resources> Invocation<'_, R> {
                 return Ok(Flow::Return(v));
             }
             Statement::Kill => return Ok(Flow::Kill),
+            Statement::Call {
+                function,
+                ref arguments,
+                result,
+            } => {
+                let args = arguments
+                    .iter()
+                    .map(|&a| self.eval(a))
+                    .collect::<Result<Vec<_>, _>>()?;
+                // A pointer names a local of the function it was made in.
+                if args.iter().any(|a| {
+                    matches!(
+                        a,
+                        Value::Pointer(Pointer {
+                            root: Root::Local(_),
+                            ..
+                        })
+                    )
+                }) {
+                    return Err("a pointer to a local passed to a function".into());
+                }
+                let (module, module_info, resources) =
+                    (self.module, self.module_info, self.resources);
+                let returned = invoke(
+                    module,
+                    module_info,
+                    &module.functions[function],
+                    &module_info[function],
+                    args,
+                    resources,
+                    self.writes,
+                )?;
+                let Some(v) = returned else {
+                    return Ok(Flow::Kill);
+                };
+                if let Some(r) = result {
+                    self.cache[r.index()] = Some(v);
+                }
+            }
             Statement::Store { pointer, value } => {
                 let value = self.eval(value)?;
                 let Value::Pointer(p) = self.eval(pointer)? else {
