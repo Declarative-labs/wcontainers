@@ -312,6 +312,19 @@ pub fn vertex_size(format: VertexFormat) -> u32 {
     }
 }
 
+/// The alignment of a vertex element's offset: the size of its components, at most 4 bytes.
+pub fn vertex_alignment(format: VertexFormat) -> u32 {
+    use VertexFormat::*;
+    match format {
+        Uint8x1 | Sint8x1 | Unorm8x1 | Snorm8x1 | Uint8x2 | Sint8x2 | Unorm8x2 | Snorm8x2
+        | Uint8x3 | Sint8x3 | Unorm8x3 | Snorm8x3 | Uint8x4 | Sint8x4 | Unorm8x4 | Snorm8x4 => 1,
+        Uint16x1 | Sint16x1 | Unorm16x1 | Snorm16x1 | Float16x1 | Uint16x2 | Sint16x2
+        | Unorm16x2 | Snorm16x2 | Float16x2 | Uint16x3 | Sint16x3 | Unorm16x3 | Snorm16x3
+        | Float16x3 | Uint16x4 | Sint16x4 | Unorm16x4 | Snorm16x4 | Float16x4 => 2,
+        _ => 4,
+    }
+}
+
 /// The index format of `IASetIndexBuffer`'s format (16 or 32-bit unsigned only, as Direct3D 11 allows).
 pub fn index_format(dxgi: u32) -> Option<IndexFormat> {
     match dxgi {

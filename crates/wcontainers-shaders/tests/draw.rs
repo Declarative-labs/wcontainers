@@ -38,24 +38,24 @@ struct Case {
     tint: [f32; 4],
     /// Drawn from the vertex grid; otherwise three vertices without a buffer.
     grid: bool,
-    /// Why the WebGL 2 back end cannot draw it, if it cannot.
-    not_on_webgl: Option<&'static str>,
+    /// Why the WebGL 2 back end cannot draw the fxc build and the dxc build, where it cannot.
+    not_on_webgl: [Option<&'static str>; 2],
     /// A known failure of the WebGL 2 back end, outside this crate: drawn and reported, not failed on.
     known_on_webgl: Option<&'static str>,
     /// Also compiled by dxc (`<name>.dxil`): drawn by the DXIL route too, against the same picture.
     dxil: bool,
 }
 
-const CASES: [Case; 14] = [
+const CASES: [Case; 16] = [
     Case {
         vs: "vs_transform",
         ps: "ps_textured",
         format: Format::Rgba8Unorm,
         tint: [1.0, 0.75, 0.5, 1.5],
         grid: true,
-        not_on_webgl: None,
+        not_on_webgl: [None, None],
         known_on_webgl: None,
-        dxil: false,
+        dxil: true,
     },
     Case {
         vs: "vs_transform",
@@ -63,7 +63,7 @@ const CASES: [Case; 14] = [
         format: Format::Rgba8Unorm,
         tint: [1.0, 1.0, 1.0, 5.0],
         grid: true,
-        not_on_webgl: None,
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
     },
@@ -73,7 +73,7 @@ const CASES: [Case; 14] = [
         format: Format::Rgba32Uint,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: Some("GLSL ES 3.00 has no bitfield operations"),
+        not_on_webgl: [Some("GLSL ES 3.00 has no bitfield operations"), None],
         known_on_webgl: None,
         dxil: false,
     },
@@ -83,7 +83,10 @@ const CASES: [Case; 14] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: false,
-        not_on_webgl: Some("GLSL ES 3.00 has no bitfield operations (vs_fullscreen inserts bits)"),
+        not_on_webgl: [
+            Some("GLSL ES 3.00 has no bitfield operations (vs_fullscreen inserts bits)"),
+            None,
+        ],
         known_on_webgl: None,
         dxil: false,
     },
@@ -93,7 +96,7 @@ const CASES: [Case; 14] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: None,
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
     },
@@ -103,7 +106,7 @@ const CASES: [Case; 14] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: Some("GLSL ES 3.00 has no noperspective"),
+        not_on_webgl: [Some("GLSL ES 3.00 has no noperspective"), None],
         known_on_webgl: None,
         dxil: false,
     },
@@ -113,8 +116,8 @@ const CASES: [Case; 14] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: None,
-        known_on_webgl: Some("the fragment's z arrives as (z + 1) / 2, the back end's clip depth"),
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
         dxil: false,
     },
     Case {
@@ -123,7 +126,7 @@ const CASES: [Case; 14] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: None,
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
     },
@@ -133,8 +136,10 @@ const CASES: [Case; 14] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: None,
-        known_on_webgl: None,
+        not_on_webgl: [None, None],
+        known_on_webgl: Some(
+            "the back end's hidden texture size uniform stays unset, so textureSize gives 1 by 1",
+        ),
         dxil: false,
     },
     Case {
@@ -143,7 +148,7 @@ const CASES: [Case; 14] = [
         format: Format::Rgba32Uint,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: None,
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
     },
@@ -153,7 +158,7 @@ const CASES: [Case; 14] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: None,
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
     },
@@ -163,7 +168,7 @@ const CASES: [Case; 14] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: None,
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
     },
@@ -173,7 +178,30 @@ const CASES: [Case; 14] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: Some("GLSL ES 3.00 has no bitfield operations (fxc extracts bits)"),
+        not_on_webgl: [
+            Some("GLSL ES 3.00 has no bitfield operations (fxc extracts bits)"),
+            None,
+        ],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_rows",
+        format: Format::Rgba8Unorm,
+        tint: [1.0, 0.75, 0.5, 1.5],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_clip",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
     },
@@ -183,7 +211,7 @@ const CASES: [Case; 14] = [
         format: Format::Rgba8Unorm,
         tint: [1.0; 4],
         grid: true,
-        not_on_webgl: None,
+        not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
     },
@@ -796,7 +824,7 @@ fn own_shaders_draw_as_direct3d_does() {
                 format!("webgpu-{route}"),
                 ours(&mut wgpu_backend, &draw, ProvokingVertex::First),
             ));
-            match case.not_on_webgl {
+            match case.not_on_webgl[usize::from(dxil)] {
                 None => runs.push((format!("webgl-{route}"), ours(&mut gl, &draw, provoking))),
                 Some(why) => eprintln!("{name} webgl {route}: not drawn: {why}"),
             }

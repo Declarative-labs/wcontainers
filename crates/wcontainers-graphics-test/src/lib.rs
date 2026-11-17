@@ -74,13 +74,16 @@ fn adapter_name(
     Ok(name)
 }
 
-/// Where this process loaded each of the named libraries from, for showing which d3d11.dll and
-/// dxgi.dll a program really runs through.
+/// The Direct3D libraries a replacement may stand in for.
+pub const LIBRARIES: [&str; 3] = ["d3d11.dll", "d3d12.dll", "dxgi.dll"];
+
+/// Where this process loaded each Direct3D library from ("<name> from <path>" or "<name> from not
+/// loaded"), for showing which ones a program really runs through.
 #[cfg(windows)]
-pub fn library_paths(names: &[&str]) -> String {
+pub fn library_paths() -> String {
     use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
     let mut paths = Vec::new();
-    for name in names {
+    for name in LIBRARIES {
         let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
         let path = match unsafe { GetModuleHandleW(windows::core::PCWSTR(wide.as_ptr())) } {
             Ok(module) => {

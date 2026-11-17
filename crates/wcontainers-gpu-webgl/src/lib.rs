@@ -7,6 +7,7 @@
 //! negate y and the front face is swapped.
 
 mod caps;
+mod capture;
 mod convert;
 mod depth;
 mod format;
@@ -197,7 +198,7 @@ pub type QuerySet = Handle<QuerySetObj>;
 #[derive(Clone, Debug)]
 pub enum NoTable {}
 
-/// The one surface a back end has: its context's canvas (natively, the EGL surface).
+/// The one surface a back end has: its context's canvas (natively, an EGL window surface).
 #[derive(Clone, Debug)]
 pub struct Surface {
     id: Id,
@@ -542,6 +543,17 @@ impl WebGl {
         Ok(WebGl::new(gl, platform, off))
     }
 
+    /// Names a host window (an `HWND` on Windows) that `create_surface` may attach to, as the host's
+    /// graphics hook numbers it.
+    ///
+    /// # Safety
+    /// `window` is a native window that outlives every surface made on it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub unsafe fn add_window(&mut self, name: u32, window: *mut core::ffi::c_void) {
+        // SAFETY: as the caller promises.
+        unsafe { self.platform.add_window(name, window) }
+    }
+
     /// Makes the back end on a canvas's WebGL 2 context.
     #[cfg(target_arch = "wasm32")]
     pub fn on_canvas(context: web_sys::WebGl2RenderingContext, off: &[&str]) -> WebGl {
@@ -776,12 +788,10 @@ impl WebGl {
         if let Some(t) = texture.twin.get() {
             return Ok(t.clone());
         }
-        if texture.host.is_some() {
-            return Err(self.unbuilt("sRGB views of block-compressed textures"));
-        }
         let readable = |f: Format| {
-            format::read_as(f, format::FormatExtensions::found(&self.extensions))
-                .is_some_and(|r| r.texel_read() == r.texel_kept())
+            host::kept(f)
+                || format::read_as(f, format::FormatExtensions::found(&self.extensions))
+                    .is_some_and(|r| r.texel_read() == r.texel_kept())
         };
         if !readable(texture.desc.format) || !readable(format) {
             return Err(self.unbuilt("sRGB twins of formats read back wider than stored"));
@@ -872,9 +882,15 @@ impl WebGl {
     }
 
     /// Copies every level and layer of `from` into `to`, a texture of the same shape whose texels have
-    /// the same bytes.
+    /// the same bytes: on the GPU, or for textures kept on the host from host copy to host copy, then
+    /// uploaded.
     fn copy_whole(&mut self, from: &Texture, to: &Texture) {
         let d = from.desc;
+        let kept = from.host.as_ref().zip(to.host.as_ref());
+        if let Some((a, b)) = kept {
+            self.slow.hit(SlowPath::HostCopyKept);
+            b.copy_from(a);
+        }
         for mip in 0..d.mip_levels {
             let region = |texture| TextureRegion {
                 texture,
@@ -892,7 +908,11 @@ impl WebGl {
                     d.depth_or_layers
                 },
             };
-            self.copy_through_pbo(&region(from), &region(to), extent);
+            if kept.is_some() {
+                self.upload_blocks(&region(to), extent);
+            } else {
+                self.copy_through_pbo(&region(from), &region(to), extent);
+            }
         }
     }
 
@@ -1101,38 +1121,6 @@ impl WebGl {
         self.applied.blend = 0;
         self.applied.depth_stencil = 0;
         self.applied.raster = 0;
-    }
-
-    /// The texels last presented, read from the default framebuffer, rows top first: for hosts that
-    /// cannot see the window otherwise (natively, the EGL surface is off-screen).
-    pub fn read_presented(&mut self) -> Vec<u8> {
-        let Some((t, _)) = self.surface.as_ref().and_then(|s| s.frame.as_ref()) else {
-            return Vec::new();
-        };
-        let (w, h) = (t.desc.width as usize, t.desc.height as usize);
-        let mut texels = vec![0; w * h * 4];
-        // SAFETY: plain GL calls; the read framebuffer binding is put back.
-        unsafe {
-            self.gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
-            self.gl.read_pixels(
-                0,
-                0,
-                w as i32,
-                h as i32,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelPackData::Slice(Some(&mut texels)),
-            );
-            self.gl
-                .bind_framebuffer(glow::READ_FRAMEBUFFER, self.applied.read_framebuffer);
-        }
-        // GL's row 0 is the bottom of the window.
-        texels
-            .chunks_exact(w * 4)
-            .rev()
-            .flatten()
-            .copied()
-            .collect()
     }
 
     fn framebuffer(
@@ -1607,6 +1595,41 @@ impl WebGl {
             region.layer
         };
         [region.origin.x, region.origin.y, z]
+    }
+
+    /// A copy from or into a texture kept on the host, in blocks (`extent` is in the source's
+    /// texels): the source's blocks from its host copy, or read back first where it has none
+    /// ([`SlowPath::HostCopyReadBack`]), then written into the destination as a host write (into
+    /// both its forms where it keeps a host copy, as texels where it does not).
+    fn copy_host_kept(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        let (sbw, sbh, bytes) = src.texture.desc.format.block();
+        let (dbw, dbh, dst_bytes) = dst.texture.desc.format.block();
+        if bytes != dst_bytes {
+            return self.invalid(format!(
+                "a copy from {:?} into {:?}, whose blocks differ in size",
+                src.texture.desc.format, dst.texture.desc.format
+            ));
+        }
+        let (cols, rows) = (extent.width.div_ceil(sbw), extent.height.div_ceil(sbh));
+        let mut packed = vec![0; (cols * rows * bytes * extent.depth_or_layers) as usize];
+        if src.texture.host.is_none() {
+            self.slow.hit(SlowPath::HostCopyReadBack);
+        }
+        if self.read_texture_now(src, extent, &mut packed).is_err() {
+            self.unbuilt("copies into textures kept on the host from formats GL cannot read back");
+            return;
+        }
+        let into = Extent {
+            width: cols * dbw,
+            height: rows * dbh,
+            depth_or_layers: extent.depth_or_layers,
+        };
+        self.write_texture(dst, into, &packed, cols * bytes, rows, WriteMode::Ordered);
     }
 
     /// Uploads a region of a block-compressed texture from its host copy: as blocks natively, else
@@ -2091,13 +2114,15 @@ impl WebGl {
     }
 
     /// Points each attribute at its stream, moved by the draw's base vertex and first instance
-    /// (WebGL 2 has no draws with bases: [`SlowPath::BaseVertexRebind`]). Err when a stream's offset
-    /// would fall below zero.
+    /// (WebGL 2 has no draws with bases: [`SlowPath::BaseVertexRebind`]), and per-instance streams
+    /// on by what `later` instances past the first step through at their rate. Err when a stream's
+    /// offset would fall below zero.
     fn apply_vertices(
         &mut self,
         call: &DrawCall<'_, Self>,
         base_vertex: i64,
         first_instance: u32,
+        later: u32,
     ) -> Result<(), ()> {
         let layout = &call.vertex_layout.0.1;
         let mut wanted = [None; MAX_VERTEX_STREAMS];
@@ -2107,7 +2132,11 @@ impl WebGl {
                 continue;
             };
             let moved = if a.per_instance {
-                i64::from(first_instance)
+                let stepped = match a.divisor {
+                    NEVER_ADVANCES => 0,
+                    n => later / n,
+                };
+                i64::from(first_instance) + i64::from(stepped)
             } else {
                 base_vertex
             } * i64::from(a.stride);
@@ -2201,6 +2230,204 @@ enum Texels<'a> {
 /// Floats travel as bits through the interface.
 fn f(bits: u32) -> f32 {
     f32::from_bits(bits)
+}
+
+impl WebGl {
+    /// [`Backend::draw`], with the draw's instances starting `later` instances past its first
+    /// instance: `instance_index` and the per-instance streams as the full draw has them there.
+    fn draw_from(&mut self, call: &DrawCall<'_, Self>, later: u32) {
+        let (base_vertex, first_instance, instances) = match call.range {
+            DrawRange::Vertices {
+                first_instance,
+                instances,
+                ..
+            } => (0, first_instance, instances),
+            DrawRange::Indexed {
+                base_vertex,
+                first_instance,
+                instances,
+                ..
+            } => (i64::from(base_vertex), first_instance, instances),
+            DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => {
+                // INDIRECT is absent: the front reads the arguments back first.
+                self.fail(LossReason::Error);
+                return;
+            }
+        };
+        let program = call.program;
+        let Some(linked) = self.linked(program) else {
+            return;
+        };
+        if self.stale_buffers > 0 {
+            self.refresh_draw(call);
+        }
+        if self.twins > 0 {
+            for set in call.bindings.iter().flatten() {
+                for (_, bound) in &set.entries {
+                    if let Bound::Texture(v) = bound {
+                        self.fresh(&v.texture);
+                    }
+                }
+            }
+            // Filling a stencil copy draws into framebuffers of its own.
+            if let Some(pass) = &self.pass
+                && self.applied.draw_framebuffer != Some(pass.framebuffer)
+            {
+                // SAFETY: a plain GL call; the pass's framebuffer is alive.
+                unsafe {
+                    self.gl
+                        .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(pass.framebuffer))
+                };
+                self.applied.draw_framebuffer = Some(pass.framebuffer);
+            }
+        }
+        if self.applied.program != program.id {
+            // SAFETY: a plain GL call; the program is alive.
+            unsafe { self.gl.use_program(Some(program.raw)) };
+            self.applied.program = program.id;
+            self.applied.sets = [u64::MAX; MAX_BINDING_SETS];
+        }
+        let (gl, v) = (&self.gl, &mut self.values);
+        if self.applied.blend != call.blend.0.0 {
+            state::blend(gl, v, &call.blend.0.1);
+            self.applied.blend = call.blend.0.0;
+        }
+        let reference = call.stencil_reference[0];
+        if self.applied.depth_stencil != call.depth_stencil.0.0
+            || self.applied.stencil_reference != reference
+        {
+            state::depth_stencil(gl, v, &call.depth_stencil.0.1, reference);
+            self.applied.depth_stencil = call.depth_stencil.0.0;
+            self.applied.stencil_reference = reference;
+        }
+        if self.applied.raster != call.raster.0.0 {
+            state::raster(gl, v, &call.raster.0.1, &self.platform);
+            self.applied.raster = call.raster.0.0;
+        }
+        // SAFETY: plain GL state calls.
+        unsafe {
+            if let Some(vp) = call.viewports.first() {
+                let floats = [f(vp.x), f(vp.y), f(vp.width), f(vp.height)];
+                let rect = floats.map(|v| v as i32);
+                // FRACTIONAL_VIEWPORT is absent: the front draws such a viewport in the program.
+                if floats.iter().zip(&rect).any(|(v, r)| *v != *r as f32) {
+                    self.invalid(format!(
+                        "the fractional viewport {floats:?} without FRACTIONAL_VIEWPORT"
+                    ));
+                    return;
+                }
+                if v.viewport != rect {
+                    gl.viewport(rect[0], rect[1], rect[2], rect[3]);
+                    v.viewport = rect;
+                }
+                let range = [f(vp.min_depth), f(vp.max_depth)];
+                if v.depth_range != range {
+                    gl.depth_range_f32(range[0], range[1]);
+                    v.depth_range = range;
+                }
+            }
+            if v.scissor_test
+                && let Some(s) = call.scissors.first()
+            {
+                let rect = [s.x as i32, s.y as i32, s.width as i32, s.height as i32];
+                if v.scissor != rect {
+                    gl.scissor(rect[0], rect[1], rect[2], rect[3]);
+                    v.scissor = rect;
+                }
+            }
+            let color = call.blend_constant.map(f);
+            if v.blend_color != color {
+                gl.blend_color(color[0], color[1], color[2], color[3]);
+                v.blend_color = color;
+            }
+        }
+        match self.apply_bindings(program.id, linked, &call.bindings) {
+            Ok(()) => {}
+            Err(Unbindable::Missing((set, binding))) => {
+                self.invalid(format!(
+                    "the draw's binding sets hold no fitting resource at set {set} binding \
+                     {binding}, which its program reads"
+                ));
+                return;
+            }
+            Err(Unbindable::BothAspects) => {
+                self.unbuilt("depth and stencil views of one texture fetched by one draw");
+                return;
+            }
+            Err(Unbindable::NoSampler) => {
+                self.fail(LossReason::OutOfMemory);
+                return;
+            }
+            Err(Unbindable::Multisampled((set, binding))) => {
+                self.invalid(format!(
+                    "the draw's program reads the multisampled texture at set {set} binding \
+                     {binding}, which needs the absent MULTISAMPLE_READ"
+                ));
+                return;
+            }
+        }
+        if base_vertex != 0 || first_instance != 0 || later != 0 {
+            self.slow.hit(SlowPath::BaseVertexRebind);
+        }
+        if self
+            .apply_vertices(call, base_vertex, first_instance, later)
+            .is_err()
+        {
+            self.unbuilt("negative stream offsets after the base vertex");
+            return;
+        }
+        // The streams moved by the bases, so GL's ids lack them: the program adds them back.
+        for (uniform, value) in [
+            (&linked.first_instance, first_instance + later),
+            (&linked.base_vertex, base_vertex as u32),
+        ] {
+            if let Some((location, held)) = uniform
+                && held.get() != value
+            {
+                // SAFETY: the program is in use.
+                unsafe { self.gl.uniform_1_u32(Some(location), value) };
+                held.set(value);
+            }
+        }
+        let mode = state::mode(call.topology);
+        let gl = &self.gl;
+        match call.range {
+            DrawRange::Vertices { first, count, .. } => {
+                // SAFETY: the draw's state is applied.
+                unsafe {
+                    gl.draw_arrays_instanced(mode, first as i32, count as i32, instances as i32)
+                };
+            }
+            DrawRange::Indexed { first, count, .. } => {
+                let Some(index) = &call.index else {
+                    self.fail(LossReason::Error);
+                    return;
+                };
+                if self.applied.index != index.buffer.id {
+                    // SAFETY: the buffer's index GL buffer is alive.
+                    unsafe { gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, index.buffer.index) };
+                    self.applied.index = index.buffer.id;
+                }
+                let ty = match index.format {
+                    IndexFormat::U8 => glow::UNSIGNED_BYTE,
+                    IndexFormat::U16 => glow::UNSIGNED_SHORT,
+                    IndexFormat::U32 => glow::UNSIGNED_INT,
+                };
+                let offset = index.offset + u64::from(first) * u64::from(index.format.size());
+                // SAFETY: the draw's state and index buffer are applied.
+                unsafe {
+                    gl.draw_elements_instanced(
+                        mode,
+                        count as i32,
+                        ty,
+                        offset as i32,
+                        instances as i32,
+                    )
+                };
+            }
+            _ => unreachable!("indirect draws returned above"),
+        }
+    }
 }
 
 impl Backend for WebGl {
@@ -2421,6 +2648,9 @@ impl Backend for WebGl {
             AddressMode::Border => Err(GpuError::Absent(Features::BORDER_COLOR)),
             AddressMode::MirrorOnce => Err(GpuError::Absent(Features::MIRROR_ONCE)),
         };
+        if desc.anisotropy > self.caps.limits.max_anisotropy {
+            return Err(GpuError::Invalid("a sampler's anisotropy past the limit"));
+        }
         let wrap = [
             address(desc.address[0])?,
             address(desc.address[1])?,
@@ -2462,9 +2692,10 @@ impl Backend for WebGl {
                 );
                 gl.sampler_parameter_i32(raw, glow::TEXTURE_COMPARE_FUNC, state::compare(c) as i32);
             }
-            if desc.anisotropy > 1 && self.extensions.contains("EXT_texture_filter_anisotropic") {
-                let a = desc.anisotropy.min(self.caps.limits.max_anisotropy);
-                gl.sampler_parameter_f32(raw, glow::TEXTURE_MAX_ANISOTROPY_EXT, f32::from(a));
+            // Above 1 only where EXT_texture_filter_anisotropic raised the limit.
+            if desc.anisotropy > 1 {
+                let a = f32::from(desc.anisotropy);
+                gl.sampler_parameter_f32(raw, glow::TEXTURE_MAX_ANISOTROPY_EXT, a);
             }
             raw
         };
@@ -2634,10 +2865,9 @@ impl Backend for WebGl {
                         Features::FRAGMENT_STORAGE_WRITE | Features::VERTEX_STORAGE_READ,
                     ));
                 }
+                // WebGL 2 has no buffer textures: fronts read typed buffers another way.
                 BindingResource::TexelBuffer { .. } => {
-                    return Err(GpuError::Invalid(
-                        "webgl: texel buffers are read as textures by the front",
-                    ));
+                    return Err(GpuError::Absent(Features::TEXEL_BUFFERS));
                 }
                 BindingResource::Table(_) => {
                     return Err(GpuError::Absent(Features::RESOURCE_TABLES));
@@ -2673,11 +2903,12 @@ impl Backend for WebGl {
 
     fn destroy(&mut self, object: Object<Self>) {
         if let Object::Surface(surface) = &object {
-            if self.surface.as_ref().is_some_and(|s| s.id == surface.id)
-                && let Some((t, v)) = self.surface.take().and_then(|s| s.frame)
-            {
-                self.destroy(Object::TextureView(v));
-                self.destroy(Object::Texture(t));
+            if self.surface.as_ref().is_some_and(|s| s.id == surface.id) {
+                if let Some((t, v)) = self.surface.take().and_then(|s| s.frame) {
+                    self.destroy(Object::TextureView(v));
+                    self.destroy(Object::Texture(t));
+                }
+                self.platform.detach();
             }
             return;
         }
@@ -2977,197 +3208,7 @@ impl Backend for WebGl {
     }
 
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
-        let (base_vertex, first_instance, instances) = match call.range {
-            DrawRange::Vertices {
-                first_instance,
-                instances,
-                ..
-            } => (0, first_instance, instances),
-            DrawRange::Indexed {
-                base_vertex,
-                first_instance,
-                instances,
-                ..
-            } => (i64::from(base_vertex), first_instance, instances),
-            DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => {
-                // INDIRECT is absent: the front reads the arguments back first.
-                self.fail(LossReason::Error);
-                return;
-            }
-        };
-        let program = call.program;
-        let Some(linked) = self.linked(program) else {
-            return;
-        };
-        if self.stale_buffers > 0 {
-            self.refresh_draw(call);
-        }
-        if self.twins > 0 {
-            for set in call.bindings.iter().flatten() {
-                for (_, bound) in &set.entries {
-                    if let Bound::Texture(v) = bound {
-                        self.fresh(&v.texture);
-                    }
-                }
-            }
-            // Filling a stencil copy draws into framebuffers of its own.
-            if let Some(pass) = &self.pass
-                && self.applied.draw_framebuffer != Some(pass.framebuffer)
-            {
-                // SAFETY: a plain GL call; the pass's framebuffer is alive.
-                unsafe {
-                    self.gl
-                        .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(pass.framebuffer))
-                };
-                self.applied.draw_framebuffer = Some(pass.framebuffer);
-            }
-        }
-        if self.applied.program != program.id {
-            // SAFETY: a plain GL call; the program is alive.
-            unsafe { self.gl.use_program(Some(program.raw)) };
-            self.applied.program = program.id;
-            self.applied.sets = [u64::MAX; MAX_BINDING_SETS];
-        }
-        let (gl, v) = (&self.gl, &mut self.values);
-        if self.applied.blend != call.blend.0.0 {
-            state::blend(gl, v, &call.blend.0.1);
-            self.applied.blend = call.blend.0.0;
-        }
-        let reference = call.stencil_reference[0];
-        if self.applied.depth_stencil != call.depth_stencil.0.0
-            || self.applied.stencil_reference != reference
-        {
-            state::depth_stencil(gl, v, &call.depth_stencil.0.1, reference);
-            self.applied.depth_stencil = call.depth_stencil.0.0;
-            self.applied.stencil_reference = reference;
-        }
-        if self.applied.raster != call.raster.0.0 {
-            state::raster(gl, v, &call.raster.0.1, &self.platform);
-            self.applied.raster = call.raster.0.0;
-        }
-        // SAFETY: plain GL state calls.
-        unsafe {
-            if let Some(vp) = call.viewports.first() {
-                let floats = [f(vp.x), f(vp.y), f(vp.width), f(vp.height)];
-                let rect = floats.map(|v| v as i32);
-                // FRACTIONAL_VIEWPORT is absent: the front draws such a viewport in the program.
-                if floats.iter().zip(&rect).any(|(v, r)| *v != *r as f32) {
-                    self.invalid(format!(
-                        "the fractional viewport {floats:?} without FRACTIONAL_VIEWPORT"
-                    ));
-                    return;
-                }
-                if v.viewport != rect {
-                    gl.viewport(rect[0], rect[1], rect[2], rect[3]);
-                    v.viewport = rect;
-                }
-                let range = [f(vp.min_depth), f(vp.max_depth)];
-                if v.depth_range != range {
-                    gl.depth_range_f32(range[0], range[1]);
-                    v.depth_range = range;
-                }
-            }
-            if v.scissor_test
-                && let Some(s) = call.scissors.first()
-            {
-                let rect = [s.x as i32, s.y as i32, s.width as i32, s.height as i32];
-                if v.scissor != rect {
-                    gl.scissor(rect[0], rect[1], rect[2], rect[3]);
-                    v.scissor = rect;
-                }
-            }
-            let color = call.blend_constant.map(f);
-            if v.blend_color != color {
-                gl.blend_color(color[0], color[1], color[2], color[3]);
-                v.blend_color = color;
-            }
-        }
-        match self.apply_bindings(program.id, linked, &call.bindings) {
-            Ok(()) => {}
-            Err(Unbindable::Missing((set, binding))) => {
-                self.invalid(format!(
-                    "the draw's binding sets hold no fitting resource at set {set} binding \
-                     {binding}, which its program reads"
-                ));
-                return;
-            }
-            Err(Unbindable::BothAspects) => {
-                self.unbuilt("depth and stencil views of one texture fetched by one draw");
-                return;
-            }
-            Err(Unbindable::NoSampler) => {
-                self.fail(LossReason::OutOfMemory);
-                return;
-            }
-            Err(Unbindable::Multisampled((set, binding))) => {
-                self.invalid(format!(
-                    "the draw's program reads the multisampled texture at set {set} binding \
-                     {binding}, which needs the absent MULTISAMPLE_READ"
-                ));
-                return;
-            }
-        }
-        if base_vertex != 0 || first_instance != 0 {
-            self.slow.hit(SlowPath::BaseVertexRebind);
-        }
-        if self
-            .apply_vertices(call, base_vertex, first_instance)
-            .is_err()
-        {
-            self.unbuilt("negative stream offsets after the base vertex");
-            return;
-        }
-        // The streams moved by the bases, so GL's ids lack them: the program adds them back.
-        for (uniform, value) in [
-            (&linked.first_instance, first_instance),
-            (&linked.base_vertex, base_vertex as u32),
-        ] {
-            if let Some((location, held)) = uniform
-                && held.get() != value
-            {
-                // SAFETY: the program is in use.
-                unsafe { self.gl.uniform_1_u32(Some(location), value) };
-                held.set(value);
-            }
-        }
-        let mode = state::mode(call.topology);
-        let gl = &self.gl;
-        match call.range {
-            DrawRange::Vertices { first, count, .. } => {
-                // SAFETY: the draw's state is applied.
-                unsafe {
-                    gl.draw_arrays_instanced(mode, first as i32, count as i32, instances as i32)
-                };
-            }
-            DrawRange::Indexed { first, count, .. } => {
-                let Some(index) = &call.index else {
-                    self.fail(LossReason::Error);
-                    return;
-                };
-                if self.applied.index != index.buffer.id {
-                    // SAFETY: the buffer's index GL buffer is alive.
-                    unsafe { gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, index.buffer.index) };
-                    self.applied.index = index.buffer.id;
-                }
-                let ty = match index.format {
-                    IndexFormat::U8 => glow::UNSIGNED_BYTE,
-                    IndexFormat::U16 => glow::UNSIGNED_SHORT,
-                    IndexFormat::U32 => glow::UNSIGNED_INT,
-                };
-                let offset = index.offset + u64::from(first) * u64::from(index.format.size());
-                // SAFETY: the draw's state and index buffer are applied.
-                unsafe {
-                    gl.draw_elements_instanced(
-                        mode,
-                        count as i32,
-                        ty,
-                        offset as i32,
-                        instances as i32,
-                    )
-                };
-            }
-            _ => unreachable!("indirect draws returned above"),
-        }
+        self.draw_from(call, 0);
     }
 
     fn begin_query(&mut self, index: u32) {
@@ -3249,8 +3290,7 @@ impl Backend for WebGl {
         extent: Extent,
     ) {
         if src.texture.host.is_some() || dst.texture.host.is_some() {
-            self.unbuilt("copies of textures kept on the host (RGB9E5, block-compressed)");
-            return;
+            return self.copy_host_kept(src, dst, extent);
         }
         if src.texture.desc.samples > 1 || dst.texture.desc.samples > 1 {
             return self.copy_samples(src, dst);
@@ -3342,7 +3382,29 @@ impl Backend for WebGl {
             return;
         };
         if dst.texture.host.is_some() {
-            self.unbuilt("copies into textures kept on the host (RGB9E5, block-compressed)");
+            // The buffer's bytes read back, then written as a host write.
+            let (bw, bh, bytes) = dst.texture.desc.format.block();
+            let (row, rows) = (
+                u64::from(extent.width.div_ceil(bw) * bytes),
+                u64::from(extent.height.div_ceil(bh)),
+            );
+            let layers = u64::from(extent.depth_or_layers);
+            if rows == 0 || layers == 0 {
+                return;
+            }
+            let (pitch, per_layer) = (u64::from(src.row_pitch), u64::from(src.rows_per_layer));
+            let size = pitch * (per_layer * (layers - 1) + rows - 1) + row;
+            let mut bytes = vec![0; size as usize];
+            self.slow.hit(SlowPath::HostCopyReadBack);
+            let read = ReadSource::Buffer {
+                buffer: src.buffer,
+                offset: src.offset,
+                size,
+            };
+            if self.read_back_now(&read, &mut bytes).is_ok() {
+                let (pitch, per_layer) = (src.row_pitch, src.rows_per_layer);
+                self.write_texture(dst, extent, &bytes, pitch, per_layer, WriteMode::Ordered);
+            }
             return;
         }
         self.refresh(src.buffer, Some(false));
@@ -3367,8 +3429,28 @@ impl Backend for WebGl {
         dst: &CopyBufferTexture<'_, Self>,
         extent: Extent,
     ) {
-        if src.texture.host.is_some() {
-            self.unbuilt("copies from textures kept on the host (RGB9E5, block-compressed)");
+        if let Some(h) = &src.texture.host {
+            // From the host copy, each row of blocks written into the buffer in order.
+            let (bw, bh, bytes) = src.texture.desc.format.block();
+            let (row, rows) = (
+                (extent.width.div_ceil(bw) * bytes) as usize,
+                extent.height.div_ceil(bh) as usize,
+            );
+            let mut packed = vec![0; row * rows * extent.depth_or_layers as usize];
+            let size = [extent.width, extent.height, extent.depth_or_layers];
+            h.read(
+                &src.texture.desc,
+                src.mip,
+                Self::corner(src),
+                size,
+                &mut packed,
+            );
+            let (pitch, per_layer) = (u64::from(dst.row_pitch), u64::from(dst.rows_per_layer));
+            for (i, chunk) in packed.chunks_exact(row).enumerate() {
+                let (layer, r) = ((i / rows) as u64, (i % rows) as u64);
+                let at = dst.offset + (layer * per_layer + r) * pitch;
+                self.write_buffer(dst.buffer, at, chunk, WriteMode::Ordered);
+            }
             return;
         }
         if self
@@ -3808,27 +3890,32 @@ impl Backend for WebGl {
     }
 
     /// A WebGL context draws into one canvas, the one the back end was made on, whatever window the
-    /// host names; so a back end has one surface at a time.
-    fn create_surface(&mut self, _window: u32) -> Result<Surface, GpuError> {
+    /// host names; so a back end has one surface at a time. Natively the surface is an EGL window
+    /// surface on a window the host named with `add_window`.
+    fn create_surface(&mut self, window: u32) -> Result<Surface, GpuError> {
         if self.surface.is_some() {
             return Err(GpuError::Invalid(
                 "webgl: a back end has one surface, its context's canvas",
             ));
+        }
+        if let Err(e) = self.platform.attach(window) {
+            self.last_log = format!("webgl: attaching to window {window}: {e}");
+            return Err(GpuError::Invalid("webgl: the host has no such window"));
         }
         let id = self.id();
         self.surface = Some(SurfaceState { id, frame: None });
         Ok(Surface { id })
     }
 
-    /// `vsync` changes nothing: the browser shows the canvas when it composites the page, at the
-    /// display's rate, and presenting never waits.
+    /// In the browser `vsync` changes nothing: the browser shows the canvas when it composites the
+    /// page, at the display's rate, and presenting never waits. Natively it is the swap interval.
     fn configure_surface(
         &mut self,
         surface: &Surface,
         format: Format,
         width: u32,
         height: u32,
-        _vsync: bool,
+        vsync: bool,
     ) -> Result<(), GpuError> {
         if self.surface.as_ref().map(|s| s.id) != Some(surface.id) {
             return Err(GpuError::Invalid("webgl: the surface was destroyed"));
@@ -3836,7 +3923,7 @@ impl Backend for WebGl {
         if format != Format::Rgba8Unorm {
             return Err(GpuError::Invalid("webgl: surfaces take rgba8unorm only"));
         }
-        if let Err(e) = self.platform.resize(&self.gl, width, height) {
+        if let Err(e) = self.platform.resize(&self.gl, width, height, vsync) {
             self.last_log = format!("webgl: resizing the surface: {e}");
             return Err(GpuError::OutOfMemory);
         }
@@ -3885,8 +3972,10 @@ impl Backend for WebGl {
         }
     }
 
-    /// Copies the frame into the drawing buffer, upside down since GL's row 0 is the bottom of the
-    /// window; the browser shows it when the device thread returns to its event loop.
+    /// Copies the frame into the drawing buffer (natively the window's back buffer, then swapped),
+    /// upside down since GL's row 0 is the bottom of the window, stretched to the drawing buffer's
+    /// size where the host's window has another; the browser shows it when the device thread returns
+    /// to its event loop.
     fn present(&mut self, surface: &Surface) -> Result<(), GpuError> {
         if let Some(reason) = self.lost {
             return Err(match reason {
@@ -3904,6 +3993,7 @@ impl Backend for WebGl {
         self.read_framebuffer(&texture, 0, 0);
         self.open_writes();
         let (w, h) = (texture.desc.width as i32, texture.desc.height as i32);
+        let (dw, dh) = self.platform.drawable_size(&self.gl);
         // SAFETY: plain GL calls; the frame's framebuffer is bound for reading.
         unsafe {
             self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
@@ -3914,12 +4004,17 @@ impl Backend for WebGl {
                 w,
                 h,
                 0,
-                h,
-                w,
+                dh,
+                dw,
                 0,
                 glow::COLOR_BUFFER_BIT,
                 glow::NEAREST,
             );
+        }
+        if let Err(e) = self.platform.swap() {
+            self.last_log = format!("webgl: presenting: {e}");
+            self.fail(LossReason::Removed);
+            return Err(GpuError::DeviceLost);
         }
         Ok(())
     }
@@ -4025,8 +4120,10 @@ impl Backend for WebGl {
 
     /// Transform feedback: the program linked again with its location outputs as varyings
     /// (interleaved, or separate with more than one target), drawn with `RASTERIZER_DISCARD` unless
-    /// it rasterises. GLES 3.0 captures only draws of lists without indices. A target holding indices
-    /// too gets its index GL buffer refreshed before an index read (`IndexTwinReadBack`).
+    /// it rasterises. GLES 3.0 captures only lists without indices; other draws are captured as
+    /// points in list order, one draw per run of consecutive vertices, and drawn again for the picture
+    /// (`CaptureExpanded`). A target holding indices too gets its index GL buffer refreshed before an
+    /// index read (`IndexTwinReadBack`).
     fn capture_vertices(
         &mut self,
         call: &DrawCall<'_, Self>,
@@ -4043,21 +4140,6 @@ impl Backend for WebGl {
                  saying whether a pass is open",
             ));
         }
-        let (mode, per_primitive) = match call.topology {
-            Topology::PointList => (glow::POINTS, 1),
-            Topology::LineList => (glow::LINES, 2),
-            Topology::TriangleList => (glow::TRIANGLES, 3),
-            _ => return Err(self.unbuilt("capture_vertices of strips, fans and loops")),
-        };
-        let DrawRange::Vertices {
-            first,
-            count,
-            first_instance,
-            instances,
-        } = call.range
-        else {
-            return Err(self.unbuilt("capture_vertices of indexed draws"));
-        };
         let outputs = &call.program.stages.0.outputs;
         let separate = targets.len() > 1;
         if outputs.is_empty()
@@ -4069,8 +4151,110 @@ impl Backend for WebGl {
                  32-bit, or other than one target per output",
             ));
         }
-        // GL captures whole primitives only.
-        let vertices = u64::from(count - count % per_primitive) * u64::from(instances);
+        let native = match (call.topology, &call.range) {
+            (Topology::PointList, DrawRange::Vertices { .. }) => Some((glow::POINTS, 1)),
+            (Topology::LineList, DrawRange::Vertices { .. }) => Some((glow::LINES, 2)),
+            (Topology::TriangleList, DrawRange::Vertices { .. }) => Some((glow::TRIANGLES, 3)),
+            _ => None,
+        };
+        // The vertex numbers in list order, for draws GL cannot capture as they are.
+        let mut list = Vec::new();
+        let (first_instance, instances, vertices_per_instance) = match (native, &call.range) {
+            (
+                Some((_, per_primitive)),
+                DrawRange::Vertices {
+                    count,
+                    first_instance,
+                    instances,
+                    ..
+                },
+            ) => (*first_instance, *instances, count - count % per_primitive),
+            (
+                None,
+                DrawRange::Vertices {
+                    first,
+                    count,
+                    first_instance,
+                    instances,
+                },
+            ) => {
+                let numbers = (*first..first.saturating_add(*count)).map(Some);
+                capture::list_order(
+                    call.topology,
+                    call.raster.0.1.provoking(),
+                    numbers,
+                    &mut list,
+                );
+                (*first_instance, *instances, list.len() as u32)
+            }
+            (
+                None,
+                DrawRange::Indexed {
+                    first,
+                    count,
+                    base_vertex,
+                    first_instance,
+                    instances,
+                },
+            ) => {
+                let Some(index) = &call.index else {
+                    return Err(GpuError::Invalid("an indexed draw with no index buffer"));
+                };
+                let size = index.format.size();
+                let start = index.offset + u64::from(*first) * u64::from(size);
+                let bytes = u64::from(*count) * u64::from(size);
+                if start + bytes > index.buffer.size {
+                    return Err(GpuError::Invalid(
+                        "indices past the end of the index buffer",
+                    ));
+                }
+                let mut raw = vec![0u8; bytes as usize];
+                self.refresh(index.buffer, Some(true));
+                let gl_buffer = index.buffer.index.or(index.buffer.data);
+                // SAFETY: plain GL calls; the copy target takes buffers of either WebGL type, and the
+                // range was checked above.
+                let read = unsafe {
+                    self.gl.bind_buffer(glow::COPY_READ_BUFFER, gl_buffer);
+                    platform::get_buffer_sub_data(
+                        &self.gl,
+                        glow::COPY_READ_BUFFER,
+                        start as i32,
+                        &mut raw,
+                    )
+                };
+                if !read {
+                    return Err(self.read_failed());
+                }
+                // GL restarts at the largest value always (a front whose API does not rewrites).
+                let restart = index.format.restart_value();
+                let mut negative = false;
+                let numbers = raw.chunks_exact(size as usize).map(|c| {
+                    let mut word = [0; 4];
+                    word[..c.len()].copy_from_slice(c);
+                    let i = u32::from_le_bytes(word);
+                    if i == restart {
+                        return None;
+                    }
+                    let v = i64::from(i) + i64::from(*base_vertex);
+                    negative |= v < 0;
+                    Some(v.max(0) as u32)
+                });
+                capture::list_order(
+                    call.topology,
+                    call.raster.0.1.provoking(),
+                    numbers,
+                    &mut list,
+                );
+                if negative {
+                    return Err(self.unbuilt(
+                        "capture_vertices reaching below vertex 0 by a negative base vertex",
+                    ));
+                }
+                (*first_instance, *instances, list.len() as u32)
+            }
+            _ => return Err(GpuError::Absent(Features::INDIRECT)),
+        };
+        let vertices = u64::from(vertices_per_instance) * u64::from(instances);
         let stride = |n: usize| -> u64 {
             if separate {
                 u64::from(outputs[n].1)
@@ -4089,9 +4273,10 @@ impl Backend for WebGl {
                  or into a range smaller than the vertices the draw makes",
             ));
         }
+        let discard = !rasterize || native.is_none();
         let kind = shader::Capture {
             separate,
-            rasterize,
+            rasterize: !discard,
         };
         let slot = &call.program.captures[kind.slot()];
         let capture = match slot.get() {
@@ -4113,9 +4298,9 @@ impl Backend for WebGl {
         let gl = &self.gl;
         // SAFETY: plain GL calls; the targets' data GL buffers are alive and hold the ranges.
         unsafe {
-            if !rasterize {
+            if discard {
                 // Outside a pass nothing is drawn; the default framebuffer is always complete.
-                if self.applied.draw_framebuffer.is_some() {
+                if !rasterize && self.applied.draw_framebuffer.is_some() {
                     gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
                     self.applied.draw_framebuffer = None;
                 }
@@ -4143,24 +4328,52 @@ impl Backend for WebGl {
                 self.applied.program = capture.id;
                 self.applied.sets = [Id::MAX; MAX_BINDING_SETS];
             }
-            gl.begin_transform_feedback(mode);
+            gl.begin_transform_feedback(native.map_or(glow::POINTS, |(mode, _)| mode));
         }
-        self.draw(&DrawCall {
-            program: &capture,
-            index: None,
-            range: DrawRange::Vertices {
-                first,
-                count,
-                first_instance,
-                instances,
-            },
-            ..*call
-        });
+        if let DrawRange::Vertices {
+            first,
+            count,
+            first_instance,
+            instances,
+        } = call.range
+            && native.is_some()
+        {
+            self.draw(&DrawCall {
+                program: &capture,
+                index: None,
+                range: DrawRange::Vertices {
+                    first,
+                    count,
+                    first_instance,
+                    instances,
+                },
+                ..*call
+            });
+        } else {
+            self.slow.hit(SlowPath::CaptureExpanded);
+            for later in 0..instances {
+                for (first, count) in capture::runs(&list) {
+                    let run = DrawCall {
+                        program: &capture,
+                        index: None,
+                        topology: Topology::PointList,
+                        range: DrawRange::Vertices {
+                            first,
+                            count,
+                            first_instance,
+                            instances: 1,
+                        },
+                        ..*call
+                    };
+                    self.draw_from(&run, later);
+                }
+            }
+        }
         let gl = &self.gl;
         // SAFETY: plain GL calls ending what was begun above.
         unsafe {
             gl.end_transform_feedback();
-            if !rasterize {
+            if discard {
                 gl.disable(glow::RASTERIZER_DISCARD);
             }
             for n in 0..targets.len() {
@@ -4173,6 +4386,9 @@ impl Backend for WebGl {
                 let end = t.offset + vertices * stride(n);
                 self.mark_stale(t.buffer, true, t.offset, end);
             }
+        }
+        if rasterize && native.is_none() {
+            self.draw(call);
         }
         match self.lost {
             Some(_) => Err(GpuError::DeviceLost),

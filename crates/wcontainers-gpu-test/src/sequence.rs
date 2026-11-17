@@ -525,12 +525,12 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                     b.wait_fence(&fence);
                     pending.clear();
                 }
-                let touched = if mode == WriteMode::Discard {
-                    (0, *size)
-                } else {
-                    (offset, offset + len)
-                };
-                pending.push((i, touched.0, touched.1));
+                // A discard gives the buffer fresh contents that nothing earlier uses.
+                match mode {
+                    WriteMode::Ordered => pending.push((i, offset, offset + len)),
+                    WriteMode::Discard => pending.retain(|p| p.0 != i),
+                    WriteMode::NoOverwrite => {}
+                }
                 b.write_buffer(buffer, offset, &bytes(len as usize, *seed), mode);
             }
             Step::WriteTexture { which, at, seed } if !textures.is_empty() => {

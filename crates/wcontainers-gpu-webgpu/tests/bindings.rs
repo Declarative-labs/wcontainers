@@ -16,9 +16,10 @@ use wcontainers_gpu::{
     AddressMode, AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc,
     BlendFactor, BlendOp, BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment,
     CompareFn, DepthAttachment, DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent,
-    Filter, Format, FormatUse, GpuError, LoadOp, MapIntent, Origin, PassDesc, Program, ReadSource,
-    SamplerDesc, ShaderModule, ShaderStage, StageSet, StoreOp, TextureRegion, TextureUsage,
-    TextureViewDesc, Topology, ViewDimension, Viewport, WriteMode,
+    Features, Filter, Format, FormatUse, GpuError, LoadOp, MAX_VERTEX_STREAMS, MapIntent, Origin,
+    PassDesc, Program, ReadSource, SamplerDesc, ShaderModule, ShaderStage, StageSet, StepMode,
+    StoreOp, TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexAttribute, VertexFormat,
+    VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -914,5 +915,59 @@ fn programs_are_validated_with_webgpus_core_language() {
         ShaderStage::Fragment,
     );
     assert!(matches!(b.create_shader(&wide), Err(GpuError::Invalid(_))));
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+#[test]
+fn step_rates_and_texel_buffers_are_reported_absent() {
+    let mut b = device();
+    assert!(!b.caps().has(Features::INSTANCE_STEP_RATE));
+    assert!(!b.caps().has(Features::TEXEL_BUFFERS));
+    let layout = |step| {
+        let mut desc = VertexLayoutDesc {
+            streams: [None; MAX_VERTEX_STREAMS],
+            attributes: [None; MAX_VERTEX_STREAMS],
+        };
+        desc.streams[0] = Some(VertexStream { stride: 16, step });
+        desc.attributes[0] = Some(VertexAttribute {
+            location: 0,
+            stream: 0,
+            offset: 0,
+            format: VertexFormat::Float32x4,
+        });
+        desc
+    };
+    assert!(
+        b.create_vertex_layout(&layout(StepMode::Instance(1)))
+            .is_ok()
+    );
+    for rate in [0, 2] {
+        assert_eq!(
+            b.create_vertex_layout(&layout(StepMode::Instance(rate)))
+                .err(),
+            Some(GpuError::Absent(Features::INSTANCE_STEP_RATE))
+        );
+    }
+    let buffer = b
+        .create_buffer(&BufferDesc {
+            size: 256,
+            usage: BufferUsage::STORAGE,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    let typed = b.create_binding_set(&[BindingEntry {
+        binding: 32,
+        stages: StageSet::FRAGMENT,
+        resource: BindingResource::TexelBuffer {
+            range: BufferRange {
+                buffer: &buffer,
+                offset: 0,
+                size: 256,
+            },
+            format: Format::Rgba8Unorm,
+            writable: false,
+        },
+    }]);
+    assert_eq!(typed.err(), Some(GpuError::Absent(Features::TEXEL_BUFFERS)));
     assert_eq!(b.status(), DeviceStatus::Ok);
 }

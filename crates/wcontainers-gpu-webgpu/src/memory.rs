@@ -294,6 +294,7 @@ impl WebGpu {
         if data.is_empty() {
             return;
         }
+        buffer.0.wrote();
         if offset + data.len() as u64 > buffer.0.desc.size {
             self.fail("write_buffer past the buffer's end");
             return;
@@ -338,7 +339,9 @@ impl WebGpu {
         b.used_in.set(self.serial);
         let dst = b.raw.borrow().clone();
         let size = data.len() as u64;
-        self.split_pass(|w| w.copy_bytes(Stream::Main, &staging, at % 4, &dst, at, size));
+        self.split_pass(SlowPath::WriteSplitPass, |w| {
+            w.copy_bytes(Stream::Main, &staging, at % 4, &dst, at, size)
+        });
     }
 
     pub(crate) fn write_texture_impl(
@@ -405,7 +408,7 @@ impl WebGpu {
                 );
             };
             if self.pending(t.used_in.get()) && mode != WriteMode::NoOverwrite {
-                self.split_pass(move |w| draw(w, Stream::Main));
+                self.split_pass(SlowPath::WriteSplitPass, move |w| draw(w, Stream::Main));
             } else {
                 draw(self, Stream::Lead);
             }
@@ -446,7 +449,7 @@ impl WebGpu {
         let tex = region.texture.clone();
         let (mip, layer, origin, stencil) =
             (region.mip, region.layer, region.origin, region.stencil);
-        self.split_pass(move |w| {
+        self.split_pass(SlowPath::WriteSplitPass, move |w| {
             w.encoder().copy_buffer_to_texture(
                 wgpu::TexelCopyBufferInfo {
                     buffer: &staging,
@@ -474,6 +477,7 @@ impl WebGpu {
             self.fail("copy_buffer inside a pass");
             return;
         }
+        dst.0.wrote();
         if src_offset + size > src.0.desc.size || dst_offset + size > dst.0.desc.size {
             self.fail("copy_buffer past a buffer's end");
             return;
@@ -774,6 +778,9 @@ impl WebGpu {
             self.fail("buffer and texture copies inside a pass");
             return;
         }
+        if !to_texture {
+            buffer.buffer.0.wrote();
+        }
         if region.texture.0.blocks.is_some() {
             self.copy_buffer_blocks(buffer, region, extent, to_texture);
             return;
@@ -921,6 +928,7 @@ impl WebGpu {
             self.fail("clear_buffer inside a pass");
             return;
         }
+        buffer.0.wrote();
         if pattern.is_empty() || !size.is_multiple_of(pattern.len() as u64) {
             self.fail("clear_buffer with a range that is not a whole number of patterns");
             return;
@@ -1130,6 +1138,7 @@ impl WebGpu {
         dst: &Buffer,
         dst_offset: u64,
     ) -> Result<(), GpuError> {
+        dst.0.wrote();
         if !dst_offset.is_multiple_of(8) {
             return Err(GpuError::Invalid(
                 "query results go to multiples of 8 bytes",

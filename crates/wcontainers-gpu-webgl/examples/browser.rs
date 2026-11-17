@@ -148,6 +148,10 @@ suite!(
     captured_indices_drawn_both_ways,
     block_compressed_and_shared_exponent_textures_read_back_as_written,
     fragment_depth_follows_the_clip_convention,
+    strips_fans_loops_and_indexed_draws_captured_in_list_order,
+    absent_features_are_refused,
+    copies_into_and_out_of_host_kept_textures,
+    srgb_views_of_block_compressed_textures,
 );
 
 thread_local! {

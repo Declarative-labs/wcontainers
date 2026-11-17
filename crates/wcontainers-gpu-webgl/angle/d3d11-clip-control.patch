@@ -1,0 +1,42 @@
+# Three fixes of upstream ANGLE (BSD-3-Clause, its LICENSE) to its Direct3D 11 renderer under EXT_clip_control, in mozangle 0.7.1's older code: commits ba845fcf25d0 (no scissor flip under the upper-left origin), 6092e0b75c22 (the clip depth mode reaches the shaders without a viewport change) and 1dd3a4c4053a (gl_FragCoord.z from the built-in position). Applied by build.cmd.
+--- a/gfx/angle/checkout/src/libANGLE/renderer/d3d/DynamicHLSL.cpp
++++ b/gfx/angle/checkout/src/libANGLE/renderer/d3d/DynamicHLSL.cpp
+@@ -843,9 +843,16 @@
+             }
+         }
+ 
+-        pixelPrologue << "    gl_FragCoord.z = (input.gl_FragCoord.z * rhw) * dx_DepthFront.x + "
+-                         "dx_DepthFront.y;\n"
+-                      << "    gl_FragCoord.w = rhw;\n";
++        if (shaderModel >= 4 && mRenderer->getShaderModelSuffix() == "")
++        {
++            pixelPrologue << "    gl_FragCoord.z = input.dx_Position.z;\n";
++        }
++        else
++        {
++            pixelPrologue << "    gl_FragCoord.z = (input.gl_FragCoord.z * rhw) * dx_DepthFront.x + "
++                             "dx_DepthFront.y;\n";
++        }
++        pixelPrologue << "    gl_FragCoord.w = rhw;\n";
+     }
+ 
+     if (pixelBuiltins.glPointCoord.enabled && shaderModel >= 3)
+--- a/gfx/angle/checkout/src/libANGLE/renderer/d3d/d3d11/StateManager11.cpp
++++ b/gfx/angle/checkout/src/libANGLE/renderer/d3d/d3d11/StateManager11.cpp
+@@ -1229,6 +1229,7 @@
+                     {
+                         case gl::State::EXTENDED_DIRTY_BIT_CLIP_CONTROL:
+                             checkPresentPath(context);
++                            invalidateViewport(context);
+                             break;
+                     }
+                 }
+@@ -1413,7 +1414,7 @@
+     int scissorX = scissor.x + mCurScissorOffset.x;
+     int scissorY = scissor.y + mCurScissorOffset.y;
+ 
+-    if (mCurPresentPathFastEnabled)
++    if (mCurPresentPathFastEnabled && glState.getClipSpaceOrigin() == gl::ClipSpaceOrigin::LowerLeft)
+     {
+         scissorY = mCurPresentPathFastColorBufferHeight - scissor.height - scissor.y;
+     }

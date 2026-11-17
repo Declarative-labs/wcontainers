@@ -78,7 +78,8 @@ bitflags! {
         const BASE_VERTEX_INSTANCE = 1 << 25;
         /// Primitive restart can be switched off for strips.
         const RESTART_SWITCH = 1 << 26;
-        /// Views may reinterpret any format of the same block size, not only sRGB twins.
+        /// Views of a texture made with `reinterpret` may take any colour format of the same block size,
+        /// not only the sRGB twin. Depth and stencil formats are never reinterpreted.
         const FORMAT_REINTERPRET = 1 << 27;
         /// Views may swizzle channels.
         const VIEW_SWIZZLE = 1 << 28;
@@ -154,6 +155,17 @@ bitflags! {
         /// back end refuses such a block with [`crate::GpuError::Absent`] of this bit, and the front
         /// blends that block in the program.
         const BLEND_CONSTANT_ALPHA = 1 << 53;
+        /// Per-instance streams that step other than once per instance
+        /// ([`crate::StepMode::Instance`] of any count, Direct3D's step rate). Without it a back end
+        /// refuses such a vertex layout with [`crate::GpuError::Absent`] of this bit, and fronts fetch
+        /// those streams in the program from the instance index (slow path
+        /// [`crate::SlowPath::InstanceRateInShader`]).
+        const INSTANCE_STEP_RATE = 1 << 54;
+        /// Typed buffers bound as [`crate::BindingResource::TexelBuffer`] and read natively by
+        /// programs ([`crate::TexelBufferRoute::Native`]). Without it a back end refuses such a binding
+        /// with [`crate::GpuError::Absent`] of this bit, and fronts take
+        /// [`crate::TexelBufferRoute::Storage`] or [`crate::TexelBufferRoute::Texture`].
+        const TEXEL_BUFFERS = 1 << 55;
     }
 }
 
@@ -180,8 +192,8 @@ pub struct Limits {
     pub vertex_attributes: u32,
     pub max_vertex_stride: u32,
     pub color_targets: u32,
-    /// Bytes one sample may hold across all color targets of a pass (WebGPU's 32 by default; back ends ask
-    /// the adapter for its most). A front whose API allows fatter targets runs each draw once per group
+    /// Bytes one sample may hold across all color targets of a pass, counted by
+    /// [`crate::color_target_bytes`] (WebGPU's 32 by default; back ends ask the adapter for its most). A front whose API allows fatter targets runs each draw once per group
     /// of targets that fits, each run starting from a saved copy of depth and stencil, with storage writes
     /// and queries kept only in the first run (slow path [`crate::SlowPath::TargetsSplit`]).
     pub color_bytes_per_sample: u32,

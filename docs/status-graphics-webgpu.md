@@ -5,9 +5,117 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 
 ## Where things stand
 
-G2 (the whole milestone, section 12) is in progress: G2 runs 1 and 2 are below as "Run 5" and
-"Run 6". The pass bar items still open are listed under "Next (G2)". Earlier runs (G2a, the first
-slice, runs 1 to 4) follow them.
+G2 (the whole milestone, section 12): every pass bar item has now been run and passes, the
+shared suite included natively on this Mac (present too), on the RTX 3080 (Direct3D 12 and
+Vulkan) and in Chrome there. G2 runs 1 to 5 are below as "Run 5" to "Run 9". What 5.7 gives the
+back end beyond the pass bar and is not built yet is under "Not carried out yet". Earlier runs
+(G2a, the first slice, runs 1 to 4) follow them.
+
+Run 9 = G2 run 5, 2026-11-17:
+- Merged origin/phase-2-graphics (at 385604f). The lock file conflicted (our libtest-mimic and
+  objc2 test crates against the shared line's new ones): took the shared line's and let cargo add
+  ours back offline (additions only). The interface brought `INSTANCE_STEP_RATE` and
+  `TEXEL_BUFFERS`; the back end has neither, so step rates other than one and typed buffer
+  bindings are now `Absent` of those bits (were `Invalid`), tested in bindings.rs
+  `step_rates_and_texel_buffers_are_reported_absent`.
+- The present test on this Mac passes. The window was never seen as visible because the test host
+  ran the run loop without handling the application's events, which is how AppKit learns a window
+  is on screen (a Swift probe: occlusion state 0x2000 with the run loop alone, 0x2002, visible,
+  when the events are handled). The host now calls `finishLaunching` and handles events while it
+  waits. The frame is drawn through `PresentConverted` (a Metal layer takes no `rgba8unorm`),
+  which the host now prints and on macOS requires; the window shows the frame's colour exactly.
+- Vertex formats WebGPU lacks are built (src/vertex.rs, `VertexFormatConverted`, plan 5.7). A
+  vertex layout with one gets a plan when made: each stream holding one is read from a shadow
+  stream laying every attribute of that stream out again, the lacking ones widened (three 8-bit
+  or 16-bit components to four, the fourth set to what a three-component format reads, one or its
+  integer; `Float16x3` to `Float16x4`; `Uint10_10_10_2` to `Uint16x4`; `Float11_11_10` to
+  `Float16x4`, exact, since both have a 5-bit exponent), the others copied as they are. The
+  pipeline takes the shadow's layout. At a draw, a shadow kept for that buffer, offset, layout and
+  stream is used while the buffer's write count is unchanged; otherwise a compute program makes it
+  from every whole element from the offset to the buffer's end, splitting the open pass (counted
+  once as `VertexFormatConverted`; `split_pass` now counts the slow path that needs it). Every
+  buffer write, copy or clear into a buffer, query resolve and storage binding of it moves the
+  buffer's write count. Destroying a buffer drops its shadows.
+
+Run 8 = G2 run 4, 2026-11-17:
+- Merged origin/phase-2-graphics (at 41816d5) and origin/phase-2-graphics-direct3d-11. The
+  interface changes they brought (doc sentences, recording back end checks) needed nothing here.
+  The first desktop build after them failed to link a stale `wcontainers-gpu-test` library
+  (unresolved symbols); `cargo clean -p wcontainers-gpu-test` fixed it. Recorded runs now clean
+  both crates.
+- Presenting a format the window lacks: a Metal layer takes no `rgba8unorm`, which every back end
+  presents (plan 4.9), so the device lost it there ("Validation Error" from wgpu). Now
+  `configure_surface` asks the window's formats (the back end keeps its adapter for this); a
+  window lacking the format is configured in the other byte order (`bgra8unorm`), frames are drawn
+  into a stand-in texture of the asked format, and `present` draws it into the window's texture
+  (`PresentConverted`, interface change below; src/fill.rs `present_by_draw`). Not yet run on a
+  shown window (see the present test below); on Windows and in Chrome the window takes the format
+  and nothing changes.
+- The suite's present test on macOS: AppKit makes windows only on the main thread and the standard
+  test harness runs every test on a thread of its own, so tests/present.rs runs
+  `present_shows_the_frame` with libtest-mimic on the main thread (on Windows it has no tests:
+  tests/suite.rs runs present there). The host (tests/host/mod.rs, shared by both files) opens a
+  borderless 4 by 4 pixel floating window whose content view's own layer is the surface, and reads
+  it through ScreenCaptureKit (one window, `SCScreenshotManager`) in sRGB, which undoes the
+  display's colour matching exactly: a Swift probe of the same steps read 256 of 256 colours
+  exactly through an external monitor's ICC profile (`CGWindowListCreateImage` gave the display's
+  values, and converting them back to sRGB missed 193 of 260). The screen recording permission is
+  held by the session the tests run from here (`CGPreflightScreenCaptureAccess` true).
+- That test still fails here, as a known failure with its reason: macOS reports every new window
+  of this session as not visible (`occlusionState` 0x2000, also for a plain Swift window, at any
+  place and level), and wgpu's Metal surface hands out no texture to an occluded window, so the
+  frame is drawn unshown, as the back end does for an occluded window. Why this session's windows
+  are occluded is not known (display not asleep, session not locked). The test now says so instead
+  of comparing the window's grey.
+- The suite's list for hosts that run present apart (the browser page and macOS) is one macro,
+  examples/scenes/names.rs; web/check runs the page against the whole native list on Windows, so a
+  test the shared crate adds and the list lacks fails there.
+
+Run 7 = G2 run 3, 2026-11-17:
+- Merged origin/phase-2-graphics (at f107eb5), then origin/phase-2-graphics-direct3d-12 and
+  -shaders (each a few commits ahead of it). The shared line brought the interface change c8a7be9:
+  `copy_texture` copies a combined depth-stencil format whole, both aspects, with `stencil` false.
+- Combined depth-stencil copies now follow it: equal formats and whole levels are one WebGPU copy
+  of every aspect (before, the depth aspect only, which WebGPU refuses); part of a level is drawn,
+  depth by `DepthWrittenByDraw` and stencil by the new `StencilWrittenByDraw` (interface change
+  below): per layer one draw clears the rectangle's stencil, then one draw per bit with that bit's
+  write mask and reference 0xff keeps the fragments whose source has the bit (src/fill.rs). Copies
+  between a combined format and another format mark the device lost.
+- Part of a stencil from a buffer (WebGPU copies depth and stencil only whole) goes into an
+  `r8uint` texture and is drawn the same way. Copies into a buffer and read backs that WebGPU
+  cannot make, 24-bit depth at all and part of any depth or stencil level, draw the aspect into a
+  colour texture first (`DepthReadByDraw`): 24-bit depth as `round(d * 16777215)` into `r32uint`
+  (exact: a unorm value stored as the nearest float is within half a step of its integer after one
+  correctly rounded multiply), 32-bit float depth's bits into `r32uint`, 16-bit depth into
+  `r16uint`, stencil into `r8uint`. A depth or stencil texture made with `COPY_SRC` (which read
+  backs need) gets binding usage, and one made with `COPY_DST` render usage, where its format
+  allows, so these draws can run; textures without copy usages get neither. Part of a 16-bit depth level from a
+  buffer marks the device lost (no Direct3D call makes one).
+- A buffer copy or read back of a combined format's depth aspect was sized as both aspects (8
+  bytes a texel); it is now the depth format's size.
+- BC1 to BC5 against Direct3D: tests/direct3d.rs loads every BC format's seeded blocks with
+  Direct3D 11 on the RTX 3080 and with WARP (a pixel shader compiled at test time by
+  `D3DCompile`), and through the back end natively and decoded. Natively every texel equals
+  Direct3D's. Decoded, BC1 to BC5 are within 2 / 255 of WARP (BC4 and BC5 within 2.6e-4, the
+  16-bit float they are stored in), while the RTX 3080's own decoder differs from WARP by up to
+  13 / 255: hardware decoders interpolate BC1 to BC5 within a tolerance. So the bar is: decoded
+  texels no further from the GPU's than WARP's are, plus one step of the format they are stored in.
+  It passes. The old one-step comparison with the GPU's decoder in tests/blocks.rs stays ignored
+  as a known failure that WARP fails too.
+- `prepare` in Chrome: examples/scenes/prepare.rs (shared by tests/prepare.rs and the page, timed
+  by `performance.now()` there) draws 16 new programs unprepared, then 16 others after `prepare`;
+  web/check prints both lines and fails if the prepared draws built anything. In Chrome the
+  `prepare` calls return at once (0.6 ms for 16) and the compiles finish in the GPU process before
+  the next submit completes, so `BACKGROUND_PREPARE` is confirmed there (measurements below).
+- The scene tests (scenes.rs, raster.rs, the two writes.rs tests drawing the triangle) compare with
+  the rig's allowance for each picture (references/d3d11/tolerances.txt, what WARP earns: 1 for the
+  triangle, quads and viewports, 0 for the instanced scene), so they hold on any GPU, and print
+  how many pixels differ at all. On the RTX 3080 every pixel still equals Direct3D's (printed, and
+  web/check compares the twelve pictures at 0).
+- Found: incremental builds on the desktop sometimes kept a stale library (a changed string in
+  src/memory.rs did not reach the test binary, twice). Runs whose results are recorded here now
+  start with `cargo clean -p wcontainers-gpu-webgpu` in the job's build command. Not reported to
+  the rig track yet.
 
 Run 6 = G2 run 2, 2026-11-17:
 - Merged origin/phase-2-graphics at d31a49e (every other graphics branch was already in it); the
@@ -314,7 +422,8 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
 All from the checkout root on the Mac; nothing is built or run on the Mac but formatting and
 `cargo check -j 2`.
 - Tests on the RTX 3080 (tests/bindings.rs, blocks.rs, copies.rs, depth.rs, direct3d.rs (Windows
-  only), fitted.rs, prepare.rs, raster.rs, scenes.rs, writes.rs and suite.rs, the shared suite; they need a GPU, and the suite's present test a desktop, so
+  only), fitted.rs, prepare.rs, raster.rs, scenes.rs, vertices.rs, writes.rs and suite.rs, the
+  shared suite; they need a GPU, and the suite's present test a desktop, so
   `--desktop`; `WEBGPU_API=dx12|vulkan|metal` picks wgpu's API, default the platform's, Vulkan on
   the desktop), both APIs in one job:
   `tools/graphics-rig/gpu-job --desktop --build "cargo test --locked -j 3 -p wcontainers-gpu-webgpu
@@ -323,10 +432,24 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   wcontainers-gpu-webgpu --no-fail-fast -- --test-threads 1"`. Keep `--no-fail-fast`, so one
   failing file does not hide the others, and `--locked`, so a stale lock file fails instead of
   being rewritten (which makes the tree differ and gpu-job refuse it).
+- When a result is recorded, start the build command with `cargo clean -p wcontainers-gpu-webgpu
+  -p wcontainers-gpu-test &&` (incremental builds on the desktop have kept stale libraries of path
+  crates changed by a merge), and before `web/check` run `tools/graphics-rig/remote "cargo clean -p
+  wcontainers-gpu-webgpu -p naga -p wcontainers-gpu -p wcontainers-gpu-test --target
+  wasm32-unknown-unknown & cargo clean -p wcontainers-gpu-webgpu -p naga -p wcontainers-gpu -p
+  wcontainers-gpu-test"`.
+- The BC comparison with Direct3D and WARP with other blocks: `set WEBGPU_SEED=<n>&& set
+  WEBGPU_CASES=<textures per format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test
+  direct3d bc_ -- --nocapture` as the job's command (prints each format's distances).
 - The prepare timings: `tools/graphics-rig/gpu-job --alone --build "cargo test --locked -j 3 -p
   wcontainers-gpu-webgpu --no-run" -- "set WEBGPU_API=dx12&& cargo test --locked -j 3 -p
   wcontainers-gpu-webgpu --test prepare -- --nocapture"` (`WEBGPU_PROGRAMS=<n>` programs per half,
   default 16).
+- The suite's present test on this Mac: `--test present` in the command below (the window shows
+  for a moment in the middle of the main screen; the session needs the screen recording
+  permission, which this one has).
+- The vertex conversion with other bytes: `set WEBGPU_SEED=<n>&& set WEBGPU_CASES=<vertices per
+  format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test vertices -- --nocapture`.
 - On this Mac's GPU, one job only (never a build loop): copy the committed tree to scratch with
   `git archive HEAD | tar -x -C <scratch>/mac-src`, and there `nix develop <checkout> -c env
   CARGO_TARGET_DIR=<scratch>/mac-target WEBGPU_API=metal cargo test --locked -j 2 -p
@@ -344,15 +467,107 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   (web/draw.mjs, web/scenes.html), compares all twelve with references/d3d11 at tolerance 0, and
   draws both quads pictures with each twist natively on both APIs and in Chrome and requires them
   to differ, draws the eight-viewport scene in Chrome (equal to `raster-viewports.png`, and
-  differing with whole-pixel viewports), then runs the shared suite in Chrome, one page per test (suite-chrome.txt). Prints
+  differing with whole-pixel viewports), prints first-draw timings with and without `prepare` in
+  Chrome (failing if the prepared draws built anything), then runs the shared suite in Chrome, one
+  page per test (suite-chrome.txt). Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
   pictures and the suite's results are copied there. About 7 minutes cold, the job itself 15 s.
-- The known BC failure: add `--ignored` to the test command (`--test blocks -- --ignored
-  --nocapture`); it prints each format's largest difference and the texel.
+- The old one-step BC comparison (ignored): add `--ignored` to the test command (`--test blocks --
+  --ignored --nocapture`); it prints each format's largest difference and the texel.
 - One renderer by hand, on the desktop: `scenes <dx12|vulkan|metal> <dir> [none|blend-factor|
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 9 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
+load not sampled; Mac load average 29 to 75):
+- All tests after the merge and a clean build of this crate and `wcontainers-gpu-test` (before
+  the vertex work): Vulkan 65 of 65 and Direct3D 12 65 of 65, one ignored on each (the old BC
+  one-step comparison): bindings 11, blocks 2, copies 4, depth 2, direct3d 4, fitted 1, prepare 1,
+  raster 1, scenes 4, suite 24, writes 11.
+- Last full run, at cf2f03c after a clean build of this crate and `wcontainers-gpu-test`: Vulkan
+  66 of 66 and Direct3D 12 66 of 66, one ignored on each (as above, plus vertices 1). tests/vertices.rs: seed 188 at 64 vertices per format (both APIs), seed 7 at 1000
+  (Vulkan) and seed 99 at 1000 (Direct3D 12), every one of the 11 formats, three frames each:
+  every component as the format means (integers and 16-bit or smaller floats exact, normalised
+  within 1e-6), the float beside it exact, one shadow made at the first frame, none at the second,
+  one after the write.
+- Clippy with warnings denied passes natively on Windows and macOS and for WebAssembly.
+- `web/check` at e5be2a5 (after cleaning this crate, naga, `wcontainers-gpu` and
+  `wcontainers-gpu-test` on both targets): all twelve pictures equal Direct3D 11's at tolerance 0,
+  the twists differ as before (16384 pixels by up to 92; 25016 by up to 204), the viewports as
+  before (equal; whole pixels 2540 differ by up to 229), the suite in Chrome 24 of 24, Chrome's
+  adapter the RTX 3080 (D3D12, discrete, not a fallback). `prepare` in Chrome: unprepared frame of
+  16 first draws 250.8 ms with 16 pipelines built while drawing; after 1.0 ms of `prepare` calls
+  and 228.3 ms waiting for the compiles, the frame 1.5 ms with none built.
+- This Mac (Apple M5 Max, Metal), single jobs from the committed tree (e5be2a5; build at `-j 2`
+  with load average 35 to 71): every test passes, 62 of 62 with the one ignored: bindings 11, blocks
+  2, copies 4, depth 2, fitted 1, prepare 1, present 1, raster 1, scenes 4, suite 23 (present runs
+  apart), vertices 1, writes 11. The present test drew through `PresentConverted` (2 frames) and
+  the window showed [51, 102, 153, 255] in all 16 pixels, as the suite asks. The earlier Mac run of this session (before the vertex
+  work, the same pass list) printed the scene differences from the RTX 3080's Direct3D
+  references: triangle 1952 pixels by 1, quads 2455 by 1 on every depth format, the eight
+  viewports 662 by 1, all within the rig's allowance.
+
+Run 8 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
+load not sampled; Mac load average 21 to 79):
+- All tests after the merges and a clean build of this crate and `wcontainers-gpu-test`, at
+  8f7db1b's code plus the present change (the macOS host's later edits do not build on Windows):
+  Vulkan 64 of 64 and Direct3D 12 64 of 64, one ignored on each (the old BC one-step comparison):
+  bindings 10, blocks 2, copies 4, depth 2, direct3d 4, fitted 1, prepare 1, raster 1, scenes 4,
+  suite 24 (present among them, so windows that take `rgba8unorm` are unchanged), writes 11;
+  tests/present.rs has no tests there. Clippy with warnings denied passes natively on Windows and
+  macOS and for WebAssembly.
+- `web/check` at 4feccfa (after cleaning this crate, naga, `wcontainers-gpu` and
+  `wcontainers-gpu-test` on both targets: a stale naga library failed the WebAssembly link before):
+  all twelve pictures equal Direct3D 11's at tolerance 0, the twists differ as before, the
+  viewports as before, the suite in Chrome 24 of 24 (present among them), Chrome's adapter the RTX
+  3080 (D3D12, discrete, not a fallback). `prepare` in Chrome: unprepared frame of 16 first draws
+  220.5 ms, 16 pipelines built while drawing; after 0.5 ms of `prepare` calls and 207.7 ms waiting
+  for the compiles, the frame 3.8 ms with none built. Job 2 min 11 s.
+- This Mac (Apple M5 Max, Metal), single jobs: the suite's other 23 tests pass under the new host;
+  present fails as the known failure (window occluded, state 0x2000). The ScreenCaptureKit probe:
+  256 of 256 colours read exactly (about 0.25 s a capture).
+
+Run 7 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
+load not sampled; Mac load average 18 to 64):
+- Last full run, after a clean build with the final usage rule (binding and render usage for depth
+  and stencil only with copy usages): Vulkan 64 of 64 and Direct3D 12 64 of 64, one ignored on
+  each; clippy with warnings denied passes natively.
+- All tests after a clean build of the crate, at af2d885's code: Vulkan 64 of 64 and Direct3D 12
+  64 of 64, one ignored on each (the old BC one-step comparison): bindings 10, blocks 2, copies 4,
+  depth 2, direct3d 4, fitted 1, prepare 1, raster 1, scenes 4, suite 24, writes 11. Every scene
+  picture equal to Direct3D's in every pixel on both APIs.
+- tests/direct3d.rs BC comparison, seed 188 one texture per format (Direct3D 12) and seed 7 four
+  per format (Vulkan), largest channel differences over the seed-7 run: WARP from the GPU / the
+  decoded from the GPU / the decoded from WARP: BC1 0.0196 / 0.0196 / 0.0078; BC1 sRGB 0.0269 /
+  0.0273 / 0.0092; BC2 0.0235 / 0.0196 / 0.0078; BC2 sRGB 0.0297 / 0.0293 / 0.0095; BC3 0.0235 /
+  0.0235 / 0.0078; BC3 sRGB 0.0323 / 0.0273 / 0.0095; BC4 0.0235 / 0.0236 / 0.00025; BC4 signed
+  0.0504 / 0.0504 / 0.00026; BC5 0.0247 / 0.0249 / 0.00025; BC5 signed 0.0508 / 0.0508 / 0.00026;
+  BC6H both 0 / 0 / 0; BC7 0 / 0 / 0; BC7 sRGB 0.0037 / 0 / 0.0037 (WARP's sRGB conversion
+  differs from the GPU's and the back end's). Natively 0 texels differ for every format.
+- `web/check` (clean build): all twelve pictures equal Direct3D 11's at tolerance 0, every twist
+  differs as before, the viewports as before, the suite in Chrome 24 of 24, Chrome's adapter the
+  RTX 3080 (D3D12, discrete, not a fallback). `prepare` in Chrome 157 (16 programs per half,
+  `performance.now()` steps of 0.1 ms): unprepared, the frame of 16 first draws (draws, submit,
+  wait for the GPU) took 473.7 ms, each draw call under 0.1 ms; after `prepare`, the 16 `prepare`
+  calls took 0.6 ms, waiting for a submit after them 441.3 ms (the compiles), and the frame
+  4.4 ms with no miss.
+- This Mac (Apple M5 Max, wgpu on Metal), two single jobs from the committed tree (af2d885, then
+  65e7755 for copies and the suite; Mac load average 18 to 37; build 54 s at `-j 2`): bindings 10
+  of 10, blocks 2 of 2, copies 4 of 4 (after the one-step allowance for 24-bit depth stored as
+  float: the probe answers `Float(0.10000001)` here, and the read of one texel was one step off a
+  near tie), depth 2 of 2, fitted 1, prepare 1, raster 1, scenes 4 of 4, writes 11 of 11, suite
+  23 of 24 (present, the known failure below). Differences from the RTX 3080's Direct3D
+  references, all within the rig's allowance: triangle 1952 pixels by 1, quads 2455 pixels by 1 (on
+  every depth format), instanced 0, the eight viewports 662 pixels by 1. `prepare` there: 16
+  unprepared first draws median 0.12 ms, longest 0.42 ms, frame 4.1 ms; after 2.9 ms of prepares,
+  median 0.3 us, frame 0.89 ms.
+- `prepare` natively, alone in the GPU queue: Direct3D 12, unprepared draw median 9.53 ms, longest
+  13.56 ms, frame 158.5 ms; after 150.4 ms of prepares, draw median 0.9 us, longest 4.4 us, frame
+  1.15 ms. Vulkan: unprepared median 0.43 ms, longest 0.83 ms, frame 7.9 ms; after 6.7 ms of
+  prepares, median 0.5 us, frame 0.35 ms. Both far below run 5's (Vulkan median 6.5 ms then): the
+  programs are the same each run, so the driver's own shader cache likely holds them; expected,
+  not measured.
 
 Run 6 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
 load not sampled; Mac load average 30 to 48):
@@ -475,47 +690,50 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Not carried out yet (each marks the device lost with its reason, or is declared absent)
 
-- BC1 to BC5 decoded by bcdec_rs sample up to 5 / 255 (unsigned) and 5 / 127 (signed) away from the
-  RTX 3080's own decoder (measurements above), beyond one step; the plan asks for Direct3D's
-  interpolation tolerance against the reference. Next: sample the same blocks with real Direct3D 11
-  (tests/direct3d.rs has the device), find the tolerance Direct3D states for BC1 to BC5, and either
-  fix the decode or state the tolerance. Known failure, test ignored with this reason.
 - 3D BC textures natively need `texture-compression-bc-sliced-3d`, which the device asks for where
   the adapter has it; decoded ones need nothing.
 
-- Stencil copies WebGPU refuses (`StencilCopiedByDraw`), multisampled depth copies, and copies of
-  24-bit depth into a buffer (`DepthReadByDraw`).
-- Vertex formats WebGPU lacks (`VertexFormatConverted`): three-component 8 and 16-bit formats,
-  `Float16x3`, `Uint10_10_10_2`, `Float11_11_10`. `create_vertex_layout` marks the device lost.
-  The plan's route: widen the streams that use them into a shadow buffer by a compute pass at draw
-  time, cached until the buffer is written.
+- Multisampled depth or stencil copies that WebGPU cannot make (between formats); part of a
+  16-bit depth level written from a buffer.
 - A surface wgpu reports lost (the window's surface must be made again from the instance, which
   the back end does not hold).
 - Immediates: `immediate_bytes` is 0, so fronts spill them.
-- An ordered write that splits a pass with a running occlusion query.
+- Splitting a pass with a running occlusion query: an ordered write, or a vertex stream whose
+  shadow must be made, there.
+- A converted vertex stream reaching past the largest storage binding (128 MiB by default) or
+  more than 2^22 workgroups.
 - Formats WebGPU lacks other than BC are declared without bits (no `FormatConverted` or
   packed-pair `BlockDecoded` yet), though 5.7 has the back end convert them.
 - Declared absent until built or measured: `TIMESTAMPS`.
-- On macOS the suite's `present_shows_the_frame` fails: the test host (tests/suite.rs) opens
-  windows only on Windows.
 - Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), renaming
   textures on `Discard` (staged instead), and freeing cached layouts and pipelines of destroyed
-  programs.
+  programs (and the shadow plans of vertex layouts no longer held).
 - Arena slices of buffers dropped without `destroy` are not reused until the arena is replaced.
 
 ## Next (G2)
 
-The pass bar items still open, in the order to take them:
-- BC1 to BC5 against real Direct3D (the known failure above).
-- In Chrome, now that waiting works there: tests/prepare.rs's first-draw timings through the
-  browser host (examples/scenes, as viewports.rs and suite.rs are), to measure `prepare` there.
-- This Mac's GPU: a window for the suite's present test on macOS; why the triangle and quads, and
-  the two writes.rs tests comparing with the triangle, differ from the RTX 3080's references there
-  (print the largest difference; the rig's WARP allowance is 1). Run it only as single jobs.
-- The rest of "Not carried out yet".
+Every pass bar item passes (Run 9). What is left is what 5.7 gives the back end beyond the pass
+bar, in "Not carried out yet", most useful first: texture formats WebGPU lacks (`FormatConverted`:
+B5G6R5 and the other 16-bit packed formats, A8) and the packed-pair formats (`BlockDecoded`);
+immediates; splitting a pass with a running occlusion query; making a lost surface again; the
+staging ring and texture renaming of 4.6; `TIMESTAMPS`. The vertex conversion has not run in
+Chrome (no page draws it yet).
 
 ## Departures from the plan
 
+- Plan 5.7 says formats WebGPU lacks are "converted on upload". For vertex formats that cannot
+  be done: a buffer's bytes are written before any layout says how they are read, the same bytes
+  may be read through several layouts and offsets, and GPU commands write buffers too. So a
+  shadow stream is made by a compute program at the first draw that reads the buffer through the
+  layout, and kept until the buffer is written (Run 9).
+- On macOS the suite's present test runs in its own test file with a harness of its own (main
+  thread), and tests/suite.rs there runs the list of examples/scenes/names.rs.
+- The plan asks BC textures decoded to be compared with Direct3D "within the stated tolerance".
+  The tolerance stated is WARP's distance from the GPU plus one step of the decoded storage
+  format, since no fixed one-step tolerance is met by Direct3D's own WARP on these blocks.
+- Scene pictures in this crate's tests are held to the rig's per-picture allowance (what WARP
+  earns) so they hold on any GPU; the RTX 3080's exact equality is printed by them and asserted by
+  web/check at tolerance 0.
 - wgpu is vendored (third_party/wgpu, 30.0.2 plus one fix in src/backend/webgpu.rs) so its browser
   back end passes a render pass's occlusion query set to WebGPU; without it every occlusion query
   in the browser failed. This touches the workspace manifest, outside this crate.
@@ -563,14 +781,20 @@ The pass bar items still open, in the order to take them:
 
 ## Interface changes
 
+- 8f7db1b `interface: named the slow path of a surface format the window lacks converted by a draw
+  at present`: `SlowPath::PresentConverted`, and the plan's 4.9 sentence on surface formats.
+
+- 3f5519a `interface: named the slow path of stencil written by a draw per bit`:
+  `SlowPath::StencilWrittenByDraw`, and the plan's 4.2 sentences on depth and stencil copies WebGPU
+  makes only whole (written by draws, read by `DepthReadByDraw`). `StencilCopiedByDraw` names a
+  different job (an 8-bit texture filled from the stencil for sampling, WebGL 2's).
 - b999c16 `interface: named the slow path of integer colour clears made by a draw`:
   `SlowPath::IntegerClearByDraw`, and the sentence in the plan's 5.7. wgpu's Direct3D 12 clears
   colour targets through f32, which cannot hold integers past 2^24.
 
 Gaps found for the interface track (not changed here): no capability tells a front which vertex
-formats a back end converts itself or that instance step rates other than one are refused
-(`StepMode::Instance(n != 1)` is `Invalid` here, as the interface's doc has the program fetch
-them, `InstanceRateInShader`).
+formats a back end converts itself. (Instance step rates now have `INSTANCE_STEP_RATE`, from the
+shared line.)
 
 - db9e0d8 `interface: made no-overwrite writes promise that no unfinished command or ordered write
   touches their bytes`: the doc of `WriteMode::NoOverwrite` and the plan's 4.6 entry. The promise
@@ -587,10 +811,17 @@ LICENSE.APACHE kept) and wgpu-naga-bridge 30.0.2 MIT OR Apache-2.0 (dependencies
 MIT (its Cargo.toml; plan section 3 records its repository's licence); half 2.7.1 MIT OR Apache-2.0;
 in the browser build js-sys 0.3.107 and wasm-bindgen 0.2.130 MIT OR Apache-2.0. Test-only, new in
 run 6: web-sys 0.3.107 and getrandom 0.4.3 MIT OR Apache-2.0 (browser); windows 0.62.2 MIT OR
-Apache-2.0 and wcontainers-graphics-test (ours) for tests/direct3d.rs. Test-only: windows-sys 0.61.2 MIT OR Apache-2.0 (the suite's window and reading the screen, already
+Apache-2.0 and wcontainers-graphics-test (ours) for tests/direct3d.rs; new in run 7, image 0.25.10
+MIT OR Apache-2.0 (its Cargo.toml; already in the lock file through the rig) and the windows crate's
+`Win32_Graphics_Direct3D_Fxc` feature, for tests/direct3d.rs. Test-only: windows-sys 0.61.2 MIT OR Apache-2.0 (the suite's window and reading the screen, already
 in the lock file); wcontainers-gpu-test (ours); png 0.18.1, anyhow 1.0.104, wasm-bindgen 0.2.130,
 js-sys 0.3.107 MIT OR Apache-2.0 (wasm-bindgen-futures is no longer used); pollster 1.0.1 Apache-2.0/MIT;
 bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT; fastrand 2.5.0 Apache-2.0 OR MIT (the random test). Tool: wasm-bindgen-cli 0.2.130 MIT OR Apache-2.0.
+
+New in run 8, test-only: libtest-mimic 0.8.2 MIT/Apache-2.0 (its Cargo.toml); on macOS only,
+block2 0.6.2 MIT, objc2 0.6.5 MIT, objc2-foundation 0.3.2 MIT, and objc2-app-kit,
+objc2-core-foundation, objc2-core-graphics, objc2-quartz-core and objc2-screen-capture-kit 0.3.2,
+each Zlib OR Apache-2.0 OR MIT (their Cargo.toml files; most already in the lock file through wgpu).
 
 ## Installed on the desktop
 

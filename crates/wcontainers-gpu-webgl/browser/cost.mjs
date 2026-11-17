@@ -14,7 +14,7 @@ try {
   const page = await browser.newPage();
   page.on('console', (m) => console.log(`console: ${m.text()}`));
   await page.goto(`http://127.0.0.1:${server.address().port}/cost.html?frames=${frames}&draws=${encodeURIComponent(draws)}`);
-  await page.waitForFunction(() => window.done !== undefined, null, { timeout: 600000 });
+  await page.waitForFunction(() => window.done !== undefined, null, { timeout: 120000 });
   result = await page.evaluate(() => window.done);
   result.lines.unshift(`chrome ${browser.version()}`);
 } finally {

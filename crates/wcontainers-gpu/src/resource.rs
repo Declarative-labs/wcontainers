@@ -120,8 +120,8 @@ pub struct TextureDesc {
     /// images, OpenGL's cube map targets). With [`TextureDesc::own_view`] it fixes what a back end that
     /// must choose a texture's kind at creation (WebGL 2) makes.
     pub cube: bool,
-    /// Views may use other formats of the same block size (Direct3D's typeless textures). Views as the
-    /// sRGB twin are always allowed. Without [`crate::Features::FORMAT_REINTERPRET`], the front copies
+    /// Views may use other colour formats of the same block size (Direct3D's typeless textures). Views
+    /// as the sRGB twin are always allowed. Without [`crate::Features::FORMAT_REINTERPRET`], the front copies
     /// into a texture of the other format instead (slow path [`crate::SlowPath::ReinterpretCopy`]).
     pub reinterpret: bool,
 }
@@ -271,7 +271,8 @@ pub enum BindingResource<'a, B: Backend> {
         writable: bool,
     },
     Sampler(&'a B::Sampler),
-    /// A buffer read as typed texels (Direct3D's typed buffer views, OpenGL's buffer textures).
+    /// A buffer read as typed texels (Direct3D's typed buffer views, OpenGL's buffer textures), where
+    /// [`crate::Features::TEXEL_BUFFERS`] is present.
     TexelBuffer {
         range: BufferRange<&'a B::Buffer>,
         format: Format,

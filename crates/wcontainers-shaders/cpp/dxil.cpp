@@ -1,13 +1,20 @@
-// The one boundary to dxil-spirv: DXIL bytes in, SPIR-V words out.
+// The one boundary to dxil-spirv: DXIL bytes in, SPIR-V words out, and the constant buffers' sizes.
 
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "boundary.h"
+#include "cast.hpp"
 #include "dxbc/dxbc_container.h"
+#include "dxil_parser.hpp"
 #include "dxil_spirv_c.h"
+#include "llvm_bitcode_parser.hpp"
+#include "metadata.hpp"
+#include "module.hpp"
+#include "value.hpp"
 
 namespace {
 
@@ -80,6 +87,57 @@ int convert(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words,
   return 0;
 }
 
+// An integer operand of a metadata node, if it is one.
+bool integer(const llvm::MDNode* node, unsigned index, uint32_t* value) {
+  if (index >= node->getNumOperands())
+    return false;
+  auto* c = llvm::dyn_cast<llvm::ConstantAsMetadata>(node->getOperand(index));
+  auto* v = c ? llvm::dyn_cast<llvm::ConstantInt>(c->getValue()) : nullptr;
+  if (!v)
+    return false;
+  *value = uint32_t(v->getUniqueInteger().getSExtValue());
+  return true;
+}
+
+// (space, register, size in bytes) of every constant buffer the module's resource list declares.
+int constant_sizes(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words, char** error) {
+  dxil_spv::DXILContainerParser container;
+  dxil_spv::LLVMBCParser bitcode;
+  if (!container.parse_container(data, size, false) ||
+      !(container.is_dxbc_binary() ? bitcode.parseDXBCBinary(data, size)
+                                   : bitcode.parse(container.get_blob().data(), container.get_blob().size()))) {
+    *error = wcs::copy("the DXIL did not parse");
+    return 1;
+  }
+  std::vector<uint32_t> sizes;
+  auto* resources = bitcode.get_module().getNamedMetadata("dx.resources");
+  auto* lists = resources && resources->getNumOperands() ? resources->getOperand(0) : nullptr;
+  auto* cbvs = lists && lists->getNumOperands() > 2 ? llvm::dyn_cast<llvm::MDNode>(lists->getOperand(2)) : nullptr;
+  for (unsigned i = 0; cbvs && i < cbvs->getNumOperands(); i++) {
+    auto* cbv = llvm::dyn_cast<llvm::MDNode>(cbvs->getOperand(i));
+    uint32_t space, reg, bytes;
+    if (cbv && integer(cbv, 3, &space) && integer(cbv, 4, &reg) && integer(cbv, 6, &bytes))
+      sizes.insert(sizes.end(), { space, reg, bytes });
+  }
+  if (!(*out = static_cast<uint32_t*>(std::malloc(sizes.size() * 4 + 4)))) {
+    *error = wcs::copy("out of memory");
+    return 3;
+  }
+  std::memcpy(*out, sizes.data(), sizes.size() * 4);
+  *out_words = sizes.size();
+  return 0;
+}
+
+}
+
+// Returns 0 and the constant buffers' (space, register, size in bytes) triples in `out` (free with
+// wcs_free), or nonzero with the reason in `error`.
+extern "C" int wcs_dxil_constant_sizes(const uint8_t* data, size_t size, uint32_t** out, size_t* out_words,
+                                       char** error) {
+  *out = nullptr;
+  *out_words = 0;
+  *error = nullptr;
+  return wcs::contained("dxil-spirv", error, [&] { return constant_sizes(data, size, out, out_words, error); });
 }
 
 // Returns 0 and the SPIR-V in `out` (free with wcs_free), or nonzero with the reason in `error`.

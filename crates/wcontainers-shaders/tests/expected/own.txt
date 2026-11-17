@@ -1,4 +1,5 @@
 ps_cases.dxbc	ok-wgsl glsl-compile
+ps_clip.dxbc	ok
 ps_depth.dxbc	ok
 ps_flat.dxbc	ok
 ps_integer.dxbc	ok-wgsl glsl-compile
@@ -6,6 +7,7 @@ ps_local.dxbc	ok
 ps_loop.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok
+ps_rows.dxbc	ok
 ps_shade.dxbc	ok-wgsl glsl-write
 ps_signed.dxbc	ok
 ps_size.dxbc	ok

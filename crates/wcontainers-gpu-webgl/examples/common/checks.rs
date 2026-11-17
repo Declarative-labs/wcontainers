@@ -72,8 +72,13 @@ enum Range {
 }
 
 /// The numbers each point writes, as (pixel, [vertex, instance, per-vertex element, per-instance
-/// element]); per-instance elements are 100 plus their number.
-fn expected(range: &Range, first_instance: u32, instances: u32) -> Vec<(usize, [u32; 4])> {
+/// element]); per-instance elements are 100 plus their number, which the stream's step `rate` gives.
+fn expected(
+    range: &Range,
+    first_instance: u32,
+    instances: u32,
+    rate: u32,
+) -> Vec<(usize, [u32; 4])> {
     let vertices: Vec<u32> = match range {
         Range::Vertices { first, count } => (*first..first + count).collect(),
         Range::Indexed {
@@ -89,8 +94,12 @@ fn expected(range: &Range, first_instance: u32, instances: u32) -> Vec<(usize, [
     };
     let mut out = Vec::new();
     for i in first_instance..first_instance + instances {
+        let element = match rate {
+            0 => first_instance,
+            n => first_instance + (i - first_instance) / n,
+        };
         for v in &vertices {
-            out.push((((i % 4) * 8 + v % 8) as usize, [*v, i, *v, 100 + i]));
+            out.push((((i % 4) * 8 + v % 8) as usize, [*v, i, *v, 100 + element]));
         }
     }
     out
@@ -98,7 +107,8 @@ fn expected(range: &Range, first_instance: u32, instances: u32) -> Vec<(usize, [
 
 /// `vertex_index` and `instance_index` include the draw's first or base vertex and first instance,
 /// and vertex streams are read from those elements on, in non-indexed and indexed (8, 16 and 32-bit)
-/// instanced draws. WebGL 2 draws with no bases: the streams are bound at an offset
+/// instanced draws, with the per-instance stream stepping every 1, 2 or 3 instances or never
+/// (`INSTANCE_STEP_RATE`). WebGL 2 draws with no bases: the streams are bound at an offset
 /// (`BaseVertexRebind`) and the program adds the hidden uniforms `naga_vs_base_vertex` and
 /// `naga_vs_first_instance`.
 pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
@@ -115,29 +125,31 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
             fragment: Some(&fs),
         })
         .expect("create_program");
-    let mut layout = VertexLayoutDesc {
-        streams: [None; MAX_VERTEX_STREAMS],
-        attributes: [None; MAX_VERTEX_STREAMS],
-    };
-    layout.streams[0] = Some(VertexStream {
-        stride: 4,
-        step: StepMode::Vertex,
-    });
-    layout.streams[1] = Some(VertexStream {
-        stride: 4,
-        step: StepMode::Instance(1),
-    });
-    for (i, location) in [1, 2].into_iter().enumerate() {
-        layout.attributes[i] = Some(VertexAttribute {
-            location,
-            stream: i as u8,
-            offset: 0,
-            format: VertexFormat::Uint32x1,
+    assert!(b.caps().has(Features::INSTANCE_STEP_RATE));
+    let layout_with_rate = |b: &mut H::Backend, rate| {
+        let mut layout = VertexLayoutDesc {
+            streams: [None; MAX_VERTEX_STREAMS],
+            attributes: [None; MAX_VERTEX_STREAMS],
+        };
+        layout.streams[0] = Some(VertexStream {
+            stride: 4,
+            step: StepMode::Vertex,
         });
-    }
-    let layout = b
-        .create_vertex_layout(&layout)
-        .expect("create_vertex_layout");
+        layout.streams[1] = Some(VertexStream {
+            stride: 4,
+            step: StepMode::Instance(rate),
+        });
+        for (i, location) in [1, 2].into_iter().enumerate() {
+            layout.attributes[i] = Some(VertexAttribute {
+                location,
+                stream: i as u8,
+                offset: 0,
+                format: VertexFormat::Uint32x1,
+            });
+        }
+        b.create_vertex_layout(&layout)
+            .expect("create_vertex_layout")
+    };
     let blend = b
         .create_blend(&BlendDesc {
             targets: [RenderTargetBlend {
@@ -216,7 +228,13 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
         .expect("create_view");
     let indices = vec![3, 0, 5, 1, 2];
     let cases = [
-        ("non-indexed", Range::Vertices { first: 3, count: 4 }, 2, 2),
+        (
+            "non-indexed",
+            Range::Vertices { first: 3, count: 4 },
+            2,
+            2,
+            1,
+        ),
         (
             "8-bit indices",
             Range::Indexed {
@@ -228,6 +246,7 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
             },
             1,
             3,
+            2,
         ),
         (
             "16-bit indices",
@@ -239,7 +258,8 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
                 base_vertex: 9,
             },
             0,
-            2,
+            3,
+            0,
         ),
         (
             "32-bit indices",
@@ -250,11 +270,13 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
                 count: 3,
                 base_vertex: 0,
             },
+            0,
+            4,
             3,
-            1,
         ),
     ];
-    for (name, range, first_instance, instances) in cases {
+    for (name, range, first_instance, instances, rate) in cases {
+        let layout = layout_with_rate(&mut b, rate);
         let index = match &range {
             Range::Indexed {
                 format, indices, ..
@@ -369,7 +391,7 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
                 u32::from_le_bytes(got[p * 16 + c * 4..p * 16 + c * 4 + 4].try_into().unwrap())
             })
         };
-        let want = expected(&range, first_instance, instances);
+        let want = expected(&range, first_instance, instances, rate);
         for (pixel, numbers) in &want {
             assert_eq!(texel(*pixel), *numbers, "{name}: pixel {pixel}");
         }
@@ -383,6 +405,7 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
         if let Some((buffer, _)) = index {
             b.destroy(Object::Buffer(buffer));
         }
+        b.destroy(Object::VertexLayout(layout));
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
@@ -1276,6 +1299,40 @@ struct Ix {
 @fragment fn fs_indices(i: Ix) -> @location(0) vec4<f32> {
     return vec4<f32>(f32(i.n), 0.0, 0.0, 1.0);
 }
+struct Num {
+    @builtin(position) p: vec4<f32>,
+    @location(0) @interpolate(flat) v: u32,
+    @location(1) @interpolate(flat) i: u32,
+}
+@vertex fn vs_numbers(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> Num {
+    var o: Num;
+    let corner = vec2<f32>(f32(v % 3u == 1u), f32(v % 3u == 2u));
+    o.p = vec4<f32>(corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0);
+    o.v = v;
+    o.i = i;
+    return o;
+}
+@fragment fn fs_numbers(i: Num) -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+}
+struct Read {
+    @builtin(position) p: vec4<f32>,
+    @location(0) @interpolate(flat) v: u32,
+    @location(1) @interpolate(flat) i: u32,
+    @location(2) @interpolate(flat) e: u32,
+}
+@vertex fn vs_streams(@builtin(instance_index) i: u32, @location(0) per_vertex: u32,
+                      @location(1) per_instance: u32) -> Read {
+    var o: Read;
+    o.p = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    o.v = per_vertex;
+    o.i = i;
+    o.e = per_instance;
+    return o;
+}
+@fragment fn fs_streams(i: Read) -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(i.v), 0.0, 0.0, 1.0);
+}
 ";
 
 /// A buffer of `size` zero bytes with `usage`, for captures.
@@ -1877,5 +1934,929 @@ pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
             }
         }
     }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Strips, fans, loops and indexed draws are captured as the lists they draw, each primitive's
+/// vertices in an order that keeps the raster block's provoking vertex where it was, restarting at the
+/// largest index value, instance after instance, interleaved and separate, with and without drawing;
+/// per-instance streams read at their step rate.
+pub fn strips_fans_loops_and_indexed_draws_captured_in_list_order<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+        return;
+    }
+    let first = b.caps().has(Features::PROVOKING_VERTEX_FIRST);
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, CAPTURED, "vs_numbers", "fs_numbers");
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    // (vertex_index, instance_index) of each vertex captured.
+    let pairs = |vertices: &[u32], instances: std::ops::Range<u32>| -> Vec<(u32, u32)> {
+        instances
+            .flat_map(|i| vertices.iter().map(move |&v| (v, i)))
+            .collect()
+    };
+    let interleaved = |pairs: &[(u32, u32)]| -> Vec<u8> {
+        words(&pairs.iter().flat_map(|&(v, i)| [v, i]).collect::<Vec<_>>())
+    };
+    let index_buffer = |b: &mut H::Backend, bytes: &[u8]| buffer(b, BufferUsage::INDEX, bytes);
+    let u16s = |v: &[u16]| -> Vec<u8> { v.iter().flat_map(|i| i.to_le_bytes()).collect() };
+    struct Case {
+        name: &'static str,
+        topology: Topology,
+        /// Index bytes and their format, or none for a draw without indices.
+        indices: Option<(Vec<u8>, IndexFormat)>,
+        range: (u32, u32, i32, u32, u32),
+        want: Vec<(u32, u32)>,
+    }
+    let cases = [
+        Case {
+            name: "triangle strip from vertex 2, two instances from 1",
+            topology: Topology::TriangleStrip,
+            indices: None,
+            range: (2, 5, 0, 1, 2),
+            want: pairs(
+                &if first {
+                    [2, 3, 4, 3, 5, 4, 4, 5, 6]
+                } else {
+                    [2, 3, 4, 4, 3, 5, 4, 5, 6]
+                },
+                1..3,
+            ),
+        },
+        Case {
+            name: "triangle fan",
+            topology: Topology::TriangleFan,
+            indices: None,
+            range: (0, 4, 0, 0, 1),
+            want: pairs(
+                &if first {
+                    [1, 2, 0, 2, 3, 0]
+                } else {
+                    [0, 1, 2, 0, 2, 3]
+                },
+                0..1,
+            ),
+        },
+        Case {
+            name: "line loop",
+            topology: Topology::LineLoop,
+            indices: None,
+            range: (0, 3, 0, 0, 1),
+            want: pairs(&[0, 1, 1, 2, 2, 0], 0..1),
+        },
+        Case {
+            name: "line strip",
+            topology: Topology::LineStrip,
+            indices: None,
+            range: (0, 3, 0, 0, 1),
+            want: pairs(&[0, 1, 1, 2], 0..1),
+        },
+        Case {
+            name: "16-bit indexed triangle list from index 1 with base vertex 10",
+            topology: Topology::TriangleList,
+            indices: Some((u16s(&[9, 7, 3, 9, 3, 4, 5]), IndexFormat::U16)),
+            range: (1, 6, 10, 0, 1),
+            want: pairs(&[17, 13, 19, 13, 14, 15], 0..1),
+        },
+        Case {
+            name: "8-bit indexed triangle strip with base vertex 1 and a restart",
+            topology: Topology::TriangleStrip,
+            indices: Some((vec![0, 1, 2, 3, 0xff, 5, 6, 7], IndexFormat::U8)),
+            range: (0, 8, 1, 3, 1),
+            want: pairs(
+                &if first {
+                    [1, 2, 3, 2, 4, 3, 6, 7, 8]
+                } else {
+                    [1, 2, 3, 3, 2, 4, 6, 7, 8]
+                },
+                3..4,
+            ),
+        },
+        Case {
+            name: "32-bit indexed points",
+            topology: Topology::PointList,
+            indices: Some((words(&[4, 0, 70000]), IndexFormat::U32)),
+            range: (0, 3, 0, 0, 2),
+            want: pairs(&[4, 0, 70000], 0..2),
+        },
+    ];
+    for case in &cases {
+        let (start, count, base_vertex, first_instance, instances) = case.range;
+        let ib = case
+            .indices
+            .as_ref()
+            .map(|(bytes, format)| (index_buffer(&mut b, bytes), *format));
+        let mut call = kit::call(&k, &program, None, &whole, case.topology, count);
+        call.range = match &ib {
+            None => DrawRange::Vertices {
+                first: start,
+                count,
+                first_instance,
+                instances,
+            },
+            Some(_) => DrawRange::Indexed {
+                first: start,
+                count,
+                base_vertex,
+                first_instance,
+                instances,
+            },
+        };
+        call.index = ib.as_ref().map(|(buffer, format)| IndexBinding {
+            buffer,
+            offset: 0,
+            format: *format,
+        });
+        call.restart = ib.is_some();
+        let n = case.want.len();
+        // Interleaved, with room for one vertex more that must stay zero.
+        let one = zeros(&mut b, BufferUsage::VERTEX, (n + 1) * 8);
+        let targets = [BufferRange {
+            buffer: &one,
+            offset: 0,
+            size: (n as u64 + 1) * 8,
+        }];
+        b.capture_vertices(&call, &targets, false)
+            .unwrap_or_else(|e| panic!("{}: capture_vertices: {e:?}", case.name));
+        let got = read_buffer(&mut b, &one, (n + 1) * 8);
+        assert_eq!(
+            &got[..n * 8],
+            &interleaved(&case.want)[..],
+            "{}: interleaved",
+            case.name
+        );
+        assert_eq!(&got[n * 8..], &[0; 8], "{}: past the vertices", case.name);
+        // Separate.
+        let (v, i) = (
+            zeros(&mut b, BufferUsage::VERTEX, n * 4),
+            zeros(&mut b, BufferUsage::VERTEX, n * 4),
+        );
+        let targets = [
+            BufferRange {
+                buffer: &v,
+                offset: 0,
+                size: n as u64 * 4,
+            },
+            BufferRange {
+                buffer: &i,
+                offset: 0,
+                size: n as u64 * 4,
+            },
+        ];
+        b.capture_vertices(&call, &targets, false)
+            .unwrap_or_else(|e| panic!("{}: capture_vertices: {e:?}", case.name));
+        let (want_v, want_i): (Vec<u32>, Vec<u32>) = case.want.iter().copied().unzip();
+        assert_eq!(
+            read_buffer(&mut b, &v, n * 4),
+            words(&want_v),
+            "{}: vertex numbers",
+            case.name
+        );
+        assert_eq!(
+            read_buffer(&mut b, &i, n * 4),
+            words(&want_i),
+            "{}: instance numbers",
+            case.name
+        );
+    }
+    // A strip with a per-vertex stream and a per-instance one stepping every 1, 2 or no instances:
+    // each instance's vertices read the elements the whole draw gives that instance.
+    let streams = kit::program(&mut b, CAPTURED, "vs_streams", "fs_streams");
+    let per_vertex = buffer(
+        &mut b,
+        BufferUsage::VERTEX,
+        &words(&(0..8).collect::<Vec<_>>()),
+    );
+    let per_instance = buffer(
+        &mut b,
+        BufferUsage::VERTEX,
+        &words(&(100..108).collect::<Vec<_>>()),
+    );
+    for rate in [1, 2, 0] {
+        let mut layout = VertexLayoutDesc {
+            streams: [None; MAX_VERTEX_STREAMS],
+            attributes: [None; MAX_VERTEX_STREAMS],
+        };
+        for (s, step) in [StepMode::Vertex, StepMode::Instance(rate)]
+            .into_iter()
+            .enumerate()
+        {
+            layout.streams[s] = Some(VertexStream { stride: 4, step });
+            layout.attributes[s] = Some(VertexAttribute {
+                location: s as u32,
+                stream: s as u8,
+                offset: 0,
+                format: VertexFormat::Uint32x1,
+            });
+        }
+        let layout = b
+            .create_vertex_layout(&layout)
+            .expect("create_vertex_layout");
+        let bound = [
+            Some(VertexBinding {
+                buffer: &per_vertex,
+                offset: 0,
+            }),
+            Some(VertexBinding {
+                buffer: &per_instance,
+                offset: 0,
+            }),
+        ];
+        let mut call = kit::call(&k, &streams, None, &whole, Topology::TriangleStrip, 4);
+        call.vertex_layout = &layout;
+        call.vertex_buffers = &bound;
+        call.range = DrawRange::Vertices {
+            first: 1,
+            count: 4,
+            first_instance: 1,
+            instances: 4,
+        };
+        let order = if first {
+            [1, 2, 3, 2, 4, 3]
+        } else {
+            [1, 2, 3, 3, 2, 4]
+        };
+        let want: Vec<u32> = (1..5)
+            .flat_map(|i| {
+                let element = match rate {
+                    0 => 1,
+                    n => 1 + (i - 1) / n,
+                };
+                order.iter().flat_map(move |&v| [v, i, 100 + element])
+            })
+            .collect();
+        let out = zeros(&mut b, BufferUsage::VERTEX, want.len() * 4);
+        let targets = [BufferRange {
+            buffer: &out,
+            offset: 0,
+            size: want.len() as u64 * 4,
+        }];
+        b.capture_vertices(&call, &targets, false)
+            .unwrap_or_else(|e| panic!("streams at rate {rate}: capture_vertices: {e:?}"));
+        assert_eq!(
+            read_buffer(&mut b, &out, want.len() * 4),
+            words(&want),
+            "streams at rate {rate}"
+        );
+        b.destroy(Object::VertexLayout(layout));
+    }
+    // Drawing too: an indexed strip whose first triangle covers the top left texel.
+    let f = Format::Rgba8Unorm;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+    let view = kit::target(&mut b, &t, f, 0, 0);
+    let ib = index_buffer(&mut b, &u16s(&[0, 1, 2, 1]));
+    let mut call = kit::call(&k, &program, None, &whole, Topology::TriangleStrip, 4);
+    call.range = DrawRange::Indexed {
+        first: 0,
+        count: 4,
+        base_vertex: 0,
+        first_instance: 0,
+        instances: 1,
+    };
+    call.index = Some(IndexBinding {
+        buffer: &ib,
+        offset: 0,
+        format: IndexFormat::U16,
+    });
+    let drawn = zeros(&mut b, BufferUsage::VERTEX, 6 * 8);
+    let targets = [BufferRange {
+        buffer: &drawn,
+        offset: 0,
+        size: 6 * 8,
+    }];
+    b.begin_pass(&kit::pass(&view, [0; 4], None));
+    b.capture_vertices(&call, &targets, true)
+        .expect("capture_vertices while drawing");
+    b.end_pass();
+    let want = pairs(
+        &if first {
+            [0, 1, 2, 1, 1, 2]
+        } else {
+            [0, 1, 2, 2, 1, 1]
+        },
+        0..1,
+    );
+    assert_eq!(
+        read_buffer(&mut b, &drawn, 6 * 8),
+        interleaved(&want),
+        "capture while drawing"
+    );
+    let picture = kit::read(&mut b, &t, 0, 0, [4, 4, 1], 4, false);
+    assert_eq!(&picture[..4], &[255, 0, 0, 255], "the top left texel drawn");
+    assert_eq!(
+        &picture[60..],
+        &[0, 0, 0, 0],
+        "the bottom right texel not drawn"
+    );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// What WebGL 2 lacks is left out of the caps and refused as absent where it is asked for: blend,
+/// depth-stencil and raster blocks, samplers, compute programs, binding kinds and query kinds. The
+/// features an extension gives are refused only where the back end was made without it. A sampler
+/// past the anisotropy limit is invalid.
+pub fn absent_features_are_refused<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let caps = b.caps().clone();
+    let never = Features::COMPUTE
+        | Features::VERTEX_STORAGE_READ
+        | Features::FRAGMENT_STORAGE_WRITE
+        | Features::POLYGON_MODE
+        | Features::DEPTH_CLAMP
+        | Features::DUAL_SOURCE_BLEND
+        | Features::INDEPENDENT_BLEND
+        | Features::LOGIC_OP
+        | Features::WIDE_LINES
+        | Features::SAMPLE_MASK
+        | Features::OCCLUSION_COUNT
+        | Features::INDIRECT
+        | Features::RESOURCE_TABLES
+        | Features::BORDER_COLOR
+        | Features::DEPTH_BOUNDS
+        | Features::STENCIL_PER_FACE
+        | Features::MIRROR_ONCE
+        | Features::DEPTH_BIAS_CLAMP
+        | Features::TEXEL_BUFFERS;
+    assert!(
+        !caps.features.intersects(never),
+        "declared what is not built: {:?}",
+        caps.features & never
+    );
+    let absent = |r: Result<(), GpuError>, f: Features, what: &str| {
+        assert_eq!(r, Err(GpuError::Absent(f)), "{what}");
+    };
+    let solid = (
+        BlendComponent {
+            src: BlendFactor::One,
+            dst: BlendFactor::Zero,
+            op: BlendOp::Add,
+        },
+        BlendComponent {
+            src: BlendFactor::One,
+            dst: BlendFactor::Zero,
+            op: BlendOp::Add,
+        },
+    );
+    let blend_desc = |blend| BlendDesc {
+        targets: [RenderTargetBlend {
+            blend,
+            writes: ColorWrites::all(),
+        }; MAX_COLOR_TARGETS],
+        same_for_all: true,
+        alpha_to_coverage: false,
+        logic_op: None,
+    };
+    let mut d = blend_desc(Some(solid));
+    d.logic_op = Some(LogicOp::Xor);
+    absent(b.create_blend(&d).map(drop), Features::LOGIC_OP, "logic op");
+    let mut d = blend_desc(Some(solid));
+    d.same_for_all = false;
+    d.targets[1].blend = None;
+    absent(
+        b.create_blend(&d).map(drop),
+        Features::INDEPENDENT_BLEND,
+        "a blend per target",
+    );
+    let mut second = solid;
+    second.0.dst = BlendFactor::OneMinusSrc1;
+    absent(
+        b.create_blend(&blend_desc(Some(second))).map(drop),
+        Features::DUAL_SOURCE_BLEND,
+        "a second source",
+    );
+    let depth_desc = DepthStencilDesc {
+        depth_compare: None,
+        depth_write: false,
+        stencil: None,
+        stencil_read_mask: [0xff; 2],
+        stencil_write_mask: [0xff; 2],
+        depth_bounds: None,
+    };
+    let mut d = depth_desc;
+    d.depth_bounds = Some([0f32.to_bits(), 0.5f32.to_bits()]);
+    absent(
+        b.create_depth_stencil(&d).map(drop),
+        Features::DEPTH_BOUNDS,
+        "depth bounds",
+    );
+    let mut d = depth_desc;
+    d.stencil_write_mask = [0xff, 0x0f];
+    absent(
+        b.create_depth_stencil(&d).map(drop),
+        Features::STENCIL_PER_FACE,
+        "a stencil mask per face",
+    );
+    let raster_desc = RasterDesc {
+        fill: FillMode::Solid,
+        cull: CullMode::None,
+        front: FrontFace::Clockwise,
+        depth_bias: 0,
+        depth_bias_slope: 0,
+        depth_bias_clamp: 0,
+        depth_clip: true,
+        scissor: false,
+        line_width: 1.0f32.to_bits(),
+        provoking: ProvokingVertex::Last,
+        depth_minus_one: !caps.has(Features::CLIP_DEPTH_ZERO_ONE),
+        sample_mask: u32::MAX,
+    };
+    b.create_raster(&raster_desc)
+        .expect("the plain raster block");
+    let mut raster = |what: &str, f: Features, change: &dyn Fn(&mut RasterDesc)| {
+        let mut d = raster_desc;
+        change(&mut d);
+        let r = b.create_raster(&d).map(drop);
+        if caps.has(f) {
+            r.unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        } else {
+            absent(r, f, what);
+        }
+    };
+    raster("lines", Features::POLYGON_MODE, &|d| {
+        d.fill = FillMode::Line
+    });
+    raster("no depth clip", Features::DEPTH_CLAMP, &|d| {
+        d.depth_clip = false
+    });
+    raster("a bias clamp", Features::DEPTH_BIAS_CLAMP, &|d| {
+        d.depth_bias = 2.0f32.to_bits();
+        d.depth_bias_clamp = 0.5f32.to_bits();
+    });
+    raster("a wide line", Features::WIDE_LINES, &|d| {
+        d.line_width = 2.0f32.to_bits()
+    });
+    raster("a partial sample mask", Features::SAMPLE_MASK, &|d| {
+        d.sample_mask = 0b101
+    });
+    raster("the first vertex", Features::PROVOKING_VERTEX_FIRST, &|d| {
+        d.provoking = ProvokingVertex::First
+    });
+    raster(
+        "clip depth from zero",
+        Features::CLIP_DEPTH_ZERO_ONE,
+        &|d| d.depth_minus_one = false,
+    );
+    raster("a fractional bias", Features::FRACTIONAL_DEPTH_BIAS, &|d| {
+        d.depth_bias = 1.5f32.to_bits()
+    });
+    let sampler_desc = SamplerDesc {
+        min: Filter::Linear,
+        mag: Filter::Linear,
+        mip: Filter::Linear,
+        address: [AddressMode::Clamp; 3],
+        lod_range: [0f32.to_bits(), 1000f32.to_bits()],
+        anisotropy: 1,
+        compare: None,
+        border: BorderColor::TransparentBlack,
+    };
+    for (mode, f) in [
+        (AddressMode::Border, Features::BORDER_COLOR),
+        (AddressMode::MirrorOnce, Features::MIRROR_ONCE),
+    ] {
+        let mut d = sampler_desc;
+        d.address[1] = mode;
+        absent(b.create_sampler(&d).map(drop), f, "an address mode");
+    }
+    let mut d = sampler_desc;
+    d.anisotropy = caps.limits.max_anisotropy;
+    b.create_sampler(&d).expect("anisotropy at the limit");
+    d.anisotropy += 1;
+    assert!(
+        matches!(b.create_sampler(&d), Err(GpuError::Invalid(_))),
+        "anisotropy past the limit"
+    );
+    let compute = ShaderModule::from_wgsl(
+        "@compute @workgroup_size(1) fn main() {}",
+        "main",
+        ShaderStage::Compute,
+    )
+    .expect("the WGSL validates");
+    absent(
+        b.create_shader(&compute).map(drop),
+        Features::COMPUTE,
+        "a compute shader",
+    );
+    let buffer = buffer(
+        &mut b,
+        BufferUsage::UNIFORM | BufferUsage::VERTEX,
+        &[0; 256],
+    );
+    let range = BufferRange {
+        buffer: &buffer,
+        offset: 0,
+        size: 256,
+    };
+    let t = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        Format::R32Uint,
+        [4, 4, 1],
+        1,
+        TextureUsage::SAMPLE,
+        false,
+    );
+    let view = kit::target(&mut b, &t, Format::R32Uint, 0, 0);
+    let entry = |resource| BindingEntry {
+        binding: 0,
+        stages: StageSet::FRAGMENT,
+        resource,
+    };
+    for (what, resource, f) in [
+        (
+            "a storage buffer",
+            BindingResource::StorageBuffer {
+                range,
+                writable: false,
+            },
+            Features::FRAGMENT_STORAGE_WRITE | Features::VERTEX_STORAGE_READ,
+        ),
+        (
+            "a storage texture",
+            BindingResource::StorageTexture {
+                view: &view,
+                writable: true,
+            },
+            Features::FRAGMENT_STORAGE_WRITE | Features::VERTEX_STORAGE_READ,
+        ),
+        (
+            "a texel buffer",
+            BindingResource::TexelBuffer {
+                range,
+                format: Format::R32Uint,
+                writable: false,
+            },
+            Features::TEXEL_BUFFERS,
+        ),
+    ] {
+        absent(b.create_binding_set(&[entry(resource)]).map(drop), f, what);
+    }
+    absent(
+        b.create_resource_table(16).map(drop),
+        Features::RESOURCE_TABLES,
+        "a resource table",
+    );
+    absent(
+        b.create_query_set(QueryKind::Occlusion, 1).map(drop),
+        Features::OCCLUSION_COUNT,
+        "exact occlusion counts",
+    );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Copies into and out of textures kept on the host (RGB9E5 and block-compressed ones): between two
+/// of them, into an uncompressed texture whose texels are the blocks and back
+/// (`HostCopyReadBack`), from a buffer and into one, each read back as the blocks moved. A solid
+/// BC1 block copied in from an `rg32uint` texture loads as its colour, so the GPU's form is written
+/// too.
+pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
+    use crate::kit::{self, Kit};
+    use Format as F;
+    let mut b = H::make();
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, LOAD_CORNER, "vs", "fs");
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::COPY_SRC;
+    macro_rules! region {
+        ($texture:expr, $layer:expr, $x:expr, $y:expr) => {
+            TextureRegion {
+                texture: $texture,
+                mip: 0,
+                layer: $layer,
+                origin: Origin { x: $x, y: $y, z: 0 },
+                stencil: false,
+            }
+        };
+    }
+    let extent = |width, height, depth_or_layers| Extent {
+        width,
+        height,
+        depth_or_layers,
+    };
+    for (n, (format, plain)) in [
+        (F::Bc1RgbaUnorm, Some(F::Rg32Uint)),
+        (F::Bc3RgbaUnorm, Some(F::Rgba32Uint)),
+        (F::Bc7RgbaUnormSrgb, Some(F::Rgba32Uint)),
+        (F::Bc4RSnorm, Some(F::Rg32Uint)),
+        (F::Rgb9e5Float, None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let want = FormatUse::SAMPLE | FormatUse::COPY_OUT;
+        if !b.caps().formats.get(format).contains(want) {
+            continue;
+        }
+        let (bw, bh, bytes) = format.block();
+        let (cols, rows) = (8 / bw, 8 / bh);
+        let block = bytes as usize;
+        let row = (cols * bytes) as usize;
+        let layer_bytes = row * rows as usize;
+        // What texture `into` should hold, both layers, as rows of blocks.
+        let at = |layer: u32, bx: u32, by: u32| {
+            layer as usize * layer_bytes + by as usize * row + bx as usize * block
+        };
+        let new = |b: &mut H::Backend, bytes: &[u8]| {
+            let t = kit::texture(b, TextureDimension::D2, format, [8, 8, 2], 1, usage, false);
+            b.write_texture(
+                &region!(&t, 0, 0, 0),
+                extent(8, 8, 2),
+                bytes,
+                row as u32,
+                rows,
+                WriteMode::Ordered,
+            );
+            t
+        };
+        let read = |b: &mut H::Backend, t: &<H::Backend as Backend>::Texture| {
+            let mut got = vec![0; layer_bytes * 2];
+            b.read_back_now(
+                &ReadSource::Texture {
+                    region: region!(t, 0, 0, 0),
+                    extent: extent(8, 8, 2),
+                },
+                &mut got,
+            )
+            .expect("read_back_now");
+            got
+        };
+        let from_bytes = pattern(layer_bytes * 2, 0x3c6e + n as u32);
+        let from = new(&mut b, &from_bytes);
+        let mut model = pattern(layer_bytes * 2, 0x7f4a + n as u32);
+        let into = new(&mut b, &model);
+        // Between two kept textures: the right half of the top of layer 1 into the bottom left of
+        // layer 0.
+        b.copy_texture(
+            &region!(&from, 1, 4, 0),
+            &region!(&into, 0, 0, 4),
+            extent(4, 4, 1),
+        );
+        for by in 0..rows / 2 {
+            for bx in 0..cols / 2 {
+                let (s, d) = (at(1, cols / 2 + bx, by), at(0, bx, rows / 2 + by));
+                model[d..d + block].copy_from_slice(&from_bytes[s..s + block]);
+            }
+        }
+        assert_eq!(
+            read(&mut b, &into),
+            model,
+            "{format:?}: copied between kept textures"
+        );
+        // From a buffer at a pitch of 256: the top half of layer 1.
+        let pitch = 256usize;
+        let rows_half = rows as usize / 2;
+        let mut staged = vec![0; pitch * rows_half];
+        let fresh = pattern(row * rows_half, 0x2b99 + n as u32);
+        for r in 0..rows_half {
+            staged[r * pitch..r * pitch + row].copy_from_slice(&fresh[r * row..(r + 1) * row]);
+            let d = at(1, 0, r as u32);
+            model[d..d + row].copy_from_slice(&fresh[r * row..(r + 1) * row]);
+        }
+        let staging = buffer(&mut b, BufferUsage::VERTEX, &staged);
+        let readbacks = b.slow_paths().count(SlowPath::HostCopyReadBack);
+        b.copy_buffer_to_texture(
+            &CopyBufferTexture {
+                buffer: &staging,
+                offset: 0,
+                row_pitch: pitch as u32,
+                rows_per_layer: rows_half as u32,
+            },
+            &region!(&into, 1, 0, 0),
+            extent(8, 4, 1),
+        );
+        assert_eq!(
+            b.slow_paths().count(SlowPath::HostCopyReadBack),
+            readbacks + 1,
+            "{format:?}: the buffer read back"
+        );
+        assert_eq!(
+            read(&mut b, &into),
+            model,
+            "{format:?}: copied from a buffer"
+        );
+        // Into a buffer, rows apart by one block more than they hold and layers by a row more.
+        let (pitch, per_layer) = (row + block, rows as usize + 1);
+        let out = buffer(
+            &mut b,
+            BufferUsage::VERTEX,
+            &vec![0xee; pitch * per_layer * 2],
+        );
+        b.copy_texture_to_buffer(
+            &region!(&into, 0, 0, 0),
+            &CopyBufferTexture {
+                buffer: &out,
+                offset: 0,
+                row_pitch: pitch as u32,
+                rows_per_layer: per_layer as u32,
+            },
+            extent(8, 8, 2),
+        );
+        let got = read_buffer(&mut b, &out, pitch * per_layer * 2);
+        let mut want = vec![0xee; pitch * per_layer * 2];
+        for layer in 0..2 {
+            for r in 0..rows as usize {
+                let s = layer * layer_bytes + r * row;
+                let d = (layer * per_layer + r) * pitch;
+                want[d..d + row].copy_from_slice(&model[s..s + row]);
+            }
+        }
+        assert_eq!(got, want, "{format:?}: copied into a buffer");
+        let Some(plain) = plain else { continue };
+        // Out to an uncompressed texture whose texels are the blocks, then back in.
+        let texel_usage = usage | TextureUsage::RENDER;
+        let p = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            plain,
+            [cols, rows, 1],
+            1,
+            texel_usage,
+            false,
+        );
+        b.copy_texture(
+            &region!(&into, 1, 0, 0),
+            &region!(&p, 0, 0, 0),
+            extent(8, 8, 1),
+        );
+        let texels = kit::read(&mut b, &p, 0, 0, [cols, rows, 1], block, false);
+        assert_eq!(
+            texels,
+            &model[layer_bytes..],
+            "{format:?}: copied into {plain:?}"
+        );
+        let written = pattern(block * (cols * rows) as usize, 0x6d2b + n as u32);
+        let mut solid = written.clone();
+        if format == F::Bc1RgbaUnorm {
+            // Texel (0, 0) a solid red block.
+            solid[..8].copy_from_slice(&[0, 0xf8, 0, 0xf8, 0, 0, 0, 0]);
+        }
+        b.write_texture(
+            &region!(&p, 0, 0, 0),
+            extent(cols, rows, 1),
+            &solid,
+            cols * bytes,
+            rows,
+            WriteMode::Ordered,
+        );
+        // Texel (1, 1) into the block at the top left of layer 0, and texel (0, 0) into a
+        // texture of its own.
+        b.copy_texture(
+            &region!(&p, 0, 1, 1),
+            &region!(&into, 0, 0, 0),
+            extent(1, 1, 1),
+        );
+        let s = (cols as usize + 1) * block;
+        let d = at(0, 0, 0);
+        model[d..d + block].copy_from_slice(&solid[s..s + block]);
+        assert_eq!(
+            b.slow_paths().count(SlowPath::HostCopyReadBack),
+            readbacks + 2,
+            "{format:?}: {plain:?} read back"
+        );
+        assert_eq!(
+            read(&mut b, &into),
+            model,
+            "{format:?}: copied from {plain:?}"
+        );
+        if format == F::Bc1RgbaUnorm {
+            let single = kit::texture(
+                &mut b,
+                TextureDimension::D2,
+                format,
+                [4, 4, 1],
+                1,
+                usage,
+                false,
+            );
+            b.copy_texture(
+                &region!(&p, 0, 0, 0),
+                &region!(&single, 0, 0, 0),
+                extent(1, 1, 1),
+            );
+            let view = kit::view(&mut b, &single, format, ViewDimension::D2, 0, 1, 0, 1);
+            let set = b
+                .create_binding_set(&[BindingEntry {
+                    binding: 32,
+                    stages: StageSet::FRAGMENT,
+                    resource: BindingResource::Texture(&view),
+                }])
+                .expect("create_binding_set");
+            let target = F::Rgba8Unorm;
+            let out = kit::texture(
+                &mut b,
+                TextureDimension::D2,
+                target,
+                [1, 1, 1],
+                1,
+                TextureUsage::RENDER | TextureUsage::COPY_SRC,
+                false,
+            );
+            let out_view = kit::target(&mut b, &out, target, 0, 0);
+            b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+            b.draw(&kit::call(
+                &k,
+                &program,
+                Some(&set),
+                &[kit::viewport(0.0, 0.0, 1.0, 1.0)],
+                Topology::TriangleList,
+                3,
+            ));
+            b.end_pass();
+            let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 4, false);
+            assert_eq!(got, [255, 0, 0, 255], "the copied solid block loaded");
+        }
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// An sRGB view of a BC1 texture decodes its colours from sRGB, and follows writes made after the
+/// view: a grey block loads about 132 through the texture's own view and about 59 through the sRGB
+/// one (one step either way, for decoders expanding 5 bits differently), then a white block 255.
+pub fn srgb_views_of_block_compressed_textures<H: Host>() {
+    use crate::kit::{self, Kit};
+    use Format as F;
+    let mut b = H::make();
+    let want = FormatUse::SAMPLE;
+    if !b.caps().formats.get(F::Bc1RgbaUnorm).contains(want) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, LOAD_CORNER, "vs", "fs");
+    let target = F::Rgba8Unorm;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        target,
+        [1, 1, 1],
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+        false,
+    );
+    let out_view = kit::target(&mut b, &out, target, 0, 0);
+    let t = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        F::Bc1RgbaUnorm,
+        [4, 4, 1],
+        1,
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+        false,
+    );
+    let write = |b: &mut H::Backend, colour: u16| {
+        let c = colour.to_le_bytes();
+        b.write_texture(
+            &TextureRegion {
+                texture: &t,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            Extent {
+                width: 4,
+                height: 4,
+                depth_or_layers: 1,
+            },
+            &[c[0], c[1], c[0], c[1], 0, 0, 0, 0],
+            8,
+            1,
+            WriteMode::Ordered,
+        );
+    };
+    let load = |b: &mut H::Backend, format| {
+        let view = kit::view(b, &t, format, ViewDimension::D2, 0, 1, 0, 1);
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&view),
+            }])
+            .expect("create_binding_set");
+        b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            &program,
+            Some(&set),
+            &[kit::viewport(0.0, 0.0, 1.0, 1.0)],
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        kit::read(b, &out, 0, 0, [1, 1, 1], 4, false)[0]
+    };
+    // Grey: red 16 of 31 in 5:6:5.
+    write(&mut b, (16 << 11) | (32 << 5) | 16);
+    let linear = load(&mut b, F::Bc1RgbaUnorm);
+    assert!((131..=133).contains(&linear), "linear view loads {linear}");
+    let srgb = load(&mut b, F::Bc1RgbaUnormSrgb);
+    assert!((58..=60).contains(&srgb), "sRGB view loads {srgb}");
+    write(&mut b, 0xffff);
+    assert_eq!(
+        load(&mut b, F::Bc1RgbaUnormSrgb),
+        255,
+        "after a later write"
+    );
     assert_eq!(b.status(), DeviceStatus::Ok);
 }

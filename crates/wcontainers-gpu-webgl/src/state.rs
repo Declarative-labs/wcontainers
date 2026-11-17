@@ -257,6 +257,15 @@ impl GlRaster {
             },
         }
     }
+
+    /// The vertex whose flat values the block's primitives take.
+    pub fn provoking(&self) -> ProvokingVertex {
+        if self.provoking == crate::platform::FIRST_VERTEX {
+            ProvokingVertex::First
+        } else {
+            ProvokingVertex::Last
+        }
+    }
 }
 
 pub fn raster(
