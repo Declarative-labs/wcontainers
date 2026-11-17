@@ -4,21 +4,17 @@
 # C:\wc\target\<branch>. Output and exit code come back; 125 means the sending failed.
 #   tools/graphics-rig/remote cargo build -p wcontainers-graphics-test
 set -euo pipefail
-host=tom@192.168.2.183
 [ $# -gt 0 ] || { echo "usage: remote <command>" >&2; exit 2; }
+# shellcheck source=tools/graphics-rig/common.sh
+. "$(dirname "$0")/common.sh"
 root=$(git rev-parse --show-toplevel)
 cd "$root"
-branch=$(git symbolic-ref --short HEAD)
-name=$(printf %s "$branch" | tr -c 'A-Za-z0-9._-' '-')
 gitdir=$(git rev-parse --absolute-git-dir)
 id=$name.$$
 ref=refs/wc-remote/$id
 trap 'rm -f "$gitdir/$id".*; git update-ref -d "$ref" 2>/dev/null || true' EXIT
 
-# A commit of the working tree as it is: untracked files included, ignored ones left out.
-cp "$gitdir/index" "$gitdir/$id.index"
-GIT_INDEX_FILE=$gitdir/$id.index git add -A
-tree=$(GIT_INDEX_FILE=$gitdir/$id.index git write-tree)
+tree=$(working_tree "$gitdir/$id.index")
 commit=$(git rev-parse HEAD)
 if [ "$tree" != "$(git rev-parse 'HEAD^{tree}')" ]; then
     commit=$(git commit-tree "$tree" -p HEAD -m "working tree of $branch")
@@ -33,11 +29,9 @@ if [ -z "$(git branch -r --contains "$commit" 2>/dev/null)" ]; then
     files+=("$gitdir/$id.bundle")
     bundle_arg=(-Bundle "C:\\wc\\incoming\\$id.bundle")
 fi
-scp -q -o BatchMode=yes "${files[@]}" "$host:C:/wc/incoming/"
+connect || exit 125
+rig_scp "${files[@]}" "$host:C:/wc/incoming/" || exit 125
 
 command=$(printf %s "$*" | base64 | tr -d '\n')
 set +e
-ssh -o BatchMode=yes "$host" powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-    -File "C:\\wc\\incoming\\$id.ps1" -Name "$name" -Commit "$commit" ${bundle_arg[@]+"${bundle_arg[@]}"} -Command "$command" \
-    2> >(tr -d '\r' >&2) | tr -d '\r'
-exit "${PIPESTATUS[0]}"
+rig_powershell "C:\\wc\\incoming\\$id.ps1" -Name "$name" -Commit "$commit" ${bundle_arg[@]+"${bundle_arg[@]}"} -Command "$command"

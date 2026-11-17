@@ -1,10 +1,15 @@
 #!/bin/bash
 # Checks the GPU queue's rules with jobs that only sleep, on an otherwise idle queue: two jobs
-# submitted together run together; with every slot taken, a later job of higher priority starts
+# submitted together run together; with twice as many jobs as slots submitted together, exactly as
+# many as there are slots run at once; with every slot taken, a later job of higher priority starts
 # before an earlier one of lower priority; an --alone job starts only when no other job runs, and
-# jobs submitted while it runs wait for it. Prints each rule's result; exits 1 if one fails.
+# jobs submitted while it runs wait for it. Sends the working tree first, which the jobs check.
+# Prints each rule's result; exits 1 if one fails. About 45 s.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=tools/graphics-rig/common.sh
+. "$here/common.sh"
+"$here/remote" "exit 0" || exit 1
 dir=$(mktemp -d "$(git rev-parse --absolute-git-dir)/queue-check.XXXXXX")
 trap 'rm -rf "$dir"' EXIT
 failed=0
@@ -27,7 +32,7 @@ check() { # description, then an awk condition over the named times a..z given a
 }
 sleeper() { echo "ping -n $(($1 + 1)) 127.0.0.1 >nul"; }
 
-slots=$(ssh -o BatchMode=yes tom@192.168.2.183 'C:\wc\bin\pueue.exe -c C:\wc\pueue\pueue.yml status --json' |
+slots=$(rig_ssh 'C:\wc\bin\pueue.exe -c C:\wc\pueue\pueue.yml status --json' |
     tr -d '\r' | sed -n 's/.*"default":{[^}]*"parallel_tasks":\([0-9]*\).*/\1/p')
 echo "the default group runs at most $slots jobs at once"
 
@@ -36,6 +41,13 @@ job b -- "$(sleeper 3)"
 wait
 check "two jobs submitted together ran together" 'a0 < b1 && b0 < a1' \
     -v a0="$(seconds a start)" -v a1="$(seconds a end)" -v b0="$(seconds b start)" -v b1="$(seconds b end)"
+
+for i in $(seq 1 $((2 * slots))); do job "cap$i" -- "$(sleeper 4)"; done
+wait
+most=$(for i in $(seq 1 $((2 * slots))); do echo "$(seconds "cap$i" start) $(seconds "cap$i" end)"; done |
+    awk '{ s[NR] = $1; e[NR] = $2 } END { for (i in s) { n = 0; for (j in s) if (s[j] <= s[i] && s[i] < e[j]) n++; if (n > m) m = n } print m + 0 }')
+check "of $((2 * slots)) jobs submitted together, at most $slots ran at once, and $slots did (seen: $most)" 'most == slots' \
+    -v most="$most" -v slots="$slots"
 
 job short -- "$(sleeper 3)"
 for i in $(seq 2 "$slots"); do job "long$i" -- "$(sleeper 8)"; done

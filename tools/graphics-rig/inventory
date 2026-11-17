@@ -3,5 +3,8 @@
 # status file's list of what the rig installed.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=tools/graphics-rig/common.sh
+. "$here/common.sh"
 enc=$(iconv -f UTF-8 -t UTF-16LE < "$here/desktop/inventory.ps1" | base64 | tr -d '\n')
-ssh -o BatchMode=yes tom@192.168.2.183 powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "$enc" | tr -d '\r'
+connect
+rig_ssh powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "$enc" | tr -d '\r'

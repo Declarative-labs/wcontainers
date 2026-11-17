@@ -5,8 +5,8 @@
 #   tools/graphics-rig/loop [picture-dir]
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-branch=$(git symbolic-ref --short HEAD)
-name=$(printf %s "$branch" | tr -c 'A-Za-z0-9._-' '-')
+# shellcheck source=tools/graphics-rig/common.sh
+. "$here/common.sh"
 "$here/remote" "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward && (if not exist tools\\graphics-rig\\browser\\node_modules\\playwright-core npm ci --prefix tools\\graphics-rig\\browser --no-fund --no-audit)"
 set +e
 "$here/gpu-job" -- "tools\\graphics-rig\\loop.cmd $name"
@@ -14,6 +14,6 @@ code=$?
 set -e
 if [ $# -gt 0 ]; then
     mkdir -p "$1"
-    scp -q -o BatchMode=yes "tom@192.168.2.183:C:/wc/out/$name/*.png" "$1/"
+    rig_scp "$host:C:/wc/out/$name/*.png" "$1/"
 fi
 exit $code

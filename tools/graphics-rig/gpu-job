@@ -1,11 +1,12 @@
 #!/bin/bash
-# Runs a short GPU job on the desktop through its queue, in this branch's copy there (send it first
-# with `remote`), and returns the job's output and exit code once it has run. Higher priorities start
-# first; --alone waits until no other job runs and keeps the GPU to itself, for timings. The command
-# is cmd.exe syntax; cargo's build directory is C:\wc\target\<branch>.
+# Runs a short GPU job on the desktop through its queue, in this branch's copy there, and returns
+# the job's output and exit code once it has run. The copy must hold this working tree as it is now
+# (send it with `remote`); the job checks that and keeps `remote` from changing the copy while it
+# runs. Higher priorities start first (any integer); --alone waits until no other job runs and keeps
+# the GPU to itself, for timings. The command is cmd.exe syntax; cargo's build directory is
+# C:\wc\target\<branch>.
 #   tools/graphics-rig/gpu-job [--priority N] [--alone] -- <command>
 set -euo pipefail
-host=tom@192.168.2.183
 priority=0
 alone=()
 while [ $# -gt 0 ]; do
@@ -17,11 +18,15 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ $# -gt 0 ] || { echo "usage: gpu-job [--priority N] [--alone] -- <command>" >&2; exit 2; }
-branch=$(git symbolic-ref --short HEAD)
-name=$(printf %s "$branch" | tr -c 'A-Za-z0-9._-' '-')
+[[ $priority =~ ^-?[0-9]+$ ]] || { echo "gpu-job: the priority must be an integer" >&2; exit 2; }
+root=$(git rev-parse --show-toplevel)
+# shellcheck source=tools/graphics-rig/common.sh
+. "$(dirname "$0")/common.sh"
+index=$(git rev-parse --absolute-git-dir)/gpu-job.$$.index
+trap 'rm -f "$index"' EXIT
+tree=$(cd "$root" && working_tree "$index")
 command=$(printf %s "$*" | base64 | tr -d '\n')
+connect || exit 125
 set +e
-ssh -o BatchMode=yes "$host" powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'C:\wc\rig\submit.ps1' \
-    -Name "$name" -Priority "$priority" ${alone[@]+"${alone[@]}"} -Command "$command" \
-    2> >(tr -d '\r' >&2) | tr -d '\r'
-exit "${PIPESTATUS[0]}"
+rig_powershell 'C:\wc\rig\submit.ps1' -Name "$name" -Tree "$tree" "-Priority:$priority" \
+    ${alone[@]+"${alone[@]}"} -Command "$command"

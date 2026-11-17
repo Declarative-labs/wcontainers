@@ -2,6 +2,8 @@
 # with its exit code.
 param(
     [Parameter(Mandatory)][string]$Name,
+    # The git tree id the checkout C:\wc\src\<Name> must hold when the job runs.
+    [Parameter(Mandatory)][string]$Tree,
     [int]$Priority = 0,
     [switch]$Alone,
     # The command, base64 of its UTF-8 text, run by cmd.exe in C:\wc\src\<Name>.
@@ -15,15 +17,26 @@ $config = 'C:\wc\pueue\pueue.yml'
 $checkout = "C:\wc\src\$Name"
 if (-not (Test-Path $checkout)) { throw "no checkout $checkout; send one with remote first" }
 
+# An alone job pauses the default group and resumes it when it ends; if its wrapper was killed
+# first, the group stays paused, so it is resumed here when no alone job is queued or running.
+$state = & $pueue -c $config status --json | ConvertFrom-Json
+$aloneTasks = @($state.tasks.PSObject.Properties.Value | Where-Object { $_.group -eq 'alone' -and
+        ($_.status.PSObject.Properties.Name | Where-Object { $_ -in 'Queued', 'Running', 'Stashed', 'Locked' }) })
+if ($state.groups.default.status -ne 'Running' -and $aloneTasks.Count -eq 0) {
+    [Console]::Error.WriteLine('gpu-job: resuming the default group, paused with no alone job')
+    & $pueue -c $config start --group default | Out-Null
+}
+
 # The job runs with this environment, which pueue records when the job is added.
 $env:CARGO_TARGET_DIR = "C:\wc\target\$Name"
 $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Command))
 $label = "$Name`: $text"
 if ($label.Length -gt 120) { $label = $label.Substring(0, 120) }
 $group = if ($Alone) { 'alone' } else { 'default' }
-$wrapper = @('powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\wc\rig\job.ps1')
+$wrapper = @('powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\wc\rig\job.ps1',
+    '-Name', $Name, '-Tree', $Tree)
 if ($Alone) { $wrapper += '-Alone' }
-$id = & $pueue -c $config add --print-task-id --group $group --priority $Priority --working-directory $checkout --label $label -- @wrapper $Command
+$id = & $pueue -c $config add --print-task-id --group $group "--priority=$Priority" --working-directory $checkout --label $label -- @wrapper -Command $Command
 if ($LASTEXITCODE -ne 0 -or -not $id) { throw 'pueue add failed' }
 $id = "$id".Trim()
 [Console]::Error.WriteLine("gpu-job: task $id in group $group at priority $Priority")
