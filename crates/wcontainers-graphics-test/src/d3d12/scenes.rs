@@ -35,6 +35,14 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("stencil", super::states::stencil_scene),
     ("formats", super::states::formats),
     ("samplers", super::states::samplers_scene),
+    ("textures", super::textures::textures),
+    ("raster", super::raster::raster),
+    ("msaa", super::raster::msaa_scene),
+    ("targets", super::raster::targets),
+    ("topology", super::primitives::topology),
+    ("geometry", super::primitives::geometry),
+    ("tessellation", super::primitives::tessellation),
+    ("streamout", super::primitives::streamout),
 ];
 
 pub fn find(name: &str) -> Option<Scene> {

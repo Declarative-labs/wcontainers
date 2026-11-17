@@ -2,8 +2,11 @@
 //! share, and the list of scenes. Each scene records into the list, submits and waits, and reads
 //! its targets back.
 
+mod primitives;
+mod raster;
 pub mod scenes;
 mod states;
+mod textures;
 
 use std::cell::{Cell, RefCell};
 use std::mem::{ManuallyDrop, transmute_copy};
