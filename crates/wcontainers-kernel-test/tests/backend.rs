@@ -109,6 +109,18 @@ fn cached_shared_positions_match_reference() {
     }
 }
 
+/// Appends while another thread truncates the file: the inode is held across each.
+#[test]
+fn truncations_and_appends_match_reference() {
+    let injections = driver::Injections {
+        saves: 2,
+        ..Default::default()
+    };
+    for run in same_on_backend("backendlocks", injections) {
+        assert_warned_only(&run, &[]);
+    }
+}
+
 /// Creating through links to missing files, and extended attributes of named pipes.
 #[test]
 fn special_files_match_reference() {

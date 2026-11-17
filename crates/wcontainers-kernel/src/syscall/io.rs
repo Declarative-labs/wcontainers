@@ -1141,9 +1141,14 @@ fn write_parts(
 }
 
 /// `inode_lock` around a write to a backend file (`fuse_direct_write_iter` without
-/// FOPEN_PARALLEL_DIRECT_WRITES, `fuse_cache_write_iter`), held while the write waits for the
-/// backend. Files in memory finish a write without waiting, so nothing else needs it.
-fn lock_backend_writes(kernel: &mut Kernel, tid: Tid, node: &crate::fs::Node) -> Result<(), Errno> {
+/// FOPEN_PARALLEL_DIRECT_WRITES, `fuse_cache_write_iter`), a truncation (`do_truncate`) or an
+/// allocation that changes its size or bytes (`fuse_file_fallocate`), held while the call waits
+/// for the backend. Files in memory finish these without waiting, so nothing else needs it.
+pub(super) fn lock_backend_writes(
+    kernel: &mut Kernel,
+    tid: Tid,
+    node: &crate::fs::Node,
+) -> Result<(), Errno> {
     let holder = match &node.borrow().content {
         Content::Backend(remote) if !node.borrow().is_directory() => remote.writer.get(),
         _ => return Ok(()),

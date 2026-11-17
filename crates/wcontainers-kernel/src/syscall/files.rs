@@ -644,6 +644,8 @@ pub(super) fn open(
                         remote.set_size(0);
                     }
                 } else {
+                    // `handle_truncate`'s `do_truncate`.
+                    super::io::lock_backend_writes(kernel, tid, &node)?;
                     crate::fs::backend::setattr(
                         &node,
                         crate::fs::backend::Change {
@@ -2254,6 +2256,7 @@ fn truncate_node(
         return Ok(0);
     }
     if crate::fs::backend::remote(node).is_some() {
+        super::io::lock_backend_writes(kernel, tid, node)?;
         crate::fs::backend::fresh(node)?;
         let (size, mode, file_type) = {
             let inode = node.borrow();
@@ -2423,6 +2426,12 @@ pub(super) fn fallocate(
     if let Some(handle) = file.borrow().backend.clone() {
         if mode & !(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE) != 0 {
             return Err(Errno::EOPNOTSUPP);
+        }
+        // Allocating while keeping the size takes no lock.
+        if mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE) != 0
+            || mode & FALLOC_FL_KEEP_SIZE == 0
+        {
+            super::io::lock_backend_writes(kernel, tid, &node)?;
         }
         crate::fs::backend::fallocate(&handle, mode, offset, length)?;
         // `fuse_file_fallocate`: a punched or zeroed range reads as zero from mapped pages too,
