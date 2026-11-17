@@ -10,7 +10,39 @@ first one's findings and the tenth the second's (below). K3 (threads): the first
 check's last findings and built threads, futexes and timers; the second built the per-thread `/proc`,
 layer 2's libc-test, scheduling between threads and clone's sharing flags; the third clone's last
 combinations and per-thread credentials; the fourth woken calls run at their turn, RLIMIT_CPU and
-the shared dumpable flag (below). K3 is complete; see Next.
+the shared dumpable flag; the fifth the K3 check's findings (below). K3 is complete; see Next.
+
+Built in K3's fifth run (the K3 check's findings):
+- clock_nanosleep on a CPU clock (the process's, another thread's, another process's) is a timer
+  on that clock that wakes the sleeper (`Owner::Sleep`, timer.rs; `cpu_sleep`, time.rs), as Linux's
+  `do_cpu_nanosleep`: time used by other threads or processes ends it, a handled signal ends a
+  relative one with what is left written (EFAULT if that write fails) and a handler-less one goes on
+  from `restart_syscall` (`Restart::CpuSleep`, to the same time on the clock), an absolute one runs
+  again. A sleep on the clock of a process whose only thread sleeps never ends, as in Linux. The
+  sleeper's timer goes when its thread ends. Before, every such sleep not already over parked with
+  nothing to end it (the check's procsleep.c and cpusleep.c hung).
+- Futex waits keep their record in the thread's entry (`Thread::futex`, see Departures): which
+  entry a wake took is a bit there, so a vector wait naming one futex twice answers the entry taken
+  (0, then 1 when both are), where it waited until its time-out before. Wakes and requeues walk the
+  queue in place instead of copying it.
+- A thread that ends holding priority inheriting locks hands each to its first waiter with
+  FUTEX_OWNER_DIED set, as Linux's `__fixup_pi_state_owner` does when the owner is gone (measured in
+  futexpi.c: the reference sets it with no robust list). FUTEX_WAIT_REQUEUE_PI takes the lock's key,
+  then the condition's key and value, then compares the keys (EAGAIN before EINVAL for one futex
+  through two addresses); FUTEX_CMP_REQUEUE_PI refuses one address for both before the keys. A shared
+  futex's page must be readable, and writable for the calls that change the word (`FUTEX_WRITE`:
+  the PI calls, wake-op's second word, a PI requeue's target), else EFAULT.
+- Layer 1 generates the PI calls: the lock, unlock and trylock calls with misaligned, null and kernel
+  addresses only (unlock with null and kernel ones only, since it reads the word first), and
+  FUTEX_WAIT_REQUEUE_PI and FUTEX_CMP_REQUEUE_PI with any words (a sequence never has a waiter, so
+  they write nothing).
+- jobs.c's hangup job waits for both SIGHUP and SIGCONT with them blocked outside `sigsuspend`; the
+  reference could run the job between the two (the check's whole-suite failure).
+- The repeatable test clock charges each turn 0.5 to 1.5 ns an instruction, drawn per turn from the
+  seed (driver.rs `ran`). Measured with the check's interleave.c: the first switch points were 228,
+  298, 291, 290 under seeds 1 to 4 (before: 249, 250, 250).
+- Status corrections: proclist's thread listing is not ignored (5 ignored tests); threads, clone's
+  sharing flags, PIDFD_THREAD and rseq's preemption abort are built (stale lines removed).
 
 Built in K3's fourth run:
 - Woken calls run again when their thread's turn comes, not at once (`settle`, `next_to_run`,
@@ -1112,7 +1144,15 @@ Missing (40, each counted "system call not implemented" and ENOSYS), with what e
 
 ## Tests (last run 2026-11-16, K3's fourth run; counts under Measurements)
 
-All pass except the ignored known failures listed above. Added in K3's fourth run: cpulimit
+All pass except the ignored known failures listed above. Added in K3's fifth run: timers
+`cpu_clock_sleeps_match_reference` (guest/cpusleep.c, with 2 saves a seed: sleeps on the process's
+clock, another thread's and another process's, relative and absolute, passed and zero times, a
+handled signal with what is left, a bad address for it, a stop and continue); threads
+`priority_inheriting_futexes_match_reference` (guest/futexpi.c, with 3 saves a seed: every PI
+call's checks and their order, waiters on a condition requeued onto a held lock and handed it in
+turn, a free lock taken from the requeue, plain wakes and requeues on PI waiters, an owner ending
+with a waiter); guest/futexes.c a vector wait naming one futex twice, woken once and twice. Added in
+K3's fourth run: cpulimit
 (guest/cpulimit.c, RLIMIT_CPU's SIGXCPU and SIGKILL against the reference); terminal's ttylock now
 starts with `cat /dev/tty | cat`; clonevm checks the shared dumpable flag. Added in K3's first run (seeded ones run
 under `SCHEDULE_SEEDS` seeds, 3 by default; 4 to 6 were run by hand):
@@ -1893,12 +1933,15 @@ All on this shared Mac; noisy, not benchmarks.
 - Layer 1's reference runner polls every descriptor twice after each call of a sequence with a
   pseudo-terminal (Linux's buffer work runs later from a work queue; ours at once), and such
   sequences write at most 256 bytes a call. A child made by clone in layer 1 ends at once.
-- Semaphore undo lists belong to processes here (Linux's belong to tasks, shared by CLONE_SYSVSEM,
-  which glibc's threads use); with threads (K3) they move to threads. A message queue's absolute
-  real time timeout becomes a deadline on the monotonic clock when the call starts (the made-up
-  machine's real time clock cannot be set). A close takes away a queue's notification request when
-  the closing table's process asked for it (Linux checks the closing task's process; tables are not
-  shared until K3).
+- A message queue's absolute real time timeout becomes a deadline on the monotonic clock when the
+  call starts (the made-up machine's real time clock cannot be set).
+- A futex wait's record is a slot in the thread's entry (`Thread::futex`: the futex each of its
+  call's entries is queued on, inline for one, and a bit per entry a wake took), as the plan says;
+  the queue of each futex is an index beside it, a `VecDeque` of waiters in a `BTreeMap` by key
+  (Linux's are intrusive lists in hash buckets), so the first waiter on a futex allocates its queue
+  and a vector wait of more than one futex allocates its list of keys (Linux allocates that vector
+  too). Before K3's fifth run every wait also allocated a list of keys in a map by thread, cloned
+  it at each look and searched its queues for itself. The cost was not measured either way.
 - A named pipe's open waiting for the other end keeps the file it makes in the thread's `opening`
   slot beside the call slot (the plan's one fixed slot holds only plain values): the file must count
   as an end while it waits, as Linux's does. It is given up when the call ends any other way or the
@@ -1941,6 +1984,7 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K3, fifth run: none.
 - K3, fourth run: none.
 - K3, third run: none.
 - K3, second run: none.
