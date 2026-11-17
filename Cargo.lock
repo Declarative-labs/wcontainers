@@ -2651,6 +2651,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-direct3d-11"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "wcontainers-gpu",
+ "wcontainers-shaders",
+]
+
+[[package]]
 name = "wcontainers-direct3d-12"
 version = "0.1.0"
 dependencies = [
@@ -2663,6 +2672,21 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-webgpu",
  "wgpu",
+]
+
+[[package]]
+name = "wcontainers-directx"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "parking_lot",
+ "pollster",
+ "wcontainers-direct3d-11",
+ "wcontainers-gpu",
+ "wcontainers-gpu-webgpu",
+ "wgpu",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

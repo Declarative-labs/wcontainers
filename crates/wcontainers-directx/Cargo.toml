@@ -1,0 +1,39 @@
+[package]
+name = "wcontainers-directx"
+description = "The Direct3D family as one Windows library (and later one container module): COM shells around our fronts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wcontainers-direct3d-11 = { path = "../wcontainers-direct3d-11" }
+wcontainers-gpu = { path = "../wcontainers-gpu" }
+wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
+wgpu = { version = "30.0.2", default-features = false }
+pollster = "1.0.1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+windows-core = "0.62.2"
+parking_lot = "0.12.5"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62.2", features = ["Win32_System_LibraryLoader"] }
+
+[build-dependencies]
+cc = "1"
+
+[lints]
+workspace = true
