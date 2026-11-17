@@ -438,7 +438,7 @@ impl WebGpu {
             .device
             .limits()
             .max_dynamic_uniform_buffers_per_pipeline_layout;
-        let groups = layout::derive(&program.stages(), &keys, max_dynamic)?;
+        let groups = layout::derive(&program.stages().collect::<Vec<_>>(), &keys, max_dynamic)?;
         let used = groups
             .iter()
             .rposition(|g| !g.is_empty())
@@ -969,12 +969,7 @@ impl WebGpu {
             ),
             None => None,
         };
-        let mut layouts = [BindingLayoutKey::default(); MAX_BINDING_SETS];
-        for (k, s) in layouts.iter_mut().zip(&call.bindings) {
-            if let Some(s) = s {
-                *k = s.0.key;
-            }
-        }
+        let layouts = call.program.0.layout_keys(&call.bindings);
         let key = PipelineKey {
             program: call.program.0.id(),
             blend: call.blend.0.id,
@@ -1151,12 +1146,7 @@ impl WebGpu {
         let crate::ProgramObj::Compute { id, shader } = &*call.program.0 else {
             return Err(GpuError::Invalid("dispatch with a render program"));
         };
-        let mut keys = [BindingLayoutKey::default(); MAX_BINDING_SETS];
-        for (k, s) in keys.iter_mut().zip(&call.bindings) {
-            if let Some(s) = s {
-                *k = s.0.key;
-            }
-        }
+        let keys = call.program.0.layout_keys(&call.bindings);
         let (pipeline, layout) = match self.caches.computes.get(&(*id, keys)) {
             Some(p) => p.clone(),
             None => {

@@ -64,8 +64,10 @@ pub enum WriteMode {
     /// only part of the buffer: the buffer keeps its size and the bytes outside the part are undefined
     /// until written (WebGL 2 orphans with `bufferData(size, null)`, then writes the part).
     Discard,
-    /// The caller promises no command recorded earlier and not yet finished reads the bytes written.
-    /// A back end may write in place at once.
+    /// The caller promises that no command recorded earlier and not yet finished, and no `Ordered`
+    /// write made since the caller last waited, reads or writes the bytes written. A back end may
+    /// write in place at once, ahead of the commands recorded before it; it keeps the order of these
+    /// writes among themselves and with `Discard` writes.
     NoOverwrite,
 }
 

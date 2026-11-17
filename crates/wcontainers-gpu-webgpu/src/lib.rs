@@ -22,10 +22,10 @@ use std::sync::{Arc, Mutex};
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingLayoutKey, BlendDesc, BufferDesc, BufferUsage, Caps,
     CopyBufferTexture, DepthStencilDesc, DeviceStatus, Extent, Features, FillMode, Filter, Format,
-    FormatCaps, FormatKind, FormatUse, GpuError, Helpers, Limits, LossReason, MapIntent, Object,
-    PassDesc, Program, ProvokingVertex, QueryKind, RasterDesc, ReadSource, ReadState, SamplerDesc,
-    ShaderModule, ShaderStage, SlowPaths, StepMode, TextureDesc, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, VertexLayoutDesc, WriteMode,
+    FormatCaps, FormatKind, FormatUse, GpuError, Helpers, Limits, LossReason, MAX_BINDING_SETS,
+    MapIntent, Object, PassDesc, Program, ProvokingVertex, QueryKind, RasterDesc, ReadSource,
+    ReadState, SamplerDesc, ShaderModule, ShaderStage, SlowPaths, StepMode, TextureDesc,
+    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, VertexLayoutDesc, WriteMode,
 };
 
 pub use draw::Counters;
@@ -51,6 +51,9 @@ pub struct WebGpu {
     /// The highest serial whose work the GPU has finished.
     completed: Arc<AtomicU64>,
     encoder: Option<wgpu::CommandEncoder>,
+    /// Submitted ahead of `encoder`: writes that take effect at once but that the queue cannot make
+    /// (bytes not in whole words), in call order.
+    lead: Option<wgpu::CommandEncoder>,
     pass: Option<draw::Pass>,
     /// Read backs recorded in the current encoder, mapped once it is submitted.
     to_map: Vec<Readback>,
@@ -136,6 +139,8 @@ struct BufferObj {
     static_bound: Cell<bool>,
     /// The serial of the last encoder that named it.
     used_in: Cell<u64>,
+    /// The serial of the last lead encoder that writes it: queue writes to it then go behind those.
+    lead_in: Cell<u64>,
 }
 
 #[derive(Debug)]
@@ -172,6 +177,8 @@ struct ShaderObj {
     entry: String,
     stage: naga::ShaderStage,
     raw: wgpu::ShaderModule,
+    /// Per set, the texture bits of the textures it samples through a sampler.
+    paired: [u128; MAX_BINDING_SETS],
 }
 
 #[derive(Debug)]
@@ -194,15 +201,31 @@ impl ProgramObj {
         }
     }
 
-    fn stages(&self) -> Vec<&ShaderObj> {
-        match self {
+    /// The layout key of each bound set, kept to the textures the program samples through a
+    /// sampler: the only bits its layout depends on.
+    fn layout_keys(
+        &self,
+        bindings: &[Option<&BindingSet>; MAX_BINDING_SETS],
+    ) -> [BindingLayoutKey; MAX_BINDING_SETS] {
+        let mut keys = [BindingLayoutKey::default(); MAX_BINDING_SETS];
+        for shader in self.stages() {
+            for ((k, s), paired) in keys.iter_mut().zip(bindings).zip(shader.paired) {
+                if let Some(s) = s {
+                    k.unfilterable_textures |= s.0.key.unfilterable_textures & paired;
+                }
+            }
+        }
+        keys
+    }
+
+    fn stages(&self) -> impl Iterator<Item = &ShaderObj> {
+        let (first, second) = match self {
             ProgramObj::Render {
                 vertex, fragment, ..
-            } => std::iter::once(&*vertex.0)
-                .chain(fragment.as_ref().map(|f| &*f.0))
-                .collect(),
-            ProgramObj::Compute { shader, .. } => vec![&*shader.0],
-        }
+            } => (vertex, fragment.as_ref()),
+            ProgramObj::Compute { shader, .. } => (shader, None),
+        };
+        std::iter::once(&*first.0).chain(second.map(|s| &*s.0))
     }
 }
 
@@ -231,6 +254,15 @@ struct SurfaceObj {
     raw: wgpu::Surface<'static>,
     current: RefCell<Option<wgpu::SurfaceTexture>>,
     format: Cell<Format>,
+}
+
+/// The encoder a command is recorded in.
+#[derive(Clone, Copy, Debug)]
+enum Stream {
+    /// The commands in the order they were recorded.
+    Main,
+    /// Ahead of them: writes taking effect at once.
+    Lead,
 }
 
 /// Never made: the back end has no resource tables.
@@ -302,6 +334,7 @@ impl WebGpu {
             serial: 1,
             completed: Arc::new(AtomicU64::new(0)),
             encoder: None,
+            lead: None,
             pass: None,
             to_map: Vec::new(),
             destroy_after_submit: Vec::new(),
@@ -342,10 +375,23 @@ impl WebGpu {
     }
 
     fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
-        self.encoder.get_or_insert_with(|| {
+        self.stream(Stream::Main)
+    }
+
+    fn stream(&mut self, stream: Stream) -> &mut wgpu::CommandEncoder {
+        let e = match stream {
+            Stream::Main => &mut self.encoder,
+            Stream::Lead => &mut self.lead,
+        };
+        e.get_or_insert_with(|| {
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor::default())
         })
+    }
+
+    /// Whether the lead encoder being recorded writes this buffer.
+    fn lead_pending(&self, b: &BufferObj) -> bool {
+        b.lead_in.get() == self.serial && self.lead.is_some()
     }
 
     fn raw_view(&self, texture: &TextureObj, desc: &TextureViewDesc) -> Option<wgpu::TextureView> {
@@ -722,6 +768,7 @@ impl Backend for WebGpu {
             in_sets: Cell::new(false),
             static_bound: Cell::new(false),
             used_in: Cell::new(0),
+            lead_in: Cell::new(0),
         })))
     }
 
@@ -851,6 +898,7 @@ impl Backend for WebGpu {
         Ok(Shader(Rc::new(ShaderObj {
             module: module.module.clone(),
             info: module.info.clone(),
+            paired: layout::paired(&module.module, module.info.get_entry_point(entry_index)),
             entry_index,
             entry: module.entry_point.clone(),
             stage,
@@ -1012,7 +1060,7 @@ impl Backend for WebGpu {
             Object::Buffer(b) if b.0.in_arena => self.release_slice(&b.0),
             Object::Buffer(b) => {
                 let raw = b.0.raw.borrow().clone();
-                if pending(b.0.used_in.get()) {
+                if pending(b.0.used_in.get()) || self.lead_pending(&b.0) {
                     self.destroy_after_submit.push(Doomed::Buffer(raw));
                 } else {
                     raw.destroy();
@@ -1147,7 +1195,10 @@ impl Backend for WebGpu {
             self.fail("submit inside a pass");
             self.pass = None;
         }
-        let commands = self.encoder.take().map(|e| e.finish());
+        let commands = [self.lead.take(), self.encoder.take()]
+            .into_iter()
+            .flatten()
+            .map(|e| e.finish());
         let index = self.queue.submit(commands);
         if let Some(a) = &mut self.arena {
             a.submitted();
