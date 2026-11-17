@@ -1,45 +1,27 @@
 @echo off
-rem The whole loop on the desktop, run as a GPU job by `loop`: every scene drawn by real Direct3D 11
-rem and 12 on the GPU and on WARP, the triangle through wgpu (Direct3D 12 and Vulkan), through Chrome
-rem (WebGPU and WebGL 2) and through the forwarding d3d11.dll, then each picture against the
-rem references. The GPU's Direct3D 11 pictures must equal the stored references
-rem (crates\wcontainers-graphics-test\references\reference-<scene>.png), and every other picture
-rem from the GPU must equal them too; WARP may differ from the GPU by 1 in a channel, which is what was measured. The
-rem forwarding run must also have loaded the replacement d3d11.dll from its own directory and logged
-rem the program's device creation going through it. Exits 1 if any check fails.
+rem The whole loop on the desktop, run as a GPU job by `loop`: every Direct3D 11 and 12 scene on the
+rem GPU checked against its stored reference (gt-run check), three scenes again through the
+rem forwarding d3d11.dll, which must have loaded from the programs' directory and logged the device
+rem creation going through it, and the triangle through wgpu (Direct3D 12 and Vulkan) and Chrome
+rem (WebGPU and WebGL 2), each of which must equal Direct3D 11's triangle. Exits 1 if any check fails.
 rem   loop.cmd <name>   writes C:\wc\out\<name>
 setlocal
 set BIN=%CARGO_TARGET_DIR%\debug
 set OUT=C:\wc\out\%~1
 if exist "%OUT%" rmdir /s /q "%OUT%"
-mkdir "%OUT%\forward" || exit /b 2
-copy /y crates\wcontainers-graphics-test\references\*.png "%OUT%" >nul || exit /b 2
-"%BIN%\gt-d3d11" all hardware "%OUT%" || exit /b 2
-"%BIN%\gt-d3d11" all warp "%OUT%" || exit /b 2
-"%BIN%\gt-d3d12" hardware "%OUT%" || exit /b 2
-"%BIN%\gt-d3d12" warp "%OUT%" || exit /b 2
+mkdir "%OUT%" || exit /b 2
+set FAILED=0
+"%BIN%\gt-run" check "%OUT%\scenes" || set FAILED=1
+"%BIN%\gt-run" check "%OUT%\forward" --api d3d11 --dll "d3d11.dll=%BIN%\wcontainers_graphics_test_forward.dll" triangle quads topology || set FAILED=1
+findstr /b /c:"d3d11 forward: D3D11CreateDevice" "%OUT%\forward\d3d11\triangle.log" >nul || (echo the forwarding run did not create its device through the replacement d3d11.dll& set FAILED=1)
 "%BIN%\gt-wgpu" dx12 "%OUT%" || exit /b 2
 "%BIN%\gt-wgpu" vulkan "%OUT%" || exit /b 2
 "%BIN%\gt-scene" triangle > "%OUT%\triangle.json" || exit /b 2
 node tools\graphics-rig\browser\draw.mjs "%OUT%\triangle.json" "%OUT%" || exit /b 2
-copy /y "%BIN%\gt-d3d11.exe" "%OUT%\forward" >nul || exit /b 2
-copy /y "%BIN%\wcontainers_graphics_test_forward.dll" "%OUT%\forward\d3d11.dll" >nul || exit /b 2
-"%OUT%\forward\gt-d3d11" triangle hardware "%OUT%\forward" > "%OUT%\forward\run.log" 2> "%OUT%\forward\calls.log"
-set CODE=%ERRORLEVEL%
-type "%OUT%\forward\run.log" & type "%OUT%\forward\calls.log"
-if not %CODE%==0 exit /b 2
-copy /y "%OUT%\forward\d3d11-hardware-triangle.png" "%OUT%\forward-d3d11-triangle.png" >nul
-
-set FAILED=0
-findstr /i /l /c:"d3d11.dll from %OUT%\forward\d3d11.dll," "%OUT%\forward\run.log" >nul || (echo the forwarding run did not load the replacement d3d11.dll& set FAILED=1)
-findstr /b /c:"d3d11 forward: D3D11CreateDevice" "%OUT%\forward\calls.log" >nul || (echo the forwarding run did not create its device through the replacement d3d11.dll& set FAILED=1)
-for %%s in (triangle quads instanced) do call :compare d3d11-hardware-%%s reference-%%s 0
-for %%s in (triangle quads instanced) do call :compare d3d11-hardware-%%s d3d11-warp-%%s 1
-call :compare d3d12-hardware-triangle d3d12-warp-triangle 1
-for %%p in (d3d12-hardware wgpu-dx12 wgpu-vulkan chrome-webgpu chrome-webgl2 forward-d3d11) do call :compare %%p-triangle d3d11-hardware-triangle 0
+for %%p in (wgpu-dx12 wgpu-vulkan chrome-webgpu chrome-webgl2) do call :compare %%p-triangle.png scenes\d3d11\triangle.png
 exit /b %FAILED%
 
 :compare
-<nul set /p "=%1 against %2, tolerance %3: "
-"%BIN%\gt-compare" "%OUT%\%1.png" "%OUT%\%2.png" %3 || set FAILED=1
+<nul set /p "=%1 against %2: "
+"%BIN%\gt-compare" "%OUT%\%1" "%OUT%\%2" 0 || set FAILED=1
 exit /b

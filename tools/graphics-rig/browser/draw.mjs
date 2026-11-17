@@ -3,8 +3,8 @@
 // with scene.json from `gt-scene triangle`. Writes chrome-webgpu-triangle.png and
 // chrome-webgl2-triangle.png, prints the adapter each API reports and the adapters chrome://gpu lists,
 // and fails unless WebGPU drew on a hardware adapter (a GPU, not a fallback or CPU one) and WebGL 2 on
-// the same GPU, so a fall back to software drawing fails the run. Chrome is the newest one in
-// C:\wc\chrome.
+// the same GPU, so a fall back to software drawing fails the run. Chrome is the one build in
+// C:\wc\chrome, pinned by desktop/install-tools.ps1.
 import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
@@ -30,9 +30,8 @@ const server = createServer(async (request, response) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 
 const installed = (await getInstalledBrowsers({ cacheDir: 'C:\\wc\\chrome' })).filter((b) => b.browser === 'chrome');
-installed.sort((a, b) => a.buildId.localeCompare(b.buildId, undefined, { numeric: true }));
-const chrome = installed.at(-1);
-if (!chrome) throw new Error('no Chrome in C:\\wc\\chrome');
+if (installed.length !== 1) throw new Error(`C:\\wc\\chrome holds ${installed.length} Chrome builds, not the one install-tools.ps1 pins`);
+const [chrome] = installed;
 // The developer features flag only adds the backend, adapter type and full name to GPUAdapterInfo.
 const browser = await chromium.launch({
   executablePath: chrome.executablePath,
