@@ -25,8 +25,9 @@ Run 7 = G2 run 3, 2026-11-17:
   colour texture first (`DepthReadByDraw`): 24-bit depth as `round(d * 16777215)` into `r32uint`
   (exact: a unorm value stored as the nearest float is within half a step of its integer after one
   correctly rounded multiply), 32-bit float depth's bits into `r32uint`, 16-bit depth into
-  `r16uint`, stencil into `r8uint`. Every depth or stencil texture gets binding and render usage
-  where its format allows, so these draws always can run. Part of a 16-bit depth level from a
+  `r16uint`, stencil into `r8uint`. A depth or stencil texture made with `COPY_SRC` (which read
+  backs need) gets binding usage, and one made with `COPY_DST` render usage, where its format
+  allows, so these draws can run; textures without copy usages get neither. Part of a 16-bit depth level from a
   buffer marks the device lost (no Direct3D call makes one).
 - A buffer copy or read back of a combined format's depth aspect was sized as both aspects (8
   bytes a texel); it is now the depth format's size.
@@ -410,6 +411,9 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 
 Run 7 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs, CPU
 load not sampled; Mac load average 18 to 64):
+- Last full run, after a clean build with the final usage rule (binding and render usage for depth
+  and stencil only with copy usages): Vulkan 64 of 64 and Direct3D 12 64 of 64, one ignored on
+  each; clippy with warnings denied passes natively.
 - All tests after a clean build of the crate, at af2d885's code: Vulkan 64 of 64 and Direct3D 12
   64 of 64, one ignored on each (the old BC one-step comparison): bindings 10, blocks 2, copies 4,
   depth 2, direct3d 4, fitted 1, prepare 1, raster 1, scenes 4, suite 24, writes 11. Every scene
