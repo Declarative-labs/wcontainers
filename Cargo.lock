@@ -2637,6 +2637,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-gpu-test"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "half",
+ "naga",
+ "wcontainers-gpu",
+]
+
+[[package]]
 name = "wcontainers-graphics-test"
 version = "0.1.0"
 dependencies = [
