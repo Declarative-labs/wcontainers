@@ -1079,8 +1079,13 @@ impl<B: Backend> Device<B> {
             let vf = format::vertex_format(e.format)
                 .ok_or(Error::InvalidArg("a format vertex input cannot have"))?;
             let slot = e.slot as usize;
+            let align = format::vertex_alignment(vf);
             let offset = if e.offset == APPEND_ALIGNED {
-                next_offset[slot]
+                next_offset[slot].next_multiple_of(align)
+            } else if e.offset % align != 0 {
+                return Err(Error::InvalidArg(
+                    "a vertex element at an offset not a multiple of its component size",
+                ));
             } else {
                 e.offset
             };

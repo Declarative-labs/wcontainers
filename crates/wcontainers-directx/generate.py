@@ -16,25 +16,29 @@ for api in ("Direct3D11", "Dxgi"):
         traits[m.group(1)] = [l.strip() for l in m.group(2).splitlines() if l.strip().startswith("fn ")]
 
 CHILD = ["ID3D11DeviceChild"]
+# What DXGI offers on every resource, and on buffers and textures of one subresource.
+DXGI_RESOURCE = ["IDXGIResource1", "IDXGIResource", "IDXGIDeviceSubObject", "IDXGIObject"]
+DXGI_SURFACE = ["IDXGISurface1", "IDXGISurface"]
 for empty in ("ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11Predicate"):
     traits[empty] = []
 structs = {
-    "Device": ["ID3D11Device", "IDXGIDevice", "IDXGIObject"],
-    "Context": ["ID3D11DeviceContext"] + CHILD,
+    "Device": ["ID3D11Device1", "ID3D11Device", "IDXGIDevice1", "IDXGIDevice", "IDXGIObject"],
+    "Context": ["ID3D11DeviceContext1", "ID3D11DeviceContext"] + CHILD
+    + ["ID3D11Multithread", "ID3DUserDefinedAnnotation"],
     "Adapter": ["IDXGIAdapter1", "IDXGIAdapter", "IDXGIObject"],
     "Factory": ["IDXGIFactory2", "IDXGIFactory1", "IDXGIFactory", "IDXGIObject"],
     "SwapChain": ["IDXGISwapChain1", "IDXGISwapChain", "IDXGIDeviceSubObject", "IDXGIObject"],
-    "Buffer": ["ID3D11Buffer", "ID3D11Resource"] + CHILD,
-    "Texture1D": ["ID3D11Texture1D", "ID3D11Resource"] + CHILD,
-    "Texture2D": ["ID3D11Texture2D", "ID3D11Resource"] + CHILD,
-    "Texture3D": ["ID3D11Texture3D", "ID3D11Resource"] + CHILD,
+    "Buffer": ["ID3D11Buffer", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE,
+    "Texture1D": ["ID3D11Texture1D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE,
+    "Texture2D": ["ID3D11Texture2D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE,
+    "Texture3D": ["ID3D11Texture3D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE,
     "RenderTargetView": ["ID3D11RenderTargetView", "ID3D11View"] + CHILD,
     "DepthStencilView": ["ID3D11DepthStencilView", "ID3D11View"] + CHILD,
     "ShaderResourceView": ["ID3D11ShaderResourceView", "ID3D11View"] + CHILD,
     "SamplerState": ["ID3D11SamplerState"] + CHILD,
-    "BlendState": ["ID3D11BlendState"] + CHILD,
+    "BlendState": ["ID3D11BlendState1", "ID3D11BlendState"] + CHILD,
     "DepthStencilState": ["ID3D11DepthStencilState"] + CHILD,
-    "RasterizerState": ["ID3D11RasterizerState"] + CHILD,
+    "RasterizerState": ["ID3D11RasterizerState1", "ID3D11RasterizerState"] + CHILD,
     "InputLayout": ["ID3D11InputLayout"] + CHILD,
     "Query": ["ID3D11Query", "ID3D11Asynchronous"] + CHILD,
     "Predicate": ["ID3D11Predicate", "ID3D11Query", "ID3D11Asynchronous"] + CHILD,
@@ -44,6 +48,14 @@ structs = {
 
 hand = {
     "ID3D11Device": "CreateBuffer CreateTexture1D CreateTexture2D CreateTexture3D CreateShaderResourceView CreateRenderTargetView CreateDepthStencilView CreateInputLayout CreateVertexShader CreatePixelShader CreateBlendState CreateDepthStencilState CreateRasterizerState CreateSamplerState CreateQuery CreatePredicate CheckFormatSupport CheckMultisampleQualityLevels CheckFeatureSupport GetFeatureLevel GetCreationFlags GetDeviceRemovedReason GetImmediateContext SetExceptionMode GetExceptionMode",
+    "ID3D11Device1": "GetImmediateContext1 CreateBlendState1 CreateRasterizerState1",
+    "IDXGIDevice1": "SetMaximumFrameLatency GetMaximumFrameLatency",
+    "ID3D11DeviceContext1": "CopySubresourceRegion1 UpdateSubresource1 DiscardResource DiscardView DiscardView1 VSSetConstantBuffers1 PSSetConstantBuffers1 VSGetConstantBuffers1 PSGetConstantBuffers1 ClearView",
+    "ID3D11Multithread": "Enter Leave SetMultithreadProtected GetMultithreadProtected",
+    "ID3DUserDefinedAnnotation": "BeginEvent EndEvent SetMarker GetStatus",
+    "IDXGIResource": "GetUsage",
+    "ID3D11BlendState1": "GetDesc1",
+    "ID3D11RasterizerState1": "GetDesc1",
     "IDXGIObject": "GetParent",
     "IDXGIDevice": "GetAdapter",
     "IDXGIAdapter": "GetDesc EnumOutputs",
@@ -63,6 +75,14 @@ hand = {
 for t in ["ID3D11Buffer", "ID3D11Texture1D", "ID3D11Texture2D", "ID3D11Texture3D", "ID3D11RenderTargetView", "ID3D11DepthStencilView", "ID3D11ShaderResourceView", "ID3D11SamplerState", "ID3D11BlendState", "ID3D11DepthStencilState", "ID3D11RasterizerState"]:
     hand[t] = "GetDesc"
 private = {"GetPrivateData", "SetPrivateData", "SetPrivateDataInterface"}
+# DXGI's calls on resources that Direct3D 11's own calls or the child's serve.
+on_resource = {
+    ("IDXGIObject", "GetParent"): "self.child.query_device(riid, ppparent)",
+    ("IDXGIDeviceSubObject", "GetDevice"): "self.child.query_device(riid, ppdevice)",
+    ("IDXGIResource", "SetEvictionPriority"): "{ self.set_eviction_priority(evictionpriority.0); Ok(()) }",
+    ("IDXGISurface", "GetDesc"): "self.get_desc_dxgi()",
+    ("IDXGIResource", "GetEvictionPriority"): "Ok(DXGI_RESOURCE_PRIORITY(self.get_eviction_priority()))",
+}
 # Structs whose unserved void calls remove the device (the context, and the device itself).
 removes = {"Device", "Context"}
 
@@ -71,10 +91,12 @@ def unused_stage(name, p, what):
     """The body of a context method on a stage or feature not served: served while it binds nothing."""
     if re.fullmatch(r"(GS|HS|DS|CS)SetShader|SetPredication", name):
         return f'self.only_unbinding("{what}", !{p[0]}.is_null())'
-    if re.fullmatch(r"(GS|HS|DS|CS)Set(ConstantBuffers|ShaderResources|Samplers)|CSSetUnorderedAccessViews", name):
+    if re.fullmatch(r"(GS|HS|DS|CS)Set(ConstantBuffers1?|ShaderResources|Samplers)|CSSetUnorderedAccessViews", name):
         return f'self.only_unbinding("{what}", super::context::binds({p[2]}, {p[1]}))'
     if name == "SOSetTargets":
         return f'self.only_unbinding("{what}", super::context::binds({p[1]}, {p[0]}))'
+    if re.fullmatch(r"(GS|HS|DS|CS)GetConstantBuffers1", name):
+        return f"super::context::nothing_bound(super::context::out_array({p[2]}), {p[1]})"
     if re.fullmatch(r"(GS|HS|DS|CS)Get(ConstantBuffers|ShaderResources|Samplers)|CSGetUnorderedAccessViews", name):
         return f"super::context::nothing_bound({p[2]}, {p[1]})"
     if name == "SOGetTargets":
@@ -98,6 +120,8 @@ def fix(sig):
     sig = sig.replace("super::Direct3D::", "windows::Win32::Graphics::Direct3D::")
     sig = sig.replace("super::Dxgi::Common::", "windows::Win32::Graphics::Dxgi::Common::")
     sig = re.sub(r"(?<![:\w])Common::", "windows::Win32::Graphics::Dxgi::Common::", sig)
+    sig = sig.replace("super::Gdi::", "windows::Win32::Graphics::Gdi::")
+    sig = sig.replace("super::super::Security::", "windows::Win32::Security::")
     sig = sig.replace("windows_core::", "windows::core::")
     return sig.rstrip(";")
 
@@ -119,13 +143,16 @@ for struct, tlist in structs.items():
             params = [p for p in params if p != "self"]
             args = ", ".join(params)
             ret = sig[end + 1:].strip()
-            unused = t == "ID3D11DeviceContext" and unused_stage(name, params, f"{t}::{name}")
+            unused = t.startswith("ID3D11DeviceContext") and unused_stage(name, params, f"{t}::{name}")
             if unused:
                 body = unused
             elif t == "ID3D11DeviceChild":
                 body = f"self.child.{snake(name)}({args})"
             elif t in ("ID3D11Device", "IDXGIObject") and name in private:
-                body = f"self.private.{snake(name)}({args})"
+                owner = "child.private" if struct.startswith(("Buffer", "Texture")) else "private"
+                body = f"self.{owner}.{snake(name)}({args})"
+            elif (t, name) in on_resource and struct.startswith(("Buffer", "Texture")):
+                body = on_resource[(t, name)]
             elif name in hand.get(t, "").split():
                 body = f"self.{snake(name)}({args})"
             elif ret.startswith("-> windows::core::Result"):
@@ -138,6 +165,10 @@ for struct, tlist in structs.items():
                 body = f'missing_void("{t}::{name}")'
             else:
                 body = f'missing_void("{t}::{name}"); Default::default()'
+            outs = [q for q in params if re.search(rf"\b{q}: windows::core::OutRef<", sig)]
+            if struct == "Device" and name.startswith("Create") and outs and ret.startswith("-> windows::core::Result"):
+                last = outs[-1]
+                body = f"creating({last}, |{last}| {body})"
             out.append(f"    {sig} {{")
             out.append("        let _call = self.call();" if struct in removes else "        let _lock = lock();")
             out.append(f"        {body}")

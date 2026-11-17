@@ -491,6 +491,81 @@ pub fn sampler(d: &D3D11_SAMPLER_DESC) -> SamplerDesc {
 
 /// The description Direct3D keeps: a target that does not blend holds the default factors and
 /// operations, and without independent blending every target is the first.
+/// Each target's logic operation enable and operation (Direct3D 11.1).
+pub type LogicOps = [(windows::core::BOOL, D3D11_LOGIC_OP); 8];
+
+/// A Direct3D 11.1 blend description as Direct3D 11's and its logic operations.
+pub fn blend_split(d: &D3D11_BLEND_DESC1) -> (D3D11_BLEND_DESC, LogicOps) {
+    let mut out = D3D11_BLEND_DESC {
+        AlphaToCoverageEnable: d.AlphaToCoverageEnable,
+        IndependentBlendEnable: d.IndependentBlendEnable,
+        ..Default::default()
+    };
+    let mut logic = [(false.into(), D3D11_LOGIC_OP_NOOP); 8];
+    for ((o, l), t) in out
+        .RenderTarget
+        .iter_mut()
+        .zip(&mut logic)
+        .zip(&d.RenderTarget)
+    {
+        *o = D3D11_RENDER_TARGET_BLEND_DESC {
+            BlendEnable: t.BlendEnable,
+            SrcBlend: t.SrcBlend,
+            DestBlend: t.DestBlend,
+            BlendOp: t.BlendOp,
+            SrcBlendAlpha: t.SrcBlendAlpha,
+            DestBlendAlpha: t.DestBlendAlpha,
+            BlendOpAlpha: t.BlendOpAlpha,
+            RenderTargetWriteMask: t.RenderTargetWriteMask,
+        };
+        *l = (t.LogicOpEnable, t.LogicOp);
+    }
+    if !d.IndependentBlendEnable.as_bool() {
+        logic = [logic[0]; 8];
+    }
+    (out, logic)
+}
+
+/// A Direct3D 11.1 blend description from Direct3D 11's and its logic operations.
+pub fn blend_joined(d: &D3D11_BLEND_DESC, logic: &LogicOps) -> D3D11_BLEND_DESC1 {
+    let mut out = D3D11_BLEND_DESC1 {
+        AlphaToCoverageEnable: d.AlphaToCoverageEnable,
+        IndependentBlendEnable: d.IndependentBlendEnable,
+        ..Default::default()
+    };
+    for ((o, l), t) in out.RenderTarget.iter_mut().zip(logic).zip(&d.RenderTarget) {
+        *o = D3D11_RENDER_TARGET_BLEND_DESC1 {
+            BlendEnable: t.BlendEnable,
+            LogicOpEnable: l.0,
+            SrcBlend: t.SrcBlend,
+            DestBlend: t.DestBlend,
+            BlendOp: t.BlendOp,
+            SrcBlendAlpha: t.SrcBlendAlpha,
+            DestBlendAlpha: t.DestBlendAlpha,
+            BlendOpAlpha: t.BlendOpAlpha,
+            LogicOp: l.1,
+            RenderTargetWriteMask: t.RenderTargetWriteMask,
+        };
+    }
+    out
+}
+
+/// A Direct3D 11.1 rasterizer description without a forced sample count, as Direct3D 11's.
+pub fn rasterizer_of1(d: &D3D11_RASTERIZER_DESC1) -> D3D11_RASTERIZER_DESC {
+    D3D11_RASTERIZER_DESC {
+        FillMode: d.FillMode,
+        CullMode: d.CullMode,
+        FrontCounterClockwise: d.FrontCounterClockwise,
+        DepthBias: d.DepthBias,
+        DepthBiasClamp: d.DepthBiasClamp,
+        SlopeScaledDepthBias: d.SlopeScaledDepthBias,
+        DepthClipEnable: d.DepthClipEnable,
+        ScissorEnable: d.ScissorEnable,
+        MultisampleEnable: d.MultisampleEnable,
+        AntialiasedLineEnable: d.AntialiasedLineEnable,
+    }
+}
+
 pub fn blend_stored(d: &D3D11_BLEND_DESC) -> D3D11_BLEND_DESC {
     let mut d = *d;
     if !d.IndependentBlendEnable.as_bool() {
