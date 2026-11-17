@@ -91,6 +91,7 @@ pub fn dxgi(format: Format) -> DXGI_FORMAT {
         Format::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
         Format::Rgba32Uint => DXGI_FORMAT_R32G32B32A32_UINT,
         Format::Depth32Float => DXGI_FORMAT_D32_FLOAT,
+        Format::Depth24PlusStencil8 => DXGI_FORMAT_D24_UNORM_S8_UINT,
         f => panic!("no case draws into {f:?}"),
     }
 }
@@ -109,6 +110,54 @@ pub struct Reference {
     /// With a D32_FLOAT depth buffer cleared to 1 and written by every fragment, and this viewport
     /// depth range: the depth buffer's texels are returned instead of the target's.
     pub depth: Option<[f32; 2]>,
+    /// With `depth`: a D24_UNORM_S8_UINT depth buffer instead, drawn with this depth bias (units,
+    /// slope scale, clamp); its texels are returned as 24-bit codes, one u32 each.
+    pub depth_bias: Option<(i32, f32, f32)>,
+    /// The draw's range, where not the whole grid from vertex 0.
+    pub bases: Option<Bases>,
+}
+
+/// A draw's range with bases, direct or from an argument buffer; an indexed draw's indices are 0, 1,
+/// 2 and so on.
+#[derive(Clone, Copy, Debug)]
+pub struct Bases {
+    pub count: u32,
+    /// The first vertex, or an indexed draw's first index.
+    pub first: u32,
+    pub base_vertex: i32,
+    pub first_instance: u32,
+    pub instances: u32,
+    pub indexed: bool,
+    /// Arguments read from a buffer, [`ARGUMENTS_WORD`] words into it.
+    pub indirect: bool,
+}
+
+/// Where an indirect draw's arguments start in their buffer, in words.
+pub const ARGUMENTS_WORD: u32 = 4;
+
+impl Bases {
+    /// The argument buffer of an indirect draw, as Direct3D and WebGPU both lay it out.
+    pub fn arguments(&self) -> Vec<u8> {
+        let mut words = vec![0xdead_beef; ARGUMENTS_WORD as usize];
+        words.extend(if self.indexed {
+            vec![
+                self.count,
+                self.instances,
+                self.first,
+                self.base_vertex as u32,
+                self.first_instance,
+            ]
+        } else {
+            vec![self.count, self.instances, self.first, self.first_instance]
+        });
+        words.iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    pub fn indices(&self) -> Vec<u8> {
+        (0..self.first + self.count)
+            .flat_map(|i| i.to_le_bytes())
+            .collect()
+    }
 }
 
 /// Draws the own shaders `vs` and `ps` (fxc's builds) with real Direct3D 11 as the drawing tests bind
@@ -169,7 +218,13 @@ pub fn direct3d_11(
             ..Default::default()
         })
         .unwrap();
-    let raster = gpu.rasterizer(&d3d11::solid()).unwrap();
+    let mut raster = d3d11::solid();
+    if let Some((units, slope, clamp)) = reference.depth_bias {
+        raster.DepthBias = units;
+        raster.SlopeScaledDepthBias = slope;
+        raster.DepthBiasClamp = clamp;
+    }
+    let raster = gpu.rasterizer(&raster).unwrap();
     let (target, rtv) = gpu.target(SIZE, SIZE, dxgi(format)).unwrap();
     let blend = reference.blend.map(|target| {
         let mut desc = D3D11_BLEND_DESC::default();
@@ -184,7 +239,11 @@ pub fn direct3d_11(
         d3d11::made(|q| unsafe { gpu.device.CreateQuery(&desc, Some(q)) }).unwrap()
     });
     let depth = reference.depth.map(|_| {
-        let (texture, view) = gpu.depth(SIZE, SIZE, DXGI_FORMAT_D32_FLOAT).unwrap();
+        let format = match reference.depth_bias {
+            Some(_) => DXGI_FORMAT_D24_UNORM_S8_UINT,
+            None => DXGI_FORMAT_D32_FLOAT,
+        };
+        let (texture, view) = gpu.depth(SIZE, SIZE, format).unwrap();
         let state = gpu
             .depth_stencil(&D3D11_DEPTH_STENCIL_DESC {
                 DepthEnable: true.into(),
@@ -227,7 +286,48 @@ pub fn direct3d_11(
         if let Some(q) = &query {
             c.Begin(q);
         }
-        c.Draw(if grid_drawn { 96 } else { 3 }, 0);
+        let mut kept = Vec::new();
+        match reference.bases {
+            None => c.Draw(if grid_drawn { 96 } else { 3 }, 0),
+            Some(d) => {
+                if d.indexed {
+                    let indices = gpu
+                        .immutable(&d.indices(), D3D11_BIND_INDEX_BUFFER)
+                        .unwrap();
+                    c.IASetIndexBuffer(&indices, DXGI_FORMAT_R32_UINT, 0);
+                    kept.push(indices);
+                }
+                let arguments = d.indirect.then(|| {
+                    let bytes = d.arguments();
+                    gpu.buffer(
+                        &D3D11_BUFFER_DESC {
+                            ByteWidth: bytes.len() as u32,
+                            Usage: D3D11_USAGE_DEFAULT,
+                            MiscFlags: D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS.0 as u32,
+                            ..Default::default()
+                        },
+                        Some(&bytes),
+                    )
+                    .unwrap()
+                });
+                let at = ARGUMENTS_WORD * 4;
+                match (d.indexed, &arguments) {
+                    (false, None) => {
+                        c.DrawInstanced(d.count, d.instances, d.first, d.first_instance)
+                    }
+                    (true, None) => c.DrawIndexedInstanced(
+                        d.count,
+                        d.instances,
+                        d.first,
+                        d.base_vertex,
+                        d.first_instance,
+                    ),
+                    (false, Some(a)) => c.DrawInstancedIndirect(a, at),
+                    (true, Some(a)) => c.DrawIndexedInstancedIndirect(a, at),
+                }
+                kept.extend(arguments);
+            }
+        }
         if let Some(q) = &query {
             c.End(q);
             let mut n = 0u64;
@@ -251,6 +351,13 @@ pub fn direct3d_11(
         c.OMSetDepthStencilState(None, 0);
     }
     if let Some((texture, _, _)) = &depth {
+        if reference.depth_bias.is_some() {
+            let codes = read(gpu, texture, Format::Depth24PlusStencil8)
+                .chunks(4)
+                .flat_map(|t| (u32::from_le_bytes(t.try_into().unwrap()) & 0xff_ffff).to_le_bytes())
+                .collect();
+            return (codes, count);
+        }
         return (read(gpu, texture, Format::Depth32Float), count);
     }
     (read(gpu, &target, format), count)
@@ -415,6 +522,9 @@ pub struct Setup {
     pub blend_constant: [f32; 4],
     /// Levels of the sampled texture: level 0 is [`texels`], level n the solid [`level_colour`].
     pub levels: u32,
+    /// The draw's range, where not `count` vertices from vertex 0; an argument buffer is also bound
+    /// at [`wcontainers_gpu::DRAW_ARGUMENTS_BINDING`] when the vertex program reads its bases there.
+    pub bases: Option<Bases>,
 }
 
 impl Setup {
@@ -431,6 +541,7 @@ impl Setup {
             blend: None,
             blend_constant: [0.0; 4],
             levels: 1,
+            bases: None,
         }
     }
 }
@@ -452,6 +563,10 @@ pub fn level_texels(n: u32) -> Vec<u8> {
     }
     let size = (TEXTURE_SIZE >> n).max(1);
     level_colour(n).repeat((size * size) as usize)
+}
+
+fn buffer_size(bases: &Option<Bases>) -> u64 {
+    bases.map_or(0, |d| d.arguments().len() as u64)
 }
 
 /// Draws through a back end with the converted shaders, binding by their reflection (every slot is
@@ -586,7 +701,19 @@ pub fn ours<B: Backend + 'static>(
             helper_buffers.push((buffer(b, bytes, BufferUsage::UNIFORM), bytes.len(), stage));
         }
     }
-    let helper_entries: Vec<BindingEntry<'_, B>> = helper_buffers
+    let arguments = setup.bases.filter(|d| d.indirect).map(|d| {
+        buffer(
+            b,
+            &d.arguments(),
+            BufferUsage::INDIRECT | BufferUsage::STORAGE,
+        )
+    });
+    let reads_arguments = vs
+        .reflection
+        .helpers
+        .iter()
+        .any(|h| h.value == wcontainers_gpu::HelperValue::DrawArguments);
+    let mut helper_entries: Vec<BindingEntry<'_, B>> = helper_buffers
         .iter()
         .map(|(buffer, len, stage)| BindingEntry {
             binding: wcontainers_gpu::helper_binding(*stage),
@@ -601,6 +728,21 @@ pub fn ours<B: Backend + 'static>(
             }),
         })
         .collect();
+    if reads_arguments {
+        let buffer = arguments.as_ref().expect("an indirect draw");
+        helper_entries.push(BindingEntry {
+            binding: wcontainers_gpu::DRAW_ARGUMENTS_BINDING,
+            stages: StageSet::VERTEX,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer,
+                    offset: 0,
+                    size: buffer_size(&setup.bases),
+                },
+                writable: false,
+            },
+        });
+    }
     let helper_set =
         (!helper_entries.is_empty()).then(|| b.create_binding_set(&helper_entries).unwrap());
 
@@ -724,6 +866,34 @@ pub fn ours<B: Backend + 'static>(
         .iter()
         .map(|buffer| Some(VertexBinding { buffer, offset: 0 }))
         .collect();
+    let indices = setup
+        .bases
+        .filter(|d| d.indexed)
+        .map(|d| buffer(b, &d.indices(), BufferUsage::INDEX));
+    let at = (ARGUMENTS_WORD * 4) as u64;
+    let range = match (setup.bases, &arguments) {
+        (None, _) => DrawRange::Vertices {
+            first: 0,
+            count: draw.count,
+            first_instance: 0,
+            instances: 1,
+        },
+        (Some(d), None) if d.indexed => DrawRange::Indexed {
+            first: d.first,
+            count: d.count,
+            base_vertex: d.base_vertex,
+            first_instance: d.first_instance,
+            instances: d.instances,
+        },
+        (Some(d), None) => DrawRange::Vertices {
+            first: d.first,
+            count: d.count,
+            first_instance: d.first_instance,
+            instances: d.instances,
+        },
+        (Some(d), Some(args)) if d.indexed => DrawRange::IndexedIndirect { args, offset: at },
+        (Some(_), Some(args)) => DrawRange::Indirect { args, offset: at },
+    };
     let [x, y, width, height, min_depth, max_depth] = setup.viewport.map(f32::to_bits);
     b.draw(&DrawCall {
         program: &program,
@@ -738,7 +908,13 @@ pub fn ours<B: Backend + 'static>(
             helper_set.as_ref(),
         ],
         vertex_buffers: &streams,
-        index: None,
+        index: indices
+            .as_ref()
+            .map(|buffer| wcontainers_gpu::IndexBinding {
+                buffer,
+                offset: 0,
+                format: wcontainers_gpu::IndexFormat::U32,
+            }),
         topology: Topology::TriangleList,
         restart: false,
         viewports: &[Viewport {
@@ -753,12 +929,7 @@ pub fn ours<B: Backend + 'static>(
         blend_constant: setup.blend_constant.map(f32::to_bits),
         stencil_reference: [0; 2],
         immediates: &[],
-        range: DrawRange::Vertices {
-            first: 0,
-            count: draw.count,
-            first_instance: 0,
-            instances: 1,
-        },
+        range,
     });
     b.end_pass();
     let (target, format) = match (&depth, &resolved) {
