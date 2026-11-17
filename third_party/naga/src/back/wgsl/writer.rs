@@ -1384,7 +1384,20 @@ impl<W: Write> Writer<W> {
         match expressions[expr] {
             Expression::Literal(literal) => match literal {
                 crate::Literal::F16(value) => write!(self.out, "{value}h")?,
-                crate::Literal::F32(value) => write!(self.out, "{value}f")?,
+                crate::Literal::F32(value) => {
+                    // WGSL reads a literal's digits exactly before checking its range, so the shortest
+                    // digits of a value near f32::MAX can name a number past it; the f64 digits of the
+                    // same value are exact.
+                    let short = alloc::format!("{value}");
+                    if short
+                        .parse::<f64>()
+                        .is_ok_and(|v| v.abs() > f64::from(f32::MAX))
+                    {
+                        write!(self.out, "{}f", f64::from(value))?
+                    } else {
+                        write!(self.out, "{short}f")?
+                    }
+                }
                 crate::Literal::U16(value) => write!(self.out, "u16({value})")?,
                 crate::Literal::I16(value) => write!(self.out, "i16({value})")?,
                 crate::Literal::U32(value) => write!(self.out, "{value}u")?,
