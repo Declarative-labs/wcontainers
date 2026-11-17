@@ -23,6 +23,9 @@ use wcontainers_gpu::*;
 /// Ids name objects in the state the back end last applied; they are never reused.
 type Id = u64;
 
+/// The instance divisor of a stream that reads one element for every vertex and instance.
+const NEVER_ADVANCES: u32 = 1 << 31;
+
 #[derive(Debug)]
 pub struct BufferObj {
     id: Id,
@@ -337,6 +340,23 @@ impl WebGl {
         self.lost.get_or_insert(reason);
     }
 
+    /// A read from a GL buffer that gave no bytes: the device is lost, so nothing reads stale bytes as
+    /// an answer.
+    fn read_failed(&mut self) -> GpuError {
+        self.fail(LossReason::Error);
+        GpuError::DeviceLost
+    }
+
+    /// A call whose route this back end does not have yet: the device is lost with the missing piece in
+    /// [`WebGl::last_log`], so the front reports device loss instead of drawing wrong.
+    fn unbuilt(&mut self, what: &'static str) -> GpuError {
+        if self.lost.is_none() {
+            self.last_log = format!("webgl: not built yet: {what}");
+        }
+        self.fail(LossReason::Error);
+        GpuError::DeviceLost
+    }
+
     fn framebuffer(
         &mut self,
         key: FramebufferKey,
@@ -627,12 +647,15 @@ impl WebGl {
         // SAFETY: plain GL calls; the copy targets take buffers of either WebGL type.
         unsafe {
             self.gl.bind_buffer(glow::COPY_READ_BUFFER, from);
-            platform::get_buffer_sub_data(
+            if !platform::get_buffer_sub_data(
                 &self.gl,
                 glow::COPY_READ_BUFFER,
                 stale.start as i32,
                 &mut bytes,
-            );
+            ) {
+                self.read_failed();
+                return;
+            }
             self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, to);
             self.gl
                 .buffer_sub_data_u8_slice(glow::COPY_WRITE_BUFFER, stale.start as i32, &bytes);
@@ -837,9 +860,13 @@ impl WebGl {
                 } else {
                     gl.vertex_attrib_pointer_f32(a.location, n, ty, norm, stride, offset as i32);
                 }
+                // Stride 0 (one element for every vertex and instance) and step rate 0 never advance:
+                // GL's stride 0 means tightly packed and its divisor 0 per vertex, so both take a
+                // divisor no instance count reaches.
                 let divisor = match stream.step {
+                    _ if stream.stride == 0 => NEVER_ADVANCES,
                     StepMode::Vertex => 0,
-                    StepMode::Instance(0) => u32::MAX,
+                    StepMode::Instance(0) => NEVER_ADVANCES,
                     StepMode::Instance(n) => n,
                 };
                 gl.vertex_attrib_divisor(a.location, divisor);
@@ -958,7 +985,9 @@ impl Backend for WebGl {
                 "webgl: the format has no capabilities here",
             ))?;
         if desc.samples > 1 {
-            unimplemented!("webgl: multisampled textures are not built yet");
+            return Err(GpuError::Invalid(
+                "webgl: the caps give every format one sample",
+            ));
         }
         let target = match desc.own_view() {
             ViewDimension::D2 => glow::TEXTURE_2D,
@@ -1018,7 +1047,7 @@ impl Backend for WebGl {
             return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
         }
         if desc.format != t.format || desc.stencil {
-            unimplemented!("webgl: views in the sRGB twin and stencil views are not built yet");
+            return Err(self.unbuilt("views in the sRGB twin and stencil views"));
         }
         Ok(Handle(Rc::new(ViewObj {
             id: self.id(),
@@ -1172,7 +1201,8 @@ impl Backend for WebGl {
         let absent = [
             (desc.fill != FillMode::Solid, Features::POLYGON_MODE),
             (
-                desc.provoking == ProvokingVertex::First,
+                desc.provoking == ProvokingVertex::First
+                    && !self.caps.has(Features::PROVOKING_VERTEX_FIRST),
                 Features::PROVOKING_VERTEX_FIRST,
             ),
             (!desc.depth_clip, Features::DEPTH_CLAMP),
@@ -1207,9 +1237,7 @@ impl Backend for WebGl {
             .flatten()
             .any(|a| state::attribute(a.format).is_none())
         {
-            unimplemented!(
-                "webgl: vertex formats GL ES cannot read as stored are not converted yet"
-            );
+            return Err(self.unbuilt("vertex formats GL ES cannot read as stored"));
         }
         Ok(Handle(Rc::new((self.id(), *desc))))
     }
@@ -1253,7 +1281,7 @@ impl Backend for WebGl {
     }
 
     fn create_query_set(&mut self, _kind: QueryKind, _count: u32) -> Result<QuerySet, GpuError> {
-        unimplemented!("webgl: queries are not built yet")
+        Err(self.unbuilt("queries"))
     }
 
     fn destroy(&mut self, object: Object<Self>) {
@@ -1360,7 +1388,8 @@ impl Backend for WebGl {
             || pass.occlusion.is_some()
             || pass.colors.iter().flatten().any(|c| c.resolve.is_some())
         {
-            unimplemented!("webgl: empty passes, occlusion queries and resolves are not built yet");
+            self.unbuilt("empty passes, occlusion queries and resolves");
+            return;
         }
         let mut key: FramebufferKey = [None; MAX_COLOR_TARGETS + 1];
         let mut views: [Option<&TextureView>; MAX_COLOR_TARGETS + 1] =
@@ -1547,10 +1576,7 @@ impl Backend for WebGl {
             self.applied.stencil_reference = reference;
         }
         if self.applied.raster != call.raster.0.0 {
-            let platform = &self.platform;
-            state::raster(gl, v, &call.raster.0.1, self.flip_y, |depth| {
-                platform.clip_control(gl, platform::UPPER_LEFT, depth)
-            });
+            state::raster(gl, v, &call.raster.0.1, self.flip_y, &self.platform);
             self.applied.raster = call.raster.0.0;
         }
         // SAFETY: plain GL state calls.
@@ -1595,9 +1621,8 @@ impl Backend for WebGl {
             .apply_vertices(call, base_vertex, first_instance)
             .is_err()
         {
-            unimplemented!(
-                "webgl: negative stream offsets after the base vertex are not built yet"
-            );
+            self.unbuilt("negative stream offsets after the base vertex");
+            return;
         }
         // The streams moved by the bases, so GL's ids lack them: the program adds them back.
         for (uniform, value) in [
@@ -1653,11 +1678,11 @@ impl Backend for WebGl {
     }
 
     fn begin_query(&mut self, _index: u32) {
-        unimplemented!("webgl: queries are not built yet")
+        self.unbuilt("queries");
     }
 
     fn end_query(&mut self) {
-        unimplemented!("webgl: queries are not built yet")
+        self.unbuilt("queries");
     }
 
     fn copy_buffer(
@@ -1697,9 +1722,8 @@ impl Backend for WebGl {
             }
         }
         if !copied {
-            unimplemented!(
-                "webgl: copies between index-only and data-only buffers are not built yet"
-            );
+            self.unbuilt("copies between index-only and data-only buffers");
+            return;
         }
         if let Some(index) = missed {
             self.mark_stale(dst, index, dst_offset, dst_offset + size);
@@ -1714,9 +1738,8 @@ impl Backend for WebGl {
     ) {
         let format = src.texture.desc.format;
         if format.is_depth_stencil() || !self.caps.formats.get(format).contains(FormatUse::RENDER) {
-            unimplemented!(
-                "webgl: copies of depth and of formats a framebuffer cannot read are not built yet"
-            );
+            self.unbuilt("copies of depth and of formats a framebuffer cannot read");
+            return;
         }
         let d = dst.texture.clone();
         for i in 0..extent.depth_or_layers {
@@ -1771,7 +1794,8 @@ impl Backend for WebGl {
         extent: Extent,
     ) {
         let Some(data) = src.buffer.data else {
-            unimplemented!("webgl: copies into textures from index-only buffers are not built yet");
+            self.unbuilt("copies into textures from index-only buffers");
+            return;
         };
         self.refresh(src.buffer, Some(false));
         // SAFETY: a plain GL call; the buffer holds other data.
@@ -1798,9 +1822,10 @@ impl Backend for WebGl {
             .read
             .filter(|r| r.texel_read() == r.texel_kept());
         let (Some(read), Some(data)) = (read, dst.buffer.data) else {
-            unimplemented!(
-                "webgl: copies into buffers of formats read wider than stored, and into index-only buffers, are not built yet"
+            self.unbuilt(
+                "copies into buffers of formats read wider than stored, and into index-only buffers",
             );
+            return;
         };
         self.refresh(dst.buffer, None);
         let layer_bytes = dst.row_pitch as usize * dst.rows_per_layer as usize;
@@ -1835,9 +1860,46 @@ impl Backend for WebGl {
         }
     }
 
+    /// WebGL 2 has no buffer clear: one block of the pattern is written from the host into every GL
+    /// buffer of `buffer`, then doubled by copies within each ([`SlowPath::PatternClearCopied`]).
     fn clear_buffer(&mut self, buffer: &Buffer, offset: u64, size: u64, pattern: &[u8]) {
-        let bytes = pattern.repeat((size / pattern.len() as u64) as usize);
-        self.write_buffer(buffer, offset, &bytes, WriteMode::Ordered);
+        if size == 0 {
+            return;
+        }
+        if pattern.is_empty() || offset + size > buffer.size {
+            self.fail(LossReason::Error);
+            return;
+        }
+        self.slow.hit(SlowPath::PatternClearCopied);
+        // A multiple of every pattern length (1 to 16 bytes); `size` is whole patterns.
+        const BLOCK: usize = 256;
+        let mut block = [0u8; BLOCK];
+        for (b, p) in block.iter_mut().zip(pattern.iter().cycle()) {
+            *b = *p;
+        }
+        let first = size.min(BLOCK as u64);
+        self.write_buffer(buffer, offset, &block[..first as usize], WriteMode::Ordered);
+        let gl = &self.gl;
+        for raw in [buffer.data, buffer.index].into_iter().flatten() {
+            let mut done = first;
+            // SAFETY: plain GL calls; the ranges lie in the buffer and never overlap, as WebGL requires
+            // of a copy within one buffer.
+            unsafe {
+                gl.bind_buffer(glow::COPY_READ_BUFFER, Some(raw));
+                gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(raw));
+                while done < size {
+                    let n = done.min(size - done);
+                    gl.copy_buffer_sub_data(
+                        glow::COPY_READ_BUFFER,
+                        glow::COPY_WRITE_BUFFER,
+                        offset as i32,
+                        (offset + done) as i32,
+                        n as i32,
+                    );
+                    done += n;
+                }
+            }
+        }
     }
 
     fn resolve(
@@ -1846,7 +1908,7 @@ impl Backend for WebGl {
         _dst: &TextureRegion<'_, Self>,
         _format: Format,
     ) {
-        unimplemented!("webgl: resolves are not built yet")
+        self.unbuilt("resolves");
     }
 
     fn submit(&mut self) -> Fence {
@@ -1982,6 +2044,10 @@ impl Backend for WebGl {
             self.gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
             self.gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok()
         };
+        // Without a sync object nothing says when the copy is done: only a lost context fails here.
+        if sync.is_none() {
+            self.fail(LossReason::Reset);
+        }
         let repack = match src {
             ReadSource::Texture { region, .. } => region.texture.read,
             ReadSource::Buffer { .. } => None,
@@ -2001,9 +2067,11 @@ impl Backend for WebGl {
         _first: u32,
         _count: u32,
     ) -> Result<Readback, GpuError> {
-        unimplemented!("webgl: queries are not built yet")
+        Err(self.unbuilt("queries"))
     }
 
+    /// Ready once the copy's sync object is signalled; a read back made without one is ready at once and
+    /// reads nothing, the device having been lost when it was made.
     fn read_state(&mut self, readback: &Readback) -> ReadState {
         let r = readback.borrow();
         match r.sync {
@@ -2030,25 +2098,31 @@ impl Backend for WebGl {
         let r = readback.borrow();
         let mut wide = Vec::new();
         // SAFETY: plain GL calls; reading the pack buffer waits for the copy into it.
-        unsafe {
+        let read = unsafe {
             self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(r.pbo));
-            if let Some(read) = r.repack {
+            let read = if let Some(read) = r.repack {
                 wide.resize(r.size, 0);
-                platform::get_buffer_sub_data(&self.gl, glow::COPY_READ_BUFFER, 0, &mut wide);
+                let ok =
+                    platform::get_buffer_sub_data(&self.gl, glow::COPY_READ_BUFFER, 0, &mut wide);
                 read.repack(&wide, dst);
+                ok
             } else {
                 let n = r.size.min(dst.len());
-                platform::get_buffer_sub_data(&self.gl, glow::COPY_READ_BUFFER, 0, &mut dst[..n]);
-            }
+                platform::get_buffer_sub_data(&self.gl, glow::COPY_READ_BUFFER, 0, &mut dst[..n])
+            };
             if let Some(sync) = r.sync {
                 self.gl.delete_sync(sync);
             }
             self.gl.delete_buffer(r.pbo);
+            read
+        };
+        if !read {
+            self.read_failed();
         }
     }
 
     fn create_surface(&mut self, _window: u32) -> Result<Surface, GpuError> {
-        unimplemented!("webgl: surfaces are not built yet")
+        Err(self.unbuilt("surfaces"))
     }
 
     fn configure_surface(
@@ -2059,15 +2133,15 @@ impl Backend for WebGl {
         _height: u32,
         _vsync: bool,
     ) -> Result<(), GpuError> {
-        unimplemented!("webgl: surfaces are not built yet")
+        Err(self.unbuilt("surfaces"))
     }
 
     fn current_texture(&mut self, _surface: &Surface) -> Result<TextureView, GpuError> {
-        unimplemented!("webgl: surfaces are not built yet")
+        Err(self.unbuilt("surfaces"))
     }
 
     fn present(&mut self, _surface: &Surface) -> Result<(), GpuError> {
-        unimplemented!("webgl: surfaces are not built yet")
+        Err(self.unbuilt("surfaces"))
     }
 
     /// Answers inside the call: `readPixels` and `getBufferSubData` wait for the GPU themselves.
@@ -2092,10 +2166,80 @@ impl Backend for WebGl {
                         glow::COPY_READ_BUFFER,
                         *offset as i32,
                         &mut dst[..*size as usize],
-                    );
+                    )
                 }
-                Ok(())
+                .then_some(())
+                .ok_or_else(|| self.read_failed())
             }
         }
+    }
+
+    /// Draws `TRIANGLE_FAN` and `LINE_LOOP` as they are. GL's tables give the vertex the raster block's
+    /// convention names, which is the one `provoking` names when the front's block follows its API, as
+    /// the converted list of the default assumes too. Guest indices go into the index ring once; GL
+    /// restarts at the largest value always, and a front whose API turns restart off rewrites them, as
+    /// for every draw.
+    fn draw_fan_or_loop(
+        &mut self,
+        call: &DrawCall<'_, Self>,
+        kind: FanOrLoop,
+        source: IndexSource<'_>,
+        _provoking: ProvokingVertex,
+        first_instance: u32,
+        instances: u32,
+    ) -> Result<(), GpuError> {
+        let topology = match kind {
+            FanOrLoop::TriangleFan => Topology::TriangleFan,
+            FanOrLoop::LineLoop => Topology::LineLoop,
+        };
+        match source {
+            IndexSource::Sequential { first, count } => self.draw(&DrawCall {
+                topology,
+                index: None,
+                range: DrawRange::Vertices {
+                    first,
+                    count,
+                    first_instance,
+                    instances,
+                },
+                ..*call
+            }),
+            IndexSource::Guest {
+                indices,
+                format,
+                base_vertex,
+            } => {
+                let width = format.size() as usize;
+                let count = indices.len() / width;
+                if count == 0 {
+                    return Ok(());
+                }
+                let mut offset = [0];
+                let ring = self.write_buffer_ring(
+                    RingKind::Indices,
+                    &[&indices[..count * width]],
+                    width as u32,
+                    &mut offset,
+                )?;
+                self.draw(&DrawCall {
+                    topology,
+                    restart: true,
+                    index: Some(IndexBinding {
+                        buffer: &ring,
+                        offset: offset[0],
+                        format,
+                    }),
+                    range: DrawRange::Indexed {
+                        first: 0,
+                        count: count as u32,
+                        base_vertex,
+                        first_instance,
+                        instances,
+                    },
+                    ..*call
+                });
+            }
+        }
+        Ok(())
     }
 }
