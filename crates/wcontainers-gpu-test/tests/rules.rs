@@ -3639,27 +3639,32 @@ fn sampler_of(r: &mut Recorder, filters: [Filter; 3], compare: Option<CompareFn>
 
 #[test]
 fn samplers_compare_exactly_where_the_program_compares() {
-    use Filter::Nearest as N;
+    use Filter::{Linear as L, Nearest as N};
     // A depth32float texture cleared to 0.5, compared with 0.4 through binding 17; binding 32's
-    // rgba8unorm texture sampled plainly through binding 16.
-    let cases: [(&str, Option<CompareFn>, Option<&str>, u8); 5] = [
-        ("compared", Some(CompareFn::Less), None, 255),
-        ("compared", Some(CompareFn::Greater), None, 0),
+    // rgba8unorm texture sampled plainly through binding 16. A comparison filters linearly a format
+    // without FILTER (depth here), as WebGPU's comparison samplers do.
+    type Case<'a> = (&'a str, [Filter; 3], Option<CompareFn>, Option<&'a str>, u8);
+    let cases: [Case; 6] = [
+        ("compared", [N; 3], Some(CompareFn::Less), None, 255),
+        ("compared", [L; 3], Some(CompareFn::Less), None, 255),
+        ("compared", [N; 3], Some(CompareFn::Greater), None, 0),
         (
             "compared",
+            [N; 3],
             None,
             Some("a program comparing through a sampler that does not compare"),
             0,
         ),
-        ("sampled", None, None, 0),
+        ("sampled", [N; 3], None, None, 0),
         (
             "sampled",
+            [N; 3],
             Some(CompareFn::Less),
             Some("a comparison sampler where the program samples without comparing"),
             0,
         ),
     ];
-    for (fragment, compare, violation, want) in cases {
+    for (fragment, filters, compare, violation, want) in cases {
         let mut d = Drawing::new();
         let depth = texture(
             &mut d.r,
@@ -3683,7 +3688,7 @@ fn samplers_compare_exactly_where_the_program_compares() {
         d.r.end_pass();
         let t = texture(&mut d.r, Format::Rgba8Unorm, 2, TextureUsage::SAMPLE);
         let v = view(&mut d.r, &t, Format::Rgba8Unorm);
-        let s = sampler_of(&mut d.r, [N; 3], compare);
+        let s = sampler_of(&mut d.r, filters, compare);
         let (texture_at, sampler_at) = if fragment == "compared" {
             (34, 17)
         } else {
