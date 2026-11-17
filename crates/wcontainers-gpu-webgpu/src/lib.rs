@@ -6,6 +6,7 @@
 //! topology and layout keys names a cached pipeline, and binding sets become cached bind groups whose
 //! uniform buffers take dynamic offsets (plan sections 4.4 and 4.5).
 
+mod blocks;
 mod convert;
 mod draw;
 mod edge;
@@ -13,6 +14,7 @@ mod fill;
 mod layout;
 mod memory;
 mod probe;
+mod wait;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -32,6 +34,8 @@ use wcontainers_gpu::{
 
 pub use draw::Counters;
 pub use probe::Depth24;
+#[cfg(target_arch = "wasm32")]
+pub use wait::block_on;
 
 /// Readback states, set by the map callback.
 const MAP_PENDING: u8 = 0;
@@ -68,7 +72,7 @@ pub struct WebGpu {
     arena: Option<memory::Arena>,
     edge: Option<edge::EdgeProgram>,
     fills: fill::Fills,
-    depth24: Option<Depth24>,
+    depth24: Depth24,
     /// Colour clears reach the API as floats, so integers past 2^24 cannot be cleared exactly.
     float_clears: bool,
     /// Changed whenever a buffer a binding set names moves so that a bind group made with it may no
@@ -151,6 +155,10 @@ struct BufferObj {
 #[derive(Debug)]
 struct TextureObj {
     desc: TextureDesc,
+    /// The format the GPU texture holds: `desc.format`, or a BC format's decoded one.
+    held: Format,
+    /// A decoded BC texture's blocks (`BlockDecoded`), per level and layer.
+    blocks: Option<RefCell<Vec<Vec<u8>>>>,
     raw: wgpu::Texture,
     used_in: Cell<u64>,
 }
@@ -255,7 +263,9 @@ struct QuerySetObj {
 
 #[derive(Debug)]
 struct ReadbackObj {
-    buffer: wgpu::Buffer,
+    /// The mapped buffer the answer arrives in; none when the host holds it.
+    buffer: Option<wgpu::Buffer>,
+    host: Vec<u8>,
     state: Arc<AtomicU8>,
     /// The serial of the encoder holding its copy.
     serial: u64,
@@ -341,6 +351,7 @@ impl WebGpu {
                 _ => LossReason::Error,
             };
             on_error.lock().unwrap().get_or_insert(reason);
+            wait::wake();
         }));
         let on_lost = lost.clone();
         device.set_device_lost_callback(move |reason, message| {
@@ -350,15 +361,11 @@ impl WebGpu {
                 _ => LossReason::Reset,
             };
             on_lost.lock().unwrap().get_or_insert(reason);
+            wait::wake();
         });
         let (mut caps, usages) = caps(adapter, &device);
-        // The browser cannot wait for the probe's answer yet (plan 4.8), so there the bit stays clear
-        // and fronts bias in the program, which is right for either storage.
-        #[cfg(not(target_arch = "wasm32"))]
-        let depth24 = Some(probe::run(&device, &queue));
-        #[cfg(target_arch = "wasm32")]
-        let depth24 = None;
-        if let Some(Depth24::Unorm(_)) = depth24 {
+        let depth24 = probe::run(&device, &queue);
+        if let Depth24::Unorm(_) = depth24 {
             caps.features |= Features::DEPTH24_UNORM;
         }
         // wgpu's Direct3D 12 clears colour targets through 32-bit floats.
@@ -393,8 +400,8 @@ impl WebGpu {
         }
     }
 
-    /// What the probe of how `depth24plus` is stored found, where it ran.
-    pub fn depth24(&self) -> Option<Depth24> {
+    /// What the probe of how `depth24plus` is stored found.
+    pub fn depth24(&self) -> Depth24 {
         self.depth24
     }
 
@@ -448,7 +455,11 @@ impl WebGpu {
         texture: &TextureObj,
         desc: &TextureViewDesc,
     ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
-        let format = convert::texture_format(desc.format)?;
+        let seen = match texture.blocks {
+            Some(_) => blocks::decoded(desc.format)?,
+            None => desc.format,
+        };
+        let format = convert::texture_format(seen)?;
         let aspect = convert::aspect(desc.stencil, desc.format);
         let view = |aspect, format| {
             texture.raw.create_view(&wgpu::TextureViewDescriptor {
@@ -520,10 +531,9 @@ fn caps(
     // natively wgpu compiles it at once on the calling thread.
     if cfg!(target_arch = "wasm32") {
         features |= Features::BACKGROUND_PREPARE;
-    } else {
-        // Proven natively by tests/raster.rs; in the browser not yet checked against Chrome.
-        features |= Features::FRACTIONAL_VIEWPORT;
     }
+    // Proven against Direct3D's picture natively by tests/raster.rs and in Chrome by web/check.
+    features |= Features::FRACTIONAL_VIEWPORT;
     let adapter_specific = f.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
     let mut formats = FormatCaps {
         uses: [FormatUse::empty(); Format::COUNT],
@@ -532,7 +542,11 @@ fn caps(
     let mut usages = [wgpu::TextureUsages::empty(); Format::COUNT];
     for (i, allowed) in usages.iter_mut().enumerate() {
         let format = format_at(i);
-        let Some(raw) = convert::texture_format(format) else {
+        // Without native BC, a BC format is held decoded (`BlockDecoded`): sampled, filtered and
+        // read back as its decoded format is, nothing else.
+        let decoded =
+            blocks::decoded(format).filter(|_| !f.contains(wgpu::Features::TEXTURE_COMPRESSION_BC));
+        let Some(raw) = convert::texture_format(decoded.unwrap_or(format)) else {
             continue;
         };
         if !raw.required_features().is_empty() && !f.contains(raw.required_features()) {
@@ -603,6 +617,13 @@ fn caps(
             if has {
                 uses |= bit;
             }
+        }
+        if decoded.is_some() {
+            uses &= FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
+            *allowed = wgpu::TextureUsages::TEXTURE_BINDING | copies;
+            formats.uses[i] = uses;
+            formats.samples[i] = 1;
+            continue;
         }
         formats.uses[i] = uses;
         let mut samples = 1u8;
@@ -850,7 +871,14 @@ impl Backend for WebGpu {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture, GpuError> {
-        let format = convert::texture_format(desc.format)
+        let decode = !self
+            .device
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
+        let held = blocks::decoded(desc.format)
+            .filter(|_| decode)
+            .unwrap_or(desc.format);
+        let format = convert::texture_format(held)
             .filter(|_| !self.caps.formats.get(desc.format).is_empty())
             .ok_or(GpuError::Invalid(
                 "texture format this back end does not hold",
@@ -905,6 +933,8 @@ impl Backend for WebGpu {
         });
         Ok(Texture(Rc::new(TextureObj {
             desc: *desc,
+            held,
+            blocks: (held != desc.format).then(|| RefCell::new(blocks::zeroed(desc))),
             raw,
             used_in: Cell::new(0),
         })))
@@ -1313,15 +1343,18 @@ impl Backend for WebGpu {
         self.caches.prune();
         for rb in self.to_map.drain(..) {
             let state = rb.0.state.clone();
-            rb.0.buffer
-                .map_async(wgpu::MapMode::Read, .., move |result| {
-                    let s = if result.is_ok() {
-                        MAP_READY
-                    } else {
-                        MAP_FAILED
-                    };
-                    state.store(s, Ordering::Release);
-                });
+            let Some(buffer) = &rb.0.buffer else {
+                continue;
+            };
+            buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+                let s = if result.is_ok() {
+                    MAP_READY
+                } else {
+                    MAP_FAILED
+                };
+                state.store(s, Ordering::Release);
+                wait::wake();
+            });
         }
         for d in self.destroy_after_submit.drain(..) {
             match d {
@@ -1334,6 +1367,7 @@ impl Backend for WebGpu {
         self.queue.on_submitted_work_done(move || {
             flag.store(true, Ordering::Release);
             completed.fetch_max(serial, Ordering::AcqRel);
+            wait::wake();
         });
         self.serial += 1;
         Fence { done, index }
@@ -1377,7 +1411,8 @@ impl Backend for WebGpu {
     }
 
     fn wait_read(&mut self, readback: &Readback) {
-        if readback.0.serial == self.serial {
+        let pending = readback.0.state.load(Ordering::Acquire) == MAP_PENDING;
+        if pending && readback.0.serial == self.serial {
             self.submit();
         }
         let state = readback.0.state.clone();
@@ -1535,23 +1570,12 @@ impl Backend for WebGpu {
 }
 
 impl WebGpu {
-    /// Pauses the device thread until `done` holds. Natively by waiting on the device; in the browser
-    /// the device thread suspends through JSPI (plan section 4.8), which the call channel brings.
+    /// Pauses the device thread until `done` holds or the device is lost (plan section 4.8).
     fn block_until(&mut self, done: impl Fn() -> bool, index: Option<wgpu::SubmissionIndex>) {
-        #[cfg(not(target_arch = "wasm32"))]
-        while !done() && self.status() == DeviceStatus::Ok {
-            let _ = self.device.poll(wgpu::PollType::Wait {
-                submission_index: index.clone(),
-                timeout: None,
-            });
-        }
-        #[cfg(target_arch = "wasm32")]
-        if !done() {
-            let _ = index;
-            panic!(
-                "webgpu: waiting in the browser needs the JSPI suspension of plan section 4.8, not built yet; poll instead"
-            );
-        }
+        let lost = self.lost.clone();
+        wait::until(&self.device, index, || {
+            done() || lost.lock().unwrap().is_some()
+        });
     }
 }
 
