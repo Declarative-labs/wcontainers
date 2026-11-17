@@ -5,7 +5,8 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 ## Where things stand
 
 K0 to K4 are done. K5 (sockets and network) has had five runs and is not complete: what is left
-is under Next. The fuller run-by-run record of K4 and of K5's first two runs is in this file at
+is under Next. At the fifth run's end (head f73d3aa) the fresh layer 1 seeds 5050448, 5050449
+and 5050450 passed 20000 sequences each with every fix in (see Measurements). The fuller run-by-run record of K4 and of K5's first two runs is in this file at
 commit fdf7001 (git history); what they built is summarised here.
 
 K5 built (all four runs):
@@ -160,7 +161,9 @@ K5 built (all four runs):
     from a socket into a pipe reading the socket (`sock_splice_read`; EAGAIN when empty),
     netlink's shutdown EOPNOTSUPP before the mode is checked, local datagram and sequenced
     packet peeks starting at SO_PEEK_OFF past whole messages (the offset moving on with peeks
-    and back with reads), and UDP corking.
+    and back with reads), UDP corking, and a process's `/proc/<pid>` directory naming it to
+    pidfd_send_signal (`tgid_pidfd_to_pid`; not to the other process descriptor calls, nor a
+    `task/<tid>` directory: EBADF).
   - UDP corking (`up->pending`): MSG_MORE or UDP_CORK hold a datagram; later sends add to it
     whatever destination they name (over UDP's largest is EMSGSIZE, a fault part way EFAULT,
     and both drop it), and the first send without MSG_MORE, or UDP_CORK turned off, sends it.
@@ -1357,7 +1360,15 @@ each sequence the runner puts back what a sequence can change outside its direct
   found the credentials at a sequenced packet socket's end; on 77abb06 5050439 and 5050441
   passed (337 s and 340 s, load 39 to 18), 5050440 found sendfile from a datagram socket; on
   c1bf7c3 5050442 found netlink's shutdown, 5050443 UDP's MSG_MORE and 5050444 local datagram
-  peeks at SO_PEEK_OFF (71 to 282 s, load 38 to 53).
+  peeks at SO_PEEK_OFF (71 to 282 s, load 38 to 53); on 619f3d0 5050445 passed (347 s),
+  5050446 found statfs of `/proc/self/fd/N` naming an mq_open queue (not fixed, see Next) and
+  5050447 pidfd_send_signal on `/proc/self` (load 46 to 78).
+- K5, fifth run, end of the milestone's layer 1 bar: on f73d3aa (every fix in) the fresh seeds
+  5050448, 5050449 and 5050450 passed 20000 sequences each (339 s, 336 s and 399 s, three side
+  by side, load 74 at the start and 49 at the end).
+- K5, fifth run: whole suite at 619f3d0 (same command, clean copy, own build, beside three layer
+  1 runs): 178 passed, 0 failed, 5 ignored, 13 min 54 s with the build, load 25.6 at the start
+  and 56.3 at the end.
 - K5, fifth run: whole suite at 60d3703 (`RUST_TEST_THREADS=3 cargo test --no-fail-fast -j 4
   -p wcontainers-kernel -p wcontainers-kernel-test`, in a clean copy with its own build, beside
   three layer 1 runs): 178 passed, 0 failed, 5 ignored, 10 min 34 s with the build, load 27.7 at
@@ -2012,9 +2023,11 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K5, in this order (what the five runs built is under Where things stand):
-1. Layer 1: run fresh seeds (5050430 and up) at 20000 until three in a row pass with every fix
-   in, fixing what they find (`LAYER1_CASES=20000 LAYER1_SEED=<n>`, one command each, see Layer
-   1); then the whole suite.
+1. Layer 1's per-milestone bar is met at f73d3aa (5050448 to 5050450). One difference found and
+   not fixed: statfs of `/proc/self/fd/N` where N is an mq_open queue gives Linux's internal
+   mqueue mount's flags (ST_VALID alone) there, and here `/dev/mqueue`'s (fstatfs is right;
+   the path walk through the descriptor's magic link returns only the inode, not that the file
+   is on the internal mount). Seed 5050446 replays it. Fresh seeds start at 5050451.
 2. Not built, counted "socket option not built": TCP_INFO (Linux 7.0 gives 280 bytes, measured;
    about half its fields are timings and rates of real segments this TCP does not have, so a
    model needs a decision on what to give for them), TCP_ZEROCOPY_RECEIVE, SO_TIMESTAMPING (old
@@ -2057,6 +2070,6 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002, 5050401 to 5050447 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050450 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
