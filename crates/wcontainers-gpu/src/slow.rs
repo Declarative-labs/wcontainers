@@ -1,9 +1,11 @@
-//! Named slow paths. Every place a front, a back end or a shared helper does something the slow way
-//! names its reason here, bumps its counter and raises a warning the first time.
+//! Named slow paths. Every place a front, a back end or a shared helper does something the slow way, or
+//! refuses a valid request for want of an exact route, names its reason here, bumps its counter and
+//! raises a warning the first time.
 
 use alloc::vec::Vec;
 
-/// Why something took the slow way.
+/// Why something took the slow way. A variant whose description starts "Refused" names a valid request
+/// that failed because no exact route exists; it is counted and warned the same way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum SlowPath {
@@ -55,15 +57,13 @@ pub enum SlowPath {
     VertexFormatConverted,
     /// A texture format the back end lacks, stored in a wider one and converted on upload and read.
     FormatConverted,
-    /// A multisampled texture read in a program by first resolving or copying it.
-    MultisampleReadCopy,
     /// A typed buffer view read as a 2D texture (no storage buffers).
     TexelBufferAsTexture,
     /// Base vertex or first instance applied by binding vertex streams at an offset.
     BaseVertexRebind,
     /// Indirect draw arguments read back to the device thread before drawing.
     IndirectReadBack,
-    /// A draw count read from a buffer turned into the largest count of draws, unused ones zeroed by compute.
+    /// A draw count read from a buffer turned into the largest count of draws, unused ones zeroed.
     IndirectCountExpanded,
     /// A persistently mapped range uploaded whole because the written bytes were not known.
     MappedUploadWhole,
@@ -83,11 +83,36 @@ pub enum SlowPath {
     DepthReadByDraw,
     /// A draw with different stencil values per face drawn once per face.
     StencilFacesSplit,
+    /// Mirror-once addressing applied in the program: absolute coordinate, clamped, original gradients.
+    MirrorOnceInShader,
+    /// A vertex stream stepping every n instances fetched in the program from the instance index.
+    InstanceRateInShader,
+    /// An exact occlusion count made by drawing the query's draws again into a counting target.
+    OcclusionCountReplay,
+    /// A timestamp asked for between draws split the pass, since timestamps are written between passes.
+    TimestampSplitPass,
+    /// The unaligned edge bytes of a buffer write, copy or clear merged on the GPU by a small program.
+    UnalignedBufferEdge,
+    /// A draw whose targets hold more bytes per sample than the back end allows, run once per group of
+    /// targets.
+    TargetsSplit,
+    /// A texture the back end cannot filter, sampled with a filtering sampler, filtered in the program
+    /// from loads.
+    FilterInShader,
+    /// Stream output with gaps or layouts transform feedback cannot write, captured whole and repacked
+    /// by a second capture.
+    StreamOutRepacked,
+    /// A logic operation in the program on a draw whose primitives may overlap, drawn one primitive at
+    /// a time.
+    LogicOpPerPrimitive,
+    /// Refused, not slow: a program needs more bindings of one kind than the back end has, and no exact
+    /// route exists, so making it failed.
+    BindingsBeyondLimit,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 38] = [
+    pub const ALL: [SlowPath; 47] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -112,7 +137,6 @@ impl SlowPath {
         SlowPath::ClipDepthRewrite,
         SlowPath::VertexFormatConverted,
         SlowPath::FormatConverted,
-        SlowPath::MultisampleReadCopy,
         SlowPath::TexelBufferAsTexture,
         SlowPath::BaseVertexRebind,
         SlowPath::IndirectReadBack,
@@ -126,6 +150,16 @@ impl SlowPath {
         SlowPath::PredicationWait,
         SlowPath::DepthReadByDraw,
         SlowPath::StencilFacesSplit,
+        SlowPath::MirrorOnceInShader,
+        SlowPath::InstanceRateInShader,
+        SlowPath::OcclusionCountReplay,
+        SlowPath::TimestampSplitPass,
+        SlowPath::UnalignedBufferEdge,
+        SlowPath::TargetsSplit,
+        SlowPath::FilterInShader,
+        SlowPath::StreamOutRepacked,
+        SlowPath::LogicOpPerPrimitive,
+        SlowPath::BindingsBeyondLimit,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -155,7 +189,6 @@ impl SlowPath {
             SlowPath::ClipDepthRewrite => "clip space depth rewritten in the shader",
             SlowPath::VertexFormatConverted => "vertex format converted",
             SlowPath::FormatConverted => "texture format stored in a wider one",
-            SlowPath::MultisampleReadCopy => "multisampled texture copied to be read",
             SlowPath::TexelBufferAsTexture => "typed buffer read as a texture",
             SlowPath::BaseVertexRebind => "vertex streams rebound for base vertex or instance",
             SlowPath::IndirectReadBack => "indirect arguments read back",
@@ -169,6 +202,16 @@ impl SlowPath {
             SlowPath::PredicationWait => "predicated draw waited for its query",
             SlowPath::DepthReadByDraw => "depth read back through a draw",
             SlowPath::StencilFacesSplit => "draw split per stencil face",
+            SlowPath::MirrorOnceInShader => "mirror once addressing applied in the shader",
+            SlowPath::InstanceRateInShader => "instance step rate applied in the shader",
+            SlowPath::OcclusionCountReplay => "occlusion count made by replaying draws",
+            SlowPath::TimestampSplitPass => "timestamp split a pass",
+            SlowPath::UnalignedBufferEdge => "unaligned buffer edge merged by a program",
+            SlowPath::TargetsSplit => "draw run once per group of targets",
+            SlowPath::FilterInShader => "texture filtered in the shader",
+            SlowPath::StreamOutRepacked => "stream output repacked",
+            SlowPath::LogicOpPerPrimitive => "logic operation drawn one primitive at a time",
+            SlowPath::BindingsBeyondLimit => "program refused: more bindings than the back end has",
         }
     }
 }

@@ -34,6 +34,9 @@ pub enum StoreOp {
 #[derive(Debug)]
 pub struct ColorAttachment<'a, B: Backend> {
     pub view: &'a B::TextureView,
+    /// The slice drawn into when `view` is a 3D view (Direct3D's render target of a volume slice); zero
+    /// otherwise. Layered drawing through a program's layer output is plan section 7's stage work.
+    pub depth_slice: u32,
     /// Where a multisampled target is resolved to when the pass ends.
     pub resolve: Option<&'a B::TextureView>,
     /// Clear color as raw bits: f32 for float formats, the integer for integer formats.
@@ -41,28 +44,44 @@ pub struct ColorAttachment<'a, B: Backend> {
     pub store: StoreOp,
 }
 
-/// The depth and stencil target of a pass.
+/// What a pass does with one aspect (depth or stencil) of its depth-stencil target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AspectOps<V> {
+    pub load: LoadOp<V>,
+    pub store: StoreOp,
+    /// The pass only reads this aspect, so it may also be sampled during the pass (Direct3D's read-only
+    /// depth and stencil views).
+    pub read_only: bool,
+}
+
+/// The depth and stencil target of a pass. Each aspect is present exactly when the view's format has it,
+/// so back ends never see operations on an aspect that does not exist.
 #[derive(Debug)]
 pub struct DepthAttachment<'a, B: Backend> {
     pub view: &'a B::TextureView,
     /// Clear depth as f32 bits.
-    pub depth_load: LoadOp<u32>,
-    pub depth_store: StoreOp,
-    pub stencil_load: LoadOp<u8>,
-    pub stencil_store: StoreOp,
-    /// The pass only reads depth, so it may also be sampled during the pass (Direct3D's read-only
-    /// depth view).
-    pub depth_read_only: bool,
-    /// The pass only reads stencil, likewise.
-    pub stencil_read_only: bool,
+    pub depth: Option<AspectOps<u32>>,
+    pub stencil: Option<AspectOps<u8>>,
 }
 
-/// A pass to begin.
+/// The size of a pass that has no attachments (Direct3D's rendering with only storage writes bound).
+/// A back end whose API needs an attachment adds one of its own, never stored, of this size and sample
+/// count; its pipelines are built for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EmptyPass {
+    pub width: u32,
+    pub height: u32,
+    pub samples: u32,
+}
+
+/// A pass to begin. Either at least one attachment is given, or `empty` is.
 #[derive(Debug)]
 pub struct PassDesc<'a, B: Backend> {
     pub colors: [Option<ColorAttachment<'a, B>>; MAX_COLOR_TARGETS],
     pub depth: Option<DepthAttachment<'a, B>>,
-    /// Occlusion queries recorded in this pass write into this set.
+    pub empty: Option<EmptyPass>,
+    /// Occlusion queries recorded in this pass write into this set. A guest query that spans several
+    /// passes is several interface queries, whose results the front adds (counts) or combines (any).
     pub occlusion: Option<&'a B::QuerySet>,
 }
 

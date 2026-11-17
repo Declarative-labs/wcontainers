@@ -12,12 +12,13 @@
 //!   a range; copy and clear; read back later; present a frame.
 //! - It also holds the **fast paths**: methods with a default made from the base, which a back end
 //!   overrides only where it has something better (read back now, triangle fans and line loops, preparing
-//!   a state combination ahead of time, clearing a texture, generating mipmaps).
-//! - Things with no cheap default (compute, transform feedback, big resource tables) are methods whose
-//!   default reports [`GpuError::Absent`]; a back end that has them overrides them and declares them in its
-//!   [`Caps`]. Fronts read [`Caps`] once and choose their route.
+//!   a state combination ahead of time, clearing a texture or rectangles of it, generating mipmaps, a ring
+//!   for per-draw data). Their defaults keep what they make in [`Helpers`].
+//! - Things with no cheap default (compute, transform feedback, big resource tables, timestamps) are
+//!   methods whose default reports [`GpuError::Absent`]; a back end that has them overrides them and
+//!   declares them in its [`Caps`]. Fronts read [`Caps`] once and choose their route.
 //! - Drawing state is a handful of immutable blocks ([`BlendDesc`], [`DepthStencilDesc`], [`RasterDesc`],
-//!   [`VertexLayoutDesc`], [`TargetLayout`], a [`Program`]) plus binding sets
+//!   [`VertexLayoutDesc`], a [`Program`]) plus binding sets
 //!   ([`Backend::create_binding_set`]). Every block becomes a back-end handle once; a draw names one of
 //!   each. A back end consumes them its own way (WebGPU: a cached pipeline per combination; WebGL 2: apply
 //!   only the blocks that changed).
@@ -34,6 +35,7 @@ mod caps;
 mod draw;
 mod error;
 mod format;
+mod helpers;
 mod resource;
 mod shader;
 mod slow;
@@ -42,11 +44,13 @@ mod state;
 pub use backend::{Backend, ClearValue, FanOrLoop, IndexSource, Object, PrepareDesc};
 pub use caps::{Caps, Features, FormatCaps, FormatUse, Limits};
 pub use draw::{
-    CaptureTargets, ColorAttachment, DepthAttachment, DispatchCall, DispatchGroups, DrawCall,
-    DrawRange, IndexBinding, LoadOp, PassDesc, ScissorRect, StoreOp, VertexBinding, Viewport,
+    AspectOps, CaptureTargets, ColorAttachment, DepthAttachment, DispatchCall, DispatchGroups,
+    DrawCall, DrawRange, EmptyPass, IndexBinding, LoadOp, PassDesc, ScissorRect, StoreOp,
+    VertexBinding, Viewport,
 };
 pub use error::{DeviceStatus, GpuError, LossReason};
 pub use format::{Format, FormatKind};
+pub use helpers::Helpers;
 pub use resource::{AddressMode, BorderColor, CompareFn, Filter};
 pub use resource::{
     BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, CopyBufferTexture, Extent,

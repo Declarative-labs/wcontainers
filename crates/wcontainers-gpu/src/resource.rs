@@ -110,6 +110,12 @@ pub enum ViewDimension {
 }
 
 /// A view of part of a texture, as a front's shader resource, render target, depth or storage view.
+///
+/// Every back end makes views of one mip level and one layer (or all layers) to draw into, and views of a
+/// mip range of the whole texture in its own dimension to sample. Anything else (another dimension, a
+/// layer range, another format of the same size) needs [`crate::Features::TEXTURE_VIEWS`] or
+/// [`crate::Features::FORMAT_REINTERPRET`]; without them the front copies (slow path
+/// [`crate::SlowPath::ReinterpretCopy`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TextureViewDesc {
     pub format: Format,
@@ -135,7 +141,12 @@ pub enum AddressMode {
     Repeat,
     Mirror,
     Clamp,
+    /// Needs [`crate::Features::BORDER_COLOR`] for colors other than transparent black; otherwise
+    /// the back end applies it in the program (slow path [`crate::SlowPath::BorderInShader`]).
     Border,
+    /// Mirrored once about zero, then clamped. Needs [`crate::Features::MIRROR_ONCE`]; otherwise the back
+    /// end samples the absolute coordinate with clamping and the original gradients, which is exact (slow
+    /// path [`crate::SlowPath::MirrorOnceInShader`]).
     MirrorOnce,
 }
 
@@ -190,6 +201,9 @@ pub struct BufferRange<H> {
 #[derive(Debug)]
 pub enum BindingResource<'a, B: Backend> {
     UniformBuffer(BufferRange<&'a B::Buffer>),
+    /// Any offset. Where the offset is not a multiple of [`crate::Limits::min_storage_offset_alignment`],
+    /// the back end binds from the aligned offset below it and the program adds the rest, which it reads
+    /// from the helper constants every converted program has (plan section 6.4).
     StorageBuffer {
         range: BufferRange<&'a B::Buffer>,
         writable: bool,
@@ -284,7 +298,11 @@ pub enum ReadState {
 /// Kinds of query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum QueryKind {
-    /// Samples that passed depth and stencil; exact only with [`crate::Features::OCCLUSION_COUNT`].
+    /// Zero when no sample passed every per-fragment test, otherwise non-zero. Every back end has it.
+    OcclusionAny,
+    /// The exact number of samples that passed every per-fragment test. Needs
+    /// [`crate::Features::OCCLUSION_COUNT`]; without it fronts count by replaying the query's draws into
+    /// a counting target (plan section 4.12, slow path [`crate::SlowPath::OcclusionCountReplay`]).
     Occlusion,
     /// GPU time in nanoseconds, where [`crate::Features::TIMESTAMPS`] is present.
     Timestamp,

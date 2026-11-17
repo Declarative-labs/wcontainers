@@ -53,9 +53,10 @@ bitflags! {
         const SAMPLE_SHADING = 1 << 19;
         /// Multisampled textures can be read in programs.
         const MULTISAMPLE_READ = 1 << 20;
-        /// Occlusion queries count samples exactly; without it they say only "none" or "some".
+        /// Query sets of [`crate::QueryKind::Occlusion`]: exact sample counts. Every back end has
+        /// [`crate::QueryKind::OcclusionAny`].
         const OCCLUSION_COUNT = 1 << 21;
-        /// Timestamps written between commands.
+        /// GPU timestamps, written between passes ([`crate::Backend::write_timestamp`]).
         const TIMESTAMPS = 1 << 22;
         /// Draw and dispatch arguments read from a buffer.
         const INDIRECT = 1 << 23;
@@ -97,6 +98,10 @@ bitflags! {
         const DEPTH_BOUNDS = 1 << 41;
         /// A different stencil reference and masks for front and back faces in one draw.
         const STENCIL_PER_FACE = 1 << 42;
+        /// [`crate::AddressMode::MirrorOnce`] in samplers.
+        const MIRROR_ONCE = 1 << 43;
+        /// Clip space depth from zero to one, as Direct3D and Vulkan define it, without rewriting shaders.
+        const CLIP_DEPTH_ZERO_ONE = 1 << 44;
     }
 }
 
@@ -122,12 +127,21 @@ pub struct Limits {
     pub vertex_attributes: u32,
     pub max_vertex_stride: u32,
     pub color_targets: u32,
+    /// Bytes one sample may hold across all color targets of a pass (WebGPU's 32 by default; back ends ask
+    /// the adapter for its most). A front whose API allows fatter targets runs each draw once per group
+    /// of targets that fits, each run starting from a saved copy of depth and stencil, with storage writes
+    /// and queries kept only in the first run (slow path [`crate::SlowPath::TargetsSplit`]).
+    pub color_bytes_per_sample: u32,
     /// Values passed from the vertex stage to the fragment stage, in four-component slots.
     pub inter_stage_slots: u32,
     /// Sample counts a target may have, as a bit per count (bit 0 for one sample).
     pub sample_counts: u32,
     pub min_uniform_offset_alignment: u32,
     pub min_storage_offset_alignment: u32,
+    /// The granule of offsets and sizes the API itself copies, writes and clears buffers in (4 on WebGPU,
+    /// 1 on WebGL 2). The interface takes any byte range; a back end with a granule above one handles the
+    /// unaligned edges itself (slow path [`crate::SlowPath::UnalignedBufferEdge`]).
+    pub buffer_copy_alignment: u32,
     /// Bytes of small per-draw constants ([`crate::DrawCall::immediates`]).
     pub immediate_bytes: u32,
     pub compute_workgroup_storage: u32,

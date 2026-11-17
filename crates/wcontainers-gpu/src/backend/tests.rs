@@ -3,6 +3,7 @@
 use super::*;
 use crate::caps::{FormatCaps, FormatUse, Limits};
 use crate::draw::Viewport;
+use crate::state::ProvokingVertex;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -11,6 +12,7 @@ use alloc::vec;
 struct Recorder {
     caps: Option<Caps>,
     slow: SlowPaths,
+    helpers: Helpers<Recorder>,
     next: u32,
     log: Vec<String>,
     /// Bytes written into each buffer, by id.
@@ -40,10 +42,12 @@ impl Recorder {
             vertex_attributes: 16,
             max_vertex_stride: 2048,
             color_targets: 8,
+            color_bytes_per_sample: 32,
             inter_stage_slots: 16,
             sample_counts: 0b1001,
             min_uniform_offset_alignment: 256,
             min_storage_offset_alignment: 256,
+            buffer_copy_alignment: 4,
             immediate_bytes: 64,
             compute_workgroup_storage: 16384,
             compute_invocations: 256,
@@ -97,6 +101,9 @@ impl Backend for Recorder {
     fn status(&mut self) -> DeviceStatus {
         DeviceStatus::Ok
     }
+    fn helpers(&mut self) -> &mut Helpers<Self> {
+        &mut self.helpers
+    }
     fn create_buffer(&mut self, desc: &BufferDesc) -> Result<Id, GpuError> {
         let id = self.id();
         self.log
@@ -108,8 +115,13 @@ impl Backend for Recorder {
     fn create_texture(&mut self, _: &TextureDesc) -> Result<Id, GpuError> {
         Ok(self.id())
     }
-    fn create_view(&mut self, _: &Id, _: &TextureViewDesc) -> Result<Id, GpuError> {
-        Ok(self.id())
+    fn create_view(&mut self, t: &Id, d: &TextureViewDesc) -> Result<Id, GpuError> {
+        let id = self.id();
+        self.log.push(format!(
+            "create_view {id} of {t} {:?} mip {} layer {}",
+            d.dimension, d.base_mip, d.base_layer
+        ));
+        Ok(id)
     }
     fn create_sampler(&mut self, _: &SamplerDesc) -> Result<Id, GpuError> {
         Ok(self.id())
@@ -151,10 +163,24 @@ impl Backend for Recorder {
         let b = &mut self.buffers[*buffer as usize];
         b[offset as usize..offset as usize + data.len()].copy_from_slice(data);
     }
-    fn write_texture(&mut self, _: &TextureRegion<'_, Self>, _: Extent, _: &[u8], _: u32, _: u32) {}
+    fn write_texture(
+        &mut self,
+        _: &TextureRegion<'_, Self>,
+        _: Extent,
+        _: &[u8],
+        _: u32,
+        _: u32,
+        _: WriteMode,
+    ) {
+    }
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
-        let c = pass.colors[0].as_ref().map(|c| c.load);
-        let d = pass.depth.as_ref().map(|d| (d.depth_load, d.stencil_load));
+        let c = pass.colors[0]
+            .as_ref()
+            .map(|c| (*c.view, c.depth_slice, c.load));
+        let d = pass
+            .depth
+            .as_ref()
+            .map(|d| (d.depth.map(|a| a.load), d.stencil.map(|a| a.load)));
         self.log.push(format!("begin_pass color {c:?} depth {d:?}"));
     }
     fn end_pass(&mut self) {
@@ -162,9 +188,10 @@ impl Backend for Recorder {
     }
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
         let index = call.index.as_ref().map(|i| *i.buffer);
+        let scissor = call.scissors.first().map(|r| (r.x, r.y, r.width, r.height));
         self.log.push(format!(
-            "draw {:?} index {index:?} {:?}",
-            call.topology, call.range
+            "draw {:?} index {index:?} {:?} scissor {scissor:?} stencil {}",
+            call.topology, call.range, call.stencil_reference[0]
         ));
     }
     fn begin_query(&mut self, _: u32) {}
@@ -191,7 +218,7 @@ impl Backend for Recorder {
         _: Extent,
     ) {
     }
-    fn clear_buffer(&mut self, _: &Id, _: u64, _: u64) {}
+    fn clear_buffer(&mut self, _: &Id, _: u64, _: u64, _: &[u8]) {}
     fn resolve(&mut self, _: &TextureRegion<'_, Self>, _: &TextureRegion<'_, Self>) {}
     fn submit(&mut self) -> Id {
         self.id()
@@ -294,17 +321,19 @@ fn fan_default_draws_a_generated_list() {
             first: 10,
             count: 5,
         },
+        ProvokingVertex::First,
         0,
         1,
     )
     .unwrap();
-    assert_eq!(indices(&r, 1), [10, 11, 12, 10, 12, 13, 10, 13, 14]);
+    // Each triangle keeps the fan's winding and starts with vertex i + 1, OpenGL's first-vertex rule.
+    assert_eq!(indices(&r, 1), [11, 12, 10, 12, 13, 10, 13, 14, 10]);
     assert_eq!(
         r.log,
         [
             "create_buffer 1 size 36",
             "write_buffer 1 36 bytes Discard",
-            "draw TriangleList index Some(1) Indexed { first: 0, count: 9, base_vertex: 0, first_instance: 0, instances: 1 }",
+            "draw TriangleList index Some(1) Indexed { first: 0, count: 9, base_vertex: 0, first_instance: 0, instances: 1 } scissor None stencil 0",
             "destroy_buffer 1",
         ]
     );
@@ -324,10 +353,17 @@ fn loop_default_closes_each_piece_and_honours_restart() {
         format: IndexFormat::U16,
         base_vertex: 3,
     };
-    r.draw_fan_or_loop(&call(&[]), FanOrLoop::LineLoop, src, 2, 4)
-        .unwrap();
-    assert_eq!(indices(&r, 1), [4, 5, 6, 4, u32::MAX, 7, 8, 7]);
-    assert!(r.log[2].starts_with("draw LineStrip index Some(1) Indexed { first: 0, count: 8, base_vertex: 3, first_instance: 2, instances: 4 }"));
+    r.draw_fan_or_loop(
+        &call(&[]),
+        FanOrLoop::LineLoop,
+        src,
+        ProvokingVertex::First,
+        2,
+        4,
+    )
+    .unwrap();
+    assert_eq!(indices(&r, 1), [4, 5, 5, 6, 6, 4, 7, 8, 8, 7]);
+    assert!(r.log[2].starts_with("draw LineList index Some(1) Indexed { first: 0, count: 10, base_vertex: 3, first_instance: 2, instances: 4 }"));
 }
 
 #[test]
@@ -342,8 +378,16 @@ fn fan_restart_starts_a_new_fan() {
         format: IndexFormat::U32,
         base_vertex: 0,
     };
-    r.draw_fan_or_loop(&call(&[]), FanOrLoop::TriangleFan, src, 0, 1)
-        .unwrap();
+    r.draw_fan_or_loop(
+        &call(&[]),
+        FanOrLoop::TriangleFan,
+        src,
+        ProvokingVertex::Last,
+        0,
+        1,
+    )
+    .unwrap();
+    // The last-vertex rule keeps the centre first, so vertex i + 2 ends each triangle.
     assert_eq!(indices(&r, 1), [0, 1, 2, 0, 2, 3, 9, 8, 7]);
 }
 
@@ -387,17 +431,251 @@ fn clear_texture_default_is_a_clearing_pass() {
     assert_eq!(
         r.log,
         [
-            "begin_pass color None depth Some((Clear(0), Load))",
+            "begin_pass color None depth Some((Some(Clear(0)), Some(Load)))",
             "end_pass"
         ]
     );
 }
 
 #[test]
+fn loop_with_restart_off_keeps_the_largest_index_as_a_vertex() {
+    let mut r = Recorder::new();
+    let guest: Vec<u8> = [0u32, 1, u32::MAX, 2]
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .collect();
+    let src = IndexSource::Guest {
+        indices: &guest,
+        format: IndexFormat::U32,
+        base_vertex: 0,
+    };
+    let mut c = call(&[]);
+    c.restart = false;
+    r.draw_fan_or_loop(&c, FanOrLoop::LineLoop, src, ProvokingVertex::First, 0, 1)
+        .unwrap();
+    assert_eq!(
+        indices(&r, 1),
+        [0, 1, 1, u32::MAX, u32::MAX, 2, 2, 0],
+        "a line list never restarts, so the largest value is an ordinary vertex"
+    );
+}
+
+#[test]
+fn clear_of_a_stencil_format_names_no_depth_aspect() {
+    let mut r = Recorder::new();
+    r.clear_texture(
+        &7,
+        Format::Stencil8,
+        ClearValue::DepthStencil {
+            depth: Some(0),
+            stencil: Some(3),
+        },
+    );
+    assert_eq!(
+        r.log[0],
+        "begin_pass color None depth Some((None, Some(Clear(3))))"
+    );
+}
+
+fn read_f32(r: &Recorder, buffer: Id, at: usize) -> f32 {
+    f32::from_le_bytes(r.buffers[buffer as usize][at..at + 4].try_into().unwrap())
+}
+
+#[test]
+fn ring_aligns_parts_pads_tails_and_wraps_with_discard() {
+    let mut r = Recorder::new();
+    let mut offsets = [0; 2];
+    let ring = r
+        .write_buffer_ring(&[&[1, 2, 3, 4, 5], &[6; 8]], 256, &mut offsets)
+        .unwrap();
+    assert_eq!(offsets, [0, 256]);
+    assert_eq!(&r.buffers[ring as usize][..6], [1, 2, 3, 4, 5, 0]);
+    assert_eq!(&r.buffers[ring as usize][256..264], [6; 8]);
+    assert_eq!(
+        r.log,
+        [
+            "create_buffer 1 size 4194304",
+            "write_buffer 1 4 bytes NoOverwrite",
+            "write_buffer 1 4 bytes NoOverwrite",
+            "write_buffer 1 8 bytes NoOverwrite",
+        ]
+    );
+    // Too little room left: the ring starts again at zero, dropping its old contents by renaming.
+    let big = vec![9u8; RING_SIZE as usize - 256];
+    let mut one = [0];
+    r.write_buffer_ring(&[&big], 256, &mut one).unwrap();
+    assert_eq!(one, [0]);
+    assert_eq!(
+        r.log.last().unwrap(),
+        "write_buffer 1 4194048 bytes Discard"
+    );
+    // Larger than the ring: a larger ring replaces it.
+    let huge = vec![1u8; RING_SIZE as usize + 4];
+    let ring = r.write_buffer_ring(&[&huge], 4, &mut one).unwrap();
+    assert_eq!(ring, 2);
+    assert!(r.log.contains(&"destroy_buffer 1".into()));
+    assert!(r.log.contains(&"create_buffer 2 size 8388608".into()));
+}
+
+#[test]
+fn generate_mips_draws_each_level_and_layer_from_the_one_above() {
+    let mut r = Recorder::new();
+    let desc = TextureDesc {
+        dimension: TextureDimension::D2,
+        format: Format::Rgba8UnormSrgb,
+        width: 8,
+        height: 8,
+        depth_or_layers: 2,
+        mip_levels: 3,
+        samples: 1,
+        usage: crate::TextureUsage::SAMPLE | crate::TextureUsage::RENDER,
+        reinterpret: false,
+    };
+    r.generate_mips(&50, &desc, 1..3, 0..2).unwrap();
+    let views: Vec<_> = r
+        .log
+        .iter()
+        .filter(|l| l.starts_with("create_view"))
+        .collect();
+    assert_eq!(views.len(), 8);
+    assert!(views[0].ends_with("of 50 D2 mip 0 layer 0"));
+    assert!(views[1].ends_with("of 50 D2 mip 1 layer 0"));
+    assert!(views[7].ends_with("of 50 D2 mip 2 layer 1"));
+    let scissors: Vec<_> = r
+        .log
+        .iter()
+        .filter(|l| l.starts_with("draw"))
+        .map(|l| String::from(l.split("scissor ").nth(1).unwrap()))
+        .collect();
+    assert_eq!(
+        scissors,
+        [
+            "Some((0, 0, 4, 4)) stencil 0",
+            "Some((0, 0, 4, 4)) stencil 0",
+            "Some((0, 0, 2, 2)) stencil 0",
+            "Some((0, 0, 2, 2)) stencil 0",
+        ]
+    );
+}
+
+#[test]
+fn generate_mips_of_a_volume_draws_each_slice_at_its_centre() {
+    let mut r = Recorder::new();
+    let desc = TextureDesc {
+        dimension: TextureDimension::D3,
+        format: Format::Rgba16Float,
+        width: 8,
+        height: 8,
+        depth_or_layers: 4,
+        mip_levels: 2,
+        samples: 1,
+        usage: crate::TextureUsage::SAMPLE | crate::TextureUsage::RENDER,
+        reinterpret: false,
+    };
+    r.generate_mips(&50, &desc, 1..2, 0..1).unwrap();
+    let passes: Vec<_> = r
+        .log
+        .iter()
+        .filter(|l| l.starts_with("begin_pass"))
+        .collect();
+    assert_eq!(passes.len(), 2);
+    assert!(passes[0].contains(", 0, DontCare"));
+    assert!(passes[1].contains(", 1, DontCare"));
+    let ring = r.helpers.ring.as_ref().unwrap().buffer;
+    assert_eq!(read_f32(&r, ring, 16), 0.25);
+    assert_eq!(read_f32(&r, ring, 256 + 16), 0.75);
+}
+
+#[test]
+fn clear_rects_draws_one_scissored_triangle_per_rectangle() {
+    let mut r = Recorder::new();
+    let rects = [
+        ScissorRect {
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4,
+        },
+        ScissorRect {
+            x: 10,
+            y: 0,
+            width: 5,
+            height: 5,
+        },
+    ];
+    r.clear_rects(
+        &7,
+        Format::Rgba8Uint,
+        ClearValue::Color([1, 2, 3, 4]),
+        &rects,
+    )
+    .unwrap();
+    let passes: Vec<_> = r.log.iter().filter(|l| !l.contains("_buffer")).collect();
+    assert_eq!(passes[0], "begin_pass color Some((7, 0, Load)) depth None");
+    assert!(passes[1].ends_with("scissor Some((1, 2, 3, 4)) stencil 0"));
+    assert!(passes[2].ends_with("scissor Some((10, 0, 5, 5)) stencil 0"));
+    assert_eq!(passes[3], "end_pass");
+    let ring = r.helpers.ring.as_ref().unwrap().buffer;
+    assert_eq!(
+        &r.buffers[ring as usize][..16],
+        [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0]
+    );
+
+    let mut r = Recorder::new();
+    let depth = ClearValue::DepthStencil {
+        depth: Some(1.0f32.to_bits()),
+        stencil: Some(5),
+    };
+    r.clear_rects(&8, Format::Depth24PlusStencil8, depth, &rects[..1])
+        .unwrap();
+    let lines: Vec<_> = r.log.iter().filter(|l| !l.contains("_buffer")).collect();
+    assert_eq!(
+        lines[0],
+        "begin_pass color None depth Some((Some(Load), Some(Load)))"
+    );
+    assert!(lines[1].ends_with("stencil 5"));
+    let ring = r.helpers.ring.as_ref().unwrap().buffer;
+    assert_eq!(read_f32(&r, ring, 20), 1.0);
+
+    // An aspect the format lacks is not cleared, and nothing is drawn.
+    let mut r = Recorder::new();
+    let stencil = ClearValue::DepthStencil {
+        depth: None,
+        stencil: Some(1),
+    };
+    r.clear_rects(&8, Format::Depth32Float, stencil, &rects)
+        .unwrap();
+    assert!(r.log.is_empty());
+}
+
+#[test]
 fn absent_features_say_which() {
     let mut r = Recorder::new();
+    const BLOCK: Id = 100;
+    let dispatch = DispatchCall {
+        program: &BLOCK,
+        bindings: [None; crate::MAX_BINDING_SETS],
+        immediates: &[],
+        groups: crate::DispatchGroups::Direct([1, 1, 1]),
+    };
+    assert_eq!(
+        r.dispatch(&dispatch).unwrap_err(),
+        GpuError::Absent(Features::COMPUTE)
+    );
+    assert_eq!(
+        r.capture_vertices(&call(&[]), &[]).unwrap_err(),
+        GpuError::Absent(Features::TRANSFORM_FEEDBACK)
+    );
     assert_eq!(
         r.create_resource_table(10).unwrap_err(),
         GpuError::Absent(Features::RESOURCE_TABLES)
+    );
+    assert_eq!(
+        r.write_resource_table(&BLOCK, 0, &[]).unwrap_err(),
+        GpuError::Absent(Features::RESOURCE_TABLES)
+    );
+    assert_eq!(
+        r.write_timestamp(&BLOCK, 0).unwrap_err(),
+        GpuError::Absent(Features::TIMESTAMPS)
     );
 }

@@ -188,50 +188,71 @@ pub struct RasterDesc {
     /// Line width as f32 bits; one unless [`crate::Features::WIDE_LINES`].
     pub line_width: u32,
     pub provoking: ProvokingVertex,
-    /// Clip space depth runs from minus one (OpenGL) instead of zero.
+    /// Clip space depth runs from minus one (OpenGL) instead of zero (Direct3D, Vulkan). Native only
+    /// with [`crate::Features::CLIP_DEPTH_MINUS_ONE`] or [`crate::Features::CLIP_DEPTH_ZERO_ONE`]
+    /// respectively; otherwise the vertex program rewrites depth (slow path
+    /// [`crate::SlowPath::ClipDepthRewrite`]).
     pub depth_minus_one: bool,
     /// Bits of the sample mask, applied with the fragment's own coverage.
     pub sample_mask: u32,
 }
 
-/// How a vertex attribute is stored.
+/// How a vertex attribute is stored: every component count of every 8, 16 and 32-bit type, and the packed
+/// formats Direct3D and OpenGL use. A back end that lacks one (WebGPU has no three-component 8 or 16-bit
+/// formats) fetches it in the vertex program from a storage buffer or converts it on upload (slow path
+/// [`crate::SlowPath::VertexFormatConverted`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VertexFormat {
     Uint8x1,
     Uint8x2,
     Uint8x3,
     Uint8x4,
+    Sint8x1,
+    Sint8x2,
+    Sint8x3,
     Sint8x4,
     Unorm8x1,
     Unorm8x2,
     Unorm8x3,
     Unorm8x4,
+    Snorm8x1,
     Snorm8x2,
+    Snorm8x3,
     Snorm8x4,
-    Bgra8Unorm,
     Uint16x1,
     Uint16x2,
+    Uint16x3,
     Uint16x4,
+    Sint16x1,
     Sint16x2,
+    Sint16x3,
     Sint16x4,
+    Unorm16x1,
     Unorm16x2,
+    Unorm16x3,
     Unorm16x4,
+    Snorm16x1,
     Snorm16x2,
+    Snorm16x3,
     Snorm16x4,
+    Float16x1,
     Float16x2,
+    Float16x3,
     Float16x4,
-    Float32,
+    Float32x1,
     Float32x2,
     Float32x3,
     Float32x4,
-    Uint32,
+    Uint32x1,
     Uint32x2,
     Uint32x3,
     Uint32x4,
-    Sint32,
+    Sint32x1,
     Sint32x2,
     Sint32x3,
     Sint32x4,
+    /// Direct3D 9's D3DCOLOR: bytes in B, G, R, A order, read as RGBA.
+    Bgra8Unorm,
     Unorm10_10_10_2,
     Uint10_10_10_2,
     Float11_11_10,
@@ -241,7 +262,9 @@ pub enum VertexFormat {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StepMode {
     Vertex,
-    /// Advances once every `n` instances (Direct3D's step rate; zero means never).
+    /// Advances once every `n` instances (Direct3D's step rate; zero means never). WebGPU steps by one
+    /// only: other rates are fetched in the vertex program from the instance index (slow path
+    /// [`crate::SlowPath::InstanceRateInShader`]).
     Instance(u32),
 }
 
