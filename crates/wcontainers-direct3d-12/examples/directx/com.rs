@@ -1245,10 +1245,10 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn CopyResource(
         &self,
-        _pdstresource: windows_core::Ref<ID3D12Resource>,
-        _psrcresource: windows_core::Ref<ID3D12Resource>,
+        pdstresource: windows_core::Ref<ID3D12Resource>,
+        psrcresource: windows_core::Ref<ID3D12Resource>,
     ) {
-        self.unsupported("CopyResource");
+        List::CopyResource(self, pdstresource, psrcresource)
     }
     fn CopyTiles(
         &self,
@@ -1689,10 +1689,10 @@ impl ID3D12Resource_Impl for Resource_Impl {
     }
     fn GetHeapProperties(
         &self,
-        _pheapproperties: *mut D3D12_HEAP_PROPERTIES,
-        _pheapflags: *mut D3D12_HEAP_FLAGS,
+        pheapproperties: *mut D3D12_HEAP_PROPERTIES,
+        pheapflags: *mut D3D12_HEAP_FLAGS,
     ) -> windows_core::Result<()> {
-        Err(self.unsupported("GetHeapProperties"))
+        Resource::GetHeapProperties(self, pheapproperties, pheapflags)
     }
 }
 

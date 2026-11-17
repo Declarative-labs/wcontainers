@@ -32,7 +32,10 @@ use crate::gpu;
 pub fn hr(e: Error) -> windows::core::Error {
     match e {
         Error::Invalid(s) => windows::core::Error::new(E_INVALIDARG, s),
-        Error::NotImplemented(s) => windows::core::Error::new(E_NOTIMPL, s),
+        Error::NotImplemented(s) => {
+            eprintln!("wcontainers: {s}: not implemented");
+            windows::core::Error::new(E_NOTIMPL, s)
+        }
         Error::OutOfMemory => E_OUTOFMEMORY.into(),
         Error::DeviceRemoved => DXGI_ERROR_DEVICE_REMOVED.into(),
     }
@@ -840,6 +843,7 @@ impl Device {
             )
         };
         let kind = HeapType::from_d3d12(heap.Type.0 as u32).map_err(hr)?;
+        let heap_type = heap.Type;
         let front = resource_desc(&desc);
         let (id, address, host) = gpu::call(move |d| {
             let id = d.create_committed(kind, &front)?;
@@ -863,6 +867,8 @@ impl Device {
                     address,
                     host,
                     back_buffer: false,
+                    heap: heap_type,
+                    heap_flags: flags,
                     base: Base::child(),
                 }
                 .into(),
@@ -1255,6 +1261,9 @@ pub struct Resource {
     host: usize,
     /// A swap chain's back buffer, which the swap chain releases.
     back_buffer: bool,
+    /// The heap's type and the flags the resource was made with.
+    heap: D3D12_HEAP_TYPE,
+    heap_flags: D3D12_HEAP_FLAGS,
     base: Base,
 }
 
@@ -1267,6 +1276,8 @@ impl Resource {
                 address: 0,
                 host: 0,
                 back_buffer: true,
+                heap: D3D12_HEAP_TYPE_DEFAULT,
+                heap_flags: D3D12_HEAP_FLAG_NONE,
                 base: Base::child(),
             }
             .into(),
@@ -1275,6 +1286,28 @@ impl Resource {
 
     pub fn GetDesc(&self) -> D3D12_RESOURCE_DESC {
         self.desc
+    }
+
+    pub fn GetHeapProperties(
+        &self,
+        properties: *mut D3D12_HEAP_PROPERTIES,
+        flags: *mut D3D12_HEAP_FLAGS,
+    ) -> Result<()> {
+        // SAFETY: the caller's optional out pointers.
+        unsafe {
+            if let Some(p) = properties.as_mut() {
+                *p = D3D12_HEAP_PROPERTIES {
+                    Type: self.heap,
+                    CreationNodeMask: 1,
+                    VisibleNodeMask: 1,
+                    ..Default::default()
+                };
+            }
+            if let Some(f) = flags.as_mut() {
+                *f = self.heap_flags;
+            }
+        }
+        Ok(())
     }
 
     pub fn GetGPUVirtualAddress(&self) -> u64 {
@@ -1758,6 +1791,47 @@ impl List {
             base_vertex,
             first_instance,
         });
+    }
+
+    /// The whole resource: a buffer's bytes, or every subresource of a texture.
+    pub fn CopyResource(&self, dst: Ref<ID3D12Resource>, src: Ref<ID3D12Resource>) {
+        let (Some(d), Some(s)) = (dst.as_ref(), src.as_ref()) else {
+            return self
+                .rec
+                .lock()
+                .unwrap()
+                .fail(Error::Invalid("CopyResource with no resource"));
+        };
+        // SAFETY: resources come from this library.
+        let (d, s) = unsafe { (d.as_impl(), s.as_impl()) };
+        if d.desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER {
+            return self.record(Command::CopyBuffer {
+                dst: d.id,
+                dst_offset: 0,
+                src: s.id,
+                src_offset: 0,
+                size: d.desc.Width.min(s.desc.Width),
+            });
+        }
+        let layers = if d.desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D {
+            1
+        } else {
+            u32::from(d.desc.DepthOrArraySize)
+        };
+        for index in 0..u32::from(d.desc.MipLevels) * layers {
+            self.record(Command::CopyTexture {
+                dst: CopyLocation::Subresource {
+                    resource: d.id,
+                    index,
+                },
+                at: [0; 3],
+                src: CopyLocation::Subresource {
+                    resource: s.id,
+                    index,
+                },
+                area: None,
+            });
+        }
     }
 
     pub fn CopyBufferRegion(
