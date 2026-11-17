@@ -363,25 +363,23 @@ impl Context {
         first: *const u32,
         count: *const u32,
     ) {
+        // Without either array the buffers are bound whole; with one of them alone the call is
+        // invalid and dropped, as Direct3D drops it.
+        if first.is_null() != count.is_null() && !list.is_null() {
+            self.run("SetConstantBuffers1", |_| {
+                Err(wcontainers_direct3d_11::Error::InvalidArg(
+                    "constant ranges with one of their two arrays",
+                ))
+            });
+            return;
+        }
         let h = held::<_, Buffer>(list, n);
         let b = fronts(&h, |b| &*b.front);
-        // Without either array the buffers are bound whole; without one of them, that half of
-        // each slot's range stays as it was.
-        let ranges: Vec<_> = if (first.is_null() && count.is_null()) || list.is_null() {
+        let ranges: Vec<_> = if first.is_null() || list.is_null() {
             vec![None; h.len()]
         } else {
-            let bound = self.bound.borrow();
             (0..h.len())
-                .map(|i| {
-                    let was = bound.constant_ranges[stage]
-                        .get(start as usize + i)
-                        .copied()
-                        .flatten()
-                        .unwrap_or((0, 4096));
-                    let f = unsafe { first.as_ref().map_or(was.0, |_| *first.add(i)) };
-                    let c = unsafe { count.as_ref().map_or(was.1, |_| *count.add(i)) };
-                    Some((f, c))
-                })
+                .map(|i| unsafe { Some((*first.add(i), *count.add(i))) })
                 .collect()
         };
         let r = ranges.clone();
@@ -580,10 +578,42 @@ impl Context {
     /// for unordered access. A deferred context keeps what it was given (the front unbinds them
     /// when its commands run).
     fn forget_unbound_resources(&self) {
+        let mut gone = Vec::new();
         if self.is_deferred() {
+            // Direct3D's rule on the deferred context's own bindings: no view of a subresource
+            // bound as a target or for unordered access is bound for reading.
+            let mut bound = self.bound.borrow_mut();
+            let Bound {
+                resources,
+                uavs,
+                targets,
+                depth,
+                ..
+            } = &mut *bound;
+            let targets: Vec<_> = targets
+                .iter()
+                .flatten()
+                .map(|t| (*t.front).clone())
+                .chain(depth.iter().map(|d| (*d.front).clone()))
+                .collect();
+            for stage in [VERTEX, PIXEL, COMPUTE] {
+                let writer = if stage == COMPUTE { COMPUTE } else { PIXEL };
+                for h in resources[stage].iter_mut() {
+                    let written = h.as_ref().is_some_and(|v| {
+                        let v = &**v.front;
+                        v.texture()
+                            .is_some_and(|t| targets.iter().any(|x| x.overlaps(t)))
+                            || uavs[writer].iter().flatten().any(|u| u.front.overlaps(v))
+                    });
+                    if written {
+                        gone.push(h.take());
+                    }
+                }
+            }
+            drop(bound);
+            drop(gone);
             return;
         }
-        let mut gone = Vec::new();
         {
             let front = self.front.borrow();
             let mut bound = self.bound.borrow_mut();
@@ -2028,6 +2058,10 @@ impl Context {
         let list = CommandList::new(Rc::new(commands), self.child.device().clone());
         self.staged.borrow_mut().clear();
         self.after_list(restore.as_bool());
+        // Without an out pointer the recorded calls are dropped all the same.
+        if out.is_null() {
+            return Err(windows::Win32::Foundation::E_UNEXPECTED.into());
+        }
         out.write(Some(list.into()))
     }
 
