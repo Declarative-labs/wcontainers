@@ -1,6 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>WebGL 2 back end suite</title>
+<script type="importmap">{ "imports": { "wcontainers-device": "./device.js" } }</script>
 <script type="module">
 // Runs one test of the shared back-end suite through the WebGL 2 back end built for WebAssembly
 // (pkg/browser.js): ?test=<name>&off=<extensions to treat as missing, separated by spaces>. Sets
@@ -28,8 +29,10 @@ window.shownTexels = () => {
 };
 window.panicked = (message) => { panic = message; };
 try {
-  await init();
+  const wasm = await init();
   suite_test(params.get('test'), params.get('off') ?? '');
+  // Through JSPI, so the back end's waits suspend the test until the browser's next task.
+  await WebAssembly.promising(wasm.suite_run)();
   window.done = { ok: true, message: '' };
 } catch (e) {
   window.done = { ok: false, message: panic || String(e) };

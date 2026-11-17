@@ -11,12 +11,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(join(here, '../../../tools/graphics-rig/browser/package.json'));
 const { chromium } = require('playwright-core');
 
-// Serves <name>.html from this directory and /pkg/ from <pkg>; resolves to the server.
+// Serves <name>.html and <name>.js from this directory and /pkg/ from <pkg>; resolves to the server.
 export async function serve(pkg) {
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
   const server = createServer(async (request, response) => {
     const path = new URL(request.url, 'http://localhost').pathname;
-    const file = /^\/[a-z]+\.html$/.test(path) ? join(here, path.slice(1)) : path.startsWith('/pkg/') ? join(pkg, path.slice(5)) : null;
+    const file = /^\/[a-z]+\.(html|js)$/.test(path) ? join(here, path.slice(1)) : path.startsWith('/pkg/') ? join(pkg, path.slice(5)) : null;
     if (!file) return response.writeHead(404).end();
     try {
       response.writeHead(200, { 'content-type': types[extname(file)] ?? 'application/octet-stream' }).end(await readFile(file));

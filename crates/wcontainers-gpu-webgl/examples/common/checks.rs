@@ -936,3 +936,309 @@ pub fn fractional_viewports_are_refused<H: Host>() {
     b.end_pass();
     assert_eq!(b.status(), DeviceStatus::Lost(LossReason::Error));
 }
+
+/// With `TIMESTAMPS`, two timestamps around a draw read back in order (unless the GPU reports a
+/// disjoint stretch, which reading clears), and an occlusion set still counts beside them. Without
+/// it, timestamp sets, writes and the disjoint flag all answer `Absent(TIMESTAMPS)`.
+pub fn timestamps_and_their_disjoint_flag<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let absent = Err(GpuError::Absent(Features::TIMESTAMPS));
+    if !b.caps().has(Features::TIMESTAMPS) {
+        assert_eq!(
+            b.create_query_set(QueryKind::Timestamp, 2).err(),
+            absent.err()
+        );
+        assert_eq!(b.timestamps_disjoint(), absent);
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, WRITE_ONE, "vs", "fs");
+    let f = Format::R32Uint;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        f,
+        [64, 64, 1],
+        1,
+        usage,
+        false,
+    );
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 64.0, 64.0)];
+    let set = b
+        .create_query_set(QueryKind::Timestamp, 2)
+        .expect("create_query_set");
+    let _ = b.timestamps_disjoint().expect("timestamps_disjoint");
+    b.write_timestamp(&set, 0).expect("write_timestamp");
+    b.begin_pass(&kit::pass(&v, [0; 4], None));
+    for _ in 0..16 {
+        b.draw(&kit::call(
+            &k,
+            &program,
+            None,
+            &whole,
+            Topology::TriangleList,
+            3,
+        ));
+    }
+    b.end_pass();
+    b.write_timestamp(&set, 1).expect("write_timestamp");
+    let rb = b.read_queries(&set, 0, 2).expect("read_queries");
+    b.submit();
+    b.wait_read(&rb);
+    let mut out = [0u8; 16];
+    b.finish_read(rb, &mut out);
+    let [t0, t1] = [0, 8].map(|i| u64::from_le_bytes(out[i..i + 8].try_into().unwrap()));
+    let disjoint = b.timestamps_disjoint().expect("timestamps_disjoint");
+    assert!(
+        disjoint || (t0 > 0 && t1 >= t0),
+        "timestamps {t0} then {t1}, not disjoint"
+    );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Half of a 4 by 4 target, cut by its diagonal through pixel centres, so the pixels on it are partly
+/// covered.
+const HALF: &str = "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, -1.0));
+    return vec4<f32>(p[v], 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.5, 0.25, 1.0);
+}
+";
+
+/// A whole copy between two four-sample `rgba8unorm` textures (`MultisampleCopyResolved` where
+/// programs cannot read samples) resolves to the same texels as its source, with some pixels on the
+/// diagonal partly covered; resolved at a pass's end and by `resolve`, alike.
+pub fn multisampled_copies_resolve_as_their_source<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let f = Format::Rgba8Unorm;
+    if !b.caps().formats.takes_samples(f, 4) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, HALF, "vs", "fs");
+    let samples = |b: &mut H::Backend| {
+        b.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: f,
+            width: 4,
+            height: 4,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 4,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .expect("create_texture")
+    };
+    let (ms, copy) = (samples(&mut b), samples(&mut b));
+    let ms_view = kit::target(&mut b, &ms, f, 0, 0);
+    let single = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let [at_end, of_source, of_copy] =
+        [0; 3].map(|_| kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, single, false));
+    let end_view = kit::target(&mut b, &at_end, f, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    let mut pass = kit::pass(&ms_view, [0; 4], None);
+    if let Some(c) = &mut pass.colors[0] {
+        c.resolve = Some(&end_view);
+    }
+    b.begin_pass(&pass);
+    b.draw(&kit::call(
+        &k,
+        &program,
+        None,
+        &whole,
+        Topology::TriangleList,
+        3,
+    ));
+    b.end_pass();
+    let region = |t| TextureRegion {
+        texture: t,
+        mip: 0,
+        layer: 0,
+        origin: Origin::default(),
+        stencil: false,
+    };
+    let extent = Extent {
+        width: 4,
+        height: 4,
+        depth_or_layers: 1,
+    };
+    let before = b.slow_paths().count(SlowPath::MultisampleCopyResolved);
+    b.copy_texture(&region(&ms), &region(&copy), extent);
+    let counted = b.slow_paths().count(SlowPath::MultisampleCopyResolved) - before;
+    b.resolve(&region(&ms), &region(&of_source), f);
+    b.resolve(&region(&copy), &region(&of_copy), f);
+    let [end, source, copied] =
+        [&at_end, &of_source, &of_copy].map(|t| kit::read(&mut b, t, 0, 0, [4, 4, 1], 4, false));
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(end, source, "resolved at the pass's end and by resolve");
+    assert_eq!(copied, source, "the copy's resolve and the source's");
+    let partial = source
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|t| t[0] != 0 && t[0] != 255)
+        .count();
+    assert!(partial > 0, "no pixel on the diagonal is partly covered");
+    let reads = b
+        .caps()
+        .has(Features::MULTISAMPLE_READ | Features::SAMPLE_SHADING);
+    assert_eq!(
+        counted,
+        u64::from(!reads),
+        "MultisampleCopyResolved counted"
+    );
+}
+
+/// Writes one into an `r32uint` target over the whole of it, at the depth `z` in window space, given
+/// in clip space for the back end's convention.
+fn at_depth(z: f64, minus_one: bool) -> String {
+    let clip = if minus_one { 2.0 * z - 1.0 } else { z };
+    format!(
+        "
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {{
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, {clip:.12}, 1.0);
+}}
+@fragment fn fs() -> @location(0) vec4<u32> {{
+    return vec4<u32>(1u);
+}}
+"
+    )
+}
+
+/// With `FRACTIONAL_DEPTH_BIAS`, a constant bias of 0.1 units on a `depth16unorm` depth 0.45 of a
+/// step above step 1000 takes it past the half step, so it stores 1001 where no bias stores 1000.
+/// Without it, a raster block with a fractional bias is refused as absent.
+pub fn fractional_depth_bias<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if !b.caps().has(Features::FRACTIONAL_DEPTH_BIAS) {
+        let desc = RasterDesc {
+            fill: FillMode::Solid,
+            cull: CullMode::None,
+            front: FrontFace::Clockwise,
+            depth_bias: 0.1f32.to_bits(),
+            depth_bias_slope: 0,
+            depth_bias_clamp: 0,
+            depth_clip: true,
+            scissor: false,
+            line_width: 1.0f32.to_bits(),
+            provoking: ProvokingVertex::Last,
+            depth_minus_one: !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE),
+            sample_mask: u32::MAX,
+        };
+        assert_eq!(
+            b.create_raster(&desc).err(),
+            Some(GpuError::Absent(Features::FRACTIONAL_DEPTH_BIAS))
+        );
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let minus_one = !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE);
+    let program = kit::program(&mut b, &at_depth(1000.45 / 65535.0, minus_one), "vs", "fs");
+    let always = kit::depth_stencil(&mut b, Some(CompareFn::Always), true, None);
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let c = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        Format::R32Uint,
+        [4, 4, 1],
+        1,
+        usage,
+        false,
+    );
+    let cv = kit::target(&mut b, &c, Format::R32Uint, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    let mut stored = Vec::new();
+    for bias in [0.0, 0.1] {
+        let raster = kit::raster(&mut b, CullMode::None, FrontFace::Clockwise, bias, 0.0);
+        let f = Format::Depth16Unorm;
+        let d = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+        let dv = kit::target(&mut b, &d, f, 0, 0);
+        b.begin_pass(&kit::pass(&cv, [0; 4], Some((&dv, 0.0, false))));
+        b.draw(&DrawCall {
+            depth_stencil: &always,
+            raster: &raster,
+            ..kit::call(&k, &program, None, &whole, Topology::TriangleList, 3)
+        });
+        b.end_pass();
+        let got = kit::read(&mut b, &d, 0, 0, [4, 4, 1], 2, false);
+        stored.push(u16::from_le_bytes([got[0], got[1]]));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(
+        stored,
+        [1000, 1001],
+        "depth stored without and with a bias of 0.1 units"
+    );
+}
+
+/// The constant alpha blend factor drawn natively: white scaled by a constant alpha of 0.5 gives 128
+/// in every channel of an `rgba8unorm` target. A blend using the constant colour and the constant
+/// alpha together, which WebGL forbids, is refused as absent.
+pub fn constant_alpha_blends<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    if !b.caps().has(Features::BLEND_CONSTANT_ALPHA) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, HALF, "vs", "fs");
+    let both = |b: &mut H::Backend, colour: BlendFactor| {
+        let c = BlendComponent {
+            src: BlendFactor::ConstantAlpha,
+            dst: colour,
+            op: BlendOp::Add,
+        };
+        b.create_blend(&BlendDesc {
+            targets: [RenderTargetBlend {
+                blend: Some((c, c)),
+                writes: ColorWrites::all(),
+            }; MAX_COLOR_TARGETS],
+            same_for_all: true,
+            alpha_to_coverage: false,
+            logic_op: None,
+        })
+    };
+    if let Err(e) = both(&mut b, BlendFactor::Constant) {
+        assert_eq!(e, GpuError::Absent(Features::BLEND_CONSTANT_ALPHA));
+    }
+    let blend = both(&mut b, BlendFactor::Zero).expect("create_blend");
+    let f = Format::Rgba8Unorm;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
+    for alpha in [0.5f32, 0.25] {
+        b.begin_pass(&kit::pass(&v, [0; 4], None));
+        b.draw(&DrawCall {
+            blend: &blend,
+            // The constant colour is not used; only its alpha is.
+            blend_constant: [1.0f32, 1.0, 1.0, alpha].map(f32::to_bits),
+            ..kit::call(&k, &program, None, &whole, Topology::TriangleList, 3)
+        });
+        b.end_pass();
+        let got = kit::read(&mut b, &t, 0, 0, [4, 4, 1], 4, false);
+        assert_eq!(b.status(), DeviceStatus::Ok);
+        // The top left texel is wholly inside HALF's triangle: (1, 0.5, 0.25, 1) scaled by alpha,
+        // within one step (the GPU's blend rounds 127.5 either way).
+        let want = [1.0f32, 0.5, 0.25, 1.0].map(|c| c * alpha * 255.0);
+        let close = got[..4]
+            .iter()
+            .zip(want)
+            .all(|(g, w)| (f32::from(*g) - w).abs() <= 1.0);
+        assert!(
+            close,
+            "the top left texel at alpha {alpha}: {:?}, want {want:?}",
+            &got[..4]
+        );
+    }
+}
