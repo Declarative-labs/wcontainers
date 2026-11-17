@@ -630,3 +630,13 @@ pub(crate) const SOCK_MAX: u32 = 11;
 
 /// `recvmmsg`'s flag to wait only for the first message (`linux/socket.h`, not in uapi).
 pub(crate) const MSG_WAITFORONE: u32 = 0x10000;
+
+/// TCP's states as `/proc/net/tcp` shows them (`net/tcp_states.h`, which only the kernel's own
+/// headers hold); UDP shows the first and seventh.
+pub(crate) const TCP_ESTABLISHED: u8 = 1;
+pub(crate) const TCP_SYN_SENT: u8 = 2;
+pub(crate) const TCP_FIN_WAIT2: u8 = 5;
+pub(crate) const TCP_TIME_WAIT: u8 = 6;
+pub(crate) const TCP_CLOSE: u8 = 7;
+pub(crate) const TCP_CLOSE_WAIT: u8 = 8;
+pub(crate) const TCP_LISTEN: u8 = 10;

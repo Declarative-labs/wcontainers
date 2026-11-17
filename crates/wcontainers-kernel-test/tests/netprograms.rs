@@ -25,3 +25,12 @@ fn a_server_and_a_client_inside() {
 fn interfaces_and_routes() {
     script("ip addr show lo; ip link show lo; ip route | head -n 1; ip -6 addr show lo");
 }
+
+#[test]
+fn socket_and_route_tables() {
+    script(
+        "nc -l -p 8080 & a=$!; nc -lu -p 9090 & b=$!; sleep 0.5; \
+         netstat -tulnp | sed \"s,$a/,A/,;s,$b/,B/,\"; netstat -lx; route -n; ifconfig lo; \
+         kill $a $b; wait",
+    );
+}
