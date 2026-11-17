@@ -6,6 +6,7 @@
 //! topology and layout keys names a cached pipeline, and binding sets become cached bind groups whose
 //! uniform buffers take dynamic offsets (plan sections 4.4 and 4.5).
 
+mod blocks;
 mod convert;
 mod draw;
 mod edge;
@@ -154,6 +155,10 @@ struct BufferObj {
 #[derive(Debug)]
 struct TextureObj {
     desc: TextureDesc,
+    /// The format the GPU texture holds: `desc.format`, or a BC format's decoded one.
+    held: Format,
+    /// A decoded BC texture's blocks (`BlockDecoded`), per level and layer.
+    blocks: Option<RefCell<Vec<Vec<u8>>>>,
     raw: wgpu::Texture,
     used_in: Cell<u64>,
 }
@@ -258,7 +263,9 @@ struct QuerySetObj {
 
 #[derive(Debug)]
 struct ReadbackObj {
-    buffer: wgpu::Buffer,
+    /// The mapped buffer the answer arrives in; none when the host holds it.
+    buffer: Option<wgpu::Buffer>,
+    host: Vec<u8>,
     state: Arc<AtomicU8>,
     /// The serial of the encoder holding its copy.
     serial: u64,
@@ -448,7 +455,11 @@ impl WebGpu {
         texture: &TextureObj,
         desc: &TextureViewDesc,
     ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
-        let format = convert::texture_format(desc.format)?;
+        let seen = match texture.blocks {
+            Some(_) => blocks::decoded(desc.format)?,
+            None => desc.format,
+        };
+        let format = convert::texture_format(seen)?;
         let aspect = convert::aspect(desc.stencil, desc.format);
         let view = |aspect, format| {
             texture.raw.create_view(&wgpu::TextureViewDescriptor {
@@ -532,7 +543,11 @@ fn caps(
     let mut usages = [wgpu::TextureUsages::empty(); Format::COUNT];
     for (i, allowed) in usages.iter_mut().enumerate() {
         let format = format_at(i);
-        let Some(raw) = convert::texture_format(format) else {
+        // Without native BC, a BC format is held decoded (`BlockDecoded`): sampled, filtered and
+        // read back as its decoded format is, nothing else.
+        let decoded =
+            blocks::decoded(format).filter(|_| !f.contains(wgpu::Features::TEXTURE_COMPRESSION_BC));
+        let Some(raw) = convert::texture_format(decoded.unwrap_or(format)) else {
             continue;
         };
         if !raw.required_features().is_empty() && !f.contains(raw.required_features()) {
@@ -603,6 +618,13 @@ fn caps(
             if has {
                 uses |= bit;
             }
+        }
+        if decoded.is_some() {
+            uses &= FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
+            *allowed = wgpu::TextureUsages::TEXTURE_BINDING | copies;
+            formats.uses[i] = uses;
+            formats.samples[i] = 1;
+            continue;
         }
         formats.uses[i] = uses;
         let mut samples = 1u8;
@@ -850,7 +872,14 @@ impl Backend for WebGpu {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture, GpuError> {
-        let format = convert::texture_format(desc.format)
+        let decode = !self
+            .device
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
+        let held = blocks::decoded(desc.format)
+            .filter(|_| decode)
+            .unwrap_or(desc.format);
+        let format = convert::texture_format(held)
             .filter(|_| !self.caps.formats.get(desc.format).is_empty())
             .ok_or(GpuError::Invalid(
                 "texture format this back end does not hold",
@@ -905,6 +934,8 @@ impl Backend for WebGpu {
         });
         Ok(Texture(Rc::new(TextureObj {
             desc: *desc,
+            held,
+            blocks: (held != desc.format).then(|| RefCell::new(blocks::zeroed(desc))),
             raw,
             used_in: Cell::new(0),
         })))
@@ -1313,16 +1344,18 @@ impl Backend for WebGpu {
         self.caches.prune();
         for rb in self.to_map.drain(..) {
             let state = rb.0.state.clone();
-            rb.0.buffer
-                .map_async(wgpu::MapMode::Read, .., move |result| {
-                    let s = if result.is_ok() {
-                        MAP_READY
-                    } else {
-                        MAP_FAILED
-                    };
-                    state.store(s, Ordering::Release);
-                    wait::wake();
-                });
+            let Some(buffer) = &rb.0.buffer else {
+                continue;
+            };
+            buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+                let s = if result.is_ok() {
+                    MAP_READY
+                } else {
+                    MAP_FAILED
+                };
+                state.store(s, Ordering::Release);
+                wait::wake();
+            });
         }
         for d in self.destroy_after_submit.drain(..) {
             match d {
@@ -1379,7 +1412,8 @@ impl Backend for WebGpu {
     }
 
     fn wait_read(&mut self, readback: &Readback) {
-        if readback.0.serial == self.serial {
+        let pending = readback.0.state.load(Ordering::Acquire) == MAP_PENDING;
+        if pending && readback.0.serial == self.serial {
             self.submit();
         }
         let state = readback.0.state.clone();

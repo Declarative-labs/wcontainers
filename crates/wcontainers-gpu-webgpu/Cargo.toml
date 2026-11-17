@@ -9,6 +9,8 @@ repository.workspace = true
 
 [dependencies]
 wcontainers-gpu = { path = "../wcontainers-gpu" }
+bcdec_rs = "0.2.1"
+half = { version = "2.7.1", default-features = false }
 naga.workspace = true
 wgpu-naga-bridge = "30.0.2"
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "metal", "vulkan", "webgpu", "naga-ir", "wgsl"] }
