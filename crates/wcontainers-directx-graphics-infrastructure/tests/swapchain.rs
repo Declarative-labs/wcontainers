@@ -1,4 +1,5 @@
-//! Swap chains, presenting and the adapter description, checked on the recording back end.
+//! Swap chains, presenting, the adapter description and format support, checked on the recording
+//! back end.
 
 mod support {
     pub mod record;
@@ -123,7 +124,10 @@ fn the_adapter_answers_from_caps() {
     assert_eq!((adapter.vendor_id, adapter.device_id), (0x10de, 0x2206));
     assert!(!adapter.software);
     assert_eq!(adapter.description_utf16()[18], 0);
-    assert_eq!(present_format(b.caps(), Format::Rgb10a2Unorm), Format::Rgba16Float);
+    assert_eq!(
+        present_format(b.caps(), Format::Rgb10a2Unorm),
+        Format::Rgba16Float
+    );
 }
 
 #[test]
@@ -144,4 +148,87 @@ fn outputs_offer_their_current_mode() {
         format: 0,
     });
     assert_eq!((mode.width, mode.height, mode.format), (2560, 1440, 28));
+}
+
+#[test]
+fn format_support_follows_the_back_ends_format_uses() {
+    use support1::*;
+    let caps = Recorder::new().caps().clone();
+    // R8G8B8A8_UNORM: a vertex format; sampled, rendered, blended, multisampled, resolved and
+    // shown; no storage.
+    let rgba = format_support(&caps, 28);
+    assert_eq!(
+        rgba.support1,
+        IA_VERTEX_BUFFER
+            | TEXTURE1D
+            | TEXTURE2D
+            | TEXTURE3D
+            | TEXTURECUBE
+            | MIP
+            | SHADER_LOAD
+            | SHADER_SAMPLE
+            | SHADER_GATHER
+            | RENDER_TARGET
+            | BLENDABLE
+            | MULTISAMPLE_RENDERTARGET
+            | MULTISAMPLE_RESOLVE
+            | DISPLAY
+            | BACK_BUFFER_CAST
+    );
+    assert_eq!(rgba.support2, 0);
+    // The typeless group: shapes only, no casts without FORMAT_REINTERPRET.
+    assert_eq!(
+        format_support(&caps, 27).support1,
+        TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MIP
+    );
+    // R32_UINT: an index and vertex format, a target without blending, stored into but not loaded.
+    let r32 = format_support(&caps, 42);
+    assert_eq!(
+        r32.support1 & (IA_INDEX_BUFFER | IA_VERTEX_BUFFER | BLENDABLE | SHADER_SAMPLE),
+        IA_INDEX_BUFFER | IA_VERTEX_BUFFER
+    );
+    assert_ne!(r32.support1 & TYPED_UNORDERED_ACCESS_VIEW, 0);
+    assert_eq!(r32.support2, support2::UAV_TYPED_STORE);
+    // R32_FLOAT views depth stored as D32_FLOAT, so it compares.
+    assert_ne!(
+        format_support(&caps, 41).support1 & SHADER_SAMPLE_COMPARISON,
+        0
+    );
+    // D32_FLOAT is a depth target with no 3D shape; its R24 view of D24S8 loads and compares.
+    assert_eq!(
+        format_support(&caps, 40).support1,
+        TEXTURE1D | TEXTURE2D | TEXTURECUBE | MIP | DEPTH_STENCIL | MULTISAMPLE_RENDERTARGET
+    );
+    assert_eq!(
+        format_support(&caps, 46).support1,
+        TEXTURE1D
+            | TEXTURE2D
+            | TEXTURECUBE
+            | MIP
+            | SHADER_LOAD
+            | SHADER_SAMPLE_COMPARISON
+            | SHADER_GATHER_COMPARISON
+    );
+    // Formats the back end lacks or the interface does not hold are refused.
+    assert!(format_support(&caps, 65).is_empty());
+    assert!(format_support(&caps, 66).is_empty());
+    assert_eq!(format_support(&caps, 0).support1, BUFFER);
+    // Sample counts: the recorder's are 1 and 4; depth views take one only.
+    assert!(takes_samples(&caps, 28, 1) && takes_samples(&caps, 28, 4));
+    assert!(!takes_samples(&caps, 28, 2) && !takes_samples(&caps, 65, 1));
+    assert!(takes_samples(&caps, 27, 4) && takes_samples(&caps, 45, 4));
+    assert!(!takes_samples(&caps, 46, 4) && takes_samples(&caps, 46, 1));
+    assert_eq!(
+        [0, 28, 20, 45, 47, 103, 66, 116].map(plane_count),
+        [
+            Some(1),
+            Some(1),
+            Some(2),
+            Some(2),
+            Some(2),
+            Some(2),
+            None,
+            None
+        ]
+    );
 }
