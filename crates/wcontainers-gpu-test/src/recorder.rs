@@ -1132,6 +1132,16 @@ impl Backend for Recorder {
             {
                 return Err(GpuError::Invalid("view range outside the texture"));
             }
+            // Without TEXTURE_VIEWS: views to draw into of one level and one layer or all layers,
+            // and views of all layers in the texture's own dimension.
+            let all_layers = desc.base_layer == 0 && desc.layer_count == layers(&t.desc);
+            let to_draw = desc.mip_count == 1 && (desc.layer_count == 1 || all_layers);
+            if !self.caps.features.contains(Features::TEXTURE_VIEWS)
+                && !to_draw
+                && !(all_layers && desc.dimension == t.desc.own_view())
+            {
+                return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
+            }
             let id = self.add(Obj::View(ViewObj {
                 texture: *texture,
                 desc: *desc,
@@ -1389,6 +1399,18 @@ impl Backend for Recorder {
                     && !has.contains(Features::VERTEX_STORAGE_READ)
                 {
                     return Err(GpuError::Absent(Features::VERTEX_STORAGE_READ));
+                }
+                if let BindingResource::Texture(v) = e.resource
+                    && !has.contains(Features::TEXTURE_VIEWS)
+                    && self.view(*v).is_ok_and(|v| {
+                        self.texture(v.texture).is_ok_and(|t| {
+                            v.desc.dimension != t.desc.own_view()
+                                || v.desc.base_layer != 0
+                                || v.desc.layer_count != layers(&t.desc)
+                        })
+                    })
+                {
+                    return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
                 }
                 if let BindingResource::Texture(v) = e.resource
                     && self

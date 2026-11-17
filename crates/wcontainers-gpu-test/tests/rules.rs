@@ -1546,3 +1546,61 @@ fn copies_of_depth_and_stencil_move_the_aspect_named() {
         ["a stencil region of a format without stencil"]
     );
 }
+
+/// Without `TEXTURE_VIEWS` a back end makes views to draw into of one level and one layer (or all
+/// layers) and views of all layers in the texture's own dimension; it binds only the latter.
+#[test]
+fn views_of_other_shapes_need_texture_views() {
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::TEXTURE_VIEWS));
+    let t = r
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: 4,
+            height: 4,
+            depth_or_layers: 3,
+            mip_levels: 2,
+            samples: 1,
+            usage: ALL,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let shape = |dimension, mip_count, base_layer, layer_count| TextureViewDesc {
+        format: Format::Rgba8Unorm,
+        dimension,
+        base_mip: 0,
+        mip_count,
+        base_layer,
+        layer_count,
+        stencil: false,
+    };
+    let absent = Err(GpuError::Absent(Features::TEXTURE_VIEWS));
+    // Two layers of three, and one layer over two levels.
+    assert_eq!(
+        r.create_view(&t, &shape(ViewDimension::D2Array, 1, 0, 2)),
+        absent
+    );
+    assert_eq!(
+        r.create_view(&t, &shape(ViewDimension::D2, 2, 1, 1)),
+        absent
+    );
+    let whole = r
+        .create_view(&t, &shape(ViewDimension::D2Array, 2, 0, 3))
+        .unwrap();
+    let layer = r
+        .create_view(&t, &shape(ViewDimension::D2, 1, 1, 1))
+        .unwrap();
+    let bind = |r: &mut Recorder, v: &Id| {
+        r.create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(v),
+        }])
+    };
+    assert!(bind(&mut r, &whole).is_ok());
+    assert_eq!(
+        bind(&mut r, &layer),
+        Err(GpuError::Absent(Features::TEXTURE_VIEWS))
+    );
+}
