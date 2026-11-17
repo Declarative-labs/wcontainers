@@ -1,376 +1,153 @@
-# Graphics track status
+# Graphics track status (interface, G1)
 
 Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orchestrator/brief-graphics.md`.
+This branch, phase-2-graphics, is the shared line: the interface track merges the other graphics
+branches into it at the start and end of every run.
 
-## Done
+## Where things stand
 
-- G0, run 1 (2026-11-17): the plan, and `crates/wcontainers-gpu` with the interface as real Rust.
-- G0, run 2 (2026-11-17): every finding of G0's independent check fixed, in the plan and the crate:
-  - Feature levels (plan 9) follow Microsoft's tables: Direct3D 11 on WebGPU reports 11_0 (11_1 needs
-    logic ops, target-independent rasterisation and forced sample counts up to 16, none exact on
-    WebGPU); Direct3D 12 on WebGPU reports 11_0 with binding tier 1; Direct3D 11 on WebGL 2 reports
-    10_0 with multisample load absent for every format. The inexact `MultisampleReadCopy` is gone.
-  - Exact occlusion counts by a counting replay (plan 4.12, `OcclusionCountReplay`); `QueryKind` has
-    `OcclusionAny` (every back end) and `Occlusion` (exact, needs `OCCLUSION_COUNT`). Queries spanning
-    passes, other query kinds, `DrawAuto` and timestamps between draws have stated routes.
-  - Binding layouts for WebGPU (plan 4.5): derived from the program, plus `BindingLayoutKey` for what
-    the bound views and samplers decide; `FilterInShader` for unfilterable formats sampled linearly;
-    `PrepareDesc::layouts` and the cache carry the keys. Binding numbers are fixed per kind.
-  - Guest memory lifetime (plan 4.6): bytes the API lets the program reuse are copied once by the
-    stand-in into the call buffer or a staging ring; mapped memory is front-owned shadow blocks. The
-    page-tracking source is now described correctly (first-write tracking of shared pages).
-  - All fast paths are in the crate with defaults built from the base and tested: `clear_rects`,
-    `generate_mips` (2D, arrays, cubes, 3D) and `write_buffer_ring`, beside the earlier ones. Their
-    built-in programs are WGSL read by naga's WGSL reader. A `helpers()` base method holds their state.
-  - Fans keep the provoking vertex the API names (new `provoking` argument); loops are line lists, so a
-    guest's largest index is never taken as a restart; depth-stencil passes name only the aspects the
-    format has (`AspectOps`); `ColorAttachment::depth_slice`; `PassDesc::empty` for passes without
-    targets.
-  - New capability bits `MIRROR_ONCE`, `CLIP_DEPTH_ZERO_ONE`; new limits `color_bytes_per_sample`,
-    `buffer_copy_alignment`; every vertex format of every component count; texture writes take a
-    `WriteMode`; buffer clears take a pattern; handles are `Clone`.
-  - New named slow paths: `MirrorOnceInShader`, `InstanceRateInShader`, `OcclusionCountReplay`,
-    `TimestampSplitPass`, `UnalignedBufferEdge`, `TargetsSplit`, `FilterInShader`, `StreamOutRepacked`,
-    `LogicOpPerPrimitive`, `LayerSplit`, `VertexFetchZeroed`, and the counted refusal
-    `BindingsBeyondLimit` (49 reasons in all).
-  - Licences of what dxil-spirv ships, its C++ standard, the Chrome flag used for verdicts, and the
-    unmeasured direct DXBC lowering are written into the plan (sections 3, 6.2, 6.3, 13).
+- G0 is done (eight runs and eight independent checks on 2026-11-17; their detail is in the git log
+  and the plan): the plan, and `crates/wcontainers-gpu` with the interface as real Rust.
+- G1a, run 1 (2026-11-17), done and pushed:
+  - Every open finding of G0's last check fixed in the plan and the crate (list below).
+  - The Linux build loop, `tools/graphics-rig/linux`.
+  - `crates/wcontainers-gpu-test`: the recording back end (`Recorder`) and the first seven tests of
+    the shared suite, which any back end runs with one macro line (How to run).
 
-- G0, run 3 (2026-11-17): every finding of the second independent check fixed:
-  - Feature levels (plan 9) now state what each level needs of a back end's numbers (Microsoft's table
-    and the SDK headers, read on the desktop) and how each is met: texture sizes are conditions (11_0
-    needs 16384 2D and cube, 2048 3D and layers; else 10_1, 10_0); input slots past the limits are
-    fetched in the program (`VertexPulledInShader`); constant buffers past WebGPU's uniform slots are
-    read as storage (`ConstantsAsStorage`), past WebGL 2's blocks or 16 KiB block size through a texture
-    (`ConstantsAsTexture`); stage values are packed, then refused (`VaryingsBeyondLimit`); BC formats are
-    decoded where not native (`BlockDecoded`, with `bcdec_rs`), with the blocks kept on the host for
-    copies and read backs (`BlockCopyReadBack`). WebGL 2's 10_0 conditions now include 2048 3D, 512
-    layers and the cube size.
-  - Sampler LOD bias: removed from `SamplerDesc` (no browser sampler has one); fronts pass it in the
-    helper constants and bind a variant (`LodBiasInShader`, plan 4.12).
-  - Cube textures: `TextureDesc::cube` and `own_view()`; WebGL 2 picks the GL target from it; other view
-    kinds come from a front-kept second texture (`ReinterpretCopy`). 1D textures removed: fronts make them
-    2D, one texel high.
-  - The brief's "build a shader with the most common states when it arrives" is written as step 2 of
-    plan 4.4, with a combination tracker helper for G1.
-  - The Direct3D family's module split: one module per back end, recorded as a departure (plan 2, 10).
-  - Program variants moved from back ends to fronts and the shaders crate. `VariantKey`, `Reflection`,
-    the helper constants (`HelperValue`) and the slot ranges (`SlotKind`) are now Rust in
-    `wcontainers-gpu` (`reflect.rs`); the conversion and stage helper API is written out in plan 6.4.
-    Milestones in plan 12 restated with what each needs; a rule for interface changes after G0.
-  - Minor: `write_buffer_ring` aligns empty parts; `ViewportDepthFlip` for near beyond far;
-    `ExecuteIndirect` in plan 5.2; texture UAV clears by dispatch; `DEPTH_BIAS_CLAMP` and
-    `DepthBiasInShader` (was `LineBiasInShader`); the loop and fan doc strings corrected.
-  - New capability bits `DEPTH_BIAS_CLAMP`, `BLOCK_COMPRESSION`; limit `max_texture_cube` (the 1D limit
-    removed). 57 slow path reasons.
+## G0's open findings, and how each was settled (plan section, crate item)
 
-- G0, run 4 (2026-11-17): every finding of the third independent check fixed:
-  - Texture atomics (required at 11_0 on `R32_UINT`, `R32_SINT`, exchange on `R32_FLOAT`): new
-    `FormatUse::STORAGE_ATOMIC` (no browser format has it) and the exact route `AtomicsThroughBuffer`
-    (the view's texels in a buffer, copied around other uses; plan 4.12).
-  - 16-bit normalised and rendered snorm formats: native with `texture-formats-tier1` (WebGPU) or
-    EXT_texture_norm16 and EXT_render_snorm (WebGL 2), otherwise `NormAsInteger` (stored as the integer
-    format of the same bits, decoded, filtered and encoded in the program, blended in it:
-    `BlendInShader`). 32-bit float blending, which 10_0 also requires, takes `BlendInShader` without
-    `float32-blendable` or EXT_float_blend.
-  - `STENCIL_PER_FACE` removed from WebGL 2's list (WebGL forbids it); `StencilFacesSplit` there.
-  - Sample mask: new `Features::SAMPLE_MASK` (WebGPU); WebGL 2 writes it in the program with
-    OES_sample_variables (`SampleMaskInShader`), and without it the Direct3D fronts report no
-    multisampling.
-  - Stencil sampling on WebGL 2: WEBGL_stencil_texturing, otherwise `StencilCopiedByDraw`. Every back end
-    serves both aspects of a depth-stencil format (documented on `FormatUse::SAMPLE` and the view).
-  - Per-target blends without OES_draw_buffers_indexed: `TargetsSplit`; `BlendDesc::same_for_all` doc
-    corrected.
-  - `VariantKey` now holds every back-end-dependent rewrite (`texel_buffers`, `storage_packed`,
-    `atomics_through_buffer`, `decoded`, `targets_in_shader`, the sample-mask flag); `convert` reads
-    nothing else, so cache keys name one module everywhere (plan 4.5, 8).
-  - `clear_texture` now takes the texture, levels and layers and clears every 3D slice and every layer
-    in a pass of its own; `generate_mips` reads the level above through whole-array, cube or cube-array
-    views (new built-in programs) so it needs no `TEXTURE_VIEWS`. Tests for both. Built-in programs are
-    now made one at a time when a default first draws with each, so WebGL 2 never builds the cube-array
-    one.
-  - Overlapping queries (`QueriesSegmented`, plan 4.7), append and counter views and
-    `CopyStructureCount` (`SlotKind::Counter`, plan 5.1), copies within typeless groups
-    (`CopyThroughBuffer`, `DepthWrittenByDraw`), WebGL 2 copies and read backs of formats it cannot
-    attach (`HostCopyKept`), and surface formats and colour space (`FormatUse::PRESENT`, SDR only,
-    plan 4.9).
-  - Renamed: `LogicOpPerPrimitive` to `TargetReadPerPrimitive`, `BlockCopyReadBack` to
-    `HostCopyReadBack`. 66 slow path reasons.
+- Blocking, Direct3D 10 and 11's core requirements the back ends have only optionally (plan 4.12's new
+  bullet, 4.11, 9; `Features` docs, `SlowPath`, `VariantFlags`, `HelperValue::DepthRange`):
+  - clip distances: `ClipDistanceInShader` (distance over w interpolated linearly, discard, or the
+    sample mask from derivatives on multisampled targets), `VariantFlags::CLIP_DISTANCE`;
+  - cull distances: `CullDistanceAsGeometry` (the stage helper drops primitives); the plan's "Mesa
+    lowers them to discards" corrected (5.4);
+  - dual-source blending: `BlendInShader`;
+  - depth clip off: `DepthClampInShader`, `VariantFlags::DEPTH_CLAMP`, `HelperValue::DepthRange`;
+  - `SV_PrimitiveID` in pixel shaders: `PrimitiveIdAsGeometry`, `VariantFlags::PRIMITIVE_ID_FROM_STAGE`;
+  - `D32_FLOAT_S8X24_UINT`: a condition of 10_0 and above on WebGPU (depth32float-stencil8), so an
+    adapter without it reports 9_3; core on WebGL 2;
+  - indirect-first-instance: `IndirectReadBack` without it.
+- Blocking, resolve without its format: `Backend::resolve(src, dst, format)`; WebGPU exact through
+  views, WebGL 2's other-twin resolve is the listed loss `ResolveInStoredFormat` (plan 4.2, 4.12, 5.1).
+- `generate_mips` through the sRGB twin of a typeless texture: the default reads and writes through
+  twin views (plan 4.3; test `generate_mips_through_the_srgb_twin_reads_and_writes_srgb_views`).
+- Layout key for helper-set textures below binding 32: load-only textures take
+  `"unfilterable-float"` from the program and need no bit (plan 4.5; `BindingLayoutKey` doc).
+- Buffer-texture copies at pitches WebGPU refuses, and buffers into depth: `RowsRepacked`, and
+  `DepthWrittenByDraw` through an `r32float` texture (plan 4.2; `CopyBufferTexture::row_pitch`,
+  `copy_buffer_to_texture` docs).
+- Texture UAV clears of views served through a texel buffer: `clear_buffer` of that buffer with the
+  encoded texel (plan 5.1).
+- Staging read backs start at the copy into the staging resource, not at `Map(READ)` (plan 4.6, 5.1).
+- Stride-zero vertex streams: every vertex reads one element; WebGL 2 uses an instance divisor of
+  2^31 (plan 4.4; `VertexStream::stride` doc; the unused-stream doc now says `None`).
+- 93 slow path reasons (six new). 32 tests in `wcontainers-gpu`.
 
-- G0, run 5 (2026-11-17): every finding of the fourth independent check fixed:
-  - Built-in programs: each is now its own module holding only its own bindings and types, validated
-    with only the abilities it needs (cube arrays only for the cube-array ones). naga's GLSL writer asks
-    for every type a module declares, so the old shared module could not be written for WebGL 2 at all.
-    A new test writes all 21 as WGSL and the 19 WebGL 2 makes as GLSL ES 3.00; Chrome compiled all of
-    them (Measurements).
-  - `generate_mips` takes `values` (the format the texels hold) and reads the level above by one of
-    three programs: the linear sampler where the format has `FILTER`; otherwise samples at texel centres
-    through a nearest sampler, blended in the program; or, for integer twins (`NormAsInteger`), integer
-    loads decoded, blended and encoded. Integer cubes are read through a 2D array view, or a copy
-    without `TEXTURE_VIEWS`. Tests for each route.
-  - `[earlydepthstencil]`: `EarlyTestsInShader` (depth and stencil read from the read-only attachment
-    and tested in the program) and `EarlyTestsPerPrimitive` (draws that write depth or stencil), with
-    `VariantFlags::EARLY_TESTS`, `HelperValue::EarlyTests`, `EARLY_DEPTH_BINDING`,
-    `EARLY_STENCIL_BINDING`, and `side_effects` and `discards` in `StageExtras::Pixel` (plan 4.12).
-  - Per-resource minimum level of detail, by Microsoft's functional specification 5.8: `MinLodClamp`,
-    `VariantKey::min_lod_clamped`, `HelperValue::MinLod`, `CLAMPED_SAMPLER_BINDING`,
-    `Reflection::sampled_pairs` (plan 4.12, 5.1, 5.2).
-  - Direct3D 12 with several queues, GPU waits and CPU signals: ordering rule in plan 5.2 and 4.8.
-  - `copy_buffer` within one buffer: documented, `CopyWithinBuffer` on WebGPU.
-  - Fractional viewports: `Features::FRACTIONAL_VIEWPORT` (WebGPU, which G2 must confirm),
-    `ViewportInShader` on WebGL 2, with a listed loss on the edges of multisampled targets.
-  - Staging `Map(WRITE)` after GPU writes: `StagingRefreshed`; the 4.6 claim narrowed.
-  - `WideLinesAsTriangles` removed (no use). The fan and loop default writes into the ring.
-  - 71 slow path reasons.
+## Interface changes
 
-- G0, run 6 (2026-11-17): every finding of the fifth independent check fixed:
-  - Attachments of different sizes: `PassDesc` requires one size (WebGPU and WebGL 2 both do); the pass
-    tracker (G1) fits a larger depth buffer or mixed colour sizes through pooled temporaries, the common
-    area copied in and out, scissors cut (`AttachmentsFitted`, plan 4.7). Exact on WebGPU; on WebGL 2 a
-    multisampled replaced attachment keeps only its resolved value (listed loss).
-  - WebGL 2's index buffer rule: `write_buffer_ring` now takes a `RingKind` and keeps an index ring and a
-    data ring; the WebGL 2 back end holds a buffer used both ways as two GL buffers (`IndexBufferTwin`,
-    `IndexTwinReadBack`, plan 4.6).
-  - Query results into a buffer on the GPU: new fast path `resolve_queries` (default reads back and
-    writes ordered, `QueryResolveWait`; WebGPU overrides with `resolveQuerySet`). Direct3D 12's
-    `ResolveQueryData`, binary occlusion as 0 or 1, and `SetPredication` on a buffer
-    (`PredicationIndirect` on WebGPU for recorded lists, else `PredicationWait`) written into plan 4.12
-    and 5.2; Vulkan's in 5.5.
-  - 24-bit depth: `Features::DEPTH24_UNORM`, found by a probe draw each back end runs at device creation
-    (plan 4.11); without it a constant bias into 24-bit depth takes `DepthBiasInShader`; float precision
-    of the stored depth is a listed loss.
-  - Texture level and sample counts: `Features::TEXTURE_LEVEL_QUERY` and `VariantFlags::TEXTURE_INFO`;
-    the shaders crate reads them from helper constants the front writes (`TextureInfoInHelpers`); plan
-    6.5 no longer gives this to back ends.
-  - `IndexFormat::U8` with `Features::INDEX_U8` (`IndexWidened` on WebGPU); adjacency topologies without
-    a geometry shader (`AdjacencyDropped`); `capture_vertices` takes `rasterize`; `timestamps_disjoint`
-    (WebGL 2's `GPU_DISJOINT_EXT`).
-  - The fan and loop default builds its list in a kept buffer (`Helpers::scratch`), no allocation per
-    draw once grown; guest indices are walked in place.
-  - The Chrome compile tool now enables every WebGL extension before compiling; the corpus's GLSL ES
-    verdicts were rerun (80 of 95 compile; plan 6.3). dxil-spirv's `bc` attribution corrected.
-  - 79 slow path reasons. 28 tests (three new: query resolve default, separate rings, 8-bit indices).
+- Commit c60a829 ("interface: gave resolve its format, ..."): `Backend::resolve` takes a `Format`
+  (a base method's signature: back ends add the argument); new `SlowPath` variants
+  `ClipDistanceInShader`, `DepthClampInShader`, `CullDistanceAsGeometry`, `PrimitiveIdAsGeometry`,
+  `RowsRepacked`, `ResolveInStoredFormat`; `VariantFlags::CLIP_DISTANCE`, `DEPTH_CLAMP`,
+  `PRIMITIVE_ID_FROM_STAGE`; `HelperValue::DepthRange`; `generate_mips` accepts the sRGB twin as
+  `values`. The rest is documentation. No other track had changed the crate yet.
 
-- G0, run 7 (2026-11-17): every finding of the sixth independent check fixed:
-  - Vertex and instance numbers: the common form's `vertex_index` and `instance_index` include the
-    draw's bases (as WebGPU and Vulkan count them; `DrawRange` doc, plan 4.4, 4.12). `SV_VertexID`,
-    `SV_InstanceID`, `gl_InstanceID`, `gl_BaseVertex`, `gl_BaseInstance` and `gl_DrawID` read the bases
-    through `VariantKey::draw_base`: from `HelperValue::DrawBase` for direct draws
-    (`DrawBaseInHelpers`), from the argument buffer at `DRAW_ARGUMENTS_BINDING` for indirect ones on
-    WebGPU (`DrawBaseFromArguments`). WebGL 2 keeps the promise under `BaseVertexRebind` with naga's
-    `naga_vs_first_instance` and a `naga_vs_base_vertex` uniform G6 adds to naga's GLSL writer.
-    `SystemValue` gained `BaseVertex`, `BaseInstance`, `DrawIndex`.
-  - Typed storage stores on formats WebGPU stores into only with `texture-formats-tier1`: the atomics
-    route generalised (`VariantKey::texels_through_buffer`, renamed from `atomics_through_buffer`; new
-    `StorageFormatThroughBuffer`). Video and packed formats: `Format::Rgbg8Unorm` and `Grgb8Unorm`
-    (decoded, `BlockDecoded`); `NV12`, `YUY2`, `420_OPAQUE` built by the front from ordinary textures;
-    no video device (plan 4.12, 9).
-  - Copies between multisampled textures on WebGL 2: `MultisampleCopyResolved`, a listed loss.
-  - Direct3D 12 placed resources: own storage each, with the defined inheritance cases (overlapping
-    buffers; identically described textures at one offset) made exact by copies before use
-    (`AliasCopied`, plan 5.2).
-  - Alpha-antialiased lines: `AntialiasedLinesAsQuads`, `VariantFlags::LINE_COVERAGE` (plan 4.12, 7).
-  - Depth and stencil read back on WebGL 2 by `DepthReadByDraw`; partial `Discard` on WebGL 2 orphans the
-    whole buffer at its size; `CopyBufferRegion` within one buffer named; the fan walk is generic (no
-    `dyn` left in the crate); `generate_mips` builds and counts nothing when no level is drawn, and
-    counts `FilterInShader` per draw (new test).
-  - 85 slow path reasons. 29 tests.
+## The recording back end and the suite
 
-- G0, run 8 (2026-11-17): every finding of the seventh independent check fixed:
-  - Helper constants: one block per program stage, each at its own binding of set 3
-    (`helper_binding(stage)`: 0 vertex and compute, 12 fragment), so a vertex stage's base vertex and a
-    pixel stage's LOD bias never share offsets (plan 6.4). Bindings a variant adds (pulled streams,
-    constants as storage or textures, Direct3D 12's spilled root constants) live in the reading stage's
-    own set and are named in the reflection (`ReflectedBinding::added`, `AddedBinding`). Direct3D 9-11
-    use one set per stage; `MAX_BINDING_SETS` doc and plan 5.1 agree.
-  - WebGPU's usage scope: `PassDesc` states the rule; the pass tracker splits (`UsageScopeSplit`), and a
-    draw using one buffer both ways (OpenGL, Vulkan) reads a copy (`UsageScopeCopied`) (plan 4.7, 5.x).
-  - `BindingLayoutKey` has only the unfilterable-texture bits; sampler layouts follow from them and the
-    program, so one program with point then linear samplers is one pipeline. `FilterInShader` binds the
-    real sampler, so other textures sharing it keep native filtering (plan 4.5).
-  - Creation never waits; what the APIs refuse at creation is decided on the calling thread by pure
-    checks over the bytes and a copy of `Caps` (plan 4.8); memory exhausted later is device loss
-    (`LossReason::OutOfMemory`, answered as device removed with `DXGI_ERROR_DRIVER_INTERNAL_ERROR`).
-  - Minor: whole-buffer ordered writes are `Discard`; uniform bindings use dynamic offsets and a uniform
-    ring (no bind group per draw); `depth_bias` is a float (`FRACTIONAL_DEPTH_BIAS`);
-    `multisample_lines` removed (line rule a listed loss); `BLEND_CONSTANT_ALPHA`; WebGL 2's window
-    origin decided (plan 6.5); event queries (5.1); sample counts per format (`FormatCaps::samples`,
-    `takes_samples`); Vulkan's GPU-to-host read backs (5.5); plan 6.3's 107-of-112 explained (the
-    harness validated with no capabilities); the WebGL 2 back end also built for the desktop on ANGLE
-    through `glow` and `khronos-egl` (plan 10, G3, G4); Direct3D 12 descriptors read at replay; the
-    built-in programs' keys are BLAKE3.
-  - 87 slow path reasons. 31 tests.
-
-## Partly done
-
-- Nothing in G0. Designed for G1, not in the crate yet: the pass tracker (plan 4.7), the occlusion
-  counter (plan 4.12) and the combination tracker (plan 4.4).
+- `Recorder` keeps every object's bytes on the CPU and runs each call when it is recorded. It checks
+  the interface's rules it meets (draws inside passes, copies and read backs outside, attachments of
+  one size, depth aspects matching the format, views in the texture's format or its twin, objects
+  used after `destroy`, read backs finished before they are ready, queries) and records each broken
+  rule in `violations`, losing the device; every base call is logged in `calls`.
+- It draws: programs in the common form run in an interpreter of naga's IR (`program.rs`;
+  arithmetic, vectors, matrices, structs, locals, branches, loops, uniform and read-only storage
+  buffers, texture samples and loads); triangles are clipped to the depth range, snapped to 1/256
+  pixel, filled by pixel centres and the top-left rule, depth and stencil tested, blended. What it
+  does not do yet is an error naming it and device loss, never a wrong answer: points and lines,
+  multisampling (only one sample is declared), cube sampling, implicit level of detail over more than
+  one level (needs derivatives), storage writes, compute, indirect draws, alpha to coverage.
+- Its `Caps` declare only what it does: held formats are the 8, 16 and 32-bit colour formats and the
+  depth and stencil formats; no BC, no storage, one sample. No interpreter crate for naga's IR
+  exists, so `program.rs` is our own.
+- Suite tests (`crates/wcontainers-gpu-test/src/suite.rs`), each generic over `Host`:
+  `buffer_writes_land_in_order_and_read_back`, `texture_writes_land_and_read_back`,
+  `copies_move_bytes_exactly` (includes an unaligned buffer copy, a copy within one buffer and a
+  12-byte row pitch, which WebGPU must repack), `clears_fill_exactly`,
+  `triangle_covers_the_pixels_whose_centres_it_holds` (with a culled back face),
+  `textured_draw_with_depth_and_blending`, `present_shows_the_frame` (checks the shown texels where the
+  host can see them: `Host::shown` returns None otherwise).
 
 ## Next
 
-- G0's independent check, again (the eighth).
-- G1 to G6 as in plan section 12; they can run in parallel. G1 is short and every other milestone builds
-  its tests on it, so start it first.
+- G1b: the pass tracker (plan 4.7, with attachment fitting and the usage-scope split), the occlusion
+  counter (4.12), the combination tracker (4.4); the recording back end's remaining rules (usage
+  scope, write ordering across passes) and a structured call stream that replays identically; the
+  seeded random call-sequence generator (100,000 cases, count recorded); every fast-path default shown
+  built from the base by a recorded stream; more suite tests (indexed draws and strips with restart,
+  instancing, stencil, every format's clear and read back, mip levels, layered and 3D targets,
+  queries, fans through `draw_fan_or_loop`).
+- The independent check of G1a.
 
 ## How to run
 
-- Interface crate: `nix develop -c cargo test -p wcontainers-gpu` (31 tests) and
-  `nix develop -c cargo clippy -p wcontainers-gpu --all-targets -- -D warnings`, and
-  `RUSTDOCFLAGS="-D warnings" nix develop -c cargo doc -p wcontainers-gpu --no-deps`. It also builds for
-  `wasm32-unknown-unknown`.
-- Built-in programs in Chrome: `WCONTAINERS_GPU_BUILTINS_OUT=<scratch>/g0-run5/builtins nix develop -c
-  cargo test -p wcontainers-gpu`, then `nix develop -c sh -c 'cd <scratch>/tools && node
-  chrome-compile.mjs ../g0-run5/builtins'`.
-- Shader corpus (scratch, `/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics`):
-  - dxbc-spirv built with `nix shell nixpkgs#meson nixpkgs#ninja nixpkgs#clang -c sh -c 'meson setup
-    build/dxbc-spirv -Denable_tools=true -Dbuildtype=release && ninja -C build/dxbc-spirv'` from
-    `src/dxbc-spirv`. The scratch copy of `tools/dxbc_compiler.cpp` was changed to drop the float-control
-    modes (round and denorm modes set to none), as plan 6.3 says.
-  - dxil-spirv built with CMake and Ninja from `src/dxil-spirv` into `build/dxil-spirv`.
-  - Corpus: `python3 -I tools/extract_dxbc.py downloads/wine-tests/d3d11.c corpus/dxbc`, then
-    `build/dxbc-spirv/tools/dxbc_compiler X.dxbc --spv corpus/spv2/X.spv` per file.
-  - Naga and Chrome verdicts: from the checkout,
-    `nix develop -c <scratch>/tools/run-corpus.sh <scratch>/corpus/spv2 <scratch>/corpus/out-via-spv2
-    <scratch>/corpus/dxbc-via-spv` writes `corpus/dxbc-via-spv-naga.txt` and `-chrome.txt`. Chrome runs
-    headless with `--enable-unsafe-webgpu`.
-  - DXIL: HLSL in `corpus/hlsl`, DXC from `nix build nixpkgs#directx-shader-compiler`, dxil-spirv with
-    `--no-bda --ssbo-uav --ssbo-srv` (plus `--bindless` for the SM 6.6 shader), then `run-corpus.sh` on
-    `corpus/dxil-spv`.
-- Microsoft's feature level and format tables used for plan 9 are in `downloads/msdocs/`.
-- Chrome's WebGPU limits and features and WebGL 2 parameters and extensions:
-  `nix develop -c node <scratch>/tools/all-limits.mjs` (headless Chrome through the flake's Playwright);
-  the run-3 output is `corpus/chrome-limits-run3.json`.
+- Linux loop (CPU only): `tools/graphics-rig/linux <command>` sends the working tree to
+  `~/wcontainers-graphics/src/phase-2-graphics` on tom@192.168.2.240 (rsync, ignored files left out)
+  and runs the command there with `CARGO_TARGET_DIR=~/wcontainers-graphics/target/phase-2-graphics`,
+  5 cargo jobs (2 when that machine's load average is above 8), at nice 10. Examples:
+  - `tools/graphics-rig/linux cargo test -p wcontainers-gpu -p wcontainers-gpu-test`
+  - `tools/graphics-rig/linux sh -c 'cargo clippy -p wcontainers-gpu -p wcontainers-gpu-test --all-targets -- -D warnings'`
+  - `tools/graphics-rig/linux sh -c 'RUSTDOCFLAGS="-D warnings" cargo doc -p wcontainers-gpu -p wcontainers-gpu-test --no-deps'`
+  - Rust there: rustup with the 1.99.0 toolchain the repository names, already installed by
+    another track; this run installed nothing.
+- A back end runs the suite with a test file holding a `Host` implementation and
+  `wcontainers_gpu_test::suite!(MyHost);` (see `crates/wcontainers-gpu-test/tests/recorder.rs`).
+- On the Mac only formatting: `nix develop -c cargo fmt -p wcontainers-gpu -p wcontainers-gpu-test`.
+- G0's corpus and Chrome tools are described in the plan, section 6.3, and the git history of this
+  file (G0 run 8).
 
 ## Measurements
 
-- No timings were taken in G0. The shader verdicts (counts only) were taken on the Mac (Apple M5) on
-  2026-11-17 with load average 12.51, 20.81, 20.69 when the builds started; Chrome as installed, headless,
-  through the flake's Playwright. Results: plan section 6.3, files in `corpus/`. Run 2 took no new
-  measurements (load average 13.02, 14.76, 17.39 when its tests ran). Run 4 took no new measurements
-  (load average 27.52, 27.98, 24.45 when its tests ran); facts it used were read in Microsoft's format
-  tables in `downloads/msdocs/` and the WebGPU specification copy in `check-g0/spec/` (scratch).
-- Run 5, on the Mac, load average 25.87, 28.86, 35.02: Chrome compiled the interface's built-in
-  programs, 21 WGSL modules and 37 GLSL ES 3.00 files, none failed. Counts, not timings. Microsoft's
-  Direct3D 11.3 functional specification saved in `downloads/d3d11spec/` (scratch) for the clamp rules.
-- Run 6, on the Mac, load average 27.88, 27.60, 28.43: the corpus's 95 GLSL ES files recompiled in
-  Chrome's WebGL 2 with every offered extension enabled: 80 compiled, 15 failed (7 bitfield, 6
-  `textureGather`, 1 multisampled sampler, 1 naga writer bug on `gl_SampleID`'s type). WGSL unchanged
-  (111 of 112). Counts, not timings. File: `corpus/dxbc-via-spv-chrome-run6.txt`.
-- Run 7 took no new measurements (load average 22.28, 26.71, 28.80 when its tests ran); facts it used
-  were read in Microsoft's format tables (`downloads/msdocs/`), the functional specification
-  (`downloads/d3d11spec/`, 3.4.4, 8.16, 8.18), the aliasing page (`check6/spec/aliasing.md`), the WebGPU
-  specification copy (`check-g0/spec/webgpu.bs`), naga 30.0.2's GLSL writer and dxil-spirv's source.
-- Run 8, on the Mac, load average 31.03, 63.57, 50.76: naga revalidated the five WGSL modules the
-  corpus harness had counted as failures, with the error text (`corpus/revalidate-run8.txt`, tool
-  `experiments/shader-corpus/src/bin/revalidate.rs`): three need `MULTISAMPLED_SHADING` and pass with
-  it, two need `SHADER_FLOAT16_IN_FLOAT32` (`pack2x16float`); both are WebGPU core. Counts, not timings.
-  The crate's tests ran at load average 91.83, 48.28, 38.23.
-- Run 3, on the Mac, load average 14.71, 16.16, 16.39: Chrome's adapter limits (plan 4.11), counts not
-  timings. WebGPU: 16384 2D, 2048 3D and layers, 8 vertex buffers, 30 attributes, 12 uniform buffers, 10
-  storage buffers, 48 sampled textures, 28 inter-stage slots, 64 immediate bytes, BC and BC sliced 3D
-  present. WebGL 2: 16 attributes, 16 uniform blocks of 16384 bytes, 16 units, 2048 3D and layers,
-  every extension the plan names. Direct3D's numbers (14 constant buffers, 32 input slots and elements,
-  32 vertex outputs; 16 at 10_0; 512 layers at 10_0) read from the desktop's SDK 10.0.26100 headers,
-  read only.
+- G1a took no timings. Loads when the tests ran: Linux laptop 0.4 to 1.3 (its own load average,
+  printed by the loop).
+- Suite on the recording back end: 7 of 7 pass; recorder rule tests 5 of 5; `wcontainers-gpu` 32 of 32.
+- The suite catches a wrong back end: three faults put into the recording back end one at a time
+  (script `g1a-breaks/break.py` in scratch, results in `g1a-breaks/results.txt`), each reverted after:
+  writes and reads ignoring a region's x origin failed `texture_writes_land_and_read_back` and
+  `copies_move_bytes_exactly`; front faces taken as clockwise failed
+  `triangle_covers_the_pixels_whose_centres_it_holds`; `Less` compared as greater failed
+  `textured_draw_with_depth_and_blending`. Linux laptop load 1.6 to 2.7.
+- The whole workspace checks on Linux (`cargo check --workspace --all-targets`, 4 m 48 s at load 1.6
+  to 4.0 with 5 jobs, after the rig merge).
+- G0's shader corpus counts are in the plan, section 6.3.
 
 ## Dependencies added and their licences
 
-- `naga` 30.0.2 (MIT OR Apache-2.0), with its `wgsl-in` feature since run 2, used by `wcontainers-gpu`;
-  its `glsl-out` and `wgsl-out` features in the crate's tests only (run 5), same licence, no new crates.
-  Its tree, from `cargo tree`: all MIT or Apache-2.0 except `foldhash` (Zlib), `zerocopy`
-  (BSD-2-Clause OR Apache-2.0 OR MIT), `unicode-ident` ((MIT OR Apache-2.0) AND Unicode-3.0),
-  `codespan-reporting` (Apache-2.0), `libm` (MIT).
-- `blake3` 1.8.7 (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception, its repository's
-  `Cargo.toml`), used by `wcontainers-gpu` since run 8, `default-features = false`; it adds `arrayvec`,
-  `cfg-if`, `cc` (MIT OR Apache-2.0) and `constant_time_eq` (CC0-1.0 OR MIT-0 OR Apache-2.0). Already
-  in the workspace lock file through the translator.
-- Read in their repositories in run 8, to be added by G3: `glow` 0.18 (MIT OR Apache-2.0 OR Zlib),
-  `khronos-egl` 6.0 (MIT or Apache-2.0); ANGLE (BSD-3-Clause), a desktop test tool, never shipped.
-- Read in its repository, to be added by G2 and G3: `bcdec_rs` 0.2.1, MIT (Cargo.toml and the
-  ScanMountGoat/image_dds LICENSE), a port of bcdec (MIT or Unlicense).
-- Read in their repositories, not yet dependencies: dxbc-spirv MIT (2025 Philip Rebohle; SPIRV-Headers
-  submodule, Khronos MIT-style); dxil-spirv MIT (Hans-Kristian Arntzen for Valve), shipping glslang's
-  SPIR-V builder (BSD-3-Clause), its bitcode reader `bc` (MIT, Hans-Kristian Arntzen for Valve) on
-  RenderDoc's `bc-decoder` (MIT, Baldur Karlsson) and SPIRV-Headers; Fossilize MIT (not used).
-- Test-only, in scratch, never shipped: Wine's d3d11 test source (LGPL-2.1) as DXBC test data; DXC
-  (NCSA) to make DXIL test shaders.
+- `wcontainers-gpu-test` uses `naga` 30.0.2 (`wgsl-in`), `blake3` 1 and `half` 2 (MIT OR Apache-2.0,
+  its `Cargo.toml`), all already in the workspace's lock file through other crates.
+- Earlier: `naga` 30.0.2 (MIT OR Apache-2.0) and `blake3` 1.8.7 (CC0-1.0 OR Apache-2.0 OR Apache-2.0
+  WITH LLVM-exception) in `wcontainers-gpu`; the licences of what later milestones add are in plan 3.
 
-## Departures from the plan's brief
+## Departures from the plan
 
-- Writing WGSL and GLSL ES 3.00 from the common form happens in each back end (with naga's writers and
-  that language's fixes), not in `wcontainers-shaders` as the brief's crate list says. Reason: back ends
-  depend only on the interface crate, and the writing is the back end's own language. The shaders crate
-  converts into the common form, lowers extra stages, and owns the cache.
-- Fronts depend on the interface plus the two shared helper crates (`wcontainers-shaders`,
-  `wcontainers-directx-graphics-infrastructure`); "depend only on the interface crate" is read as "never
-  on each other or on a back end".
-- Geometry, hull and domain stages and stream output are lowered by the shaders crate's stage helper and
-  reach back ends as ordinary dispatches and draws; the interface has no method for them.
-- DXIL reaches the common form through dxil-spirv's SPIR-V and naga's SPIR-V reader, which needs fixes
-  (made in a naga fork pinned by revision until upstream takes them).
-- Target formats are not a block a draw names (the brief lists targets among the blocks): the pass names
-  its targets, so a seventh handle per draw would repeat it. `prepare` takes them as `TargetLayout`.
-- Direct3D 11 and 12 on WebGPU report feature level 11_0 (when the adapter has 11_0's texture sizes;
-  otherwise a lower level), not the top level the brief asks for: 11_1
-  requires logic ops, target-independent rasterisation and forced sample counts up to 16 (Direct3D 11)
-  and binding tier 3 (Direct3D 12), none of which WebGPU can serve exactly.
-- Multisample counts per format fall short of Microsoft's 10_1 and 11_0 format tables (8 samples on 47
-  formats at 11_0; 4 samples on `R32_UINT` and others; on WebGPU adapters without
-  `texture-formats-tier1`, the 16-bit normalised formats too). They are reported through the API's
-  per-format queries; no exact emulation exists. The owner should know.
-- The second shortfall against the format tables: the video abilities of `NV12`, `YUY2` and
-  `420_OPAQUE` (video decoder, video processor). The Direct3D 11 front offers no `ID3D11VideoDevice`;
-  the formats themselves are served (plan 4.12).
-- On WebGL 2, a copy between multisampled textures keeps only the source's resolved value in every
-  sample (`MultisampleCopyResolved`), a listed loss: no exact route exists there.
-- The common form never holds base vertex or base instance built-ins (WGSL has none); `vertex_index`
-  and `instance_index` include the bases, and API values that leave them out are made by a variant.
-  This needs a change to naga's GLSL writer (`naga_vs_base_vertex`) in our naga fork, sent upstream.
-- On WebGL 2 without OES_sample_variables (10.3% of WebGL 2 browsers, nearly all Firefox) the Direct3D
-  fronts report no multisampling at all, because a partial sample mask has no route there. With it,
-  4 samples as before.
-- WebGL 2's 10_0 also needs EXT_color_buffer_float (99.94%), since 10_0 renders to float formats.
-- Two listed precision losses remain: denormal handling in shaders, and Direct3D clip depth on WebGL 2
-  without EXT_clip_control (6.8% of WebGL 2 browsers). Indexed vertex fetch past a buffer's end gets
-  WebGPU's robust-access value, not zero.
-- A program needing more sampled textures than the back end has is refused at creation
-  (`BindingsBeyondLimit`, counted and warned); no exact route exists.
-- A new crate `wcontainers-directx` (not in the brief's list) builds the one library that holds the
-  Direct3D family, so DXGI, Direct3D 11 and 12 share one back end and one device thread; `d3d11.dll`,
-  `d3d12.dll` and `dxgi.dll` forward to it (plan 10).
-- Bytes the API lets the program reuse when the call returns are copied once by the stand-in (plan 2
-  rule 1, 4.6), not read in place as the brief says, because the device thread reads them only after the
-  frame's call buffer crosses.
-- The Direct3D family (DXGI, 10, 11, 12) is one module per back end, loaded at the first call into any
-  of them, not one module per API as the brief says: they share one device and DXGI's objects, which
-  separate modules could only do through run-time dispatch or separate devices (plan 10). The unused
-  back end is never loaded. Its cost to a Direct3D 11 program is measured at G4.
-- Program variants (filtering, border, mirror once, LOD bias, limits, clip depth) are chosen by fronts
-  and made by the shaders crate; back ends never rewrite programs.
-- One more counted refusal beside `BindingsBeyondLimit`: `VaryingsBeyondLimit` (more stage values
-  than the back end has after packing). Texture sizes beyond the adapter's lower the reported level.
-- Direct3D 12's and Vulkan's several queues are ordered into the back end's one submission order, so
-  their work never runs at once on the GPU (async compute and copy queues lose their overlap, not their
-  results; plan 4.8, 5.2).
-- One more listed loss: fractional viewports on WebGL 2 with multisampled targets (edge samples follow
-  their pixel's centre; plan 4.12).
-- Two more listed losses: 24-bit depth stored as 32-bit float where the adapter has no 24-bit depth
-  (Apple silicon): depth compares at float precision (the bias is made exact); and on WebGL 2, a
-  multisampled attachment of a different size from the pass's keeps only its resolved value (plan 4.7,
-  4.12). Both were chosen over exact routes that would cost every draw (depth written in the program)
-  or have none (WebGL 2 cannot copy multisampled renderbuffers).
-- `wcontainers-gpu` gained naga's `wgsl-in` feature, for the built-in programs of the fast-path
-  defaults, and `blake3` for their content keys.
-- A memory failure found after the guest was told an object was made is reported as device loss
-  (`DXGI_ERROR_DEVICE_REMOVED`, reason `DXGI_ERROR_DRIVER_INTERNAL_ERROR`), not as `E_OUTOFMEMORY` at
-  creation: browsers report memory errors only after the call, and creation does not wait (plan 4.8).
-- Which line rasterisation rule Direct3D's `MultisampleEnable` picks is a listed loss: neither browser
-  API lets a program choose (plan 4.12).
-- The interface's usage-scope rule (one pass, one usage scope) binds every back end, so a future
-  native back end would split a few passes it need not (plan 4.7).
-- The workspace root `Cargo.toml` gained the `naga` workspace dependency (outside the crates this track
-  owns, needed to add one).
+- From G0 (each is written in the plan): back ends write WGSL and GLSL themselves; fronts use the two
+  shared helper crates; extra stages lowered by the shaders crate; DXIL through dxil-spirv and a naga
+  fork; targets not a block; 11_0, not the top level, on WebGPU; multisample counts per format and the
+  video abilities fall short of Microsoft's tables; WebGL 2's multisampled copies and fitted
+  attachments keep resolved values; base vertex through a naga fork change; WebGL 2 without
+  OES_sample_variables reports no multisampling; EXT_color_buffer_float a 10_0 condition; listed
+  precision losses (denormals, clip depth without EXT_clip_control, 24-bit depth stored as float,
+  fractional viewports on multisampled WebGL 2 targets, line rasterisation rule); counted refusals
+  `BindingsBeyondLimit` and `VaryingsBeyondLimit`; the `wcontainers-directx` crate; reusable bytes
+  copied once by the stand-in; the Direct3D family as one module per back end; variants chosen by
+  fronts; several queues ordered into one; late memory failures as device loss; the usage-scope rule
+  on every back end; the root `Cargo.toml` gained `naga`.
+- G1a: `D32_FLOAT_S8X24_UINT` without depth32float-stencil8 lowers the reported level to 9_3 rather
+  than being emulated (no exact route; the feature's share of adapters is unmeasured). On WebGL 2 a
+  resolve in the other sRGB twin is a listed loss (`ResolveInStoredFormat`). The recording back end
+  draws (plan 11 asks only that it check rules and record), because the suite must pass on it and
+  fail on a back end that is wrong.
 
 ## Known failures
 
-- None in the code.
+- None.
