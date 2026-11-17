@@ -142,7 +142,10 @@ bitflags! {
         /// [`crate::BlendFactor::ConstantAlpha`] and [`crate::BlendFactor::OneMinusConstantAlpha`].
         /// Without it a front uses [`crate::BlendFactor::Constant`] with the constant's alpha in all four
         /// channels where its block uses no constant colour as well (exact), and otherwise blends in the
-        /// program (slow path [`crate::SlowPath::BlendInShader`]).
+        /// program (slow path [`crate::SlowPath::BlendInShader`]). WebGL forbids the constant colour
+        /// and the constant alpha as one target's colour source and destination factors together; its
+        /// back end refuses such a block with [`crate::GpuError::Absent`] of this bit, and the front
+        /// blends that block in the program.
         const BLEND_CONSTANT_ALPHA = 1 << 53;
     }
 }
