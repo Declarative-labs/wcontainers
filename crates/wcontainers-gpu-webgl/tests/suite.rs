@@ -20,7 +20,15 @@ impl wcontainers_gpu_test::Host for Angle {
         );
         let off = std::env::var("WEBGL_OFF").unwrap_or_default();
         let off: Vec<&str> = off.split_whitespace().collect();
-        WebGl::on_angle(&dir, &off).expect("ANGLE's OpenGL ES 3.0 context")
+        let mut b = WebGl::on_angle(&dir, &off).expect("ANGLE's OpenGL ES 3.0 context");
+        use wcontainers_gpu::Backend;
+        assert_eq!(
+            b.status(),
+            wcontainers_gpu::DeviceStatus::Ok,
+            "the back end was lost as it was made: {}",
+            b.last_log()
+        );
+        b
     }
 
     fn window(_: &mut WebGl) -> u32 {
@@ -37,6 +45,8 @@ wcontainers_gpu_test::suite!(Angle);
 
 #[path = "../examples/common/checks.rs"]
 mod checks;
+#[path = "../examples/common/kit.rs"]
+mod kit;
 
 #[test]
 fn vertex_and_instance_numbers_include_the_bases() {
@@ -51,4 +61,24 @@ fn discard_then_no_overwrite_writes() {
 #[test]
 fn depth_and_stencil_read_back() {
     checks::depth_and_stencil_read_back::<Angle>();
+}
+
+#[test]
+fn stencil_sampled_and_read_back() {
+    checks::stencil_sampled_and_read_back::<Angle>();
+}
+
+#[test]
+fn copies_within_a_typeless_group() {
+    checks::copies_within_a_typeless_group::<Angle>();
+}
+
+#[test]
+fn loads_count_levels_from_the_view() {
+    checks::loads_count_levels_from_the_view::<Angle>();
+}
+
+#[test]
+fn fractional_viewports_are_refused() {
+    checks::fractional_viewports_are_refused::<Angle>();
 }

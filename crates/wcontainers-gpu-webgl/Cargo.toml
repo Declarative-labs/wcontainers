@@ -31,6 +31,15 @@ wcontainers-gpu-test = { path = "../wcontainers-gpu-test" }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 wcontainers-graphics-test = { path = "../wcontainers-graphics-test" }
 
+# The WebGPU back end on wgpu's Direct3D 12, for drawings compared with it.
+[target.'cfg(windows)'.dev-dependencies]
+pollster = "1.0.1"
+wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
+wgpu = { version = "30.0.2", default-features = false, features = ["dx12"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+
 [[example]]
 name = "browser"
 crate-type = ["cdylib"]

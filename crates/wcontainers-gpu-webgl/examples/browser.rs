@@ -5,6 +5,8 @@
 
 #[path = "common/checks.rs"]
 mod checks;
+#[path = "common/kit.rs"]
+mod kit;
 #[path = "common/scenes.rs"]
 mod scenes;
 
@@ -126,10 +128,15 @@ suite!(
     linear_filtering_and_address_modes,
     instances_start_at_the_first_instance,
     indexed_strips_restart_and_add_the_base_vertex,
+    fragments_write_storage_buffers,
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,
     depth_and_stencil_read_back,
+    stencil_sampled_and_read_back,
+    copies_within_a_typeless_group,
+    loads_count_levels_from_the_view,
+    fractional_viewports_are_refused,
 );
 
 /// Runs the suite test `name` with `off` (extensions to treat as missing, separated by spaces). A
