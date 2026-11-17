@@ -6,9 +6,9 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 K0 to K3 are done (their runs are in git history and below). K4 (files outside) is partly built:
 its first run built the FUSE side with the backend as a volume; its second run put the root file
-system on the backend, built private mappings, extended attributes and fallocate of backend files,
-FLUSH at every close and tests of backend notices. Layer 1 on the backend and the milestone's
-fresh layer 1 seeds are not done yet (see Next).
+system on the backend, built private mappings, extended attributes, access control lists and
+fallocate of backend files, FLUSH at every close, tests of backend notices and layer 1 on the
+backend. Shared mappings of backend files the backend caches are not built (see Next).
 
 Built in K4's second run:
 - Root file system on the backend. `Start::backend` (was `volume`) names where the backend is
@@ -33,9 +33,25 @@ Built in K4's second run:
   not ask for FUSE_SETXATTR_EXT), LISTXATTR (no trusted filtering, names checked as
   `fuse_verify_xattr_list`), REMOVEXATTR; every name goes to the backend (`fuse_xattr_handler`);
   ENOSYS is EOPNOTSUPP. File capabilities of a program on the backend are read at exec
-  (`get_vfs_caps_from_disk`, one GETXATTR into 24 bytes) unless the mount is nosuid. Access control
-  list names are counted "backend call not built" (EOPNOTSUPP). tests/backend.rs
-  `attributes_and_allocation_match_reference` (guest/backendattrs.c).
+  (`get_vfs_caps_from_disk`, one GETXATTR into 24 bytes) unless the mount is nosuid. Reading
+  `security.capability` with getxattr is EINVAL, as measured on the reference with it set and not
+  (see Known issues). Access control lists as Linux's FUSE on a host mount without
+  FUSE_POSIX_ACL: reading one is ENODATA; setting one is checked (`posix_acl_valid`, default lists
+  only on directories, owner or CAP_FOWNER) and handed to the backend as the attribute, or
+  removed with an empty value. tests/backend.rs `attributes_and_allocation_match_reference`
+  (guest/backendattrs.c), `file_capabilities_match_reference` (guest/backendcaps.c).
+- O_DIRECT opens of backend regular files are allowed (`FMODE_CAN_ODIRECT` in `fuse_open`).
+- Layer 1 on the backend: tests/layer1.rs `sequences_on_backend_match_reference`
+  (`LAYER1_BACKEND_CASES`, default 32; `LAYER1_SEED`). The sequences are built as layer 1's
+  (`layer1::build_on_backend`) with `/backend` in place of `/dev/shm` in the path pool (same length,
+  so every offset holds) and calls from `BACKEND_CALLS`: layer 1's file, memory and identity calls,
+  none that Docker's seccomp profile lets through only with CAP_SYS_ADMIN (the reference's
+  container needs it to mount FUSE). The reference runs the runner under `wc-backend mount`; ours
+  keeps one server for every sequence, sends it DESTROY after each (as Linux's unmount) and empties
+  its directory (`Backend::destroy`, `Backend::empty`), as the runner empties `/backend`
+  (guest/layer1.c takes the directory as its argument). Found and fixed on the way: the reference's
+  command ran with the server's umask 0 (now Docker's 022, set in `wc-backend mount`), O_DIRECT,
+  access control lists, file capability reads.
 - fallocate on backend files: FALLOCATE with keep-size, punch-hole and zero-range; other modes
   EOPNOTSUPP (`fuse_file_fallocate`), after the generic checks.
 - Mappings of backend files: a private mapping reads the mapped range at mmap (GETATTR with the
@@ -2291,10 +2307,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Known issues
 
 - K4, second run: getxattr of `security.capability` on the reference's FUSE mount answers EINVAL
-  (with size 0 and with a buffer), though the server holds a valid v2 value (read on the server's
-  side) and ours gives it; cause not found (`cap_inode_getsecurity` reads it through
-  `vfs_getxattr_alloc`). tests/backend.rs `file_capabilities_match_reference` is ignored with this
-  reason (guest/backendcaps.c).
+  (with size 0 and with a buffer, set or not), though the server holds a valid v2 value (read on
+  the server's side). Ours answers the same, as measured; the cause is not found
+  (`cap_inode_getsecurity`'s only EINVAL before the value is read is `d_find_any_alias` finding no
+  dentry). Whether exec on the reference honours file capabilities of a FUSE file is unchecked.
 - K4, first run (from the K3 check): terminal's `job_control` (guest/jobs.c `leader_exit`) can fail
   from a race in the reference: Linux's `disassociate_ctty` sends SIGHUP to the foreground group
   before `session_clear_tty`, and on a loaded multi-CPU reference the job can open `/dev/tty` in that
@@ -2354,17 +2370,15 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K4 goes on. Left for this milestone, most important first:
-1. Layer 1 on the backend: the generated file calls run in a directory on the backend in ours and
-   in a reference that mounts the same server through its FUSE, compared call by call.
-2. Shared mappings of backend files opened without direct IO (a block of shared pages filled with
+1. Shared mappings of backend files opened without direct IO (a block of shared pages filled with
    READ, written back with WRITE at msync, munmap and exit, and reads and writes of the file going
    through the block while it is mapped). Untestable against the reference with the first backend,
    which opens every file for direct IO; would need the server run with caching.
-3. Re-reading a backend file's private pages on MADV_DONTNEED, and mremap growth of such mappings
+2. Re-reading a backend file's private pages on MADV_DONTNEED, and mremap growth of such mappings
    (both counted "backend call not built" now).
-4. Access control lists on backend files (counted, EOPNOTSUPP now). copy_file_range, splice,
-   sendfile, cachestat and fadvise on backend files are untested.
-5. The milestone's three fresh layer 1 seeds of 20000 with every fix in, at the end.
+3. copy_file_range, sendfile and fadvise on backend files are reached by layer 1 on the backend;
+   splice and cachestat on them are untested.
+4. The milestone's three fresh layer 1 seeds of 20000 with every fix in, at the end.
 
 Left open from K3: poll and select waiters share one channel; a host wall clock step during a run is
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-

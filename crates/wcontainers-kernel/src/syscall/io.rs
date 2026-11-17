@@ -828,6 +828,14 @@ pub(super) fn file_bytes(
     })
 }
 
+/// Whether a file is on the backend, which opened it for direct reads and writes (FOPEN_DIRECT_IO).
+pub(super) fn direct_on_backend(file: &FileRef) -> bool {
+    file.borrow()
+        .backend
+        .as_ref()
+        .is_some_and(|handle| handle.direct_io())
+}
+
 fn is_sysctl(file: &FileRef) -> bool {
     matches!(file.borrow().node.borrow().content, Content::Proc(entry)
         if entry.style() == Style::Sysctl)
@@ -984,6 +992,17 @@ pub(super) fn read_at(
     }
     let offset = at.unwrap_or(file.borrow().offset);
     refresh_proc(kernel, cx, tid, file, offset)?;
+    // `fuse_direct_io`: a file the backend opened for direct reads and writes is read into the
+    // buffer's pages, taken first: as far as they can be written, EFAULT if not at all.
+    let count = if direct_on_backend(file) {
+        let reachable = guest(kernel, cx, tid).accessible(buffer, count, Permissions::WRITE);
+        if reachable == 0 && count > 0 {
+            return Err(Errno::EFAULT);
+        }
+        reachable
+    } else {
+        count
+    };
     let bytes = file_bytes(cx, file, count, offset)?;
     let (node, flags) = (file.borrow().node.clone(), file.borrow().flags);
     accessed(kernel, cx, &node, flags);

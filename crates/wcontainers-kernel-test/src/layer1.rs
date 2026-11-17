@@ -3592,12 +3592,18 @@ impl Reference {
         if backend {
             let server = crate::backend::server(&crate::backend::out());
             let script = format!(
-                "mkdir -p {BACKEND_ROOT} && exec /wcb/wc-backend mount {} {BACKEND_ROOT} {} {BACKEND_ROOT}",
+                "{} && mkdir -p {BACKEND_ROOT} && exec /wcb/wc-backend mount {} {BACKEND_ROOT} {} {BACKEND_ROOT}",
+                crate::backend::FUSE_DEVICE_LINK,
                 crate::backend::SERVED,
                 program.display()
             );
             command
-                .args(["--device", "/dev/fuse", "--cap-add", "SYS_ADMIN"])
+                .args([
+                    "--device",
+                    crate::backend::FUSE_DEVICE,
+                    "--cap-add",
+                    "SYS_ADMIN",
+                ])
                 .args(["--tmpfs", crate::backend::SERVED])
                 .arg("--volume")
                 .arg(format!("{}:/wcb:ro", server.display()))
@@ -3810,7 +3816,11 @@ fn run_ours_on(
         .collect();
     let start = Start {
         path: b"/wc/layer1",
-        arguments: &[b"/wc/layer1"],
+        arguments: if sequence.backend {
+            &[b"/wc/layer1", BACKEND_ROOT.as_bytes()]
+        } else {
+            &[b"/wc/layer1"]
+        },
         environment: &environment,
         working_directory: b"/",
         hostname: reference::HOSTNAME.as_bytes(),

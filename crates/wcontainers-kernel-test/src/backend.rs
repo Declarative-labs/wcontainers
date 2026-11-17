@@ -17,6 +17,14 @@ const BUILD_IMAGE: &str = "rust:1.91-alpine3.22";
 /// Where the backend's directory is in its container, and where the reference mounts it.
 pub const SERVED: &str = "/srv";
 
+/// The FUSE device for the reference's container, put outside `/dev` so that `/dev` holds what a
+/// default container's does: the server opens it through a link at `/dev/fuse`
+/// ([`FUSE_DEVICE_LINK`]), which it removes once mounted.
+pub const FUSE_DEVICE: &str = "/dev/fuse:/wcdev/fuse";
+
+/// The shell command that makes the link.
+pub const FUSE_DEVICE_LINK: &str = "ln -s /wcdev/fuse /dev/fuse";
+
 /// Where tests build the server: the workspace's target directory.
 pub fn out() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/wc-kernel-test")
@@ -272,11 +280,13 @@ pub fn reference_run(
         .canonicalize()
         .expect("program directory exists");
     let file = Path::new("/wc").join(program.file_name().expect("program has a name"));
-    let script = format!("mkdir -p {at} && exec /wcb/wc-backend mount {SERVED} {at} \"$@\"");
+    let script = format!(
+        "{FUSE_DEVICE_LINK} && mkdir -p {at} && exec /wcb/wc-backend mount {SERVED} {at} \"$@\""
+    );
     let output = Command::new("docker")
         .args(["run", "--rm", "--platform", "linux/arm64", "--name", &name])
         .args(["--hostname", HOSTNAME])
-        .args(["--device", "/dev/fuse", "--cap-add", "SYS_ADMIN"])
+        .args(["--device", FUSE_DEVICE, "--cap-add", "SYS_ADMIN"])
         .args(["--tmpfs", SERVED])
         .arg("--volume")
         .arg(format!("{}:/wc:ro", directory.display()))

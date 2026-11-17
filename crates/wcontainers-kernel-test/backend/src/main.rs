@@ -70,6 +70,9 @@ fn mount(server: Arc<Server<Arc<PassthroughFs>>>, at: &Path, command: &[String])
     let mut session = FuseSession::new(at, "wc-backend", "", false).expect("a FUSE session");
     session.mount().expect("mounted");
     let mut channel = session.new_channel().expect("a FUSE channel");
+    // The device (a link to it) was only for mounting: the command sees `/dev` as a default
+    // container has it.
+    std::fs::remove_file("/dev/fuse").expect("removing /dev/fuse");
     std::thread::spawn(move || {
         while let Ok(Some((reader, writer))) = channel.get_request() {
             if let Err(error) = server.handle_message(reader, writer.into(), None, None) {

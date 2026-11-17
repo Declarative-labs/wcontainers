@@ -3,6 +3,8 @@
 
 use alloc::vec::Vec;
 
+use wcontainers_abi::PAGE_SIZE;
+
 use super::{Args, guest};
 use crate::credentials::{CAP_SETFCAP, CAP_SYS_ADMIN, Credentials};
 use crate::fs::{Content, Inode, Kind, Node};
@@ -58,6 +60,22 @@ fn target(
 /// Whether an inode's attributes are the backend's.
 fn on_backend(node: &Node) -> bool {
     crate::fs::backend::remote(node).is_some()
+}
+
+/// `do_get_acl` on the backend: `__fuse_get_acl` asks for the list into a page; none or ENODATA
+/// is no list, ERANGE is E2BIG, and a list comes back as `posix_acl_to_xattr` writes it.
+fn backend_acl(node: &Node, name: &[u8]) -> Result<Vec<u8>, Errno> {
+    let value = match crate::fs::backend::getxattr(node, name, PAGE_SIZE as u32) {
+        Ok(value) if !value.is_empty() => value,
+        Ok(_) | Err(Errno::ENODATA) => return Err(Errno::ENODATA),
+        Err(Errno::ERANGE) => return Err(Errno::E2BIG),
+        Err(error) => return Err(error),
+    };
+    check_acl(&value)?;
+    if value.len() <= 4 {
+        return Err(Errno::ENODATA);
+    }
+    Ok(acl_normalized(&value))
 }
 
 /// Linux's `posix_acl_valid`: the entries in order, the owner's, users', the group's, groups',
@@ -428,14 +446,13 @@ fn get(
     let name = import_name(kernel, cx, tid, name)?;
     let node = target(kernel, cx, tid, at)?;
     let size = size.min(u64::from(XATTR_SIZE_MAX)) as usize;
-    if name == ACL_ACCESS || name == ACL_DEFAULT {
-        // The backend's mount takes lists, but `fuse_get_acl` reads none without FUSE_POSIX_ACL.
-        if on_backend(&node) {
-            return Err(Errno::ENODATA);
-        }
+    let acl = name == ACL_ACCESS || name == ACL_DEFAULT;
+    if acl && !on_backend(&node) {
         return Err(Errno::EOPNOTSUPP);
     }
-    let found = {
+    let found = if acl {
+        backend_acl(&node, &name)
+    } else {
         let inode = node.borrow();
         let credentials = kernel.credentials(tid);
         permission(

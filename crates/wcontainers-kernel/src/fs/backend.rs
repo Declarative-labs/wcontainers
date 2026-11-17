@@ -160,7 +160,12 @@ impl Handle {
     /// backend opened for direct reads and writes, since INIT does not ask to map those
     /// (FUSE_DIRECT_IO_ALLOW_MMAP).
     pub fn may_map_shared(&self) -> bool {
-        self.open_flags & FOPEN_DIRECT_IO == 0
+        !self.direct_io()
+    }
+
+    /// Whether the backend opened the file for direct reads and writes (FOPEN_DIRECT_IO).
+    pub fn direct_io(&self) -> bool {
+        self.open_flags & FOPEN_DIRECT_IO != 0
     }
 }
 
