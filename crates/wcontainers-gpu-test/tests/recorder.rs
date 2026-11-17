@@ -1,0 +1,175 @@
+//! The shared suite on the recording back end, and the interface rules it enforces.
+
+use wcontainers_gpu::*;
+use wcontainers_gpu_test::{Host, Recorder};
+
+struct RecorderHost;
+
+impl Host for RecorderHost {
+    type Backend = Recorder;
+    fn make() -> Recorder {
+        Recorder::new()
+    }
+    fn window(_: &mut Recorder) -> u32 {
+        7
+    }
+    fn shown(backend: &mut Recorder, window: u32) -> Option<Vec<u8>> {
+        backend
+            .shown
+            .iter()
+            .rev()
+            .find(|f| f.window == window)
+            .map(|f| f.bytes.clone())
+    }
+}
+
+wcontainers_gpu_test::suite!(RecorderHost);
+
+fn target(r: &mut Recorder, width: u32, height: u32, format: Format) -> wcontainers_gpu_test::Id {
+    let t = r
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width,
+            height,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    r.create_view(
+        &t,
+        &TextureViewDesc {
+            format,
+            dimension: ViewDimension::D2,
+            base_mip: 0,
+            mip_count: 1,
+            base_layer: 0,
+            layer_count: 1,
+            stencil: false,
+        },
+    )
+    .unwrap()
+}
+
+fn pass_on<'a>(
+    color: &'a wcontainers_gpu_test::Id,
+    depth: Option<&'a wcontainers_gpu_test::Id>,
+) -> PassDesc<'a, Recorder> {
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: depth.map(|view| DepthAttachment {
+            view,
+            depth: Some(AspectOps {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+                read_only: false,
+            }),
+            stencil: None,
+        }),
+        empty: None,
+        occlusion: None,
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: color,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Load,
+        store: StoreOp::Store,
+    });
+    pass
+}
+
+#[test]
+fn attachments_of_different_sizes_are_refused() {
+    let mut r = Recorder::new();
+    let color = target(&mut r, 4, 4, Format::Rgba8Unorm);
+    let depth = target(&mut r, 8, 8, Format::Depth32Float);
+    r.begin_pass(&pass_on(&color, Some(&depth)));
+    assert_eq!(r.violations, ["attachments of different sizes"]);
+    assert_eq!(r.status(), DeviceStatus::Lost(LossReason::Error));
+}
+
+#[test]
+fn depth_aspects_must_match_the_format() {
+    let mut r = Recorder::new();
+    let color = target(&mut r, 4, 4, Format::Rgba8Unorm);
+    let depth = target(&mut r, 4, 4, Format::Depth24PlusStencil8);
+    r.begin_pass(&pass_on(&color, Some(&depth)));
+    assert_eq!(
+        r.violations,
+        ["depth attachment aspects differ from the format's"]
+    );
+}
+
+#[test]
+fn copies_and_read_backs_inside_a_pass_are_refused() {
+    let mut r = Recorder::new();
+    let color = target(&mut r, 4, 4, Format::Rgba8Unorm);
+    let buffer = r
+        .create_buffer(&BufferDesc {
+            size: 16,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    r.begin_pass(&pass_on(&color, None));
+    r.copy_buffer(&buffer, 0, &buffer, 8, 8);
+    assert!(
+        r.read_back(&ReadSource::Buffer {
+            buffer: &buffer,
+            offset: 0,
+            size: 4,
+        })
+        .is_err()
+    );
+    r.end_pass();
+    assert_eq!(
+        r.violations,
+        ["copy_buffer inside a pass", "read_back inside a pass"]
+    );
+}
+
+#[test]
+fn a_finished_read_before_submit_is_refused() {
+    let mut r = Recorder::new();
+    let buffer = r
+        .create_buffer(&BufferDesc {
+            size: 4,
+            usage: BufferUsage::COPY_SRC,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    let rb = r
+        .read_back(&ReadSource::Buffer {
+            buffer: &buffer,
+            offset: 0,
+            size: 4,
+        })
+        .unwrap();
+    assert_eq!(r.read_state(&rb), ReadState::Pending);
+    r.finish_read(rb, &mut [0; 4]);
+    assert_eq!(
+        r.violations,
+        ["finish_read of a read back that is not ready"]
+    );
+}
+
+#[test]
+fn objects_used_after_destroy_are_refused() {
+    let mut r = Recorder::new();
+    let buffer = r
+        .create_buffer(&BufferDesc {
+            size: 4,
+            usage: BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    r.destroy(Object::Buffer(buffer));
+    r.write_buffer(&buffer, 0, &[1], WriteMode::Ordered);
+    r.destroy(Object::Buffer(buffer));
+    assert_eq!(r.violations.len(), 2);
+}
