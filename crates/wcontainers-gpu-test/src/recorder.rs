@@ -41,7 +41,12 @@ pub(crate) struct ViewObj {
 /// A resource bound in a binding set.
 #[derive(Clone, Debug)]
 pub(crate) enum Bound {
-    Buffer { buffer: Id, offset: u64, size: u64 },
+    Buffer {
+        buffer: Id,
+        offset: u64,
+        size: u64,
+        writable: bool,
+    },
     Texture(Id),
     Sampler(Id),
 }
@@ -87,6 +92,9 @@ pub(crate) struct Pass {
     pub occlusion: Option<Id>,
     /// The running occlusion query and whether any sample passed.
     pub query: Option<(u32, u64)>,
+    /// Buffers the pass's draws bound as writable storage, and those they used any other way.
+    pub written: Vec<Id>,
+    pub other: Vec<Id>,
 }
 
 /// The recording back end.
@@ -198,7 +206,8 @@ impl Recorder {
                     | Features::INDEX_U8
                     | Features::DEPTH24_UNORM
                     | Features::BASE_VERTEX_INSTANCE
-                    | Features::CLIP_DEPTH_ZERO_ONE,
+                    | Features::CLIP_DEPTH_ZERO_ONE
+                    | Features::FRAGMENT_STORAGE_WRITE,
                 limits,
                 formats: FormatCaps { uses, samples },
             },
@@ -489,6 +498,8 @@ impl Recorder {
             height,
             occlusion: pass.occlusion.copied(),
             query: None,
+            written: Vec::new(),
+            other: Vec::new(),
         });
         Ok(())
     }
@@ -922,20 +933,30 @@ impl Backend for Recorder {
         let mut set = Vec::new();
         for e in entries {
             let bound = match e.resource {
-                BindingResource::UniformBuffer(r)
-                | BindingResource::StorageBuffer {
-                    range: r,
-                    writable: false,
-                } => Bound::Buffer {
+                BindingResource::UniformBuffer(r) => Bound::Buffer {
                     buffer: *r.buffer,
                     offset: r.offset,
                     size: r.size,
+                    writable: false,
+                },
+                BindingResource::StorageBuffer { writable: true, .. }
+                    if e.stages.contains(StageSet::VERTEX) =>
+                {
+                    return Err(GpuError::Absent(Features::VERTEX_STORAGE_WRITE));
+                }
+                BindingResource::StorageBuffer { range: r, writable } => Bound::Buffer {
+                    buffer: *r.buffer,
+                    offset: r.offset,
+                    size: r.size,
+                    writable,
                 },
                 BindingResource::Texture(v) => Bound::Texture(*v),
                 BindingResource::Sampler(s) => Bound::Sampler(*s),
-                BindingResource::StorageBuffer { writable: true, .. }
-                | BindingResource::StorageTexture { .. } => {
-                    return Err(GpuError::Absent(Features::FRAGMENT_STORAGE_WRITE));
+                // No format this back end holds has storage uses.
+                BindingResource::StorageTexture { .. } => {
+                    return Err(GpuError::Invalid(
+                        "a storage texture of a format without storage uses",
+                    ));
                 }
                 BindingResource::TexelBuffer { .. } => {
                     return Err(GpuError::Invalid("typed texel buffers are fronts' routes"));
