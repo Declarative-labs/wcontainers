@@ -17,7 +17,7 @@
 #       verdict against the baseline in tools/graphics-rig/wine-baseline (a test passing there must
 #       pass) and exits 1 if one does not. --record runs on real Direct3D and copies the results into
 #       wine-baseline, to be committed. Logs stay in C:\wc\out\<branch>\wine\logs and are copied to
-#       pyro-parked/wcontainers-scratch/graphics-rig/wine-logs on the Mac.
+#       pyro-parked/wcontainers-scratch/graphics-rig/wine-logs/<branch> on the Mac.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=tools/graphics-rig/common.sh
@@ -52,7 +52,9 @@ set +e
     "$script\\wine-run.ps1 -Out $out -Baseline tools\\graphics-rig\\wine-baseline -Launch %CARGO_TARGET_DIR%\\debug\\gt-launch.exe$options"
 code=$?
 set -e
-logs=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/wine-logs
+# Per branch: other checkouts run the same command at the same time.
+logs=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/wine-logs/$name
+rm -rf "$logs"
 mkdir -p "$logs"
 rig_scp "$host:C:/wc/out/$name/wine/logs/*.log" "$logs/" 2>/dev/null || true
 if [ -n "$record" ] && [ $code -eq 0 ]; then

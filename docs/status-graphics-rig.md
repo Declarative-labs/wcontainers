@@ -179,7 +179,8 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   for tests that fail on the real thing (not counted). With replacements it ends with how many tests
   loaded each from the test directory. The job builds the rig first (for gt-launch).
   Exits 1 on any FAIL. `--record` runs real Direct3D and copies the results into wine-baseline.
-  Logs: C:\wc\out\<branch>\wine\logs, copied to the scratch directory (wine-logs). Example:
+  Logs: C:\wc\out\<branch>\wine\logs, copied to the scratch directory (wine-logs/<branch>, emptied
+  first, as other tracks' checkouts run the same command). Example:
   `wine-tests run d3d11:test_blend_state/test_texture` or
   `wine-tests run vkd3d-shader_runner:hlsl+abs.shader_test`. A whole run of all eight files takes
   about 9 minutes on the GPU, most of it the shader runner (about 1 s a file). vkd3d's tests give
@@ -207,7 +208,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   per tile, only the pixels its own repeated runs on real Direct3D changed): prints `pass` or
   `FAIL` per frame and per program and exits 1 on any FAIL. The references are on the desktop
   (C:\wc\programs\reference\<program>: the frames and tolerances.txt; a copy in the scratch
-  directory, program-references), since the frames show the programs' own art under their own
+  directory, program-references/<branch>), since the frames show the programs' own art under their own
   licences; tools/graphics-rig/program-references/<program> in the repository holds
   tolerances.txt and frames.sha256, and a program whose desktop references do not have those
   hashes fails ("run programs run --record"). `--record` (real Direct3D only) runs each program
@@ -216,7 +217,8 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   frames are written "unrepeatable" and reported as "not compared"), leaves out the tiles meeting a program's `ignore` rectangle (bgfx's GPU
   memory readout, see programs.ps1), and copies tolerances.txt and frames.sha256 into the
   checkout, to be committed. Frames and
-  census go to the scratch directory (programs/<program>); `--census` (real Direct3D only) also
+  census go to the scratch directory (programs/<branch>/<program>, emptied first, as other tracks'
+  checkouts run the same command at the same time); `--census` (real Direct3D only) also
   copies each census into tools/graphics-rig/census/<program>.txt. Direct3D 12 programs run
   without the forwarding library (it is Direct3D 11 only), so they have no census and no frame
   clock (Godot's movie writer runs on fixed time anyway); they must exit with 0 after writing every

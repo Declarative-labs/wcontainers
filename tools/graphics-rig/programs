@@ -11,7 +11,7 @@
 #       with replacement libraries if given (paths on the desktop, relative to its checkout), and
 #       comparing each frame with the program's references; prints pass or FAIL for each program
 #       and frame and exits 1 on any FAIL. The frames and census files are copied to
-#       pyro-parked/wcontainers-scratch/graphics-rig/programs/<program>. --census runs real
+#       pyro-parked/wcontainers-scratch/graphics-rig/programs/<branch>/<program>. --census runs real
 #       Direct3D only and also copies each census.txt (Direct3D 11 programs) into
 #       tools/graphics-rig/census/<program>.txt, to be committed. --record runs real Direct3D only,
 #       three times, keeps the first run's frames as the references on the desktop
@@ -52,14 +52,17 @@ set +e
     "$script -Mode run -Out $out -Forward %CARGO_TARGET_DIR%\\debug\\wcontainers_graphics_test_forward.dll -Check %CARGO_TARGET_DIR%\\debug\\gt-run.exe -Launch %CARGO_TARGET_DIR%\\debug\\gt-launch.exe$options"
 code=$?
 set -e
-scratch=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/programs
+# Per branch: other checkouts run the same command at the same time.
+scratch=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/programs/$name
+rm -rf "$scratch"
 mkdir -p "$scratch"
 rig_scp -r "$host:C:/wc/out/$name/programs/*" "$scratch/" 2>/dev/null || true
 if [ -n "$record" ] && [ -d "$scratch/references" ]; then
-    mkdir -p "$here/program-references" "$scratch/../program-references"
+    kept=$scratch/../../program-references/$name
+    mkdir -p "$here/program-references" "$kept"
     cp -R "$scratch/references/"* "$here/program-references/"
     # The frames themselves stay out of the repository; a copy is kept in the scratch directory.
-    rig_scp -r "$host:C:/wc/programs/reference/*" "$scratch/../program-references/" 2>/dev/null || true
+    rig_scp -r "$host:C:/wc/programs/reference/*" "$kept/" 2>/dev/null || true
     echo "programs: allowances and SHA-256 of the references copied into $here/program-references"
 fi
 rm -rf "$scratch"/*/bin "$scratch/references"
