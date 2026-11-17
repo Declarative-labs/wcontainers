@@ -657,6 +657,10 @@ pub(crate) const TCP_LISTEN: u8 = 10;
 /// generate).
 pub(crate) const SO_EE_ORIGIN_ICMP: u8 = 2;
 pub(crate) const SO_EE_ORIGIN_ICMP6: u8 = 3;
+pub(crate) const SO_EE_ORIGIN_TIMESTAMPING: u8 = 4;
+/// Which send timestamp an error queue entry carries (`linux/errqueue.h`).
+pub(crate) const SCM_TSTAMP_SND: u32 = 0;
+pub(crate) const SCM_TSTAMP_SCHED: u32 = 1;
 /// The ICMP and ICMPv6 type and code of an unreachable port (`linux/icmp.h`, `linux/icmpv6.h`).
 pub(crate) const ICMP_DEST_UNREACH: u8 = 3;
 pub(crate) const ICMP_PORT_UNREACH: u8 = 3;

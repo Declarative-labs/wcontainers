@@ -3,7 +3,11 @@
 // (a deferred static key), so each receiver asks and waits before anything is sent to it.
 #define _GNU_SOURCE
 #include <errno.h>
+#include <time.h>
+#include <linux/errqueue.h>
 #include <linux/net_tstamp.h>
+#include <poll.h>
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
@@ -32,13 +36,13 @@ static void set(const char *what, int fd, int name, unsigned flags, int phc, int
 }
 
 // Reads what a socket holds, saying of each time only whether it is now or empty.
-static void drain(const char *who, int fd) {
+static void drain_with(const char *who, int fd, int flags) {
     for (;;) {
         char buf[200], ctl[512];
         struct iovec v = {buf, sizeof buf};
         struct msghdr m = {.msg_iov = &v, .msg_iovlen = 1, .msg_control = ctl,
                            .msg_controllen = sizeof ctl};
-        int n = recvmsg(fd, &m, MSG_DONTWAIT);
+        int n = recvmsg(fd, &m, MSG_DONTWAIT | flags);
         if (n < 0) {
             printf("  %s: %s\n", who, strerror(errno));
             return;
@@ -48,6 +52,13 @@ static void drain(const char *who, int fd) {
         clock_gettime(CLOCK_REALTIME, &now);
         for (struct cmsghdr *c = CMSG_FIRSTHDR(&m); c; c = CMSG_NXTHDR(&m, c)) {
             printf(" [%d/%d length %lu", c->cmsg_level, c->cmsg_type, (unsigned long)c->cmsg_len);
+            if (c->cmsg_type == IP_RECVERR || c->cmsg_type == IPV6_RECVERR) {
+                struct sock_extended_err e;
+                memcpy(&e, CMSG_DATA(c), sizeof e);
+                printf(" errno %u origin %u type %u code %u info %u data %u]", e.ee_errno,
+                       e.ee_origin, e.ee_type, e.ee_code, e.ee_info, e.ee_data);
+                continue;
+            }
             long long t[6];
             int k = (c->cmsg_len - CMSG_LEN(0)) / 16;
             memcpy(t, CMSG_DATA(c), k * 16);
@@ -62,6 +73,8 @@ static void drain(const char *who, int fd) {
         printf("\n");
     }
 }
+
+static void drain(const char *who, int fd) { drain_with(who, fd, 0); }
 
 static const unsigned RX = SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE;
 
@@ -166,5 +179,43 @@ int main(void) {
     n = sendmsg(u, &m, 0);
     printf("send with an id: %d %s\n", n, n < 0 ? strerror(errno) : "");
     drain("udp", r);
+
+    // Software send timestamps on UDP, only the times (OPT_TSONLY).
+    int v = socket(AF_INET6, SOCK_DGRAM, 0);
+    unsigned tx = SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_TX_SCHED |
+                  SOF_TIMESTAMPING_SOFTWARE | SOF_TIMESTAMPING_OPT_ID | SOF_TIMESTAMPING_OPT_TSONLY;
+    set("udp send stamps", u, TIMESTAMPING_OLD, tx, 0, 4);
+    set("udp6 send stamps", v, TIMESTAMPING_OLD, tx & ~SOF_TIMESTAMPING_TX_SCHED, 0, 4);
+    sendto(u, "abc", 3, 0, (void *)&a, sizeof a);
+    sendto(u, "defg", 4, 0, (void *)&a, sizeof a);
+    struct pollfd p = {.fd = u, .events = POLLIN};
+    printf("poll %d revents %#x\n", poll(&p, 1, 0), p.revents);
+    drain_with("udp errors", u, MSG_ERRQUEUE);
+    drain("udp", r);
+    struct sockaddr_in6 a6 = {.sin6_family = AF_INET6, .sin6_port = htons(7600)};
+    inet_pton(AF_INET6, "::ffff:127.0.0.1", &a6.sin6_addr);
+    sendto(v, "v6", 2, 0, (void *)&a6, sizeof a6);
+    drain_with("udp6 errors", v, MSG_ERRQUEUE);
+    drain("udp", r);
+    h->cmsg_type = TIMESTAMPING_OLD;
+    unsigned sched = SOF_TIMESTAMPING_TX_SCHED;
+    memcpy(CMSG_DATA(h), &sched, 4);
+    n = sendmsg(u, &m, 0);
+    printf("send asking only sched: %d\n", n);
+    drain_with("udp errors", u, MSG_ERRQUEUE);
+    h->cmsg_type = SCM_TS_OPT_ID;
+    unsigned key = 77;
+    memcpy(CMSG_DATA(h), &key, 4);
+    n = sendmsg(u, &m, 0);
+    printf("send with key 77: %d\n", n);
+    sendto(u, "next", 4, 0, (void *)&a, sizeof a);
+    drain_with("udp errors", u, MSG_ERRQUEUE);
+    drain("udp", r);
+    set("udp send stamps, no OPT_ID", u, TIMESTAMPING_OLD,
+        SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_OPT_TSONLY, 0, 4);
+    sendto(u, "x", 1, 0, (void *)&a, sizeof a);
+    drain_with("udp errors", u, MSG_ERRQUEUE);
+    drain("udp", r);
+    set("local send stamps", x, TIMESTAMPING_OLD, SOF_TIMESTAMPING_TX_SOFTWARE, 0, 4);
     return 0;
 }

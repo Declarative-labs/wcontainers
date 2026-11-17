@@ -136,8 +136,10 @@ pub(crate) struct Socket {
     owner_uid: u32,
     /// SO_TIMESTAMP and SO_TIMESTAMPNS (`SOCK_RCVTSTAMP`, `SOCK_RCVTSTAMPNS`, `SOCK_TSTAMP_NEW`).
     stamps: u8,
-    /// SO_TIMESTAMPING's flags (`sk_tsflags`).
+    /// SO_TIMESTAMPING's flags (`sk_tsflags`), and the key OPT_ID gives the next send's
+    /// timestamps (`sk_tskey`).
     tsflags: u32,
+    tskey: u32,
     /// Its inode's number and owner, once it has a file (`sock_i_ino`, `sock_i_uid`).
     ino: u64,
     uid: u32,
@@ -191,6 +193,7 @@ impl Socket {
             owner_uid: 0,
             stamps: 0,
             tsflags: 0,
+            tskey: 0,
             ino: 0,
             uid: 0,
             file: Weak::new(),
@@ -2922,6 +2925,7 @@ pub(super) fn recvmsg(
     let local = socket.borrow().family == AF_UNIX;
     let reported = tsflags & tsflag(SOF_TIMESTAMPING_SOFTWARE) != 0
         && (tsflags & tsflag(SOF_TIMESTAMPING_RX_SOFTWARE) != 0
+            || received.flags & crate::linux::net::MSG_ERRQUEUE != 0
             || tsflags & tsflag(SOF_TIMESTAMPING_OPT_RX_FILTER) == 0)
         && (!local || (stamps & STAMP != 0 && datagram));
     if let Some(time) = time.filter(|_| reported) {
@@ -3337,13 +3341,18 @@ pub(super) fn setsockopt(
             if flags & tsflag(SOF_TIMESTAMPING_BIND_PHC) != 0 {
                 return Err(Errno::EOPNOTSUPP);
             }
-            // Send timestamps are not built (hardware ones never come on these interfaces, as
-            // on Linux's loopback): answered as a Linux without the option.
+            // Software send timestamps are built for UDP with OPT_TSONLY (local and netlink
+            // sockets make none, as on Linux, and hardware ones never come on these
+            // interfaces); TCP's and copies of the packets are not: answered as a Linux without
+            // the option.
             let software_sends = tsflag(SOF_TIMESTAMPING_TX_SOFTWARE)
                 | tsflag(SOF_TIMESTAMPING_TX_SCHED)
                 | tsflag(SOF_TIMESTAMPING_TX_ACK)
                 | tsflag(SOF_TIMESTAMPING_TX_COMPLETION);
-            if flags & software_sends != 0 {
+            let udp = own.inet.is_some() && own.kind == SOCK_DGRAM;
+            let built = own.inet.is_none()
+                || (udp && tsonly && flags & tsflag(SOF_TIMESTAMPING_TX_COMPLETION) == 0);
+            if flags & software_sends != 0 && !built {
                 drop(own);
                 return Err(kernel.counters.refuse(
                     cx.host,
@@ -3351,6 +3360,9 @@ pub(super) fn setsockopt(
                     (u64::from(level) << 32) | u64::from(name),
                     Errno::ENOPROTOOPT,
                 ));
+            }
+            if flags & id != 0 && own.tsflags & id == 0 {
+                own.tskey = 0;
             }
             own.tsflags = flags;
             own.stamps = if name == SO_TIMESTAMPING_NEW {

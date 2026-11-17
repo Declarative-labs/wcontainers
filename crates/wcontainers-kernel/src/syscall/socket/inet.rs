@@ -176,6 +176,9 @@ pub(crate) struct QueuedError {
     data: Vec<u8>,
     truesize: u64,
     time: Option<crate::fs::Time>,
+    /// For a send timestamp (`__skb_tstamp_tx`) instead of an ICMP error: which (SCM_TSTAMP_SND
+    /// or SCM_TSTAMP_SCHED) and its key.
+    stamp: Option<(u32, u32)>,
 }
 
 impl Inet {
@@ -2174,6 +2177,9 @@ struct SentControl {
     interface: Option<u32>,
     /// UDP's segment size (UDP_SEGMENT), from the message or else the socket.
     segment: Option<u16>,
+    /// The send timestamps this send asks for in place of the socket's, and its key.
+    stamp_flags: Option<u32>,
+    stamp_key: Option<u32>,
 }
 
 /// The most segments one UDP send may make (`UDP_MAX_SEGMENTS`).
@@ -2287,9 +2293,18 @@ fn sent_control(
                     if flags & !(hardware | software) != 0 {
                         return Err(Errno::EINVAL);
                     }
-                    if flags & software != 0 {
+                    let own = socket.borrow();
+                    let udp = own
+                        .inet
+                        .as_deref()
+                        .is_some_and(|inet| inet.protocol == Protocol::Udp);
+                    let tsonly = own.tsflags & SOF_TIMESTAMPING_OPT_TSONLY as u32 != 0;
+                    let completion = SOF_TIMESTAMPING_TX_COMPLETION as u32;
+                    drop(own);
+                    if flags & software != 0 && !(udp && tsonly && flags & completion == 0) {
                         return refuse(level, kind);
                     }
+                    out.stamp_flags = Some(flags);
                 }
                 // The key of this send's timestamps, which only sockets with OPT_ID that are
                 // not TCP name.
@@ -2302,6 +2317,7 @@ fn sent_control(
                     if tcp || own.tsflags & SOF_TIMESTAMPING_OPT_ID as u32 == 0 || data.len() != 4 {
                         return Err(Errno::EINVAL);
                     }
+                    out.stamp_key = Some(u32::from_le_bytes(data.try_into().expect("4 bytes")));
                 }
                 _ => return Err(Errno::EINVAL),
             },
@@ -2605,6 +2621,7 @@ fn udp_send(
         return Ok(total);
     }
     udp_deliver(kernel, cx, tid, socket, to, from, data, sent)?;
+    send_stamps(kernel, cx, socket, &sent);
     Ok(total)
 }
 
@@ -2873,6 +2890,74 @@ fn route(to: &Endpoint, sent: &SentControl) -> Result<Route, Errno> {
     Ok(Route::Usual)
 }
 
+/// `__skb_tstamp_tx` for a UDP datagram that left: a SCHED entry and then a SND entry on the
+/// error queue as the send asks, each only the time (OPT_TSONLY), keyed by OPT_ID's count of
+/// such sends unless the send names its key.
+fn send_stamps(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, sent: &SentControl) {
+    // A hardware request takes a key too (`SKBTX_ANY_TSTAMP`), though none comes here.
+    let record = SOF_TIMESTAMPING_TX_SOFTWARE as u32
+        | SOF_TIMESTAMPING_TX_SCHED as u32
+        | SOF_TIMESTAMPING_TX_HARDWARE as u32;
+    let tsflags = socket.borrow().tsflags;
+    let asked = sent.stamp_flags.unwrap_or(tsflags) & record;
+    if asked == 0 {
+        return;
+    }
+    let key = if tsflags & SOF_TIMESTAMPING_OPT_ID as u32 == 0 {
+        0
+    } else if let Some(key) = sent.stamp_key {
+        key
+    } else {
+        let mut own = socket.borrow_mut();
+        own.tskey = own.tskey.wrapping_add(1);
+        own.tskey.wrapping_sub(1)
+    };
+    let time = Some(kernel.now(cx));
+    let truesize = datagram_truesize(0);
+    let infos = [
+        (
+            SOF_TIMESTAMPING_TX_SCHED as u32,
+            crate::linux_extra::SCM_TSTAMP_SCHED,
+        ),
+        (
+            SOF_TIMESTAMPING_TX_SOFTWARE as u32,
+            crate::linux_extra::SCM_TSTAMP_SND,
+        ),
+    ];
+    for (flag, info) in infos {
+        if asked & flag == 0 {
+            continue;
+        }
+        let mut own = socket.borrow_mut();
+        let held: u64 = own
+            .inet
+            .as_deref()
+            .unwrap()
+            .errors
+            .iter()
+            .map(|error| error.truesize)
+            .sum();
+        // `sock_queue_err_skb`: none past the receive buffer.
+        if held + truesize >= own.rcvbuf {
+            continue;
+        }
+        own.inet
+            .as_deref_mut()
+            .unwrap()
+            .errors
+            .push_back(QueuedError {
+                to: Endpoint::default(),
+                from: [0; 16],
+                data: Vec::new(),
+                truesize,
+                time,
+                stamp: Some((info, key)),
+            });
+        drop(own);
+        super::error_report(kernel, cx, socket);
+    }
+}
+
 /// What a UDP datagram is held as while corked (MSG_MORE or UDP_CORK): its destination, source,
 /// bytes so far and the first send's control messages (`up->pending`, `inet->cork`).
 pub(crate) struct Corked {
@@ -2939,7 +3024,9 @@ pub(super) fn uncork(
     else {
         return Ok(());
     };
-    udp_deliver(kernel, cx, tid, socket, to, from, data, sent)
+    udp_deliver(kernel, cx, tid, socket, to, from, data, sent)?;
+    send_stamps(kernel, cx, socket, &sent);
+    Ok(())
 }
 
 /// A datagram from `from` to `to`: to the outside, to the container's name server, to the socket
@@ -3112,6 +3199,7 @@ fn port_unreachable(
                     data: quoted.to_vec(),
                     truesize,
                     time,
+                    stamp: None,
                 });
         }
         own.error = Errno::ECONNREFUSED.0 as i32;
@@ -3132,19 +3220,45 @@ fn read_error(
     let Some(error) = inet(socket).errors.pop_front() else {
         return Err(Errno::EAGAIN);
     };
-    let next = !inet_ref(socket).errors.is_empty();
-    socket.borrow_mut().error = if next {
-        Errno::ECONNREFUSED.0 as i32
-    } else {
-        0
-    };
-    if next {
+    // `sock_dequeue_err_skb`: the socket's error is the next ICMP error's, or none after the
+    // last ICMP error; timestamps leave it.
+    let next = inet_ref(socket)
+        .errors
+        .front()
+        .map(|next| next.stamp.is_none());
+    match next {
+        Some(true) => socket.borrow_mut().error = Errno::ECONNREFUSED.0 as i32,
+        _ if error.stamp.is_none() => socket.borrow_mut().error = 0,
+        _ => {}
+    }
+    if next.is_some() {
         super::error_report(kernel, cx, socket);
+    }
+    let family = socket.borrow().family;
+    let (level, kind) = if family == AF_INET {
+        (SOL_IP, IP_RECVERR)
+    } else {
+        (SOL_IPV6, IPV6_RECVERR)
+    };
+    if let Some((info, key)) = error.stamp {
+        // ENOMSG from SO_EE_ORIGIN_TIMESTAMPING, with no offender and no bytes (OPT_TSONLY).
+        let mut extended = Errno::ENOMSG.0.to_le_bytes().to_vec();
+        extended.extend_from_slice(&[crate::linux_extra::SO_EE_ORIGIN_TIMESTAMPING, 0, 0, 0]);
+        extended.extend_from_slice(&info.to_le_bytes());
+        extended.extend_from_slice(&key.to_le_bytes());
+        let offender = if family == AF_INET { 16 } else { 28 };
+        extended.resize(extended.len() + offender, 0);
+        let received = Received {
+            flags: MSG_ERRQUEUE,
+            error: Some((level, kind, extended)),
+            time: error.time,
+            ..Received::default()
+        };
+        return Ok((0, received));
     }
     let size = parts.size();
     let copied = (error.data.len() as u64).min(size);
     scatter(kernel, cx, tid, parts, &error.data[..copied as usize])?;
-    let family = socket.borrow().family;
     let v4 = v4_of(&error.to.address).is_some();
     // `struct sock_extended_err` and the offender, the host that sent the error.
     let mut extended = Errno::ECONNREFUSED.0.to_le_bytes().to_vec();
@@ -3168,12 +3282,6 @@ fn read_error(
         port: 0,
     };
     extended.extend_from_slice(&address_bytes(family, &offender));
-    let level = if family == AF_INET { SOL_IP } else { SOL_IPV6 };
-    let kind = if family == AF_INET {
-        IP_RECVERR
-    } else {
-        IPV6_RECVERR
-    };
     let index = if v4_of(&error.from) == Some(network::ADDRESS) {
         network::ETHERNET_INDEX
     } else {
