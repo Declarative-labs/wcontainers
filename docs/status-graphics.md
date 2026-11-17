@@ -79,7 +79,11 @@ branches into it at the start and end of every run.
   conflict and without touching the interface, the suite or the plan. The whole workspace checks.
 - G1, run 10 (2026-11-17): the six findings of G1's eighth check settled (below). The start merge
   brought the shaders branch in (the others had nothing new), with two interface commits of serde
-  derives, kept (Interface changes). The whole workspace checks.
+  derives, kept (Interface changes). At the end direct3d-11 (twice) and direct3d-12 were merged.
+  There was no conflict and no change to the interface. The whole workspace checks. The fronts'
+  tests on the recording back end pass with its new rules: direct3d-11 `front` 31, direct3d-12
+  `device` 10, infrastructure `swapchain` 9. This run also added the generator's dispatch, capture
+  and timestamp steps.
 - G1, run 9 (2026-11-17): the three findings of G1's seventh independent check settled (below).
   The other branches had nothing new at the start. At the end webgpu, direct3d-11 and direct3d-12
   were merged without conflict (webgl, shaders and rig had nothing new); webgpu brought two
