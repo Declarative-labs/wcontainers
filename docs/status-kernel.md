@@ -1827,6 +1827,21 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K6a, first run: the Linux Test Project runs in an image of its own (Debian trixie with glibc
+  and the suite at /opt/ltp), in the reference and on ours, not in alpine:3.22: glibc is what the
+  suite is built for. Each test runs as the first process of a container of its own (`/bin/sh -c`
+  its runtest line), not one after another in one container under runltp or kirk, so no test
+  sees another's leftovers and a kernel failure ends one test; the verdict is read from the exit
+  code as kirk reads it. The suite's own timeouts are left at their defaults (no LTP_TIMEOUT_MUL).
+- K6a, first run: the whole suite is the groups a default container can start
+  (`ltp::SUITE`); those for hardware, other hosts or long stress are left out (named there).
+- K6a, first run: on ours the root is the kernel's in-memory file system, which tests see as
+  tmpfs (`Using /tmp/LTP_... as tmpdir (tmpfs filesystem)`) where the reference's is overlayfs;
+  tests that choose by file system type can choose differently.
+- K6a, first run: netlink protocols other than route, ping sockets and AF_PACKET are left refused
+  and counted (the check's finding 9): ping and packet sockets fall under section 15's raw
+  packets; the netlink ones are listed under Not built and in Next.
+
 - K5, seventh run: eventfd's number in fdinfo is the lowest free among the container's event
   descriptors; Linux's is the lowest free on the whole machine, so it differs from the
   reference's whenever other containers hold some (the test shows it as N). epoll's items are
@@ -2194,6 +2209,8 @@ guest).
 
 ## Changes to the shared crate (wcontainers-abi)
 
+- K6a, first run: none.
+
 - K5, eighth run: none.
 - K5, seventh run: none.
 - K5, sixth run: none.
@@ -2258,6 +2275,11 @@ guest).
 None open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- K6a, first run (fixed): sigpick's reference race (below, from K3) came from musl's fork, which
+  blocks every signal until it returns in the parent; a child that signalled at once could find
+  the main thread blocking it, so Linux gave the signal to the next thread. The child now waits
+  for the parent's word. 8 of 8 runs alone passed (load about 20).
 
 - K5, eighth run (fixed): tests/inet.rs `deferred_accepts_match_reference` failed now and then
   because the reference raced: after the listener closed, client 0's write came 100 ms later
@@ -2374,6 +2396,22 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6a's next run (or K6b): the wrong answers of the first comparison (under "K6a, first run"),
+largest first by the tests they turn:
+1. `/proc/config.gz` (CONFIG_IKCONFIG_PROC, which the reference has): the suite's library reads
+   the kernel's configuration for every test that names options it needs, and without it such
+   tests are TBROK "Cannot parse kernel .config" (72 of the first 258 differences). It must
+   describe this kernel truthfully (what is built), in Linux's format, gzip'd.
+2. `/proc/sys/kernel/tainted` (19), `/proc/sys/fs/pipe-max-size`, `/proc/sys/kernel/sem`,
+   `/proc/sysvipc/*`, `/proc/cmdline` and the other entries tests open (counted "proc entry not
+   built"; the comparison lists each test's).
+3. F_SETLEASE (counted "fcntl command not built" 1024), AF_ALG (crypto and cve tests), keyctl
+   and add_key, io_setup and the other calls the comparison names as not built.
+4. The four tests killed by SIGSEGV on ours, and the other wrong answers, test by test.
+5. Re-run the whole comparison (`ltp ours` then `ltp compare`) after each batch; tests slower
+   than the time limit on the stand-in are not differences of behaviour and are listed apart.
+6. The netlink protocols the reference makes (SOCK_DIAG for `ss` first) from the K5 check.
 
 K5's corners, none holding the milestone (what the seven runs built is under Where things
 stand), in this order:
