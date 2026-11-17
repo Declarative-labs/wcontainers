@@ -163,9 +163,11 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
   forwarder resolving `D3D11CreateDevice` to the library's own, 8 threads making buffers at once,
   equal state descriptions giving the live object, the context's getters (with reference counts and
   `ClearState`), and unused stages taking unbinding calls.
-- crates/wcontainers-directx/tests/programs.rs, 4 tests and 1 ignored: our two programs, system and
+- crates/wcontainers-directx/tests/programs.rs, 3 tests and 1 ignored: our two programs, system and
   ours; `own_handled` with a D32_FLOAT depth-stencil view; the D24_UNORM_S8_UINT one (known failure).
   `own_handled` now also writes and copies a buffer at unaligned byte ranges and checks every byte.
+- Last full run: 2026-11-17, run 3, on the desktop from this tree: 16 + 11 + 3 passed, 1 ignored (the
+  known failure, which run with `--include-ignored` fails as described); lint clean.
 
 ## Departures from the plan
 
