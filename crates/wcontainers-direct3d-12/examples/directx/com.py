@@ -43,7 +43,7 @@ def args(sig):
     return ', '.join(p.split(':')[0] for p in parts if p)
 
 OBJECTS = [
-    'Factory:IDXGIFactory4:EnumAdapters1,EnumAdapters,EnumAdapterByLuid,IsCurrent,GetCreationFlags,IsWindowedStereoEnabled,CreateSwapChainForHwnd,CreateSwapChain',
+    'Factory:IDXGIFactory4:MakeWindowAssociation,GetWindowAssociation,EnumAdapters1,EnumAdapters,EnumAdapterByLuid,IsCurrent,GetCreationFlags,IsWindowedStereoEnabled,CreateSwapChainForHwnd,CreateSwapChain',
     'Adapter:IDXGIAdapter1:GetDesc1,GetDesc,EnumOutputs,GetParent',
     'Output:IDXGIOutput6:GetParent,GetDesc,GetDesc1,GetDisplayModeList,GetDisplayModeList1,FindClosestMatchingMode,FindClosestMatchingMode1,CheckHardwareCompositionSupport,SupportsOverlays',
     'SwapChain:IDXGISwapChain4:GetParent,GetContainingOutput,Present,Present1,GetBuffer,ResizeBuffers,GetDesc1,GetDesc,GetHwnd,GetDevice,GetCurrentBackBufferIndex,GetLastPresentCount,SetMaximumFrameLatency,GetMaximumFrameLatency,GetFrameLatencyWaitableObject,GetFullscreenState,SetFullscreenState,IsTemporaryMonoSupported,CheckColorSpaceSupport,SetColorSpace1',
@@ -52,7 +52,7 @@ OBJECTS = [
     'Allocator:ID3D12CommandAllocator:Reset',
     'List:ID3D12GraphicsCommandList2:WriteBufferImmediate,Close,Reset,ExecuteBundle,DrawInstanced,DrawIndexedInstanced,CopyResource,CopyBufferRegion,CopyTextureRegion,IASetPrimitiveTopology,RSSetViewports,RSSetScissorRects,OMSetBlendFactor,OMSetStencilRef,SetPipelineState,ResourceBarrier,SetGraphicsRootSignature,SetComputeRootSignature,SetDescriptorHeaps,SetGraphicsRootDescriptorTable,SetComputeRootDescriptorTable,SetGraphicsRootConstantBufferView,SetComputeRootConstantBufferView,SetGraphicsRootShaderResourceView,SetComputeRootShaderResourceView,SetGraphicsRootUnorderedAccessView,SetComputeRootUnorderedAccessView,SetGraphicsRoot32BitConstant,SetComputeRoot32BitConstant,SetGraphicsRoot32BitConstants,SetComputeRoot32BitConstants,IASetIndexBuffer,IASetVertexBuffers,OMSetRenderTargets,ClearRenderTargetView,ClearDepthStencilView,ClearUnorderedAccessViewUint,ClearUnorderedAccessViewFloat,Dispatch,ExecuteIndirect,ResolveSubresource,BeginQuery,EndQuery,ResolveQueryData,SetPredication,GetType',
     'Fence:ID3D12Fence:GetCompletedValue,SetEventOnCompletion,Signal',
-    'Resource:ID3D12Resource2:GetDesc1,Map,Unmap,GetDesc,GetHeapProperties,GetGPUVirtualAddress,WriteToSubresource,ReadFromSubresource',
+    'Resource:ID3D12Resource2:GetDesc1,GetProtectedResourceSession,Map,Unmap,GetDesc,GetHeapProperties,GetGPUVirtualAddress,WriteToSubresource,ReadFromSubresource',
     'RootSignature:ID3D12RootSignature:',
     'PipelineState:ID3D12PipelineState:',
     'QueryHeap:ID3D12QueryHeap:',
