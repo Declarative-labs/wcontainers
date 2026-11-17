@@ -55,13 +55,6 @@ pub const TRIANGLE: [[f32; 5]; 3] = [
     [-0.8, -0.7, 0.0, 0.0, 1.0],
 ];
 
-pub const TRIANGLE_HLSL: &str = r"
-struct VsIn { float2 pos : POSITION; float3 color : COLOR; };
-struct VsOut { float4 pos : SV_Position; float3 color : COLOR; };
-VsOut vs(VsIn i) { VsOut o; o.pos = float4(i.pos, 0.0, 1.0); o.color = i.color; return o; }
-float4 ps(VsOut i) : SV_Target { return float4(i.color, 1.0); }
-";
-
 pub const TRIANGLE_WGSL: &str = include_str!("triangle.wgsl");
 
 /// Quad vertices: position x, y, z, texture u, v and colour r, g, b, a. The first quad is near
@@ -78,15 +71,6 @@ pub const QUADS: [[f32; 9]; 8] = [
 ];
 
 pub const QUAD_INDICES: [u16; 12] = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
-
-pub const QUADS_HLSL: &str = r"
-Texture2D tex : register(t0);
-SamplerState smp : register(s0);
-struct VsIn { float3 pos : POSITION; float2 uv : TEXCOORD; float4 color : COLOR; };
-struct VsOut { float4 pos : SV_Position; float2 uv : TEXCOORD; float4 color : COLOR; };
-VsOut vs(VsIn i) { VsOut o; o.pos = float4(i.pos, 1.0); o.uv = i.uv; o.color = i.color; return o; }
-float4 ps(VsOut i) : SV_Target { return tex.Sample(smp, i.uv) * i.color; }
-";
 
 pub const TEXTURE_SIZE: u32 = 16;
 
@@ -110,25 +94,6 @@ pub fn texture() -> Vec<u8> {
 pub const INSTANCE_SHAPE: [[f32; 2]; 3] = [[0.0, 0.1], [0.09, -0.07], [-0.09, -0.07]];
 
 pub const INSTANCES: u32 = 16;
-
-pub const INSTANCED_HLSL: &str = r"
-cbuffer Scene : register(b0) {
-    float4 placement[16]; // offset x, y; cosine and sine of the turn
-    float4 colors[16];
-    float4 scale;
-};
-struct VsIn { float2 pos : POSITION; uint id : SV_InstanceID; };
-struct VsOut { float4 pos : SV_Position; float4 color : COLOR; };
-VsOut vs(VsIn i) {
-    float4 p = placement[i.id];
-    float2 turned = float2(i.pos.x * p.z - i.pos.y * p.w, i.pos.x * p.w + i.pos.y * p.z);
-    VsOut o;
-    o.pos = float4(turned * scale.xy + p.xy, 0.0, 1.0);
-    o.color = colors[i.id];
-    return o;
-}
-float4 ps(VsOut i) : SV_Target { return i.color; }
-";
 
 /// The instanced scene's constant buffer, laid out as `INSTANCED_HLSL`'s `Scene`: sixteen
 /// placements, sixteen colours and a scale, each a float4.

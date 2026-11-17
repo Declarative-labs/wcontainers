@@ -1,0 +1,4 @@
+flip first: present succeeded, buffers 128 by 96, format 28, count 2
+flip resized: present succeeded, buffers 64 by 80, format 28, count 2
+blit first: present succeeded, buffers 128 by 96, format 87, count 1
+blit resized: present succeeded, buffers 64 by 80, format 87, count 1
