@@ -10,6 +10,10 @@ repository.workspace = true
 [dependencies]
 wcontainers-gpu = { path = "../wcontainers-gpu" }
 naga = { workspace = true }
+blake3 = { version = "1", default-features = false }
+
+[build-dependencies]
+cc = { version = "1", features = ["parallel"] }
 
 [dev-dependencies]
 naga = { workspace = true, features = ["wgsl-in", "glsl-out", "wgsl-out"] }
