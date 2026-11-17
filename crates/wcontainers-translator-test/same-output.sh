@@ -8,6 +8,8 @@
 #   WC_OUTPUT_ROOT=<directory> nix develop -c crates/wcontainers-translator-test/same-output.sh <commit> [sets]
 # Sets, comma separated (default all): bench busybox musl rg git python java go node bun. Node and Bun take
 # many GB and minutes each; run them alone. The real binaries come from this checkout's target/binaries.
+# Both sides run this tree's tests/output.rs, so they write the same list; for an earlier commit from before
+# the guest CPU interface its few calls are spelled the old way.
 set -u
 root=$(git rev-parse --show-toplevel)
 cd "$root" || exit 1
@@ -21,6 +23,14 @@ tree=$dir/trees/${base:0:12}
 if [ ! -f "$tree/Cargo.toml" ]; then
   rm -rf "$tree" && mkdir -p "$tree/target" && git archive "$base" | tar -x -C "$tree" || exit 1
   ln -s "$root/target/binaries" "$tree/target/binaries"
+fi
+output=$tree/crates/wcontainers-translator-test/tests/output.rs
+if [ -d "$tree/crates/wcontainers-guest-cpu" ]; then
+  cp crates/wcontainers-translator-test/tests/output.rs "$output"
+else
+  sed -e 's/translate::<Arm64>(/translate(/' -e 's/thread_module::<Arm64>()/thread_module()/' \
+    -e '/NO_OFFER/d' -e '/^use wcontainers_arm64::Arm64;$/d' \
+    crates/wcontainers-translator-test/tests/output.rs > "$output"
 fi
 before=$dir/lists/${base:0:12}
 now=$dir/lists/now

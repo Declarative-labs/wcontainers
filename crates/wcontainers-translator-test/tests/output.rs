@@ -4,6 +4,9 @@
 //! number), its length and its BLAKE3 hash. One command:
 //! `WC_OUTPUT_DIR=<directory> WC_OUTPUT_SETS=bench,busybox nix develop -c cargo test --release -p wcontainers-translator-test --test output -- --ignored --nocapture`
 //! (sets: `bench`, which is the benchmark set and the thread module, and the names of the real binaries).
+//! `WC_OUTPUT_LOOK_AHEADS` (comma separated labels of [`LOOK_AHEADS`]) limits the look-aheads, all by
+//! default. A real binary is translated from all its starts at each look-ahead, and at full and bounded also
+//! from each kind of start alone.
 
 use std::fmt::Write;
 use wcontainers_arm64::Arm64;
@@ -12,10 +15,30 @@ use wcontainers_translator_test::binaries::{Binary, SOURCES};
 use wcontainers_translator_test::programs::{Library, build_with};
 use wcontainers_translator_test::runner::probe;
 
-const LOOK_AHEADS: [(&str, LookAhead); 2] = [
-    ("full", LookAhead::Full),
+const LOOK_AHEADS: [(&str, LookAhead); 7] = [
+    ("none", LookAhead::None),
+    ("b1", LookAhead::Bounded(1)),
+    ("b17", LookAhead::Bounded(17)),
+    ("b64", LookAhead::Bounded(64)),
     ("bounded", LookAhead::Bounded(BOUND)),
+    ("b4096", LookAhead::Bounded(4096)),
+    ("full", LookAhead::Full),
 ];
+/// What a translation is offered: nothing, for ARM64.
+const NO_OFFER: () = ();
+
+/// The look-aheads asked for.
+fn look_aheads() -> Vec<(&'static str, LookAhead)> {
+    let asked = std::env::var("WC_OUTPUT_LOOK_AHEADS").ok();
+    LOOK_AHEADS
+        .into_iter()
+        .filter(|(label, _)| {
+            asked
+                .as_deref()
+                .is_none_or(|a| a.split(',').any(|l| l == *label))
+        })
+        .collect()
+}
 const SETTINGS: [Optimise; 2] = [Optimise::Speed, Optimise::Size];
 
 fn line(out: &mut String, name: &str, wasm: &[u8]) {
@@ -47,7 +70,7 @@ fn bench(out: &mut String) {
         ));
     }
     for blob in &blobs {
-        for (label, look_ahead) in LOOK_AHEADS {
+        for (label, look_ahead) in look_aheads() {
             for optimise in SETTINGS {
                 let translation = translate::<Arm64>(
                     &blob.bytes,
@@ -56,7 +79,7 @@ fn bench(out: &mut String) {
                     look_ahead,
                     optimise,
                     probe(),
-                    (),
+                    NO_OFFER,
                 )
                 .unwrap();
                 lines(
@@ -76,20 +99,34 @@ fn binary(out: &mut String, name: &str) {
         .find(|s| s.name == name)
         .unwrap_or_else(|| panic!("no set named {name}"));
     let binary = Binary::read(source.name, &std::fs::read(source.file()).unwrap());
-    let starts = binary.starts.all();
-    for (label, look_ahead) in LOOK_AHEADS {
-        for optimise in SETTINGS {
-            let translation = translate::<Arm64>(
-                &binary.image,
-                binary.code.clone(),
-                &starts,
-                look_ahead,
-                optimise,
-                probe(),
-                (),
-            )
-            .unwrap();
-            lines(out, &format!("{name}-{label}-{optimise:?}"), &translation);
+    let all = binary.starts.all();
+    let mut start_sets = vec![(String::new(), all, false)];
+    for (means, starts) in binary.starts.by_means() {
+        let means = format!("-{}", means.replace(' ', "_"));
+        start_sets.push((means, starts.iter().copied().collect(), true));
+    }
+    for (label, look_ahead) in look_aheads() {
+        for (means, starts, alone) in &start_sets {
+            if *alone && !matches!(label, "full" | "bounded") || starts.is_empty() {
+                continue;
+            }
+            for optimise in SETTINGS {
+                let translation = translate::<Arm64>(
+                    &binary.image,
+                    binary.code.clone(),
+                    starts,
+                    look_ahead,
+                    optimise,
+                    probe(),
+                    NO_OFFER,
+                )
+                .unwrap();
+                lines(
+                    out,
+                    &format!("{name}-{label}{means}-{optimise:?}"),
+                    &translation,
+                );
+            }
         }
     }
 }
