@@ -197,7 +197,11 @@ pub fn removal(r: Option<wcontainers_direct3d_11::Removal>) -> Result<()> {
 pub fn hresult(e: wcontainers_direct3d_11::Error) -> Error {
     use wcontainers_direct3d_11::Error as F;
     match e {
-        F::InvalidArg(_) => E_INVALIDARG.into(),
+        // Reported as Direct3D's debug layer reports an invalid call.
+        F::InvalidArg(why) => {
+            eprintln!("wcontainers direct3d 11: invalid: {why}");
+            E_INVALIDARG.into()
+        }
         F::NotImplemented(_) => E_NOTIMPL.into(),
         F::Unsupported => DXGI_ERROR_UNSUPPORTED.into(),
         F::StillDrawing => DXGI_ERROR_WAS_STILL_DRAWING.into(),

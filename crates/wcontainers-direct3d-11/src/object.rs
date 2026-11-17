@@ -308,7 +308,8 @@ pub struct Shader<B: Backend> {
     /// (`None` where nothing does yet).
     pub stand_ins: Vec<(u32, Option<StandIn>)>,
     /// A vertex shader's bytecode, converted again for pixel shaders that interpolate its outputs
-    /// other than by perspective; empty for the other stages.
+    /// other than by perspective, and a pixel shader's, converted again for counting; empty for
+    /// compute shaders.
     pub bytecode: Vec<u8>,
 }
 

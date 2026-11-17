@@ -1,4 +1,4 @@
-//! The device: `ID3D11Device1` and `IDXGIDevice1` on one object.
+//! The device: `ID3D11Device1` and `IDXGIDevice3` on one object.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -9,7 +9,9 @@ use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
-use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIAdapter1, IDXGIDevice1};
+use windows::Win32::Graphics::Dxgi::{
+    DXGI_OFFER_RESOURCE_PRIORITY, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice3, IDXGIResource,
+};
 use windows::core::{
     ComObjectInner, ComObjectInterface, GUID, IUnknownImpl, Interface, OutRef, Ref, Result,
     implement,
@@ -22,7 +24,7 @@ use wcontainers_gpu::SourceStage;
 use super::counted::{Counted, Held};
 use super::*;
 
-#[implement(ID3D11Device1, IDXGIDevice1)]
+#[implement(ID3D11Device1, IDXGIDevice3)]
 pub struct Device {
     pub front: Locked<Shared>,
     pub(super) private: Private,
@@ -135,8 +137,63 @@ pub fn create_device(
         states: States::default(),
     }
     .into();
+    // The object's table of ID3D11Device1 is ours to point elsewhere.
+    unsafe {
+        let table = device.as_raw() as *mut *const ID3D11Device1_Vtbl;
+        *table = patched_table(*table);
+    }
     let context = unsafe { device.GetImmediateContext() }?;
     Ok((device.into(), context, level))
+}
+
+/// The windows crate's `CheckMultisampleQualityLevels` and `CheckFormatSupport` entries, which
+/// write their answer only on success and never check the pointer.
+type QualityLevels =
+    unsafe extern "system" fn(*mut c_void, DXGI_FORMAT, u32, *mut u32) -> windows::core::HRESULT;
+type FormatSupport =
+    unsafe extern "system" fn(*mut c_void, DXGI_FORMAT, *mut u32) -> windows::core::HRESULT;
+static CHECK_QUALITY_LEVELS: std::sync::OnceLock<QualityLevels> = std::sync::OnceLock::new();
+static CHECK_FORMAT_SUPPORT: std::sync::OnceLock<FormatSupport> = std::sync::OnceLock::new();
+
+/// The device's table with `CheckMultisampleQualityLevels` and `CheckFormatSupport` answering as
+/// Direct3D does, made once from the first device's.
+fn patched_table(original: *const ID3D11Device1_Vtbl) -> *const ID3D11Device1_Vtbl {
+    struct Table(ID3D11Device1_Vtbl);
+    // SAFETY: a table of function pointers, never written after it is made.
+    unsafe impl Sync for Table {}
+    unsafe impl Send for Table {}
+    static PATCHED: std::sync::OnceLock<Table> = std::sync::OnceLock::new();
+    &PATCHED
+        .get_or_init(|| {
+            // SAFETY: the windows crate's table, copied bit for bit.
+            let mut table = unsafe { std::ptr::read(original) };
+            let _ = CHECK_QUALITY_LEVELS.set(table.base__.CheckMultisampleQualityLevels);
+            table.base__.CheckMultisampleQualityLevels = check_quality_levels;
+            let _ = CHECK_FORMAT_SUPPORT.set(table.base__.CheckFormatSupport);
+            table.base__.CheckFormatSupport = check_format_support;
+            Table(table)
+        })
+        .0
+}
+
+/// `CheckMultisampleQualityLevels`: `E_INVALIDARG` for a null out pointer, and the count zeroed
+/// for a sample count it has no levels for (`E_FAIL`), as Direct3D answers.
+unsafe extern "system" fn check_quality_levels(
+    this: *mut c_void,
+    format: DXGI_FORMAT,
+    samples: u32,
+    out: *mut u32,
+) -> windows::core::HRESULT {
+    if out.is_null() {
+        return E_INVALIDARG;
+    }
+    let mut n = 0;
+    let entry = CHECK_QUALITY_LEVELS.get().expect("the table was patched");
+    let hr = unsafe { entry(this, format, samples, &mut n) };
+    if hr.is_ok() || hr == windows::Win32::Foundation::E_FAIL {
+        unsafe { *out = n };
+    }
+    hr
 }
 
 /// Writes `object` to an out parameter, or reports that the call only checks (a null out pointer).
@@ -727,6 +784,14 @@ impl Device_Impl {
         format: DXGI_FORMAT,
         samples: u32,
     ) -> Result<u32> {
+        // Values that name no DXGI format.
+        let f = format.0 as u32;
+        if !matches!(f, 0..=132 | 189..=191) {
+            return Err(E_INVALIDARG.into());
+        }
+        if samples == 0 || samples > 32 {
+            return Err(windows::Win32::Foundation::E_FAIL.into());
+        }
         Ok(self
             .front
             .borrow()
@@ -839,6 +904,7 @@ impl Device_Impl {
         if flags != 0 {
             return Err(E_INVALIDARG.into());
         }
+        self.deferred_allowed()?;
         let c: ID3D11DeviceContext1 = Context::deferred(self.front.clone(), self.me()).into();
         out.write(Some(c.into()))
     }
@@ -851,9 +917,18 @@ impl Device_Impl {
         if flags != 0 {
             return Err(E_INVALIDARG.into());
         }
+        self.deferred_allowed()?;
         out.write(Some(
             Context::deferred(self.front.clone(), self.me()).into(),
         ))
+    }
+
+    /// A device made single-threaded has no deferred contexts (`DXGI_ERROR_INVALID_CALL`).
+    fn deferred_allowed(&self) -> Result<()> {
+        if self.flags & D3D11_CREATE_DEVICE_SINGLETHREADED.0 != 0 {
+            return Err(windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.into());
+        }
+        Ok(())
     }
 
     /// `CreateDeviceContextState`: a state object for this device's own interface, at the first
@@ -943,7 +1018,67 @@ impl Device_Impl {
         unsafe { self.adapter.query(riid, parent).ok() }
     }
 
+    /// `OfferResources`: the contents are kept, which DXGI allows (it may discard them).
+    pub(super) fn offer_resources(
+        &self,
+        count: u32,
+        resources: *const Option<IDXGIResource>,
+        priority: DXGI_OFFER_RESOURCE_PRIORITY,
+    ) -> Result<()> {
+        if !(1..=3).contains(&priority.0) || !all_given(count, resources) {
+            return Err(E_INVALIDARG.into());
+        }
+        Ok(())
+    }
+
+    /// `ReclaimResources`: offered resources were never discarded.
+    pub(super) fn reclaim_resources(
+        &self,
+        count: u32,
+        resources: *const Option<IDXGIResource>,
+        discarded: *mut windows::core::BOOL,
+    ) -> Result<()> {
+        if !all_given(count, resources) {
+            return Err(E_INVALIDARG.into());
+        }
+        if !discarded.is_null() {
+            for i in 0..count as usize {
+                unsafe { *discarded.add(i) = false.into() };
+            }
+        }
+        Ok(())
+    }
+
+    /// `Trim`: the front keeps no temporary memory a hint could free.
+    pub(super) fn trim(&self) {}
+
     pub(super) fn get_adapter(&self) -> Result<IDXGIAdapter> {
         self.adapter.cast()
     }
+}
+
+/// Whether `resources` holds `count` resources, none of them null.
+fn all_given(count: u32, resources: *const Option<IDXGIResource>) -> bool {
+    count > 0
+        && !resources.is_null()
+        && unsafe { std::slice::from_raw_parts(resources, count as usize) }
+            .iter()
+            .all(Option::is_some)
+}
+
+/// `CheckFormatSupport`: `E_INVALIDARG` for a null out pointer, and no uses written when the
+/// format is not supported, as Direct3D answers.
+unsafe extern "system" fn check_format_support(
+    this: *mut c_void,
+    format: DXGI_FORMAT,
+    out: *mut u32,
+) -> windows::core::HRESULT {
+    if out.is_null() {
+        return E_INVALIDARG;
+    }
+    let mut uses = 0;
+    let entry = CHECK_FORMAT_SUPPORT.get().expect("the table was patched");
+    let hr = unsafe { entry(this, format, &mut uses) };
+    unsafe { *out = if hr.is_ok() { uses } else { 0 } };
+    hr
 }

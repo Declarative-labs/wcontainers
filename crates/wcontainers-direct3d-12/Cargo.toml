@@ -12,6 +12,7 @@ wcontainers-gpu = { path = "../wcontainers-gpu" }
 wcontainers-directx-graphics-infrastructure = { path = "../wcontainers-directx-graphics-infrastructure" }
 wcontainers-shaders = { path = "../wcontainers-shaders" }
 slab = "0.4"
+md-5 = { version = "0.11", default-features = false }
 naga = { workspace = true }
 
 [dev-dependencies]

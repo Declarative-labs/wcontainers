@@ -21,6 +21,7 @@ unsafe extern "C" {
     fn wcs_dxil_to_spirv(
         data: *const u8,
         size: usize,
+        samples: u32,
         out: *mut *mut u32,
         out_words: *mut usize,
         error: *mut *mut c_char,
@@ -56,14 +57,22 @@ fn words(out: *mut u32, words: usize) -> Vec<u32> {
     v
 }
 
-/// DXIL to SPIR-V words.
-fn to_spirv(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
+/// DXIL to SPIR-V words, the targets' sample count fixed where `samples` is not zero.
+fn to_spirv(dxil: &[u8], samples: u8) -> Result<Vec<u32>, ConvertError> {
     let mut out = core::ptr::null_mut();
     let mut words = 0;
     let mut error = core::ptr::null_mut();
     // SAFETY: the pointers are valid for the call; the C side allocates `out` and `error` with malloc.
-    let status =
-        unsafe { wcs_dxil_to_spirv(dxil.as_ptr(), dxil.len(), &mut out, &mut words, &mut error) };
+    let status = unsafe {
+        wcs_dxil_to_spirv(
+            dxil.as_ptr(),
+            dxil.len(),
+            samples.into(),
+            &mut out,
+            &mut words,
+            &mut error,
+        )
+    };
     if status != 0 {
         return Err(ConvertError::Rejected(reason(error)));
     }
@@ -170,7 +179,7 @@ pub(crate) fn lower(
     dxil: &[u8],
     variant: &VariantKey,
 ) -> Result<(Module, Reflection, ShaderStage), ConvertError> {
-    let spirv = to_spirv(dxil)?;
+    let spirv = to_spirv(dxil, variant.samples)?;
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
         strict_capabilities: false,
@@ -180,6 +189,10 @@ pub(crate) fn lower(
         .parse()
         .map_err(|e| ConvertError::Reader(format!("{e}")))?;
     unconverted(&module)?;
+    if !module.overrides.is_empty() {
+        // dxil-spirv's only specialisation constant here: the targets' sample count.
+        return Err(ConvertError::Unsupported("SampleCount"));
+    }
     direct3d_float_to_int(&mut module)?;
     declared_sizes(dxil, &mut module)?;
     crate::lower::derivatives_anywhere(&mut module);
@@ -316,6 +329,20 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
         )
     }) {
         return Err(ConvertError::Unsupported("Texture1DArray"));
+    }
+    // WGSL has no multisampled array textures (the DXBC route refuses them by the same name).
+    if module.global_variables.iter().any(|(_, v)| {
+        matches!(
+            module.types[v.ty].inner,
+            TypeInner::Image {
+                arrayed: true,
+                class: naga::ImageClass::Sampled { multi: true, .. }
+                    | naga::ImageClass::Depth { multi: true },
+                ..
+            }
+        )
+    }) {
+        return Err(ConvertError::Unsupported("MultisampledArrayTexture"));
     }
     // Every built-in the entry point reads or writes, with its type, and every location it reads
     // (`false`) or writes (`true`).

@@ -99,6 +99,7 @@ pub fn caps(
             1
         },
         capture_buffers: get(glow::MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS),
+        capture_components: get(glow::MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS),
     };
     let format_ext = FormatExtensions::found(ext);
     let mut formats = FormatCaps {
