@@ -4,9 +4,9 @@ Branch `phase-2-graphics-shaders`. Plan: `docs/phase-2-graphics.md`, sections 6,
 
 ## Where things stand
 
-Milestone G6a (first slice): done in run 3; run 4 fixed what the independent check of run 3 found
-(listed under "Run 4" below). Run 4 merged origin/phase-2-graphics and every origin/phase-2-graphics-*
-branch again (no conflicts).
+Milestone G6a (first slice): done in run 3; runs 4 and 5 fixed what the independent checks of runs 3
+and 4 found (listed under "Run 4" and "Run 5" below). Run 5 merged origin/phase-2-graphics and every
+origin/phase-2-graphics-* branch again (no conflicts).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -101,21 +101,62 @@ Run 4 (the independent check's findings, each fixed or recorded):
   `dxil_bindings_and_sampled_pairs_match_dxbc` now also compares the extras of both routes. DXIL
   reports `PrimitiveId`, `VertexWithoutPosition` and `Texture1DArray` by name where the module
   would have been invalid.
-- `CONVERTER_VERSION` carries a BLAKE3 hash of the converters' C++ sources as built (`build.rs`,
-  carriage returns left out), not revisions written by hand.
+- `CONVERTER_VERSION` carries a BLAKE3 hash of sources, not revisions written by hand. As run 4 left
+  it, the hash missed dxbc-spirv's `ir/passes` and `cpp/assert` (it did not recurse there); run 5
+  fixed that (below).
 - The dynamically indexed constant buffers' sizes come from dxbc-spirv's own parser through the C
   boundary, matched by space and register; the Rust parser of SHDR is gone.
 - naga's WGSL writer writes the module's diagnostic filters (`diagnostic(off,
   derivative_uniformity);`), so Chrome sees what naga validated.
 - Six new shaders of our own (`tests/own/more.hlsl`, `spaces.hlsl`) for these cases.
 
+Run 5 (the independent check of run 4, each finding fixed or recorded):
+- DXIL integer signedness: dxil-spirv types integers as unsigned, and naga's SPIR-V reader took a
+  conversion's, division's or shift's signedness from its types, so `fptosi`, `sitofp`, `sdiv`,
+  `srem` and `ashr` became unsigned (wrong for every negative value). The carried reader now reads
+  each instruction in the signedness it names (signed and unsigned division, remainder and modulo,
+  right shifts, the four float conversions, `SConvert`/`UConvert`, bitfield extracts, and
+  GLSL.std.450's `SAbs`, `SSign`, `SMin`, `SMax`, `SClamp`, `FindSMsb` and their unsigned forms):
+  operands are reinterpreted, and the result is given the result type's signedness. Atomic and
+  subgroup minimum and maximum, which cannot reinterpret memory, are refused by name
+  (`Reader("... on integers of the other signedness")`) when the signedness differs.
+- Texel offsets on DXIL loads (`OpImageFetch` with `Offset`/`ConstOffset`) were dropped silently; the
+  reader now adds them to the coordinate, and refuses any other load operand it does not know by
+  name (`unsupported image load operand`) instead of skipping it.
+- `isnan`/`isinf` in DXIL modules: naga's WGSL writer (carried) now writes them for f32 as tests of
+  the float's bits (the DXBC route still lowers them in `convert`; see Departures).
+- DXIL modules get the same `diagnostic(off, derivative_uniformity)` as DXBC ones, so samples and
+  derivatives in non-uniform control flow compile in Chrome.
+- DXIL values dxc packs into one register are refused as `Unsupported("PackedStageValues")` instead
+  of failing validation as `Invalid`.
+- DXBC loops left from inside a switch case (`LoopBreakInSwitch`, refused before): the case sets a
+  flag and leaves the switch, and a test after the switch leaves the loop.
+- The DXIL boundary installs the same error log as the DXBC one, so dxbc-spirv's container errors
+  become the returned reason instead of going to stderr (or `fd_write` on WebAssembly).
+- The content key: `CONVERTER_VERSION` is now the crate version plus a BLAKE3 hash of everything
+  that makes the module: the converters' C++ (every file under the built directories, recursively,
+  `cpp/assert` and `build.rs` included), this crate's Rust sources and the carried naga's sources
+  (`third_party/naga/src`). `build.rs` reruns when any of them changes and keeps the C++ objects
+  while the C++ hash is unchanged, so a Rust change compiles no C++.
+- The fuzz test prints every case our own checks refused (`ours: malformed ...`/`invalid ...`) and
+  the status reports them (Measurements). On mutated bytecode they are refusals, not crashes; on
+  real bytecode the corpus tests fail on them.
+- New own shaders, `tests/own/signed.hlsl`, compiled by both fxc and dxc (`-Gis`): `ps_signed`
+  (signed division, remainder, shifts, conversions, min, max, abs on negative values, exact as raw
+  bits), `ps_offset` (loads and a sample with texel offsets), `ps_special` (NaN and infinity tests,
+  scalar and vector), `ps_cases` (a loop with a switch whose cases leave early), `vs_pack`/`ps_pack`
+  (values compilers pack). `tests/draw.rs` draws the DXIL builds too (`vs_transform.dxil` with the
+  pixel shader's), against real Direct3D 11's picture of the fxc build.
+
 Next (G6b and on, in order):
 - DXIL inputs and outputs as the DXBC route lays them out: one four-component value per register
   (now each value keeps its own width, so a Direct3D 12 vertex shader writing a float4 that a pixel
   shader reads as float2 fails WebGPU's pipeline check), and elements dxc packs into one register
   (dxil-spirv gives them a SPIR-V component; naga's reader drops it, so two values claim one
-  location). Both fit one wrapper, the one `draw_bases` already makes.
+  location; refused as `PackedStageValues` until then). Both fit one wrapper, the one `draw_bases`
+  already makes.
 - DXIL binding numbers by root signature (6.4, `VariantKey::layout`); today Direct3D 11's rule.
+- Send the carried naga changes upstream (below).
 - naga SPIR-V reader fixes for DXIL (6.2): typed buffers ("unsupported image dimension"), storage
   images without a format, discard as `SPV_EXT_demote_to_helper_invocation`, the sample mask kept as
   an array, geometry and tessellation execution models (the stage helper), and 1D texture arrays
@@ -177,22 +218,56 @@ let reflection = &converted.reflection;
   `E_INVALIDARG` too, or dxbc-spirv or dxil-spirv refused the bytecode, with its message, including
   their failed assertions and exceptions natively), `Unsupported(name)` (a named feature or variant
   not provided yet, for example `GeometryShader`, `StorageImage`, `TypedBuffer`, `Atomics`,
-  `RegisterSpace`), `Reader(text)` (a gap of naga's SPIR-V reader, DXIL only), `Malformed` and
-  `Invalid` (our bugs, a panic in the lowering included: the corpus tests fail on any of these). A
-  front answers each with the API's own refusal (`E_INVALIDARG` at shader creation).
+  `RegisterSpace`, `PackedStageValues`), `Reader(text)` (a gap of naga's SPIR-V reader, DXIL
+  only), `Malformed` and `Invalid` (our lowering's own checks or naga's validation refused the
+  converter's output, a panic in the lowering included; on real bytecode these are our bugs, and
+  the corpus tests fail on any of them). A front answers each with the API's own refusal
+  (`E_INVALIDARG` at shader creation).
 - On WebAssembly a converter failure that is not an error return (dxil-spirv's crashes on signed but
   malformed DXIL, see Known gaps) traps the shaders module; the host reports it as a failed
   conversion.
 
 ## Measurements
 
+Run 5, 2026-11-17, counts only:
+- Laptop (i7-8750H, load average 1 to 5), the whole suite with the corpus (`--include-ignored --skip
+  mutated`): every test passes; every verdict of corpus, rig DXBC and rig DXIL equals its record,
+  unchanged from run 4 (corpus 127 convert and 64 named, rig DXBC 56 of 79, rig DXIL 49 of 72). Own
+  DXBC 18 of 19 (`ps_spaces` `RegisterSpace`; `ps_cases` converts now that loops are left from switch
+  cases), own DXIL 5 of 8 (`ps_spaces` `RegisterSpace`, `vs_pack` and `ps_pack`
+  `PackedStageValues`).
+- Chrome 157 on the RTX 3080 (`web/check`, one GPU job, about 3 s): WGSL corpus 127 of 127, rig DXBC
+  56 of 56, rig DXIL 49 of 49, own 18 of 18, own DXIL 5 of 5; GLSL ES corpus 90 of 103, rig DXBC 47
+  of 53, rig DXIL 46 of 48, own 14 of 17, own DXIL 5 of 5. Every GLSL ES failure is a bitfield
+  operation (`findMSB`, `bitCount` and `findLSB` among them), `textureGather` or `sampler2DMS`.
+  Verdicts in scratch `graphics-shaders/run5/out`.
+- `tests/draw.rs` on the desktop (RTX 3080, shared, no timings): every own pair equal to Direct3D 11
+  texel for texel by the DXBC route on WebGPU (14 of 14) and WebGL 2 (9 drawn, `ps_depth` the known
+  back-end failure, 2591 of 4096 texels, largest 77, as in run 4), and by the DXIL route
+  (`ps_signed`, `ps_offset`, `ps_special`, `ps_cases`) on WebGPU (4 of 4) and WebGL 2 (3 drawn;
+  `ps_cases` is not drawn there because fxc's build extracts bits). The rig's triangle from DXIL and
+  DXBC equal to Direct3D 12's picture on both. Log in scratch `graphics-shaders/run5-draw.log`.
+- WebAssembly (laptop, `run5/wasm.sh`): `wasm_imports` (release) is 4,853,449 bytes, the same 10 WASI
+  imports. The corpus test under wasmtime 38.0.4 passes, and every file it writes equals the native
+  build's (corpus, rig, rig DXIL, own, own DXIL).
+- Fuzz, `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000` (scratch `fuzz/resume.sh`, laptop load
+  below 5). The inputs now include the 13 new own files, so the cases are not those of run 4. 13
+  cases ended the process: 10 DXIL in dxil-spirv (8 segmentation faults, 2 `std::terminate`: cases
+  434, 743, 1457, 1904, 1938, 1964, 2158, 2600, 2786, 2997) and 3 DXBC killed for memory (934,
+  1539, 2228). 13 cases were refused by our own checks: `malformed` 7 (`no instruction 0` 4, `unknown
+  stage` 3) and `invalid` 6 (4 constant indices past an array's end, 1 duplicate switch case value, 1 `tanh` of a
+  type it does not take;
+  scratch `fuzz/run5-seed7-ours.txt`). The independent check's run with seed 20261117 and 12000
+  cases (before run 5) ended the process in 55 (0.46%) and refused 38 by our own checks.
+
 Run 4, 2026-11-17, on the Linux laptop (i7-8750H, load average 1 to 2), counts only:
 - Corpus test (all verdicts as recorded in `tests/expected`): corpus 127 convert (88 GLSL ES compile
   in glslang, 15 do not, 24 not written: 3 fewer unwritten than run 3, from the level-zero fold), 64
   named failures with the same counts by reason as below; rig DXBC 56 of 79 (unchanged); rig DXIL 49
-  of 72 (the rig's DXIL grew from 27; the rest: execution models of geometry and tessellation 17,
+  of 72 (the rig's DXIL grew from 27; the 23 others: execution models of geometry and tessellation 15,
   typed buffers 2, a storage image without a format 1, an unsupported built-in 1, the sample mask as
-  an array 1, `PrimitiveId`, `VertexWithoutPosition`, `Texture1DArray`); own DXBC 12 of 13
+  an array 1, `PrimitiveId` 1, `VertexWithoutPosition` 1, `Texture1DArray` 1; run 4's record of
+  this line said 17 execution models, which was wrong); own DXBC 12 of 13
   (`ps_spaces` is `RegisterSpace`), own DXIL `ps_spaces` `RegisterSpace`.
 - Fuzz, `WCONTAINERS_FUZZ_SEED=7 WCONTAINERS_FUZZ_CASES=3000`, inputs the rig's, our own and the
   corpus, every mutation re-signed so it reaches the converters, restarted after each crash
@@ -296,7 +371,16 @@ the tree as published"), plus these changes, each a later commit touching only `
   which dxbc-spirv inverts back to Direct3D's w), HLSL's `SV_Position` has w.
 - WGSL writer, the module's diagnostic filters are written as `diagnostic(...)` directives
   (`Severity::to_wgsl_ident` added beside `from_wgsl_ident`).
-Not yet sent upstream.
+- SPIR-V reader (run 5): integer instructions read in the signedness they name, the result given its
+  type's (`convert::op_signedness`, `glsl_signedness`, `Frontend::retype_int`); atomic and subgroup
+  minimum and maximum of the other signedness refused (`Error::UnsupportedSignedness`); texel offsets
+  on `OpImageFetch` added to the coordinate; unknown load operands refused
+  (`Error::UnsupportedImageLoadOperand`) instead of skipped with a log warning.
+- WGSL writer (run 5), `isnan`/`isinf` of f32 scalars and vectors written as bit tests (WGSL has
+  neither).
+Not yet sent upstream: that needs a GitHub account and fork the owner chooses, which this track does
+not have. Each change is its own commit touching only `third_party/naga`, so each can be sent as it
+stands (`git diff d380816 HEAD -- third_party/naga`).
 
 ## How to run
 
@@ -391,8 +475,13 @@ were already there.
 - naga is carried as a copy in the tree (`third_party/naga`, patched in by the workspace), not as a fork
   by git revision (6.2): a fork needs a new repository on the owner's account, and this track commits
   only to its own branch. Moving to a git revision later changes one line of the workspace manifest.
-- `isnan` is lowered by `convert` itself (a bit test on the float's bits), not by the WGSL back end
-  (6.5): it is exact on every back end and needs no back-end fix.
+- `isnan` from DXBC is lowered by `convert` itself (a bit test on the float's bits), not by the WGSL
+  back end (6.5). From DXIL, naga's reader gives the IR's `isnan`/`isinf`, which the carried naga's
+  WGSL writer writes as the same bit tests (f32 only; f16 and f64 stay refused by the writer), and
+  GLSL writes as GLSL's own `isnan`/`isinf`.
+- The content key's converter version (8) is the crate version plus a hash of all the sources that
+  make the module (the C++, our Rust, the carried naga), not the crate version and the C++
+  revisions: a change to the lowering or to naga changes modules without changing either.
 - `[earlydepthstencil]` and conservative depth are not put in the module: WGSL has no form for either
   and naga's validator refuses them under WebGPU's capabilities. Early tests are reported in
   `StageExtras::Pixel::early_tests`; conservative depth is only an optimisation hint and is dropped
@@ -413,10 +502,13 @@ were already there.
 ## Known gaps found so far
 
 - Signed but malformed DXIL can end the process natively: dxil-spirv's bitcode reader faults or calls
-  `std::terminate` (`bc/cast.hpp`) on it (15 of 3000 fuzz cases, Measurements); one malformed DXBC
-  case exhausted memory. Only bytecode whose checksum matches reaches the converters, so this needs a
+  `std::terminate` (`bc/cast.hpp`) on it (10 of 3000 fuzz cases in run 5, 15 in run 4,
+  Measurements); malformed DXBC exhausted memory in 3 of 3000 (1 in run 4). Only bytecode whose checksum matches reaches the converters, so this needs a
   program that signs malformed bytecode. dxil-spirv is used unmodified, so the fix belongs upstream
   (not yet reported). `tests/fuzz.rs` stays failing at those cases.
+- Mutated but signed bytecode that dxbc-spirv accepts can give IR our lowering refuses (`Malformed`)
+  or a module naga's validation refuses (`Invalid`, for example a constant index past an array's
+  end, which Direct3D would read as zero): refused, not converted (Measurements).
 - GLSL ES 3.00 has no `noperspective`: a pixel shader reading one is not written for WebGL 2.
 - The WebGL 2 back end's fragment depth: check run 3 measured a pixel shader reading `SV_Position.z`
   wrong through it (z arrives as (z+1)/2); that is the WebGL track's clip depth. `ps_depth` is drawn
