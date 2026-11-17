@@ -1,9 +1,58 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 3 of G4 as a whole (2026-11-17).
+Runs so far: six on G4a, the first slice; then runs 1 to 4 of G4 as a whole (2026-11-17).
 
 ## Where things stand
+
+G4 run 4: the Windows desktop refused every SSH sign-in for the whole run (the key exchange
+works, then the connection is reset; probed from 11:13 to the end). So nothing of this run was
+built, linked, run or tested on Windows. What it did:
+- Merged origin/phase-2-graphics (which held -webgpu, -webgl, -shaders and -rig; -direct3d-12 had
+  nothing new), cleanly. The shaders crate now also needs the dxil-spirv submodule.
+- Type-checked and linted the Windows library on the Mac with a check-only cross build (How to
+  run, "Without the desktop"): the windows-msvc target through rustup, and stub MSVC tools so the
+  build scripts pass. Nothing links, so it proves the code compiles and is clippy-clean for Windows,
+  nothing more.
+- Committed locally, not pushed (the rule is to push only what built and passed its tests on the
+  desktop):
+  - b1d136f: run 3's patch (compute, `Dispatch`/`DispatchIndirect`, unordered access views with
+    counters, their clears, `CopyStructureCount`, the pixel stage's unordered access views,
+    private data, one null array in `*SetConstantBuffers1`, rows laid over each other), plus
+    shader resource views of structured and raw buffers (`create_buffer_srv`; bound as read-only
+    storage buffers; an empty one reads a 64 KiB buffer of zeros), one `ShaderView` type for both
+    kinds of view, and Direct3D's rule that what a pipeline writes it no longer reads: binding an
+    unordered access view unbinds shader resource views of the same subresource (or buffer) —
+    the compute stage's for a compute view, every stage's for a pixel one — and such views bind as
+    none.
+  - bae1307: deferred contexts (`CreateDeferredContext`, `1`, `FinishCommandList`,
+    `ExecuteCommandList`). A deferred context records each front call as a closure; its command
+    list runs them on the device's front, from the default state; after it the state is the one
+    before or the default, as `RestoreContextState` asks (the context's bound objects are bound
+    again). `Map` on a deferred context takes dynamic resources only, `WRITE_DISCARD` (and
+    `WRITE_NO_OVERWRITE` after a discard in the same list) into the context's own bytes, written
+    at execution through a map of the immediate context; `GetData` answers
+    `DXGI_ERROR_INVALID_CALL`, `Flush` does nothing, `GetType` is `DEFERRED`. The immediate
+    context pays nothing for this (its calls run at once, no boxing).
+  - 4a36a17: depth bias through the raster block for triangles (lines and points with a bias, and
+    a constant bias on 24-bit depth where the back end stores it as float, are refused at the
+    draw, named); a bias clamp needs the back end's `DEPTH_BIAS_CLAMP`. Instance step rates other
+    than one where the back end declares `INSTANCE_STEP_RATE` (WebGL 2 could; WebGPU cannot).
+  - d059356: `D3D11CreateDeviceAndSwapChain` with a swap chain (through the factory of the
+    device's adapter). com.rs's test now expects `DXGI_ERROR_INVALID_CALL` for a description
+    without a window (DXGI's documented answer, not yet compared with real Direct3D).
+  - 6fea7d4: `CreateDXGIFactory`, `1` and `2`, exported (under `wc_` names with linker aliases,
+    so they cannot meet an import of the system's), and a `dxgi.dll` forwarder from build.rs. The
+    program's calls get our factory (its adapter described from a back end made once for the
+    caps); calls from this library (wgpu loads DXGI by name) and from modules in the system
+    directory go on to the system's dxgi.dll, loaded by full path. Why: SDL's renderer
+    (chocolate-doom) and bgfx take their factory from dxgi.dll and ask it for a swap chain on our
+    device, which the system's DXGI cannot serve; this is the likely cause of both failing.
+    Not known yet: whether the system's d3d12.dll (under wgpu) needs dxgi.dll exports the
+    forwarder lacks (see What comes next).
+  - f2a7656: a vertex shader is converted again (`VariantKey::output_interpolation`) for each pixel
+    shader that interpolates its inputs other than by perspective, since WebGPU requires the two
+    stages to agree (test_shader_interstage_interface's failure).
 
 G4 run 3 merged origin/phase-2-graphics, -webgpu, -webgl, -direct3d-12 and -shaders, cleanly. The
 WebGPU back end now copies both aspects of depth with stencil (interface change c8a7be9), so the
@@ -243,6 +292,7 @@ topology; adjacency topologies without a geometry shader through `AdjacencyDropp
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- G4 run 4: not run (the desktop refused sign-ins all run). The counts below are run 3's.
 - d3d11: not passing. G4 run 3 (2026-11-17, commit 8d07989, our library copied in as d3d11.dll,
   RTX 3080 through the queue, not alone; 4 min 27 s): 73 of 166 pass, 91 of the 162 that pass on
   real Direct3D fail. New passes: test_create_texture1d, test_device_interfaces,
@@ -376,6 +426,30 @@ buffer and unordered access views, geometry, stream output and compute), so they
 
 ## What comes next (G4b and on)
 
+After G4 run 4, first, once the desktop answers again:
+1. Build, lint and run every test of both crates on the desktop (How to run) from this tree, which
+   holds six commits never built on Windows (b1d136f to f2a7656). Fix what fails, then push.
+2. The rig's compute scene and Wine's d3d11 file through ours; update the table of files.
+3. The real programs (scratch script run-programs.sh): with our d3d11.dll alone, then with our
+   dxgi.dll as well (`--dll 'dxgi.dll=%CARGO_TARGET_DIR%\debug\dxgi.dll'` beside the d3d11 one).
+   Find out whether the system's d3d12.dll under wgpu still loads with our dxgi.dll in the
+   program's folder: if it imports dxgi.dll exports the forwarder lacks, export those as thunks to
+   the system's (the list from `dumpbin /exports C:\Windows\System32\dxgi.dll`), or move the back
+   end to wgpu's Vulkan path as the Direct3D 12 track did (which drew 43 line pixels differently in
+   the topology scene, run 2). Then chocolate-doom (SDL), bgfx-01-cubes and Godot (ANGLE): why each
+   fails, and compare frames for the three chosen (the rig now gives captured programs a clock
+   that moves by frames, so bgfx may be comparable too).
+4. Outputs (`EnumOutputs`, `GetDisplayModeList`, `FindClosestMatchingMode`, `GetDesc`) from the
+   infrastructure crate's `OutputDesc`; many engines ask for them.
+5. Multisampled textures (the interface has sample counts, `resolve` and `takes_samples`): 5 Wine
+   tests and the rig's msaa scene; `ResolveSubresource`.
+6. `CreateDeviceContextState`/`SwapDeviceContextState` (test_deferred_context_swap_state needs only
+   the creation and a swap that does nothing on a deferred context; test_device_context_state also
+   needs geometry, hull and domain shaders and Direct3D 10's interfaces).
+7. Then the rest of the list below (geometry shaders and stream output wait on the shaders crate,
+   which refuses geometry, hull and domain shaders, storage images and counters; typed buffer
+   views wait on its TypedBuffer).
+
 After G4 run 3, first: the desktop stopped taking SSH logins at 10:11 (key exchange works; the
 connection is reset at authentication), right after a GPU job in which Godot's 2D platformer,
 through our library, ran for 120 s without presenting a frame and was stopped. Whether our
@@ -457,6 +531,17 @@ compute, then the geometry and stream output slow paths; then the three real pro
    cannot lose its device on purpose (the front test of a loss at the next wait sets `lost`).
 
 ## How to run
+
+Without the desktop (G4 run 4): a check-only cross build on the Mac proves the Windows library
+compiles and is clippy-clean, nothing more (nothing links or runs). The script
+pyro-parked/wcontainers-scratch/graphics-direct3d-11/wincheck/check.sh runs rustup's cargo 1.99.0
+with `--target x86_64-pc-windows-msvc -j 2` on both crates with all targets, with `VCINSTALLDIR`
+and `CC_`/`CXX_`/`AR_x86_64_pc_windows_msvc` pointing at a stub (wincheck/bin/stub as cl.exe,
+lib.exe and link.exe) that writes the files it is asked for, empty. `check.sh` checks;
+`check.sh clippy -- -D warnings` lints. It needs `rustup target add x86_64-pc-windows-msvc
+--toolchain 1.99.0` (done on this Mac) and the submodules
+(`git submodule update --init --recursive`). A deliberate type error in Windows-only code was
+caught by it, so it does see that code.
 
 - The desktop's clock moved back about eight hours during G4 run 2 (gpu-job times went from 17:17
   to 09:25), which left build outputs dated in the future, so cargo skipped rebuilding our crates
@@ -604,6 +689,13 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Departures from the plan
 
+- DXGI's factory entry points decide by the caller's module whose DXGI a call wants: callers in
+  this library (wgpu) or in the system directory get the system's dxgi.dll, every other caller
+  ours. The Direct3D 12 track decides by thread (its device thread); this library has no device
+  thread yet (calls run on the caller's thread), so the caller's module is the mark that exists.
+- A factory made by `CreateDXGIFactory*` describes its adapter from a back end made once for its
+  caps and dropped (one extra wgpu device at the first such call).
+
 - No call buffer or device thread yet: COM calls run the front on the calling thread under one
   re-entrant lock (section 4.8 puts the channel in the second batch).
 - Device children are made by our own `counted!` macro (crates/wcontainers-directx/src/com/counted.rs),
@@ -644,7 +736,7 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Interface changes
 
-None in G4 run 3.
+None in G4 runs 3 and 4.
 
 - c8a7be9 "interface: copied combined depth-stencil textures whole in copy_texture": the
   documentation of `copy_texture` and `TextureRegion::stencil`, and the plan's sentence in 4.2: a copy
@@ -747,6 +839,14 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 
 ## Asked of other tracks
 
+- Infrastructure crate (Direct3D 12 track), from Wine's test_swapchain_views and
+  test_swapchain_flip: list the sRGB twin in the surface's view formats, so a back buffer takes
+  an `R8G8B8A8_UNORM_SRGB` view as DXGI allows; give out every buffer of a sequential
+  (bit-block-transfer) swap chain, as DXGI does (today buffer 0 only); and give back buffers
+  binding usage when the swap chain asks for `DXGI_USAGE_SHADER_INPUT`.
+- WebGPU back end: the vertex formats WebGPU lacks (`VertexFormatConverted`, "not built yet" in
+  its log; Wine's test_vertex_formats, format 0x1a).
+
 - WebGPU back end: follow interface change c8a7be9 (copy both aspects of a combined depth-stencil
   format in `copy_texture`, with `wgpu::TextureAspect::All`); still not done at G4 run 2's merge.
 - WebGPU back end: `write_texture` of a 3D region of several slices with `rows_per_layer` above the
@@ -759,6 +859,11 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   dxgi.dll only), so the forwarder placement can be checked by the scenes command.
 
 ## Licences
+
+G4 run 4 added the windows crate's `Win32_System_Diagnostics_Debug` and
+`Win32_System_SystemInformation` features (same crate, MIT OR Apache-2.0). On the Mac (not the
+desktop) it added rustup's x86_64-pc-windows-msvc standard library for 1.99.0 (rust-std, MIT OR
+Apache-2.0), for the check-only cross build. Nothing installed on the desktop.
 
 G4 run 3 added the windows crate's `Win32_Graphics_Gdi` and `Win32_Security` features (same crate,
 MIT OR Apache-2.0; `IDXGISurface1` and `IDXGIResource1` name their types). Nothing installed on
