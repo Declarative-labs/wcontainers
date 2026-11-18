@@ -1855,6 +1855,9 @@ converted vertex shader.
   `naga_vs_first_instance` set per draw so `vertex_index` and `instance_index` still include them
   (4.12); indirect draws read their arguments back first
   (`IndirectReadBack`, with `INDIRECT` absent).
+- A draw sampling levels of a 2D array texture it also draws into samples a copy of those levels,
+  made once per level while the level is unchanged (`SampledTargetCopied`): ANGLE on Direct3D 11
+  takes the array's view as spanning the drawn subresource, unbinds it, and the draw reads zeros.
 - Stream output declarations transform feedback cannot write: `StreamOutRepacked`. Exact occlusion
   counts: `OcclusionCountReplay`. Direct3D's clip depth: native with EXT_clip_control, otherwise
   `ClipDepthRewrite` (a listed loss, 4.12).
