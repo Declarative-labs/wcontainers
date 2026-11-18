@@ -1,0 +1,27 @@
+[package]
+name = "wcontainers-inside"
+description = "The program the wcontainers native back end runs in a virtual machine's privileged level: its floor (entry, page tables, interrupts, the link to the host)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-abi.workspace = true
+# Page table entry bits.
+aarch64-paging = { version = "0.12.3", default-features = false }
+# System register fields.
+aarch64-cpu = "12.0.0"
+arm-sysregs = { version = "0.5.2", features = ["el1"] }
+# The interrupt controller.
+arm-gic = "0.11.0"
+safe-mmio = "0.4.0"
+# Locks shared by the virtual CPUs.
+spin = { version = "0.10.0", default-features = false, features = ["spin_mutex"] }
+
+[build-dependencies]
+wcontainers-abi.workspace = true
+
+[lints]
+workspace = true

@@ -3,6 +3,26 @@
 version = 4
 
 [[package]]
+name = "aarch64-cpu"
+version = "12.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d29c35ddc46f9490b91fe6271e848f68ff5b04f9df8e5416457abd05ab2ddf9"
+dependencies = [
+ "arm-targets",
+ "tock-registers",
+]
+
+[[package]]
+name = "aarch64-paging"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33031af061bdc70425bc55be120e6ac1801d5613aeb84906a282febadf72176e"
+dependencies = [
+ "bitflags",
+ "thiserror",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -39,10 +59,102 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "applevisor"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "139a0fe60afd3e8c3a42fc0265caf4eb04b84a8b760623f7a6229174c18e4e36"
+dependencies = [
+ "applevisor-sys",
+]
+
+[[package]]
+name = "applevisor-sys"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14ae37676989768c5b21414857b782a5e513d93129cda34854f5f78c423a63be"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
+
+[[package]]
+name = "arm-gic"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c515ae78e71b0da6996b07c9afc2be190df9f60a631fe201d3be991d1e3e7c17"
+dependencies = [
+ "arm-sysregs",
+ "bitflags",
+ "safe-mmio",
+ "thiserror",
+ "zerocopy",
+]
+
+[[package]]
+name = "arm-sysregs"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ade7ce6337d4740899df84854c60a5c104175f0e35978f131724697d9ba3a6d"
+dependencies = [
+ "arm-sysregs-aarch32",
+ "arm-sysregs-common",
+ "arm-sysregs-el0",
+ "arm-sysregs-el1",
+]
+
+[[package]]
+name = "arm-sysregs-aarch32"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f574312ff652ad9bccdf3c0885a4fadfbfb2b4ca26aefafa91736a9fc1e1e97c"
+dependencies = [
+ "arm-sysregs-common",
+ "bitflags",
+]
+
+[[package]]
+name = "arm-sysregs-common"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "362d54f215a3d7413160b2e36bf7972b7990831bc9ac45b76776866d4d99d9bd"
+dependencies = [
+ "bitflags",
+ "num_enum",
+ "pastey",
+]
+
+[[package]]
+name = "arm-sysregs-el0"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e73ff608bf096287e4c59c13686b47d76177a76315391edd144cebd3a7efd38"
+dependencies = [
+ "arm-sysregs-aarch32",
+ "arm-sysregs-common",
+ "bitflags",
+]
+
+[[package]]
+name = "arm-sysregs-el1"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "140996601708ec9c1841c526a4de934394bb489c3345913cdee90f4ab0212bf6"
+dependencies = [
+ "arm-sysregs-common",
+ "arm-sysregs-el0",
+ "bitflags",
+]
+
+[[package]]
+name = "arm-targets"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0555f30eb9cd1a07d7677d01971da6c74cbbb0f73f0667cbee74e590a68a619"
 
 [[package]]
 name = "arrayvec"
@@ -1235,6 +1347,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_enum"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d0bca838442ec211fa11de3a8b0e0e8f3a4522575b5c4c06ed722e005036f26"
+dependencies = [
+ "num_enum_derive",
+ "rustversion",
+]
+
+[[package]]
+name = "num_enum_derive"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "object"
 version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1277,6 +1419,12 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "percent-encoding"
@@ -1629,6 +1777,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustversion"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
 name = "rusty-fork"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1638,6 +1792,15 @@ dependencies = [
  "quick-error",
  "tempfile",
  "wait-timeout",
+]
+
+[[package]]
+name = "safe-mmio"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8227fa63b47c9e32e57da4efeec270bba9a8930387f014f1e4759e46af3bd8c7"
+dependencies = [
+ "zerocopy",
 ]
 
 [[package]]
@@ -1760,6 +1923,12 @@ checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "spin"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 
 [[package]]
 name = "stable_deref_trait"
@@ -1898,6 +2067,12 @@ dependencies = [
  "displaydoc",
  "zerovec",
 ]
+
+[[package]]
+name = "tock-registers"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc2477fb5e50cca83e3c38fd91757ffd87382baf2a3e032f10e9b29a9a50474b"
 
 [[package]]
 name = "toml"
@@ -2304,6 +2479,33 @@ version = "0.1.0"
 dependencies = [
  "wasm-encoder 0.263.0",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-hypervisor"
+version = "0.1.0"
+dependencies = [
+ "aarch64-cpu",
+ "applevisor",
+ "applevisor-sys",
+ "fastrand",
+ "libc",
+ "object 0.37.3",
+ "wcontainers-abi",
+ "wcontainers-inside",
+]
+
+[[package]]
+name = "wcontainers-inside"
+version = "0.1.0"
+dependencies = [
+ "aarch64-cpu",
+ "aarch64-paging",
+ "arm-gic",
+ "arm-sysregs",
+ "safe-mmio",
+ "spin",
+ "wcontainers-abi",
 ]
 
 [[package]]
