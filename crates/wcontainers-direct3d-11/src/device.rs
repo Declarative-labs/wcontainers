@@ -26,6 +26,8 @@ use crate::shader::{self, Helpers, StageVariant};
 pub(crate) struct HelperBlocks<B: Backend> {
     pub blocks: [Vec<u8>; 2],
     pub arguments: u64,
+    /// The ids of the merged samplers bound beside the blocks.
+    pub samplers: Vec<u64>,
     pub set: Kept<B, B::BindingSet>,
 }
 
@@ -640,9 +642,9 @@ impl<B: Backend> Device<B> {
             ));
         }
         let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
-        if d.misc_flags & !(MISC_TEXTURECUBE | MISC_GENERATE_MIPS) != 0 {
+        if d.misc_flags & !(MISC_TEXTURECUBE | MISC_GENERATE_MIPS | MISC_RESOURCE_CLAMP) != 0 {
             return not_implemented(
-                "textures with misc flags other than a cube and mip generation",
+                "textures with misc flags other than a cube, mip generation and a level clamp",
             );
         }
         let both = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
@@ -788,6 +790,7 @@ impl<B: Backend> Device<B> {
             staged: RefCell::new(Vec::new()),
             shadow: RefCell::new(Vec::new()),
             chain: false,
+            min_lod: Cell::new(0.0),
         };
         for (i, data) in init.iter().take(subresources).enumerate() {
             let (region, extent) = texture
@@ -1295,6 +1298,7 @@ impl<B: Backend> Device<B> {
             gpu: Kept::new(gpu, id, Object::Sampler, &self.graveyard),
             made,
             twin: RefCell::new(None),
+            clamped: RefCell::new(Vec::new()),
         }))
     }
 
@@ -1384,6 +1388,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<Rc<Shader<B>>> {
         let (mut converted, reads_samples) = shader::convert(bytecode, stage)?;
         let samplers = shader::sampler_slots(&converted);
+        let textures = shader::texture_slots(&converted);
         let helpers = Rc::new(shader::Helpers::of(&converted));
         let module = converted.modules.pop().expect("one module");
         self.live()?;
@@ -1407,6 +1412,7 @@ impl<B: Backend> Device<B> {
             stand_ins,
             bytecode: bytecode.to_vec(),
             samplers,
+            textures,
             reads_samples,
             helpers,
         });

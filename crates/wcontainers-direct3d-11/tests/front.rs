@@ -1603,6 +1603,56 @@ fn a_sampler_with_a_level_of_detail_bias_is_read_through_a_program_that_adds_it(
 }
 
 #[test]
+fn a_texture_under_a_minimum_level_clamp_is_sampled_through_a_merged_sampler() {
+    let mut dev = device();
+    sampling(&mut dev, "samplers.ps_sample");
+    let desc = TextureDesc {
+        mip_levels: 4,
+        misc_flags: MISC_RESOURCE_CLAMP,
+        ..tex2d(16, 16, RGBA8, bind::SHADER_RESOURCE)
+    };
+    let texture = dev.create_texture(&desc, &[]).unwrap();
+    let view = dev
+        .create_view(&texture, None, bind::SHADER_RESOURCE)
+        .unwrap();
+    dev.set_shader_resources(PIXEL, 0, &[Some(Rc::new(ShaderView::Texture(view)))])
+        .unwrap();
+    texture.min_lod.set(1.5);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    // The pixel shader is converted again once, and Direct3D's default sampler is made again once
+    // with its minimum level raised to the clamp, bound beside the helper block holding it.
+    let count = |what: &str| log.iter().filter(|l| l.starts_with(what)).count();
+    assert_eq!(count("create_shader"), 1, "{log:#?}");
+    let merged: Vec<&String> = log
+        .iter()
+        .filter(|l| l.starts_with("create_sampler") && l.contains("lod 1.5.."))
+        .collect();
+    assert_eq!(merged.len(), 1, "{log:#?}");
+    let id = merged[0].split(' ').nth(1).unwrap();
+    let binding = format!(" {}=sampler {id}", wcontainers_gpu::CLAMPED_SAMPLER_BINDING);
+    let sets = log.iter().filter(|l| l.contains(&binding)).count();
+    assert_eq!(sets, 1, "{log:#?}");
+    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    assert_eq!(helper_f32(&dev, &log, fragment, 0), Some(1.5), "{log:#?}");
+    assert!(dev.backend.slow_paths().count(SlowPath::MinLodClamp) >= 2);
+
+    // A clamp at the view's first level clamps nothing: the plain program draws again.
+    texture.min_lod.set(0.0);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(
+        !log.iter().any(|l| l.starts_with("create_shader")),
+        "{log:#?}"
+    );
+    assert!(!log.iter().any(|l| l.contains(&binding)), "{log:#?}");
+}
+
+#[test]
 fn dual_source_blending_draws_the_programs_second_output_where_the_back_end_blends_it() {
     let mut dev = device();
     dev.backend.caps.features |= wcontainers_gpu::Features::DUAL_SOURCE_BLEND;

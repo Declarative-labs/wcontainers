@@ -115,6 +115,8 @@ pub struct Texture<B: Backend> {
     pub staged: RefCell<Vec<Staged<B>>>,
     /// A swap chain's buffer, whose target views may also take the sRGB twin of its format.
     pub chain: bool,
+    /// The minimum level-of-detail clamp `SetResourceMinLOD` gives, in the texture's levels.
+    pub min_lod: Cell<f32>,
 }
 
 impl<B: Backend> Texture<B> {
@@ -261,6 +263,9 @@ pub struct Sampler<B: Backend> {
     /// The same sampler comparing where `gpu` does not, or not where it does, for a program that reads
     /// it the other way; made at the first such draw.
     pub twin: RefCell<Option<Kept<B, B::Sampler>>>,
+    /// The same sampler with its minimum level raised, by that minimum's bits, for textures under a
+    /// minimum level-of-detail clamp; made at the first draw through each.
+    pub clamped: RefCell<Vec<ClampedSampler<B>>>,
 }
 
 pub struct Blend<B: Backend> {
@@ -272,6 +277,9 @@ pub struct DepthStencil<B: Backend> {
     pub desc: DepthStencilDesc,
     pub gpu: Kept<B, B::DepthStencil>,
 }
+
+/// A sampler made with its minimum level raised, by that minimum's bits.
+pub type ClampedSampler<B> = (u32, Kept<B, <B as Backend>::Sampler>);
 
 /// A raster block made with one sample mask.
 pub type MaskedRaster<B> = (u32, Kept<B, <B as Backend>::Raster>);
@@ -313,6 +321,8 @@ pub struct Shader<B: Backend> {
     pub bytecode: Vec<u8>,
     /// The sampler slots the program reads, one bit each.
     pub samplers: u16,
+    /// The texture slots the program reads, one bit each.
+    pub textures: u128,
     /// The program reads the targets' sample count, so each draw converts it for theirs.
     pub reads_samples: bool,
     /// Where the plain program reads its helper constants.

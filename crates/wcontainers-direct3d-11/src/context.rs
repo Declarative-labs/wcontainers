@@ -1154,11 +1154,69 @@ impl<B: Backend> Device<B> {
                 }
             }
         }
+        let mut min_lod_clamped = 0;
+        if s.textures != 0 {
+            for i in 0..self.ctx.resources[stage].len().min(128) {
+                if s.textures & (1 << i) != 0 && self.min_lod_of(stage, i as u32).is_some() {
+                    min_lod_clamped |= 1 << i;
+                }
+            }
+        }
         StageVariant {
             lod_bias,
+            min_lod_clamped,
             samples: if s.reads_samples { samples } else { 0 },
             ..StageVariant::default()
         }
+    }
+
+    /// The minimum level-of-detail clamp of the texture view bound to `stage`'s `slot`, in the view's
+    /// levels, and the view's level count; none where the clamp leaves every level of the view.
+    fn min_lod_of(&self, stage: usize, slot: u32) -> Option<(f32, u32)> {
+        let v = self.ctx.resources[stage]
+            .get(slot as usize)?
+            .as_deref()?
+            .texture()?;
+        let clamp = v.texture.min_lod.get() - v.desc.first_mip as f32;
+        (clamp > 0.0).then_some((clamp, v.desc.mip_count))
+    }
+
+    /// The sampler bound to `stage`'s `slot` (Direct3D's default where none is) with its minimum
+    /// level raised to `clamp`, made at its first use.
+    fn clamped_sampler(
+        &mut self,
+        stage: usize,
+        slot: u32,
+        clamp: f32,
+    ) -> Result<(B::Sampler, u64)> {
+        let s = match self.ctx.samplers[stage]
+            .get(slot as usize)
+            .cloned()
+            .flatten()
+        {
+            Some(s) => s,
+            None => {
+                self.default_sampler()?;
+                self.zeros.sampler.clone().expect("made")
+            }
+        };
+        let [min, max] = s.made.lod_range.map(f32::from_bits);
+        // Direct3D clamps the level to the sampler's range and then to the resource's clamp.
+        let lod_range = [min.max(clamp), max.max(clamp)].map(f32::to_bits);
+        if let Some((_, k)) = s.clamped.borrow().iter().find(|(m, _)| *m == lod_range[0]) {
+            return Ok((k.handle.clone(), k.id));
+        }
+        let gpu = self.backend.create_sampler(&GpuSampler {
+            lod_range,
+            ..s.made
+        });
+        let gpu = self.gpu(gpu)?;
+        let id = self.id();
+        s.clamped.borrow_mut().push((
+            lod_range[0],
+            Kept::new(gpu.clone(), id, Object::Sampler, &self.graveyard),
+        ));
+        Ok((gpu, id))
     }
 
     /// The strides of the bound vertex buffers in the slots the input layout reads, zero elsewhere.
@@ -1314,7 +1372,9 @@ impl<B: Backend> Device<B> {
         self.grow_constants()?;
         self.update_set(COMPUTE)?;
         if self.stage_variant(COMPUTE, &cs, 1) != StageVariant::default() {
-            return not_implemented("a compute shader sampling through a biased sampler");
+            return not_implemented(
+                "a compute shader sampling through a biased sampler or a clamped texture",
+            );
         }
         let key = (
             cs.gpu.id,
@@ -1824,10 +1884,15 @@ impl<B: Backend> Device<B> {
                             .map_or(0.0, |s| s.desc.mip_lod_bias);
                         [bias.to_bits(), 0, 0]
                     }
+                    HelperValue::MinLod { texture } => {
+                        let (clamp, levels) = self.min_lod_of(stage, texture).unwrap_or((0.0, 1));
+                        [clamp.to_bits(), levels, 0]
+                    }
                     _ => unreachable!("refused at conversion"),
                 };
                 let n = match slot.value {
                     HelperValue::LodBias { .. } => 1,
+                    HelperValue::MinLod { .. } => 2,
                     _ => 3,
                 };
                 for (k, w) in words[..n].iter().enumerate() {
@@ -1836,13 +1901,32 @@ impl<B: Backend> Device<B> {
                 }
             }
         }
+        // The merged samplers of textures under a minimum level-of-detail clamp; both stages
+        // number theirs from the same binding, so only one of them may have any.
+        if !helpers[0].merged.is_empty() && !helpers[1].merged.is_empty() {
+            return not_implemented(
+                "minimum level-of-detail clamps on textures both draw stages sample",
+            );
+        }
+        let mut merged = Vec::new();
+        for (h, stage) in helpers.iter().zip([VERTEX, PIXEL]) {
+            for &(binding, (texture, sampler)) in &h.merged {
+                let (clamp, _) = self.min_lod_of(stage, texture).unwrap_or((0.0, 1));
+                let (s, id) = self.clamped_sampler(stage, sampler, clamp)?;
+                merged.push((binding, stage, s, id));
+            }
+        }
+        let samplers: Vec<u64> = merged.iter().map(|m| m.3).collect();
         let blocks = [
             &blocks[0][..helpers[0].size as usize],
             &blocks[1][..helpers[1].size as usize],
         ];
         let arguments = args.map_or(0, |(b, ..)| b.gpu.borrow().id);
         if self.helper_blocks.as_ref().is_some_and(|h| {
-            h.arguments == arguments && h.blocks[0] == blocks[0] && h.blocks[1] == blocks[1]
+            h.arguments == arguments
+                && h.blocks[0] == blocks[0]
+                && h.blocks[1] == blocks[1]
+                && h.samplers == samplers
         }) {
             return Ok(());
         }
@@ -1895,6 +1979,17 @@ impl<B: Backend> Device<B> {
                 },
             });
         }
+        for (binding, stage, s, _) in &merged {
+            entries.push(BindingEntry {
+                binding: *binding,
+                stages: if *stage == VERTEX {
+                    StageSet::VERTEX
+                } else {
+                    StageSet::FRAGMENT
+                },
+                resource: BindingResource::Sampler(s),
+            });
+        }
         let set = self.backend.create_binding_set(&entries);
         drop(entries);
         drop(args);
@@ -1903,6 +1998,7 @@ impl<B: Backend> Device<B> {
         self.helper_blocks = Some(HelperBlocks {
             blocks: blocks.map(<[u8]>::to_vec),
             arguments,
+            samplers,
             set: Kept::new(set, id, Object::BindingSet, &self.graveyard),
         });
         Ok(())
@@ -1975,6 +2071,9 @@ impl<B: Backend> Device<B> {
         if vk.lod_bias | pk.lod_bias != 0 {
             self.backend.slow_paths().hit(SlowPath::LodBiasInShader);
         }
+        if vk.min_lod_clamped | pk.min_lod_clamped != 0 {
+            self.backend.slow_paths().hit(SlowPath::MinLodClamp);
+        }
         if vk.from_arguments {
             self.backend
                 .slow_paths()
@@ -2000,7 +2099,7 @@ impl<B: Backend> Device<B> {
         // SV_VertexID and SV_InstanceID leave out the draw's bases, which the common form's indices
         // include: a vertex program reading them takes the bases from its helper constants or from
         // the indirect arguments; level-of-detail biases are helper constants too.
-        let reads_helpers = helpers[0].size > 0 || helpers[1].size > 0;
+        let reads_helpers = helpers.iter().any(|h| h.size > 0 || !h.merged.is_empty());
         if reads_helpers {
             let (base, arguments) = match range {
                 Range::Vertices { start, .. } => (start, None),
