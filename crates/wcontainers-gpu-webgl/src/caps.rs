@@ -29,6 +29,8 @@ pub fn caps(
         | Features::TRANSFORM_FEEDBACK
         // vertexAttribDivisor takes any rate.
         | Features::INSTANCE_STEP_RATE
+        // gl_PointSize, up to ALIASED_POINT_SIZE_RANGE; programs that write none draw 1.
+        | Features::POINT_SIZE
         // FRACTIONAL_DEPTH_BIAS: polygonOffset takes float units, but GL may round them; set by the
         // back end's probe.
         | Features::BLEND_CONSTANT_ALPHA;
@@ -51,6 +53,19 @@ pub fn caps(
         .iter()
         .all(|e| ext.contains(e)),
     );
+    for (name, feature) in [
+        ("OES_draw_buffers_indexed", Features::INDEPENDENT_BLEND),
+        ("WEBGL_blend_func_extended", Features::DUAL_SOURCE_BLEND),
+        // Lines only; WebGL has no point filling.
+        ("WEBGL_polygon_mode", Features::POLYGON_MODE),
+        ("EXT_depth_clamp", Features::DEPTH_CLAMP),
+        ("EXT_polygon_offset_clamp", Features::DEPTH_BIAS_CLAMP),
+        ("EXT_texture_mirror_clamp_to_edge", Features::MIRROR_ONCE),
+    ] {
+        features.set(feature, ext.contains(name));
+    }
+    // CLIP_DISTANCE and CULL_DISTANCE stay absent although WEBGL_clip_cull_distance is there: with
+    // the distances written and enabled, Chrome on the RTX 3080 clipped nothing (not found why).
     let anisotropic = ext.contains("EXT_texture_filter_anisotropic");
     let units_vertex = get(glow::MAX_VERTEX_TEXTURE_IMAGE_UNITS);
     let units_fragment = get(glow::MAX_TEXTURE_IMAGE_UNITS);
@@ -89,8 +104,12 @@ pub fn caps(
         compute_invocations: 0,
         compute_size: [0; 3],
         max_dispatch: 0,
-        // Programs write gl_PointSize 1 (POINT_SIZE is absent).
-        max_point_size: 1.0,
+        max_point_size: {
+            let mut range = [1.0; 2];
+            // SAFETY: a plain query of two floats.
+            unsafe { gl.get_parameter_f32_slice(glow::ALIASED_POINT_SIZE_RANGE, &mut range) };
+            range[1]
+        },
         // Lines are drawn 1 wide (WIDE_LINES is absent), whatever range GL has.
         max_line_width: 1.0,
         max_anisotropy: if anisotropic {

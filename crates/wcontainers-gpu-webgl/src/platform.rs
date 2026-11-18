@@ -15,8 +15,26 @@ pub const NEGATIVE_ONE_TO_ONE: u32 = 0x935E;
 pub const FIRST_VERTEX: u32 = 0x8E4D;
 pub const LAST_VERTEX: u32 = 0x8E4E;
 
+/// GL_LINE and GL_FILL, for `polygonModeWEBGL` and `glPolygonModeANGLE`.
+pub const LINE: u32 = 0x1B01;
+pub const FILL: u32 = 0x1B02;
+/// GL_POLYGON_OFFSET_LINE of WEBGL_polygon_mode.
+pub const POLYGON_OFFSET_LINE: u32 = 0x2A02;
+/// GL_DEPTH_CLAMP_EXT.
+pub const DEPTH_CLAMP: u32 = 0x864F;
+/// GL_MIRROR_CLAMP_TO_EDGE_EXT.
+pub const MIRROR_CLAMP_TO_EDGE: u32 = 0x8743;
+/// GL_CLIP_DISTANCE0_EXT; distance n is enabled at this plus n.
+pub const CLIP_DISTANCE0: u32 = 0x3000;
+/// The second-source blend factors of WEBGL_blend_func_extended: GL_SRC1_COLOR_EXT,
+/// GL_ONE_MINUS_SRC1_COLOR_EXT, GL_SRC1_ALPHA_EXT and GL_ONE_MINUS_SRC1_ALPHA_EXT.
+pub const SRC1_COLOR: u32 = 0x88F9;
+pub const ONE_MINUS_SRC1_COLOR: u32 = 0x88FA;
+pub const SRC1_ALPHA: u32 = 0x8589;
+pub const ONE_MINUS_SRC1_ALPHA: u32 = 0x88FB;
+
 /// The WebGL extension names, with the GL names ANGLE reports for each natively.
-const EXTENSIONS: [(&str, &str); 15] = [
+const EXTENSIONS: [(&str, &str); 22] = [
     ("EXT_clip_control", "GL_EXT_clip_control"),
     ("WEBGL_provoking_vertex", "GL_ANGLE_provoking_vertex"),
     ("EXT_color_buffer_float", "GL_EXT_color_buffer_float"),
@@ -54,6 +72,16 @@ const EXTENSIONS: [(&str, &str); 15] = [
     ),
     ("EXT_texture_norm16", "GL_EXT_texture_norm16"),
     ("EXT_render_snorm", "GL_EXT_render_snorm"),
+    ("OES_draw_buffers_indexed", "GL_OES_draw_buffers_indexed"),
+    ("WEBGL_blend_func_extended", "GL_EXT_blend_func_extended"),
+    ("WEBGL_polygon_mode", "GL_ANGLE_polygon_mode"),
+    ("EXT_depth_clamp", "GL_EXT_depth_clamp"),
+    ("EXT_polygon_offset_clamp", "GL_EXT_polygon_offset_clamp"),
+    (
+        "EXT_texture_mirror_clamp_to_edge",
+        "GL_EXT_texture_mirror_clamp_to_edge",
+    ),
+    ("WEBGL_clip_cull_distance", "GL_ANGLE_clip_cull_distance"),
 ];
 
 /// GL_TIMESTAMP_EXT, GL_QUERY_COUNTER_BITS_EXT and GL_GPU_DISJOINT_EXT.
@@ -90,12 +118,30 @@ mod native {
     type ClipControl = unsafe extern "system" fn(u32, u32);
     type ProvokingVertex = unsafe extern "system" fn(u32);
     type GetQueryiv = unsafe extern "system" fn(u32, u32, *mut i32);
+    type EnableI = unsafe extern "system" fn(u32, u32);
+    type EquationI = unsafe extern "system" fn(u32, u32, u32);
+    type FuncI = unsafe extern "system" fn(u32, u32, u32, u32, u32);
+    type MaskI = unsafe extern "system" fn(u32, u8, u8, u8, u8);
+    type PolygonMode = unsafe extern "system" fn(u32, u32);
+    type OffsetClamp = unsafe extern "system" fn(f32, f32, f32);
+
+    /// OES_draw_buffers_indexed's calls.
+    struct Indexed {
+        enable: EnableI,
+        disable: EnableI,
+        equation: EquationI,
+        func: FuncI,
+        mask: MaskI,
+    }
 
     /// The calls past glow, and the EGL objects the context lives in.
     pub struct Platform {
         clip_control: Option<ClipControl>,
         provoking_vertex: Option<ProvokingVertex>,
         get_queryiv: Option<GetQueryiv>,
+        indexed: Option<Indexed>,
+        polygon_mode: Option<PolygonMode>,
+        offset_clamp: Option<OffsetClamp>,
         egl: Egl,
     }
 
@@ -146,6 +192,56 @@ mod native {
             if let Some(f) = self.provoking_vertex {
                 // SAFETY: the pointer was loaded for this context's glProvokingVertexANGLE.
                 unsafe { f(mode) };
+            }
+        }
+
+        /// Enables or disables `cap` for colour target `i` (OES_draw_buffers_indexed).
+        pub fn enable_i(&self, cap: u32, i: u32, on: bool) {
+            if let Some(x) = &self.indexed {
+                // SAFETY: the pointers were loaded for this context's glEnableiOES and glDisableiOES.
+                unsafe {
+                    if on {
+                        (x.enable)(cap, i)
+                    } else {
+                        (x.disable)(cap, i)
+                    }
+                }
+            }
+        }
+
+        pub fn blend_equation_i(&self, i: u32, e: [u32; 2]) {
+            if let Some(x) = &self.indexed {
+                // SAFETY: the pointer was loaded for this context's glBlendEquationSeparateiOES.
+                unsafe { (x.equation)(i, e[0], e[1]) }
+            }
+        }
+
+        pub fn blend_func_i(&self, i: u32, f: [u32; 4]) {
+            if let Some(x) = &self.indexed {
+                // SAFETY: the pointer was loaded for this context's glBlendFuncSeparateiOES.
+                unsafe { (x.func)(i, f[0], f[1], f[2], f[3]) }
+            }
+        }
+
+        pub fn color_mask_i(&self, i: u32, m: [bool; 4]) {
+            if let Some(x) = &self.indexed {
+                // SAFETY: the pointer was loaded for this context's glColorMaskiOES.
+                unsafe { (x.mask)(i, m[0].into(), m[1].into(), m[2].into(), m[3].into()) }
+            }
+        }
+
+        /// Fills polygons (`FILL`) or draws their edges (`LINE`), for both faces.
+        pub fn polygon_mode(&self, mode: u32) {
+            if let Some(f) = self.polygon_mode {
+                // SAFETY: the pointer was loaded for this context's glPolygonModeANGLE.
+                unsafe { f(glow::FRONT_AND_BACK, mode) }
+            }
+        }
+
+        pub fn polygon_offset_clamp(&self, factor: f32, units: f32, clamp: f32) {
+            if let Some(f) = self.offset_clamp {
+                // SAFETY: the pointer was loaded for this context's glPolygonOffsetClampEXT.
+                unsafe { f(factor, units, clamp) }
             }
         }
 
@@ -378,10 +474,49 @@ mod native {
                 .contains("GL_EXT_disjoint_timer_query"))
         // SAFETY: glGetQueryivEXT takes two GLenums and a pointer to one GLint.
         .then(|| unsafe { core::mem::transmute::<*const core::ffi::c_void, GetQueryiv>(queryiv) });
+        let has = |name| gl.supported_extensions().contains(name);
+        // SAFETY (each `cast`): the pointer is the named GL ES function, of the type it is cast to.
+        unsafe fn cast<T: Copy>(p: *const core::ffi::c_void) -> T {
+            // SAFETY: as the caller promises.
+            unsafe { core::mem::transmute_copy(&p) }
+        }
+        let calls = |names: &[&str]| -> Option<Vec<*const core::ffi::c_void>> {
+            let p: Vec<_> = names.iter().map(|n| load(n)).collect();
+            p.iter().all(|f| !f.is_null()).then_some(p)
+        };
+        let indexed = calls(&[
+            "glEnableiOES",
+            "glDisableiOES",
+            "glBlendEquationSeparateiOES",
+            "glBlendFuncSeparateiOES",
+            "glColorMaskiOES",
+        ])
+        .filter(|_| has("GL_OES_draw_buffers_indexed"))
+        // SAFETY: see `cast`.
+        .map(|p| unsafe {
+            Indexed {
+                enable: cast(p[0]),
+                disable: cast(p[1]),
+                equation: cast(p[2]),
+                func: cast(p[3]),
+                mask: cast(p[4]),
+            }
+        });
+        let polygon_mode = calls(&["glPolygonModeANGLE"])
+            .filter(|_| has("GL_ANGLE_polygon_mode"))
+            // SAFETY: see `cast`.
+            .map(|p| unsafe { cast::<PolygonMode>(p[0]) });
+        let offset_clamp = calls(&["glPolygonOffsetClampEXT"])
+            .filter(|_| has("GL_EXT_polygon_offset_clamp"))
+            // SAFETY: see `cast`.
+            .map(|p| unsafe { cast::<OffsetClamp>(p[0]) });
         let platform = Platform {
             clip_control,
             provoking_vertex,
             get_queryiv,
+            indexed,
+            polygon_mode,
+            offset_clamp,
             egl: Egl {
                 instance,
                 display,
@@ -435,11 +570,30 @@ mod web {
     use wasm_bindgen::{JsCast, JsValue};
     use web_sys::WebGl2RenderingContext;
 
+    /// A function of an extension object, with the object it is called on.
+    type Call = Option<(js_sys::Object, js_sys::Function)>;
+
+    fn call(c: &Call, args: &[JsValue]) {
+        if let Some((ext, f)) = c {
+            let _ = match *args {
+                [ref a] => f.call1(ext, a),
+                [ref a, ref b] => f.call2(ext, a, b),
+                [ref a, ref b, ref c] => f.call3(ext, a, b, c),
+                _ => f.apply(ext, &args.iter().collect()),
+            };
+        }
+    }
+
     /// The calls past glow, made on the extension objects Chrome hands out.
     #[derive(Debug)]
     pub struct Platform {
-        clip_control: Option<(js_sys::Object, js_sys::Function)>,
-        provoking_vertex: Option<(js_sys::Object, js_sys::Function)>,
+        clip_control: Call,
+        provoking_vertex: Call,
+        /// OES_draw_buffers_indexed's enableiOES, disableiOES, blendEquationSeparateiOES,
+        /// blendFuncSeparateiOES and colorMaskiOES.
+        indexed: [Call; 5],
+        polygon_mode: Call,
+        offset_clamp: Call,
         /// The context, and its canvas (on the page or off-screen), whose drawing buffer surfaces
         /// present into.
         context: WebGl2RenderingContext,
@@ -457,6 +611,41 @@ mod web {
             if let Some((ext, f)) = &self.provoking_vertex {
                 let _ = f.call1(ext, &JsValue::from(mode));
             }
+        }
+
+        /// Enables or disables `cap` for colour target `i` (OES_draw_buffers_indexed).
+        pub fn enable_i(&self, cap: u32, i: u32, on: bool) {
+            let c = &self.indexed[if on { 0 } else { 1 }];
+            call(c, &[cap.into(), i.into()]);
+        }
+
+        pub fn blend_equation_i(&self, i: u32, e: [u32; 2]) {
+            call(&self.indexed[2], &[i.into(), e[0].into(), e[1].into()]);
+        }
+
+        pub fn blend_func_i(&self, i: u32, f: [u32; 4]) {
+            let args = [i, f[0], f[1], f[2], f[3]].map(JsValue::from);
+            call(&self.indexed[3], &args);
+        }
+
+        pub fn color_mask_i(&self, i: u32, m: [bool; 4]) {
+            let args = [i.into(), m[0].into(), m[1].into(), m[2].into(), m[3].into()];
+            call(&self.indexed[4], &args);
+        }
+
+        /// Fills polygons (`FILL`) or draws their edges (`LINE`), for both faces.
+        pub fn polygon_mode(&self, mode: u32) {
+            call(
+                &self.polygon_mode,
+                &[glow::FRONT_AND_BACK.into(), mode.into()],
+            );
+        }
+
+        pub fn polygon_offset_clamp(&self, factor: f32, units: f32, clamp: f32) {
+            call(
+                &self.offset_clamp,
+                &[factor.into(), units.into(), clamp.into()],
+            );
         }
 
         /// How many bits the GPU's timestamps have; zero where it writes none.
@@ -592,10 +781,32 @@ mod web {
         let clip_control = extension_call(&context, "EXT_clip_control", "clipControlEXT");
         let provoking_vertex =
             extension_call(&context, "WEBGL_provoking_vertex", "provokingVertexWEBGL");
-        // Enabled here since glow does not know them; they add only enums.
-        let _ = context.get_extension("WEBGL_stencil_texturing");
-        let _ = context.get_extension("EXT_texture_norm16");
-        let _ = context.get_extension("EXT_render_snorm");
+        let indexed = [
+            "enableiOES",
+            "disableiOES",
+            "blendEquationSeparateiOES",
+            "blendFuncSeparateiOES",
+            "colorMaskiOES",
+        ]
+        .map(|f| extension_call(&context, "OES_draw_buffers_indexed", f));
+        let polygon_mode = extension_call(&context, "WEBGL_polygon_mode", "polygonModeWEBGL");
+        let offset_clamp = extension_call(
+            &context,
+            "EXT_polygon_offset_clamp",
+            "polygonOffsetClampEXT",
+        );
+        // Enabled here since glow does not know them; they add only enums and shader built-ins.
+        for name in [
+            "WEBGL_stencil_texturing",
+            "EXT_texture_norm16",
+            "EXT_render_snorm",
+            "EXT_depth_clamp",
+            "EXT_texture_mirror_clamp_to_edge",
+            "WEBGL_clip_cull_distance",
+            "WEBGL_blend_func_extended",
+        ] {
+            let _ = context.get_extension(name);
+        }
         for compressed in [
             "WEBGL_compressed_texture_s3tc",
             "WEBGL_compressed_texture_s3tc_srgb",
@@ -611,6 +822,9 @@ mod web {
             Platform {
                 clip_control,
                 provoking_vertex,
+                indexed,
+                polygon_mode,
+                offset_clamp,
                 context,
                 canvas,
             },

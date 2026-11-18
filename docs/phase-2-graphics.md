@@ -865,6 +865,7 @@ the adapter):
   `texture-compression-bc` (86.8% of adapters per the research) and, for 3D textures,
   `texture-compression-bc-sliced-3d`. Absent: `MIRROR_ONCE`,
   `VERTEX_STORAGE_WRITE`, `TRANSFORM_FEEDBACK`, `READ_BACK_NOW`, `FAN_AND_LOOP`, `POLYGON_MODE`,
+  `POLYGON_MODE_POINT`,
   `PROVOKING_VERTEX_LAST`, `CLIP_DEPTH_MINUS_ONE`, `CULL_DISTANCE`, `LOGIC_OP`, `WIDE_LINES`,
   `POINT_SIZE`, `OCCLUSION_COUNT`, `RESTART_SWITCH`, `FORMAT_REINTERPRET`, `SHADER_I64`, `SHADER_F64`,
   `INDEX_U8` (WebGPU indices are 16 or 32 bits), `FRACTIONAL_DEPTH_BIAS` (`depthBias` is an integer),
@@ -891,7 +892,7 @@ the adapter):
   indices), `FRACTIONAL_DEPTH_BIAS` (`polygonOffset` takes float units), `BLEND_CONSTANT_ALPHA` (but WebGL forbids the constant colour
   and constant alpha as one colour blend's two factors, so such a block is refused as absent and blended
   in the program), `DEPTH24_UNORM` where the probe below finds it, and by extension where present:
-  `POLYGON_MODE` (WEBGL_polygon_mode), `PROVOKING_VERTEX_FIRST` (WEBGL_provoking_vertex),
+  `POLYGON_MODE` (WEBGL_polygon_mode, lines only: `POLYGON_MODE_POINT` is absent), `PROVOKING_VERTEX_FIRST` (WEBGL_provoking_vertex),
   `CLIP_DISTANCE` and `CULL_DISTANCE` (WEBGL_clip_cull_distance), `DEPTH_CLAMP` (EXT_depth_clamp),
   `DUAL_SOURCE_BLEND` (WEBGL_blend_func_extended), `INDEPENDENT_BLEND` (OES_draw_buffers_indexed),
   `TIMESTAMPS` (EXT_disjoint_timer_query_webgl2), `CLIP_DEPTH_ZERO_ONE` (EXT_clip_control, 93.2% per
@@ -1684,7 +1685,7 @@ attachments of different sizes: `AttachmentsFitted` (4.7). `GL_TIME_ELAPSED` and
 `glPrimitiveRestartIndex` with any index, or restart off: `RestartRewrite` (WebGPU and WebGL 2 restart only
 at the largest value, always). `glLogicOp`: `LogicOpInShader`, one primitive at a time where primitives
 may overlap (`TargetReadPerPrimitive`). `GL_SAMPLES_PASSED`: `OcclusionCountReplay`. `glPolygonMode`: native with
-WEBGL_polygon_mode, otherwise `FillModeConverted`. Clip depth from minus one: native on WebGL 2,
+WEBGL_polygon_mode (lines; points need `POLYGON_MODE_POINT`), otherwise `FillModeConverted`. Clip depth from minus one: native on WebGL 2,
 `ClipDepthRewrite` on WebGPU. Multisample textures (3.2): WebGPU has them; WebGL 2 does not, so Mesa
 reports OpenGL 3.1 there (3.1 needs texture buffers: `TexelBufferAsTexture`). Wide lines report a range of
 1 to 1, which core profile allows. Border colors: `BorderInShader` on both. `GL_TEXTURE_LOD_BIAS`:
