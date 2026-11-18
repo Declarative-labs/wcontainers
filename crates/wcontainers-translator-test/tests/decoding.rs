@@ -139,7 +139,7 @@ fn words_in_no_form_are_undefined() {
 /// `WC_DECODE_SEED`.
 #[test]
 fn translated_words_are_of_forms_layer_1_covers() {
-    use wcontainers_translator_test::layer1::covered;
+    use wcontainers_translator_test::guest::arm64::covered;
     let count = setting("WC_DECODE_WORDS", 200_000) as u32;
     let seed = setting("WC_DECODE_SEED", 1);
     let mut key = [0u8; 32];
@@ -179,7 +179,7 @@ fn translated_words_are_of_forms_layer_1_covers() {
 /// `WC_DECODE_CASES` words per form, seeded from `WC_DECODE_SEED`.
 #[test]
 fn every_offered_form_is_translated() {
-    use wcontainers_translator_test::layer1::{covered, of_feature_not_offered};
+    use wcontainers_translator_test::guest::arm64::{covered, of_feature_not_offered};
     let count = setting("WC_DECODE_CASES", 64) as u32;
     let seed = setting("WC_DECODE_SEED", 1);
     let mut untranslated = Vec::new();

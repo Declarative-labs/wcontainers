@@ -4,6 +4,7 @@
 use std::io::Write;
 use std::time::Duration;
 use std::time::Instant;
+use wcontainers_arm64::Arm64;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Means, Optimise, Translation};
 use wcontainers_translator_test::binaries::{Binary, SOURCES};
@@ -61,7 +62,7 @@ fn translated(binary: &Binary, optimise: Optimise) -> Translation {
         &binary.starts.all(),
         LookAhead::Full,
         optimise,
-        probe(),
+        probe::<Arm64>(),
         (),
     )
     .expect("translate")
@@ -73,7 +74,7 @@ fn load_in_wasmtime(binary: &Binary, translation: Translation) -> (Duration, Dur
     // The lookup table covers the code alone.
     let slots = ((binary.code.end - binary.code.start) / 4) as u32;
     let table_base = LOAD + binary.code.start;
-    let mut machine = Machine::new(memory, table_base, slots, Syscalls::StandIn);
+    let mut machine = Machine::<Arm64>::new(memory, table_base, slots, Syscalls::StandIn);
     machine.load_translation(&binary.image, binary.code.clone(), LOAD, translation)
 }
 
@@ -87,7 +88,7 @@ fn load_in_chrome(
 ) -> Result<wcontainers_translator_test::browser::Loaded, String> {
     let wasm: Vec<&[u8]> = translation.modules.iter().map(|m| &m.wasm[..]).collect();
     let code = binary.code.clone();
-    wcontainers_translator_test::browser::load_modules(
+    wcontainers_translator_test::browser::load_modules::<Arm64>(
         name,
         &binary.image,
         LOAD,

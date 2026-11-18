@@ -48,6 +48,7 @@ function run({
   codeStart,
   optimise,
   splitBytes,
+  standIn,
 }) {
   const translator = new WebAssembly.Instance(new WebAssembly.Module(translatorBytes)).exports;
   const result = (length) =>
@@ -68,7 +69,8 @@ function run({
   const tableBase = BigInt(load + (codeStart ?? 0));
   // The array covers the whole blob, every page of it that may run code, so code the program writes runs;
   // for modules translated ahead of time from an image, its code.
-  const slots = Math.ceil((moduleBytes.length ? codeBytes - codeStart : blob.length) / 4);
+  const align = BigInt(contract.align);
+  const slots = Math.ceil((moduleBytes.length ? codeBytes - codeStart : blob.length) / contract.align);
   const slotsAt = Math.ceil((PERMISSIONS_AT + permissionPages + 1) / 4) * 4;
   const statePages = Math.ceil((slotsAt + 4 * slots) / 65536);
   const state = new WebAssembly.Memory({ initial: statePages, maximum: statePages, shared: true });
@@ -93,8 +95,8 @@ function run({
   let nextSlot = contract.exactSlot + 1;
   // Where the array holds the slot for an address, as an index of 32 bit words, or null if it covers none.
   function slotEntry(address) {
-    if (address < tableBase || address >= tableBase + 4n * BigInt(slots) || address % 4n !== 0n) return null;
-    return (slotsAt + Number(address - tableBase)) / 4;
+    if (address < tableBase || address >= tableBase + align * BigInt(slots) || address % align !== 0n) return null;
+    return slotsAt / 4 + Number((address - tableBase) / align);
   }
   function setSlot(address, slot) {
     const at = slotEntry(address);
@@ -125,16 +127,9 @@ function run({
   }
   const reason = (name) => contract.reasons.indexOf(name);
 
-  // The registers, from the thread block, where they all are whenever a hook runs or the thread has left.
+  // The pc, from the thread block, where every register is whenever a hook runs or the thread has left.
   function registers() {
-    const view = new DataView(state.buffer, BLOCK_AT);
-    const x = [];
-    for (let i = 0; i < 31; i++) x.push(view.getBigUint64(contract.registerX + 8 * i, true));
-    return {
-      x,
-      sp: view.getBigUint64(contract.registerSp, true),
-      pc: view.getBigUint64(contract.registerPc, true),
-    };
+    return { pc: new DataView(state.buffer, BLOCK_AT).getBigUint64(contract.pcOffset, true) };
   }
 
   function stop(why) {
@@ -183,7 +178,7 @@ function run({
     };
     const file = (fd) => (fd === 1n ? stdout : fd === 2n ? stderr : null);
     switch (number) {
-      case 64n: {
+      case BigInt(standIn.write): {
         const out = file(a[0]);
         if (!out) return -EBADF;
         const bytes = read(a[1], a[2]);
@@ -191,7 +186,7 @@ function run({
         out.push(...bytes);
         return a[2];
       }
-      case 66n: {
+      case BigInt(standIn.writev): {
         const out = file(a[0]);
         if (!out) return -EBADF;
         // Linux takes the vector count as a 32 bit number.
@@ -215,14 +210,14 @@ function run({
         out.push(...gathered);
         return BigInt(gathered.length);
       }
-      case 93n:
-      case 94n:
+      case BigInt(standIn.exit):
+      case BigInt(standIn.exitGroup):
         stop({ kind: "finished", status: Number(BigInt.asIntN(32, a[0])) });
         raiseStopFlag();
         return 0n;
       // brk: this stand-in never moves the break, and answers with the current one as Linux does when it
       // cannot.
-      case 214n:
+      case BigInt(standIn.brk):
         return BigInt(programBreak);
       default:
         slowPath(reason("system call not implemented"), number, 0);
@@ -272,7 +267,7 @@ function run({
         stop({ kind: "memory fault", address: address.toString(), write: false, execute: true });
         return 0;
       }
-      const coveredEnd = tableBase + 4n * BigInt(slots);
+      const coveredEnd = tableBase + align * BigInt(slots);
       if (address < tableBase || address >= coveredEnd) {
         stop({ kind: "no code", address: address.toString() });
         return 0;
@@ -430,7 +425,7 @@ function run({
         [contract.permissions]: constant(PERMISSIONS_AT, "i32"),
         [contract.permissionPages]: constant(BigInt(permissionPages), "i64"),
         [contract.slots]: constant(slotsAt, "i32"),
-        [contract.slotsCover]: constant(4n * BigInt(slots), "i64"),
+        [contract.slotsCover]: constant(align * BigInt(slots), "i64"),
       },
       [contract.thread]: thread.exports,
     });
@@ -445,7 +440,7 @@ function run({
       [contract.tableBase]: constant(tableBase, "i64"),
       [contract.threadBlock]: constant(BLOCK_AT, "i32"),
       [contract.slots]: constant(slotsAt, "i32"),
-      [contract.slotsCover]: constant(4n * BigInt(slots), "i64"),
+      [contract.slotsCover]: constant(align * BigInt(slots), "i64"),
     },
   });
 

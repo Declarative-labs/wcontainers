@@ -1,11 +1,12 @@
 //! The browser runner: a flat blob run in Chrome by `browser/runner.js`, with the translator built for wasm32
 //! from `browser/` so that code is translated at run time there too.
 
+use crate::guest::GuestTest;
 use crate::programs::{Blob, Ran, placement};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 fn package() -> PathBuf {
@@ -16,29 +17,47 @@ fn target() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/browser")
 }
 
-/// Build the translator for the browser, once per process, and return the module's path.
-pub fn translator() -> PathBuf {
-    static BUILT: OnceLock<PathBuf> = OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-            let status = Command::new(cargo)
-                .args([
-                    "build",
-                    "--release",
-                    "--quiet",
-                    "--target",
-                    "wasm32-unknown-unknown",
-                    "--target-dir",
-                ])
-                .arg(target())
-                .current_dir(package())
-                .status()
-                .expect("run cargo for the browser translator");
-            assert!(status.success(), "the browser translator did not build");
-            target().join("wasm32-unknown-unknown/release/wcontainers_browser.wasm")
-        })
-        .clone()
+/// Build the translator for the browser for a guest, once per process and guest, and return the module's
+/// path.
+pub fn translator<G: GuestTest>() -> PathBuf {
+    static BUILT: Mutex<Vec<(&str, PathBuf)>> = Mutex::new(Vec::new());
+    let mut built = BUILT.lock().unwrap();
+    if let Some((_, path)) = built.iter().find(|(name, _)| *name == G::NAME) {
+        return path.clone();
+    }
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let directory = target().join(G::NAME);
+    let status = Command::new(cargo)
+        .args([
+            "build",
+            "--release",
+            "--quiet",
+            "--features",
+            G::NAME,
+            "--target",
+            "wasm32-unknown-unknown",
+            "--target-dir",
+        ])
+        .arg(&directory)
+        .current_dir(package())
+        .status()
+        .expect("run cargo for the browser translator");
+    assert!(status.success(), "the browser translator did not build");
+    let path = directory.join("wasm32-unknown-unknown/release/wcontainers_browser.wasm");
+    built.push((G::NAME, path.clone()));
+    path
+}
+
+/// The stand-in kernel's numbers, for the page's settings.
+fn stand_in<G: GuestTest>() -> Value {
+    let numbers = G::STAND_IN;
+    serde_json::json!({
+        "write": numbers.write,
+        "writev": numbers.writev,
+        "exit": numbers.exit,
+        "exitGroup": numbers.exit_group,
+        "brk": numbers.brk,
+    })
 }
 
 /// What happened in Chrome: the program's output and status, and the runner's report.
@@ -70,37 +89,55 @@ impl Report {
 }
 
 /// Run a blob in Chrome at look-ahead none, starting at its first byte.
-pub fn translated(blob: &Blob) -> Report {
-    translated_with(blob, (LookAhead::None, Optimise::Speed), Omit::default())
+pub fn translated<G: GuestTest>(blob: &Blob) -> Report {
+    translated_with::<G>(blob, (LookAhead::None, Optimise::Speed), Omit::default())
 }
 
 /// Run a blob in Chrome at a look-ahead, translated for speed or size, leaving out some checks only to
 /// measure them.
-pub fn translated_with(blob: &Blob, how: (LookAhead, Optimise), omit: Omit) -> Report {
-    repeated(blob, how, omit, 1)
+pub fn translated_with<G: GuestTest>(
+    blob: &Blob,
+    how: (LookAhead, Optimise),
+    omit: Omit,
+) -> Report {
+    repeated::<G>(blob, how, omit, 1)
 }
 
 /// [`translated_with`], running the program `repeat` times in the same instances, each run timed by itself.
 /// The report holds the output of the last run.
-pub fn repeated(blob: &Blob, how: (LookAhead, Optimise), omit: Omit, repeat: u32) -> Report {
-    run_in_chrome(blob, how, omit, repeat, None, 0)
+pub fn repeated<G: GuestTest>(
+    blob: &Blob,
+    how: (LookAhead, Optimise),
+    omit: Omit,
+    repeat: u32,
+) -> Report {
+    run_in_chrome::<G>(blob, how, omit, repeat, None, 0)
 }
 
 /// [`repeated`] at full look-ahead, the translation split into modules of at most `module_bytes` of code,
 /// only to measure calls between modules.
-pub fn repeated_split(blob: &Blob, optimise: Optimise, repeat: u32, module_bytes: u32) -> Report {
+pub fn repeated_split<G: GuestTest>(
+    blob: &Blob,
+    optimise: Optimise,
+    repeat: u32,
+    module_bytes: u32,
+) -> Report {
     let how = (LookAhead::Full, optimise);
-    run_in_chrome(blob, how, Omit::default(), repeat, None, module_bytes)
+    run_in_chrome::<G>(blob, how, Omit::default(), repeat, None, module_bytes)
 }
 
 /// [`translated_with`] with V8 given these flags, only for measuring what the engine does (such as compiling
 /// every function when its module is made, not at its first call).
-pub fn translated_with_engine_flags(blob: &Blob, look_ahead: LookAhead, flags: &str) -> Report {
+pub fn translated_with_engine_flags<G: GuestTest>(
+    blob: &Blob,
+    look_ahead: LookAhead,
+    flags: &str,
+) -> Report {
     let how = (look_ahead, Optimise::Speed);
-    run_in_chrome(blob, how, Omit::default(), 1, Some(flags), 0)
+    run_in_chrome::<G>(blob, how, Omit::default(), 1, Some(flags), 0)
 }
 
-fn run_in_chrome(
+fn run_in_chrome<G: GuestTest>(
     blob: &Blob,
     (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
@@ -111,7 +148,7 @@ fn run_in_chrome(
     let place = placement(blob);
     let directory = target().join("cases").join(&blob.name);
     std::fs::create_dir_all(&directory).unwrap();
-    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
+    std::fs::copy(translator::<G>(), directory.join("translator.wasm")).unwrap();
     std::fs::write(directory.join("blob.bin"), &blob.bytes).unwrap();
     std::fs::write(directory.join("stack.bin"), &place.stack).unwrap();
     let regions: Vec<Value> = place
@@ -137,6 +174,7 @@ fn run_in_chrome(
         "repeat": repeat,
         "optimise": optimise as u8,
         "splitBytes": module_bytes,
+        "standIn": stand_in::<G>(),
         "omit": u8::from(omit.stop)
             | (u8::from(omit.permissions) << 1)
             | (u8::from(omit.returns) << 2)
@@ -247,7 +285,7 @@ pub struct Loaded {
 /// Load code modules translated ahead of time from an image placed at `load`, its code at `code`, in Chrome,
 /// V8 given these flags, without running anything; or what the page threw, such as an engine refusing a
 /// limit. The lookup table covers the code alone.
-pub fn load_modules(
+pub fn load_modules<G: GuestTest>(
     name: &str,
     image: &[u8],
     load: u64,
@@ -257,7 +295,7 @@ pub fn load_modules(
 ) -> Result<Loaded, String> {
     let directory = target().join("cases").join(format!("load-{name}"));
     std::fs::create_dir_all(&directory).unwrap();
-    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
+    std::fs::copy(translator::<G>(), directory.join("translator.wasm")).unwrap();
     std::fs::write(directory.join("blob.bin"), image).unwrap();
     std::fs::write(directory.join("stack.bin"), []).unwrap();
     for (i, module) in modules.iter().enumerate() {
@@ -287,10 +325,10 @@ pub fn load_modules(
     })
 }
 
-/// One instruction case: its code word, the thread state to start from (the contract's
-/// `THREAD_STATE_SIZE` bytes) and the bytes to put at each place.
+/// One instruction case: its code, the thread state to start from (the contract's `THREAD_STATE_SIZE` bytes)
+/// and the bytes to put at each place.
 pub struct StateCase {
-    pub word: u32,
+    pub code: crate::guest::Encoded,
     pub state: Vec<u8>,
     pub places: Vec<Vec<u8>>,
 }
@@ -303,9 +341,10 @@ pub struct StateRun {
     pub changed: Vec<(u32, u8)>,
 }
 
-/// Run instruction cases one after another in one Chrome page at look-ahead none, each word at `code` in a
-/// memory of `memory_bytes` with these regions, ending at a system call or where control lands.
-pub fn cases(
+/// Run instruction cases one after another in one Chrome page at look-ahead none, each instruction at `code`
+/// in a memory of `memory_bytes` with these regions, ending at a system call or where control lands. Each
+/// instruction goes as the longest the guest has, the rest of it the code area's filler.
+pub fn cases<G: crate::guest::GuestTest>(
     code: u64,
     memory_bytes: u64,
     regions: &[(std::ops::Range<u64>, wcontainers_abi::Permissions)],
@@ -314,12 +353,18 @@ pub fn cases(
 ) -> Vec<StateRun> {
     let directory = target().join("cases").join("instructions");
     std::fs::create_dir_all(&directory).unwrap();
-    std::fs::copy(translator(), directory.join("translator.wasm")).unwrap();
-    std::fs::write(directory.join("blob.bin"), cases[0].word.to_le_bytes()).unwrap();
+    std::fs::copy(translator::<G>(), directory.join("translator.wasm")).unwrap();
+    let code_bytes = G::MAX_LENGTH as usize;
+    let padded = |code: &crate::guest::Encoded| {
+        let mut bytes = code.code().to_vec();
+        bytes.resize(code_bytes, G::FILLER);
+        bytes
+    };
+    std::fs::write(directory.join("blob.bin"), padded(&cases[0].code)).unwrap();
     std::fs::write(directory.join("stack.bin"), []).unwrap();
     let mut bytes = Vec::new();
     for case in cases {
-        bytes.extend(case.word.to_le_bytes());
+        bytes.extend(padded(&case.code));
         bytes.extend(&case.state);
         for place in &case.places {
             bytes.extend(place);
@@ -335,7 +380,7 @@ pub fn cases(
         .map(|range| serde_json::json!([range.start, range.end - range.start]))
         .collect();
     let setup = serde_json::json!({
-        "codeBytes": 4,
+        "codeBytes": code_bytes,
         "load": code,
         "memoryBytes": memory_bytes,
         "regions": regions,
@@ -346,6 +391,7 @@ pub fn cases(
         "cases": cases.len(),
         "areas": places,
         "stopAtSyscall": true,
+        "standIn": stand_in::<G>(),
     });
     let result = launch(&directory, &setup, None);
     let numbers = |value: &Value| -> Vec<u8> {

@@ -8,6 +8,7 @@
 //! checks out, as the benchmarks do.
 
 use std::process::Command;
+use wcontainers_arm64::Arm64;
 use wcontainers_translator::{LookAhead, Omit, Optimise, translate_omitting};
 use wcontainers_translator_test::programs::{Library, build_with};
 use wcontainers_translator_test::runner::precompile;
@@ -25,14 +26,14 @@ fn main() {
         returns: omitted.contains("returns"),
         depth: omitted.contains("depth"),
     };
-    let blob = build_with(program, optimisation, Library::None, &defines);
+    let blob = build_with::<Arm64>(program, optimisation, Library::None, &defines);
     let mut translation = translate_omitting::<wcontainers_arm64::Arm64>(
         &blob.bytes,
         0..blob.code_bytes,
         &[0],
         LookAhead::Full,
         Optimise::Speed,
-        wcontainers_translator_test::runner::probe(),
+        wcontainers_translator_test::runner::probe::<Arm64>(),
         (),
         omit,
     )

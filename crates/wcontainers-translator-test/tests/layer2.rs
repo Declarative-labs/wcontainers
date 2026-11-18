@@ -14,12 +14,13 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use wcontainers_arm64::Arm64;
 use wcontainers_arm64::forms;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Optimise};
 use wcontainers_translator_test::browser;
+use wcontainers_translator_test::guest::arm64::excluded;
 use wcontainers_translator_test::jobs::at_once;
-use wcontainers_translator_test::layer1::excluded;
 use wcontainers_translator_test::layer2::{OUTPUT, area_offset, assemble, program};
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
@@ -68,7 +69,8 @@ fn full_matches_none_and_the_cpu() {
                     let left_out = forms::form(word).and_then(|form| excluded(form, word));
                     assert_eq!(left_out, None, "word {word:#010x} at {:#x}", 4 * at);
                 }
-                let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
+                let (none, mut none_machine, none_registers) =
+                    translated::<Arm64>(&blob, LookAhead::None);
                 // A program ends by writing its output, or by a memory fault (SIGSEGV).
                 match none.status {
                     0 => assert_eq!(none.stdout.len(), OUTPUT as usize),
@@ -77,7 +79,7 @@ fn full_matches_none_and_the_cpu() {
                 }
                 // Accesses stay above the area's start: the code and tables are as built.
                 let below = area_offset(&blob);
-                let changed = reachable_memory(&mut none_machine, &blob)[..below]
+                let changed = reachable_memory::<Arm64>(&mut none_machine, &blob)[..below]
                     .iter()
                     .zip(&blob.bytes)
                     .rposition(|(now, built)| now != built);
@@ -86,22 +88,22 @@ fn full_matches_none_and_the_cpu() {
                     None,
                     "a store this many bytes from the area's start"
                 );
-                let none_memory = reachable_memory(&mut none_machine, &blob);
+                let none_memory = reachable_memory::<Arm64>(&mut none_machine, &blob);
                 // Full for speed and for size, plain and stopping at every stop check.
                 for optimise in [Optimise::Speed, Optimise::Size] {
                     let how = (LookAhead::Full, optimise);
                     for stopping in [false, true] {
                         let (full, mut full_machine, full_registers) = if stopping {
-                            translated_stopping_everywhere(&blob, how)
+                            translated_stopping_everywhere::<Arm64>(&blob, how)
                         } else {
-                            translated_for(&blob, how)
+                            translated_for::<Arm64>(&blob, how)
                         };
                         let what =
                             format!("at full for {optimise:?}, stopping everywhere {stopping}");
                         assert_eq!(full, none, "output {what}");
                         assert_eq!(full_registers, none_registers, "registers {what}");
                         assert!(
-                            reachable_memory(&mut full_machine, &blob) == none_memory,
+                            reachable_memory::<Arm64>(&mut full_machine, &blob) == none_memory,
                             "memory {what}"
                         );
                         assert_eq!(full_machine.count(Reason::UnsupportedInstructionReached), 0);
@@ -115,32 +117,33 @@ fn full_matches_none_and_the_cpu() {
                 }
                 // Bounded from the first instruction ahead of time and from wherever the code goes at run time.
                 let look_ahead = LookAhead::Bounded(bound);
-                let mut machine = ready(&blob, look_ahead, Default::default());
+                let mut machine = ready::<Arm64>(&blob, look_ahead, Default::default());
                 machine.translate_at_run_time(move || look_ahead);
                 let (stopped, registers) = machine.run();
                 let what = format!("at bounded {bound}");
                 assert_eq!(
-                    outcome(&blob, &machine, stopped, &registers),
+                    outcome::<Arm64>(&blob, &machine, stopped, &registers),
                     none,
                     "output {what}"
                 );
                 assert_eq!(registers, none_registers, "registers {what}");
                 assert!(
-                    reachable_memory(&mut machine, &blob) == none_memory,
+                    reachable_memory::<Arm64>(&mut machine, &blob) == none_memory,
                     "memory {what}"
                 );
-                let (mixed_ran, mut mixed_machine, mixed_registers, events) = mixed(&blob, mix);
+                let (mixed_ran, mut mixed_machine, mixed_registers, events) =
+                    mixed::<Arm64>(&blob, mix);
                 let what = format!("mixed from {mix} ({events:?})");
                 assert_eq!(mixed_ran, none, "output {what}");
                 assert_eq!(mixed_registers, none_registers, "registers {what}");
                 assert!(
-                    reachable_memory(&mut mixed_machine, &blob) == none_memory,
+                    reachable_memory::<Arm64>(&mut mixed_machine, &blob) == none_memory,
                     "memory {what}"
                 );
                 count(&lost, events.stacks_lost);
                 count(&forgotten, events.forgotten);
                 if on_cpu {
-                    assert_eq!(native(&blob), none, "output against the CPU");
+                    assert_eq!(native::<Arm64>(&blob), none, "output against the CPU");
                 }
                 if in_chrome {
                     for how in [
@@ -148,7 +151,8 @@ fn full_matches_none_and_the_cpu() {
                         (LookAhead::Full, Optimise::Speed),
                         (LookAhead::Full, Optimise::Size),
                     ] {
-                        let ours = browser::translated_with(&blob, how, Default::default());
+                        let ours =
+                            browser::translated_with::<Arm64>(&blob, how, Default::default());
                         assert_eq!(ours.ran, none, "output in Chrome at {how:?}");
                     }
                 }

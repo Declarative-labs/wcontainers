@@ -4,8 +4,11 @@
 #![recursion_limit = "256"]
 
 use std::cell::RefCell;
-use wcontainers_abi::{Permissions, RegisterBlock};
-use wcontainers_arm64::Arm64;
+use wcontainers_abi::Permissions;
+#[cfg(feature = "arm64")]
+use wcontainers_arm64::Arm64 as G;
+#[cfg(not(feature = "arm64"))]
+compile_error!("name the guest with a feature: arm64");
 use wcontainers_guest_cpu::{GUEST_REASONS, Guest, HookBody, HookDone, HookType, Personality};
 use wcontainers_translator::contract;
 use wcontainers_translator::{LookAhead, Omit, Optimise, translate_in_modules, translate_omitting};
@@ -71,15 +74,13 @@ pub extern "C" fn translate(
     } else {
         Optimise::Speed
     };
-    let host = Arm64::host_from_probe(probe);
+    let host = G::host_from_probe(probe);
     let code = code_start..code_end;
     let result = INPUT.with_borrow(|blob| match module_bytes {
-        0 => {
-            translate_omitting::<Arm64>(blob, code, &[start], look_ahead, optimise, host, (), omit)
-        }
+        0 => translate_omitting::<G>(blob, code, &[start], look_ahead, optimise, host, (), omit),
         _ => {
             let module_bytes = module_bytes as usize;
-            translate_in_modules::<Arm64>(
+            translate_in_modules::<G>(
                 blob,
                 code,
                 &[start],
@@ -124,7 +125,7 @@ pub extern "C" fn more_module(i: u32) -> i32 {
 /// its length.
 #[unsafe(no_mangle)]
 pub extern "C" fn probe_module() -> i32 {
-    answer(Arm64::probe_module())
+    answer(G::probe_module())
 }
 
 thread_local! {
@@ -132,7 +133,7 @@ thread_local! {
     /// after it for an instruction's bytes.
     static STATE: RefCell<Vec<u8>> = RefCell::new(vec![
         0;
-        contract::thread_state_size::<Arm64>() + Arm64::MAX_LENGTH as usize
+        contract::thread_state_size::<G>() + G::MAX_LENGTH as usize
     ]);
     static DONE: std::cell::Cell<HookDone> = const {
         std::cell::Cell::new(HookDone {
@@ -154,11 +155,10 @@ pub extern "C" fn cpu_state() -> *mut u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn cpu_hook(hook: u32, a: i64, b: i64, c: i64, d: i64) {
     let args: [i64; HookType::MAX_PARAMS] = [a, b, c, d];
-    let types = &Arm64::HOOKS[hook as usize];
+    let types = &G::HOOKS[hook as usize];
     let (count, length) = (types.params.len(), usize::from(types.state.len));
-    let done = STATE.with_borrow_mut(|state| {
-        Arm64::run_hook(hook as usize, &args[..count], &mut state[..length])
-    });
+    let done = STATE
+        .with_borrow_mut(|state| G::run_hook(hook as usize, &args[..count], &mut state[..length]));
     DONE.set(done);
 }
 
@@ -169,22 +169,22 @@ pub extern "C" fn cpu_hook(hook: u32, a: i64, b: i64, c: i64, d: i64) {
 pub extern "C" fn cpu_memory_fault(address: i64, length: u32) -> i32 {
     use zerocopy::FromBytes;
     STATE.with_borrow(|state| {
-        let block = <Arm64 as Personality>::Block::read_from_prefix(state)
+        let block = <G as Personality>::Block::read_from_prefix(state)
             .expect("a register block")
             .0;
-        let code_at = contract::thread_state_size::<Arm64>();
+        let code_at = contract::thread_state_size::<G>();
         let code = &state[code_at..code_at + length as usize];
-        Arm64::memory_fault(address as u64, code, &block) as i32
+        G::memory_fault(address as u64, code, &block) as i32
     })
 }
 
 // Every hook's arguments fit `cpu_hook`'s and its results `HookDone`'s.
 const _: () = {
     let mut i = 0;
-    while i < Arm64::HOOKS.len() {
+    while i < G::HOOKS.len() {
         assert!(
-            Arm64::HOOKS[i].params.len() <= HookType::MAX_PARAMS
-                && Arm64::HOOKS[i].results.len() <= HookType::MAX_RESULTS
+            G::HOOKS[i].params.len() <= HookType::MAX_PARAMS
+                && G::HOOKS[i].results.len() <= HookType::MAX_RESULTS
         );
         i += 1;
     }
@@ -205,7 +205,7 @@ pub extern "C" fn cpu_hook_reason() -> i32 {
 /// The thread module. Returns its length.
 #[unsafe(no_mangle)]
 pub extern "C" fn thread_module() -> i32 {
-    answer(wcontainers_translator::thread_module::<Arm64>())
+    answer(wcontainers_translator::thread_module::<G>())
 }
 
 /// Everything the runner must agree on with the translator and the shared crate, as JSON. Returns its
@@ -213,7 +213,6 @@ pub extern "C" fn thread_module() -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn contract() -> i32 {
     use contract::*;
-    use core::mem::offset_of;
     let trap_kinds: Vec<&str> = (0..)
         .map_while(TrapKind::from_i32)
         .map(|kind| match kind {
@@ -227,7 +226,7 @@ pub extern "C" fn contract() -> i32 {
             TrapKind::Overflow => "overflow",
         })
         .collect();
-    let guest_hooks: Vec<serde_json::Value> = Arm64::HOOKS
+    let guest_hooks: Vec<serde_json::Value> = G::HOOKS
         .iter()
         .map(|hook| {
             let (body, line) = match hook.body {
@@ -279,12 +278,12 @@ pub extern "C" fn contract() -> i32 {
         "guestHooks": guest_hooks,
         // How many arguments `cpu_hook` takes after the hook's index.
         "hookParams": HookType::MAX_PARAMS,
-        "align": Arm64::ALIGN,
-        "maxLength": Arm64::MAX_LENGTH,
+        "align": G::ALIGN,
+        "maxLength": G::MAX_LENGTH,
         "memoryFaults": ["page", "general protection", "stack fault"],
         "lookup": LOOKUP,
         "probe": PROBE,
-        "threadStateSize": thread_state_size::<Arm64>(),
+        "threadStateSize": thread_state_size::<G>(),
         "pageRead": PAGE_READ,
         "pageWrite": PAGE_WRITE,
         "nextPageRead": NEXT_PAGE_READ,
@@ -294,15 +293,14 @@ pub extern "C" fn contract() -> i32 {
         "execute": Permissions::EXECUTE.bits(),
         "pageSize": wcontainers_abi::PAGE_SIZE,
         "warningThreshold": WARNING_THRESHOLD,
-        "reasons": (0..GUEST_REASONS + Arm64::REASONS.len() as u32)
-            .map(Reason::name_of::<Arm64>)
+        "reasons": (0..GUEST_REASONS + G::REASONS.len() as u32)
+            .map(Reason::name_of::<G>)
             .collect::<Vec<_>>(),
         "trapKinds": trap_kinds,
-        "stopFlag": Arm64::STOP_FLAG_OFFSET,
-        "threadBlockSize": Arm64::BLOCK_SIZE,
-        "registerX": offset_of!(RegisterBlock, x),
-        "registerSp": offset_of!(RegisterBlock, sp),
-        "registerPc": offset_of!(RegisterBlock, pc),
+        "stopFlag": G::STOP_FLAG_OFFSET,
+        "threadBlockSize": G::BLOCK_SIZE,
+        "pcOffset": G::PC_OFFSET,
+        "flagsWordOffset": G::FLAGS_WORD_OFFSET,
     });
     answer(description.to_string().into_bytes())
 }

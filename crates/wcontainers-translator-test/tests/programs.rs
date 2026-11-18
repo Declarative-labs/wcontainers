@@ -1,5 +1,6 @@
 //! C programs give the same output and exit status through the translator as on real ARM64 Linux.
 
+use wcontainers_arm64::Arm64;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Optimise};
 use wcontainers_translator_test::browser;
@@ -15,7 +16,11 @@ const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
 /// A blob at full look-ahead in Chrome, translated for speed and for size, gives Linux's run.
 fn full_matches_in_chrome(blob: &Blob, theirs: &Ran) {
     for optimise in [Optimise::Speed, Optimise::Size] {
-        let ours = browser::translated_with(blob, (LookAhead::Full, optimise), Default::default());
+        let ours = browser::translated_with::<Arm64>(
+            blob,
+            (LookAhead::Full, optimise),
+            Default::default(),
+        );
         assert_eq!(
             ours.ran, *theirs,
             "{} at full for {optimise:?} in Chrome",
@@ -59,9 +64,9 @@ fn deep_recursion_matches_linux() {
         ("deep", "-O2", Library::C, &["DEPTH=150000"][..]),
         ("deep_small_frames", "-O0", Library::None, &[][..]),
     ] {
-        let mut blob = build_with(name, optimisation, library, defines);
+        let mut blob = build_with::<Arm64>(name, optimisation, library, defines);
         blob.stack_bytes = 8 << 20;
-        let theirs = native(&blob);
+        let theirs = native::<Arm64>(&blob);
         every_look_ahead_matches(&blob, &theirs, |what, machine| {
             let left = machine.count(Reason::StackNearlyFull);
             let continued = machine.count(Reason::ContinuedAfterStackLoss);
@@ -75,7 +80,7 @@ fn deep_recursion_matches_linux() {
             (LookAhead::Full, Optimise::Speed),
             (LookAhead::Full, Optimise::Size),
         ] {
-            let ours = browser::translated_with(&blob, how, Default::default());
+            let ours = browser::translated_with::<Arm64>(&blob, how, Default::default());
             let what = format!("{} at {how:?} in Chrome", blob.name);
             assert_eq!(ours.ran, theirs, "{what}");
             assert!(ours.count("engine stack nearly full") > 0, "{what}");
@@ -87,8 +92,8 @@ fn deep_recursion_matches_linux() {
 /// and leaves the stack when it calls itself, at every look-ahead as on Linux.
 #[test]
 fn a_frame_past_the_budget_matches_linux() {
-    let blob = build("big_frame", "-O0", Library::None);
-    let theirs = native(&blob);
+    let blob = build::<Arm64>("big_frame", "-O0", Library::None);
+    let theirs = native::<Arm64>(&blob);
     assert_eq!(theirs.status, 42);
     every_look_ahead_matches(&blob, &theirs, |what, machine| {
         if what.ends_with("Full") {
@@ -103,8 +108,8 @@ fn a_frame_past_the_budget_matches_linux() {
 fn unwinding_matches_linux() {
     for name in ["jumps", "exceptions", "panics"] {
         for optimisation in ["-O0", "-O2"] {
-            let blob = build(name, optimisation, Library::C);
-            let theirs = native(&blob);
+            let blob = build::<Arm64>(name, optimisation, Library::C);
+            let theirs = native::<Arm64>(&blob);
             assert_eq!(
                 theirs.status,
                 if name == "jumps" { 50 } else { 0 },
@@ -123,8 +128,8 @@ fn unwinding_matches_linux() {
 fn stacks_switched_by_the_program_match_linux() {
     for name in ["fibers", "coroutines"] {
         for optimisation in ["-O0", "-O2"] {
-            let blob = build(name, optimisation, Library::C);
-            let theirs = native(&blob);
+            let blob = build::<Arm64>(name, optimisation, Library::C);
+            let theirs = native::<Arm64>(&blob);
             assert_eq!(theirs.status, 0, "{}", blob.name);
             every_look_ahead_matches(&blob, &theirs, print_counters);
             full_matches_in_chrome(&blob, &theirs);
@@ -139,8 +144,8 @@ fn stacks_switched_by_the_program_match_linux() {
 fn written_code_and_null_calls_match_linux() {
     for (name, status) in [("written_code", 0), ("null_call", 139)] {
         for optimisation in ["-O0", "-O2"] {
-            let blob = build(name, optimisation, Library::C);
-            let theirs = native(&blob);
+            let blob = build::<Arm64>(name, optimisation, Library::C);
+            let theirs = native::<Arm64>(&blob);
             assert_eq!(theirs.status, status, "{}", blob.name);
             every_look_ahead_matches(&blob, &theirs, |what, machine| {
                 if name == "null_call" {
@@ -149,8 +154,11 @@ fn written_code_and_null_calls_match_linux() {
             });
             for look_ahead in [LookAhead::Full, LookAhead::AT_RUN_TIME] {
                 for optimise in [Optimise::Speed, Optimise::Size] {
-                    let ours =
-                        browser::translated_with(&blob, (look_ahead, optimise), Default::default());
+                    let ours = browser::translated_with::<Arm64>(
+                        &blob,
+                        (look_ahead, optimise),
+                        Default::default(),
+                    );
                     let what =
                         format!("{} at {look_ahead:?} for {optimise:?} in Chrome", blob.name);
                     assert_eq!(ours.ran, theirs, "{what}");
@@ -166,8 +174,8 @@ fn written_code_and_null_calls_match_linux() {
 #[test]
 fn cut_functions_and_split_translations_match_linux() {
     for optimisation in ["-O0", "-O2"] {
-        let blob = build("many_blocks", optimisation, Library::C);
-        let theirs = native(&blob);
+        let blob = build::<Arm64>("many_blocks", optimisation, Library::C);
+        let theirs = native::<Arm64>(&blob);
         assert_eq!(theirs.status, 0, "{}", blob.name);
         every_look_ahead_matches(&blob, &theirs, |_, _| {});
         full_matches_in_chrome(&blob, &theirs);
@@ -178,9 +186,9 @@ fn cut_functions_and_split_translations_match_linux() {
         ("exceptions", "-O2"),
         ("many_blocks", "-O2"),
     ] {
-        let blob = build(name, optimisation, Library::C);
-        let theirs = native(&blob);
-        let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
+        let blob = build::<Arm64>(name, optimisation, Library::C);
+        let theirs = native::<Arm64>(&blob);
+        let (none, mut none_machine, none_registers) = translated::<Arm64>(&blob, LookAhead::None);
         assert_eq!(none, theirs, "{} at none", blob.name);
         for module_bytes in [1 << 12, 1 << 16] {
             let modules = wcontainers_translator::translate_in_modules::<wcontainers_arm64::Arm64>(
@@ -189,7 +197,7 @@ fn cut_functions_and_split_translations_match_linux() {
                 &[0],
                 LookAhead::Full,
                 wcontainers_translator::Optimise::Speed,
-                wcontainers_translator_test::runner::probe(),
+                wcontainers_translator_test::runner::probe::<Arm64>(),
                 (),
                 module_bytes,
             )
@@ -197,8 +205,10 @@ fn cut_functions_and_split_translations_match_linux() {
             .modules
             .len();
             assert!(modules > 1, "{} in {modules} modules", blob.name);
-            let mut machine =
-                ready_with(&blob, wcontainers_translator_test::runner::probe(), |m| {
+            let mut machine = ready_with::<Arm64>(
+                &blob,
+                wcontainers_translator_test::runner::probe::<Arm64>(),
+                |m| {
                     m.load_split(
                         &blob.bytes,
                         0..blob.code_bytes,
@@ -206,28 +216,34 @@ fn cut_functions_and_split_translations_match_linux() {
                         &[0],
                         module_bytes,
                     )
-                });
+                },
+            );
             let (stopped, registers) = machine.run();
             let what = format!("{} in modules of {module_bytes} bytes", blob.name);
-            assert_eq!(ran(&blob, &machine, stopped, &registers), theirs, "{what}");
+            assert_eq!(
+                ran::<Arm64>(&blob, &machine, stopped, &registers),
+                theirs,
+                "{what}"
+            );
             assert_eq!(registers, none_registers, "registers of {what}");
             assert!(
-                reachable_memory(&mut machine, &blob) == reachable_memory(&mut none_machine, &blob),
+                reachable_memory::<Arm64>(&mut machine, &blob)
+                    == reachable_memory::<Arm64>(&mut none_machine, &blob),
                 "memory of {what}"
             );
         }
     }
 }
 
-fn print_counters(what: &str, machine: &Machine) {
+fn print_counters(what: &str, machine: &Machine<Arm64>) {
     eprintln!("{what}: {:?}", machine.counters());
 }
 
 /// A blob at none matches Linux, and at full, at bounded with every piece but the first made at run time,
 /// and mixed (seeds 0 to 2, the first with no stops), it matches Linux and none's registers and memory. `check` is called on each run
 /// with what it was.
-fn every_look_ahead_matches(blob: &Blob, theirs: &Ran, check: impl Fn(&str, &Machine)) {
-    let (none, mut none_machine, none_registers) = translated(blob, LookAhead::None);
+fn every_look_ahead_matches(blob: &Blob, theirs: &Ran, check: impl Fn(&str, &Machine<Arm64>)) {
+    let (none, mut none_machine, none_registers) = translated::<Arm64>(blob, LookAhead::None);
     assert_eq!(&none, theirs, "{} at none", blob.name);
     check(&format!("{} at None", blob.name), &none_machine);
     let mut runs = Vec::new();
@@ -236,7 +252,7 @@ fn every_look_ahead_matches(blob: &Blob, theirs: &Ran, check: impl Fn(&str, &Mac
         (LookAhead::Full, Optimise::Size),
         (LookAhead::AT_RUN_TIME, Optimise::Speed),
     ] {
-        let (ours, machine, registers) = translated_for(blob, how);
+        let (ours, machine, registers) = translated_for::<Arm64>(blob, how);
         let (look_ahead, optimise) = how;
         runs.push((
             format!("{} at {look_ahead:?} for {optimise:?}", blob.name),
@@ -246,7 +262,7 @@ fn every_look_ahead_matches(blob: &Blob, theirs: &Ran, check: impl Fn(&str, &Mac
         ));
     }
     for seed in 0..3 {
-        let (ours, machine, registers, events) = mixed(blob, seed);
+        let (ours, machine, registers, events) = mixed::<Arm64>(blob, seed);
         let what = format!("{} mixed from {seed} ({events:?})", blob.name);
         runs.push((what, ours, machine, registers));
     }
@@ -254,7 +270,8 @@ fn every_look_ahead_matches(blob: &Blob, theirs: &Ran, check: impl Fn(&str, &Mac
         assert_eq!(&ours, theirs, "{what}");
         assert_eq!(registers, none_registers, "registers of {what}");
         assert!(
-            reachable_memory(&mut machine, blob) == reachable_memory(&mut none_machine, blob),
+            reachable_memory::<Arm64>(&mut machine, blob)
+                == reachable_memory::<Arm64>(&mut none_machine, blob),
             "memory of {what}"
         );
         check(&what, &machine);
@@ -291,8 +308,8 @@ fn differences_match_linux_on_other_hosts() {
         arm_nans: false,
     };
     for optimisation in ["-O0", "-O2"] {
-        let blob = build("differences", optimisation, Library::C);
-        let theirs = native(&blob);
+        let blob = build::<Arm64>("differences", optimisation, Library::C);
+        let theirs = native::<Arm64>(&blob);
         for look_ahead in [LookAhead::None, LookAhead::Full] {
             let mut machine = ready_on(
                 &blob,
@@ -301,7 +318,7 @@ fn differences_match_linux_on_other_hosts() {
                 host,
             );
             let (stopped, registers) = machine.run();
-            let ours = ran(&blob, &machine, stopped, &registers);
+            let ours = ran::<Arm64>(&blob, &machine, stopped, &registers);
             let what = format!("differences at {optimisation}, look-ahead {look_ahead:?}");
             assert_eq!(
                 String::from_utf8_lossy(&ours.stdout),
@@ -332,20 +349,20 @@ fn match_linux(programs: &[(&str, Library)]) {
     for &(name, library) in programs {
         let mut built: Vec<(&str, Vec<u8>)> = Vec::new();
         for optimisation in LEVELS {
-            let blob = build(name, optimisation, library);
+            let blob = build::<Arm64>(name, optimisation, library);
             if let Some((same, _)) = built.iter().find(|(_, bytes)| *bytes == blob.bytes) {
                 eprintln!("{name} {optimisation}: the same blob as {same}");
                 continue;
             }
             built.push((optimisation, blob.bytes.clone()));
-            let theirs = native(&blob);
+            let theirs = native::<Arm64>(&blob);
             let mut finals = Vec::new();
             for how in [
                 (LookAhead::None, Optimise::Speed),
                 (LookAhead::Full, Optimise::Speed),
                 (LookAhead::Full, Optimise::Size),
             ] {
-                let (ours, mut machine, registers) = translated_for(&blob, how);
+                let (ours, mut machine, registers) = translated_for::<Arm64>(&blob, how);
                 let what = format!("{name} at {optimisation}, {how:?}");
                 assert_eq!(
                     String::from_utf8_lossy(&ours.stdout),
@@ -365,7 +382,7 @@ fn match_linux(programs: &[(&str, Library)]) {
                     machine.counters()
                 );
                 assert_eq!(machine.count(Reason::UnsupportedInstructionReached), 0);
-                finals.push((registers, reachable_memory(&mut machine, &blob)));
+                finals.push((registers, reachable_memory::<Arm64>(&mut machine, &blob)));
             }
             for (registers, memory) in &finals[1..] {
                 assert_eq!(
@@ -393,20 +410,21 @@ fn match_linux(programs: &[(&str, Library)]) {
 fn stops_at_every_check_change_nothing() {
     for (name, defines) in [("bench", &["SCALE=0"][..]), ("integers", &[][..])] {
         for optimisation in ["-O0", "-O2"] {
-            let blob = build_with(name, optimisation, Library::None, defines);
-            let theirs = native(&blob);
+            let blob = build_with::<Arm64>(name, optimisation, Library::None, defines);
+            let theirs = native::<Arm64>(&blob);
             let what = format!("{name} at {optimisation}");
-            let (none, mut none_machine, none_registers) = translated(&blob, LookAhead::None);
+            let (none, mut none_machine, none_registers) =
+                translated::<Arm64>(&blob, LookAhead::None);
             assert_eq!(none, theirs, "{what} at none");
             for optimise in [Optimise::Speed, Optimise::Size] {
                 let (full, mut machine, registers) =
-                    translated_stopping_everywhere(&blob, (LookAhead::Full, optimise));
+                    translated_stopping_everywhere::<Arm64>(&blob, (LookAhead::Full, optimise));
                 let what = format!("{what} for {optimise:?}");
                 assert_eq!(full, theirs, "{what} at full, stopping everywhere");
                 assert_eq!(registers, none_registers, "registers of {what}");
                 assert!(
-                    reachable_memory(&mut machine, &blob)
-                        == reachable_memory(&mut none_machine, &blob),
+                    reachable_memory::<Arm64>(&mut machine, &blob)
+                        == reachable_memory::<Arm64>(&mut none_machine, &blob),
                     "memory of {what}"
                 );
                 let stops = machine.count(Reason::StoppedByFlag);
@@ -437,7 +455,7 @@ fn measure() {
         ("tables", "-O2", Library::None),
         ("hello", "-O2", Library::C),
     ] {
-        let blob = build(name, optimisation, library);
+        let blob = build::<Arm64>(name, optimisation, library);
         let code = &blob.bytes[..blob.code_bytes as usize];
         let starts: Vec<u64> = (0..blob.code_bytes / 4).map(|i| 4 * i).collect();
         let mut best = (Duration::MAX, Duration::MAX, Vec::new());
@@ -449,7 +467,7 @@ fn measure() {
                 &starts,
                 LookAhead::None,
                 wcontainers_translator::Optimise::Speed,
-                wcontainers_translator_test::runner::probe(),
+                wcontainers_translator_test::runner::probe::<Arm64>(),
                 (),
             )
             .unwrap();
@@ -492,7 +510,7 @@ fn floats_speed() {
     });
     for k in chosen {
         let workload = format!("WORKLOAD={k}");
-        let blob = build_with("floats", "-O2", Library::C, &["SCALE=1", &workload]);
+        let blob = build_with::<Arm64>("floats", "-O2", Library::C, &["SCALE=1", &workload]);
         time_against_native(&format!("floats {}", WORKLOADS[k - 1]), &blob);
     }
 }
@@ -506,7 +524,7 @@ fn floats_speed() {
 fn switching_speed() {
     const ROUND_TRIPS: f64 = 2_000_000.0;
     for name in ["fibers", "coroutines"] {
-        let blob = build_with(name, "-O2", Library::C, &["SWITCHES=2000000"]);
+        let blob = build_with::<Arm64>(name, "-O2", Library::C, &["SWITCHES=2000000"]);
         let (native, wasmtime, chrome) = time_against_native(name, &blob);
         // Two switches a round trip, two coroutines in `coroutines`.
         let switches = if name == "fibers" { 2.0 } else { 4.0 } * ROUND_TRIPS;
@@ -532,11 +550,11 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
             .expect("sysctl");
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     };
-    let theirs = native(blob);
-    let native = native_seconds(blob, runs);
+    let theirs = native::<Arm64>(blob);
+    let native = native_seconds::<Arm64>(blob, runs);
     let mut best = f64::MAX;
     for _ in 0..runs {
-        let (ours, _, _, time) = translated_omitting(
+        let (ours, _, _, time) = translated_omitting::<Arm64>(
             blob,
             (LookAhead::Full, wcontainers_translator::Optimise::Speed),
             wcontainers_translator::Omit::default(),
@@ -554,7 +572,7 @@ fn time_against_native(name: &str, blob: &Blob) -> (f64, f64, Option<f64>) {
     }
     let mut in_chrome = f64::MAX;
     for _ in 0..runs {
-        let report = browser::repeated(
+        let report = browser::repeated::<Arm64>(
             blob,
             (LookAhead::Full, wcontainers_translator::Optimise::Speed),
             wcontainers_translator::Omit::default(),

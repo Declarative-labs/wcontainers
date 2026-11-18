@@ -8,6 +8,7 @@
 
 use std::io::Write;
 use std::time::{Duration, Instant};
+use wcontainers_arm64::Arm64;
 use wcontainers_translator::{LookAhead, Omit, Optimise, translate};
 use wcontainers_translator_test::browser;
 use wcontainers_translator_test::programs::{
@@ -97,7 +98,7 @@ fn size(blob: &Blob) {
             &[0],
             LookAhead::Full,
             optimise(),
-            wcontainers_translator_test::runner::probe(),
+            wcontainers_translator_test::runner::probe::<Arm64>(),
             (),
         )
         .unwrap();
@@ -142,20 +143,25 @@ fn measure_benchmarks() {
         Err(_) => variants().to_vec(),
     };
     eprintln!("translated for {:?}", optimise());
-    size(&build_with("bench", "-O2", Library::None, &["SCALE=1"]));
+    size(&build_with::<Arm64>(
+        "bench",
+        "-O2",
+        Library::None,
+        &["SCALE=1"],
+    ));
     for k in chosen {
         let name = WORKLOADS[k - 1];
         let workload = format!("WORKLOAD={k}");
-        let blob = build_with("bench", "-O2", Library::None, &["SCALE=1", &workload]);
-        let expected = native(&blob);
-        let native_time = native_seconds(&blob, runs);
+        let blob = build_with::<Arm64>("bench", "-O2", Library::None, &["SCALE=1", &workload]);
+        let expected = native::<Arm64>(&blob);
+        let native_time = native_seconds::<Arm64>(&blob, runs);
         eprintln!("{name}: native {native_time:.3} s (load {})", load());
         for &(label, omit) in &variants {
             let mut best = f64::INFINITY;
             let mut counters = Vec::new();
             for _ in 0..runs {
                 let (ran, machine, _, time) =
-                    translated_omitting(&blob, (LookAhead::Full, optimise()), omit);
+                    translated_omitting::<Arm64>(&blob, (LookAhead::Full, optimise()), omit);
                 assert_eq!(ran, expected, "{name} with {label}");
                 best = best.min(time.as_secs_f64());
                 counters = machine.counters();
@@ -174,7 +180,8 @@ fn measure_benchmarks() {
             // The best time of each run in the same instances.
             let mut best = vec![f64::INFINITY; repeat as usize];
             for _ in 0..runs {
-                let report = browser::repeated(&blob, (LookAhead::Full, optimise()), omit, repeat);
+                let report =
+                    browser::repeated::<Arm64>(&blob, (LookAhead::Full, optimise()), omit, repeat);
                 assert_eq!(report.ran, expected, "{name} in Chrome with {label}");
                 for (best, time) in best.iter_mut().zip(report.runs) {
                     *best = best.min(time);
@@ -205,23 +212,26 @@ fn measure_calls_between_modules() {
     let runs: u32 = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
     let calls: u64 = std::env::var("WC_CALLS").map_or(100_000_000, |v| v.parse().unwrap());
     let define = format!("CALLS={calls}");
-    let blob = build_with("calls", "-O2", Library::None, &[&define]);
-    let expected = native(&blob);
-    let native_time = native_seconds(&blob, runs);
+    let blob = build_with::<Arm64>("calls", "-O2", Library::None, &[&define]);
+    let expected = native::<Arm64>(&blob);
+    let native_time = native_seconds::<Arm64>(&blob, runs);
     eprintln!("calls: native {native_time:.3} s (load {})", load());
     for optimise in [Optimise::Speed, Optimise::Size] {
         let mut one = f64::INFINITY;
         let mut split = f64::INFINITY;
         for _ in 0..runs {
             let (ran_one, _, _, time) =
-                translated_omitting(&blob, (LookAhead::Full, optimise), Omit::default());
+                translated_omitting::<Arm64>(&blob, (LookAhead::Full, optimise), Omit::default());
             assert_eq!(ran_one, expected);
             one = one.min(time.as_secs_f64());
-            let mut machine =
-                ready_with(&blob, wcontainers_translator_test::runner::probe(), |m| {
+            let mut machine = ready_with::<Arm64>(
+                &blob,
+                wcontainers_translator_test::runner::probe::<Arm64>(),
+                |m| {
                     m.optimise_for(optimise);
                     m.load_split(&blob.bytes, 0..blob.code_bytes, blob.load, &[0], 1);
-                });
+                },
+            );
             let started = Instant::now();
             let (stopped, registers) = machine.run();
             let time = started.elapsed().as_secs_f64();
@@ -238,10 +248,11 @@ fn measure_calls_between_modules() {
         }
         let (mut one, mut split) = (f64::INFINITY, f64::INFINITY);
         for _ in 0..runs {
-            let report = browser::repeated(&blob, (LookAhead::Full, optimise), Omit::default(), 2);
+            let report =
+                browser::repeated::<Arm64>(&blob, (LookAhead::Full, optimise), Omit::default(), 2);
             assert_eq!(report.ran, expected);
             one = report.runs.iter().fold(one, |a, &b| a.min(b));
-            let report = browser::repeated_split(&blob, optimise, 2, 1);
+            let report = browser::repeated_split::<Arm64>(&blob, optimise, 2, 1);
             assert_eq!(report.ran, expected);
             split = report.runs.iter().fold(split, |a, &b| a.min(b));
         }

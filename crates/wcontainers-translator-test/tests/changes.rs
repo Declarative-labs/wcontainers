@@ -14,6 +14,7 @@ use dynasmrt::{DynamicLabel, DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use wcontainers_abi::{Exit, PAGE_SIZE, Permissions};
+use wcontainers_arm64::Arm64;
 use wcontainers_translator::{LookAhead, Omit};
 use wcontainers_translator_test::changes::{Compared, Plan, compare};
 use wcontainers_translator_test::layer2::{assemble, program};
@@ -84,7 +85,7 @@ fn random_programs_with_changes_match_none() {
     let tally = std::cell::RefCell::new(Tally::default());
     let result = runner.run(&(program(), plan()), |(program, plan)| {
         let blob = assemble(&program);
-        tally.borrow_mut().add(compare(&blob, plan));
+        tally.borrow_mut().add(compare::<Arm64>(&blob, plan));
         Ok(())
     });
     tally.borrow().report(&format!(
@@ -107,7 +108,7 @@ fn programs_with_changes_match_none() {
         ("bench", "-O0"),
         ("bench", "-O2"),
     ] {
-        let blob = build(name, optimisation, Library::None);
+        let blob = build::<Arm64>(name, optimisation, Library::None);
         for seed in 0..seeds {
             for every in [16, 1024] {
                 let plan = Plan {
@@ -116,7 +117,7 @@ fn programs_with_changes_match_none() {
                     stops: 1.0,
                 };
                 eprintln!("{name} {optimisation}: {plan:?}");
-                tally.add(compare(&blob, plan));
+                tally.add(compare::<Arm64>(&blob, plan));
             }
         }
     }
@@ -159,7 +160,7 @@ fn data_blob(name: &str, mut ops: Ops) -> Blob {
 /// instruction and full at every stop check up to that point.
 fn denied_at_the_first(blob: &Blob, stop_at: Option<(u64, u64)>, page: u64) {
     let run = |look_ahead| {
-        let mut machine = ready(blob, look_ahead, Omit::default());
+        let mut machine = ready::<Arm64>(blob, look_ahead, Omit::default());
         let mut first = true;
         machine.on_pause(move |at, paused| {
             let registers = paused.registers();

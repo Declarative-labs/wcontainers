@@ -21,83 +21,7 @@ pub struct Target {
     pub fields: &'static [&'static str],
 }
 
-pub const AARCH64: Target = Target {
-    rust_target: "aarch64-unknown-linux-musl",
-    docker_platform: "linux/arm64",
-    reference_host: "WC_REFERENCE_AARCH64",
-    fields: &[
-        "x0",
-        "x1",
-        "x2",
-        "x3",
-        "x4",
-        "x5",
-        "x6",
-        "x7",
-        "x8",
-        "x9",
-        "x10",
-        "x11",
-        "x12",
-        "x13",
-        "x14",
-        "x15",
-        "x16",
-        "x17",
-        "x18",
-        "x19",
-        "x20",
-        "x21",
-        "x22",
-        "x23",
-        "x24",
-        "x25",
-        "x26",
-        "x27",
-        "x28",
-        "x29",
-        "x30",
-        "sp",
-        "pc",
-        "nzcv",
-        "tpidr_el0",
-        "v0",
-        "v1",
-        "v2",
-        "v3",
-        "v4",
-        "v5",
-        "v6",
-        "v7",
-        "v8",
-        "v9",
-        "v10",
-        "v11",
-        "v12",
-        "v13",
-        "v14",
-        "v15",
-        "v16",
-        "v17",
-        "v18",
-        "v19",
-        "v20",
-        "v21",
-        "v22",
-        "v23",
-        "v24",
-        "v25",
-        "v26",
-        "v27",
-        "v28",
-        "v29",
-        "v30",
-        "v31",
-        "fpsr",
-        "fpcr",
-    ],
-};
-
+/// x86-64's, until its `GuestTest` names it.
 pub const X86_64: Target = Target {
     rust_target: "x86_64-unknown-linux-musl",
     docker_platform: "linux/amd64",
@@ -427,7 +351,7 @@ impl Drop for Reference {
 }
 
 /// Runners not in use, per target, so that many blobs share a few runners.
-pub fn with_reference<R>(target: &'static Target, work: impl FnOnce(&mut Reference) -> R) -> R {
+pub fn with_reference<R>(target: &Target, work: impl FnOnce(&mut Reference) -> R) -> R {
     static FREE: OnceLock<Mutex<Vec<(&'static str, Reference)>>> = OnceLock::new();
     let free = FREE.get_or_init(|| Mutex::new(Vec::new()));
     let taken = {
@@ -482,58 +406,4 @@ fn write_record(to: &mut impl Write, record: &[u8]) {
         .expect("send to the reference");
     to.write_all(record).expect("send to the reference");
     to.flush().unwrap();
-}
-
-/// ARM64's layer 1 cases as they are drawn today, on the generic reference.
-pub struct Cases(Reference);
-
-/// What happened on the real CPU, in ARM64's shape.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ArmLanded {
-    pub signal: u32,
-    pub code: u32,
-    pub address: u64,
-    /// x0 to x30, sp, pc, flags, thread pointer.
-    pub registers: [u64; 35],
-    pub vectors: [u128; 32],
-    /// FPSR and FPCR.
-    pub float: [u32; 2],
-    pub changed: Vec<(u32, u8)>,
-}
-
-impl Cases {
-    pub fn start() -> Self {
-        Cases(Reference::start(&AARCH64))
-    }
-
-    /// Run one instruction from these registers (x0 to x30, sp, flags, thread pointer), vector registers,
-    /// FPSR and FPCR, and data seed.
-    pub fn run(
-        &mut self,
-        word: u32,
-        seed: u64,
-        registers: &[u64; 34],
-        vectors: &[u128; 32],
-        float: [u32; 2],
-    ) -> ArmLanded {
-        let mut state: Vec<u128> = registers[..32].iter().map(|&r| r.into()).collect();
-        state.push(CODE.into());
-        state.extend(registers[32..].iter().map(|&r| u128::from(r)));
-        state.extend(vectors);
-        state.extend(float.map(u128::from));
-        let landed = self
-            .0
-            .case(&word.to_le_bytes(), seed, &state)
-            .unwrap_or_else(|e| panic!("the reference runner failed: {e}"));
-        let s = &landed.state;
-        ArmLanded {
-            signal: landed.signal,
-            code: landed.code,
-            address: landed.address,
-            registers: std::array::from_fn(|i| s[i] as u64),
-            vectors: std::array::from_fn(|i| s[35 + i]),
-            float: [s[67] as u32, s[68] as u32],
-            changed: landed.changed,
-        }
-    }
 }

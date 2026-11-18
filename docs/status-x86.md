@@ -21,8 +21,10 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   the resolved dependencies, and fixed the plan's RISC-V far call (see "X1, run 6").
 - X2 (the shared test harness): run 1 (2026-11-17) fixed the four findings of the last X1 check, built the
   generic reference runner and transport and proved the x86 one on the i7-8750H, and moved ARM64's layer 1
-  and blobs onto it. Not done yet: `GuestTest` and the harness written once over it (see "X2, run 1",
-  "What comes next").
+  and blobs onto it. Run 2 (the same day) built `GuestTest` with ARM64's part and made the library of the
+  test crate generic over it (runner, layer 1, programs, changes, mixed, layer 3, browser), the browser crate
+  per guest by a feature, and layer 1's and four other test files written once over `G`. Not done yet: the
+  other test files, layer 2's model and emitter, the corpora (see "X2, run 2", "What comes next").
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -37,19 +39,41 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 
 ## X2: what comes next, in order
 
-1. `GuestTest` (plan 7.2) in the test crate (`src/guest/mod.rs`, ARM64's in `src/guest/arm64.rs`), naming its
-   `Target`; move every ARM64 fact out of the shared files into it: layer 1's forms, strategy, exclusions and
-   `reference_outcome` (`src/layer1.rs`), layer 2's registers and dynasm emitter (`src/layer2.rs`), the
-   runners' `Arm64` (`src/runner.rs`, `src/programs.rs`, `src/browser.rs`), the corpora of smoke, checks and
-   changes, the relocation kinds of `src/binaries.rs`, the stand-in's numbers, `programs/` per CPU.
-2. Replace the `Cases`/`ArmLanded` adapter in `src/reference.rs` by `G::to_state`, `G::reference_stop` and the
-   generic `Landed`.
-3. Every test file generic over `G` with one test per guest (`layer1_arm64`, ...); `tests/cases.rs` then
-   prints `G::cases`' states (its text must stay the same: `same-cases.sh d27cd70 1 2 3` and a new seed).
-4. The browser crate's guest chosen by a cargo feature, its contract with the per-CPU numbers of plan 7.2.
-5. Plan 7.3's recorded reference results and layer 1 batching; `long-runs.sh` and the benchmarks generic.
+1. Layer 2 over `G`: `MODEL_REGISTERS`, `Extra`/`extra()` and `assemble` of plan 7.2 into `src/guest/arm64.rs`,
+   moving the dynasm emitter out of `src/layer2.rs`; `tests/layer2.rs` and `tests/cases.rs`' layer 2 part over
+   `G` (then `same-cases.sh d27cd70` again, seeds 1, 2, 3 and a new one).
+2. The corpora: `smoke()`, `checks()`, `changes()` (`Snippet`, `Expect`) from `tests/smoke.rs`,
+   `tests/checks.rs` and the hand-made half of `tests/changes.rs` (their dynasm words) into ARM64's part, the
+   test bodies over `G`.
+3. The test files still pinned to `Arm64` (`::<Arm64>` calls, no wrapper): `programs.rs` (its other-host test
+   needs the probe answers a guest has), `benchmarks.rs`, `output.rs` (ARM64's four probe answers),
+   `binaries.rs` with `relocation(kind)` from `src/binaries.rs`, and `src/bin/machine-code.rs`. `decoding.rs`
+   and `valid.rs` test ARM64's decoder itself: name them as ARM64's (or move them to the ARM64 crate's tests).
+4. `programs/` per CPU (`PROGRAMS`: start code, assembly tests, `written_code.c`, `differences.c`),
+   `ELF_MACHINE`, `MUSL_LOADER`, `auxiliary`.
+5. Plan 7.3's recorded reference results and layer 1 batching; `long-runs.sh` generic.
 6. The whole suite, its time against X1 run 6's 25 minutes, and a read of the harness for ARM64 facts left
-   outside the per-CPU part.
+   outside the per-CPU part; merge origin/phase-1-translator.
+
+## X2, run 2 (2026-11-17)
+
+- origin/phase-1-translator: fetched at the start, nothing new since 8b5e420.
+- `src/guest/mod.rs`: `GuestTest` and the generic `Encoded`, `State`, `Case`, `Signal`, `Stop`, `Outcome`,
+  `Designed`, `StandIn`; `src/guest/arm64.rs`: ARM64's part, with layer 1's forms, value strategies, exclusions,
+  the reference's stops, what a faulting access leaves open and the FPSR rule, all moved out of
+  `src/layer1.rs` unchanged. The `Cases`/`ArmLanded` adapter and `AARCH64` are gone.
+- Generic over `G`: `Machine<G>` and its host (thread state, stand-in numbers, slots by `G::ALIGN`, one
+  thread module and probe per guest kept by type, since a static in a generic function is shared), layer 1
+  (the filler written when not 0), programs (C and Rust targets, general-register flags), changes, mixed (random
+  starts from instruction boundaries found by `G::decode`, which for ARM64 draw the same), layer 3 (its gcc
+  image per guest platform), browser.
+- The browser crate: the guest by a feature (`arm64`), built per guest under `target/browser/<name>`; the
+  contract gives `pcOffset` and `flagsWordOffset`; the page takes the stand-in's numbers from its settings
+  and steps slots by `align`.
+- Tests written once over `G` with an `_arm64` wrapper each: `layer1.rs`, `cases.rs` (layer 1 part),
+  `browser.rs`, `float_hook.rs`, `lookaheads.rs`, `layer3.rs`.
+- Same cases: `same-cases.sh d27cd70 1 2 3 5309` (scratch `x2/run2/same-cases-1.log`, Mac load 15.7 to 19.5):
+  layer 1 1215 forms and layer 2 64 programs the same for each of the four seeds.
 
 ## X2, run 1 (2026-11-17)
 
@@ -1045,6 +1069,21 @@ X2 (each also written into the plan's text in the same commit):
 - The x86 runner is linked at 1.5 GiB (plan 7.2).
 - Containers this track starts are named `wc-x86-...` (were `wc-translator-...`).
 - ARM64's blobs go through the wire to one long-lived container per runner, not a container per blob.
+- `GuestTest` as built differs from plan 7.2's listing where building showed it must (plan 7.2, "As built
+  at X2"): the names group is `REFERENCE: Target`; `Form` is `Clone`; `cases(form)` takes no offer
+  (`DEFAULT_OFFER` until X8); `no_form(seed)` gives whole cases; `hand_cases()` stands for `designed` and
+  also holds the hand-made compared cases; `reconcile` stands for `may_differ` (a mask cannot say "equal to
+  the start" or "the reference's stored bytes do not count"); `track`, `PC_FIELD`, `SP_FIELD`,
+  `GENERAL_FIELDS` and `NAME` added.
+- ARM64's four hand-made layer 1 tests (alignment faults, vector registers, the step instructions' edges,
+  designed answers) are one test, `hand_cases_do_what_they_must_arm64`, over the same 105 cases.
+- A Chrome instruction case carries `MAX_LENGTH` bytes, the instruction then the filler (ARM64: the 4-byte
+  word, as before).
+- The gcc image of layer 3 is per guest (`wc-x86-gcc-arm64`, built for the guest's Docker platform), so it no
+  longer shares `wc-translator-gcc` with the translator track.
+- The browser page reads the pc by `pcOffset` and nothing else of the register block (it read x0 to x30 and
+  sp, unused); `syscall` offsets, `codeChanges` and `traps` of plan 7.2's contract are not added, since the
+  page gets the call's number and arguments from the hook and traps by `trapKinds` already.
 
 ## Decisions taken in the plan that the owner may want to hear about
 

@@ -2463,6 +2463,23 @@ pub struct StandIn { pub write: u64, pub writev: u64, pub exit: u64, pub exit_gr
 pub struct Snippet { pub name: &'static str, pub code: Vec<u8>, pub expect: Expect }
 ```
 
+As built at X2 (`src/guest/mod.rs`), where building it showed a signature must change:
+- The names group is `REFERENCE: Target` (the runner's Rust target, Docker's platform, the SSH host's
+  variable and the field names, which are `FIELDS`' names), with `C_TARGET`, `GENERAL_ONLY` and `NAME` (the
+  suffix of the per-guest tests' names) beside it.
+- `Form` is `Clone`, not `Copy` (ARM64's forms hold their names), and `forms()` gives only the forms layer 1
+  draws from (ARM64's covered ones). `cases(form)` takes no offer: it uses `DEFAULT_OFFER` until the AVX
+  setting (X8) needs a second one.
+- `no_form(seed)` gives whole cases (the bytes and a plain starting state), since the harness cannot make a
+  state; `hand_cases()` stands for `designed(offer)` and also holds the hand-made cases that are compared
+  with the reference (`Designed { name, case, stop, fields, compared }`).
+- `may_differ` is `reconcile(case, &mut expected, &actual)`: the CPU makes the reference's outcome what the
+  translated one must equal. A mask could not say "equal to the case's starting value" (ARM64's FPSR rule)
+  or "the reference's stored bytes do not count" (a store that faults).
+- `track(thread)` sets the tracking beside the fields; `PC_FIELD`, `SP_FIELD` and `GENERAL_FIELDS` name
+  the fields the harness reads (the changes test's pointers and frames).
+- `breakpoint_code` takes the abi's 16-bit breakpoint detail.
+
 `Expect` is today's expectation of each corpus (the smoke output, the checks' counts, the changes' stops),
 unchanged. A translator trap maps to a `Stop` and to an exit status generically, from `TrapKind` and the
 signal section 6 gives it (128 + 8 for SIGFPE); a breakpoint's `si_code` comes from `breakpoint_code` and

@@ -52,7 +52,7 @@ fn hosts(set: &str) -> Vec<(String, Host)> {
         every.collect()
     } else {
         every
-            .filter(|&answer| Host::from_probe(answer) == probe())
+            .filter(|&answer| Host::from_probe(answer) == probe::<Arm64>())
             .collect()
     };
     answers
@@ -79,10 +79,15 @@ fn bench(out: &mut String) {
         "thread",
         &wcontainers_translator::thread_module::<Arm64>(),
     );
-    let mut blobs = vec![build_with("bench", "-O2", Library::None, &["SCALE=1"])];
+    let mut blobs = vec![build_with::<Arm64>(
+        "bench",
+        "-O2",
+        Library::None,
+        &["SCALE=1"],
+    )];
     for k in 1..=8 {
         let workload = format!("WORKLOAD={k}");
-        blobs.push(build_with(
+        blobs.push(build_with::<Arm64>(
             "bench",
             "-O2",
             Library::None,

@@ -2,13 +2,11 @@
 //! (zig's) or gcc (Alpine's, in Docker) at an optimisation level, as flat blobs of fixed position or
 //! position independent code, run on Linux and through the translator at none and full.
 
+use crate::guest::GuestTest;
 use crate::programs::{Blob, Ran, flatten, native, out_directory, source_directory, unique, zig};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
-
-/// The Docker image with gcc and musl, made once from Alpine.
-const GCC_IMAGE: &str = "wc-translator-gcc";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compiler {
@@ -54,21 +52,31 @@ fn csmith_include() -> PathBuf {
         .clone()
 }
 
-/// Make the gcc image if it is not there yet.
-fn gcc_image() {
-    static MADE: OnceLock<()> = OnceLock::new();
-    MADE.get_or_init(|| {
-        let present = Command::new("docker")
-            .args(["image", "inspect", GCC_IMAGE])
-            .output()
-            .expect("run docker")
-            .status
-            .success();
-        if present {
-            return;
-        }
+/// The gcc image of the guest's platform, made if it is not there yet.
+fn gcc_image<G: GuestTest>() -> String {
+    static MADE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let image = format!("wc-x86-gcc-{}", G::NAME);
+    let mut made = MADE.lock().unwrap();
+    if made.contains(&image) {
+        return image;
+    }
+    let present = Command::new("docker")
+        .args(["image", "inspect", &image])
+        .output()
+        .expect("run docker")
+        .status
+        .success();
+    if !present {
         let mut child = Command::new("docker")
-            .args(["build", "-q", "-t", GCC_IMAGE, "-"])
+            .args([
+                "build",
+                "-q",
+                "--platform",
+                G::REFERENCE.docker_platform,
+                "-t",
+                &image,
+                "-",
+            ])
             .stdin(std::process::Stdio::piped())
             .spawn()
             .expect("run docker build");
@@ -83,7 +91,9 @@ fn gcc_image() {
             child.wait().unwrap().success(),
             "the gcc image did not build"
         );
-    });
+    }
+    made.push(image.clone());
+    image
 }
 
 /// Write a Csmith program for a seed; its name is `csmith-<seed>`.
@@ -109,8 +119,13 @@ pub fn csmith(seed: u64) -> PathBuf {
 }
 
 /// Build a C file with the C library into a flat blob.
-pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Position) -> Blob {
-    let (elf, own, name) = compile(source, compiler, optimisation, position, true);
+pub fn build<G: GuestTest>(
+    source: &Path,
+    compiler: Compiler,
+    optimisation: &str,
+    position: Position,
+) -> Blob {
+    let (elf, own, name) = compile::<G>(source, compiler, optimisation, position, true);
     let mut blob = flatten(&elf, &own, name);
     if position == Position::Independent {
         blob.load = crate::programs::MOVED;
@@ -120,10 +135,17 @@ pub fn build(source: &Path, compiler: Compiler, optimisation: &str, position: Po
 
 /// Build a C file as an ordinary static Linux executable and run it on Linux for at most 20 seconds, so a
 /// blob's fault can be told to be the program's own.
-pub fn ordinary(source: &Path, compiler: Compiler, optimisation: &str, position: Position) -> Ran {
-    let (elf, ..) = compile(source, compiler, optimisation, position, false);
+pub fn ordinary<G: GuestTest>(
+    source: &Path,
+    compiler: Compiler,
+    optimisation: &str,
+    position: Position,
+) -> Ran {
+    let (elf, ..) = compile::<G>(source, compiler, optimisation, position, false);
     let output = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "--name"])
+        .args(["run", "--rm", "--network", "none", "--platform"])
+        .arg(G::REFERENCE.docker_platform)
+        .arg("--name")
         .arg(crate::reference::container_name("ordinary"))
         .arg("-v")
         .arg(format!("{}:/o:ro", out_directory().display()))
@@ -144,7 +166,7 @@ pub fn ordinary(source: &Path, compiler: Compiler, optimisation: &str, position:
 
 /// Compile and link a C file, for a flat blob (with `flat.ld`) or as an ordinary executable. Gives the ELF
 /// file, its own unique stem and the program's name.
-fn compile(
+fn compile<G: GuestTest>(
     source: &Path,
     compiler: Compiler,
     optimisation: &str,
@@ -180,7 +202,7 @@ fn compile(
                 elf.display().to_string(),
                 source.display().to_string(),
             );
-            let mut arguments = vec!["cc", "-target", "aarch64-linux-musl", optimisation];
+            let mut arguments = vec!["cc", "-target", G::C_TARGET, optimisation];
             arguments.extend(code);
             arguments.extend(["-fno-sanitize=all", "-w", &include]);
             if flat {
@@ -190,11 +212,13 @@ fn compile(
             zig(&arguments);
         }
         Compiler::Gcc => {
-            gcc_image();
+            let image = gcc_image::<G>();
             let source_directory = source.parent().unwrap();
             let mut command = Command::new("docker");
             command
-                .args(["run", "--rm", "--network", "none", "--name"])
+                .args(["run", "--rm", "--network", "none", "--platform"])
+                .arg(G::REFERENCE.docker_platform)
+                .arg("--name")
                 .arg(crate::reference::container_name("gcc"))
                 .arg("-v")
                 .arg(format!("{}:/s:ro", source_directory.display()))
@@ -204,7 +228,7 @@ fn compile(
                 .arg(format!("{}:/l:ro", script.parent().unwrap().display()))
                 .arg("-v")
                 .arg(format!("{}:/o", out.display()))
-                .args([GCC_IMAGE, "gcc", optimisation, "-w"])
+                .args([image.as_str(), "gcc", optimisation, "-w"])
                 .args(code)
                 .arg("-I/i");
             if flat {
@@ -226,8 +250,8 @@ fn compile(
 }
 
 /// The native run, or `None` when the program does not end in time (Csmith's programs may not).
-pub fn native_in_time(blob: &Blob) -> Option<Ran> {
-    let ran = native(blob);
+pub fn native_in_time<G: GuestTest>(blob: &Blob) -> Option<Ran> {
+    let ran = native::<G>(blob);
     // The reference's own limit: SIGALRM, as Docker reports it.
     (ran.status != 128 + 14).then_some(ran)
 }

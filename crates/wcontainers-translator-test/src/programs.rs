@@ -1,16 +1,15 @@
-//! C programs built as flat blobs, run through the translator and on real ARM64 Linux.
+//! C programs built as flat blobs, run through the translator and on real Linux of the guest's CPU.
 
+use crate::guest::GuestTest;
 use crate::layout::initial_stack;
-use crate::reference::{AARCH64, BlobRan, BlobRequest, with_reference};
+use crate::reference::{BlobRan, BlobRequest, with_reference};
 use crate::runner::{Fault, Machine, Stopped, Syscalls};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
-use wcontainers_abi::{Exit, Permissions, RegisterBlock};
-use wcontainers_arm64::Arm64;
-use wcontainers_guest_cpu::Personality;
+use wcontainers_abi::{Exit, Permissions};
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
 /// Where every blob is linked, and loaded unless it is moved.
@@ -78,12 +77,17 @@ pub enum Library {
 
 /// Build `programs/<name>.c` (or `.cpp`, C++ with its library; `.rs`, Rust with its standard library; `.S`,
 /// assembly) at an optimisation level, such as "-O2", into a flat blob.
-pub fn build(name: &str, optimisation: &str, library: Library) -> Blob {
-    build_with(name, optimisation, library, &[])
+pub fn build<G: GuestTest>(name: &str, optimisation: &str, library: Library) -> Blob {
+    build_with::<G>(name, optimisation, library, &[])
 }
 
 /// [`build`] with preprocessor definitions, such as "SCALE=1".
-pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&str]) -> Blob {
+pub fn build_with<G: GuestTest>(
+    name: &str,
+    optimisation: &str,
+    library: Library,
+    defines: &[&str],
+) -> Blob {
     let out = out_directory();
     std::fs::create_dir_all(&out).unwrap();
     let mut stem = format!("{name}{optimisation}");
@@ -103,7 +107,7 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     let script = source_directory().join("flat.ld");
     let text = |p: &Path| p.to_str().unwrap().to_string();
     if source.extension().unwrap() == "rs" {
-        rust(&source, &elf, &script, optimisation);
+        rust::<G>(&source, &elf, &script, optimisation);
         return flatten(&elf, &own, stem);
     }
     let script = format!("-Wl,-T,{}", text(&script));
@@ -115,7 +119,7 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
     let mut arguments = vec![
         driver,
         "-target",
-        "aarch64-linux-musl",
+        G::C_TARGET,
         optimisation,
         "-static",
         "-fno-pic",
@@ -125,14 +129,9 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
         "-Wl,--build-id=none",
     ];
     if library == Library::None {
-        arguments.extend([
-            "-ffreestanding",
-            "-nostdlib",
-            // zig sets the CPU's features itself; this is how it leaves out floating point and vectors.
-            "-mcpu=generic-neon-fp_armv8",
-            "-fno-stack-protector",
-            "-fwrapv",
-        ]);
+        arguments.extend(["-ffreestanding", "-nostdlib"]);
+        arguments.extend(G::GENERAL_ONLY);
+        arguments.extend(["-fno-stack-protector", "-fwrapv"]);
     }
     arguments.extend(defines.iter().map(String::as_str));
     let (elf_text, source_text) = (text(&elf), text(&source));
@@ -142,15 +141,10 @@ pub fn build_with(name: &str, optimisation: &str, library: Library, defines: &[&
 }
 
 /// Build a Rust program with its standard library, statically, linked with `script`.
-fn rust(source: &Path, elf: &Path, script: &Path, optimisation: &str) {
+fn rust<G: GuestTest>(source: &Path, elf: &Path, script: &Path, optimisation: &str) {
     let level = optimisation.trim_start_matches("-O");
     let status = Command::new("rustc")
-        .args([
-            "--edition",
-            "2024",
-            "--target",
-            "aarch64-unknown-linux-musl",
-        ])
+        .args(["--edition", "2024", "--target", G::REFERENCE.rust_target])
         .args(["-C", &format!("opt-level={level}")])
         .args(["-C", "panic=unwind", "-C", "relocation-model=static"])
         .args(["-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld"])
@@ -209,6 +203,18 @@ pub(crate) fn flatten(elf: &Path, own: &str, name: String) -> Blob {
     blob
 }
 
+/// The offsets of the instructions in a range of code, decoding forward from its start; where nothing
+/// decodes, the next slot.
+pub fn boundaries<G: GuestTest>(code: &[u8]) -> Vec<u64> {
+    let mut at = 0;
+    let mut all = Vec::new();
+    while at < code.len() {
+        all.push(at as u64);
+        at += G::decode(&code[at..]).map_or(G::ALIGN as usize, |(_, length)| usize::from(length));
+    }
+    all
+}
+
 /// What a program did: its output and exit status.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Ran {
@@ -246,42 +252,45 @@ pub fn placement(blob: &Blob) -> Placement {
 }
 
 /// Run a blob through the translator in wasmtime, starting at its first byte, translated for speed.
-pub fn translated(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine, RegisterBlock) {
-    translated_for(blob, (look_ahead, Optimise::Speed))
+pub fn translated<G: GuestTest>(blob: &Blob, look_ahead: LookAhead) -> (Ran, Machine<G>, G::Block) {
+    translated_for::<G>(blob, (look_ahead, Optimise::Speed))
 }
 
 /// [`translated`] for speed or for size.
-pub fn translated_for(blob: &Blob, how: (LookAhead, Optimise)) -> (Ran, Machine, RegisterBlock) {
-    let (ran, machine, registers, _) = translated_omitting(blob, how, Omit::default());
+pub fn translated_for<G: GuestTest>(
+    blob: &Blob,
+    how: (LookAhead, Optimise),
+) -> (Ran, Machine<G>, G::Block) {
+    let (ran, machine, registers, _) = translated_omitting::<G>(blob, how, Omit::default());
     (ran, machine, registers)
 }
 
 /// [`translated`] without some checks, also giving how long the guest ran (translating and compiling not
 /// included).
-pub fn translated_omitting(
+pub fn translated_omitting<G: GuestTest>(
     blob: &Blob,
     how: (LookAhead, Optimise),
     omit: Omit,
-) -> (Ran, Machine, RegisterBlock, Duration) {
-    run_blob(blob, how, omit, false)
+) -> (Ran, Machine<G>, G::Block, Duration) {
+    run_blob::<G>(blob, how, omit, false)
 }
 
 /// [`translated_for`] with the thread stopping at every stop check it reaches and carrying on each time.
-pub fn translated_stopping_everywhere(
+pub fn translated_stopping_everywhere<G: GuestTest>(
     blob: &Blob,
     how: (LookAhead, Optimise),
-) -> (Ran, Machine, RegisterBlock) {
-    let (ran, machine, registers, _) = run_blob(blob, how, Omit::default(), true);
+) -> (Ran, Machine<G>, G::Block) {
+    let (ran, machine, registers, _) = run_blob::<G>(blob, how, Omit::default(), true);
     (ran, machine, registers)
 }
 
-fn run_blob(
+fn run_blob<G: GuestTest>(
     blob: &Blob,
     (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
     stop_everywhere: bool,
-) -> (Ran, Machine, RegisterBlock, Duration) {
-    let mut machine = ready_for(blob, look_ahead, optimise, omit);
+) -> (Ran, Machine<G>, G::Block, Duration) {
+    let mut machine = ready_for::<G>(blob, look_ahead, optimise, omit);
     if stop_everywhere {
         machine.stop_at_every_check();
     }
@@ -293,23 +302,33 @@ fn run_blob(
 }
 
 /// A machine with a blob placed, translated and ready to run from its first byte.
-pub fn ready(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Machine {
-    ready_for(blob, look_ahead, Optimise::Speed, omit)
+pub fn ready<G: GuestTest>(blob: &Blob, look_ahead: LookAhead, omit: Omit) -> Machine<G> {
+    ready_for::<G>(blob, look_ahead, Optimise::Speed, omit)
 }
 
 /// [`ready`], translated for `optimise`.
-pub fn ready_for(blob: &Blob, look_ahead: LookAhead, optimise: Optimise, omit: Omit) -> Machine {
-    ready_on(blob, (look_ahead, optimise), omit, crate::runner::probe())
+pub fn ready_for<G: GuestTest>(
+    blob: &Blob,
+    look_ahead: LookAhead,
+    optimise: Optimise,
+    omit: Omit,
+) -> Machine<G> {
+    ready_on::<G>(
+        blob,
+        (look_ahead, optimise),
+        omit,
+        crate::runner::probe::<G>(),
+    )
 }
 
 /// [`ready`], translated for a host with these facts instead of the probe's.
-pub fn ready_on(
+pub fn ready_on<G: GuestTest>(
     blob: &Blob,
     (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
-    host: wcontainers_arm64::Host,
-) -> Machine {
-    ready_with(blob, host, |machine| {
+    host: G::Host,
+) -> Machine<G> {
+    ready_with::<G>(blob, host, |machine| {
         machine.optimise_for(optimise);
         machine.load_omitting(
             &blob.bytes,
@@ -328,13 +347,13 @@ pub fn ready_on(
 
 /// A machine with the blob's memory and permissions, its code put in place by `load`, and the stack and
 /// registers ready to run from its first byte.
-pub fn ready_with(
+pub fn ready_with<G: GuestTest>(
     blob: &Blob,
-    host: wcontainers_arm64::Host,
-    load: impl FnOnce(&mut Machine),
-) -> Machine {
+    host: G::Host,
+    load: impl FnOnce(&mut Machine<G>),
+) -> Machine<G> {
     // The table covers the whole blob, every page of it that may run code, so code the program writes runs.
-    let slots = (blob.bytes.len() as u64).div_ceil(4) as u32;
+    let slots = (blob.bytes.len() as u64).div_ceil(G::ALIGN) as u32;
     let place = placement(blob);
     let mut machine = Machine::new(place.memory_bytes, blob.load, slots, Syscalls::StandIn);
     machine.set_host(host);
@@ -343,12 +362,17 @@ pub fn ready_with(
     }
     load(&mut machine);
     machine.write(place.sp, &place.stack);
-    machine.set_registers(&Arm64::initial_block(blob.load, place.sp));
+    machine.set_registers(&G::initial_block(blob.load, place.sp));
     machine
 }
 
 /// What a program did, from why its thread stopped. Panics if it stopped without exiting or faulting.
-pub fn ran(blob: &Blob, machine: &Machine, stopped: Stopped, registers: &RegisterBlock) -> Ran {
+pub fn ran<G: GuestTest>(
+    blob: &Blob,
+    machine: &Machine<G>,
+    stopped: Stopped,
+    registers: &G::Block,
+) -> Ran {
     // Docker reports a process killed by a signal as 128 plus the signal's number.
     let status = match stopped {
         // Linux reports the low 8 bits of the status.
@@ -361,15 +385,16 @@ pub fn ran(blob: &Blob, machine: &Machine, stopped: Stopped, registers: &Registe
         Stopped::Fault(Fault::GeneralProtection | Fault::Overflow) => 128 + 11,
         Stopped::Fault(Fault::Stack) => 128 + 7,
         other => {
-            let at = registers.pc.wrapping_sub(blob.load) as usize;
-            let word = blob
-                .bytes
-                .get(at..at + 4)
-                .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+            let pc = u64::from_le_bytes(
+                zerocopy::IntoBytes::as_bytes(registers)[G::PC_OFFSET..][..8]
+                    .try_into()
+                    .unwrap(),
+            );
+            let at = (pc.wrapping_sub(blob.load) as usize).min(blob.bytes.len());
+            let code = &blob.bytes[at..(at + G::MAX_LENGTH as usize).min(blob.bytes.len())];
             panic!(
-                "the program stopped without exiting: {other:?} at {:#x}, word {word:#x?} ({:?})",
-                registers.pc,
-                word.map(wcontainers_arm64::decode)
+                "the program stopped without exiting: {other:?} at {pc:#x}, bytes {code:02x?} ({})",
+                G::disassemble(code)
             )
         }
     };
@@ -381,7 +406,7 @@ pub fn ran(blob: &Blob, machine: &Machine, stopped: Stopped, registers: &Registe
 }
 
 /// Every byte the guest may reach: the blob's pages, then the stack.
-pub fn reachable_memory(machine: &mut Machine, blob: &Blob) -> Vec<u8> {
+pub fn reachable_memory<G: GuestTest>(machine: &mut Machine<G>, blob: &Blob) -> Vec<u8> {
     let mut bytes = Vec::new();
     for (range, _) in placement(blob).regions {
         let mut part = vec![0; (range.end - range.start) as usize];
@@ -393,13 +418,13 @@ pub fn reachable_memory(machine: &mut Machine, blob: &Blob) -> Vec<u8> {
 
 /// The shortest of `runs` native runs of a blob on the reference, in seconds, each timed by the reference
 /// from making a child process to its end (so the reference's start-up is not counted).
-pub fn native_seconds(blob: &Blob, runs: u32) -> f64 {
-    on_reference(blob, runs.max(1)).seconds
+pub fn native_seconds<G: GuestTest>(blob: &Blob, runs: u32) -> f64 {
+    on_reference::<G>(blob, runs.max(1)).seconds
 }
 
 /// Run a blob natively on the reference.
-pub fn native(blob: &Blob) -> Ran {
-    let ran = on_reference(blob, 0);
+pub fn native<G: GuestTest>(blob: &Blob) -> Ran {
+    let ran = on_reference::<G>(blob, 0);
     Ran {
         stdout: ran.stdout,
         stderr: ran.stderr,
@@ -407,7 +432,7 @@ pub fn native(blob: &Blob) -> Ran {
     }
 }
 
-fn on_reference(blob: &Blob, runs: u32) -> BlobRan {
+fn on_reference<G: GuestTest>(blob: &Blob, runs: u32) -> BlobRan {
     let request = BlobRequest {
         bytes: &blob.bytes,
         load: blob.load,
@@ -417,7 +442,7 @@ fn on_reference(blob: &Blob, runs: u32) -> BlobRan {
         stdin: &[],
         runs,
     };
-    let ran = with_reference(&AARCH64, |reference| reference.blob(&request))
+    let ran = with_reference(&G::REFERENCE, |reference| reference.blob(&request))
         .unwrap_or_else(|e| panic!("the reference runner failed: {e}"));
     // The runner's own failure in the blob's child is no result of the guest's: it fails the case, never
     // compares.

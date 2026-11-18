@@ -4,6 +4,7 @@
 
 use dynasmrt::aarch64::Aarch64Relocation;
 use dynasmrt::{DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
+use wcontainers_arm64::Arm64;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 use wcontainers_translator_test::browser;
@@ -60,15 +61,15 @@ fn blob(name: &str, ops: Ops) -> Blob {
 
 /// Linux, none and full (translated for speed and for size) agree, and full ends with the registers and
 /// memory of none. Returns the machines that ran at full, for their counters.
-fn compare(blob: &Blob) -> [Machine; 2] {
-    let theirs = native(blob);
-    let (none, mut none_machine, none_registers) = translated(blob, LookAhead::None);
+fn compare(blob: &Blob) -> [Machine<Arm64>; 2] {
+    let theirs = native::<Arm64>(blob);
+    let (none, mut none_machine, none_registers) = translated::<Arm64>(blob, LookAhead::None);
     assert_eq!(none, theirs, "{}: none against Linux", blob.name);
-    let none_memory = reachable_memory(&mut none_machine, blob);
+    let none_memory = reachable_memory::<Arm64>(&mut none_machine, blob);
     [Optimise::Speed, Optimise::Size].map(|optimise| {
         let how = (LookAhead::Full, optimise);
         let (full, mut full_machine, full_registers, _) =
-            translated_omitting(blob, how, Omit::default());
+            translated_omitting::<Arm64>(blob, how, Omit::default());
         eprintln!(
             "{} for {optimise:?}: status {}, full counters {:?}",
             blob.name,
@@ -82,7 +83,7 @@ fn compare(blob: &Blob) -> [Machine; 2] {
         );
         assert_eq!(full_registers, none_registers, "{}: registers", blob.name);
         assert!(
-            reachable_memory(&mut full_machine, blob) == none_memory,
+            reachable_memory::<Arm64>(&mut full_machine, blob) == none_memory,
             "{} for {optimise:?}: memory",
             blob.name
         );
@@ -209,10 +210,10 @@ fn failing_at_an_entry_in_chrome() {
         frame_below(false),
         frame_below(true),
     ] {
-        let theirs = native(&blob);
+        let theirs = native::<Arm64>(&blob);
         for optimise in [Optimise::Speed, Optimise::Size] {
             let how = (LookAhead::Full, optimise);
-            let ours = browser::translated_with(&blob, how, Omit::default());
+            let ours = browser::translated_with::<Arm64>(&blob, how, Omit::default());
             eprintln!("{} for {optimise:?}: {:?}", blob.name, ours.counters);
             assert_eq!(ours.ran, theirs, "{} for {optimise:?} in Chrome", blob.name);
             assert!(ours.count(Reason::LeftToAddress.name()) > 0);
