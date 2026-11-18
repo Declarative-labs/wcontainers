@@ -40,11 +40,11 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   below); the owned crates are swept for bare numbers (section "Bare numbers"); the owner's names of
   2026-11-18 are built, each its own commit, and the plan corrected (section "J4a run 3"). origin/phase-1
   had nothing new to merge (still 2edbc451). The bar is run again (section "J4a run 3").
-- Not built yet, from the brief's later sections: unknown fields of a config.json ignored with a warning
-  and a counter through `serde_ignored`, in place of refusing them (the owner's reading of the standard,
-  2026-11-18). Next after J4a's check, before J5.
-- J4a is complete: its bar passes at full, none and bounded (section "J4a run 3"). Next: the unknown
-  fields above, then J5 (plan section 16).
+- Also built in J4a run 3, from the brief's later sections: a property of a config.json the specification
+  does not define, and every annotation, is ignored and named for a warning (read through `serde_ignored`),
+  in place of being refused (section "J4a run 3").
+- J4a is complete: its bar passes at full, none and bounded (section "J4a run 3"). Next: J5 (plan section
+  16).
 
 ## For the orchestrator
 
@@ -208,7 +208,21 @@ Left, with why:
   threadsched program's turn counts vary by seed (1669, 1621, 1619; with saves 1614, 1633, 1670) and each
   seed's 3 runs were identical; every seed of it had a leave after a turn ended; threads and futexes had
   none, as the check found (463 and 353 turns every seed).
-- J4a's bar at 582a1ab0, every change of this run's code (scratch j4/bars.sh bar --nocapture, logs
+- Unknown properties of a config.json (the brief, 2026-11-18, later): `spec_from_json` reads with oci-spec's
+  types through `serde_ignored` and returns with the configuration the path of each property they do not
+  define (named as the refusals name fields, `mounts[2].label`) and of each annotation, since the runtime acts
+  on none; the hand-written re-serialise-and-compare is gone. `wcon` warns of each, "wcon: configuration: a
+  property the specification does not define, or an annotation, ignored: PATH: COUNT". refused.rs's four
+  tests of fields oci-spec does not read are now `ignored!` tests that the container is made and the path
+  named, with one for an annotation; the base configuration is accepted with nothing ignored; surface.rs's
+  command line test gives `wcon` a configuration with an unknown property and checks the warning. A
+  library caller gets the paths; the warning is the caller's (the runtime's warnings go through the
+  kernel's `Host::warn`, whose reason and detail cannot carry a path, and the container does not exist yet).
+  The owned suite with it (scratch j4run3/owned-4.log; 68.0 s, load 41.9 to 78.2): 122 passed (the new
+  annotation test), 1 ignored, 0 failed. (owned-3.log is the same run before spec.rs's own unit test was
+  changed from a refusal to an ignored path: that test failed, as it should have.)
+- J4a's bar at 582a1ab0, every change of this run's code but the unknown properties, which nothing the
+  bar runs reads (the kernel tests read no config.json) (scratch j4/bars.sh bar --nocapture, logs
   j4run3/bar-full.log, bar-none.log, bar-bounded.log; the bar's 13 test files, now 36 tests with the two new
   repeats): full 36 passed (383.7 s with its build, load 93.9 to 64.0); none 36 passed (594.4 s, load 64.0 to
   60.9); bounded 36 passed (435.0 s, load 60.9 to 44.6; N drawn 237, 44, 38, 15, 51, 27 and 202). The repeats
@@ -1494,6 +1508,10 @@ array of slots in microseconds.
   corrected). The N a seed gives changed with it.
 
 ## Dependencies
+
+Added in J4a run 3 (licence read from the registry's manifest on 2026-11-18): serde_ignored 0.1.14 (MIT OR
+Apache-2.0) to wcontainers-runtime, for the properties of a config.json the specification does not define;
+its dependencies serde and serde_core were in the lock.
 
 Added in J1, licences read from each crate's manifest in the registry on 2026-11-17:
 - wcontainers-runtime: none beyond the workspace's own crates.
