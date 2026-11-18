@@ -450,8 +450,8 @@ typed `RWBuffer` (undefined too; ours removes the device). hlsl sampler-offset a
 run fewer checks than real only because real runs shader models 6.0 to 6.5 and ours 6.0 (real's
 log: "Compiling SM6.0-SM6.5 shaders"; 30 checks is 5 models of sampler-offset's 6), as plan
 section 9's answer says. sample-minmax stops at minimum and maximum filters (absent in WebGPU;
-the runner assumes them on every Direct3D 12 device; which capability reports them is not yet
-checked, see "Gap list").
+the runner assumes them on every Direct3D 12 device, and Direct3D 12 has no query for them, see
+"Gap list").
 
 Run 19 (run19/runner1.log, built at f74262c, 252 s): 204 of 302, the same 98 failing files as
 run 18. After the clamp commit (1cb2548, run by hand, not the whole set): hlsl sampler runs
@@ -593,9 +593,11 @@ where Direct3D 12 has none):
   answered): unbounded_resource_arrays, unbounded_samplers.
 - Multisampled texture arrays (WebGPU's multisampled textures have one layer; Direct3D 12 has no
   capability for them, so creation answers E_NOTIMPL): clear_render_target_view.
-- Minimum and maximum filters (WebGPU has no reduction samplers; refused by name at use): the
-  shader runner's sample-minmax. Which Direct3D 12 capability should report them was not
-  checked against Microsoft's documentation; to do.
+- Minimum and maximum filters (WebGPU has no reduction samplers): the shader runner's
+  sample-minmax. Direct3D 12 has no query for them: Microsoft's `D3D12_FILTER` page (read
+  2026-11-17) sends the reader to Direct3D 11's `D3D11_FEATURE_DATA_D3D11_OPTIONS1::MinMaxFiltering`,
+  so ours refuses such samplers by name at use (E_NOTIMPL, the device removed), the only report
+  Direct3D 12 leaves.
 - Shader models above 6.0 (plan section 9's answer): 37 shader runner files run fewer checks.
 - Also reported absent with no failing test here: conservative rasterisation, raster order
   views, ray tracing, mesh shaders, variable rate shading, sampler feedback,
@@ -659,8 +661,7 @@ Not absent features, so not yet allowed on the list (others' work, then this fro
    `geometry.rs` routes geometry shaders (14 files).
 4. The converter items above as they land (`StorageOffset` would let `storage_range` bind any
    offset).
-5. Find which Direct3D 12 capability reports minimum and maximum filters and make sure ours
-   answers it absent; then turn this gap list into the final one.
+5. Turn this gap list into the final one as the G6 items land.
 6. The view swizzle once the interface and converter have one.
 7. Later: `ID3D12GraphicsCommandList5` and later, `ID3D12Fence1`; render pass resolves of part
    of a subresource and of depth-stencil targets; the built-in storage clear for UAV clears of
