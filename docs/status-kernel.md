@@ -100,6 +100,34 @@ Built, each tested against the reference:
   choose, the port still shown by getsockname; an accepted socket keeps its listener's chosen
   address but never its port (`inet_csk_clone_lock`). inet `tcp_disconnects_match_reference`.
 - The not-built counting test asked F_GETOWNER_UIDS, built in the first run; it asks F_GETDELEG.
+- PR_SET_MM_MAP (cve-2026-43499's ghostlock): Linux's checks (size, inside the address space
+  and above 64 KiB, pairs in order, RLIMIT_DATA, auxv of at most 432 bytes as measured, exe_fd
+  needing powers no container holds), kept as brk, cmdline, environ and auxv read them; the
+  single-field forms need CAP_SYS_RESOURCE (EPERM). procwrite `memory_map_setting_matches_reference`.
+  With it, cmdline and environ are read only from anonymous memory (`access_remote_vm` with
+  FOLL_ANON), as the reference showed for arguments moved into a program's data.
+- The test backend forgot a directory still in use (ftest02 and ftest06: unlink EBADF): when a
+  call let an inode go, its FORGET counted the lookups of answers another parked call had
+  recorded and would take on its next run. Those lookups now wait for their call
+  (`recorded_lookups`). rootbackend `directories_still_used_match_reference` (5 processes walking
+  whole paths) failed at seed 2 before and passes six seeds now.
+- /proc/kmsg, which no container process may open (EPERM); proc01 now fails as the reference's.
+- fs.inotify.max_user_instances (EMFILE past 8192 per user) and max_user_watches (ENOSPC past
+  1048576), the reference's values; kernel.threads-max (memory / 128 KiB, EAGAIN at clone past
+  it). The reference's root shares its inotify count with the host's other root processes, so
+  the test shows only that the limit holds.
+- get_robust_list of a process the caller may not read by its real ids is EPERM.
+- An eventfd counted by a completed asynchronous request reaches ULLONG_MAX, shown as POLLERR.
+- ETXTBSY: opening for writing, O_TRUNC or truncate of a program a live process runs, and
+  running a file open for writing. processes `busy_programs_match_reference`.
+- VmLck in /proc/<pid>/status (every page of a locked range).
+- kill and rt_sigqueueinfo take any thread's number and signal its process.
+- statx's and fdinfo's mount ids are numbered as mountinfo numbers the mounts.
+
+LTP reruns at the newest code, one by one: ftest02, ftest06 (pass), proc01 (fail, as the
+reference), statx01, rt_sigqueueinfo01, mlock203, munlockall01, mmap14, execve04, creat07,
+get_robust_list01, eventfd06 (pass); mlock201 still fails (mincore: page residency not
+tracked).
 
 ## K6c, second run
 
