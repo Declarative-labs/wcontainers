@@ -116,6 +116,12 @@ those 642 (k6c2/compare-4-partial.txt):
     hugefallocate01 and memfd_create03 now broken as the reference's.
 - Excused with a gap: none yet; the draft list is below.
 
+Whole suite: started detached at 07:20 at aca4c10 with two test threads beside the LTP run
+(load 44 to 65; scratch k6c2/suite.log; binaries built after it started may hold ad73ecd's
+timer slack change). By 07:51 the first 62 test binaries had run: 141 passed, 0 failed, 6
+ignored (their known reasons); python.rs and the binaries after it were still running when this
+run ended, so the whole suite is not yet shown to pass at this run's last commit.
+
 Draft gap list (section 15 causes only; to be settled when the comparison is whole):
 - Tracing one process from another (missing in phase one): the ptrace tests (ptrace01, 02,
   03, 05, 06, 11 in the K6c first run) and any other test that stops on ptrace.
