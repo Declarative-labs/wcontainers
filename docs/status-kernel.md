@@ -3515,8 +3515,10 @@ K6c, in this order:
 3. The slow tests: run the timeouts (k6c4/timeouts-5.txt) with LTP_LIMIT 7200 and 2 jobs, a
    sample first (gf01, fsx01, rwtest01, creat05, open04, float_bessel, hackbench01,
    cve-2014-0196), to show each gives the reference's verdict or is slow for a named cause.
-   Speed-ups that keep Linux's behaviour: a backend that answers FOPEN_NOFLUSH would spare the
-   FLUSH per close (the kernel must honour it); check whether ours does.
+   Fidelity found while looking: `backend::flush` does not honour FOPEN_NOFLUSH (Linux's
+   `fuse_flush` skips the round trip for such a handle without writeback cache) and does not
+   remember an ENOSYS answer (`fc->no_flush`), so it asks again at every close. Fix both; a test
+   server that answers FOPEN_NOFLUSH would then spare the FLUSH per close.
 4. openat03 (O_TMPFILE on the root): the test backend (fuse-backend-rs passthrough) has no
    TMPFILE; decide whether the test server should answer it, or record it as the backend's.
 5. copy_file_range03: the guest's repeatable clock skips idle waits while the backend stamps
