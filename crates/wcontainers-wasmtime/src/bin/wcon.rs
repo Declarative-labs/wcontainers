@@ -1,7 +1,7 @@
 //! A demonstration of the library: runs one container to its end and exits with its status.
 //!
-//! wcontainers (--oci DIRECTORY | --tar FILE) [--config config.json] [--cache DIRECTORY]
-//!             [--look-ahead full|none|N] [--size] [-- ARGUMENTS...]
+//! wcon (--oci DIRECTORY | --tar FILE) [--config config.json] [--cache DIRECTORY]
+//!      [--look-ahead full|none|N] [--size] [-- ARGUMENTS...]
 //!
 //! What runs is the OCI image's configuration converted, or the runtime's base configuration for a
 //! plain tar, or `--config`'s; the arguments, when given, replace `process.args`.
@@ -32,7 +32,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            eprintln!("wcontainers: {error}");
+            eprintln!("wcon: {error}");
             match error.downcast_ref::<wcontainers_runtime::Error>() {
                 Some(wcontainers_runtime::Error::NotFound(_)) => ExitCode::from(NOT_FOUND),
                 _ => ExitCode::from(RUNTIME_FAILED),
@@ -104,14 +104,14 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     )?;
     let Ok(Ending::Finished { status }) = container.run();
     if let Some(error) = container.start_failure() {
-        eprintln!("wcontainers: the program could not be started: {error:?}");
+        eprintln!("wcon: the program could not be started: {error:?}");
     }
     for Warned {
         reason, count, cpu, ..
     } in container.system().warnings()
     {
         let side = if *cpu { "back end" } else { "kernel" };
-        eprintln!("wcontainers: {side}: {reason}: {count}");
+        eprintln!("wcon: {side}: {reason}: {count}");
     }
     // As a shell reports it.
     Ok(if status & SIGNAL_BITS == 0 {

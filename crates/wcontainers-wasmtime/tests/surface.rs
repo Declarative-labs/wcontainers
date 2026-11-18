@@ -602,7 +602,7 @@ fn a_second_process_starts_from_the_cache() {
 #[test]
 fn the_command_line_program_runs_a_container() {
     let (layout, files) = images();
-    let program = env!("CARGO_BIN_EXE_wcontainers");
+    let program = env!("CARGO_BIN_EXE_wcon");
     let expected = reference(PIPELINE);
     for source in [
         ["--oci", layout.to_str().unwrap()],
