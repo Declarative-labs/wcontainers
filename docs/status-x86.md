@@ -40,8 +40,10 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   passes every form at 1,000 cases a form against the i7-8750H; hello world prints in wasmtime. Run 2 (the
   same day) built the length table from a sweep of every map on the reference, ran the kernel-only forms in
   layer 1, ran x86 in Chrome, and measured the decoder's share of the browser build and the long division
-  (see "X3, run 2"). Every part of X3's pass bar holds; X3 is complete. What is left for later milestones is
-  under "X3: what comes next".
+  (see "X3, run 2"). Run 3 (the same day) fixed what the independent check of X3 found: cases that reached
+  the reference runner's own memory, `may_vary`, the reserved NOPs' prefixes, and five smaller ones, and did
+  the first part of the literal sweep (see "X3, run 3"). What is left for later milestones is under "X3:
+  what comes next".
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -56,17 +58,77 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 
 ## X3: what comes next
 
-1. The independent check of X3.
+1. The second independent check of X3.
 2. Plan 7.3's recorded reference results and layer 1 batching (still proposed, not ruled).
 3. For X4: the shared layer 2 model's operations are ARM64's; x86's `assemble`, `smoke`, `checks` panic
    with the milestone that builds them. A cached FS base at full look-ahead must be reloaded after a system
    call (the stand-in's `arch_prctl` writes it in the block).
-4. For X5: `xsetbv` is in the AVX setting's group and has no meaning yet (with the setting on it would give
+4. The literal fix list (`fix-x86.md`) from its WIDTH part on, and `layout.rs`'s page size (see "X3, run
+   3"). ARM64's layer 1 cases are not checked against its runner's range as x86's are: its loads and stores
+   take their base from the data area (or sp, also there) and an index within 64 of zero, and its literal
+   loads reach at most 1 MiB from the code area, so those cannot reach 0x8000_0000. Not checked: system
+   instructions that take an address in a random register (`dc zva` and the cache maintenance ones), which
+   could reach it. The runner's start check holds for ARM64 too.
+5. For X5: `xsetbv` is in the AVX setting's group and has no meaning yet (with the setting on it would give
    illegal instruction, where a CPU with XSAVE gives general protection). The never-claimed list in layer 1
    (100 cases a form) and the designed answers of the VMX forms (illegal instruction, excluded from layer 1
    as plan 7.4 says) come with X5. Prefixes a CPU without a feature ignores, so that the bytes run as an older
    instruction (`F3 0F 09`, `wbnoinvd`, is `wbinvd` and general protection on the reference), are X5's
    never-claimed list to find.
+
+## X3, run 3 (2026-11-18)
+
+The independent check of X3 found eight problems; all are fixed but the last, which is a part of the literal
+fix list (below):
+- Layer 1 at seed 5150 failed `Btr_rm64_r64`: a bit offset moved the access into the reference runner's own
+  image (linked at 0x6000_0000), where the CPU read the runner. Each runner's place is now one range in
+  `layout.rs` (`RUNNER`, the image base and 1.25 GiB after it), which the runner checks at start (it caught at
+  once that the i7-8750H put the heap 0x3b5c_9000 bytes after the image, so the range is not 512 MiB), and
+  x86's generator drops every case, in a form or in no form, whose accesses (iced's `used_memory` from the
+  case's registers, plus a bit offset's move) reach it. Three quarters of the bit offsets are now aimed with
+  their operand. A unit test replays the check's two cases.
+- `Guest::may_vary` was false for bt and its kin, `int 0x80`, `sysenter`, never-claimed `Code`s and invalid
+  encodings. Now true for each (see "Departures"); plan 3.2 describes the item; `tests/facts.rs` in the x86
+  crate checks every kind.
+- The reserved NOP forms' cases now draw `66`, `F2` and `F3` in any order and REX.W (kept when the
+  translator's decoder still gives a reserved NOP), so endbr64, rdsspq and MPX's encodings are compared; a
+  unit test checks the draws reach each prefix. `endbr64` is also a hand case compared with the reference.
+- `pop [esp + d]` under 67 added the stack move after wrapping; now before (a hand case compared with the
+  reference: `67 8f 84 24 f8 ef ff bb` at rsp 0x4400_1000 faults at 0).
+- `stack_move` of `add rsp, [m]` read an immediate from a memory operand; now `Unknown`.
+- Multi-byte and reserved NOPs described a 4-byte read-write access; now none. `movapd` and `movupd` stores
+  are writes.
+- `jrcxz` and `jecxz` are built (the Jcc page); the others the check listed stay X5's (see "Departures").
+- The eager flags of bt, clc, stc and cmc are now named under "Departures" and in plan 5.1.
+
+Also done:
+- The brief's bug in the x86 reference runner: it read `_fpx_sw_bytes.xfeatures` (fp + 472) as the size of
+  its frame's FP area, so it kept and put back only a few bytes of its own FP state around each case. It now
+  reads `extended_size` through a `#[repr(C)]` copy of Linux's struct, with a bound check against its buffer.
+  No recorded reference exists to be affected; what it failed to put back was the runner's own MXCSR and
+  vector registers, and every x86 case so far starts with the same MXCSR and x87 control word as the runner.
+- Literal sweep, part 1 (page and address width) of `fix-x86.md`: `wcontainers_x86` gains
+  `VIRTUAL_ADDRESS_BITS`, `USER_END`, `USER_TOP` (from `wcontainers_abi::PAGE_SIZE`; the x86 crate now
+  depends on `wcontainers-abi`), `CANONICAL_SHIFT` and `is_canonical`, used by `memory_fault` and the
+  canonical check of branch targets (the emitted bytes are the same), by x86's harness and by the reference
+  tests; `layer2.rs` and `smoke.rs` use `PAGE_SIZE`. A new `wcontainers_x86::encoding` names the legacy
+  prefixes, REX and the 0F escape (used by the decoder and the harness), and the crate names the interrupt
+  vectors (`BREAKPOINT_VECTOR`, `OVERFLOW_VECTOR`, `LINUX_32_BIT_SYSTEM_CALL`). Left: `layout.rs`'s 4096s
+  (the reference runner includes the file and has no `wcontainers-abi`), and every later part of the list
+  (WIDTH, RFLAGS, FXSAVE, REG, the rest of ENC, COND, SIMD, LINUX, FIELDS and on). Signal and si_code
+  numbers stay retyped in x86's harness until the orchestrator rules on the x86-64 system call source (the
+  list's LINUX step). `phase-1-literals` has no check crate yet, so nothing was merged.
+
+Proof of run 3 (the Mac, Apple M5; scratch `x3/run3/`):
+- Layer 1, every x86 form (705: run 2's 703 with `jrcxz` and `jecxz`), 1,200 cases a form, seed 5150 (the
+  check's seed), 4 at once, at 65ffbd7 (the runner's FP-area fix, b4a8cda, was written while it started, so
+  its runner may be either; neither changes a case's result) (`l1-5150-1200.log`, 14:13 to 15:12, 3,485 s; Mac load 75 at the
+  start, 64 at the end; the i7-8750H's load 6.2 before from other tracks' builds): passed, zero mismatches.
+  The check's own run of this seed failed `Btr_rm64_r64`.
+- Cases in no form, 10,000 at seed 5150 (`noform-5150-10000.log`, 352 s, Mac load 113 at the end): passed.
+- The x86 crate's tests (tables 4, lengths 2, facts 3) and the harness's two new unit tests: passed.
+- Clippy with `-D warnings` on the x86, test and interface crates (all targets) and on the reference runner
+  for both CPUs; `cargo fmt --check`: clean.
 
 ## X3, run 2 (2026-11-18)
 
@@ -1525,6 +1587,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## Cases actually run
 
+- X3 run 3: twelve forms (the bit tests, `pop`, three reserved NOPs, `jrcxz`, `jecxz`) at 1,200 cases a form,
+  seed 5150 (twice: the first ended on the runner's start check, see "X3, run 3"); every x86 form (705) at
+  1,200 cases a form, seed 5150; 10,000 cases in no form at seed 5150; the suite.
 - X3 run 2: the length sweep twice (294 and 300 lines of 256 probes, each probe 4 or 5 runs on the
   reference, about 380,000 runs); the kernel-only forms at 50 cases (twice, while fixing) and at 1,000
   (seed 1); cases in no form at 64 for seeds 1 to 6 (twice), and 10,000 at seed 1; layer 1 in Chrome at 1 a
