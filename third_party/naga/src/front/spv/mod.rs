@@ -639,6 +639,8 @@ pub struct Frontend<I> {
     lookup_constant: FastHashMap<spirv::Word, LookupConstant>,
     lookup_variable: FastHashMap<spirv::Word, LookupVariable>,
     lookup_expression: FastHashMap<spirv::Word, LookupExpression>,
+    /// Each ballot's predicate id (none for a constant true), for counting its bits.
+    ballot_predicates: FastHashMap<spirv::Word, Option<spirv::Word>>,
     // Load overrides are used to work around row-major matrices
     lookup_load_override: FastHashMap<spirv::Word, LookupLoadOverride>,
     lookup_sampled_image: FastHashMap<spirv::Word, image::LookupSampledImage>,
@@ -701,6 +703,7 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
             lookup_constant: FastHashMap::default(),
             lookup_variable: FastHashMap::default(),
             lookup_expression: FastHashMap::default(),
+            ballot_predicates: FastHashMap::default(),
             lookup_load_override: FastHashMap::default(),
             lookup_sampled_image: FastHashMap::default(),
             lookup_function_type: FastHashMap::default(),
@@ -3464,6 +3467,29 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
             _ => Err(Error::AtomicUpgradeError(
                 crate::front::atomic_upgrade::Error::GlobalVariableMissing,
             )),
+        }
+    }
+}
+
+impl<I: Iterator<Item = u32>> Frontend<I> {
+    /// Reads a memory operand's scope id, which must be at most the workgroup: the IR's storage and
+    /// texel accesses are available and visible at workgroup scope (WGSL's memory model), so
+    /// asking for that, or less, is what every access already does.
+    fn workgroup_scope(&mut self, module: &crate::Module, mask: u32) -> Result<(), Error> {
+        let id = self.next()?;
+        let constant = self.lookup_constant.lookup(id)?;
+        let scope =
+            resolve_constant(module.to_ctx(), &constant.inner).ok_or(Error::InvalidOperand)?;
+        if [
+            spirv::Scope::Workgroup as u32,
+            spirv::Scope::Subgroup as u32,
+            spirv::Scope::Invocation as u32,
+        ]
+        .contains(&scope)
+        {
+            Ok(())
+        } else {
+            Err(Error::UnsupportedMemoryScope { mask, scope })
         }
     }
 }

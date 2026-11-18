@@ -2699,6 +2699,8 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                         Some(predicate_handle)
                     };
 
+                    self.ballot_predicates
+                        .insert(result_id, predicate.map(|_| predicate_id));
                     let result_handle = ctx
                         .expressions
                         .append(crate::Expression::SubgroupBallotResult, span);
@@ -2719,6 +2721,115 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                         span,
                     );
                     emitter.start(ctx.expressions);
+                }
+                // The lanes a ballot counts, as an add of its predicate over the subgroup (a
+                // reduce or a scan); a ballot made elsewhere is counted from its bits, reduces only.
+                Op::GroupNonUniformBallotBitCount => {
+                    inst.expect(6)?;
+                    block.extend(emitter.finish(ctx.expressions));
+                    let result_type_id = self.next()?;
+                    let result_id = self.next()?;
+                    let exec_scope_id = self.next()?;
+                    let group_op_id = self.next()?;
+                    let value_id = self.next()?;
+                    let exec_scope_const = self.lookup_constant.lookup(exec_scope_id)?;
+                    resolve_constant(ctx.gctx(), &exec_scope_const.inner)
+                        .filter(|exec_scope| *exec_scope == spirv::Scope::Subgroup as u32)
+                        .ok_or(Error::InvalidBarrierScope(exec_scope_id))?;
+                    let collective_op = match spirv::GroupOperation::from_u32(group_op_id) {
+                        Some(spirv::GroupOperation::Reduce) => crate::CollectiveOperation::Reduce,
+                        Some(spirv::GroupOperation::InclusiveScan) => {
+                            crate::CollectiveOperation::InclusiveScan
+                        }
+                        Some(spirv::GroupOperation::ExclusiveScan) => {
+                            crate::CollectiveOperation::ExclusiveScan
+                        }
+                        _ => return Err(Error::UnsupportedGroupOperation(group_op_id)),
+                    };
+                    let result_type = self.lookup_type.lookup(result_type_id)?.handle;
+                    let one = ctx
+                        .expressions
+                        .append(crate::Expression::Literal(crate::Literal::U32(1)), span);
+                    let zero = ctx
+                        .expressions
+                        .append(crate::Expression::Literal(crate::Literal::U32(0)), span);
+                    emitter.start(ctx.expressions);
+                    let handle = match self.ballot_predicates.get(&value_id).copied() {
+                        Some(predicate) => {
+                            let argument = match predicate {
+                                Some(id) => {
+                                    let lookup = self.lookup_expression.lookup(id)?;
+                                    let condition = get_expr_handle!(id, lookup);
+                                    ctx.expressions.append(
+                                        crate::Expression::Select {
+                                            condition,
+                                            accept: one,
+                                            reject: zero,
+                                        },
+                                        span,
+                                    )
+                                }
+                                None => one,
+                            };
+                            block.extend(emitter.finish(ctx.expressions));
+                            let result = ctx.expressions.append(
+                                crate::Expression::SubgroupOperationResult { ty: result_type },
+                                span,
+                            );
+                            block.push(
+                                crate::Statement::SubgroupCollectiveOperation {
+                                    result,
+                                    op: crate::SubgroupOperation::Add,
+                                    collective_op,
+                                    argument,
+                                },
+                                span,
+                            );
+                            emitter.start(ctx.expressions);
+                            result
+                        }
+                        None if collective_op == crate::CollectiveOperation::Reduce => {
+                            let lookup = self.lookup_expression.lookup(value_id)?;
+                            let value = get_expr_handle!(value_id, lookup);
+                            let bits = ctx.expressions.append(
+                                crate::Expression::Math {
+                                    fun: crate::MathFunction::CountOneBits,
+                                    arg: value,
+                                    arg1: None,
+                                    arg2: None,
+                                    arg3: None,
+                                },
+                                span,
+                            );
+                            let words: Vec<_> = (0..4)
+                                .map(|index| {
+                                    ctx.expressions.append(
+                                        crate::Expression::AccessIndex { base: bits, index },
+                                        span,
+                                    )
+                                })
+                                .collect();
+                            words[1..].iter().fold(words[0], |sum, &w| {
+                                ctx.expressions.append(
+                                    crate::Expression::Binary {
+                                        op: crate::BinaryOperator::Add,
+                                        left: sum,
+                                        right: w,
+                                    },
+                                    span,
+                                )
+                            })
+                        }
+                        None => return Err(Error::UnsupportedGroupOperation(group_op_id)),
+                    };
+                    self.lookup_expression.insert(
+                        result_id,
+                        LookupExpression {
+                            handle,
+                            type_id: result_type_id,
+                            block_id,
+                        },
+                    );
                 }
                 Op::GroupNonUniformAll
                 | Op::GroupNonUniformAny
@@ -3245,18 +3356,18 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
 
     /// Reads a load's or store's `words` words of memory operands, through a pointer of type
     /// `pointer_type_id`. Alignment, volatility, hints and non-private access change nothing in the
-    /// IR. Availability and visibility at a scope are taken only on workgroup memory, which every
-    /// target keeps coherent within its workgroup; elsewhere they are refused.
+    /// IR. Availability and visibility are taken on workgroup memory at any scope (it is seen by
+    /// its workgroup only), and elsewhere at workgroup scope or less, which every access of the IR
+    /// has; wider ones are refused.
     fn parse_memory_access(
         &mut self,
         words: u16,
         pointer_type_id: spirv::Word,
         module: &crate::Module,
     ) -> Result<(), Error> {
+        use spirv::MemoryAccess as M;
         let mask = self.next()?;
-        let access = spirv::MemoryAccess::from_bits_retain(mask);
-        let scoped =
-            spirv::MemoryAccess::MAKE_POINTER_AVAILABLE | spirv::MemoryAccess::MAKE_POINTER_VISIBLE;
+        let access = M::from_bits_retain(mask);
         let workgroup = matches!(
             module.types[self.lookup_type.lookup(pointer_type_id)?.handle].inner,
             crate::TypeInner::Pointer {
@@ -3264,11 +3375,28 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                 ..
             }
         );
-        if access.intersects(scoped) && !workgroup {
-            return Err(Error::UnsupportedMemoryAccess(mask));
+        let known = M::VOLATILE
+            | M::ALIGNED
+            | M::NONTEMPORAL
+            | M::MAKE_POINTER_AVAILABLE
+            | M::MAKE_POINTER_VISIBLE
+            | M::NON_PRIVATE_POINTER;
+        if !known.contains(access) || workgroup {
+            for _ in 1..words {
+                self.next()?;
+            }
+            return match known.contains(access) {
+                true => Ok(()),
+                false => Err(Error::UnsupportedMemoryAccess(mask)),
+            };
         }
-        for _ in 1..words {
+        if access.contains(M::ALIGNED) {
             self.next()?;
+        }
+        for scoped in [M::MAKE_POINTER_AVAILABLE, M::MAKE_POINTER_VISIBLE] {
+            if access.contains(scoped) {
+                self.workgroup_scope(module, mask)?;
+            }
         }
         Ok(())
     }
