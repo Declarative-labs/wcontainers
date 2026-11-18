@@ -4,6 +4,10 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
+the reference and on our kernel, one command each for a test, a group and the whole suite. See
+"K6a, first run" just below for what exists, the bar, the first comparison and what is next.
+
 K0 to K4 are done. K5 (sockets and network) is built: every part of its milestone exists and is
 tested against the reference. The eighth run fixed every finding of the seventh run's check (the
 unstable deferred accept test, six option corners, connects to oneself, IPV6_ADDRFORM, the
@@ -13,7 +17,99 @@ corner differences and options not built, each counted, listed under Next for la
 and 5050450 passed 20000 sequences each with every fix in (see Measurements). The fuller run-by-run record of K4 and of K5's first two runs is in this file at
 commit fdf7001 (git history); what they built is summarised here.
 
-K5 built (all four runs):
+## K6a, first run
+
+The K5 check's ten findings (orchestrator's k5-open-findings.json), each tested against the
+reference (tests/inet.rs `option_reads_and_socket_corners_match_reference`, guest/optreads.c;
+`route_questions_and_rules_match_reference`, guest/routeget.c):
+- TCP sendmsg reads its control messages only once connected (`sk_stream_wait_connect` first):
+  an unconnected socket with a bad cmsg_len is EPIPE, as Linux (layer 1 seed 9595101's find).
+- Route questions: RTM_GETROUTE of one address (`ip route get`, IPv4 and ::1, RTM_F_FIB_MATCH,
+  RTA_OIF), and the RTM_GETRULE dump (IPv4's three rules, multicast routing's, IPv6's two) as
+  measured; a single RTM_GETRULE is EOPNOTSUPP as Linux.
+- Socket options Linux answers: every SOL_SOCKET one of the check's list (SO_DEBUG, SO_NO_CHECK,
+  SO_BSDCOMPAT, SO_GET_FILTER, SO_RXQ_OVFL with its drop counts, SO_WIFI_STATUS, SO_NOFCS,
+  SO_LOCK_FILTER, SO_SELECT_ERR_QUEUE with POLLPRI, SO_MAX_PACING_RATE, SO_BPF_EXTENSIONS,
+  SO_INCOMING_NAPI_ID, SO_COOKIE, SO_PEERGROUPS, SO_PREFER_BUSY_POLL, SO_NETNS_COOKIE,
+  SO_BUF_LOCK, SO_RESERVE_MEM's read, SO_TXREHASH, SO_DETACH_FILTER) and the TCP, IP and IPv6
+  ones of the list as read on fresh and connected sockets; what is still not built is named
+  under "Not built" ("socket option not built"). UDP now counts its drops (/proc/net/udp's
+  column too) and takes a datagram as 7.0's `__udp_enqueue_schedule_skb` does (room for its
+  true size, or an empty queue), found by the new test. IPv6's route MTU is 65536 (IPV6_MTU
+  read 65535 before).
+- SO_PASSSEC on internet sockets is EOPNOTSUPP; TCP poll wants SO_RCVLOWAT's bytes (or a full
+  receive buffer); a second automatic bind of a named local socket is 0.
+- TCP_CORK, TCP_FASTOPEN_CONNECT, TCP_SAVE_SYN, TCP_TX_DELAY, a paced SO_MAX_PACING_RATE and TCP's
+  MSG_MORE are counted "socket option not acted on" (warned); the counter "recvmmsg returned
+  early" is gone: recvmmsg's and sendmmsg's later messages wait as Linux's do (the thread's call
+  slot keeps the messages done, `Call::messages`).
+- Netlink protocols other than route, ping sockets and AF_PACKET stay refused and counted; they
+  are now named under "Not built" (ping and packet sockets are section 15's raw packets).
+- sigpick's reference race: musl's fork blocks every signal until it returns in the parent, so a
+  child that signalled at once could find the main thread blocking it. The child now waits for
+  the parent's word; 8 of 8 runs passed alone (load about 20).
+
+The Linux Test Project (layer 3):
+- Release 20260930 (the newest, September 2026), built with glibc on Debian trixie (pinned by
+  digest): glibc is the C library the project is written and tested for; its musl build drops
+  tests that do not build there. `crates/wcontainers-kernel-test/ltp/build.sh <scratch>` builds
+  the image wc-kernel-ltp:20260930 (suite at /opt/ltp, binaries stripped) and leaves its files
+  as `docker export` gives them in `<scratch>/ltp-20260930.tar` (718 MB). Kept in scratch:
+  pyro-parked/wcontainers-scratch/kernel/ltp. The build took 83 s for the compile (load ~25).
+- One command each (`src/bin/ltp.rs`, `src/ltp.rs`):
+  `LTP_TAR=<tar> nix develop -c cargo run -p wcontainers-kernel-test --bin ltp -- reference|ours <results> [group | group:test | test]...`
+  (no names: the whole suite), and `... --bin ltp -- compare <reference results> <our results>`.
+  `LTP_JOBS` (4), `LTP_SEED` (1; our runs' schedules), `LTP_LIMIT` (seconds per test: 900 ours,
+  1800 reference). A results file that exists is continued. Each test runs `/bin/sh -c
+  <runtest command>` as the first process of a container of its own, with the same environment
+  in both (a default container's plus LTPROOT, TMPDIR and the suite's bin on PATH). Results are
+  one line per test: id, verdict (pass, fail, broken, skipped, warning from the exit code the
+  library ORs together; timeout, hang, crash or unsupported when there was none), exit code,
+  seconds, and on ours the kernel's warnings. Logs under `<results>.logs/`.
+- On ours the image is loaded once into a prepared kernel (`driver::prepare`) and each test runs
+  in a process forked from it, so a kernel crash or a hang ends only that test; the clock is the
+  repeatable one, so the suite's own timeouts are in the guest's time.
+  A watchdog in each test's process calls a run that ends no turn for 120 s a hang (stuck in
+  one call or turn); one still ending turns at the time limit is a timeout (slower than the
+  limit on the stand-in, not a difference of behaviour). The comparison groups differences by
+  cause: a crash of the kernel, a hang, a timeout, a part not built (a warning that no test
+  whose verdict matches gave), and else a wrong answer.
+- The bar (reference, measured): 2694 tests in 26 groups; 1243 pass, 153 fail, 548 broken, 746
+  skipped, 3 warning, 1 exit 255 (sched:trace_sched01). syscalls alone: 1552 tests, 973 pass,
+  49 fail, 314 broken (177 of them "Failed to acquire device": no loop devices in a default
+  container), 213 skipped, 3 warning. Results: crates/wcontainers-kernel-test/ltp/
+  reference-20260930.tsv (the bar; logs in scratch ltp/reference-1.tsv.logs).
+  Run with 5 jobs, load 20 to 30; the tests' own times add to 11622 s.
+- First whole run on ours (scratch ltp/ours-1.tsv, compare-1.txt), mostly at 931c5a3 to
+  e7b79ef (the tests that crashed or hung were run again after their fixes): 2310 of 2694
+  verdicts matched, 384 differed: 1 kernel crash (pty02, then fixed), 15 slower than the
+  limit, 79 a part not built, 289 wrong answers. Kernel crashes and hangs it found, each fixed
+  with a test against the reference:
+  - kill06, kill08: SIGKILL to one's own process group ended the sender's thread before the
+    other members were signalled, and the next lookup of the sender panicked (tests/processes.rs
+    `killing_own_group_matches_reference`, guest/groupkill.c).
+  - clock_gettime01 waited for ever for `/proc/self/stat`'s user time, always 0: the stat file
+    now shows the process's CPU time and its reaped children's (guest/cputime.c).
+  - pipeio_1 to _8: two writers that found a pipe full woke each other for ever inside the
+    kernel (both wait on the pipe's one channel and each woke it before waiting); a writer now
+    wakes readers only for bytes it added (tests/processes.rs
+    `writers_waiting_on_a_full_pipe_match_reference`, guest/pipewriters.c).
+  - pty02: a canonical terminal in EXTPROC mode reads past its line end, and the count of what
+    it holds overflowed; it wraps as Linux's unsigned difference does (tests/terminal.rs
+    `extproc_reads_match_reference`, guest/ttyextproc.c).
+- The first comparison with every fix in (second whole run, all at 8a3d41f, 3 jobs, LTP_LIMIT
+  300, load 20 to 35; crates/wcontainers-kernel-test/ltp/ours-20260930-8a3d41f.tsv, logs and
+  compare-2.txt in scratch ltp/): 2308 of 2694 verdicts match,
+  386 differ. By cause: no kernel crash, no hang, 18 slower than the time limit on the stand-in
+  (fs growfiles, rwtest and iogen, cve-2011-0999, cve-2017-17052, mtest06_3, shm_test01 and
+  others that take 30 s to 5 min natively), 79 a part not built, 289 wrong answers. By group:
+  syscalls 188, hugetlb 56, cve 41, sysfs 18, mm 18, fs 13, kernel_misc 11, syscalls-ipc 9,
+  crypto 8, controllers 8, sched 5, pty 4, can 3, containers 2, uevent 1, capability 1. The most
+  common: reference pass and ours broken (94), reference broken and ours skipped (87), reference
+  skipped and ours broken (83). The largest single cause is the missing `/proc/config.gz` (see
+  Next). Ours: 1054 pass, 178 fail, 639 broken, 798 skipped, 7 warning, 18 timeout.
+
+
 - Local sockets of every kind (stream, datagram, sequenced packets), names (paths and abstract),
   listening, SCM_RIGHTS and SCM_CREDENTIALS, options and buffer limits as Linux; a connect by path
   moves the socket node's access time.
@@ -412,6 +508,13 @@ waits costs the reference's deadline). A sequence that runs past 60 s in the ref
 ## For the independent check
 
 Everything a reviewer should know about what is not compared, in one place.
+
+- K6a: LTP compares verdicts only (from exit codes), not output or the counts in each test's
+  summary. The reference ran once, so its own flaky tests (timing tests under load, such as
+  clock_nanosleep02 failing there) are in the bar as they came. Our runs used LTP_LIMIT=300 for
+  the groups after syscalls in the first run and for the whole second run; a test past it is a
+  timeout, not a verdict. The first ~900 tests of the first run ran before the crash and hang
+  fixes; the second run (scratch ltp/ours-2.tsv) is wholly at 8a3d41f.
 
 Ignored tests (each attribute gives the reason):
 - busybox `root_file_system`: `ls -la /`, `ls -ln /etc`, `stat /etc`, `find /etc`, `du /etc/apk` show
@@ -1513,6 +1616,18 @@ each sequence the runner puts back what a sequence can change outside its direct
 
 ## Measurements
 
+- K6a, first run, end of the milestone's layer 1 bar: at 8a3d41f (every fix of the run in) the
+  fresh seeds 5050464, 5050465 and 5050466 passed 20000 sequences each (328.8 s, 328.5 s and
+  328.6 s, three side by side beside an LTP run of 3 jobs, load 19.9 at the start and 22.7 at
+  the end). Earlier in the run seed 5050463 passed 20000 at e7b79ef (310.5 s, load about 20).
+  Fresh seeds start at 5050467.
+- K6a, first run, whole suite of both crates at 8a3d41f (`cargo test -p wcontainers-kernel -p
+  wcontainers-kernel-test -- --test-threads=3`): 191 passed, 0 failed, 5 ignored, in 18 min 47 s,
+  beside an LTP run of 3 jobs (load 20.4 at the start, 21.8 at the end).
+- K6a, first run: the LTP image's build took 83 s for configure, compile and install (load
+  about 25). On ours most tests take 0.2 to 0.5 s each (the stand-in's speed with the
+  repeatable clock skipping sleeps); the reference takes about 1.6 s each with Docker's start.
+
 - K5, eighth run, end of the milestone's layer 1 bar: at 090feaf (every fix of the run in) the
   fresh seeds 5050459, 5050460 and 5050461 passed 20000 sequences each (326 s each, three side
   by side beside the whole suite's build, load 38.6 at the start and 67.0 at the end). Before
@@ -1769,6 +1884,21 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- K6a, first run: the Linux Test Project runs in an image of its own (Debian trixie with glibc
+  and the suite at /opt/ltp), in the reference and on ours, not in alpine:3.22: glibc is what the
+  suite is built for. Each test runs as the first process of a container of its own (`/bin/sh -c`
+  its runtest line), not one after another in one container under runltp or kirk, so no test
+  sees another's leftovers and a kernel failure ends one test; the verdict is read from the exit
+  code as kirk reads it. The suite's own timeouts are left at their defaults (no LTP_TIMEOUT_MUL).
+- K6a, first run: the whole suite is the groups a default container can start
+  (`ltp::SUITE`); those for hardware, other hosts or long stress are left out (named there).
+- K6a, first run: on ours the root is the kernel's in-memory file system, which tests see as
+  tmpfs (`Using /tmp/LTP_... as tmpdir (tmpfs filesystem)`) where the reference's is overlayfs;
+  tests that choose by file system type can choose differently.
+- K6a, first run: netlink protocols other than route, ping sockets and AF_PACKET are left refused
+  and counted (the check's finding 9): ping and packet sockets fall under section 15's raw
+  packets; the netlink ones are listed under Not built and in Next.
 
 - K5, seventh run: eventfd's number in fdinfo is the lowest free among the container's event
   descriptors; Linux's is the lowest free on the whole machine, so it differs from the
@@ -2083,21 +2213,39 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "call on another process not built": process_vm_readv and process_vm_writev on another process.
 - "socket family not built": socket and socketpair of a family other than AF_UNIX, AF_INET,
   AF_INET6 and AF_NETLINK, such as AF_PACKET (detail: the family; EAFNOSUPPORT).
-- "socket protocol not built": raw sockets (EPERM), ping sockets (EACCES), SCTP
+- "socket protocol not built": raw sockets (EPERM), ping sockets (EACCES; plan section 15: no
+  raw packets, so no ping, though Docker's ping_group_range lets the reference make them), SCTP
   (ESOCKTNOSUPPORT for SOCK_SEQPACKET, EPROTONOSUPPORT in a stream), MPTCP and UDP-Lite
-  (EPROTONOSUPPORT), netlink protocols other than NETLINK_ROUTE (EPROTONOSUPPORT), and netlink
-  messages to another socket's port (ECONNREFUSED); detail family times 2^32 plus kind times 2^16
-  plus protocol.
+  (EPROTONOSUPPORT), netlink protocols other than NETLINK_ROUTE (EPROTONOSUPPORT, where the
+  reference makes NETLINK_SOCK_DIAG (`ss`), GENERIC, AUDIT, KOBJECT_UEVENT, NETFILTER and
+  USERSOCK sockets), and netlink messages to another socket's port (ECONNREFUSED); detail family
+  times 2^32 plus kind times 2^16 plus protocol. AF_PACKET is "socket family not built"
+  (EAFNOSUPPORT; the reference has CAP_NET_RAW and makes them; section 15's raw packets).
 - "socket option not built": socket options not built (detail: level times 2^32 plus option;
-  ENOPROTOOPT), among them TCP_ZEROCOPY_RECEIVE, TCP_SAVE_SYN,
-  TCP_MD5SIG, TCP_ULP, UDP_ENCAP, IP_RECVOPTS, IP_RETOPTS, IP_RECVORIGDSTADDR, IP_MINTTL,
-  IP_UNICAST_IF, the source-specific multicast options and IPv6's group and extension header
+  ENOPROTOOPT). Read: SO_MEMINFO, SO_PEERSEC on local sockets is ENOPROTOOPT as Linux's,
+  TCP_ZEROCOPY_RECEIVE with room for its structure, TCP_MD5SIG and TCP_MD5SIG_EXT, IP_MSFILTER,
+  MCAST_MSFILTER, IP_PKTOPTIONS and IPV6_2292PKTOPTIONS once packet information was asked for,
+  IPV6_FLOWLABEL_MGR, IPV6's MCAST_MSFILTER, and IPv6 options past those answered. Set:
+  SO_ATTACH_FILTER and SO_ATTACH_BPF (no socket filters), SO_RESERVE_MEM, TCP_ULP,
+  TCP_FASTOPEN_KEY, TCP_MD5SIG, TCP_ZEROCOPY_RECEIVE, UDP_ENCAP, IP_ORIGDSTADDR,
+  IP_MINTTL, IP_CHECKSUM, IP_RECVERR_RFC4884, IP_UNICAST_IF, IP_LOCAL_PORT_RANGE, IP_MSFILTER and
+  the source-specific multicast options, IPv6's 2292 forms, flow information and labels,
+  multicast (IPV6_JOIN_GROUP and the rest), IPV6_RECVERR_RFC4884, IPV6_MINHOPCOUNT,
+  IPV6_RECVORIGDSTADDR, IPV6_UNICAST_IF, IPV6_ADDR_PREFERENCES and the extension header
   options; SO_TIMESTAMPING with software send flags; and as send control messages (EINVAL)
-  IP_RETOPTS, IPv6 extension headers and per-send software send timestamps.
+  IP_RETOPTS, IPv6 extension headers and per-send software send timestamps. Every other option
+  number Linux answers on a fresh or connected socket is answered as Linux answers it (tests
+  inet `option_reads_and_socket_corners_match_reference`, guest/optreads.c).
+- "socket option not acted on": TCP_CORK, TCP_FASTOPEN_CONNECT, TCP_SAVE_SYN and TCP_TX_DELAY
+  set on, SO_MAX_PACING_RATE set to a limit, and TCP's MSG_MORE: kept and read back, but bytes
+  go to the peer at once where Linux holds or paces them (detail: level times 2^32 plus option,
+  or the flag). Keepalive's options and TCP_THIN_LINEAR_TIMEOUTS, TCP_RTO_MIN_US and
+  TCP_RTO_MAX_MS are kept and change nothing a program can see here: nothing is lost between
+  the container's own sockets and the peer always answers.
 - "netlink request not built": rtnetlink requests other than RTM_GETLINK, RTM_GETADDR and
-  RTM_GETROUTE dumps, RTM_GETNEIGH dumps and RTM_GETLINK of one link (EOPNOTSUPP; detail the
-  type plus 2^16 for a dump), such as `ip route get`, one neighbour, rules and queue
-  disciplines.
+  RTM_GETROUTE dumps, RTM_GETNEIGH and RTM_GETRULE dumps, RTM_GETLINK of one link and
+  RTM_GETROUTE of one address (EOPNOTSUPP; detail the type plus 2^16 for a dump), such as one
+  neighbour and queue disciplines.
 - "ioctl request not built" also covers SIOCGSTAMP and its forms on internet sockets (ENOENT),
   and the requests that change interfaces for a caller with CAP_NET_ADMIN (Docker gives none,
   so EPERM as in the reference).
@@ -2108,7 +2256,7 @@ queued", "tcp room modelled", "tcp info modelled", "multicast or broadcast not s
 "neighbour entries not built" (a neighbour dump after packets left by eth0),
 "tcp
 connect waits for backlog room", "interface counters not kept", "name query not answered",
-"recvmmsg returned early", "listening outside failed" (a host that cannot accept from outside
+"listening outside failed" (a host that cannot accept from outside
 or whose port is taken), "outside datagram header made up",
 "page residency not tracked", "proc
 fields not tracked", "fault syndrome approximated", "core dump not
@@ -2118,6 +2266,8 @@ this" counts a CPU side that answered it cannot make a memory, thread or shared 
 guest).
 
 ## Changes to the shared crate (wcontainers-abi)
+
+- K6a, first run: none.
 
 - K5, eighth run: none.
 - K5, seventh run: none.
@@ -2183,6 +2333,11 @@ guest).
 None open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- K6a, first run (fixed): sigpick's reference race (below, from K3) came from musl's fork, which
+  blocks every signal until it returns in the parent; a child that signalled at once could find
+  the main thread blocking it, so Linux gave the signal to the next thread. The child now waits
+  for the parent's word. 8 of 8 runs alone passed (load about 20).
 
 - K5, eighth run (fixed): tests/inet.rs `deferred_accepts_match_reference` failed now and then
   because the reference raced: after the listener closed, client 0's write came 100 ms later
@@ -2300,6 +2455,22 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
+K6a's next run (or K6b): the wrong answers of the first comparison (under "K6a, first run"),
+largest first by the tests they turn:
+1. `/proc/config.gz` (CONFIG_IKCONFIG_PROC, which the reference has): the suite's library reads
+   the kernel's configuration for every test that names options it needs, and without it such
+   tests are TBROK "Cannot parse kernel .config" (72 of the first 258 differences). It must
+   describe this kernel truthfully (what is built), in Linux's format, gzip'd.
+2. `/proc/sys/kernel/tainted` (19), `/proc/sys/fs/pipe-max-size`, `/proc/sys/kernel/sem`,
+   `/proc/sysvipc/*`, `/proc/cmdline` and the other entries tests open (counted "proc entry not
+   built"; the comparison lists each test's).
+3. F_SETLEASE (counted "fcntl command not built" 1024), AF_ALG (crypto and cve tests), keyctl
+   and add_key, io_setup and the other calls the comparison names as not built.
+4. The four tests killed by SIGSEGV on ours, and the other wrong answers, test by test.
+5. Re-run the whole comparison (`ltp ours` then `ltp compare`) after each batch; tests slower
+   than the time limit on the stand-in are not differences of behaviour and are listed apart.
+6. The netlink protocols the reference makes (SOCK_DIAG for `ss` first) from the K5 check.
+
 K5's corners, none holding the milestone (what the seven runs built is under Where things
 stand), in this order:
 1. The rest of the send timestamps (refused and counted now): TCP's (SCHED, SND and ACK per
@@ -2326,7 +2497,7 @@ stand), in this order:
    container can unmount (umount needs CAP_SYS_ADMIN).
 6. IPv6 multicast (IPV6_JOIN_GROUP and the rest are counted; a send to an IPv6 group is
    ENETUNREACH, as eth0 has no IPv6).
-7. The per-milestone layer 1 bar was met again at the eighth run's end (seeds 5050459, 5050460,
+7. (Superseded: see Measurements, K6a.) The per-milestone layer 1 bar was met again at the eighth run's end (seeds 5050459, 5050460,
    5050461 at 090feaf, with sendmmsg, recvmmsg and epoll_pwait2 now generated; 5050462 at the
    run's last code b70a418). Fresh seeds start at 5050463.
 8. Left from the eighth run: a client whose held request went with its listener sends its
@@ -2352,6 +2523,6 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.

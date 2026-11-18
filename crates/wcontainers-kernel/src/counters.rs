@@ -85,13 +85,15 @@ pub mod reason {
     pub const FAMILY_NOT_BUILT: &str = "socket family not built";
     /// A socket option that is not built. Detail: the level times 2^32 plus the option.
     pub const OPTION_NOT_BUILT: &str = "socket option not built";
+    /// A socket option set, or a send flag given, whose effect on what the other end sees and
+    /// when is not built: TCP_CORK, TCP_FASTOPEN_CONNECT and TCP's MSG_MORE (bytes go at once,
+    /// where Linux holds them). The option is kept and read back. Detail: the level times 2^32
+    /// plus the option, or the flag for MSG_MORE.
+    pub const OPTION_NOT_ACTED_ON: &str = "socket option not acted on";
     /// A socket of a built family whose kind or protocol is not built: raw packets, ping, SCTP,
     /// MPTCP, UDP-Lite (plan section 15). Answered as Linux without the power or the protocol.
     /// Detail: the family times 2^32, plus the kind times 2^16, plus the protocol.
     pub const PROTOCOL_NOT_BUILT: &str = "socket protocol not built";
-    /// A blocking recvmmsg without MSG_WAITFORONE found fewer messages than asked for after the
-    /// first and returned those, where Linux waits for the rest. Detail: none.
-    pub const RECVMMSG_EARLY: &str = "recvmmsg returned early";
     /// A netlink request Linux answers that is not built: answered EOPNOTSUPP, as Linux does
     /// for a request with no handler. Detail: the message type, plus 2^16 for a dump.
     pub const NETLINK_REQUEST_NOT_BUILT: &str = "netlink request not built";

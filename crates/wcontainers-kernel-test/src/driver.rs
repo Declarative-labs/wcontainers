@@ -74,6 +74,9 @@ pub struct TestHost {
     pub(crate) backend: Option<crate::backend::Backend>,
     /// Connections to the outside and lookups.
     network: crate::network::Network,
+    /// Whether what the container writes also goes to this process's own streams as it comes,
+    /// so a run that is stopped still shows it.
+    echo: bool,
 }
 
 impl TestHost {
@@ -91,6 +94,7 @@ impl TestHost {
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
             backend: None,
             network: Default::default(),
+            echo: false,
         }
     }
 
@@ -149,6 +153,7 @@ impl TestHost {
             backend: self.backend.take(),
             // A new host has none of the old one's connections; its published ports go on.
             network: self.network.moved(),
+            echo: self.echo,
         };
         host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
@@ -187,10 +192,13 @@ impl Host for TestHost {
         } else {
             ""
         };
-        eprintln!(
-            "kernel warning: {} (detail {} {name}, count {})",
-            warning.reason, warning.detail, warning.count
-        );
+        // Printed at counts 1, 2, 4, 8 and on, as a program can give millions.
+        if warning.count.is_power_of_two() {
+            eprintln!(
+                "kernel warning: {} (detail {} {name}, count {})",
+                warning.reason, warning.detail, warning.count
+            );
+        }
         self.warnings.push(Warned {
             reason: warning.reason.to_string(),
             count: warning.count,
@@ -209,6 +217,13 @@ impl Host for TestHost {
     }
 
     fn output(&mut self, stream: Stream, bytes: &[u8]) {
+        if self.echo {
+            use std::io::Write;
+            let _ = match stream {
+                Stream::Output => std::io::stdout().write_all(bytes),
+                Stream::Error => std::io::stderr().write_all(bytes),
+            };
+        }
         match stream {
             Stream::Output => self.stdout.extend_from_slice(bytes),
             Stream::Error => self.stderr.extend_from_slice(bytes),
@@ -268,6 +283,10 @@ pub fn exit_code(wait_status: i32) -> i32 {
         128 + signal
     }
 }
+
+/// How many turns on the CPU side this process's runs have ended, for a watchdog that tells a
+/// run that is slow from one stuck inside a single call or turn.
+pub static TURNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// What a container starts with: its files and its first process.
 pub struct Container<'a> {
@@ -335,6 +354,43 @@ pub fn run_injected(
     seed: u64,
     injections: Injections,
 ) -> Result<Run, Failure> {
+    run_prepared(prepare(container), container, seed, injections)
+}
+
+/// A kernel holding a container's files before its first process starts, and the groups that
+/// process starts in.
+pub struct Prepared {
+    pub kernel: Kernel,
+    pub groups: Vec<u32>,
+    /// Whether the container's output also goes to this process's streams as it comes.
+    pub echo: bool,
+}
+
+/// Puts a container's files in a new kernel's root, unless the root is on the backend.
+pub fn prepare(container: &Container<'_>) -> Prepared {
+    let mut kernel = Kernel::new();
+    if container.backend != Some("/") {
+        image::add_files(&mut kernel, container.files);
+    }
+    Prepared {
+        kernel,
+        groups: image::root_groups(container.files),
+        echo: false,
+    }
+}
+
+/// As [`run_injected`], on a kernel [`prepare`] made for the container.
+pub fn run_prepared(
+    prepared: Prepared,
+    container: &Container<'_>,
+    seed: u64,
+    injections: Injections,
+) -> Result<Run, Failure> {
+    let Prepared {
+        mut kernel,
+        groups,
+        echo,
+    } = prepared;
     let mut at = moments(seed ^ 0x5a7e, injections.saves);
     let (signal, signals) = injections.signal.unwrap_or((0, 0));
     let mut signal_at = moments(seed ^ 0x5197, signals);
@@ -347,6 +403,7 @@ pub fn run_injected(
     let mut report: Option<i32> = None;
     let mut cpu = StandIn::new();
     let mut host = TestHost::repeatable(seed);
+    host.echo = echo;
     host.network.published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some("/");
     if container.backend.is_some() {
@@ -356,10 +413,6 @@ pub fn run_injected(
             image,
             container.cached,
         ));
-    }
-    let mut kernel = Kernel::new();
-    if !root_on_backend {
-        image::add_files(&mut kernel, container.files);
     }
     let arguments: Vec<&[u8]> = container
         .arguments
@@ -371,7 +424,6 @@ pub fn run_injected(
         .iter()
         .map(|variable| variable.as_bytes())
         .collect();
-    let groups = image::root_groups(container.files);
     let start = Start {
         path: container.path.as_bytes(),
         arguments: &arguments,
@@ -415,6 +467,7 @@ pub fn run_injected(
 
                 kernel.exit(&mut cpu, &mut host, exit);
                 turns += 1;
+                TURNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 network_events(&mut kernel, &mut cpu, &mut host, Duration::ZERO);
                 // The backend's answers arrive at moments and in an order drawn from the seed.
                 while host

@@ -384,6 +384,8 @@ pub(crate) struct Call {
     pub wall: bool,
     /// How much of the call is done, such as bytes of a large write.
     pub progress: u64,
+    /// How many messages of sendmmsg or recvmmsg are done; `progress` is the current one's.
+    pub messages: u64,
     /// For F_SETLKW's wait: the descriptor table asking, and the table holding the lock in the way
     /// (none for an open file's lock), as Linux's `blocked_hash` finds them.
     pub lock_wait: Option<(u64, Option<u64>)>,

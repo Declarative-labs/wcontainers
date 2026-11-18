@@ -102,8 +102,11 @@ const TCP_CONNECTED_SNDBUF: u64 = 2_626_560;
 const TCP_MSS_UNCONNECTED: i32 = 536;
 /// The MSS while a SYN waits for its answer: 536 less the timestamp option (measured).
 const TCP_MSS_SYN_SENT: u32 = 524;
-/// What `IP_MTU` gives on a connection inside the container (measured).
+/// What `IP_MTU` gives on a connection inside the container (measured): the loopback's, at most
+/// IP_MAX_MTU.
 const ROUTE_MTU: i32 = 65535;
+/// The same for IPv6, whose cap (IP6_MAX_MTU) is past the loopback's 65536 (measured).
+const ROUTE_MTU6: i32 = 65536;
 /// The largest UDP payloads (measured).
 const UDP_MAX4: u64 = 65507;
 const UDP_MAX6: u64 = 65527;
@@ -1934,6 +1937,9 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
     if inet.protocol == Protocol::Udp {
         if own.error != 0 || !inet.errors.is_empty() {
             mask |= EPOLLERR;
+            if flag(&own, SOL_SOCKET, SO_SELECT_ERR_QUEUE) {
+                mask |= EPOLLPRI;
+            }
         }
         if own.shutdown & RCV_SHUTDOWN != 0 {
             mask |= EPOLLRDHUP | EPOLLIN | EPOLLRDNORM;
@@ -1976,7 +1982,11 @@ pub(super) fn poll(socket: &SocketRef) -> u16 {
                 .iter()
                 .find(|packet| packet.urgent || packet.consumed < packet.data.len())
                 .is_some_and(|packet| packet.urgent);
-        if held > usize::from(at_mark) {
+        // `tcp_epollin_ready`: SO_RCVLOWAT's bytes (one more at such a byte), or fewer once
+        // the receiver's window is closed, here when its buffer is full.
+        let target = super::receive_low_water(&own) + u64::from(at_mark);
+        let truesize: u64 = own.queue.iter().map(|packet| packet.truesize).sum();
+        if held > 0 && (held as u64 >= target || truesize >= own.rcvbuf) {
             mask |= EPOLLIN | EPOLLRDNORM;
         }
         if own
@@ -2112,16 +2122,23 @@ pub(super) fn send(
     let protocol = inet_ref(socket).protocol;
     match protocol {
         Protocol::Tcp => {
-            // `tcp_sendmsg_locked` reads only the socket-level messages, and any fault is EINVAL.
-            if let Some(control) = &message.control {
+            // `tcp_sendmsg_locked` reads only the socket-level messages, and any fault is EINVAL,
+            // once the connection is made: before, `sk_stream_wait_connect` fails or waits
+            // first, and the call runs again when it is made.
+            let established =
+                socket.borrow().state == State::Connected && inet_ref(socket).connecting.is_none();
+            if let Some(control) = message.control.as_ref().filter(|_| established) {
                 sent_control(kernel, cx, tid, socket, control, true, false)
                     .map_err(|_| Errno::EINVAL)?;
             }
             // Urgent data to the outside is refused only where it would go: an unconnected
             // socket fails first (`sk_stream_wait_connect`).
-            let outside = socket.borrow().state == State::Connected
-                && inet_ref(socket).connecting.is_none()
-                && inet_ref(socket).outside.is_some();
+            let outside = established && inet_ref(socket).outside.is_some();
+            if message.flags & MSG_MORE != 0 && total > 0 && established {
+                kernel
+                    .counters
+                    .count(cx.host, crate::reason::OPTION_NOT_ACTED_ON, MSG_MORE.into());
+            }
             if message.flags & MSG_OOB != 0 && total > 0 && outside {
                 return Err(kernel.counters.refuse_flag(
                     cx.host,
@@ -3049,13 +3066,8 @@ fn deliver_many(
         if !takes {
             continue;
         }
-        let held: u64 = receiver
-            .borrow()
-            .queue
-            .iter()
-            .map(|packet| packet.truesize)
-            .sum();
-        if held > receiver.borrow().rcvbuf {
+        if !udp_room(&receiver.borrow(), datagram_truesize(data.len() as u64)) {
+            receiver.borrow_mut().drops += 1;
             continue;
         }
         let mut arrival = arrival_from(socket, &to, sent);
@@ -3221,6 +3233,14 @@ fn send_stamps(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef, se
     }
 }
 
+/// `__udp_enqueue_schedule_skb`: a datagram fits a receiver whose queue has room for its true
+/// size, or whose queue is empty (unless its buffer is past half the largest int).
+fn udp_room(receiver: &Socket, truesize: u64) -> bool {
+    let held: u64 = receiver.queue.iter().map(|packet| packet.truesize).sum();
+    let rcvbuf = receiver.rcvbuf;
+    held + truesize <= rcvbuf || (rcvbuf <= (i32::MAX >> 1) as u64 && held == 0)
+}
+
 /// What a UDP datagram is held as while corked (MSG_MORE or UDP_CORK): its destination, source,
 /// bytes so far and the first send's control messages (`up->pending`, `inet->cork`).
 pub(crate) struct Corked {
@@ -3373,13 +3393,8 @@ fn udp_deliver(
             };
             for data in pieces {
                 let truesize = datagram_truesize(data.len() as u64);
-                let held: u64 = receiver
-                    .borrow()
-                    .queue
-                    .iter()
-                    .map(|packet| packet.truesize)
-                    .sum();
-                if held > receiver.borrow().rcvbuf {
+                if !udp_room(&receiver.borrow(), truesize) {
+                    receiver.borrow_mut().drops += 1;
                     continue;
                 }
                 let arrival = Arrival {
@@ -3573,6 +3588,7 @@ fn read_error(
             mark: 0,
             priority: 0,
             segment: 0,
+            drops: 0,
         }),
         error: Some((level, kind, extended)),
         time: error.time,
@@ -3831,6 +3847,7 @@ fn arrival_from(sender: &SocketRef, to: &Endpoint, sent: SentControl) -> Arrival
         mark,
         priority,
         segment: 0,
+        drops: 0,
     }
 }
 
@@ -3847,6 +3864,7 @@ pub(super) fn arrival_outside() -> Arrival {
         mark: 0,
         priority: 0,
         segment: 0,
+        drops: 0,
     }
 }
 
@@ -3869,6 +3887,8 @@ pub(crate) struct Arrival {
     pub priority: u32,
     /// The segment size of a datagram kept whole for a receiver with UDP_GRO (0 for none).
     pub segment: u16,
+    /// The receiver's drops as it was queued, if it asked for them then (SO_RXQ_OVFL).
+    pub drops: u32,
 }
 
 /// What `ipv4_pktinfo_prepare` keeps of a datagram as it is queued for `receiver`.
@@ -3876,8 +3896,15 @@ pub(super) fn prepared(receiver: &SocketRef, arrival: Arrival) -> Arrival {
     let own = receiver.borrow();
     let asked = flag(&own, SOL_IP, IP_PKTINFO)
         || (own.family == AF_INET6 && flag(&own, SOL_IPV6, IPV6_RECVPKTINFO));
+    // `sock_skb_set_dropcount`.
+    let drops = if flag(&own, SOL_SOCKET, SO_RXQ_OVFL) {
+        own.drops
+    } else {
+        0
+    };
     Arrival {
         prepared: asked,
+        drops,
         ..arrival
     }
 }
@@ -4031,12 +4058,77 @@ pub(super) fn set_option(
                     inet(socket).pingpong = value == 0;
                     Some(Ok(0))
                 }
-                TCP_NODELAY
-                | TCP_CORK
-                | TCP_THIN_LINEAR_TIMEOUTS
-                | TCP_FASTOPEN_CONNECT
-                | TCP_FASTOPEN_NO_COOKIE
-                | TCP_INQ => store(socket, i32::from(value != 0)),
+                TCP_CORK | TCP_FASTOPEN_CONNECT => {
+                    if value != 0 {
+                        kernel.counters.count(
+                            cx.host,
+                            crate::reason::OPTION_NOT_ACTED_ON,
+                            (u64::from(level) << 32) | u64::from(name),
+                        );
+                    }
+                    store(socket, i32::from(value != 0))
+                }
+                TCP_NODELAY | TCP_THIN_LINEAR_TIMEOUTS | TCP_FASTOPEN_NO_COOKIE | TCP_INQ => {
+                    store(socket, i32::from(value != 0))
+                }
+                TCP_THIN_DUPACK => Some(if (0..=1).contains(&value) {
+                    Ok(0)
+                } else {
+                    Err(Errno::EINVAL)
+                }),
+                // Repair mode wants CAP_NET_ADMIN (`tcp_can_repair_sock`); without it nothing
+                // of it may be set.
+                TCP_REPAIR | TCP_REPAIR_QUEUE | TCP_TIMESTAMP | TCP_AO_REPAIR => {
+                    Some(Err(if kernel.credentials(tid).has(CAP_NET_ADMIN) {
+                        return not_built(kernel, cx);
+                    } else {
+                        Errno::EPERM
+                    }))
+                }
+                TCP_QUEUE_SEQ => Some(Err(
+                    if socket.borrow().state == State::Closed
+                        && inet_ref(socket).connecting.is_none()
+                    {
+                        Errno::EINVAL
+                    } else {
+                        Errno::EPERM
+                    },
+                )),
+                TCP_REPAIR_WINDOW => Some(Err(if bytes.len() != 20 {
+                    Errno::EINVAL
+                } else {
+                    Errno::EPERM
+                })),
+                // A saved SYN and a delay before each send change what the peer sees; kept,
+                // and counted.
+                TCP_SAVE_SYN | TCP_TX_DELAY => {
+                    if name == TCP_SAVE_SYN && !(0..=2).contains(&value) {
+                        return Some(Err(Errno::EINVAL));
+                    }
+                    if value != 0 {
+                        kernel.counters.count(
+                            cx.host,
+                            crate::reason::OPTION_NOT_ACTED_ON,
+                            (u64::from(level) << 32) | u64::from(name),
+                        );
+                    }
+                    store(socket, value)
+                }
+                // Retransmission's bounds: nothing is lost between the container's own sockets.
+                TCP_RTO_MAX_MS => {
+                    if !(1000..=120_000).contains(&value) {
+                        return Some(Err(Errno::EINVAL));
+                    }
+                    store(socket, value)
+                }
+                // Whole jiffies (HZ 1000) of at least two and at most TCP_RTO_MIN.
+                TCP_RTO_MIN_US => {
+                    let jiffies = (i64::from(value) + 999).div_euclid(1000);
+                    if !(2..=200).contains(&jiffies) {
+                        return Some(Err(Errno::EINVAL));
+                    }
+                    store(socket, (jiffies * 1000) as i32)
+                }
                 TCP_KEEPIDLE | TCP_KEEPINTVL => {
                     if !(1..=32767).contains(&value) {
                         return Some(Err(Errno::EINVAL));
@@ -4226,6 +4318,15 @@ pub(super) fn set_option(
                 | IP_PKTINFO
                 | IP_RECVTTL
                 | IP_RECVTOS => store(socket, i32::from(value != 0)),
+                // No IP options are ever sent, no security context is given and no route here
+                // fragments, so what these would add to a receive never comes.
+                IP_RECVOPTS | IP_RETOPTS | IP_PASSSEC | IP_RECVFRAGSIZE => {
+                    store(socket, i32::from(value != 0))
+                }
+                // `ip_ra_control`: raw sockets only.
+                IP_ROUTER_ALERT => Some(Err(Errno::EINVAL)),
+                // The iptables tables want CAP_NET_ADMIN.
+                64 | 65 => Some(Err(Errno::EPERM)),
                 _ => not_built(kernel, cx),
             }
         }
@@ -4296,6 +4397,19 @@ pub(super) fn set_option(
                 | IPV6_RECVPKTINFO | IPV6_RECVHOPLIMIT | IPV6_RECVTCLASS => {
                     store(socket, i32::from(value != 0))
                 }
+                // No extension headers are ever sent, no route here fragments or changes its
+                // path MTU, and flow labels are never read: what these would add never comes.
+                IPV6_RECVHOPOPTS
+                | IPV6_RECVRTHDR
+                | IPV6_RECVDSTOPTS
+                | IPV6_RECVPATHMTU
+                | IPV6_RECVFRAGSIZE
+                | IPV6_AUTOFLOWLABEL
+                | IPV6_ROUTER_ALERT_ISOLATE => store(socket, i32::from(value != 0)),
+                // `ip6_ra_control`: raw sockets only.
+                IPV6_ROUTER_ALERT => Some(Err(Errno::ENOPROTOOPT)),
+                // The ip6tables tables want CAP_NET_ADMIN.
+                64 | 65 => Some(Err(Errno::EPERM)),
                 _ => not_built(kernel, cx),
             }
         }
@@ -4329,6 +4443,7 @@ pub(super) fn get_option(
     socket: &SocketRef,
     level: u32,
     name: u32,
+    room: i32,
 ) -> Option<Result<Vec<u8>, Errno>> {
     let family = socket.borrow().family;
     let protocol = inet_ref(socket).protocol;
@@ -4418,6 +4533,21 @@ pub(super) fn get_option(
                 Some(Ok(name))
             }
             TCP_INFO => Some(Ok(tcp_info(kernel, cx, socket))),
+            // Deprecated and always off; no repair mode (it wants CAP_NET_ADMIN), so its queue,
+            // sequence and window cannot be read; never MPTCP.
+            TCP_THIN_DUPACK | TCP_REPAIR | TCP_IS_MPTCP => int(0),
+            TCP_REPAIR_QUEUE | TCP_QUEUE_SEQ => Some(Err(Errno::EINVAL)),
+            TCP_REPAIR_WINDOW if room != 20 => Some(Err(Errno::EINVAL)),
+            TCP_REPAIR_WINDOW | TCP_AO_REPAIR => Some(Err(Errno::EPERM)),
+            // `tcp_clock_ms`: the monotonic clock in milliseconds, with no offset here.
+            TCP_TIMESTAMP => int((kernel.entry_now / 1_000_000) as u32 as i32),
+            // Cubic keeps no information to give, and no SYN is saved, no upper layer protocol
+            // set and no fast open key made: nothing.
+            TCP_CC_INFO | TCP_SAVED_SYN | TCP_ULP | TCP_FASTOPEN_KEY => Some(Ok(Vec::new())),
+            TCP_SAVE_SYN | TCP_TX_DELAY => kept(0),
+            TCP_ZEROCOPY_RECEIVE if room < 16 => Some(Err(Errno::EINVAL)),
+            TCP_RTO_MAX_MS => kept(120_000),
+            TCP_RTO_MIN_US => kept(200_000),
             _ => not_built(kernel, cx),
         },
         SOL_UDP if protocol == Protocol::Udp => {
@@ -4462,6 +4592,26 @@ pub(super) fn get_option(
                 )))
             }
             IP_HDRINCL => kept(0),
+            IP_RECVOPTS | IP_RETOPTS | IP_PASSSEC | IP_RECVFRAGSIZE => kept(0),
+            // Off, and never set here (setting them is counted as not built).
+            IP_ROUTER_ALERT | IP_RECVORIGDSTADDR | IP_MINTTL | IP_CHECKSUM | IP_RECVERR_RFC4884
+            | IP_UNICAST_IF | IP_LOCAL_PORT_RANGE => int(0),
+            // TCP's saved packet information: none asked for gives nothing.
+            IP_PKTOPTIONS if protocol != Protocol::Tcp => Some(Err(Errno::ENOPROTOOPT)),
+            IP_PKTOPTIONS
+                if !flag(&socket.borrow(), SOL_IP, IP_PKTINFO)
+                    && !flag(&socket.borrow(), SOL_IP, IP_RECVTTL) =>
+            {
+                Some(Ok(Vec::new()))
+            }
+            // `inet_num`: the local port, for these protocols.
+            IP_PROTOCOL => int(i32::from(inet_ref(socket).local.port)),
+            // The iptables tables want CAP_NET_ADMIN.
+            64..=67 => Some(Err(Errno::EPERM)),
+            // `getorigdst`: no connection here went through address translation.
+            SO_ORIGINAL_DST if protocol != Protocol::Tcp => Some(Err(Errno::ENOPROTOOPT)),
+            SO_ORIGINAL_DST if room < 16 => Some(Err(Errno::EINVAL)),
+            SO_ORIGINAL_DST => Some(Err(Errno::ENOENT)),
             _ => not_built(kernel, cx),
         },
         SOL_IPV6 if family == AF_INET6 => match name {
@@ -4481,8 +4631,48 @@ pub(super) fn get_option(
                 if !connected {
                     return Some(Err(Errno::ENOTCONN));
                 }
-                int(ROUTE_MTU)
+                int(ROUTE_MTU6)
             }
+            IPV6_RECVHOPOPTS
+            | IPV6_RECVRTHDR
+            | IPV6_RECVDSTOPTS
+            | IPV6_RECVPATHMTU
+            | IPV6_RECVFRAGSIZE
+            | IPV6_ROUTER_ALERT_ISOLATE => kept(0),
+            IPV6_AUTOFLOWLABEL | IPV6_MULTICAST_ALL => kept(1),
+            // Off, and never set here (setting them is counted as not built).
+            IPV6_2292PKTINFO | IPV6_2292HOPOPTS | IPV6_2292DSTOPTS | IPV6_2292RTHDR
+            | IPV6_2292HOPLIMIT | IPV6_FLOWINFO | IPV6_MULTICAST_IF | IPV6_ROUTER_ALERT
+            | IPV6_RECVERR_RFC4884 | IPV6_FLOWINFO_SEND | IPV6_MINHOPCOUNT
+            | IPV6_RECVORIGDSTADDR | IPV6_UNICAST_IF => int(0),
+            // `IPV6_PREFER_SRC_PUBTMP_DEFAULT | IPV6_PREFER_SRC_HOME`, as `ipv6_getsockopt`.
+            IPV6_ADDR_PREFERENCES => int(0x500),
+            // No sticky extension headers: nothing.
+            IPV6_HOPOPTS | IPV6_RTHDRDSTOPTS | IPV6_RTHDR | IPV6_DSTOPTS => Some(Ok(Vec::new())),
+            // TCP's saved packet information: none asked for gives nothing.
+            IPV6_2292PKTOPTIONS if protocol != Protocol::Tcp => Some(Err(Errno::ENOPROTOOPT)),
+            IPV6_2292PKTOPTIONS
+                if !flag(&socket.borrow(), SOL_IPV6, IPV6_RECVPKTINFO)
+                    && !flag(&socket.borrow(), SOL_IPV6, IPV6_RECVHOPLIMIT)
+                    && !flag(&socket.borrow(), SOL_IPV6, IPV6_RECVTCLASS) =>
+            {
+                Some(Ok(Vec::new()))
+            }
+            // `struct ip6_mtuinfo`: no address, and the route's MTU.
+            IPV6_PATHMTU => {
+                if !connected {
+                    return Some(Err(Errno::ENOTCONN));
+                }
+                let mut bytes = alloc::vec![0u8; 28];
+                bytes.extend_from_slice(&(ROUTE_MTU6 as u32).to_le_bytes());
+                Some(Ok(bytes))
+            }
+            // The ip6tables tables want CAP_NET_ADMIN.
+            64 | 65 | 68 | 69 => Some(Err(Errno::EPERM)),
+            // `ipv6_getorigdst`: no connection here went through address translation.
+            IP6T_SO_ORIGINAL_DST if protocol != Protocol::Tcp => Some(Err(Errno::ENOPROTOOPT)),
+            IP6T_SO_ORIGINAL_DST if room < 28 => Some(Err(Errno::EINVAL)),
+            IP6T_SO_ORIGINAL_DST => Some(Err(Errno::ENOENT)),
             _ => not_built(kernel, cx),
         },
         _ => Some(Err(Errno::EOPNOTSUPP)),

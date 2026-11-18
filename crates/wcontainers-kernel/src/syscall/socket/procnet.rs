@@ -314,13 +314,14 @@ fn udp(kernel: &Kernel, family: u32) -> String {
         endpoint(&mut out, family, &inet.remote.unwrap_or_default());
         let _ = write!(
             out,
-            " {state:02X} {:08X}:{:08X} 00:00000000 00000000 {:5} {:8} {} 2 {:016x} 0",
+            " {state:02X} {:08X}:{:08X} 00:00000000 00000000 {:5} {:8} {} 2 {:016x} {}",
             own.written as u32,
             held as u32,
             own.uid,
             0,
             own.ino,
-            pointer(socket)
+            pointer(socket),
+            own.drops
         );
         if family == AF_INET {
             pad(&mut out, start, UDP_WIDTH);

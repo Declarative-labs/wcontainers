@@ -444,15 +444,20 @@ pub(super) fn write(
         if kernel.signal_pending(tid) {
             break Err(Errno::ERESTARTSYS);
         }
-        // Readers hear of what came before each wait (not again after a wake that found no room).
+        // Readers hear of what came before each wait, and are woken for it (not again after a
+        // wake that found no room: writers wait on the same channel, and two that found the
+        // pipe full would wake each other for ever).
         let call = kernel.threads[&tid].call;
-        if !call.started || call.progress != done {
+        let new = !call.started || call.progress != done;
+        if new {
             signal_ends(kernel, cx, &node, true);
         }
         let thread = kernel.thread_mut(tid);
         thread.call.started = true;
         thread.call.progress = done;
-        kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
+        if new {
+            kernel.wake_poll(channel(&node), EPOLLIN | EPOLLRDNORM);
+        }
         kernel.park(tid, channel(&node));
         return Err(Errno::PARKED);
     };

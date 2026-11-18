@@ -674,3 +674,9 @@ pub(crate) const UDP_NO_CHECK6_TX: u32 = 101;
 pub(crate) const UDP_NO_CHECK6_RX: u32 = 102;
 pub(crate) const UDP_SEGMENT: u32 = 103;
 pub(crate) const UDP_GRO: u32 = 104;
+
+/// `rtm_flags` of a route answer (`in_route.h`): the route is to this host, a broadcast or a
+/// multicast group.
+pub(crate) const RTCF_LOCAL: u32 = 0x8000_0000;
+pub(crate) const RTCF_BROADCAST: u32 = 0x1000_0000;
+pub(crate) const RTCF_MULTICAST: u32 = 0x2000_0000;

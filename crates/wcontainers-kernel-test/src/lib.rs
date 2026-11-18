@@ -9,6 +9,7 @@ pub mod guest;
 pub mod image;
 pub mod layer1;
 pub mod libctest;
+pub mod ltp;
 pub mod network;
 pub mod reference;
 pub mod standin;
