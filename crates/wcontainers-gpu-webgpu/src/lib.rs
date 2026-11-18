@@ -1138,6 +1138,10 @@ impl Backend for WebGpu {
             self.slow.hit(wcontainers_gpu::SlowPath::FormatConverted);
         }
         usage |= copies & allowed;
+        // Copies between a buffer and a converted format are draws, into the texture or from it.
+        if packed::held(desc.format).is_some() && desc.samples == 1 {
+            usage |= wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        }
         // Depth and stencil copies and read backs WebGPU has no copy for are draws: from a bound
         // source into an attachment.
         if desc.usage.contains(TextureUsage::COPY_SRC)
