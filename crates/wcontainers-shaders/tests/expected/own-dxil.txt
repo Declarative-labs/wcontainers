@@ -2,7 +2,7 @@ cs_atomics.dxil	spirv-reader AtomicSMin
 cs_decrement.dxil	ok-wgsl glsl-write
 cs_images.dxil	unsupported StorageFormatKind
 cs_shared.dxil	ok-wgsl glsl-write
-cs_texels.dxil	unsupported NonFiniteConstant
+cs_texels.dxil	unsupported TypedBufferFormatKind
 cs_through.dxil	unsupported StorageFormatKind
 gs_adjacent.dxil	spirv-reader unsupported
 gs_cut.dxil	spirv-reader unsupported
@@ -34,7 +34,7 @@ ps_samples.dxil	unsupported SampleCount
 ps_signed.dxil	ok
 ps_spaces.dxil	ok
 ps_special.dxil	ok
-ps_table.dxil	unsupported NonFiniteConstant
+ps_table.dxil	ok
 ps_texels.dxil	unsupported TypedBufferFormatKind
 ps_textured.dxil	ok
 ps_twospaces.dxil	ok
