@@ -1107,6 +1107,72 @@ pub(crate) fn varyings(s: &ShaderModule) -> Vec<u32> {
     }
 }
 
+/// A value passed between stages: its location, type, and interpolation and sampling (a float's
+/// unstated ones taken as perspective at the centre, as WGSL defaults them).
+type StageValueAt = (
+    u32,
+    naga::TypeInner,
+    Option<naga::Interpolation>,
+    Option<naga::Sampling>,
+);
+
+/// The location values a shader's entry point writes (`output`) or reads.
+fn stage_values(s: &ShaderModule, output: bool) -> Vec<StageValueAt> {
+    let Some(ep) = s
+        .module
+        .entry_points
+        .iter()
+        .find(|e| e.name == s.entry_point)
+    else {
+        return Vec::new();
+    };
+    let value = |binding: &Option<naga::Binding>, ty: naga::Handle<naga::Type>| {
+        let Some(naga::Binding::Location {
+            location,
+            interpolation,
+            sampling,
+            ..
+        }) = *binding
+        else {
+            return None;
+        };
+        let inner = &s.module.types[ty].inner;
+        let float = inner.scalar_kind() == Some(naga::ScalarKind::Float);
+        Some((
+            location,
+            inner.clone(),
+            interpolation.or(float.then_some(naga::Interpolation::Perspective)),
+            sampling.or(float.then_some(naga::Sampling::Center)),
+        ))
+    };
+    // Each binding, or a struct's members.
+    let each = |binding: &Option<naga::Binding>, ty: naga::Handle<naga::Type>| {
+        let members: Vec<_> = match (binding, &s.module.types[ty].inner) {
+            (None, naga::TypeInner::Struct { members, .. }) => {
+                members.iter().map(|m| (m.binding.clone(), m.ty)).collect()
+            }
+            _ => vec![(binding.clone(), ty)],
+        };
+        members
+            .into_iter()
+            .filter_map(|(b, t)| value(&b, t))
+            .collect::<Vec<_>>()
+    };
+    if output {
+        ep.function
+            .result
+            .as_ref()
+            .map(|r| each(&r.binding, r.ty))
+            .unwrap_or_default()
+    } else {
+        ep.function
+            .arguments
+            .iter()
+            .flat_map(|a| each(&a.binding, a.ty))
+            .collect()
+    }
+}
+
 /// Layers per level: array layers, or one for a 3D texture.
 pub(crate) fn layers(desc: &TextureDesc) -> u32 {
     match desc.dimension {
@@ -1501,6 +1567,24 @@ impl Backend for Recorder {
                     .is_some_and(|f| f.stage != ShaderStage::Fragment)
             {
                 return Err(GpuError::Invalid("a program of shaders of other stages"));
+            }
+            if let Some(f) = &obj.fragment {
+                let outputs = stage_values(&obj.vertex, true);
+                for input in stage_values(f, false) {
+                    match outputs.iter().find(|o| o.0 == input.0) {
+                        None => {
+                            return Err(GpuError::Invalid(
+                                "a fragment input the vertex shader does not write",
+                            ));
+                        }
+                        Some(o) if *o != input => {
+                            return Err(GpuError::Invalid(
+                                "a fragment input of another type, interpolation or sampling than the vertex output",
+                            ));
+                        }
+                        Some(_) => {}
+                    }
+                }
             }
             if varyings(&obj.vertex).len() > self.caps.limits.inter_stage_slots as usize {
                 return Err(GpuError::Invalid(

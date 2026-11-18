@@ -712,6 +712,57 @@ fn a_program_finds_every_binding_it_reads() {
     d.refused("nothing bound at group 0 binding 0");
 }
 
+/// Programs converted apart meet here: the vertex shader writes every location the fragment shader
+/// reads, of its type, interpolation and sampling, and may write more (`VariantKey::linked` and
+/// `output_interpolation`).
+#[test]
+fn fragment_inputs_are_vertex_outputs_of_their_type_and_interpolation() {
+    const LINKED: &str = "
+struct V { @builtin(position) p: vec4<f32>, @location(0) a: vec4<f32>, @location(3) b: vec4<f32>,
+    @location(5) @interpolate(flat) n: u32 }
+@vertex fn vs() -> V { return V(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), 0u); }
+struct Gap { @location(0) a: vec4<f32>, @location(5) @interpolate(flat) n: u32 }
+@fragment fn gap(i: Gap) -> @location(0) vec4<f32> { return i.a; }
+@fragment fn past(@location(6) c: vec4<f32>) -> @location(0) vec4<f32> { return c; }
+@fragment fn narrower(@location(3) b: vec2<f32>) -> @location(0) vec4<f32> { return vec4<f32>(b, 0.0, 1.0); }
+@fragment fn linear(@location(3) @interpolate(linear) b: vec4<f32>) -> @location(0) vec4<f32> { return b; }
+@fragment fn centroid(@location(3) @interpolate(perspective, centroid) b: vec4<f32>) -> @location(0) vec4<f32> { return b; }
+@fragment fn stated(@location(3) @interpolate(perspective, center) b: vec4<f32>) -> @location(0) vec4<f32> { return b; }
+";
+    let mut r = Recorder::new();
+    let shader = |r: &mut Recorder, entry, stage| {
+        r.create_shader(&ShaderModule::from_wgsl(LINKED, entry, stage).unwrap())
+            .unwrap()
+    };
+    let v = shader(&mut r, "vs", ShaderStage::Vertex);
+    let mut program = |entry| {
+        let f = shader(&mut r, entry, ShaderStage::Fragment);
+        r.create_program(&Program::Render {
+            vertex: &v,
+            fragment: Some(&f),
+        })
+        .map(|_| ())
+    };
+    // Reading fewer locations than are written, and stating the defaults, are allowed.
+    assert_eq!(program("gap"), Ok(()));
+    assert_eq!(program("stated"), Ok(()));
+    assert_eq!(
+        program("past"),
+        Err(GpuError::Invalid(
+            "a fragment input the vertex shader does not write"
+        ))
+    );
+    for entry in ["narrower", "linear", "centroid"] {
+        assert_eq!(
+            program(entry),
+            Err(GpuError::Invalid(
+                "a fragment input of another type, interpolation or sampling than the vertex output"
+            )),
+            "{entry}"
+        );
+    }
+}
+
 #[test]
 fn shaders_and_programs_hold_entry_points_of_their_stages() {
     let module = naga::front::wgsl::parse_str(PROGRAM).unwrap();
