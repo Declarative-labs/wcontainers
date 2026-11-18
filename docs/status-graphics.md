@@ -32,6 +32,51 @@ branches into it at the start and end of every run, keeps the whole workspace bu
 - G1c, run 4 (2026-11-18): the eleven findings of G1c's third check settled, all in the plan's text
   (below, "G1c's third check"). No branch had anything new at the start (fetched first); no code
   changed this run.
+- G1c, run 5 (2026-11-18): the seven findings of G1c's fourth check settled (below, "G1c's fourth
+  check"): plan 15.4 now names each of Vulkan 1.1's 67 features present or absent with its route or
+  reason; the suite and the random sequences now copy within depth and stencil subresources of
+  every format (`Depth24Plus` added). No branch had anything new at the start (fetched first).
+
+## G1c's fourth check, and how each finding was settled (run 5)
+
+Claims were checked at their source first (downloads in scratch `graphics/g1c5/dl`: Mesa's
+`nir_lower_alpha.c` and `vk_nir_convert_ycbcr.c` through GitLab's API, the WebGPU specification,
+Vulkan's `textures.adoc` and `fragops.adoc`; `vk.xml` from the check's `check-g1c-4/dl`).
+- Blocking, Vulkan's features: 15.4 now lists all 67 (55 of `VkPhysicalDeviceFeatures`, 12 of 1.1's
+  six structures, counted in `vk.xml`) in five lists: 12 present natively, 6 natively or by the
+  Direct3D fronts' route, 4 by the shaders crate's program rewrites, 19 through counted slow paths,
+  26 absent, each absence with its reason (a script over the plan finds each name in exactly one
+  list). Decisions worth naming: `fullDrawIndexUint32` present (WebGPU's primitive assembly splits
+  only strips at the restart value, checked); `multiDrawIndirect` present (one indirect draw each,
+  as OpenGL 4.6's); `samplerAnisotropy` native, anisotropy 1 with a nearest filter (Vulkan leaves the
+  scheme to the implementation, checked); `shaderImageGatherExtended` and the formatless storage
+  features by the shaders crate's existing rewrites; arrays indexed at run time for sampled textures
+  only (the shaders crate's switch refuses buffers and storage views); `alphaToOne` present by a new
+  proposed slow path `AlphaToOneInShader` (Mesa's `nir_lower_alpha_to_coverage` and
+  `nir_lower_alpha_to_one`, MIT, checked; the OpenGL driver needs the same for
+  `GL_SAMPLE_ALPHA_TO_ONE`); absent: `depthBounds`, multisampled storage, `shaderInt16`, the four
+  16-bit storage features, `shaderResourceMinLod`, residency and sparse, `variableMultisampleRate`,
+  variable pointers, `protectedMemory`, and `samplerYcbcrConversion` (a scope choice; Mesa's
+  runtime has the route). 5.5 points to the lists; G10's pass bar says how they are checked
+  (`vulkaninfo` on the RTX 3080, and the driver over `Recorder::with_caps` for each
+  adapter-dependent feature); G8 takes the program rewrites; 15.7 now proposes four slow path
+  names; 15.9 names the absences.
+- `Depth24Plus` in the shared suite test: added, through the depth path that reads values (within
+  one step of 2^-24) rather than bytes. The fault "a copy within one `Depth24Plus` subresource
+  dropped by the recorder" is caught by that test (scratch `g1c5/faults.log`).
+- Random sequences: a new step, `DepthCopy`, makes a depth or stencil texture of its own (all six
+  depth and stencil formats the back end copies out, 1 or 2 layers and levels), writes one level
+  and layer with valid values, copies a region beside itself, and reads each aspect back; the test
+  now prints how many copies within one subresource were of depth or stencil.
+- Mesa's licence files: 15.2 now says Mesa enters as a git submodule at `third_party/mesa` (as
+  `dxbc-spirv` and `dxil-spirv` do) pointing at a fork of ours whose branch is the pinned release
+  plus the patch set, one commit per change, so no GPL or SGI file is copied into this repository
+  (Mesa's `licenses/` checked: Apache-2.0, BSL-1.0, GPL-1.0-or-later, GPL-2.0-only, MIT,
+  SGI-B-2.0). Where the fork is kept is added to 15.9.
+- 5.7 against 15.4: 5.7's absent list now says it is the back end's own `Caps`, and that a front may
+  still serve those features through counted slow paths, as Vulkan's are.
+- G1d's pass bar is now written out in 15.8 (no reference to G1b).
+- The WebGPU back end and the depth or stencil copy test: recorded under "Known failures".
 
 ## G1c's third check, and how each finding was settled (run 4)
 
@@ -219,6 +264,7 @@ G1c run 3:
   destination, counted `CopyWithinTexture`. For `Depth24PlusStencil8` and `Depth32FloatStencil8` both aspects move by
   one copy: copy the whole subresource into the temporary natively, then the region back by
   `DepthWrittenByDraw` and `StencilWrittenByDraw` (G1c run 2 added these two formats to the test).
+  Run 5 added `Depth24Plus` alone to that test (its depth read as values within 2^-24).
   The new suite tests `a_copy_within_one_depth_or_stencil_subresource_moves_the_region`,
   `every_vertex_format_reads_its_element` and `the_occlusion_counter_counts_every_sample_that_passes`
   (your summing program's first shared test) come in when you merge.
@@ -268,7 +314,7 @@ pointers to a function's locals passed to another function.
 
 ## Next
 
-- G1c's independent check, fourth round.
+- G1c's independent check, fifth round.
 - G1d (plan 15.8) once the owner has answered plan 15.9 (now also: wvk, Vulkan's slow features
   reported present, the copy into streams, the back end as its own module and the import call per
   interface call it costs, OpenGL and Vulkan as two modules, Xwayland with a GLX stand-in).
@@ -296,12 +342,22 @@ pointers to a function's locals passed to another function.
     copies the tree, changes one place, runs the tests named and prints CAUGHT, SURVIVED or BUILD
     FAILED). Run 2's and 3's faults: scratch `g1c2/faults.py` and `g1c3/faults.py`, the same way, each fault
     a list of changes.
-    Earlier runs' scripts are in scratch `g1r2` to `g1b2`.
+    Run 5's fault: scratch `g1c5/faults.py`, the same way. Earlier runs' scripts are in scratch
+    `g1r2` to `g1b2`.
 - A back end runs the suite with a test file holding a `Host` implementation and
   `wcontainers_gpu_test::suite!(MyHost);` (see `crates/wcontainers-gpu-test/tests/recorder.rs`).
 - On the Mac only formatting: `nix develop -c cargo fmt -p wcontainers-gpu -p wcontainers-gpu-test`.
 
 ## Measurements
+
+- G1c run 5, on the Linux laptop (i7-8750H, 12 threads, load 0.2 at the start; scratch
+  `g1c5/test1.log`): owned crates' clippy with warnings denied clean; 234 tests pass (interface 36,
+  compute 8, fast paths 14, helpers 19, suite on the recorder 48, rules 108, sequences 1 at the
+  default 1,000); random sequences at seed 0x5eed, 20,000 asked and run (`--release`, 13.1 s of
+  test): 1,206,788 calls, 24,004 copies within one subresource, 21,071 of them of depth or stencil,
+  2,831 multisampled passes, 3,992 depth-stencil passes, 8,031 dispatches, recorded with no rule
+  broken and replayed identically. Fault (scratch `g1c5/faults.log`, load 1.1): 1 of 1 caught.
+  End check: below, "End of run".
 
 - G1c run 4: no code changed and no branch merged, so no test was run; the owned crates' code is
   that of run 3's end check (`g1c3/end-check.log`).
@@ -374,6 +430,9 @@ pointers to a function's locals passed to another function.
 
 ## Departures from the plan
 
+- G1c run 5: plan 15.2 had Mesa vendored as files under `third_party/mesa`; it is now a submodule
+  pointing at a fork of ours, because Mesa's tree holds GPL and SGI files the project may not copy.
+
 - G1c run 4: Mesa's Windows build uses MSVC, not clang-cl (Mesa's `install.rst` names MSVC and
   Clang, not clang-cl).
 - G1c run 3: plan 15 makes OpenGL and Vulkan two WebAssembly modules, each holding Mesa's shared
@@ -405,6 +464,12 @@ pointers to a function's locals passed to another function.
   proptest with a fixed ChaCha seed.
 
 ## Known failures
+
+- On the WebGPU back end (the shared line's `crates/wcontainers-gpu-webgpu/src/memory.rs`, which
+  fails "a copy within one subresource of depth or stencil" by name),
+  `a_copy_within_one_depth_or_stencil_subresource_moves_the_region` fails once that track runs the
+  suite from this line, until it builds the route under "For the other tracks". Expected; the
+  WebGPU track's work.
 
 - The occlusion counter refuses (`GpuError::Invalid`) a single fan, strip with restart or indirect
   draw that brings a pixel's sum over its samples to its counting format's bound (2048 in
