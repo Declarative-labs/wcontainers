@@ -7,7 +7,10 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use oci_spec::image::{Descriptor, ImageConfiguration, ImageIndex, ImageManifest, MediaType};
+use oci_spec::image::{
+    ANNOTATION_CREATED, Descriptor, ImageConfiguration, ImageIndex, ImageManifest, MediaType,
+    OciLayout,
+};
 use oci_spec::runtime::{Spec, User};
 use sha2::{Digest as _, Sha256};
 use wcontainers_kernel::{Attributes, Kernel, NewFile};
@@ -59,13 +62,13 @@ impl Image {
     /// Linux, its blobs checked against their digests and its layers applied in order.
     pub fn oci(directory: &Path, architecture: &str) -> Result<Self, Error> {
         let layout = directory.join("oci-layout");
-        let header: serde_json::Value = serde_json::from_reader(open(&layout)?)
+        let header = OciLayout::from_reader(open(&layout)?)
             .map_err(|error| Error::Image(format!("{}: {error}", layout.display())))?;
-        if header["imageLayoutVersion"].as_str() != Some("1.0.0") {
+        if header.image_layout_version() != "1.0.0" {
             return Err(Error::Image(format!(
                 "{}: image layout version {} is not 1.0.0",
                 layout.display(),
-                header["imageLayoutVersion"]
+                header.image_layout_version()
             )));
         }
         let index_path = directory.join("index.json");
@@ -125,57 +128,83 @@ impl Image {
 
     /// What to run: for an OCI image, the runtime's base configuration ([`crate::base_spec`]) with the
     /// image configuration converted into it as `conversion.md` says; for a plain tar, the base
-    /// configuration alone, whose `process.args` the caller sets.
+    /// configuration, whose `process.args` the caller sets. Where the image names no user, the user
+    /// is root with the groups `/etc/group` lists it in, as Docker gives it.
     pub fn spec(&self) -> Result<Spec, Error> {
         let mut spec = crate::base_spec();
+        let mut process = spec.process().clone().unwrap_or_default();
+        process.set_user(self.root());
+        spec.set_process(Some(process.clone()));
         let Some(configuration) = &self.configuration else {
             return Ok(spec);
         };
-        let Some(config) = configuration.config() else {
-            return Ok(spec);
-        };
-        let mut process = spec.process().clone().unwrap_or_default();
-        let mut args: Vec<String> = config.entrypoint().clone().unwrap_or_default();
-        args.extend(config.cmd().clone().unwrap_or_default());
-        process.set_args(Some(args));
-        process.set_env(config.env().clone());
-        let cwd = config.working_dir().clone().filter(|cwd| !cwd.is_empty());
-        process.set_cwd(PathBuf::from(cwd.unwrap_or_else(|| "/".to_string())));
-        if let Some(user) = config.user().as_deref().filter(|user| !user.is_empty()) {
-            process.set_user(self.user(user)?);
+        // Implicit annotations first, so that a label of the same key takes precedence.
+        let mut annotations: HashMap<String, String> = [
+            ("os", Some(configuration.os().to_string())),
+            (
+                "architecture",
+                Some(configuration.architecture().to_string()),
+            ),
+            ("variant", configuration.variant().clone()),
+            ("os.version", configuration.os_version().clone()),
+            (
+                "os.features",
+                configuration.os_features().as_ref().map(|f| f.join(",")),
+            ),
+            ("author", configuration.author().clone()),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| Some((format!("org.opencontainers.image.{name}"), value?)))
+        .chain(
+            configuration
+                .created()
+                .clone()
+                .map(|created| (ANNOTATION_CREATED.to_string(), created)),
+        )
+        .collect();
+        if let Some(config) = configuration.config() {
+            if let Some(volumes) = config.volumes().as_ref().filter(|v| !v.is_empty()) {
+                return Err(Error::Refused {
+                    field: "config.Volumes".to_string(),
+                    reason: format!(
+                        "{volumes:?}: a volume is a mount of a directory from outside, which needs \
+                         the shipped outside's file backend"
+                    ),
+                });
+            }
+            let mut args: Vec<String> = config.entrypoint().clone().unwrap_or_default();
+            args.extend(config.cmd().clone().unwrap_or_default());
+            process.set_args(Some(args));
+            process.set_env(Some(with_defaults(
+                process.env().clone().unwrap_or_default(),
+                config.env().clone().unwrap_or_default(),
+            )));
+            let cwd = config.working_dir().clone().filter(|cwd| !cwd.is_empty());
+            process.set_cwd(PathBuf::from(cwd.unwrap_or_else(|| "/".to_string())));
+            if let Some(user) = config.user().as_deref().filter(|user| !user.is_empty()) {
+                process.set_user(self.user(user)?);
+            }
+            if let Some(signal) = config.stop_signal() {
+                annotations.insert(
+                    "org.opencontainers.image.stopSignal".to_string(),
+                    signal.clone(),
+                );
+            }
+            if let Some(ports) = config.exposed_ports().as_ref().filter(|p| !p.is_empty()) {
+                annotations.insert(
+                    "org.opencontainers.image.exposedPorts".to_string(),
+                    ports.join(","),
+                );
+            }
+            annotations.extend(config.labels().clone().unwrap_or_default());
         }
         spec.set_process(Some(process));
-        let mut annotations: HashMap<String, String> = config.labels().clone().unwrap_or_default();
-        if let Some(signal) = config.stop_signal() {
-            annotations.insert(
-                "org.opencontainers.image.stopSignal".to_string(),
-                signal.clone(),
-            );
-        }
-        if let Some(ports) = config.exposed_ports().as_ref().filter(|p| !p.is_empty()) {
-            annotations.insert(
-                "org.opencontainers.image.exposedPorts".to_string(),
-                ports.join(","),
-            );
-        }
-        if !annotations.is_empty() {
-            spec.set_annotations(Some(annotations));
-        }
-        if let Some(volumes) = config.volumes().as_ref().filter(|v| !v.is_empty()) {
-            return Err(Error::Refused {
-                field: "config.Volumes".to_string(),
-                reason: format!(
-                    "{volumes:?}: a volume is a mount of a directory from outside, which needs the \
-                     shipped outside's file backend"
-                ),
-            });
-        }
+        spec.set_annotations(Some(annotations));
         Ok(spec)
     }
 
     /// `process.user` for the image configuration's `User` (`user`, `uid`, `user:group`, `uid:gid`
-    /// and the mixed forms), names looked up in the root's `/etc/passwd` and `/etc/group`, with the
-    /// groups that list the user as additional groups.
+    /// and the mixed forms), names looked up in the root's `/etc/passwd` and `/etc/group`.
     fn user(&self, text: &str) -> Result<User, Error> {
         let passwd = self.table(b"etc/passwd");
         let group = self.table(b"etc/group");
@@ -212,27 +241,55 @@ impl Image {
                 .and_then(|fields| fields.get(3)?.parse().ok())
                 .unwrap_or(0),
         };
-        let user_name = account.and_then(|fields| fields.first().copied());
-        let mut additional: Vec<u32> = match (group_name, user_name) {
-            (None, Some(user_name)) => group
-                .iter()
-                .filter(|fields| {
-                    fields
-                        .get(3)
-                        .is_some_and(|members| members.split(',').any(|m| m == user_name))
-                })
-                .filter_map(|fields| fields.get(2)?.parse().ok())
-                .filter(|&g| g != gid)
-                .collect(),
-            _ => Vec::new(),
-        };
-        additional.sort_unstable();
-        additional.dedup();
         let mut user = User::default();
         user.set_uid(uid);
         user.set_gid(gid);
-        user.set_additional_gids((!additional.is_empty()).then_some(additional));
+        // Groups only for a user named without a group, as conversion.md says.
+        if group_name.is_none() && name.parse::<u32>().is_err() {
+            user.set_additional_gids(Some(self.groups(name, gid)));
+        }
         Ok(user)
+    }
+
+    /// The user where the image names none: root, in its groups, as Docker gives it.
+    fn root(&self) -> User {
+        let passwd = self.table(b"etc/passwd");
+        let account = passwd.iter().find(|fields| fields.get(2) == Some(&"0"));
+        let gid = account
+            .and_then(|fields| fields.get(3)?.parse().ok())
+            .unwrap_or(0);
+        let mut user = User::default();
+        user.set_gid(gid);
+        let name = account.and_then(|fields| fields.first().copied());
+        user.set_additional_gids(Some(
+            name.map_or_else(|| vec![gid], |name| self.groups(name, gid)),
+        ));
+        user
+    }
+
+    /// The additional groups of the user `name` whose group is `gid`, as Docker gives them: `gid`,
+    /// then each group `/etc/group` lists the user in, in its order.
+    fn groups(&self, name: &str, gid: u32) -> Vec<u32> {
+        let members = self
+            .table(b"etc/group")
+            .into_iter()
+            .filter(|fields| {
+                fields
+                    .get(3)
+                    .is_some_and(|members| members.split(',').any(|m| m == name))
+            })
+            .filter_map(|fields| fields.get(2)?.parse().ok());
+        std::iter::once(gid).chain(members).collect()
+    }
+
+    /// The home directory of `uid` in the root's `/etc/passwd`, or `/` as runc has it.
+    pub(crate) fn home(&self, uid: u32) -> String {
+        self.table(b"etc/passwd")
+            .iter()
+            .find(|fields| fields.get(2).and_then(|f| f.parse().ok()) == Some(uid))
+            .and_then(|fields| fields.get(5))
+            .filter(|home| !home.is_empty())
+            .map_or_else(|| "/".to_string(), |home| home.to_string())
     }
 
     /// The lines of a colon-separated table in the root, such as `/etc/passwd`, split into fields.
@@ -586,6 +643,18 @@ fn clean(path: &[u8]) -> Option<Vec<u8>> {
     Some(parts.join(&b'/'))
 }
 
+/// The image's environment with the runtime's defaults (such as `PATH`) for the names it lacks, so
+/// that a default never removes or changes one of the image's variables.
+fn with_defaults(defaults: Vec<String>, image: Vec<String>) -> Vec<String> {
+    let name = |variable: &str| variable.split('=').next().unwrap_or("").to_string();
+    let named: Vec<String> = image.iter().map(|v| name(v)).collect();
+    defaults
+        .into_iter()
+        .filter(|default| !named.contains(&name(default)))
+        .chain(image)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,16 +791,97 @@ mod tests {
             process.args().as_ref().unwrap(),
             &["/serve", "--port", "80"]
         );
-        assert_eq!(process.env().as_ref().unwrap(), &["A=1"]);
+        assert_eq!(
+            process.env().as_ref().unwrap(),
+            &[
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "A=1"
+            ]
+        );
         assert_eq!(process.cwd(), Path::new("/srv"));
         assert_eq!((process.user().uid(), process.user().gid()), (100, 101));
-        assert_eq!(process.user().additional_gids().as_ref().unwrap(), &[4]);
+        assert_eq!(
+            process.user().additional_gids().as_ref().unwrap(),
+            &[101, 4]
+        );
         let annotations = spec.annotations().as_ref().unwrap();
         assert_eq!(annotations["name"], "web");
         assert_eq!(
             annotations["org.opencontainers.image.stopSignal"],
             "SIGQUIT"
         );
+    }
+
+    #[test]
+    fn implicit_annotations_give_way_to_labels() {
+        let mut image = image(
+            &[&[]],
+            Some(serde_json::json!({
+                "Env": ["PATH=/bin"], "StopSignal": "SIGQUIT",
+                "Labels": {"org.opencontainers.image.stopSignal": "SIGINT",
+                           "org.opencontainers.image.os": "label"},
+            })),
+        );
+        let configuration = image.configuration.as_mut().unwrap();
+        configuration.set_variant(Some("v8".to_string()));
+        configuration.set_os_version(Some("6.1".to_string()));
+        configuration.set_os_features(Some(vec!["a".to_string(), "b".to_string()]));
+        configuration.set_author(Some("someone".to_string()));
+        configuration.set_created(Some("2026-11-18T00:00:00Z".to_string()));
+        let spec = image.spec().unwrap();
+        let annotations = spec.annotations().as_ref().unwrap();
+        let expected = [
+            ("os", "label"),
+            ("architecture", "arm64"),
+            ("variant", "v8"),
+            ("os.version", "6.1"),
+            ("os.features", "a,b"),
+            ("author", "someone"),
+            ("created", "2026-11-18T00:00:00Z"),
+            ("stopSignal", "SIGINT"),
+        ];
+        for (name, value) in expected {
+            assert_eq!(
+                annotations[&format!("org.opencontainers.image.{name}")],
+                value
+            );
+        }
+        assert_eq!(annotations.len(), expected.len());
+        let process = spec.process().as_ref().unwrap();
+        assert_eq!(process.env().as_ref().unwrap(), &["PATH=/bin"]);
+    }
+
+    /// With no `User`, as Docker: root, in its own group and then the groups that list it, in file
+    /// order.
+    #[test]
+    fn an_image_without_a_user_runs_as_root_in_its_groups() {
+        let files: &[(&str, &str)] = &[
+            ("etc/", ""),
+            (
+                "etc/passwd",
+                "root:x:0:0::/root:/bin/sh
+",
+            ),
+            (
+                "etc/group",
+                "root:x:0:root
+wheel:x:10:root
+bin:x:1:root,bin
+web:x:2:
+",
+            ),
+        ];
+        for image in [
+            image(&[files], Some(serde_json::json!({}))),
+            image(&[files], None),
+        ] {
+            let spec = image.spec().unwrap();
+            let user = spec.process().as_ref().unwrap().user().clone();
+            assert_eq!((user.uid(), user.gid()), (0, 0));
+            assert_eq!(user.additional_gids().as_ref().unwrap(), &[0, 0, 10, 1]);
+            assert_eq!(image.home(0), "/root");
+            assert_eq!(image.home(5), "/");
+        }
     }
 
     #[test]

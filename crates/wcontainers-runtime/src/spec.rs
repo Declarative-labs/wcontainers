@@ -1,6 +1,6 @@
-//! Every field of the OCI runtime configuration honoured or refused by name. The configuration is read
-//! as its JSON, so a field this runtime does not know, oci-spec's newer ones included, is refused
-//! too, never passed over.
+//! Every field of the OCI runtime configuration honoured or refused by name. A configuration read
+//! from its JSON is checked against that JSON, so a field oci-spec does not read is refused too,
+//! never passed over.
 
 use oci_spec::runtime::Spec;
 use serde_json::{Value, json};
@@ -43,6 +43,9 @@ const NAMESPACES: [&str; 6] = ["pid", "network", "ipc", "uts", "mount", "cgroup"
 /// The umask the kernel starts the first process with.
 const UMASK: u64 = 0o022;
 
+/// The paths the kernel mounts again read-only, as a default Docker container has the first of its.
+const READONLY_PATHS: [&str; 1] = ["/proc/sys"];
+
 /// The mounts the kernel always makes, as a default Docker container has them.
 fn mounts() -> Value {
     json!([
@@ -71,7 +74,6 @@ pub fn base_spec() -> Spec {
         .collect();
     serde_json::from_value(json!({
         "ociVersion": "1.2.1",
-        "root": {"path": "rootfs"},
         "process": {
             "user": {"uid": 0, "gid": 0},
             "cwd": "/",
@@ -83,9 +85,48 @@ pub fn base_spec() -> Spec {
             },
         },
         "mounts": mounts(),
-        "linux": {"namespaces": namespaces},
+        "linux": {"namespaces": namespaces, "readonlyPaths": READONLY_PATHS},
     }))
     .expect("the base configuration is one oci-spec reads")
+}
+
+/// A configuration from its JSON, refusing by name the first field oci-spec does not read.
+pub fn spec_from_json(json: &[u8]) -> Result<Spec, Error> {
+    let given: Value =
+        serde_json::from_slice(json).map_err(|error| Error::Configuration(error.to_string()))?;
+    let spec: Spec = serde_json::from_value(given.clone())
+        .map_err(|error| Error::Configuration(error.to_string()))?;
+    let read = serde_json::to_value(&spec).expect("a configuration is JSON");
+    match unread(&given, &read, "") {
+        Some(field) => Err(refused(field, "a field this runtime does not know")),
+        None => Ok(spec),
+    }
+}
+
+/// The first field of `given` that is not in `read`, by its path.
+fn unread(given: &Value, read: &Value, path: &str) -> Option<String> {
+    let at = |name: &str| {
+        if path.is_empty() {
+            name.to_string()
+        } else {
+            format!("{path}.{name}")
+        }
+    };
+    match (given, read) {
+        (Value::Object(given), Value::Object(read)) => given
+            .iter()
+            .filter(|(_, value)| !value.is_null())
+            .find_map(|(name, value)| match read.get(name) {
+                None => Some(at(name)),
+                Some(kept) => unread(value, kept, &at(name)),
+            }),
+        (Value::Array(given), Value::Array(read)) => given
+            .iter()
+            .zip(read)
+            .enumerate()
+            .find_map(|(index, (value, kept))| unread(value, kept, &format!("{path}[{index}]"))),
+        _ => None,
+    }
 }
 
 /// What the kernel's start takes from an accepted configuration.
@@ -95,6 +136,7 @@ pub(crate) struct Accepted {
     pub cwd: String,
     pub hostname: String,
     pub groups: Vec<u32>,
+    pub uid: u32,
 }
 
 fn refused(field: impl Into<String>, reason: impl Into<String>) -> Error {
@@ -168,10 +210,23 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
     if !fields.contains_key("linux") {
         namespaces(&Value::Null)?;
     }
+    let linux = fields.get("linux").and_then(Value::as_object);
+    if !linux.is_some_and(|linux| linux.contains_key("readonlyPaths")) {
+        readonly_paths(&Value::Null)?;
+    }
     let process = spec
         .process()
         .as_ref()
         .ok_or_else(|| refused("process", "a container needs a process to run"))?;
+    if process.capabilities().is_none() {
+        return Err(refused(
+            "process.capabilities",
+            format!(
+                "absent, so the process would keep no capabilities; the kernel gives {CAPABILITIES:?}, \
+                 others need it to take capabilities at start"
+            ),
+        ));
+    }
     let args = process.args().clone().unwrap_or_default();
     if args.is_empty() {
         return Err(refused(
@@ -195,13 +250,19 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
             .clone()
             .unwrap_or_else(|| "localhost".to_string()),
         groups: process.user().additional_gids().clone().unwrap_or_default(),
+        uid: process.user().uid(),
     })
 }
 
 fn root(value: &Value) -> Result<(), Error> {
     for (name, field) in value.as_object().into_iter().flatten() {
         match name.as_str() {
-            "path" => {}
+            "path" => absent(
+                "root.path",
+                field,
+                "the root's files are the image argument; a root read from a directory of the host \
+                 needs the shipped outside's file backend",
+            )?,
             "readonly" => absent("root.readonly", field, "read-only mounts in the kernel")?,
             _ => {
                 return Err(refused(
@@ -292,7 +353,20 @@ fn process(value: &Value) -> Result<(), Error> {
             "user" => user(field)?,
             "commandLine" => absent(&path, field, "a Windows host")?,
             "capabilities" => {
-                for (set, capabilities) in field.as_object().into_iter().flatten() {
+                let sets = field.as_object().cloned().unwrap_or_default();
+                if let Some(set) = ["bounding", "effective", "permitted"]
+                    .into_iter()
+                    .find(|set| !sets.contains_key(*set))
+                {
+                    return Err(refused(
+                        format!("{path}.{set}"),
+                        format!(
+                            "absent, so the set is empty; the kernel gives {CAPABILITIES:?}, others \
+                             need it to take capabilities at start"
+                        ),
+                    ));
+                }
+                for (set, capabilities) in &sets {
                     let mut names: Vec<&str> = capabilities
                         .as_array()
                         .into_iter()
@@ -413,7 +487,8 @@ fn linux(value: &Value) -> Result<(), Error> {
                 field,
                 "the kernel installing the filter on the first process at start",
             )?,
-            "rootfsPropagation" | "mountLabel" | "maskedPaths" | "readonlyPaths" => absent(
+            "readonlyPaths" => readonly_paths(field)?,
+            "rootfsPropagation" | "mountLabel" | "maskedPaths" => absent(
                 &path,
                 field,
                 "read-only, masking and labelled mounts in the kernel",
@@ -423,6 +498,33 @@ fn linux(value: &Value) -> Result<(), Error> {
             }
             _ => return Err(refused(path, "a field this runtime does not know")),
         }
+    }
+    Ok(())
+}
+
+/// The kernel mounts its read-only paths whatever the configuration says, so the list must name
+/// exactly those.
+fn readonly_paths(value: &Value) -> Result<(), Error> {
+    let mut given: Vec<&str> = value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    given.sort_unstable();
+    if given != READONLY_PATHS {
+        return Err(refused(
+            "linux.readonlyPaths",
+            format!(
+                "{}: the kernel makes {READONLY_PATHS:?} read-only; others need read-only mounts \
+                 in the kernel",
+                if value.is_null() {
+                    "absent".to_string()
+                } else {
+                    value.to_string()
+                }
+            ),
+        ));
     }
     Ok(())
 }
@@ -458,4 +560,63 @@ fn namespaces(value: &Value) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A configuration as `runc spec` writes it, with resources, seccomp and devices added: every
+    /// field is one oci-spec reads, so none is refused as unknown.
+    #[test]
+    fn a_whole_configuration_is_read_with_nothing_unread() {
+        let given = json!({
+            "ociVersion": "1.0.2-dev",
+            "process": {
+                "terminal": true,
+                "user": {"uid": 0, "gid": 0},
+                "args": ["sh"],
+                "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "TERM=xterm"],
+                "cwd": "/",
+                "capabilities": {
+                    "bounding": ["CAP_AUDIT_WRITE", "CAP_KILL", "CAP_NET_BIND_SERVICE"],
+                    "effective": ["CAP_AUDIT_WRITE", "CAP_KILL", "CAP_NET_BIND_SERVICE"],
+                    "permitted": ["CAP_AUDIT_WRITE", "CAP_KILL", "CAP_NET_BIND_SERVICE"],
+                    "ambient": ["CAP_AUDIT_WRITE", "CAP_KILL", "CAP_NET_BIND_SERVICE"]
+                },
+                "rlimits": [{"type": "RLIMIT_NOFILE", "hard": 1024, "soft": 1024}],
+                "noNewPrivileges": true
+            },
+            "root": {"path": "rootfs", "readonly": true},
+            "hostname": "runc",
+            "mounts": [
+                {"destination": "/proc", "type": "proc", "source": "proc"},
+                {"destination": "/dev", "type": "tmpfs", "source": "tmpfs",
+                 "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]}
+            ],
+            "linux": {
+                "resources": {
+                    "devices": [{"allow": false, "access": "rwm"}],
+                    "memory": {"limit": 1048576},
+                    "pids": {"limit": 10}
+                },
+                "namespaces": [{"type": "pid"}, {"type": "network"}, {"type": "ipc"},
+                               {"type": "uts"}, {"type": "mount"}, {"type": "cgroup"}],
+                "seccomp": {
+                    "defaultAction": "SCMP_ACT_ERRNO",
+                    "architectures": ["SCMP_ARCH_AARCH64"],
+                    "syscalls": [{"names": ["getcwd"], "action": "SCMP_ACT_ALLOW"}]
+                },
+                "maskedPaths": ["/proc/acpi", "/proc/kcore"],
+                "readonlyPaths": ["/proc/bus", "/proc/sys"]
+            }
+        });
+        spec_from_json(&serde_json::to_vec(&given).unwrap()).unwrap();
+        let mut unknown = given;
+        unknown["linux"]["resources"]["memory"]["limitt"] = json!(1);
+        match spec_from_json(&serde_json::to_vec(&unknown).unwrap()) {
+            Err(Error::Refused { field, .. }) => assert_eq!(field, "linux.resources.memory.limitt"),
+            other => panic!("{:?}", other.map(drop)),
+        }
+    }
 }

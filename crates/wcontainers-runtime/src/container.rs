@@ -45,6 +45,8 @@ pub enum Error {
     /// A field of the configuration the runtime cannot honour, named as the standard names it, with
     /// its value and what honouring it would take.
     Refused { field: String, reason: String },
+    /// The configuration's JSON is not one the runtime specification describes.
+    Configuration(String),
     /// The image is not one this runtime reads.
     Image(String),
     Io {
@@ -57,6 +59,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Refused { field, reason } => write!(f, "{field} is not supported: {reason}"),
+            Error::Configuration(what) => write!(f, "the configuration: {what}"),
             Error::Image(what) => write!(f, "the image: {what}"),
             Error::Io { path, error } => write!(f, "{}: {error}", path.display()),
         }
@@ -100,9 +103,14 @@ impl<B: BackEnd> Runtime<B> {
         image.add_to(&mut kernel)?;
         let mut cpu = B::new(&self.shared, tuning, &machine.offer);
         outside.stop_flag(cpu.stop_flag());
-        let path = image.program(&accepted.args[0], &accepted.env, &accepted.cwd);
+        let mut env = accepted.env;
+        // As runc: a process without HOME gets its user's home directory.
+        if !env.iter().any(|variable| variable.starts_with("HOME=")) {
+            env.push(format!("HOME={}", image.home(accepted.uid)));
+        }
+        let path = image.program(&accepted.args[0], &env, &accepted.cwd);
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
-        let environment: Vec<&[u8]> = accepted.env.iter().map(|v| v.as_bytes()).collect();
+        let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
         kernel.start(
             &mut cpu,
             &mut outside,

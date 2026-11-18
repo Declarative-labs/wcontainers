@@ -10,9 +10,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use wcontainers_arm64::Arm64;
-use wcontainers_runtime::oci_spec::runtime::Spec;
 use wcontainers_runtime::{
-    BackEnd, Ending, Image, Machine, Runtime, RuntimeSettings, System, Warned,
+    BackEnd, Ending, Image, Machine, Runtime, RuntimeSettings, System, Warned, spec_from_json,
 };
 use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, Tuning};
 
@@ -64,7 +63,10 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         _ => return Err("give one of --oci and --tar".into()),
     };
     let mut spec = match config {
-        Some(path) => Spec::load(path)?,
+        Some(path) => spec_from_json(
+            &std::fs::read(&path)
+                .map_err(|error| wcontainers_runtime::Error::Io { path, error })?,
+        )?,
         None => image.spec()?,
     };
     if !command.is_empty() {

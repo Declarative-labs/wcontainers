@@ -9,6 +9,8 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
+use serde_json::json;
+
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::oci_spec::runtime::Spec;
 use wcontainers_runtime::{Ending, Image, Machine, Runtime, RuntimeSettings, System, base_spec};
@@ -183,7 +185,7 @@ fn a_pipeline_from_the_oci_image_matches_the_reference() {
 fn a_pipeline_from_a_plain_tar_matches_the_reference() {
     let (_, files) = images();
     let image = Image::tar(files).unwrap();
-    let spec = with_args(base_spec(), &["sh", "-c", PIPELINE]);
+    let spec = with_args(image.spec().unwrap(), &["sh", "-c", PIPELINE]);
     let (outcome, _) = ours(&spec, &image, None);
     assert_eq!(outcome, reference(PIPELINE));
 }
@@ -218,6 +220,244 @@ fn honoured_fields_behave_so() {
             exit_code: 0,
         }
     );
+}
+
+/// With no user in the image, the user, groups and environment are Docker's, from either form.
+#[test]
+fn the_user_and_environment_match_the_reference() {
+    let (layout, files) = images();
+    let command = "id; echo \"home=$HOME\"; env | sort | grep -v ^HOSTNAME=";
+    let expected = reference(command);
+    for image in [
+        Image::oci(layout, "arm64").unwrap(),
+        Image::tar(files).unwrap(),
+    ] {
+        let spec = with_args(image.spec().unwrap(), &["sh", "-c", command]);
+        assert_eq!(ours(&spec, &image, None).0, expected);
+    }
+}
+
+/// Linux's capability numbers, by the names the configuration uses.
+const CAPABILITY_NUMBERS: [&str; 41] = [
+    "CAP_CHOWN",
+    "CAP_DAC_OVERRIDE",
+    "CAP_DAC_READ_SEARCH",
+    "CAP_FOWNER",
+    "CAP_FSETID",
+    "CAP_KILL",
+    "CAP_SETGID",
+    "CAP_SETUID",
+    "CAP_SETPCAP",
+    "CAP_LINUX_IMMUTABLE",
+    "CAP_NET_BIND_SERVICE",
+    "CAP_NET_BROADCAST",
+    "CAP_NET_ADMIN",
+    "CAP_NET_RAW",
+    "CAP_IPC_LOCK",
+    "CAP_IPC_OWNER",
+    "CAP_SYS_MODULE",
+    "CAP_SYS_RAWIO",
+    "CAP_SYS_CHROOT",
+    "CAP_SYS_PTRACE",
+    "CAP_SYS_PACCT",
+    "CAP_SYS_ADMIN",
+    "CAP_SYS_BOOT",
+    "CAP_SYS_NICE",
+    "CAP_SYS_RESOURCE",
+    "CAP_SYS_TIME",
+    "CAP_SYS_TTY_CONFIG",
+    "CAP_MKNOD",
+    "CAP_LEASE",
+    "CAP_AUDIT_WRITE",
+    "CAP_AUDIT_CONTROL",
+    "CAP_SETFCAP",
+    "CAP_MAC_OVERRIDE",
+    "CAP_MAC_ADMIN",
+    "CAP_SYSLOG",
+    "CAP_WAKE_ALARM",
+    "CAP_BLOCK_SUSPEND",
+    "CAP_AUDIT_READ",
+    "CAP_PERFMON",
+    "CAP_BPF",
+    "CAP_CHECKPOINT_RESTORE",
+];
+
+/// Each resource limit as the configuration names it and `/proc/self/limits` does.
+const LIMIT_NAMES: [(&str, &str); 16] = [
+    ("RLIMIT_CPU", "Max cpu time"),
+    ("RLIMIT_FSIZE", "Max file size"),
+    ("RLIMIT_DATA", "Max data size"),
+    ("RLIMIT_STACK", "Max stack size"),
+    ("RLIMIT_CORE", "Max core file size"),
+    ("RLIMIT_RSS", "Max resident set"),
+    ("RLIMIT_NPROC", "Max processes"),
+    ("RLIMIT_NOFILE", "Max open files"),
+    ("RLIMIT_MEMLOCK", "Max locked memory"),
+    ("RLIMIT_AS", "Max address space"),
+    ("RLIMIT_LOCKS", "Max file locks"),
+    ("RLIMIT_SIGPENDING", "Max pending signals"),
+    ("RLIMIT_MSGQUEUE", "Max msgqueue size"),
+    ("RLIMIT_NICE", "Max nice priority"),
+    ("RLIMIT_RTPRIO", "Max realtime priority"),
+    ("RLIMIT_RTTIME", "Max realtime timeout"),
+];
+
+/// The values the runtime accepts as honoured (its base configuration, with the umask and every
+/// limit written out) are what the guest sees: the umask, each limit, the capability sets, the
+/// mounts and the read-only paths. Any other value of these is refused (tests/refused.rs).
+#[test]
+fn the_guest_sees_the_honoured_values() {
+    let (layout, _) = images();
+    let image = Image::oci(layout, "arm64").unwrap();
+    let command = "umask; echo; cat /proc/self/limits; echo; grep ^Cap /proc/self/status; echo; \
+                   cat /proc/mounts";
+    let mut spec = with_args(image.spec().unwrap(), &["sh", "-c", command]);
+    let unlimited = u64::MAX;
+    let limits = [
+        ("RLIMIT_STACK", 8 << 20, unlimited),
+        ("RLIMIT_CORE", 0, unlimited),
+        ("RLIMIT_NOFILE", 1 << 20, 1 << 20),
+        ("RLIMIT_NICE", 0, 0),
+        ("RLIMIT_RTPRIO", 0, 0),
+        ("RLIMIT_SIGPENDING", 128_302, 128_302),
+        ("RLIMIT_MSGQUEUE", 819_200, 819_200),
+    ];
+    let rlimits: Vec<_> = LIMIT_NAMES
+        .iter()
+        .map(|(name, _)| {
+            let (soft, hard) = limits
+                .iter()
+                .find(|(limit, ..)| limit == name)
+                .map_or((unlimited, unlimited), |&(_, soft, hard)| (soft, hard));
+            json!({"type": name, "soft": soft, "hard": hard})
+        })
+        .collect();
+    let mut value = serde_json::to_value(&spec).unwrap();
+    value["process"]["user"]["umask"] = json!(0o022);
+    value["process"]["rlimits"] = json!(rlimits);
+    spec = serde_json::from_value(value.clone()).unwrap();
+    let (outcome, _) = ours(&spec, &image, None);
+    assert_eq!((outcome.exit_code, outcome.stderr.as_str()), (0, ""));
+    let sections: Vec<&str> = outcome.stdout.split("\n\n").collect();
+    let [umask, limits, capabilities, mounts] = sections[..] else {
+        panic!("{}", outcome.stdout);
+    };
+
+    assert_eq!(
+        umask,
+        format!(
+            "{:04o}",
+            value["process"]["user"]["umask"].as_u64().unwrap()
+        )
+    );
+
+    for line in limits.lines().skip(1) {
+        let (title, rest) = line.split_at(26);
+        let (name, _) = LIMIT_NAMES
+            .iter()
+            .find(|(_, shown)| *shown == title.trim())
+            .unwrap_or_else(|| panic!("{line}"));
+        let given = rlimits.iter().find(|limit| limit["type"] == *name).unwrap();
+        let number = |text: &str| {
+            if text == "unlimited" {
+                u64::MAX
+            } else {
+                text.parse().unwrap()
+            }
+        };
+        let seen: Vec<u64> = rest.split_whitespace().take(2).map(number).collect();
+        assert_eq!(
+            seen,
+            [
+                given["soft"].as_u64().unwrap(),
+                given["hard"].as_u64().unwrap()
+            ],
+            "{line}"
+        );
+    }
+    assert_eq!(limits.lines().count(), 1 + LIMIT_NAMES.len());
+
+    let sets = &value["process"]["capabilities"];
+    for (shown, set) in [
+        ("CapInh", "inheritable"),
+        ("CapPrm", "permitted"),
+        ("CapEff", "effective"),
+        ("CapBnd", "bounding"),
+        ("CapAmb", "ambient"),
+    ] {
+        let mask = sets[set]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .fold(0u64, |mask, name| {
+                let number = CAPABILITY_NUMBERS
+                    .iter()
+                    .position(|known| *known == name.as_str().unwrap())
+                    .unwrap();
+                mask | 1 << number
+            });
+        let line = format!("{shown}:\t{mask:016x}");
+        assert!(
+            capabilities.lines().any(|seen| seen == line),
+            "{line} in\n{capabilities}"
+        );
+    }
+
+    // Each mount as the configuration gives it, then each read-only path, and nothing else but the root.
+    let seen: Vec<Vec<&str>> = mounts
+        .lines()
+        .map(|line| line.split(' ').collect())
+        .collect();
+    let options =
+        |line: &[&str]| -> Vec<String> { line[3].split(',').map(str::to_string).collect() };
+    let trimmed = |option: &str| match option.split_once('=') {
+        Some((name @ ("mode" | "ptmxmode"), number)) => {
+            format!("{name}={}", number.trim_start_matches('0'))
+        }
+        _ => option.to_string(),
+    };
+    let given = value["mounts"].as_array().unwrap();
+    for mount in given {
+        let line = seen
+            .iter()
+            .find(|line| line[1] == mount["destination"])
+            .unwrap_or_else(|| panic!("{mount} in\n{mounts}"));
+        assert_eq!(
+            (line[0], line[2]),
+            (
+                mount["source"].as_str().unwrap(),
+                mount["type"].as_str().unwrap()
+            )
+        );
+        let shown = options(line);
+        for option in mount["options"].as_array().unwrap() {
+            match option.as_str().unwrap() {
+                "strictatime" => assert!(!shown.contains(&"relatime".to_string()), "{line:?}"),
+                // Shown by neither Linux nor the kernel: no visible effect, or tmpfs's default.
+                "newinstance" | "mode=1777" => {}
+                option => assert!(shown.contains(&trimmed(option)), "{option} in {line:?}"),
+            }
+        }
+        for flag in ["nosuid", "noexec", "nodev", "ro"] {
+            let asked = mount["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|o| o == flag);
+            assert_eq!(
+                shown.contains(&flag.to_string()),
+                asked,
+                "{flag} in {line:?}"
+            );
+        }
+    }
+    let readonly = value["linux"]["readonlyPaths"].as_array().unwrap();
+    for path in readonly {
+        let line = seen.iter().find(|line| line[1] == path).unwrap();
+        assert!(options(line).contains(&"ro".to_string()), "{line:?}");
+    }
+    assert_eq!(seen[0][1], "/");
+    assert_eq!(seen.len(), 1 + given.len() + readonly.len(), "{mounts}");
 }
 
 /// The child of [`a_second_process_starts_from_the_cache`]: runs the pipeline with the cache in

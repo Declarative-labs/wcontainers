@@ -1,14 +1,15 @@
 //! Every field of the OCI runtime configuration the runtime cannot honour makes the container fail to
 //! start with an error naming the field: one test for each, from the runtime's base configuration
-//! with that one field set. The base configuration itself is accepted.
+//! with that one field set, read from its JSON. The base configuration itself is accepted.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 use wcontainers_arm64::Arm64;
-use wcontainers_runtime::oci_spec::runtime::Spec;
-use wcontainers_runtime::{Error, Image, Machine, Runtime, RuntimeSettings, System, base_spec};
+use wcontainers_runtime::{
+    Error, Image, Machine, Runtime, RuntimeSettings, System, base_spec, spec_from_json,
+};
 use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, Tuning};
 
 /// A root holding only its own directory.
@@ -40,7 +41,7 @@ fn base() -> Value {
 }
 
 fn make(value: Value) -> Result<(), Error> {
-    let spec: Spec = serde_json::from_value(value).expect("a configuration oci-spec reads");
+    let spec = spec_from_json(&serde_json::to_vec(&value).unwrap())?;
     let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings::default());
     let system = System::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
     let tuning = Tuning {
@@ -89,7 +90,21 @@ macro_rules! refused {
 
 refused! {
     oci_version: "ociVersion", |v| v["ociVersion"] = json!("2.0.0");
-    root_readonly: "root.readonly", |v| v["root"]["readonly"] = json!(true);
+    root_path: "root.path", |v| v["root"] = json!({"path": "rootfs"});
+    root_readonly: "root.readonly", |v| v["root"] = json!({"path": "", "readonly": true});
+    a_field_oci_spec_does_not_read: "hostnmae", |v| v["hostnmae"] = json!("typo");
+    a_process_field_oci_spec_does_not_read: "process.futureProcessField", |v| v["process"]
+        ["futureProcessField"] = json!(true);
+    a_linux_field_oci_spec_does_not_read: "linux.unknownLinuxThing", |v| v["linux"]
+        ["unknownLinuxThing"] = json!({"x": 1});
+    a_mount_field_oci_spec_does_not_read: "mounts[2].label", |v| v["mounts"][2]["label"] =
+        json!("x");
+    uid_mappings: "uidMappings", |v| v["uidMappings"] =
+        json!([{"containerID": 0, "hostID": 1000, "size": 1}]);
+    gid_mappings: "gidMappings", |v| v["gidMappings"] =
+        json!([{"containerID": 0, "hostID": 1000, "size": 1}]);
+    a_gid_mapped_mount: "mounts[0].gidMappings", |v| v["mounts"][0]["gidMappings"] =
+        json!([{"containerID": 0, "hostID": 1000, "size": 1}]);
     a_bind_mount: "mounts[6]", |v| v["mounts"].as_array_mut().unwrap().push(
         json!({"destination": "/data", "type": "bind", "source": "/srv", "options": ["rbind"]}));
     a_mount_of_another_file_system: "mounts[6]", |v| v["mounts"].as_array_mut().unwrap().push(
@@ -117,6 +132,14 @@ refused! {
         ["capabilities"]["bounding"].as_array_mut().unwrap().push(json!("CAP_SYS_ADMIN"));
     process_capabilities_ambient: "process.capabilities.ambient", |v| v["process"]
         ["capabilities"]["ambient"] = json!(["CAP_KILL"]);
+    process_capabilities_absent: "process.capabilities", |v| {
+        v["process"].as_object_mut().unwrap().remove("capabilities"); };
+    process_capabilities_effective_absent: "process.capabilities.effective", |v| {
+        v["process"]["capabilities"].as_object_mut().unwrap().remove("effective"); };
+    process_capabilities_permitted_absent: "process.capabilities.permitted", |v| {
+        v["process"]["capabilities"].as_object_mut().unwrap().remove("permitted"); };
+    process_capabilities_bounding_absent: "process.capabilities.bounding", |v| {
+        v["process"]["capabilities"].as_object_mut().unwrap().remove("bounding"); };
     process_capabilities_inheritable: "process.capabilities.inheritable", |v| v["process"]
         ["capabilities"]["inheritable"] = json!(["CAP_KILL"]);
     process_rlimits: "process.rlimits[0]", |v| v["process"]["rlimits"] =
@@ -153,7 +176,9 @@ refused! {
         json!("system_u:object_r:container_file_t:s0");
     linux_masked_paths: "linux.maskedPaths", |v| v["linux"]["maskedPaths"] = json!(["/proc/kcore"]);
     linux_readonly_paths: "linux.readonlyPaths", |v| v["linux"]["readonlyPaths"] =
-        json!(["/proc/sys"]);
+        json!(["/proc/sys", "/proc/bus"]);
+    linux_readonly_paths_absent: "linux.readonlyPaths", |v| {
+        v["linux"].as_object_mut().unwrap().remove("readonlyPaths"); };
     linux_intel_rdt: "linux.intelRdt", |v| v["linux"]["intelRdt"] = json!({"closID": "one"});
     linux_memory_policy: "linux.memoryPolicy", |v| v["linux"]["memoryPolicy"] =
         json!({"mode": "MPOL_BIND", "nodes": "0"});
