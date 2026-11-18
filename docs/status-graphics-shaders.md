@@ -1358,6 +1358,8 @@ scratch `graphics-shaders/run27`:
   new cases (draw3.log), and the Windows clippy of the crate clean (draw4.log, which also holds the
   DXIL gather failure that led to the reader change).
 - Not rerun this run: the WebAssembly comparison and Chrome's compile of the written files.
+- At the end of run 27 the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` and the
+  desktop's `C:\wc\target\phase-2-graphics-shaders` and `C:\wc\probe` were deleted.
 
 Run 26, 2026-11-18, counts only (desktop shared through the queue; the laptop unreachable), logs in
 scratch `graphics-shaders/run26`:
