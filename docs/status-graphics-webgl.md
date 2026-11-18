@@ -1795,7 +1795,8 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   build directory C:\wc\target\phase-2-graphics-webgl (19.6 GB) was deleted at the end of run 15,
   as the runs are now asked to; the next build.cmd makes it again from nothing. C: had 407 GB free
   after. Run 16 built it again from nothing and deleted it at its end. Run 17 did the same (C: had 441 GB free after). Run 18 did the same (C: had 443 GB free after). G3b run 1 built it again (with the
-  Direct3D 11 library's WebGL 2 build in its `webgl` folder) and deleted it at its end.
+  Direct3D 11 library's WebGL 2 build in its `webgl` folder) and deleted it at its end (11.4 GB;
+  C: had 432 GB free after).
 - C:\wc\tools\mozangle-0.7.1-patched (run 5): the mozangle crate's sources, unpacked and patched by
   angle\build.cmd. Its size was not measured.
 - Left by the independent check of the first run (not ours to remove without asking): the pictures
