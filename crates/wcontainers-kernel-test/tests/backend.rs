@@ -77,6 +77,29 @@ fn attributes_and_allocation_match_reference() {
     }
 }
 
+/// Mappings of backend files whose pages are read when first touched, by the program or by the
+/// kernel's copies, also saved and brought back: far into a sparse file past 5 GiB, shared and
+/// private, across a fork and with the file changed while mapped. Nothing is read whole.
+#[test]
+fn mapped_pages_read_when_touched_match_reference() {
+    use wcontainers_kernel::reason;
+    let injections = driver::Injections {
+        saves: 4,
+        save_gap: 10,
+        ..Default::default()
+    };
+    for run in same_on("backendmaps", injections, true) {
+        assert_warned_only(
+            &run,
+            &[
+                reason::BACKEND_PAGES_WRITTEN_WHOLE,
+                reason::FAULT_SYNDROME_APPROXIMATED,
+            ],
+        );
+        assert!(run.saved > 0);
+    }
+}
+
 /// File capabilities set and read back with getxattr on a backend file (the reference answers
 /// EINVAL to the reading).
 #[test]
@@ -229,7 +252,7 @@ fn assert_only_written_whole(run: &driver::Run) {
     );
 }
 
-/// Checks that a run warned of nothing but `allowed` and of backend files read whole when mapped.
+/// Checks that a run warned of nothing but `allowed` and of backend programs read whole when run.
 fn assert_warned_only(run: &driver::Run, allowed: &[&str]) {
     let others: Vec<_> = run
         .warnings

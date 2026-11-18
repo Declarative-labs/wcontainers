@@ -587,6 +587,7 @@ impl AddressMap {
             let from = start.max(mapping.start);
             let mut copies = Vec::new();
             if let Backing::File {
+                node,
                 offset,
                 file_end,
                 copied,
@@ -595,9 +596,17 @@ impl AddressMap {
             {
                 let to = end.min(*file_end);
                 let first = *offset / PAGE_SIZE;
+                let page = |at: u64| first + (at - mapping.start) / PAGE_SIZE;
+                // A page not read from the backend yet is copied when it has come.
+                let unread = crate::shared::unfilled(node, page(from)..page(to.max(from)));
                 let mut at = from;
                 while at < to {
-                    if copied.insert(first + (at - mapping.start) / PAGE_SIZE) {
+                    let number = page(at);
+                    if unread.iter().any(|run| run.contains(&number)) {
+                        at += PAGE_SIZE;
+                        continue;
+                    }
+                    if copied.insert(number) {
                         match copies.last_mut() {
                             Some((_, run_end)) if *run_end == at => *run_end = at + PAGE_SIZE,
                             _ => copies.push((at, at + PAGE_SIZE)),
@@ -720,8 +729,24 @@ impl AddressMap {
         Ok(())
     }
 
-    /// Tells the CPU side what a mapping's pages allow: nothing wholly past a file's end, and no
-    /// writing where a private file page is not copied yet, so the first write comes back to copy it.
+    /// Tells the CPU side again what the mapping holding `address` allows, once pages of its file
+    /// came that it showed with no access.
+    pub fn refresh(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        address: u64,
+    ) -> Result<(), Errno> {
+        match self.find(address).cloned() {
+            Some(mapping) => self.apply_permissions(cpu, memory, &mapping),
+            None => Ok(()),
+        }
+    }
+
+    /// Tells the CPU side what a mapping's pages allow: nothing wholly past a file's end, nothing
+    /// where a backend file's page is not read yet, so the first touch comes back to read it, and
+    /// no writing where a private file page is not copied yet, so the first write comes back to
+    /// copy it.
     fn apply_permissions(
         &mut self,
         cpu: &mut dyn Cpu,
@@ -745,6 +770,16 @@ impl AddressMap {
         if mapping.end > split {
             cpu.set_permissions(memory, split, mapping.end - split, Permissions::empty())
                 .map_err(errno::from_cpu)?;
+        }
+        if let Backing::File { node, offset, .. } = &mapping.backing {
+            let first = offset / PAGE_SIZE;
+            let address = |page: u64| mapping.start + (page - first) * PAGE_SIZE;
+            let last = first + (split - mapping.start) / PAGE_SIZE;
+            for run in crate::shared::unfilled(node, first..last) {
+                let from = address(run.start);
+                cpu.set_permissions(memory, from, address(run.end) - from, Permissions::empty())
+                    .map_err(errno::from_cpu)?;
+            }
         }
         Ok(())
     }

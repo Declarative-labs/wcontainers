@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use wcontainers_abi::{Cpu, MemoryId, PAGE_SIZE, Permissions};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
-use crate::memory::AddressMap;
+use crate::memory::{AddressMap, Backing, page_down, page_up};
 use crate::process::{LIMITS, Limit};
 use crate::{Errno, errno};
 
@@ -37,9 +37,11 @@ pub(crate) struct Guest<'a> {
 
 impl Guest<'_> {
     /// How many bytes from `address` on can be accessed as `wanted`, growing the stack as a fault there
-    /// would.
+    /// would. Pages of backend files in the range that are not read yet are asked for, and while
+    /// they are awaited nothing is accessible: the call sees a fault, and runs again once they came
+    /// (`Kernel::system_call`).
     pub fn accessible(&mut self, address: u64, length: u64, wanted: Permissions) -> u64 {
-        let done = self.map.borrow().accessible(address, length, wanted);
+        let mut done = self.map.borrow().accessible(address, length, wanted);
         if done < length
             && self.map.borrow().find(address + done).is_none()
             && self
@@ -54,9 +56,36 @@ impl Guest<'_> {
                 )
                 .unwrap_or(false)
         {
-            return self.map.borrow().accessible(address, length, wanted);
+            done = self.map.borrow().accessible(address, length, wanted);
+        }
+        if done > 0 && !self.read_in(address, address + done) {
+            return 0;
         }
         done
+    }
+
+    /// Asks for the pages of mapped backend files in `[start, end)` not read yet; whether all are
+    /// there.
+    fn read_in(&self, start: u64, end: u64) -> bool {
+        let map = self.map.borrow();
+        let mut there = true;
+        let mut at = start;
+        while at < end {
+            let Some(mapping) = map.find(at) else { break };
+            if let Backing::File { node, offset, .. } = &mapping.backing {
+                let to = mapping.end.min(end);
+                let page = |address: u64| (offset + (address - mapping.start)) / PAGE_SIZE;
+                let pages = page(page_down(at))..page(page_up(to));
+                if !crate::shared::unfilled(node, pages.clone()).is_empty() {
+                    // Read ahead as a fault would, so a copy in pieces waits once.
+                    let ahead = pages.start + crate::shared::readahead_pages(node);
+                    let reach = page(mapping.end).min(ahead).max(pages.end);
+                    there &= crate::shared::fill(node, pages.start..reach).is_ok();
+                }
+            }
+            at = mapping.end;
+        }
+        there
     }
 
     /// `copy_from_user` of the whole range, or `EFAULT`.

@@ -304,6 +304,9 @@ pub(crate) struct Thread {
     pub vruntime: u64,
     /// When the thread was woken and has not yet run, on the monotonic clock.
     pub woken_at: Option<u64>,
+    /// Whether it waits for pages of a mapped file its program touched, so once woken it goes on
+    /// from the instruction that touched them instead of running a call again.
+    pub filling: bool,
     /// The address and syndrome of the thread's last fault, which every later frame shows.
     pub fault: (u64, u64),
     /// Signals a fault forced on the thread, which even the first process acts on.
@@ -484,7 +487,9 @@ impl Taken {
             return path;
         }
         let path = read();
-        self.push(TakenItem::Path(address, path.clone()));
+        if path != Err(crate::Errno::PARKED) {
+            self.push(TakenItem::Path(address, path.clone()));
+        }
         path
     }
 }
@@ -569,6 +574,7 @@ impl Thread {
             runtime: 0,
             vruntime: 0,
             woken_at: None,
+            filling: false,
             fault: (0, 0),
             forced: 0,
             schedule: Schedule::default(),

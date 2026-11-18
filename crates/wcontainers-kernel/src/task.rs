@@ -166,7 +166,25 @@ impl Kernel {
     fn system_call(&mut self, cx: &mut Context<'_>, tid: Tid, call: Syscall, again: bool) {
         self.threads[&tid].taken.borrow_mut().rewind();
         self.begin_asking(tid);
-        let outcome = syscall::dispatch(self, cx, tid, call, again);
+        let mut outcome = syscall::dispatch(self, cx, tid, call, again);
+        // A copy that reached pages of a mapped backend file not read yet found them not there:
+        // a call that failed for it runs again once they have come, as Linux's copy waits for
+        // the fault. One that did part of its work first keeps its short result (counted).
+        if let Some(client) = self.files.backend.clone()
+            && client.waits_for_pages(tid)
+        {
+            match outcome {
+                syscall::Outcome::Return(value) if !crate::errno::Errno::is_error_return(value) => {
+                    client.stop_waiting_for_pages(tid);
+                    self.counters
+                        .count(cx.host, reason::COPY_SHORT_OF_PAGES, call.number);
+                }
+                syscall::Outcome::Return(_) | syscall::Outcome::Restart => {
+                    outcome = syscall::Outcome::Parked;
+                }
+                syscall::Outcome::Parked | syscall::Outcome::Gone => {}
+            }
+        }
         self.end_asking(tid, matches!(outcome, syscall::Outcome::Parked));
         if let Some(thread) = self.threads.get(&tid) {
             syscall::ipc::settle(self, cx, thread.process);
@@ -391,6 +409,15 @@ impl Kernel {
         for _ in 0..core::mem::take(&mut cx.refused) {
             self.counters.count(cx.host, reason::HOST_CANNOT, 0);
         }
+        let unasked = self
+            .files
+            .backend
+            .as_ref()
+            .map_or(0, |client| client.unasked());
+        for _ in 0..unasked {
+            self.counters
+                .count(cx.host, reason::BACKEND_PAGES_UNASKED, 0);
+        }
         self.counters.flush(cx.host);
     }
 
@@ -497,9 +524,13 @@ impl Kernel {
         if let Some(channel) = thread.call.wait.take() {
             thread.woken_at = Some(entry_now);
             let deadline = thread.call.deadline;
+            let filling = core::mem::take(&mut thread.filling);
             self.parked.remove(tid, channel, deadline);
-            self.woken.push_back(tid);
-            // Its registers still hold the call, which runs again before it goes on.
+            // Its registers still hold the call, which runs again before it goes on, or the
+            // instruction that touched pages it waited for, which touches them again.
+            if !filling {
+                self.woken.push_back(tid);
+            }
             self.make_runnable(tid, Resume::FromRegisters);
         }
     }

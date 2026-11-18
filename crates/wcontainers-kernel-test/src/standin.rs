@@ -396,7 +396,7 @@ impl StandIn {
         let mut moved = Vec::new();
         for (id, block) in &self.blocks {
             let mut bytes = MmapMut::map_anon(block.bytes.len()).expect("host memory for a block");
-            bytes.copy_from_slice(&block.bytes);
+            copy_touched(&block.bytes, &mut bytes);
             moved.push((
                 block.bytes.as_ptr() as usize,
                 block.bytes.len(),
@@ -735,5 +735,18 @@ impl Cpu for StandIn {
             .get_mut(&thread)
             .expect("thread exists")
             .registers = *from;
+    }
+}
+
+/// Copies the pages of `from` that hold anything into `to`, which is fresh zeroed memory of the
+/// same length, so a block much larger than what its mappings touched (a mapping far into a
+/// file) takes host memory only for what they touched.
+fn copy_touched(from: &MmapMut, to: &mut MmapMut) {
+    const CHUNK: usize = 4096;
+    for (index, chunk) in from.chunks(CHUNK).enumerate() {
+        if chunk.iter().any(|byte| *byte != 0) {
+            let start = index * CHUNK;
+            to[start..start + chunk.len()].copy_from_slice(chunk);
+        }
     }
 }

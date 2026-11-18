@@ -470,7 +470,20 @@ pub(crate) fn path_argument(
 ) -> Result<alloc::vec::Vec<u8>, Errno> {
     let mut taken = core::mem::take(kernel.thread_mut(tid).taken.get_mut());
     let path = taken.path(address, || {
-        guest(kernel, cx, tid).read_path_maybe_empty(address)
+        let path = guest(kernel, cx, tid).read_path_maybe_empty(address);
+        // A path in pages of a mapped backend file not read yet is copied once they have come.
+        match path {
+            Err(Errno::EFAULT)
+                if kernel
+                    .files
+                    .backend
+                    .as_ref()
+                    .is_some_and(|client| client.waits_for_pages(tid)) =>
+            {
+                Err(Errno::PARKED)
+            }
+            path => path,
+        }
     });
     *kernel.thread_mut(tid).taken.get_mut() = taken;
     let path = path?;
