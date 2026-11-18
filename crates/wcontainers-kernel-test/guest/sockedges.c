@@ -439,6 +439,55 @@ static void zero_reads(void) {
     close(p[1]);
 }
 
+// listen on local sockets that are connected: refused unnamed, and a call that changes nothing
+// when named, for socket pairs, connected and accepted sockets, also after the peer closed.
+static void connected_listens(void) {
+    char buf[4];
+    int types[] = {SOCK_STREAM, SOCK_SEQPACKET, SOCK_DGRAM};
+    for (int t = 0; t < 3; t++) {
+        for (int named = 0; named < 2; named++) {
+            int p[2];
+            socketpair(AF_UNIX, types[t] | SOCK_NONBLOCK, 0, p);
+            printf("pair of type %d named %d: ", types[t], named);
+            struct sockaddr_un automatic = {AF_UNIX};
+            if (named)
+                bind(p[0], (void *)&automatic, sizeof(sa_family_t));
+            result("listen", listen(p[0], -1));
+            int accepting = 0;
+            socklen_t size = sizeof accepting;
+            getsockopt(p[0], SOL_SOCKET, SO_ACCEPTCONN, &accepting, &size);
+            printf("accepting %d\n", accepting);
+            send(p[1], "y", 1, MSG_DONTWAIT);
+            result("receive", recv(p[0], buf, sizeof buf, MSG_DONTWAIT));
+            result("accept", accept4(p[0], 0, 0, SOCK_NONBLOCK));
+            close(p[0]);
+            close(p[1]);
+        }
+    }
+    for (int type = 1; type <= 5; type += 4) {
+        struct sockaddr_un server = {AF_UNIX, "\0lsrv"}, client = {AF_UNIX, "\0lcli"};
+        socklen_t length = offsetof(struct sockaddr_un, sun_path) + 5;
+        int l = socket(AF_UNIX, type, 0);
+        bind(l, (void *)&server, length);
+        listen(l, 5);
+        int c = socket(AF_UNIX, type | SOCK_NONBLOCK, 0);
+        bind(c, (void *)&client, length);
+        connect(c, (void *)&server, length);
+        printf("type %d: ", type);
+        result("listen on the client", listen(c, 3));
+        int a = accept4(l, 0, 0, SOCK_NONBLOCK);
+        result("listen on the accepted", listen(a, 3));
+        int other = socket(AF_UNIX, type, 0);
+        result("connect to the client", connect(other, (void *)&client, length));
+        close(a);
+        result("listen after the peer closed", listen(c, 3));
+        result("receive", recv(c, buf, sizeof buf, MSG_DONTWAIT));
+        close(other);
+        close(c);
+        close(l);
+    }
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     signal(SIGPIPE, SIG_IGN);
@@ -456,5 +505,6 @@ int main(int argc, char **argv) {
     all_hosts();
     dgram_disconnects();
     zero_reads();
+    connected_listens();
     return 0;
 }

@@ -916,8 +916,13 @@ pub(super) fn listen(
     if !listener.connection() {
         return Err(Errno::EOPNOTSUPP);
     }
-    if listener.name.is_none() || listener.state == State::Connected {
+    if listener.name.is_none() {
         return Err(Errno::EINVAL);
+    }
+    // A named connected socket is left as it is, and the call succeeds (measured on the
+    // reference: socket pairs, connected and accepted sockets, also after the peer closed).
+    if listener.state == State::Connected {
+        return Ok(0);
     }
     // A negative backlog counts as none (`sk_max_ack_backlog` is unsigned, read as an int).
     listener.max_backlog = backlog as u32;
