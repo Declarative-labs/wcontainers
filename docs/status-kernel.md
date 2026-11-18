@@ -3365,8 +3365,16 @@ K6c, in this order:
    wc-kernel-ltp-served:20260930 must exist, ltp/build.sh makes it). When it ends, run every test
    that differs again at the newest commit into a second file, and compare both with `ltp compare
    crates/wcontainers-kernel-test/ltp/reference-20260930.tsv <file>`.
-2. Rerun the fixed-not-rerun tests listed under "K6c, third run" and confirm.
-3. Parts not built that tests reach, largest first: the cgroup2 mount at /sys/fs/cgroup (read
+2. A wrong answer of the most serious kind, found late in this run (ours-5 at fb0bc97):
+   math float_power, float_iperb and float_trigo (120 threads each) end with glibc's "double
+   free or corruption (out)" and SIGABRT on ours; the reference passes. Find the cause before
+   anything else. A suspect, not checked: the stand-in's exclusive monitor (QEMU's
+   `exclusive_addr` and `exclusive_val`) survives a switch between threads, where Linux's
+   exception return clears it, so an STXR after a switch can succeed on a value changed and
+   changed back (glibc's atomic free lists). If so, the CPU side must clear it whenever a thread
+   is run again (a boundary question for the orchestrator: the translator must do the same).
+3. Rerun the fixed-not-rerun tests listed under "K6c, third run" and confirm.
+4. Parts not built that tests reach, largest first: the cgroup2 mount at /sys/fs/cgroup (read
    only, the container's root cgroup, with /proc/cgroups; the reference's files, modes and
    contents are in scratch k6c3/cgroup-reference.txt), which
    the 8 controllers tests reach; /proc/<pid>/mem (FOLL_FORCE: reads of PROT_NONE, writes into
@@ -3376,18 +3384,18 @@ K6c, in this order:
    page residency for mincore (mincore03, mlock201); system time (times03: time the kernel spends
    in a call could count as the thread's system time); keyctl and /proc/keys; IPV6_RTHDR;
    PROCMAP_QUERY; MSG_MORE on UDP; remap_file_pages; the madvise advices counted.
-4. The slow tests (46 timeouts): run them with a long limit (LTP_LIMIT 3600, 2 jobs) to show
+5. The slow tests (46 timeouts): run them with a long limit (LTP_LIMIT 3600, 2 jobs) to show
    their verdicts; growfiles needs about 5000 s each at the measured 1400 messages a second, so
    show a sample and excuse the rest under section 15 (file access is slower until the cache)
    only with that evidence. Large reads on the backend run their chunks again on each wait
    (quadratic in chunks, like sendfile was): give read, write and copy_file_range rounds with
    `Client::checkpoint` as sendfile has.
-5. Settle the written gap list from section 15 only (the draft under "K6c, second run", and
+6. Settle the written gap list from section 15 only (the draft under "K6c, second run", and
    the causes named in this run's table), commit the results file of the last whole comparison
    under ltp/, and write the counters list (Not built, by counter). The system calls list is
    current (Done 256, Missing 6, Refused 65).
-6. Three fresh layer 1 seeds at the end (fresh seeds start at 9191003).
-7. The whole suite (started detached at adc5628c, scratch k6c3/suite.log, load in suite.load):
+7. Three fresh layer 1 seeds at the end (fresh seeds start at 9191003).
+8. The whole suite (started detached at adc5628c, scratch k6c3/suite.log, load in suite.load):
    read its result.
 
 After K6b (fifth run), in this order (none of these holds K6b):
