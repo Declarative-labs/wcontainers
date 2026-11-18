@@ -85,7 +85,7 @@ What was done about each:
   SIGBUS, because Linux starts the handler with the case's AC and the handler's own unaligned accesses then
   fault. The read-back handler now clears AC with NT and ID, first thing. Plan sections 2, 7.2 (`may_differ`,
   `leave`) and 7.3 say so.
-- Suite time: see the proof below.
+- Suite time: measured again below, with no zig stall.
 
 Proof of run 6 (the Mac, Apple M5):
 - origin/phase-1-translator: nothing new at the start (2026-11-18 00:10).
@@ -96,6 +96,13 @@ Proof of run 6 (the Mac, Apple M5):
 - Same cases: `same-cases.sh d27cd70 1 2 3 8807` (`WC_OUTPUT_ROOT` scratch `x2/same`, log
   `x2/run6/same-cases.log`, Mac load 86 to 94): layer 1 1215 forms and layer 2 64 programs the same for each
   seed. Nothing this run changed draws cases.
+- Suite at 3cfa9e1 (`WC_REFERENCE_X86_64=tom@192.168.2.240`, scratch `x2/run6/suite.log`): 78 passed (run 5's
+  77 and the refusal test), 0 failed, 11 ignored, 23 minutes 34 seconds, Mac load 54.1 at start and 34.3 at
+  end (run 5: 24 minutes 7 seconds at 42.0 to 43.8, and 27 minutes 10 seconds at 37.9 to 64.5). No zig
+  build stalled.
+- Clippy with `-D warnings` on the test crate (all targets) and on the runner for both CPUs, `cargo fmt
+  --check`: clean.
+- origin/phase-1-translator: fetched again at the end (00:44), nothing new.
 
 ## X2, run 5 (2026-11-17)
 
