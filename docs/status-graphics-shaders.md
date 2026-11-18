@@ -417,6 +417,11 @@ Run 13 (variants):
 
 Next (in order):
 - The rest of the variants (the list above), each with a drawn test as run 10's:
+- `PROVOKING_LAST` (open question, not built): a pixel program sees only one value per primitive
+  for a flat input, the provoking vertex's, so no rewrite of the programs alone picks the last
+  vertex's. The exact routes are the front's: lists drawn with each primitive's indices rotated
+  ((a, b, c) as (c, a, b), winding kept), strips and fans made lists first. If that holds, the flag
+  has no use and the interface could drop it; until decided it stays refused by name.
 - Filtering and border in the program (both read `HelperValue::SamplerState` as mirror-once does;
   border with linear filtering needs the filter in the program too), decoded textures
   and targets written in the program, pulled vertices, constants through a texture, typed buffers
@@ -593,7 +598,11 @@ Run 13, 2026-11-17, counts only:
   the whole test ran and passed as committed (`run13/draw8.log`).
 - Laptop (i7-8750H, load average 0 to 1): the suite without the ignored corpora passes after
   recording the new own verdicts (`vs_deep`, `ps_mirror`: convert), clippy with warnings denied
-  passes; Windows clippy with warnings denied passes.
+  passes; Windows clippy with warnings denied passes. At the end of the run the whole suite with
+  every corpus (`--include-ignored --skip mutated`, the plan's corpus and the real programs'
+  shaders) passes, every verdict and cache record as recorded (corpus test 179 s;
+  `run13/full-suite.log`). Not re-run: Chrome's compile and the WebAssembly comparison (the
+  plain conversions did not change).
 
 Run 12, 2026-11-17, counts only:
 - `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, scratch
