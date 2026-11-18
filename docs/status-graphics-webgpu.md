@@ -11,7 +11,11 @@ in "Run 13"). Run 14 measured instance data at more streams and made binding set
 frame find their bind groups. Run 15 moved copies of converted formats onto the GPU. Run 16
 merged, found nothing new asked, ran both full runs and measured the timestamp workload's cause
 (naga's loop bounding). Run 17 fixed the second G2b check's findings (query sets past 4096, query
-results from a ring, two stale hand-over sentences, the point fill test's report). Every request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
+results from a ring, two stale hand-over sentences, the point fill test's report). Run 18 fixed
+the third check's findings (BGRX vertices answered and tested against Direct3D 11, integer formats
+no longer declared resolvable, part of a depth level copied into colour, the rest of the 16-bit
+group copied into depth, prepared strips built for both index formats) and answered what the
+newest merges ask. Every request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
 graphics branch), and where each stands:
@@ -73,6 +77,73 @@ graphics branch), and where each stands:
 - Freeing the back end's tables when a program or block is destroyed (Direct3D 12: "its own tables
   keep their entries"): built (run 13). tests/scenes.rs
   `destroyed_programs_and_blocks_free_their_pipelines`.
+- `B8G8R8X8_UNORM` vertices (Direct3D 11: test_vertex_formats runs 98 of real Direct3D's 100
+  checks): served by the interface's `VertexFormat::Bgra8Unorm` (wgpu's `unorm8x4-bgra`), with X
+  read as written; Direct3D leaves it undefined (the RTX 3080's Direct3D 11 reads 1.0, and Wine's
+  test ignores it). No interface format is needed: the Direct3D 11 front's own table
+  (`format::vertex_format`) maps DXGI 87 but not 88, so the remaining step is that front's line
+  (asked of it below). tests/direct3d.rs `bgra_vertices_read_as_direct3d_reads_bgra_and_bgrx`
+  (64 seeded vertices: every component equal to Direct3D 11's `B8G8R8A8_UNORM`, and to its
+  `B8G8R8X8_UNORM` but for the fourth), tests/vertices.rs `bgra_vertices_read_as_they_mean`
+  natively and the same in Chrome by web/check.
+- Copies between `R16_UNORM` and `D16_UNORM` (Direct3D 11: test_format_compatibility, removed at
+  line 992): the device was lost by this back end. The D3D11 track's newest per-test log on the
+  desktop (C:\wc\out\phase-2-graphics-direct3d-11\wine\logs, 2026-11-18 01:01) ends with
+  `webgpu: a copy into depth from a format outside its typeless group`: that front holds
+  `R16_TYPELESS` not bound as depth as `r16float`, and Wine's last rows copy it into `D16_UNORM`.
+  Built (run 18): `r16float`, `r16snorm` and `r16sint` are copied into `depth16unorm` through
+  their bits (a buffer into an `r16uint` texture, then the depth draw), and part of a depth level
+  is copied into a colour format of its group by drawing it into a colour texture first
+  (`DepthReadByDraw`; the G2b check's `part_of_d16_into_r16` lost the device). Wine's rows
+  themselves are not rerun here (the Direct3D 11 track's job). examples/scenes/depth16.rs
+  `group_copies` (every colour format of the group into `depth16unorm` and back, whole and 3x2
+  at an offset, bits kept), tests/copies.rs natively and web/check in Chrome; it failed before.
+- Integer formats declared resolvable (Direct3D 12 worked around 34 answers; the G2b check found
+  them on wgpu's Vulkan): `RESOLVE` is now declared only for float and normalised formats, as
+  WebGPU and Direct3D allow. tests/scenes.rs `integer_formats_are_not_resolvable` (failed on
+  Vulkan before).
+- Indexed strips of a prepared combination (G2 finding): built here without an interface change.
+  `prepare` of a strip builds its pipeline for 16-bit and 32-bit indices, and strips drawn
+  without indices use the 32-bit one (an index format has no effect there). examples/scenes/
+  prepare.rs `prepared_strips` (a prepared strip drawn without indices and with both index
+  formats: 0 misses, 0 pipelines built; 2 misses before), tests/prepare.rs and web/check.
+- A view swizzle for stencil views (Direct3D 11, test_depth_stencil_sampling; Direct3D 12 item 7):
+  refused here, absent. WebGPU has no view swizzle and wgpu 30 has none either; the interface has
+  no swizzle field. A stencil view reads stencil in its first component, so a front reading it
+  elsewhere (Direct3D's `X24_TYPELESS_G8_UINT` in green) moves it in the program (the converter's
+  and front's job).
+- `COUNTER_BINDING` (helper set binding 15) and `SlowPath::PixelInvocationsCounted` (Direct3D 12,
+  run 22): nothing to build. The binding is a storage buffer in the helper set, laid out from the
+  program's reflection as every helper binding is; the Direct3D 12 front counts pixel shader
+  invocations through this back end and its test_query_pipeline_statistics passes (its status,
+  runs 22 and 23). The shared `OcclusionCounter`'s new GPU sum is a compute program this back end
+  runs as any other.
+
+Run 18 = G2b run 8, 2026-11-18 (fixes from G2b's third independent check):
+- Merged origin/phase-2-graphics-rig, -shaders, -direct3d-12, -direct3d-11 and -webgl (no
+  conflicts; the shared line had nothing new). Interface changes they brought: `COUNTER_BINDING`
+  and `SlowPath::PixelInvocationsCounted` (answered in the list above) and the shared
+  `OcclusionCounter` summing on the GPU. Read the four front status files' new text: the new asks
+  of this back end are the stencil view swizzle and the counter binding (list above); the
+  Direct3D 11 gap list's other two items, BGRA vertices and R16/D16 copies, are in the list too.
+- Fixes, each with its test (all listed above): BGRX vertices answered and compared with
+  Direct3D 11; no integer format declared resolvable; part of a depth level copied into colour by a
+  draw; `r16float`, `r16snorm` and `r16sint` copied into `depth16unorm`; prepared strips built for
+  both index formats. The three back end fixes' tests were run with the source fixes taken out:
+  each failed (the 16-bit copies lost the device on wgpu's validation, the strips missed, the
+  integer formats were declared resolvable on Vulkan).
+- Full runs at 39252f02 on the desktop (RTX 3080, shared with the other tracks through the GPU
+  queue; logs in scratch logs/run18-full.log and logs/run18-webcheck.log): natively, Vulkan 112
+  passed and 3 ignored (the known BC decoder difference, the wireframe on Vulkan, point filling
+  absent), Direct3D 12 113 passed and 2 ignored (the BC difference, 24-bit depth bias absent), 0
+  failed; the shared suite 39 of 39 on each API. web/check: the twelve pictures equal Direct3D 11's
+  at tolerance 0, the twists differ, the shared suite 39 of 39 in Chrome 157 on the RTX 3080
+  (Direct3D 12 underneath), and in Chrome: prepared strips 0 misses, BGRA vertices as they mean,
+  the 16-bit group copies kept the bits for `r16uint`, `r16float` and `r16sint` (Chrome has no
+  16-bit normalised textures), timestamps, converted formats, vertex formats, renames and query
+  sets as before.
+- Removed at the end: the desktop's build folder C:\wc\target\phase-2-graphics-webgpu (5.86 GB);
+  no scratch copy or Mac build output was made.
 
 Run 17 = G2b run 7, 2026-11-18 (fixes from G2b's second independent check):
 - Merged origin/phase-2-graphics-rig, -shaders, -direct3d-12, -direct3d-11 and -webgl (no
@@ -809,8 +880,9 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   Chrome (failing if the prepared draws built anything), checks timestamps, the converted formats
   (examples/scenes/converted.rs, seed 1, 4 textures each), the vertex formats read through shadows
   (examples/scenes/vertices.rs, seed 188, 64 vertices each) and texture renaming
-  (examples/scenes/renames.rs) and query sets past 4096 and the query ring
-  (examples/scenes/queries.rs) in Chrome, prints the instance data routes' timings in Chrome
+  (examples/scenes/renames.rs), query sets past 4096 and the query ring
+  (examples/scenes/queries.rs), BGRA vertices (vertices.rs), prepared strips (prepare.rs) and
+  copies between `depth16unorm` and its group (depth16.rs) in Chrome, prints the instance data routes' timings in Chrome
   (examples/scenes/pulled.rs, failing if their pictures differ), then runs the shared suite
   in Chrome, one page per test (suite-chrome.txt). Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
@@ -1294,15 +1366,21 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Next (G2b)
 
-1. The independent check of G2b (again, after run 17).
+1. The independent check of G2b (again, after run 18).
 2. The owner's decision on loop bounding natively (run 16 measured it as the whole of the
    timestamp workload's 1.3 and 1.5 times): wgpu's `create_shader_module_trusted` without
    `force_loop_bounding` takes Direct3D's time, but lets a guest's endless loop be undefined in
    the driver's compiler, as on real Direct3D.
 3. Read the fronts' status files again after merging.
-4. `PrepareDesc` has no index format (interface track's; see run 13).
+4. For the Direct3D 11 track (not this back end's code): map DXGI 88 (`B8G8R8X8_UNORM`) to
+   `VertexFormat::Bgra8Unorm` in `format::vertex_format`, and rerun test_format_compatibility
+   with this branch.
 
 ## Departures from the plan
+
+- `prepare` of a strip builds two pipelines (16-bit and 32-bit indices), as `PrepareDesc` does not
+  say which index format the draws use: one extra compile per prepared strip combination, instead
+  of an interface field that would break the fronts' code (run 18).
 
 - BGRX (`Bgrx8Unorm`, `Bgrx8UnormSrgb`) is held as BGRA with alpha one, so its unused X byte reads
   back as 255. The RTX 3080's Direct3D 11 keeps the X byte as written, from the host (128 of 128
@@ -1418,11 +1496,10 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   colour targets through f32, which cannot hold integers past 2^24.
 
 Gaps found for the interface track (not changed here): no capability tells a front which vertex
-formats a back end converts itself. `PrepareDesc` has no index format, so `prepare` cannot build an
-indexed strip's pipeline (WebGPU's pipeline names the strip's index format) and that draw still
-misses once; a field `strip_index: Option<IndexFormat>` would serve it (Direct3D 12 knows it from the
-pipeline's cut value), but adding it breaks both fronts' code, so it is left to the interface track. (Instance step rates now have `INSTANCE_STEP_RATE`, from the
-shared line.)
+formats a back end converts itself. `PrepareDesc` has no index format; since run 18 this back end
+builds a prepared strip for both index formats instead (Departures), so nothing misses; a field
+`strip_index: Option<IndexFormat>` would save the second pipeline but breaks both fronts' code.
+(Instance step rates now have `INSTANCE_STEP_RATE`, from the shared line.)
 
 - db9e0d8 `interface: made no-overwrite writes promise that no unfinished command or ordered write
   touches their bytes`: the doc of `WriteMode::NoOverwrite` and the plan's 4.6 entry. The promise

@@ -558,11 +558,7 @@ fn raw(
             "the bytecode is a shader of another stage",
         ));
     }
-    Ok(wcontainers_shaders::convert(
-        Source::Dxbc(bytecode),
-        key,
-        None,
-    ))
+    Ok(crate::cache::convert(Source::Dxbc(bytecode), key))
 }
 
 /// The converter's answer in Direct3D's terms, which should be a program of `modules` stages.

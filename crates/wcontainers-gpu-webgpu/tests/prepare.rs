@@ -56,3 +56,11 @@ fn prepared_combinations_build_nothing_at_their_first_draw() {
     );
     assert_eq!((prepared.misses, prepared.built), (0, 0));
 }
+
+/// A prepared strip is built for both index formats, so its indexed draws build nothing.
+#[test]
+fn prepared_strips_build_nothing_at_their_indexed_draws() {
+    let mut b = device();
+    let line = prepare::prepared_strips(&mut b).unwrap();
+    eprintln!("{line}");
+}

@@ -861,11 +861,49 @@ impl WebGpu {
         if df.is_depth_stencil() && (sf != df || !whole) {
             let at = (src.mip, src.layer, [src.origin.x, src.origin.y]);
             if df.kind() != FormatKind::Stencil {
-                let Some(how) = DepthSource::of(sf, df) else {
+                if let Some(how) = DepthSource::of(sf, df) {
+                    self.depth_copy((&s.raw(), sf, how), at, dst, extent, Stream::Main);
+                } else if df == Format::Depth16Unorm
+                    && matches!(sf, Format::R16Float | Format::R16Snorm | Format::R16Sint)
+                {
+                    // The rest of the 16-bit group is drawn from its bits, copied first into
+                    // `r16uint` through a buffer.
+                    let Ok(bits) = self.create_texture(&TextureDesc {
+                        dimension: TextureDimension::D2,
+                        format: Format::R16Uint,
+                        width: extent.width,
+                        height: extent.height,
+                        depth_or_layers: extent.depth_or_layers,
+                        mip_levels: 1,
+                        samples: 1,
+                        usage: TextureUsage::COPY_DST | TextureUsage::SAMPLE,
+                        cube: false,
+                        reinterpret: false,
+                    }) else {
+                        self.fail("the texture a depth copy is drawn from could not be made");
+                        return;
+                    };
+                    let staged = TextureRegion {
+                        texture: &bits,
+                        mip: 0,
+                        layer: 0,
+                        origin: Default::default(),
+                        stencil: false,
+                    };
+                    self.copy_texture_impl(src, &staged, extent);
+                    let how = DepthSource::Unorm16;
+                    let raw = bits.0.raw();
+                    self.depth_copy(
+                        (&raw, Format::R16Uint, how),
+                        (0, 0, [0, 0]),
+                        dst,
+                        extent,
+                        Stream::Main,
+                    );
+                } else {
                     self.fail("a copy into depth from a format outside its typeless group");
                     return;
-                };
-                self.depth_copy((&s.raw(), sf, how), at, dst, extent, Stream::Main);
+                }
             }
             if df.kind() != FormatKind::Depth {
                 if sf != df {
@@ -904,6 +942,19 @@ impl WebGpu {
             } else {
                 SlowPath::CopyThroughBuffer
             });
+            // Depth WebGPU cannot copy out (part of a level, 24-bit) is drawn into a colour
+            // texture of its bytes first (`DepthReadByDraw`).
+            let drawn = match sf.is_depth_stencil() {
+                true => match self.aspect_as_colour(src, extent) {
+                    Ok(drawn) => drawn,
+                    Err(()) => return,
+                },
+                false => None,
+            };
+            let drawn_raw = drawn.as_ref().map(|t| t.0.raw());
+            if let (Some(t), Some(raw)) = (&drawn, &drawn_raw) {
+                from = texel_copy(raw, &t.0, 0, 0, Default::default(), false);
+            }
             let ((sbw, sbh, _), (dbw, dbh, _)) = (sf.block(), df.block());
             let into = Extent {
                 width: extent.width.div_ceil(sbw) * dbw,

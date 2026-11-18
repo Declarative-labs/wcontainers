@@ -2,10 +2,11 @@
 //! every indexed draw, lists included, and cannot turn restart off, so a draw that must not restart
 //! is checked only where a write may have put one, and its indices are rewritten when one is there.
 
+use rangemap::RangeSet;
 use std::ops::Range;
 use wcontainers_gpu::IndexFormat;
 
-/// Bytes per index of each width, in the order of [`Maxima`]'s lists.
+/// Bytes per index of each width, in the order of [`Maxima`]'s sets.
 const WIDTHS: [u64; 3] = [1, 2, 4];
 
 fn slot(format: IndexFormat) -> usize {
@@ -16,58 +17,61 @@ fn slot(format: IndexFormat) -> usize {
     }
 }
 
-/// For 8, 16 and 32-bit indices, the sorted, disjoint byte ranges of a buffer that may hold the
-/// largest value. Indices lie at multiples of their width, so each width is tracked apart.
+/// For 8, 16 and 32-bit indices, the byte ranges of a buffer that may hold the largest value.
+/// Indices lie at multiples of their width, so each width is tracked apart.
 #[derive(Debug, Default)]
-pub struct Maxima([Vec<Range<u64>>; 3]);
+pub struct Maxima([RangeSet<u64>; 3]);
 
 impl Maxima {
-    /// `bytes` now lie at `at`: whole indices inside them are known exactly.
+    /// `bytes` now lie at `at`. An index they touch may hold the largest value only if every byte
+    /// they wrote into it is 0xff; the bytes of an index they cover in part are not known.
     pub fn wrote(&mut self, at: u64, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let end = at + bytes.len() as u64;
         let none = !bytes.contains(&0xff);
-        for (list, w) in self.0.iter_mut().zip(WIDTHS) {
-            let (start, end) = (at.next_multiple_of(w), (at + bytes.len() as u64) / w * w);
-            if start >= end {
-                continue;
-            }
-            remove(list, start..end);
+        for (set, w) in self.0.iter_mut().zip(WIDTHS) {
+            let (lo, hi) = (at / w * w, end.next_multiple_of(w));
+            set.remove(lo..hi);
             if none {
                 continue;
             }
-            let words = bytes[(start - at) as usize..(end - at) as usize].chunks_exact(w as usize);
-            let mut found = words
-                .enumerate()
-                .filter(|(_, c)| c.iter().all(|&b| b == 0xff))
-                .map(|(i, _)| start + i as u64 * w);
+            let full = |i: u64| {
+                let written = &bytes[(i.max(at) - at) as usize..((i + w).min(end) - at) as usize];
+                written.iter().all(|&b| b == 0xff)
+            };
+            let mut found = (0..(hi - lo) / w).map(|k| lo + k * w).filter(|&i| full(i));
             if let Some(first) = found.next() {
                 let last = found.next_back().unwrap_or(first);
-                insert(list, first..last + w);
+                set.insert(first..last + w);
             }
         }
     }
 
     /// Bytes `range` were written with what the host does not know (by the GPU).
     pub fn unknown(&mut self, range: Range<u64>) {
-        for list in &mut self.0 {
-            insert(list, range.clone());
+        if range.is_empty() {
+            return;
+        }
+        for set in &mut self.0 {
+            set.insert(range.clone());
         }
     }
 
     /// Bytes `range` hold no index of the largest value, of any width.
     pub fn cleared(&mut self, range: Range<u64>) {
-        for (list, w) in self.0.iter_mut().zip(WIDTHS) {
+        for (set, w) in self.0.iter_mut().zip(WIDTHS) {
             let (start, end) = (range.start.next_multiple_of(w), range.end / w * w);
             if start < end {
-                remove(list, start..end);
+                set.remove(start..end);
             }
         }
     }
 
     /// Whether indices of `format` in bytes `range` may hold its largest value.
     pub fn may_hold(&self, format: IndexFormat, range: Range<u64>) -> bool {
-        let list = &self.0[slot(format)];
-        let i = list.partition_point(|r| r.end <= range.start);
-        list.get(i).is_some_and(|r| r.start < range.end)
+        !range.is_empty() && self.0[slot(format)].overlaps(&range)
     }
 
     /// Whether bytes `range` may hold the largest index value of any width.
@@ -76,36 +80,6 @@ impl Maxima {
             .into_iter()
             .any(|f| self.may_hold(f, range.clone()))
     }
-}
-
-fn remove(list: &mut Vec<Range<u64>>, cut: Range<u64>) {
-    if !list.iter().any(|r| r.start < cut.end && cut.start < r.end) {
-        return;
-    }
-    let mut kept = Vec::with_capacity(list.len() + 1);
-    for r in list.drain(..) {
-        if r.end <= cut.start || cut.end <= r.start {
-            kept.push(r);
-            continue;
-        }
-        if r.start < cut.start {
-            kept.push(r.start..cut.start);
-        }
-        if cut.end < r.end {
-            kept.push(cut.end..r.end);
-        }
-    }
-    *list = kept;
-}
-
-fn insert(list: &mut Vec<Range<u64>>, add: Range<u64>) {
-    let i = list.partition_point(|r| r.end < add.start);
-    let (mut j, mut merged) = (i, add);
-    while j < list.len() && list[j].start <= merged.end {
-        merged = merged.start.min(list[j].start)..merged.end.max(list[j].end);
-        j += 1;
-    }
-    list.splice(i..j, [merged]);
 }
 
 /// Indices of a draw that must not restart, rewritten so GL never meets its restart value.
@@ -165,13 +139,33 @@ mod tests {
         assert!(m.may_hold(IndexFormat::U16, 10..12));
         assert!(m.may_hold(IndexFormat::U32, 8..12));
         assert!(!m.may_hold(IndexFormat::U32, 0..8));
-        // Writing zeros over them forgets them; a write of part of an index keeps it.
+        // Writing zeros over part of an index forgets it at every width that index touches.
         m.wrote(9, &[0; 3]);
-        assert!(m.may_hold(IndexFormat::U32, 8..12));
+        assert!(!m.may_hold(IndexFormat::U32, 8..12));
         assert!(!m.may_hold(IndexFormat::U16, 10..12));
-        assert!(m.may_hold(IndexFormat::U16, 8..10));
+        assert!(!m.may_hold(IndexFormat::U16, 8..10));
+        assert!(m.may_hold(IndexFormat::U8, 8..9));
         m.wrote(0, &[0; 12]);
         assert!(!m.any(0..12));
+    }
+
+    #[test]
+    fn writes_of_part_of_an_index_may_complete_the_largest_value() {
+        let mut m = Maxima::default();
+        // 16-bit indices 1, 2 and 0x00ff; one byte then makes the third 0xffff.
+        m.wrote(0, &[1, 0, 2, 0, 0xff, 0, 0, 0]);
+        assert!(!m.may_hold(IndexFormat::U16, 0..8));
+        m.wrote(5, &[0xff]);
+        assert!(m.may_hold(IndexFormat::U16, 4..6));
+        assert!(!m.may_hold(IndexFormat::U16, 0..4));
+        // So does a write of the low half of a 32-bit index whose high half is unknown.
+        m.wrote(8, &[0xff, 0xff]);
+        assert!(m.may_hold(IndexFormat::U32, 8..12));
+        // A byte other than 0xff in an index rules it out, whatever else it holds.
+        m.wrote(9, &[0]);
+        assert!(!m.may_hold(IndexFormat::U32, 8..12));
+        assert!(!m.may_hold(IndexFormat::U16, 8..10));
+        assert!(m.may_hold(IndexFormat::U8, 8..9));
     }
 
     #[test]

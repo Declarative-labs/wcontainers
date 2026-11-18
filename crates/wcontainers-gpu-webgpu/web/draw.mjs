@@ -5,9 +5,9 @@
 // chrome-webgpu-<scene>.png into <out-dir>, or <out-dir>\<twist> for a twist other than none, and
 // the eight-viewport scene as chrome-webgpu-viewports.png and, moved to whole pixels,
 // chrome-webgpu-viewports-rounded.png, prints first-draw timings with and without prepare, and checks
-// timestamps, the formats held converted, the vertex formats read through shadows, query sets past
-// 4096 queries and the query ring, and the cost of
-// instance data fetched in the program.
+// prepared strips, timestamps, the formats held converted, the vertex formats read through shadows
+// and BGRA vertices, query sets past 4096 queries and the query ring, copies between depth16unorm
+// and its group, and the cost of instance data fetched in the program.
 // Fails unless WebGPU's adapter is a GPU (discrete or integrated, not a fallback).
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -91,7 +91,8 @@ try {
     console.log(`chrome converted formats failed: ${e.message}`);
     failed = true;
   }
-  // Vertex formats WebGPU lacks, read through shadow streams (seed 188, 64 vertices each).
+  // Vertex formats WebGPU lacks, read through shadow streams, and BGRA vertices (seed 188, 64
+  // vertices each).
   try {
     console.log(`chrome ${await page.evaluate(() => window.vertexFormats(188, 64))}`);
   } catch (e) {
@@ -111,6 +112,13 @@ try {
     for (const line of lines) console.log(`chrome ${line}`);
   } catch (e) {
     console.log(`chrome query sets failed: ${e.message}`);
+    failed = true;
+  }
+  // Copies between depth16unorm and its group's colour formats, whole and in part.
+  try {
+    console.log(`chrome ${await page.evaluate(() => window.depthGroupCopies())}`);
+  } catch (e) {
+    console.log(`chrome depth group copies failed: ${e.message}`);
     failed = true;
   }
   // Instance data fetched in the program against vertex buffers (20 frames a route): the routes
