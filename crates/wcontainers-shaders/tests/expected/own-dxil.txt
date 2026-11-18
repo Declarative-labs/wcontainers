@@ -1,8 +1,9 @@
-cs_atomics.dxil	spirv-reader unsupported
-cs_decrement.dxil	spirv-reader unsupported
+cs_atomics.dxil	ok-wgsl glsl-write
+cs_decrement.dxil	ok-wgsl glsl-write
 cs_images.dxil	unsupported StorageFormatKind
-cs_texels.dxil	spirv-reader unsupported
-cs_through.dxil	spirv-reader unsupported
+cs_shared.dxil	ok-wgsl glsl-write
+cs_texels.dxil	unsupported TypedBufferFormatKind
+cs_through.dxil	unsupported StorageFormatKind
 gs_adjacent.dxil	spirv-reader unsupported
 gs_cut.dxil	spirv-reader unsupported
 gs_instances.dxil	spirv-reader unsupported
@@ -10,18 +11,23 @@ gs_line_adjacent.dxil	spirv-reader unsupported
 gs_lines.dxil	spirv-reader unsupported
 gs_points.dxil	spirv-reader unsupported
 gs_quads.dxil	spirv-reader unsupported
+ps_array.dxil	ok
 ps_cases.dxil	ok
 ps_clip.dxil	ok
 ps_coarse.dxil	ok
 ps_deriv.dxil	ok-wgsl glsl-write
 ps_dual.dxil	ok
+ps_fill.dxil	ok
 ps_filter.dxil	ok-wgsl glsl-compile
 ps_ftoi.dxil	ok
+ps_halves.dxil	ok-wgsl glsl-write
 ps_ids.dxil	ok
+ps_layer.dxil	spirv-reader unsupported
 ps_levels.dxil	ok-wgsl glsl-write
 ps_mingather.dxil	ok-wgsl glsl-compile
 ps_minlod.dxil	ok
 ps_mirror.dxil	ok
+ps_msarray.dxil	unsupported MultisampledArrayTexture
 ps_negate.dxil	ok
 ps_offset.dxil	ok
 ps_pack.dxil	unsupported PackedStageValues
@@ -31,7 +37,7 @@ ps_samples.dxil	unsupported SampleCount
 ps_signed.dxil	ok
 ps_spaces.dxil	ok
 ps_special.dxil	ok
-ps_table.dxil	unsupported NonFiniteConstant
+ps_table.dxil	ok
 ps_texels.dxil	unsupported TypedBufferFormatKind
 ps_textured.dxil	ok
 ps_twospaces.dxil	ok

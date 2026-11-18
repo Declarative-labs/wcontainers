@@ -6,7 +6,9 @@ use alloc::vec::Vec;
 
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[repr(u8)]
 pub enum SlowPath {
     /// A triangle fan was drawn as a generated triangle list.
@@ -258,11 +260,17 @@ pub enum SlowPath {
     /// Pixel shader invocations counted by drawing each draw again, with the depth and stencil tests
     /// off, through a program adding to a counter, where the back end has no statistics queries.
     PixelInvocationsCounted,
+    /// A view's component mapping applied by the program to what it reads, where the back end's views
+    /// have none.
+    SwizzleInShader,
+    /// An atomic minimum or maximum of the other signedness than the memory's other operations, made
+    /// by a compare-exchange loop.
+    AtomicExchangeLoop,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 102] = [
+    pub const ALL: [SlowPath; 104] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -365,6 +373,8 @@ impl SlowPath {
         SlowPath::CaptureExpanded,
         SlowPath::CopyWithinTexture,
         SlowPath::PixelInvocationsCounted,
+        SlowPath::SwizzleInShader,
+        SlowPath::AtomicExchangeLoop,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -485,6 +495,10 @@ impl SlowPath {
             SlowPath::CopyWithinTexture => "copy within one subresource made through a buffer",
             SlowPath::PixelInvocationsCounted => {
                 "pixel shader invocations counted by drawing again"
+            }
+            SlowPath::SwizzleInShader => "view component mapping applied in the program",
+            SlowPath::AtomicExchangeLoop => {
+                "atomic minimum or maximum made by a compare-exchange loop"
             }
         }
     }

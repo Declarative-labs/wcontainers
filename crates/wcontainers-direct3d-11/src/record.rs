@@ -452,6 +452,14 @@ impl Backend for Recorder {
                 d.depth.as_ref().map(|a| a.load),
                 d.stencil.as_ref().map(|a| a.load)
             );
+            for (name, read_only) in [
+                ("depth", d.depth.as_ref().is_some_and(|a| a.read_only)),
+                ("stencil", d.stencil.as_ref().is_some_and(|a| a.read_only)),
+            ] {
+                if read_only {
+                    let _ = write!(line, " {name} read-only");
+                }
+            }
         }
         if let Some(e) = &pass.empty {
             let _ = write!(

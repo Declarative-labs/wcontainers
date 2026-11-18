@@ -322,8 +322,21 @@ impl<B: Backend> Device<B> {
             ));
             merged = self.merged_samplers(p, bind::PIXEL, StageSet::FRAGMENT)?;
         }
-        let arguments = arguments.as_ref().map(|(b, s)| (b, *s));
-        self.helper_blocks(&blocks, arguments, &merged, counter)
+        let reads: Vec<_> = arguments
+            .iter()
+            .map(|(buffer, size)| {
+                (
+                    DRAW_ARGUMENTS_BINDING,
+                    stages,
+                    BufferRange {
+                        buffer,
+                        offset: 0,
+                        size: *size,
+                    },
+                )
+            })
+            .collect();
+        self.helper_blocks(&blocks, &reads, &merged, counter)
     }
 
     /// A clamped program's merged samplers (binding, the back end's stages, sampler): each pair
@@ -359,11 +372,16 @@ impl<B: Backend> Device<B> {
     }
 
     /// The helper block of a pixel or compute stage (API stage `visibility`), from what its
-    /// bindings give.
+    /// bindings give. The layer and viewport a pixel shader reads are zero: no earlier stage
+    /// writes them (the converter refuses those outputs), so each draw is one run of layer 0
+    /// through viewport 0.
     pub(super) fn stage_block(&self, helpers: &Helpers, visibility: u32) -> Result<Vec<u8>, Error> {
         let mut block = vec![0u8; helpers.size as usize];
         for slot in &helpers.slots {
-            let words = self.bound_helper(visibility, slot.value)?;
+            let words = match slot.value {
+                HelperValue::Layer | HelperValue::Viewport => words(&[0]),
+                value => self.bound_helper(visibility, value)?,
+            };
             put(&mut block, slot.offset, slot.value, words)?;
         }
         Ok(block)
@@ -381,11 +399,12 @@ impl<B: Backend> Device<B> {
     }
 
     /// A helper set of `blocks` (binding, the back end's stages, bytes), written into the data
-    /// ring, with an indirect draw's `arguments` (buffer, bytes) bound.
+    /// ring, with read-only storage buffers `reads` (binding, the back end's stages, range) bound,
+    /// such as an indirect draw's arguments.
     pub(super) fn helper_blocks(
         &mut self,
         blocks: &[(u32, StageSet, Vec<u8>)],
-        arguments: Option<(&B::Buffer, u64)>,
+        reads: &[(u32, StageSet, BufferRange<&B::Buffer>)],
         samplers: &[(u32, StageSet, B::Sampler)],
         counter: Option<&B::Buffer>,
     ) -> Result<B::BindingSet, Error> {
@@ -413,20 +432,18 @@ impl<B: Backend> Device<B> {
             stages: *stages,
             resource: BindingResource::Sampler(s),
         }));
-        if let Some((args, size)) = arguments {
-            entries.push(BindingEntry {
-                binding: DRAW_ARGUMENTS_BINDING,
-                stages: blocks.first().map_or(StageSet::VERTEX, |b| b.1),
-                resource: BindingResource::StorageBuffer {
-                    range: BufferRange {
-                        buffer: args,
-                        offset: 0,
-                        size,
-                    },
-                    writable: false,
+        entries.extend(reads.iter().map(|(binding, stages, range)| BindingEntry {
+            binding: *binding,
+            stages: *stages,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer: range.buffer,
+                    offset: range.offset,
+                    size: range.size,
                 },
-            });
-        }
+                writable: false,
+            },
+        }));
         if let Some(counter) = counter {
             entries.push(BindingEntry {
                 binding: COUNTER_BINDING,
@@ -461,7 +478,9 @@ fn put(block: &mut [u8], offset: u32, value: HelperValue, words: Words) -> Resul
         HelperValue::LodBias { .. }
         | HelperValue::TextureComponents { .. }
         | HelperValue::TextureLevels { .. }
-        | HelperValue::TextureSamples { .. } => 1,
+        | HelperValue::TextureSamples { .. }
+        | HelperValue::Layer
+        | HelperValue::Viewport => 1,
         HelperValue::TexelBufferView { .. } | HelperValue::MinLod { .. } => 2,
         HelperValue::DrawBase | HelperValue::DrawArguments => 3,
         HelperValue::TexelLayout { .. } => 5,

@@ -6,8 +6,8 @@
 //! the depth and stencil tests off, no colour written and a program adding one a pixel (or a
 //! sample, for pixel shaders run once a sample) to a counter buffer on the GPU
 //! (`PixelInvocationsCounted`), which `EndQuery` copies into the value.
-//! Draws through geometry shaders or stream output are refused while a pipeline statistics query
-//! runs and no hull or domain shader is made, so those stages' counts are zero. Stream output
+//! Draws through geometry, hull or domain shaders or stream output are refused while a pipeline
+//! statistics query runs, so those stages' counts are zero. Stream output
 //! statistics are the stage helper's counts of primitives written and needed, read back.
 
 use wcontainers_gpu::{
