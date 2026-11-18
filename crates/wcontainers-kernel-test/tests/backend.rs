@@ -252,15 +252,12 @@ fn assert_only_written_whole(run: &driver::Run) {
     );
 }
 
-/// Checks that a run warned of nothing but `allowed` and of backend programs read whole when run.
+/// Checks that a run warned of nothing but `allowed`.
 fn assert_warned_only(run: &driver::Run, allowed: &[&str]) {
     let others: Vec<_> = run
         .warnings
         .iter()
-        .filter(|warning| {
-            warning.reason != wcontainers_kernel::reason::BACKEND_READ_WHOLE
-                && !allowed.contains(&warning.reason.as_str())
-        })
+        .filter(|warning| !allowed.contains(&warning.reason.as_str()))
         .collect();
     assert!(others.is_empty(), "{others:?}");
 }

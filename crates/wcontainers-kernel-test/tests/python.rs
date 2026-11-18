@@ -83,9 +83,7 @@ const SYSTEM_MODULES: &[&str] = &[
     "test_shutil",
     "test_glob",
     "test_pty",
-    // Its LargeMmapTests map sparse files past 4 GiB, which the backend reads whole when mapped
-    // (counted), hours on the stand-in.
-    "test_mmap.MmapTests",
+    "test_mmap",
     "test_epoll",
 ];
 

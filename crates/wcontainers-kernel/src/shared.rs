@@ -72,39 +72,6 @@ pub(crate) fn backend_block(
     Ok(())
 }
 
-/// Makes a backend file's block hold `bytes`, the whole file as just read through `handle`, where
-/// it lacks them.
-pub(crate) fn backend_block_of(
-    kernel: &mut Kernel,
-    cx: &mut Context<'_>,
-    node: &Node,
-    handle: &Rc<Handle>,
-    bytes: &[u8],
-) -> Result<(), Errno> {
-    kernel.counters.count(
-        cx.host,
-        crate::reason::BACKEND_READ_WHOLE,
-        bytes.len() as u64,
-    );
-    let length = page_up(bytes.len() as u64);
-    let old = node.borrow().content.block();
-    if old.map_or(0, |old| old.length) < length {
-        backend_grow(kernel, cx, node, old, handle, length)?;
-    }
-    let changes = match &node.borrow().content {
-        Content::Backend(remote) => remote.pages.as_ref().map_or(0, |pages| pages.changes),
-        _ => 0,
-    };
-    pages_came(
-        cx,
-        node,
-        0..length / PAGE_SIZE,
-        changes,
-        Ok(Rc::from(bytes)),
-    );
-    Ok(())
-}
-
 /// Gives a backend file a block of `length` bytes holding the pages its old one held.
 fn backend_grow(
     kernel: &mut Kernel,

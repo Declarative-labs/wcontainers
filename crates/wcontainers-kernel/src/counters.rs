@@ -73,9 +73,6 @@ pub mod reason {
     /// A mapped backend file's pages were written back whole, changed or not, since which pages a
     /// shared mapping wrote is not known (Linux writes back only dirty pages). Detail: none.
     pub const BACKEND_PAGES_WRITTEN_WHOLE: &str = "backend pages written whole";
-    /// A program on the backend was read whole to be run, so the pages of its mappings hold it
-    /// at once, where Linux reads each page at its first fault. Detail: the bytes read.
-    pub const BACKEND_READ_WHOLE: &str = "backend file read whole when run";
     /// The kernel touched pages of a mapped backend file not read yet where no call or fault runs
     /// to wait for them (a signal frame written there): they are not asked for, and the touch is a
     /// fault, where Linux would read them. Detail: none.

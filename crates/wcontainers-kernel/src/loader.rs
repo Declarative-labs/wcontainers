@@ -119,8 +119,12 @@ pub(crate) struct Program {
     node: Node,
     /// Its path from the root, with links followed.
     path: Vec<u8>,
+    /// Its bytes: all of a file in memory, the first `SCRIPT_LINE` of one on the backend (Linux's
+    /// `bprm->buf`), whose others are read when needed.
     bytes: Vec<u8>,
-    /// A program on the backend: the open file it was read through, which its pages are kept by.
+    /// Its size.
+    size: u64,
+    /// A program on the backend: the open file it is read through, which its pages are kept by.
     backend: Option<alloc::rc::Rc<crate::fs::backend::Handle>>,
     /// The caller may read it (Linux's `would_dump`).
     readable: bool,
@@ -209,20 +213,23 @@ pub(crate) fn program_of(
             drop(inode);
             (bytes, None)
         }
-        // A program on the backend is opened there and read whole (`do_open_execat`).
+        // A program on the backend is opened there (`do_open_execat`) and its first bytes read
+        // (`prepare_binprm`).
         (Content::Backend(_), Some(size)) => {
             drop(inode);
             let handle = crate::fs::backend::open(
                 &node,
                 crate::linux::general::O_RDONLY | crate::linux::general::O_LARGEFILE,
             )?;
-            (crate::fs::backend::read(&handle, 0, size)?, Some(handle))
+            let head = crate::fs::backend::read(&handle, 0, size.min(SCRIPT_LINE as u64))?;
+            (head, Some(handle))
         }
         _ => return Err(Errno::EACCES),
     };
     Ok(Program {
         node,
         path,
+        size: size.unwrap_or(bytes.len() as u64),
         bytes,
         backend,
         readable,
@@ -345,20 +352,31 @@ fn parse_script_line(bytes: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), Errno> 
     Ok((string(name), argument.map(string)))
 }
 
-/// Bytes of a file from `offset`, as many as it has up to `length`, as Linux's `kernel_read`: an
-/// offset a file position cannot hold is EINVAL (`rw_verify_area`).
-fn file_bytes(bytes: &[u8], offset: u64, length: u64) -> Result<&[u8], Errno> {
+/// Bytes of a program from `offset`, as many as it has up to `length`, as Linux's `kernel_read`:
+/// an offset a file position cannot hold is EINVAL (`rw_verify_area`). Those past what it holds
+/// are read from the backend, which parks the call until they come.
+fn file_bytes(program: &Program, offset: u64, length: u64) -> Result<Vec<u8>, Errno> {
     let end = offset
         .checked_add(length)
         .filter(|end| *end <= i64::MAX as u64)
         .ok_or(Errno::EINVAL)?;
+    let bytes = &program.bytes;
+    if let Some(handle) = &program.backend
+        && end > bytes.len() as u64
+    {
+        let end = end.min(program.size);
+        if offset >= end {
+            return Ok(Vec::new());
+        }
+        return crate::fs::backend::read(handle, offset, end - offset);
+    }
     let clamp = |at: u64| usize::try_from(at).unwrap_or(usize::MAX).min(bytes.len());
-    Ok(&bytes[clamp(offset).min(clamp(end))..clamp(end)])
+    Ok(bytes[clamp(offset).min(clamp(end))..clamp(end)].to_vec())
 }
 
 /// The same, all of it or EIO (`elf_read`).
-fn elf_read(bytes: &[u8], offset: u64, length: u64) -> Result<&[u8], Errno> {
-    let read = file_bytes(bytes, offset, length)?;
+fn elf_read(program: &Program, offset: u64, length: u64) -> Result<Vec<u8>, Errno> {
+    let read = file_bytes(program, offset, length)?;
     if read.len() as u64 != length {
         return Err(Errno::EIO);
     }
@@ -376,27 +394,36 @@ fn file_header(bytes: &[u8]) -> Header {
 }
 
 /// The program headers, as Linux's `load_elf_phdrs`: entries of Linux's size, at least one and at
-/// most 64 KiB of them, all in the file.
-fn program_headers(bytes: &[u8], header: &Header) -> Option<Vec<Segment>> {
+/// most 64 KiB of them, all in the file; `invalid` if not. A read the backend is asked for parks.
+fn program_headers(
+    program: &Program,
+    header: &Header,
+    invalid: Errno,
+) -> Result<Vec<Segment>, Errno> {
     let endian = LittleEndian;
     if usize::from(header.e_phentsize(endian)) != size_of::<Segment>() {
-        return None;
+        return Err(invalid);
     }
     let count = usize::from(header.e_phnum(endian));
     let size = (size_of::<Segment>() * count) as u64;
     if size == 0 || size > 65536 {
-        return None;
+        return Err(invalid);
     }
-    let raw = elf_read(bytes, header.e_phoff(endian), size).ok()?;
-    let (segments, _) = object::pod::slice_from_bytes::<Segment>(raw, count).ok()?;
-    Some(segments.to_vec())
+    let raw = match elf_read(program, header.e_phoff(endian), size) {
+        Ok(raw) => raw,
+        Err(Errno::PARKED) => return Err(Errno::PARKED),
+        Err(_) => return Err(invalid),
+    };
+    let (segments, _) =
+        object::pod::slice_from_bytes::<Segment>(&raw, count).map_err(|()| invalid)?;
+    Ok(segments.to_vec())
 }
 
 /// Linux's `parse_elf_properties` and arm64's `arch_parse_elf_property` on the file whose properties
 /// count (the loader's when there is one): one GNU property note of at most 1 KiB whose properties
 /// are whole, sorted and unique. The CPU has no branch target identification, so what they ask for
 /// changes nothing.
-fn check_properties(bytes: &[u8], segment: Option<&Segment>) -> Result<(), Errno> {
+fn check_properties(program: &Program, segment: Option<&Segment>) -> Result<(), Errno> {
     let Some(segment) = segment else {
         return Ok(());
     };
@@ -407,7 +434,7 @@ fn check_properties(bytes: &[u8], segment: Option<&Segment>) -> Result<(), Errno
     if segment.p_filesz(endian) > 1024 {
         return Err(Errno::ENOEXEC);
     }
-    let note = file_bytes(bytes, segment.p_offset(endian), segment.p_filesz(endian))?;
+    let note = file_bytes(program, segment.p_offset(endian), segment.p_filesz(endian))?;
     if note.len() < NOTE_HEADER + 4 {
         return Err(Errno::EIO);
     }
@@ -485,7 +512,7 @@ fn place(
     {
         return Err(Errno::ENOEXEC.into());
     }
-    let segments = program_headers(&program.bytes, &header).ok_or(Errno::ENOEXEC)?;
+    let segments = program_headers(&program, &header, Errno::ENOEXEC)?;
     let mut property = None;
     let mut interpreter = None;
     for segment in &segments {
@@ -496,14 +523,14 @@ fn place(
                 if !(2..=u64::from(PATH_MAX)).contains(&size) {
                     return Err(Errno::ENOEXEC.into());
                 }
-                let name = elf_read(&program.bytes, segment.p_offset(endian), size)?;
+                let name = elf_read(&program, segment.p_offset(endian), size)?;
                 let (last, name) = name.split_last().expect("two bytes at least");
                 if *last != 0 {
                     return Err(Errno::ENOEXEC.into());
                 }
                 let name = name.split(|byte| *byte == 0).next().unwrap_or_default();
                 let found = open_named_program(kernel, cx.cpu, tid, name)?;
-                elf_read(&found.bytes, 0, size_of::<Header>() as u64)?;
+                elf_read(&found, 0, size_of::<Header>() as u64)?;
                 interpreter = Some(found);
                 break;
             }
@@ -516,7 +543,7 @@ fn place(
             if header.e_ident.magic != elf::ELFMAG || header.e_machine(endian) != elf::EM_AARCH64 {
                 return Err(Errno::ELIBBAD.into());
             }
-            let segments = program_headers(&found.bytes, &header).ok_or(Errno::ELIBBAD)?;
+            let segments = program_headers(&found, &header, Errno::ELIBBAD)?;
             property = segments
                 .iter()
                 .rfind(|segment| segment.p_type(endian) == elf::PT_GNU_PROPERTY)
@@ -525,9 +552,7 @@ fn place(
         }
         None => None,
     };
-    let properties_of = interpreter
-        .as_ref()
-        .map_or(&program.bytes, |(found, ..)| &found.bytes);
+    let properties_of = interpreter.as_ref().map_or(&program, |(found, ..)| found);
     check_properties(properties_of, property.as_ref())?;
     // Where Linux puts a program that can be placed anywhere: two thirds of the way up.
     let bias = if header.e_type(endian) == elf::ET_EXEC {
@@ -574,13 +599,33 @@ fn place(
                 capabilities,
             })?
     };
+    let main_tails = segment_tails(&program, &segments)?;
+    let interpreter_tails = match &interpreter {
+        Some((found, _, segments)) => segment_tails(found, segments)?,
+        None => Vec::new(),
+    };
     // The point of no return: from here a failure kills the process.
     let main_path = program.path.clone();
+    // A program on the backend shows its pages as Linux's page cache, each read when touched.
+    for placed in core::iter::once(&program).chain(interpreter.as_ref().map(|(found, ..)| found)) {
+        if let Some(handle) = &placed.backend {
+            crate::shared::backend_block(
+                kernel,
+                cx,
+                &placed.node,
+                Some(handle),
+                placed.size,
+                false,
+            )
+            .map_err(fatal)?;
+        }
+    }
     let main = place_elf(
         cx,
         memory,
         &mut map,
         (&program, &header, &segments),
+        &main_tails,
         &main_path,
         Some(bias),
     )
@@ -596,6 +641,7 @@ fn place(
                 memory,
                 &mut map,
                 (found, header, segments),
+                &interpreter_tails,
                 &found.path,
                 None,
             )
@@ -604,13 +650,6 @@ fn place(
         }
         None => (main.entry, 0),
     };
-    // A program on the backend shows the pages it was read into, as Linux's page cache.
-    for placed in core::iter::once(&program).chain(interpreter.as_ref().map(|(found, ..)| found)) {
-        if let Some(handle) = &placed.backend {
-            crate::shared::backend_block_of(kernel, cx, &placed.node, handle, &placed.bytes)
-                .map_err(fatal)?;
-        }
-    }
     crate::shared::show_all(kernel, cx, memory, &map).map_err(fatal)?;
     let vdso = place_vdso(cx, memory, &mut map).map_err(fatal)?;
 
@@ -729,17 +768,51 @@ fn place_vdso(cx: &mut Context<'_>, memory: MemoryId, map: &mut AddressMap) -> R
     Ok(start)
 }
 
-/// Places one ELF file's loadable segments. With no bias given, the file goes wherever free space is,
-/// as `mmap` would put it.
+/// The file bytes of the last page of each writable segment that zeroed memory follows within that
+/// page, by the page's offset in the file: Linux clears the rest of that page (`padzero`), which
+/// makes it the process's own copy. Read before anything changes, since the backend may be asked;
+/// two segments may end in one page, each with its own bytes of it.
+fn segment_tails(program: &Program, segments: &[Segment]) -> Result<Vec<(u64, Vec<u8>)>, Errno> {
+    let endian = LittleEndian;
+    let mut tails = Vec::new();
+    for segment in segments {
+        let offset = segment.p_offset(endian);
+        let address = segment.p_vaddr(endian);
+        let segment_file = segment.p_filesz(endian);
+        let file_end = address.wrapping_add(segment_file);
+        if segment.p_type(endian) != elf::PT_LOAD
+            || segment_file == 0
+            || segment.p_memsz(endian) <= segment_file
+            || !segment_permissions(segment.p_flags(endian).0).contains(Permissions::WRITE)
+            || file_end % PAGE_SIZE == 0
+        {
+            continue;
+        }
+        let Some(to) = offset.checked_add(segment_file) else {
+            continue;
+        };
+        let page_offset = page_down(offset) + (page_down(file_end) - page_down(address));
+        if page_offset < to && to <= program.size {
+            tails.push((
+                page_offset,
+                file_bytes(program, page_offset, to - page_offset)?,
+            ));
+        }
+    }
+    Ok(tails)
+}
+
+/// Places one ELF file's loadable segments, with the tails [`segment_tails`] read. With no bias
+/// given, the file goes wherever free space is, as `mmap` would put it.
 fn place_elf(
     cx: &mut Context<'_>,
     memory: MemoryId,
     map: &mut AddressMap,
     (program, header, segments): (&Program, &Header, &[Segment]),
+    tails: &[(u64, Vec<u8>)],
     path: &[u8],
     bias: Option<u64>,
 ) -> Result<Placed, Errno> {
-    let bytes = program.bytes.as_slice();
     let endian = LittleEndian;
     let loads: Vec<_> = segments
         .iter()
@@ -766,7 +839,7 @@ fn place_elf(
         (None, elf::ET_DYN) => map.find_free(span).ok_or(Errno::ENOMEM)? - lowest,
         _ => return Err(Errno::ENOEXEC),
     };
-    let file_size = bytes.len() as u64;
+    let file_size = program.size;
     let mut program_headers = 0;
     let phoff = header.e_phoff(endian);
     let mut end = 0;
@@ -807,8 +880,13 @@ fn place_elf(
             {
                 let page_offset = from + (last_page - start);
                 copied.insert(page_offset / PAGE_SIZE);
+                let tail = tails
+                    .iter()
+                    .find(|(at, tail)| *at == page_offset && at + tail.len() as u64 == to)
+                    .map(|(_, tail)| tail.as_slice())
+                    .ok_or(Errno::EIO)?;
                 cx.cpu
-                    .write(memory, last_page, &bytes[page_offset as usize..to as usize])
+                    .write(memory, last_page, tail)
                     .map_err(errno::from_cpu)?;
             }
             // The file's pages are shown once every segment is placed.
