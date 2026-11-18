@@ -52,6 +52,10 @@ pub(crate) struct Variant<B: Backend> {
     pub helpers: Rc<Helpers>,
 }
 
+/// A vertex layout block's key: its input layout (zero for none), the bound strides, and the
+/// vertex program whose input types it gives.
+pub(crate) type LayoutKey = (u64, [u32; 32], u64);
+
 /// A Direct3D 11 device and its immediate context on back end `B`.
 pub struct Device<B: Backend> {
     pub backend: B,
@@ -93,7 +97,7 @@ pub struct Device<B: Backend> {
     /// Combinations drawn and built ahead.
     pub(crate) ahead: crate::ahead::Ahead<B>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
-    pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
+    pub(crate) layouts: HashMap<LayoutKey, Kept<B, B::VertexLayout>>,
     /// What empty slots read.
     pub(crate) zeros: Zeros<B>,
     /// The stage helpers of geometry shaders and stream output, by the vertex shader's, input
@@ -230,6 +234,7 @@ impl<B: Backend> Device<B> {
             depth_stencil: Rc::new(DepthStencil {
                 desc: ds_desc,
                 gpu: Kept::new(ds, id(), Object::DepthStencil, &graveyard),
+                read_only: RefCell::new(Vec::new()),
             }),
             raster: Rc::new(Rasterizer {
                 desc: raster_desc,
@@ -323,6 +328,10 @@ impl<B: Backend> Device<B> {
             if resolvable(f) {
                 bits |= MULTISAMPLE_RESOLVE;
             }
+        }
+        // A typed depth format is read through its typeless group's other members.
+        if format::depth_only(dxgi) {
+            bits &= !(SHADER_LOAD | SHADER_SAMPLE | MULTISAMPLE_LOAD);
         }
         bits
     }
@@ -575,7 +584,8 @@ impl<B: Backend> Device<B> {
         self.variants.retain(|(p, _), _| !ids.contains(p));
         self.counting
             .retain(|(v, _, p), _| !ids.contains(v) && !ids.contains(p));
-        self.layouts.retain(|(l, _), _| !ids.contains(l));
+        self.layouts
+            .retain(|(l, _, v), _| !ids.contains(l) && !ids.contains(v));
         self.bury_built();
     }
 
@@ -706,6 +716,21 @@ impl<B: Backend> Device<B> {
         if mips > full {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
+        let drawn = bind::RENDER_TARGET | bind::UNORDERED_ACCESS;
+        if d.bind_flags & drawn != 0
+            && (d.bind_flags & bind::DEPTH_STENCIL != 0
+                || format::never_target_or_storage(d.format))
+            || format::depth_only(d.format) && d.bind_flags & (drawn | bind::SHADER_RESOURCE) != 0
+        {
+            return Err(Error::InvalidArg(
+                "the format does not support the bind flags",
+            ));
+        }
+        if d.misc_flags & MISC_SHARED != 0 && d.misc_flags & MISC_SHARED_KEYEDMUTEX != 0 {
+            return Err(Error::InvalidArg(
+                "shared and shared with a keyed mutex exclude each other",
+            ));
+        }
         let format = format::storage_format(d.format, d.bind_flags & bind::DEPTH_STENCIL != 0)?;
         // A count and quality the device reports no level for is invalid, as in Direct3D. The
         // standard pattern is the back end's own; the centred one it cannot place. A single
@@ -798,7 +823,9 @@ impl<B: Backend> Device<B> {
             (bind::DEPTH_STENCIL, FormatUse::DEPTH_STENCIL),
             (bind::UNORDERED_ACCESS, FormatUse::STORAGE_WRITE),
         ] {
-            if d.bind_flags & flag != 0 {
+            if d.bind_flags & flag != 0
+                && !(n == FormatUse::STORAGE_WRITE && format::is_srgb(d.format))
+            {
                 needs |= n;
             }
         }
@@ -837,7 +864,9 @@ impl<B: Backend> Device<B> {
             (bind::DEPTH_STENCIL, TextureUsage::RENDER),
             (bind::UNORDERED_ACCESS, TextureUsage::STORAGE),
         ] {
-            if d.bind_flags & flag != 0 {
+            if d.bind_flags & flag != 0
+                && !(u == TextureUsage::STORAGE && format::is_srgb(d.format))
+            {
                 usage |= u;
             }
         }
@@ -1026,6 +1055,14 @@ impl<B: Backend> Device<B> {
                 "the resource lacks the bind flag the view needs",
             ));
         }
+        let read_only = desc.map_or(0, |d| d.read_only);
+        if read_only & !(DSV_READ_ONLY_DEPTH | DSV_READ_ONLY_STENCIL) != 0
+            || read_only != 0 && (kind != bind::DEPTH_STENCIL || self.feature_level() < 0xb000)
+        {
+            return Err(Error::InvalidArg(
+                "read-only depth-stencil views need feature level 11_0",
+            ));
+        }
         let arrayed = t.array_size > 1;
         let cube = t.misc_flags & MISC_TEXTURECUBE != 0 && kind == bind::SHADER_RESOURCE;
         // Views drawn into are one layer at a pass; shader and unordered access views see theirs.
@@ -1052,6 +1089,7 @@ impl<B: Backend> Device<B> {
             },
             first_layer: 0,
             layer_count: u32::MAX,
+            read_only: 0,
         };
         let mut v = desc.copied().unwrap_or(whole);
         if v.format == format::UNKNOWN {
@@ -1175,7 +1213,25 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
-        let twin = if !stencil && format::reinterprets(format, texture.format) {
+        // A storage view of some slices of a 3D level, which no back end's view sees, is made on
+        // a texture of those slices alone (`View::window`).
+        let window = kind == bind::UNORDERED_ACCESS
+            && t.dimension == TexDim::D3
+            && (v.first_layer != 0 || v.layer_count != (t.depth >> v.first_mip).max(1));
+        let twin = if window {
+            let e = texture.mip_extent(v.first_mip);
+            let gpu = self.backend.create_texture(&GpuTexture {
+                format,
+                width: e.width,
+                height: e.height,
+                depth_or_layers: v.layer_count,
+                mip_levels: 1,
+                ..texture.gpu_desc
+            });
+            let gpu = self.gpu(gpu)?;
+            let id = self.id();
+            Some(Kept::new(gpu, id, Object::Texture, &self.graveyard))
+        } else if !stencil && format::reinterprets(format, texture.format) {
             if kind == bind::DEPTH_STENCIL {
                 return not_implemented(
                     "a depth view reinterpreting a typeless texture's bits as another format",
@@ -1196,7 +1252,7 @@ impl<B: Backend> Device<B> {
             &TextureViewDesc {
                 format,
                 dimension,
-                base_mip: v.first_mip,
+                base_mip: if window { 0 } else { v.first_mip },
                 mip_count: v.mip_count,
                 base_layer,
                 layer_count,
@@ -1211,6 +1267,7 @@ impl<B: Backend> Device<B> {
             format,
             gpu: Kept::new(gpu, id, Object::TextureView, &self.graveyard),
             twin,
+            window,
         }))
     }
 
@@ -1221,12 +1278,8 @@ impl<B: Backend> Device<B> {
         desc: Option<&ViewDesc>,
     ) -> Result<Rc<ShaderView<B>>> {
         let v = self.create_view(texture, desc, bind::UNORDERED_ACCESS)?;
-        let t = &texture.desc;
-        if t.dimension == TexDim::D3
-            && (v.desc.first_layer != 0
-                || v.desc.layer_count != (t.depth >> v.desc.first_mip).max(1))
-        {
-            return not_implemented("an unordered access view of some slices of a 3D level");
+        if format::is_srgb(v.desc.format) {
+            return Err(Error::InvalidArg("an sRGB unordered access view"));
         }
         self.check_format(v.format, FormatUse::STORAGE_WRITE)?;
         Ok(Rc::new(ShaderView::Texture(v)))
@@ -1449,6 +1502,7 @@ impl<B: Backend> Device<B> {
         Ok(Rc::new(DepthStencil {
             desc: *d,
             gpu: Kept::new(gpu, id, Object::DepthStencil, &self.graveyard),
+            read_only: RefCell::new(Vec::new()),
         }))
     }
 

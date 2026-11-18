@@ -146,7 +146,7 @@ fn dxgi_usage(bind: u32) -> DXGI_USAGE {
 
 /// A texture of one dimension: its interface, description structure, conversion and resource type.
 macro_rules! texture {
-    ($name:ident, $imp:ident, $iface:ident, $vtbl:ident, $desc:ident, $back:path, $dim:ident, $iface10:ident, $vtbl10:ident, $at10:expr $(, $surface:ident)?) => {
+    ($name:ident, $imp:ident, $iface:ident $(| $also:ident)*, $vtbl:ident, $desc:ident, $back:path, $dim:ident, $iface10:ident, $vtbl10:ident, $at10:expr $(, $surface:ident)?) => {
         pub struct $name {
             pub front: Locked<Rc<front::Texture<Chosen>>>,
             pub(super) child: Child,
@@ -154,7 +154,7 @@ macro_rules! texture {
         }
 
         counted!($name => $imp {
-            main: $iface, $vtbl;
+            main: $iface $(| $also)*, $vtbl;
             dxgi: IDXGIResource1, IDXGIResource1_Vtbl, -2;
             $($surface: IDXGISurface1, IDXGISurface1_Vtbl, -3, if one_subresource;)?
             d3d10: $iface10, $vtbl10, $at10, if offers_d3d10;
@@ -233,8 +233,8 @@ texture!(
 texture!(
     Texture2D,
     Texture2D_Impl,
-    ID3D11Texture2D,
-    ID3D11Texture2D_Vtbl,
+    ID3D11Texture2D1 | ID3D11Texture2D,
+    ID3D11Texture2D1_Vtbl,
     D3D11_TEXTURE2D_DESC,
     convert::texture2d_back,
     D3D11_RESOURCE_DIMENSION_TEXTURE2D,
@@ -246,8 +246,8 @@ texture!(
 texture!(
     Texture3D,
     Texture3D_Impl,
-    ID3D11Texture3D,
-    ID3D11Texture3D_Vtbl,
+    ID3D11Texture3D1 | ID3D11Texture3D,
+    ID3D11Texture3D1_Vtbl,
     D3D11_TEXTURE3D_DESC,
     convert::texture3d_back,
     D3D11_RESOURCE_DIMENSION_TEXTURE3D,
@@ -255,6 +255,23 @@ texture!(
     ID3D10Texture3D_Vtbl,
     -3
 );
+
+/// Direct3D 11.3's descriptions of textures: no layout but the undefined one is served.
+impl Texture2D {
+    pub(super) fn get_desc1(&self, out: *mut D3D11_TEXTURE2D_DESC1) {
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = unsafe { convert::same_fields(&convert::texture2d_back(&self.front.desc)) };
+        }
+    }
+}
+
+impl Texture3D {
+    pub(super) fn get_desc1(&self, out: *mut D3D11_TEXTURE3D_DESC1) {
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = unsafe { convert::same_fields(&convert::texture3d_back(&self.front.desc)) };
+        }
+    }
+}
 
 /// A view: the front view and the resource it views (held with a library reference).
 pub struct RenderTargetView {
@@ -264,7 +281,7 @@ pub struct RenderTargetView {
 }
 
 counted!(RenderTargetView => RenderTargetView_Impl {
-    main: ID3D11RenderTargetView, ID3D11RenderTargetView_Vtbl;
+    main: ID3D11RenderTargetView1 | ID3D11RenderTargetView, ID3D11RenderTargetView1_Vtbl;
     d3d10: ID3D10RenderTargetView, ID3D10RenderTargetView_Vtbl, -2;
 });
 
@@ -284,6 +301,12 @@ impl RenderTargetView {
     pub(super) fn get_desc(&self, out: *mut D3D11_RENDER_TARGET_VIEW_DESC) {
         if let Some(out) = unsafe { out.as_mut() } {
             *out = convert::rtv_back(&self.front.desc);
+        }
+    }
+
+    pub(super) fn get_desc1(&self, out: *mut D3D11_RENDER_TARGET_VIEW_DESC1) {
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = unsafe { convert::same_fields(&convert::rtv_back(&self.front.desc)) };
         }
     }
 
@@ -338,7 +361,7 @@ pub struct ShaderResourceView {
 }
 
 counted!(ShaderResourceView => ShaderResourceView_Impl {
-    main: ID3D11ShaderResourceView, ID3D11ShaderResourceView_Vtbl;
+    main: ID3D11ShaderResourceView1 | ID3D11ShaderResourceView, ID3D11ShaderResourceView1_Vtbl;
     d3d10: ID3D10ShaderResourceView1, ID3D10ShaderResourceView1_Vtbl, -2, if offers_d3d10;
 });
 
@@ -363,6 +386,12 @@ impl ShaderResourceView {
         }
     }
 
+    pub(super) fn get_desc1(&self, out: *mut D3D11_SHADER_RESOURCE_VIEW_DESC1) {
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = unsafe { convert::same_fields(&self.desc) };
+        }
+    }
+
     pub(super) fn get_resource(&self, out: OutRef<ID3D11Resource>) {
         let _ = out.write(Some(self.resource.public()));
     }
@@ -376,7 +405,9 @@ pub struct UnorderedAccessView {
     pub(super) child: Child,
 }
 
-counted!(UnorderedAccessView => UnorderedAccessView_Impl { main: ID3D11UnorderedAccessView, ID3D11UnorderedAccessView_Vtbl });
+counted!(UnorderedAccessView => UnorderedAccessView_Impl {
+    main: ID3D11UnorderedAccessView1 | ID3D11UnorderedAccessView, ID3D11UnorderedAccessView1_Vtbl
+});
 
 impl UnorderedAccessView {
     pub fn new(
@@ -396,6 +427,12 @@ impl UnorderedAccessView {
     pub(super) fn get_desc(&self, out: *mut D3D11_UNORDERED_ACCESS_VIEW_DESC) {
         if let Some(out) = unsafe { out.as_mut() } {
             *out = self.desc;
+        }
+    }
+
+    pub(super) fn get_desc1(&self, out: *mut D3D11_UNORDERED_ACCESS_VIEW_DESC1) {
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = unsafe { convert::same_fields(&self.desc) };
         }
     }
 
@@ -517,7 +554,7 @@ pub struct RasterizerState {
 }
 
 counted!(RasterizerState => RasterizerState_Impl {
-    main: ID3D11RasterizerState1 | ID3D11RasterizerState, ID3D11RasterizerState1_Vtbl;
+    main: ID3D11RasterizerState2 | ID3D11RasterizerState1 | ID3D11RasterizerState, ID3D11RasterizerState2_Vtbl;
     d3d10: ID3D10RasterizerState, ID3D10RasterizerState_Vtbl, -2;
 });
 
@@ -556,6 +593,15 @@ impl RasterizerState {
                 AntialiasedLineEnable: d.AntialiasedLineEnable,
                 ForcedSampleCount: 0,
             };
+        }
+    }
+
+    /// No conservative rasterization is served, so it is always off.
+    pub(super) fn get_desc2(&self, out: *mut D3D11_RASTERIZER_DESC2) {
+        let mut d = D3D11_RASTERIZER_DESC1::default();
+        self.get_desc1(&mut d);
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = unsafe { convert::same_fields(&d) };
         }
     }
 }
@@ -663,13 +709,13 @@ impl ComputeShader {
 
 /// A query or predicate: its interface, and whether `QueryInterface` answers `ID3D11Predicate`.
 macro_rules! asynchronous {
-    ($name:ident, $imp:ident, $iface:ident, $vtbl:ident) => {
+    ($name:ident, $imp:ident, $iface:ident $(| $also:ident)*, $vtbl:ident) => {
         pub struct $name {
             pub front: Locked<Rc<wcontainers_direct3d_11::query::Query<Chosen>>>,
             pub(super) child: Child,
         }
 
-        counted!($name => $imp { main: $iface, $vtbl });
+        counted!($name => $imp { main: $iface $(| $also)*, $vtbl });
 
         impl $name {
             pub fn new(
@@ -698,7 +744,25 @@ macro_rules! asynchronous {
     };
 }
 
-asynchronous!(Query, Query_Impl, ID3D11Query, ID3D11Query_Vtbl);
+asynchronous!(
+    Query,
+    Query_Impl,
+    ID3D11Query1 | ID3D11Query,
+    ID3D11Query1_Vtbl
+);
+
+impl Query {
+    /// A query of all the work: one queue runs every kind.
+    pub(super) fn get_desc1(&self, out: *mut D3D11_QUERY_DESC1) {
+        if let Some(out) = unsafe { out.as_mut() } {
+            *out = D3D11_QUERY_DESC1 {
+                Query: D3D11_QUERY(self.front.kind as i32),
+                MiscFlags: self.front.misc,
+                ContextType: D3D11_CONTEXT_TYPE_ALL,
+            };
+        }
+    }
+}
 asynchronous!(
     Predicate,
     Predicate_Impl,

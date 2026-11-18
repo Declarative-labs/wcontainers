@@ -142,6 +142,7 @@ fn view(format: DXGI_FORMAT, dimension: ViewDim, mips: (u32, u32), layers: (u32,
         mip_count: mips.1,
         first_layer: layers.0,
         layer_count: layers.1,
+        read_only: 0,
     }
 }
 
@@ -333,13 +334,10 @@ pub fn rtv_back(v: &ViewDesc) -> D3D11_RENDER_TARGET_VIEW_DESC {
 }
 
 pub fn dsv(d: &D3D11_DEPTH_STENCIL_VIEW_DESC) -> Result<ViewDesc> {
-    if d.Flags != 0 {
-        return Err(super::missing("read-only depth-stencil views"));
-    }
     let f = d.Format;
-    unsafe {
+    let mut v = unsafe {
         let u = &d.Anonymous;
-        Ok(match d.ViewDimension {
+        match d.ViewDimension {
             D3D11_DSV_DIMENSION_TEXTURE1D => {
                 view(f, ViewDim::Texture1D, (u.Texture1D.MipSlice, 1), (0, 1))
             }
@@ -368,13 +366,16 @@ pub fn dsv(d: &D3D11_DEPTH_STENCIL_VIEW_DESC) -> Result<ViewDesc> {
                     "depth-stencil views of an unknown dimension",
                 ));
             }
-        })
-    }
+        }
+    };
+    v.read_only = d.Flags;
+    Ok(v)
 }
 
 pub fn dsv_back(v: &ViewDesc) -> D3D11_DEPTH_STENCIL_VIEW_DESC {
     let mut d = D3D11_DEPTH_STENCIL_VIEW_DESC {
         Format: DXGI_FORMAT(v.format as i32),
+        Flags: v.read_only,
         ..Default::default()
     };
     let (mip, first, size) = (v.first_mip, v.first_layer, v.layer_count);
@@ -797,4 +798,81 @@ pub fn rasterizer(d: &D3D11_RASTERIZER_DESC) -> RasterizerDesc {
         multisample: d.MultisampleEnable.as_bool(),
         antialiased_lines: d.AntialiasedLineEnable.as_bool(),
     }
+}
+
+/// A description as its Direct3D 11.3 form (`..._DESC1`) or back: the 11.3 forms add fields only
+/// at the end (a texture's layout, a 2D view's plane slice), so the shared fields are the same
+/// bytes; added fields are zero in the wider form, and dropped in the narrower.
+///
+/// # Safety
+/// `A` and `B` are such a pair of plain C structures.
+pub unsafe fn same_fields<A, B>(a: &A) -> B {
+    let mut b = unsafe { std::mem::zeroed::<B>() };
+    let n = size_of::<A>().min(size_of::<B>());
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            (a as *const A).cast::<u8>(),
+            (&mut b as *mut B).cast::<u8>(),
+            n,
+        )
+    };
+    b
+}
+
+/// A shader resource view's 11.3 description as Direct3D 11's: a plane past the first is invalid,
+/// as no planar format is served.
+pub fn srv_of1(d: &D3D11_SHADER_RESOURCE_VIEW_DESC1) -> Result<D3D11_SHADER_RESOURCE_VIEW_DESC> {
+    use windows::Win32::Graphics::Direct3D::{
+        D3D11_SRV_DIMENSION_TEXTURE2D, D3D11_SRV_DIMENSION_TEXTURE2DARRAY,
+    };
+    let plane = unsafe {
+        match d.ViewDimension {
+            D3D11_SRV_DIMENSION_TEXTURE2D => d.Anonymous.Texture2D.PlaneSlice,
+            D3D11_SRV_DIMENSION_TEXTURE2DARRAY => d.Anonymous.Texture2DArray.PlaneSlice,
+            _ => 0,
+        }
+    };
+    if plane != 0 {
+        return Err(E_INVALIDARG.into());
+    }
+    Ok(unsafe { same_fields(d) })
+}
+
+/// A render target view's 11.3 description as Direct3D 11's (see [`srv_of1`]).
+pub fn rtv_of1(d: &D3D11_RENDER_TARGET_VIEW_DESC1) -> Result<D3D11_RENDER_TARGET_VIEW_DESC> {
+    let plane = unsafe {
+        match d.ViewDimension {
+            D3D11_RTV_DIMENSION_TEXTURE2D => d.Anonymous.Texture2D.PlaneSlice,
+            D3D11_RTV_DIMENSION_TEXTURE2DARRAY => d.Anonymous.Texture2DArray.PlaneSlice,
+            _ => 0,
+        }
+    };
+    if plane != 0 {
+        return Err(E_INVALIDARG.into());
+    }
+    Ok(unsafe { same_fields(d) })
+}
+
+/// An unordered access view's 11.3 description as Direct3D 11's (see [`srv_of1`]).
+pub fn uav_of1(d: &D3D11_UNORDERED_ACCESS_VIEW_DESC1) -> Result<D3D11_UNORDERED_ACCESS_VIEW_DESC> {
+    let plane = unsafe {
+        match d.ViewDimension {
+            D3D11_UAV_DIMENSION_TEXTURE2D => d.Anonymous.Texture2D.PlaneSlice,
+            D3D11_UAV_DIMENSION_TEXTURE2DARRAY => d.Anonymous.Texture2DArray.PlaneSlice,
+            _ => 0,
+        }
+    };
+    if plane != 0 {
+        return Err(E_INVALIDARG.into());
+    }
+    Ok(unsafe { same_fields(d) })
+}
+
+/// A rasterizer state's 11.3 description as 11.1's: no conservative rasterization is reported, so
+/// asking for it is invalid.
+pub fn rasterizer_of2(d: &D3D11_RASTERIZER_DESC2) -> Result<D3D11_RASTERIZER_DESC1> {
+    if d.ConservativeRaster != D3D11_CONSERVATIVE_RASTERIZATION_MODE_OFF {
+        return Err(E_INVALIDARG.into());
+    }
+    Ok(unsafe { same_fields(d) })
 }

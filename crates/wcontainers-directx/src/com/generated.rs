@@ -9,6 +9,167 @@ use windows::Win32::Graphics::Dxgi::*;
 
 use super::*;
 
+impl ID3D11Device3_Impl for Device_Impl {
+    fn CreateTexture2D1(
+        &self,
+        pdesc1: *const D3D11_TEXTURE2D_DESC1,
+        pinitialdata: *const D3D11_SUBRESOURCE_DATA,
+        pptexture2d: windows::core::OutRef<ID3D11Texture2D1>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(pptexture2d, |pptexture2d| {
+            self.create_texture2_d1(pdesc1, pinitialdata, pptexture2d)
+        })
+    }
+    fn CreateTexture3D1(
+        &self,
+        pdesc1: *const D3D11_TEXTURE3D_DESC1,
+        pinitialdata: *const D3D11_SUBRESOURCE_DATA,
+        pptexture3d: windows::core::OutRef<ID3D11Texture3D1>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(pptexture3d, |pptexture3d| {
+            self.create_texture3_d1(pdesc1, pinitialdata, pptexture3d)
+        })
+    }
+    fn CreateRasterizerState2(
+        &self,
+        prasterizerdesc: *const D3D11_RASTERIZER_DESC2,
+        pprasterizerstate: windows::core::OutRef<ID3D11RasterizerState2>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(pprasterizerstate, |pprasterizerstate| {
+            self.create_rasterizer_state2(prasterizerdesc, pprasterizerstate)
+        })
+    }
+    fn CreateShaderResourceView1(
+        &self,
+        presource: windows::core::Ref<ID3D11Resource>,
+        pdesc1: *const D3D11_SHADER_RESOURCE_VIEW_DESC1,
+        ppsrview1: windows::core::OutRef<ID3D11ShaderResourceView1>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppsrview1, |ppsrview1| {
+            self.create_shader_resource_view1(presource, pdesc1, ppsrview1)
+        })
+    }
+    fn CreateUnorderedAccessView1(
+        &self,
+        presource: windows::core::Ref<ID3D11Resource>,
+        pdesc1: *const D3D11_UNORDERED_ACCESS_VIEW_DESC1,
+        ppuaview1: windows::core::OutRef<ID3D11UnorderedAccessView1>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppuaview1, |ppuaview1| {
+            self.create_unordered_access_view1(presource, pdesc1, ppuaview1)
+        })
+    }
+    fn CreateRenderTargetView1(
+        &self,
+        presource: windows::core::Ref<ID3D11Resource>,
+        pdesc1: *const D3D11_RENDER_TARGET_VIEW_DESC1,
+        pprtview1: windows::core::OutRef<ID3D11RenderTargetView1>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(pprtview1, |pprtview1| {
+            self.create_render_target_view1(presource, pdesc1, pprtview1)
+        })
+    }
+    fn CreateQuery1(
+        &self,
+        pquerydesc1: *const D3D11_QUERY_DESC1,
+        ppquery1: windows::core::OutRef<ID3D11Query1>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppquery1, |ppquery1| {
+            self.create_query1(pquerydesc1, ppquery1)
+        })
+    }
+    fn GetImmediateContext3(
+        &self,
+        ppimmediatecontext: windows::core::OutRef<ID3D11DeviceContext3>,
+    ) {
+        let _call = self.call();
+        self.get_immediate_context3(ppimmediatecontext)
+    }
+    fn CreateDeferredContext3(
+        &self,
+        contextflags: u32,
+        ppdeferredcontext: windows::core::OutRef<ID3D11DeviceContext3>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppdeferredcontext, |ppdeferredcontext| {
+            self.create_deferred_context3(contextflags, ppdeferredcontext)
+        })
+    }
+    fn WriteToSubresource(
+        &self,
+        pdstresource: windows::core::Ref<ID3D11Resource>,
+        dstsubresource: u32,
+        pdstbox: *const D3D11_BOX,
+        psrcdata: *const core::ffi::c_void,
+        srcrowpitch: u32,
+        srcdepthpitch: u32,
+    ) {
+        let _call = self.call();
+        self.unserved("ID3D11Device3::WriteToSubresource")
+    }
+    fn ReadFromSubresource(
+        &self,
+        pdstdata: *mut core::ffi::c_void,
+        dstrowpitch: u32,
+        dstdepthpitch: u32,
+        psrcresource: windows::core::Ref<ID3D11Resource>,
+        srcsubresource: u32,
+        psrcbox: *const D3D11_BOX,
+    ) {
+        let _call = self.call();
+        self.unserved("ID3D11Device3::ReadFromSubresource")
+    }
+}
+
+impl ID3D11Device2_Impl for Device_Impl {
+    fn GetImmediateContext2(
+        &self,
+        ppimmediatecontext: windows::core::OutRef<ID3D11DeviceContext2>,
+    ) {
+        let _call = self.call();
+        self.get_immediate_context2(ppimmediatecontext)
+    }
+    fn CreateDeferredContext2(
+        &self,
+        contextflags: u32,
+        ppdeferredcontext: windows::core::OutRef<ID3D11DeviceContext2>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppdeferredcontext, |ppdeferredcontext| {
+            self.create_deferred_context2(contextflags, ppdeferredcontext)
+        })
+    }
+    fn GetResourceTiling(
+        &self,
+        ptiledresource: windows::core::Ref<ID3D11Resource>,
+        pnumtilesforentireresource: *mut u32,
+        ppackedmipdesc: *mut D3D11_PACKED_MIP_DESC,
+        pstandardtileshapefornonpackedmips: *mut D3D11_TILE_SHAPE,
+        pnumsubresourcetilings: *mut u32,
+        firstsubresourcetilingtoget: u32,
+        psubresourcetilingsfornonpackedmips: *mut D3D11_SUBRESOURCE_TILING,
+    ) {
+        let _call = self.call();
+        self.unserved("ID3D11Device2::GetResourceTiling")
+    }
+    fn CheckMultisampleQualityLevels1(
+        &self,
+        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+        samplecount: u32,
+        flags: u32,
+    ) -> windows::core::Result<u32> {
+        let _call = self.call();
+        self.check_multisample_quality_levels1(format, samplecount, flags)
+    }
+}
+
 impl ID3D11Device1_Impl for Device_Impl {
     fn GetImmediateContext1(
         &self,
@@ -624,6 +785,107 @@ impl IDXGIObject_Impl for Device_Impl {
     ) -> windows::core::Result<()> {
         let _call = self.call();
         self.get_parent(riid, ppparent)
+    }
+}
+
+impl ID3D11DeviceContext3_Impl for Context_Impl {
+    fn Flush1(&self, contexttype: D3D11_CONTEXT_TYPE, hevent: windows::Win32::Foundation::HANDLE) {
+        let _call = self.call();
+        self.flush1(contexttype, hevent)
+    }
+    fn SetHardwareProtectionState(&self, hwprotectionenable: windows::core::BOOL) {
+        let _call = self.call();
+        self.unserved("ID3D11DeviceContext3::SetHardwareProtectionState")
+    }
+    fn GetHardwareProtectionState(&self, phwprotectionenable: *mut windows::core::BOOL) {
+        let _call = self.call();
+        self.get_hardware_protection_state(phwprotectionenable)
+    }
+}
+
+impl ID3D11DeviceContext2_Impl for Context_Impl {
+    fn UpdateTileMappings(
+        &self,
+        ptiledresource: windows::core::Ref<ID3D11Resource>,
+        numtiledresourceregions: u32,
+        ptiledresourceregionstartcoordinates: *const D3D11_TILED_RESOURCE_COORDINATE,
+        ptiledresourceregionsizes: *const D3D11_TILE_REGION_SIZE,
+        ptilepool: windows::core::Ref<ID3D11Buffer>,
+        numranges: u32,
+        prangeflags: *const u32,
+        ptilepoolstartoffsets: *const u32,
+        prangetilecounts: *const u32,
+        flags: u32,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        Err(missing("ID3D11DeviceContext2::UpdateTileMappings"))
+    }
+    fn CopyTileMappings(
+        &self,
+        pdesttiledresource: windows::core::Ref<ID3D11Resource>,
+        pdestregionstartcoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+        psourcetiledresource: windows::core::Ref<ID3D11Resource>,
+        psourceregionstartcoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+        ptileregionsize: *const D3D11_TILE_REGION_SIZE,
+        flags: u32,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        Err(missing("ID3D11DeviceContext2::CopyTileMappings"))
+    }
+    fn CopyTiles(
+        &self,
+        ptiledresource: windows::core::Ref<ID3D11Resource>,
+        ptileregionstartcoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+        ptileregionsize: *const D3D11_TILE_REGION_SIZE,
+        pbuffer: windows::core::Ref<ID3D11Buffer>,
+        bufferstartoffsetinbytes: u64,
+        flags: u32,
+    ) {
+        let _call = self.call();
+        self.unserved("ID3D11DeviceContext2::CopyTiles")
+    }
+    fn UpdateTiles(
+        &self,
+        pdesttiledresource: windows::core::Ref<ID3D11Resource>,
+        pdesttileregionstartcoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+        pdesttileregionsize: *const D3D11_TILE_REGION_SIZE,
+        psourcetiledata: *const core::ffi::c_void,
+        flags: u32,
+    ) {
+        let _call = self.call();
+        self.unserved("ID3D11DeviceContext2::UpdateTiles")
+    }
+    fn ResizeTilePool(
+        &self,
+        ptilepool: windows::core::Ref<ID3D11Buffer>,
+        newsizeinbytes: u64,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        Err(missing("ID3D11DeviceContext2::ResizeTilePool"))
+    }
+    fn TiledResourceBarrier(
+        &self,
+        ptiledresourceorviewaccessbeforebarrier: windows::core::Ref<ID3D11DeviceChild>,
+        ptiledresourceorviewaccessafterbarrier: windows::core::Ref<ID3D11DeviceChild>,
+    ) {
+        let _call = self.call();
+        self.unserved("ID3D11DeviceContext2::TiledResourceBarrier")
+    }
+    fn IsAnnotationEnabled(&self) -> windows::core::BOOL {
+        let _call = self.call();
+        self.is_annotation_enabled()
+    }
+    fn SetMarkerInt(&self, plabel: &windows::core::PCWSTR, data: i32) {
+        let _call = self.call();
+        self.set_marker_int(plabel, data)
+    }
+    fn BeginEventInt(&self, plabel: &windows::core::PCWSTR, data: i32) {
+        let _call = self.call();
+        self.begin_event_int(plabel, data)
+    }
+    fn EndEvent(&self) {
+        let _call = self.call();
+        let _ = self.end_event();
     }
 }
 
@@ -3083,6 +3345,13 @@ impl ID3D10DeviceChild_Impl for Texture1D_Impl {
     }
 }
 
+impl ID3D11Texture2D1_Impl for Texture2D_Impl {
+    fn GetDesc1(&self, pdesc: *mut D3D11_TEXTURE2D_DESC1) {
+        let _lock = lock();
+        self.get_desc1(pdesc)
+    }
+}
+
 impl ID3D11Texture2D_Impl for Texture2D_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_TEXTURE2D_DESC) {
         let _lock = lock();
@@ -3333,6 +3602,13 @@ impl ID3D10DeviceChild_Impl for Texture2D_Impl {
     }
 }
 
+impl ID3D11Texture3D1_Impl for Texture3D_Impl {
+    fn GetDesc1(&self, pdesc: *mut D3D11_TEXTURE3D_DESC1) {
+        let _lock = lock();
+        self.get_desc1(pdesc)
+    }
+}
+
 impl ID3D11Texture3D_Impl for Texture3D_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_TEXTURE3D_DESC) {
         let _lock = lock();
@@ -3547,6 +3823,13 @@ impl ID3D10DeviceChild_Impl for Texture3D_Impl {
     }
 }
 
+impl ID3D11RenderTargetView1_Impl for RenderTargetView_Impl {
+    fn GetDesc1(&self, pdesc1: *mut D3D11_RENDER_TARGET_VIEW_DESC1) {
+        let _lock = lock();
+        self.get_desc1(pdesc1)
+    }
+}
+
 impl ID3D11RenderTargetView_Impl for RenderTargetView_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_RENDER_TARGET_VIEW_DESC) {
         let _lock = lock();
@@ -3735,6 +4018,13 @@ impl ID3D10DeviceChild_Impl for DepthStencilView_Impl {
     }
 }
 
+impl ID3D11ShaderResourceView1_Impl for ShaderResourceView_Impl {
+    fn GetDesc1(&self, pdesc1: *mut D3D11_SHADER_RESOURCE_VIEW_DESC1) {
+        let _lock = lock();
+        self.get_desc1(pdesc1)
+    }
+}
+
 impl ID3D11ShaderResourceView_Impl for ShaderResourceView_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_SHADER_RESOURCE_VIEW_DESC) {
         let _lock = lock();
@@ -3833,6 +4123,13 @@ impl ID3D10DeviceChild_Impl for ShaderResourceView_Impl {
     ) -> windows::core::Result<()> {
         let _lock = lock();
         self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11UnorderedAccessView1_Impl for UnorderedAccessView_Impl {
+    fn GetDesc1(&self, pdesc1: *mut D3D11_UNORDERED_ACCESS_VIEW_DESC1) {
+        let _lock = lock();
+        self.get_desc1(pdesc1)
     }
 }
 
@@ -4137,6 +4434,13 @@ impl ID3D10DeviceChild_Impl for DepthStencilState_Impl {
     }
 }
 
+impl ID3D11RasterizerState2_Impl for RasterizerState_Impl {
+    fn GetDesc2(&self, pdesc: *mut D3D11_RASTERIZER_DESC2) {
+        let _lock = lock();
+        self.get_desc2(pdesc)
+    }
+}
+
 impl ID3D11RasterizerState1_Impl for RasterizerState_Impl {
     fn GetDesc1(&self, pdesc: *mut D3D11_RASTERIZER_DESC1) {
         let _lock = lock();
@@ -4256,6 +4560,13 @@ impl ID3D11DeviceChild_Impl for InputLayout_Impl {
     ) -> windows::core::Result<()> {
         let _lock = lock();
         self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11Query1_Impl for Query_Impl {
+    fn GetDesc1(&self, pdesc1: *mut D3D11_QUERY_DESC1) {
+        let _lock = lock();
+        self.get_desc1(pdesc1)
     }
 }
 

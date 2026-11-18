@@ -914,6 +914,97 @@ fn lines_by_the_quadrilateral_or_alpha_rule_are_not_served() {
     }
 }
 
+#[test]
+fn a_read_only_depth_view_keeps_views_of_its_aspect_bound_and_its_draws_write_nothing_there() {
+    let mut dev = device();
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(
+        &mut dev,
+        "common.vs_color",
+        "common.ps_color",
+        &elements,
+        28,
+    );
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    // R24G8_TYPELESS viewed as D24_UNORM_S8_UINT (45) for depth and R24_UNORM_X8_TYPELESS (46)
+    // to read it.
+    let depth = dev
+        .create_texture(
+            &tex2d(16, 16, 44, bind::DEPTH_STENCIL | bind::SHADER_RESOURCE),
+            &[],
+        )
+        .unwrap();
+    let view = |format, read_only| ViewDesc {
+        format,
+        dimension: ViewDim::Texture2D,
+        first_mip: 0,
+        mip_count: 1,
+        first_layer: 0,
+        layer_count: 1,
+        read_only,
+    };
+    let srv = dev
+        .create_view(&depth, Some(&view(46, 0)), bind::SHADER_RESOURCE)
+        .unwrap();
+    let srv = Rc::new(ShaderView::Texture(srv));
+    for (read_only, kept) in [
+        (0, false),
+        (DSV_READ_ONLY_DEPTH, true),
+        (DSV_READ_ONLY_STENCIL, false),
+    ] {
+        let dsv = dev
+            .create_view(&depth, Some(&view(45, read_only)), bind::DEPTH_STENCIL)
+            .unwrap();
+        dev.om_set_render_targets(&[Some(rtv.clone())], None)
+            .unwrap();
+        dev.set_shader_resources(PIXEL, 0, &[Some(srv.clone())])
+            .unwrap();
+        dev.om_set_render_targets(&[Some(rtv.clone())], Some(dsv))
+            .unwrap();
+        assert_eq!(
+            dev.shader_resource_bound(PIXEL, 0),
+            kept,
+            "flags {read_only}"
+        );
+    }
+    // The default state writes depth; through the depth-only read-only view it draws with a twin
+    // writing none, in a pass whose depth is only read.
+    let dsv = dev
+        .create_view(
+            &depth,
+            Some(&view(45, DSV_READ_ONLY_DEPTH)),
+            bind::DEPTH_STENCIL,
+        )
+        .unwrap();
+    dev.om_set_render_targets(&[Some(rtv)], Some(dsv)).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("create_depth_stencil") && l.contains("write false")),
+        "{log:#?}"
+    );
+    assert!(
+        log.iter().any(|l| l.starts_with("begin_pass")
+            && l.contains(" depth read-only")
+            && !l.contains("stencil read-only")),
+        "{log:#?}"
+    );
+    // Feature level 11_0 is needed, and only the two flags exist.
+    assert!(matches!(
+        dev.create_view(&depth, Some(&view(45, 4)), bind::DEPTH_STENCIL),
+        Err(Error::InvalidArg(_))
+    ));
+}
+
 /// A target, cleared and bound, with a program of the corpus and a vertex buffer of `stride` bytes.
 fn ready(dev: &mut Dev, vs: &str, ps: &str, elements: &[InputElement], stride: u32) {
     let target = dev
@@ -1143,12 +1234,20 @@ fn a_constant_buffer_smaller_than_its_shader_declares_grows() {
 #[test]
 fn formats_direct3d_defines_but_the_front_does_not_serve_are_not_implemented() {
     let mut dev = device();
-    // R32G32B32_TYPELESS and _FLOAT are valid; 0 and 500 are no format.
-    for typeless in [5, 6] {
+    // R1_UNORM and SAMPLER_FEEDBACK_MIN_MIP_OPAQUE are valid; 0 and 500 are no format.
+    for unserved in [66, 189] {
         assert!(matches!(
-            dev.create_texture(&tex2d(4, 4, typeless, bind::SHADER_RESOURCE), &[]),
+            dev.create_texture(&tex2d(4, 4, unserved, bind::SHADER_RESOURCE), &[]),
             Err(Error::NotImplemented(_))
         ));
+    }
+    // R32G32B32_TYPELESS and _FLOAT are stored as the back end's three-channel format, which the
+    // recording back end holds.
+    for served in [5, 6] {
+        assert!(
+            dev.create_texture(&tex2d(4, 4, served, bind::SHADER_RESOURCE), &[])
+                .is_ok()
+        );
     }
     for bad in [0, 500] {
         assert!(matches!(
@@ -1332,6 +1431,7 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         mip_count: 1,
         first_layer: 0,
         layer_count: 1,
+        read_only: 0,
     };
     // R24G8_TYPELESS: D24_UNORM_S8_UINT for depth, R24_UNORM_X8_TYPELESS and X24_TYPELESS_G8_UINT
     // to read depth and stencil; a D format is for depth-stencil views only. Stencil, which
@@ -2311,6 +2411,7 @@ fn a_view_reinterpreting_typeless_bits_reads_a_twin_copied_before_each_draw() {
         mip_count: 1,
         first_layer: 0,
         layer_count: 1,
+        read_only: 0,
     };
     let unorm = dev
         .create_view(&typeless, Some(&desc), bind::SHADER_RESOURCE)
