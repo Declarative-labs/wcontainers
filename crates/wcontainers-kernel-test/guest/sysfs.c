@@ -49,6 +49,18 @@ static void hugepages(void) {
         }
     }
     p("write nr_hugepages", open("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", O_WRONLY));
+    // Same-page merging, built and never run.
+    const char *ksm[] = {"advisor_max_cpu", "advisor_max_pages_to_scan", "advisor_min_pages_to_scan",
+                         "advisor_mode", "advisor_target_scan_time", "full_scans", "general_profit",
+                         "ksm_zero_pages", "max_page_sharing", "pages_scanned", "pages_shared",
+                         "pages_sharing", "pages_skipped", "pages_to_scan", "pages_unshared",
+                         "pages_volatile", "run", "sleep_millisecs", "smart_scan", "stable_node_chains",
+                         "stable_node_chains_prune_millisecs", "stable_node_dups", "use_zero_pages"};
+    for (unsigned i = 0; i < sizeof ksm / sizeof *ksm; i++) {
+        snprintf(path, sizeof path, "/sys/kernel/mm/ksm/%s", ksm[i]);
+        show(path);
+    }
+    p("write ksm run", open("/sys/kernel/mm/ksm/run", O_WRONLY));
     show("/proc/sys/vm/nr_hugepages");
     show("/proc/sys/vm/nr_overcommit_hugepages");
     show("/proc/sys/vm/hugetlb_shm_group");

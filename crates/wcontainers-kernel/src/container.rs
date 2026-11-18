@@ -252,9 +252,39 @@ const HUGE_PAGE_SIZES: [(u64, Option<u64>); 4] = [
     (1048576, Some(32768)),
 ];
 
-/// `/sys/kernel/mm/hugepages`: a directory per huge page size, none of them ever reserved, as in
-/// a default container, where `/proc/sys/vm` cannot be written. Write-only `demote` is left out.
-fn make_huge_pages(numbers: &mut Numbers, sys: &Node, now: Time) {
+/// `/sys/kernel/mm/ksm` as the reference's kernel has it: same-page merging built but never
+/// run (`run` 0, which a container's read-only /sys cannot change), so it merges nothing and
+/// every count stays 0. The files, modes and values as measured.
+const KSM_FILES: [(&[u8], u32, &str); 23] = [
+    (b"advisor_max_cpu", 0o644, "70\n"),
+    (b"advisor_max_pages_to_scan", 0o644, "30000\n"),
+    (b"advisor_min_pages_to_scan", 0o644, "500\n"),
+    (b"advisor_mode", 0o644, "[none] scan-time\n"),
+    (b"advisor_target_scan_time", 0o644, "200\n"),
+    (b"full_scans", 0o444, "0\n"),
+    (b"general_profit", 0o444, "0\n"),
+    (b"ksm_zero_pages", 0o444, "0\n"),
+    (b"max_page_sharing", 0o644, "256\n"),
+    (b"pages_scanned", 0o444, "0\n"),
+    (b"pages_shared", 0o444, "0\n"),
+    (b"pages_sharing", 0o444, "0\n"),
+    (b"pages_skipped", 0o444, "0\n"),
+    (b"pages_to_scan", 0o644, "100\n"),
+    (b"pages_unshared", 0o444, "0\n"),
+    (b"pages_volatile", 0o444, "0\n"),
+    (b"run", 0o644, "0\n"),
+    (b"sleep_millisecs", 0o644, "20\n"),
+    (b"smart_scan", 0o644, "1\n"),
+    (b"stable_node_chains", 0o444, "0\n"),
+    (b"stable_node_chains_prune_millisecs", 0o644, "2000\n"),
+    (b"stable_node_dups", 0o444, "0\n"),
+    (b"use_zero_pages", 0o644, "0\n"),
+];
+
+/// `/sys/kernel/mm`: `hugepages`, a directory per huge page size, none of them ever reserved, as
+/// in a default container, where `/proc/sys/vm` cannot be written (write-only `demote` is left
+/// out); and `ksm` ([`KSM_FILES`]).
+fn make_memory_management(numbers: &mut Numbers, sys: &Node, now: Time) {
     let directory = |numbers: &mut Numbers, at: &Node, name: &[u8]| {
         make(
             numbers,
@@ -271,6 +301,21 @@ fn make_huge_pages(numbers: &mut Numbers, sys: &Node, now: Time) {
     };
     let kernel = directory(numbers, sys, b"kernel");
     let mm = directory(numbers, &kernel, b"mm");
+    let ksm = directory(numbers, &mm, b"ksm");
+    for (name, mode, text) in KSM_FILES {
+        make(
+            numbers,
+            &ksm,
+            name,
+            S_IFREG | mode,
+            0,
+            0,
+            0,
+            now,
+            Content::Regular(Regular::with_bytes(text.as_bytes().to_vec())),
+        )
+        .expect("a new container's file systems have room");
+    }
     let huge = directory(numbers, &mm, b"hugepages");
     for (size, demotes_to) in HUGE_PAGE_SIZES {
         let at = directory(
@@ -1026,7 +1071,7 @@ impl Kernel {
             None,
         );
         sys.borrow_mut().ino = 1;
-        make_huge_pages(&mut self.files.numbers, &sys, now);
+        make_memory_management(&mut self.files.numbers, &sys, now);
 
         let view = fs::proc::View {
             processes: &self.processes,
