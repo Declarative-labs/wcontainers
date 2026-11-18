@@ -1048,6 +1048,28 @@ impl Recorder {
         &self,
         call: &DrawCall<'_, Self>,
     ) -> Result<(Vec<Option<u32>>, u32, u32), Error> {
+        let (first, count, first_instance, instances) = match call.range {
+            DrawRange::Vertices {
+                first,
+                count,
+                first_instance,
+                instances,
+            }
+            | DrawRange::Indexed {
+                first,
+                count,
+                first_instance,
+                instances,
+                ..
+            } => (first, count, first_instance, instances),
+            _ => (0, 0, 0, 0),
+        };
+        if first.checked_add(count).is_none() {
+            return Err("a draw's range past the largest vertex or index".into());
+        }
+        if first_instance.checked_add(instances).is_none() {
+            return Err("a draw's instances past the largest instance index".into());
+        }
         Ok(match call.range {
             DrawRange::Vertices {
                 first,

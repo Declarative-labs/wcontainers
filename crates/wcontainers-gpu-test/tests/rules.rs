@@ -1199,6 +1199,21 @@ fn views_take_the_textures_format_or_its_twin() {
         ),
         Err(GpuError::Invalid("view range outside the texture"))
     );
+    // Ranges whose ends pass the largest u32 are refused, not wrapped.
+    for (base_mip, base_layer) in [(u32::MAX, 0), (0, u32::MAX)] {
+        assert_eq!(
+            r.create_view(
+                &t,
+                &TextureViewDesc {
+                    format: Format::Rgba8Unorm,
+                    base_mip,
+                    base_layer,
+                    ..desc
+                }
+            ),
+            Err(GpuError::Invalid("view range outside the texture"))
+        );
+    }
 }
 
 /// A 2 by 2 `rgba8unorm` texture made to be viewed in other formats.
@@ -2245,7 +2260,7 @@ fn raster_blocks_need_the_features_they_use() {
         depth_minus_one: false,
         sample_mask: !0,
     };
-    let cases: [(Features, Change); 10] = [
+    let cases: [(Features, Change); 11] = [
         (Features::PROVOKING_VERTEX_FIRST, |_| {}),
         (Features::PROVOKING_VERTEX_LAST, |d| {
             d.provoking = ProvokingVertex::Last
@@ -2260,6 +2275,7 @@ fn raster_blocks_need_the_features_they_use() {
         (Features::CLIP_DEPTH_ZERO_ONE, |_| {}),
         (Features::WIDE_LINES, |d| d.line_width = 2.0f32.to_bits()),
         (Features::POLYGON_MODE, |d| d.fill = FillMode::Line),
+        (Features::POLYGON_MODE_POINT, |d| d.fill = FillMode::Point),
         (Features::DEPTH_CLAMP, |d| d.depth_clip = false),
         (Features::CLIP_DEPTH_MINUS_ONE, |d| d.depth_minus_one = true),
     ];
@@ -3234,6 +3250,41 @@ fn regions_lie_inside_their_texture() {
             "a region outside its level or off the block grid",
         ]
     );
+    // Ends past the largest u32 are refused, not wrapped.
+    let one = |r: &mut Recorder, t: &Id, layer, origin, width, layers: u32| {
+        r.write_texture(
+            &TextureRegion {
+                texture: t,
+                mip: 0,
+                layer,
+                origin,
+                stencil: false,
+            },
+            Extent {
+                width,
+                height: 1,
+                depth_or_layers: layers,
+            },
+            &vec![0; (width * 4 * layers) as usize],
+            width * 4,
+            1,
+            WriteMode::Ordered,
+        );
+    };
+    let mut r = Recorder::new();
+    let flat = shaped(&mut r, TextureDimension::D2, 4, 2, 2);
+    let deep = shaped(&mut r, TextureDimension::D3, 4, 4, 2);
+    one(&mut r, &flat, 0, at(u32::MAX - 1, 0, 0), 2, 1);
+    one(&mut r, &flat, u32::MAX, at(0, 0, 0), 1, 2);
+    one(&mut r, &deep, 0, at(0, 0, u32::MAX), 1, 2);
+    assert_eq!(
+        r.violations,
+        [
+            "a region outside its level or off the block grid",
+            "a region past the last layer",
+            "a region past the last slice",
+        ]
+    );
 }
 
 #[test]
@@ -3970,6 +4021,47 @@ fn bindings_hold_the_kind_of_resource_the_program_reads() {
         let p = d.program(fragment);
         d.begin();
         d.draw(&p, Some(&set), Topology::TriangleList, false);
+        d.refused(violation);
+    }
+}
+
+#[test]
+fn draw_ranges_end_within_a_u32() {
+    let range = "a draw's range past the largest vertex or index";
+    let instances = "a draw's instances past the largest instance index";
+    let vertices = |first, first_instance| DrawRange::Vertices {
+        first,
+        count: 3,
+        first_instance,
+        instances: 2,
+    };
+    let indexed = |first, first_instance| DrawRange::Indexed {
+        first,
+        count: 3,
+        base_vertex: 0,
+        first_instance,
+        instances: 2,
+    };
+    let cases = [
+        (vertices(u32::MAX - 1, 0), range),
+        (vertices(0, u32::MAX), instances),
+        (indexed(u32::MAX - 1, 0), range),
+        (indexed(0, u32::MAX), instances),
+    ];
+    for (r, violation) in cases {
+        let mut d = Drawing::new();
+        let p = d.program("plain");
+        d.begin();
+        d.draw_with(&p, None, Topology::TriangleList, false, |c, spare| {
+            if matches!(r, DrawRange::Indexed { .. }) {
+                c.index = Some(IndexBinding {
+                    buffer: spare,
+                    offset: 0,
+                    format: IndexFormat::U16,
+                });
+            }
+            c.range = r;
+        });
         d.refused(violation);
     }
 }

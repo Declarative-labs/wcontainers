@@ -1157,8 +1157,8 @@ fn for_rows(
     let o = region.origin;
     if !o.x.is_multiple_of(bw)
         || !o.y.is_multiple_of(bh)
-        || o.x + extent.width > w.next_multiple_of(bw)
-        || o.y + extent.height > h.next_multiple_of(bh)
+        || u64::from(o.x) + u64::from(extent.width) > u64::from(w.next_multiple_of(bw))
+        || u64::from(o.y) + u64::from(extent.height) > u64::from(h.next_multiple_of(bh))
     {
         return Err("a region outside its level or off the block grid".into());
     }
@@ -1169,10 +1169,12 @@ fn for_rows(
     let region_rows = extent.height.div_ceil(bh) as usize;
     let three_d = desc.dimension == TextureDimension::D3;
     if three_d {
-        if o.z + extent.depth_or_layers > d {
+        if u64::from(o.z) + u64::from(extent.depth_or_layers) > u64::from(d) {
             return Err("a region past the last slice".into());
         }
-    } else if region.layer + extent.depth_or_layers > desc.depth_or_layers {
+    } else if u64::from(region.layer) + u64::from(extent.depth_or_layers)
+        > u64::from(desc.depth_or_layers)
+    {
         return Err("a region past the last layer".into());
     }
     for k in 0..extent.depth_or_layers {
@@ -1357,8 +1359,9 @@ impl Backend for Recorder {
                     return Err(GpuError::Absent(Features::FORMAT_REINTERPRET));
                 }
             }
-            if desc.base_mip + desc.mip_count > t.desc.mip_levels
-                || desc.base_layer + desc.layer_count > layers(&t.desc)
+            if u64::from(desc.base_mip) + u64::from(desc.mip_count) > u64::from(t.desc.mip_levels)
+                || u64::from(desc.base_layer) + u64::from(desc.layer_count)
+                    > u64::from(layers(&t.desc))
                 || desc.mip_count == 0
                 || desc.layer_count == 0
             {
@@ -1584,8 +1587,11 @@ impl Backend for Recorder {
         self.nested += 1;
         #[allow(clippy::redundant_closure_call)]
         let made = (|| -> Result<Id, GpuError> {
-            if desc.fill != FillMode::Solid {
-                return Err(GpuError::Absent(Features::POLYGON_MODE));
+            // Lines and points are captured, not drawn, so neither fill mode is declared.
+            match desc.fill {
+                FillMode::Solid => {}
+                FillMode::Line => return Err(GpuError::Absent(Features::POLYGON_MODE)),
+                FillMode::Point => return Err(GpuError::Absent(Features::POLYGON_MODE_POINT)),
             }
             if !desc.depth_clip {
                 return Err(GpuError::Absent(Features::DEPTH_CLAMP));
@@ -2347,7 +2353,7 @@ impl Backend for Recorder {
         let made = (|| -> Result<Id, GpuError> {
             let results = match self.obj(*set) {
                 Ok(Obj::QuerySet { results, .. }) => results
-                    .get(first as usize..(first + count) as usize)
+                    .get(first as usize..first as usize + count as usize)
                     .map(|r| r.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()),
                 _ => None,
             };
