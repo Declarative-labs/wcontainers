@@ -49,6 +49,8 @@ pub struct Run {
     pub files: Vec<FileRecord>,
     /// How many times it was saved and brought back.
     pub saved: usize,
+    /// How many turns on the CPU side it took.
+    pub turns: u64,
 }
 
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
@@ -314,10 +316,13 @@ pub fn run(container: &Container<'_>, seed: u64) -> Result<Run, Failure> {
 }
 
 /// What a run has done to it at moments drawn from its seed, besides where its turns end.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Injections {
     /// How many times it is saved and brought back.
     pub saves: usize,
+    /// The most turns between two saves (and before the first): a long run spreads its saves
+    /// over more turns.
+    pub save_gap: u64,
     /// How much more the host's wall clock moves on than its monotonic clock at each save.
     pub wall_step: u64,
     /// A signal sent to the first process from outside, and how many times.
@@ -325,6 +330,18 @@ pub struct Injections {
     /// How many notices the file backend sends unasked, of kinds and about nodes drawn from the
     /// seed, as a backend whose files changed underneath would.
     pub notices: usize,
+}
+
+impl Default for Injections {
+    fn default() -> Self {
+        Self {
+            saves: 0,
+            save_gap: 100,
+            wall_step: 0,
+            signal: None,
+            notices: 0,
+        }
+    }
 }
 
 /// Turn counts at which something is injected: `count` of them, each 1 to 100 turns after the last.
@@ -394,7 +411,7 @@ pub fn run_prepared(
         groups,
         echo,
     } = prepared;
-    let mut at = moments(seed ^ 0x5a7e, injections.saves);
+    let mut at = moments_apart(seed ^ 0x5a7e, injections.saves, injections.save_gap);
     let (signal, signals) = injections.signal.unwrap_or((0, 0));
     let mut signal_at = moments(seed ^ 0x5197, signals);
     // Notices come close together, so that a short program meets many of them.
@@ -580,6 +597,7 @@ pub fn run_prepared(
         counters: kernel.counters().collect(),
         files,
         saved,
+        turns,
     };
     Ok(finish(run, report))
 }
@@ -799,6 +817,7 @@ fn encode(run: &Run) -> Vec<u8> {
     bytes(&mut out, &run.outcome.stderr);
     number(&mut out, run.outcome.exit_code as u64);
     number(&mut out, run.saved as u64);
+    number(&mut out, run.turns);
     number(&mut out, run.warnings.len() as u64);
     for warned in &run.warnings {
         bytes(&mut out, warned.reason.as_bytes());
@@ -848,6 +867,7 @@ fn decode(input: &[u8]) -> Run {
     let stderr = reader.bytes();
     let exit_code = reader.number() as i32;
     let saved = reader.number() as usize;
+    let turns = reader.number();
     let warnings = (0..reader.number())
         .map(|_| Warned {
             reason: reader.text(),
@@ -884,5 +904,6 @@ fn decode(input: &[u8]) -> Run {
         counters,
         files,
         saved,
+        turns,
     }
 }

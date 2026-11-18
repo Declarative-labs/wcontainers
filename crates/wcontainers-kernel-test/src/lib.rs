@@ -12,6 +12,7 @@ pub mod libctest;
 pub mod ltp;
 pub mod network;
 pub mod reference;
+pub mod runtimes;
 pub mod standin;
 
 use std::path::Path;
