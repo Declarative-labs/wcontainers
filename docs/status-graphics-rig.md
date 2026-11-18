@@ -1335,6 +1335,17 @@ ours; Mac load average about 60 to 65):
   2525 and 2549 in the two runs; bgfx-01-cubes-d3d12's Wait 591 against 590 committed.
 - Unit tests through `remote` after the census change: 3 of the forwarding crate pass (a copied
   table, the thunks' layout, the census's own calls left out on its thread only), clippy clean.
+- Whole suite at 324dbc9 (scratch r2run4/suite): fmt, clippy with warnings denied and the unit
+  tests (19 through `remote`, 16 on the Mac); shellcheck of the Mac scripts; `scenes` 255 passed,
+  0 failed, 0 absent (19 s); `scenes --api d3d12 --dll d3d12.dll=<the forwarding library>` 116
+  passed (11 s); `loop` passes (25 s); `programs run` all 25 pass (111 s); `wine-tests run --warp`
+  801 counted, 0 FAIL, dxgi test_swapchain_backbuffer_index run on WARP (196 s); `wine-tests run`
+  800 counted, 0 FAIL, that test "excluded" on the GPU (498 s). No display driver event in the
+  System log during any of it; the queue not held after.
+- Check from a fresh clone of the pushed branch at c398f87 (scratch r2run4, clone deleted after,
+  log fresh-clone.log): `scenes blend draws` 12 passed; `wine-tests run d3d10core` 111 counted, 0
+  FAIL (it waited 7 minutes behind other tracks' hazard jobs); `programs run
+  d3d12-hello-constbuffers` passes, its census matching its .expected file.
 - The reset record was checked against the System and Application logs and each checkout's
   reflog on the desktop (scratch r2run4/resets-context.txt, resets-summary.txt, dred.txt); the
   failed logons of FakeUser against the Security and OpenSSH logs (fakeuser.txt).
