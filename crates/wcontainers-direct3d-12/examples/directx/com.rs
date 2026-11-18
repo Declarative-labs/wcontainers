@@ -1635,6 +1635,30 @@ impl ID3D12Object_Impl for Allocator_Impl {
     }
 }
 
+impl ID3D12GraphicsCommandList6_Impl for List_Impl {
+    fn DispatchMesh(
+        &self,
+        _threadgroupcountx: u32,
+        _threadgroupcounty: u32,
+        _threadgroupcountz: u32,
+    ) {
+        self.unsupported("DispatchMesh");
+    }
+}
+
+impl ID3D12GraphicsCommandList5_Impl for List_Impl {
+    fn RSSetShadingRate(
+        &self,
+        _baseshadingrate: D3D12_SHADING_RATE,
+        _combiners: *const D3D12_SHADING_RATE_COMBINER,
+    ) {
+        self.unsupported("RSSetShadingRate");
+    }
+    fn RSSetShadingRateImage(&self, _shadingrateimage: windows_core::Ref<ID3D12Resource>) {
+        self.unsupported("RSSetShadingRateImage");
+    }
+}
+
 impl ID3D12GraphicsCommandList4_Impl for List_Impl {
     fn BeginRenderPass(
         &self,
@@ -2231,6 +2255,12 @@ impl ID3D12Object_Impl for List_Impl {
     }
     fn SetName(&self, name: &windows_core::PCWSTR) -> windows_core::Result<()> {
         self.base().SetName(name)
+    }
+}
+
+impl ID3D12Fence1_Impl for Fence_Impl {
+    fn GetCreationFlags(&self) -> D3D12_FENCE_FLAGS {
+        Fence::GetCreationFlags(self)
     }
 }
 
