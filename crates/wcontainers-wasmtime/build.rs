@@ -1,4 +1,4 @@
-//! The translator's build identity: a hash of the sources of every workspace crate the emitted code
+//! The translator's build identity: a hash of the files of every workspace crate the emitted code
 //! depends on (the translator, every guest and what they stand on) and of the locked entry of every
 //! other crate they depend on, so a change to any of them changes the cache's keys. The workspace comes
 //! from `cargo metadata --no-deps` and the rest from the lock file, so nothing is fetched.
@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 
 use cargo_lock::Lockfile;
 use cargo_metadata::{DependencyKind, MetadataCommand, Package};
+
+/// A package's directories that hold only targets never built into a dependent, and build output.
+const NOT_BUILT_INTO_DEPENDENTS: [&str; 4] = ["tests", "benches", "examples", "target"];
 
 fn files(directory: &Path, into: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(directory) else {
@@ -104,23 +107,38 @@ fn main() {
             hasher.update(entry.as_bytes());
             continue;
         }
+        // Every file of the package's directory, cargo's bound of what a package is built from (its
+        // sources and whatever they include), but for the directories it never builds into a
+        // dependent. Each entry is watched (a directory with every file in it); an entry added
+        // beside the manifest is reached only through a changed source, which is watched.
         let member = members[package.name.as_str()];
         let directory = member
             .manifest_path
             .parent()
             .expect("a manifest's directory")
             .as_std_path();
-        let mut paths = vec![member.manifest_path.clone().into_std_path_buf()];
-        files(&directory.join("src"), &mut paths);
+        let mut paths = Vec::new();
+        for entry in std::fs::read_dir(directory)
+            .expect("a package's directory")
+            .flatten()
+        {
+            let path = entry.path();
+            if NOT_BUILT_INTO_DEPENDENTS.contains(&entry.file_name().to_string_lossy().as_ref()) {
+                continue;
+            }
+            println!("cargo:rerun-if-changed={}", path.display());
+            if path.is_dir() {
+                files(&path, &mut paths);
+            } else {
+                paths.push(path);
+            }
+        }
         paths.sort();
         for path in paths {
-            println!("cargo:rerun-if-changed={}", path.display());
             let relative = path.strip_prefix(root).expect("inside the workspace");
             hasher.update(relative.to_string_lossy().as_bytes());
-            hasher.update(&std::fs::read(&path).expect("a source file"));
+            hasher.update(&std::fs::read(&path).expect("a package's file"));
         }
-        // A source file added.
-        println!("cargo:rerun-if-changed={}", directory.join("src").display());
     }
     println!(
         "cargo:rustc-env=WCONTAINERS_TRANSLATOR_BUILD={}",

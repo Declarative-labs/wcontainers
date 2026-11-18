@@ -327,8 +327,11 @@ already does, decided by that measurement.
   a higher address ceiling (section 8). The ceiling itself is not in the key: the code reads the array's
   cover and the permission pages from imported globals (contract.rs `SLOTS_COVER`, `PERMISSION_PAGES`), so
   one entry serves every ceiling of the same form,
-- the translator's build identity: a hash made at build time of the sources of every crate the emitted
-  code depends on: the translator, the guest interface (`wcontainers-guest-cpu`: `Personality`, `Guest`),
+- the translator's build identity: a hash made at build time of the files of every crate the emitted
+  code depends on (every file of the crate's package directory, cargo's own bound of what a package is
+  built from, so files its sources include, such as the ARM64 decoder's table of Arm's forms, are in it;
+  only the directories never built into a dependent, `tests`, `benches`, `examples` and `target`, are left
+  out): the translator, the guest interface (`wcontainers-guest-cpu`: `Personality`, `Guest`),
   every guest crate of the workspace (each crate that depends on the guest interface and not on the
   translator, found by the build script, so x86-64's joins when it lands), and `wcontainers-abi` (the
   register block, `STOP_FLAG_OFFSET`, `THREAD_BLOCK_SIZE`), and the locked entry (name, version, source,
@@ -337,8 +340,8 @@ already does, decided by that measurement.
   cargo-lock crate), so nothing is fetched (wasm-encoder, the guest's decoder and float crates, the
   translator's petgraph and what those depend on), so any change to them changes the key without
   manual version numbers (built with the disk level, J2: the in-memory level lives inside one build). The
-  build script reruns when the lock file, a crate's manifest or a hashed crate's sources change, and for
-  nothing else under the crates directory,
+  build script reruns when the lock file, a crate's manifest or a hashed file changes, and for nothing
+  else under the crates directory (a hashed crate's tests among them),
 - wasmtime's own compatibility check, which `Module::deserialize` makes. A file that exists but cannot be
   read whole or is refused is a counted, warned slow path ("translation in the cache's directory refused"):
   the translation is made again and written in its place.
