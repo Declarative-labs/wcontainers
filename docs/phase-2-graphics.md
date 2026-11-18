@@ -442,7 +442,8 @@ Building ahead, for the implicit fronts (the brief's three steps against stutter
 3. Record every combination drawn into the cache (section 8) and `prepare` them all at the next start.
 These `prepare` calls queue behind Direct3D 12's and the cache's, and never block. A shared helper in
 `wcontainers-gpu` (the combination tracker, written at G1 with the pass tracker) keeps the tuples per
-vertex shader and the counts, and picks the tuples; it counts how many prepared combinations were
+vertex shader and the counts (with the cache's record taken in, and given back as the record to
+write, `totals`), and picks the tuples; it counts how many prepared combinations were
 later drawn and how many never were, which G4 reports on real programs. A combination still missing at
 its first draw is built then and the frame pauses (`PipelineMiss`), never skipping the draw.
 
@@ -722,9 +723,12 @@ Rules a pass description follows:
   (kept sorted; while neither the pass nor the draw writes storage, the common case, the check is a
   test of one flag, and recording a draw's uses one search per use); before a draw that would
   put a resource in both, it ends the pass with `Store` and begins the next on the same targets with
-  `Load` (`UsageScopeSplit`, counted); each part names the resolve target, whose last resolve is the
-  one that stays (a part cannot be known to be the last when it begins; a split pass costs one more
-  resolve). Running
+  `Load` (`UsageScopeSplit`, counted), keeping the pass's read-only aspects; each part names the
+  resolve target, whose last resolve is the one that stays (a part cannot be known to be the last when
+  it begins; a split pass costs one more resolve). For the same reason an explicit front, which knows
+  its whole pass before it replays it, begins a pass whose draws write storage with `Store` where its
+  API discards (a split pass keeps those attachments), and the tracker refuses to split a pass that
+  discards. Running
 queries carry over as at any split (below). Exact: the
   later draw sees the storage writes, as the APIs promise after their barrier or hazard rule. Within one
   draw, Direct3D forbids the same resource as a storage view and any other binding (Direct3D 11's

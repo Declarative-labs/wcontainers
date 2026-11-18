@@ -153,7 +153,8 @@ pub struct IndexBinding<'a, B: Backend> {
 /// index plus `base_vertex` for an indexed one, and `first_instance` plus the instance's place. A front
 /// whose API counts otherwise binds a program variant that takes the bases out
 /// ([`crate::DrawBaseSource`]); the bases it writes are those of the API's draw, also when a route
-/// splits the draw into several.
+/// splits the draw into several. `first + count` and `first_instance + instances` fit in a `u32`, so
+/// every index the program sees does.
 #[derive(Debug)]
 pub enum DrawRange<'a, B: Backend> {
     Vertices {

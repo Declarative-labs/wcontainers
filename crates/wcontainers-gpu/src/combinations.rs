@@ -77,8 +77,9 @@ impl<V: Ord + Clone, P: Ord + Clone, T: Ord + Clone> CombinationTracker<V, P, T>
         }
     }
 
-    /// Draws per vertex shader and tuple, of this run and the cache's record.
-    fn totals(&self) -> BTreeMap<(&V, &T), u64> {
+    /// Draws per vertex shader and tuple, of this run and the cache's record taken in by
+    /// [`CombinationTracker::record`]: the record a front writes back into the cache.
+    pub fn totals(&self) -> BTreeMap<(&V, &T), u64> {
         let mut totals: BTreeMap<(&V, &T), u64> = BTreeMap::new();
         for e in self.entries.iter().filter(|e| e.draws > 0) {
             *totals.entry((&e.vertex, &e.tuple)).or_default() += e.draws;
