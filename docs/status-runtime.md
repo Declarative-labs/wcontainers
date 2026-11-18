@@ -97,9 +97,18 @@ J2's bar on the merged tree with the fix (scratch worktree j3/tree at fff0aa77, 
   passed, 2 ignored, 94.4 s (load 36.0 to 28.7; m-bar-bounded.log). The 47 are J2's 46 and the kernel
   track's new test in processes; ignored as before: align's exclusive load (the translator's known failure)
   and memfd's huge pages.
-- Layer 1: seed 6022140857 with 40,000 sequences passes over the back end and on the buffer CPU (above); a
+- Layer 1: seed 6022140857 with 40,000 sequences passes over the back end and on the buffer CPU (above;
+  a first try in the checkout, j3/layer1-40000-6022140857.log, was ended by a signal 15 from outside after
+  its build, with no verdict); a
   new seed, 10,000 sequences with seed 2026111831 and 32 on each file backend, 3 passed in 167.8 s (load 34.4
   to 31.5; j3/m-layer1-10000-2026111831.log, whose header names every knob).
+
+- The stand-in: the whole kernel test crate without the feature on the same tree (j3/m-verdicts.log and
+  m-verdicts.txt; 2416.8 s, load 31.5 to 56.0, the K6b runtimes most of it): 217 passed, 1 failed, 106
+  ignored. The failure is `backend::transfers_match_reference` on the reference's side: the same standard
+  output, and the reference's standard error held a message of its own backend helper ("wc-backend:
+  EncodeMessage(... ENOENT ...)"); run again alone it passes (j3/m-transfers-rerun.log, load 50.6). Not
+  compared line by line with the kernel track's own verdicts, which this track does not keep.
 
 Built in J3:
 - Free turns (5d86b31d): `Turn` is `Counted { limit }` or `Free`; `StopFlag` (runtime crate) raises the
