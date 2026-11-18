@@ -1163,6 +1163,12 @@ tracks' jobs beside ours; Mac load average 58 to 78):
   FAIL on the GPU (the quarantined dxgi test not run; job 9 min 59 s, after waiting 69 s behind
   another track's hazard job) and `wine-tests run --warp` 801 counted, 0 FAIL (3 min 8 s);
   `queue-check`: all six rules pass.
+- Check from a fresh clone of the pushed branch at d5bb944 (scratch, fresh-r2b): `scenes blend
+  stencil draws raster` 24 passed; `wine-tests run dxgi` 23 counted, 0 FAIL (the quarantined test
+  not run on the GPU); `programs run --dll d3d12.dll=<the forwarding library>
+  d3d12-hello-constbuffers bgfx-01-cubes-d3d12 godot-platformer-2d-d3d12` (a second copy behind
+  the first, through WC_D3D12; its log shows each D3D12CreateDevice passing through both): all
+  three pass.
 
 ## Loading a replacement Direct3D library
 
