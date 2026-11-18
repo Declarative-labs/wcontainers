@@ -186,3 +186,140 @@ fn pipelines_and_bind_groups_are_cached() {
         2
     );
 }
+
+/// Destroying a program or the last of a block's creations frees the pipelines and layouts made
+/// with it; a block made twice keeps them until both are destroyed; the scene drawn again after
+/// is still Direct3D's.
+#[test]
+fn destroyed_programs_and_blocks_free_their_pipelines() {
+    use wcontainers_gpu::Object;
+    let mut b = device();
+    let t = draw::targets(&mut b, None).unwrap();
+    let frame = |b: &mut WebGpu, p: &draw::Prepared| {
+        draw::begin(b, &t, true);
+        draw::draw(b, p);
+        b.end_pass();
+        let rb = draw::read(b, &t).unwrap();
+        b.submit();
+        b.wait_read(&rb);
+        let mut rgba = vec![0; (scene::WIDTH * scene::HEIGHT * 4) as usize];
+        b.finish_read(rb, &mut rgba);
+        assert_eq!(b.status(), DeviceStatus::Ok);
+        rgba
+    };
+    let base = b.held();
+    let p = draw::prepare(&mut b, Scene::Triangle, Twist::None).unwrap();
+    frame(&mut b, &p);
+    let drawn = b.held();
+    assert!(drawn.0 > base.0 && drawn.1 > base.1, "{base:?} {drawn:?}");
+    // An equal blend made again is the same block; destroying one creation keeps the pipeline.
+    let again = b.create_blend(&draw::opaque()).unwrap();
+    b.destroy(Object::Blend(again));
+    assert_eq!(b.held(), drawn);
+    b.destroy(Object::Blend(p.blend.clone()));
+    let after_blend = b.held();
+    assert_eq!(
+        after_blend.0, base.0,
+        "pipelines of the destroyed blend kept"
+    );
+    b.destroy(Object::Program(p.program.clone()));
+    assert_eq!(b.held(), base, "layouts of the destroyed program kept");
+    for o in [
+        Object::DepthStencil(p.depth_stencil.clone()),
+        Object::Raster(p.raster.clone()),
+        Object::VertexLayout(p.vertex_layout.clone()),
+    ] {
+        b.destroy(o);
+    }
+    let q = draw::prepare(&mut b, Scene::Triangle, Twist::None).unwrap();
+    let rgba = frame(&mut b, &q);
+    assert!(
+        allowance::within(&rgba, &reference(Scene::Triangle), "triangle.png"),
+        "the triangle drawn after the destroys differs"
+    );
+    assert_eq!(b.held(), drawn);
+}
+
+/// The triangle with its colour from immediates the fragment stage declares, where the device has
+/// them (`immediate_bytes` above zero): each draw shows the colour it set, over the triangle's
+/// pixels in Direct3D's picture.
+#[test]
+fn immediates_reach_the_program() {
+    const WGSL: &str = "
+struct Colour { rgb: vec3f, scale: f32 }
+var<immediate> colour: Colour;
+struct VsOut { @builtin(position) pos: vec4f }
+@vertex fn vs(@location(0) pos: vec2f, @location(1) c: vec3f) -> VsOut {
+    return VsOut(vec4f(pos, 0.0, 1.0));
+}
+@fragment fn ps(i: VsOut) -> @location(0) vec4f {
+    return vec4f(colour.rgb * colour.scale, 1.0);
+}";
+    let mut b = device();
+    let limit = b.caps().limits.immediate_bytes;
+    eprintln!("immediate_bytes: {limit}");
+    if limit < 16 {
+        eprintln!("immediates absent on this device: nothing to draw");
+        return;
+    }
+    let mut p = draw::prepare(&mut b, Scene::Triangle, Twist::None).unwrap();
+    // The example's helper validates with WebGPU's core capabilities; immediates need their own.
+    let module = naga::front::wgsl::parse_str(WGSL).unwrap();
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::IMMEDIATES,
+    )
+    .validate(&module)
+    .unwrap();
+    let mut stage = |entry: &str, stage| {
+        b.create_shader(&wcontainers_gpu::ShaderModule {
+            module: module.clone(),
+            info: info.clone(),
+            entry_point: entry.into(),
+            stage,
+            key: [0; 32],
+        })
+        .unwrap()
+    };
+    let (vs, ps) = (
+        stage("vs", wcontainers_gpu::ShaderStage::Vertex),
+        stage("ps", wcontainers_gpu::ShaderStage::Fragment),
+    );
+    p.program = b
+        .create_program(&wcontainers_gpu::Program::Render {
+            vertex: &vs,
+            fragment: Some(&ps),
+        })
+        .unwrap();
+    let t = draw::targets(&mut b, None).unwrap();
+    let want = reference(Scene::Triangle);
+    let clear = want[..4].to_vec();
+    for (rgb, scale, shown) in [
+        ([0.2f32, 0.4, 0.6], 1.0f32, [51u8, 102, 153, 255]),
+        ([1.0, 0.0, 0.5], 0.4, [102, 0, 51, 255]),
+    ] {
+        let bytes: Vec<u8> = rgb
+            .iter()
+            .chain([&scale])
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        draw::begin(&mut b, &t, true);
+        draw::draw_with(&mut b, &p, &bytes);
+        b.end_pass();
+        let rb = draw::read(&mut b, &t).unwrap();
+        b.submit();
+        b.wait_read(&rb);
+        let mut rgba = vec![0; want.len()];
+        b.finish_read(rb, &mut rgba);
+        assert_eq!(b.status(), DeviceStatus::Ok);
+        let wrong = rgba
+            .chunks(4)
+            .zip(want.chunks(4))
+            .filter(|(got, d3d)| {
+                let inside = *d3d != &clear[..];
+                *got != if inside { &shown[..] } else { &clear[..] }
+            })
+            .count();
+        assert_eq!(wrong, 0, "pixels not the immediates' colour or the clear");
+    }
+}
