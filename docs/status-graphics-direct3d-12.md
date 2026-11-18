@@ -301,7 +301,7 @@ Nothing answers success without the work.
 ## The pass bar's cases against real Direct3D 12 (own program)
 
 `check_d3d12 cases` runs each case in its own process with real Direct3D 12 and through ours and
-compares the lines (`examples/check/cases.rs`). Run 18: 23 of 23 equal (Measurements). Run 17 (RTX 3080, desktop shared with other
+compares the lines (`examples/check/cases.rs`). Runs 18 and 19: 23 of 23 equal (Measurements). Run 17 (RTX 3080, desktop shared with other
 tracks, scratch run17/check1.log, built at d9a661c's sources): 22 of 22 equal; draw 0 of 4096
 pixels beyond 1; features 269 of 872, outputs 22 of 110 and answers 7 of 37 differ, none beyond
 real Direct3D 12 (ours answers less: heap flags, colour spaces, formats WebGPU lacks).
@@ -577,9 +577,6 @@ list only when it is the back end's or browser's to lack (reported absent as Dir
 
 ## Next, in this order
 
-0. The own program's run of run 19 did not happen: the GPU queue was held (the rig track's
-   test of its driver-reset hold, 21:58). Run it first (How to run, "Own program") and record
-   the cases; every case equalled real Direct3D 12 in run 18.
 1. The real program's frames: Direct3D 12 frame capture in the rig (its own next step; the rig
    branch had nothing new in run 19), then compare bgfx 01-cubes, 24-nbody and 38-bloom against
    real Direct3D 12 (scratch bin/bgfx-run.ps1 runs them by hand today).
@@ -780,6 +777,12 @@ Run 11's entries:
 
 ## Measurements
 
+- Run 19 (2026-11-17, RTX 3080, desktop shared with other tracks, not `--alone`, load not taken;
+  run19/check3.log, built at f136240): fence events, 2000 rounds: real first 10 µs, mean 1 µs,
+  99th percentile 1 µs, largest 10 µs; ours first 93 µs, mean 23 µs, 99th percentile 59 µs,
+  largest 155 µs. Own program: 23 of 23 cases equal; draw 0 of 4096 pixels beyond 1; features
+  253 of 872 (268 in run 18: the typed buffer answers), outputs 22 of 110, answers 7 of 37
+  differ, none beyond real.
 - Run 18 (2026-11-17, RTX 3080, desktop shared with other tracks, not `--alone`, load not taken;
   run18/check3.log): fence events, 2000 rounds: real first 8 µs, mean 1 µs, 99th percentile 2 µs,
   largest 8 µs; ours first 53 µs, mean 17 µs, 99th percentile 24 µs, largest 62 µs. Own program
