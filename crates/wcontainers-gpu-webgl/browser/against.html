@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGL 2 against WebGPU</title>
+<script type="importmap">{ "imports": { "wcontainers-device": "./device.js" } }</script>
+<script type="module">
+// Runs one comparison of examples/common/against.rs (pkg/browser.js): ?name=<comparison>, or no name
+// for the list. Sets window.done to { ok, lines }; a panic traps the module, so a page runs one.
+import init, { against_names, against_run } from './pkg/browser.js';
+const params = new URLSearchParams(location.search);
+let panic = '';
+window.makeContext = () => {
+  const canvas = document.createElement('canvas');
+  const gl = canvas.getContext('webgl2', { antialias: false, depth: false, stencil: false, alpha: true });
+  if (!gl) throw new Error('no WebGL 2 context');
+  canvas.addEventListener('webglcontextlost', (e) => console.log(`context lost: ${e.statusMessage}`));
+  return gl;
+};
+window.panicked = (message) => { panic = message; };
+try {
+  await init();
+  const name = params.get('name');
+  if (!name) {
+    window.done = { ok: true, lines: against_names().split(' ') };
+  } else {
+    // WebGPU's adapter must be a GPU (Chrome names its type with --enable-webgpu-developer-features,
+    // which chrome.mjs gives).
+    const info = (await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })).info;
+    if (!['discrete GPU', 'integrated GPU'].includes(info.type)) throw new Error(`WebGPU's adapter is of type ${info.type}, not a GPU`);
+    const lines = [`webgpu adapter: ${info.description} (${info.type}, ${info.backend})`, ...(await against_run(name)).split('\n').slice(1)];
+    window.done = { ok: !lines.some((l) => l.includes(': FAILED ')), lines };
+  }
+} catch (e) {
+  window.done = { ok: false, lines: [panic || String(e)] };
+}
+</script>
