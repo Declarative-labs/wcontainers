@@ -179,7 +179,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         storage_packed,
         texels_through_buffer: _,
         decoded,
-        targets_in_shader,
+        targets_in_shader: _,
         min_lod_clamped: _,
         texture_layers: _,
         swizzled: _,
@@ -203,7 +203,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     let asked = [
         (*storage_packed != 0, "StoragePacked"),
         (!decoded.is_empty(), "NormAsInteger"),
-        (!targets_in_shader.is_empty(), "TargetsInShader"),
         (
             *layout != [0; 32] || root_signature.is_some(),
             "RootSignatureLayout",

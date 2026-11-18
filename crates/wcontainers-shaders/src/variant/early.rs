@@ -95,7 +95,6 @@ pub(super) fn early_tests(
         ShaderStage::Fragment,
         HelperValue::EarlyTests,
         rows,
-        32,
     );
     let vec4 = vector(module, 4, Scalar::F32);
     let position = w.input(

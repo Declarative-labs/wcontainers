@@ -195,7 +195,6 @@ impl TexelBuffer {
                 binding: self.binding,
             },
             vec2u,
-            8,
         );
         let v = b.raw(|f, body| load_helper(f, body, member));
         (b.field(v, 0), b.field(v, 1))
@@ -230,7 +229,6 @@ impl TexelBuffer {
             self.stage,
             HelperValue::TexelLayout { slot },
             two,
-            32,
         );
         let v = b.raw(|f, body| load_helper(f, body, member));
         let first = b.field(v, 0);

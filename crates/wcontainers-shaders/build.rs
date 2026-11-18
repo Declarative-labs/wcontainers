@@ -51,6 +51,21 @@ const DXBC_SPIRV: &[&str] = &[
     "util/util_swizzle.cpp",
 ];
 
+/// dxbc-spirv's IR enums the lowering reads, by C++ name: the module of `ir.rs` each becomes, and the
+/// type its constants take where they are compared (the serialised form's literal operands are u64).
+const IR_ENUMS: &[(&str, &str, &str)] = &[
+    ("ScalarType", "scalar", "u8"),
+    ("OpCode", "code", "u16"),
+    ("OpFlag", "flag", "u8"),
+    ("BuiltIn", "builtin", "u64"),
+    ("ResourceKind", "kind", "u64"),
+    ("ShaderStage", "stage", "u64"),
+    ("PrimitiveType", "primitive", "u64"),
+    ("InterpolationMode", "interp", "u64"),
+    ("Construct", "construct", "u64"),
+    ("UavFlag", "uav", "u64"),
+];
+
 const DXIL_SPIRV: &[&str] = &[
     "debug/logging.cpp",
     "util/thread_local_allocator.cpp",
@@ -180,6 +195,11 @@ fn main() {
     build.file("cpp/assertion.cpp");
     compile(&build, "wcs_assertion", &objects);
 
+    ir_codes(
+        &root.join("ir/ir.h"),
+        &PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("ir_codes.rs"),
+    );
+
     // The converter as a whole: the C++ above, this crate's Rust, and the naga carried in the
     // workspace, whose readers and writers make the module.
     let naga = Path::new("../../third_party/naga/src");
@@ -200,6 +220,108 @@ fn main() {
     if naga.exists() {
         println!("cargo:rerun-if-changed={}", naga.display());
     }
+}
+
+/// Writes `IR_ENUMS` as Rust constants from dxbc-spirv's own header, so the numbers the lowering
+/// compares are dxbc-spirv's, never retyped: `eSetCsWorkgroupSize` becomes `SET_CS_WORKGROUP_SIZE`.
+fn ir_codes(header: &Path, out: &Path) {
+    let text = std::fs::read_to_string(header).unwrap();
+    let mut rust = String::new();
+    for (cpp, module, ty) in IR_ENUMS {
+        let start = text
+            .find(&format!("enum class {cpp} :"))
+            .unwrap_or_else(|| panic!("{}: no enum {cpp}", header.display()));
+        let body = &text[start..];
+        let body = &body[body.find('{').unwrap() + 1..body.find("};").unwrap()];
+        rust += &format!(
+            "/// dxbc-spirv's `ir::{cpp}`, from its `ir/ir.h`.\n#[allow(dead_code)]\npub mod {module} {{\n"
+        );
+        let mut values: Vec<(String, u64)> = Vec::new();
+        for entry in without_comments(body).split(',') {
+            let entry = entry.trim();
+            let Some(name) = entry.strip_prefix('e') else {
+                continue;
+            };
+            let (name, value) = match name.split_once('=') {
+                Some((name, value)) => (name.trim(), value.trim()),
+                None => (name, ""),
+            };
+            let value = match value {
+                "" => values.last().map_or(0, |(_, v)| v + 1),
+                v if v.starts_with('e') => {
+                    values
+                        .iter()
+                        .find(|(n, _)| *n == v[1..])
+                        .unwrap_or_else(|| panic!("{cpp}: {v} is not defined before {name}"))
+                        .1
+                }
+                v => evaluate(v).unwrap_or_else(|| panic!("{cpp}::e{name}: cannot read {v}")),
+            };
+            values.push((name.to_string(), value));
+            rust += &format!("    pub const {}: {ty} = {value};\n", screaming(name));
+        }
+        rust += "}\n";
+    }
+    std::fs::write(out, rust).unwrap();
+}
+
+/// C++ source without its comments.
+fn without_comments(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix("/*") {
+            rest = r.find("*/").map_or("", |end| &r[end + 2..]);
+        } else if let Some(r) = rest.strip_prefix("//") {
+            rest = r.find('\n').map_or("", |end| &r[end..]);
+        } else {
+            let c = rest.chars().next().unwrap();
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    out
+}
+
+/// An enumerator's value: an unsigned literal (`5`, `5u`, `0x10u`), or a shift of one (`(1u << 3)`).
+fn evaluate(text: &str) -> Option<u64> {
+    let text = text
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .trim();
+    if let Some((a, b)) = text.split_once("<<") {
+        return Some(evaluate(a)? << evaluate(b)?);
+    }
+    let digits = text.trim_end_matches(['u', 'U']);
+    match digits.strip_prefix("0x") {
+        Some(hex) => u64::from_str_radix(hex, 16).ok(),
+        None => digits.parse().ok(),
+    }
+}
+
+/// `SetCsWorkgroupSize` as `SET_CS_WORKGROUP_SIZE`, `Image2DMsArray` as `IMAGE_2D_MS_ARRAY`.
+fn screaming(name: &str) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    let mut out = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        let prev = i.checked_sub(1).map(|p| chars[p]);
+        let next = chars.get(i + 1).copied();
+        let lower = |c: Option<char>| c.is_some_and(|c| c.is_ascii_lowercase());
+        let word = match prev {
+            None => false,
+            Some(p) if c.is_ascii_digit() => p.is_ascii_lowercase(),
+            Some(p) if c.is_ascii_uppercase() => {
+                p.is_ascii_lowercase() || (p.is_ascii_uppercase() && lower(next))
+            }
+            _ => false,
+        };
+        if word {
+            out.push('_');
+        }
+        out.push(c.to_ascii_uppercase());
+    }
+    out
 }
 
 /// Compiles `build` into the static library `name`, reusing the objects of an earlier run while

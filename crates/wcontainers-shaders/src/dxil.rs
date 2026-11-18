@@ -1486,34 +1486,51 @@ fn bindings(
     Ok(slots)
 }
 
+/// SPIR-V's physical layout (its specification, 2.3 and 2.2.1): the header's words before the first
+/// instruction, and where an instruction's first word keeps its word count and its opcode.
+pub(crate) mod words {
+    pub const HEADER: usize = 5;
+    pub const COUNT_SHIFT: u32 = u16::BITS;
+    pub const OPCODE_MASK: u32 = u16::MAX as u32;
+}
+
 /// Whether an atomic minimum or maximum in `spirv` is of the other signedness than the integers it
 /// works on, which naga's reader makes a compare-exchange loop.
 fn atomic_signedness_differs(spirv: &[u32]) -> bool {
+    use spirv::Op;
     use std::collections::HashMap;
-    const TYPE_INT: u32 = 21;
-    const TYPE_POINTER: u32 = 32;
-    // OpAtomicSMin, OpAtomicSMax; OpAtomicUMin, OpAtomicUMax.
-    const SIGNED: [u32; 2] = [236, 238];
-    const UNSIGNED: [u32; 2] = [237, 239];
+    const SIGNED: [Op; 2] = [Op::AtomicSMin, Op::AtomicSMax];
+    const UNSIGNED: [Op; 2] = [Op::AtomicUMin, Op::AtomicUMax];
     // The instructions giving pointers: variables, access chains, texel pointers, parameters.
-    const POINTERS: [u32; 6] = [59, 65, 66, 67, 60, 55];
+    const POINTERS: [Op; 6] = [
+        Op::Variable,
+        Op::AccessChain,
+        Op::InBoundsAccessChain,
+        Op::PtrAccessChain,
+        Op::ImageTexelPointer,
+        Op::FunctionParameter,
+    ];
     // Signedness of integer types, pointee of pointer types, type of each result.
     let mut signed = HashMap::new();
     let mut pointee = HashMap::new();
     let mut types = HashMap::new();
     let mut atomics = Vec::new();
-    let mut at = 5;
+    let mut at = words::HEADER;
     while at < spirv.len() {
-        let (count, op) = ((spirv[at] >> 16) as usize, spirv[at] & 0xffff);
+        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
         if count == 0 || at + count > spirv.len() {
             return false;
         }
+        let Some(op) = Op::from_u32(spirv[at] & words::OPCODE_MASK) else {
+            at += count;
+            continue;
+        };
         let w = &spirv[at + 1..at + count];
         match op {
-            TYPE_INT if w.len() >= 3 => {
+            Op::TypeInt if w.len() >= 3 => {
                 signed.insert(w[0], w[2] != 0);
             }
-            TYPE_POINTER if w.len() >= 3 => {
+            Op::TypePointer if w.len() >= 3 => {
                 pointee.insert(w[0], w[2]);
             }
             _ if (SIGNED.contains(&op) || UNSIGNED.contains(&op)) && w.len() >= 3 => {
