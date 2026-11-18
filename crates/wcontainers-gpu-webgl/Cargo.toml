@@ -14,6 +14,8 @@ glow = "0.18.0"
 half = "2.7.1"
 naga = { workspace = true, features = ["glsl-out"] }
 rangemap = "1.8.0"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"], optional = true }
+serde = { version = "1.0.228", features = ["derive"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 khronos-egl = { version = "6.0.0", features = ["dynamic"] }
@@ -22,6 +24,13 @@ khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 js-sys = "0.3.84"
 wasm-bindgen = "0.2.130"
 web-sys = { version = "0.3.107", features = ["WebGl2RenderingContext"] }
+
+[features]
+# Call streams of the interface (src/trace.rs): saved with their shaders, and replayed on any back end.
+trace = ["dep:postcard", "dep:serde", "naga/serialize", "naga/deserialize"]
+# `WebGl` records every call into the stream file `WEBGL_TRACE` names, for replaying a real program's
+# frames elsewhere.
+record = ["trace"]
 
 [lints]
 workspace = true
@@ -47,6 +56,7 @@ rand_chacha = "0.9.0"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+web-sys = { version = "0.3.107", features = ["HtmlCanvasElement", "console"] }
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 # The WebGPU back end on the browser's WebGPU, for the per-draw cost measured against it.
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
@@ -59,3 +69,8 @@ crate-type = ["cdylib"]
 [[example]]
 name = "draw-cost"
 crate-type = ["cdylib"]
+
+[[example]]
+name = "replay"
+crate-type = ["cdylib"]
+required-features = ["trace"]

@@ -1,0 +1,74 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Replayed frames on WebGL 2 and WebGPU</title>
+<script type="importmap">{ "imports": { "wcontainers-device": "./device.js" } }</script>
+<script type="module">
+// Replays pkg/stream.bin (a recorded call stream) on each back end, frame by frame with a 20 ms pause
+// between frames so the GPU keeps up. Odd frames time each call inside the back end; even frames
+// are timed whole only, so the clock's own cost stays out of them. Frames before `skip` (loading)
+// are left out of the sums. Sets window.done to { ok, lines }.
+import init, { replay_on_webgl, replay_on_webgpu, replay_frame, replay_report } from './pkg/replay.js';
+const skip = Number(new URLSearchParams(location.search).get('skip') ?? 10);
+const pause = () => new Promise((r) => setTimeout(r, 20));
+const median = (t) => { const s = [...t].sort((a, b) => a - b); return s.length ? s[s.length >> 1] : NaN; };
+const lines = [];
+window.makeCanvas = () => document.createElement('canvas');
+async function run(name, start) {
+  await start();
+  const whole = [];
+  const inside = [];
+  const kinds = new Map();
+  let frames = 0;
+  let failed = 0;
+  let first = '';
+  for (let i = 0; ; i++) {
+    const timed = i % 2 === 1;
+    const text = await replay_frame(timed);
+    if (text === undefined || text === null) break;
+    frames++;
+    let sum = 0;
+    for (const line of text.split('\n')) {
+      const [kind, a, ...rest] = line.split(' ');
+      if (kind === 'failed') {
+        failed += Number(a);
+        if (!first && Number(a)) first = `frame ${i}: ${rest.join(' ')}`;
+      } else if (kind === 'frame') {
+        if (i >= skip && !timed) whole.push(Number(a));
+      } else if (i >= skip && timed) {
+        const k = kinds.get(kind) ?? { calls: 0, ms: 0 };
+        k.calls += Number(a);
+        k.ms += Number(rest[0]);
+        kinds.set(kind, k);
+        sum += Number(rest[0]);
+      }
+    }
+    if (i >= skip && timed) inside.push(sum);
+    await pause();
+  }
+  const timedFrames = inside.length;
+  lines.push(`${name}: ${frames} frames, ${failed} calls failed${first ? ` (first: ${first})` : ''}`);
+  lines.push(`${name}: whole frame (untimed calls) median ${median(whole).toFixed(3)} ms, fastest ${Math.min(...whole).toFixed(3)} ms, over ${whole.length} frames from frame ${skip}`);
+  lines.push(`${name}: inside the back end (each call timed) median ${median(inside).toFixed(3)} ms a frame, over ${timedFrames} frames`);
+  const sorted = [...kinds.entries()].sort((a, b) => b[1].ms - a[1].ms);
+  for (const [kind, k] of sorted) {
+    lines.push(`${name}:   ${kind}: ${(k.calls / timedFrames).toFixed(1)} calls, ${(k.ms / timedFrames).toFixed(3)} ms a frame, ${(k.ms * 1000 / k.calls).toFixed(2)} us a call`);
+  }
+  lines.push(`${name}: ${replay_report()}`);
+  return failed === 0;
+}
+try {
+  await init();
+  const canvas = document.createElement('canvas');
+  const gl = canvas.getContext('webgl2', { antialias: false, depth: false, stencil: false });
+  const stream = new Uint8Array(await (await fetch('./pkg/stream.bin')).arrayBuffer());
+  lines.push(`stream: ${stream.length} bytes, cross-origin isolated ${self.crossOriginIsolated}`);
+  const okGl = await run('webgl2', async () => replay_on_webgl(gl, stream));
+  const info = (await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })).info;
+  lines.push(`webgpu adapter: ${info.description} (${info.type}, ${info.backend})`);
+  if (!['discrete GPU', 'integrated GPU'].includes(info.type)) throw new Error(`WebGPU's adapter is of type ${info.type}, not a GPU`);
+  const okGpu = await run('webgpu', async () => replay_on_webgpu(stream));
+  window.done = { ok: okGl && okGpu, lines };
+} catch (e) {
+  window.done = { ok: false, lines: [...lines, String(e)] };
+}
+</script>
