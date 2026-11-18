@@ -818,6 +818,15 @@ to 25). It fixed the two findings the seventh run left open:
   of the Mac scripts; `scenes` 243 passed, 0 failed, 0 absent (18 s job); `loop` passes (31 s end
   to end); `programs run` 21 of 21 pass (2 min 24 s job); `wine-tests run`, all eight files: 784
   counted, 0 FAIL (7 min 49 s job).
+- Check from a fresh clone of phase-2-graphics-rig at 3dcb003 (scratch, fresh-run8): `scenes
+  --api d3d11 --level 10_0 --build "cargo build -q -p wcontainers-graphics-test-forward" --dll
+  d3d11.dll=<forwarding library> triangle levels formats msaa textures`: 33 passed, 0 failed, 11
+  absent (formats-support.caps absent: 2 lines lower than the GPU's at 10_0); with the cube array
+  part's level changed from 10_1 to 10_0 in that clone, `scenes --api d3d11 --level 10_0 textures`
+  failed (9 FAIL, exit 1: the scene stopped at the shader model 4.1 shader); `wine-tests run dxgi`
+  20 counted, 0 FAIL; `programs run --dll d3d11.dll=<forwarding library> atg-simplelightingpc`
+  passes; `cargo tree --workspace -e all --target all` (2926 lines) names no Wine, vkd3d, Godot,
+  Doom or Xbox-ATG-Samples crate.
 
 ## Loading a replacement Direct3D library
 
