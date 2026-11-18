@@ -87,6 +87,10 @@ pub fn texels() -> Vec<u8> {
 
 pub const CLEAR: [f32; 4] = [0.125, 0.25, 0.5, 1.0];
 
+/// The difference allowed a filtered sample against Direct3D's: a filter's weights at 8 bits on
+/// either side, on values of at most one.
+pub const FILTER_ALLOWANCE: f32 = 1.0 / 128.0;
+
 pub fn dxgi(format: Format) -> DXGI_FORMAT {
     match format {
         Format::R8Unorm => DXGI_FORMAT_R8_UNORM,

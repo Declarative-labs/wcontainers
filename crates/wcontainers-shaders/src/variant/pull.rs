@@ -153,7 +153,6 @@ pub(super) fn pulled(
             ShaderStage::Vertex,
             HelperValue::PulledStream { input: location },
             vec4u,
-            16,
         );
         let fetch = fetch(module, location, format, ty, buffer, stream)?;
         let fetch = module.functions.append(fetch, Span::UNDEFINED);
