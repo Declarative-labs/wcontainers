@@ -45,9 +45,12 @@ WebGPU back end (G2); see "Gap list" and "Next". Runs, all on 2026-11-17:
   `ExecuteIndirect` draws of programs reading `SV_VertexID`/`SV_InstanceID` read the bases from
   their arguments on the GPU (`DrawBaseSource::Arguments`, `DrawBaseFromArguments`) instead of
   reading the arguments back; UAV clears with rectangles on buffer views (element ranges) and
-  3D texture views (copies from a cleared scratch texture); the device takes the LUID of the
-  adapter `D3D12CreateDevice` was given. New case `statistics`; all 16 cases equal to real
-  Direct3D 12. Test files 122 of 193 (query_pipeline_statistics newly passing).
+  3D texture views (copies from a cleared scratch texture); direct draws reading past a vertex
+  buffer view's end draw that stream from a copy with a zero tail (`VertexFetchZeroed`); the
+  device takes the LUID of the adapter `D3D12CreateDevice` was given, or of the first adapter
+  the process's DXGI lists. New cases `statistics` and `vertex-past-end`; all 17 cases equal to
+  real Direct3D 12. Test files 122 of 193 (query_pipeline_statistics newly passing); shader
+  runner 204 of 299 (from 194: the runner now finds our device's vendor).
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
@@ -188,8 +191,10 @@ Nothing answers success without the work.
 ## The pass bar's cases against real Direct3D 12 (own program)
 
 `check_d3d12 cases` runs each case in its own process with real Direct3D 12 and through ours and
-compares the lines (`examples/check/cases.rs`). Run 14 (RTX 3080, scratch run14/check3.log, built
-after f2894aa's arguments route): 16 of 16 equal. New: statistics (pipeline statistics around
+compares the lines (`examples/check/cases.rs`). Run 14 (RTX 3080, scratch run14/check4.log, built
+at 9937b23): 17 of 17 equal. New: vertex-past-end (a triangle strip whose fifth vertex lies past
+a view of four, and two instances of which the per-instance view holds one; pixels equal).
+Before it (check3.log, after f2894aa's arguments route): 16 of 16 equal. New: statistics (pipeline statistics around
 nothing; around two draws, an indexed draw and a dispatch with a counted occlusion query inside;
 around an indirect draw and a skipped predicated draw; a stream output statistics query; the counts
 Direct3D leaves to the implementation printed as bounds: vertex shader invocations at most the
@@ -235,7 +240,8 @@ hlsl_d3d12 8 of 9. Newly passing: query_pipeline_statistics. quad_tessellation a
 line_tessellation now get past their statistics queries and stop at hull shaders (the stage
 helper, G6). After the rectangle clears (run14/named2.log): clear_unordered_access_view_image no
 longer crashes; it runs 35726 checks, and its 24 failures are all `CheckFeatureSupport` E_FAIL for
-the 16-bit packed formats WebGPU lacks (24 checks skipped for them).
+the 16-bit packed formats WebGPU lacks (24 checks skipped for them). Last full run at 9937b23
+(run14/full2.log): the same 122 of 193, the same failing set.
 
 Run 13 (2026-11-17, desktop shared with other tracks; scratch run13/full1.log to full4.log):
 - After the merge alone (full1): the same 116 of 193 as run 12.
@@ -303,6 +309,26 @@ Run with our d3d12.dll alone (the system's dxgi.dll): with our dxgi.dll too ever
 in its Direct3D 11 part before reaching Direct3D 12 (our dxgi.dll serves only Direct3D 12), 0 of
 299 (run12/runner1.log). Command: `E='%CARGO_TARGET_DIR%\debug\examples';
 tools/graphics-rig/wine-tests run --dll "d3d12.dll=$E\d3d12.dll" vkd3d-shader_runner`.
+
+Run 14 (run14/runner2.log, built at 9937b23): 204 of 299. The ten newly passing files
+(d3dbc modifiers and sub; hlsl bool-semantics, depth-out, f32tof16, get-sample-pos,
+is-front-face, nointerpolation, pixel-position, struct-semantics) failed only because the
+runner, matching our device to the system's adapters by LUID, found no vendor and dropped its
+"nvidia" tag (run14/runner1.log, before that fix: 194). The 95 failing, by first cause:
+- 37 run fewer checks than real with no failure: the runner compiles shader model 6.0 only
+  (real: 6.0 to 6.6), since `CheckFeatureSupport(SHADER_MODEL)` answers 6.0 as plan section 9
+  says; files requiring 6.2 and later (16-bit types, int64 and the like) skip those sections.
+- The converter (G6), 46: refused by name (`StorageImage` 8, `TypedBuffer` 6,
+  `PackedStageValues` 4, `StructType`, `NonFiniteConstant`, `ConstantComponentIndexing` 2 each,
+  `StorageCounter`, `SparseFeedback`, `InterpolateAt`, `DynamicOffset`, `CullDistance`,
+  `ClipDistance`, `CalculateLevelOfDetail` 1 each, int64 in naga 1), "a shader feature the
+  converter lacks" 9, "a shader the converter got wrong" 5, state creation E_NOTIMPL 4.
+- Device removed after a refusal, 5.
+- Wrong values, 3: arithmetic-float-uniform (min16float constants read as 32-bit, converter),
+  frexp (converter), texture-load (an SM 4.0 `Texture2DMS` load in an unrolled loop reads at
+  `pos.yx` instead of `pos.xy`, converter; and unorm and float views read through a
+  `Texture2D<uint4>`, undefined in Direct3D, where real converts and ours gives the raw bits,
+  then the device is removed). Not looked into further: G6's to check.
 
 Run 13 (built at the depth twin commit; run13/runner1.log): 194 of 299 again, the same 105
 failing files; 242 of 302 report no failed check (239 in run 12). sample-cmp no longer stops at
@@ -388,16 +414,15 @@ list only when it is the back end's or browser's to lack (reported absent as Dir
    grep crates/wcontainers-shaders/src for `unsupported("StorageImage")` and
    `BindingsBeyondLimit`; once gone, run Godot (command under "Real program") and compare its
    frames with the rig's references; also try godot-platformer-3d-d3d12.
-2. Vertices past the end: the plan's `VertexFetchZeroed` for direct draws without indices (a
-   stream copied into a scratch buffer with a zero tail; WebGPU refuses such a draw, so today it
-   removes the device); for `ExecuteIndirect` (execute_indirect) only G6's pulled streams make it
-   exact without reading every command back.
+2. Vertices past the end in `ExecuteIndirect` (execute_indirect): only G6's pulled streams
+   make it exact without reading every command back (direct draws are done, run 14).
 3. Timestamps against real Direct3D 12 (a new case) when G2's `TIMESTAMPS` lands; A8 when
    `FormatConverted` lands. A counted query whose draws write depth is not in the own cases
    (vkd3d's query_occlusion covers it).
 4. The stencil view and component mapping route once the interface has a view swizzle.
-5. The shader runner's wrong values (sample-cmp, arithmetic-float, frexp) and the files that run
-   a few checks fewer than real ("Shader runner"): find which capability answer causes each.
+5. The shader runner: its fewer-check files come from the shader model answer (6.0, plan
+   section 9); its wrong values are in converted shaders (G6). Nothing left on the front's side
+   that is known.
 6. Turn the gap list into the pass bar's final written list once the G6 and G2 items land.
 7. Later: `ID3D12GraphicsCommandList3` and later, `ID3D12Fence1`; recording without allocating
    per command, the call buffer of plan 4.8; moving `examples/directx` into
@@ -443,8 +468,8 @@ A working example of all of it is this track's Windows library: `examples/direct
 - Tests (one draws on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 --no-run" -- "cargo test
   -j 3 --no-fail-fast -p wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12"`
-  (33 tests: 9 infrastructure, 9 front, 10 device on the recorder, 1 on the GPU, 4 unit; run 13:
-  all pass at 15290f3, built clean). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
+  (33 tests: 9 infrastructure, 9 front, 10 device on the recorder, 1 on the GPU, 4 unit; run 14:
+  all pass at 9937b23, run14/full2.log). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
   `WEBGPU_API=dx12|vulkan` picks wgpu's path for the GPU test.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
@@ -496,9 +521,15 @@ Run 14's entries:
   with the depth and stencil tests off (plan 4.12). Real NVIDIA counts differ (the own case
   compares them as bounds); vkd3d's test checks the same bounds.
 - `D3D12CreateDevice` given an adapter (ours or the system's) makes a device whose
-  `GetAdapterLuid` is that adapter's; with none, ours. Before, always ours, so a program
+  `GetAdapterLuid` is that adapter's; with none, the first adapter of the dxgi.dll the process
+  loads (ours where it lies beside the program, else the system's), as Direct3D 12 takes the
+  first adapter. Before, always ours, so a program
   matching the device to the system's adapters by LUID (vkd3d's shader runner, for its vendor)
   found none.
+- Direct draws reading past a vertex buffer view's end (per-vertex streams without indices,
+  per-instance streams with a step rate) draw that stream from a scratch copy of the view's bytes
+  with a zero tail, released at the list's end (`VertexFetchZeroed`, plan 5.2). Indexed draws
+  keep WebGPU's robust access for indices past the end (the plan's listed loss).
 - 3D texture UAV clears with rectangles copy from a scratch 2D texture of the level's size
   cleared to the value, one copy per rectangle and depth slice; a view whose format differs
   from the texture's (not its sRGB twin) is refused by name.
