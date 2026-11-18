@@ -845,8 +845,34 @@ impl WebGpu {
             && (s.desc.dimension == TextureDimension::D3
                 || (src.layer < dst.layer + extent.depth_or_layers
                     && dst.layer < src.layer + extent.depth_or_layers));
+        // Depth and stencil go through a temporary texture of their format, each half by the
+        // draws below.
         if within && df.is_depth_stencil() {
-            self.fail("a copy within one subresource of depth or stencil");
+            self.slow.hit(SlowPath::CopyWithinTexture);
+            let Ok(temp) = self.create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format: d.desc.format,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: extent.depth_or_layers,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            }) else {
+                self.fail("the texture a depth or stencil copy within one subresource goes through could not be made");
+                return;
+            };
+            let staged = |stencil| TextureRegion {
+                texture: &temp,
+                mip: 0,
+                layer: 0,
+                origin: Default::default(),
+                stencil,
+            };
+            self.copy_texture_impl(src, &staged(dst.stencil), extent);
+            self.copy_texture_impl(&staged(src.stencil), dst, extent);
             return;
         }
         // A combined format is copied with both aspects.
