@@ -355,10 +355,13 @@ fn device_creation_answers_as_direct3d() {
         DXGI_ERROR_INVALID_CALL
     );
     assert!(chain.is_null());
-    assert_eq!(
-        both(std::ptr::null(), &mut chain, null.cast()),
-        E_INVALIDARG
-    );
+    // Without a description the device is made alone, as the rig's device scene saw real
+    // Direct3D answer.
+    let mut chain: *mut c_void = std::ptr::NonNull::dangling().as_ptr();
+    let mut out = null;
+    assert_eq!(both(std::ptr::null(), &mut chain, &mut out).0, 0);
+    assert!(chain.is_null() && !out.is_null());
+    drop(unsafe { ID3D11Device::from_raw(out) });
 }
 
 #[test]

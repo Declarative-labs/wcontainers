@@ -370,9 +370,12 @@ impl Child {
 
 /// `D3D11_CREATE_DEVICE_DEBUG`.
 const CREATE_DEBUG: u32 = 0x2;
-/// `D3D_DRIVER_TYPE_UNKNOWN` and `D3D_DRIVER_TYPE_HARDWARE`.
+/// `D3D_DRIVER_TYPE_UNKNOWN`, `_HARDWARE` and `_SOFTWARE`.
 const DRIVER_UNKNOWN: i32 = 0;
 const DRIVER_HARDWARE: i32 = 1;
+const DRIVER_SOFTWARE: i32 = 5;
+/// The only version `D3D11CreateDevice` takes.
+const D3D11_SDK_VERSION: u32 = 7;
 
 type CreateDevice = unsafe extern "system" fn(
     *mut c_void,
@@ -448,12 +451,18 @@ pub unsafe extern "system" fn D3D11CreateDevice(
             flags,
             levels,
             level_count,
+            sdk_version,
             device,
             level,
             context,
         )
     }
 }
+
+/// The feature levels Direct3D 11 knows, which a program's list may name.
+const KNOWN_LEVELS: [u32; 11] = [
+    0x1000, 0x9100, 0x9200, 0x9300, 0xa000, 0xa100, 0xb000, 0xb100, 0xc000, 0xc100, 0xc200,
+];
 
 /// `D3D11CreateDevice` for the program.
 ///
@@ -467,12 +476,29 @@ unsafe fn create_for_program(
     flags: u32,
     levels: *const D3D_FEATURE_LEVEL,
     level_count: u32,
+    sdk_version: u32,
     device: *mut *mut c_void,
     level: *mut D3D_FEATURE_LEVEL,
     context: *mut *mut c_void,
 ) -> HRESULT {
-    // With an adapter the driver type is unknown; without one it is named.
-    if !software.is_invalid() || adapter.is_null() == (driver_type == DRIVER_UNKNOWN) {
+    // Direct3D clears what it hands out before it checks anything.
+    unsafe {
+        if !level.is_null() {
+            *level = D3D_FEATURE_LEVEL(0);
+        }
+        if !device.is_null() {
+            *device = std::ptr::null_mut();
+        }
+        if !context.is_null() {
+            *context = std::ptr::null_mut();
+        }
+    }
+    // With an adapter the driver type is unknown; without one it is named. A software rasteriser's
+    // module goes with the software driver alone.
+    if adapter.is_null() == (driver_type == DRIVER_UNKNOWN)
+        || software.is_invalid() == (driver_type == DRIVER_SOFTWARE)
+        || sdk_version != D3D11_SDK_VERSION
+    {
         return E_INVALIDARG;
     }
     if adapter.is_null() && driver_type != DRIVER_HARDWARE {
@@ -482,7 +508,8 @@ unsafe fn create_for_program(
     if flags & CREATE_DEBUG != 0 {
         return DXGI_ERROR_SDK_COMPONENT_MISSING;
     }
-    let asked: Vec<u32> = if levels.is_null() || level_count == 0 {
+    // No list is Direct3D's default list; an empty one names no level to make.
+    let asked: Vec<u32> = if levels.is_null() {
         Vec::new()
     } else {
         unsafe { std::slice::from_raw_parts(levels, level_count as usize) }
@@ -490,6 +517,12 @@ unsafe fn create_for_program(
             .map(|l| l.0 as u32)
             .collect()
     };
+    if asked.iter().any(|l| !KNOWN_LEVELS.contains(l)) {
+        return E_INVALIDARG;
+    }
+    if !levels.is_null() && asked.is_empty() {
+        return DXGI_ERROR_UNSUPPORTED;
+    }
     let (d, c, l) = match create_device(&asked, flags) {
         Ok(made) => made,
         Err(e) => return e.code(),
@@ -498,13 +531,16 @@ unsafe fn create_for_program(
         if !level.is_null() {
             *level = D3D_FEATURE_LEVEL(l as i32);
         }
+        // Without either out pointer Direct3D only says it could make the device.
+        if device.is_null() && context.is_null() {
+            return windows::Win32::Foundation::S_FALSE;
+        }
         if !context.is_null() {
             *context = c.into_raw();
         }
-        if device.is_null() {
-            return windows::Win32::Foundation::S_FALSE;
+        if !device.is_null() {
+            *device = d.into_raw();
         }
-        *device = d.into_raw();
     }
     windows::Win32::Foundation::S_OK
 }
@@ -556,7 +592,12 @@ pub unsafe extern "system" fn D3D11CreateDeviceAndSwapChain(
             None => DXGI_ERROR_UNSUPPORTED,
         };
     }
-    if swap_chain.is_null() {
+    if let Some(chain) = unsafe { swap_chain.as_mut() } {
+        *chain = std::ptr::null_mut();
+    }
+    // Without a description Direct3D makes the device alone, whether a swap chain is asked for.
+    let desc = unsafe { swap_chain_desc.cast::<DXGI_SWAP_CHAIN_DESC>().as_ref() };
+    let Some(desc) = desc.filter(|_| !swap_chain.is_null()) else {
         return unsafe {
             create_for_program(
                 adapter,
@@ -565,15 +606,12 @@ pub unsafe extern "system" fn D3D11CreateDeviceAndSwapChain(
                 flags,
                 levels,
                 level_count,
+                sdk_version,
                 device,
                 level,
                 context,
             )
         };
-    }
-    unsafe { *swap_chain = std::ptr::null_mut() };
-    let Some(desc) = (unsafe { swap_chain_desc.cast::<DXGI_SWAP_CHAIN_DESC>().as_ref() }) else {
-        return E_INVALIDARG;
     };
     // The device, then its swap chain from the factory of the device's adapter, as DXGI makes it.
     let mut made: *mut c_void = std::ptr::null_mut();
@@ -585,6 +623,7 @@ pub unsafe extern "system" fn D3D11CreateDeviceAndSwapChain(
             flags,
             levels,
             level_count,
+            sdk_version,
             &mut made,
             level,
             std::ptr::null_mut(),
