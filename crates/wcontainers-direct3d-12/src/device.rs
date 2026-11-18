@@ -90,12 +90,14 @@ const UPLOAD_BUFFER: BufferUsage = BufferUsage::VERTEX
     .union(BufferUsage::COPY_DST);
 /// Readback buffers are only written by copies and read back.
 const READBACK_BUFFER: BufferUsage = BufferUsage::COPY_DST.union(BufferUsage::READ_BACK);
+/// Buffers in a custom heap the CPU sees are both.
+const SHARED_BUFFER: BufferUsage = UPLOAD_BUFFER.union(BufferUsage::READ_BACK);
 
-/// Guest-visible memory of an upload or readback heap, shared by the buffers placed in it.
+/// Guest-visible memory of an upload, readback or shared heap, shared by the buffers placed in it.
 type HostMemory = Rc<UnsafeCell<Box<[u8]>>>;
 
-/// The bytes `Map` hands out for an upload or readback buffer: its own memory, or its part of its
-/// heap's, which overlapping placed buffers share as the memory they alias.
+/// The bytes `Map` hands out for an upload, readback or shared buffer: its own memory, or its part
+/// of its heap's, which overlapping placed buffers share as the memory they alias.
 struct Host {
     memory: HostMemory,
     offset: usize,
@@ -127,7 +129,7 @@ impl Host {
 enum Storage<B: Backend> {
     Buffer {
         buffer: B::Buffer,
-        /// The bytes `Map` hands out, for upload and readback heaps.
+        /// The bytes `Map` hands out, for upload, readback and shared heaps.
         host: Option<Host>,
     },
     Texture {
@@ -435,11 +437,12 @@ impl<B: Backend> Device<B> {
                 HeapType::Default => DEFAULT_BUFFER,
                 HeapType::Upload => UPLOAD_BUFFER,
                 HeapType::Readback => READBACK_BUFFER,
+                HeapType::Shared => SHARED_BUFFER,
             };
             let buffer = self.backend.create_buffer(&BufferDesc {
                 size: stored_size(desc.width, self.backend.caps().limits.max_buffer_size),
                 usage,
-                intent: if heap == HeapType::Upload {
+                intent: if heap.uploads() {
                     MapIntent::Often
                 } else {
                     MapIntent::Rarely
@@ -450,8 +453,8 @@ impl<B: Backend> Device<B> {
             let address = self.addresses.insert(desc.width, id);
             (Storage::Buffer { buffer, host }, address)
         } else {
-            if heap != HeapType::Default {
-                return Err(Error::Invalid("textures live in default heaps"));
+            if heap.cpu_only() {
+                return Err(Error::Invalid("textures live in default or custom heaps"));
             }
             let (format, typeless) = desc.texture_format()?;
             let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
@@ -603,7 +606,8 @@ impl<B: Backend> Device<B> {
         self.memory[memory.0 as usize]
             .placed
             .push((offset, end, id));
-        if heap == HeapType::Default {
+        // Buffers in heaps the CPU sees share its memory; everything else inherits by copies.
+        if heap == HeapType::Default || desc.dimension != resource::DIMENSION_BUFFER {
             self.inherit(id, &overlaps);
         }
         Ok(id)
@@ -1526,21 +1530,26 @@ impl<B: Backend> Device<B> {
                 i += 1;
                 continue;
             }
-            let r = self.reads.swap_remove(i);
-            if !ready {
-                self.backend.wait_read(&r.readback);
-            }
-            if let Some(Resource {
-                storage:
-                    Storage::Buffer {
-                        host: Some(host), ..
-                    },
-                ..
-            }) = self.resources.get_mut(r.resource.0 as usize)
-            {
-                self.backend
-                    .finish_read(r.readback, &mut host.bytes()[r.offset..r.offset + r.size]);
-            }
+            self.finish_read(i);
+        }
+    }
+
+    /// Finishes read back `i` into its buffer's memory, waiting for it if it is not ready. Later
+    /// read backs keep their order, so overlapping ones land as the GPU wrote them.
+    fn finish_read(&mut self, i: usize) {
+        let r = self.reads.remove(i);
+        if self.backend.read_state(&r.readback) != ReadState::Ready {
+            self.backend.wait_read(&r.readback);
+        }
+        if let Some(Resource {
+            storage: Storage::Buffer {
+                host: Some(host), ..
+            },
+            ..
+        }) = self.resources.get_mut(r.resource.0 as usize)
+        {
+            self.backend
+                .finish_read(r.readback, &mut host.bytes()[r.offset..r.offset + r.size]);
         }
     }
 
@@ -1647,7 +1656,7 @@ impl<B: Backend> Device<B> {
             self.uploads_read(c, &mut uploads);
         }
         for id in uploads {
-            self.upload(id);
+            self.upload(id)?;
         }
         let first_read = self.reads.len();
         let result = lists.iter().try_for_each(|l| {
@@ -1682,7 +1691,7 @@ impl<B: Backend> Device<B> {
             if self
                 .resources
                 .get(id.0 as usize)
-                .is_some_and(|r| r.heap == HeapType::Upload)
+                .is_some_and(|r| r.heap.uploads())
             {
                 out.push(id);
             }
@@ -1721,7 +1730,7 @@ impl<B: Backend> Device<B> {
         let buffer = buffer.clone();
         self.backend
             .clear_buffer(&buffer, offset, 4, &value.to_le_bytes());
-        if heap == HeapType::Readback {
+        if heap.reads_back() {
             self.read_into(id, offset, 4)?;
         }
         Ok(())
@@ -2652,7 +2661,7 @@ impl<B: Backend> Replay<B> {
                 let t = t.clone();
                 d.backend
                     .copy_buffer(&s, *src_offset, &t, *dst_offset, *size);
-                if heap == HeapType::Readback {
+                if heap.reads_back() {
                     d.read_into(*dst, *dst_offset, *size)?;
                 }
             }
@@ -3170,7 +3179,7 @@ impl<B: Backend> Replay<B> {
                 }
                 let copy = d.scratch(needed, BufferUsage::VERTEX | BufferUsage::COPY_DST)?;
                 let bytes = held - held % 4;
-                d.upload(id);
+                d.upload(id)?;
                 if bytes > 0 {
                     d.backend.copy_buffer(&buffer, offset, &copy, 0, bytes);
                 }
@@ -3878,7 +3887,7 @@ fn copy_texture<B: Backend>(
                 },
                 extent,
             );
-            if heap == HeapType::Readback {
+            if heap.reads_back() {
                 let rows = u64::from(extent.height.div_ceil(bh));
                 let size = u64::from(footprint.row_pitch)
                     * (rows * u64::from(extent.depth_or_layers) - 1)
