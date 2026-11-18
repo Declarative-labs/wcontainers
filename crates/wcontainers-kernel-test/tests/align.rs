@@ -1,5 +1,6 @@
-//! Misaligned accesses, compared with real ARM64 Linux. Both are known failures of the stand-in CPU, not
-//! of the kernel: they show where unicorn differs from the reference's hardware.
+//! Misaligned accesses and the exclusive monitor, compared with real ARM64 Linux. The misaligned ones
+//! are known failures of the stand-in CPU, not of the kernel: they show where unicorn differs from the
+//! reference's hardware.
 
 use std::path::Path;
 
@@ -21,5 +22,13 @@ fn unaligned_exclusive_matches_reference() {
 #[ignore = "known failure: unicorn (QEMU) never checks stack pointer alignment, so the stand-in never reports the alignment fault the reference's SIGBUS comes from"]
 fn misaligned_stack_pointer_matches_reference() {
     let (ours, theirs) = run_both(&program(), &["stack"]);
+    assert_eq!(ours.outcome, theirs);
+}
+
+/// A return from the kernel clears the exclusive monitor, so a store-exclusive after a system call
+/// fails, as one after another thread's turn must.
+#[test]
+fn return_clears_exclusive_monitor_matches_reference() {
+    let (ours, theirs) = run_both(&program(), &["monitor"]);
     assert_eq!(ours.outcome, theirs);
 }

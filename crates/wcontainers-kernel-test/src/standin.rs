@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use memmap2::MmapMut;
 use unicorn_engine::{
-    Arch, Arm64CpuModel, HookType, MemType, Mode, Prot, RegisterARM64, Unicorn, uc_error,
+    Arch, Arm64CpuModel, Context, HookType, MemType, Mode, Prot, RegisterARM64, Unicorn, uc_error,
 };
 use wcontainers_abi::{
     Access, AddressSpace, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock,
@@ -56,6 +56,10 @@ struct Stopped {
 
 struct Memory {
     unicorn: Unicorn<'static, Stopped>,
+    /// The CPU state as made, with the exclusive monitor clear, put back before each turn: a return to
+    /// a program clears the monitor (`ClearExclusiveLocal` at exception return), and nothing of one
+    /// thread's turn may reach another's.
+    fresh: Context,
     bytes: MmapMut,
     /// What each page allows, as the kernel last said.
     pages: Vec<Permissions>,
@@ -164,9 +168,13 @@ impl Memory {
                 false
             })
             .expect("adding the fault hook");
+        let fresh = unicorn
+            .context_init()
+            .expect("saving unicorn's fresh CPU state");
         let bytes = MmapMut::map_anon(end as usize).map_err(|_| CpuError::OutOfMemory)?;
         Ok(Self {
             unicorn,
+            fresh,
             bytes,
             pages: vec![Permissions::empty(); (end / PAGE_SIZE) as usize],
             mapped: BTreeMap::new(),
@@ -330,6 +338,7 @@ impl Memory {
 
     fn load_registers(&mut self, registers: &RegisterBlock) -> Result<(), uc_error> {
         let unicorn = &mut self.unicorn;
+        unicorn.context_restore(&self.fresh)?;
         for (index, value) in registers.x.iter().enumerate() {
             unicorn.reg_write(x_register(index), *value)?;
         }
