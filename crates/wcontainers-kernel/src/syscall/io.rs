@@ -1790,6 +1790,14 @@ fn send(
     let mut failure = None;
     let mut remaining = count - resumed;
     while remaining > 0 {
+        // A round begins: what earlier rounds moved is kept, so a wait for the backend in this
+        // one runs the call again from here, not from the first round.
+        if moved > resumed {
+            kernel.thread_mut(tid).call.progress = moved;
+            if let Some(client) = &kernel.files.backend {
+                client.checkpoint();
+            }
+        }
         // What cannot be spliced from (no `splice_read`: directories, secret memory, `/dev/null`,
         // the process files of `/proc`), or into (secret memory has no `splice_write`), fails at the
         // first round that asks for bytes.
@@ -1904,6 +1912,9 @@ fn send(
             break;
         }
         pos = read_to;
+    }
+    if failure == Some(Errno::PARKED) {
+        return Err(Errno::PARKED);
     }
     touch_atime(kernel, cx, &input_node, flags);
     if moved == 0 {

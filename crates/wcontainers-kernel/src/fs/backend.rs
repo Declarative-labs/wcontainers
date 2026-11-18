@@ -347,6 +347,34 @@ impl Client {
         }
     }
 
+    /// The asking call finished a part of its work that a later run will not do again (a round
+    /// of a large transfer whose progress the call keeps): the replies that part used go, so its
+    /// next run's questions are matched from the part it is in. Nothing happens while an answer
+    /// is awaited or a reply gave a handle the call still holds.
+    pub fn checkpoint(&self) {
+        let ended = {
+            let mut state = self.state.borrow_mut();
+            let Some(asker) = state.asker else {
+                return;
+            };
+            let Some(asked) = state.calls.get_mut(&asker.tid) else {
+                return;
+            };
+            if asked.waiting.is_some()
+                || !asked.handles.is_empty()
+                || asked.used < asked.replies.len()
+            {
+                return;
+            }
+            asked.used = 0;
+            Asked {
+                replies: core::mem::take(&mut asked.replies),
+                ..Default::default()
+            }
+        };
+        self.let_go(Some(ended));
+    }
+
     /// The run ended; with `done`, so did the call, and its replies go.
     pub fn end(&self, tid: Tid, done: bool) {
         let ended = {

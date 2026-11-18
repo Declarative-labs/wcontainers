@@ -1,10 +1,12 @@
 // Directories on the root: a failed rmdir of a directory that is still used, then work inside it,
-// by several processes at once, as ftest02 does.
+// by several processes at once, as ftest02 does; and a sendfile between files of the root larger
+// than one round.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -85,6 +87,24 @@ int main(void) {
         int status;
         waitpid(children[k], &status, 0);
         printf("child %d: %d\n", k, status);
+    }
+    {
+        int in = open("/tmp/rootdirs/big", O_CREAT | O_RDWR | O_TRUNC, 0644);
+        static char block[65536];
+        for (int k = 0; k < 64; k++) {
+            memset(block, 'a' + k % 26, sizeof block);
+            write(in, block, sizeof block);
+        }
+        int out = open("/tmp/rootdirs/copy", O_CREAT | O_RDWR | O_TRUNC, 0644);
+        off_t from = 1000;
+        long sent = sendfile(out, in, &from, 3 << 20);
+        printf("sendfile %ld offset %ld\n", sent, (long)from);
+        struct stat st;
+        fstat(out, &st);
+        char a, b;
+        pread(out, &a, 1, 2 << 20);
+        pread(in, &b, 1, (2 << 20) + 1000);
+        printf("copy size %ld same %d\n", (long)st.st_size, a == b);
     }
     return 0;
 }
