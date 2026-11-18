@@ -85,6 +85,8 @@ const SYSTEM_MODULES: &[&str] = &[
     "test_pty",
     "test_mmap",
     "test_epoll",
+    "test_fcntl",
+    "test_selectors",
 ];
 
 #[test]

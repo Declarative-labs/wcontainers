@@ -1,5 +1,7 @@
 // Which thread takes a signal sent to the process when several could: the first thread if it
-// wants it, else the next willing thread from the last one chosen.
+// wants it, else the next willing thread from the last one chosen. The first thread is shown
+// willing while it runs (it sends the signal itself): asleep, the loaded reference sometimes
+// passed it over.
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <signal.h>
@@ -80,7 +82,12 @@ int main(void) {
     }
     pthread_sigmask(SIG_UNBLOCK, &block, NULL);
     for (int round = 0; round < 2; round++) {
-        send_from_child();
+        int before = handled;
+        kill(getpid(), SIGUSR1);
+        while (handled == before) {
+            struct timespec ts = {0, 1000000};
+            nanosleep(&ts, NULL);
+        }
         printf("main willing: taken by thread %d\n", which(taker));
     }
     return 0;
