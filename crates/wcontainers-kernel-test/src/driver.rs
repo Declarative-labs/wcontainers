@@ -72,6 +72,9 @@ pub struct TestHost {
     /// What a run's choices come from: how long each turn on the CPU side lasts, and when the
     /// backend's answers arrive.
     schedule: StdRng,
+    /// With a repeatable clock, the time the kernel's work on a turn's end takes, passed at the
+    /// next reading of the clock.
+    kernel_work: u64,
     /// The file backend, for a container with a volume.
     pub(crate) backend: Option<crate::backend::Backend>,
     /// Connections to the outside and lookups.
@@ -94,6 +97,7 @@ impl TestHost {
             virtual_now: None,
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            kernel_work: 0,
             backend: None,
             network: Default::default(),
             echo: false,
@@ -113,14 +117,16 @@ impl TestHost {
 
     /// Advances a repeatable clock by the time one turn on the CPU side took: between 0.5 and 1.5
     /// nanoseconds for each instruction it ran (a CPU's speed varies with its caches and its load),
-    /// and between 0.5 and 1.5 microseconds more, both drawn from the seed. The speed moves the
-    /// points where the scheduler switches threads, so seeds give different interleavings.
+    /// and between 0.5 and 1.5 microseconds more for the kernel's work on what came back, both
+    /// drawn from the seed. The kernel's part passes after the first reading of the clock, which
+    /// the kernel takes as it is entered. The speed moves the points where the scheduler switches
+    /// threads, so seeds give different interleavings.
     fn ran(&mut self, instructions: u64) {
         let picoseconds = self.schedule.random_range(500..1500);
-        let step =
-            instructions.saturating_mul(picoseconds) / 1000 + self.schedule.random_range(500..1500);
+        let kernel = self.schedule.random_range(500..1500);
         if let Some(now) = &mut self.virtual_now {
-            *now += step;
+            *now += instructions.saturating_mul(picoseconds) / 1000;
+            self.kernel_work = kernel;
         }
     }
 }
@@ -151,6 +157,7 @@ impl TestHost {
             virtual_now: self.virtual_now.map(|_| 0),
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
+            kernel_work: 0,
             // The backend and the answers it owes go on with the copy.
             backend: self.backend.take(),
             // A new host has none of the old one's connections; its published ports go on.
@@ -170,8 +177,12 @@ impl TestHost {
 
 impl Host for TestHost {
     fn monotonic_nanoseconds(&mut self) -> u64 {
-        match self.virtual_now {
-            Some(now) => now + self.skipped,
+        match &mut self.virtual_now {
+            Some(now) => {
+                let read = *now + self.skipped;
+                *now += core::mem::take(&mut self.kernel_work);
+                read
+            }
             None => self.started.elapsed().as_nanos() as u64 + self.skipped,
         }
     }

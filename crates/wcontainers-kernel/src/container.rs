@@ -576,6 +576,8 @@ impl Kernel {
             next_timer: 0,
             ended_time: 0,
             children_time: 0,
+            ended_system: 0,
+            children_system: 0,
             children_maxrss: 0,
             peak_mapped: 0,
             started: cx.monotonic(),

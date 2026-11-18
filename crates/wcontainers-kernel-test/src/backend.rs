@@ -188,9 +188,24 @@ impl Backend {
                 command.args(["--tmpfs", SERVED]);
                 format!("exec {serve} listen {SERVED}")
             }
+            // The files Docker writes into every container, written over the image's as
+            // `as_started` writes them for a root in memory.
             Served::Image(name) => {
                 image = name;
-                format!("exec {serve} listen {SERVED}")
+                command
+                    .arg("--env")
+                    .arg(format!("WC_HOSTNAME={}\n", crate::reference::HOSTNAME))
+                    .arg("--env")
+                    .arg(format!("WC_HOSTS={}", crate::image::hosts()))
+                    .arg("--env")
+                    .arg(format!("WC_RESOLV={}", crate::image::resolver()));
+                format!(
+                    "printf %s \"$WC_HOSTNAME\" > {SERVED}/etc/hostname && \
+                     printf %s \"$WC_HOSTS\" > {SERVED}/etc/hosts && \
+                     printf %s \"$WC_RESOLV\" > {SERVED}/etc/resolv.conf && \
+                     chmod 644 {SERVED}/etc/hostname {SERVED}/etc/hosts {SERVED}/etc/resolv.conf && \
+                     exec {serve} listen {SERVED}"
+                )
             }
         };
         let mut child = command

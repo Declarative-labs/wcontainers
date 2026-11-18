@@ -26,6 +26,8 @@ pub(super) enum Clock {
     Wall,
     /// A process's CPU time.
     Process(Pid),
+    /// A process's CPU time outside the kernel (`ITIMER_VIRTUAL`).
+    ProcessUser(Pid),
     /// A thread's CPU time.
     Thread(Tid),
 }
@@ -210,6 +212,10 @@ fn now(kernel: &Kernel, clock: Clock) -> Option<u64> {
             .processes
             .contains_key(&pid)
             .then(|| super::time::process_cpu_time(kernel, pid)),
+        Clock::ProcessUser(pid) => kernel.processes.contains_key(&pid).then(|| {
+            let (total, system) = super::time::process_times(kernel, pid);
+            total - system
+        }),
         Clock::Thread(tid) => kernel.threads.get(&tid).map(|thread| thread.runtime),
     }
 }
@@ -238,7 +244,8 @@ pub(crate) fn cpu_check(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) {
         .copied()
         .filter(|id| {
             let timer = &kernel.timers.all[id];
-            (timer.clock == Clock::Process(pid) || timer.clock == Clock::Thread(tid))
+            [Clock::Process(pid), Clock::ProcessUser(pid), Clock::Thread(tid)]
+                .contains(&timer.clock)
                 && timer
                     .expires
                     .zip(now(kernel, timer.clock))
@@ -298,7 +305,9 @@ pub(crate) fn cpu_slice(kernel: &Kernel, tid: Tid) -> Option<u64> {
         .iter()
         .filter_map(|id| {
             let timer = &kernel.timers.all[id];
-            if timer.clock != Clock::Process(pid) && timer.clock != Clock::Thread(tid) {
+            if ![Clock::Process(pid), Clock::ProcessUser(pid), Clock::Thread(tid)]
+                .contains(&timer.clock)
+            {
                 return None;
             }
             Some(
@@ -1067,10 +1076,10 @@ pub(super) fn setitimer(
         Some(id) => id,
         None => kernel.timers.add(Timer {
             owner: Owner::Interval { pid, which },
-            clock: if which == ITIMER_REAL {
-                Clock::Wall
-            } else {
-                Clock::Process(pid)
+            clock: match which {
+                ITIMER_REAL => Clock::Wall,
+                ITIMER_VIRTUAL => Clock::ProcessUser(pid),
+                _ => Clock::Process(pid),
             },
             expires: None,
             interval: 0,

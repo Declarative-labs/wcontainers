@@ -430,8 +430,8 @@ fn notes(
     Ok(notes)
 }
 
-/// `PROC_FIELDS_NOT_TRACKED`'s detail for a core's notes: system time shows as user time, and the
-/// task flags are those `/proc/<pid>/stat` shows.
+/// `PROC_FIELDS_NOT_TRACKED`'s detail for a core's notes: the task flags are those
+/// `/proc/<pid>/stat` shows.
 const PROC_FIELDS_CORE: u64 = 6;
 
 /// A time in nanoseconds as `struct __kernel_old_timeval`.
@@ -447,15 +447,10 @@ fn status(kernel: &Kernel, pid: Pid, tid: Tid, signal: u32, registers: &Register
     let process = &kernel.processes[&pid];
     let thread = &kernel.threads[&tid];
     // The first thread shows the whole process's time, the others their own.
-    let used = if tid == pid {
-        process.ended_time
-            + process
-                .threads
-                .iter()
-                .map(|other| kernel.threads[other].runtime)
-                .sum::<u64>()
+    let (used, system) = if tid == pid {
+        super::time::process_times(kernel, pid)
     } else {
-        thread.runtime
+        (thread.runtime, thread.system)
     };
     let mut reg = [0u64; 34];
     reg[..31].copy_from_slice(&registers.x);
@@ -472,10 +467,10 @@ fn status(kernel: &Kernel, pid: Pid, tid: Tid, signal: u32, registers: &Register
         pr_pgrp: process.group,
         pr_sid: process.session,
         pr_times: [
-            timeval(used),
-            [0; 2],
-            timeval(process.children_time),
-            [0; 2],
+            timeval(used - system),
+            timeval(system),
+            timeval(process.children_time - process.children_system),
+            timeval(process.children_system),
         ],
         pr_reg: reg,
         pr_fpvalid: 1,

@@ -19,13 +19,24 @@ pub(super) fn cpu_time(kernel: &Kernel, _: &mut Context<'_>, tid: Tid) -> u64 {
 
 /// The CPU time a process has used, one that has ended included.
 pub(super) fn process_cpu_time(kernel: &Kernel, pid: Pid) -> u64 {
+    process_times(kernel, pid).0
+}
+
+/// A process's CPU time and the part of it in the kernel, its ended threads' included.
+pub(crate) fn process_times(kernel: &Kernel, pid: Pid) -> (u64, u64) {
     let process = &kernel.processes[&pid];
-    process.ended_time
-        + process
-            .threads
-            .iter()
-            .map(|thread| kernel.threads[thread].runtime)
-            .sum::<u64>()
+    process.threads.iter().map(|thread| &kernel.threads[thread]).fold(
+        (process.ended_time, process.ended_system),
+        |(total, system), thread| (total + thread.runtime, system + thread.system),
+    )
+}
+
+/// A time in nanoseconds as a `timeval`.
+pub(super) fn timeval(nanoseconds: u64) -> __kernel_old_timeval {
+    __kernel_old_timeval {
+        tv_sec: (nanoseconds / 1_000_000_000) as i64,
+        tv_usec: (nanoseconds % 1_000_000_000 / 1000) as i64,
+    }
 }
 
 /// The process whose time a CPU clock id below zero reads, as Linux's `pid_for_clock`: a process's or
@@ -465,18 +476,20 @@ pub(super) fn times(
     tid: Tid,
     [out, ..]: Args,
 ) -> Result<u64, Errno> {
-    let ticks = |nanoseconds: u64| nanoseconds / 10_000_000;
-    let used = ticks(cpu_time(kernel, cx, tid));
+    let ticks = |nanoseconds: u64| (nanoseconds / 10_000_000) as i64;
     if out != 0 {
+        let pid = kernel.threads[&tid].process;
+        let (total, system) = process_times(kernel, pid);
+        let process = &kernel.processes[&pid];
         let value = crate::linux_extra::tms {
-            tms_utime: used as i64,
-            tms_stime: 0,
-            tms_cutime: 0,
-            tms_cstime: 0,
+            tms_utime: ticks(total - system),
+            tms_stime: ticks(system),
+            tms_cutime: ticks(process.children_time - process.children_system),
+            tms_cstime: ticks(process.children_system),
         };
         guest(kernel, cx, tid).write_value(out, &value)?;
     }
-    Ok(ticks(cx.monotonic()))
+    Ok(ticks(cx.monotonic()) as u64)
 }
 
 /// `do_adjtimex` on this machine's clock, which nothing in the container can adjust: setting

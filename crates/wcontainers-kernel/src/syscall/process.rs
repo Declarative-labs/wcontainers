@@ -1664,12 +1664,21 @@ pub(super) fn getrusage(
         return Err(Errno::EINVAL);
     }
     let mut out = rusage::new_zeroed();
-    if who != RUSAGE_CHILDREN {
-        let used = super::time::cpu_time(kernel, cx, tid);
-        out.ru_utime = __kernel_old_timeval {
-            tv_sec: (used / 1_000_000_000) as i64,
-            tv_usec: (used % 1_000_000_000 / 1000) as i64,
+    let pid = kernel.threads[&tid].process;
+    if who == RUSAGE_CHILDREN {
+        let process = &kernel.processes[&pid];
+        out.ru_utime = super::time::timeval(process.children_time - process.children_system);
+        out.ru_stime = super::time::timeval(process.children_system);
+        out.ru_maxrss = (process.children_maxrss / 1024) as i64;
+    } else {
+        let (total, system) = if who == RUSAGE_THREAD as i32 {
+            let thread = &kernel.threads[&tid];
+            (thread.runtime, thread.system)
+        } else {
+            super::time::process_times(kernel, pid)
         };
+        out.ru_utime = super::time::timeval(total - system);
+        out.ru_stime = super::time::timeval(system);
         // Which pages a program has touched is not known, so every mapped page counts as resident,
         // as mincore reports them.
         let mapped: u64 = kernel

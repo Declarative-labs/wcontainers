@@ -103,6 +103,9 @@ pub(crate) struct Process {
     /// (`cutime`), in nanoseconds.
     pub ended_time: u64,
     pub children_time: u64,
+    /// The parts of `ended_time` and `children_time` spent in the kernel.
+    pub ended_system: u64,
+    pub children_system: u64,
     /// The largest memory of reaped children, for `getrusage(RUSAGE_CHILDREN)`.
     pub children_maxrss: u64,
     /// The memory mapped when the process ended, as its largest.
@@ -307,6 +310,8 @@ pub(crate) struct Thread {
     /// The CPU time the thread has used, and its scheduler time weighted by its priority.
     pub runtime: u64,
     pub vruntime: u64,
+    /// The part of `runtime` spent in the kernel on the thread's behalf (`stime`).
+    pub system: u64,
     /// When the thread was woken and has not yet run, on the monotonic clock.
     pub woken_at: Option<u64>,
     /// Whether it waits for pages of a mapped file its program touched, so once woken it goes on
@@ -587,6 +592,7 @@ impl Thread {
             restart: None,
             runtime: 0,
             vruntime: 0,
+            system: 0,
             woken_at: None,
             filling: false,
             fault: (0, 0),

@@ -208,6 +208,8 @@ fn make_child(
     process.next_timer = 0;
     process.ended_time = 0;
     process.children_time = 0;
+    process.ended_system = 0;
+    process.children_system = 0;
     process.children_maxrss = 0;
     process.peak_mapped = 0;
     process.child_subreaper = false;
@@ -250,6 +252,7 @@ fn make_child(
     thread.call = Default::default();
     thread.restart = None;
     thread.runtime = 0;
+    thread.system = 0;
     thread.forced = 0;
     thread.parent_death_signal = 0;
     thread.default_timer_slack = thread.timer_slack;
@@ -334,6 +337,7 @@ fn make_thread(
     thread.call = Default::default();
     thread.restart = None;
     thread.runtime = 0;
+    thread.system = 0;
     thread.forced = 0;
     thread.parent_death_signal = 0;
     thread.default_timer_slack = thread.timer_slack;
@@ -502,10 +506,9 @@ fn child_usage(kernel: &Kernel, child: Pid) -> rusage {
     let mut usage = rusage::new_zeroed();
     if let Some(process) = kernel.processes.get(&child) {
         let used = process.ended_time + process.children_time;
-        usage.ru_utime = __kernel_old_timeval {
-            tv_sec: (used / 1_000_000_000) as i64,
-            tv_usec: (used % 1_000_000_000 / 1000) as i64,
-        };
+        let system = process.ended_system + process.children_system;
+        usage.ru_utime = super::time::timeval(used - system);
+        usage.ru_stime = super::time::timeval(system);
         usage.ru_maxrss = (process.peak_mapped.max(process.children_maxrss) / 1024) as i64;
     }
     usage

@@ -349,6 +349,7 @@ impl Kernel {
             refused: 0,
         };
         self.account(&mut cx, tid);
+        let entered = self.entry_now;
         self.tick(tid);
         self.wake_due();
         syscall::timer::fire_due(self, &mut cx);
@@ -361,6 +362,7 @@ impl Kernel {
             self.came_back(&mut cx, tid, exit);
         }
         self.settle(&mut cx);
+        self.account_system(tid, entered);
     }
 
     /// Something happened outside.

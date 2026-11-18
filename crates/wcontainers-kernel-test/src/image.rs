@@ -150,7 +150,7 @@ fn as_started(files: &[File]) -> impl Iterator<Item = File> + '_ {
 }
 
 /// `/etc/hosts` as Docker writes it, for the made-up network's address.
-fn hosts() -> String {
+pub(crate) fn hosts() -> String {
     let [a, b, c, d] = wcontainers_kernel::network::ADDRESS;
     format!(
         "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\nfe00::\tip6-localnet\n\
@@ -161,7 +161,7 @@ fn hosts() -> String {
 }
 
 /// `/etc/resolv.conf` naming the kernel's name server, as Docker names its own.
-fn resolver() -> String {
+pub(crate) fn resolver() -> String {
     let [a, b, c, d] = wcontainers_kernel::network::NAME_SERVER;
     format!("nameserver {a}.{b}.{c}.{d}\n")
 }

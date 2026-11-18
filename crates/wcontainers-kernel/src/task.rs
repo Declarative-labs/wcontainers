@@ -77,12 +77,27 @@ impl Kernel {
     pub(crate) fn account(&mut self, cx: &mut Context<'_>, tid: Tid) {
         let now = cx.monotonic();
         self.entry_now = now;
-        let delta = now.saturating_sub(self.last_now);
+        self.charge(tid, now.saturating_sub(self.last_now));
+    }
+
+    /// Charges a thread for CPU time, as its scheduler time too.
+    fn charge(&mut self, tid: Tid, delta: u64) {
         let thread = self.thread_mut(tid);
         thread.runtime += delta;
         thread.vruntime += schedule::scale(delta, schedule::weight(&thread.schedule));
         let vruntime = thread.vruntime;
         self.run_queue.update_min(Some(vruntime));
+    }
+
+    /// Charges a thread that came back for the time the kernel then worked until it settled, as
+    /// time in the kernel (`stime`).
+    pub(crate) fn account_system(&mut self, tid: Tid, entered: u64) {
+        if !self.threads.contains_key(&tid) {
+            return;
+        }
+        let delta = self.last_now.saturating_sub(entered);
+        self.charge(tid, delta);
+        self.thread_mut(tid).system += delta;
     }
 
     /// Linux's scheduler tick (`check_preempt_tick`), at every return from the CPU side whatever
@@ -643,6 +658,7 @@ impl Kernel {
             .expect("process exists");
         process.threads.retain(|other| *other != tid);
         process.ended_time += thread.runtime;
+        process.ended_system += thread.system;
         if let Some(leader) = leader {
             process.ended_leader = leader;
         }
@@ -724,6 +740,7 @@ impl Kernel {
             }
             let process = self.processes.get_mut(&pid).expect("process exists");
             process.ended_time += thread.runtime;
+            process.ended_system += thread.system;
             if tid == pid {
                 process.ended_leader = Leader::of(&thread);
             }
@@ -997,7 +1014,10 @@ impl Kernel {
         }
         if let Some(parent) = self.processes.get_mut(&process.parent) {
             parent.children_time += process.ended_time + process.children_time;
-            parent.children_maxrss = parent.children_maxrss.max(process.children_maxrss);
+            parent.children_system += process.ended_system + process.children_system;
+            parent.children_maxrss = parent
+                .children_maxrss
+                .max(process.peak_mapped.max(process.children_maxrss));
         }
     }
 
