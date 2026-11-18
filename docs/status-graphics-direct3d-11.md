@@ -1,10 +1,87 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 13 of G4 as a whole (2026-11-17; run 13
-is the first of the orchestrator's second series on G4).
+Runs so far: six on G4a, the first slice; then runs 1 to 14 of G4 as a whole (2026-11-17; runs
+13 and 14 are the first two of the orchestrator's second series on G4).
 
 ## Where things stand
+
+G4 run 14 (2026-11-17, about 22:45 to 00:30 Pacific). Merged origin/phase-2-graphics-webgpu,
+-direct3d-12, -shaders and -rig cleanly (-graphics and -webgl had nothing new); the merged tree
+linted (both builds) and passed the front tests (37) on the desktop before any change. The rig
+brought its display reset guard (desktop/hazard.ps1: jobs not marked `--reference`, ours
+included, run one at a time in the group "hazard", and a reset holds the queue); this run's
+jobs waited there a few minutes each.
+- Geometry shaders and stream output (src/context/geometry.rs, src/stream.rs) through the
+  shaders crate's stage helper: `CreateGeometryShader` and `...WithStreamOutput` make a
+  `Geometry` object (from a geometry shader, or a vertex shader's bytecode with a declaration);
+  the declaration is checked against the output signature (`shader::output_signature`, OSGN,
+  OSG5, OSG1) by the rules Wine's test_stream_output and test_fl10_stream_output_desc show real
+  Direct3D applying (names and indices, gaps, component ranges, each component once, a buffer's
+  entries together and not gaps alone, strides, 10_x's one value per buffer, the rasterized
+  stream). A draw with one bound runs `Stages::run` outside a pass: the vertex shader converted
+  with every input fetched (`InputLayout::all`, the bases in its helper block, bound for compute
+  through `ContextState::vertex_compute`), the geometry stage's slots in their own set
+  (`GEOMETRY` = 3: constant buffers, views and samplers, with getters), then draws the output
+  with the pass-through program (converted again for the pixel shader's interpolation) and the
+  pixel shader. `SOSetTargets`/`SOGetTargets`: each buffer keeps the bytes it is filled to in a
+  4-byte GPU counter (`Buffer::filled`), set by the offsets (-1 appends), gathered into the
+  helper's block around each streaming draw. `DrawAuto` reads that counter back
+  (`ReadBackWait`). Stream output statistics and overflow predicates of stream 0 add what each
+  draw wrote and needed (read back while one runs). Indirect draws through a geometry shader read
+  their arguments back (`IndirectReadBack`). Buffers bound for vertices, indices or stream output
+  get storage usage where the back end has compute. Refused by name: geometry shaders without
+  the back end's compute programs (WebGL 2), vertex shader variants behind a geometry shader,
+  counted occlusion and statistics queries during such draws, helper constants in a geometry
+  shader, and what the stage helper refuses (`GeometryStreams`, `GeometryWithoutPosition`,
+  indexed strips, triangle strips with adjacency). New front tests
+  `a_geometry_shader_runs_as_compute_before_the_draw_of_its_output`,
+  `stream_output_writes_its_targets_and_draw_auto_draws_what_they_hold`, and the declaration
+  rules in stream.rs's unit test.
+- Storage textures read through a buffer of their texels (src/context/through.rs) where the
+  converter refuses atomics on storage textures (`StorageImageAtomics`): `shader::convert` marks
+  the typed texture views (`TypedView::through`, `texels_through_buffer`), the set binds a buffer
+  of the view's level (`Through`, its layout in `HelperValue::TexelLayout`), copied in before
+  each draw or dispatch and out after (`AtomicsThroughBuffer`). Compute helper blocks are now
+  written by the same `helper_block` as the draws'.
+- Views reinterpreting a typeless texture's bits (`format::reinterprets`): made on a twin
+  texture of the view's format (`View::twin`): shader resource and storage views copied in
+  before each draw or dispatch reading them and storage views out after, target views copied in
+  at the pass's start and out at its end, clears of them cleared on the twin and copied out
+  (`ReinterpretCopy`). Depth views never reinterpret.
+- Depth clamping in the programs where the back end clips only (WebGL 2 without
+  `EXT_depth_clamp`): the shaders crate's `DEPTH_CLAMP` variant on both programs with their added
+  value one location past both stages' own (`StageVariant::linked`) and `DepthRange` from the
+  first viewport (`DepthClampInShader`); the raster block then keeps clipping on.
+- Stencil views (`X24_TYPELESS_G8_UINT`, `X32_TYPELESS_G8X24_UINT`) are now refused by name
+  without the back end's `VIEW_SWIZZLE`: Direct3D gives stencil in the second component and the
+  interface's stencil views in the first, so they read wrong values before (the views scene's
+  stencil cell; Wine's test_depth_stencil_sampling; Asked since run 9).
+- `own_refused` now asks for a hull shader where it asked for a geometry shader (geometry
+  shaders are served and answer as real Direct3D).
+- Results at 1bcfe5f (RTX 3080 through the queue, not alone; scratch logs/g4s2i-*): Wine's
+  d3d11 file 113 of the 166 the rig counts (104 at run 13; none lost). New:
+  test_create_shader_resource_view, test_draw_uav_only, test_fl10_stream_output_desc,
+  test_geometry_shader, test_index_buffer_offset, test_stream_output, test_stream_output_resume,
+  test_texture, test_texture1d. The rig's scenes through the whole library: 122 pass, 16 fail, 4
+  absent (113, 28, 4 at run 13): compute and streamout now match; views now draws (its stencil
+  cell then read wrong, now refused); geometry stops at `PrimitiveId` (a pixel shader reading
+  SV_PrimitiveID, the shaders crate's unbuilt `PRIMITIVE_ID_FROM_STAGE`); raster (wireframe) and
+  tessellation (hull shaders) as before. Through the WebGL 2 build: 34 pass, 96 fail, 19 absent,
+  as at run 13. Library tests 15 + 14 and front tests 40 pass.
+- After 1bcfe5f: target views reinterpreting bits are drawn into their twins (copied in at the
+  pass's start unless cleared, out at its end); building ahead skips combinations whose targets
+  are of another kind (float or integer) than the pixel shader writes (it made a pipeline WebGPU
+  refused, which removed the device in Wine's test_uav_load). At the last commit (see git log):
+  the compute, streamout and depth scenes match; the WebGL 2 build's depth scene now matches
+  (clamping in the programs; its 11_0 cells absent); test_uav_load reaches its 3D-slices view
+  and test_depth_stencil_sampling the stencil view, both refused by name. Wine's full file again
+  113 of 166 (none lost; logs/g4s2m-wine.log). Real programs through the whole library
+  (logs/g4s2m-programs.log): the eight as before match with largest difference 0, and
+  godot-platformer-2d-d3d11 (Godot through ANGLE, which builds a point-sprite geometry shader)
+  now matches too at frames 10, 60 and 120 with largest difference 0: four engine families.
+  atg-simplecomputepc runs its 120 frames and still differs (154515 pixels; its Mandelbrot is
+  drawn, so a computed value differs: not read yet).
 
 G4 run 13 (2026-11-17, about 21:50 to 23:00 Pacific). Merged origin/phase-2-graphics, -webgpu,
 -webgl, -direct3d-12, -shaders and -rig cleanly; the merged tree linted (both builds) and passed
@@ -824,6 +901,17 @@ resources, views and states.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11: not passing. G4 run 14 (2026-11-17, our library copied in as d3d11.dll, RTX 3080
+  through the queue, not alone, through scratch rigfix/wine.sh, refreshed from the rig's new
+  runner with the same one-line fix): full file at 1bcfe5f: 113 of the 166 the rig counts (53
+  fail; logs/g4s2i-wine.log; none lost). First named gap of each failing test in
+  logs/g4s2i-wine-gaps.txt, counted: no named gap 16; the WARP fallback after an 11_1 device is
+  refused 7; `VertexWithoutPosition` 6; texture misc flags (GDI, keyed mutex) 4; `StructType` 2,
+  `DynamicOffset` 2; one each of target views of buffers, read-only depth views, hull shaders,
+  clip distances without the back end's, a buffer misc flag, a 3D storage view of some slices, a
+  format the back end lacks, a uint clear of R11G11B10, a target view reinterpreting bits (served
+  since, at the next commit), a float clear of a buffer view, a DXGI format not served,
+  `ViewportArrayIndex`, `RenderTargetArrayIndex`, `GetDC`, `CullDistance`, `AtomicSignedness`.
 - d3d11: not passing. G4 run 13 (2026-11-17, our library copied in as d3d11.dll, RTX 3080
   through the queue, not alone, through scratch rigfix/wine.sh): full file at 23fbcb5: 104 of
   the 166 the rig counts (62 fail; 197.5 s; logs/g4s1e-wine.log). First named gap of each failing
@@ -1107,50 +1195,49 @@ crate's `NormAsInteger`).
 
 ## What comes next (G4b and on)
 
-After G4 run 13, in order (the branch is pushed; everything on it built and passed on the desktop):
-0. Geometry shaders and stream output through the shaders crate's stage helper
-   (`wcontainers_shaders::stage::Stages::new(backend, vertex, geometry, stream)`, `run` per draw
-   giving a `FinalDraw` drawn with `passthrough()`; the Direct3D 12 front's geometry route is a
-   worked example): 14 of Wine's failing tests and the geometry and streamout scenes stop there.
-   Then storage textures through a buffer of their texels (`texels_through_buffer`,
-   `HelperValue::TexelLayout`, copies around each use, `AtomicsThroughBuffer`) for
-   test_draw_uav_only, test_early_depth_stencil and the compute scene; then why
-   atg-simplecomputepc's frames differ and why bgfx-01-cubes stops at start.
-1. Depth clamping in the program where the back end has no `DEPTH_CLAMP` (the WebGL 2 build's
-   depth scene stops there): the shaders crate's `DEPTH_CLAMP` variant, set in both programs'
-   keys with the same `LinkedValues` (location one past both reflections'), and `DepthRange` in
-   the pixel helper block from the viewport.
-2. Reinterpreting views (the views scene, test_texture, test_texture1d, test_uav_load): typeless
-   textures stored as the integer format of their bits with views decoded in the program
-   (`VariantKey::decoded`, `targets_in_shader`, `NormAsInteger`), or a twin; the biggest piece of
-   this front's own work left.
-3. Wireframe without the back end's polygon mode (the raster scene on WebGPU): no slow path is
+After G4 run 14, in order (the branch is pushed; everything on it built and passed on the desktop):
+0. Real programs: why atg-simplecomputepc's frames differ (a computed value: compare its compute
+   shader's output with real Direct3D's), bgfx-01-cubes (stops at start, not read yet), Godot's
+   3D platformer through ANGLE. Four families already match (scratch run-final.sh runs Wine's
+   file and the programs).
+1. Wine's failing tests with no named gap (16; scratch logs/g4s2i-wine-gaps.txt): read each
+   first failing check. Known causes: test_early_depth_stencil (the pixel shader runs for
+   fragments the early depth test would drop: WebGPU has no forced early tests with storage
+   writes; the shaders crate's `EarlyTestsInShader` is unbuilt), test_negative_viewports at 10_x,
+   test_cb_relative_addressing (Asked), test_create_rasterizer_state (`ID3D11RasterizerState2`),
+   test_logic_op, test_filter_minmax, test_nv12, video (absent features: write them into the gap
+   list with the feature named).
+2. Gaps of the shaders track, named and waiting: `VertexWithoutPosition` (6 tests: vertex
+   shaders feeding stream output or a geometry shader with no SV_Position), `PrimitiveId` in pixel
+   shaders behind a geometry stage (`PRIMITIVE_ID_FROM_STAGE`, the geometry scene),
+   `GeometryStreams`, `RenderTargetArrayIndex`/`ViewportArrayIndex` (layered rendering, several
+   viewports), hull and domain shaders (the tessellator landed; the stages do not yet),
+   `StructType`, `DynamicOffset`, `CullDistance`, `AtomicSignedness`.
+3. Unordered access views of some slices of a 3D level (test_create_unordered_access_view): a
+   twin of those slices, or the whole level with the slices' offset in the helper constants.
+4. Wireframe without the back end's polygon mode (the raster scene on WebGPU): no slow path is
    planned; read section 4 first (culling must still apply to the triangles).
-4. The WebGL 2 cases (32 of the rig's outputs match through the WebGL 2 build, 23 absent at 10_0;
-   Measurements): depth clamping (item 1), texture views (the back end's), polygon mode (this
-   ANGLE lacks `WEBGL_polygon_mode`), reading half floats back (mips), the constants and samplers
-   scenes (device lost in the back end: "naga could not write the shader as GLSL ES 3.00" for the
-   filter library, a loss for the constant window; not read yet).
-5. `ID3D11Device2`/`3` and `ID3D11DeviceContext2`/`3` (the Tool Kit samples' census names
+5. The WebGL 2 cases (34 of the rig's outputs match through the WebGL 2 build): depth clamping
+   is now in the programs (check the depth scene), texture views (the back end's
+   `TEXTURE_VIEWS`: the views scene), polygon mode, the constants and samplers scenes (device lost
+   in the back end, not read yet), typed buffers (`TexelBufferAsTexture`).
+6. `ID3D11Device2`/`3` and `ID3D11DeviceContext2`/`3` (the Tool Kit samples' census names
    `CreateTexture2D1` and `CheckMultisampleQualityLevels1`; test_create_rasterizer_state's last
    checks need `ID3D11RasterizerState2`). Read test_format_support's and test_swapchain_formats'
    per-level answers (9_x format support).
-6. Third family breadth: atg-simplemsaa_pc waits on the WebGPU back end's block-compressed small
-   levels (Asked), atg-simplecomputepc on storage images, atg-simplebezierpc on hull and domain
-   shaders; Godot through ANGLE on `GeometryShader`, bgfx on `TypedBuffer` and an nvapi64.dll
-   stand-in (a library exporting no `nvapi_QueryInterface`, given with `--dll nvapi64.dll=...`).
 7. The listed cases still without a test against real Direct3D (texture atomics,
    earlydepthstencil with storage writes, a depth buffer larger than its target, rasterised stream
    output, typed storage views, NV12 and YUY2, R8G8_B8G8, a copy between multisampled textures,
-   antialiased lines, UsageScopeSplit, FilterInShader on depth); most wait on other tracks.
-8. Building ahead hits nothing on the real programs (Measurements): they make their shaders
-   before drawing, so within one run there is no tuple to pair with. The cache's record of earlier
+   antialiased lines, UsageScopeSplit, FilterInShader on depth). Texture atomics and rasterised
+   stream output can now be written as `own_` programs.
+8. Building ahead hits nothing on the real programs (Measurements): the cache's record of earlier
    runs (plan section 8, `convert_cached` and `record_combination`, the shaders track's) is what
-   would hit; wire it in when it lands.
+   would hit; wire it in when it lands. Module size of section 10 to measure again.
 9. Move the context fully onto the pass tracker (fitted attachments, `UsageScopeSplit`).
-10. Compute shaders sampling a clamped texture or through a biased sampler (refused by name), and
-   pipeline statistics' compute invocations against real Direct3D.
+10. Compute shaders sampling a clamped texture or through a biased sampler (refused by name).
 11. Wine's d3d10core file needs a d3d10core.dll of ours and `ID3D10Device`; not started.
+12. The twins of reinterpreting views and storage textures through buffers are copied at every
+   draw that uses them; tracking which copy is current would drop most copies (measure first).
 
 ## How to run
 
@@ -1369,6 +1456,18 @@ own_queries now also covers pipeline statistics and stream output queries.
 
 ## Departures from the plan
 
+- Run 14: views reinterpreting a typeless texture and storage textures read through buffers are
+  copied at every draw or dispatch that uses them, and out after every write, without tracking
+  which copy holds the newest texels: correct whatever wrote the texture last, slow (counted as
+  `ReinterpretCopy` and `AtomicsThroughBuffer`). A target view on a twin splits its pass at
+  nothing more, but its copies run at each pass's start and end.
+- Run 14: a stream output target's filled size lives in a 4-byte GPU buffer per resource (made at
+  its first binding as a target); `DrawAuto` reads it back and draws directly, waiting for the
+  GPU, where Direct3D draws from it on the GPU (the interface has no draw counted from a buffer
+  word but indirect draws, and those need the stride's division in a program; not measured).
+- Run 14: the stage helper's buffers and programs are kept per (vertex shader, input layout,
+  geometry shader, pixel shader) for the device's life, as the programs are.
+
 - Run 13: a texture view whose kind differs from its slot's declaration (integers read as floats
   or the reverse, undefined in Direct3D) reads as an empty slot, zeros, as Wine's test_generate_mips
   sees real Direct3D answer; WebGPU refuses binding such a view.
@@ -1515,6 +1614,14 @@ None in G4 runs 3 to 12.
 
 ## Measurements
 
+- 2026-11-17/18, G4 run 14, the desktop (i9-9900K, RTX 3080) through the queue, not alone (the
+  rig's hazard group runs our jobs one at a time beside other tracks' reference jobs; Mac load
+  average 47 at 23:51): Wine's d3d11 file 113 of 166 in 198.7 s (23:35) and 209.9 s (00:08).
+  Real programs through the whole library, 120 frames each: chocolate-doom 4.4 s,
+  atg-simplelightingpc 4.1 s, atg-simpleinstancingpc 3.7 s, atg-simplecomputepc 3.5 s,
+  godot-platformer-2d-d3d11 17.9 s. Building ahead on them: no combination built ahead (as
+  before; item 8 of What comes next). Module size not measured again.
+
 - 2026-11-17, G4 run 13, the desktop (i9-9900K, RTX 3080) through the queue, not alone (other
   tracks' jobs beside; Mac load average 57 to 65 at 22:42): Wine's d3d11 file 104 of 166 in
   197.5 s. Real programs through the whole library, every compared frame identical to real
@@ -1646,6 +1753,15 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 - The rig's replacement check cannot see wcontainers_directx.dll behind the forwarder (above).
 
 ## Asked of other tracks
+
+- Rig (G4 run 14): the runner bug of run 13 is still in desktop/wine-run.ps1 (now line 256 after
+  the reset guard's lines); this track's fixed copy was refreshed from the new runner, so the
+  quarantine and the reset checks still apply to its runs.
+- Shaders track (G4 run 14): `PRIMITIVE_ID_FROM_STAGE` (the rig's geometry scene stops there: a
+  pixel shader behind a geometry shader reading SV_PrimitiveID), `VertexWithoutPosition` both in
+  the plain conversion and in the stage helper's vertex compute form (stream output from a vertex
+  shader writing no position, six of Wine's tests), `GeometryStreams`, and hull and domain stages
+  in `Stages`.
 
 - Rig (G4 run 13): tools/graphics-rig/desktop/wine-run.ps1 line 224, `$allowed = if
   ($known.ContainsKey($name)) { $known[$name] } else { @() }`, gives `$null` (and a one-element
