@@ -426,5 +426,5 @@ godot-compute-f1bbd623757d7a64.dxil	ok-wgsl glsl-write
 godot-compute-f8ba5aa849fe70e5.dxil	unsupported ResourceArray
 godot-compute-fcdd20873fda5f78.dxil	ok-wgsl glsl-write
 godot-fragment-2893de73bed23900.dxil	unsupported ResourceArray
-godot-fragment-f0e16912c4aaaddb.dxil	spirv-reader unsupported
+godot-fragment-f0e16912c4aaaddb.dxil	unsupported Subgroups
 godot-vertex-ae47f85da0f11cca.dxil	ok-wgsl glsl-write

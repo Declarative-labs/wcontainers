@@ -210,9 +210,9 @@ pub struct RasterDesc {
 }
 
 /// How a vertex attribute is stored: every component count of every 8, 16 and 32-bit type, and the packed
-/// formats Direct3D and OpenGL use. A back end that lacks one (WebGPU has no three-component 8 or 16-bit
-/// formats) fetches it in the vertex program from a storage buffer or converts it on upload (slow path
-/// [`crate::SlowPath::VertexFormatConverted`]).
+/// formats Direct3D and OpenGL use. Every back end takes every one: a back end whose API lacks one
+/// (WebGPU has no three-component 8 or 16-bit formats) converts the stream itself, so no capability
+/// lists them (slow path [`crate::SlowPath::VertexFormatConverted`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum VertexFormat {
     Uint8x1,

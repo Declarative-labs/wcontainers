@@ -1637,7 +1637,6 @@ impl Device {
         out: *mut *mut c_void,
     ) -> Result<()> {
         clear_out(out);
-        wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32, true).map_err(hr)?;
         // SAFETY: the API requires both.
         let (heap, desc) = unsafe {
             (
@@ -1645,6 +1644,11 @@ impl Device {
                 *pdesc.as_ref().ok_or(E_INVALIDARG)?,
             )
         };
+        let unordered = desc
+            .Flags
+            .contains(D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        wcontainers_direct3d_12::resource::check_heap_flags(flags.0 as u32, Some(unordered))
+            .map_err(hr)?;
         let kind = heap_kind(&heap)?;
         let front = resource_desc(&desc);
         check_creation(kind, &front, state.0 as u32, !clear.is_null()).map_err(hr)?;

@@ -998,6 +998,90 @@ fn the_occlusion_counter_counts_exactly() {
     k.healthy();
 }
 
+/// `end_into` writes the count into a buffer of the front's as a u64 in order with the writes
+/// around it: an earlier write there is replaced, a later one replaces it, and the words beside it
+/// stay. The recorder computes with no workgroup memory, so this is the default (read back).
+#[test]
+fn the_occlusion_counter_writes_its_count_into_a_buffer_in_order() {
+    let mut k = Kit::new();
+    let mut passes = PassTracker::default();
+    let mut counter = OcclusionCounter::default();
+    let color = k.target(4, 4, Format::Rgba8Unorm);
+    passes.set_targets(&mut k.r, colors(color)).unwrap();
+    let p = k.program("color");
+    let counting = k.program("counting");
+    let tests = k.depth(None, false);
+    let set = k.params(0, [1.0; 4], 0.5);
+    let heap =
+        k.r.create_buffer(&BufferDesc {
+            size: 24,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    k.r.write_buffer(&heap, 0, &[0xab; 24], WriteMode::Ordered);
+    counter.begin(&mut k.r, &mut passes).unwrap();
+    let viewport = [Viewport {
+        x: 0f32.to_bits(),
+        y: 0f32.to_bits(),
+        width: 4f32.to_bits(),
+        height: 2f32.to_bits(),
+        min_depth: 0f32.to_bits(),
+        max_depth: 1f32.to_bits(),
+    }];
+    let streams = [Some(VertexBinding {
+        buffer: &k.quad,
+        offset: 0,
+    })];
+    let call = DrawCall {
+        program: &p,
+        blend: &k.blend,
+        depth_stencil: &tests,
+        raster: &k.raster,
+        vertex_layout: &k.layout,
+        bindings: [Some(&set), None, None, None],
+        vertex_buffers: &streams,
+        index: None,
+        topology: Topology::TriangleStrip,
+        restart: false,
+        viewports: &viewport,
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Vertices {
+            first: 0,
+            count: 4,
+            first_instance: 0,
+            instances: 1,
+        },
+    };
+    counter
+        .draw(&mut k.r, &mut passes, &call, &facts(&counting, false))
+        .unwrap();
+    passes.before_draw(&mut k.r, &[]).unwrap();
+    k.r.draw(&call);
+    counter.end_into(&mut k.r, &mut passes, &heap, 8).unwrap();
+    passes.close(&mut k.r).unwrap();
+    let read = |k: &mut Kit| {
+        let mut bytes = [0u8; 24];
+        let src = ReadSource::Buffer {
+            buffer: &heap,
+            offset: 0,
+            size: 24,
+        };
+        k.r.read_back_now(&src, &mut bytes).unwrap();
+        bytes
+    };
+    let mut expected = [0xab; 24];
+    expected[8..16].copy_from_slice(&8u64.to_le_bytes());
+    assert_eq!(read(&mut k), expected);
+    k.r.write_buffer(&heap, 12, &[1; 4], WriteMode::Ordered);
+    expected[12..16].fill(1);
+    assert_eq!(read(&mut k), expected);
+    k.healthy();
+}
+
 /// Where a pixel of the counting target reaches the counting format's exact bound (2048 in
 /// `r16float`, which a back end without blendable `r32float` counts in), the draws are counted again
 /// in halves: of the draws, of one draw's instances, or of one list's primitives.

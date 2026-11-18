@@ -37,9 +37,12 @@ struct Case {
     /// Also compiled by dxc (`<name>.dxil`): drawn by the DXIL route too, against real Direct3D 12's
     /// picture of that build.
     dxil: bool,
+    /// The DXIL build needs a shader model this desktop's Direct3D 12 refuses: held to Direct3D 11's
+    /// picture of the fxc build instead.
+    dxil_against_11: bool,
 }
 
-const CASES: [Case; 23] = [
+const CASES: [Case; 25] = [
     Case {
         vs: "vs_transform",
         ps: "ps_twospaces",
@@ -49,6 +52,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -59,6 +63,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -69,6 +74,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -79,6 +85,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [Some("GLSL ES 3.00 has no bitfield operations"), None],
         known_on_webgl: None,
         dxil: false,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_fullscreen",
@@ -92,6 +99,7 @@ const CASES: [Case; 23] = [
         ],
         known_on_webgl: None,
         dxil: false,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_shade",
@@ -102,6 +110,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_shade",
@@ -112,6 +121,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [Some("GLSL ES 3.00 has no noperspective"), None],
         known_on_webgl: None,
         dxil: false,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -122,6 +132,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -132,6 +143,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -142,6 +154,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -152,6 +165,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -162,6 +176,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -172,6 +187,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -185,6 +201,7 @@ const CASES: [Case; 23] = [
         ],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -195,6 +212,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -205,6 +223,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_carry",
@@ -215,6 +234,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -225,6 +245,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -235,6 +256,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -245,6 +267,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [Some("GLSL ES 3.00 has no fine derivatives"); 2],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -255,6 +278,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
     },
     Case {
         vs: "vs_transform",
@@ -265,6 +289,35 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: true,
+        dxil_against_11: false,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_gatheroff",
+        format: Format::Rgba8Unorm,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [
+            Some("GLSL ES 3.00 has no textureGather"),
+            Some("GLSL ES 3.00 has no textureGather"),
+        ],
+        known_on_webgl: None,
+        dxil: false,
+        dxil_against_11: false,
+    },
+    Case {
+        vs: "vs_transform",
+        ps: "ps_helper",
+        format: Format::Rgba32Uint,
+        tint: [1.0; 4],
+        grid: true,
+        not_on_webgl: [
+            Some("GLSL ES 3.00 has no fine derivatives"),
+            Some("GLSL ES 3.00 has no fine derivatives"),
+        ],
+        known_on_webgl: None,
+        dxil: true,
+        dxil_against_11: true,
     },
     Case {
         vs: "vs_pack",
@@ -275,6 +328,7 @@ const CASES: [Case; 23] = [
         not_on_webgl: [None, None],
         known_on_webgl: None,
         dxil: false,
+        dxil_against_11: false,
     },
 ];
 
@@ -594,7 +648,7 @@ fn own_shaders_draw_as_direct3d_does() {
         let reference = direct3d(&gpu, case);
         keep(&format!("{name}.d3d11"), &reference, case.format);
         // Each DXIL build is held to Direct3D 12 drawing that same DXIL.
-        let reference_12 = case.dxil.then(|| {
+        let reference_12 = (case.dxil && !case.dxil_against_11).then(|| {
             let texels = direct3d_12(&gpu12, case);
             keep(&format!("{name}.d3d12"), &texels, case.format);
             let (count, largest) = differ(&reference, &texels, case.format);

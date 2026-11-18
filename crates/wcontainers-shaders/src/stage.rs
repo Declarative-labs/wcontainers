@@ -22,7 +22,7 @@ use naga::{
     Module, ResourceBinding, Scalar, ScalarKind, Span, StorageAccess, StructMember, Type,
     TypeInner,
 };
-use wcontainers_gpu::{Interpolation, Reflection, ScalarKind as ValueKind, SystemValue};
+use wcontainers_gpu::{Interpolation, Reflection, ScalarKind as ValueKind};
 
 mod helper;
 mod tessellate;
@@ -601,13 +601,6 @@ pub(crate) fn passthrough(reflection: &Reflection) -> Result<Module> {
             offset: 16 * slot as u32,
         });
         components.push(v);
-    }
-    if !reflection
-        .outputs
-        .iter()
-        .any(|v| v.system == Some(SystemValue::Position))
-    {
-        return Err(ConvertError::Unsupported("GeometryWithoutPosition"));
     }
     let ty = module.types.insert(
         Type {

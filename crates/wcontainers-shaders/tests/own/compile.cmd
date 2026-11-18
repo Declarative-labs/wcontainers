@@ -12,6 +12,8 @@ cd /d %~dp0
 "%FXC%" /nologo /T ps_5_0 /E ps_loop /Fo ps_loop.dxbc own.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_fullscreen /Fo vs_fullscreen.dxbc own.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_window /Fo ps_window.dxbc own.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_gatheroff /Fo ps_gatheroff.dxbc own.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_gatheroff -Gis -Fo ps_gatheroff.dxil own.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_shade /Fo vs_shade.dxbc more.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_flat /Fo ps_flat.dxbc more.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_shade /Fo ps_shade.dxbc more.hlsl || exit /b 1
@@ -38,6 +40,8 @@ for %%e in (ps_ftoi ps_table ps_deriv ps_coarse) do (
   "%FXC%" /nologo /T ps_5_0 /E %%e /Fo %%e.dxbc values.hlsl || exit /b 1
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil values.hlsl || exit /b 1
 )
+"%FXC%" /nologo /T ps_5_0 /E ps_helper /Fo ps_helper.dxbc values.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_6 -E ps_helper -Gis -Fo ps_helper.dxil values.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_carry /Fo vs_carry.dxbc values.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_carry -Gis -Fo vs_carry.dxil values.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_negate /Fo ps_negate.dxbc negate.hlsl || exit /b 1
@@ -62,7 +66,7 @@ for %%e in (ps_dual ps_levels ps_samples ps_ids ps_minlod ps_mingather ps_mirror
 "%DXC%" -nologo -T ps_6_0 -E ps_filter -Gis -Fo ps_filter.dxil filter.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_geometry /Fo vs_geometry.dxbc geometry.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_geometry /Fo ps_geometry.dxbc geometry.hlsl || exit /b 1
-for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_adjacent gs_line_adjacent) do (
+for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_unplaced gs_adjacent gs_line_adjacent) do (
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Gis -Fo %%e.dxil geometry.hlsl || exit /b 1
 )

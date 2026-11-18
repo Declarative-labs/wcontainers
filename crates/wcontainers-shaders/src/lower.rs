@@ -3877,11 +3877,14 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         let image = self.add(b, Expression::GlobalVariable(res.var));
         let sampler = self.add(b, Expression::GlobalVariable(sampler_res.var));
         let array_index = self.layer(b, r[2])?;
-        let coordinate = self.coords(b, k, r[3], true)?;
-        let offset = if r[4] != 0 {
-            Some(self.offset_constant(b, k, r[4])?)
-        } else {
+        let mut coordinate = self.coords(b, k, r[3], true)?;
+        let offset = if r[4] == 0 {
             None
+        } else if gather && self.l.ir.op(r[4])?.code != code::CONSTANT {
+            coordinate = self.offset_coordinate(b, image, coordinate, r[4])?;
+            None
+        } else {
+            Some(self.offset_constant(b, k, r[4])?)
         };
         let depth_ref_id = if gather { r[5] } else { r[10] };
         let depth_ref = if depth_ref_id != 0 {
@@ -3990,6 +3993,49 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         }
         let c = self.l.ivec_constant(&comps)?;
         Ok(self.add(b, Expression::Constant(c)))
+    }
+
+    /// A gather's offset given at run time (`gather4_po`), which the common form takes only as a
+    /// constant: the coordinate moved by the offset in texels of level 0, which picks the same four
+    /// texels. Direct3D takes each component's low six bits, signed.
+    fn offset_coordinate(
+        &mut self,
+        b: &mut Block,
+        image: Handle<Expression>,
+        coordinate: Handle<Expression>,
+        id: u32,
+    ) -> Result<Handle<Expression>> {
+        let o = self.get_as(b, id, Scalar::I32)?;
+        let o = self.e.swizzle(&mut self.f, b, o, 0, 2)?;
+        let six = self.splat_lit(b, Literal::U32(26), 2)?;
+        let o = self.bin(b, BinaryOperator::ShiftLeft, o, six);
+        let o = self.bin(b, BinaryOperator::ShiftRight, o, six);
+        let o = self.add(
+            b,
+            Expression::As {
+                expr: o,
+                kind: ScalarKind::Float,
+                convert: Some(4),
+            },
+        );
+        let zero = self.lit(b, Literal::U32(0));
+        let size = self.add(
+            b,
+            Expression::ImageQuery {
+                image,
+                query: ImageQuery::Size { level: Some(zero) },
+            },
+        );
+        let size = self.add(
+            b,
+            Expression::As {
+                expr: size,
+                kind: ScalarKind::Float,
+                convert: Some(4),
+            },
+        );
+        let shift = self.bin(b, BinaryOperator::Divide, o, size);
+        Ok(self.bin(b, BinaryOperator::Add, coordinate, shift))
     }
 
     fn slot_of(&self, desc: u32) -> Result<u32> {

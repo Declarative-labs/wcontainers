@@ -18,6 +18,9 @@ pub(super) struct Helpers {
     /// The (texture, sampler) registers the program samples with, in the order of its merged
     /// samplers (`CLAMPED_SAMPLER_BINDING`), where it applies a minimum level-of-detail clamp.
     pub pairs: Vec<(u32, u32)>,
+    /// The bindings it adds for multisampled arrays' layers after the first: set, binding,
+    /// texture slot and layer (`AddedBinding::TextureLayer`).
+    pub layers: Vec<(u32, u32, u32, u32)>,
 }
 
 impl Helpers {
@@ -34,6 +37,17 @@ impl Helpers {
                 true => c.reflection.sampled_pairs.clone(),
                 false => Vec::new(),
             },
+            layers: c
+                .reflection
+                .bindings
+                .iter()
+                .filter_map(|b| match b.added {
+                    Some(AddedBinding::TextureLayer(slot, layer)) => {
+                        Some((b.set, b.binding, slot, layer))
+                    }
+                    _ => None,
+                })
+                .collect(),
         }
     }
 }

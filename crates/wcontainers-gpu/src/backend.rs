@@ -237,8 +237,10 @@ pub trait Backend: Sized {
     /// keeps on the host, through that copy ([`crate::SlowPath::HostCopyReadBack`]). A combined
     /// depth-stencil format is copied whole, both aspects in one call (Direct3D's copies; WebGPU
     /// copies such textures only so). The two regions may lie in one subresource if they do not
-    /// overlap (Vulkan and OpenGL allow it); a back end whose API refuses that copies through a
-    /// buffer ([`crate::SlowPath::CopyWithinTexture`]).
+    /// overlap (Vulkan and OpenGL allow it, for every format); a back end whose API refuses that copies
+    /// through a buffer, or, for a depth or stencil format its API cannot copy into from a buffer,
+    /// through a temporary texture of the same format by the routes above
+    /// ([`crate::SlowPath::CopyWithinTexture`]).
     fn copy_texture(
         &mut self,
         src: &TextureRegion<'_, Self>,
@@ -390,7 +392,9 @@ pub trait Backend: Sized {
     }
 
     /// Builds a state combination ahead of its first draw. The default does nothing, so the first draw
-    /// builds it. WebGPU overrides it to compile the pipeline in the background.
+    /// builds it. WebGPU overrides it to compile the pipeline in the background. The combination names
+    /// no index format, which the APIs bind with the index buffer at the draw: a back end whose
+    /// pipeline holds the index format of strips builds a strip topology for both.
     fn prepare(&mut self, desc: &PrepareDesc<'_, Self>) {
         let _ = desc;
     }
