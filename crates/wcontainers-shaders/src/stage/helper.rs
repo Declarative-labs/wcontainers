@@ -2,7 +2,11 @@
 //! shaders (or a vertex shader whose output is streamed), and for each API draw records the
 //! dispatches and says what the front draws after them.
 
-use super::{GEOMETRY_BINDING, INDICES_BINDING, VALUES_BINDING, VERTICES_BINDING, WORKGROUP, word};
+use super::tessellate::{Tessellation, Tessellator};
+use super::{
+    GEOMETRY_BINDING, INDICES_BINDING, PATCHES_BINDING, VALUES_BINDING, VERTICES_BINDING,
+    WORKGROUP, word,
+};
 use crate::{ConvertError, Converted};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -25,6 +29,8 @@ pub enum InputTopology {
     LineStripAdjacency,
     TriangleListAdjacency,
     TriangleStripAdjacency,
+    /// Patches of this many control points (1 to 32), for a hull stage.
+    PatchList(u8),
 }
 
 /// Why the stage helper cannot run a pair of shaders or a draw.
@@ -104,7 +110,7 @@ pub struct StageDraw<'a, B: Backend> {
     /// The vertex stage's sets, as for a draw (its slots and pulled streams in set 0, its helper
     /// constants in set 3), made visible to compute. Set 1 is the helper's own.
     pub vertex_sets: [Option<&'a B::BindingSet>; MAX_BINDING_SETS],
-    /// The geometry stage's sets: its slots in set 0, its helper constants in set 3.
+    /// The geometry or hull stage's sets: its slots in set 0, its helper constants in set 3.
     pub geometry_sets: [Option<&'a B::BindingSet>; MAX_BINDING_SETS],
     pub index: Option<StageIndex<'a, B>>,
     pub topology: InputTopology,
@@ -117,19 +123,34 @@ pub struct StageDraw<'a, B: Backend> {
 /// What the front draws after [`Stages::run`], in its pass: the program it made of
 /// [`Stages::passthrough`] and its pixel program, with [`Stages::vertex_layout`], `buffer` as vertex
 /// stream 0 at offset 0, and with indices from `buffer` at `index_offset` (u32, strips restarting)
-/// when given; `count` vertices or indices, one instance.
+/// when given; `count` vertices or indices, one instance. After a tessellation stage, `tessellated`
+/// says how it differs.
 #[derive(Debug)]
 pub struct FinalDraw<B: Backend> {
     pub buffer: B::Buffer,
     pub index_offset: Option<u64>,
     pub topology: Topology,
     pub count: u32,
+    pub tessellated: Option<TessellatedDraw<B>>,
+}
+
+/// The draw after a tessellation stage: the domain program (converted) with the pixel program, no
+/// vertex streams, indices (u32) from [`FinalDraw::buffer`] at offset 0, as an indexed indirect draw
+/// whose arguments are at offset 0 of `arguments` ([`FinalDraw::count`] is the most indices it can
+/// draw). The domain program reads `patches` and `points`, bound read-only at
+/// [`wcontainers_gpu::DOMAIN_PATCHES_BINDING`] and [`wcontainers_gpu::DOMAIN_POINTS_BINDING`] in its
+/// helper set.
+#[derive(Debug)]
+pub struct TessellatedDraw<B: Backend> {
+    pub arguments: B::Buffer,
+    pub patches: BufferRange<B::Buffer>,
+    pub points: BufferRange<B::Buffer>,
 }
 
 /// Buffers the helper owns, grown as draws need.
 pub(super) struct Owned<B: Backend> {
     pub(super) buffer: B::Buffer,
-    size: u64,
+    pub(super) size: u64,
 }
 
 /// The geometry stage's compute program and what its output is.
@@ -143,6 +164,17 @@ struct Geometry<B: Backend> {
     output: u32,
     out_words: u32,
     out_locations: u32,
+}
+
+/// The hull stage's compute program, the tessellator, and the patch records between them.
+struct Hull<B: Backend> {
+    program: B::Program,
+    tessellator: Tessellator<B>,
+    tessellation: Tessellation,
+    input_points: u32,
+    /// Words per patch record.
+    patch_words: u32,
+    patches: Option<Owned<B>>,
 }
 
 /// The stream output program and its declaration's elements.
@@ -159,11 +191,13 @@ const STREAM_WORDS: usize = 12;
 /// The elements its table holds.
 const STREAM_ENTRIES: usize = 64;
 
-/// A vertex shader, and a geometry shader or stream output or both, run as compute work before the
-/// draw ([`SlowPath::GeometryAsCompute`], [`SlowPath::StreamOutAsCompute`]).
+/// A vertex shader, and a geometry shader or stream output or both, or a hull shader and the
+/// tessellator, run as compute work before the draw ([`SlowPath::GeometryAsCompute`],
+/// [`SlowPath::StreamOutAsCompute`], [`SlowPath::TessellationAsCompute`]).
 pub struct Stages<B: Backend> {
     vertex: B::Program,
     geometry: Option<Geometry<B>>,
+    hull: Option<Hull<B>>,
     stream: Option<Stream<B>>,
     /// Words per vertex record.
     in_words: u32,
@@ -218,12 +252,105 @@ impl<B: Backend> Stages<B> {
         Ok(Stages {
             vertex: vertex_program,
             geometry,
+            hull: None,
             stream,
             in_words: super::record_words(read.len()),
             records: None,
             out: None,
             unused,
         })
+    }
+
+    /// Makes the compute programs of `vertex` (converted with every input pulled) and `hull`, and the
+    /// tessellator, for draws whose final draw runs `domain` ([`TessellatedDraw`]).
+    pub fn tessellated(
+        backend: &mut B,
+        vertex: &Converted,
+        hull: &Converted,
+        domain: &Converted,
+    ) -> Result<Self, StageError> {
+        let StageExtras::Hull {
+            input_control_points,
+            output_control_points,
+            domain: hull_domain,
+            partitioning,
+            output_primitive,
+            max_tess_factor,
+            point_locations,
+            constant_locations,
+        } = hull.reflection.extras
+        else {
+            return Err(StageError::Convert(ConvertError::Malformed(
+                "not a hull shader".into(),
+            )));
+        };
+        match domain.reflection.extras {
+            StageExtras::Domain { domain: d, .. } if d == hull_domain => {}
+            StageExtras::Domain { .. } => return Err(StageError::Declaration),
+            _ => {
+                return Err(StageError::Convert(ConvertError::Malformed(
+                    "not a domain shader".into(),
+                )));
+            }
+        }
+        let read = super::locations(&hull.reflection.inputs);
+        let shader = backend.create_shader(&super::vertex_program_for(vertex, &read)?)?;
+        let vertex_program = backend.create_program(&Program::Compute(&shader))?;
+        let shader = backend.create_shader(&hull.modules[0])?;
+        let hull_program = backend.create_program(&Program::Compute(&shader))?;
+        let patch_words = u32::from(output_control_points) * 4 * u32::from(point_locations)
+            + 4 * u32::from(constant_locations)
+            + 8;
+        let unused = backend.create_buffer(&BufferDesc {
+            size: 1280,
+            usage: BufferUsage::STORAGE,
+            intent: MapIntent::Rarely,
+        })?;
+        Ok(Stages {
+            vertex: vertex_program,
+            geometry: None,
+            hull: Some(Hull {
+                program: hull_program,
+                tessellator: Tessellator::new(backend)?,
+                tessellation: Tessellation {
+                    domain: hull_domain,
+                    partitioning,
+                    output: output_primitive,
+                    max_factor: max_tess_factor as f32,
+                },
+                input_points: input_control_points.into(),
+                patch_words,
+                patches: None,
+            }),
+            stream: None,
+            in_words: super::record_words(read.len()),
+            records: None,
+            out: None,
+            unused,
+        })
+    }
+
+    /// Releases everything the helper made.
+    pub fn destroy(self, backend: &mut B) {
+        use wcontainers_gpu::Object;
+        backend.destroy(Object::Program(self.vertex));
+        if let Some(g) = self.geometry {
+            backend.destroy(Object::Program(g.program));
+        }
+        if let Some(h) = self.hull {
+            backend.destroy(Object::Program(h.program));
+            h.tessellator.destroy(backend);
+            if let Some(p) = h.patches {
+                backend.destroy(Object::Buffer(p.buffer));
+            }
+        }
+        if let Some(s) = self.stream {
+            backend.destroy(Object::Program(s.program));
+        }
+        for owned in [self.records, self.out].into_iter().flatten() {
+            backend.destroy(Object::Buffer(owned.buffer));
+        }
+        backend.destroy(Object::Buffer(self.unused));
     }
 
     /// The vertex program of the draw after a geometry stage, for the front's program with its pixel
@@ -291,10 +418,16 @@ impl<B: Backend> Stages<B> {
             T::TriangleStripAdjacency => {
                 return Err(StageError::Unsupported("GeometryTriangleStripAdjacency"));
             }
+            T::PatchList(n) => (u32::from(n), false),
         };
-        match &self.geometry {
-            Some(g) if n != g.input_vertices => return Err(StageError::TopologyMismatch),
-            None if n > 3 => return Err(StageError::Unsupported("StreamOutputAdjacency")),
+        let patches = matches!(draw.topology, T::PatchList(_));
+        match (&self.geometry, &self.hull) {
+            (_, Some(h)) if !patches || n != h.input_points => {
+                return Err(StageError::TopologyMismatch);
+            }
+            (_, None) if patches => return Err(StageError::TopologyMismatch),
+            (Some(g), _) if n != g.input_vertices => return Err(StageError::TopologyMismatch),
+            (None, None) if n > 3 => return Err(StageError::Unsupported("StreamOutputAdjacency")),
             _ => {}
         }
         if strip && draw.index.is_some() {
@@ -307,7 +440,8 @@ impl<B: Backend> Stages<B> {
             true => (count + 1).saturating_sub(n),
         };
         let streamed = self.stream.is_some() && draw.stream_output.is_some();
-        if primitives == 0 || instances == 0 || (self.geometry.is_none() && !streamed) {
+        let drawn = self.geometry.is_some() || self.hull.is_some();
+        if primitives == 0 || instances == 0 || (!drawn && !streamed) {
             return Ok(None);
         }
         let limits = backend.caps().limits;
@@ -436,6 +570,64 @@ impl<B: Backend> Stages<B> {
                     _ => Topology::TriangleStrip,
                 },
                 count: if strips { 2 * total } else { total },
+                tessellated: None,
+            });
+        }
+
+        if let Some(h) = &mut self.hull {
+            backend.slow_paths().hit(SlowPath::TessellationAsCompute);
+            let total = primitives
+                .checked_mul(instances)
+                .ok_or(GpuError::OutOfMemory)?;
+            let patch_bytes = (u64::from(super::tess::HEADER_WORDS)
+                + u64::from(total) * u64::from(h.patch_words))
+                * 4;
+            grow(backend, &mut h.patches, patch_bytes, BufferUsage::STORAGE)?;
+            let patches = &h.patches.as_ref().unwrap().buffer;
+            let hull_set = backend.create_binding_set(&[
+                uniform(),
+                storage(VERTICES_BINDING, records, record_bytes, false),
+                storage(PATCHES_BINDING, patches, patch_bytes, true),
+            ])?;
+            let mut sets = draw.geometry_sets;
+            sets[super::STAGE_SET as usize] = Some(&hull_set);
+            backend.dispatch(&DispatchCall {
+                program: &h.program,
+                bindings: sets,
+                immediates: &[],
+                groups: groups(primitives),
+            })?;
+            let hull_range = BufferRange {
+                buffer: patches,
+                offset: 0,
+                size: patch_bytes,
+            };
+            h.tessellator
+                .run(backend, &h.tessellation, hull_range, total, primitives)?;
+            let (_, per_indices) = super::tess::patch_bounds(h.tessellation.max_factor);
+            let (arguments, points, indices) = h.tessellator.owned();
+            last = Some(FinalDraw {
+                buffer: indices.buffer.clone(),
+                index_offset: Some(0),
+                topology: match h.tessellation.output {
+                    0 => Topology::PointList,
+                    1 => Topology::LineList,
+                    _ => Topology::TriangleList,
+                },
+                count: total.saturating_mul(per_indices),
+                tessellated: Some(TessellatedDraw {
+                    arguments: arguments.buffer.clone(),
+                    patches: BufferRange {
+                        buffer: patches.clone(),
+                        offset: 0,
+                        size: patch_bytes,
+                    },
+                    points: BufferRange {
+                        buffer: points.buffer.clone(),
+                        offset: 0,
+                        size: points.size,
+                    },
+                }),
             });
         }
 

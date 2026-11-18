@@ -172,6 +172,7 @@ fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
         InputTopology::LineStripAdjacency => D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ,
         InputTopology::TriangleListAdjacency => D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ,
         InputTopology::TriangleStripAdjacency => D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ,
+        InputTopology::PatchList(n) => D3D_PRIMITIVE_TOPOLOGY(32 + i32::from(n)),
     }
 }
 

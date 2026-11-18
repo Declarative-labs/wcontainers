@@ -54,7 +54,7 @@ tessellation.hs_quad_odd.dxil	spirv-reader unsupported
 tessellation.hs_quad_pow2.dxil	spirv-reader unsupported
 tessellation.hs_tri.dxil	spirv-reader unsupported
 tessellation.ps.dxil	ok
-tessellation.vs.dxil	unsupported VertexWithoutPosition
+tessellation.vs.dxil	ok
 textures.ps_1d.dxil	ok
 textures.ps_1d_array.dxil	unsupported Texture1DArray
 textures.ps_2d_array.dxil	ok
