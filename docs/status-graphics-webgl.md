@@ -6,38 +6,28 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 ## Where things stand
 
 G3 is at its pass bar (item by item below) apart from named known failures that wait on other
-tracks, on hardware or on the native test tool. Run 14 (the second run of the G3 milestone task)
-merged origin/phase-2-graphics, origin/phase-2-graphics-webgpu and origin/phase-2-graphics-shaders
-(origin/phase-2-graphics-rig had nothing new; the Direct3D branches were not merged, nothing here
-needs them), and fixed every finding of the independent check of run 13:
-- `create_shader` refuses every shader that needs a feature the caps lack, through `Absent` of those
-  features: sample index, sample mask and per-sample interpolation (`SAMPLE_SHADING`),
-  multisampled textures (`MULTISAMPLE_READ`), `textureNumLevels` and `textureNumSamples`
-  (`TEXTURE_LEVEL_QUERY`), storage buffers and textures (`VERTEX_STORAGE_READ`,
-  `VERTEX_STORAGE_WRITE`, `FRAGMENT_STORAGE_WRITE`), 16 and 64-bit types, the primitive index,
-  subgroups, resource tables, besides the outputs refused before. Before, most of these were
-  accepted and lost the device at the first draw, or came back as `Invalid`.
-- Copies from cube textures within a typeless group (every format the draw route takes) are built:
-  the draw samples the cube towards each texel's centre.
-- `rgb32float`, `rgb32uint` and `rgb32sint` are kept on the host (`HostCopyKept`), as RGB9E5 is:
-  GL neither renders nor reads them, so copies of them lost the device. Now copied and read back.
-- Copies into 16-bit floats from another format of the group go through the host
-  (`HostCopyReadBack`): a draw wrote NaN payloads canonical. Found by the half-float pairs of
-  `copies_within_a_typeless_group`, which the check skipped before.
-- Copies within one subresource (the interface's new rule) go through a buffer
-  (`CopyWithinTexture`), or for 16-bit floats, which GL does not read back, through a 2D texture.
-- Draws with no viewport or several, front and back stencil references that differ, and buffer
-  clears with a pattern not 1, 2, 4, 8 or 16 bytes long are refused as `Invalid` (device loss with
-  the rule).
-- The checks' patterns take a seed and a case count (`WEBGL_SEED`, `WEBGL_CASES`); checks whose
-  feature is absent report "not run" in Chrome instead of "ok".
-- The fractional viewport comparison now draws as a front without `FRACTIONAL_VIEWPORT` does (the
-  enclosing whole-pixel viewport, the adjusted positions, the scissor cut to the covered pixel
-  centres) with a triangle clipped at the viewport's edges.
-- The cost page confirms WebGPU's adapter is a GPU (`discrete GPU`, through Chrome's WebGPU
-  developer features flag).
+tracks or on hardware. Run 15 (the third run of the G3 milestone task) merged origin/phase-2-graphics,
+origin/phase-2-graphics-webgpu and origin/phase-2-graphics-shaders (the rig and Direct3D 11 branches
+had nothing new; Direct3D 12 was not merged, nothing here needs it), and:
+- Found why the fractional viewport comparison failed: run 14 read the assertion backwards. WebGPU
+  (wgpu on Direct3D 12 natively, Chrome's WebGPU on Direct3D 12 too) leaves row 13 of a viewport
+  ending at y 13.75 undrawn, and this back end drew it. Direct3D always scissors to the viewport,
+  rounding each edge towards negative infinity (D3D11.3 functional specification, 15.6.1 and 15.7),
+  so row 13 is outside. The interface said a front cuts the scissor to the pixels whose centres the
+  viewport covers, which is Vulkan's answer, not Direct3D's: interface change 4a72bce0 says the
+  front cuts it to what its API draws. The comparison now draws as a Direct3D front does and passes
+  on both window-origin routes, natively and in Chrome.
+- The comparisons with the WebGPU back end run in Chrome too: their drawings moved, generic over the
+  back end, into examples/common/against.rs; tests/against_webgpu.rs runs them natively, and
+  browser/against.mjs (against.html, exports of examples/browser.rs) runs them against Chrome's
+  WebGPU, one page per comparison, as part of all.cmd. 9 of 10 routes equal in Chrome, the tenth the
+  known r32float one; the same natively.
+- The browser host lists the two new suite tests of the merge (typed buffers through storage and
+  through a texture); both pass in Chrome and natively.
 
-Earlier runs, briefly: run 13 fixed depth writes and read backs (24-bit words, combined formats,
+Earlier runs, briefly: run 14 refused shaders needing absent features when they are made, built
+copies from cubes, of rgb32 textures, into half floats and within one subresource, and seeded the
+checks; run 13 fixed depth writes and read backs (24-bit words, combined formats,
 rounding; `depth-bias_depth` exactly equal to Direct3D 11); run 12 built the extension routes; run 11
 fixed layer invalidation in Chrome and the base level patch of mozangle; runs 1 to 10 built the back
 end. The git log has each run's commits.
@@ -45,9 +35,10 @@ end. The git log has each run's commits.
 ## The pass bar, item by item (plan section 12, G3)
 
 Where each item is shown; "check" is a function of examples/common/checks.rs (or extensions.rs), run
-by both hosts; "against" is tests/against_webgpu.rs.
-- The shared suite in Chrome's WebGL 2: 37 of 37 with every extension, and with stencil texturing,
-  the format and the raster extensions off. Without EXT_clip_control: the 25 known failures (24
+by both hosts; "against" is a comparison of examples/common/against.rs, run natively by
+tests/against_webgpu.rs and in Chrome by browser/against.mjs.
+- The shared suite in Chrome's WebGL 2: 39 of 39 with every extension, and with stencil texturing,
+  the format and the raster extensions off. Without EXT_clip_control: the 26 known failures (25
   natively) of the suite's own raster blocks.
 - The absent list of 4.11 declared: check `absent_features_are_refused` (every absent feature
   left out of the caps and refused through `Absent`: blocks, samplers, bindings, query sets, and
@@ -69,9 +60,10 @@ by both hosts; "against" is tests/against_webgpu.rs.
   twin of a 16-bit normalised format: against, route against route byte-equal; against WebGPU's
   hardware filter a known failure (G1's helper).
 - A fractional viewport against G2's native one: against
-  `a_fractional_viewport_in_the_program_equals_webgpu_native` draws as a front does without
-  `FRACTIONAL_VIEWPORT` (whole-pixel viewport, adjusted positions, scissor), clipped at the
-  viewport's edges, written in WGSL here; G6's crates/wcontainers-shaders/tests/variant_draw.rs runs
+  `a_fractional_viewport_in_the_program_equals_webgpu_native` draws as a Direct3D front does
+  without `FRACTIONAL_VIEWPORT` (whole-pixel viewport, adjusted positions, Direct3D's implicit
+  scissor), clipped at the viewport's edges, written in WGSL here; equal on both routes natively
+  and in Chrome since run 15; G6's crates/wcontainers-shaders/tests/variant_draw.rs runs
   the real `VIEWPORT_ADJUST` variant on this back end. `FRACTIONAL_VIEWPORT` absent here, check
   `fractional_viewports_are_refused`.
 - A buffer used as indices and vertices, written by host, copy and transform feedback, drawn both
@@ -93,8 +85,7 @@ by both hosts; "against" is tests/against_webgpu.rs.
   `multisampled_copies_resolve_as_their_source`.
 - Both window-origin routes, each equal to G2's (culled triangle, `gl_FragCoord` gradient, mip
   chain, read back): against `both_window_origins_equal_webgpu`, on ANGLE with and without
-  EXT_clip_control. The comparisons with G2 run natively only (Chrome's route of them is in
-  "Next"); in Chrome the suite's culling, scissor and fragment position tests cover the origin.
+  EXT_clip_control, natively and (since run 15) in Chrome against its WebGPU.
 - A fractional `depth_bias` and `ConstantAlpha`: checks `fractional_depth_bias` (the probe finds
   ANGLE rounds the units, so `FRACTIONAL_DEPTH_BIAS` is absent and fronts bias in the program) and
   `constant_alpha_blends`.
@@ -660,7 +651,7 @@ All from the checkout root on the Mac.
 - Everything at once (both scene routes in Chrome and on ANGLE; the suite with the checks in
   Chrome four ways (every extension, without EXT_clip_control, without it and WEBGL_provoking_vertex,
   without WEBGL_stencil_texturing and the BC extensions) and on ANGLE three ways (the third also
-  without the BC extensions); the comparisons with the WebGPU back end),
+  without the BC extensions); the comparisons with the WebGPU back end natively and in Chrome),
   one GPU job after the build; exit 1 on any failure, so today it exits 1 for the known failures. The
   Chrome suite verdicts land in `<out>\suite-chrome*.txt`:
   `tools/graphics-rig/gpu-job --desktop --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "crates\wcontainers-gpu-webgl\browser\all.cmd C:\wc\out\webgl\<name>"`.
@@ -671,8 +662,12 @@ All from the checkout root on the Mac.
   example, in release, into `%CARGO_TARGET_DIR%\webgl-cost-pkg`):
   `tools/graphics-rig/gpu-job --alone --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "node crates\wcontainers-gpu-webgl\browser\cost.mjs %CARGO_TARGET_DIR%\webgl-cost-pkg C:\wc\out\webgl\cost.txt 30 \"10000 50000\""`
   (frames timed per case, then the draw counts). About 15 s.
-- The comparisons with the WebGPU back end alone (build.cmd builds them):
-  `tools/graphics-rig/gpu-job -- "cargo test -j 3 -p wcontainers-gpu-webgl --test against_webgpu -- --test-threads=1"`.
+- The comparisons with the WebGPU back end alone (build.cmd builds them), natively:
+  `tools/graphics-rig/gpu-job -- "cargo test -j 3 -p wcontainers-gpu-webgl --test against_webgpu -- --test-threads=1"`;
+  in Chrome (the output's directory must exist; all.cmd writes `<out>\against-chrome.txt`):
+  `tools/graphics-rig/gpu-job --desktop -- "node crates\wcontainers-gpu-webgl\browser\against.mjs %CARGO_TARGET_DIR%\webgl-pkg <out-file>"`.
+  A comparison of examples/common/against.rs names its routes and its WebGPU device; both hosts
+  take the list from there (natively a test per name, checked by `every_comparison_is_a_test`).
 - The suite in Chrome alone (after build.cmd and a `--list` into a file, as all.cmd does):
   `node crates\wcontainers-gpu-webgl\browser\suite.mjs "%CARGO_TARGET_DIR%\webgl-pkg" <out-file> <list-file> [<extensions off>]`.
 - Once per desktop, and again whenever angle/ changes (done in run 5, 4 m 30 s of compiling; done
@@ -1136,15 +1131,43 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
     10,000-draw ones are less than half run 11's (WebGL 4.9 and 9.0, WebGPU 2.9 and 3.8 there).
     The one change to the page is Chrome's WebGPU developer features flag; not found why.
 
+## Measurements, run 15
+
+- 2026-11-17, G3 run 15, same desktop (RTX 3080, driver 32.0.16.2101; desktop clock times; queued
+  jobs, not timed). 39 suite tests and 44 checks (83), 6 comparisons with the WebGPU back end (10
+  routes).
+  - Start of the run, after the merges (job 21:27 to 21:29), before any change: Chrome 80 passed, 1
+    not run, 2 failed (the two new suite tests the browser host did not list); ANGLE 83 of 83; against
+    WebGPU natively 4 of 6 (r32float against the hardware filter; the fractional viewport).
+  - Final tree (job 21:41:35 to 21:43:58), lint clean on both targets in its build, the 6 unit tests
+    of src pass, every check with seed 0 and one case: Chrome 157.0.8103.78 82 passed and 1 not run
+    (`clip_and_cull_distances`) of 83 with every extension; 76 passed and 7 not run without
+    WEBGL_stencil_texturing, the format and the raster extensions; 56 passed, 1 not run and the 26
+    known failures without EXT_clip_control, and the same without it and WEBGL_provoking_vertex.
+    ANGLE (mozangle 0.7.1 with both patches) 83 of 83 with every extension, 58 of 83 on both reduced
+    routes (the 25 known: run 14's 24 and the new
+    `typed_buffers_through_a_texture_lie_2048_elements_to_a_row`, refused by the suite's raster
+    block). Against WebGPU: natively 5 of 6 tests (and `every_comparison_is_a_test`), in Chrome 9 of
+    10 routes, WebGPU's adapter "NVIDIA GeForce RTX 3080 (discrete GPU, D3D12)"; on both the one
+    failure is r32float against the hardware filter. All 74 scene and rig verdicts as expected, 10
+    rig pictures skipped where their features are absent.
+- Per-draw cost, both back ends in Chrome 157 on the RTX 3080 (job --alone 21:44:04 to 21:44:27; the
+  desktop's CPU load read 16% at 21:44:29, after the job), median of 30 frames, the frame's CPU time
+  (performance.now, 0.1 ms steps):
+  - WebGL 2: 10,000 draws 1.6 ms with one set, 3.9 ms with a set per draw; 50,000 draws 5.8 ms and
+    16.6 ms (0.16, 0.39, 0.12 and 0.33 us a draw).
+  - WebGPU: 10,000 draws 1.6 ms and 3.8 ms; 50,000 draws 7.6 ms and 18.2 ms (0.16, 0.38, 0.15 and
+    0.36 us a draw).
+  - Within 0.3 ms of run 14's on every case except WebGPU's 50,000 draws with a set per draw
+    (17.7 ms there).
+
 ## Known failures
 
-- (run 14) `a_fractional_viewport_in_the_program_equals_webgpu_native` (against, ANGLE): drawn as a
-  front without `FRACTIONAL_VIEWPORT` draws it, with a triangle clipped at the viewport's edges, 5
-  pixels of row 13 (x 2 to 6, the last row whose centres the viewport at y 1.25, height 12.5 covers)
-  are left undrawn, where WebGPU's native viewport draws them; every other pixel is equal. The
-  scissor (rows 1 to 13) and the whole-pixel viewport (rows 1 to 13) both hold the row, so it is not
-  found why. Before run 14 the comparison's triangle stayed inside the viewport and it passed.
-  G6's variant_draw.rs, with the real variant and an edge clipped, passes on this back end.
+- Fixed in run 15: `a_fractional_viewport_in_the_program_equals_webgpu_native` (run 14). Run 14
+  read its assertion backwards: WebGPU, not this back end, left row 13 undrawn, as Direct3D's
+  implicit scissor does (see "Where things stand").
+- (run 15) Since the merge of run 15 also `typed_buffers_through_a_texture_lie_2048_elements_to_a_row`
+  on those routes, for the same reason: 25 natively, 26 in Chrome.
 - (run 14) Suite without EXT_clip_control or WEBGL_provoking_vertex: 24 tests natively (the earlier
   20 and `captures_write_location_outputs_packed_in_draw_order`,
   `constants_read_through_a_texture_lie_256_rows_to_a_texture_row`,
@@ -1223,8 +1246,9 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   NaN payloads canonical.
 - (run 14) A fragment program that only reads storage is refused as `Absent(FRAGMENT_STORAGE_WRITE)`,
   as binding sets refuse storage: the interface has no bit for fragment storage reads.
-- (run 14) The comparisons with the WebGPU back end (tests/against_webgpu.rs) run natively only, on
-  patched mozangle, not in Chrome; see "Next".
+- (run 15) The fractional viewport comparison cuts the scissor as Direct3D's implicit one (each edge
+  rounded down), by interface change 4a72bce0, where the plan said the pixels whose centres the
+  viewport covers.
 
 - The suite crate `wcontainers-gpu-test` (G1's) takes proptest without its default features
   (cdcfbc4, a one-line Cargo.toml change): their process forking and timeouts do not build for
@@ -1348,6 +1372,15 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Interface changes
 
+- 4a72bce0 (run 15) "interface: cut the scissor of a fractional viewport drawn in the program to the
+  pixels its api draws, as direct3d rounds each edge down": the doc comment of
+  `Features::FRACTIONAL_VIEWPORT` and plan 4.12's "Fractional viewports". Direct3D scissors to the
+  viewport with each edge rounded towards negative infinity (D3D11.3 functional specification,
+  15.6.1 and 15.7), so a Direct3D front cuts its scissor that way; Vulkan clips to the viewport only,
+  so its front keeps the pixel-centre rule. Shown by the fractional viewport comparison: wgpu's and
+  Chrome's WebGPU on the RTX 3080's Direct3D 12 leave the last row of a viewport ending at y 13.75
+  undrawn. No code changes; fronts that cut the scissor read the text.
+
 - d37c5d9 "interface: said which vertex outputs capture_vertices writes to which target and how
   they are packed": the vertex stage's location outputs in location order as packed 32-bit
   components, no built-ins. With one target they are interleaved; with more, output n goes to
@@ -1431,19 +1464,17 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Next
 
-What is left of G3's pass bar cannot be done in this crate, or is not found yet:
+What is left of G3's pass bar cannot be done in this crate:
 - G1's suite should take clip depth and provoking vertex from the caps. Until it does, the routes
-  without the extensions fail 25 suite tests in Chrome, 24 natively.
-- The r32float comparison against WebGPU's hardware filter stays one float step off (G1's helper).
+  without the extensions fail 26 suite tests in Chrome, 25 natively.
+- The r32float comparison against WebGPU's hardware filter stays one float step off (G1's helper),
+  natively and in Chrome.
 - `TIMESTAMPS` cannot run on the RTX 3080, which gives zero timestamp bits.
-- The fractional viewport comparison's row 13 (see "Known failures").
 
 After that, in about this order:
-1. A Chrome host for tests/against_webgpu.rs: move its scenes into examples/common (they are
-   generic over the back end) and run them from a page with both back ends, as draw-cost does.
-2. Draws and captures whose base vertex reaches below vertex 0.
-3. Copies from one- and two-channel signed normalised formats, through a buffer as plan 4.12 has
+1. Draws and captures whose base vertex reaches below vertex 0.
+2. Copies from one- and two-channel signed normalised formats, through a buffer as plan 4.12 has
    them.
-4. `CLIP_DISTANCE` and `CULL_DISTANCE` in Chrome (see "Known failures").
-5. `SAMPLE_SHADING` with OES_sample_variables and OES_shader_multisample_interpolation, where
+3. `CLIP_DISTANCE` and `CULL_DISTANCE` in Chrome (see "Known failures").
+4. `SAMPLE_SHADING` with OES_sample_variables and OES_shader_multisample_interpolation, where
    Chrome has them (absent today, and refused when a shader is made since run 14).
