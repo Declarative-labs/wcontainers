@@ -1454,6 +1454,8 @@ whose hazard slot other tracks' long runs held for most of the run), logs in scr
   written files equal the native ones except the known gap (`116_cs_group_index_code` WGSL,
   `d599fbc7efa911be` WGSL and GLSL, and the two `cache.txt` holding them).
 - Not rerun this run: Chrome's compile of the written files.
+- At the end of run 29 the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (7.3 GB)
+  and the desktop's `C:\wc\target\phase-2-graphics-shaders` were deleted.
 
 Run 28, 2026-11-18, counts only (laptop load about 1 to 5; desktop shared through the queue), logs in
 scratch `graphics-shaders/run28`:
