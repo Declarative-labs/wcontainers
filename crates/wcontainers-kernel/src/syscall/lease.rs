@@ -70,6 +70,25 @@ fn time_out(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) {
     }
 }
 
+/// Whether some open file has `node` open for writing (`i_writecount` above 0).
+pub(crate) fn open_for_writing(kernel: &Kernel, node: &Node) -> bool {
+    kernel.threads.values().any(|thread| {
+        thread.files.borrow().iter().any(|(_, descriptor)| {
+            let file = descriptor.file.borrow();
+            Rc::ptr_eq(&file.node, node) && !file.is_path() && file.writable()
+        })
+    })
+}
+
+/// Whether a live process runs `node` as its program (`exe_file_deny_write_access`, so
+/// `i_writecount` is below 0).
+pub(crate) fn running(kernel: &Kernel, node: &Node) -> bool {
+    kernel
+        .processes
+        .values()
+        .any(|process| process.ended.is_none() && Rc::ptr_eq(&process.executable.0, node))
+}
+
 /// The open files of `node` for reading only and for writing (`i_readcount`, `i_writecount`),
 /// an opener waiting to write counting as one.
 fn open_counts(kernel: &Kernel, node: &Node) -> (usize, usize) {

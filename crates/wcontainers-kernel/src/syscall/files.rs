@@ -626,6 +626,14 @@ pub(super) fn open(
                 return Err(Errno::EACCES);
             }
         }
+        // A program a process runs is not opened for writing or truncated (`get_write_access`).
+        if !created
+            && file_type == S_IFREG
+            && (accmode != O_RDONLY || flags & O_TRUNC != 0)
+            && super::lease::running(kernel, &node)
+        {
+            return Err(Errno::ETXTBSY);
+        }
         // `do_dentry_open` breaks leases before the file system's open.
         if !created && file_type == S_IFREG {
             super::lease::break_leases(kernel, cx, tid, &node, flags)?;
@@ -2607,6 +2615,9 @@ pub(super) fn truncate(
     crate::fs::permission(&node.borrow(), credentials(kernel, tid), W_OK, caller)?;
     if node.borrow().fs.read_only() {
         return Err(Errno::EROFS);
+    }
+    if super::lease::running(kernel, &node) {
+        return Err(Errno::ETXTBSY);
     }
     truncate_node(kernel, cx, tid, &node, length)
 }

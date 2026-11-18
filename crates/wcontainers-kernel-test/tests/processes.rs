@@ -38,3 +38,10 @@ fn robust_lists_match_reference() {
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     wcontainers_kernel_test::assert_same_output(&out, "robustlist", &[]);
 }
+
+/// ETXTBSY: a running program is not written, and a file being written is not run.
+#[test]
+fn busy_programs_match_reference() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    wcontainers_kernel_test::assert_same_output(&out, "textbusy", &[]);
+}

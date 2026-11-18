@@ -202,6 +202,12 @@ pub(crate) fn program_of(
     if !inode.permits(credentials, X_OK, true) {
         return Err(Errno::EACCES);
     }
+    drop(inode);
+    // A file open for writing is not run (`deny_write_access`).
+    if crate::syscall::lease::open_for_writing(kernel, &node) {
+        return Err(Errno::ETXTBSY);
+    }
+    let inode = node.borrow();
     let readable = inode.permits(credentials, R_OK, true);
     let size = match &inode.content {
         Content::Backend(remote) => Some(remote.size.get()),
