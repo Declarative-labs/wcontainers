@@ -211,10 +211,6 @@ fn fetch(
     };
     let mut b = Block::new();
     let (f_, b_) = (&mut f, &mut b);
-    let u = |f: &mut Function, v: u32| {
-        f.expressions
-            .append(Expression::Literal(Literal::U32(v)), Span::UNDEFINED)
-    };
     let vertex = push(f_, b_, Expression::FunctionArgument(0));
     let instance = push(f_, b_, Expression::FunctionArgument(1));
     let s = load_helper(f_, b_, stream);
@@ -364,7 +360,8 @@ fn fetch(
     Ok(f)
 }
 
-/// One component's value from its `bits` raw bits, as Direct3D converts them.
+/// One component's value from its `bits` raw bits, as Direct3D converts them: normalised values
+/// correctly rounded, half floats with their NaN payloads.
 fn decode(
     f: &mut Function,
     body: &mut Block,
@@ -372,30 +369,11 @@ fn decode(
     raw: Handle<Expression>,
     bits: u32,
 ) -> Handle<Expression> {
-    let lit = |f: &mut Function, l: Literal| {
-        f.expressions
-            .append(Expression::Literal(l), Span::UNDEFINED)
-    };
-    let cast = |f: &mut Function,
-                body: &mut Block,
-                expr: Handle<Expression>,
-                kind: ScalarKind,
-                convert: Option<u8>| {
-        push(
-            f,
-            body,
-            Expression::As {
-                expr,
-                kind,
-                convert,
-            },
-        )
-    };
     let signed = |f: &mut Function, body: &mut Block| {
         if bits == 32 {
             return cast(f, body, raw, ScalarKind::Sint, None);
         }
-        let by = lit(f, Literal::U32(32 - bits));
+        let by = u(f, 32 - bits);
         let up = binary(f, body, ShiftLeft, raw, by);
         let up = cast(f, body, up, ScalarKind::Sint, None);
         binary(f, body, ShiftRight, up, by)
@@ -403,41 +381,159 @@ fn decode(
     match kind {
         Kind::Uint => raw,
         Kind::Sint => signed(f, body),
-        Kind::Unorm => {
-            let v = cast(f, body, raw, ScalarKind::Float, Some(4));
-            let max = lit(f, Literal::F32(((1u64 << bits) - 1) as f32));
-            binary(f, body, Divide, v, max)
-        }
+        Kind::Unorm => unorm(f, body, raw, bits),
         Kind::Snorm => {
+            // |s| / (2^(bits-1) - 1), the most negative code clamped to -1 by `unorm`'s ceiling.
             let s = signed(f, body);
-            let v = cast(f, body, s, ScalarKind::Float, Some(4));
-            let max = lit(f, Literal::F32(((1u64 << (bits - 1)) - 1) as f32));
-            let q = binary(f, body, Divide, v, max);
-            let low = lit(f, Literal::F32(-1.0));
-            math(f, body, MathFunction::Max, [q, low])
+            let magnitude = math(f, body, MathFunction::Abs, [s, s]);
+            let magnitude = cast(f, body, magnitude, ScalarKind::Uint, None);
+            let v = unorm(f, body, magnitude, bits - 1);
+            let negated = push(
+                f,
+                body,
+                Expression::Unary {
+                    op: naga::UnaryOperator::Negate,
+                    expr: v,
+                },
+            );
+            let zero = f
+                .expressions
+                .append(Expression::Literal(Literal::I32(0)), Span::UNDEFINED);
+            let negative = binary(f, body, naga::BinaryOperator::Less, s, zero);
+            select(f, body, negative, negated, v)
         }
         Kind::Float if bits == 32 => cast(f, body, raw, ScalarKind::Float, None),
-        Kind::Float if bits == 16 => {
-            let pair = math(f, body, MathFunction::Unpack2x16float, [raw, raw]);
-            index(f, body, pair, 0)
+        Kind::Float => {
+            let float = small_float(f, body, raw, bits);
+            cast(f, body, float, ScalarKind::Float, None)
         }
-        Kind::Float => small_float(f, body, raw, bits - 5),
     }
 }
 
-/// An unsigned float of five exponent bits and `m` mantissa bits (the 11- and 10-bit floats).
+fn u(f: &mut Function, v: u32) -> Handle<Expression> {
+    f.expressions
+        .append(Expression::Literal(Literal::U32(v)), Span::UNDEFINED)
+}
+
+fn cast(
+    f: &mut Function,
+    body: &mut Block,
+    expr: Handle<Expression>,
+    kind: ScalarKind,
+    convert: Option<u8>,
+) -> Handle<Expression> {
+    push(
+        f,
+        body,
+        Expression::As {
+            expr,
+            kind,
+            convert,
+        },
+    )
+}
+
+fn select(
+    f: &mut Function,
+    body: &mut Block,
+    condition: Handle<Expression>,
+    accept: Handle<Expression>,
+    reject: Handle<Expression>,
+) -> Handle<Expression> {
+    push(
+        f,
+        body,
+        Expression::Select {
+            condition,
+            accept,
+            reject,
+        },
+    )
+}
+
+/// `c / (2^bits - 1)` correctly rounded to f32, codes past the largest giving one. Its binary
+/// expansion is `c`'s bits repeated without end, so the mantissa is that pattern from its leading
+/// one, and the rounding goes up exactly when the bit after the mantissa is set (the bits past it are
+/// never all zero, so there is no tie).
+fn unorm(
+    f: &mut Function,
+    body: &mut Block,
+    c: Handle<Expression>,
+    bits: u32,
+) -> Handle<Expression> {
+    let max = (1u32 << bits) - 1;
+    // Leading zeros within the code's bits.
+    let clz = math(f, body, MathFunction::CountLeadingZeros, [c, c]);
+    let above = u(f, 32 - bits);
+    let lz = binary(f, body, Subtract, clz, above);
+    // The pattern from the leading one: the code rotated left by `lz` within its bits.
+    let up = binary(f, body, ShiftLeft, c, lz);
+    let width = u(f, bits);
+    let rest = binary(f, body, Subtract, width, lz);
+    let down = binary(f, body, ShiftRight, c, rest);
+    let rotated = binary(f, body, naga::BinaryOperator::InclusiveOr, up, down);
+    let mask = u(f, max);
+    let rotated = binary(f, body, And, rotated, mask);
+    // Repeated from bit 31 down.
+    let mut window = None;
+    let mut top = 32i32 - bits as i32;
+    while top > -(bits as i32) {
+        let part = if top >= 0 {
+            let by = u(f, top as u32);
+            binary(f, body, ShiftLeft, rotated, by)
+        } else {
+            let by = u(f, (-top) as u32);
+            binary(f, body, ShiftRight, rotated, by)
+        };
+        window = Some(match window {
+            None => part,
+            Some(w) => binary(f, body, naga::BinaryOperator::InclusiveOr, w, part),
+        });
+        top -= bits as i32;
+    }
+    let window = window.unwrap();
+    let exponent_top = u(f, 126);
+    let exponent = binary(f, body, Subtract, exponent_top, lz);
+    let at = u(f, 23);
+    let exponent = binary(f, body, ShiftLeft, exponent, at);
+    let eight = u(f, 8);
+    let mantissa = binary(f, body, ShiftRight, window, eight);
+    let fraction_mask = u(f, 0x7f_ffff);
+    let mantissa = binary(f, body, And, mantissa, fraction_mask);
+    let seven = u(f, 7);
+    let round = binary(f, body, ShiftRight, window, seven);
+    let one = u(f, 1);
+    let round = binary(f, body, And, round, one);
+    let value = binary(f, body, Add, exponent, mantissa);
+    let value = binary(f, body, Add, value, round);
+    let value = cast(f, body, value, ScalarKind::Float, None);
+    let zero_code = u(f, 0);
+    let is_zero = binary(f, body, Equal, c, zero_code);
+    let zero = f
+        .expressions
+        .append(Expression::Literal(Literal::F32(0.0)), Span::UNDEFINED);
+    let value = select(f, body, is_zero, zero, value);
+    let is_full = binary(f, body, GreaterEqual, c, mask);
+    let full = f
+        .expressions
+        .append(Expression::Literal(Literal::F32(1.0)), Span::UNDEFINED);
+    select(f, body, is_full, full, value)
+}
+
+/// The f32 bits of a float of five exponent bits and `bits - 5` mantissa bits (11- and 10-bit floats,
+/// unsigned), or of a half float (`bits` 16, signed), infinities and NaN payloads kept.
 fn small_float(
     f: &mut Function,
     body: &mut Block,
     raw: Handle<Expression>,
-    m: u32,
+    bits: u32,
 ) -> Handle<Expression> {
-    let u = |f: &mut Function, v: u32| {
-        f.expressions
-            .append(Expression::Literal(Literal::U32(v)), Span::UNDEFINED)
-    };
+    use naga::BinaryOperator::InclusiveOr;
+    let m = if bits == 16 { 10 } else { bits - 5 };
     let by = u(f, m);
     let exponent = binary(f, body, ShiftRight, raw, by);
+    let five = u(f, 0x1f);
+    let exponent = binary(f, body, And, exponent, five);
     let mask = u(f, (1 << m) - 1);
     let mantissa = binary(f, body, And, raw, mask);
     let to_f32 = u(f, 23 - m);
@@ -447,63 +543,32 @@ fn small_float(
     let e = binary(f, body, Add, exponent, rebias);
     let twenty_three = u(f, 23);
     let e = binary(f, body, ShiftLeft, e, twenty_three);
-    let normal = binary(f, body, naga::BinaryOperator::InclusiveOr, e, fraction);
-    let normal = push(
-        f,
-        body,
-        Expression::As {
-            expr: normal,
-            kind: ScalarKind::Float,
-            convert: None,
-        },
-    );
+    let normal = binary(f, body, InclusiveOr, e, fraction);
     // Infinity or NaN.
     let all = u(f, 0x7f80_0000);
-    let special = binary(f, body, naga::BinaryOperator::InclusiveOr, all, fraction);
-    let special = push(
-        f,
-        body,
-        Expression::As {
-            expr: special,
-            kind: ScalarKind::Float,
-            convert: None,
-        },
-    );
-    // Denormal: the mantissa times 2^-(14 + m).
-    let as_float = push(
-        f,
-        body,
-        Expression::As {
-            expr: mantissa,
-            kind: ScalarKind::Float,
-            convert: Some(4),
-        },
-    );
+    let special = binary(f, body, InclusiveOr, all, fraction);
+    // Denormal: the mantissa times 2^-(14 + m), exact in f32.
+    let as_float = cast(f, body, mantissa, ScalarKind::Float, Some(4));
     let scale = f.expressions.append(
         Expression::Literal(Literal::F32(1.0 / (1u64 << (14 + m)) as f32)),
         Span::UNDEFINED,
     );
     let denormal = binary(f, body, Multiply, as_float, scale);
+    let denormal = cast(f, body, denormal, ScalarKind::Uint, None);
     let top = u(f, 31);
     let is_special = binary(f, body, Equal, exponent, top);
     let zero = u(f, 0);
     let is_denormal = binary(f, body, Equal, exponent, zero);
-    let big = push(
-        f,
-        body,
-        Expression::Select {
-            condition: is_special,
-            accept: special,
-            reject: normal,
-        },
-    );
-    push(
-        f,
-        body,
-        Expression::Select {
-            condition: is_denormal,
-            accept: denormal,
-            reject: big,
-        },
-    )
+    let big = select(f, body, is_special, special, normal);
+    let value = select(f, body, is_denormal, denormal, big);
+    if bits != 16 {
+        return value;
+    }
+    let fifteen = u(f, 15);
+    let sign = binary(f, body, ShiftRight, raw, fifteen);
+    let one = u(f, 1);
+    let sign = binary(f, body, And, sign, one);
+    let thirty_one = u(f, 31);
+    let sign = binary(f, body, ShiftLeft, sign, thirty_one);
+    binary(f, body, InclusiveOr, value, sign)
 }

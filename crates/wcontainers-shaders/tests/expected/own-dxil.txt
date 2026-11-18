@@ -12,6 +12,7 @@ ps_mirror.dxil	ok
 ps_negate.dxil	ok
 ps_offset.dxil	ok
 ps_pack.dxil	unsupported PackedStageValues
+ps_pull.dxil	ok
 ps_rows.dxil	ok
 ps_samples.dxil	unsupported SampleCount
 ps_signed.dxil	ok
@@ -24,4 +25,5 @@ vs_clip.dxil	ok-wgsl glsl-compile
 vs_deep.dxil	ok
 vs_ids.dxil	ok
 vs_pack.dxil	unsupported PackedStageValues
+vs_pull.dxil	ok
 vs_transform.dxil	ok
