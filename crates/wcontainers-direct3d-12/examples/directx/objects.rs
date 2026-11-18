@@ -634,21 +634,18 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
-        if d.StreamOutput.NumEntries != 0
-            || !d.GS.pShaderBytecode.is_null()
-            || !d.HS.pShaderBytecode.is_null()
-            || !d.DS.pShaderBytecode.is_null()
-        {
-            return Err(hr(Error::NotImplemented(
-                "geometry, hull and domain stages and stream output",
-            )));
+        if d.StreamOutput.NumEntries != 0 {
+            return Err(hr(Error::NotImplemented("stream output")));
+        }
+        if !d.HS.pShaderBytecode.is_null() || !d.DS.pShaderBytecode.is_null() {
+            return Err(hr(Error::NotImplemented("hull and domain stages")));
         }
         let root = d.pRootSignature.as_ref().map(|r| {
             // SAFETY: root signatures come from this library.
             unsafe { r.as_impl() }.0
         });
         // SAFETY: the API requires valid bytecode and input layout pointers.
-        let (vs, ps) = unsafe { (code(&d.VS), code(&d.PS)) };
+        let (vs, gs, ps) = unsafe { (code(&d.VS), code(&d.GS), code(&d.PS)) };
         let elements = if d.InputLayout.NumElements == 0 {
             &[][..]
         } else {
@@ -737,6 +734,7 @@ impl Device {
             dev.create_graphics_pipeline(&GraphicsPipelineDesc {
                 root,
                 vs: &vs,
+                gs: &gs,
                 ps: &ps,
                 blend,
                 sample_mask,

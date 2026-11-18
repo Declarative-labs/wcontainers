@@ -9,6 +9,7 @@ use wcontainers_gpu::{
 };
 
 use wcontainers_directx_graphics_infrastructure::dxgi_vertex_format;
+use wcontainers_shaders::stage::InputTopology;
 
 use crate::Error;
 
@@ -402,6 +403,28 @@ pub fn topology(value: u32) -> Result<Topology, Error> {
         4 => Topology::TriangleList,
         5 => Topology::TriangleStrip,
         10..=13 => return Err(Error::NotImplemented("adjacency topologies")),
+        33..=64 => return Err(Error::NotImplemented("patch lists")),
+        _ => return Err(Error::Invalid("unknown primitive topology")),
+    })
+}
+
+/// `D3D_PRIMITIVE_TOPOLOGY` values with adjacency.
+pub fn adjacency(value: u32) -> bool {
+    (10..=13).contains(&value)
+}
+
+/// `D3D_PRIMITIVE_TOPOLOGY` as a geometry stage takes it.
+pub fn input_topology(value: u32) -> Result<InputTopology, Error> {
+    Ok(match value {
+        1 => InputTopology::PointList,
+        2 => InputTopology::LineList,
+        3 => InputTopology::LineStrip,
+        4 => InputTopology::TriangleList,
+        5 => InputTopology::TriangleStrip,
+        10 => InputTopology::LineListAdjacency,
+        11 => InputTopology::LineStripAdjacency,
+        12 => InputTopology::TriangleListAdjacency,
+        13 => InputTopology::TriangleStripAdjacency,
         33..=64 => return Err(Error::NotImplemented("patch lists")),
         _ => return Err(Error::Invalid("unknown primitive topology")),
     })
