@@ -276,9 +276,11 @@ pub enum BindingResource<'a, B: Backend> {
     UniformBuffer(BufferRange<&'a B::Buffer>),
     /// The offset is a multiple of [`crate::Limits::min_storage_offset_alignment`] and the size at most
     /// [`crate::Limits::max_storage_buffer_size`], and at least the size of the program's block, a
-    /// runtime-sized array counted as one element. A front whose API
-    /// binds at any offset binds from the aligned offset below it and writes the rest into the program's
-    /// helper constants ([`crate::HelperValue::StorageOffset`]), which the program adds to its addresses.
+    /// runtime-sized array counted as one element. A front whose API binds at any offset binds from
+    /// the largest offset below it that is a multiple of both the alignment and the program's element
+    /// stride ([`crate::ReflectedBinding::stride`]), and writes the rest into the program's helper
+    /// constants ([`crate::HelperValue::StorageOffset`]), which a program made with
+    /// [`crate::VariantFlags::STORAGE_OFFSET`] adds to its addresses.
     StorageBuffer {
         range: BufferRange<&'a B::Buffer>,
         writable: bool,

@@ -558,9 +558,11 @@ from what they are given (6.5).
   the shader can be split, and otherwise the shader fails to build (4.12).
 - Storage buffer bindings at any offset (Direct3D's raw and structured views from any first element):
   where the offset is not a multiple of `min_storage_offset_alignment` (256 on WebGPU), the front binds
-  from the aligned offset below and writes the rest into the helper constants
-  (`HelperValue::StorageOffset`), which every converted program adds to its storage addresses (one add
-  per access; there is no second program).
+  from the largest offset below that is a multiple of both the alignment and the program's element
+  stride (`ReflectedBinding::stride`) and writes the rest into the helper constants
+  (`HelperValue::StorageOffset`), which a program made with `VariantFlags::STORAGE_OFFSET` adds to its
+  storage addresses (one add per access). A front that cannot know ahead of the draw (Direct3D 12's
+  pipelines) asks for the flag on every program with storage buffers, so there is no second program.
 - Direct3D 12 descriptor tables live in heaps the program writes with the CPU at any time, and root
   signature 1.0 (and `DESCRIPTORS_VOLATILE` ranges in 1.1) let it change descriptors after recording a
   command list, up to that list's execution. Without `RESOURCE_TABLES` the Direct3D 12 front therefore
