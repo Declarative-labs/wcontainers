@@ -25,10 +25,12 @@ use naga::{
 use wcontainers_gpu::{Interpolation, Reflection, ScalarKind as ValueKind, SystemValue};
 
 mod helper;
+mod tessellate;
 pub use helper::{
     FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages, StreamOutput,
     StreamOutputEntry, StreamTargets,
 };
+pub use tessellate::{Tessellation, Tessellator};
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
@@ -171,6 +173,59 @@ pub fn stream_program() -> Result<wcontainers_gpu::ShaderModule> {
         stage: wcontainers_gpu::ShaderStage::Compute,
         key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
+}
+
+/// The tessellator program (`tessellator.wgsl`), which [`Stages`] runs after the hull stage.
+pub fn tessellator_program() -> Result<wcontainers_gpu::ShaderModule> {
+    let text = include_str!("stage/tessellator.wgsl");
+    let module = naga::front::wgsl::parse_str(text)
+        .map_err(|e| ConvertError::Malformed(format!("the tessellator program: {e}")))?;
+    Ok(wcontainers_gpu::ShaderModule {
+        info: crate::validate(&module)?,
+        module,
+        entry_point: "main".into(),
+        stage: wcontainers_gpu::ShaderStage::Compute,
+        key: *blake3::hash(text.as_bytes()).as_bytes(),
+    })
+}
+
+/// The hull stage's output, which the tessellator and the domain program read: a header of
+/// [`tess::HEADER_WORDS`] words the hull program writes, then one record per patch of the draw (all API
+/// instances together). A record holds each output control point's slots (four words per location the
+/// hull shader writes), then the patch constants' slots, then the tessellation factors (outer 0 to 3,
+/// inner 0 and 1, as f32).
+pub mod tess {
+    /// Words per patch record.
+    pub const PATCH_WORDS: u32 = 0;
+    /// Words per control point.
+    pub const POINT_WORDS: u32 = 1;
+    /// The word of a record where the patch constants' slots start.
+    pub const CONSTANT_BASE: u32 = 2;
+    /// The word of a record where the factors start.
+    pub const FACTOR_BASE: u32 = 3;
+    /// From this word, the slot of each control point location (32), then of each patch constant
+    /// location (32); [`NO_SLOT`] where the hull shader writes none.
+    pub const SLOTS: u32 = 4;
+    pub const NO_SLOT: u32 = u32::MAX;
+    pub const HEADER_WORDS: u32 = 72;
+    /// Locations a stage passes per control point and per patch, as Direct3D 11 has them.
+    pub const LOCATIONS: u32 = 32;
+    /// Words of the tessellator's counts buffer before its two words per patch: the indexed indirect
+    /// draw's arguments, then the draw's point total.
+    pub const COUNTS_BASE: u32 = 8;
+
+    /// The most points and indices one patch can make with factors up to `max_factor`, for sizing
+    /// the tessellator's output: at most `n` points along any edge, where `n` is the factor rounded up
+    /// to the next odd or even number of segments plus one.
+    pub fn patch_bounds(max_factor: f32) -> (u32, u32) {
+        let f = if max_factor.is_nan() {
+            64.0
+        } else {
+            max_factor.clamp(1.0, 64.0)
+        };
+        let n = (f.ceil() as u32 + 3).min(66);
+        (n * n, 6 * n * n)
+    }
 }
 
 /// A converted vertex program as a compute program writing vertex records with a slot for each of
