@@ -1,7 +1,8 @@
 # Sets up the GPU job queue on the desktop, once: pueue's daemon as a scheduled task that starts with
 # Windows and runs as this user without a window, a default group of short jobs that run at most
-# $Parallel at a time, and a group 'alone' for timings that run one at a time with the GPU to
-# themselves. Running it again changes nothing that is already in place.
+# $Parallel at a time, a group 'hazard' for jobs of the kinds that may reset the display driver,
+# which run one at a time (beside the short ones), and a group 'alone' for timings that run one at a
+# time with the GPU to themselves. Running it again changes nothing that is already in place.
 param([int]$Parallel = 4)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -47,11 +48,13 @@ while ($true) {
 # A daemon that starts with jobs left from before pauses its groups; nobody waits for those jobs now.
 if ($started) {
     & $pueue -c $config clean | Out-Null
-    & $pueue -c $config start --all | Out-Null
+    if (-not (Test-Path C:\wc\logs\held.txt)) { & $pueue -c $config start --all | Out-Null }
 }
 $groups = (& $pueue -c $config status --json | ConvertFrom-Json).groups
-if (-not $groups.alone) { & $pueue -c $config group add alone --parallel 1 | Out-Null }
+foreach ($group in 'alone', 'hazard') {
+    if (-not $groups.$group) { & $pueue -c $config group add $group --parallel 1 | Out-Null }
+    & $pueue -c $config parallel 1 --group $group | Out-Null
+}
 & $pueue -c $config parallel $Parallel --group default | Out-Null
-& $pueue -c $config parallel 1 --group alone | Out-Null
 $groups = (& $pueue -c $config status --json | ConvertFrom-Json).groups
 $groups.PSObject.Properties | ForEach-Object { "group $($_.Name): at most $($_.Value.parallel_tasks) at once, $($_.Value.status)" }

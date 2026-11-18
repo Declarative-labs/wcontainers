@@ -1,8 +1,8 @@
-//! A stand-in d3d11.dll that writes the name of each call it receives to standard error and passes
-//! the call, untouched, to the system's d3d11.dll. A program that loads it from its own directory
-//! shows that a replacement placed beside a program is the one it uses. With WC_OUT set it also
-//! takes a census of the program's Direct3D calls and saves chosen frames (census.rs), on a clock
-//! that moves by frames (clock.rs).
+//! A stand-in for d3d11.dll and d3d12.dll (copied under either name) that writes the name of each
+//! call it receives to standard error and passes the call, untouched, to the system's library of
+//! that export. A program that loads it from its own directory shows that a replacement placed
+//! beside a program is the one it uses. With WC_OUT set it also takes a census of the program's
+//! Direct3D calls and saves chosen frames (census.rs), on a clock that moves by frames (clock.rs).
 
 #![cfg(windows)]
 
@@ -27,17 +27,19 @@ const _: () = assert!(EXPORTS.len() <= RESOLVED.len());
 /// Calls of each export.
 static CALLS: [AtomicU64; 512] = [const { AtomicU64::new(0) }; 512];
 
+/// An export's name as the census and the log write it: "<library>.dll <name>", or its ordinal.
+fn export_label(index: usize) -> String {
+    let (library, name, ordinal) = EXPORTS[index];
+    match name {
+        Some(name) => format!("{}.dll {}", LIBRARIES[library], name.to_string_lossy()),
+        None => format!("{}.dll @{ordinal}", LIBRARIES[library]),
+    }
+}
+
 /// The exports called, with how often.
 fn export_counts() -> Vec<(String, u64)> {
-    EXPORTS
-        .iter()
-        .zip(&CALLS)
-        .map(|(name, calls)| {
-            (
-                name.to_string_lossy().into_owned(),
-                calls.load(Ordering::Relaxed),
-            )
-        })
+    (0..EXPORTS.len())
+        .map(|i| (export_label(i), CALLS[i].load(Ordering::Relaxed)))
         .filter(|(_, calls)| *calls > 0)
         .collect()
 }
@@ -45,9 +47,32 @@ fn export_counts() -> Vec<(String, u64)> {
 fn export(name: &str) -> usize {
     let index = EXPORTS
         .iter()
-        .position(|e| e.to_bytes() == name.as_bytes())
+        .position(|e| e.1.is_some_and(|n| n.to_bytes() == name.as_bytes()))
         .unwrap();
     resolve(index as u32)
+}
+
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+unsafe extern "system" fn wc_typed_D3D12CreateDevice(
+    adapter: *mut c_void,
+    level: i32,
+    riid: *const windows::core::GUID,
+    device: *mut *mut c_void,
+) -> i32 {
+    type Real = unsafe extern "system" fn(
+        *mut c_void,
+        i32,
+        *const windows::core::GUID,
+        *mut *mut c_void,
+    ) -> i32;
+    let real: Real = unsafe { std::mem::transmute(export("D3D12CreateDevice")) };
+    let result = unsafe { real(adapter, level, riid, device) };
+    // With a null device the call only asks whether a device could be made.
+    if result >= 0 && !device.is_null() {
+        unsafe { census::created12(*device) };
+    }
+    result
 }
 
 #[allow(non_snake_case)]
@@ -178,36 +203,52 @@ extern "system" fn DllMain(_module: *mut c_void, reason: u32, _reserved: *mut c_
 /// Called by the thunk of export `index`: logs the call and returns the system function to jump to.
 /// There is no caller to give an error to, so a missing library or function ends the process.
 extern "C" fn resolve(index: u32) -> usize {
-    let name = EXPORTS[index as usize];
-    eprintln!("{LIBRARY} forward: {}", name.to_string_lossy());
+    let (library, name, ordinal) = EXPORTS[index as usize];
+    let library_name = LIBRARIES[library];
+    match name {
+        Some(name) => eprintln!("{library_name} forward: {}", name.to_string_lossy()),
+        None => eprintln!("{library_name} forward: @{ordinal}"),
+    }
     CALLS[index as usize].fetch_add(1, Ordering::Relaxed);
     let slot = &RESOLVED[index as usize];
     let known = slot.load(Ordering::Acquire);
     if known != 0 {
         return known;
     }
-    let Some(function) = (unsafe { GetProcAddress(system_library(), name.as_ptr().cast()) }) else {
-        eprintln!("{LIBRARY} forward: the system library lacks this export");
+    // By name, or by ordinal for an export without one (an ordinal passes as a pointer below 0x10000).
+    let symbol = name.map_or(ordinal as usize as *const u8, |n| n.as_ptr().cast());
+    let Some(function) = (unsafe { GetProcAddress(system_library(library), symbol) }) else {
+        eprintln!("{library_name} forward: the system library lacks this export");
         std::process::abort();
     };
     slot.store(function as usize, Ordering::Release);
     function as usize
 }
 
-/// The library calls go to, loaded by its full path (by name alone, Windows would hand back this
-/// one): the system's, or the replacement at the path in WC_D3D11, so a census and frame capture
-/// can sit in front of a replacement.
-fn system_library() -> HMODULE {
-    static MODULE: OnceLock<usize> = OnceLock::new();
-    *MODULE.get_or_init(|| {
-        // The variables are this library's alone: the library it loads, which may be another
-        // copy of it, must not see them.
+/// The variables naming a replacement for each library, read by `configure`.
+static TARGETS: OnceLock<[Option<String>; 2]> = OnceLock::new();
+
+/// Reads this library's variables once and removes them: the library it loads, which may be
+/// another copy of it, must not see them.
+fn configure() -> &'static [Option<String>; 2] {
+    TARGETS.get_or_init(|| {
         census::configure();
-        let target = std::env::var("WC_D3D11");
-        for name in ["WC_OUT", "WC_CAPTURE", "WC_D3D11"] {
-            // Read and removed once, on the program's first call into Direct3D 11.
+        let targets = ["WC_D3D11", "WC_D3D12"].map(|name| std::env::var(name).ok());
+        for name in ["WC_OUT", "WC_CAPTURE", "WC_D3D11", "WC_D3D12"] {
             unsafe { std::env::remove_var(name) };
         }
+        targets
+    })
+}
+
+/// The library `library`'s calls go to, loaded by its full path (by name alone, Windows would hand
+/// back this one): the system's, or the replacement at the path in WC_D3D11 or WC_D3D12, so a
+/// census and frame capture can sit in front of a replacement.
+fn system_library(library: usize) -> HMODULE {
+    static MODULES: [OnceLock<usize>; 2] = [OnceLock::new(), OnceLock::new()];
+    let name = LIBRARIES[library];
+    *MODULES[library].get_or_init(|| {
+        let target = configure()[library].clone().ok_or(());
         let path = match target {
             Ok(path) => path,
             Err(_) => {
@@ -215,16 +256,13 @@ fn system_library() -> HMODULE {
                 let length =
                     unsafe { GetSystemDirectoryW(dir.as_mut_ptr(), dir.len() as u32) } as usize;
                 assert!(length > 0 && length < dir.len(), "GetSystemDirectoryW");
-                format!(
-                    "{}\\{LIBRARY}.dll",
-                    String::from_utf16_lossy(&dir[..length])
-                )
+                format!("{}\\{name}.dll", String::from_utf16_lossy(&dir[..length]))
             }
         };
         let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
         let module = unsafe { LoadLibraryW(wide.as_ptr()) };
         if module.is_null() {
-            eprintln!("{LIBRARY} forward: cannot load {path}");
+            eprintln!("{name} forward: cannot load {path}");
             std::process::abort();
         }
         module as usize
