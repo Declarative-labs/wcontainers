@@ -275,8 +275,8 @@ foreach ($choice in $Tests.Split(',')) {
         # Recording chosen tests keeps the other tests' lines of the baseline, in the file's order.
         $order = @{}; for ($i = 0; $i -lt $all.Count; $i++) { $order[$all[$i]] = $i }
         $byTest = { $order[$_.Split(' ')[0]] }
-        $results = @(@(Get-Content $baselineFile | Where-Object { $names -notcontains $_.Split(' ')[0] }) + $results | Sort-Object $byTest)
-        $failing = @(@(Get-Content "$Baseline\$file-$driver.failures" | Where-Object { $names -notcontains $_.Split(' ')[0] }) + $failing | Sort-Object $byTest)
+        $results = @(@(Get-Content $baselineFile | Where-Object { $names -notcontains $_.Split(' ')[0] }) + $results | Sort-Object $byTest, { $_ })
+        $failing = @(@(Get-Content "$Baseline\$file-$driver.failures" | Where-Object { $names -notcontains $_.Split(' ')[0] }) + $failing | Sort-Object $byTest, { $_ })
     }
     [IO.File]::WriteAllLines("$Out\$file-$driver.failures", [string[]]$failing)
     [IO.File]::WriteAllLines("$Out\$file-$driver.txt", [string[]]$results)
