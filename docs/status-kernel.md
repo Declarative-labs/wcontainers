@@ -132,6 +132,11 @@ local non-stream sockets, and the network-changing socket ioctls copy their stru
 before checking CAP_NET_ADMIN (inet `socket_ioctl_checks_match_reference`); layer 1 now asks
 SIOCATMARK, SIOCSIFFLAGS and SIOCADDRT (seed 9191002, 200 sequences, matched).
 
+Note for the orchestrator: early in this run a `pkill -f 'cargo test'` meant for this track's
+old whole-suite run also stopped other tracks' cargo processes running then (the x86 track's
+suite run writing scratch x86/x3/run1/suite.log, a runtime-track layer 1 run, a translator
+layer 3 run, which restarted); their test binaries already running went on.
+
 LTP comparison (layer 3), table at the end of this run:
 - The whole suite at fb0bc97 (TCP backend, before every other fix of this run) runs detached:
   scratch k6c3/ours-5.tsv (output ours-5.out, start and load in ours-5.load: 07:58, load 26 to
@@ -3362,8 +3367,8 @@ K6c, in this order:
    crates/wcontainers-kernel-test/ltp/reference-20260930.tsv <file>`.
 2. Rerun the fixed-not-rerun tests listed under "K6c, third run" and confirm.
 3. Parts not built that tests reach, largest first: the cgroup2 mount at /sys/fs/cgroup (read
-   only, the container's root cgroup, with /proc/cgroups; the reference's files are listed in
-   scratch notes: cgroup.*, cpu.*, cpuset.*, hugetlb.*, io.*, memory.*, pids.*, rdma.*), which
+   only, the container's root cgroup, with /proc/cgroups; the reference's files, modes and
+   contents are in scratch k6c3/cgroup-reference.txt), which
    the 8 controllers tests reach; /proc/<pid>/mem (FOLL_FORCE: reads of PROT_NONE, writes into
    private file mappings copy the page; dirtyc0w, cve-2016-5195, cve-2017-1000405, thp04);
    smaps, pagemap, attr; per-user pipe pages (fs.pipe-user-pages-soft and hard, pipe15:
