@@ -7,15 +7,16 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) and R1 (the
 Direct3D reference library) are done and checked. R2 (keeping the owner's PC safe, and what the
-Direct3D 12 track waits for), two runs on 2026-11-17: the three findings of R1's last check are
-fixed; the display driver resets are traced and the queue now protects the PC from them, failed
-logons are recorded as they happen, Chrome's wrapper comes back with every Chrome install, and
-every script keeps one SSH connection per branch (see "The owner's PC" below). The forwarding
-library stands in for d3d12.dll as well as d3d11.dll: every Direct3D 12 scene passes through it,
-and it counts a Direct3D 12 program's device, queue, command list, factory and swap chain calls
-and saves its frames, so bgfx's Direct3D 12 renderer, Godot's Forward+ renderer on Direct3D 12
-and two of Microsoft's Direct3D 12 samples are compared frame by frame and have a census. R1's
-parts:
+Direct3D 12 track waits for), three runs on 2026-11-17 and 18: the findings of R1's last check
+and of R2's first check are fixed; the display driver resets are traced and the queue now
+protects the PC from them, failed logons are recorded as they happen, Chrome's wrapper comes back
+with every Chrome install, and every script keeps one SSH connection per branch (see "The owner's
+PC" below). The forwarding library stands in for d3d12.dll as well as d3d11.dll: every Direct3D
+12 scene passes through it, and it counts a Direct3D 12 program's device, queue, command list,
+factory and swap chain calls and saves its frames, so bgfx's Direct3D 12 renderer, Godot's
+Forward+ renderer on Direct3D 12 and two of Microsoft's Direct3D 12 samples are compared frame by
+frame and have a census; the samples' census is checked against the calls their source makes.
+R1's parts:
 - Jobs that present run on a hidden desktop ("wc-rig") in the session of the user logged in at the
   console (`gpu-job --desktop`, see How to run): windows and swap chains work there and nothing
   shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
@@ -71,18 +72,28 @@ What caused them, as far as the logs show:
   right after the reset the Direct3D 12 track's vkd3d tests through its own d3d12.dll crashed
   (16:44:36); either may have caused it.
 What now prevents a repeat (desktop/hazard.ps1, in C:\wc\rig, which every branch's jobs go through):
-- A job of a kind that may reset the driver runs one at a time, in the queue group "hazard": every
-  job not marked `--reference`, that is conformance tests on the GPU, any replacement Direct3D
-  library, and every other track's own code. Reference jobs (Microsoft's Direct3D, wgpu or Chrome on
-  the rig's own scenes and programs, and anything on WARP) run beside it as before.
+- The kinds seen to reset the driver are Direct3D 12 conformance tests on the GPU (Wine's dxgi
+  tests, six times), the rig's own scene program after an edit (19:35), and, for the unknown
+  16:44, other tracks' own code. Jobs of these kinds run one at a time, in the queue group
+  "hazard". The queue itself decides, not the job's sender: a job runs beside others only if its
+  command is one of the rig's own runs with no replacement library (programs, scenes, the loop,
+  Wine's tests on WARP) and the rig's code in its tree (the two test crates and
+  tools/graphics-rig) has already run one job without a reset (C:\wc\logs\cleared.txt). So
+  Wine's and vkd3d's tests on the GPU, replacement libraries, every other track's own command and
+  the rig's own runs after any change to the rig run one at a time. `--reference` is ignored.
 - A reset during a job fails it and holds the queue: no new GPU job starts, and gpu-job refuses new
   ones with the reason, until someone records the cause with `tools/graphics-rig/resets record
   "<cause>"`. Running jobs finish.
-- What ran at the reset is quarantined by name until lifted (`resets lift`): the job's command, or,
-  for Wine's tests on the GPU, the very test that was running (the run then stops). A quarantined
-  job is refused; a quarantined Wine test is skipped on the GPU and still runs on WARP.
-- dxgi test_swapchain_backbuffer_index is quarantined on the GPU (it runs on WARP: 398 checks, the
-  154 failed ones being Present's "occluded" answers, as recorded).
+- What ran at the reset is quarantined until lifted (`resets lift`): the job's command, or, for
+  Wine's tests on the GPU, the very test that was running (the run then stops). A command is
+  refused when the words of a quarantined command all come in it in the same order, paths taken
+  by their last part only, so another output directory or checkout, or anything added, does not
+  get around it. A quarantined Wine test is skipped on the GPU and still runs on WARP.
+- Commands sent with `remote` are watched the same way: refused while quarantined or while the
+  queue is held, and a reset during one fails it, holds the queue and quarantines it.
+- dxgi test_swapchain_backbuffer_index is kept off the GPU by the repository itself
+  (wine-excluded.txt, marked "(gpu)"; it runs on WARP: 398 checks, the 154 failed ones being
+  Present's "occluded" answers, as recorded), besides its quarantine on the desktop.
 - C:\wc\logs\jobs.log records every GPU job's start and end (branch, tree, group, exit code,
   command), so the next reset can be matched to the jobs that ran.
 
@@ -114,7 +125,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   cmd.exe, with `CARGO_TARGET_DIR=C:\wc\target\<branch>`. Example:
   `tools/graphics-rig/remote cargo build -p wcontainers-graphics-test`. Runs of one branch take turns,
   and wait for that branch's running GPU jobs (each job holds the branch's lock shared).
-- `tools/graphics-rig/gpu-job [--priority N] [--alone] [--reference] [--desktop] [--build <command>] -- <command>`: runs a
+- `tools/graphics-rig/gpu-job [--priority N] [--alone] [--desktop] [--build <command>] -- <command>`: runs a
   command as a GPU job in C:\wc\src\<branch>. That copy must hold this working tree as it is now; the
   job checks the git tree id when it starts and fails with 125 and a message if it differs.
   `--build <command>` sends the working tree and runs the build command there first, as `remote`
@@ -124,10 +135,10 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   `gpu-job --build "cargo build -p wcontainers-graphics-test" -- "%CARGO_TARGET_DIR%\debug\gt-d3d11
   all hardware C:\wc\out\x"`. Without it the job runs whatever the build directory holds, which may
   have been built from an earlier tree. N is any integer, higher starts first; `--alone` waits until
-  no other job runs and holds new ones back from its submission until it ends. Without
-  `--reference` the job runs in the group hazard, one at a time (The owner's PC, above); the rig's
-  scripts pass it for real Direct3D, wgpu, Chrome and WARP runs without replacement libraries. A
-  quarantined command, or any job while the queue is held, is refused with 125 and the reason. The command is any cmd.exe command line,
+  no other job runs and holds new ones back from its submission until it ends. The queue puts
+  every job in the group hazard, one at a time, except the rig's own runs on cleared rig code (The
+  owner's PC, above); `--reference` is accepted and ignored. A quarantined command, or any job
+  while the queue is held, is refused with 125 and the reason. The command is any cmd.exe command line,
   quotes and backslashes included. `--desktop` runs the command on the hidden desktop wc-rig of the
   session of whoever is logged in at the desktop's console, for anything that creates a window or
   a swap chain: the job (in session 0) writes the command, its directory and its whole environment
@@ -142,7 +153,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   (exit 1 if the command gave 0) with "job: FAIL, the display driver was reset ..." and the events,
   whichever job beside it caused it, and the events are added to C:\wc\logs\display-resets.log.
 - `tools/graphics-rig/queue-check`: sends the working tree, then on an idle queue submits sleeping jobs
-  and checks that two jobs run together, that of twice as many jobs as slots submitted together
+  (desktop/sleep.ps1, a rig run; the first, one at a time, clears the tree's rig code) and checks that two jobs run together, that of twice as many jobs as slots submitted together
   exactly as many as there are slots run at once, that a later priority-10 job starts before an
   earlier priority-0 one when every slot is taken, that an alone job runs with nothing beside it,
   and that two hazard jobs submitted together run one after the other. About 1 min on an idle
@@ -150,7 +161,8 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
 - `tools/graphics-rig/resets`: prints whether the queue is held, the quarantined names and the end
   of C:\wc\logs\display-resets.log. `resets record "<cause>"` records what caused the held reset
   and lets jobs start again; `resets suspect "<name>" "<why>"` quarantines a job's command or a Wine
-  test ("wine <file>:<test>"); `resets lift "<name>"` lifts one. To see the hold without a reset:
+  test ("wine <file>:<test>"); `resets lift "<name>"` lifts one. Recording a cause resumes the
+  groups, but not "default" and "hazard" while an alone job is queued or running. To see the hold without a reset:
   `ssh tom@192.168.2.183 powershell -ExecutionPolicy Bypass -Command ". C:\wc\rig\hazard.ps1;
   Set-Hold @('test')"`, then `resets record "test"`.
 - `tools/graphics-rig/loop [picture-dir]`: one `gpu-job --desktop --build` that builds the rig on the desktop
@@ -382,10 +394,24 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   buffer copied on the queue the swap chain presents on, after the program's work) and WC_D3D12
   names a replacement behind it. Command lists: on each new device the library makes one list of
   each kind (direct, bundle, compute, copy) and patches their tables (four distinct tables here)
-  before the program records any; lists executed on a queue whose table is not one of those are
-  counted as a number in census.txt ("command lists executed with a table not counted"), not
-  patched: in Microsoft's samples (on the Agility SDK) these are one list a frame of the runtime's
-  own, whose calls are not the program's. Hooking CreateCommandList instead crashed Godot (Measurements).
+  before the program records any. With the Agility SDK (Microsoft's samples) the display driver
+  gives each list, at its first Reset, a copy of that patched table with its own functions for
+  the draws and the state it sets (DrawInstanced, IASet*, RSSet*, SetGraphicsRoot*,
+  SetPipelineState and the like) and the patched entries for the rest; Reset and Close are typed
+  hooks, so the copy is patched as soon as the first Reset returns, each entry going to the
+  function it calls in the end, so a call is counted once. A list executed with a table that is
+  neither is counted as a number in census.txt ("executed with a table not counted then").
+  Reset, Close and ExecuteCommandLists also note calls made from Windows' own libraries (the
+  system directory): DXGI resets, closes and executes a list of its own on the program's queue at
+  each present (119 of each in 120 frames, in every Direct3D 12 program run). They stay in the
+  counts and are listed in census.txt's line "made by Windows' own libraries". Hooking
+  CreateCommandList crashed Godot (Measurements) and is not needed: a list keeps the patched table
+  until its first Reset.
+- `programs run` also checks a program's census against tools/graphics-rig/census/<program>.expected
+  where there is one: each line there, the calls the program's source makes ("<table> <method>
+  <calls>"), must be in census.txt as it is, or the program fails ("census has ... where the
+  program makes ..."). The two Microsoft samples have one, from their source; it holds through a
+  replacement library too, as the forwarding library counts in front of it.
 - The census (crates/wcontainers-graphics-test-forward/src/census.rs), on when WC_OUT names a
   directory: the typed D3D11CreateDevice and D3D11CreateDeviceAndSwapChain exports patch the method
   tables of the device, swap chain and DXGI factory with counting thunks (names read from the
@@ -1135,8 +1161,8 @@ tracks' jobs beside ours; Mac load average 58 to 78):
   ClearRenderTargetView 239, Close 476 and Reset 476 for 120 frames where the program does one
   clear, one Reset and one Close a frame: those lists are the runtime's own. Counting only the
   device's tables: ClearRenderTargetView 120, Reset 239, Close 240 and 238 lists "with a table
-  not counted". The one Reset and Close a frame beyond the program's own are not explained;
-  they are counted as the program's (Known issues).
+  not counted". That census left out most of the samples' own calls, every draw among them
+  (found by R2's check; the third run below explains and fixes it).
 - Microsoft's samples: `programs build` fetched DirectX-Graphics-Samples (sparse, D3D12HelloWorld)
   and built D3D12HelloTriangle and D3D12HelloConstBuffers with the Build Tools (MSBuild with
   -restore first: it worked but wrote into the owner's profile, see Departures; then from the
@@ -1169,6 +1195,49 @@ tracks' jobs beside ours; Mac load average 58 to 78):
   d3d12-hello-constbuffers bgfx-01-cubes-d3d12 godot-platformer-2d-d3d12` (a second copy behind
   the first, through WC_D3D12; its log shows each D3D12CreateDevice passing through both): all
   three pass.
+
+R2 third run (2026-11-18, from 00:00; desktop reachable throughout, other tracks' jobs beside
+ours; Mac load average 45 to 70):
+- Why the samples' census missed their draws, found with a temporary dump of every table
+  executed: both uncounted tables were heap copies of the patched D3D12Core.dll table (the direct
+  list's), with 38 entries pointing into the NVIDIA driver (nvwgf2umx.dll: DrawInstanced,
+  DrawIndexedInstanced, Dispatch, IASetPrimitiveTopology, IASetVertexBuffers, RSSetViewports,
+  RSSetScissorRects, SetPipelineState, the SetGraphicsRoot* and SetComputeRoot* setters and
+  others) and the rest pointing to our thunks. A second dump showed the switch happening at each
+  list's first Reset (before it, the list had the patched table), and the call stack at that first
+  Reset showed the second list a frame is DXGI's (dxgi.dll called its Reset), in every Direct3D 12
+  program (bgfx and Godot as well), reset 119 times in 120 frames. bgfx and Godot, on the
+  system's Direct3D 12 runtime, get no such copies.
+- After the fix, `programs run --census` of the six Direct3D 12 programs: all pass. The samples
+  now count DrawInstanced, IASetPrimitiveTopology, IASetVertexBuffers, RSSetViewports,
+  RSSetScissorRects and SetGraphicsRootSignature 120 each (and SetGraphicsRootDescriptorTable 120 in
+  ConstBuffers), Reset 239 and Close 240 of which DXGI's 119 each; the census line "made by
+  Windows' own libraries: command-list Close 119, command-list Reset 119, command-queue
+  ExecuteCommandLists 119". Every line of the two .expected files matched. With one line of
+  d3d12-hello-triangle.expected changed to DrawInstanced 121, the run failed: "census has
+  'command-list DrawInstanced 120' where the program makes 'command-list DrawInstanced 121'".
+  Godot's 2D game with CreateCommandList and CreateCommandList1 hooked crashed again at once
+  (0xc0000005, 0 frames), so they are not hooked; with Reset and Close hooked it ran its 120 frames.
+- Three census runs of the six (one job each, about 30 s): the samples and bgfx-38-bloom-d3d12
+  identical in all three; bgfx-01-cubes-d3d12 differed in 7 methods (CopyTextureRegion 691/689/689,
+  ResourceBarrier 2111/2107/2107, CheckFeatureSupport 2477/2471/2471, CreateFence 692/690/690,
+  GetCustomHeapProperties 19/18/18, AddRef and Release by 3); both Godot games in the device's
+  AddRef and Release only (by up to 20). R2's check had seen bgfx-38-bloom-d3d12's CheckFeatureSupport go from
+  2484 to 1797 and CreateFence from 692 to 463 between two runs.
+- The queue: `queue-check` passes all six rules with the queue deciding the groups (third try:
+  the first failed as a job's arguments may not hold spaces, which the rig key first had, so
+  every rig run failed to start from 00:21:28 to 00:23:20; no other track's job was a rig run
+  then; the second found an alone job let others start 0.3 s before it ended, now fixed by
+  resuming the groups only after its reset check). One sleep job of a new rig tree ran in group
+  hazard, the next in default. `resets suspect "echo r2c harmless suspect"`, then `gpu-job --
+  "echo r2c harmless suspect&& rem with C:\wc\out\other\a"` and `remote "echo r2c harmless
+  suspect"` were both refused (125) naming the quarantine; lifted after. A hold (Set-Hold by hand
+  for about 3 s) refused both `gpu-job` and `remote`; `resets record` resumed the three groups.
+  The quarantine matching was also checked on a scratch quarantine file (7 cases: the same
+  command with another output directory, with words added before and after, matched; a shorter
+  command, another test target and an unrelated build did not).
+- Unit tests: 17 on Windows (13 as before, 3 for gt-chrome's argument handling, 1 for the census
+  patching a copied table), the 16 that are not Windows-only on the Mac.
 
 ## Loading a replacement Direct3D library
 
@@ -1230,8 +1299,10 @@ There is no plan document in this checkout; these depart from the task or brief 
   so a one-off scheduled task as SYSTEM adds it.
 - Chrome is Chrome for Testing in C:\wc\chrome rather than Google Chrome installed into Windows: the
   same browser build, without an updater, services or entries in the owner's machine, and pinned.
-  It is "current" only as of setup: `npx @puppeteer/browsers install chrome@stable --path C:\wc\chrome`
-  fetches a newer one, and draw.mjs uses the newest present.
+  It is the build pinned in desktop/install-chrome.ps1; to move to another, change the pin there
+  and run setup-desktop, which installs it with the wrapper in front. Installing Chrome any other
+  way (for example `npx @puppeteer/browsers install` by hand) leaves out the wrapper, and
+  draw.mjs refuses to run when more than one build is present.
 - The job queue client and the remote command are shell scripts in tools/graphics-rig (with PowerShell
   halves for the desktop), not Rust in the crate: they only drive ssh, scp and pueue.
 - The queue tool is pueue (MIT OR Apache-2.0): it runs on Windows, has groups with a parallel limit and per-job
@@ -1291,13 +1362,17 @@ There is no plan document in this checkout; these depart from the task or brief 
 - Nineteen Wine tests are excluded: they would change the owner's display, found by searching
   each test's calls for ChangeDisplaySettings, SetFullscreenState, fullscreen swap chains,
   SetGammaControl and ClipCursor. dxgi test_swapchain_backbuffer_index, whose Direct3D 12 part hangs
-  the RTX 3080, is not excluded but quarantined on the desktop, so it runs on WARP and never on the
-  GPU.
-- Jobs not marked `--reference` (other tracks' own commands included) run one at a time in the
-  queue group hazard: the task asks that kinds seen to reset the driver run one at a time, and the
-  cause of one reset (16:44) is unknown, with other tracks' own code among the suspects, so a job
-  is held to be of a hazardous kind unless it says it runs only the references. Tracks that build
-  inside their jobs hold that one slot while they build; `gpu-job --build` builds outside it.
+  the RTX 3080, is excluded on the GPU only (marked "(gpu)" in wine-excluded.txt) and also
+  quarantined on the desktop, so it runs on WARP and never on the GPU.
+- Every job runs one at a time in the queue group hazard unless the queue sees it is one of the
+  rig's own runs on rig code already seen to run without a reset: the task asks that kinds seen
+  to reset the driver run one at a time; those kinds include the rig's own scene program after an
+  edit (19:35) and, as suspects of the unknown 16:44, other tracks' own code; and a flag chosen by
+  the sender was found used by other tracks for their own GPU code. Tracks that build inside their
+  jobs hold that one slot while they build; `gpu-job --build` builds outside it. Measured load
+  before the change (C:\wc\logs\jobs.log, 2026-11-17 21:58 to 2026-11-18 00:13): 294 jobs,
+  hazard 108 of them for 102 minutes, default 174 for 25 minutes, alone 12 for 10 minutes; at
+  most 5 at once.
 - vkd3d's tests are built like Wine's, with llvm-mingw rather than vkd3d's own configure and
   make (no MSYS or autotools on the desktop): the headers vkd3d's build generates come from
   llvm-mingw's widl (run in the output directory, as widl names each header's guard after the path
@@ -1389,10 +1464,10 @@ There is no plan document in this checkout; these depart from the task or brief 
   queries are not counted. Factory calls made before the program's first device are not counted.
   A program that gets a context other than through D3D11CreateDevice(AndSwapChain),
   GetImmediateContext* or CreateDeferredContext* would not be counted on it. On Direct3D 12 the
-  same holds for the device, queues and command lists: in Microsoft's samples (Agility SDK) the
-  queue's Wait, Signal and ExecuteCommandLists, the device's Evict and MakeResident, and one Reset
-  and Close of a command list a frame are calls of DXGI or the runtime, not of the program's
-  code. A Direct3D 12 device made other than through D3D12CreateDevice (the Agility SDK's
+  same holds for the device, queues and command lists: DXGI's own command list (one Reset, Close
+  and ExecuteCommandLists a present, listed in census.txt's "made by Windows' own libraries"
+  line) and DXGI's or the runtime's calls of the queue's Wait and Signal and the device's
+  CreateCommandList, CreateCommandAllocator, Evict and MakeResident are in the counts. A Direct3D 12 device made other than through D3D12CreateDevice (the Agility SDK's
   ID3D12DeviceFactory) would not be counted at all.
 - Godot's 3D platformer on Direct3D 12 differs from run to run in under 80 pixels by 1 (see
   Measurements), within the frame tolerance; its Direct3D 11 frames, Doom's and the 2D game's do
@@ -1411,7 +1486,13 @@ There is no plan document in this checkout; these depart from the task or brief 
   times on every run).
 - On Direct3D 12, bgfx's overlay line of GPU time differs from run to run (the frame clock answers
   Direct3D 11's timestamp queries only; Direct3D 12's are resolved into buffers the program maps),
-  so those tiles (about 63 of 3600 with the memory line) are left out by the recording.
+  so for bgfx-01-cubes-d3d12 and bgfx-38-bloom-d3d12 the rectangle left out of the comparison
+  covers it as well as the memory line (x 0 to 319, y 208 to 271).
+- Some counts of a Direct3D 12 program's census differ from run to run (Measurements, R2 third
+  run): bgfx's texture uploads (CheckFeatureSupport, CreateFence, CopyTextureRegion,
+  ResourceBarrier, Wait; by a few, and by up to a third in one check) and the device's AddRef and
+  Release in all but the samples. Everything else was the same in every run, and the two samples'
+  census was identical in all runs.
 - The bgfx examples' GPU memory readout (one line of their overlay) is not compared: it changed
   between runs of real Direct3D, and a replacement reports its own memory. Other readouts of the
   overlay (frame time, GPU time, latency) are fixed by the frame clock and are compared.
@@ -1454,7 +1535,7 @@ There is no plan document in this checkout; these depart from the task or brief 
   again during the second independent check, when the checker had opened only about 4 new
   connections and an already open shared connection kept working throughout. So it is not this rig's
   connection count alone; other users of the machine may be the cause. Cause unknown; sshd_config sets
-  no limits of its own. The scripts share one connection and wait up to 20 minutes for it (see How
+  no limits of its own. The scripts share one connection and wait up to 30 minutes for it (see How
   to run); in the third run the first connection was refused once and came up 15 s later.
 - On 2026-11-17 at about 09:20 Pacific time the desktop's clock went back about 8 hours (job
   times printed 17:14 and then 09:22; not done by anything of ours, cause not looked into, as the
