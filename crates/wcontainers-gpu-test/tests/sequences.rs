@@ -33,7 +33,9 @@ fn random_sequences_record_and_replay_identically() {
     });
     let ran = Cell::new(0u64);
     let calls = Cell::new(0usize);
-    // Multisampled passes, depth-stencil passes, indexed draws, queries, scissored draws, tinted
+    let dropped = Cell::new(0u64);
+    // Multisampled passes, depth-stencil passes, indexed draws (and those dropped whole for fetching
+    // past their stream, counted by the recorder), queries, scissored draws, tinted
     // draws, no-overwrite buffer writes made without waiting first, and texture writes that
     // discard, and that do not overwrite without waiting first; dispatches, vertex captures and
     // timestamps; copies within one subresource, and those of depth or stencil formats.
@@ -44,6 +46,7 @@ fn random_sequences_record_and_replay_identically() {
         let read = sequence::run(&mut r, &steps).expect("a step was refused");
         assert!(r.violations.is_empty(), "violations: {:?}", r.violations);
         calls.set(calls.get() + r.calls.len());
+        dropped.set(dropped.get() + r.dropped_draws);
         let mut n = seen.get();
         // The sample count of each view's texture, for the passes (surface textures, not made by
         // create_texture, have one).
@@ -110,6 +113,7 @@ fn random_sequences_record_and_replay_identically() {
             again.violations
         );
         assert_eq!(again.calls, r.calls);
+        assert_eq!(again.dropped_draws, r.dropped_draws);
         assert_eq!(again.contents(), r.contents());
         // The bytes the steps read back are in the stream's finish_read calls.
         let finished: Vec<_> = r
@@ -129,7 +133,8 @@ fn random_sequences_record_and_replay_identically() {
          {} depth-stencil passes, {} indexed draws, {} queries, {} scissored draws, {} tinted \
          draws, {} no-overwrite writes without a wait, {} discarding texture writes, {} \
          no-overwrite texture writes without a wait, {} dispatches, {} vertex captures, {} \
-         timestamps, {} copies within one subresource ({} of depth or stencil)",
+         timestamps, {} copies within one subresource ({} of depth or stencil), {} draws dropped \
+         for fetching past a stream",
         cases,
         ran.get(),
         calls.get(),
@@ -146,7 +151,8 @@ fn random_sequences_record_and_replay_identically() {
         n[10],
         n[11],
         n[12],
-        n[13]
+        n[13],
+        dropped.get()
     );
     result.unwrap();
 }

@@ -102,8 +102,10 @@ pub enum Step {
 
 /// What else a pass does, each where present: a depth-stencil target (its cleared depth and
 /// stencil, tested and written by the draws, both aspects read back after a single-sampled pass), a
-/// scissor rectangle, indexed draws (16 or 32-bit, instanced from a first instance), a tint read
-/// from a uniform binding at one of two aligned offsets, and an occlusion query read back.
+/// scissor rectangle, indexed draws (16 or 32-bit, instanced from a first instance, and perhaps a
+/// last one fetching past the vertex stream, scissored to nothing so that every outcome the
+/// interface allows leaves the same pixels), a tint read from a uniform binding at one of two
+/// aligned offsets, and an occlusion query read back.
 #[derive(Clone, Debug)]
 pub struct PassOptions {
     pub depth: Option<(f32, u8)>,
@@ -960,7 +962,7 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
             Step::Dispatch(which) if kit.step.is_some() && !buffers.is_empty() => {
                 let i = pick(*which, buffers.len());
                 let (buffer, size) = &buffers[i];
-                let words = size / 4;
+                let words = size / STORAGE_WORD;
                 let set = b.create_binding_set(&[BindingEntry {
                     binding: 1,
                     stages: StageSet::COMPUTE,
@@ -968,12 +970,12 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                         range: BufferRange {
                             buffer,
                             offset: 0,
-                            size: words * 4,
+                            size: words * STORAGE_WORD,
                         },
                         writable: true,
                     },
                 }])?;
-                pending.push((i, 0, words * 4));
+                pending.push((i, 0, words * STORAGE_WORD));
                 b.dispatch(&DispatchCall {
                     program: kit.step.as_ref().ok_or(GpuError::Invalid("no compute"))?,
                     bindings: [Some(&set), None, None, None],
@@ -1390,9 +1392,12 @@ fn pass<B: Backend>(
         let first_instance = if bases { u32::from(n >> 2 & 1) } else { 0 };
         (wide, instances, first_instance)
     });
+    // The triangle past the stream: the three vertices after the last.
+    let past = options.indexed.is_some_and(|n| n >> 3 & 1 == 1);
     let ib = match indexed {
         Some((wide, ..)) if !triangles.is_empty() => {
-            let order = (0..triangles.len() as u32).flat_map(|t| [3 * t + 2, 3 * t + 1, 3 * t]);
+            let drawn = triangles.len() as u32 + u32::from(past);
+            let order = (0..drawn).flat_map(|t| [3 * t + 2, 3 * t + 1, 3 * t]);
             let data: Vec<u8> = if wide {
                 order.flat_map(u32::to_le_bytes).collect()
             } else {
@@ -1435,7 +1440,18 @@ fn pass<B: Backend>(
         buffer: &vb,
         offset: 0,
     })];
-    for (n, (.., blended)) in triangles.iter().enumerate() {
+    let nothing = [ScissorRect {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    }];
+    let blends = triangles
+        .iter()
+        .map(|(.., blended)| *blended)
+        .chain((past && ib.is_some()).then_some(false));
+    for (n, blended) in blends.enumerate() {
+        let beyond = n == triangles.len();
         let n = n as u32;
         let program = match (kind, &tint) {
             (FormatKind::Uint, _) => &kit.uint_program,
@@ -1445,7 +1461,7 @@ fn pass<B: Backend>(
         };
         b.draw(&DrawCall {
             program,
-            blend: if *blended && float {
+            blend: if blended && float {
                 &kit.added
             } else {
                 &kit.opaque
@@ -1455,7 +1471,7 @@ fn pass<B: Backend>(
             } else {
                 &kit.depth
             },
-            raster: if scissor.is_some() {
+            raster: if scissor.is_some() || beyond {
                 &kit.scissored
             } else {
                 &kit.raster
@@ -1474,7 +1490,11 @@ fn pass<B: Backend>(
             topology: Topology::TriangleList,
             restart: false,
             viewports: &viewport,
-            scissors: scissor.as_ref().map_or(&[], |s| &s[..]),
+            scissors: match &scissor {
+                _ if beyond => &nothing,
+                Some(s) => s,
+                None => &[],
+            },
             blend_constant: [0; 4],
             stencil_reference: [0; 2],
             immediates: &[],
