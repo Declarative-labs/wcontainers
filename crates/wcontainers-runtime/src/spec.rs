@@ -144,7 +144,7 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
                 }
             }
             "root" => root(field)?,
-            "mounts" => check_mounts(field)?,
+            "mounts" => {}
             "process" => process(field)?,
             "hostname" | "annotations" => {}
             "domainname" => absent(name, field, "the kernel taking a domain name at start")?,
@@ -161,6 +161,12 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
             }
             _ => return Err(refused(name, "a field this runtime does not know")),
         }
+    }
+    // The kernel makes its mounts and namespaces whatever the configuration says, so leaving the lists
+    // out is refused as leaving one of them out is.
+    check_mounts(fields.get("mounts").unwrap_or(&Value::Null))?;
+    if !fields.contains_key("linux") {
+        namespaces(&Value::Null)?;
     }
     let process = spec
         .process()

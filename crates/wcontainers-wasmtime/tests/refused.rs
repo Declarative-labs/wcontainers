@@ -96,6 +96,8 @@ refused! {
         json!({"destination": "/sys/fs/cgroup", "type": "cgroup", "source": "cgroup",
                "options": ["ro", "nosuid", "noexec", "nodev"]}));
     a_mount_with_other_options: "mounts[0]", |v| v["mounts"][0]["options"] = json!(["nosuid"]);
+    mounts_absent: "mounts", |v| { v.as_object_mut().unwrap().remove("mounts"); };
+    linux_absent: "linux.namespaces", |v| { v.as_object_mut().unwrap().remove("linux"); };
     a_kernel_mount_left_out: "mounts", |v| { v["mounts"].as_array_mut().unwrap().remove(3); };
     an_id_mapped_mount: "mounts[0].uidMappings", |v| v["mounts"][0]["uidMappings"] =
         json!([{"containerID": 0, "hostID": 1000, "size": 1}]);
