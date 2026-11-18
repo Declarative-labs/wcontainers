@@ -8,9 +8,8 @@ param(
     [switch]$Built,
     [int]$Priority = 0,
     [switch]$Alone,
-    # The command runs only Microsoft's Direct3D, wgpu or Chrome on the rig's own scenes and
-    # programs, a kind never seen to reset the display driver, so it may run beside other jobs; every
-    # other job runs in the group hazard, one at a time.
+    # Accepted from older clients and ignored: the queue decides which jobs may run beside others
+    # (Test-Cleared in hazard.ps1).
     [switch]$Reference,
     # Runs the command on the hidden desktop of the logged-in user's session (see job.ps1).
     [switch]$Desktop,
@@ -28,32 +27,28 @@ New-Item -ItemType Directory -Force C:\wc\pueue\errors | Out-Null
 if (-not (Test-Path $checkout)) { throw "no checkout $checkout; send one with remote first" }
 . $PSScriptRoot\hazard.ps1
 $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Command))
-$quarantined = (Get-Quarantine)[$text]
+$quarantined = Find-Quarantine $text
 if ($quarantined) { throw "not run: quarantined, as suspected of a display driver reset ($quarantined); see tools/graphics-rig/resets" }
 if (Test-Held) { throw "not run: the queue is held after a display driver reset until its cause is recorded (tools/graphics-rig/resets): $((Get-Content $hazardHeld) -join ' / ')" }
 
 # An alone job pauses the other groups and resumes them when it ends; if its wrapper was killed
 # first, they stay paused, so they are resumed here when no alone job is queued or running.
-$state = & $pueue -c $config status --json | ConvertFrom-Json
-$aloneTasks = @($state.tasks.PSObject.Properties.Value | Where-Object { $_.group -eq 'alone' -and
-        ($_.status.PSObject.Properties.Name | Where-Object { $_ -in 'Queued', 'Running', 'Stashed', 'Locked' }) })
-foreach ($other in 'default', 'hazard', 'alone') {
-    if ($state.groups.$other.status -ne 'Running' -and ($other -eq 'alone' -or $aloneTasks.Count -eq 0)) {
-        [Console]::Error.WriteLine("gpu-job: resuming the group $other, paused with no alone job and no hold")
-        & $pueue -c $config start --group $other | Out-Null
-    }
-}
+Resume-Groups | ForEach-Object { [Console]::Error.WriteLine("gpu-job: $_, paused with no alone job and no hold") }
 
 # The job runs with this environment, which pueue records when the job is added.
 . $PSScriptRoot\env.ps1
 $env:CARGO_TARGET_DIR = "C:\wc\target\$Name"
 $label = "$Name`: $text"
 if ($label.Length -gt 120) { $label = $label.Substring(0, 120) }
-$group = if ($Alone) { 'alone' } elseif ($Reference) { 'default' } else { 'hazard' }
+# The rig's own runs on rig code seen to run without a reset go beside others; every other job
+# runs in the group hazard, one at a time, and a rig run that is not cleared yet clears its code.
+$key = if (Test-RigRun $text) { Get-RigKey $checkout $Tree } else { '' }
+$group = if ($Alone) { 'alone' } elseif (Test-Cleared $text $key) { 'default' } else { 'hazard' }
 $arguments = @('-c', $config, 'add', '--print-task-id', '--group', $group, "--priority=$Priority",
     '--working-directory', $checkout, '--label', $label, '--',
     'powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\wc\rig\job.ps1',
     '-Name', $Name, '-Tree', $Tree, '-Group', $group)
+if ($key) { $arguments += '-RigKey', $key }
 if ($Built) { $arguments += '-Built' }
 if ($Alone) { $arguments += '-Alone' }
 if ($Desktop) { $arguments += '-Desktop' }
