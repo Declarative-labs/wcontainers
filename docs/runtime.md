@@ -791,7 +791,7 @@ root's files, how we run and what machine the container sees as separate argumen
 ```rust
 let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache: Some(path) });  // None: memory only
 let image = Image::oci(&layout, CpuSide::<Arm64>::ARCHITECTURE)?;  // or Image::tar(&file)
-let spec: oci_spec::runtime::Spec = image.spec()?;   // the image's conversion; or base_spec(), or config.json
+let spec: oci_spec::runtime::Spec = image.spec()?;   // the image's conversion; or spec_from_json(config.json)
 let mut container = runtime.container(
     &spec,
     &image,
@@ -804,8 +804,10 @@ let ending = container.run()?;   // to the end; or container.step() and containe
 
 - **What to run** is `oci_spec::runtime::Spec` (oci-spec 0.10.0, Apache-2.0). No type of ours repeats any of
   it. `base_spec()` is the configuration of everything the kernel gives a container (its mounts, its
-  namespaces, Docker's capabilities, root, `PATH`), with no program: a plain tar's configuration starts from
-  it, and an image's is converted into it.
+  read-only path, its namespaces, Docker's capabilities, root, `PATH`), with no program and no `root`: a
+  plain tar's configuration (`Image::spec` of a tar) and an image's conversion start from it.
+  `spec_from_json` reads a `config.json`: oci-spec drops fields it does not model, so the JSON is compared
+  with what oci-spec read and the first field it did not read is refused by its path.
 - **An OCI image** (`Image::oci`, a directory in the OCI image layout, which `docker save` writes as a tar):
   the index's manifest for linux and the back end's architecture (through nested indexes; a manifest whose
   configuration is not an image's, such as an attestation, is passed over), every blob checked against its
@@ -814,9 +816,15 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   extended attributes are refused (the kernel's `add_file` takes none). `Image::spec` is the image
   specification's conversion: Entrypoint and Cmd to `process.args`, Env to `process.env`, WorkingDir to
   `process.cwd` (`/` when empty), User to `process.user` (names from the root's `/etc/passwd` and
-  `/etc/group`, the groups listing the user as additional groups, as runc does), Labels to `annotations`,
-  StopSignal and ExposedPorts to their `org.opencontainers.image.` annotations, Volumes refused by name
-  (`config.Volumes`). A plain tar (`Image::tar`) is the simple case of a root.
+  `/etc/group`; for a user named without a group, its group and then the groups listing it as additional
+  groups, as Docker gives them; none for a number or a named group, as conversion.md says), `os`,
+  `architecture`, `variant`, `os.version`, `os.features`, `author`, `created`, StopSignal and ExposedPorts
+  to their `org.opencontainers.image.` annotations, Labels to `annotations` over any of those, Volumes
+  refused by name (`config.Volumes`). Env is kept whole, with the base `PATH` added when it has none.
+  With no User (implementation-defined), and for a plain tar, the user is root with its group and the
+  groups listing it, as Docker gives them. A plain tar (`Image::tar`) is the simple case of a root.
+- **HOME**: as runc, a process whose `process.env` has no `HOME` gets its user's home directory from the
+  root's `/etc/passwd` (`/` when none).
 - **`process.args[0]`** is found as runc finds it: with a slash from the working directory, else in the
   directories of `PATH` in `process.env`, the first regular file anyone may run, following the root's links;
   a name not found goes to the kernel as it is, which fails the start as exec does (status 127).
@@ -832,23 +840,32 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   what a runtime's containers share (the compiler and its cache), `Tuning`, `Offer`, its architecture as the
   image configuration names it, and its stop flag. The kernel tests' stand-in is no `BackEnd`; the test
   driver makes it itself.
-- **Every field of the configuration is honoured or refused by name.** The configuration is read as its JSON,
-  so a field the runtime does not know, oci-spec's newer ones included, is refused too. Honoured:
-  `ociVersion` 1.x, `root.path`, `process.args`, `process.env`, `process.cwd` (absolute),
+- **Every field of the configuration is honoured or refused by name.** A `config.json` is read by
+  `spec_from_json`, so a field oci-spec does not read is refused too, and `accept` refuses any field of
+  oci-spec's it does not know. Honoured:
+  `ociVersion` 1.x, `process.args`, `process.env`, `process.cwd` (absolute),
   `process.user.additionalGids`, `hostname` (absent: `localhost`), `annotations` (data, no behaviour), and
   these when they are what the kernel gives: `process.user.uid` and `gid` 0, `process.user.umask` 0022,
-  `process.capabilities` Docker's 14 in bounding, effective and permitted and none in inheritable and ambient,
+  `process.capabilities` Docker's 14 in bounding, effective and permitted and none in inheritable and ambient
+  (a set left out is empty, as the specification says, so leaving out `capabilities` or one of those three
+  is refused),
   `process.rlimits` at the kernel's values, `process.terminal` and `process.noNewPrivileges` false,
   `mounts` exactly the kernel's six (`/proc`, `/dev`, `/dev/pts`, `/sys`, `/dev/mqueue`, `/dev/shm`, each
-  with Docker's type, source and options), `linux.namespaces` exactly pid, network, ipc, uts, mount and
-  cgroup with no `path`; a configuration without `mounts` or without `linux` is refused as one leaving those
-  out is, since the kernel makes them whatever it says. Refused, each with what supporting it would take:
+  with Docker's type, source and options), `linux.readonlyPaths` exactly `/proc/sys` (the one the kernel
+  makes), `linux.namespaces` exactly pid, network, ipc, uts, mount and
+  cgroup with no `path`; a configuration without `mounts`, `linux` or `linux.readonlyPaths` is refused as
+  one leaving those out is, since the kernel makes them whatever it says. The surface tests check that the
+  guest sees each of these values (umask, every limit, the capability sets, the mounts and the read-only
+  path), so a change in the kernel fails a test rather than leaving a refusal stale. Refused, each with what
+  supporting it would take:
+  - `root.path`: the root's files are the `Image` argument; a root read from a directory of the host needs
+    the shipped outside's file backend (J5), with the files' owners and devices as the host keeps them;
   - the user, umask, capabilities, limits and no_new_privs at other values, and `linux.sysctl`: the kernel
     taking them at start (today `Start` takes the program, arguments, environment, working directory, host
     name, groups and the backend, kernel container.rs);
   - `mounts` other than the kernel's, or lacking one of them: bind mounts of host directories need the shipped
     outside's file backend (J5), other file systems the kernel, and leaving one out the kernel taking its
-    mounts at start; id-mapped mounts (`mounts[n].uidMappings`): user namespaces;
+    mounts at start; id-mapped mounts (`mounts[n].uidMappings`, `gidMappings`): user namespaces;
   - `hooks` (they run host programs): the shipped outside running them at the lifecycle points the runtime
     specification names;
   - `linux.resources` and `linux.cgroupsPath` (cgroups): the kernel accounting CPU, memory, pids and I/O per
@@ -859,7 +876,7 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   - `linux.devices`: device nodes in the kernel for each, with the outside behind them;
   - `linux.seccomp`: the kernel installing the filter on the first process at start (it runs seccomp filters
     a program installs);
-  - `root.readonly`, `linux.maskedPaths`, `linux.readonlyPaths`, `linux.rootfsPropagation`,
+  - `root.readonly`, `linux.maskedPaths`, `linux.readonlyPaths` other than `/proc/sys`, `linux.rootfsPropagation`,
     `linux.mountLabel`: read-only, masking and labelled mounts in the kernel;
   - `process.terminal` and `process.consoleSize`: standard input in the kernel's interface (asked of the
     kernel track) and the terminal surface;

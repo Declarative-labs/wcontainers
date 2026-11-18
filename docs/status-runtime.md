@@ -10,6 +10,8 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   (the kernel through K6b, 2edbc451) is merged (db247ebf), which needed one back end fix (fff0aa77); then J3
   is built: free turns, the library surface on the OCI runtime configuration, OCI images and plain tars, the
   shipped outside, and the command line program. J3's bar passes (below).
+- J3 run 2 (2026-11-18): the nine findings of J3 run 1's check are settled (their section below, with the
+  bar run again).
 - Asked of the kernel track (next heading but one): standard input, and the values `Start` would need to
   honour the fields refused today.
 - J3 is complete but for what waits on others: standard input (the kernel's interface), and the fields
@@ -50,6 +52,79 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## Findings of J3 run 1's check, and how each was settled (J3 run 2)
+
+- Capabilities left out were taken as Docker's (blocking): fixed (3b81f5b4). A set left out is empty in the
+  runtime specification, so a configuration without `process.capabilities`, or without its `bounding`,
+  `effective` or `permitted`, is refused by that name (the kernel gives the 14). Leaving out `inheritable`
+  or `ambient` is accepted: empty is what the kernel gives. Tests: refused.rs
+  `process_capabilities_absent`, `process_capabilities_{effective,permitted,bounding}_absent`.
+- Fields oci-spec does not model were dropped (blocking): fixed. The new `spec_from_json` (runtime crate) reads
+  a `config.json`, compares its JSON with what oci-spec read (re-serialised), and refuses the first field it
+  did not read, by its path (`hostnmae`, `process.futureProcessField`, `linux.resources.memory.limitt`). Nulls
+  count as absent. The command line program and every refusal test now go through it. Tests: refused.rs
+  `a_field_oci_spec_does_not_read` and the process, linux and mount ones; spec.rs
+  `a_whole_configuration_is_read_with_nothing_unread` (a `runc spec` style configuration with resources,
+  seccomp, devices, masked and read-only paths: nothing is reported as unread). The check's
+  cli-unknown.json now exits 125 with `hostnmae is not supported: a field this runtime does not know`.
+  A `Spec` built in Rust cannot hold an unknown field, so `Runtime::container` keeps taking a `Spec`.
+- `root.path` was listed as honoured but never read (blocking): it is now refused (`root.path`, unless empty),
+  with what honouring it would take. The root's files are the `Image` argument, and `base_spec()` has no
+  `root`. Reading a host directory as a root needs the shipped outside's file backend (J5), because an
+  unpacked directory on macOS keeps neither the files' owners nor their devices. Test: refused.rs
+  `root_path`. Plan section 14 corrected. A `config.json` written by `runc spec` is now refused at
+  `root.path` first.
+- The conversion left out the implicit annotations (minor): fixed. `os`, `architecture`, `variant`,
+  `os.version`, `os.features` (comma-joined, as ExposedPorts), `author` and `created` go to their
+  `org.opencontainers.image.` annotations. Labels are applied last, so a label overrides any implicit one,
+  StopSignal included. Test: image.rs `implicit_annotations_give_way_to_labels`.
+- With no `User`, root had no groups and no HOME (minor): fixed, and the same now holds for a plain tar
+  (`Image::spec` of a tar).
+  - Groups: the user is root, its group and then the groups `/etc/group` lists it in, in file order, as
+    Docker gives them (`groups=0(root),0(root),1(bin),...`).
+  - A user named without a group gets the same form. A numeric `User`, or one naming a group, gets no
+    additional groups, as conversion.md says (the code had given a numeric user the groups listing its
+    name).
+  - HOME: as runc does, a process whose environment has no `HOME` gets its user's home directory from the
+    root's `/etc/passwd` (`/` when none). This is done at start (`Runtime::container`), so a configuration
+    built by hand gets it too.
+  - Test: surface.rs `the_user_and_environment_match_the_reference` runs `id; echo "home=$HOME"; env | sort`
+    from the OCI image and from the plain tar, both matching `docker run`.
+- An image without Env lost PATH (minor): fixed. The image's Env is kept whole, and the base `PATH` is added
+  when it has none (`with_defaults`). Tests: image.rs `the_image_configuration_is_converted` (PATH added)
+  and `implicit_annotations_give_way_to_labels` (the image's own PATH kept).
+- Three refusals had no test (minor): added (refused.rs `uid_mappings`, `gid_mappings`,
+  `a_gid_mapped_mount`).
+- The `oci-layout` file was read by hand (minor): now `oci_spec::image::OciLayout::from_reader`.
+- The honoured values were not checked against the guest (minor): surface.rs
+  `the_guest_sees_the_honoured_values`. It runs the base configuration with the umask and all 16 limits
+  written out (accepted, so they equal the runtime's constants), and checks the following:
+  - the umask;
+  - every line of `/proc/self/limits`;
+  - all five capability sets of `/proc/self/status`, against the masks computed from the configuration;
+  - `/proc/mounts`: each mount's source, type and options, and nothing beyond the root, the six mounts and
+    the read-only paths.
+  This found a value the configuration did not state: the kernel mounts `/proc/sys` again read-only (as
+  Docker's `readonlyPaths` does). So `base_spec()` now carries `linux.readonlyPaths: ["/proc/sys"]`.
+  Exactly that list is honoured; any other list, or none, is refused by name (refused.rs
+  `linux_readonly_paths`, `linux_readonly_paths_absent`).
+- The check's probe (scratch check-j3/probe) was not run again. Each of its configurations that showed a
+  problem is now a test in refused.rs or surface.rs.
+
+J3's bar run again, as the whole suite of what this track owns (3b81f5b4, the test build;
+`cargo test -j 4 -p wcontainers-runtime -p wcontainers-wasmtime -- --test-threads 3 --nocapture`; 64 s with
+its build, load 31.5 to 56.9; scratch j3run2/owned-1.log):
+- Results: runtime 7; back end 3 unit, cache 3, code 4, faults 2, fork 5, refused 70 (69 refusals and the
+  base configuration accepted), surface 8 (the cache run's child ignored when run alone), turns 5, views 6.
+  113 passed, 0 failed.
+- The surface tests cover the pipeline from the OCI image and from the plain tar, the user and environment,
+  the honoured values, the busy process and the command line program from both images. All match the
+  reference.
+- The cache pair, each run a new process: the first, with an empty cache, made both ranges and 104 pieces
+  in 7.805 s. The second found both ranges and 85 pieces on disk and made 7, in 0.346 s. One pair only, so
+  the times show the order of the difference, not a figure.
+- The test images left under target/tmp/wc-surface (one set per test process) were deleted after the run.
 
 ## Findings of J2 run 5's check, and how each was settled (J3 run 1)
 
