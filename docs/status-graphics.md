@@ -20,6 +20,57 @@ branches into it at the start and end of every run, keeps the whole workspace bu
     the NIR route, the call channel and stand-ins, sound and input hooks, the interface changes
     they need, milestones G1d and G7 to G12, and the owner's decisions).
   - End merges: direct3d-11 and shaders (below, "End of run"); the rest had nothing new.
+- G1c, run 2 (2026-11-18): the fourteen findings of G1c's independent check settled (below, "G1c's
+  check"). Start merges: webgl (a merge) and direct3d-11 (a merge); the others had nothing new; no
+  conflict, no owned file changed; the whole workspace checks after them (laptop, scratch
+  `g1c2/start-check.log`); pushed (33790064).
+
+## G1c's check, and how each finding was settled (run 2)
+
+- Blocking, plan 15.4's "absent, because WebGPU has no route": wrong; the interface has routes for
+  most of them and wvk serves them on WebGPU (checked at its README). 15.4 now reports present
+  natively `imageCubeArray`, `independentBlend`, `sampleRateShading` (and three optional ones where
+  the adapter has them, the Direct3D routes otherwise); present through named, counted routes
+  `logicOp`, `fillModeNonSolid`, `largePoints`, `multiViewport`, `shaderFloat64`,
+  `shaderCullDistance`, `vertexPipelineStoresAndAtomics`, `occlusionQueryPrecise`,
+  `pipelineStatisticsQuery`, `geometryShader`, `tessellationShader`, `shaderDrawParameters`; and
+  `wideLines` and `shaderInt64` through two slow path names proposed in 15.7 (`WideLinesAsQuads`,
+  `Int64Emulated`, made at G1d). Absent: sparse binding, as a stated scope choice. An owner decision
+  in 15.9.
+- wvk as prior art: 15.4 names it (checked at the source: `src/wink/vulkan`, MIT headers, Vulkan 1.2
+  on Mesa's runtime over `webgpu.h`, its dEQP-VK run: 313,069 cases run, 98.5% passed), with its
+  design beside ours; G10's measure takes 98.5% as a floor; 15.9 asks whether to consider it.
+- The mesa-wink date: 15.2 now gives the driver directory's last change (2026-10-28, 41e1c1dfab),
+  the `wink` head (2026-11-11) and that 2026-11-17 is GitHub's push date; and the native build
+  against Dawn (`gex_wgpu_native.c`), and the shared compiler `src/wink/compiler` (all checked).
+- G9's bar: one measure (passed over run, NotSupported not run, and each NotSupported group asks for
+  something the driver does not report) over 15.2's lists, which are now the families gex_wgpu
+  reports (dEQP-GLES2, -GLES3, -GLES31, KHR-GLES) plus KHR-GL33; floors 92.9% and, for KHR-GL46,
+  98.6%, said to be floors and not a like-for-like comparison. GLES contexts on Windows come from
+  Mesa's WGL ES profile extension (checked in `stw_ext_extensionsstring.c`).
+- G8's bar: the route converting more shaders is chosen, on equal counts the faster.
+- G7: crossings defined (a hand-over to the device thread; host calls on the guest's thread counted
+  apart); Direct3D 11 gains its device thread at G7 (15.1); the Wine stand-ins are proven on the
+  laptop under a pinned Wine with the WebGPU back end on lavapipe, against the rig's references.
+- Consumed arguments copied into streams: named in 15.1 as a narrowing of the brief, with why
+  (the program may reuse the memory when the call returns), measured at G7, and in 15.9.
+- The WASI module and one device: 15.2 now makes the back end its own module per page that every
+  front module (the Direct3D one; the Mesa one, `wasm32-wasip1`) calls by imports; G9b's first step
+  settles it with the other open questions and measures the import's cost; module names in 15.9
+  follow (`gpu-webgpu.wasm`, `gpu-webgl.wasm`, `opengl.wasm`, `vulkan.wasm`).
+- The suite's copy within one depth or stencil subresource now also covers `Depth24PlusStencil8`
+  and `Depth32FloatStencil8`, each aspect written and read back (24-bit depth within one step).
+- `CopyWithinTexture`'s warning now says "a temporary buffer or texture".
+- `every_vertex_format_reads_its_element` reads each element at attribute offset 12 behind filler
+  bytes, and the 11-11-10 case holds an 11-bit denormal, the greatest 11-bit float and a 10-bit
+  float with mantissa bits; the check's denormal fault is now caught (below).
+- `a_bindings_slot_is_its_place_in_its_kinds_range` checks every slot of all five kinds, that the
+  ranges adjoin, and that counters have as many slots as storage.
+- `SlowPath` numbers: a new unit test `reasons_keep_their_numbers` holds every reason's number by
+  name, and `SlowPath`'s doc and plan 6.4 say new reasons go at the end. The status's warning about
+  the direct3d-12 branch was wrong: that branch is wholly contained in this line, so its next merge
+  of the line takes this order with no conflict; only caches or logs it recorded under the old order
+  are at risk (below, for the other tracks).
 
 ## G1b's second check, and how each finding was settled
 
@@ -97,6 +148,13 @@ doc and plan 4.12 and 5.7: every back end takes every vertex format, so no capab
 type into an `rgba32` target, normalised values within 2^-20; the recorder now reads the four packed
 formats it refused before: `Bgra8Unorm`, `Unorm10_10_10_2`, `Uint10_10_10_2`, `Float11_11_10`).
 
+G1c run 2 (two "interface:" commits, c1324007 and 4bbfe962): `CopyWithinTexture`'s warning text;
+`SlowPath`'s doc (numbers are kept, new reasons at the end) with the rule test
+`reasons_keep_their_numbers`; the slot rule test widened to every kind and slot, the ranges
+adjoining, and counters as many as storage slots. Suite: the copy within one depth or stencil
+subresource and the vertex format test widened (above), 1cfae99c. No new "interface:" commit came from the other branches since
+run 1 (the webgl and direct3d-11 merges touched no owned file).
+
 ## The WebGPU track's request, decided
 
 - No index format in `PrepareDesc`. Direct3D 11, OpenGL and Vulkan bind index buffers at the draw,
@@ -113,7 +171,10 @@ formats it refused before: `Bgra8Unorm`, `Unorm10_10_10_2`, `Uint10_10_10_2`, `F
 - WebGPU: a copy within one subresource of a depth or stencil format must no longer lose the device:
   copy the source region into a temporary texture of the same format (your routes between textures:
   whole subresource natively, part by draws), then from it into the destination, counted
-  `CopyWithinTexture`. The new suite tests `a_copy_within_one_depth_or_stencil_subresource_moves_the_region`,
+  `CopyWithinTexture`. For `Depth24PlusStencil8` and `Depth32FloatStencil8` both aspects move by
+  one copy: copy the whole subresource into the temporary natively, then the region back by
+  `DepthWrittenByDraw` and `StencilWrittenByDraw` (G1c run 2 added these two formats to the test).
+  The new suite tests `a_copy_within_one_depth_or_stencil_subresource_moves_the_region`,
   `every_vertex_format_reads_its_element` and `the_occlusion_counter_counts_every_sample_that_passes`
   (your summing program's first shared test) come in when you merge.
 - WebGL: the same three suite tests; `every_vertex_format_reads_its_element` asks for `Bgra8Unorm`
@@ -121,7 +182,18 @@ formats it refused before: `Bgra8Unorm`, `Unorm10_10_10_2`, `Uint10_10_10_2`, `F
   `EXT_color_buffer_float`; the test asks `RENDER | COPY_OUT` of it, so a missing extension fails it
   by name).
 - Direct3D 11: `format::components` now returns `Format::components`; it can go when convenient.
-- Direct3D 12: `Features::VIEW_SWIZZLE` gets a call at G1d at the earliest (plan 15.7).
+- Direct3D 12: `Features::VIEW_SWIZZLE` gets a call at G1d at the earliest (plan 15.7). Your branch
+  is contained in this line, so merging it brings this line's `SlowPath` order without a conflict;
+  discard any shader cache or log your branch recorded before 2a00617e, whose numbers for
+  `SequentialBuffersCopied`, `SwizzleInShader` and `AtomicExchangeLoop` were in the other order.
+- Shaders: `CONVERTER_VERSION` hashes this crate's Rust and the carried naga, not
+  `wcontainers-gpu`, yet the cache stores `SlowPath` and the reflection's types by number. The
+  numbers of `SlowPath` are now held by a test here; the other serialised types of the interface
+  (`VariantKey`, `Reflection`) are not, so consider putting the interface crate's sources into the
+  hash.
+- Every track: `every_vertex_format_reads_its_element` now reads at attribute offset 12 and holds
+  11-11-10 denormals; a shadow-stream converter that drops the offset or scales denormals wrongly
+  now fails it.
 
 ## The rules and their tests
 
@@ -149,8 +221,9 @@ pointers to a function's locals passed to another function.
 
 ## Next
 
-- G1c's independent check.
-- G1d (plan 15.8) once the owner has answered plan 15.9.
+- G1c's independent check, second round.
+- G1d (plan 15.8) once the owner has answered plan 15.9 (now also: wvk, Vulkan's slow features
+  reported present, the copy into streams, and the back end as its own module).
 - More suite tests beyond the pass bars: every format's clear and read back against real
   Direct3D's bytes, mip levels, layered and 3D targets, fans and loops on back ends that draw lines.
 
@@ -173,13 +246,29 @@ pointers to a function's locals passed to another function.
     tree) and run `nohup ./long.sh > long.out 2>&1 &` there (every fault, then 100,000 sequences at
     0x5eed and 0x3c1d0e), or `python3 -I faults.py <tree> <work dir> <target dir> [names]` (it
     copies the tree, changes one place, runs the tests named and prints CAUGHT, SURVIVED or BUILD
-    FAILED). Earlier runs' scripts are in scratch `g1r2` to `g1b2`.
+    FAILED). Run 2's faults: scratch `g1c2/faults.py`, the same way, each fault a list of changes.
+    Earlier runs' scripts are in scratch `g1r2` to `g1b2`.
 - A back end runs the suite with a test file holding a `Host` implementation and
   `wcontainers_gpu_test::suite!(MyHost);` (see `crates/wcontainers-gpu-test/tests/recorder.rs`).
 - On the Mac only formatting: `nix develop -c cargo fmt -p wcontainers-gpu -p wcontainers-gpu-test`.
 
 ## Measurements
 
+- G1c run 2, on the Linux laptop (i7-8750H, 12 threads):
+  - Owned crates' tests (scratch `g1c2/test1.log`, load 1.8, and `g1c2/end-check.log`, load 2.9):
+    234 pass (interface 36, compute 8, fast paths 14, helpers 19, suite on the recorder 48, rules
+    108, sequences 1 at the default 1,000); clippy and docs with warnings denied clean; the whole
+    workspace checks.
+  - Faults (scratch `g1c2/faults.log` and `faults2.log`, load 4 to 6): 5 of 5 caught by the test
+    written for each: 11-bit denormals scaled by 2^-15 (the check's fault; the vertex format test),
+    the attribute offset ignored (that test and six others), a copy within one combined depth and
+    stencil subresource dropped (the depth or stencil copy test only, which before this run held
+    no combined format), two reasons swapped in `SlowPath` and `ALL` together
+    (`reasons_keep_their_numbers`; the older order test passes under it), the counter range one
+    slot wider (the slot test, after it was widened to check the ranges adjoin: its first form let
+    this fault through).
+  - No random sequences this run: the generator and recorder are unchanged since run 1's 100,000
+    cases at each of two seeds.
 - G1c, all on the Linux laptop (i7-8750H, 12 threads):
   - Owned crates' tests after the changes (scratch `g1c/test1.log`, load 1.2): 233 pass (interface
     35, compute 8, fast paths 14, helpers 19, suite on the recorder 48, rules 108, sequences 1 at
@@ -205,6 +294,10 @@ pointers to a function's locals passed to another function.
   (`g1c/work`, `g1c/target`) and the loop's build (`target/phase-2-graphics`); logs stay in `g1c`
   there and in scratch `g1c`. Left alone: the other tracks' folders and the `check-g1*` folders of
   the checks.
+- G1c run 2: 47 GB free at the start; at the end deleted `g1c2/work` (the fault tree and its build)
+  and `target/phase-2-graphics` (7.2 GB); logs stay in `g1c2` there and in scratch `g1c2`. Not
+  ours, left alone: `target/phase-2-graphics-` (4.2 GB, of 2026-11-17, origin unknown) and
+  `target/phase-2-graphics-shaders`.
 
 ## Dependencies added and their licences
 
@@ -216,6 +309,10 @@ pointers to a function's locals passed to another function.
 
 ## Departures from the plan
 
+- G1c run 2: plan 15 departs from the brief in one place and from section 10 in another, each
+  named there and in 15.9: consumed arguments are copied into the call streams (the brief says
+  data is read in place; 15.1 gives why), and the back end becomes its own WebAssembly module that
+  every front module calls (section 10 had one module per front and back end; 15.2).
 - G1c: `crates/wcontainers-direct3d-11/src/format.rs` (another track's crate) changed: its
   `components` returns `Format::components`, so the two tables cannot drift (G1b's check, finding
   6). One function body; the track can drop the function.
@@ -244,13 +341,18 @@ pointers to a function's locals passed to another function.
 
 ## End of run
 
+- Run 2: no branch had anything new at the end (fetched after the work); nothing to merge. End
+  check above (`g1c2/end-check.log`).
+
+Run 1:
+
 - End merges: direct3d-11 conflicted in `crates/wcontainers-gpu/src/slow.rs` only: the line had
   `SequentialBuffersCopied` before `SwizzleInShader` and `AtomicExchangeLoop`, the direct3d-11 and
   shaders branches after them. `SlowPath` is `repr(u8)` and serialised in the shaders crate's cache
   (`Reflection::slow_paths`), so one order must hold everywhere: the shaders and direct3d-11
   branches' (the three last, in that order) is taken, with G1c's doc of `CopyWithinTexture` kept.
-  The direct3d-12 branch still has the other order and will meet the same conflict once when it
-  merges this line: take this line's `slow.rs`. Then shaders merged without conflict; the others
+  The direct3d-12 branch's last commit is contained in this line, so it meets no conflict when it
+  merges the line (corrected at run 2). Then shaders merged without conflict; the others
   had nothing new. No other owned file changed in the end merges.
 - End check after them (scratch `g1c/end-check.log`, laptop, load 2.9): the whole workspace checks,
   the owned crates' clippy and docs are clean with warnings denied, their 233 tests pass, and
