@@ -27,7 +27,7 @@ rewrites, render passes; 16 custom heap buffers, scaling-none swap chains, bgfx 
   a root argument not set since its root signature was set is skipped with a warning instead of
   removing the device (Direct3D 12 leaves it undefined; real Direct3D 12 draws garbage). The
   rig now holds tests that fail some checks on real Direct3D 12 to every other check, so the
-  counted set grew from 193 to 198: 128 of 198 pass (see "Test files"). All 22 own cases equal.
+  counted set grew from 193 to 198: 129 of 198 pass (see "Test files"). All 22 own cases equal.
 
 - `wcontainers-directx-graphics-infrastructure`, the portable core: the adapter description from the
   back end's `Caps`; output descriptions, their modes, and the colour spaces swap chains present in
@@ -266,7 +266,8 @@ geometry commit before the unset-argument skip): 128 of 198. d3d12 (Wine) 10 of 
 107 of 176, vkd3d-d3d12_invalid_usage 3 of 3, vkd3d-hlsl_d3d12 8 of 9. Newly passing:
 test_geometry_shader. Newly counted and failing: test_update_descriptor_tables_after_root_
 signature_change (passes since the skip, run17/named2.log) and test_copy_block_compressed_texture
-(below). Last full run: see the end of this section.
+(below). Last full run (run17/full2.log, at 159cb48, with the skip; the crates' 34 tests
+pass): 129 of 198, vkd3d-d3d12 108 of 176, no test lost.
 
 Files passing, by test file: d3d12 (Wine) all 10; vkd3d-d3d12_invalid_usage all 3;
 vkd3d-hlsl_d3d12 all but test_thread_id; vkd3d-d3d12 all but the 69 below. The failing ones,
@@ -308,8 +309,8 @@ each by what it stops at first:
 
 History (tests passing on real Direct3D 12 that pass through ours, vkd3d-d3d12 of 172 to 174):
 run 5 54, 6 66, 7 80, 8 87, 9 74 (the rig's stricter rule began), 10 87, 11 94, 12 98, 13 103,
-14 104, 15 106, 16 106; run 17 107 of 176 under the newer rule. Whole counts: run 12 116 of 193,
-13 121, 14 122, 15 124, 16 124; run 17 128 of 198.
+14 104, 15 106, 16 106; run 17 108 of 176 under the newer rule. Whole counts: run 12 116 of 193,
+13 121, 14 122, 15 124, 16 124; run 17 129 of 198.
 
 ## Shader runner (vkd3d-shader_runner, 302 files)
 
@@ -524,8 +525,8 @@ A working example of all of it is this track's Windows library: `examples/direct
 - Tests (one draws on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 --no-run" -- "cargo test
   -j 3 --no-fail-fast -p wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12"`
-  (34 tests: 9 infrastructure, 9 front, 11 device on the recorder, 1 on the GPU, 4 unit; run 16:
-  all pass, run16/test2.log). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
+  (34 tests: 9 infrastructure, 9 front, 11 device on the recorder, 1 on the GPU, 4 unit; run 17:
+  all pass, run17/full2.log). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
   `WEBGPU_API=dx12|vulkan` picks wgpu's path for the GPU test.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
@@ -911,6 +912,10 @@ Run 16's entries:
   Apache-2.0), `png` (MIT OR Apache-2.0), as the WebGPU track already uses them.
 
 ## Installed on the desktop
+
+Run 17: nothing installed. The rig's build folder of this branch,
+C:\wc\target\phase-2-graphics-direct3d-12, is kept for the next run of this track (the rig
+builds there every run); this run made no other build folder there or on the Mac's scratch.
 
 Nothing beyond the rig's setup. Run 16: C:\wc\out\phase-2-graphics-direct3d-12\bgfx-run.ps1 (a
 1 KB script) and its copies of bgfx examples and our libraries in
