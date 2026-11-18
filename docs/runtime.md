@@ -1276,9 +1276,10 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
   places mappings low first by one rule
   with each process's highest address in use, fails a crossing of the ceiling as running out of memory with a
   counter and a warning, and settles standard input in the abi before J3; the kernel test crate's driver
-  loop is replaced by the runtime's `step` and `drive`, its stand-in
-  implements `Execution` and counts the placeholder unit, its test host implements `Outside`, with a
-  `runtime` feature and `LOOK_AHEAD` (made by this track in J1 and J2); K7's module exports the kernel's six methods
+  loop is replaced by the runtime's `step` and `drive`, its stand-in implements `Execution` (counting
+  Unicorn's instructions as its progress until the owner rules on the unit; its count of the placeholder
+  unit is built with J4b, section 9), its test host implements `Outside`, with a `runtime` feature and
+  `LOOK_AHEAD` (made by this track in J1 and J2); K7's module exports the kernel's six methods
   and imports `Cpu` and `Host`; the translator emits the guest-defined progress count with a limit word
-  (before J4), and gives a form of its output with the table and the array of slots in 64 bit memory,
+  (before J4b), and gives a form of its output with the table and the array of slots in 64 bit memory,
   its widths in the cache key (before x86 runs here, and before any ARM64 process needs more than 4080 MiB).
