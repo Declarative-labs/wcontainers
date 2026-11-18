@@ -73,3 +73,27 @@ uint4 ps_coarse(VsOut i) : SV_Target0 {
     float v = pixel_product(i);
     return asuint(float4(ddx_coarse(v), ddy_coarse(v), ddx(v), fwidth(v)));
 }
+
+// Helper lanes seen through derivatives: each pixel shows whether its quad neighbours are helpers,
+// outside the triangle or discarded. The dxc build (shader model 6.6) discards first and asks
+// IsHelperLane(); the fxc build takes a lane without coverage as a helper, adds the lanes it will
+// discard, and discards them after the derivatives. Both read the coverage.
+uint4 ps_helper(VsOut i, uint coverage : SV_Coverage) : SV_Target0 {
+    uint2 p = uint2(i.position.xy);
+    bool gone = (p.x * 7 + p.y * 3) % 5 == 0;
+#if __SHADER_TARGET_MAJOR >= 6
+    if (gone) {
+        discard;
+    }
+    float h = IsHelperLane() ? 1.0 : 0.0;
+#else
+    float h = coverage == 0 || gone ? 1.0 : 0.0;
+#endif
+    uint4 r = uint4(asuint(ddx_fine(h)), asuint(ddy_fine(h)), asuint(h), coverage);
+#if __SHADER_TARGET_MAJOR < 6
+    if (gone) {
+        discard;
+    }
+#endif
+    return r;
+}

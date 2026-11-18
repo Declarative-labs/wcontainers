@@ -2009,6 +2009,30 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     inst.expect(1)?;
                     break Some(crate::Statement::Kill);
                 }
+                // The IR has no helper query: this reads the private flag `HELPER_INVOCATION`, which
+                // the module's user sets (from the coverage and at each demotion) or rejects.
+                Op::IsHelperInvocationEXT => {
+                    inst.expect(3)?;
+                    let result_type_id = self.next()?;
+                    let result_id = self.next()?;
+                    let flag = helper_invocation_flag(ctx.module, span);
+                    block.extend(emitter.finish(ctx.expressions));
+                    let pointer = ctx
+                        .expressions
+                        .append(crate::Expression::GlobalVariable(flag), span);
+                    emitter.start(ctx.expressions);
+                    let handle = ctx
+                        .expressions
+                        .append(crate::Expression::Load { pointer }, span);
+                    self.lookup_expression.insert(
+                        result_id,
+                        LookupExpression {
+                            handle,
+                            type_id: result_type_id,
+                            block_id,
+                        },
+                    );
+                }
                 // The IR's `Kill` is WGSL's `discard`, which demotes the invocation to a helper.
                 Op::DemoteToHelperInvocation => {
                     inst.expect(1)?;
@@ -3272,4 +3296,36 @@ fn make_index_literal(
 
     emitter.start(ctx.expressions);
     Ok(expr)
+}
+
+/// The private flag `OpIsHelperInvocationEXT` reads, made at its first use.
+fn helper_invocation_flag(
+    module: &mut crate::Module,
+    span: crate::Span,
+) -> Handle<crate::GlobalVariable> {
+    if let Some((handle, _)) = module
+        .global_variables
+        .iter()
+        .find(|(_, v)| v.name.as_deref() == Some(super::HELPER_INVOCATION))
+    {
+        return handle;
+    }
+    let ty = module.types.insert(
+        crate::Type {
+            name: None,
+            inner: crate::TypeInner::Scalar(crate::Scalar::BOOL),
+        },
+        span,
+    );
+    module.global_variables.append(
+        crate::GlobalVariable {
+            name: Some(super::HELPER_INVOCATION.into()),
+            space: crate::AddressSpace::Private,
+            binding: None,
+            ty,
+            init: None,
+            memory_decorations: Default::default(),
+        },
+        span,
+    )
 }

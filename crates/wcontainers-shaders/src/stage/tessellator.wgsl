@@ -388,55 +388,33 @@ fn stitch_regular(trapezoid: bool, diagonals: u32, base_offset: i32, inside_poin
         base += 3;
         outside += 1;
     }
-    var p = 0;
-    switch diagonals {
-        case 0u: {
-            for (p = 0; p < inside_points - 1; p++) {
-                clockwise_triangle(inside, outside, outside + 1, base);
-                clockwise_triangle(inside, outside + 1, inside + 1, base + 3);
-                base += 6;
-                inside += 1;
-                outside += 1;
-            }
+    // Each quad between the rows is two triangles in one of three shapes: inside to outside (a),
+    // outside to inside (b) or mirrored (c). The middle quad of `DIAGONALS_INSIDE_TO_OUTSIDE_EXCEPT_MIDDLE`
+    // and the first half of `DIAGONALS_MIRRORED` take c. One loop with the shape chosen per quad keeps
+    // the program small enough for fxc, which fails on one loop per shape.
+    let half = inside_points / 2;
+    let middle = max(half - 1, 0);
+    var quads = max(inside_points - 1, 0);
+    if diagonals == DIAGONALS_INSIDE_TO_OUTSIDE_EXCEPT_MIDDLE {
+        quads = middle + 1 + max(inside_points - middle - 2, 0);
+    }
+    for (var q = 0; q < quads; q++) {
+        var shape = 0u;
+        if diagonals == DIAGONALS_INSIDE_TO_OUTSIDE_EXCEPT_MIDDLE {
+            shape = select(1u, 2u, q == middle);
+        } else if diagonals == DIAGONALS_MIRRORED {
+            shape = select(0u, 2u, q < half);
         }
-        case 1u: {
-            for (p = 0; p < inside_points / 2 - 1; p++) {
-                clockwise_triangle(outside, outside + 1, inside, base);
-                clockwise_triangle(inside, outside + 1, inside + 1, base + 3);
-                base += 6;
-                inside += 1;
-                outside += 1;
-            }
-            clockwise_triangle(outside, inside + 1, inside, base);
-            clockwise_triangle(outside, outside + 1, inside + 1, base + 3);
-            base += 6;
-            inside += 1;
-            outside += 1;
-            p += 2;
-            for (; p < inside_points; p++) {
-                clockwise_triangle(outside, outside + 1, inside, base);
-                clockwise_triangle(inside, outside + 1, inside + 1, base + 3);
-                base += 6;
-                inside += 1;
-                outside += 1;
-            }
-        }
-        default: {
-            for (p = 0; p < inside_points / 2; p++) {
-                clockwise_triangle(outside, inside + 1, inside, base);
-                clockwise_triangle(outside, outside + 1, inside + 1, base + 3);
-                base += 6;
-                inside += 1;
-                outside += 1;
-            }
-            for (; p < inside_points - 1; p++) {
-                clockwise_triangle(inside, outside, outside + 1, base);
-                clockwise_triangle(inside, outside + 1, inside + 1, base + 3);
-                base += 6;
-                inside += 1;
-                outside += 1;
-            }
-        }
+        let first = select(select(vec3<i32>(outside, outside + 1, inside),
+                                  vec3<i32>(outside, inside + 1, inside), shape == 2u),
+                           vec3<i32>(inside, outside, outside + 1), shape == 0u);
+        let second = select(vec3<i32>(inside, outside + 1, inside + 1),
+                            vec3<i32>(outside, outside + 1, inside + 1), shape == 2u);
+        clockwise_triangle(first.x, first.y, first.z, base);
+        clockwise_triangle(second.x, second.y, second.z, base + 3);
+        base += 6;
+        inside += 1;
+        outside += 1;
     }
     if trapezoid {
         clockwise_triangle(outside, outside + 1, inside, base);
@@ -578,18 +556,14 @@ fn quad() {
             define_point(FXP_ONE, FXP_ONE, 2);
             define_point(0u, FXP_ONE, 3);
             num_points = 4;
-            switch tv.output {
-                case 0u: {
-                    dump_points();
-                }
-                case 1u: {
-                    dump_lines();
-                }
-                default: {
-                    clockwise_triangle(0, 1, 3, 0);
-                    clockwise_triangle(1, 2, 3, 3);
-                    num_indices = 6;
-                }
+            if tv.output == OUTPUT_POINT {
+                dump_points();
+            } else if tv.output == OUTPUT_LINE {
+                dump_lines();
+            } else {
+                clockwise_triangle(0, 1, 3, 0);
+                clockwise_triangle(1, 2, 3, 3);
+                num_indices = 6;
             }
             return;
         }
@@ -821,17 +795,13 @@ fn tri() {
             define_point(0u, 0u, 1);
             define_point(FXP_ONE, 0u, 2);
             num_points = 3;
-            switch tv.output {
-                case 0u: {
-                    dump_points();
-                }
-                case 1u: {
-                    dump_lines();
-                }
-                default: {
-                    clockwise_triangle(0, 1, 2, 0);
-                    num_indices = 3;
-                }
+            if tv.output == OUTPUT_POINT {
+                dump_points();
+            } else if tv.output == OUTPUT_LINE {
+                dump_lines();
+            } else {
+                clockwise_triangle(0, 1, 2, 0);
+                num_indices = 3;
             }
             return;
         }
@@ -883,17 +853,9 @@ fn tri() {
                 let q = select(end - (p - start), p, (e & 1) != 0);
                 let param = place(inner_ctx, q);
                 let along = param - (perp + 1u) / 2u;
-                switch e {
-                    case 0: {
-                        define_point(perp, along, offset);
-                    }
-                    case 1: {
-                        define_point(along, perp, offset);
-                    }
-                    default: {
-                        define_point(along, FXP_ONE - along - perp, offset);
-                    }
-                }
+                let u = select(along, perp, e == 0);
+                let v = select(select(FXP_ONE - along - perp, perp, e == 1), along, e == 0);
+                define_point(u, v, offset);
                 offset += 1;
             }
         }

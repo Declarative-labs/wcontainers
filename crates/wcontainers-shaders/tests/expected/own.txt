@@ -15,6 +15,7 @@ gs_line_adjacent.dxbc	ok-wgsl glsl-write
 gs_lines.dxbc	ok-wgsl glsl-write
 gs_points.dxbc	ok-wgsl glsl-write
 gs_quads.dxbc	ok-wgsl glsl-write
+gs_unplaced.dxbc	ok-wgsl glsl-write
 hs_line_even_line.dxbc	ok-wgsl glsl-write
 hs_line_even_point.dxbc	ok-wgsl glsl-write
 hs_line_integer_line.dxbc	ok-wgsl glsl-write
@@ -53,11 +54,13 @@ ps_coarse.dxbc	ok
 ps_depth.dxbc	ok
 ps_deriv.dxbc	ok-wgsl glsl-write
 ps_dual.dxbc	ok
-ps_fill.dxbc	ok
+ps_fill.dxbc	ok-wgsl glsl-compile
 ps_filter.dxbc	ok-wgsl glsl-compile
 ps_flat.dxbc	ok
 ps_ftoi.dxbc	ok
+ps_gatheroff.dxbc	ok-wgsl glsl-compile
 ps_geometry.dxbc	ok
+ps_helper.dxbc	ok-wgsl glsl-write
 ps_ids.dxbc	ok
 ps_integer.dxbc	ok-wgsl glsl-compile
 ps_layer.dxbc	ok

@@ -66,3 +66,10 @@ float4 ps_window(float4 position : SV_Position) : SV_Target0 {
     float2 cell = frac(position.xy / 16.0);
     return float4(cell, position.x > position.y ? 1.0 : 0.25, 1.0);
 }
+
+// Gathers whose offsets vary per pixel (gather4_po), some past six bits, which Direct3D wraps.
+float4 ps_gatheroff(VsOut i) : SV_Target0 {
+    int2 p = int2(i.position.xy);
+    int2 o = int2(p.x % 11 - 5, p.y % 7 - 3) + int2((p.y % 2) * 64, (p.x % 3) * -64);
+    return albedo.GatherRed(linear_clamp, i.uv, o) * 0.5 + albedo.GatherGreen(linear_clamp, i.uv, o.yx) * 0.25;
+}

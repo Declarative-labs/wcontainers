@@ -109,16 +109,6 @@ impl Lowering<'_> {
         }
         input_vertices(g.input)?;
         let max = g.max_vertices;
-        let has_position = self.io.iter().any(|(id, io)| {
-            io.builtin == Some(builtin::POSITION)
-                && self
-                    .ir
-                    .op(*id)
-                    .is_ok_and(|o| o.code == code::DCL_OUTPUT_BUILT_IN)
-        });
-        if !has_position {
-            return Err(unsupported("GeometryWithoutPosition"));
-        }
         let m = &mut self.module;
         let u32_ty = build::scalar(m, Scalar::U32);
         let values = stage::values(m);
@@ -174,7 +164,7 @@ impl Lowering<'_> {
         let words = b.u32(record);
         let base = b.mul(vertex, words);
         let mut slots: Vec<(Expr, ScalarKind)> = Vec::new();
-        let (pos_var, pos_scalar) = self
+        let position = self
             .io
             .iter()
             .find(|(id, io)| {
@@ -184,12 +174,21 @@ impl Lowering<'_> {
                         .op(*id)
                         .is_ok_and(|o| o.code == code::DCL_OUTPUT_BUILT_IN)
             })
-            .map(|(_, io)| (io.var, io.ty.basic().map(|m| m.scalar)))
-            .unwrap();
-        let pos_scalar = Self::scalar(pos_scalar.ok_or(unsupported("BuiltInArray"))?)?;
-        let p = b.global(pos_var);
-        let p = b.load(p);
-        slots.push((p, pos_scalar.kind));
+            .map(|(_, io)| (io.var, io.ty.basic().map(|m| m.scalar)));
+        if let Some((pos_var, pos_scalar)) = position {
+            let pos_scalar = Self::scalar(pos_scalar.ok_or(unsupported("BuiltInArray"))?)?;
+            let p = b.global(pos_var);
+            let p = b.load(p);
+            slots.push((p, pos_scalar.kind));
+        } else {
+            // A shader feeding only stream output writes no position: the record carries (0, 0, 0,
+            // -1), outside every clip volume, as a vertex program without one does.
+            let vec4 = build::vec4(&mut self.module, Scalar::F32);
+            let zero = b.expr(naga::Expression::Literal(naga::Literal::F32(0.0)));
+            let below = b.expr(naga::Expression::Literal(naga::Literal::F32(-1.0)));
+            let p = b.compose(vec4, alloc::vec![zero, zero, zero, below]);
+            slots.push((p, ScalarKind::Float));
+        }
         for &loc in &outputs {
             let v = self.location_vec4(&mut b, loc)?;
             slots.push(v);
