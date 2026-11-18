@@ -2614,7 +2614,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             _ => return Err(malformed(format!("atomic operation {what}"))),
         };
         let compared = matches!(fun, A::Exchange { compare: Some(_) });
-        let result = want.map(|_| {
+        // A compare-exchange always takes its result: naga's HLSL writer has no form without it.
+        let result = (want.is_some() || compared).then(|| {
             let ty = if compared {
                 self.l.module.generate_predeclared_type(
                     naga::PredeclaredType::AtomicCompareExchangeWeakResult(s),
@@ -2639,7 +2640,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 result,
             },
         );
-        let Some(mut v) = result else {
+        let (Some(mut v), Some(_)) = (result, want) else {
             return Ok(None);
         };
         if compared {
