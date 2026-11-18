@@ -1216,6 +1216,10 @@ fn read_parts(
     let mut written = 0;
     let mut guest = guest(kernel, cx, tid);
     for &(base, length) in parts {
+        // An empty segment is passed over whatever its address (`copy_page_to_iter`).
+        if length == 0 {
+            continue;
+        }
         let piece = &bytes[written..(written + length as usize).min(bytes.len())];
         if piece.is_empty() {
             break;
@@ -1269,6 +1273,9 @@ fn write_parts(
     let mut guest = guest(kernel, cx, tid);
     for &(base, length) in parts {
         let length = length.min(left);
+        if length == 0 {
+            continue;
+        }
         let readable = guest.accessible(base, length, Permissions::READ);
         bytes.extend_from_slice(&guest.read(base, readable)?);
         left -= length;

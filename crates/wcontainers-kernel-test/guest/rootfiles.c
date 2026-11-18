@@ -1,6 +1,7 @@
 // The container's own files as programs meet them: epoll on regular files of the root, /tmp
 // and /dev/shm, a pipe write from anonymous memory running on into a mapped program's pages not
-// read yet, directory change notices (dnotify), and what the root says it is (overlayfs).
+// read yet, directory change notices (dnotify), what the root says it is (overlayfs), and vectors
+// with an empty segment at an address that cannot be reached.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -233,7 +234,24 @@ static void direct(void) {
     unlink("/direct");
 }
 
+// readv and writev on a root file with an empty first segment at an unmapped address.
+static void empty_segments(void) {
+    int fd = open("/tmp/vectorfile", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    char data[64], back[64];
+    memset(data, 0x42, sizeof data);
+    struct iovec parts[2] = {{(void *)16, 0}, {data, sizeof data}};
+    printf("writev empty first %zd %s\n", writev(fd, parts, 2), strerror(errno));
+    lseek(fd, 0, SEEK_SET);
+    memset(back, 0, sizeof back);
+    parts[1].iov_base = back;
+    printf("readv empty first %zd %s same %d\n", readv(fd, parts, 2), strerror(errno),
+           memcmp(back, data, sizeof back) == 0);
+    close(fd);
+    unlink("/tmp/vectorfile");
+}
+
 int main(void) {
+    empty_segments();
     presents();
     direct();
     epoll_on("/tmp/epollfile");
