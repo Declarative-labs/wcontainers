@@ -10,8 +10,9 @@ use naga::{
     SampleLevel, Scalar, Span, Statement, StorageAccess, StructMember, Type, TypeInner, VectorSize,
 };
 use wcontainers_gpu::{
-    AddedBinding, HELPER_SET, HelperSlot, HelperValue, Reflection, ShaderStage, SlotKind,
-    StageExtras, VariantFlags, VariantKey, helper_binding,
+    AddedBinding, CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource, HELPER_SET,
+    HelperSlot, HelperValue, Reflection, ShaderStage, SlotKind, StageExtras, VariantFlags,
+    VariantKey, helper_binding,
 };
 
 use crate::ConvertError;
@@ -27,8 +28,29 @@ pub(crate) fn apply(
 ) -> Result<()> {
     constants_as_storage(module, variant.constants_as_storage, reflection)?;
     let mut outlined = Outlined::default();
-    if variant.lod_bias != 0 {
-        lod_bias(module, stage, variant.lod_bias, reflection, &mut outlined)?;
+    if variant.draw_base == DrawBaseSource::Arguments {
+        draw_arguments(module, reflection, &mut outlined)?;
+    }
+    let mut clamps = Vec::new();
+    if variant.lod_bias != 0 || variant.min_lod_clamped != 0 {
+        samples(
+            module,
+            stage,
+            variant,
+            reflection,
+            &mut outlined,
+            &mut clamps,
+        )?;
+    }
+    if variant.min_lod_clamped != 0 {
+        loads(
+            module,
+            stage,
+            variant,
+            reflection,
+            &mut outlined,
+            &mut clamps,
+        )?;
     }
     if variant.flags.contains(VariantFlags::TEXTURE_INFO) {
         texture_info(module, stage, reflection, &mut outlined)?;
@@ -61,7 +83,12 @@ pub(crate) fn apply(
             let counting = flags.contains(VariantFlags::COUNTING);
             let mask = flags.contains(VariantFlags::SAMPLE_MASK);
             let dual = flags.contains(VariantFlags::DUAL_SOURCE);
-            if counting || mask || dual {
+            let bias = flags.contains(VariantFlags::DEPTH_BIAS);
+            if counting || mask || dual || bias {
+                let bias = bias.then(|| {
+                    let vec4 = vector(module, 4, Scalar::F32);
+                    helper(module, reflection, stage, HelperValue::DepthBias, vec4, 16)
+                });
                 let mask = mask.then(|| {
                     let u32_ty = scalar(module, Scalar::U32);
                     helper(
@@ -79,6 +106,9 @@ pub(crate) fn apply(
                 }
                 if let Some(mask) = mask {
                     sample_mask(module, &mut w, mask);
+                }
+                if let Some(bias) = bias {
+                    depth_bias(module, &mut w, bias);
                 }
                 if counting {
                     counted(module, &mut w);
@@ -242,6 +272,7 @@ fn helper_name(value: HelperValue) -> String {
         HelperValue::LodBias { sampler } => format!("lod_bias_{sampler}"),
         HelperValue::TextureLevels { texture } => format!("levels_{texture}"),
         HelperValue::TextureSamples { texture } => format!("samples_{texture}"),
+        HelperValue::MinLod { texture } => format!("min_lod_{texture}"),
         HelperValue::SampleMask => "sample_mask".into(),
         HelperValue::ViewportAdjust => "viewport".into(),
         other => format!("{other:?}").to_lowercase(),
@@ -263,6 +294,10 @@ struct Output {
 struct Wrapped {
     f: Function,
     body: Block,
+    /// Statements run before the wrapped program, which compute from its inputs alone.
+    prologue: Block,
+    /// Where the call of the wrapped program is in `body`.
+    call_at: usize,
     outputs: Vec<Output>,
     /// The original result: one bound value, or a struct of them.
     original: Option<(Handle<Type>, bool)>,
@@ -299,6 +334,7 @@ impl Wrapped {
         let returned = result
             .as_ref()
             .map(|_| push(&mut f, &mut body, Expression::CallResult(callee)));
+        let call_at = body.len();
         body.push(
             Statement::Call {
                 function: callee,
@@ -338,6 +374,8 @@ impl Wrapped {
         Wrapped {
             f,
             body,
+            prologue: Block::new(),
+            call_at,
             outputs,
             original,
             changed: false,
@@ -348,7 +386,42 @@ impl Wrapped {
         self.outputs.iter().position(|o| is(&o.binding))
     }
 
+    /// The entry point's input bound as `is` says, read in the prologue; made an argument of type
+    /// `ty` bound by `binding` where the program has none.
+    fn input(
+        &mut self,
+        module: &Module,
+        is: impl Fn(&Binding) -> bool,
+        binding: Binding,
+        ty: Handle<Type>,
+    ) -> Handle<Expression> {
+        let (f, prologue) = (&mut self.f, &mut self.prologue);
+        for i in 0..f.arguments.len() {
+            let a = &f.arguments[i];
+            if a.binding.as_ref().is_some_and(&is) {
+                return push(f, prologue, Expression::FunctionArgument(i as u32));
+            }
+            if let TypeInner::Struct { members, .. } = &module.types[a.ty].inner
+                && let Some(m) = members
+                    .iter()
+                    .position(|m| m.binding.as_ref().is_some_and(&is))
+            {
+                let s = push(f, prologue, Expression::FunctionArgument(i as u32));
+                return index(f, prologue, s, m as u32);
+            }
+        }
+        f.arguments.push(FunctionArgument {
+            name: None,
+            ty,
+            binding: Some(binding),
+        });
+        let i = f.arguments.len() as u32 - 1;
+        push(f, prologue, Expression::FunctionArgument(i))
+    }
+
     fn finish(mut self, module: &mut Module) {
+        let prologue = core::mem::take(&mut self.prologue);
+        self.body.splice(self.call_at..self.call_at, prologue);
         let f = &mut self.f;
         let value = match self.original {
             Some((_, true)) if !self.changed => Some(self.outputs[0].value),
@@ -503,6 +576,101 @@ fn sample_mask(module: &mut Module, w: &mut Wrapped, helper: (Handle<GlobalVaria
             w.changed = true;
         }
     }
+}
+
+/// The fragment's depth written with Direct3D's depth bias added: constant units times the format's
+/// step plus the slope scale times the larger window depth slope, clamped as the bias clamp's sign
+/// says. A depth the program writes itself is kept, as the fixed function biases only the rasterised
+/// depth.
+fn depth_bias(module: &mut Module, w: &mut Wrapped, helper: (Handle<GlobalVariable>, u32)) {
+    use naga::BinaryOperator::{Add, Greater, Less, Multiply};
+    if w.output(|b| *b == Binding::BuiltIn(BuiltIn::FragDepth))
+        .is_some()
+    {
+        return;
+    }
+    let vec4 = vector(module, 4, Scalar::F32);
+    let position = w.input(
+        module,
+        |b| matches!(b, Binding::BuiltIn(BuiltIn::Position { .. })),
+        Binding::BuiltIn(BuiltIn::Position { invariant: false }),
+        vec4,
+    );
+    let (f, body) = (&mut w.f, &mut w.prologue);
+    let z = index(f, body, position, 2);
+    let bias = load_helper(f, body, helper);
+    let [units, scale, clamp, step] = [0, 1, 2, 3].map(|i| index(f, body, bias, i));
+    let slopes = [naga::DerivativeAxis::X, naga::DerivativeAxis::Y].map(|axis| {
+        let d = push(
+            f,
+            body,
+            Expression::Derivative {
+                axis,
+                ctrl: naga::DerivativeControl::None,
+                expr: z,
+            },
+        );
+        math(f, body, MathFunction::Abs, [d, d])
+    });
+    let slope = math(f, body, MathFunction::Max, slopes);
+    let constant = binary(f, body, Multiply, units, step);
+    let sloped = binary(f, body, Multiply, scale, slope);
+    let raw = binary(f, body, Add, constant, sloped);
+    let zero = f32_lit(f, 0.0);
+    let bounded = [
+        math(f, body, MathFunction::Min, [raw, clamp]),
+        math(f, body, MathFunction::Max, [raw, clamp]),
+    ];
+    let positive = binary(f, body, Greater, clamp, zero);
+    let negative = binary(f, body, Less, clamp, zero);
+    let clamped = push(
+        f,
+        body,
+        Expression::Select {
+            condition: negative,
+            accept: bounded[1],
+            reject: raw,
+        },
+    );
+    let clamped = push(
+        f,
+        body,
+        Expression::Select {
+            condition: positive,
+            accept: bounded[0],
+            reject: clamped,
+        },
+    );
+    let value = binary(f, body, Add, z, clamped);
+    let ty = scalar(module, Scalar::F32);
+    w.outputs.push(Output {
+        name: Some("depth".into()),
+        ty,
+        binding: Binding::BuiltIn(BuiltIn::FragDepth),
+        value,
+    });
+    w.changed = true;
+}
+
+/// A math function of one or two arguments (the second ignored for one-argument functions).
+fn math(
+    f: &mut Function,
+    body: &mut Block,
+    fun: MathFunction,
+    [arg, arg1]: [Handle<Expression>; 2],
+) -> Handle<Expression> {
+    let arg1 = (fun.argument_count() > 1).then_some(arg1);
+    push(
+        f,
+        body,
+        Expression::Math {
+            fun,
+            arg,
+            arg1,
+            arg2: None,
+            arg3: None,
+        },
+    )
 }
 
 /// The counting variant's outputs: 1.0 at location 0 with target 0's alpha (for alpha to coverage),
@@ -701,6 +869,149 @@ fn constants_as_storage(
     Ok(())
 }
 
+/// Bases read from an indirect draw's arguments: the draw bases' block (16 bytes at offset 0, made by
+/// either route) becomes [`HelperValue::DrawArguments`], and each read of the base vertex or first
+/// instance becomes a read of the argument buffer at [`DRAW_ARGUMENTS_BINDING`]. In words from the
+/// draw's offset, the base vertex is at 2 and the first instance at 3, one later when indexed.
+fn draw_arguments(
+    module: &mut Module,
+    reflection: &mut Reflection,
+    outlined: &mut Outlined,
+) -> Result<()> {
+    let Some(slot) = reflection
+        .helpers
+        .iter_mut()
+        .find(|s| s.value == HelperValue::DrawBase)
+    else {
+        return Ok(());
+    };
+    slot.value = HelperValue::DrawArguments;
+    let block = naga::ResourceBinding {
+        group: HELPER_SET,
+        binding: helper_binding(ShaderStage::Vertex),
+    };
+    let helpers = module
+        .global_variables
+        .iter()
+        .find(|(_, g)| g.binding == Some(block))
+        .map(|(h, _)| h)
+        .ok_or(ConvertError::Malformed(
+            "draw bases without their block".into(),
+        ))?;
+    let u32_ty = scalar(module, Scalar::U32);
+    let i32_ty = scalar(module, Scalar::I32);
+    let member = |name: &str, offset| StructMember {
+        name: Some(name.into()),
+        ty: u32_ty,
+        binding: None,
+        offset,
+    };
+    let ty = module.types.insert(
+        Type {
+            name: Some("Helpers".into()),
+            inner: TypeInner::Struct {
+                members: alloc::vec![
+                    member("arguments_offset", 0),
+                    member("indexed", 4),
+                    member("draw", 8),
+                ],
+                span: 16,
+            },
+        },
+        Span::UNDEFINED,
+    );
+    module.global_variables[helpers].ty = ty;
+    let words = module.types.insert(
+        Type {
+            name: None,
+            inner: TypeInner::Array {
+                base: u32_ty,
+                size: naga::ArraySize::Dynamic,
+                stride: 4,
+            },
+        },
+        Span::UNDEFINED,
+    );
+    let arguments = module.global_variables.append(
+        GlobalVariable {
+            name: Some("draw_arguments".into()),
+            space: AddressSpace::Storage {
+                access: StorageAccess::LOAD,
+            },
+            binding: Some(naga::ResourceBinding {
+                group: HELPER_SET,
+                binding: DRAW_ARGUMENTS_BINDING,
+            }),
+            ty: words,
+            init: None,
+            memory_decorations: Default::default(),
+        },
+        Span::UNDEFINED,
+    );
+    // The reader of word `first` (plus one when indexed), as the type the block's member had.
+    let reader = |first: u32, signed: bool| {
+        use naga::BinaryOperator::Add;
+        let mut f = Function {
+            name: Some(
+                if signed {
+                    "base_vertex"
+                } else {
+                    "first_instance"
+                }
+                .into(),
+            ),
+            result: Some(FunctionResult {
+                ty: if signed { i32_ty } else { u32_ty },
+                binding: None,
+            }),
+            ..Default::default()
+        };
+        let mut body = Block::new();
+        let at = load_helper(&mut f, &mut body, (helpers, 0));
+        let indexed = load_helper(&mut f, &mut body, (helpers, 1));
+        let first = f
+            .expressions
+            .append(Expression::Literal(Literal::U32(first)), Span::UNDEFINED);
+        let word = binary(&mut f, &mut body, Add, at, first);
+        let word = binary(&mut f, &mut body, Add, word, indexed);
+        let base = push(&mut f, &mut body, Expression::GlobalVariable(arguments));
+        let pointer = push(&mut f, &mut body, Expression::Access { base, index: word });
+        let mut value = push(&mut f, &mut body, Expression::Load { pointer });
+        if signed {
+            value = push(
+                &mut f,
+                &mut body,
+                Expression::As {
+                    expr: value,
+                    kind: naga::ScalarKind::Sint,
+                    convert: None,
+                },
+            );
+        }
+        body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
+        f.body = body;
+        f
+    };
+    let mut sites = Vec::new();
+    for (owner, f) in owners(module) {
+        for (h, e) in f.expressions.iter() {
+            let Expression::Load { pointer } = *e else {
+                continue;
+            };
+            if let Expression::AccessIndex { base, index } = f.expressions[pointer]
+                && index < 2
+                && f.expressions[base] == Expression::GlobalVariable(helpers)
+            {
+                sites.push((owner, h, index));
+            }
+        }
+    }
+    for (owner, h, index) in sites {
+        outlined.add(owner, h, reader(2 + index, index == 0), Vec::new());
+    }
+    Ok(())
+}
+
 // Expressions replaced by calls.
 
 /// Expressions to be replaced by calls to new functions: the functions are put ahead of every other in
@@ -889,90 +1200,154 @@ fn register_of(
         .map(|b| b.register)
 }
 
-/// Samplings through the samplers of `slots` add the sampler's level-of-detail bias from the helper
-/// block: an implicit level becomes a bias, a bias and an explicit level grow by it, and gradients are
-/// scaled by two to its power.
-fn lod_bias(
+/// Samplings the variant changes, each replaced by one callee that applies every change it asks for.
+/// Through a sampler in `lod_bias`, the sampler's level-of-detail bias from the helper block is added:
+/// an implicit level becomes a bias, a bias and an explicit level grow by it, and gradients are scaled
+/// by two to its power. Of a texture in `min_lod_clamped`, samples go through the merged sampler of
+/// their pair (`CLAMPED_SAMPLER_BINDING` plus the pair's index, which carries the clamp), and samples
+/// and gathers read zero where the clamp leaves the access no level (`min_lod_zero`).
+fn samples(
     module: &mut Module,
     stage: ShaderStage,
-    slots: u16,
+    variant: &VariantKey,
     reflection: &mut Reflection,
     outlined: &mut Outlined,
+    clamps: &mut Vec<(u32, (Handle<GlobalVariable>, u32))>,
 ) -> Result<()> {
     struct Site {
         owner: usize,
         h: Handle<Expression>,
         sampler: u32,
+        biased: bool,
+        clamped: Option<(u32, Handle<Type>)>,
     }
     let mut sites = Vec::new();
     for (owner, f) in owners(module) {
         for (h, e) in f.expressions.iter() {
             let Expression::ImageSample {
+                image,
                 sampler,
-                gather: None,
+                gather,
                 ..
             } = *e
             else {
                 continue;
             };
             let g = global_of(f, sampler).ok_or(ConvertError::Unsupported("SamplerArgument"))?;
-            let Some(r) = register_of(module, reflection, g, SlotKind::Sampler) else {
+            let Some(s) = register_of(module, reflection, g, SlotKind::Sampler) else {
                 continue;
             };
-            if slots & (1 << r) != 0 {
+            let t = global_of(f, image).ok_or(ConvertError::Unsupported("TextureArgument"))?;
+            let clamped = register_of(module, reflection, t, SlotKind::Texture)
+                .filter(|&r| r < 128 && variant.min_lod_clamped & (1 << r) != 0)
+                .map(|r| (r, module.global_variables[g].ty));
+            let biased = gather.is_none() && variant.lod_bias & (1 << s) != 0;
+            if biased || clamped.is_some() {
                 sites.push(Site {
                     owner,
                     h,
-                    sampler: r,
+                    sampler: s,
+                    biased,
+                    clamped,
                 });
             }
         }
     }
-    let mut helpers: Vec<(u32, (Handle<GlobalVariable>, u32))> = Vec::new();
+    let mut biases: Vec<(u32, (Handle<GlobalVariable>, u32))> = Vec::new();
+    let mut merged: Vec<(usize, Handle<GlobalVariable>)> = Vec::new();
     for site in sites {
-        let helper_at = match helpers.iter().find(|(s, _)| *s == site.sampler) {
-            Some((_, h)) => *h,
-            None => {
-                let f32_ty = scalar(module, Scalar::F32);
-                let value = HelperValue::LodBias {
-                    sampler: site.sampler,
-                };
-                let h = helper(module, reflection, stage, value, f32_ty, 4);
-                helpers.push((site.sampler, h));
-                h
-            }
-        };
-        let f = function(module, site.owner);
+        let bias_at = site
+            .biased
+            .then(|| match biases.iter().find(|(s, _)| *s == site.sampler) {
+                Some((_, h)) => *h,
+                None => {
+                    let f32_ty = scalar(module, Scalar::F32);
+                    let value = HelperValue::LodBias {
+                        sampler: site.sampler,
+                    };
+                    let h = helper(module, reflection, stage, value, f32_ty, 4);
+                    biases.push((site.sampler, h));
+                    h
+                }
+            });
+        let f = function(module, site.owner).clone();
         let Expression::ImageSample {
             image,
             sampler,
+            gather,
             coordinate,
             array_index,
             offset,
             level,
             depth_ref,
             clamp_to_edge,
-            ..
         } = f.expressions[site.h].clone()
         else {
             unreachable!()
         };
-        if depth_ref.is_some() {
+        if site.biased && depth_ref.is_some() {
             return Err(ConvertError::Unsupported("LodBiasOnComparison"));
         }
-        let mut operands = alloc::vec![image, sampler, coordinate];
+        if site.clamped.is_some() && depth_ref.is_some() {
+            return Err(ConvertError::Unsupported("MinLodOnComparison"));
+        }
+        // The merged sampler of the pair, made on first use; gathers read level 0 whatever the
+        // sampler's range, so they keep their own.
+        let merged_sampler = match site.clamped {
+            Some((texture, ty)) if gather.is_none() => {
+                let pair = reflection
+                    .sampled_pairs
+                    .iter()
+                    .position(|&p| p == (texture, site.sampler))
+                    .ok_or_else(|| {
+                        ConvertError::Malformed("a sampled pair missing from the reflection".into())
+                    })?;
+                Some(match merged.iter().find(|(p, _)| *p == pair) {
+                    Some((_, g)) => *g,
+                    None => {
+                        let g = module.global_variables.append(
+                            GlobalVariable {
+                                name: Some(format!("clamped_sampler_{pair}")),
+                                space: AddressSpace::Handle,
+                                binding: Some(naga::ResourceBinding {
+                                    group: HELPER_SET,
+                                    binding: CLAMPED_SAMPLER_BINDING + pair as u32,
+                                }),
+                                ty,
+                                init: None,
+                                memory_decorations: Default::default(),
+                            },
+                            Span::UNDEFINED,
+                        );
+                        merged.push((pair, g));
+                        g
+                    }
+                })
+            }
+            _ => None,
+        };
+        let clamp_at = site
+            .clamped
+            .map(|(texture, _)| min_lod_helper(module, reflection, stage, texture, clamps));
+        // The callee's arguments: the image, the sampler unless the merged one replaces it, the
+        // coordinate, the array index and the level's operands; the last operand only types the result.
+        let mut operands = alloc::vec![image];
+        if merged_sampler.is_none() {
+            operands.push(sampler);
+        }
+        operands.push(coordinate);
         operands.extend(array_index);
+        let next = operands.len();
         match level {
             SampleLevel::Exact(e) | SampleLevel::Bias(e) => operands.push(e),
             SampleLevel::Gradient { x, y } => operands.extend([x, y]),
             SampleLevel::Auto | SampleLevel::Zero => {}
         }
         operands.push(site.h);
-        let f = function(module, site.owner).clone();
         let types = types_of(module, &f, &operands)?;
         let result = *types.last().unwrap();
         let mut callee = Function {
-            name: Some(format!("sample_biased_{}", site.sampler)),
+            name: Some(format!("sample_{}", site.sampler)),
             result: Some(FunctionResult {
                 ty: result,
                 binding: None,
@@ -995,60 +1370,63 @@ fn lod_bias(
             ));
         }
         let arg = |i: usize| args[i];
-        let depth = matches!(
-            module.types[types[0]].inner,
-            TypeInner::Image {
-                class: ImageClass::Depth { .. },
-                ..
-            }
-        );
-        if depth && matches!(level, SampleLevel::Zero | SampleLevel::Exact(_)) {
-            return Err(ConvertError::Unsupported("LodBiasOnDepthLevel"));
-        }
-        let bias = load_helper(&mut callee, &mut body, helper_at);
-        let next = 3 + usize::from(array_index.is_some());
-        let level = match level {
-            SampleLevel::Auto => SampleLevel::Bias(bias),
-            SampleLevel::Zero => SampleLevel::Exact(bias),
-            SampleLevel::Exact(_) => SampleLevel::Exact(binary(
-                &mut callee,
-                &mut body,
-                naga::BinaryOperator::Add,
-                arg(next),
-                bias,
-            )),
-            SampleLevel::Bias(_) => SampleLevel::Bias(binary(
-                &mut callee,
-                &mut body,
-                naga::BinaryOperator::Add,
-                arg(next),
-                bias,
-            )),
-            SampleLevel::Gradient { .. } => {
-                let scale = push(
-                    &mut callee,
-                    &mut body,
-                    Expression::Math {
-                        fun: MathFunction::Exp2,
-                        arg: bias,
-                        arg1: None,
-                        arg2: None,
-                        arg3: None,
-                    },
+        let sampler = match merged_sampler {
+            Some(g) => push(&mut callee, &mut body, Expression::GlobalVariable(g)),
+            None => arg(1),
+        };
+        let coordinate = arg(if merged_sampler.is_some() { 1 } else { 2 });
+        let array_index = array_index.map(|_| arg(next - 1));
+        let level = match bias_at {
+            Some(bias_at) => {
+                let depth = matches!(
+                    module.types[types[0]].inner,
+                    TypeInner::Image {
+                        class: ImageClass::Depth { .. },
+                        ..
+                    }
                 );
-                let mut scaled = |g: Handle<Expression>| {
-                    binary(
-                        &mut callee,
-                        &mut body,
-                        naga::BinaryOperator::Multiply,
-                        g,
-                        scale,
-                    )
+                if depth && matches!(level, SampleLevel::Zero | SampleLevel::Exact(_)) {
+                    return Err(ConvertError::Unsupported("LodBiasOnDepthLevel"));
+                }
+                let bias = load_helper(&mut callee, &mut body, bias_at);
+                let add = |callee: &mut Function, body: &mut Block, e| {
+                    binary(callee, body, naga::BinaryOperator::Add, e, bias)
                 };
-                let x = scaled(arg(next));
-                let y = scaled(arg(next + 1));
-                SampleLevel::Gradient { x, y }
+                match level {
+                    SampleLevel::Auto => SampleLevel::Bias(bias),
+                    SampleLevel::Zero => SampleLevel::Exact(bias),
+                    SampleLevel::Exact(_) => {
+                        SampleLevel::Exact(add(&mut callee, &mut body, arg(next)))
+                    }
+                    SampleLevel::Bias(_) => {
+                        SampleLevel::Bias(add(&mut callee, &mut body, arg(next)))
+                    }
+                    SampleLevel::Gradient { .. } => {
+                        let scale = math(&mut callee, &mut body, MathFunction::Exp2, [bias; 2]);
+                        let mut scaled = |g: Handle<Expression>| {
+                            binary(
+                                &mut callee,
+                                &mut body,
+                                naga::BinaryOperator::Multiply,
+                                g,
+                                scale,
+                            )
+                        };
+                        let x = scaled(arg(next));
+                        let y = scaled(arg(next + 1));
+                        SampleLevel::Gradient { x, y }
+                    }
+                }
             }
+            None => match level {
+                SampleLevel::Exact(_) => SampleLevel::Exact(arg(next)),
+                SampleLevel::Bias(_) => SampleLevel::Bias(arg(next)),
+                SampleLevel::Gradient { .. } => SampleLevel::Gradient {
+                    x: arg(next),
+                    y: arg(next + 1),
+                },
+                other => other,
+            },
         };
         if stage != ShaderStage::Fragment && matches!(level, SampleLevel::Bias(_)) {
             return Err(ConvertError::Malformed(
@@ -1056,29 +1434,215 @@ fn lod_bias(
             ));
         }
         let offset = offset.map(|o| copy_constant(&f, o, &mut callee));
-        let sample = push(
+        let mut value = push(
             &mut callee,
             &mut body,
             Expression::ImageSample {
                 image: arg(0),
-                sampler: arg(1),
-                gather: None,
-                coordinate: arg(2),
-                array_index: array_index.map(|_| arg(3)),
+                sampler,
+                gather,
+                coordinate,
+                array_index,
                 offset,
                 level,
                 depth_ref: None,
                 clamp_to_edge,
             },
         );
-        body.push(
-            Statement::Return {
-                value: Some(sample),
-            },
-            Span::UNDEFINED,
-        );
+        if let Some(clamp_at) = clamp_at {
+            // A gather reads level 0 only, which a clamp of one or more leaves out.
+            let read = gather.is_some().then(|| f32_lit(&mut callee, 0.0));
+            value = min_lod_zero(&mut callee, &mut body, clamp_at, read, result, value);
+        }
+        body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
         callee.body = body;
         outlined.add(site.owner, site.h, callee, operands[..n].to_vec());
+    }
+    Ok(())
+}
+
+/// The helper member holding texture `texture`'s clamp and level count (two u32, the clamp's f32 bits
+/// first), made on first use.
+fn min_lod_helper(
+    module: &mut Module,
+    reflection: &mut Reflection,
+    stage: ShaderStage,
+    texture: u32,
+    made: &mut Vec<(u32, (Handle<GlobalVariable>, u32))>,
+) -> (Handle<GlobalVariable>, u32) {
+    if let Some((_, at)) = made.iter().find(|(t, _)| *t == texture) {
+        return *at;
+    }
+    let vec2 = vector(module, 2, Scalar::U32);
+    let at = helper(
+        module,
+        reflection,
+        stage,
+        HelperValue::MinLod { texture },
+        vec2,
+        8,
+    );
+    made.push((texture, at));
+    at
+}
+
+/// `value`, or zero (Direct3D's out-of-bounds result) where the per-resource clamp leaves the access no
+/// level: when the clamp passes the view's last level, or when the level the access reads (`level`, an
+/// f32 expression or a constant) is below the clamp's whole part.
+fn min_lod_zero(
+    f: &mut Function,
+    body: &mut Block,
+    clamp_at: (Handle<GlobalVariable>, u32),
+    level: Option<Handle<Expression>>,
+    ty: Handle<Type>,
+    value: Handle<Expression>,
+) -> Handle<Expression> {
+    use naga::BinaryOperator as Op;
+    let m = load_helper(f, body, clamp_at);
+    let bits = index(f, body, m, 0);
+    let clamp = push(
+        f,
+        body,
+        Expression::As {
+            expr: bits,
+            kind: naga::ScalarKind::Float,
+            convert: None,
+        },
+    );
+    let count = index(f, body, m, 1);
+    let count = push(
+        f,
+        body,
+        Expression::As {
+            expr: count,
+            kind: naga::ScalarKind::Float,
+            convert: Some(4),
+        },
+    );
+    let one = f32_lit(f, 1.0);
+    let last = binary(f, body, Op::Subtract, count, one);
+    let mut zero_when = binary(f, body, Op::Greater, clamp, last);
+    if let Some(level) = level {
+        let whole = math(f, body, MathFunction::Floor, [clamp; 2]);
+        let below = binary(f, body, Op::Less, level, whole);
+        zero_when = binary(f, body, Op::LogicalOr, zero_when, below);
+    }
+    let zero = push(f, body, Expression::ZeroValue(ty));
+    push(
+        f,
+        body,
+        Expression::Select {
+            condition: zero_when,
+            accept: zero,
+            reject: value,
+        },
+    )
+}
+
+/// Loads of textures in `min_lod_clamped` read zero where the clamp leaves their level out.
+fn loads(
+    module: &mut Module,
+    stage: ShaderStage,
+    variant: &VariantKey,
+    reflection: &mut Reflection,
+    outlined: &mut Outlined,
+    clamps: &mut Vec<(u32, (Handle<GlobalVariable>, u32))>,
+) -> Result<()> {
+    let mut sites = Vec::new();
+    for (owner, f) in owners(module) {
+        for (h, e) in f.expressions.iter() {
+            let Expression::ImageLoad { image, .. } = *e else {
+                continue;
+            };
+            let g = global_of(f, image).ok_or(ConvertError::Unsupported("TextureArgument"))?;
+            let Some(r) = register_of(module, reflection, g, SlotKind::Texture) else {
+                continue;
+            };
+            if r < 128 && variant.min_lod_clamped & (1 << r) != 0 {
+                sites.push((owner, h, r));
+            }
+        }
+    }
+    for (owner, h, texture) in sites {
+        let clamp_at = min_lod_helper(module, reflection, stage, texture, clamps);
+        let f = function(module, owner).clone();
+        let Expression::ImageLoad {
+            image,
+            coordinate,
+            array_index,
+            sample,
+            level,
+        } = f.expressions[h].clone()
+        else {
+            unreachable!()
+        };
+        let mut operands = alloc::vec![image, coordinate];
+        operands.extend(array_index);
+        operands.extend(sample);
+        operands.extend(level);
+        operands.push(h);
+        let types = types_of(module, &f, &operands)?;
+        let result = *types.last().unwrap();
+        let mut callee = Function {
+            name: Some(format!("load_clamped_{texture}")),
+            result: Some(FunctionResult {
+                ty: result,
+                binding: None,
+            }),
+            ..Default::default()
+        };
+        let mut body = Block::new();
+        let n = operands.len() - 1;
+        let mut args = Vec::new();
+        for (i, &ty) in types[..n].iter().enumerate() {
+            callee.arguments.push(FunctionArgument {
+                name: None,
+                ty,
+                binding: None,
+            });
+            args.push(push(
+                &mut callee,
+                &mut body,
+                Expression::FunctionArgument(i as u32),
+            ));
+        }
+        let mut next = 2;
+        let mut take = |o: Option<Handle<Expression>>| {
+            o.map(|_| {
+                next += 1;
+                args[next - 1]
+            })
+        };
+        let array_index = take(array_index);
+        let sample = take(sample);
+        let level = take(level);
+        let value = push(
+            &mut callee,
+            &mut body,
+            Expression::ImageLoad {
+                image: args[0],
+                coordinate: args[1],
+                array_index,
+                sample,
+                level,
+            },
+        );
+        let read = match level {
+            Some(l) => push(
+                &mut callee,
+                &mut body,
+                Expression::As {
+                    expr: l,
+                    kind: naga::ScalarKind::Float,
+                    convert: Some(4),
+                },
+            ),
+            None => f32_lit(&mut callee, 0.0),
+        };
+        let value = min_lod_zero(&mut callee, &mut body, clamp_at, Some(read), result, value);
+        body.push(Statement::Return { value: Some(value) }, Span::UNDEFINED);
+        callee.body = body;
+        outlined.add(owner, h, callee, operands[..n].to_vec());
     }
     Ok(())
 }

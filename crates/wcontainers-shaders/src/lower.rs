@@ -605,9 +605,8 @@ impl<'a> Lowering<'a> {
     fn check_builtin(&self, b: u64, input: bool) -> Result<()> {
         let ok = match (self.stage, input, b) {
             (_, false, builtin::POSITION) => self.stage == SourceStage::Vertex,
-            (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => {
-                self.variant.draw_base != DrawBaseSource::Arguments
-            }
+            (SourceStage::Vertex, false, builtin::CLIP_DISTANCE) => true,
+            (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
             | (SourceStage::Pixel, true, builtin::SAMPLE_ID | builtin::SAMPLE_MASK)
@@ -635,16 +634,13 @@ impl<'a> Lowering<'a> {
             builtin::SAMPLE_POSITION => "SamplePosition",
             builtin::STENCIL_REF => "StencilRef",
             builtin::IS_FULLY_COVERED => "InnerCoverage",
-            builtin::VERTEX_ID | builtin::INSTANCE_ID => "DrawBaseFromArguments",
             _ => "BuiltIn",
         }))
     }
 
-    /// The vertex stage's helper constants: the draw's bases at offset 0.
+    /// The vertex stage's helper constants: the draw's bases at offset 0 (for bases from an indirect
+    /// draw's arguments too, which the variant pass then reads from them).
     fn helper_block(&mut self) -> Result<()> {
-        if self.variant.draw_base == DrawBaseSource::Arguments {
-            return Err(unsupported("DrawBaseFromArguments"));
-        }
         let i32_ty = self.scalar_ty(Scalar::I32);
         let u32_ty = self.scalar_ty(Scalar::U32);
         let members = vec![
@@ -817,6 +813,46 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let b = io.builtin.unwrap();
+            if b == builtin::CLIP_DISTANCE {
+                // The common form's clip distances are one array of f32, however the IR groups them.
+                let element = io.ty.members[..]
+                    == [Basic {
+                        scalar: scalar::F32,
+                        size: 1,
+                    }];
+                let count: u32 = io.ty.dims.iter().product();
+                if !element || !(1..=8).contains(&count) {
+                    return Err(unsupported("ClipDistanceType"));
+                }
+                let (var, ty) = (io.var, io.ty.clone());
+                let p = e.add(&mut f, &mut body, Expression::GlobalVariable(var));
+                let mut v = e.add(&mut f, &mut body, Expression::Load { pointer: p });
+                let f32_ty = self.scalar_ty(Scalar::F32);
+                let array = self.ty(TypeInner::Array {
+                    base: f32_ty,
+                    size: ArraySize::Constant(NonZeroU32::new(count).unwrap()),
+                    stride: 4,
+                });
+                if ty.dims.is_empty() {
+                    v = e.add(
+                        &mut f,
+                        &mut body,
+                        Expression::Compose {
+                            ty: array,
+                            components: alloc::vec![v],
+                        },
+                    );
+                }
+                members.push((
+                    format!("b{b}"),
+                    array,
+                    naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances),
+                ));
+                values.push(v);
+                let element = ty.members[0];
+                self.reflect_value(id, false, None, 0, element, 0, system_value(b));
+                continue;
+            }
             let member = io.ty.basic().ok_or(unsupported("BuiltInArray"))?;
             let var = io.var;
             let p = e.add(&mut f, &mut body, Expression::GlobalVariable(var));
@@ -1163,6 +1199,7 @@ fn system_value(b: u64) -> Option<SystemValue> {
         builtin::SAMPLE_ID => SystemValue::SampleIndex,
         builtin::SAMPLE_MASK => SystemValue::Coverage,
         builtin::DEPTH => SystemValue::Depth,
+        builtin::CLIP_DISTANCE => SystemValue::ClipDistance,
         _ => return None,
     })
 }

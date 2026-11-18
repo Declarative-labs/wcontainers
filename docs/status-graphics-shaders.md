@@ -8,9 +8,10 @@ Milestone G6a (first slice): done in run 3; runs 4, 5, 6, 8 and 9 fixed what the
 of runs 3, 4, 5, 7 and 8 found (listed under "Run 4" to "Run 9" below); run 7 drew run 6's fixes on
 the GPU. Milestone G6 in full (section 12's pass bar) is not done: run 9 (the first run on it) fixed
 the run 8 check's findings and built the cache of section 8; run 10 built ten of the variant key's
-rewrites with drawn tests and the corpus of real programs' shaders; what remains is under Next. Run
-10 merged origin/phase-2-graphics, -direct3d-11, -direct3d-12 and -webgpu (no conflicts; the
-others had nothing new).
+rewrites with drawn tests and the corpus of real programs' shaders; run 11 built depth bias and the
+draw bases from an indirect draw's arguments, with drawn tests; run 12 built the minimum
+level-of-detail clamp with drawn tests; what remains is under Next. Run 12 merged
+origin/phase-2-graphics and -direct3d-11 (no conflicts; the other branches had nothing new).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -299,12 +300,12 @@ Run 10 (variants and the real programs' shaders):
   on a 4-level texture, which shows Direct3D applies it to explicit levels too; comparisons refused
   `LodBiasOnComparison`, depth levels `LodBiasOnDepthLevel`), `constants_as_storage` (read-only
   storage at the first storage binding past the program's, `AddedBinding::ConstantsAsStorage`).
-- Still refused by name: the flags `ProvokingRewrite`, `DepthBiasInShader`, `EarlyTestsInShader`,
+- Still refused by name (run 11 built `DepthBiasInShader` and `DrawBaseFromArguments`): the flags
+  `ProvokingRewrite`, `EarlyTestsInShader`,
   `AntialiasedLinesAsQuads`, `ClipDistanceInShader`, `DepthClampInShader`, `PrimitiveIdAsGeometry`,
   and the fields `FilterInShader`, `BorderInShader`, `MirrorOnceInShader`, `ConstantsAsTexture`,
   `VertexPulledInShader`, `StorageFormats`, `TexelBufferRoute`, `StoragePacked`,
-  `TexelsThroughBuffer`, `NormAsInteger`, `TargetsInShader`, `MinLodClamp`, `RootSignatureLayout`,
-  `DrawBaseFromArguments`.
+  `TexelsThroughBuffer`, `NormAsInteger`, `TargetsInShader`, `RootSignatureLayout` (run 12 built `MinLodClamp`).
 - The real programs' shaders: `examples/containers.rs` finds every DXBC and DXIL container in the
   files under a directory (header and chunk table checked, distinct ones by BLAKE3) and lists where
   each came from. Run over the rig's real programs (C:\wc\programs) it found 890: 529 DXBC and 361
@@ -324,11 +325,76 @@ Run 10 (variants and the real programs' shaders):
   draw with a `Reference` of its changes: texture levels, sampler bias, blending, an occlusion query,
   a depth buffer and range).
 
+Run 11 (variants):
+- `DEPTH_BIAS` (pixel programs): the wrapped entry point writes the fragment's depth plus Direct3D's
+  bias from `HelperValue::DepthBias` (units times the step, plus the slope scale times the larger
+  of `|dpdx(z)|` and `|dpdy(z)|`, clamped by the clamp's sign), computed in a prologue before the
+  program runs. A depth the program writes itself is left as written (the fixed function biases only
+  the rasterised depth; not measured against Direct3D). The wrapper gained a prologue and a way to
+  read an entry input, adding it as an argument where the program has none.
+- `DrawBaseSource::Arguments` (vertex programs), on both routes: each route builds the bases' block
+  as for `Helpers`, then one rewrite on the common form turns it into `HelperValue::DrawArguments`
+  (word offset, indexed, draw number) and replaces each load of the base vertex or first instance by
+  a call that reads the argument buffer bound read-only at `DRAW_ARGUMENTS_BINDING` in set 3: word
+  offset + 2 (base vertex, as i32) or + 3 (first instance), one more when indexed.
+- New own shaders `vs_ids`/`ps_ids` (`variants.hlsl`, fxc and dxc): the vertex and instance numbers
+  as colours, the triangle's number so the provoking vertex does not matter. Every other own shader
+  recompiled byte for byte as committed.
+- Drawn (`tests/variant_draw.rs`, numbers under Measurements): depth bias against real Direct3D 11
+  drawing into D24_UNORM_S8_UINT with the rasteriser's bias, ours into Depth32Float taken to 24-bit
+  codes, unclamped and clamped (the test also checks that the clamp changes Direct3D's depth); the
+  draw bases (direct by the helpers, indirect by the arguments; non-indexed with a first vertex,
+  indexed with a first index and base vertex; two instances from a first instance of 1 or 2) against
+  real Direct3D 11's `DrawInstanced`, `DrawIndexedInstanced` and their indirect forms.
+- The shared harness (`tests/common`) draws with bases, indices and indirect arguments
+  (`Setup::bases`, `Reference::bases`) and gives Direct3D 11 a biased 24-bit depth buffer.
+
+Run 12 (variants):
+- `min_lod_clamped` (any stage), on both routes, by the functional specification's 5.8 (scratch
+  `graphics/downloads/d3d11spec`): one rewrite outlines every sample whose sampler is biased or whose
+  texture is clamped into one callee that applies both (`samples` in `src/variant.rs`, which
+  replaced `lod_bias`). A clamped texture's samples go through the merged sampler of their pair, a
+  new handle at `CLAMPED_SAMPLER_BINDING` + the pair's index in `sampled_pairs` in set 3 (the front
+  makes it with its level range starting at the clamp), and read zero when the clamp passes the
+  view's last level; gathers (level 0 only) also read zero for a clamp of 1 or more; loads read zero
+  when their level is below the clamp's whole part (`loads`). `HelperValue::MinLod` is (the clamp's
+  f32 bits, the view's level count) as two u32. Comparisons of a clamped texture are
+  `Unsupported("MinLodOnComparison")`: Direct3D compares the out-of-bounds zero with the reference
+  by the sampler's function, which the program does not know.
+- New own shaders `ps_minlod` (an implicit sample, a sample at level 0.25 and loads of each level, by
+  the pixel's place) and `ps_mingather` (a gather), fxc and dxc. Every other own shader recompiled
+  byte for byte as committed.
+- Drawn (`tests/variant_draw.rs`): against real Direct3D 11 with `SetResourceMinLOD` on a 4-level
+  texture made with `RESOURCE_CLAMP` (numbers under Measurements).
+- Clip distances natively (the reference the `CLIP_DISTANCE` variant needs, and what real programs
+  with `SV_ClipDistance` need where the back end has them): a vertex program's clip distances are the
+  common form's `@builtin(clip_distances)` array on both routes (DXBC in `lower.rs`, refused before
+  as `ClipDistance`; DXIL already read by naga, now reflected as `SystemValue::ClipDistance`), and
+  the module is validated with naga's `CLIP_DISTANCES`. `capabilities(module)` (public) gives the
+  capabilities a module needs, WebGPU's core ones plus dual-source blending and clip distances where
+  it uses them; `convert` and the corpus test validate with it. Cull distances and clip distances
+  read by a pixel shader stay refused by name (`CullDistance`, `ClipDistance`).
+- Carried naga: the GLSL writer enables `GL_ANGLE_clip_cull_distance` (WebGL's
+  WEBGL_clip_cull_distance) for WebGL programs instead of `GL_EXT_clip_cull_distance`, which
+  Chrome's WebGL 2 refuses.
+- New own shader `vs_clip` (`vs_transform` with two clip distances), fxc and dxc; drawn natively
+  on wgpu's Vulkan path (its Direct3D 12 path has no clip distances, wgpu issue 6236) against real
+  Direct3D 11. The shared harness gained `webgpu_on(backends)`.
+
 Next (in order):
-- The rest of the variants (the list above), each with a drawn test as run 10's: depth bias (against
-  Direct3D 11 on a 24-bit target), depth clamp and clip distances (against WebGPU's native features
-  where wgpu has them, otherwise Direct3D 11), the draw bases from an indirect draw's arguments, the
-  minimum level-of-detail clamp, filtering, border and mirror-once in the program, decoded textures
+- The rest of the variants (the list above), each with a drawn test as run 10's:
+- `CLIP_DISTANCE` and `DEPTH_CLAMP` pass new values from the vertex to the pixel program, which are
+  converted apart, so the pixel program must be told where they arrive: a variant field the front
+  fills from the vertex program's reflection, as `output_interpolation` does (an interface change).
+  Proposed, one field for both: `linked: (u32, u8)`, the first location neither stage uses and the
+  vertex program's clip distance count; the vertex program writes its distances there as
+  `(count + 3) / 4` four-component perspective values (unused components zero), then the unclamped
+  z, and the pixel program reads them there. The vertex side is `Wrapped` replacing the
+  `clip_distances` output; the pixel side a `Wrapped` prologue reading added inputs (as depth bias
+  does) and discarding where any distance is negative (multisampled targets: refuse by name until
+  the per-sample mask is built). Test: `vs_clip` with the variant on WebGPU (Direct3D 12 path) and
+  WebGL 2 against run 12's native picture; depth clamp against Direct3D 11 with depth clip off.
+- Then filtering, border and mirror-once in the program, decoded textures
   and targets written in the program, pulled vertices, constants through a texture, typed buffers
   and storage formats (after the storage image and typed buffer support they need), early tests,
   line coverage, the provoking rewrite, the primitive index from the stage helper, root signature
@@ -374,15 +440,32 @@ let module: &wcontainers_gpu::ShaderModule = &converted.modules[0];  // hand to 
 let reflection = &converted.reflection;
 ```
 - `variant_key` is `wcontainers_gpu::VariantKey`; `VariantKey::default()` for the plain program. Built:
-  `draw_base` (`None`, `Helpers`), `output_interpolation`, `lod_bias`, `constants_as_storage`,
-  `samples`, and the flags `CLIP_DEPTH_REWRITE`, `VIEWPORT_DEPTH_FLIP`, `VIEWPORT_ADJUST` (vertex
-  programs; ignored on others), `COUNTING`, `SAMPLE_MASK`, `DUAL_SOURCE` (pixel programs) and
-  `TEXTURE_INFO`. Every other field or flag set, and a root signature, is refused by name (the list
-  is under Run 10). Each helper value a variant needs is in `reflection.helpers` at its offset in the
+  `draw_base` (`None`, `Helpers`, `Arguments`), `output_interpolation`, `lod_bias`,
+  `constants_as_storage`, `samples`, and the flags `CLIP_DEPTH_REWRITE`, `VIEWPORT_DEPTH_FLIP`,
+  `VIEWPORT_ADJUST` (vertex programs; ignored on others), `COUNTING`, `SAMPLE_MASK`, `DUAL_SOURCE`,
+  `DEPTH_BIAS` (pixel programs), `TEXTURE_INFO` and `min_lod_clamped`. Every other field or flag
+  set, and a root signature, is refused by name (the list is under Run 10). Each helper value a variant needs is in `reflection.helpers` at its offset in the
   stage's block (`helper_size` bytes, bound at `helper_binding(stage)` in set 3), after `DrawBase` when
   both are asked: the front writes `ViewportAdjust` as (scale x, scale y, offset x, offset y) of clip
   x and y (offsets times w), `SampleMask` as a u32, `LodBias { sampler }` as an f32,
-  `TextureLevels { texture }` as a u32.
+  `TextureLevels { texture }` as a u32, `DepthBias` as (constant units, slope scale, clamp, the depth
+  format's step) in f32, `DrawArguments` as (word offset of the draw's arguments, 1 when indexed, draw
+  number) in u32.
+- `min_lod_clamped`: for each pair n of `reflection.sampled_pairs` whose texture is clamped, bind a
+  sampler like the pair's own but with its level range starting at max(its own, the clamp in the
+  view's numbering) at `CLAMPED_SAMPLER_BINDING` + n in set 3; write `MinLod { texture }` as (the
+  clamp's f32 bits, the view's level count). A clamped texture that is compared is refused
+  (`MinLodOnComparison`).
+- Clip distances: a vertex program writing `SV_ClipDistance` converts to a module with
+  `@builtin(clip_distances)`, which needs the back end's `Features::CLIP_DISTANCE` (wgpu's
+  `CLIP_DISTANCES`; WebGL's WEBGL_clip_cull_distance); without it the front asks for the
+  `CLIP_DISTANCE` variant (not built yet, refused by name). `wcontainers_shaders::capabilities(module)`
+  gives what a module needs beyond WebGPU's core.
+- `DEPTH_BIAS` writes the depth itself, so the front draws with the raster block's bias at zero and
+  without early depth tests for those draws.
+- `draw_base: Arguments` reads the bases from the indirect argument buffer, bound read-only (storage)
+  at `DRAW_ARGUMENTS_BINDING` in set 3 for the vertex stage; the helper block holds where the draw's
+  arguments start.
 - `samples` is the targets' sample count where the program reads it (`GetRenderTargetSampleCount`);
   a program that reads it converts only with it set (`Unsupported("SampleCount")` otherwise).
 - `COUNTING` programs have no side effects left (`extras.side_effects` false); `DUAL_SOURCE` needs
@@ -416,9 +499,8 @@ let reflection = &converted.reflection;
   `reflection.extras` for pixel shaders: early tests, side effects (UAV writes), discards, per sample.
 - DXIL: `convert(Source::Dxil(bytecode), &variant_key, None)`, same result shape. Bindings are
   numbered as for Direct3D 11 for now (stage set, kind range + register; `space` kept in the
-  reflection), not yet by root signature. `draw_base` `None` (bases read as zero) and `Helpers` (the
-  vertex helper block as for DXBC above) are taken; `Arguments` is
-  `Unsupported("DrawBaseFromArguments")` on both routes. Inputs and outputs are listed as for DXBC
+  reflection), not yet by root signature. `draw_base` `None` (bases read as zero), `Helpers` and
+  `Arguments` are taken as for DXBC. Inputs and outputs are listed as for DXBC
   (semantic names from the container's signatures, location = register), but unlike DXBC each value
   keeps its own width and type (`vs_transform.dxil` writes `@location(1) vec2<f32>`), so a
   Direct3D 12 vertex shader writing a float4 that the pixel shader reads as float2 fails WebGPU's
@@ -450,7 +532,47 @@ let reflection = &converted.reflection;
 
 ## Measurements
 
-Run 10, 2026-11-17, counts only:
+Run 12, 2026-11-17, counts only:
+- `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, scratch
+  `run12/draw2.log`), each by the DXBC and the DXIL route, against Direct3D 11's resource clamp:
+  `ps_minlod` with clamps 0, 1.5, 3 and 3.5 on WebGPU and WebGL 2, and `ps_mingather` with clamps
+  0.5, 1 and 3.5 on WebGPU: 0 of 4096 texels differ in every case (allowance 1). Each clamp past the
+  first changes Direct3D's picture (1.5: 2162 texels, 3: 2530, 3.5: 2442; gather 1 and 3.5: 2071).
+  Every earlier comparison of the file as in run 11. Windows clippy with warnings denied passes.
+- Clip distances natively (`run12/draw4.log`): `vs_clip` with `ps_textured` on wgpu's Vulkan path,
+  0 of 4096 texels differ from Direct3D 11 by both routes (allowance 0); the planes change 1071 of
+  Direct3D's texels. Every other comparison of the file as before (68 exact comparisons in the log).
+- Chrome 157 (`web/check`, one GPU job, about 3 s, own corpora only, `run12/chrome2.log`): WGSL own
+  33 of 33, own DXIL 20 of 20 (`vs_clip` with `enable clip_distances` included); GLSL ES own 26 of
+  30, own DXIL 17 of 18: `vs_clip` compiles after the naga change (before it, both builds failed on
+  the extension's name), `ps_minlod` compiles, the failures are bitfield operations and
+  `textureGather` (`ps_mingather`). The other corpora were not re-run: their verdicts did not
+  change.
+- Laptop (i7-8750H, load average 0.4 to 3): the suite with every corpus (`--skip mutated`) passes
+  after recording the new own verdicts (`vs_clip` converts; glslang 8.13 knows neither clip
+  distance extension, so its GLSL ES verdict is a glslang failure), every other verdict unchanged,
+  so no corpus or real program shader used clip distances. Earlier in the run, after recording the four
+  new own verdicts (`ps_minlod` converts and compiles as GLSL ES; `ps_mingather`'s GLSL ES has
+  `textureGather`, which ES 3.00 lacks); every other verdict unchanged. Clippy with warnings denied
+  passes.
+
+Run 11, 2026-11-17, counts only:
+- `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, scratch
+  `run11/draw4.log`), each by the DXBC and the DXIL route: depth bias against Direct3D 11's
+  D24_UNORM_S8_UINT buffer, in 24-bit codes, on WebGPU and WebGL 2: (2000 units, slope 0.25, no
+  clamp) 355 of 4096 texels differ by 1 code, (clamp 0.0002) 471 by 1, (-2000, -0.25, clamp -0.0002)
+  478 by 1, never more than 1 (allowance 1); the clamp changes 1610 of Direct3D's texels. Draw bases
+  against Direct3D 11, 0 of 4096 differ in every case: vertices from 48 and indexed (first index 6,
+  base vertex 48), two instances from 1 or 2, directly on WebGPU and WebGL 2 and indirectly (the
+  arguments 4 words into their buffer) on WebGPU. Every run 10 comparison as in run 10. Windows clippy
+  with warnings denied passes. `tests/draw.rs` on the changed shared harness: all 3 tests pass
+  (`run11/draw-plain.log`).
+- Laptop (i7-8750H, load average 0.5 to 4.2): the whole suite with every corpus passes (`--skip
+  mutated`; corpus test 214 s), every verdict as recorded; own DXBC and DXIL each two more
+  (`vs_ids`, `ps_ids`, converting). Clippy with warnings denied passes.
+- Not re-run this run: Chrome's compile of the written files and the WebAssembly comparison (the
+  default conversions did not change; only the new variants' paths did).
+
 - `tests/variant_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, scratch
   `run10/draw8.log`), each by the DXBC and the DXIL route: equal texel for texel (or, for depth, in
   f32 steps) to the stated reference: viewport adjustment 0 of 4096 on WebGPU and WebGL 2; clip
@@ -738,6 +860,9 @@ the tree as published"), plus these changes, each a later commit touching only `
 - SPIR-V reader (run 10), an `OpUndef` in a function ends the running Emit range before its zero value
   (a zero value is never emitted); a texel coordinate's vector type of another scalar kind is made
   where the reader needs it, instead of panicking that it should exist.
+- GLSL writer (run 12), WebGL programs with clip or cull distances enable
+  `GL_ANGLE_clip_cull_distance` (WEBGL_clip_cull_distance's name) instead of
+  `GL_EXT_clip_cull_distance`.
 - GLSL writer (run 8), fine derivatives need `Features::DERIVATIVE_CONTROL` (GLSL 4.50, not ES)
   instead of being written as the plain functions.
 Not yet sent upstream: that needs a GitHub account and fork the owner chooses, which this track does
@@ -911,6 +1036,16 @@ were already there.
   its CMake does for that file.
 
 ## Known gaps found so far
+
+- The minimum level-of-detail clamp's zero is (0, 0, 0, 0): Direct3D gives the format's default
+  for components the format lacks (alpha 1 for an R8 texture, for example), which the program does
+  not know. Drawn only on RGBA8.
+- `DEPTH_BIAS` leaves a depth the program writes as it is; that Direct3D does not bias a written
+  depth is expected (as Vulkan defines it), not measured.
+- wgpu's Direct3D 12 path has no clip distances (wgpu issue 6236), so natively on Windows the
+  WebGPU back end refuses programs with them unless made on Vulkan; Chrome's WebGPU compiles them.
+- `draw_base: Arguments` serves WebGPU only: WebGL 2 has no storage buffers to read the arguments
+  from (nor indirect draws; its front reads them back and draws directly with `Helpers`).
 
 - One real program shader (`d599fbc7efa911be.dxbc`, a bgfx shader) converts to a module whose
   expression order differs between the native and WebAssembly builds (run 10): the two results of
