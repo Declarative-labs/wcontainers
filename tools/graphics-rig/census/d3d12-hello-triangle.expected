@@ -1,0 +1,16 @@
+# Calls D3D12HelloTriangle.cpp (DirectX-Graphics-Samples 68a2b1e9) makes in its 120 frames, lines
+# 292 to 315 once a frame; each line must be in its census.txt as it is. Reset and Close also hold
+# the 119 of DXGI's own command list (the census's "made by Windows' own libraries" line), and Close
+# the program's first, at line 194.
+command-list SetGraphicsRootSignature 120
+command-list RSSetViewports 120
+command-list RSSetScissorRects 120
+command-list ResourceBarrier 240
+command-list OMSetRenderTargets 120
+command-list ClearRenderTargetView 120
+command-list IASetPrimitiveTopology 120
+command-list IASetVertexBuffers 120
+command-list DrawInstanced 120
+command-list Reset 239
+command-list Close 240
+swap-chain Present 120

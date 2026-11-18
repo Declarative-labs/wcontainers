@@ -40,6 +40,8 @@ mod chrome {
     };
     use windows::core::{PCWSTR, PWSTR};
 
+    use super::{new_profile, program_end};
+
     const LOCAL_STATE: &str = r#"{"password_manager":{"os_password_blank":false,"os_password_last_changed":"9000000000000000000"}}"#;
 
     pub fn run() -> i32 {
@@ -58,10 +60,7 @@ mod chrome {
             .skip(1)
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        // Chrome's own child processes (--type=...) never make a profile.
-        if !args.iter().any(|a| switch_value(a, "type").is_some())
-            && let Some(dir) = args.iter().find_map(|a| switch_value(a, "user-data-dir"))
-        {
+        if let Some(dir) = new_profile(&args) {
             seed_local_state(Path::new(dir));
         }
         match start(&real) {
@@ -71,16 +70,6 @@ mod chrome {
                 1
             }
         }
-    }
-
-    /// The value of `--name=value`; Chrome on Windows also takes `-` and `/` and any case.
-    fn switch_value<'a>(arg: &'a str, name: &str) -> Option<&'a str> {
-        let rest = arg
-            .strip_prefix("--")
-            .or_else(|| arg.strip_prefix('-'))
-            .or_else(|| arg.strip_prefix('/'))?;
-        let (key, value) = rest.split_once('=')?;
-        key.eq_ignore_ascii_case(name).then_some(value)
     }
 
     fn seed_local_state(dir: &Path) {
@@ -145,20 +134,106 @@ mod chrome {
             Ok(code as i32)
         }
     }
+}
 
-    /// Where the program name ends in a command line, by CreateProcess's rules: a quoted name runs
-    /// to the next quote, an unquoted one to the first space or tab.
-    fn program_end(line: &[u16]) -> usize {
-        let quote = b'"' as u16;
-        if line.first() == Some(&quote) {
-            line[1..]
-                .iter()
-                .position(|&c| c == quote)
-                .map_or(line.len(), |i| i + 2)
-        } else {
-            line.iter()
-                .position(|&c| c == b' ' as u16 || c == b'\t' as u16)
-                .unwrap_or(line.len())
-        }
+/// The profile directory a browser process starts on, if it may make one: Chrome's own child
+/// processes (--type=...) never do.
+#[cfg(any(windows, test))]
+fn new_profile(args: &[String]) -> Option<&str> {
+    if args.iter().any(|a| switch_value(a, "type").is_some()) {
+        return None;
+    }
+    args.iter().find_map(|a| switch_value(a, "user-data-dir"))
+}
+
+/// The value of `--name=value`; Chrome on Windows also takes `-` and `/` and any case.
+#[cfg(any(windows, test))]
+fn switch_value<'a>(arg: &'a str, name: &str) -> Option<&'a str> {
+    let rest = arg
+        .strip_prefix("--")
+        .or_else(|| arg.strip_prefix('-'))
+        .or_else(|| arg.strip_prefix('/'))?;
+    let (key, value) = rest.split_once('=')?;
+    key.eq_ignore_ascii_case(name).then_some(value)
+}
+
+/// Where the program name ends in a command line, by CreateProcess's rules: a quoted name runs to
+/// the next quote, an unquoted one to the first space or tab.
+#[cfg(any(windows, test))]
+fn program_end(line: &[u16]) -> usize {
+    let quote = b'"' as u16;
+    if line.first() == Some(&quote) {
+        line[1..]
+            .iter()
+            .position(|&c| c == quote)
+            .map_or(line.len(), |i| i + 2)
+    } else {
+        line.iter()
+            .position(|&c| c == b' ' as u16 || c == b'\t' as u16)
+            .unwrap_or(line.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().collect()
+    }
+
+    #[test]
+    fn switches_take_any_prefix_and_case() {
+        assert_eq!(
+            switch_value("--user-data-dir=C:\\p", "user-data-dir"),
+            Some("C:\\p")
+        );
+        assert_eq!(switch_value("-user-data-dir=a", "user-data-dir"), Some("a"));
+        assert_eq!(
+            switch_value("/User-Data-Dir=a b", "user-data-dir"),
+            Some("a b")
+        );
+        assert_eq!(switch_value("--user-data-dir=", "user-data-dir"), Some(""));
+        assert_eq!(switch_value("--user-data-dir", "user-data-dir"), None);
+        assert_eq!(
+            switch_value("--user-data-directory=a", "user-data-dir"),
+            None
+        );
+        assert_eq!(switch_value("user-data-dir=a", "user-data-dir"), None);
+        assert_eq!(switch_value("--type=renderer", "type"), Some("renderer"));
+    }
+
+    #[test]
+    fn only_the_browser_process_makes_a_profile() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            new_profile(&args(&[
+                "--headless",
+                "--user-data-dir=C:\\p",
+                "about:blank"
+            ])),
+            Some("C:\\p")
+        );
+        assert_eq!(
+            new_profile(&args(&["--type=gpu-process", "--user-data-dir=C:\\p"])),
+            None
+        );
+        assert_eq!(
+            new_profile(&args(&["/user-data-dir=q", "-TYPE=renderer"])),
+            None
+        );
+        assert_eq!(new_profile(&args(&["--headless"])), None);
+    }
+
+    #[test]
+    fn the_program_name_ends_as_createprocess_reads_it() {
+        let line = wide("\"C:\\a b\\chrome.exe\" --x");
+        assert_eq!(program_end(&line), "\"C:\\a b\\chrome.exe\"".len());
+        let line = wide("C:\\chrome.exe --x");
+        assert_eq!(program_end(&line), "C:\\chrome.exe".len());
+        assert_eq!(program_end(&wide("chrome.exe\t--x")), "chrome.exe".len());
+        assert_eq!(program_end(&wide("chrome.exe")), "chrome.exe".len());
+        assert_eq!(program_end(&wide("\"C:\\no end")), "\"C:\\no end".len());
+        assert_eq!(program_end(&wide("\"\" --x")), 2);
     }
 }
