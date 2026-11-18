@@ -268,7 +268,7 @@ impl<B: Backend> Device<B> {
                 let words = match (slot.value, bases) {
                     (HelperValue::DrawBase, Bases::Direct(b)) => {
                         self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
-                        [b[0], b[1], 0, 0]
+                        words(&[b[0], b[1]])
                     }
                     (
                         HelperValue::DrawArguments,
@@ -283,18 +283,18 @@ impl<B: Backend> Device<B> {
                             .hit(SlowPath::DrawBaseFromArguments);
                         arguments =
                             Some(((*args).clone(), offset + if *indexed { 20 } else { 16 }));
-                        [(offset / 4) as u32, u32::from(*indexed), 0, 0]
+                        words(&[(offset / 4) as u32, u32::from(*indexed)])
                     }
-                    (HelperValue::PulledStream { input }, _) => {
-                        pulled
+                    (HelperValue::PulledStream { input }, _) => words(
+                        &pulled
                             .iter()
                             .find(|p| p.0 == input)
                             .ok_or(Error::Invalid("a pulled input the draw does not fetch"))?
-                            .2
-                    }
+                            .2,
+                    ),
                     (value, _) => self.bound_helper(bind::VERTEX, value)?,
                 };
-                put(&mut block, slot.offset, words)?;
+                put(&mut block, slot.offset, slot.value, words)?;
             }
             blocks.push((helper_binding(ShaderStage::Vertex), stages, block));
         }
@@ -314,17 +314,14 @@ impl<B: Backend> Device<B> {
     pub(super) fn stage_block(&self, helpers: &Helpers, visibility: u32) -> Result<Vec<u8>, Error> {
         let mut block = vec![0u8; helpers.size as usize];
         for slot in &helpers.slots {
-            put(
-                &mut block,
-                slot.offset,
-                self.bound_helper(visibility, slot.value)?,
-            )?;
+            let words = self.bound_helper(visibility, slot.value)?;
+            put(&mut block, slot.offset, slot.value, words)?;
         }
         Ok(block)
     }
 
     /// The words the last `binding_sets` found for `value` of the API stage `visibility`.
-    fn bound_helper(&self, visibility: u32, value: HelperValue) -> Result<[u32; 4], Error> {
+    fn bound_helper(&self, visibility: u32, value: HelperValue) -> Result<Words, Error> {
         self.bound_helpers
             .iter()
             .find(|h| h.0 == visibility && h.1 == value)
@@ -378,14 +375,35 @@ impl<B: Backend> Device<B> {
     }
 }
 
-/// Writes one helper slot's words at `offset` of `block`.
-fn put(block: &mut [u8], offset: u32, words: [u32; 4]) -> Result<(), Error> {
+/// A helper value's words: at most nine (`HelperValue::SamplerState`), zeros past its own.
+pub(super) type Words = [u32; 9];
+
+/// `w` as helper words.
+pub(super) fn words(w: &[u32]) -> Words {
+    let mut out = [0; 9];
+    out[..w.len()].copy_from_slice(w);
+    out
+}
+
+/// Writes helper value `value`'s words at `offset` of `block`.
+fn put(block: &mut [u8], offset: u32, value: HelperValue, words: Words) -> Result<(), Error> {
+    let n = match value {
+        HelperValue::LodBias { .. }
+        | HelperValue::TextureComponents { .. }
+        | HelperValue::TextureLevels { .. }
+        | HelperValue::TextureSamples { .. } => 1,
+        HelperValue::TexelBufferView { .. } | HelperValue::MinLod { .. } => 2,
+        HelperValue::DrawBase | HelperValue::DrawArguments => 3,
+        HelperValue::SamplerState { .. } => 9,
+        _ => 4,
+    };
     let at = offset as usize;
-    let end = (at + 16).min(block.len());
-    if at >= end {
+    let n = n.min(block.len().saturating_sub(at) / 4);
+    if n == 0 {
         return Err(Error::Invalid("a helper slot past its block"));
     }
-    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-    block[at..end].copy_from_slice(&bytes[..end - at]);
+    for (k, w) in words[..n].iter().enumerate() {
+        block[at + 4 * k..at + 4 * k + 4].copy_from_slice(&w.to_le_bytes());
+    }
     Ok(())
 }

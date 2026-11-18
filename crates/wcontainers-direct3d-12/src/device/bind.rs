@@ -420,6 +420,7 @@ impl<B: Backend> Device<B> {
         let mut held = Vec::with_capacity(bindings.len());
         self.bound_formats.clear();
         self.bound_helpers.clear();
+        self.bound_sampling.clear();
         for (index, b) in bindings.iter().enumerate() {
             let source = locate(&root, b).ok_or(Error::Invalid(
                 "the bound root signature lacks a binding a shader reads",
@@ -480,7 +481,16 @@ impl<B: Backend> Device<B> {
                             self.buffer_view(&v, false)?
                         }
                         (SlotKind::Texture, Descriptor::ShaderResource(v)) => {
-                            Held::Texture(self.shader_resource(&v, b.compared)?)
+                            let view = self.shader_resource(&v, b.compared)?;
+                            let components = dxgi(v.format)?.components();
+                            self.bound_helpers.push((
+                                b.visibility,
+                                HelperValue::TextureComponents {
+                                    texture: b.binding.register,
+                                },
+                                pull::words(&[components]),
+                            ));
+                            Held::Texture(view)
                         }
                         (SlotKind::Counter, Descriptor::UnorderedAccess(v)) => {
                             self.view_counter(&v)?
@@ -503,7 +513,7 @@ impl<B: Backend> Device<B> {
                             Form::Plain => return Err(Error::Invalid("a storage binding")),
                         },
                         (SlotKind::Sampler, Descriptor::Sampler(v)) => {
-                            Held::Sampler(self.sampler(&v)?)
+                            Held::Sampler(self.sampler(&v, b)?)
                         }
                         (SlotKind::Sampler, Descriptor::Empty) => {
                             return Err(Error::Invalid("an empty sampler descriptor"));
@@ -514,7 +524,7 @@ impl<B: Backend> Device<B> {
                 }
                 (SlotKind::Sampler, Source::Static(i)) => {
                     let v = crate::state::static_sampler(&root.samplers[i]);
-                    Held::Sampler(self.sampler(&v)?)
+                    Held::Sampler(self.sampler(&v, b)?)
                 }
                 _ => return Err(Error::NotImplemented("this kind of root binding")),
             };
@@ -535,7 +545,7 @@ impl<B: Backend> Device<B> {
                 if b.texel {
                     // A null typed buffer holds no element; its format stays the program's.
                     self.bound_helpers
-                        .push((b.visibility, texel_value(b), [0; 4]));
+                        .push((b.visibility, texel_value(b), pull::words(&[0, 0])));
                 }
                 Held::Storage {
                     buffer: self.null_buffer(writable)?,
@@ -558,6 +568,14 @@ impl<B: Backend> Device<B> {
                 let shape = b.shape.ok_or(Error::NotImplemented(
                     "null views of one-dimensional textures",
                 ))?;
+                // Every component of a null view reads zero.
+                self.bound_helpers.push((
+                    b.visibility,
+                    HelperValue::TextureComponents {
+                        texture: b.binding.register,
+                    },
+                    pull::words(&[0b1111]),
+                ));
                 Held::Texture(self.null_view(shape, false)?)
             }
         })
@@ -674,8 +692,11 @@ impl<B: Backend> Device<B> {
             (b.binding.kind != SlotKind::Texture, b.binding.register),
             format,
         ));
-        self.bound_helpers
-            .push((b.visibility, texel_value(b), [rest as u32, v.count, 0, 0]));
+        self.bound_helpers.push((
+            b.visibility,
+            texel_value(b),
+            pull::words(&[rest as u32, v.count]),
+        ));
         self.storage_range(v.resource, start, bound, writable)
     }
 
@@ -835,9 +856,46 @@ impl<B: Backend> Device<B> {
         )
     }
 
-    /// The back end's sampler for a sampler descriptor, made once per description.
-    fn sampler(&mut self, v: &crate::list::SamplerView) -> Result<B::Sampler, Error> {
-        let desc = crate::state::sampler(v, self.backend.caps())?;
+    /// The back end's sampler for a sampler descriptor bound for `b`, made once per description;
+    /// what the program applies itself is noted for its variant, with its helper values.
+    fn sampler(
+        &mut self,
+        v: &crate::list::SamplerView,
+        b: &StageBinding,
+    ) -> Result<B::Sampler, Error> {
+        let caps = self.backend.caps();
+        let desc = crate::state::sampler(v, caps)?;
+        let (bias, border) = crate::state::in_program(v, caps);
+        if bias || border {
+            if !matches!(b.visibility, 0 | PIXEL) {
+                return Err(Error::NotImplemented(
+                    "level-of-detail bias, border or mirror-once sampling in a vertex or \
+                     geometry shader",
+                ));
+            }
+            let sampler = b.binding.register;
+            if sampler >= 16 {
+                return Err(Error::NotImplemented(
+                    "sampling in the program through a sampler register past 15",
+                ));
+            }
+            self.bound_sampling
+                .push((b.visibility, sampler, bias, border));
+            let state = crate::state::sampler_state(v, &desc);
+            self.bound_helpers.extend([
+                (
+                    b.visibility,
+                    HelperValue::LodBias { sampler },
+                    pull::words(&[v.lod_bias]),
+                ),
+                (
+                    b.visibility,
+                    HelperValue::BorderColor { sampler },
+                    pull::words(&v.border),
+                ),
+                (b.visibility, HelperValue::SamplerState { sampler }, state),
+            ]);
+        }
         if let Some(s) = self.samplers.get(&desc) {
             return Ok(s.clone());
         }

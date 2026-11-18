@@ -339,7 +339,11 @@ pub struct Device<B: Backend> {
     /// The typed views the last binding sets made bind: API stage, slot and format.
     bound_formats: Vec<(u32, formats::Slot, Format)>,
     /// The helper values the last binding sets made give: API stage, value and its words.
-    bound_helpers: Vec<(u32, HelperValue, [u32; 4])>,
+    bound_helpers: Vec<(u32, HelperValue, pull::Words)>,
+    /// The samplers the last binding sets made bind whose sampling the program applies: API
+    /// stage, register, and whether it adds the bias and applies the addressing
+    /// (`state::in_program`).
+    bound_sampling: Vec<(u32, u32, bool, bool)>,
     /// The error that removed the device, if one did.
     removed: Option<Error>,
 }
@@ -385,6 +389,7 @@ impl<B: Backend> Device<B> {
             messages: Vec::new(),
             bound_formats: Vec::new(),
             bound_helpers: Vec::new(),
+            bound_sampling: Vec::new(),
             removed: None,
         }
     }
@@ -1253,6 +1258,10 @@ impl<B: Backend> Device<B> {
                     | HelperValue::DrawArguments
                     | HelperValue::PulledStream { .. }
                     | HelperValue::TexelBufferView { .. }
+                    | HelperValue::LodBias { .. }
+                    | HelperValue::BorderColor { .. }
+                    | HelperValue::SamplerState { .. }
+                    | HelperValue::TextureComponents { .. }
             )
         }) {
             return Err(Error::NotImplemented(

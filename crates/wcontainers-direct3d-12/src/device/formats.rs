@@ -1,10 +1,15 @@
-//! Typed views whose format only the bound view names: WebGPU's storage textures name their
-//! format in the program, and typed buffers read through storage buffers decode theirs there
-//! (`TexelBufferAsStorage`). A shader declaring such views is converted at pipeline creation with
-//! each one's format taken as the 32-bit single-channel format of its declared kind (the only
-//! formats Direct3D guarantees typed loads of), and for bound views of other formats the program
-//! is converted again with theirs, at the first draw or dispatch binding them, and kept per
-//! pipeline (`VariantKey::storage_formats`, `VariantKey::texel_formats`).
+//! A pixel or compute stage's programs for what is bound: typed views whose format only the
+//! bound view names, and sampling the back end's sampler lacks.
+//!
+//! WebGPU's storage textures name their format in the program, and typed buffers read through
+//! storage buffers decode theirs there (`TexelBufferAsStorage`). A shader declaring such views is
+//! converted at pipeline creation with each one's format taken as the 32-bit single-channel
+//! format of its declared kind (the only formats Direct3D guarantees typed loads of)
+//! (`VariantKey::storage_formats`, `VariantKey::texel_formats`). Samplers with a level-of-detail
+//! bias (`LodBiasInShader`), or with border or mirror-once addressing the back end lacks
+//! (`BorderInShader`), are applied by the program (`VariantKey::lod_bias`,
+//! `VariantKey::border_in_shader`). For other bound formats or such samplers the program is
+//! converted again, at the first draw or dispatch binding them, and kept per pipeline.
 
 use super::*;
 use crate::dxbc::{Kind, typed_views};
@@ -13,14 +18,20 @@ use pull::Helpers;
 /// A typed view's slot: a storage slot (else a texture slot) and its register.
 pub(super) type Slot = (bool, u32);
 
-/// A program made for a set of bound formats with its helper layout; `None` where the
-/// conversion failed.
-type Variant<B> = (
-    Vec<(Slot, Format)>,
-    Option<(<B as Backend>::Program, Helpers)>,
-);
+/// What a stage's program is made for: the typed views' formats by slot, and the sampler
+/// registers whose bias (`lod_bias`) and addressing (`border_in_shader`) it applies.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Bound {
+    formats: Vec<(Slot, Format)>,
+    lod_bias: u16,
+    border: u16,
+}
 
-/// A pipeline's program stage whose typed view formats come from the bound views.
+/// A program made for what is bound, with its helper layout; `None` where the conversion
+/// failed.
+type Variant<B> = (Bound, Option<(<B as Backend>::Program, Helpers)>);
+
+/// A pipeline's pixel or compute stage, whose program depends on what is bound.
 pub(super) struct Formats<B: Backend> {
     /// The API stage (`D3D12_SHADER_VISIBILITY`, 0 for compute) and its bytecode.
     visibility: u32,
@@ -29,7 +40,7 @@ pub(super) struct Formats<B: Backend> {
     key: VariantKey,
     /// The formats the pipeline's own program was made with, by slot.
     made: Vec<(Slot, Format)>,
-    /// Programs made for other bound formats.
+    /// Programs made for other bindings.
     variants: Vec<Variant<B>>,
 }
 
@@ -66,13 +77,9 @@ fn slots(key: &VariantKey) -> Vec<(Slot, Format)> {
 }
 
 impl<B: Backend> Formats<B> {
-    /// The record of a stage converted with `key`, whose formats it made the program with;
-    /// `None` when it has no such views.
+    /// The record of a stage converted with `key`, whose formats it made the program with.
     pub(super) fn of(visibility: u32, code: &[u8], key: &VariantKey) -> Option<Box<Self>> {
         let made = slots(key);
-        if made.is_empty() {
-            return None;
-        }
         Some(Box::new(Formats {
             visibility,
             code: code.to_vec(),
@@ -96,11 +103,11 @@ impl<B: Backend> Formats<B> {
 }
 
 impl<B: Backend> Device<B> {
-    /// The program to draw or dispatch with for the typed views the last `binding_sets` bound,
-    /// with its helper layout: `None` for the pipeline's own, else the one converted for their
-    /// formats. Views bound with no format (null views) keep the program's. `vertex_variant` says
-    /// the draw uses a vertex program other than the pipeline's own, which such programs are not
-    /// made with.
+    /// The program to draw or dispatch with for the typed views and samplers the last
+    /// `binding_sets` bound, with its helper layout: `None` for the pipeline's own, else the one
+    /// converted for them. Views bound with no format (null views) keep the program's.
+    /// `vertex_variant` says the draw uses a vertex program other than the pipeline's own, which
+    /// such programs are not made with.
     pub(super) fn bound_program(
         &mut self,
         pid: PipelineId,
@@ -109,29 +116,52 @@ impl<B: Backend> Device<B> {
         let Some(f) = &self.pipelines[pid.0 as usize].formats else {
             return Ok(None);
         };
-        let mut bound = f.made.clone();
+        let (mut lod_bias, mut border) = (0u16, 0u16);
+        for &(visibility, register, bias, address) in &self.bound_sampling {
+            if visibility == f.visibility {
+                lod_bias |= u16::from(bias) << register;
+                border |= u16::from(address) << register;
+            }
+        }
+        let mut formats = f.made.clone();
         for &(visibility, slot, format) in &self.bound_formats {
             if visibility == f.visibility
-                && let Some(b) = bound.iter_mut().find(|b| b.0 == slot)
+                && let Some(b) = formats.iter_mut().find(|b| b.0 == slot)
             {
                 b.1 = format;
             }
         }
-        if bound == f.made {
+        if formats == f.made && lod_bias == 0 && border == 0 {
             return Ok(None);
         }
         if vertex_variant {
             return Err(Error::NotImplemented(
-                "a vertex program fetching its inputs with typed views of other formats",
+                "a vertex program fetching its inputs with typed views of other formats or \
+                 sampling in the program",
             ));
         }
-        let refused = Error::NotImplemented("typed views of formats the shader cannot take");
+        if lod_bias != 0 {
+            self.backend.slow_paths().hit(SlowPath::LodBiasInShader);
+        }
+        if border != 0 {
+            self.backend.slow_paths().hit(SlowPath::BorderInShader);
+        }
+        let bound = Bound {
+            formats,
+            lod_bias,
+            border,
+        };
+        let refused = Error::NotImplemented("a program for the bound views and samplers");
         if let Some((_, p)) = f.variants.iter().find(|v| v.0 == bound) {
             return p.clone().map(Some).ok_or(refused);
         }
         let (visibility, code) = (f.visibility, f.code.clone());
-        let mut key = f.key.clone();
-        for &((storage, register), format) in &bound {
+        let mut key = VariantKey {
+            lod_bias,
+            border_in_shader: border,
+            ..f.key.clone()
+        };
+        for &((storage, register), format) in &bound.formats {
             match storage {
                 true => key.storage_formats.push((register, format)),
                 false => key.texel_formats.push((register, format)),

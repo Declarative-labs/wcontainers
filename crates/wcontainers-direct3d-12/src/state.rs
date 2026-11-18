@@ -436,9 +436,9 @@ pub fn input_topology(value: u32) -> Result<InputTopology, Error> {
     })
 }
 
-/// The sampler of a sampler descriptor. Filters that reduce by minimum or maximum, level-of-detail
-/// bias, and border colours or mirrored-once addressing the back end lacks wait for the program
-/// variants that do them.
+/// The back end's sampler for a sampler descriptor. Address modes the back end lacks (border,
+/// mirror once) clamp, and a level-of-detail bias is left out: the program applies them
+/// (`in_program`).
 pub fn sampler(v: &crate::list::SamplerView, caps: &Caps) -> Result<SamplerDesc, Error> {
     let filter = |bit: u32| {
         if v.filter & (1 << bit) != 0 {
@@ -452,9 +452,6 @@ pub fn sampler(v: &crate::list::SamplerView, caps: &Caps) -> Result<SamplerDesc,
     if reduction > 1 {
         return Err(Error::NotImplemented("minimum and maximum filters"));
     }
-    if v.lod_bias != 0 && f32::from_bits(v.lod_bias) != 0.0 {
-        return Err(Error::NotImplemented("level-of-detail bias"));
-    }
     let mut border_used = false;
     let mut address = [AddressMode::Repeat; 3];
     for (a, &mode) in address.iter_mut().zip(&v.address) {
@@ -462,12 +459,12 @@ pub fn sampler(v: &crate::list::SamplerView, caps: &Caps) -> Result<SamplerDesc,
             1 => AddressMode::Repeat,
             2 => AddressMode::Mirror,
             3 => AddressMode::Clamp,
-            4 => {
+            4 if caps.has(Features::BORDER_COLOR) => {
                 border_used = true;
                 AddressMode::Border
             }
             5 if caps.has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
-            5 => return Err(Error::NotImplemented("mirrored-once addressing")),
+            4 | 5 => AddressMode::Clamp,
             _ => return Err(Error::Invalid("unknown address mode")),
         };
     }
@@ -477,9 +474,6 @@ pub fn sampler(v: &crate::list::SamplerView, caps: &Caps) -> Result<SamplerDesc,
         [1.0, 1.0, 1.0, 1.0] => BorderColor::OpaqueWhite,
         _ => BorderColor::Custom(v.border),
     };
-    if border_used && border != BorderColor::TransparentBlack && !caps.has(Features::BORDER_COLOR) {
-        return Err(Error::NotImplemented("border colours"));
-    }
     Ok(SamplerDesc {
         min: if anisotropic {
             Filter::Linear
@@ -510,6 +504,38 @@ pub fn sampler(v: &crate::list::SamplerView, caps: &Caps) -> Result<SamplerDesc,
             BorderColor::TransparentBlack
         },
     })
+}
+
+/// What a program applies itself for sampler `v`: its level-of-detail bias
+/// (`VariantKey::lod_bias`), and its addressing and filtering where the back end lacks border or
+/// mirror-once addressing (`VariantKey::border_in_shader`, which applies every address mode).
+pub fn in_program(v: &crate::list::SamplerView, caps: &Caps) -> (bool, bool) {
+    let bias = f32::from_bits(v.lod_bias) != 0.0;
+    let border = v.address.iter().any(|&a| {
+        a == 4 && !caps.has(Features::BORDER_COLOR) || a == 5 && !caps.has(Features::MIRROR_ONCE)
+    });
+    (bias, border)
+}
+
+/// `HelperValue::SamplerState` of sampler `v` made as `made`: min, mag and mip filter, the three
+/// address modes as Direct3D gives them, anisotropy, then the level range.
+pub fn sampler_state(v: &crate::list::SamplerView, made: &SamplerDesc) -> [u32; 9] {
+    let mut words = [0; 9];
+    for (w, f) in words.iter_mut().zip([made.min, made.mag, made.mip]) {
+        *w = f as u32;
+    }
+    for (w, &mode) in words[3..].iter_mut().zip(&v.address) {
+        *w = match mode {
+            1 => AddressMode::Repeat,
+            2 => AddressMode::Mirror,
+            4 => AddressMode::Border,
+            5 => AddressMode::MirrorOnce,
+            _ => AddressMode::Clamp,
+        } as u32;
+    }
+    words[6] = u32::from(made.anisotropy);
+    words[7..].copy_from_slice(&made.lod_range);
+    words
 }
 
 /// A root signature's static sampler as a sampler descriptor would hold it.
