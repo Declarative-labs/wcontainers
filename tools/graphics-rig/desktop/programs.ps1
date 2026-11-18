@@ -27,10 +27,13 @@ param(
     [string]$Launch,
     # Where each program's reference frames are kept: <References>\<program>.
     [string]$References = 'C:\wc\programs\reference',
-    # Runs each program -Runs times on real Direct3D and keeps the first run's frames as its
-    # references, with the allowances the others give; writes <Out>\references\<program> (the
-    # allowances and the frames' SHA-256) for the repository.
+    # Run -Run of -Runs of a recording on real Direct3D, each in its own job (a program's few
+    # unstable pixels move from job to job, not from run to run within one): runs each program
+    # once, and in the last job keeps the first run's frames as its references, with the
+    # allowances the others give; writes <Out>\references\<program> (the allowances and the
+    # frames' SHA-256) for the repository.
     [switch]$Record,
+    [ValidateRange(1, 100)][int]$Run = 1,
     [ValidateRange(2, 100)][int]$Runs = 10
 )
 $ErrorActionPreference = 'Stop'
@@ -326,8 +329,10 @@ if ($Record -and $Dlls) { throw 'references are recorded on real Direct3D only' 
 $frameList = @($Capture.Split(',') | ForEach-Object { [int]$_ })
 $last = $frameList[-1]
 $failed = 0
-# Only this run's outputs are kept, without the copies of the programs, so the Mac copies no more.
-if (Test-Path $Out) { cmd.exe /d /c "rd /s /q `"\\?\$Out`"" }
+if ($Run -gt $Runs) { throw "run $Run of $Runs" }
+# Only this run's outputs are kept (all of a recording's), without the copies of the programs, so
+# the Mac copies no more.
+if ((Test-Path $Out) -and $Run -eq 1) { cmd.exe /d /c "rd /s /q `"\\?\$Out`"" }
 foreach ($name in $chosen) {
     $dir = "$Out\$name"
     $reference = "$References\$name"
@@ -335,13 +340,13 @@ foreach ($name in $chosen) {
     if ($Record) {
         # The first run is kept, the others show what the program draws differently each time.
         $dirs = @($dir) + @(2..$Runs | ForEach-Object { "$dir-run$_" })
-        $ran = $true
-        foreach ($run in $dirs) {
-            $result = @(Run-Program $name $run)
-            $result[0..($result.Count - 2)]
-            if (-not $result[-1]) { $ran = $false }
-        }
-        if (-not $ran) { $failed++; continue }
+        $target = $dirs[$Run - 1]
+        $result = @(Run-Program $name $target)
+        $result[0..($result.Count - 2)]
+        if (-not $result[-1]) { $failed++; continue }
+        if ($Run -lt $Runs) { continue }
+        $missing = @($dirs | Where-Object { -not (Test-Path "$_\frame-$last.png") })
+        if ($missing) { "${name}: FAIL, no frames from the earlier runs in $($missing -join ', ')"; $failed++; continue }
         if (Test-Path $reference) { Remove-Item -Recurse -Force $reference }
         if (Test-Path "$Out\references\$name") { Remove-Item -Recurse -Force "$Out\references\$name" }
         $ignore = @(if ($all[$name].ignore) { '--ignore', $all[$name].ignore })
