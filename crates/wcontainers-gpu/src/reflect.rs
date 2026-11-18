@@ -259,6 +259,10 @@ pub enum StageExtras {
         /// Point (0), line (1), clockwise (2) or counter-clockwise (3) triangle output.
         output_primitive: u8,
         max_tess_factor: u32,
+        /// Locations written per output control point, and locations of patch constants: what the
+        /// stage helper's record of a patch holds.
+        point_locations: u8,
+        constant_locations: u8,
     },
     Domain {
         /// Triangle (0), quad (1) or isoline (2) domain.
