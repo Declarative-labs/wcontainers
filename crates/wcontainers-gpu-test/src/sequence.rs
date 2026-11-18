@@ -88,6 +88,16 @@ pub enum Step {
     },
     /// A timestamp written into one of two, both read back, where it has timestamps.
     Timestamp(u8),
+    /// A depth or stencil texture of its own, one level and layer of it written, a region copied
+    /// beside itself in that subresource, each aspect read back, then destroyed.
+    DepthCopy {
+        format: u8,
+        size: [u8; 2],
+        layers: u8,
+        mips: u8,
+        at: [u8; 6],
+        seed: u8,
+    },
 }
 
 /// What else a pass does, each where present: a depth-stencil target (its cleared depth and
@@ -221,6 +231,22 @@ pub fn steps(max: usize) -> impl Strategy<Value = Vec<Step>> {
         (any::<u16>(), any::<u8>())
             .prop_map(|(which, triangles)| Step::Capture { which, triangles }),
         any::<u8>().prop_map(Step::Timestamp),
+        (
+            any::<u8>(),
+            any::<[u8; 2]>(),
+            any::<u8>(),
+            any::<u8>(),
+            any::<[u8; 6]>(),
+            any::<u8>()
+        )
+            .prop_map(|(format, size, layers, mips, at, seed)| Step::DepthCopy {
+                format,
+                size,
+                layers,
+                mips,
+                at,
+                seed
+            }),
     ];
     prop::collection::vec(step, 1..=max)
 }
@@ -265,6 +291,16 @@ const FORMATS: [Format; 10] = [
     Format::R32Uint,
     Format::Rgba16Uint,
     Format::R8Sint,
+];
+
+/// The formats of [`Step::DepthCopy`], where the back end copies them out.
+const DEPTH_FORMATS: [Format; 6] = [
+    Format::Depth16Unorm,
+    Format::Depth24Plus,
+    Format::Depth32Float,
+    Format::Stencil8,
+    Format::Depth24PlusStencil8,
+    Format::Depth32FloatStencil8,
 ];
 
 /// What the steps draw with, made once.
@@ -566,6 +602,10 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
     let formats: Vec<Format> = FORMATS
         .into_iter()
         .filter(|&f| b.caps().formats.get(f).contains(drawn))
+        .collect();
+    let depth_formats: Vec<Format> = DEPTH_FORMATS
+        .into_iter()
+        .filter(|&f| b.caps().formats.get(f).contains(FormatUse::COPY_OUT))
         .collect();
     // Buffer ranges (by index into `buffers`) commands or writes touched since the last wait for
     // all work: what a no-overwrite write keeps off without waiting.
@@ -986,6 +1026,25 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                     )?;
                 }
             }
+            Step::DepthCopy {
+                format,
+                size,
+                layers,
+                mips,
+                at,
+                seed,
+            } if !depth_formats.is_empty() => {
+                depth_copy(
+                    b,
+                    depth_formats[pick(*format, depth_formats.len())],
+                    *size,
+                    *layers,
+                    *mips,
+                    at,
+                    *seed,
+                    &mut read,
+                )?;
+            }
             Step::Timestamp(n) if kit.timestamps.is_some() => {
                 let set = kit
                     .timestamps
@@ -999,6 +1058,147 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
         }
     }
     Ok(read)
+}
+
+/// [`Step::DepthCopy`]: depth in eighths (which a draw writes exactly), stencil any; the region
+/// beside the source to its right, or below it where the level is one texel wide.
+#[allow(clippy::too_many_arguments)]
+fn depth_copy<B: Backend>(
+    b: &mut B,
+    format: Format,
+    size: [u8; 2],
+    layers: u8,
+    mips: u8,
+    at: &[u8; 6],
+    seed: u8,
+    read: &mut Vec<Vec<u8>>,
+) -> Result<(), GpuError> {
+    let (width, height) = (2 + u32::from(size[0] % 7), 1 + u32::from(size[1] % 8));
+    let desc = TextureDesc {
+        dimension: TextureDimension::D2,
+        format,
+        width,
+        height,
+        depth_or_layers: 1 + u32::from(layers % 2),
+        mip_levels: 1 + u32::from(mips % 2),
+        samples: 1,
+        usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+        cube: false,
+        reinterpret: false,
+    };
+    let mip = pick(at[0], desc.mip_levels as usize) as u32;
+    let layer = pick(at[1], desc.depth_or_layers as usize) as u32;
+    let (w, h) = ((width >> mip).max(1), (height >> mip).max(1));
+    // Along x where the level is at least two wide, else along y; nowhere at one by one.
+    let (along, across) = if w >= 2 { (w, h) } else { (h, w) };
+    if along < 2 {
+        return Ok(());
+    }
+    let long = 1 + u32::from(at[2]) % (along / 2);
+    let start = u32::from(at[3]) % (along - 2 * long + 1);
+    let (offset, wide) = span(at[4], at[5], u64::from(across));
+    let (offset, wide) = (offset as u32, wide as u32);
+    let (src, dst, e) = if w >= 2 {
+        (
+            Origin {
+                x: start,
+                y: offset,
+                z: 0,
+            },
+            Origin {
+                x: start + long,
+                y: offset,
+                z: 0,
+            },
+            Extent {
+                width: long,
+                height: wide,
+                depth_or_layers: 1,
+            },
+        )
+    } else {
+        (
+            Origin {
+                x: offset,
+                y: start,
+                z: 0,
+            },
+            Origin {
+                x: offset,
+                y: start + long,
+                z: 0,
+            },
+            Extent {
+                width: wide,
+                height: long,
+                depth_or_layers: 1,
+            },
+        )
+    };
+    let t = b.create_texture(&desc)?;
+    let whole = Extent {
+        width: w,
+        height: h,
+        depth_or_layers: 1,
+    };
+    let at_aspect = |stencil| TextureRegion {
+        stencil,
+        ..region::<B>(&t, mip, layer, Origin { x: 0, y: 0, z: 0 })
+    };
+    let kind = format.kind();
+    let has_depth = kind != FormatKind::Stencil;
+    let has_stencil = kind != FormatKind::Depth;
+    let depth_bytes = if format == Format::Depth16Unorm { 2 } else { 4 };
+    let texels = (w * h) as usize;
+    if has_depth {
+        let data: Vec<u8> = (0..texels)
+            .flat_map(|i| {
+                let mut texel = [0; 4];
+                let eighth = (i * 131 + usize::from(seed)) % 9;
+                crate::texel::encode_depth(format, eighth as f64 / 8.0, &mut texel);
+                texel.into_iter().take(depth_bytes)
+            })
+            .collect();
+        b.write_texture(
+            &at_aspect(false),
+            whole,
+            &data,
+            w * depth_bytes as u32,
+            h,
+            WriteMode::Ordered,
+        );
+    }
+    if has_stencil {
+        b.write_texture(
+            &at_aspect(true),
+            whole,
+            &bytes(texels, seed),
+            w,
+            h,
+            WriteMode::Ordered,
+        );
+    }
+    b.copy_texture(
+        &region::<B>(&t, mip, layer, src),
+        &region::<B>(&t, mip, layer, dst),
+        e,
+    );
+    for (stencil, texel) in [(false, depth_bytes), (true, 1)] {
+        if (stencil && !has_stencil) || (!stencil && !has_depth) {
+            continue;
+        }
+        let rb = b.read_back(&ReadSource::Texture {
+            region: at_aspect(stencil),
+            extent: whole,
+        })?;
+        b.submit();
+        b.wait_read(&rb);
+        let mut out = vec![0; texels * texel];
+        b.finish_read(rb, &mut out);
+        read.push(out);
+    }
+    b.destroy(Object::Texture(t));
+    Ok(())
 }
 
 /// One pass of [`Step::Pass`] on texture `t`.
