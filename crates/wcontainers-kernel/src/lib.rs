@@ -145,6 +145,8 @@ pub struct Kernel {
     released: Vec<file::FileRef>,
     /// Notices that such closes took message queue requests away, for the kernel to send.
     notices: Vec<(syscall::socket::SocketRef, alloc::vec::Vec<u8>)>,
+    /// The open files and descriptors whose owners F_NOTIFY requests owe a signal, in order.
+    dnotified: Vec<(alloc::rc::Weak<core::cell::RefCell<file::OpenFile>>, i32)>,
     /// Parked threads whose wait ended, in line to run, whose calls are run again when their turn
     /// comes.
     woken: VecDeque<Tid>,
@@ -232,6 +234,7 @@ impl Kernel {
             parked: schedule::Parked::default(),
             released: Vec::new(),
             notices: Vec::new(),
+            dnotified: Vec::new(),
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
             monotonic_offset: 0,

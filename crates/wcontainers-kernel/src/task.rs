@@ -186,6 +186,9 @@ impl Kernel {
             }
         }
         self.end_asking(tid, matches!(outcome, syscall::Outcome::Parked));
+        if !self.dnotified.is_empty() {
+            syscall::dnotify::send(self, cx);
+        }
         if let Some(thread) = self.threads.get(&tid) {
             syscall::ipc::settle(self, cx, thread.process);
         }
@@ -341,6 +344,9 @@ impl Kernel {
     /// Runs again the calls of woken threads and acts on signals sent to threads waiting for their
     /// turn, until nothing is left; then notes the time and reports what was counted.
     pub(crate) fn settle(&mut self, cx: &mut Context<'_>) {
+        if !self.dnotified.is_empty() {
+            syscall::dnotify::send(self, cx);
+        }
         loop {
             if !self.files.terminals.is_empty() {
                 syscall::tty::released(self, cx);

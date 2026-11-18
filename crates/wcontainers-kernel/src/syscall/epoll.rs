@@ -176,8 +176,8 @@ fn queue_of(kernel: &Kernel, tid: Tid, file: &FileRef) -> Result<Option<Queue>, 
         Content::Pidfd(..) => object(super::pidfd::channel(&node)),
         Content::Mqueue(_) => object(super::mqueue::channel(&node)),
         Content::Socket(socket) => Ok(Some(Queue::Object(super::socket::object(socket)))),
-        // `fuse_file_poll`: a backend that does not answer POLL leaves the default mask.
-        Content::Backend(_) if !inode.is_directory() => Ok(None),
+        // Backend files are the container's own files, which the reference keeps on overlayfs
+        // over ext4, whose files have no poll: EPERM, as for the in-memory ones.
         Content::Special
             if crate::fs::dev::Device::from_number(inode.rdev)
                 == Some(crate::fs::dev::Device::Random) =>

@@ -280,6 +280,10 @@ fn tell(
     directory: bool,
     unlinked: bool,
 ) {
+    // F_NOTIFY requests hear of a directory's children and of the directory itself.
+    if !name.is_empty() || directory {
+        super::dnotify::tell(kernel, node, mask, 0);
+    }
     if node.borrow().watches.is_empty() {
         return;
     }
@@ -471,6 +475,11 @@ fn moved(
     let directory = node.borrow().is_directory();
     kernel.move_cookie = kernel.move_cookie.wrapping_add(1);
     let cookie = kernel.move_cookie;
+    // FS_RENAME, which only F_NOTIFY requests take, comes first, for a rename within one
+    // directory (`fsnotify_handle_event`).
+    if Rc::ptr_eq(from.0, to.0) {
+        super::dnotify::tell(kernel, from.0, 0, DN_RENAME);
+    }
     tell(
         kernel,
         from.0,

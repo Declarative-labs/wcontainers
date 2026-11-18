@@ -293,6 +293,7 @@ impl FdTable {
                 crate::fs::backend::flush_unwaited(handle, self.lock_owner);
             }
             if !file.is_path() {
+                crate::syscall::dnotify::flush(&file.node, self.lock_owner, &descriptor.file);
                 let mut node = file.node.borrow_mut();
                 self.let_go_locks |=
                     crate::locks::release_table(&mut node.record_locks, self.lock_owner);

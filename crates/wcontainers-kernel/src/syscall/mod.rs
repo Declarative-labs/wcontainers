@@ -4,6 +4,7 @@
 //! `ENOSYS`, is counted and warns. So does a number Linux does not have.
 
 mod clone;
+pub(crate) mod dnotify;
 pub(crate) mod epoll;
 pub(crate) mod eventfd;
 mod fdinfo;

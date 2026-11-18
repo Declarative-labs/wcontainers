@@ -244,6 +244,18 @@ impl Kernel {
                 _ => return,
             }
         };
+        self.signal_owner(cx, &owner, fd, reason);
+    }
+
+    /// Linux's `send_sigio` itself, for descriptor `fd` of a file with `owner`.
+    pub(crate) fn signal_owner(
+        &mut self,
+        cx: &mut Context<'_>,
+        owner: &crate::file::Owner,
+        fd: i32,
+        reason: u32,
+    ) {
+        let owner = *owner;
         for (target, pid) in self.owner_targets(&owner) {
             if !self.may_signal_owner(&owner, pid) {
                 continue;
