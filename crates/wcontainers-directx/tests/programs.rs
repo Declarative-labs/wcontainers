@@ -1,7 +1,7 @@
 //! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges`,
 //! `own_depth_copy`, `own_swap_chain`, `own_volumes`, `own_queries`, `own_interfaces`,
 //! `own_indirect`, `own_min_lod`, `own_packed`, `own_nv12`, `own_yuy2`, `own_cases`,
-//! `own_level10` and `lifetimes`) run as ordinary programs, once beside the system's d3d11.dll and once with our
+//! `own_level10`, `own_d3d10` and `lifetimes`) run as ordinary programs, once beside the system's d3d11.dll and once with our
 //! forwarding d3d11.dll and library beside them, and what each printed compared.
 #![cfg(windows)]
 
@@ -335,6 +335,18 @@ fn interfaces_answer_as_direct3d_does() {
     let (code, want) = run("own_interfaces", &place("interfaces-system", false));
     assert_eq!(code, 0, "{want}");
     let (code, got) = run("own_interfaces", &place("interfaces-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does() {
+    let (code, want) = run("own_d3d10", &place("d3d10-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_d3d10", &place("d3d10-ours", true));
     assert_eq!(code, 0, "{got}");
     for (w, g) in want.lines().zip(got.lines()) {
         assert_eq!(w, g, "the first line that differs");

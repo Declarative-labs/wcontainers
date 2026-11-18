@@ -3,6 +3,7 @@
 // under the library's lock.
 #![allow(non_snake_case, unused_variables, clippy::too_many_arguments)]
 
+use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Graphics::Direct3D10::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::*;
@@ -788,13 +789,870 @@ impl IDXGIObject_Impl for Device_Impl {
     }
 }
 
+impl ID3D10Device1_Impl for Device_Impl {
+    fn CreateShaderResourceView1(
+        &self,
+        presource: windows::core::Ref<ID3D10Resource>,
+        pdesc: *const D3D10_SHADER_RESOURCE_VIEW_DESC1,
+        ppsrview: windows::core::OutRef<ID3D10ShaderResourceView1>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppsrview, |ppsrview| {
+            self.create_shader_resource_view110(presource, pdesc, ppsrview)
+        })
+    }
+    fn CreateBlendState1(
+        &self,
+        pblendstatedesc: *const D3D10_BLEND_DESC1,
+        ppblendstate: windows::core::OutRef<ID3D10BlendState1>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppblendstate, |ppblendstate| {
+            self.create_blend_state110(pblendstatedesc, ppblendstate)
+        })
+    }
+    fn GetFeatureLevel(&self) -> D3D10_FEATURE_LEVEL1 {
+        let _call = self.call();
+        self.get_feature_level10()
+    }
+}
+
+impl ID3D10Device_Impl for Device_Impl {
+    fn VSSetConstantBuffers(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *const Option<ID3D10Buffer>,
+    ) {
+        let _call = self.call();
+        self.vs_set_constant_buffers10(startslot, numbuffers, ppconstantbuffers)
+    }
+    fn PSSetShaderResources(
+        &self,
+        startslot: u32,
+        numviews: u32,
+        ppshaderresourceviews: *const Option<ID3D10ShaderResourceView>,
+    ) {
+        let _call = self.call();
+        self.ps_set_shader_resources10(startslot, numviews, ppshaderresourceviews)
+    }
+    fn PSSetShader(&self, ppixelshader: windows::core::Ref<ID3D10PixelShader>) {
+        let _call = self.call();
+        self.ps_set_shader10(ppixelshader)
+    }
+    fn PSSetSamplers(
+        &self,
+        startslot: u32,
+        numsamplers: u32,
+        ppsamplers: *const Option<ID3D10SamplerState>,
+    ) {
+        let _call = self.call();
+        self.ps_set_samplers10(startslot, numsamplers, ppsamplers)
+    }
+    fn VSSetShader(&self, pvertexshader: windows::core::Ref<ID3D10VertexShader>) {
+        let _call = self.call();
+        self.vs_set_shader10(pvertexshader)
+    }
+    fn DrawIndexed(&self, indexcount: u32, startindexlocation: u32, basevertexlocation: i32) {
+        let _call = self.call();
+        self.draw_indexed10(indexcount, startindexlocation, basevertexlocation)
+    }
+    fn Draw(&self, vertexcount: u32, startvertexlocation: u32) {
+        let _call = self.call();
+        self.draw10(vertexcount, startvertexlocation)
+    }
+    fn PSSetConstantBuffers(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *const Option<ID3D10Buffer>,
+    ) {
+        let _call = self.call();
+        self.ps_set_constant_buffers10(startslot, numbuffers, ppconstantbuffers)
+    }
+    fn IASetInputLayout(&self, pinputlayout: windows::core::Ref<ID3D10InputLayout>) {
+        let _call = self.call();
+        self.ia_set_input_layout10(pinputlayout)
+    }
+    fn IASetVertexBuffers(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppvertexbuffers: *const Option<ID3D10Buffer>,
+        pstrides: *const u32,
+        poffsets: *const u32,
+    ) {
+        let _call = self.call();
+        self.ia_set_vertex_buffers10(startslot, numbuffers, ppvertexbuffers, pstrides, poffsets)
+    }
+    fn IASetIndexBuffer(
+        &self,
+        pindexbuffer: windows::core::Ref<ID3D10Buffer>,
+        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+        offset: u32,
+    ) {
+        let _call = self.call();
+        self.ia_set_index_buffer10(pindexbuffer, format, offset)
+    }
+    fn DrawIndexedInstanced(
+        &self,
+        indexcountperinstance: u32,
+        instancecount: u32,
+        startindexlocation: u32,
+        basevertexlocation: i32,
+        startinstancelocation: u32,
+    ) {
+        let _call = self.call();
+        self.draw_indexed_instanced10(
+            indexcountperinstance,
+            instancecount,
+            startindexlocation,
+            basevertexlocation,
+            startinstancelocation,
+        )
+    }
+    fn DrawInstanced(
+        &self,
+        vertexcountperinstance: u32,
+        instancecount: u32,
+        startvertexlocation: u32,
+        startinstancelocation: u32,
+    ) {
+        let _call = self.call();
+        self.draw_instanced10(
+            vertexcountperinstance,
+            instancecount,
+            startvertexlocation,
+            startinstancelocation,
+        )
+    }
+    fn GSSetConstantBuffers(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *const Option<ID3D10Buffer>,
+    ) {
+        let _call = self.call();
+        self.gs_set_constant_buffers10(startslot, numbuffers, ppconstantbuffers)
+    }
+    fn GSSetShader(&self, pshader: windows::core::Ref<ID3D10GeometryShader>) {
+        let _call = self.call();
+        self.gs_set_shader10(pshader)
+    }
+    fn IASetPrimitiveTopology(
+        &self,
+        topology: windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY,
+    ) {
+        let _call = self.call();
+        self.ia_set_primitive_topology10(topology)
+    }
+    fn VSSetShaderResources(
+        &self,
+        startslot: u32,
+        numviews: u32,
+        ppshaderresourceviews: *const Option<ID3D10ShaderResourceView>,
+    ) {
+        let _call = self.call();
+        self.vs_set_shader_resources10(startslot, numviews, ppshaderresourceviews)
+    }
+    fn VSSetSamplers(
+        &self,
+        startslot: u32,
+        numsamplers: u32,
+        ppsamplers: *const Option<ID3D10SamplerState>,
+    ) {
+        let _call = self.call();
+        self.vs_set_samplers10(startslot, numsamplers, ppsamplers)
+    }
+    fn SetPredication(
+        &self,
+        ppredicate: windows::core::Ref<ID3D10Predicate>,
+        predicatevalue: windows::core::BOOL,
+    ) {
+        let _call = self.call();
+        self.set_predication10(ppredicate, predicatevalue)
+    }
+    fn GSSetShaderResources(
+        &self,
+        startslot: u32,
+        numviews: u32,
+        ppshaderresourceviews: *const Option<ID3D10ShaderResourceView>,
+    ) {
+        let _call = self.call();
+        self.gs_set_shader_resources10(startslot, numviews, ppshaderresourceviews)
+    }
+    fn GSSetSamplers(
+        &self,
+        startslot: u32,
+        numsamplers: u32,
+        ppsamplers: *const Option<ID3D10SamplerState>,
+    ) {
+        let _call = self.call();
+        self.gs_set_samplers10(startslot, numsamplers, ppsamplers)
+    }
+    fn OMSetRenderTargets(
+        &self,
+        numviews: u32,
+        pprendertargetviews: *const Option<ID3D10RenderTargetView>,
+        pdepthstencilview: windows::core::Ref<ID3D10DepthStencilView>,
+    ) {
+        let _call = self.call();
+        self.om_set_render_targets10(numviews, pprendertargetviews, pdepthstencilview)
+    }
+    fn OMSetBlendState(
+        &self,
+        pblendstate: windows::core::Ref<ID3D10BlendState>,
+        blendfactor: *const f32,
+        samplemask: u32,
+    ) {
+        let _call = self.call();
+        self.om_set_blend_state10(pblendstate, blendfactor, samplemask)
+    }
+    fn OMSetDepthStencilState(
+        &self,
+        pdepthstencilstate: windows::core::Ref<ID3D10DepthStencilState>,
+        stencilref: u32,
+    ) {
+        let _call = self.call();
+        self.om_set_depth_stencil_state10(pdepthstencilstate, stencilref)
+    }
+    fn SOSetTargets(
+        &self,
+        numbuffers: u32,
+        ppsotargets: *const Option<ID3D10Buffer>,
+        poffsets: *const u32,
+    ) {
+        let _call = self.call();
+        self.so_set_targets10(numbuffers, ppsotargets, poffsets)
+    }
+    fn DrawAuto(&self) {
+        let _call = self.call();
+        self.draw_auto10()
+    }
+    fn RSSetState(&self, prasterizerstate: windows::core::Ref<ID3D10RasterizerState>) {
+        let _call = self.call();
+        self.rs_set_state10(prasterizerstate)
+    }
+    fn RSSetViewports(&self, numviewports: u32, pviewports: *const D3D10_VIEWPORT) {
+        let _call = self.call();
+        self.rs_set_viewports10(numviewports, pviewports)
+    }
+    fn RSSetScissorRects(&self, numrects: u32, prects: *const windows::Win32::Foundation::RECT) {
+        let _call = self.call();
+        self.rs_set_scissor_rects10(numrects, prects)
+    }
+    fn CopySubresourceRegion(
+        &self,
+        pdstresource: windows::core::Ref<ID3D10Resource>,
+        dstsubresource: u32,
+        dstx: u32,
+        dsty: u32,
+        dstz: u32,
+        psrcresource: windows::core::Ref<ID3D10Resource>,
+        srcsubresource: u32,
+        psrcbox: *const D3D10_BOX,
+    ) {
+        let _call = self.call();
+        self.copy_subresource_region10(
+            pdstresource,
+            dstsubresource,
+            dstx,
+            dsty,
+            dstz,
+            psrcresource,
+            srcsubresource,
+            psrcbox,
+        )
+    }
+    fn CopyResource(
+        &self,
+        pdstresource: windows::core::Ref<ID3D10Resource>,
+        psrcresource: windows::core::Ref<ID3D10Resource>,
+    ) {
+        let _call = self.call();
+        self.copy_resource10(pdstresource, psrcresource)
+    }
+    fn UpdateSubresource(
+        &self,
+        pdstresource: windows::core::Ref<ID3D10Resource>,
+        dstsubresource: u32,
+        pdstbox: *const D3D10_BOX,
+        psrcdata: *const core::ffi::c_void,
+        srcrowpitch: u32,
+        srcdepthpitch: u32,
+    ) {
+        let _call = self.call();
+        self.update_subresource10(
+            pdstresource,
+            dstsubresource,
+            pdstbox,
+            psrcdata,
+            srcrowpitch,
+            srcdepthpitch,
+        )
+    }
+    fn ClearRenderTargetView(
+        &self,
+        prendertargetview: windows::core::Ref<ID3D10RenderTargetView>,
+        colorrgba: *const f32,
+    ) {
+        let _call = self.call();
+        self.clear_render_target_view10(prendertargetview, colorrgba)
+    }
+    fn ClearDepthStencilView(
+        &self,
+        pdepthstencilview: windows::core::Ref<ID3D10DepthStencilView>,
+        clearflags: u32,
+        depth: f32,
+        stencil: u8,
+    ) {
+        let _call = self.call();
+        self.clear_depth_stencil_view10(pdepthstencilview, clearflags, depth, stencil)
+    }
+    fn GenerateMips(&self, pshaderresourceview: windows::core::Ref<ID3D10ShaderResourceView>) {
+        let _call = self.call();
+        self.generate_mips10(pshaderresourceview)
+    }
+    fn ResolveSubresource(
+        &self,
+        pdstresource: windows::core::Ref<ID3D10Resource>,
+        dstsubresource: u32,
+        psrcresource: windows::core::Ref<ID3D10Resource>,
+        srcsubresource: u32,
+        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+    ) {
+        let _call = self.call();
+        self.resolve_subresource10(
+            pdstresource,
+            dstsubresource,
+            psrcresource,
+            srcsubresource,
+            format,
+        )
+    }
+    fn VSGetConstantBuffers(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *mut Option<ID3D10Buffer>,
+    ) {
+        let _call = self.call();
+        self.vs_get_constant_buffers10(startslot, numbuffers, ppconstantbuffers)
+    }
+    fn PSGetShaderResources(
+        &self,
+        startslot: u32,
+        numviews: u32,
+        ppshaderresourceviews: *mut Option<ID3D10ShaderResourceView>,
+    ) {
+        let _call = self.call();
+        self.ps_get_shader_resources10(startslot, numviews, ppshaderresourceviews)
+    }
+    fn PSGetShader(&self, pppixelshader: windows::core::OutRef<ID3D10PixelShader>) {
+        let _call = self.call();
+        self.ps_get_shader10(pppixelshader)
+    }
+    fn PSGetSamplers(
+        &self,
+        startslot: u32,
+        numsamplers: u32,
+        ppsamplers: *mut Option<ID3D10SamplerState>,
+    ) {
+        let _call = self.call();
+        self.ps_get_samplers10(startslot, numsamplers, ppsamplers)
+    }
+    fn VSGetShader(&self, ppvertexshader: windows::core::OutRef<ID3D10VertexShader>) {
+        let _call = self.call();
+        self.vs_get_shader10(ppvertexshader)
+    }
+    fn PSGetConstantBuffers(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *mut Option<ID3D10Buffer>,
+    ) {
+        let _call = self.call();
+        self.ps_get_constant_buffers10(startslot, numbuffers, ppconstantbuffers)
+    }
+    fn IAGetInputLayout(&self, ppinputlayout: windows::core::OutRef<ID3D10InputLayout>) {
+        let _call = self.call();
+        self.ia_get_input_layout10(ppinputlayout)
+    }
+    fn IAGetVertexBuffers(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppvertexbuffers: windows::core::OutRef<ID3D10Buffer>,
+        pstrides: *mut u32,
+        poffsets: *mut u32,
+    ) {
+        let _call = self.call();
+        self.ia_get_vertex_buffers10(startslot, numbuffers, ppvertexbuffers, pstrides, poffsets)
+    }
+    fn IAGetIndexBuffer(
+        &self,
+        pindexbuffer: windows::core::OutRef<ID3D10Buffer>,
+        format: *mut windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+        offset: *mut u32,
+    ) {
+        let _call = self.call();
+        self.ia_get_index_buffer10(pindexbuffer, format, offset)
+    }
+    fn GSGetConstantBuffers(
+        &self,
+        startslot: u32,
+        numbuffers: u32,
+        ppconstantbuffers: *mut Option<ID3D10Buffer>,
+    ) {
+        let _call = self.call();
+        self.gs_get_constant_buffers10(startslot, numbuffers, ppconstantbuffers)
+    }
+    fn GSGetShader(&self, ppgeometryshader: windows::core::OutRef<ID3D10GeometryShader>) {
+        let _call = self.call();
+        self.gs_get_shader10(ppgeometryshader)
+    }
+    fn IAGetPrimitiveTopology(
+        &self,
+        ptopology: *mut windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY,
+    ) {
+        let _call = self.call();
+        self.ia_get_primitive_topology10(ptopology)
+    }
+    fn VSGetShaderResources(
+        &self,
+        startslot: u32,
+        numviews: u32,
+        ppshaderresourceviews: *mut Option<ID3D10ShaderResourceView>,
+    ) {
+        let _call = self.call();
+        self.vs_get_shader_resources10(startslot, numviews, ppshaderresourceviews)
+    }
+    fn VSGetSamplers(
+        &self,
+        startslot: u32,
+        numsamplers: u32,
+        ppsamplers: *mut Option<ID3D10SamplerState>,
+    ) {
+        let _call = self.call();
+        self.vs_get_samplers10(startslot, numsamplers, ppsamplers)
+    }
+    fn GetPredication(
+        &self,
+        pppredicate: windows::core::OutRef<ID3D10Predicate>,
+        ppredicatevalue: *mut windows::core::BOOL,
+    ) {
+        let _call = self.call();
+        self.get_predication10(pppredicate, ppredicatevalue)
+    }
+    fn GSGetShaderResources(
+        &self,
+        startslot: u32,
+        numviews: u32,
+        ppshaderresourceviews: *mut Option<ID3D10ShaderResourceView>,
+    ) {
+        let _call = self.call();
+        self.gs_get_shader_resources10(startslot, numviews, ppshaderresourceviews)
+    }
+    fn GSGetSamplers(
+        &self,
+        startslot: u32,
+        numsamplers: u32,
+        ppsamplers: *mut Option<ID3D10SamplerState>,
+    ) {
+        let _call = self.call();
+        self.gs_get_samplers10(startslot, numsamplers, ppsamplers)
+    }
+    fn OMGetRenderTargets(
+        &self,
+        numviews: u32,
+        pprendertargetviews: *mut Option<ID3D10RenderTargetView>,
+        ppdepthstencilview: windows::core::OutRef<ID3D10DepthStencilView>,
+    ) {
+        let _call = self.call();
+        self.om_get_render_targets10(numviews, pprendertargetviews, ppdepthstencilview)
+    }
+    fn OMGetBlendState(
+        &self,
+        ppblendstate: windows::core::OutRef<ID3D10BlendState>,
+        blendfactor: *mut f32,
+        psamplemask: *mut u32,
+    ) {
+        let _call = self.call();
+        self.om_get_blend_state10(ppblendstate, blendfactor, psamplemask)
+    }
+    fn OMGetDepthStencilState(
+        &self,
+        ppdepthstencilstate: windows::core::OutRef<ID3D10DepthStencilState>,
+        pstencilref: *mut u32,
+    ) {
+        let _call = self.call();
+        self.om_get_depth_stencil_state10(ppdepthstencilstate, pstencilref)
+    }
+    fn SOGetTargets(
+        &self,
+        numbuffers: u32,
+        ppsotargets: windows::core::OutRef<ID3D10Buffer>,
+        poffsets: *mut u32,
+    ) {
+        let _call = self.call();
+        self.so_get_targets10(numbuffers, ppsotargets, poffsets)
+    }
+    fn RSGetState(&self, pprasterizerstate: windows::core::OutRef<ID3D10RasterizerState>) {
+        let _call = self.call();
+        self.rs_get_state10(pprasterizerstate)
+    }
+    fn RSGetViewports(&self, numviewports: *mut u32, pviewports: *mut D3D10_VIEWPORT) {
+        let _call = self.call();
+        self.rs_get_viewports10(numviewports, pviewports)
+    }
+    fn RSGetScissorRects(&self, numrects: *mut u32, prects: *mut windows::Win32::Foundation::RECT) {
+        let _call = self.call();
+        self.rs_get_scissor_rects10(numrects, prects)
+    }
+    fn GetDeviceRemovedReason(&self) -> windows::core::Result<()> {
+        let _call = self.call();
+        self.get_device_removed_reason()
+    }
+    fn SetExceptionMode(&self, raiseflags: u32) -> windows::core::Result<()> {
+        let _call = self.call();
+        self.set_exception_mode(raiseflags)
+    }
+    fn GetExceptionMode(&self) -> u32 {
+        let _call = self.call();
+        self.get_exception_mode()
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        self.private.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        self.private.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        self.private.set_private_data_interface(guid, pdata)
+    }
+    fn ClearState(&self) {
+        let _call = self.call();
+        self.clear_state10()
+    }
+    fn Flush(&self) {
+        let _call = self.call();
+        self.flush10()
+    }
+    fn CreateBuffer(
+        &self,
+        pdesc: *const D3D10_BUFFER_DESC,
+        pinitialdata: *const D3D10_SUBRESOURCE_DATA,
+        ppbuffer: windows::core::OutRef<ID3D10Buffer>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppbuffer, |ppbuffer| {
+            self.create_buffer10(pdesc, pinitialdata, ppbuffer)
+        })
+    }
+    fn CreateTexture1D(
+        &self,
+        pdesc: *const D3D10_TEXTURE1D_DESC,
+        pinitialdata: *const D3D10_SUBRESOURCE_DATA,
+    ) -> windows::core::Result<ID3D10Texture1D> {
+        let _call = self.call();
+        self.create_texture1_d10(pdesc, pinitialdata)
+    }
+    fn CreateTexture2D(
+        &self,
+        pdesc: *const D3D10_TEXTURE2D_DESC,
+        pinitialdata: *const D3D10_SUBRESOURCE_DATA,
+    ) -> windows::core::Result<ID3D10Texture2D> {
+        let _call = self.call();
+        self.create_texture2_d10(pdesc, pinitialdata)
+    }
+    fn CreateTexture3D(
+        &self,
+        pdesc: *const D3D10_TEXTURE3D_DESC,
+        pinitialdata: *const D3D10_SUBRESOURCE_DATA,
+    ) -> windows::core::Result<ID3D10Texture3D> {
+        let _call = self.call();
+        self.create_texture3_d10(pdesc, pinitialdata)
+    }
+    fn CreateShaderResourceView(
+        &self,
+        presource: windows::core::Ref<ID3D10Resource>,
+        pdesc: *const D3D10_SHADER_RESOURCE_VIEW_DESC,
+        ppsrview: windows::core::OutRef<ID3D10ShaderResourceView>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppsrview, |ppsrview| {
+            self.create_shader_resource_view10(presource, pdesc, ppsrview)
+        })
+    }
+    fn CreateRenderTargetView(
+        &self,
+        presource: windows::core::Ref<ID3D10Resource>,
+        pdesc: *const D3D10_RENDER_TARGET_VIEW_DESC,
+        pprtview: windows::core::OutRef<ID3D10RenderTargetView>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(pprtview, |pprtview| {
+            self.create_render_target_view10(presource, pdesc, pprtview)
+        })
+    }
+    fn CreateDepthStencilView(
+        &self,
+        presource: windows::core::Ref<ID3D10Resource>,
+        pdesc: *const D3D10_DEPTH_STENCIL_VIEW_DESC,
+        ppdepthstencilview: windows::core::OutRef<ID3D10DepthStencilView>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppdepthstencilview, |ppdepthstencilview| {
+            self.create_depth_stencil_view10(presource, pdesc, ppdepthstencilview)
+        })
+    }
+    fn CreateInputLayout(
+        &self,
+        pinputelementdescs: *const D3D10_INPUT_ELEMENT_DESC,
+        numelements: u32,
+        pshaderbytecodewithinputsignature: *const core::ffi::c_void,
+        bytecodelength: usize,
+        ppinputlayout: windows::core::OutRef<ID3D10InputLayout>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppinputlayout, |ppinputlayout| {
+            self.create_input_layout10(
+                pinputelementdescs,
+                numelements,
+                pshaderbytecodewithinputsignature,
+                bytecodelength,
+                ppinputlayout,
+            )
+        })
+    }
+    fn CreateVertexShader(
+        &self,
+        pshaderbytecode: *const core::ffi::c_void,
+        bytecodelength: usize,
+        ppvertexshader: windows::core::OutRef<ID3D10VertexShader>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppvertexshader, |ppvertexshader| {
+            self.create_vertex_shader10(pshaderbytecode, bytecodelength, ppvertexshader)
+        })
+    }
+    fn CreateGeometryShader(
+        &self,
+        pshaderbytecode: *const core::ffi::c_void,
+        bytecodelength: usize,
+        ppgeometryshader: windows::core::OutRef<ID3D10GeometryShader>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppgeometryshader, |ppgeometryshader| {
+            self.create_geometry_shader10(pshaderbytecode, bytecodelength, ppgeometryshader)
+        })
+    }
+    fn CreateGeometryShaderWithStreamOutput(
+        &self,
+        pshaderbytecode: *const core::ffi::c_void,
+        bytecodelength: usize,
+        psodeclaration: *const D3D10_SO_DECLARATION_ENTRY,
+        numentries: u32,
+        outputstreamstride: u32,
+        ppgeometryshader: windows::core::OutRef<ID3D10GeometryShader>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppgeometryshader, |ppgeometryshader| {
+            self.create_geometry_shader_with_stream_output10(
+                pshaderbytecode,
+                bytecodelength,
+                psodeclaration,
+                numentries,
+                outputstreamstride,
+                ppgeometryshader,
+            )
+        })
+    }
+    fn CreatePixelShader(
+        &self,
+        pshaderbytecode: *const core::ffi::c_void,
+        bytecodelength: usize,
+        pppixelshader: windows::core::OutRef<ID3D10PixelShader>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(pppixelshader, |pppixelshader| {
+            self.create_pixel_shader10(pshaderbytecode, bytecodelength, pppixelshader)
+        })
+    }
+    fn CreateBlendState(
+        &self,
+        pblendstatedesc: *const D3D10_BLEND_DESC,
+        ppblendstate: windows::core::OutRef<ID3D10BlendState>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppblendstate, |ppblendstate| {
+            self.create_blend_state10(pblendstatedesc, ppblendstate)
+        })
+    }
+    fn CreateDepthStencilState(
+        &self,
+        pdepthstencildesc: *const D3D10_DEPTH_STENCIL_DESC,
+        ppdepthstencilstate: windows::core::OutRef<ID3D10DepthStencilState>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppdepthstencilstate, |ppdepthstencilstate| {
+            self.create_depth_stencil_state10(pdepthstencildesc, ppdepthstencilstate)
+        })
+    }
+    fn CreateRasterizerState(
+        &self,
+        prasterizerdesc: *const D3D10_RASTERIZER_DESC,
+        pprasterizerstate: windows::core::OutRef<ID3D10RasterizerState>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(pprasterizerstate, |pprasterizerstate| {
+            self.create_rasterizer_state10(prasterizerdesc, pprasterizerstate)
+        })
+    }
+    fn CreateSamplerState(
+        &self,
+        psamplerdesc: *const D3D10_SAMPLER_DESC,
+        ppsamplerstate: windows::core::OutRef<ID3D10SamplerState>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppsamplerstate, |ppsamplerstate| {
+            self.create_sampler_state10(psamplerdesc, ppsamplerstate)
+        })
+    }
+    fn CreateQuery(
+        &self,
+        pquerydesc: *const D3D10_QUERY_DESC,
+        ppquery: windows::core::OutRef<ID3D10Query>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppquery, |ppquery| self.create_query10(pquerydesc, ppquery))
+    }
+    fn CreatePredicate(
+        &self,
+        ppredicatedesc: *const D3D10_QUERY_DESC,
+        pppredicate: windows::core::OutRef<ID3D10Predicate>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(pppredicate, |pppredicate| {
+            self.create_predicate10(ppredicatedesc, pppredicate)
+        })
+    }
+    fn CreateCounter(
+        &self,
+        pcounterdesc: *const D3D10_COUNTER_DESC,
+        ppcounter: windows::core::OutRef<ID3D10Counter>,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        creating(ppcounter, |ppcounter| {
+            Err(missing("ID3D10Device::CreateCounter"))
+        })
+    }
+    fn CheckFormatSupport(
+        &self,
+        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+    ) -> windows::core::Result<u32> {
+        let _call = self.call();
+        self.check_format_support(format)
+    }
+    fn CheckMultisampleQualityLevels(
+        &self,
+        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+        samplecount: u32,
+    ) -> windows::core::Result<u32> {
+        let _call = self.call();
+        self.check_multisample_quality_levels(format, samplecount)
+    }
+    fn CheckCounterInfo(&self, pcounterinfo: *mut D3D10_COUNTER_INFO) {
+        let _call = self.call();
+        self.unserved("ID3D10Device::CheckCounterInfo")
+    }
+    fn CheckCounter(
+        &self,
+        pdesc: *const D3D10_COUNTER_DESC,
+        ptype: *mut D3D10_COUNTER_TYPE,
+        pactivecounters: *mut u32,
+        szname: windows::core::PSTR,
+        pnamelength: *mut u32,
+        szunits: windows::core::PSTR,
+        punitslength: *mut u32,
+        szdescription: windows::core::PSTR,
+        pdescriptionlength: *mut u32,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        Err(missing("ID3D10Device::CheckCounter"))
+    }
+    fn GetCreationFlags(&self) -> u32 {
+        let _call = self.call();
+        self.get_creation_flags()
+    }
+    fn OpenSharedResource(
+        &self,
+        hresource: windows::Win32::Foundation::HANDLE,
+        returnedinterface: *const windows::core::GUID,
+        ppresource: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _call = self.call();
+        Err(missing("ID3D10Device::OpenSharedResource"))
+    }
+    fn SetTextFilterSize(&self, width: u32, height: u32) {
+        let _call = self.call();
+        self.set_text_filter_size10(width, height)
+    }
+    fn GetTextFilterSize(&self, pwidth: *mut u32, pheight: *mut u32) {
+        let _call = self.call();
+        self.get_text_filter_size10(pwidth, pheight)
+    }
+}
+
+impl ID3D10Multithread_Impl for Device_Impl {
+    fn Enter(&self) {
+        let _call = self.call();
+        self.enter10()
+    }
+    fn Leave(&self) {
+        let _call = self.call();
+        self.leave10()
+    }
+    fn SetMultithreadProtected(&self, bmtprotect: windows::core::BOOL) -> windows::core::BOOL {
+        let _call = self.call();
+        self.set_multithread_protected10(bmtprotect)
+    }
+    fn GetMultithreadProtected(&self) -> windows::core::BOOL {
+        let _call = self.call();
+        self.get_multithread_protected10()
+    }
+}
+
 impl ID3D11DeviceContext3_Impl for Context_Impl {
     fn Flush1(&self, contexttype: D3D11_CONTEXT_TYPE, hevent: windows::Win32::Foundation::HANDLE) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.flush1(contexttype, hevent)
     }
     fn SetHardwareProtectionState(&self, hwprotectionenable: windows::core::BOOL) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.unserved("ID3D11DeviceContext3::SetHardwareProtectionState")
     }
     fn GetHardwareProtectionState(&self, phwprotectionenable: *mut windows::core::BOOL) {
@@ -818,6 +1676,9 @@ impl ID3D11DeviceContext2_Impl for Context_Impl {
         flags: u32,
     ) -> windows::core::Result<()> {
         let _call = self.call();
+        if self.emulates10() {
+            return Err(E_INVALIDARG.into());
+        }
         Err(missing("ID3D11DeviceContext2::UpdateTileMappings"))
     }
     fn CopyTileMappings(
@@ -830,6 +1691,9 @@ impl ID3D11DeviceContext2_Impl for Context_Impl {
         flags: u32,
     ) -> windows::core::Result<()> {
         let _call = self.call();
+        if self.emulates10() {
+            return Err(E_INVALIDARG.into());
+        }
         Err(missing("ID3D11DeviceContext2::CopyTileMappings"))
     }
     fn CopyTiles(
@@ -842,6 +1706,9 @@ impl ID3D11DeviceContext2_Impl for Context_Impl {
         flags: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.unserved("ID3D11DeviceContext2::CopyTiles")
     }
     fn UpdateTiles(
@@ -853,6 +1720,9 @@ impl ID3D11DeviceContext2_Impl for Context_Impl {
         flags: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.unserved("ID3D11DeviceContext2::UpdateTiles")
     }
     fn ResizeTilePool(
@@ -861,6 +1731,9 @@ impl ID3D11DeviceContext2_Impl for Context_Impl {
         newsizeinbytes: u64,
     ) -> windows::core::Result<()> {
         let _call = self.call();
+        if self.emulates10() {
+            return Err(E_INVALIDARG.into());
+        }
         Err(missing("ID3D11DeviceContext2::ResizeTilePool"))
     }
     fn TiledResourceBarrier(
@@ -869,22 +1742,37 @@ impl ID3D11DeviceContext2_Impl for Context_Impl {
         ptiledresourceorviewaccessafterbarrier: windows::core::Ref<ID3D11DeviceChild>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.unserved("ID3D11DeviceContext2::TiledResourceBarrier")
     }
     fn IsAnnotationEnabled(&self) -> windows::core::BOOL {
         let _call = self.call();
+        if self.emulates10() {
+            return Default::default();
+        }
         self.is_annotation_enabled()
     }
     fn SetMarkerInt(&self, plabel: &windows::core::PCWSTR, data: i32) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.set_marker_int(plabel, data)
     }
     fn BeginEventInt(&self, plabel: &windows::core::PCWSTR, data: i32) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.begin_event_int(plabel, data)
     }
     fn EndEvent(&self) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         let _ = self.end_event();
     }
 }
@@ -903,6 +1791,9 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         copyflags: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.copy_subresource_region1(
             pdstresource,
             dstsubresource,
@@ -926,6 +1817,9 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         copyflags: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.update_subresource1(
             pdstresource,
             dstsubresource,
@@ -938,10 +1832,16 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
     }
     fn DiscardResource(&self, presource: windows::core::Ref<ID3D11Resource>) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.discard_resource(presource)
     }
     fn DiscardView(&self, presourceview: windows::core::Ref<ID3D11View>) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.discard_view(presourceview)
     }
     fn VSSetConstantBuffers1(
@@ -953,6 +1853,9 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *const u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.vs_set_constant_buffers1(
             startslot,
             numbuffers,
@@ -970,6 +1873,9 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *const u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.hs_set_constant_buffers1(
             startslot,
             numbuffers,
@@ -987,6 +1893,9 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *const u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ds_set_constant_buffers1(
             startslot,
             numbuffers,
@@ -1004,6 +1913,9 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *const u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.gs_set_constant_buffers1(
             startslot,
             numbuffers,
@@ -1021,6 +1933,9 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *const u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ps_set_constant_buffers1(
             startslot,
             numbuffers,
@@ -1038,6 +1953,9 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         pnumconstants: *const u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.cs_set_constant_buffers1(
             startslot,
             numbuffers,
@@ -1164,6 +2082,9 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         numrects: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.clear_view(pview, color, prect, numrects)
     }
     fn DiscardView1(
@@ -1173,6 +2094,9 @@ impl ID3D11DeviceContext1_Impl for Context_Impl {
         numrects: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.discard_view1(presourceview, prects, numrects)
     }
 }
@@ -1185,6 +2109,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.vs_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn PSSetShaderResources(
@@ -1194,6 +2121,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ps_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn PSSetShader(
@@ -1203,6 +2133,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numclassinstances: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ps_set_shader(ppixelshader, ppclassinstances, numclassinstances)
     }
     fn PSSetSamplers(
@@ -1212,6 +2145,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ps_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn VSSetShader(
@@ -1221,14 +2157,23 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numclassinstances: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.vs_set_shader(pvertexshader, ppclassinstances, numclassinstances)
     }
     fn DrawIndexed(&self, indexcount: u32, startindexlocation: u32, basevertexlocation: i32) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.draw_indexed(indexcount, startindexlocation, basevertexlocation)
     }
     fn Draw(&self, vertexcount: u32, startvertexlocation: u32) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.draw(vertexcount, startvertexlocation)
     }
     fn Map(
@@ -1240,10 +2185,16 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pmappedresource: *mut D3D11_MAPPED_SUBRESOURCE,
     ) -> windows::core::Result<()> {
         let _call = self.call();
+        if self.emulates10() {
+            return Err(E_INVALIDARG.into());
+        }
         self.map(presource, subresource, maptype, mapflags, pmappedresource)
     }
     fn Unmap(&self, presource: windows::core::Ref<ID3D11Resource>, subresource: u32) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.unmap(presource, subresource)
     }
     fn PSSetConstantBuffers(
@@ -1253,10 +2204,16 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ps_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn IASetInputLayout(&self, pinputlayout: windows::core::Ref<ID3D11InputLayout>) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ia_set_input_layout(pinputlayout)
     }
     fn IASetVertexBuffers(
@@ -1268,6 +2225,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         poffsets: *const u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ia_set_vertex_buffers(startslot, numbuffers, ppvertexbuffers, pstrides, poffsets)
     }
     fn IASetIndexBuffer(
@@ -1277,6 +2237,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         offset: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ia_set_index_buffer(pindexbuffer, format, offset)
     }
     fn DrawIndexedInstanced(
@@ -1288,6 +2251,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         startinstancelocation: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.draw_indexed_instanced(
             indexcountperinstance,
             instancecount,
@@ -1304,6 +2270,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         startinstancelocation: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.draw_instanced(
             vertexcountperinstance,
             instancecount,
@@ -1318,6 +2287,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.gs_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn GSSetShader(
@@ -1327,6 +2299,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numclassinstances: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.gs_set_shader(pshader, ppclassinstances, numclassinstances)
     }
     fn IASetPrimitiveTopology(
@@ -1334,6 +2309,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         topology: windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ia_set_primitive_topology(topology)
     }
     fn VSSetShaderResources(
@@ -1343,6 +2321,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.vs_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn VSSetSamplers(
@@ -1352,14 +2333,23 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.vs_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn Begin(&self, pasync: windows::core::Ref<ID3D11Asynchronous>) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.begin(pasync)
     }
     fn End(&self, pasync: windows::core::Ref<ID3D11Asynchronous>) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.end(pasync)
     }
     fn GetData(
@@ -1378,6 +2368,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         predicatevalue: windows::core::BOOL,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.set_predication(ppredicate, predicatevalue)
     }
     fn GSSetShaderResources(
@@ -1387,6 +2380,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.gs_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn GSSetSamplers(
@@ -1396,6 +2392,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.gs_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn OMSetRenderTargets(
@@ -1405,6 +2404,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pdepthstencilview: windows::core::Ref<ID3D11DepthStencilView>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.om_set_render_targets(numviews, pprendertargetviews, pdepthstencilview)
     }
     fn OMSetRenderTargetsAndUnorderedAccessViews(
@@ -1418,6 +2420,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         puavinitialcounts: *const u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.om_set_render_targets_and_unordered_access_views(
             numrtvs,
             pprendertargetviews,
@@ -1435,6 +2440,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         samplemask: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.om_set_blend_state(pblendstate, blendfactor, samplemask)
     }
     fn OMSetDepthStencilState(
@@ -1443,6 +2451,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         stencilref: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.om_set_depth_stencil_state(pdepthstencilstate, stencilref)
     }
     fn SOSetTargets(
@@ -1452,10 +2463,16 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         poffsets: *const u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.so_set_targets(numbuffers, ppsotargets, poffsets)
     }
     fn DrawAuto(&self) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.draw_auto()
     }
     fn DrawIndexedInstancedIndirect(
@@ -1464,6 +2481,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         alignedbyteoffsetforargs: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.draw_indexed_instanced_indirect(pbufferforargs, alignedbyteoffsetforargs)
     }
     fn DrawInstancedIndirect(
@@ -1472,10 +2492,16 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         alignedbyteoffsetforargs: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.draw_instanced_indirect(pbufferforargs, alignedbyteoffsetforargs)
     }
     fn Dispatch(&self, threadgroupcountx: u32, threadgroupcounty: u32, threadgroupcountz: u32) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.dispatch(threadgroupcountx, threadgroupcounty, threadgroupcountz)
     }
     fn DispatchIndirect(
@@ -1484,18 +2510,30 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         alignedbyteoffsetforargs: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.dispatch_indirect(pbufferforargs, alignedbyteoffsetforargs)
     }
     fn RSSetState(&self, prasterizerstate: windows::core::Ref<ID3D11RasterizerState>) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.rs_set_state(prasterizerstate)
     }
     fn RSSetViewports(&self, numviewports: u32, pviewports: *const D3D11_VIEWPORT) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.rs_set_viewports(numviewports, pviewports)
     }
     fn RSSetScissorRects(&self, numrects: u32, prects: *const windows::Win32::Foundation::RECT) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.rs_set_scissor_rects(numrects, prects)
     }
     fn CopySubresourceRegion(
@@ -1510,6 +2548,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         psrcbox: *const D3D11_BOX,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.copy_subresource_region(
             pdstresource,
             dstsubresource,
@@ -1527,6 +2568,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         psrcresource: windows::core::Ref<ID3D11Resource>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.copy_resource(pdstresource, psrcresource)
     }
     fn UpdateSubresource(
@@ -1539,6 +2583,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         srcdepthpitch: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.update_subresource(
             pdstresource,
             dstsubresource,
@@ -1555,6 +2602,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         psrcview: windows::core::Ref<ID3D11UnorderedAccessView>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.copy_structure_count(pdstbuffer, dstalignedbyteoffset, psrcview)
     }
     fn ClearRenderTargetView(
@@ -1563,6 +2613,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         colorrgba: *const f32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.clear_render_target_view(prendertargetview, colorrgba)
     }
     fn ClearUnorderedAccessViewUint(
@@ -1571,6 +2624,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         values: *const u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.clear_unordered_access_view_uint(punorderedaccessview, values)
     }
     fn ClearUnorderedAccessViewFloat(
@@ -1579,6 +2635,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         values: *const f32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.clear_unordered_access_view_float(punorderedaccessview, values)
     }
     fn ClearDepthStencilView(
@@ -1589,14 +2648,23 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         stencil: u8,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.clear_depth_stencil_view(pdepthstencilview, clearflags, depth, stencil)
     }
     fn GenerateMips(&self, pshaderresourceview: windows::core::Ref<ID3D11ShaderResourceView>) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.generate_mips(pshaderresourceview)
     }
     fn SetResourceMinLOD(&self, presource: windows::core::Ref<ID3D11Resource>, minlod: f32) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.set_resource_min_lod(presource, minlod)
     }
     fn GetResourceMinLOD(&self, presource: windows::core::Ref<ID3D11Resource>) -> f32 {
@@ -1612,6 +2680,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.resolve_subresource(
             pdstresource,
             dstsubresource,
@@ -1626,6 +2697,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         restorecontextstate: windows::core::BOOL,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.execute_command_list(pcommandlist, restorecontextstate)
     }
     fn HSSetShaderResources(
@@ -1635,6 +2709,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.hs_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn HSSetShader(
@@ -1644,6 +2721,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numclassinstances: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.hs_set_shader(phullshader, ppclassinstances, numclassinstances)
     }
     fn HSSetSamplers(
@@ -1653,6 +2733,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.hs_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn HSSetConstantBuffers(
@@ -1662,6 +2745,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.hs_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn DSSetShaderResources(
@@ -1671,6 +2757,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ds_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn DSSetShader(
@@ -1680,6 +2769,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numclassinstances: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ds_set_shader(pdomainshader, ppclassinstances, numclassinstances)
     }
     fn DSSetSamplers(
@@ -1689,6 +2781,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ds_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn DSSetConstantBuffers(
@@ -1698,6 +2793,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ds_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn CSSetShaderResources(
@@ -1707,6 +2805,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.cs_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn CSSetUnorderedAccessViews(
@@ -1717,6 +2818,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         puavinitialcounts: *const u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.cs_set_unordered_access_views(
             startslot,
             numuavs,
@@ -1731,6 +2835,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numclassinstances: u32,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.cs_set_shader(pcomputeshader, ppclassinstances, numclassinstances)
     }
     fn CSSetSamplers(
@@ -1740,6 +2847,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *const Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.cs_set_samplers(startslot, numsamplers, ppsamplers)
     }
     fn CSSetConstantBuffers(
@@ -1749,6 +2859,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppconstantbuffers: *const Option<ID3D11Buffer>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.cs_set_constant_buffers(startslot, numbuffers, ppconstantbuffers)
     }
     fn VSGetConstantBuffers(
@@ -1785,6 +2898,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ps_get_samplers(startslot, numsamplers, ppsamplers)
     }
     fn VSGetShader(
@@ -2082,10 +3198,16 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
     }
     fn ClearState(&self) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.clear_state()
     }
     fn Flush(&self) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.flush()
     }
     fn GetType(&self) -> D3D11_DEVICE_CONTEXT_TYPE {
@@ -2102,6 +3224,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppcommandlist: windows::core::OutRef<ID3D11CommandList>,
     ) -> windows::core::Result<()> {
         let _call = self.call();
+        if self.emulates10() {
+            return Err(E_INVALIDARG.into());
+        }
         self.finish_command_list(restoredeferredcontextstate, ppcommandlist)
     }
 }
@@ -3026,11 +4151,11 @@ impl ID3D10Buffer_Impl for Buffer_Impl {
         ppdata: *mut *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
         let _lock = lock();
-        Err(missing("ID3D10Buffer::Map"))
+        self.map10(maptype, mapflags, ppdata)
     }
     fn Unmap(&self) {
         let _lock = lock();
-        missing_void("ID3D10Buffer::Unmap")
+        self.unmap10()
     }
     fn GetDesc(&self, pdesc: *mut D3D10_BUFFER_DESC) {
         let _lock = lock();
@@ -3277,11 +4402,11 @@ impl ID3D10Texture1D_Impl for Texture1D_Impl {
         ppdata: *mut *mut core::ffi::c_void,
     ) -> windows::core::Result<()> {
         let _lock = lock();
-        Err(missing("ID3D10Texture1D::Map"))
+        self.map10(subresource, maptype, mapflags, ppdata)
     }
     fn Unmap(&self, subresource: u32) {
         let _lock = lock();
-        missing_void("ID3D10Texture1D::Unmap")
+        self.unmap10(subresource)
     }
     fn GetDesc(&self, pdesc: *mut D3D10_TEXTURE1D_DESC) {
         let _lock = lock();
@@ -3534,11 +4659,11 @@ impl ID3D10Texture2D_Impl for Texture2D_Impl {
         mapflags: u32,
     ) -> windows::core::Result<D3D10_MAPPED_TEXTURE2D> {
         let _lock = lock();
-        Err(missing("ID3D10Texture2D::Map"))
+        self.map10(subresource, maptype, mapflags)
     }
     fn Unmap(&self, subresource: u32) {
         let _lock = lock();
-        missing_void("ID3D10Texture2D::Unmap")
+        self.unmap10(subresource)
     }
     fn GetDesc(&self, pdesc: *mut D3D10_TEXTURE2D_DESC) {
         let _lock = lock();
@@ -3791,11 +4916,11 @@ impl ID3D10Texture3D_Impl for Texture3D_Impl {
         mapflags: u32,
     ) -> windows::core::Result<D3D10_MAPPED_TEXTURE3D> {
         let _lock = lock();
-        Err(missing("ID3D10Texture3D::Map"))
+        self.map10(subresource, maptype, mapflags)
     }
     fn Unmap(&self, subresource: u32) {
         let _lock = lock();
-        missing_void("ID3D10Texture3D::Unmap")
+        self.unmap10(subresource)
     }
     fn GetDesc(&self, pdesc: *mut D3D10_TEXTURE3D_DESC) {
         let _lock = lock();
@@ -4591,6 +5716,41 @@ impl ID3D11DeviceChild_Impl for InputLayout_Impl {
     }
 }
 
+impl ID3D10InputLayout_Impl for InputLayout_Impl {}
+
+impl ID3D10DeviceChild_Impl for InputLayout_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
 impl ID3D11Query1_Impl for Query_Impl {
     fn GetDesc1(&self, pdesc1: *mut D3D11_QUERY_DESC1) {
         let _lock = lock();
@@ -4616,6 +5776,70 @@ impl ID3D11DeviceChild_Impl for Query_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D10Query_Impl for Query_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D10_QUERY_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10Asynchronous_Impl for Query_Impl {
+    fn Begin(&self) {
+        let _lock = lock();
+        self.begin10()
+    }
+    fn End(&self) {
+        let _lock = lock();
+        self.end10()
+    }
+    fn GetData(
+        &self,
+        pdata: *mut core::ffi::c_void,
+        datasize: u32,
+        getdataflags: u32,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.get_data10(pdata, datasize, getdataflags)
+    }
+    fn GetDataSize(&self) -> u32 {
+        let _lock = lock();
+        self.get_data_size10()
+    }
+}
+
+impl ID3D10DeviceChild_Impl for Query_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
     }
     fn GetPrivateData(
         &self,
@@ -4694,12 +5918,113 @@ impl ID3D11DeviceChild_Impl for Predicate_Impl {
     }
 }
 
+impl ID3D10Predicate_Impl for Predicate_Impl {}
+
+impl ID3D10Query_Impl for Predicate_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D10_QUERY_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10Asynchronous_Impl for Predicate_Impl {
+    fn Begin(&self) {
+        let _lock = lock();
+        self.begin10()
+    }
+    fn End(&self) {
+        let _lock = lock();
+        self.end10()
+    }
+    fn GetData(
+        &self,
+        pdata: *mut core::ffi::c_void,
+        datasize: u32,
+        getdataflags: u32,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.get_data10(pdata, datasize, getdataflags)
+    }
+    fn GetDataSize(&self) -> u32 {
+        let _lock = lock();
+        self.get_data_size10()
+    }
+}
+
+impl ID3D10DeviceChild_Impl for Predicate_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
 impl ID3D11VertexShader_Impl for VertexShader_Impl {}
 
 impl ID3D11DeviceChild_Impl for VertexShader_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D10VertexShader_Impl for VertexShader_Impl {}
+
+impl ID3D10DeviceChild_Impl for VertexShader_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
     }
     fn GetPrivateData(
         &self,
@@ -4764,12 +6089,82 @@ impl ID3D11DeviceChild_Impl for PixelShader_Impl {
     }
 }
 
+impl ID3D10PixelShader_Impl for PixelShader_Impl {}
+
+impl ID3D10DeviceChild_Impl for PixelShader_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
 impl ID3D11GeometryShader_Impl for GeometryShader_Impl {}
 
 impl ID3D11DeviceChild_Impl for GeometryShader_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D10GeometryShader_Impl for GeometryShader_Impl {}
+
+impl ID3D10DeviceChild_Impl for GeometryShader_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
     }
     fn GetPrivateData(
         &self,

@@ -461,11 +461,22 @@ impl<B: Backend> Replay<B> {
                 }),
             },
         );
-        if let Some(g) = d.render_mut(pid).geometry.as_mut() {
-            g.stages = Some(stages);
-        }
+        let tessellated = match d.render_mut(pid).geometry.as_mut() {
+            Some(g) => {
+                g.stages = Some(stages);
+                g.domain.is_some()
+            }
+            None => false,
+        };
         let out = match ran {
             Ok(out) => out,
+            // Real Direct3D 12 draws patches of another control point count than the hull
+            // shader takes; the stage helper does not.
+            Err(StageError::TopologyMismatch) if tessellated => {
+                return Err(Error::NotImplemented(
+                    "patches of another control point count than the hull shader takes",
+                ));
+            }
             // A draw of primitives the geometry shader does not take, which Direct3D does not
             // draw either.
             Err(StageError::TopologyMismatch) => None,

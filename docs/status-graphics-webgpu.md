@@ -17,7 +17,9 @@ no longer declared resolvable, part of a depth level copied into colour, the res
 group copied into depth, prepared strips built for both index formats) and answered what the
 newest merges ask. G2b passed its fourth independent check. Run 19 is G2c run 1 (below): the
 check's open findings, the new requests (three-channel 32-bit textures), and where real programs'
-frame time goes. Every request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
+frame time goes. Run 20 is G2c run 2 (below): the interface's ruling on depth and stencil
+copies within one subresource built, subgroups, and the stencil view question answered. Every
+request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
 graphics branch), and where each stands:
@@ -134,6 +136,90 @@ graphics branch), and where each stands:
   invocations through this back end and its test_query_pipeline_statistics passes (its status,
   runs 22 and 23). The shared `OcclusionCounter`'s new GPU sum is a compute program this back end
   runs as any other.
+- Copies within one subresource of depth or stencil (the interface's ruling, G1c: through a
+  temporary texture of the same format): built (run 20). The region is drawn into a texture of
+  its format and size, then drawn from it into its place, each aspect by the depth and stencil
+  draws partial copies already use (`CopyWithinTexture`). Before, the device was marked lost by
+  name. The shared suite's `a_copy_within_one_depth_or_stencil_subresource_moves_the_region`
+  (`depth32float`, `depth16unorm`, `stencil8`, `depth24plus`, both combined formats) natively and
+  in Chrome; tests/copies.rs `depth_copies_within_one_subresource_go_through_a_texture` (two
+  layers at once, every value exact, counted once).
+- Subgroups (shaders track, run 28: "ask wgpu for `SUBGROUP` where the adapter has it and
+  declare `Features::SUBGROUPS`"; Godot's 3D platformer through the Direct3D 12 front stops at
+  wave operations): built (run 20). The device asks for wgpu's `SUBGROUP` where the adapter has
+  it and declares `SUBGROUPS` then. Where it is: wgpu's Vulkan on the RTX 3080; wgpu's Direct3D
+  12 only with DXC (shader model 6), so not with the FXC the fronts' instance uses; not in
+  Chrome, because wgpu 30's browser back end does not map WebGPU's `subgroups` feature (its
+  feature table has 16 entries, none of them subgroups), so the back end declares it absent
+  there. tests/subgroups.rs: declared exactly where the adapter has it; a fragment program using
+  `subgroupAll`, `subgroupAdd` and `subgroupBallot` draws every pixel as they define; a device
+  made without the feature declares none and refuses the program by name.
+- Stencil views reading 0 on wgpu's Direct3D 12 path (Direct3D 11 front, G4 run 19, Wine's
+  test_depth_stencil_sampling): not reproduced in this back end. wgpu 30's Direct3D 12 stencil
+  views use `X24_TYPELESS_G8_UINT` with a component mapping that moves the stencil (green) into
+  the first component and forces the second to 0 (wgpu-hal dx12/view.rs
+  `STENCIL_COMPONENT_MAPPING`), as WebGPU defines. tests/bindings.rs
+  `combined_depth_stencil_views_draw_and_read_each_aspect` now also clears the stencil alone (depth
+  kept, as `D3D11_CLEAR_STENCIL` does) and reads it again through the stencil view: the value is
+  in the first component on Vulkan and on Direct3D 12 for `depth24plus-stencil8` and
+  `depth32float-stencil8` (run 20; this test is native only). So a 0 seen through the front
+  comes from the second component being read where the program's mapping was not applied, or
+  from the front's path; asked back of the Direct3D 11 track under Next.
+
+Run 20 = G2c run 2, 2026-11-18:
+- Merged origin/phase-2-graphics (G1c: the ruling on depth and stencil copies within one
+  subresource, prepare naming no index format, no vertex format capability, three new shared
+  suite tests); it carried the newest -rig, -shaders, -direct3d-11, -direct3d-12 and -webgl
+  commits, so nothing else was left to merge. No conflicts. The three new suite tests were added
+  to examples/scenes/names.rs, so Chrome runs them too.
+- The G2b check's open findings were all closed in run 19 (above); the strip index field is now
+  the interface's own ruling (no index format in `PrepareDesc`; strips prepared for both).
+- Built: the ruling on depth and stencil copies within one subresource; subgroups. Answered with
+  a test: stencil views on wgpu's Direct3D 12 path. Each is in the list above. Read again for
+  new asks: the Direct3D 11 front's empty-slot `resinfo` sizes (its own stand-in texture, its
+  item), its multisampled arrays as a texture per layer (refused by that front for now; plan 4.2's
+  texture per layer is built in the fronts, as the Direct3D 12 front has done), the shaders track's 24-bit early
+  tests (its own program), the WebGL track's replays (they replay on this back end unchanged).
+  Nothing else is asked of this back end.
+- Full runs (desktop, RTX 3080, NVIDIA 621.01, shared with the other tracks through the GPU
+  queue, CPU load not sampled; scratch logs/run20-full.log, run20-subgroups.log,
+  run20-clippy.log, run20-webcheck.log, pictures in run20/web): lint of both builds clean;
+  natively after `cargo clean` of this crate and the suite crate, Vulkan 121 passed and 3
+  ignored, Direct3D 12 122 passed and 2 ignored (the same ignored tests as run 19), 0 failed;
+  the shared suite 42 of 42 on each API. Subgroups: the adapter has them on Vulkan (declared,
+  drawn), not on Direct3D 12 (declared absent). web/check after cleaning the WebAssembly build:
+  the twelve pictures and the viewports equal Direct3D 11's at tolerance 0, the twists differ,
+  the shared suite 42 of 42 in Chrome 157 on the RTX 3080 (D3D12, discrete, not a fallback),
+  timestamps without developer features in steps of 65,536 ns (9.830 and 19.530 ms), the other
+  Chrome checks as in run 19.
+- Then the shared line moved again (G1c run 7: what an indexed draw may fetch past a stream and
+  a program past its binding, two new suite tests) and -direct3d-12 and -shaders with it: merged
+  (one conflict, in the plan's text on fetches past a vertex buffer: both texts kept, the Direct3D
+  12 track's indirect draws sentence inside the shared line's paragraph). The new suite tests went
+  into examples/scenes/names.rs. Its newest asks of this back end are subgroups (built above) and
+  the two suite tests, which pass. Runs after it (logs/run20-full2.log, run20-clippy2.log,
+  run20-webcheck2.log, run20-plain.log, run20-webcheck3.log): lint clean; Vulkan 123 passed and
+  3 ignored, Direct3D 12 124 passed and 2 ignored, 0 failed; the shared suite 44 of 44 on each
+  API and 44 of 44 in Chrome. The first web/check after the merge failed at one step: Chrome
+  launched without developer features got no adapter ("no adapter"; the G2b check met the same
+  once). Run alone three times right after, it passed 3 of 3 (stretches 9.765 and 19.5 ms, every
+  value a multiple of 65,536 ns), and web/check again passed whole (pictures at tolerance 0, the
+  suite 44 of 44 in Chrome). The adapter miss is Chrome's, seen twice in about ten launches.
+- Frame time: the breakdowns of run 19 stand (Measurements); nothing in this run changes a
+  frame's path but the device asking for subgroups. The two large costs are now placed: the
+  bgfx copy is the Direct3D 12 front's `MappedUploadWhole` (asked of it under Next), the acquire
+  spin is the display wait itself (Next).
+- A third merge of the shared line (G1c run 8: an interface doc change, a storage binding's size
+  a multiple of four and an access past a binding may reach buffers sharing its API buffer, as
+  this back end's arena does; no new suite test) took the shared line's plan text where it
+  conflicted (its wording of the same indirect draws sentence). Runs after it
+  (logs/run20-full3.log, run20-clippy3.log, run20-webcheck4.log): lint clean; Vulkan 123 passed
+  and 3 ignored, Direct3D 12 124 passed and 2 ignored, 0 failed, the suite 44 of 44 on each;
+  web/check passed whole (pictures at tolerance 0, the suite 44 of 44 in Chrome, timestamps in
+  65,536 ns steps).
+- Removed: the desktop's C:\wc\target\phase-2-graphics-webgpu three times (5.96, 8.53 and
+  8.53 GB) and the checkout's own target on the Mac three times (505, 508 and 508 MB of
+  `cargo check`); no scratch copy was made.
 
 Run 19 = G2c run 1, 2026-11-18:
 - Merged origin/phase-2-graphics-rig, -shaders, -direct3d-12 and -direct3d-11 (no conflicts; the
@@ -831,6 +917,10 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   `AUTOMATIC_TIMESTAMP_NORMALIZATION`): without it, natively on a GPU whose timestamp period is not
   1 ns, `TIMESTAMPS` is declared absent. On the RTX 3080 the period is 1 ns on both of wgpu's APIs
   with or without the flag (tests/timestamps.rs prints it), so there it changes nothing.
+- `SUBGROUPS` is declared where wgpu offers `SUBGROUP`: on the RTX 3080 through wgpu's Vulkan,
+  not through its Direct3D 12 with FXC (the fronts' instance; DXC would offer it), and not in
+  the browser with wgpu 30. A program using subgroups on a device without them is refused at
+  `create_shader` with `GpuError::Invalid`, so fronts check the capability first.
 - Make it from a wgpu adapter: ask for the device with `WebGpu::device_descriptor(&adapter)` (the
   features the back end uses where present, and the adapter's highest limits), then
   `WebGpu::new(&adapter, device, queue)`. `WebGpu` is the `B` of `Device<B: Backend>`. The whole
@@ -885,7 +975,7 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 `cargo check -j 2`.
 - Tests on the RTX 3080 (tests/bindings.rs, blocks.rs, converted.rs, copies.rs, depth.rs,
   direct3d.rs (Windows only), fitted.rs, prepare.rs, pulled.rs, queries.rs, raster.rs, scenes.rs, surface.rs
-  (Windows only), timestamps.rs, vertices.rs, writes.rs and suite.rs, the shared suite; they need a
+  (Windows only), subgroups.rs, timestamps.rs, vertices.rs, writes.rs and suite.rs, the shared suite; they need a
   GPU, and the suite's present test and surface.rs a desktop, so
   `--desktop`; `WEBGPU_API=dx12|vulkan|metal` picks wgpu's API, default the platform's, Vulkan on
   the desktop), both APIs in one job:
@@ -1492,21 +1582,32 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
    timestamp workload's 1.3 and 1.5 times): wgpu's `create_shader_module_trusted` without
    `force_loop_bounding` takes Direct3D's time, but lets a guest's endless loop be undefined in
    the driver's compiler, as on real Direct3D.
-3. Read the fronts' status files again after merging.
+3. Read the fronts' status files again after merging. If Wine's test_depth_stencil_sampling
+   still reads 0 through the Direct3D 11 front after its check (item 6), run the front's
+   converted program on this back end in a test here to find which side drops the stencil.
 4. For the Direct3D 11 track (not this back end's code): map DXGI 88 (`B8G8R8X8_UNORM`) to
    `VertexFormat::Bgra8Unorm` in `format::vertex_format`, and rerun test_format_compatibility
    with this branch. Its library's wgpu instance (wcontainers-directx com/chosen.rs) lacks
    `WebGpu::INSTANCE_FLAGS`, so on a GPU whose timestamp period is not 1 ns it would get no
    `TIMESTAMPS` (none on the RTX 3080). For atg-simplecomputepc's division: run the sample with
    the instance on Vulkan, or on wgpu's DXC, to see which compiler step rounds.
-5. Frame time (Measurements, run 19): measure how many bytes the Direct3D 12 front writes a frame
-   in bgfx-01-cubes-d3d12 (3.4 ms of copying a frame) and ask that front to write only ranges
-   the program changed; try acquiring the window's texture at present rather than earlier, or
-   another present mode, against the 10 ms a frame the GPU thread spins in the Vulkan driver's
-   acquire; find why some programs' runs on the hidden desktop last far longer than their frames
-   (godot-platformer-2d-d3d12's pair), so the breakdown can be taken for it.
-6. When the interface track rules on copies within one subresource of depth or stencil, build
-   what it says (today the device is marked lost by name).
+5. For the Direct3D 12 track (not this back end's code): the 3.4 ms a frame of copying in
+   bgfx-01-cubes-d3d12 (Measurements, run 19) is the front's `MappedUploadWhole`
+   (device/bind.rs): at each `ExecuteCommandLists` every upload buffer a binding reads is written
+   to the back end whole, and the back end copies what it is given. Writing only the ranges the
+   recorded bindings and copies read (the binding's offset and size are at hand there) would cut
+   it to what the frame uses. The bytes a frame are not measured (the back end counts writes, not
+   bytes; the front would have to print them).
+6. For the Direct3D 11 track: stencil views (list above). The back end gives the stencil in the
+   first component on wgpu's Direct3D 12 path, tested; check that the converted program for
+   test_depth_stencil_sampling reads the first component and moves it to the second
+   (`STENCIL_READ`), and that its stencil clear reaches the texture.
+7. Frame time, what is left: the GPU thread's 10 ms a frame in the Vulkan driver's acquire is the
+   wait for the display's next image under FIFO (Direct3D's `Present(1)`), which the NVIDIA Vulkan
+   driver spins in rather than sleeps; acquiring later in the frame moves the wait, and another
+   present mode changes what the program asked for, so neither is taken. Find why some programs'
+   runs on the hidden desktop last far longer than their frames (godot-platformer-2d-d3d12's
+   pair), so the breakdown can be taken for Godot.
 
 ## Departures from the plan
 
@@ -1517,8 +1618,9 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   in `PrepareDesc` breaks the four places in other tracks' crates that build it
   (wcontainers-direct3d-11 cache.rs and ahead.rs, wcontainers-direct3d-12 device.rs,
   wcontainers-gpu-test fast_paths.rs), which a commit touching only crates/wcontainers-gpu cannot
-  carry, and every branch merging this one would stop building. It is for the interface track
-  to make with the fronts (listed under "Gaps found for the interface track").
+  carry, and every branch merging this one would stop building. The interface track has since
+  ruled (G1c, `Backend::prepare`'s doc and plan 4.3): no index format in `PrepareDesc`, and a
+  back end like this one prepares strips for both, so this is now the plan, not a departure.
 
 - BGRX (`Bgrx8Unorm`, `Bgrx8UnormSrgb`) is held as BGRA with alpha one, so its unused X byte reads
   back as 255. The RTX 3080's Direct3D 11 keeps the X byte as written, from the host (128 of 128

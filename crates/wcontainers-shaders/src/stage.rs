@@ -320,17 +320,22 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
     });
     // Where each output is: the position and the locations, as members of the result or the result.
     let mut position = None;
-    let mut slots: Vec<Option<(u32, ScalarKind)>> = alloc::vec![None; locations.len()];
+    // Each location's member, scalar kind and component count (a record's slot holds four).
+    let mut slots: Vec<Option<(u32, ScalarKind, u32)>> = alloc::vec![None; locations.len()];
     let mut place = |binding: &Binding, member: Option<u32>, inner: &TypeInner| -> Result<()> {
-        let kind = match inner {
-            TypeInner::Vector { scalar, size } if *size as u32 == 4 => scalar.kind,
+        let (kind, size) = match inner {
+            TypeInner::Vector { scalar, size } => (scalar.kind, *size as u32),
+            TypeInner::Scalar(scalar) => (scalar.kind, 1),
+            // No stage after reads them: geometry and hull shaders reading clip distances are
+            // refused at their own conversion, and their own outputs clip.
+            _ if *binding == Binding::BuiltIn(BuiltIn::ClipDistances) => return Ok(()),
             _ => return Err(ConvertError::Unsupported("VertexOutputShape")),
         };
         match binding {
             Binding::BuiltIn(BuiltIn::Position { .. }) => position = Some(member),
             Binding::Location { location, .. } => {
                 if let Some(i) = locations.iter().position(|l| l == location) {
-                    slots[i] = Some((member.unwrap_or(0), kind));
+                    slots[i] = Some((member.unwrap_or(0), kind, size));
                 }
             }
             _ => return Err(ConvertError::Unsupported("VertexOutputForGeometry")),
@@ -447,17 +452,31 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
     let r = b.add(before, x);
     let per = b.u32(record_words(locations.len()) / 4);
     let record = b.mul(r, per);
-    let write = |b: &mut Builder, slot: u32, value: Option<(Option<u32>, ScalarKind)>| {
+    let write = |b: &mut Builder, slot: u32, value: Option<(Option<u32>, ScalarKind, u32)>| {
         let value = match value {
-            Some((member, kind)) => {
+            Some((member, kind, size)) => {
                 let v = match member {
                     Some(m) => b.field(out, m),
                     None => out,
                 };
-                if kind == ScalarKind::Uint {
+                let v = if kind == ScalarKind::Uint {
                     v
                 } else {
                     b.bitcast(v, ScalarKind::Uint)
+                };
+                // Fewer than four components fill the slot's first ones; the rest are zero.
+                match size {
+                    4 => v,
+                    1 => {
+                        let zero = b.u32(0);
+                        b.compose(uvec4, alloc::vec![v, zero, zero, zero])
+                    }
+                    n => {
+                        let mut parts: Vec<_> = (0..n).map(|c| b.field(v, c)).collect();
+                        let zero = b.u32(0);
+                        parts.resize(4, zero);
+                        b.compose(uvec4, parts)
+                    }
                 }
             }
             None => b.expr(naga::Expression::ZeroValue(uvec4)),
@@ -468,14 +487,14 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
         let p = b.at(p, at);
         b.store(p, value);
     };
-    write(&mut b, 0, Some((position, ScalarKind::Float)));
+    write(&mut b, 0, Some((position, ScalarKind::Float, 4)));
     for (i, slot) in slots.iter().enumerate() {
-        let member = slot.map(|(m, kind)| {
+        let member = slot.map(|(m, kind, size)| {
             let member = match &module.types[result.ty].inner {
                 TypeInner::Struct { .. } => Some(m),
                 _ => None,
             };
-            (member, kind)
+            (member, kind, size)
         });
         write(&mut b, 1 + i as u32, member);
     }

@@ -512,6 +512,7 @@ impl WebGpu {
             | wgpu::Features::TIMESTAMP_QUERY
             | wgpu::Features::POLYGON_MODE_LINE
             | wgpu::Features::POLYGON_MODE_POINT
+            | wgpu::Features::SUBGROUP
             | wgpu::Features::IMMEDIATES;
         wgpu::DeviceDescriptor {
             label: None,
@@ -719,6 +720,7 @@ fn caps(
             Features::INDIRECT_FIRST_INSTANCE,
         ),
         (wgpu::Features::SHADER_F16, Features::SHADER_F16),
+        (wgpu::Features::SUBGROUP, Features::SUBGROUPS),
         (wgpu::Features::POLYGON_MODE_LINE, Features::POLYGON_MODE),
         (
             wgpu::Features::POLYGON_MODE_POINT,

@@ -77,6 +77,7 @@ pub const CASES: &[&str] = &[
     "timestamps",
     "filter-depth",
     "vertex-views",
+    "no-scissors",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -111,6 +112,7 @@ pub fn run(name: &str) -> Result<String> {
             "timestamps" => timestamps(&c),
             "filter-depth" => filter_depth(&c),
             "vertex-views" => vertex_views(&c),
+            "no-scissors" => no_scissors(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -1306,6 +1308,35 @@ unsafe fn vertex_past_end(c: &Ctx) -> Result<String> {
         );
         viewport(&list, half, half, half);
         list.DrawInstanced(3, 2, 3, 0);
+        c.run(&list)?;
+        Ok(colours(
+            &c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?,
+        ))
+    }
+}
+
+/// A list that sets every state but scissors and draws the triangles, after another list that
+/// set them (Direct3D 12 leaves the scissors undefined; this compares what the GPU does).
+unsafe fn no_scissors(c: &Ctx) -> Result<String> {
+    unsafe {
+        let (root, pso) = c.triangle_pso(false)?;
+        let vertices = c.upload(&triangles())?;
+        let (_a, first) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (target, _heap, rtv) = c.target(&first)?;
+        c.run(&first)?;
+        let (_b, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        list.OMSetRenderTargets(1, Some(&rtv), false, None);
+        list.RSSetViewports(&[D3D12_VIEWPORT {
+            Width: SIZE as f32,
+            Height: SIZE as f32,
+            MaxDepth: 1.0,
+            ..Default::default()
+        }]);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        list.SetPipelineState(&pso);
+        list.SetGraphicsRootSignature(&root);
+        vertex_buffer(&list, &vertices);
+        list.DrawInstanced(12, 1, 0, 0);
         c.run(&list)?;
         Ok(colours(
             &c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?,

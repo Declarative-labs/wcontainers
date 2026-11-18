@@ -337,6 +337,36 @@ fn combined_depth_stencil_views_draw_and_read_each_aspect() {
         assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
         // Depth 0.25 is 63.75 of 255, stored as 64.
         assert_eq!(got, [64, 7, 0, 255], "{format:?}");
+        // The stencil alone cleared, as Direct3D's `D3D11_CLEAR_STENCIL` does: the depth is kept
+        // and the stencil view reads the new value in its first component.
+        b.begin_pass(&PassDesc {
+            colors: Default::default(),
+            depth: Some(DepthAttachment {
+                view: &depth_view,
+                depth: Some(AspectOps {
+                    load: LoadOp::Load,
+                    store: StoreOp::Store,
+                    read_only: false,
+                }),
+                stencil: Some(AspectOps {
+                    load: LoadOp::Clear(100),
+                    store: StoreOp::Store,
+                    read_only: false,
+                }),
+            }),
+            empty: None,
+            occlusion: None,
+        });
+        b.end_pass();
+        begin(&mut b, &k, [0.0; 4]);
+        draw_at(&mut b, &k, &set, None);
+        let got = finish(&mut b, &k, 4);
+        assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
+        assert_eq!(
+            got,
+            [64, 100, 0, 255],
+            "{format:?}, the stencil alone cleared"
+        );
         ran += 1;
     }
     assert!(ran > 0, "every device holds depth24plus-stencil8");

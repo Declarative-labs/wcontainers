@@ -64,6 +64,19 @@ fn system_directory() -> String {
 /// the back end's or the system's.
 #[inline(never)]
 pub(super) fn called_by_program() -> bool {
+    caller_is_program(&[])
+}
+
+/// As [`called_by_program`], counting the system's libraries `for_program` (file names, lower
+/// case) as the program's: those that call the entry point only on a program's behalf.
+#[inline(never)]
+pub(super) fn called_by_program_or(for_program: &[&str]) -> bool {
+    caller_is_program(for_program)
+}
+
+/// The caller three frames up (the entry point's caller), as [`called_by_program_or`] judges it.
+#[inline(always)]
+fn caller_is_program(for_program: &[&str]) -> bool {
     let mut frames = [std::ptr::null_mut(); 1];
     // Frame 0 is this function, 1 the entry point, 2 its caller.
     // SAFETY: writes at most one frame into the array.
@@ -83,8 +96,11 @@ pub(super) fn called_by_program() -> bool {
     // SAFETY: a buffer of the length given.
     let len = unsafe { GetModuleFileNameW(Some(caller), &mut path) } as usize;
     let path = String::from_utf16_lossy(&path[..len.min(path.len())]).to_lowercase();
-    !path.starts_with(&system_directory())
-        && !super::chosen::own_directory().is_some_and(|d| path.starts_with(d))
+    let system = system_directory();
+    if let Some(name) = path.strip_prefix(&system) {
+        return for_program.contains(&name);
+    }
+    !super::chosen::own_directory().is_some_and(|d| path.starts_with(d))
 }
 
 /// The export `export` of the system's library `library`, loaded by its full path.

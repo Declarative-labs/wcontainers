@@ -1,12 +1,65 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 20 of G4 as a whole (2026-11-17 and
-18; runs 13 to 20 are the orchestrator's second series on G4).
+Runs so far: six on G4a, the first slice; then runs 1 to 21 of G4 as a whole (2026-11-17 and
+18; runs 13 to 21 are the orchestrator's second series on G4).
 
 ## Where things stand
 
-G4 run 20 (2026-11-18, about 07:45 to 10:00 Pacific). Merged origin/phase-2-graphics,
+G4 run 21 (2026-11-18, about 09:50 to 12:30 Pacific). Merged origin/phase-2-graphics (which
+held -shaders, -direct3d-12 and -webgl's new work) cleanly; -webgpu and -rig had nothing new.
+The merged tree linted with warnings denied and passed the front tests on the desktop before any
+change (logs/g4s9a-*). The shaders crate still lists `StorageOffset`, `EarlyTestsInShader` and
+`AntialiasedLinesAsQuads` as unbuilt, so nothing waiting on them moved.
+- Direct3D 10's device on the device (`ID3D10Device1`, `ID3D10Device`, and
+  `ID3D10Multithread`; src/com/device10.rs, generate.py): every call of Direct3D 10's device is
+  served (but counters and `OpenSharedResource`, unserved as on Direct3D 11's): creation through
+  Direct3D 11's calls with Direct3D 10's descriptions (misc flags, depth view, blend and stream
+  output declarations converted; the rest share Direct3D 11's layout), the context calls on the
+  immediate context. Shaders, input layouts, queries and predicates now offer their Direct3D 10
+  interfaces; Direct3D 10's `Map`/`Unmap` on buffers and textures and `Begin`/`End`/`GetData`
+  on queries run through the immediate context (pipeline statistics in Direct3D 10's 64 bytes).
+  A child's Direct3D 10 `GetDevice` gives the device's Direct3D 10 interface where offered.
+- The behaviour real Direct3D shows, measured with a new example `own_d3d10`
+  (tests/programs.rs `direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does`; identical
+  to real Direct3D line by line, logs/g4s9c-d3d10.log): `QueryInterface` answers
+  `ID3D10Device`/`ID3D10Device1` only once a context state was made (any emulated interface; all
+  five of the device's tables are gated); while the active state is of the other API, a call that
+  changes state or does work does nothing (`E_INVALIDARG` where it answers), and a getter reads the
+  default state (objects none, counts zero, blend factor ones, mask all ones), on either side;
+  Direct3D 10's creation calls work whatever is active; `GetFeatureLevel` answers the device's
+  level (11_0 too). The example draws a triangle through Direct3D 10's calls only (immutable
+  vertex buffer, constant buffer by `UpdateSubresource`, a Direct3D 10 blend state with a write
+  mask, an occlusion query, a staging copy mapped through `ID3D10Texture2D::Map`): identical
+  pixels and counts. In that mode `ID3D11DeviceContext::PSGetSamplers` writes nothing at all
+  (the other getters write the default state), as Wine's test_device_context_state shows real
+  Direct3D doing; that test now passes (287 checks).
+- Direct3D 10's entry points (src/com/d3d10core.rs): `D3D10CreateDevice` (d3d10.dll's, 10_0),
+  `D3D10CreateDevice1` (d3d10_1.dll's) and `D3D10CoreCreateDevice` (d3d10core.dll's, also
+  asked by the system's Direct3D 10 runtime for the program) make our device with a state
+  emulating Direct3D 10 swapped in from the start; the hardware driver only, no debug layer.
+  `D3D10CoreRegisterLayers` answers `E_NOTIMPL`, `D3D10CoreGetVersion` the system's own. A
+  forwarding d3d10core.dll is built; no d3d10.dll or d3d10_1.dll forwarder (Departures).
+- The immediate context's bindings and state object now live on the device
+  (`context::Kept`), not in the COM context object: a Direct3D 10 program never holds the
+  context, so each of its calls made a fresh one, and Direct3D's immediate context keeps its
+  state for the device's life anyway (a Direct3D 11 program releasing its context and asking
+  again now gets its bindings back, as from real Direct3D).
+- Wine's d3d10core file through ours (our library copied in as d3d10.dll; the test makes its
+  devices with `D3D10CreateDevice`): 90 of 111 pass (logs/g4s9j-wine10.log). Before the
+  bindings moved to the device, 19 (every map failed: the context holding the Direct3D 10
+  state had gone).
+- Results (see the Wine section and Measurements): Wine's d3d11 file 133 of 165 (132 at run
+  20; test_device_context_state new, none lost), at 944ff499 too; d3d10core 90 of 111 (not run
+  before); scenes through the whole library 123 pass, 14 fail, 4 absent (as at run 20); the WebGL
+  2 build's scenes 67 match, 52 fail, 27 absent (63, 61, 23 at run 20; from the WebGL 2 back
+  end's merged work, nothing of this front's); real programs as at run 20 (eleven of
+  Microsoft's and the engines' plus four of bgfx's matching; atg-simplecomputepc,
+  atg-simplemsaa_pc and bgfx-26-occlusion differing as before).
+- At the end: lint of both builds clean with warnings denied; front 46 + cache 1 + unit 5,
+  library com 15 and programs 27 with 2 ignored (the known failures), all passing.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (15.4 GB, debug builds of
+  both back ends) was deleted; no build folder was made on the Mac. Merged origin/phase-2-graphics,
 -shaders, -direct3d-12 and -webgl cleanly (-webgpu and -rig had nothing new); the merged tree
 linted with warnings denied and passed the front tests on the desktop before any change
 (logs/g4s8a-*).
@@ -309,7 +362,11 @@ and depth buffers larger than their targets.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
-- d3d11: not passing. G4 run 20 (2026-11-18, RTX 3080 through the queue's hazard group, not
+- d3d11: not passing. G4 run 21 (2026-11-18, RTX 3080 through the queue's hazard group, not
+  alone, rigfix/wine.sh, at d2892718's tree): 133 pass of the 165 run (32 fail;
+  logs/g4s9f-wine.log). New: test_device_context_state (287 checks, as real Direct3D); none
+  lost (the 32 are run 20's 33 but it).
+- d3d11 at G4 run 20 (2026-11-18, RTX 3080 through the queue's hazard group, not
   alone, rigfix/wine.sh, at fbcd643's tree): 132 pass of the 165 run (33 fail;
   logs/g4s8h-wine.log, gaps in logs/g4s8h-wine-gaps.txt). New: test_sample_attached_rtv (the
   over-release), test_gather and test_gather_c (the shaders crate's run-time offsets),
@@ -325,17 +382,35 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
   since run 17: test_nv12.
 - Earlier runs of the file (G4 runs 1 to 17: 11, 56, 73, 68, 72, 74, 78, 79, 82, 88, 90, 104,
   113, 114, 118 and 127 passing) and their gap lists are in this file's git history.
-- d3d10core: not run (needs a d3d10core.dll of ours and `ID3D10Device`). dxgi: the rig has no
+- d3d10core: not passing. G4 run 21 (2026-11-18, RTX 3080 through the queue's hazard group,
+  not alone; rigfix/wine.sh with `--dll 'd3d10.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll'`):
+  90 pass of 111 (21 fail; logs/g4s9j-wine10.log). The first named failure of each:
+  - Absent here as in the d3d11 file: logic ops and WARP (test_format_support's
+    `CheckFormatSupport` answers, test_swapchain_formats' typeless format, test_resource_access
+    runs 294 checks of 318), the shaders track's items (test_layered_rendering,
+    test_multiple_viewports, test_clip_distance, test_combined_clip_and_cull_distances,
+    test_cb_relative_addressing, test_vs_input_relative_addressing), the WebGPU back end's
+    stencil views (test_depth_stencil_sampling), the infrastructure crate's (test_swapchain_flip,
+    test_desktop_window).
+  - Not read yet (work, this front's unless found otherwise): test_device_interfaces (the
+    adapter's parent answers `IDXGIFactory1`), test_create_texture2d (test 11 made where real
+    Direct3D refuses), test_create_buffer (an `E_NOTIMPL` at line 2564), test_clear_state
+    (viewport slots past the count left unwritten), test_state_refcounting (a state object given
+    where real Direct3D gives none, line 8986), test_check_multisample_quality_levels (`E_FAIL`,
+    then a crash), test_stream_output (`E_INVALIDARG`, line 15678), test_format_compatibility
+    (test 26's colour), test_layered_rtv_mismatch (a crash).
+- dxgi: the rig has no
   baseline of real Direct3D's verdicts for it.
 
-The gap list, G4 run 20 (the 33 failing tests of the full file at fbcd643: run 18's 38 but
-test_nv12, test_sample_attached_rtv, test_gather, test_gather_c and test_stream_output_components,
-which pass; test_atomic_instructions is quarantined and not run, and is kept in part B; the
+The gap list, G4 run 21 (the 32 failing tests of the full file at d2892718: run 20's 33 but
+test_device_context_state, which passes; before that run 18's 38 but test_nv12,
+test_sample_attached_rtv, test_gather, test_gather_c and test_stream_output_components;
+test_atomic_instructions is quarantined and not run, and is kept in part B; the
 first named
 refusal, skip or failed check of each, logs/g4s6g-wine-gaps.txt, read against Wine's d3d11.c in
 scratch winesrc/). A test is in part A only where the first thing it fails on is a feature
 absent on this stack; everything else is work, in part B, with whose it is. Nothing is excluded
-for convenience: each of the 33 failing tests, and the quarantined one, is in exactly one place.
+for convenience: each of the 32 failing tests, and the quarantined one, is in exactly one place.
 A. Absent on this stack (gaps), 18 tests:
 - Logic operations (WebGPU has none, so 11_1 is not offered; Wine's helper then asks for WARP,
   which this library does not provide): test_create_shader, test_state_refcounting,
@@ -350,7 +425,7 @@ A. Absent on this stack (gaps), 18 tests:
   test_texture3d_interfaces (their keyed-mutex entries).
 - The 10_0/10_1 rasteriser's corner rule for a negative viewport origin (WebGPU rasterises as
   11_0): test_negative_viewports at levels 10_x.
-B. Work, named (not gaps), 15 tests and the quarantined one:
+B. Work, named (not gaps), 14 tests and the quarantined one:
 - Shaders track: test_atomic_instructions (quarantined after it reset the display driver; the
   front refuses `AtomicExchangeLoop` programs until the loop is shown to end), `GeometryStreams`
   (test_so_statistics_query), stream output after a domain shader (test_quad_tessellation;
@@ -373,9 +448,8 @@ B. Work, named (not gaps), 15 tests and the quarantined one:
 - Infrastructure crate: every buffer of a sequential swap chain (test_swapchain_flip, line
   16228); a swap chain on the desktop window (test_desktop_window: wgpu's surface refuses it at
   `Surface::configure`, the device is lost at line 32666).
-- This front: `ID3D10Device` on the device after `CreateDeviceContextState`
-  (test_device_context_state, line 7487's `check_interface(device, &IID_ID3D10Device, ...)`).
-Wine's d3d10core file is not run (it needs a d3d10core.dll of ours and `ID3D10Device`).
+None of this front's own is left in the list. Wine's d3d10core file is not run (it needs an
+entry point making a device in Direct3D 10 mode, What comes next).
 
 ## Known failures
 
@@ -392,24 +466,20 @@ Wine's d3d10core file is not run (it needs a d3d10core.dll of ours and `ID3D10De
 
 ## What comes next
 
-After G4 run 20 (the branch is pushed; everything on it built and passed on the desktop). Done
-in run 20: test_sample_attached_rtv, `TargetsSplit` and `resinfo` on WebGL 2 with their tests,
-atg-simplebezierpc (from the merges). At the head of the list now:
-- `ID3D10Device` (item 0 below): the largest piece of this front's own left in Wine's file, and
-  Direct3D 10 programs need it. Real Direct3D answers `ID3D10Device` and `ID3D10Device1` from
-  the device once a context state has been made (Wine's line 7487), so it must be the whole
-  Direct3D 10 device (about 100 methods onto the device and context), not an answer alone.
+After G4 run 21 (the branch is pushed; everything on it built and passed on the desktop). Done
+in run 21: Direct3D 10's device on the device, with `own_d3d10` against real Direct3D. At the
+head of the list now:
+- Wine's d3d10core file: the nine failures not read yet (Wine section). Then Direct3D 10
+  programs: d3d10.dll and d3d10_1.dll forwarders need the effects framework and shader
+  reflection they also export (not ours), so only d3d10core.dll is forwarded. Also the final
+  release of a resource unbinding it in Direct3D 10 mode (not built).
 - bgfx-26-occlusion: the counted occlusion query one sample short (49 for 50); then whether the
   rig should also ignore the overlay panel's last rows where NVAPI is kept out (rig track).
 - An empty slot's `resinfo` sizes on WebGPU (Known failures).
 - Multisampled textures of more than one layer as a texture per layer (refused by name now).
 Then, from run 18 (items 1 and 4's YUY2 are done; item 2's bgfx and bezier are done):
-0. Wine's d3d11 file: this front's named work left is `ID3D10Device` on the device with
-   `CreateDeviceContextState` and `SwapDeviceContextState` (test_device_context_state; Wine's
-   d3d10core file needs the same device behind a d3d10_1.dll of ours). Then the shaders track's
-   and the back ends' items as they land (merge, rerun the file).
-1. YUY2 (a listed case with NV12): a half-width `rgba8unorm` texture whose views are
-   `R8G8B8A8_UNORM`/`_UINT`, boxes in pixels halved; not started (no Wine test uses it).
+0. Wine's d3d11 file: the shaders track's and the back ends' items as they land (merge, rerun
+   the file). Wine's d3d10core file needs the entry point above.
 2. Real programs: bgfx waits on `MultisampledArrayTexture` (shaders track); atg-simplebezierpc
    and the rig's tessellation scene on the tessellator compiling under FXC (shaders track);
    atg-simplecomputepc on the division's precision (Asked); atg-simplemsaa_pc frame 10 is 4
@@ -420,7 +490,8 @@ Then, from run 18 (items 1 and 4's YUY2 are done; item 2's bgfx and bezier are d
    front does not draw through its own draw path, perhaps the present's; not read yet).
 4. Listed cases still without a passing test against real Direct3D: alpha-antialiased lines
    (shaders track's `LINE_COVERAGE`, Asked), `[earlydepthstencil]` with storage writes
-   (`EARLY_TESTS`, Asked; own_cases early), YUY2.
+   (`EARLY_TESTS`, Asked; own_cases early). Both are still unbuilt in the shaders crate at run
+   21's merge.
 5. Move the context fully onto the pass tracker (it begins only fitted passes since run 18; the
    usage-scope split is the front's own), so fitting, splits and occlusion share one route;
    geometry and tessellation draws do not cut their scissors to a fitted area yet, and
@@ -442,6 +513,14 @@ Then, from run 18 (items 1 and 4's YUY2 are done; item 2's bgfx and bezier are d
   the first named gap of each failing test of logs/<label>-wine.log. `run-all.sh <label>` runs the
   library tests, every scene through the whole library, Wine's d3d11 file and the WebGL 2 scenes.
   Real programs' logs are under graphics-rig/programs/phase-2-graphics-direct3d-11/<program>.
+
+Everything of run 21 in one command: scratch `run-g4s9.sh <label> [steps]` (steps `lib wine
+scenes webgl programs`; it builds the library before Wine's file, then runs run-g4s8.sh's
+steps). Wine's d3d10core file: `rigfix/wine.sh --dll
+'d3d10.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll' d3d10core` after a `cargo build`
+of the library (its devices come from `D3D10CreateDevice`, so the library goes in as d3d10.dll).
+Never run tools/graphics-rig/queue-check while a job of this checkout waits: it sends the tree,
+and the waiting job then stops ("holds tree ..., not the sent ...").
 
 Everything of run 20 in one command: scratch `run-g4s8.sh <label> [steps]` (steps `lib
 webgllib scenes wine webgl programs`, default all; `webgllib` runs the `own_level10` tests on
@@ -583,6 +662,11 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Tests
 
+At G4 run 21: front.rs 46, tests/cache.rs 1, unit 5 (unchanged), com.rs 15, programs.rs 29
+(new: `own_d3d10`, `direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does`; the
+two known failures ignored); all others passing on the desktop (logs/g4s9f-*, g4s9k-lib.log),
+lint of both builds clean with warnings denied (logs/g4s9g-lint.log).
+
 At G4 run 20: front.rs 46 (new: the split test), tests/cache.rs 1, unit 5, com.rs 15,
 programs.rs 28 (new: `own_level10` targets, resinfo and resinfo_empty; resinfo_empty and the
 early tests case ignored as known failures; `own_interfaces` also prints an over-release); all
@@ -681,6 +765,25 @@ clean with warnings denied. The library tests run without `WC_GPU_CACHE`, so wit
   clean.
 
 ## Departures from the plan
+
+- Run 21: Direct3D 10's device converts each Direct3D 10 object it is handed to its Direct3D 11
+  interface by `QueryInterface` (a reference taken and given back per object per call) and calls
+  the context's own method; a fast path reading our object without the query is not built (no
+  Direct3D 10 program measured).
+- Run 21: our library exports `D3D10CreateDevice` and `D3D10CreateDevice1`, but only
+  d3d10core.dll is made as a forwarder: d3d10.dll and d3d10_1.dll also export the effects
+  framework, shader compiling and reflection, which this library does not serve, and a
+  forwarder must not name exports that do not exist. Wine's d3d10core file runs with the library
+  itself copied in as d3d10.dll (every test ran, so what the test imports from it resolves).
+- Run 21: the system's d3d10.dll and d3d10_1.dll calling `D3D10CoreCreateDevice` get ours (they
+  ask on the program's behalf; `factory::called_by_program_or`); every other system caller gets
+  the system's, as for `D3D11CreateDevice`.
+- Run 21: in Direct3D 10 mode, the final release of a bound resource does not unbind it
+  (Microsoft's page on `SwapDeviceContextState` says Direct3D 10 mode does); the context keeps
+  its library reference as in Direct3D 11 mode.
+- Run 21: Direct3D 10's `CreateGeometryShaderWithStreamOutput` gives the one buffer its
+  `OutputStreamStride`, and where entries write several buffers each buffer the components its
+  entries write (Direct3D 10 has one stride argument); not compared with real Direct3D.
 
 - Run 20: `TargetsSplit` runs each group's draw in a pass of its own and ends it after the
   last run, so a split draw costs a pass per group (counted as the slow path). Queries, pixel
@@ -910,6 +1013,8 @@ clean with warnings denied. The library tests run without `WC_GPU_CACHE`, so wit
 
 ## Interface changes
 
+None in G4 runs 20 and 21.
+
 None in G4 run 19 (the merge's conflict in slow.rs was resolved by keeping both sides' entries).
 
 None in G4 runs 3 to 12.
@@ -924,6 +1029,18 @@ None in G4 runs 3 to 12.
   the plan's text in section 7 (Direct3D 11's constant buffers).
 
 ## Measurements
+
+- 2026-11-18, G4 run 21, the desktop (i9-9900K, RTX 3080) through the queue's hazard group, not
+  alone (other tracks' hazard jobs one at a time beside ours; our jobs waited up to 40 minutes
+  for theirs): Wine's d3d11 file 133 of 165 run, 151.6 s at d2892718 and 156.3 s at 944ff499
+  (logs/g4s9f-wine.log, g4s9k-wine.log); Wine's d3d10core file 90 of 111, 96.4 s
+  (logs/g4s9j-wine10.log; real Direct3D's baseline passes 111). Scenes, the WebGL 2 build and
+  real programs: Where things stand (logs/g4s9f-scenes.log, -webgl.log, -programs.log,
+  -bgfx.log), and again at 944ff499 (logs/g4s9l-*: the same verdicts; single runs of 120
+  frames: sdk-tutorial02 to 07 0.9 s each, chocolate-doom 3.1 s, atg-simplelightingpc 3.1 s,
+  atg-simpleinstancingpc 3.4 s, atg-simplebezierpc 8.0 s, godot-platformer-2d-d3d11 13.3 s,
+  godot-platformer-3d-d3d11 46.2 s). Module size and
+  building-ahead hits not measured again (runs 16 and 18).
 
 - 2026-11-18, G4 run 20, the desktop (i9-9900K, RTX 3080) through the queue's hazard group, not
   alone (other tracks' hazard jobs one at a time beside ours; the WebGL 2 scenes waited 27
@@ -1287,6 +1404,9 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   dxgi.dll only), so the forwarder placement can be checked by the scenes command.
 
 ## Licences
+
+G4 run 21 added no dependency (the windows crate's `Win32_Graphics_Direct3D10` feature was
+already on) and installed nothing on the desktop.
 
 G4 run 18 added the windows crate's `Win32_Graphics_Direct3D_Fxc` feature to the library's
 dev-dependency (same crate, MIT OR Apache-2.0; `D3DCompile` for the examples). Installed nothing

@@ -271,11 +271,15 @@ pub enum SlowPath {
     /// A blit swap chain's buffers past the first, which DXGI moves one place at each present,
     /// moved by copies.
     SequentialBuffersCopied,
+    /// An indirect draw without indices fetching per-vertex streams, whose vertex count only the GPU
+    /// knows: one reading past a stream's end is skipped whole by the back end, where the API reads
+    /// zeros (a listed loss; counted at each such draw, as any of them may).
+    IndirectFetchPastEnd,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 105] = [
+    pub const ALL: [SlowPath; 106] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -381,6 +385,7 @@ impl SlowPath {
         SlowPath::SwizzleInShader,
         SlowPath::AtomicExchangeLoop,
         SlowPath::SequentialBuffersCopied,
+        SlowPath::IndirectFetchPastEnd,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -509,6 +514,9 @@ impl SlowPath {
                 "atomic minimum or maximum made by a compare-exchange loop"
             }
             SlowPath::SequentialBuffersCopied => "swap chain buffers moved by copies at present",
+            SlowPath::IndirectFetchPastEnd => {
+                "indirect draw skipped whole if it fetches past a vertex buffer's end"
+            }
         }
     }
 }
@@ -593,7 +601,7 @@ mod tests {
             PrimitiveIdAsGeometry RowsRepacked ResolveInStoredFormat ResolveByDraw \
             PatternClearCopied ConstantBufferGrown IntegerClearByDraw StencilWrittenByDraw \
             PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
-            SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied";
+            SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd";
         let held: Vec<_> = HELD.split_whitespace().collect();
         assert!(held.len() <= SlowPath::ALL.len());
         for (i, name) in held.iter().enumerate() {

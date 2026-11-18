@@ -2,6 +2,7 @@
 //! given the binding rule of plan section 6.4 and stripped of what WGSL cannot express.
 
 mod arrays;
+mod depth;
 mod images;
 mod nonfinite;
 
@@ -220,6 +221,7 @@ pub(crate) fn lower(
         .map_err(|e| ConvertError::Reader(format!("{e}")))?;
     nonfinite::calls(&mut module)?;
     arrays::split(&mut module, &mut resources)?;
+    depth::widen(&mut module)?;
     let mut atomics = images::texel_atomics(&mut module)?;
     // WebGPU's storage buffers are read-only or read-write; one the program only writes is the latter.
     for (_, v) in module.global_variables.iter_mut() {
@@ -291,7 +293,6 @@ pub(crate) fn lower(
         let into = &mut reflection.outputs;
         stage_values(&module, r.ty, r.binding.as_ref(), pixel, &outputs, into);
     }
-    helper_invocations(&mut module);
     let slots = bindings(&mut module, &resources, set, &mut reflection)?;
     reflection.sampled_pairs = sampled_pairs(&module, &slots)?;
     draw_bases(&mut module, variant, &mut reflection)?;
@@ -303,6 +304,7 @@ pub(crate) fn lower(
         stage,
         &mut reflection,
     )?;
+    helper_invocations(&mut module);
     Ok((module, reflection, stage))
 }
 
@@ -481,7 +483,9 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     if locations.windows(2).any(|w| w[0] == w[1]) {
         return Err(ConvertError::Unsupported("PackedStageValues"));
     }
-    if builtins.iter().any(|(b, _)| *b == BuiltIn::PrimitiveIndex) {
+    if ep.stage != naga::ShaderStage::Fragment
+        && builtins.iter().any(|(b, _)| *b == BuiltIn::PrimitiveIndex)
+    {
         return Err(ConvertError::Unsupported("PrimitiveId"));
     }
     // WebGPU's subgroups serve pixel and compute programs only, and have no subgroup barrier.
@@ -570,8 +574,9 @@ fn each_block(block: &mut naga::Block, f: &mut impl FnMut(&mut naga::Block)) {
 /// Sets the flag naga's SPIR-V reader reads for `OpIsHelperInvocationEXT` (`IsHelperLane()` and the
 /// guards dxil-spirv puts around wave operations in pixel shaders). WGSL has no helper query, so a
 /// pixel program takes it from its coverage, which is zero in helper invocations, and sets it at each
-/// demotion (`Kill`, which WGSL's `discard` makes a helper). Elsewhere the flag stays false.
-fn helper_invocations(module: &mut Module) {
+/// demotion (`Kill`, which WGSL's `discard` makes a helper). Elsewhere the flag stays false. Both
+/// routes use the flag: DXIL's helper queries, and the compare-exchange loops of either route.
+pub(crate) fn helper_invocations(module: &mut Module) {
     let Some((flag, _)) = module
         .global_variables
         .iter()
@@ -621,24 +626,42 @@ fn helper_invocations(module: &mut Module) {
         Span::UNDEFINED,
     );
     let f = &mut ep.function;
-    let index = match f
-        .arguments
-        .iter()
-        .position(|a| matches!(a.binding, Some(Binding::BuiltIn(BuiltIn::SampleMask))))
-    {
-        Some(i) => i,
-        None => {
-            f.arguments.push(FunctionArgument {
-                name: Some("coverage".into()),
-                ty: u32_ty,
-                binding: Some(Binding::BuiltIn(BuiltIn::SampleMask)),
-            });
-            f.arguments.len() - 1
+    let mask = |b: &Option<Binding>| matches!(b, Some(Binding::BuiltIn(BuiltIn::SampleMask)));
+    // The coverage argument, or the member of an argument's structure holding it.
+    let found = f.arguments.iter().enumerate().find_map(|(i, a)| {
+        if mask(&a.binding) {
+            return Some((i, None));
         }
-    };
+        match &module.types[a.ty].inner {
+            TypeInner::Struct { members, .. } => members
+                .iter()
+                .position(|m| mask(&m.binding))
+                .map(|m| (i, Some(m as u32))),
+            _ => None,
+        }
+    });
+    let (index, member) = found.unwrap_or_else(|| {
+        f.arguments.push(FunctionArgument {
+            name: Some("coverage".into()),
+            ty: u32_ty,
+            binding: Some(Binding::BuiltIn(BuiltIn::SampleMask)),
+        });
+        (f.arguments.len() - 1, None)
+    });
     let e = &mut f.expressions;
-    let coverage = e.append(Expression::FunctionArgument(index as u32), Span::UNDEFINED);
     let zero = e.append(Expression::Literal(Literal::U32(0)), Span::UNDEFINED);
+    let mut coverage = e.append(Expression::FunctionArgument(index as u32), Span::UNDEFINED);
+    let mut first = None;
+    if let Some(m) = member {
+        coverage = e.append(
+            Expression::AccessIndex {
+                base: coverage,
+                index: m,
+            },
+            Span::UNDEFINED,
+        );
+        first = Some(coverage);
+    }
     let helper = e.append(
         Expression::Binary {
             op: naga::BinaryOperator::Equal,
@@ -650,7 +673,7 @@ fn helper_invocations(module: &mut Module) {
     let pointer = e.append(Expression::GlobalVariable(flag), Span::UNDEFINED);
     let mut start = naga::Block::new();
     start.push(
-        Statement::Emit(Range::new_from_bounds(helper, helper)),
+        Statement::Emit(Range::new_from_bounds(first.unwrap_or(helper), helper)),
         Span::UNDEFINED,
     );
     start.push(
@@ -1328,6 +1351,7 @@ fn stage_values(
                 BuiltIn::Position { .. } => (SystemValue::Position, 1),
                 BuiltIn::VertexIndex => (SystemValue::VertexId, 6),
                 BuiltIn::InstanceIndex => (SystemValue::InstanceId, 8),
+                BuiltIn::PrimitiveIndex => (SystemValue::PrimitiveId, 7),
                 BuiltIn::FrontFacing => (SystemValue::FrontFacing, 9),
                 BuiltIn::SampleIndex => (SystemValue::SampleIndex, 10),
                 BuiltIn::SampleMask => (SystemValue::Coverage, 66),

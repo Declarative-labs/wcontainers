@@ -184,6 +184,7 @@ pub(crate) fn lower(ir: &Ir, variant: &VariantKey) -> Result<(Module, Reflection
         SourceStage::Hull => l.hull_entry_point()?,
         _ => l.entry_point()?,
     }
+    crate::dxil::helper_invocations(&mut l.module);
     Ok((l.module, l.reflection, stage))
 }
 
@@ -1064,6 +1065,7 @@ impl<'a> Lowering<'a> {
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
+            | (SourceStage::Pixel, true, builtin::PRIMITIVE_ID)
             | (SourceStage::Pixel, true, builtin::SAMPLE_ID | builtin::SAMPLE_MASK)
             | (SourceStage::Pixel, true, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX)
             | (SourceStage::Pixel, false, builtin::DEPTH | builtin::SAMPLE_MASK) => true,
@@ -1569,6 +1571,7 @@ impl<'a> Lowering<'a> {
             builtin::VERTEX_ID => (naga::BuiltIn::VertexIndex, 1, Scalar::U32),
             builtin::INSTANCE_ID => (naga::BuiltIn::InstanceIndex, 1, Scalar::U32),
             builtin::IS_FRONT_FACE => (naga::BuiltIn::FrontFacing, 1, Scalar::BOOL),
+            builtin::PRIMITIVE_ID => (naga::BuiltIn::PrimitiveIndex, 1, Scalar::U32),
             builtin::SAMPLE_ID => (naga::BuiltIn::SampleIndex, 1, Scalar::U32),
             builtin::SAMPLE_MASK => (naga::BuiltIn::SampleMask, 1, Scalar::U32),
             builtin::WORKGROUP_ID => (naga::BuiltIn::WorkGroupId, 3, Scalar::U32),
@@ -1693,6 +1696,7 @@ fn system_value(b: u64) -> Option<SystemValue> {
         builtin::VERTEX_ID => SystemValue::VertexId,
         builtin::INSTANCE_ID => SystemValue::InstanceId,
         builtin::IS_FRONT_FACE => SystemValue::FrontFacing,
+        builtin::PRIMITIVE_ID => SystemValue::PrimitiveId,
         builtin::SAMPLE_ID => SystemValue::SampleIndex,
         builtin::SAMPLE_MASK => SystemValue::Coverage,
         builtin::DEPTH => SystemValue::Depth,
@@ -2227,11 +2231,15 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         Lowering::scalar(self.basic_of(id)?.scalar)
     }
 
-    /// The expression for value `id` here.
+    /// The expression for value `id` here: a struct value (kept as its members) composed whole, as
+    /// a phi or a call takes it.
     fn get(&mut self, b: &mut Block, id: u32) -> Result<Handle<Expression>> {
         match self.val(b, id)? {
             Val::Expr(h) => Ok(h),
-            Val::Tuple(_) => Err(malformed(format!("struct value {id} used as a value"))),
+            Val::Tuple(components) => {
+                let ty = self.l.ir_ty(&self.l.ir.op(id)?.ty)?;
+                Ok(self.add(b, Expression::Compose { ty, components }))
+            }
         }
     }
 
@@ -3295,7 +3303,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     }
 
     /// An atomic minimum (or maximum) of `value` into `pointer` in the other signedness than the
-    /// memory's scalar `s`, by a compare-exchange loop; gives the old value.
+    /// memory's scalar `s`, by a compare-exchange loop; gives the old value. Each try compares with
+    /// the value the last exchange gave, never with a plain load, which a cache may keep stale.
     fn exchange_loop(
         &mut self,
         b: &mut Block,
@@ -3329,9 +3338,18 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             Span::UNDEFINED,
         );
         let operand = self.e.bitcast(&mut self.f, b, value, s, other);
-        self.e.flush(&self.f, b);
+        let first = self.add(b, Expression::Load { pointer });
+        let var = self.add(b, Expression::LocalVariable(old));
+        self.stmt(
+            b,
+            Statement::Store {
+                pointer: var,
+                value: first,
+            },
+        );
         let mut body = Block::new();
-        let current = self.add(&mut body, Expression::Load { pointer });
+        let var = self.add(&mut body, Expression::LocalVariable(old));
+        let current = self.add(&mut body, Expression::Load { pointer: var });
         let a = self.e.bitcast(&mut self.f, &mut body, current, s, other);
         let fun = if min {
             MathFunction::Min
@@ -3371,12 +3389,18 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 result: Some(result),
             },
         );
-        let var = self.add(&mut body, Expression::LocalVariable(old));
+        let seen = self.add(
+            &mut body,
+            Expression::AccessIndex {
+                base: result,
+                index: 0,
+            },
+        );
         self.stmt(
             &mut body,
             Statement::Store {
                 pointer: var,
-                value: current,
+                value: seen,
             },
         );
         let exchanged = self.add(
@@ -3386,12 +3410,17 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 index: 1,
             },
         );
+        // A helper lane's exchange does nothing and gives no defined value: it leaves.
+        let flag = naga::front::spv::helper_invocation_flag(&mut self.l.module, Span::UNDEFINED);
+        let flag = self.add(&mut body, Expression::GlobalVariable(flag));
+        let helper = self.add(&mut body, Expression::Load { pointer: flag });
+        let leave = self.bin(&mut body, BinaryOperator::LogicalOr, exchanged, helper);
         self.e.flush(&self.f, &mut body);
         let mut accept = Block::new();
         accept.push(Statement::Break, Span::UNDEFINED);
         body.push(
             Statement::If {
-                condition: exchanged,
+                condition: leave,
                 accept,
                 reject: Block::new(),
             },
@@ -3973,6 +4002,15 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                         return Err(unsupported("SampleCompareLevel"));
                     }
                     SampleLevel::Zero
+                } else if res.depth {
+                    // WGSL samples a depth texture at whole levels only.
+                    let o = self.l.ir.op(lod)?;
+                    let v = f32::from_bits(o.lits.first().copied().unwrap_or_default() as u32);
+                    let whole = v as i32;
+                    if o.code != code::CONSTANT || whole as f32 != v || whole < 0 {
+                        return Err(unsupported("DepthSampleLevel"));
+                    }
+                    SampleLevel::Exact(self.lit(b, Literal::I32(whole)))
                 } else {
                     SampleLevel::Exact(self.get_as(b, lod, Scalar::F32)?)
                 }
@@ -3980,10 +4018,16 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 if depth_ref.is_some() {
                     return Err(unsupported("SampleCompareBias"));
                 }
+                if res.depth {
+                    return Err(unsupported("DepthSampleBias"));
+                }
                 SampleLevel::Bias(self.get_as(b, bias, Scalar::F32)?)
             } else if dx != 0 {
                 if depth_ref.is_some() {
                     return Err(unsupported("SampleCompareGradient"));
+                }
+                if res.depth {
+                    return Err(unsupported("DepthSampleGradient"));
                 }
                 let x = self.coords(b, k, dx, true)?;
                 let y = self.coords(b, k, dy, true)?;

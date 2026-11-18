@@ -502,7 +502,21 @@ bound follows from this: one that compares exactly where the program compares th
 and none with a linear filter (min, mag or mip) where the program pairs it with a texture whose bit is
 set. A uniform or storage binding is at least the size of the block the program declares there (a
 runtime-sized array counted as one element), as WebGPU's `minBindingSize` and WebGL 2's
-`UNIFORM_BLOCK_DATA_SIZE` require (`ConstantBufferGrown`, 5.1).
+`UNIFORM_BLOCK_DATA_SIZE` require (`ConstantBufferGrown`, 5.1). A storage binding's size is a
+whole number of words (`STORAGE_WORD`, four bytes), as WebGPU's bind group rule requires; a front
+whose API's view or range is not rounds its bytes up (the API's out-of-range rules then cover the
+bytes added), as the Vulkan driver does with a descriptor's range (15.4). So that a range reaching
+the end of its buffer stays inside it rounded, a front whose API makes buffers of other sizes and
+may bind them as storage makes them with their size rounded up to a whole number of words
+(`BufferDesc`'s doc): the OpenGL driver for every buffer object (`glBufferData` of six bytes bound
+whole as a shader storage buffer), the Direct3D fronts for buffers with unordered access or
+shader resource bindings, and the Vulkan driver by its memory requirements (15.4). Every binding
+the program reads is bound, whatever the draw then covers or fetches, with the kind the program
+declares there (`BindingEntry`'s doc): the WebGPU back end takes its binding layouts from the
+program, so a uniform buffer where the program declares storage, a read-only storage binding of a
+block the program writes, or a texture view of another dimension, sample type or multisampling
+is refused by WebGPU at the draw. The recording back end refuses each before it rasterises or
+drops anything.
 `prepare` takes the layout keys too (`PrepareDesc::layouts`; the zero key, every texture filterable, is
 what a Direct3D 12 pipeline state is prepared with before any descriptor is known), and the cache
 records them, so a combination first seen with other keys is prepared at the next start. The pipeline
@@ -1422,16 +1436,22 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   (checked: "Optionally (implementation-defined), empty vertexIndexList and return, cancelling the
   draw call"); the recording back end drops such a draw, the harshest of these, and counts it.
   Direct3D reads zero past the end of a vertex buffer: for draws without indices the front draws
-  the part past the end with a zero buffer bound (`VertexFetchZeroed`), exact; for indexed draws,
-  indices past the end get what the back end gives; a listed loss. The exact route is the pulled
+  the part past the end with a zero buffer bound (`VertexFetchZeroed`), exact, except an indirect
+  one, whose count only the GPU knows: WebGPU may skip it whole when it reads past the end, a listed
+  loss (`IndirectFetchPastEnd`, counted at each indirect draw without indices fetching per-vertex
+  streams); for indexed draws, indices past the end get what the back end gives; a listed loss. The exact route is the pulled
   variant for the draw's streams (`VariantKey::pulled`), which the Vulkan driver takes when its
   program enables robust access (15.4); here every indexed draw would pay for it, since Direct3D
   has no such switch.
 - A shader's access to a buffer outside its bound range (Direct3D reads zero and drops the write
   for constant, raw and structured buffers) gets what the back end gives (`BindingResource`'s doc):
-  on WebGPU a value from anywhere in the buffer, zero or (0, 0, 0, x), or the draw or dispatch
-  partly dropped (checked: the WebGPU specification's out-of-bounds access in shaders), and WGSL may
-  end the invocation with its outputs zero (checked: WGSL's out-of-bounds access); a listed loss.
+  on WebGPU a value from anywhere in the WebGPU buffer behind the binding, zero or (0, 0, 0, x), a
+  store landing anywhere in that buffer, or the draw or dispatch partly dropped (checked: the WebGPU
+  specification's out-of-bounds access in shaders; WGSL's out-of-bounds access: "any memory
+  location(s) of the WebGPU GPUBuffer bound"), and WGSL may end the invocation with its outputs
+  zero; a listed loss. The WebGPU back end holds small uniform buffers the program writes often in
+  one shared WebGPU buffer, so such a load may read another of the device's buffers (a read only:
+  that shared buffer holds no buffer a program writes).
   Typed buffers are exact: their route checks each element against the view's length
   (`HelperValue::TexelBufferView`). The exact route for the rest is the check in the program that
   the Vulkan driver makes (`RobustAccessInShader`, 15.4), which every program would pay for. The
@@ -2752,9 +2772,17 @@ lists (checked in Mesa's main branch, 2026-11-18): `meson.options` (a new choice
 `gallium-drivers` and `vulkan-drivers` lists), the top-level `meson.build` (the
 `with_gallium_wcontainers` and Vulkan flags, as `with_gallium_zink` and `with_microsoft_vk` are made
 there), `src/gallium/meson.build` (the driver's `subdir` and its `driver_*` dependency),
-`src/meson.build` (the Vulkan driver's `subdir`), and the WGL target: `wgl.c`'s
-`wgl_screen_create_by_name` picks a screen by `#ifdef GALLIUM_*` blocks, one per driver, so ours gets
-one, and `libgl-gdi`'s meson file links the driver. The Rust side fills `pipe_screen` and
+`src/meson.build` (the Vulkan driver's `subdir`), and the WGL target, whose `wgl.c` branches per
+driver in three places (checked in Mesa's main branch, 2026-11-18): `wgl_screen_create_by_name`
+picks a screen by `#ifdef GALLIUM_*` blocks, one per driver, so ours gets one (setting a
+`use_wcontainers` flag, as `use_zink` is set); `wgl_screen_create`'s `drivers[]` list (the
+`GALLIUM_DRIVER` variable's choice first, then `d3d12`, `zink`, `llvmpipe`, `softpipe`) gets ours
+after the variable's choice, so the test build draws through it by default and
+`GALLIUM_DRIVER=llvmpipe` still picks the software reference; and `wgl_present` gets a branch on
+that flag calling `pipe_screen::flush_frontbuffer`, as Zink's does, which our driver serves by
+presenting the interface's surface (`wgl_create_framebuffer` returns nothing for drivers other
+than d3d12, and stw then keeps its own framebuffer, so it is left as it is). `libgl-gdi`'s meson
+file links the driver. The Rust side fills `pipe_screen` and
 `pipe_context` itself from bindings that `bindgen` (BSD-3-Clause, to confirm at G9) makes of the
 pinned headers. So the driver is Rust, as the project's rules ask, and Mesa's build links it as a
 prebuilt library.
@@ -2763,7 +2791,9 @@ What the driver does, by the plan's earlier sections: `create_*_state` makes blo
 marks dirty, `draw_vbo` names blocks and binding sets, `pipe_context::blit` and clears go through
 Gallium's `util_blitter` drawing with our own blocks, queries through the interface's queries and the
 occlusion counter, `resource_copy_region` through `copy_texture` (copies within one subresource of
-every format, G1c), maps through the interface's write modes (5.3). Shaders arrive as NIR and go
+every format, G1c), maps through the interface's write modes (5.3), buffer objects made a whole
+number of storage words in size so that one bound whole as a shader storage buffer stays inside it
+(4.5). Shaders arrive as NIR and go
 through the NIR route (15.3) into the common form, then the shaders crate's `convert` with the
 variant key the draw needs. Versions, as 5.3 and 5.4: 4.6 core on WebGPU (64-bit floats by Mesa's
 soft-float lowering, `F64Emulated`), 3.1 on WebGL 2 (no multisampled textures there). Caps report
@@ -2836,16 +2866,17 @@ The GPL and SGI files stay in the submodule's tree, never copied into this repos
 
 **The MIT-headed WebGPU driver for Mesa.** It is `gex_wgpu` in `github.com/MercuryWorkshop/mesa-wink`
 (branch `wink`). Checked at the source on 2026-11-18 (and by G1c's independent check, every file of
-the directory): its C sources, `gex_wgpu_screen.c` (2,647,356 bytes, one file) among them, start
+the directory; the head of `wink` read again at 21:57 UTC that day): its C sources,
+`gex_wgpu_screen.c` (2,659,872 bytes at that head, one file) among them, start
 `SPDX-License-Identifier: MIT`; its build and test files do not: `meson.build` (which begins
 `gex_emdawn_dir = get_option(...)`, no header), the `native/` build scripts, its README, CI lists
 and log carry no licence. The repository declares no licence (GitHub's licence field is empty; it
 carries Mesa's own `docs/license.rst` and `licenses/`, which say each file's SPDX tag governs, and
 these files have none), so those files are of unknown licence, and building the driver needs its
-`meson.build`. It is not a GitHub fork. It is still being worked on: on the `wink` branch its directory last
-changed on 2026-10-28 (commit 41e1c1dfab) and the branch's head is of 2026-11-11, but the newest
-commit on any branch (2026-11-13, branch `fr/tbo-align`, 4a3419242a) changes `gex_wgpu` itself
-(buffer texture ranges at a 16-byte alignment). Its
+`meson.build`. It is not a GitHub fork. It is still being worked on, daily: the head of `wink`
+(5f8a8bc255, 2026-11-18, fence syncs on a remote context) changes `gex_wgpu` itself, as did an
+earlier commit on another branch (2026-11-13, `fr/tbo-align`, 4a3419242a, buffer texture ranges
+at a 16-byte alignment); the repository was pushed to again later that day. Its
 meson file requires Tint and emdawnwebgpu (Dawn's `webgpu.h` for Emscripten), and it also builds
 natively against Dawn (`gex_wgpu_native.c`). Its shader compiler (NIR to SPIR-V by Zink's
 `nir_to_spirv`, then Tint to WGSL) is `src/wink/compiler`, shared with the same repository's Vulkan
@@ -3034,15 +3065,54 @@ only with `clip-distances` (checked in `wvk_physical_device.c`).
   but neither specification requires it, so the driver relies on neither: on a device made with the feature enabled it hands the
   interface no access out of range, and the interface's back ends never meet one (the interface
   allows them, with WebGPU's outcomes: `BindingResource`'s and `DrawRange`'s docs, 4.12).
-  Shader access: Mesa's `nir_lower_robust_access` (MIT, checked: `src/compiler/nir/`
-  `nir_lower_robust_access.c` on Mesa's main branch) runs on every program, its filter taking
-  uniform and storage buffer loads, stores and atomics: a load whose last byte passes the size
-  reads at offset 0 of the range instead (a value within it), and a store or atomic past it is not
-  executed (the atomic gives zero, an undefined value being allowed); the sizes it reads
-  (`get_ubo_size`, `get_ssbo_size`) are lowered by the driver to each descriptor's range, from the
-  helper values. The pass takes buffers as `load_ubo` and `load_ssbo` with an index and an offset,
-  so it runs after the driver lowers buffer access to that form (`nir_lower_explicit_io`); G8
-  checks that its route keeps it. Texel buffers take the typed-buffer route, which already reads zero past the view's
+  Shader access, in every program of a device made with the feature, in three NIR steps (each
+  pass MIT, checked at its source on Mesa's main branch, `src/compiler/nir/`). First, buffer
+  access is lowered to a binding index and a byte offset (`nir_lower_explicit_io` with
+  `nir_address_format_32bit_index_offset`). Second, it is split into 32-bit scalar accesses
+  (`nir_lower_io_to_scalar` over uniform and storage buffers, which takes `load_ubo`, `load_ssbo`
+  and `store_ssbo`; `nir_lower_mem_access_bit_sizes` for the 64-bit ones `shaderInt64` brings;
+  16-bit buffer access is absent, below), as Vulkan allows: "Any non-atomic access ... wider than
+  32-bits may be treated as multiple 32-bit accesses that are separately bounds checked" (checked:
+  `shaders.adoc`). Third, `nir_lower_robust_access` runs, its filter taking uniform and storage
+  buffer loads, stores and atomics: a load whose last byte passes the size reads at offset 0
+  instead, and a store or atomic past it is not executed (the atomic gives zero, an undefined
+  value being allowed). That pass's own comment says only that Vulkan drivers get buffer
+  robustness lowered through `nir_lower_explicit_io`, naming no address format; the bounded one
+  that pass offers, `nir_address_format_64bit_bounded_global` (defined in `nir_defines.h`), makes
+  64-bit global addresses (`load_global_constant_bounded` and its kin, checked:
+  `nir_defines.h`, `nir_lower_explicit_io.c`), which the common form cannot hold since WebGPU has
+  no buffer addresses, so this route keeps the index and offset form, which `nir_lower_explicit_io`
+  does not bound, and bounds it with this pass. The sizes the pass reads (`get_ubo_size`,
+  `get_ssbo_size`, which also give a runtime-sized array's length) are lowered to the
+  descriptor's range in bytes, which the driver writes into the program's helper constants; no
+  helper value carries it today, so 15.7 proposes `HelperValue::BufferRange`. The check runs on
+  offsets within the descriptor's range, before the `StorageOffset` remainder is added.
+  Every access the check lets through then lies inside the range, and so inside the binding the
+  interface sees, if that binding meets the interface's rules (at least the program's block, a
+  storage binding's size a multiple of four), which a descriptor's range need not: the CTS binds
+  ranges of 1, 3, 4 and 32 bytes of buffers of that size to blocks of 8192 bytes (checked:
+  `vktRobustnessBufferAccessTests.cpp`, `s_testArraySize` 128 `mat4`s, `range_1_byte` to
+  `range_32_bytes`, both buffers created with the range's size). So:
+  - Storage buffers: the converted program declares each as a runtime-sized array of 32-bit
+    words, so its block is four bytes, and the driver binds the descriptor's range rounded up to a
+    multiple of four. The driver reports every buffer's memory requirements as its size so
+    rounded, so the bytes the rounding adds are memory bound to the buffer, which Vulkan lets an
+    out-of-range read return ("may include bytes beyond the size of the buffer itself") and an
+    out-of-range write modify ("within the memory range(s) bound to the underlying buffer"),
+    checked: `shaders.adoc`. A word whose last byte passes the range is out of range; a load of
+    it reads the word at offset 0, inside the binding, which is at least four bytes.
+  - Uniform buffers: a WGSL uniform block has a fixed size, so the binding is at least the block
+    the program declares. Where the memory bound to the buffer holds the block's size from the
+    descriptor's offset, the driver binds that size (the check sends every read past the range to
+    offset 0, so the bytes past it are never read). Where it does not, as in those CTS cases, it
+    binds a copy grown to the block's size (`ConstantBufferGrown`, 5.1): the words holding the
+    range copied on the GPU into a zeroed buffer of the block's size, before the pass or dispatch
+    that reads it; the driver counts the source as read by that draw in the pass tracker, so a
+    storage write to it earlier in the same pass splits the pass first (`UsageScopeSplit`). An
+    access past the block the program declares is not served: Vulkan leaves it undefined even
+    with the feature ("whether the underlying buffer is bigger than that or not", checked:
+    `shaders.adoc`).
+  Texel buffers take the typed-buffer route, which already reads zero past the view's
   length and drops writes there (`HelperValue::TexelBufferView`). Proposed name
   `RobustAccessInShader` (15.7), counted per program so made. Vertex input: draws whose ranges the
   driver sees on the CPU (draws without indices, and the instance streams of every direct draw;
@@ -3327,6 +3397,13 @@ Each in the interface's style; made at G1d with a rule test in the recorder and 
   features (15.4), `RobustAccessInShader` (buffer accesses checked against their range in the
   program, Vulkan's `robustBufferAccess`, 15.4), and `HelpersInProgramSet` (above). Each a named
   reason added at the end of `SlowPath`.
+- **A buffer binding's range as the API gave it.** `HelperValue::BufferRange { set, binding }`: the
+  byte length (u32) of the range a front's API binds at a uniform or storage binding, which may be
+  shorter than the binding the interface sees (rounded up to a multiple of four, or grown to the
+  program's block). Vulkan's robust shader access checks against it and a runtime-sized array's
+  length is computed from it (15.4); OpenGL's `length()` on an SSBO's last member, whose range
+  `glBindBufferRange` sets, takes it the same way. A base primitive: a helper value the front writes
+  as it writes the others, with nothing for a back end to do.
 - **Nothing else is expected**: 5.3 to 5.5 found routes for the rest in the existing interface.
 
 ### 15.8 Milestones of the second batch
@@ -3361,10 +3438,14 @@ its load, as everywhere.
   pass's 16-bit integer operations in 32-bit words), with the fragment shaders of
   `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` after `nir_lower_alpha_to_coverage` and
   `nir_lower_alpha_to_one` in the corpus, and the widened operations held to 16-bit ones by a test
-  over every 16-bit value and shift count; and the program of 15.4's `robustBufferAccess`
-  (`nir_lower_robust_access` after buffer access is lowered to index and offset), with the shaders
-  of `dEQP-VK.robustness.buffer_access.*` in the corpus, lowered before both runs (so the reference
-  runs the same checks), on seeded ranges that include accesses past the range. Whether lavapipe runs the lowered NIR
+  over every 16-bit value and shift count; and the program of 15.4's `robustBufferAccess` (its
+  three steps: index and offset, 32-bit scalar accesses, `nir_lower_robust_access`, with the sizes
+  read from `HelperValue::BufferRange` and storage buffers declared as runtime-sized arrays of
+  words), with the shaders of `dEQP-VK.robustness.buffer_access.*` in the corpus, lowered before
+  both runs (so the reference runs the same checks), on seeded ranges that include the CTS's 1, 3,
+  4 and 32 bytes against its 8192-byte blocks and accesses past the range, bound as 15.4 binds
+  them (storage rounded up to four bytes, uniform grown to the block), and none of the converted
+  program's accesses outside its binding (the recording back end stops at one). Whether lavapipe runs the lowered NIR
   (`demote_samples`) is checked first; where it does not, those shaders are held by G10's CTS
   cases, listed so. Pass bar: 15.3's, the outputs of every converted shader held to llvmpipe's or
   lavapipe's. Needs:
@@ -3412,9 +3493,10 @@ its load, as everywhere.
   over the recording back end, which drops and counts any draw fetching past a stream's end and
   stops at any program access outside its bound range: on a device with the feature enabled, the
   same cases' draws and dispatches (indices past a stream, uniform and storage accesses past their
-  descriptor's range, texel buffer elements past the view) run with none dropped or stopped and
-  give zero, a value within the range, or a dropped write, as 15.4 says; with it disabled, the
-  converted programs hold no check.
+  descriptor's range, with ranges of 1, 3, 4 and 32 bytes of buffers of that size against blocks
+  larger than them, texel buffer elements past the view) run with none dropped or stopped and
+  none of their bindings refused, and give zero, a value from the memory bound to the buffer, or
+  a dropped write, as 15.4 says; with it disabled, the converted programs hold no check.
   The browser half: `vulkan.wasm` in Chrome on WebGPU, `vk-default` built for WebAssembly as G9b
   builds dEQP (the CTS calling the driver's entry points without a loader), with the same measure.
   Needs: G1d, G8 (G9b's way of running the suites in Chrome for the browser half).

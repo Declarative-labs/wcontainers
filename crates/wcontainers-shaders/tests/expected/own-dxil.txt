@@ -16,6 +16,7 @@ ps_array.dxil	ok
 ps_cases.dxil	ok
 ps_clip.dxil	ok
 ps_coarse.dxil	ok
+ps_contend.dxil	ok-wgsl glsl-write
 ps_deriv.dxil	ok-wgsl glsl-write
 ps_dual.dxil	ok
 ps_early.dxil	ok-wgsl glsl-write
@@ -36,9 +37,11 @@ ps_msarray.dxil	unsupported MultisampledArrayTexture
 ps_negate.dxil	ok
 ps_offset.dxil	ok
 ps_pack.dxil	unsupported PackedStageValues
+ps_primid.dxil	ok-wgsl glsl-compile
 ps_pull.dxil	ok
 ps_rows.dxil	ok
 ps_samples.dxil	unsupported SampleCount
+ps_shadow.dxil	ok-wgsl glsl-write
 ps_signed.dxil	ok
 ps_spaces.dxil	ok
 ps_special.dxil	ok
