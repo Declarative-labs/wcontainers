@@ -184,6 +184,9 @@ struct Lowering<'a> {
     workgroup: [u32; 3],
     /// Images and samplers used in depth comparisons, by declaring id.
     compared: HashSet<u32>,
+    /// Shared memory and storage buffers some atomic operation uses, by declaring id: their scalars
+    /// are declared atomic.
+    atomic: HashSet<u32>,
     semantics: HashMap<u32, (String, u32)>,
     discards: bool,
     side_effects: bool,
@@ -245,6 +248,7 @@ impl<'a> Lowering<'a> {
             conservative: None,
             workgroup: [1; 3],
             compared: HashSet::default(),
+            atomic: HashSet::default(),
             semantics: HashMap::default(),
             discards: false,
             side_effects: false,
@@ -302,12 +306,25 @@ impl<'a> Lowering<'a> {
 
     /// The naga type of an IR type with one member, arrays included.
     fn ir_ty(&mut self, t: &Ty) -> Result<Handle<Type>> {
+        self.ir_ty_of(t, false)
+    }
+
+    /// [`Self::ir_ty`], with the member atomic where `atomic` (a 32-bit integer).
+    fn ir_ty_of(&mut self, t: &Ty, atomic: bool) -> Result<Handle<Type>> {
         let member = match t.members[..] {
             [member] => member,
             [] => return Err(malformed("a declaration without a type".into())),
             _ => return Err(unsupported("StructType")),
         };
-        let mut handle = self.basic(member)?;
+        let mut handle = if atomic {
+            let s = Self::scalar(member.scalar)?;
+            if member.size != 1 || !matches!(s, Scalar::U32 | Scalar::I32) {
+                return Err(unsupported("AtomicType"));
+            }
+            self.ty(TypeInner::Atomic(s))
+        } else {
+            self.basic(member)?
+        };
         let mut size = basic_size(member);
         let mut align = basic_align(member);
         for &count in &t.dims {
@@ -362,6 +379,15 @@ impl<'a> Lowering<'a> {
                     let dcl = self.ir.op(d)?.refs[0];
                     self.compared.insert(dcl);
                 }
+            }
+            match op.code {
+                code::LDS_ATOMIC => {
+                    self.atomic.insert(op.refs[0]);
+                }
+                code::BUFFER_ATOMIC => {
+                    self.atomic.insert(self.ir.op(op.refs[0])?.refs[0]);
+                }
+                _ => {}
             }
         }
         for id in 1..=self.ir.ops.len() as u32 {
@@ -433,7 +459,7 @@ impl<'a> Lowering<'a> {
                 match k {
                     kind::BUFFER_TYPED => return Err(unsupported("TypedBuffer")),
                     kind::BUFFER_RAW | kind::BUFFER_STRUCTURED => {
-                        let ty = self.ir_ty(&op.ty)?;
+                        let ty = self.ir_ty_of(&op.ty, self.atomic.contains(&id))?;
                         let read_only = !storage || op.lits.get(4).is_some_and(|f| f & 2 != 0);
                         let access = if read_only {
                             naga::StorageAccess::LOAD
@@ -470,9 +496,17 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            code::DCL_UAV_COUNTER => return Err(unsupported("StorageCounter")),
+            code::DCL_UAV_COUNTER => {
+                // One atomic word of its own, at the counter binding of the view's slot.
+                let uav = self.ir.op(op.refs[1])?;
+                let ty = self.ty(TypeInner::Atomic(Scalar::U32));
+                let space = AddressSpace::Storage {
+                    access: naga::StorageAccess::LOAD | naga::StorageAccess::STORE,
+                };
+                self.resource_in(id, uav, SlotKind::Counter, ty, space, None, false)?;
+            }
             code::DCL_LDS => {
-                let ty = self.ir_ty(&op.ty)?;
+                let ty = self.ir_ty_of(&op.ty, self.atomic.contains(&id))?;
                 let var = self.global(format!("lds{id}"), AddressSpace::WorkGroup, None, ty, None);
                 self.memory.insert(id, var);
             }
@@ -1331,7 +1365,12 @@ impl Emit {
     }
 
     fn add(&mut self, f: &mut Function, block: &mut Block, expr: Expression) -> Handle<Expression> {
-        if expr.needs_pre_emit() || matches!(expr, Expression::CallResult(_)) {
+        if expr.needs_pre_emit()
+            || matches!(
+                expr,
+                Expression::CallResult(_) | Expression::AtomicResult { .. }
+            )
+        {
             self.flush(f, block);
             let h = f.expressions.append(expr, Span::UNDEFINED);
             self.start = f.expressions.len();
@@ -2439,9 +2478,10 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             }
             c::IMAGE_COMPUTE_LOD => return Err(unsupported("CalculateLevelOfDetail")),
             c::IMAGE_STORE | c::IMAGE_ATOMIC => return Err(unsupported("StorageImage")),
-            c::LDS_ATOMIC | c::BUFFER_ATOMIC | c::COUNTER_ATOMIC => {
-                return Err(unsupported("Atomics"));
-            }
+            c::LDS_ATOMIC | c::BUFFER_ATOMIC | c::COUNTER_ATOMIC => match self.atomic(b, op)? {
+                Some(v) => v,
+                None => return Ok(()),
+            },
             c::INTERPOLATE_AT_CENTROID | c::INTERPOLATE_AT_SAMPLE | c::INTERPOLATE_AT_OFFSET => {
                 return Err(unsupported("InterpolateAt"));
             }
@@ -2463,6 +2503,147 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         };
         self.define(b, id, Val::Expr(v));
         Ok(())
+    }
+
+    /// An atomic operation on shared memory, a storage buffer or a view's counter; its result (the
+    /// value before, or after for a counter's decrement as Direct3D defines it) unless it has none.
+    fn atomic(&mut self, b: &mut Block, op: &Op) -> Result<Option<Handle<Expression>>> {
+        use naga::AtomicFunction as A;
+        let r = &op.refs;
+        let what = *op
+            .lits
+            .first()
+            .ok_or_else(|| malformed("atomic without its operation".into()))?;
+        let (pointer, s) = if op.code == code::COUNTER_ATOMIC {
+            let (res, _) = self.buffer(r[0])?;
+            self.l.side_effects = true;
+            (
+                self.add(b, Expression::GlobalVariable(res.var)),
+                Scalar::U32,
+            )
+        } else {
+            let (var, ty) = if op.code == code::LDS_ATOMIC {
+                self.memory_var(code::LDS_LOAD, r[0])?
+            } else {
+                self.l.side_effects = true;
+                let (res, ty) = self.buffer(r[0])?;
+                (res.var, ty)
+            };
+            match self.walk(b, var, &ty, r[1], 1)? {
+                Place::Element(p, element, None | Some(Index::Const(0))) if element.size == 1 => {
+                    (p, Lowering::scalar(element.scalar)?)
+                }
+                _ => return Err(malformed("atomic on a vector".into())),
+            }
+        };
+        let want = op
+            .ty
+            .basic()
+            .map(|m| Lowering::scalar(m.scalar))
+            .transpose()?;
+        let operand = |me: &mut Self, b: &mut Block, k: u32| -> Result<Handle<Expression>> {
+            let v = me.get_as(b, r[2], s)?;
+            Ok(if me.basic_of(r[2])?.size == 1 {
+                v
+            } else {
+                me.add(b, Expression::AccessIndex { base: v, index: k })
+            })
+        };
+        let (fun, value) = match what {
+            // Load and store: atomic loads and stores in naga's form.
+            0 => {
+                let v = self.add(b, Expression::Load { pointer });
+                return Ok(Some(self.retyped(b, v, s, want)));
+            }
+            1 => {
+                let value = operand(self, b, 0)?;
+                self.stmt(b, Statement::Store { pointer, value });
+                return Ok(None);
+            }
+            2 => (A::Exchange { compare: None }, operand(self, b, 0)?),
+            3 => {
+                let compare = operand(self, b, 0)?;
+                (
+                    A::Exchange {
+                        compare: Some(compare),
+                    },
+                    operand(self, b, 1)?,
+                )
+            }
+            4 => (A::Add, operand(self, b, 0)?),
+            5 => (A::Subtract, operand(self, b, 0)?),
+            6..=9 => {
+                let signed = what <= 7;
+                if signed != (s == Scalar::I32) {
+                    return Err(unsupported("AtomicSignedness"));
+                }
+                let fun = if what % 2 == 0 { A::Min } else { A::Max };
+                (fun, operand(self, b, 0)?)
+            }
+            10 => (A::And, operand(self, b, 0)?),
+            11 => (A::InclusiveOr, operand(self, b, 0)?),
+            12 => (A::ExclusiveOr, operand(self, b, 0)?),
+            13 | 14 => {
+                let one = match s {
+                    Scalar::I32 => Literal::I32(1),
+                    _ => Literal::U32(1),
+                };
+                let fun = if what == 13 { A::Add } else { A::Subtract };
+                (fun, self.lit(b, one))
+            }
+            _ => return Err(malformed(format!("atomic operation {what}"))),
+        };
+        let compared = matches!(fun, A::Exchange { compare: Some(_) });
+        let result = want.map(|_| {
+            let ty = if compared {
+                self.l.module.generate_predeclared_type(
+                    naga::PredeclaredType::AtomicCompareExchangeWeakResult(s),
+                )
+            } else {
+                self.l.scalar_ty(s)
+            };
+            self.add(
+                b,
+                Expression::AtomicResult {
+                    ty,
+                    comparison: compared,
+                },
+            )
+        });
+        self.stmt(
+            b,
+            Statement::Atomic {
+                pointer,
+                fun,
+                value,
+                result,
+            },
+        );
+        let Some(mut v) = result else {
+            return Ok(None);
+        };
+        if compared {
+            v = self.add(b, Expression::AccessIndex { base: v, index: 0 });
+        }
+        if op.code == code::COUNTER_ATOMIC && what == 14 {
+            let one = self.lit(b, Literal::U32(1));
+            v = self.bin(b, BinaryOperator::Subtract, v, one);
+        }
+        Ok(Some(self.retyped(b, v, s, want)))
+    }
+
+    /// `v` of scalar `from` as the result type's scalar.
+    fn retyped(
+        &mut self,
+        b: &mut Block,
+        v: Handle<Expression>,
+        from: Scalar,
+        want: Option<Scalar>,
+    ) -> Handle<Expression> {
+        match want {
+            Some(to) => self.e.bitcast(&mut self.f, b, v, from, to),
+            None => v,
+        }
     }
 
     fn memory_var(&mut self, opcode: u16, dcl: u32) -> Result<(Handle<GlobalVariable>, Ty)> {
