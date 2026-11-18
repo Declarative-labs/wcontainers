@@ -755,9 +755,9 @@ pub fn a_copy_within_one_subresource_moves_the_region<H: Host>() {
 }
 
 /// The same for the depth and stencil formats a back end copies out, each written with values a
-/// draw writes exactly (float depth in eighths, 16-bit depth and stencil any): a back end whose API
-/// copies these only between subresources goes through a temporary texture of the same format,
-/// counted `CopyWithinTexture`.
+/// draw writes exactly (float depth in eighths, 16-bit depth and stencil any), and the formats with
+/// both, each aspect read back: a back end whose API copies these only between subresources goes
+/// through a temporary texture of the same format, counted `CopyWithinTexture`.
 pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<H: Host>() {
     let mut b = H::make();
     let depth32 = (0..8u32)
@@ -775,6 +775,78 @@ pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<H: Host>(
             copy_within_one_subresource(&mut b, format, texel, bytes);
         }
     }
+    for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
+        if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+            copy_within_one_combined_subresource(&mut b, format);
+        }
+    }
+}
+
+/// As [`copy_within_one_subresource`] for a format with depth and stencil, whose one copy moves
+/// both aspects: depth written and read in eighths (24-bit depth within one step of 2^-24), stencil
+/// any.
+fn copy_within_one_combined_subresource<B: Backend>(b: &mut B, format: Format) {
+    let t = texture(
+        b,
+        format,
+        (4, 2),
+        1,
+        1,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    );
+    let aspect = |stencil| TextureRegion {
+        stencil,
+        ..region(&t, 0, 0, 0, 0)
+    };
+    let eighth = |i: usize| i as f64 / 8.0;
+    let depth: Vec<u8> = (0..8)
+        .flat_map(|i| {
+            let mut texel = [0; 4];
+            crate::texel::encode_depth(format, eighth(i), &mut texel);
+            texel
+        })
+        .collect();
+    let stencil = pattern(8, 5);
+    b.write_texture(
+        &aspect(false),
+        extent(4, 2, 1),
+        &depth,
+        16,
+        2,
+        WriteMode::Ordered,
+    );
+    b.write_texture(
+        &aspect(true),
+        extent(4, 2, 1),
+        &stencil,
+        4,
+        2,
+        WriteMode::Ordered,
+    );
+    b.copy_texture(
+        &region(&t, 0, 0, 0, 0),
+        &region(&t, 0, 0, 2, 0),
+        extent(2, 2, 1),
+    );
+    // Texel i holds what texel `from(i)` held: the right half of each row takes its left half.
+    let from = |i: usize| if i % 4 >= 2 { i - 2 } else { i };
+    let got = read_texture(b, aspect(false), extent(4, 2, 1), 4);
+    let step = match format {
+        Format::Depth24PlusStencil8 => 1.0 / 16_777_215.0,
+        _ => 0.0,
+    };
+    for i in 0..8 {
+        let g = crate::texel::decode_depth(format, &got[i * 4..i * 4 + 4]);
+        let e = eighth(from(i));
+        assert!(
+            (g - e).abs() <= step,
+            "{format:?} depth of texel {i}: {g}, not {e}"
+        );
+    }
+    let got = read_texture(b, aspect(true), extent(4, 2, 1), 1);
+    let expected: Vec<u8> = (0..8).map(|i| stencil[from(i)]).collect();
+    assert_eq!(got, expected, "{format:?} stencil");
+    ok(b);
 }
 
 /// Writes a 4 by 2 texture of `format`, copies its left half onto its right half, and reads back
@@ -1044,10 +1116,10 @@ pub fn typed_buffers_through_a_texture_lie_2048_elements_to_a_row<H: Host>() {
 }
 
 /// Every vertex format is taken by every back end and reads its element (a back end whose API lacks
-/// one converts it itself, `VertexFormatConverted`): one element, repeated at a stride of 16, read
-/// as a `vec4` of the format's number type by a one-pixel quad and written to an `rgba32` target of
-/// that type. Missing components read 0, 0 and 1 (the integer 1 for integer formats). Normalised
-/// values are held within 2^-20, the others exactly.
+/// one converts it itself, `VertexFormatConverted`): one element, at attribute offset 12 of a stride
+/// of 28 whose first bytes are filler, read as a `vec4` of the format's number type by a one-pixel
+/// quad and written to an `rgba32` target of that type. Missing components read 0, 0 and 1 (the
+/// integer 1 for integer formats). Normalised values are held within 2^-20, the others exactly.
 pub fn every_vertex_format_reads_its_element<H: Host>() {
     use VertexFormat::*;
     const FORMATS: [VertexFormat; 52] = [
@@ -1135,16 +1207,19 @@ pub fn every_vertex_format_reads_its_element<H: Host>() {
     }
     let rs = raster(&mut b, CullMode::None);
     let vb = quad(&mut b);
-    let values = buffer(&mut b, 64, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    const OFFSET: u32 = 12;
+    let values = buffer(&mut b, 128, BufferUsage::VERTEX | BufferUsage::COPY_DST);
     for format in FORMATS {
         let (element, expected) = vertex_element(format);
-        let bytes: Vec<u8> = (0..4).flat_map(|_| element).collect();
+        let bytes: Vec<u8> = (0..4)
+            .flat_map(|_| [0xa5; OFFSET as usize].into_iter().chain(element))
+            .collect();
         b.write_buffer(&values, 0, &bytes, WriteMode::Ordered);
         let mut desc = VertexLayoutDesc {
             streams: [None; MAX_VERTEX_STREAMS],
             attributes: [None; MAX_VERTEX_STREAMS],
         };
-        for (s, stride) in [(0, 8), (1, 16)] {
+        for (s, stride) in [(0, 8), (1, 16 + OFFSET)] {
             desc.streams[s] = Some(VertexStream {
                 stride,
                 step: StepMode::Vertex,
@@ -1159,7 +1234,7 @@ pub fn every_vertex_format_reads_its_element<H: Host>() {
         desc.attributes[1] = Some(VertexAttribute {
             location: 1,
             stream: 1,
-            offset: 0,
+            offset: OFFSET,
             format,
         });
         let vl = b.create_vertex_layout(&desc).expect("create_vertex_layout");
@@ -1255,10 +1330,11 @@ fn vertex_element(format: VertexFormat) -> ([u8; 16], Read) {
             }
         }
         Float11_11_10 => {
-            // 1.5 and 0.25 as 11-bit floats, 6.0 as a 10-bit float (5-bit exponents biased by 15).
-            let word = (15u32 << 6 | 32) | (13u32 << 6) << 11 | (17u32 << 5 | 16) << 22;
+            // 5-bit exponents biased by 15: the least 11-bit denormal (2^-20), the greatest 11-bit
+            // float, and 0.75 as a 10-bit float.
+            let word = 1u32 | (30u32 << 6 | 63) << 11 | (14u32 << 5 | 16) << 22;
             element[..4].copy_from_slice(&word.to_le_bytes());
-            Read::Float([1.5, 0.25, 6.0, 1.0], 0.0)
+            Read::Float([2f32.powi(-20), 65024.0, 0.75, 1.0], 0.0)
         }
         _ => {
             // The 8, 16 and 32-bit integer and normalised formats: bytes of a fixed pattern, with
