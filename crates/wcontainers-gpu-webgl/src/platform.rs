@@ -158,16 +158,44 @@ mod native {
         windows: std::collections::HashMap<u32, egl::NativeWindowType>,
     }
 
+    thread_local! {
+        /// The context current on this thread, as [`Egl::id`] gives it; 0 for none of ours.
+        static CURRENT: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    }
+
+    impl Egl {
+        fn id(&self) -> usize {
+            self.context.as_ptr() as usize
+        }
+
+        /// Makes the context current with its window surface, else the off-screen one.
+        fn make_current(&self) -> Result<(), egl::Error> {
+            let surface = self.window.unwrap_or(self.pbuffer);
+            self.instance.make_current(
+                self.display,
+                Some(surface),
+                Some(surface),
+                Some(self.context),
+            )?;
+            CURRENT.set(self.id());
+            Ok(())
+        }
+    }
+
     impl Drop for Egl {
         fn drop(&mut self) {
             let e = &self.instance;
-            let _ = e.make_current(self.display, None, None, None);
+            if CURRENT.get() == self.id() {
+                let _ = e.make_current(self.display, None, None, None);
+                CURRENT.set(0);
+            }
             if let Some(window) = self.window {
                 let _ = e.destroy_surface(self.display, window);
             }
             let _ = e.destroy_surface(self.display, self.pbuffer);
             let _ = e.destroy_context(self.display, self.context);
-            let _ = e.terminate(self.display);
+            // The default display stays initialised: every back end of the process shares it, and
+            // terminating it would end their contexts too.
         }
     }
 
@@ -181,6 +209,15 @@ mod native {
     }
 
     impl Platform {
+        /// Makes this back end's context current where another back end on the thread made its own
+        /// current since.
+        #[inline]
+        pub fn current(&self) {
+            if CURRENT.get() != self.egl.id() {
+                let _ = self.egl.make_current();
+            }
+        }
+
         pub fn clip_control(&self, _gl: &glow::Context, origin: u32, depth: u32) {
             if let Some(f) = self.clip_control {
                 // SAFETY: the pointer was loaded for this context's glClipControlEXT.
@@ -319,10 +356,9 @@ mod native {
                 )
             }
             .map_err(|err| format!("eglCreateWindowSurface: {err}"))?;
-            e.instance
-                .make_current(e.display, Some(surface), Some(surface), Some(e.context))
-                .map_err(|err| format!("eglMakeCurrent: {err}"))?;
             e.window = Some(surface);
+            e.make_current()
+                .map_err(|err| format!("eglMakeCurrent: {err}"))?;
             Ok(())
         }
 
@@ -330,12 +366,7 @@ mod native {
         pub fn detach(&mut self) {
             let e = &mut self.egl;
             if let Some(window) = e.window.take() {
-                let _ = e.instance.make_current(
-                    e.display,
-                    Some(e.pbuffer),
-                    Some(e.pbuffer),
-                    Some(e.context),
-                );
+                let _ = e.make_current();
                 let _ = e.instance.destroy_surface(e.display, window);
             }
         }
@@ -446,6 +477,7 @@ mod native {
         instance
             .make_current(display, Some(pbuffer), Some(pbuffer), Some(context))
             .map_err(|e| format!("eglMakeCurrent: {e}"))?;
+        CURRENT.set(context.as_ptr() as usize);
         let load = |name: &str| {
             instance
                 .get_proc_address(name)
@@ -601,6 +633,10 @@ mod web {
     }
 
     impl Platform {
+        /// A WebGL context needs no making current.
+        #[inline(always)]
+        pub fn current(&self) {}
+
         pub fn clip_control(&self, _gl: &glow::Context, origin: u32, depth: u32) {
             if let Some((ext, f)) = &self.clip_control {
                 let _ = f.call2(ext, &JsValue::from(origin), &JsValue::from(depth));
