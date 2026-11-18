@@ -11,6 +11,7 @@ gs_line_adjacent.dxil	spirv-reader unsupported
 gs_lines.dxil	spirv-reader unsupported
 gs_points.dxil	spirv-reader unsupported
 gs_quads.dxil	spirv-reader unsupported
+ps_array.dxil	ok
 ps_cases.dxil	ok
 ps_clip.dxil	ok
 ps_coarse.dxil	ok

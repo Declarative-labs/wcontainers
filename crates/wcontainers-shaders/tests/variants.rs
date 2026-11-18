@@ -798,3 +798,27 @@ fn read_written_four_channel_storage_goes_through_a_buffer() {
     let text = wgsl(&convert(Source::Dxil(&code), &key, None).unwrap());
     assert!(!text.contains("texture_storage"), "{text}");
 }
+
+/// An array of textures is one texture per element, at the registers Direct3D 12 gives the range,
+/// and an element picked at run time is chosen by a switch.
+#[test]
+fn texture_arrays_are_a_texture_per_element() {
+    let c = convert(
+        Source::Dxil(&read("tests/own/ps_array.dxil")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    let mut textures: Vec<_> = c
+        .reflection
+        .bindings
+        .iter()
+        .filter(|b| b.kind == SlotKind::Texture)
+        .map(|b| (b.register, b.slot()))
+        .collect();
+    textures.sort_unstable();
+    assert_eq!(textures, [(0, 0), (1, 1), (2, 2), (3, 3)]);
+    let text = wgsl(&c);
+    assert!(text.contains("switch"), "{text}");
+    assert_eq!(text.matches("texture_2d<f32>;").count(), 4, "{text}");
+}
