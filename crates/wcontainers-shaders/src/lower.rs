@@ -185,8 +185,8 @@ struct Lowering<'a> {
     /// Images and samplers used in depth comparisons, by declaring id.
     compared: HashSet<u32>,
     /// Shared memory and storage buffers some atomic operation uses, by declaring id: their scalars
-    /// are declared atomic.
-    atomic: HashSet<u32>,
+    /// are declared atomic. The bits say which minimum and maximum it takes: 1 signed, 2 unsigned.
+    atomic: HashMap<u32, u8>,
     semantics: HashMap<u32, (String, u32)>,
     discards: bool,
     side_effects: bool,
@@ -248,7 +248,7 @@ impl<'a> Lowering<'a> {
             conservative: None,
             workgroup: [1; 3],
             compared: HashSet::default(),
-            atomic: HashSet::default(),
+            atomic: HashMap::default(),
             semantics: HashMap::default(),
             discards: false,
             side_effects: false,
@@ -307,6 +307,22 @@ impl<'a> Lowering<'a> {
     /// The naga type of an IR type with one member, arrays included.
     fn ir_ty(&mut self, t: &Ty) -> Result<Handle<Type>> {
         self.ir_ty_of(t, false)
+    }
+
+    /// The IR type of declaration `dcl`, its scalar the one its atomic operations take: signed where
+    /// they take signed minimums or maximums, unsigned where unsigned ones. Both cannot be declared.
+    fn declared_ty(&self, dcl: u32) -> Result<Ty> {
+        let mut t = self.ir.op(dcl)?.ty.clone();
+        let scalar = match self.atomic.get(&dcl) {
+            Some(3) => return Err(unsupported("AtomicSignedness")),
+            Some(1) => scalar::I32,
+            Some(2) => scalar::U32,
+            _ => return Ok(t),
+        };
+        if let [member] = &mut t.members[..] {
+            member.scalar = scalar;
+        }
+        Ok(t)
     }
 
     /// [`Self::ir_ty`], with the member atomic where `atomic` (a 32-bit integer).
@@ -380,15 +396,17 @@ impl<'a> Lowering<'a> {
                     self.compared.insert(dcl);
                 }
             }
-            match op.code {
-                code::LDS_ATOMIC => {
-                    self.atomic.insert(op.refs[0]);
-                }
-                code::BUFFER_ATOMIC => {
-                    self.atomic.insert(self.ir.op(op.refs[0])?.refs[0]);
-                }
-                _ => {}
-            }
+            let dcl = match op.code {
+                code::LDS_ATOMIC => op.refs[0],
+                code::BUFFER_ATOMIC => self.ir.op(op.refs[0])?.refs[0],
+                _ => continue,
+            };
+            let sign = match op.lits.first() {
+                Some(6 | 7) => 1,
+                Some(8 | 9) => 2,
+                _ => 0,
+            };
+            *self.atomic.entry(dcl).or_default() |= sign;
         }
         for id in 1..=self.ir.ops.len() as u32 {
             let op = self.ir.op(id)?;
@@ -459,7 +477,8 @@ impl<'a> Lowering<'a> {
                 match k {
                     kind::BUFFER_TYPED => return Err(unsupported("TypedBuffer")),
                     kind::BUFFER_RAW | kind::BUFFER_STRUCTURED => {
-                        let ty = self.ir_ty_of(&op.ty, self.atomic.contains(&id))?;
+                        let ty = self.declared_ty(id)?;
+                        let ty = self.ir_ty_of(&ty, self.atomic.contains_key(&id))?;
                         let read_only = !storage || op.lits.get(4).is_some_and(|f| f & 2 != 0);
                         let access = if read_only {
                             naga::StorageAccess::LOAD
@@ -506,7 +525,8 @@ impl<'a> Lowering<'a> {
                 self.resource_in(id, uav, SlotKind::Counter, ty, space, None, false)?;
             }
             code::DCL_LDS => {
-                let ty = self.ir_ty_of(&op.ty, self.atomic.contains(&id))?;
+                let ty = self.declared_ty(id)?;
+                let ty = self.ir_ty_of(&ty, self.atomic.contains_key(&id))?;
                 let var = self.global(format!("lds{id}"), AddressSpace::WorkGroup, None, ty, None);
                 self.memory.insert(id, var);
             }
@@ -2647,7 +2667,6 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     }
 
     fn memory_var(&mut self, opcode: u16, dcl: u32) -> Result<(Handle<GlobalVariable>, Ty)> {
-        let ir = self.l.ir;
         if opcode == code::CONSTANT_LOAD {
             return self.l.constant_array(dcl);
         }
@@ -2660,7 +2679,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             .memory
             .get(&dcl)
             .ok_or_else(|| malformed(format!("memory {dcl}")))?;
-        Ok((var, ir.op(dcl)?.ty.clone()))
+        Ok((var, self.l.declared_ty(dcl)?))
     }
 
     fn buffer(&self, desc: u32) -> Result<(Resource, Ty)> {
@@ -2670,7 +2689,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             .resources
             .get(&dcl)
             .ok_or_else(|| malformed(format!("descriptor {desc}")))?;
-        Ok((res, self.l.ir.op(dcl)?.ty.clone()))
+        Ok((res, self.l.declared_ty(dcl)?))
     }
 
     fn image(&self, desc: u32) -> Result<Resource> {
