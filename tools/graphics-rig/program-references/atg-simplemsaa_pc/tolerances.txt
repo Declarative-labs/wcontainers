@@ -1,4 +1,4 @@
 # <frame> <channel tolerance> <pixels allowed beyond it> warp 0 0 [tiles <tile>:<pixels>,...], from repeated runs
-frame-10.png 8 768 warp 0 0 stray 4 tiles 2659:256,2819:256,2840:256
-frame-120.png 8 1536 warp 0 0 stray 9 tiles 1307:256,1371:256,1451:256,2684:256,2845:256,2929:256
-frame-60.png 8 768 warp 0 0 stray 9 tiles 2766:256,2841:256,2925:256
+frame-10.png 8 1024 warp 0 0 stray 2 tiles 2659:256,2679:256,2840:256,2847:256
+frame-120.png 8 2304 warp 0 0 stray 11 tiles 1307:256,1371:256,1451:256,2547:256,2684:256,2685:256,2845:256,2850:256,2929:256
+frame-60.png 8 1024 warp 0 0 stray 11 tiles 1853:256,2766:256,2841:256,2925:256

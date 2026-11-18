@@ -1,48 +1,15 @@
-hlsl+cast-to-half.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\cast-to-half.shader_test:60: Model 6.2
-hlsl+cast-to-half.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\cast-to-half.shader_test:63: Model 6.2
-hlsl+float-comparison.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\float-comparison.shader_test:67: Model 6.0
-hlsl+gather-cmp.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\gather-cmp.shader_test:100: Model 5.0
-hlsl+gather-cmp.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\gather-cmp.shader_test:100: Model 6.0
-hlsl+gather-cmp.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\gather-cmp.shader_test:122: Model 5.0
-hlsl+gather-cmp.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\gather-cmp.shader_test:122: Model 6.0
-hlsl+gather-cmp.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\gather-cmp.shader_test:144: Model 5.0
-hlsl+gather-cmp.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\gather-cmp.shader_test:144: Model 6.0
-hlsl+gather-cmp.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\gather-cmp.shader_test:74: Model 5.0
-hlsl+gather-cmp.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\gather-cmp.shader_test:74: Model 6.0
-hlsl+gather-cmp.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\gather-cmp.shader_test:87: Model 5.0
-hlsl+gather-cmp.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\gather-cmp.shader_test:87: Model 6.0
-hlsl+half.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\half.shader_test:210: Model 6.2
-hlsl+object-references.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\object-references.shader_test:114: Model 6.0
-hlsl+pointer-cast.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\pointer-cast.shader_test:20: Model 6.0
-hlsl+pointer-cast.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\pointer-cast.shader_test:23: Model 6.0
-hlsl+register-reservations-resources.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\register-reservations-resources.shader_test:38: Model 6.0
-hlsl+sm6-uav-rwtexture.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\sm6-uav-rwtexture.shader_test:120: Model 6.0
-hlsl+sm6-uav-rwtexture.shader_test 1 shader_runner.c:2032: C:\wc\wine\vkd3d\tests\hlsl\sm6-uav-rwtexture.shader_test:121: Model 6.0
-hlsl+switch.shader_test 1 shader_runner_d3d12.c:1200: C:\wc\wine\vkd3d\tests\hlsl\switch.shader_test:640: Model 6.0
-hlsl+tgsm.shader_test 1 shader_runner.c:2052: C:\wc\wine\vkd3d\tests\hlsl\tgsm.shader_test:482: Model 6.0
-hlsl+tgsm.shader_test 1 shader_runner.c:2052: C:\wc\wine\vkd3d\tests\hlsl\tgsm.shader_test:483: Model 6.0
-hlsl+tgsm.shader_test 1 shader_runner.c:2052: C:\wc\wine\vkd3d\tests\hlsl\tgsm.shader_test:486: Model 6.0
-hlsl+tgsm.shader_test 1 shader_runner.c:2052: C:\wc\wine\vkd3d\tests\hlsl\tgsm.shader_test:487: Model 6.0
-hlsl+tgsm.shader_test 1 shader_runner.c:2052: C:\wc\wine\vkd3d\tests\hlsl\tgsm.shader_test:592: Model 6.2
-hlsl+tgsm.shader_test 1 shader_runner.c:2052: C:\wc\wine\vkd3d\tests\hlsl\tgsm.shader_test:594: Model 6.2
-hlsl+uav-rwbuffer.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwbuffer.shader_test:107: Model 6.0
-hlsl+uav-rwbuffer.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwbuffer.shader_test:13: Model 6.0
-hlsl+uav-rwbuffer.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwbuffer.shader_test:137: Model 6.0
-hlsl+uav-rwbuffer.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwbuffer.shader_test:30: Model 6.0
-hlsl+uav-rwbuffer.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwbuffer.shader_test:61: Model 6.0
-hlsl+uav-rwbuffer.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwbuffer.shader_test:90: Model 6.0
-hlsl+uav-rwstructuredbuffer.shader_test 1 shader_runner.c:2003: C:\wc\wine\vkd3d\tests\hlsl\uav-rwstructuredbuffer.shader_test:402: Model 6.2
-hlsl+uav-rwstructuredbuffer.shader_test 1 shader_runner.c:2003: C:\wc\wine\vkd3d\tests\hlsl\uav-rwstructuredbuffer.shader_test:407: Model 6.2
-hlsl+uav-rwstructuredbuffer.shader_test 1 shader_runner.c:2052: C:\wc\wine\vkd3d\tests\hlsl\uav-rwstructuredbuffer.shader_test:403: Model 6.2
-hlsl+uav-rwstructuredbuffer.shader_test 1 shader_runner.c:2052: C:\wc\wine\vkd3d\tests\hlsl\uav-rwstructuredbuffer.shader_test:404: Model 6.2
-hlsl+uav-rwtexture.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwtexture.shader_test:508: Model 6.0
-hlsl+uav-rwtexture.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwtexture.shader_test:516: Model 6.0
-hlsl+uav-rwtexture.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwtexture.shader_test:524: Model 6.0
-hlsl+uav-rwtexture.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwtexture.shader_test:532: Model 6.0
-hlsl+uav-rwtexture.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwtexture.shader_test:540: Model 6.0
-hlsl+uav-rwtexture.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwtexture.shader_test:548: Model 6.0
-hlsl+uav-rwtexture.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwtexture.shader_test:556: Model 6.0
-hlsl+uav-rwtexture.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwtexture.shader_test:564: Model 6.0
-hlsl+uav-rwtexture.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwtexture.shader_test:572: Model 6.0
-hlsl+uav-rwtexture.shader_test 1 shader_runner.c:2704: C:\wc\wine\vkd3d\tests\hlsl\uav-rwtexture.shader_test:580: Model 6.0
-hlsl+wave-ops-uint.shader_test 1 shader_runner_d3d12.c:984: C:\wc\wine\vkd3d\tests\hlsl\wave-ops-uint.shader_test:174: Model 6.0
+hlsl+cast-to-half.shader_test shader_runner.c:2032 7-8
+hlsl+float-comparison.shader_test shader_runner.c:2032 6
+hlsl+gather-cmp.shader_test shader_runner.c:2032 5-9,12-16
+hlsl+half.shader_test shader_runner.c:2032 32
+hlsl+object-references.shader_test shader_runner.c:2032 24
+hlsl+pointer-cast.shader_test shader_runner.c:2032 1-2
+hlsl+register-reservations-resources.shader_test shader_runner.c:2032 23
+hlsl+sm6-uav-rwtexture.shader_test shader_runner.c:2032 5-6
+hlsl+switch.shader_test shader_runner_d3d12.c:1200 163
+hlsl+tgsm.shader_test shader_runner.c:2052 198-199,202-203,221,223
+hlsl+uav-rwbuffer.shader_test shader_runner.c:2704 36-37,39,42,44,47
+hlsl+uav-rwstructuredbuffer.shader_test shader_runner.c:2003 1-2
+hlsl+uav-rwstructuredbuffer.shader_test shader_runner.c:2052 32-33
+hlsl+uav-rwtexture.shader_test shader_runner.c:2704 53-62
+hlsl+wave-ops-uint.shader_test shader_runner_d3d12.c:984 25

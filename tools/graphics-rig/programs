@@ -16,7 +16,8 @@
 #       tools/graphics-rig/census/<program>.txt, to be committed. --record runs real Direct3D only,
 #       --runs times (default 10), keeps the first run's frames as the references on the desktop
 #       (C:\wc\programs\reference\<program>) and copies their allowances and SHA-256 into
-#       tools/graphics-rig/program-references/<program>, to be committed.
+#       tools/graphics-rig/program-references/<program>, to be committed. Each run is its own GPU
+#       job, since a program's unstable pixels change from job to job more than within one.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=tools/graphics-rig/common.sh
@@ -31,6 +32,7 @@ case $1 in
 esac
 census=
 record=
+runs=10
 options=
 dlls=()
 programs=()
@@ -38,7 +40,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         --census) census=1; shift ;;
         --record) record=1; options+=" -Record"; shift ;;
-        --runs) options+=" -Runs $2"; shift 2 ;;
+        --runs) runs=$2; shift 2 ;;
         --capture) options+=" -Capture $2"; shift 2 ;;
         --dll) dlls+=("$2"); shift 2 ;;
         *) programs+=("$1"); shift ;;
@@ -48,10 +50,20 @@ done
 [ ${#programs[@]} -eq 0 ] || options+=" -Programs $(IFS=,; echo "${programs[*]}")"
 [ ${#dlls[@]} -eq 0 ] || options+=" -Dlls \"$(IFS=';'; echo "${dlls[*]}")\""
 out="C:\\wc\\out\\$name\\programs"
+job() {
+    "$here/gpu-job" --desktop --build "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward" -- \
+        "$script -Mode run -Out $out -Forward %CARGO_TARGET_DIR%\\debug\\wcontainers_graphics_test_forward.dll -Check %CARGO_TARGET_DIR%\\debug\\gt-run.exe -Launch %CARGO_TARGET_DIR%\\debug\\gt-launch.exe$options$1"
+}
+code=0
 set +e
-"$here/gpu-job" --desktop --build "cargo build -q -p wcontainers-graphics-test -p wcontainers-graphics-test-forward" -- \
-    "$script -Mode run -Out $out -Forward %CARGO_TARGET_DIR%\\debug\\wcontainers_graphics_test_forward.dll -Check %CARGO_TARGET_DIR%\\debug\\gt-run.exe -Launch %CARGO_TARGET_DIR%\\debug\\gt-launch.exe$options"
-code=$?
+if [ -n "$record" ]; then
+    # Each run of a recording is its own job; the last one records the references.
+    for run in $(seq 1 "$runs"); do
+        job " -Run $run -Runs $runs" || code=$?
+    done
+else
+    job "" || code=$?
+fi
 set -e
 # Per branch: other checkouts run the same command at the same time.
 scratch=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-rig/programs/$name
