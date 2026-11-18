@@ -57,7 +57,7 @@
 056_ps_code_6.dxbc	ok
 057_ps_color_code_1.dxbc	ok
 058_ps_depth_code.dxbc	ok
-059_ps_code_7.dxbc	unsupported StorageImageAtomics
+059_ps_code_7.dxbc	ok-wgsl glsl-write
 060_ps_code_8.dxbc	ok
 061_ps_code_9.dxbc	ok
 062_ps_partial_input_code.dxbc	ok
@@ -162,7 +162,7 @@
 161_gather4_po_c_code.dxbc	unsupported DynamicOffset
 162_vs_code_11.dxbc	ok
 163_ps_code_21.dxbc	ok
-164_ps_code_22.dxbc	unsupported StorageImageAtomics
+164_ps_code_22.dxbc	ok-wgsl glsl-write
 165_ps_depth_le_code.dxbc	ok
 166_ps_depth_ge_code.dxbc	ok
 167_hs_code.dxbc	ok-wgsl glsl-write

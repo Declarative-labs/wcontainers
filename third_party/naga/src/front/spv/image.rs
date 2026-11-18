@@ -25,7 +25,7 @@ bitflags::bitflags! {
 }
 
 impl super::BlockContext<'_> {
-    fn get_image_expr_ty(
+    pub(super) fn get_image_expr_ty(
         &self,
         handle: Handle<crate::Expression>,
     ) -> Result<Handle<crate::Type>, Error> {

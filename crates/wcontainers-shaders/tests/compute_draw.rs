@@ -15,7 +15,7 @@ use wcontainers_gpu::{
     TextureViewDesc, VariantKey, ViewDimension, WriteMode, helper_binding,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
-use wcontainers_shaders::{Source, convert};
+use wcontainers_shaders::{ConvertError, Source, convert};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -23,6 +23,7 @@ use windows::core::Interface;
 
 /// One storage view: its bytes before the dispatch, whether it is a raw buffer, the count its
 /// counter starts at (none: no counter), and whether it is an append or consume view.
+#[derive(Clone)]
 struct View {
     bytes: Vec<u8>,
     raw: bool,
@@ -31,6 +32,7 @@ struct View {
 }
 
 /// One case: a shader, its views by slot and its workgroups.
+#[derive(Clone)]
 struct Case {
     shader: &'static str,
     views: Vec<View>,
@@ -210,13 +212,22 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Ran {
     }
 }
 
-fn ours<B: Backend>(b: &mut B, case: &Case) -> Ran {
-    let c = convert(
-        Source::Dxbc(&bytecode(&format!("{}.dxbc", case.shader))),
-        &VariantKey::default(),
-        None,
-    )
-    .unwrap();
+/// The same through the WebGPU back end, from fxc's DXBC or dxc's DXIL (whose views are numbered
+/// from u0 without gaps, so a slot is the register on both routes).
+fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertError> {
+    let key = VariantKey::default();
+    let c = match dxil {
+        true => convert(
+            Source::Dxil(&bytecode(&format!("{}.dxil", case.shader))),
+            &key,
+            None,
+        )?,
+        false => convert(
+            Source::Dxbc(&bytecode(&format!("{}.dxbc", case.shader))),
+            &key,
+            None,
+        )?,
+    };
     assert!(c.reflection.helpers.is_empty());
     let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
     let buffers: Vec<_> = case
@@ -294,8 +305,15 @@ fn ours<B: Backend>(b: &mut B, case: &Case) -> Ran {
         })
         .collect();
     assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
-    Ran { views, counters }
+    Ok(Ran { views, counters })
 }
+
+/// DXIL builds refused today, with the reason: dxil-spirv declares every buffer of unsigned words,
+/// and `cs_atomics` takes a signed minimum on one, which WebGPU's atomics cannot do on unsigned words.
+const DXIL_REFUSED: [(&str, &str); 1] = [(
+    "cs_atomics",
+    "spirv-reader AtomicSMin on integers of the other signedness",
+)];
 
 /// Makes what depends on the order invocations ran in comparable: the value the last exchange left
 /// (word 648 of `cs_atomics`' raw view) is marked as the values the exchanges returned are, and the
@@ -337,10 +355,28 @@ fn atomics_and_counters_match_direct3d() {
     let mut failures = Vec::new();
     let mut compared = 0;
     for seed in seed..seed + seeds {
-        for case in cases(seed) {
-            let name = format!("seed {seed} {}", case.shader);
+        for (case, dxil) in cases(seed)
+            .into_iter()
+            .flat_map(|c| [(c.clone(), false), (c, true)])
+        {
+            let build = if dxil { "dxil" } else { "dxbc" };
+            let name = format!("seed {seed} {} {build}", case.shader);
             let mut reference = direct3d(&gpu, &case);
-            let mut made = ours(&mut backend, &case);
+            let mut made = match ours(&mut backend, &case, dxil) {
+                Ok(made) => made,
+                Err(e) => {
+                    let refused = DXIL_REFUSED.iter().find(|r| r.0 == case.shader);
+                    let why = match &e {
+                        ConvertError::Reader(w) => format!("spirv-reader {w}"),
+                        e => format!("{e}"),
+                    };
+                    eprintln!("{name}: refused, {why}");
+                    if !dxil || refused.is_none_or(|r| r.1 != why) {
+                        failures.push(name);
+                    }
+                    continue;
+                }
+            };
             ordered(&case, &mut reference);
             ordered(&case, &mut made);
             compared += 1;
@@ -1258,14 +1294,23 @@ fn direct3d_through(gpu: &Gpu, views: &[Through]) -> Vec<Vec<u8>> {
 }
 
 /// The same through the WebGPU back end, every texture read and written through a buffer whose rows
-/// are 3 texels longer and layers one row taller than the view, the padding seeded too.
-fn ours_through<B: Backend>(b: &mut B, views: &[Through], seed: u64) -> Vec<Vec<u8>> {
+/// are 3 texels longer and layers one row taller than the view, the padding seeded too; from fxc's
+/// DXBC or dxc's DXIL, whose slots are the views' places among the program's (Direct3D 12's
+/// numbering).
+fn ours_through<B: Backend>(b: &mut B, views: &[Through], seed: u64, dxil: bool) -> Vec<Vec<u8>> {
+    let slot = |t: &Through| match dxil {
+        true => views.iter().filter(|v| v.slot < t.slot).count() as u32,
+        false => t.slot,
+    };
     let key = VariantKey {
-        texels_through_buffer: views.iter().map(|t| 1u64 << t.slot).sum(),
-        storage_formats: views.iter().map(|t| (t.slot, t.format)).collect(),
+        texels_through_buffer: views.iter().map(|t| 1u64 << slot(t)).sum(),
+        storage_formats: views.iter().map(|t| (slot(t), t.format)).collect(),
         ..Default::default()
     };
-    let c = convert(Source::Dxbc(&bytecode("cs_through.dxbc")), &key, None).unwrap();
+    let c = match dxil {
+        true => convert(Source::Dxil(&bytecode("cs_through.dxil")), &key, None).unwrap(),
+        false => convert(Source::Dxbc(&bytecode("cs_through.dxbc")), &key, None).unwrap(),
+    };
     let mut next = rng(seed ^ 0x5eed);
     let layout = |t: &Through| (t.size[0] + 3, t.size[1] + 1);
     let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
@@ -1312,10 +1357,10 @@ fn ours_through<B: Backend>(b: &mut B, views: &[Through], seed: u64) -> Vec<Vec<
     let set = b.create_binding_set(&entries).unwrap();
     let mut helpers = vec![0u8; c.reflection.helper_size as usize];
     for h in &c.reflection.helpers {
-        let HelperValue::TexelLayout { slot } = h.value else {
+        let HelperValue::TexelLayout { slot: s } = h.value else {
             panic!("{h:?}");
         };
-        let t = views.iter().find(|t| t.slot == slot).unwrap();
+        let t = views.iter().find(|t| slot(t) == s).unwrap();
         let (pitch, rows) = layout(t);
         let words = [pitch, rows, t.size[0], t.size[1], t.size[2]];
         for (k, w) in words.iter().enumerate() {
@@ -1395,24 +1440,27 @@ fn storage_textures_through_buffers_match_direct3d() {
     for seed in seed..seed + seeds {
         let views = through_views(&gpu, seed);
         let reference = direct3d_through(&gpu, &views);
-        let made = ours_through(&mut backend, &views, seed);
-        for ((a, o), t) in reference.iter().zip(&made).zip(&views) {
-            let size = t.format.block().2 as usize;
-            let mut apart = 0;
-            for (n, (x, y)) in a.chunks(size).zip(o.chunks(size)).enumerate() {
-                if x != y {
-                    apart += 1;
-                    if apart <= 6 {
-                        eprintln!("  u{} texel {n}: direct3d {x:02x?}, ours {y:02x?}", t.slot);
+        for dxil in [false, true] {
+            let made = ours_through(&mut backend, &views, seed, dxil);
+            let build = if dxil { "dxil" } else { "dxbc" };
+            for ((a, o), t) in reference.iter().zip(&made).zip(&views) {
+                let size = t.format.block().2 as usize;
+                let mut apart = 0;
+                for (n, (x, y)) in a.chunks(size).zip(o.chunks(size)).enumerate() {
+                    if x != y {
+                        apart += 1;
+                        if apart <= 6 {
+                            eprintln!("  u{} texel {n}: direct3d {x:02x?}, ours {y:02x?}", t.slot);
+                        }
                     }
                 }
-            }
-            eprintln!(
-                "seed {seed} u{} {:?}: {apart} texels apart",
-                t.slot, t.format
-            );
-            if apart > 0 {
-                failures.push(format!("seed {seed} u{}", t.slot));
+                eprintln!(
+                    "seed {seed} {build} u{} {:?}: {apart} texels apart",
+                    t.slot, t.format
+                );
+                if apart > 0 {
+                    failures.push(format!("seed {seed} {build} u{}", t.slot));
+                }
             }
         }
     }
