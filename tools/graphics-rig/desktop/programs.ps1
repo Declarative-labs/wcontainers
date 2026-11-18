@@ -271,6 +271,7 @@ function Run-Program([string]$name, [string]$dir) {
         $movie = @(Get-ChildItem "$dir\movie\frame*.png" -ErrorAction SilentlyContinue | Sort-Object Name)
         $frames = $movie.Count
         foreach ($n in $frameList) { if ($n -le $frames) { Copy-Item $movie[$n - 1].FullName "$dir\frame-$n.png" } }
+        Remove-Item -Recurse -Force "$dir\movie"
         $census = 'no census (Direct3D 12)'
         $whole = $ended -and $process.ExitCode -eq 0
     } else {
