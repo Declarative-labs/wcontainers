@@ -511,6 +511,18 @@ impl Backend for Recorder {
         ));
     }
 
+    fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {
+        let groups = match call.groups {
+            DispatchGroups::Direct(g) => format!("{g:?}"),
+            DispatchGroups::Indirect { args, offset } => format!("indirect {args} {offset}"),
+        };
+        self.record(format!(
+            "dispatch program {} sets {:?} groups {groups}",
+            call.program, call.bindings
+        ));
+        Ok(())
+    }
+
     fn begin_query(&mut self, index: u32) {
         self.record(format!("begin_query {index}"));
     }

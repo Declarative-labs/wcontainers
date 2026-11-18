@@ -624,10 +624,10 @@ impl Device_Impl {
         &self,
         bytecode: *const c_void,
         length: usize,
-        _linkage: Ref<ID3D11ClassLinkage>,
-        _out: OutRef<ID3D11GeometryShader>,
+        linkage: Ref<ID3D11ClassLinkage>,
+        out: OutRef<ID3D11GeometryShader>,
     ) -> Result<()> {
-        self.unserved_shader(bytecode, length, SourceStage::Geometry, "geometry shaders")
+        self.geometry_shader(bytecode, length, None, linkage, out)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -635,20 +635,76 @@ impl Device_Impl {
         &self,
         bytecode: *const c_void,
         length: usize,
-        _entries: *const D3D11_SO_DECLARATION_ENTRY,
-        _count: u32,
-        _strides: *const u32,
-        _stride_count: u32,
-        _rasterized: u32,
-        _linkage: Ref<ID3D11ClassLinkage>,
-        _out: OutRef<ID3D11GeometryShader>,
+        entries: *const D3D11_SO_DECLARATION_ENTRY,
+        count: u32,
+        strides: *const u32,
+        stride_count: u32,
+        rasterized: u32,
+        linkage: Ref<ID3D11ClassLinkage>,
+        out: OutRef<ID3D11GeometryShader>,
     ) -> Result<()> {
-        self.unserved_shader(
+        let entries = (!entries.is_null()).then(|| {
+            unsafe { std::slice::from_raw_parts(entries, count as usize) }
+                .iter()
+                .map(|e| wcontainers_direct3d_11::stream::DeclEntry {
+                    stream: e.Stream,
+                    semantic: (!e.SemanticName.is_null()).then(|| {
+                        String::from_utf8_lossy(unsafe { e.SemanticName.as_bytes() }).into_owned()
+                    }),
+                    semantic_index: e.SemanticIndex,
+                    start_component: e.StartComponent,
+                    component_count: e.ComponentCount,
+                    slot: e.OutputSlot,
+                })
+                .collect::<Vec<_>>()
+        });
+        let strides = (!strides.is_null()).then(|| {
+            unsafe { std::slice::from_raw_parts(strides, stride_count as usize) }.to_vec()
+        });
+        self.geometry_shader(
             bytecode,
             length,
-            SourceStage::Geometry,
-            "geometry shaders with stream output",
+            Some((entries, strides, rasterized)),
+            linkage,
+            out,
         )
+    }
+
+    /// A geometry shader, with the stream output declaration given (entries and strides, each
+    /// `None` where the program gave no array, and the rasterized stream).
+    #[allow(clippy::type_complexity)]
+    fn geometry_shader(
+        &self,
+        bytecode: *const c_void,
+        length: usize,
+        so: Option<(
+            Option<Vec<wcontainers_direct3d_11::stream::DeclEntry>>,
+            Option<Vec<u32>>,
+            u32,
+        )>,
+        linkage: Ref<ID3D11ClassLinkage>,
+        out: OutRef<ID3D11GeometryShader>,
+    ) -> Result<()> {
+        if bytecode.is_null() || !linkage.is_null() {
+            return Err(if bytecode.is_null() {
+                E_INVALIDARG.into()
+            } else {
+                missing("class linkage")
+            });
+        }
+        if self.front.borrow().feature_level() < 0xa000 {
+            return Err(E_INVALIDARG.into());
+        }
+        let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
+        let so = so
+            .as_ref()
+            .map(|(e, s, r)| (e.as_deref(), s.as_deref(), *r));
+        let shader = self
+            .front
+            .borrow_mut()
+            .create_geometry_shader(code, so)
+            .map_err(hresult)?;
+        give(out, GeometryShader::new(shader, self.me()).into())
     }
 
     pub(super) fn create_hull_shader(

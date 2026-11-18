@@ -11,9 +11,9 @@
 //! without vertex reuse or clipping splits counts them, compute invocations from the dispatches,
 //! and pixel shader invocations by a second occlusion counter replaying the draws with the depth
 //! and stencil tests off through a program counting one per pixel (one per sample where the pixel
-//! shader runs per sample). Stream output statistics and overflow predicates answer zero and
-//! false: no stream output is served (geometry shaders with stream output are refused at creation
-//! and stream output targets cannot be bound), so none is ever written or needed.
+//! shader runs per sample). Stream output statistics and overflow predicates of stream 0 add up
+//! what the stage helper counted at each streaming draw; only stream 0 is ever written, so the
+//! others answer zero and false.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -82,6 +82,26 @@ fn is_stream_output(kind: u32) -> bool {
     (kind::SO_STATISTICS..=kind::SO_OVERFLOW_PREDICATE_STREAM3).contains(&kind)
 }
 
+/// Whether `kind` is a stream output query of stream 0 (or of all streams).
+fn of_stream_zero(kind: u32) -> bool {
+    (kind::SO_STATISTICS..=kind::SO_STATISTICS_STREAM0 + 1).contains(&kind)
+}
+
+impl<B: Backend> Queries<B> {
+    /// Whether a stream output query of stream 0 runs.
+    pub(crate) fn streams_running(&self) -> bool {
+        !self.streams.is_empty()
+    }
+
+    /// Adds a draw's primitives written and needed to the running stream output queries.
+    pub(crate) fn add_streamed(&mut self, written: u64, needed: u64) {
+        for q in &self.streams {
+            let [w, n] = q.streamed.get();
+            q.streamed.set([w + written, n + needed]);
+        }
+    }
+}
+
 /// Whether `kind` answers from the work's end alone, with no stretch of its own: events,
 /// timestamps, the disjoint query and stream output's queries.
 fn answered_at_end(kind: u32) -> bool {
@@ -126,6 +146,8 @@ pub struct Query<B: Backend> {
     state: RefCell<State<B>>,
     /// A timestamp's time, in nanoseconds from the device's making.
     stamp: std::cell::Cell<u64>,
+    /// A stream output query's primitives written and needed.
+    streamed: std::cell::Cell<[u64; 2]>,
 }
 
 /// `D3D11_QUERY_MISC_PREDICATEHINT`.
@@ -142,6 +164,8 @@ pub(crate) struct Queries<B: Backend> {
     pub(crate) counted: Vec<Rc<Query<B>>>,
     /// Pipeline statistics queries begun and not ended.
     pub(crate) statistics: Vec<Rc<Query<B>>>,
+    /// Stream output queries of stream 0 begun and not ended.
+    streams: Vec<Rc<Query<B>>>,
     /// When the device was made: timestamps count nanoseconds from it.
     made: std::time::Instant,
     /// Whether the program made an occlusion predicate: from then on every pass counts into a set,
@@ -163,6 +187,7 @@ impl<B: Backend> Queries<B> {
             running: Vec::new(),
             counted: Vec::new(),
             statistics: Vec::new(),
+            streams: Vec::new(),
             made: std::time::Instant::now(),
             used: false,
             set: None,
@@ -194,6 +219,7 @@ impl<B: Backend> Device<B> {
             misc,
             state: RefCell::new(State::Fresh),
             stamp: std::cell::Cell::new(0),
+            streamed: std::cell::Cell::new([0; 2]),
         }))
     }
 
@@ -204,6 +230,10 @@ impl<B: Backend> Device<B> {
             kind::EVENT | kind::TIMESTAMP => return,
             k if answered_at_end(k) => {
                 *q.state.borrow_mut() = State::Running(Vec::new());
+                q.streamed.set([0; 2]);
+                if of_stream_zero(k) && !self.queries.streams.iter().any(|r| Rc::ptr_eq(r, q)) {
+                    self.queries.streams.push(q.clone());
+                }
                 return;
             }
             kind::OCCLUSION => {
@@ -287,6 +317,7 @@ impl<B: Backend> Device<B> {
             q.stamp.set(self.queries.made.elapsed().as_nanos() as u64);
         }
         let parts = if answered_at_end(q.kind) {
+            self.queries.streams.retain(|r| !Rc::ptr_eq(r, q));
             Vec::new()
         } else {
             self.close_stretch(true);
@@ -338,6 +369,13 @@ impl<B: Backend> Device<B> {
                     short(&[NANOSECONDS, 1])
                 }
                 kind::EVENT => short(&[1]),
+                k if is_stream_output(k) && (k - kind::SO_STATISTICS).is_multiple_of(2) => {
+                    short(&q.streamed.get())
+                }
+                k if is_stream_output(k) => {
+                    let [written, needed] = q.streamed.get();
+                    short(&[u64::from(needed > written)])
+                }
                 _ => short(&[]),
             };
             *q.state.borrow_mut() = State::Done(answer);
