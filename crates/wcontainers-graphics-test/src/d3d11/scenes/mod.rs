@@ -7,6 +7,7 @@ pub(crate) mod constants;
 mod copies;
 mod deferred;
 pub(crate) mod depth;
+mod device;
 pub(crate) mod draws;
 mod dynamic;
 pub(crate) mod formats;
@@ -65,6 +66,7 @@ pub const SCENES: &[(&str, Scene)] = &[
     ("streamout", streamout::run),
     ("deferred", deferred::run),
     ("levels", levels::run),
+    ("device", device::run),
     ("swapchain", swapchain::run),
 ];
 

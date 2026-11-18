@@ -47,6 +47,8 @@ $sources = [ordered]@{
     'bx' = @{ url = 'https://github.com/bkaradzic/bx.git'; commit = '365db1e26b5fdfec2a7497c2f0694c22be08bfbf' }
     'bimg' = @{ url = 'https://github.com/bkaradzic/bimg.git'; commit = 'f091e14e7540c85fd46951342034cfa59ff2693b' }
     'bgfx' = @{ url = 'https://github.com/bkaradzic/bgfx.git'; commit = '3aab3201a949be0d25e20e5fc2afbb2bee80b906' }
+    # MIT (one licence for the samples, their kits and media): Microsoft's DirectX Tool Kit samples.
+    'xbox-atg-samples' = @{ url = 'https://github.com/microsoft/Xbox-ATG-Samples.git'; commit = 'ff629a6e4876e38fe8761ead116a0e53f634ca67'; sparse = @('PCSamples/IntroGraphics/SimpleBezierPC', 'PCSamples/IntroGraphics/SimpleComputePC', 'PCSamples/IntroGraphics/SimpleInstancingPC', 'PCSamples/IntroGraphics/SimpleLightingPC', 'PCSamples/IntroGraphics/SimpleMSAA_PC', 'Kits/DirectXTK', 'Kits/ATGTK', 'Media/Fonts', 'Media/Textures', 'Media/Meshes/AliasSampleCityBlock') }
     # MIT.
     'godot-demo-projects' = @{ url = 'https://github.com/godotengine/godot-demo-projects.git'; commit = 'b761b4cd5718a7118f2c95eb55f181d0a5f004f1'; sparse = @('3d/platformer', '2d/platformer') }
 }
@@ -60,11 +62,13 @@ $downloads = [ordered]@{
 $tutorials = 'directx-sdk-samples\C++\Direct3D11\Tutorials'
 $bgfxBin = 'bgfx\.build\win64_vs2022\bin'
 $bgfxExamples = @('01-cubes', '06-bump', '09-hdr', '16-shadowmaps', '21-deferred', '24-nbody')
+$atgSamples = @('SimpleBezierPC', 'SimpleComputePC', 'SimpleInstancingPC', 'SimpleLightingPC', 'SimpleMSAA_PC')
+$atg = 'xbox-atg-samples\PCSamples\IntroGraphics'
 $godot = 'godot\Godot_v4.7.2-stable_win64_console.exe'
 $godotProjects = @('3d/platformer', '2d/platformer')
 # Each program: its executable and working directory under $root, its arguments ({out} is its
-# output directory), its environment, its API (Direct3D 11 unless said), and a part of its frames
-# not compared, if any. A Direct3D 12
+# output directory), its environment, its API (Direct3D 11 unless said), a part of its frames
+# not compared, if any, and a settings file written before it runs ($godotSettings), if any. A Direct3D 12
 # program writes its own frames as {out}\movie\frame<number>.png.
 $all = [ordered]@{}
 foreach ($n in 2, 4, 5, 6, 7) {
@@ -76,6 +80,11 @@ foreach ($n in 2, 4, 5, 6, 7) {
 foreach ($e in $bgfxExamples) {
     $all["bgfx-$e"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d11'; ignore = '0,236,320,36' }
 }
+# Microsoft's DirectX Tool Kit samples, run in the root of their repository, where they find their
+# media (under Media).
+foreach ($sample in $atgSamples) {
+    $all["atg-$($sample.ToLower())"] = @{ exe = "$atg\$sample\x64\Release\$sample.exe"; cwd = 'xbox-atg-samples'; args = '' }
+}
 # Freedoom's first demo played as fast as it can be drawn, one game tic a frame, through SDL's
 # Direct3D 11 renderer.
 $all['chocolate-doom'] = @{
@@ -85,11 +94,23 @@ $all['chocolate-doom'] = @{
 }
 # Godot's demo games with nobody at the controls, at a fixed 60 steps a second: Direct3D 11
 # through Godot's compatibility renderer on ANGLE, and Direct3D 12 through its Forward+ renderer.
+# Godot falls back to another renderer (Vulkan, OpenGL) when the one asked for fails; the
+# project's override.cfg, which Godot reads after project.godot, turns every fallback off, so a
+# failing Direct3D makes the program fail rather than draw through something else.
+$godotSettings = @(
+    '[rendering]',
+    'rendering_device/fallback_to_vulkan=false',
+    'rendering_device/fallback_to_d3d12=false',
+    'rendering_device/fallback_to_opengl3=false',
+    'gl_compatibility/fallback_to_native=false',
+    'gl_compatibility/fallback_to_angle=false'
+)
 foreach ($project in $godotProjects) {
     $tag = 'godot-' + ($project -replace '^(\w+)/(\w+)$', '$2-$1')
-    $common = "--path $root\src\godot-demo-projects\$($project -replace '/', '\') --windowed --resolution 960x540 --fixed-fps 60 --disable-vsync"
-    $all["$tag-d3d11"] = @{ exe = $godot; cwd = 'godot'; args = "$common --rendering-method gl_compatibility --rendering-driver opengl3_angle" }
-    $all["$tag-d3d12"] = @{ exe = $godot; cwd = 'godot'; api = 'd3d12'; args = "$common --rendering-method forward_plus --rendering-driver d3d12 --write-movie {out}\movie\frame.png --quit-after {last}" }
+    $path = "$root\src\godot-demo-projects\$($project -replace '/', '\')"
+    $common = "--path $path --windowed --resolution 960x540 --fixed-fps 60 --disable-vsync"
+    $all["$tag-d3d11"] = @{ exe = $godot; cwd = 'godot'; settings = "$path\override.cfg"; args = "$common --rendering-method gl_compatibility --rendering-driver opengl3_angle" }
+    $all["$tag-d3d12"] = @{ exe = $godot; cwd = 'godot'; settings = "$path\override.cfg"; api = 'd3d12'; args = "$common --rendering-method forward_plus --rendering-driver d3d12 --write-movie {out}\movie\frame.png --quit-after {last}" }
 }
 $chosen = if ($Programs) { $Programs.Split(',') } else { @($all.Keys) }
 foreach ($name in $chosen) { if (-not $all.Contains($name)) { throw "no program $name; the programs are $($all.Keys -join ', ')" } }
@@ -149,6 +170,10 @@ if ($Mode -eq 'build') {
     foreach ($name in $downloads.Keys) { Download $name }
     $src = "$root\src"
     Build 'the DirectX SDK tutorials' "`"$msbuild`" `"$src\$tutorials\Tutorials_1-7_2022.sln`" /nologo /v:minimal /m /p:Configuration=Release /p:Platform=x64"
+    # Made for Visual Studio 2017: built with this one's toolset and SDK.
+    foreach ($sample in $atgSamples) {
+        Build "DirectX Tool Kit sample $sample" "`"$msbuild`" `"$src\$atg\$sample\$sample.vcxproj`" /nologo /v:minimal /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0.26100.0"
+    }
     Build 'the bgfx project files' "cd /d `"$src\bgfx`" && ..\bx\tools\bin\windows\genie.exe --with-examples vs2022"
     # bgfx built to draw on the thread that calls bgfx::frame, not on a render thread of its own, so
     # what an example draws in a frame follows the clock it read for that frame (see clock.rs of
@@ -202,10 +227,14 @@ function Run-Program([string]$name, [string]$dir) {
         New-Item -ItemType Directory -Force "$bin\replacement" | Out-Null
         Copy-Item $replacement "$bin\replacement\d3d11.dll"
     }
+    if ($program.settings) { Set-Content -Encoding ascii $program.settings $godotSettings }
     $arguments = $program.args.Replace('{out}', $dir).Replace('{last}', "$last")
-    # Through gt-launch, which reports where the program loaded each replacement from.
-    $names = @($extra | ForEach-Object { $_[0].ToLower() }) + @(if ($replacement -and $d3d12) { 'd3d11.dll' })
-    $wanted = if ($names) { $names -join ',' } else { '-' }
+    # Through gt-launch, which reports where the program and the processes it starts loaded each
+    # library from: those placed beside it, the library of its API and dxgi.dll.
+    $placed = @($extra | ForEach-Object { $_[0].ToLower() }) + @(if ($d3d12) { if ($replacement) { 'd3d11.dll' } } else { 'd3d11.dll' })
+    $required = @($(if ($d3d12) { 'd3d12.dll' } else { 'd3d11.dll' }), 'dxgi.dll')
+    $names = @($placed + $required | Select-Object -Unique)
+    $wanted = $names -join ','
     $report = "$dir\loaded.txt"
     $info = New-Object Diagnostics.ProcessStartInfo $Launch, "`"$report`" $wanted `"$bin\$(Split-Path -Leaf $exe)`" $arguments"
     $info.UseShellExecute = $false
@@ -241,9 +270,25 @@ function Run-Program([string]$name, [string]$dir) {
         $whole = $ended
     }
     $saved = @(Get-ChildItem "$dir\frame-*.png" -ErrorAction SilentlyContinue).Count
-    $elsewhere = @(if (Test-Path $report) { Get-Content $report | Where-Object { $_ -notmatch ' from not loaded$' } | Where-Object { ($_ -split ' from ', 2)[1] -ine "$bin\$(($_ -split ' from ', 2)[0])" } })
-    if ($elsewhere) {
-        "${name}: FAIL, did not load the replacement: $($elsewhere -join ', ')"
+    # The library of its API and dxgi.dll must have been loaded, and each library placed beside
+    # it from there and nowhere else. A program stopped at the time limit has no report (gt-launch
+    # is stopped with it).
+    $lines = @(if (Test-Path $report) { Get-Content $report })
+    $wrong = @(if ($ended -and -not $lines) { "gt-launch wrote no report of the libraries it loaded" })
+    # The forwarding library answers timestamp queries from the frame clock but still asks the
+    # implementation, and says when it gave an error.
+    $wrong += @(($stdout.Result + $stderr.Result) -split "`n" | Where-Object { $_ -match '^d3d11 forward: GetData of a timestamp query failed' } | ForEach-Object { $_.Trim() })
+    foreach ($library in $(if ($lines) { $names })) {
+        $from = @($lines | Where-Object { $_ -like "$library from *" } | ForEach-Object { ($_ -split ' from ', 2)[1] })
+        if (-not $from -or $from -contains 'not loaded') {
+            if ($required -contains $library) { $wrong += "$library not loaded" }
+        } elseif ($placed -contains $library) {
+            $other = @($from | Where-Object { $_ -ine "$bin\$library" })
+            if ($other) { $wrong += "$library loaded from $($other -join ' and '), not from $bin" }
+        }
+    }
+    if ($wrong) {
+        "${name}: FAIL, $($wrong -join '; ')"
         return $false
     }
     if ($whole -and $frames -ge $last -and $saved -eq $frameList.Count) {
@@ -306,6 +351,9 @@ foreach ($name in $chosen) {
     $verdicts = @(& $Check frames $reference $dir)
     $bad = $LASTEXITCODE
     $verdicts | ForEach-Object { "${name} $_" }
-    if ($bad) { "${name}: FAIL, frames differ"; $failed++ } else { "${name}: pass, every frame as on real Direct3D" }
+    $compared = @($verdicts | Where-Object { $_ -notmatch ': not compared' }).Count
+    if ($bad) { "${name}: FAIL, frames differ"; $failed++ }
+    elseif ($compared) { "${name}: pass, every compared frame as on real Direct3D" }
+    else { "${name}: pass, ran to its last frame; no frame compared, as it draws differently on every run of real Direct3D" }
 }
 if ($failed) { exit 1 }

@@ -27,6 +27,7 @@ depth-format_d32s8.exr 0.00000005960464477539063 0 warp 954 0.000000059604644775
 depth-funcs.png 1 0 warp 21280 1
 depth-shader.png 0 0 warp 0 0
 depth-shader_depth.exr 0.00000011920928955078125 0 warp 1952 0.00000011920928955078125
+device-results.txt exact warp same
 draws.png 1 0 warp 335 1
 dynamic.png 1 0 warp 1352 1
 formats-b5g6r5_unorm.png 1 0 warp 698 1

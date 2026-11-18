@@ -31,7 +31,9 @@ fn main() -> anyhow::Result<()> {
             driver,
             debug,
             &[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0],
-        )?;
+        )
+        // A device that could not be made still says where its libraries came from.
+        .inspect_err(|_| println!("{}", wcontainers_graphics_test::library_paths()))?;
         println!("adapter {}", gpu.adapter()?);
         println!("{}", wcontainers_graphics_test::library_paths());
         for name in names {
