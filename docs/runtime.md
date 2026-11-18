@@ -1,6 +1,6 @@
 # wcontainers: the runtime (joining the kernel to the translator)
 
-Status: plan, 2026-11-17; J1 and J2 built (2026-11-18); J3 next.
+Status: plan, 2026-11-17; J1 to J3 built (2026-11-18); J4a next, J4b waits for the progress unit.
 
 Words used here:
 - **kernel**: crates/wcontainers-kernel, driven from outside through `wcontainers-abi`.
@@ -570,9 +570,10 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
     progress >= limit`, the stop check and the counter as one piece of code, raising the flag becoming
     `limit = 0`; asked of the translator track, which owns the emitted code and its measurement). Until then
     it reports stop checks passed in its place: a named gap ("progress counted by stop checks"), counted and
-    warned once per container, recorded in the status file. Nothing in J1 to J3's bars depends on where a
-    counted turn ends (each compares output with the reference); J4's seeded thread switches do, so J4 is
-    built on the translator's count.
+    warned once per container, recorded in the status file. Nothing in J1 to J4a's bars depends on where a
+    counted turn ends (each compares output with the reference, and J4a's repeats compare runs at one
+    look-ahead only); J4b's comparison of counts across settings and back ends does, so J4b is built on the
+    translator's count.
 - **Turns.** The outside turns the kernel's slice into a `Turn`, one of two kinds:
   - *Counted*: the back end counts progress and stops the thread after the given amount (or never, with no
     limit). Until the translator's count exists, the WebAssembly back end raises the flag at every check, as
@@ -826,8 +827,16 @@ let ending = container.run()?;   // to the end; or container.step() and containe
 - **HOME**: as runc, a process whose `process.env` has no `HOME` gets its user's home directory from the
   root's `/etc/passwd` (`/` when none).
 - **`process.args[0]`** is found as runc finds it: with a slash from the working directory, else in the
-  directories of `PATH` in `process.env`, the first regular file anyone may run, following the root's links;
-  a name not found goes to the kernel as it is, which fails the start as exec does (status 127).
+  directories of `PATH` in `process.env`, the first regular file anyone may run, following the root's links.
+  A name with no slash that is not found there makes no container (`Error::NotFound`, runc's "executable
+  file not found in $PATH"; the command line program exits 127, as Docker does); it is never looked up in
+  the working directory. A path with a slash goes to the kernel, which fails the start as exec does
+  (status 127).
+- **The files Docker writes in every container**: `/etc/hostname` (the host name), `/etc/hosts` (as
+  Docker writes it, with the kernel's made-up address for the host name) and `/etc/resolv.conf` (the
+  kernel's name server), mode 0644, owned by root, in place of the image's own, from either form of image.
+  Docker writes them over its mounts; an OCI image's layers have no `/etc/resolv.conf`. `/.dockerenv` is
+  not written: it marks the Docker engine, which this is not.
 - **How we run it** is the back end's own type (`BackEnd::Tuning`; for the WebAssembly back end
   `Tuning { look_ahead, optimise }`): it changes speed and never behaviour, and is part of every cache key.
 - **What machine the container appears to run on** is `Machine<Offer>`, separate because the guest sees it:
@@ -844,14 +853,17 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   `spec_from_json`, so a field oci-spec does not read is refused too, and `accept` refuses any field of
   oci-spec's it does not know. Honoured:
   `ociVersion` 1.x, `process.args`, `process.env`, `process.cwd` (absolute),
-  `process.user.additionalGids`, `hostname` (absent: `localhost`), `annotations` (data, no behaviour), and
+  `process.user.additionalGids`, `hostname` (absent or empty: `localhost`; runc sets no host name when it is
+  empty), `annotations` (data, no behaviour), and
   these when they are what the kernel gives: `process.user.uid` and `gid` 0, `process.user.umask` 0022,
   `process.capabilities` Docker's 14 in bounding, effective and permitted and none in inheritable and ambient
   (a set left out is empty, as the specification says, so leaving out `capabilities` or one of those three
   is refused),
   `process.rlimits` at the kernel's values, `process.terminal` and `process.noNewPrivileges` false,
-  `mounts` exactly the kernel's six (`/proc`, `/dev`, `/dev/pts`, `/sys`, `/dev/mqueue`, `/dev/shm`, each
-  with Docker's type, source and options), `linux.readonlyPaths` exactly `/proc/sys` (the one the kernel
+  `mounts` exactly the kernel's six, once each and in the order the kernel makes them (`/proc`, `/dev`,
+  `/dev/pts`, `/sys`, `/dev/mqueue`, `/dev/shm`, each with Docker's type, source and options; the standard
+  makes mounts in the listed order, so another order or a repeat is refused at the first `mounts[n]` that
+  differs), `linux.readonlyPaths` exactly `/proc/sys` (the one the kernel
   makes), `linux.namespaces` exactly pid, network, ipc, uts, mount and
   cgroup with no `path`; a configuration without `mounts`, `linux` or `linux.readonlyPaths` is refused as
   one leaving those out is, since the kernel makes them whatever it says. The surface tests check that the
@@ -864,8 +876,8 @@ let ending = container.run()?;   // to the end; or container.step() and containe
     taking them at start (today `Start` takes the program, arguments, environment, working directory, host
     name, groups and the backend, kernel container.rs);
   - `mounts` other than the kernel's, or lacking one of them: bind mounts of host directories need the shipped
-    outside's file backend (J5), other file systems the kernel, and leaving one out the kernel taking its
-    mounts at start; id-mapped mounts (`mounts[n].uidMappings`, `gidMappings`): user namespaces;
+    outside's file backend (J5), other file systems the kernel, and leaving one out, another order or a
+    repeat the kernel taking its mounts at start; id-mapped mounts (`mounts[n].uidMappings`, `gidMappings`): user namespaces;
   - `hooks` (they run host programs): the shipped outside running them at the lifecycle points the runtime
     specification names;
   - `linux.resources` and `linux.cgroupsPath` (cgroups): the kernel accounting CPU, memory, pids and I/O per
@@ -923,7 +935,8 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   `bounded` the container's N is drawn from 1 to 64 from the run's seed, as the translator plan's "bounded
   with random N" (phase-1-translator.md line 456), and printed, so the run repeats. One N per container,
   not per range: the look-ahead is a setting of the container, and drawing it per range would be a test's
-  behaviour inside the shipped back end. Which look-aheads each bar runs is named in the
+  behaviour inside the shipped back end. The back end's surface tests (crates/wcontainers-wasmtime/tests/surface.rs)
+  read `LOOK_AHEAD` the same way; having no run seed, their bounded N is drawn from `LOOK_AHEAD_SEED` alone. Which look-aheads each bar runs is named in the
   milestone (section 16): J1 full, with hello also at none and bounded; J2 to J5 full, none and bounded;
   J5's Linux Test Project full only; J6 full and bounded, not none (section 7: libpython at none measured 113.9 s to compile and 16.9 GB); J7
   full; J8 full and bounded. Bounded runs with the default seed unless the bar names more. Injections (the stop flag, a signal, a thread switch, save and
@@ -1057,13 +1070,20 @@ Each bar is checkable by running the named command on this Mac with Docker.
   (tests/refused.rs) fails naming that field; a second run of the same container in a new process starts
   from the disk cache (every range's translation from disk; measured); the command line program runs the
   same pipeline from both and fails naming a refused field.
-- **J4, threads and turns.** Starts once the translator emits the guest-defined count (section 9), so seeded
-  thread switches land at the same guest points at every look-ahead. Many threads per process, futexes,
-  timers, outside events raising the flag in free turns. Bar: `threads`, `turns`, `timers`, `deadlines`,
-  `cputime`, `cpulimit`, `clocks`, `lockwaits`, `rseqabort`, `priorities`, `schedattr` and
-  `shell::runs_repeat_for_a_seed` pass with `--features runtime` at full, none and bounded, with the same
-  count at every exit for a seed at each look-ahead and on the stand-in; a test runs a threaded program
-  through the public surface in free turns and matches the reference.
+- **J4, threads and turns**, split by the orchestrator's ruling of 2026-11-18 into J4a, built now on the unit
+  the back end has today (stop checks passed, warned "progress counted by stop checks" as the interim it
+  is), and J4b, which waits for the guest-defined count (section 9) with the stand-in's count and the loop's
+  count of the kernel's changes of pc.
+  - **J4a.** Many threads per process, futexes, timers, outside events raising the flag in free turns.
+    Bar: `threads`, `turns`, `timers`, `deadlines`, `cputime`, `cpulimit`, `clocks`, `lockwaits`,
+    `rseqabort`, `priorities`, `schedattr` and `shell::runs_repeat_for_a_seed` pass with `--features
+    runtime` at full, none and bounded; a seeded run repeats exactly at each look-ahead taken alone
+    (the kernel test crate's `repeats`: output, warnings, counters, the CPU side's warnings and the turn
+    count, with and without saves, `REPEAT_RUNS` times per seed); a test runs a threaded program through
+    the public surface in free turns and matches the reference (crates/wcontainers-wasmtime/tests/surface.rs
+    `a_threaded_program_matches_the_reference`, at the look-ahead `LOOK_AHEAD` names).
+  - **J4b.** The same count at every exit for a seed across look-ahead settings and against the stand-in.
+    Starts once the owner rules on the unit and the translator emits it.
 - **J5, files outside, sockets, network, and the whole suite.** The shipped outside's backend and network
   (taken from what the kernel test host does, written for shipping). Bar: the whole kernel test crate with
   `--features runtime` gives the same verdicts as without, test by test, at full, none and bounded
