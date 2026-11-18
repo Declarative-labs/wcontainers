@@ -231,6 +231,9 @@ pub enum SlowPath {
     /// A resolve asked in the sRGB twin of the stored format averaged in the stored format, because the
     /// back end cannot read its multisampled samples another way (a listed loss).
     ResolveInStoredFormat,
+    /// A resolve made by a draw loading and averaging every sample, where the API's own resolve does
+    /// not average in the format named (Chrome's WebGPU averages the stored values of an sRGB twin).
+    ResolveByDraw,
     /// A buffer range filled with a non-zero pattern by copies from a block of the pattern, where the
     /// API clears buffers only to zero.
     PatternClearCopied,
@@ -256,7 +259,7 @@ pub enum SlowPath {
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 100] = [
+    pub const ALL: [SlowPath; 101] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -350,6 +353,7 @@ impl SlowPath {
         SlowPath::PrimitiveIdAsGeometry,
         SlowPath::RowsRepacked,
         SlowPath::ResolveInStoredFormat,
+        SlowPath::ResolveByDraw,
         SlowPath::PatternClearCopied,
         SlowPath::ConstantBufferGrown,
         SlowPath::IntegerClearByDraw,
@@ -467,6 +471,7 @@ impl SlowPath {
             SlowPath::PrimitiveIdAsGeometry => "primitive index made by the stage helper",
             SlowPath::RowsRepacked => "copy rows repacked to the api's pitch",
             SlowPath::ResolveInStoredFormat => "resolve averaged in the stored format",
+            SlowPath::ResolveByDraw => "resolve averaged by a draw",
             SlowPath::PatternClearCopied => "buffer filled with a pattern by copies",
             SlowPath::ConstantBufferGrown => "constant buffer grown to its shader's size",
             SlowPath::IntegerClearByDraw => "integer colour clear made by a draw",

@@ -2,7 +2,7 @@
 //! tracker) driving the recording back end through scripted draws.
 
 use wcontainers_gpu::*;
-use wcontainers_gpu_test::{Id, Recorder};
+use wcontainers_gpu_test::{Call, Id, Recorder};
 
 const PROGRAMS: &str = "
 struct Params { color: vec4<f32>, depth: f32 }
@@ -639,6 +639,154 @@ fn integer_multisampled_targets_need_multisample_reads_to_be_fitted() {
         passes.before_draw(&mut k.r, &[]),
         Err(GpuError::Absent(Features::MULTISAMPLE_READ))
     );
+}
+
+/// An explicit pass on a colour target and a depth buffer cleared to 1.0 with `depth` ops, whose
+/// first draw writes storage and depth 0.25 in the left column and whose second reads the storage
+/// with depth Less at 0.5 over everything, writing (7, 0, 0). Gives the tracker's answer to the
+/// second draw, the colour target and the kit.
+fn split_explicit(
+    depth: AspectOps<u32>,
+) -> (Result<Option<ScissorRect>, GpuError>, Target<Recorder>, Kit) {
+    let mut k = Kit::new();
+    let color = k.target(2, 2, Format::Rgba8Unorm);
+    let depth_target = k.target(2, 2, Format::Depth32Float);
+    let storage =
+        k.r.create_buffer(&BufferDesc {
+            size: 16,
+            usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    let entry = |binding, writable| BindingEntry {
+        binding,
+        stages: StageSet::FRAGMENT,
+        resource: BindingResource::StorageBuffer {
+            range: BufferRange {
+                buffer: &storage,
+                offset: 0,
+                size: 16,
+            },
+            writable,
+        },
+    };
+    let writes = k.r.create_binding_set(&[entry(160, true)]).unwrap();
+    let reads = k.r.create_binding_set(&[entry(161, false)]).unwrap();
+    let write = k.program("write");
+    let read = k.program("reads");
+    let less = k.depth(Some(CompareFn::Less), !depth.read_only);
+    let near = k.params(0, [0.0, 1.0, 0.0, 1.0], 0.25);
+    let far = k.params(1, [0.0, 0.0, 1.0, 1.0], 0.5);
+    let mut targets = colors(color.clone());
+    targets.depth = Some(depth_target);
+    let mut ops = PassOps::LOAD_STORE;
+    ops.colors[0] = (LoadOp::Clear(f32s([0.0, 0.0, 0.0, 1.0])), StoreOp::Store);
+    ops.depth = depth;
+    let mut passes = PassTracker::default();
+    passes.begin(&mut k.r, targets, ops).unwrap();
+    let area = passes
+        .before_draw(
+            &mut k.r,
+            &[ScopeUse {
+                resource: 1,
+                storage_write: true,
+            }],
+        )
+        .unwrap();
+    assert_eq!(area, None);
+    k.draw(
+        (2, 2),
+        Some(ScissorRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 2,
+        }),
+        &write,
+        &less,
+        [Some(&near), Some(&writes), None, None],
+    );
+    let answer = passes.before_draw(
+        &mut k.r,
+        &[ScopeUse {
+            resource: 1,
+            storage_write: false,
+        }],
+    );
+    if let Ok(area) = answer {
+        assert_eq!(area, None);
+        k.draw(
+            (2, 2),
+            area,
+            &read,
+            &less,
+            [Some(&far), Some(&reads), None, None],
+        );
+        passes.end(&mut k.r).unwrap();
+    }
+    (answer, color, k)
+}
+
+/// A split explicit pass ends its first part with Store and begins the second with Load and the
+/// pass's own store and read-only aspects, so the second draw is tested against the depth the first
+/// wrote.
+#[test]
+fn a_split_explicit_pass_keeps_its_depth_and_ops_between_parts() {
+    let (answer, color, mut k) = split_explicit(AspectOps {
+        load: LoadOp::Clear(1.0f32.to_bits()),
+        store: StoreOp::Store,
+        read_only: false,
+    });
+    assert!(answer.is_ok());
+    assert_eq!(k.r.slow_paths().count(SlowPath::UsageScopeSplit), 1);
+    let mut want = Vec::new();
+    for _y in 0..2 {
+        for x in 0..2 {
+            want.extend_from_slice(if x == 0 {
+                &[0, 255, 0, 255]
+            } else {
+                &[7, 0, 0, 255]
+            });
+        }
+    }
+    assert_eq!(k.read(&color, 4), want);
+    k.healthy();
+
+    // Read-only depth stays read-only in the second part.
+    let (answer, _, mut k) = split_explicit(AspectOps {
+        load: LoadOp::Load,
+        store: StoreOp::Store,
+        read_only: true,
+    });
+    assert!(answer.is_ok());
+    let passes: Vec<_> =
+        k.r.calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::BeginPass(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+    assert_eq!(passes.len(), 2);
+    let depth = passes[1].depth.unwrap().1.unwrap();
+    assert!(depth.read_only);
+    assert_eq!(depth.load, LoadOp::Load);
+    assert_eq!(passes[1].colors[0].unwrap().3, LoadOp::Load);
+    k.healthy();
+}
+
+/// A split of an explicit pass that discards an attachment would lose what its first part drew, so
+/// the tracker refuses it.
+#[test]
+fn a_split_of_a_pass_that_discards_is_refused() {
+    let (answer, _, mut k) = split_explicit(AspectOps {
+        load: LoadOp::Clear(1.0f32.to_bits()),
+        store: StoreOp::Discard,
+        read_only: false,
+    });
+    assert!(matches!(answer, Err(GpuError::Invalid(_))));
+    assert_eq!(k.r.slow_paths().count(SlowPath::UsageScopeSplit), 0);
+    k.healthy();
 }
 
 /// A storage buffer written by one draw and read by the next: the tracker splits the pass there,
@@ -1589,4 +1737,22 @@ fn the_combination_tracker_picks_the_tuples_drawn() {
     let ax10 = t.combination(&'a', &('a', 'x'), &10);
     t.drawn(ax10);
     assert_eq!(t.prepared_use(), (3, 4));
+    // The record to write back: this run's draws per vertex shader and tuple, with the record's.
+    // Two programs of vertex shader 'a' drew tuple 10 (3 and 1) and 20 (1 and 1).
+    let totals: Vec<_> = t
+        .totals()
+        .into_iter()
+        .map(|((&v, &tuple), n)| (v, tuple, n))
+        .collect();
+    assert_eq!(
+        totals,
+        [
+            ('a', 10, 4),
+            ('a', 20, 2),
+            ('b', 20, 1),
+            ('b', 30, 5),
+            ('c', 10, 2),
+            ('d', 40, 3),
+        ]
+    );
 }

@@ -89,6 +89,10 @@ pub const DRAW_ARGUMENTS_BINDING: u32 = 11;
 /// The width in texels of the texture a constant buffer is read through
 /// ([`AddedBinding::ConstantsAsTexture`]): the buffer's 16-byte row r is texel (r % width, r / width).
 pub const CONSTANTS_TEXTURE_WIDTH: u32 = 256;
+/// The width in texels of the 2D texture a typed buffer is read through ([`TexelBufferRoute::Texture`]):
+/// element e of the buffer, counted in the view's format from the buffer's start, is texel
+/// (e % width, e / width). WebGL 2's smallest texture size limit.
+pub const TEXEL_BUFFER_TEXTURE_WIDTH: u32 = 2048;
 
 /// The API stage a shader was written for. Geometry, hull and domain shaders become compute and vertex
 /// programs in the shaders crate's stage helper; the others become one program stage each.
@@ -269,9 +273,9 @@ pub enum HelperValue {
     LodBias { sampler: u32 },
     /// A sampler's border color (four f32, or four u32 for integer textures).
     BorderColor { sampler: u32 },
-    /// The components the bound view's format has, a bit each from red (u32), for programs that apply
-    /// the border in the program: a border colour is read as a texel of the view's format, so a
-    /// component the format lacks reads its default (zero, one for alpha).
+    /// The components the bound view's format has ([`crate::Format::components`], u32), for
+    /// programs that apply the border in the program: a border colour is read as a texel of the
+    /// view's format, so a component the format lacks reads its default (zero, one for alpha).
     TextureComponents { texture: u32 },
     /// A sampler's state, for programs that filter or address in the program: min, mag and mip filter
     /// and the three address modes as u32 codes (the order of [`crate::Filter`]'s and
@@ -300,6 +304,11 @@ pub enum HelperValue {
     /// The texel layout of a storage view read through a buffer: row pitch in texels and rows per
     /// layer, two u32.
     TexelLayout { slot: u32 },
+    /// A typed buffer view read through a storage buffer or a texture ([`TexelBufferRoute`]) at this
+    /// binding: the byte offset of the view's first element in the bound range (in the buffer the
+    /// texture copies) and the view's element count, two u32. Elements at or past the count read zero in the format's components
+    /// and the defaults in the others, as an element of a vertex stream does, and take no writes.
+    TexelBufferView { set: u32, binding: u32 },
     /// How the program combines target n with its old value: color and alpha source and destination
     /// factors and operations, the write mask and the logic operation as u32 codes (eight u32), then the
     /// draw's blend constant (four f32).
@@ -436,9 +445,15 @@ pub enum TexelBufferRoute {
     #[default]
     Native,
     /// From storage buffers, the format decoded in the program
-    /// ([`crate::SlowPath::TexelBufferAsStorage`]).
+    /// ([`crate::SlowPath::TexelBufferAsStorage`]): each typed buffer is a storage buffer of u32
+    /// words at its slot's binding (read-only for a texture slot), the view's place in it and its
+    /// length in [`HelperValue::TexelBufferView`], its format from [`VariantKey::texel_formats`]
+    /// (texture slots) or [`VariantKey::storage_formats`] (storage slots).
     Storage,
-    /// From a 2D texture the front copies the buffer into ([`crate::SlowPath::TexelBufferAsTexture`]).
+    /// From a 2D texture of the view's format the front copies the buffer into, laid out as
+    /// [`TEXEL_BUFFER_TEXTURE_WIDTH`] says, at the slot's binding, the view's place and length in
+    /// [`HelperValue::TexelBufferView`] and its format from [`VariantKey::texel_formats`]
+    /// ([`crate::SlowPath::TexelBufferAsTexture`]). Typed buffers at texture slots only.
     Texture,
 }
 
@@ -498,6 +513,9 @@ pub struct VariantKey {
     pub storage_formats: Vec<(u32, Format)>,
     /// How typed buffers are read.
     pub texel_buffers: TexelBufferRoute,
+    /// Formats of the typed buffer views bound at texture slots, by slot, from the bound view, for the
+    /// routes other than [`TexelBufferRoute::Native`].
+    pub texel_formats: Vec<(u32, Format)>,
     /// Storage slots packed into one buffer, at offsets from the helper constants
     /// ([`crate::SlowPath::StoragePacked`]).
     pub storage_packed: u64,
@@ -556,6 +574,20 @@ mod tests {
         assert_eq!(SlotKind::Texture.binding(128), None);
         assert_eq!(SlotKind::Storage.binding(63), Some(223));
         assert_eq!(SlotKind::Counter.binding(0), Some(224));
+    }
+
+    #[test]
+    fn sampler_state_codes_keep_their_numbers() {
+        use crate::{AddressMode, Filter};
+        assert_eq!([Filter::Nearest, Filter::Linear].map(|f| f as u32), [0, 1]);
+        let modes = [
+            AddressMode::Repeat,
+            AddressMode::Mirror,
+            AddressMode::Clamp,
+            AddressMode::Border,
+            AddressMode::MirrorOnce,
+        ];
+        assert_eq!(modes.map(|m| m as u32), [0, 1, 2, 3, 4]);
     }
 
     #[test]

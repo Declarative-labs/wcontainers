@@ -334,6 +334,25 @@ fn clear_rects_draws_one_triangle_per_rectangle_in_one_pass() {
     healthy(&mut r);
 }
 
+/// The built-in programs draw with the provoking vertex the back end has: on one without
+/// `PROVOKING_VERTEX_FIRST`, a draw-made clear asks for the last and clears.
+#[test]
+fn built_ins_take_the_provoking_vertex_the_back_end_has() {
+    let mut r = Recorder::with_caps(|c| c.features.remove(Features::PROVOKING_VERTEX_FIRST));
+    let (t, _) = texture(&mut r, 2, 1, 1);
+    let v = view(&mut r, &t);
+    let whole = ScissorRect {
+        x: 0,
+        y: 0,
+        width: 2,
+        height: 2,
+    };
+    r.clear_rects(&v, Format::Rgba8Unorm, ClearValue::Color(red()), &[whole])
+        .unwrap();
+    assert_eq!(read(&mut r, &t, 0, 0, 2), [255, 0, 0, 255].repeat(4));
+    healthy(&mut r);
+}
+
 /// A rectangle reaching to the largest offsets is cleared to the view's edges, through a viewport
 /// within the bounds the recorder checks (`max_texture_2d` wide at most).
 #[test]
