@@ -1387,7 +1387,16 @@ impl WebGpu {
             self.fail("resolve inside a pass");
             return;
         }
-        // Both views in the resolve format, so an sRGB twin averages in linear light.
+        // Both views in the resolve format, so an sRGB twin averages in linear light. Chrome
+        // (Dawn on Direct3D 12) averages the stored values whatever the views' format, so in the
+        // browser the other twin is the listed loss `ResolveInStoredFormat`.
+        let stored = src.texture.0.held;
+        let format = if cfg!(target_arch = "wasm32") && format != stored {
+            self.slow.hit(SlowPath::ResolveInStoredFormat);
+            stored
+        } else {
+            format
+        };
         let Some(format) = convert::texture_format(format) else {
             self.fail("resolve in a format this back end does not hold");
             return;
