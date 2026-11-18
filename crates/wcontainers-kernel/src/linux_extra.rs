@@ -266,9 +266,24 @@ pub(crate) const KMALLOC_MAX_SIZE: u64 = 4096 << 10;
 /// huge pages except where advised.
 pub(crate) const PR_THP_DISABLE_EXCEPT_ADVISED: u64 = 1 << 1;
 
-/// `linux/securebits.h`'s bit for keeping capabilities across a change of ids
-/// (`issecure_mask(SECURE_KEEP_CAPS)`), which linux-raw-sys does not generate.
-pub(crate) const SECBIT_KEEP_CAPS: u64 = 1 << 4;
+/// `linux/securebits.h`'s bits (`issecure_mask` of each `SECURE_*`), which linux-raw-sys does not
+/// generate: root gains no powers by running a program, a change of ids leaves the powers alone,
+/// the powers are kept across a change of ids, ambient powers may not be raised, and two that
+/// only ask programs to check what they run. Each has a lock bit just above it.
+pub(crate) const SECBIT_NOROOT: u32 = 1 << 0;
+pub(crate) const SECBIT_NO_SETUID_FIXUP: u32 = 1 << 2;
+pub(crate) const SECBIT_KEEP_CAPS: u32 = 1 << 4;
+pub(crate) const SECBIT_NO_CAP_AMBIENT_RAISE: u32 = 1 << 6;
+pub(crate) const SECBIT_EXEC_RESTRICT_FILE: u32 = 1 << 8;
+pub(crate) const SECBIT_EXEC_DENY_INTERACTIVE: u32 = 1 << 10;
+/// `SECURE_ALL_BITS` and `SECURE_ALL_LOCKS`.
+pub(crate) const SECURE_ALL_BITS: u32 = SECBIT_NOROOT
+    | SECBIT_NO_SETUID_FIXUP
+    | SECBIT_KEEP_CAPS
+    | SECBIT_NO_CAP_AMBIENT_RAISE
+    | SECBIT_EXEC_RESTRICT_FILE
+    | SECBIT_EXEC_DENY_INTERACTIVE;
+pub(crate) const SECURE_ALL_LOCKS: u32 = SECURE_ALL_BITS << 1;
 
 /// The words Linux keeps of a program's auxiliary vector (`AT_VECTOR_SIZE`: twice arm64's 2 and the
 /// 24 generic entries and the end).

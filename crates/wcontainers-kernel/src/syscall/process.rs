@@ -11,6 +11,7 @@ use crate::counters::reason;
 use crate::credentials::{CAP_SETGID, CAP_SETUID};
 use crate::linux::general::*;
 use crate::linux::prctl::*;
+use crate::linux_extra::{SECBIT_KEEP_CAPS, SECBIT_NO_CAP_AMBIENT_RAISE};
 use crate::process::{LIMITS, Limit, SIGNALS, Tid};
 use crate::signal::UNBLOCKABLE;
 use crate::{Context, Errno, Kernel};
@@ -1181,13 +1182,40 @@ pub(super) fn prctl(
             kernel.process_of(tid).map.borrow_mut().dumpable = second == 1;
             Ok(0)
         }
-        PR_GET_KEEPCAPS => Ok(kernel.credentials(tid).keep_capabilities.into()),
+        PR_GET_KEEPCAPS => Ok(kernel.credentials(tid).secure(SECBIT_KEEP_CAPS).into()),
+        // `cap_task_prctl`: refused once its lock is set.
         PR_SET_KEEPCAPS => {
             if second > 1 {
                 return Err(Errno::EINVAL);
             }
+            if kernel.credentials(tid).secure(SECBIT_KEEP_CAPS << 1) {
+                return Err(Errno::EPERM);
+            }
             changing(kernel, tid, true, |credentials| {
-                credentials.keep_capabilities = second == 1;
+                if second == 1 {
+                    credentials.securebits |= SECBIT_KEEP_CAPS;
+                } else {
+                    credentials.securebits &= !SECBIT_KEEP_CAPS;
+                }
+                Ok(0)
+            })
+        }
+        // `cap_task_prctl`: a locked bit may not change and a lock not be lifted, only known bits,
+        // and only with CAP_SETPCAP.
+        PR_SET_SECUREBITS => {
+            use crate::linux_extra::{SECURE_ALL_BITS, SECURE_ALL_LOCKS};
+            let old = kernel.credentials(tid).securebits;
+            let wanted = second;
+            let locks = u64::from(old & SECURE_ALL_LOCKS);
+            if ((locks >> 1) & (u64::from(old) ^ wanted)) != 0
+                || locks & !wanted != 0
+                || wanted & !u64::from(SECURE_ALL_LOCKS | SECURE_ALL_BITS) != 0
+                || !kernel.credentials(tid).has(CAP_SETPCAP)
+            {
+                return Err(Errno::EPERM);
+            }
+            changing(kernel, tid, true, |credentials| {
+                credentials.securebits = wanted as u32;
                 Ok(0)
             })
         }
@@ -1219,7 +1247,9 @@ pub(super) fn prctl(
                     let raise = second as u32 == PR_CAP_AMBIENT_RAISE;
                     let credentials = kernel.credentials(tid);
                     if raise
-                        && (credentials.permitted & bit == 0 || credentials.inheritable & bit == 0)
+                        && (credentials.permitted & bit == 0
+                            || credentials.inheritable & bit == 0
+                            || credentials.secure(SECBIT_NO_CAP_AMBIENT_RAISE))
                     {
                         return Err(Errno::EPERM);
                     }
@@ -1337,11 +1367,7 @@ pub(super) fn prctl(
             }
             Ok(saved.len() as u64)
         }
-        PR_GET_SECUREBITS => Ok(if kernel.credentials(tid).keep_capabilities {
-            crate::linux_extra::SECBIT_KEEP_CAPS
-        } else {
-            0
-        }),
+        PR_GET_SECUREBITS => Ok(kernel.credentials(tid).securebits.into()),
         PR_SET_MM => {
             // `prctl_set_mm`: the whole-map forms first, then every other form needs CAP_SYS_RESOURCE.
             let form = second as u32;

@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 
 use crate::linux::general;
+use crate::linux_extra::{SECBIT_KEEP_CAPS, SECBIT_NO_SETUID_FIXUP, SECBIT_NOROOT};
 
 pub(crate) const CAP_CHOWN: u32 = general::CAP_CHOWN;
 pub(crate) const CAP_DAC_OVERRIDE: u32 = general::CAP_DAC_OVERRIDE;
@@ -63,8 +64,8 @@ pub(crate) struct Credentials {
     pub inheritable: u64,
     pub bounding: u64,
     pub ambient: u64,
-    /// `PR_SET_KEEPCAPS`.
-    pub keep_capabilities: bool,
+    /// `PR_SET_SECUREBITS`'s bits (`SECBIT_*`), `PR_SET_KEEPCAPS`'s among them.
+    pub securebits: u32,
     /// `PR_SET_NO_NEW_PRIVS`.
     pub no_new_privileges: bool,
     /// Which committed change of credentials these are: Linux makes a new credential structure at
@@ -91,7 +92,7 @@ impl Credentials {
             inheritable: 0,
             bounding: DOCKER_DEFAULT,
             ambient: 0,
-            keep_capabilities: false,
+            securebits: 0,
             no_new_privileges: false,
             serial: 0,
         }
@@ -105,6 +106,11 @@ impl Credentials {
             || self.fsuid != old.fsuid
             || self.fsgid != old.fsgid
             || self.permitted & !old.permitted != 0
+    }
+
+    /// Whether a `SECBIT_*` bit is set (`issecure`).
+    pub fn secure(&self, bit: u32) -> bool {
+        self.securebits & bit != 0
     }
 
     pub fn has(&self, capability: u32) -> bool {
@@ -124,10 +130,14 @@ impl Credentials {
 
     /// Linux's `cap_emulate_setxuid`: what a change of user numbers does to the powers.
     pub fn after_uid_change(&mut self, old_uid: u32, old_euid: u32, old_suid: u32) {
+        if self.secure(SECBIT_NO_SETUID_FIXUP) {
+            self.fsuid = self.euid;
+            return;
+        }
         let was_root = old_uid == 0 || old_euid == 0 || old_suid == 0;
         let all_nonroot = self.uid != 0 && self.euid != 0 && self.suid != 0;
         if was_root && all_nonroot {
-            if !self.keep_capabilities {
+            if !self.secure(SECBIT_KEEP_CAPS) {
                 self.permitted = 0;
                 self.effective = 0;
             }
@@ -146,6 +156,9 @@ impl Credentials {
 
     /// Linux's `cap_task_fix_setuid` for `setfsuid`: leaving root drops the file powers.
     pub fn after_fsuid_change(&mut self, old_fsuid: u32) {
+        if self.secure(SECBIT_NO_SETUID_FIXUP) {
+            return;
+        }
         const FILE_POWERS: u64 = bits(&[
             general::CAP_CHOWN,
             general::CAP_DAC_OVERRIDE,
@@ -260,7 +273,7 @@ impl Credentials {
         }
         // Root's powers, unless a set-user-root program with file capabilities is run by another user.
         let set_user_root = new.uid != 0 && new.euid == 0;
-        if !(has_file_capabilities && set_user_root) {
+        if !(has_file_capabilities && set_user_root) && !old.secure(SECBIT_NOROOT) {
             if new.euid == 0 || new.uid == 0 {
                 new.permitted = new.bounding | new.inheritable;
             }
@@ -289,7 +302,7 @@ impl Credentials {
         } else {
             new.ambient
         };
-        new.keep_capabilities = false;
+        new.securebits &= !SECBIT_KEEP_CAPS;
         let secure = id_changed
             || new.euid != old.uid
             || new.egid != old.gid
