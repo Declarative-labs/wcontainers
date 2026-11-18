@@ -834,8 +834,9 @@ or a seeded sample whose size is an argument) must have the same registers.
   `pmcr_el0`, `pmccntr_el0` and `pmuserenr_el0` at EL1, check-n0c/pmu_fpsr.out case P), and with EL2 enabled
   the framework emulates PMU accesses only when ID_AA64DFR0_EL1.PMUVer is not 0 (same header). Measured here
   (experiments/n0r4/tpidrro.out, case E, two runs): with EL2 enabled the virtual CPU still reports PMUVer 0,
-  and the host can set PMUVer to 1 to 9 with `hv_vcpu_set_sys_reg`, which reads back. Whether the emulated
-  counter counts EL0 instructions and raises an overflow interrupt is not known; N1 tries it (decision 10).
+  and the host can set PMUVer to 1 to 9 with `hv_vcpu_set_sys_reg`, which reads back. N1 tried whether the
+  emulated counter counts EL0 instructions and raises an overflow interrupt: it does neither (decision 10),
+  so EL2 stays unused and the monitor's interface has no setting for it.
 - x86-64: the inside runs in ring 0, translated code in ring 3, in 64-bit mode with 4-level paging.
 - **One virtual machine per host process**, holding every container that process runs natively. Why:
   Hypervisor.framework allows one virtual machine per process (hv_vm.h: `hv_vm_create` "Creates a VM
@@ -938,7 +939,8 @@ taking a whole block at the first touch zeroes nothing and holds no more host me
 touched. A change that leaves the whole range alike (a fork write-protecting it all) keeps the block; one
 that reaches only part of it (a permission change, a copy-on-write copy, a tracking lock, an unmapping)
 first splits it into 4 KiB entries over the same frames (on ARM64 by break-before-make: the entry made
-invalid, its range invalidated, then the new table written), counted "large entry split". The guest cannot
+invalid, invalidated by one TLB invalidation at its address, which covers the whole block, then the new
+table written), counted "large entry split" and warned at its first time (built in N1's floor). The guest cannot
 tell: permissions stay per 4 KiB page as the record says, and the kernel reports residency the same on
 every back end (every mapped page as in memory, kernel/counters.rs:41-44). N4 also measures ARM64's
 contiguous bit (16 entries as one) for ranges that cannot take a block. Rejected: 4 KiB entries only (+8.5%
@@ -973,8 +975,9 @@ different heap addresses per container (a save could then come back only where i
 
 **Memory from the host.** Guest-physical memory is one large reservation the monitor maps into the virtual
 machine at start; the host gives it pages only when touched. The inside gives memory back through the link,
-in whole host pages, and the monitor frees them by unmapping the range from the virtual machine, mapping
-fresh anonymous memory over it and mapping it in again (`hv_vm_unmap`, `mmap` with MAP_FIXED, `hv_vm_map`;
+in whole host pages, and the monitor frees them through `Machine::give_back` (section 5.9), whose
+Hypervisor.framework body unmaps the range from the virtual machine, maps
+fresh anonymous memory over it and maps it in again (`hv_vm_unmap`, `mmap` with MAP_FIXED, `hv_vm_map`;
 costs-round-3/virtual-machine/src/arm64/hvfrun.c:228-240). Measured on the M5 (mac-tests.jsonl "hvf_memory",
 three runs of each): that frees the memory (the footprint after giving back 1 GiB fell from 1030.7 MiB to
 6.2 MiB, and the guest read zeros after) in 14.7 to 16.6 ms per GiB and 60.5 to 62.7 ms for 4 GiB. Rejected:
@@ -1097,12 +1100,13 @@ next exit, as `LocalSystem`'s would.
 
 One call shape: the inside writes a request in a page shared with the monitor and rings a doorbell; the
 monitor answers in the same page and resumes the virtual CPU. The doorbell is the floor's one
-platform-specific instruction: `hvc` on Hypervisor.framework (in a machine given EL2, which only decision
-10's option C trial makes, `hvc` goes to the guest's own EL2, so there it is a store to the unmapped page
-`layout::DOORBELL`, as on KVM ARM64; built and run at N1) (an exception exit, used by the round 3
-prototype, hvfrun.c and guest.s), an `out` to a port on KVM x86-64 (`KVM_EXIT_IO`, used by vmrun.c), and a
-store to an unmapped guest-physical page on KVM ARM64 (`KVM_EXIT_MMIO`, from KVM's documentation,
-Documentation/virt/kvm/api.rst; not yet tried: no KVM ARM64 machine is at hand). Requests are typed messages
+platform-specific instruction: `hvc` on Hypervisor.framework (an exception exit, used by the round 3
+prototype, hvfrun.c and guest.s, and by N1), an `out` to a port on KVM x86-64 (`KVM_EXIT_IO`, used by
+vmrun.c), and a store to an unmapped guest-physical page on KVM ARM64 (`KVM_EXIT_MMIO`, from KVM's
+documentation, Documentation/virt/kvm/api.rst; not yet tried: no KVM ARM64 machine is at hand; N10 adds
+that page to the layout). Requests are typed messages, one `#[repr(C)]` type per request with its answer's
+type, written over the link page's message words by field (`link::Message`), so the two sides share one
+definition
 (the `Host` calls, translate, more memory, give back, idle, the image's files at a container's start, and
 the turn handoff of section 5.1). Measured exit cost 0.7 µs on the M5 and 5.6 to 6.2 µs on the Intel laptop
 (brief).
@@ -1206,7 +1210,8 @@ Asked of the translator track: the stop point in a translation request, and the 
 ### 5.9 One interface of ours over KVM and Hypervisor.framework
 
 A trait in the monitor's crate, resolved at compile time per host (a host has one of the two):
-`Hypervisor` with `Machine` (map and unmap guest-physical memory, raise an interrupt, make a virtual CPU) and
+`Hypervisor` with `Machine` (map guest-physical memory, give back the host pages of a range, raise an
+interrupt, make a virtual CPU) and
 `VirtualCpu` (run until an exit, read and write registers, be stopped from another thread). Exits are one
 enum of ours: doorbell, fault the inside could not take, stopped. KVM ARM64 and KVM x86-64 differ only in
 registers and the doorbell; Hypervisor.framework differs in the call names and in binding a virtual CPU to
@@ -1557,10 +1562,13 @@ the ruling).
   experiments/n0r3/step.out); a timer interrupt and an `hv_gic_set_spi` interrupt each land; a second
   virtual CPU on another thread runs; memory given back through the link lowers the process's footprint.
   Every case passes; the doorbell round trip, an interrupt's arrival and the delay of a stop from another
-  host thread (300 stops) are measured and recorded, and so
+  host thread (300 stops by default, seeded; the count and seed are settings of the test) are measured and
+  recorded, and so
   is decision 10's option C case, recorded and not a pass condition: in a machine with EL2 enabled and
   PMUVer set by the host (section 5.1), whether the emulated counter counts EL0 instructions, whether its
-  overflow interrupt reaches the inside, and how late.
+  overflow interrupt reaches the inside, and how late. (Run at N1; once C was out its code had no use and
+  was removed: the trial as run is at commit fe3a4bff, crates/wcontainers-inside/src/bin/floor-cases/cases.rs
+  `counter_trial` and tests/floor.rs.)
 - **N2, the native ARM64 output, instruction by instruction.** `Native` for ARM64, the small encoder, every
   route of section 3.4 at look-ahead none, the stand-in register for withheld ones, the position map, run at
   EL0 on N1's floor with no kernel: each case's state is set by the floor and read back by it. Needs no
@@ -1734,7 +1742,11 @@ choice. The count's definition is E (section 4).
    and runs past its overflow with no overflow flag (PMOVSCLR_EL0 0) and no interrupt, while the virtual
    timer's interrupt arrives through the same GIC; so not even a cycle bound (instructions at most the core's
    retire width times cycles) can be armed. Also, in such a machine `hvc` goes to the guest's own EL2, so the
-   doorbell must be a store to an unmapped page there. By this decision's recommendation, C is out on this
+   doorbell must be a store to an unmapped page there. The obvious objection, that PMCR_EL0.N reads as the
+   guest EL2's MDCR_EL2.HPMN, which starts at 0, was ruled out by N1's independent check
+   (pyro-parked/wcontainers-scratch/native/check-n1/hpmn.c, hpmn.out): MDCR_EL2 reads 0 and ignores writes
+   from both the host and the guest's EL2, PMCR_EL0.N is 0 even read at EL2, and event counter 0 counts
+   nothing over a 10,000-round loop. By this decision's recommendation, C is out on this
    platform and the choice is between A and B; the owner rules.
 11. The other project's borrowed views of kernel state: built into the inside, or copied out through the
    link, when the native back end is used? Recommended: built into the inside, as a policy is.
