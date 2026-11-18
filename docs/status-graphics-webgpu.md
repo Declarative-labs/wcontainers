@@ -773,6 +773,8 @@ CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
   nothing; converted formats seed 1, 4 textures each, within bounds, with every copy on the GPU;
   vertex formats and texture renames pass; the instance data routes draw alike; the suite in
   Chrome 39 passed, 0 failed.
+- At the end of the run the desktop's build folder C:\wc\target\phase-2-graphics-webgpu (6.91 GB)
+  and the Mac checkout's `cargo check` output (553 MB) were deleted; the next build there is cold.
 
 Run 14 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs
 except where alone, CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
