@@ -484,7 +484,8 @@ goes was looked for and not found. The output is the same bytes, so the guest's 
 module passes a few of its own closures as `&dyn Fn` while it plans, as before the move: translate time only,
 nothing of the guest, nothing in the output.) The translator crate
 depends on `wcontainers-guest-cpu` only, never on a CPU crate (tests in the translator crate fail if its
-manifest or sources name one, or if its resolved dependencies, as `cargo tree` gives them, hold one). The
+manifest or sources name one, or if its resolved dependencies, as `cargo tree` gives them for every target
+with dev-dependencies included, hold one). The
 program that ships (the browser's cdylib, the host runner) names the one
 guest it is built for.
 
@@ -2718,8 +2719,9 @@ Measured throughout, recorded with machine and load: translation speed, output s
   them, layered the same way (section 3.1); `wcontainers-translator` is generic over `Guest` and depends on
   no CPU crate: `cargo tree -p wcontainers-translator` shows none, also among its dev-dependencies, since
   its validity test (`tests/valid.rs`, which draws ARM64's forms) moves to the test crate, and tests in
-  the translator crate fail if its manifest or sources name a CPU crate again or its resolved normal and
-  build dependencies (`cargo tree`, all features) hold one, under whatever name; the test crate and the
+  the translator crate fail if its manifest or sources name a CPU crate again or its resolved normal, build
+  and dev dependencies (`cargo tree`, all features, every target) hold one, under whatever name; the test
+  crate and the
   browser crate name `Arm64` where they call the translator; the float hook's host side moves into
   `Arm64::run_hook`, and the host runner and the browser's cdylib call it instead of `exact::run` (the
   browser's `cpu_hook` export and runner.js's copy of the state come with it, section 3.4 Hooks); the

@@ -98,7 +98,8 @@ fn the_translator_names_no_guest_cpu_crate() {
     assert!(found.is_empty(), "the translator names {found:?}");
 }
 
-/// The resolved graph, so that a crate brought in under another name or through another crate is found too.
+/// The resolved graph for every target, dev-dependencies included, so that a crate brought in under another
+/// name, through another crate or only for one target is found too.
 #[test]
 fn the_translator_depends_on_no_guest_cpu_crate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -109,10 +110,12 @@ fn the_translator_depends_on_no_guest_cpu_crate() {
             "tree",
             "--offline",
             "--all-features",
+            "--target",
+            "all",
             "-p",
             env!("CARGO_PKG_NAME"),
             "-e",
-            "normal,build",
+            "normal,build,dev",
             "--prefix",
             "none",
             "--format",
