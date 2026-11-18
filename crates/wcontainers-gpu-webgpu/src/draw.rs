@@ -317,7 +317,7 @@ impl Caches {
     /// Forgets binding sets and bind groups nothing holds any more.
     pub fn prune(&mut self) {
         prune(&mut self.sets, &mut self.sets_alive);
-        if self.groups.len() > 2 * self.groups_alive.max(64) {
+        if self.groups.len() > 2 * self.groups_alive.max(PRUNE_LEAST) {
             let now = self.group_prunings;
             self.groups
                 .retain(|_, g| Rc::strong_count(g) > 1 || g.used.get() == now);
@@ -326,6 +326,9 @@ impl Caches {
         }
     }
 }
+
+/// Entries a table may hold before it is first pruned.
+const PRUNE_LEAST: usize = 64;
 
 /// Immediates padded to whole words, as WebGPU sets them.
 fn words(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
@@ -341,7 +344,7 @@ fn words(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 /// Forgets entries nothing holds, once the table has doubled since it was last pruned, so each
 /// insert costs constant time on average.
 fn prune<K, V>(table: &mut HashMap<K, Weak<V>>, alive: &mut usize) {
-    if table.len() > 2 * (*alive).max(64) {
+    if table.len() > 2 * (*alive).max(PRUNE_LEAST) {
         table.retain(|_, v| v.strong_count() > 0);
         *alive = table.len();
     }

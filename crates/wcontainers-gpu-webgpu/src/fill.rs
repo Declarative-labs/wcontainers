@@ -216,7 +216,7 @@ const RESOLVE_WGSL: &str = "
 fn uniform(device: &wgpu::Device, words: [u32; 4]) -> wgpu::Buffer {
     let b = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: 16,
+        size: size_of::<[u32; 4]>() as u64,
         usage: wgpu::BufferUsages::UNIFORM,
         mapped_at_creation: true,
     });
