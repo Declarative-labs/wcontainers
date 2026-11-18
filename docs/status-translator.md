@@ -63,8 +63,8 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   it was stopped 2026-11-17 20:34 after layer 3 chunk 55 was stopped at the limit (failure 3 below).
   Restarted 21:21 on de8f4a2 with `WC_LONG_LIMIT=180` added (a chunk may take 3 hours); chunk 55 runs again
   first. Stopped 2026-11-18 01:27 with chunk 57 hung (failure 4 below) and restarted 01:29 on 7ec7920 (the
-  run's own zig cache), same command; that run (driver pid 7047 at the time of writing) is the one going
-  now. Use `WC_LONG_ACCEPT=c38b4ad
+  run's own zig cache), same command. Stopped 04:32 after chunk 71 and restarted on 33afa1e (failure 5
+  below), same command; that run (driver pid 85560 at the time of writing) is the one going now. Use `WC_LONG_ACCEPT=c38b4ad
   WC_LONG_LIMIT=180` on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
   `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
 - Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
@@ -164,7 +164,24 @@ Failures found by the run, each with its cause and fix:
    `long-runs.sh`): each run's zig uses its own cache, `WC_LONG_DIR/zig-cache`, so other jobs on the machine
    cannot rebuild entries under it. The driver and the hung chunk were stopped 01:27 (no ledger line for
    chunk 57), the run's cache was warmed by one layer 3 run of 24 cases with one job (seed 9, every compiler,
-   level and position, not counted), and the driver restarted; chunk 57 runs again.
+   level and position, not counted), and the driver restarted; chunk 57 runs again: passed on 7ec7920, 445
+   compared, 739 s, load 45 to 58.
+5. Layer 3 chunk 70 (cases 34500 to 34999, 7ec7920): case 34780 (Csmith 100035080, clang -Os, fixed
+   position) failed the test's own guard, before any translation ran: Linux ended the blob with SIGSEGV
+   (139, the same four times) and the program built as an ordinary executable also with SIGSEGV, but they
+   wrote different lines: the blob `...checksum after hashing O error : 8612052E`, the executable
+   `...checksum after hashing H<garbage> : 32BE545C` (both the same on two more runs each). The program is
+   broken as clang -Os builds it: built by gcc at -O0, -O1, -O2 and -Os it runs past 20 s without a fault;
+   as clang -Os builds it, it prints a name through a wild pointer (and hash lines it should not print at
+   all without an argument, so memory was overwritten) and then faults, so what it prints depends on where
+   things are, which differs between the blob and the executable. The translator agrees with Linux on the
+   blob at none, full for speed and full for size, each plain and stopping everywhere (replayed in a
+   scratch copy). Change (33afa1e, a departure, see "Departures from the plan"): when Linux ends the blob by
+   a signal, the guard now asks only that the ordinary executable end by the same signal, not that it also
+   wrote the same; the blob is then compared with the translator as every other case. The guard still
+   fails a case whose blob and executable end differently. The case replayed on 33afa1e with
+   `WC_LAYER3_FROM=34780 WC_LAYER3_CASES=1`: compared, also in Chrome, passes. The driver was stopped after
+   chunk 71 and restarted 04:32 on 33afa1e, same command; chunk 70 runs again.
 
 ## P1: close-out of M5 and the long-run driver
 
@@ -2475,6 +2492,13 @@ contract's bits, in both runners).
   end on Linux in time are made and counted apart, not compared, so more than 100,000 are made.
 - P2: the long-run driver runs an exported copy of one commit in the run's directory rather than the
   checkout, so a fix being worked on cannot leak into chunks recorded under an older commit.
+- P2: layer 3's guard for blobs that Linux ends by a signal was narrowed (33afa1e): the program built as an
+  ordinary executable must end by the same signal, but may have written something else before, since a
+  program that faults may print through a wild pointer whose target depends on the layout (failure 5 of
+  P2). This lets one more kind of case be compared; it skips nothing, and a case whose two builds end
+  differently still fails. It is the only change to a test's checks in P2.
+- P2: the long-run driver gives each run its own zig cache (`WC_LONG_DIR/zig-cache`): zig processes
+  sharing `~/.cache/zig` with other jobs deadlocked on its locks (failure 4 of P2).
 
 - P1: the long-run driver is a shell script (`long-runs.sh`), not Rust: it only runs test commands one after
   another and keeps a ledger.

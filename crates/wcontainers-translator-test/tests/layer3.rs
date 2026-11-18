@@ -40,11 +40,12 @@ fn compare<G: GuestTest>(blob: &Blob, ordinary: impl Fn() -> Ran) -> Result<Opti
         return Ok(None);
     };
     // A blob that Linux ends by a signal is compared only when the program, built as an ordinary
-    // executable, ends the same way: otherwise both sides could agree on a blob that is broken (a moved blob
-    // that did not relocate itself, say).
+    // executable, ends by the same signal: otherwise both sides could agree on a blob that is broken (a
+    // moved blob that did not relocate itself, say). What it wrote before may differ, as a program that
+    // faults may have read through a wild pointer, whose target depends on where things are.
     if theirs.status >= 128 {
         let program = ordinary();
-        if (program.status, &program.stdout) != (theirs.status, &theirs.stdout) {
+        if program.status != theirs.status {
             // Whether Linux does it again tells a fault of the blob from one of the reference.
             let again: Vec<i32> = (0..3).map(|_| native::<G>(blob).status).collect();
             return Err(format!(
