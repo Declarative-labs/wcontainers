@@ -2,8 +2,8 @@
 //! crate into the common form.
 
 use wcontainers_gpu::{
-    CLAMPED_SAMPLER_BINDING, DrawBaseSource, HELPER_SET, HelperSlot, HelperValue, SlotKind,
-    SourceStage, VariantFlags, VariantKey,
+    AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, HELPER_SET, HelperSlot, HelperValue,
+    SlotKind, SourceStage, VariantFlags, VariantKey,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -41,6 +41,74 @@ pub fn stage(bytecode: &[u8]) -> Result<SourceStage> {
     Err(bad)
 }
 
+/// One element of a DXBC container's input signature.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignatureElement {
+    pub semantic: String,
+    pub index: u32,
+    pub register: u32,
+    /// Direct3D's system value name (`D3D_NAME`): 6 is the vertex id, 8 the instance id.
+    pub system: u32,
+}
+
+/// The input signature (`ISGN`, or `ISG1` of shader model 5.1) of a DXBC container; empty where it
+/// has none. An error if the bytes are not such a container or the chunk is malformed.
+pub fn input_signature(bytecode: &[u8]) -> Result<Vec<SignatureElement>> {
+    let bad = Error::InvalidArg("not DXBC bytecode");
+    let word = |at: usize| -> Result<u32> {
+        bytecode
+            .get(at..)
+            .and_then(|b| b.get(..4))
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            .ok_or(bad)
+    };
+    if bytecode.len() < 32 || &bytecode[..4] != b"DXBC" {
+        return Err(bad);
+    }
+    for i in 0..word(28)? as usize {
+        let at = word(32 + 4 * i)? as usize;
+        let tag = bytecode.get(at..).and_then(|b| b.get(..4)).ok_or(bad)?;
+        let (stride, first) = match tag {
+            b"ISGN" => (24, 0),
+            b"ISG1" => (32, 4),
+            _ => continue,
+        };
+        let data = at + 8;
+        let mut elements = Vec::new();
+        for e in 0..word(data)? as usize {
+            let base = data + 8 + e * stride + first;
+            let name_at = data + word(base)? as usize;
+            let name = bytecode
+                .get(name_at..)
+                .and_then(|b| b.split(|&c| c == 0).next())
+                .ok_or(bad)?;
+            elements.push(SignatureElement {
+                semantic: String::from_utf8_lossy(name).into_owned(),
+                index: word(base + 4)?,
+                system: word(base + 8)?,
+                register: word(base + 16)?,
+            });
+        }
+        return Ok(elements);
+    }
+    Ok(Vec::new())
+}
+
+/// Direct3D's system value names of the vertex and instance ids, which no input element feeds.
+const VERTEX_ID: u32 = 6;
+const INSTANCE_ID: u32 = 8;
+
+impl SignatureElement {
+    /// The input assembler generates it; no input element feeds it. Direct3D goes by the name too:
+    /// a pixel shader's input named so carries no system value.
+    pub fn generated(&self) -> bool {
+        matches!(self.system, VERTEX_ID | INSTANCE_ID)
+            || ["SV_VertexID", "SV_InstanceID"]
+                .iter()
+                .any(|n| self.semantic.eq_ignore_ascii_case(n))
+    }
+}
+
 /// What a draw asks of one stage's program beyond the plain conversion, from the state bound at the
 /// draw. The default is the plain program.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -57,6 +125,8 @@ pub struct StageVariant {
     /// Texture slots whose bound view's resource has a minimum level-of-detail clamp past the
     /// view's first level (`MinLodClamp`).
     pub min_lod_clamped: u128,
+    /// The input layout whose pulled elements the vertex program fetches (its id; zero for none).
+    pub pulled: u64,
 }
 
 impl StageVariant {
@@ -77,13 +147,15 @@ impl StageVariant {
 }
 
 /// Where a converted program reads its helper constants: the block's size and each value's offset;
-/// and the (texture slot, sampler slot) pairs it samples through merged samplers of a minimum
-/// level-of-detail clamp, each bound at `CLAMPED_SAMPLER_BINDING` plus its index.
+/// the (texture slot, sampler slot) pairs it samples through merged samplers of a minimum
+/// level-of-detail clamp, each bound at `CLAMPED_SAMPLER_BINDING` plus its index; and the binding
+/// of each input it fetches itself, by location.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Helpers {
     pub size: u32,
     pub values: Vec<HelperSlot>,
     pub merged: Vec<(u32, (u32, u32))>,
+    pub pulled: Vec<(u32, u32)>,
 }
 
 impl Helpers {
@@ -100,10 +172,20 @@ impl Helpers {
                 pairs.get(n as usize).map(|&p| (b.binding, p))
             })
             .collect();
+        let pulled = c
+            .reflection
+            .bindings
+            .iter()
+            .filter_map(|b| match b.added {
+                Some(AddedBinding::PulledStream(location)) => Some((b.binding, location)),
+                _ => None,
+            })
+            .collect();
         Helpers {
             size: c.reflection.helper_size,
             values: c.reflection.helpers.clone(),
             merged,
+            pulled,
         }
     }
 }
@@ -202,6 +284,7 @@ fn answer(r: core::result::Result<Converted, ConvertError>) -> Result<Converted>
                         | HelperValue::DrawArguments
                         | HelperValue::LodBias { .. }
                         | HelperValue::MinLod { .. }
+                        | HelperValue::PulledStream { .. }
                 )
             }) =>
         {

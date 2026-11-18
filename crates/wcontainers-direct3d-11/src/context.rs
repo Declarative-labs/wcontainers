@@ -89,6 +89,8 @@ pub struct ContextState<B: Backend> {
     scissors: Vec<ScissorRect>,
     pub(crate) sets: [Option<Kept<B, B::BindingSet>>; STAGES],
     sets_dirty: [bool; STAGES],
+    /// The input layout whose pulled streams the vertex stage's set binds (its id; zero for none).
+    pulled_set: u64,
     pass_open: bool,
     /// The size of the open pass when it has no attachments.
     empty_pass: Option<EmptyPass>,
@@ -131,6 +133,7 @@ impl<B: Backend> ContextState<B> {
             scissors: Vec::new(),
             sets: [None, None, None],
             sets_dirty: [true; STAGES],
+            pulled_set: 0,
             pass_open: false,
             empty_pass: None,
             clears: Vec::new(),
@@ -410,6 +413,10 @@ impl<B: Backend> Device<B> {
         start: u32,
         slots: &[Option<VertexSlot<B>>],
     ) -> Result<()> {
+        // The vertex stage's set binds the streams its program fetches.
+        if self.ctx.pulled_set != 0 {
+            self.ctx.sets_dirty[VERTEX] = true;
+        }
         put(&mut self.ctx.vertex_buffers, start, slots)
     }
 
@@ -1170,10 +1177,17 @@ impl<B: Backend> Device<B> {
         if self.removed.is_some() {
             return Ok(());
         }
-        let r = if self
-            .backend
-            .caps()
-            .has(Features::INDIRECT | Features::INDIRECT_FIRST_INSTANCE)
+        // Fetching in the program steps by the first instance, which only the arguments hold.
+        let pulls = self
+            .ctx
+            .layout
+            .as_ref()
+            .is_some_and(|l| !l.pulled.is_empty());
+        let r = if !pulls
+            && self
+                .backend
+                .caps()
+                .has(Features::INDIRECT | Features::INDIRECT_FIRST_INSTANCE)
         {
             self.try_draw(Range::Indirect { indexed, offset }, 0, 1, Some(args))
         } else {
@@ -1351,8 +1365,15 @@ impl<B: Backend> Device<B> {
         if interpolation.is_empty() && vk == StageVariant::default() {
             return Ok(());
         }
+        let pulled = match &self.ctx.layout {
+            Some(l) if vk.pulled == l.id => {
+                l.pulled.iter().map(|e| (e.location, e.format)).collect()
+            }
+            _ => Vec::new(),
+        };
         let variant = VariantKey {
             output_interpolation: interpolation,
+            pulled,
             ..vk.key(SourceStage::Vertex)
         };
         let v = self.convert_kept(&vs.bytecode, SourceStage::Vertex, &variant)?;
@@ -1608,7 +1629,7 @@ impl<B: Backend> Device<B> {
         };
         self.settle();
         self.grow_constants()?;
-        self.update_set(COMPUTE)?;
+        self.update_set(COMPUTE, &[])?;
         if self.stage_variant(COMPUTE, &cs, 1) != StageVariant::default() {
             return not_implemented(
                 "a compute shader sampling through a biased sampler or a clamped texture",
@@ -1744,13 +1765,16 @@ impl<B: Backend> Device<B> {
     }
 
     /// Makes the binding set of `stage` from its slots and its shader's reflection, when it changed.
-    fn update_set(&mut self, stage: usize) -> Result<()> {
+    /// Makes `stage`'s binding set again where its bindings changed; `pulled` holds the binding of
+    /// each vertex input the program fetches itself, by location.
+    fn update_set(&mut self, stage: usize, pulled: &[(u32, u32)]) -> Result<()> {
         if !self.ctx.sets_dirty[stage] {
             return Ok(());
         }
         let set = set_of(stage);
         let shader = self.stage_shader(stage).clone();
-        let Some(shader) = shader.filter(|s| s.reflection.bindings.iter().any(|b| b.set == set))
+        let Some(shader) = shader
+            .filter(|s| !pulled.is_empty() || s.reflection.bindings.iter().any(|b| b.set == set))
         else {
             self.ctx.sets[stage] = None;
             self.ctx.sets_dirty[stage] = false;
@@ -1893,6 +1917,11 @@ impl<B: Backend> Device<B> {
                 );
             }
         }
+        let zero_stream = if pulled.is_empty() {
+            None
+        } else {
+            Some(self.zero_storage()?)
+        };
         let mut cbs = Vec::new();
         for (c, range) in self.ctx.constant_buffers[stage]
             .iter()
@@ -1943,10 +1972,59 @@ impl<B: Backend> Device<B> {
                 _ => None,
             })
             .collect();
+        // The streams the vertex program fetches, each bound from its offset rounded down to the
+        // storage offset alignment to the buffer's end; an empty slot, or an offset past the end,
+        // reads the buffer of zeros.
+        let limits = &self.backend.caps().limits;
+        let align = u64::from(limits.min_storage_offset_alignment.max(4));
+        let largest = limits.max_storage_buffer_size & !3;
+        let streams: Vec<_> = pulled
+            .iter()
+            .map(|&(binding, location)| {
+                let bound = self
+                    .ctx
+                    .layout
+                    .as_ref()
+                    .and_then(|l| l.pulled.iter().find(|e| e.location == location))
+                    .and_then(|e| self.ctx.vertex_buffers[e.slot as usize].as_ref())
+                    .map(|(b, _, offset)| (b, u64::from(*offset) / align * align))
+                    .filter(|(b, start)| start + 4 <= b.size.get());
+                (
+                    binding,
+                    bound.map(|(b, start)| {
+                        let size = ((b.size.get() - start) & !3).min(largest);
+                        (b.gpu.borrow(), start, size)
+                    }),
+                )
+            })
+            .collect();
         let uavs = &self.ctx.uavs[stage];
         let views = &self.ctx.resources[stage];
         let samplers = &self.ctx.samplers[stage];
         let mut entries = Vec::new();
+        for (binding, bound) in &streams {
+            let range = match (bound, &zero_stream) {
+                (Some((b, offset, size)), _) => BufferRange {
+                    buffer: &b.handle,
+                    offset: *offset,
+                    size: *size,
+                },
+                (None, Some(zero)) => BufferRange {
+                    buffer: zero,
+                    offset: 0,
+                    size: ZERO_BYTES,
+                },
+                (None, None) => unreachable!("made with the streams"),
+            };
+            entries.push(BindingEntry {
+                binding: *binding,
+                stages,
+                resource: BindingResource::StorageBuffer {
+                    range,
+                    writable: false,
+                },
+            });
+        }
         for b in wanted() {
             let slot = b.register as usize;
             let resource = match b.kind {
@@ -2053,6 +2131,7 @@ impl<B: Backend> Device<B> {
         }
         let set = self.backend.create_binding_set(&entries);
         drop(entries);
+        drop(streams);
         drop(cbs);
         drop(spans);
         drop(srvs);
@@ -2111,6 +2190,50 @@ impl<B: Backend> Device<B> {
     /// Writes the helper constants of the draw's two program stages where they differ from the
     /// last written, and keeps the set binding them (with an indirect draw's arguments, for a vertex
     /// program that reads its bases from them).
+    /// How the vertex program fetches its input at `location` for a draw from `first_instance`:
+    /// the first element's byte offset in the stream's binding, the stride, a divisor and a bias.
+    fn pulled_stream(&self, location: u32, first_instance: u32) -> [u32; 4] {
+        let Some(e) = self
+            .ctx
+            .layout
+            .as_ref()
+            .and_then(|l| l.pulled.iter().find(|e| e.location == location))
+        else {
+            return [0; 4];
+        };
+        let align = self
+            .backend
+            .caps()
+            .limits
+            .min_storage_offset_alignment
+            .max(4);
+        let (stride, offset) = self.ctx.vertex_buffers[e.slot as usize]
+            .as_ref()
+            .map_or((0, 0), |(_, stride, offset)| (*stride, *offset));
+        let offset = offset % align + e.offset;
+        match self
+            .ctx
+            .layout
+            .as_ref()
+            .and_then(|l| l.instance_steps[e.slot as usize])
+        {
+            // Every instance reads the first instance's element.
+            Some(0) => [
+                offset.wrapping_add(first_instance.wrapping_mul(stride)),
+                0,
+                1,
+                0,
+            ],
+            Some(rate) => [
+                offset,
+                stride,
+                rate,
+                (rate - 1).wrapping_mul(first_instance),
+            ],
+            None => [offset, stride, 0, 0],
+        }
+    }
+
     fn write_helpers(
         &mut self,
         helpers: &[Rc<Helpers>; 2],
@@ -2124,28 +2247,30 @@ impl<B: Backend> Device<B> {
                 return not_implemented("a helper block larger than 256 bytes");
             }
             for slot in &h.values {
-                let words: [u32; 3] = match slot.value {
-                    HelperValue::DrawBase => [bases[0], bases[1], 0],
+                let words: [u32; 4] = match slot.value {
+                    HelperValue::DrawBase => [bases[0], bases[1], 0, 0],
                     HelperValue::DrawArguments => {
                         let (_, offset, indexed) = args.expect("an indirect draw");
-                        [offset / 4, u32::from(indexed), 0]
+                        [offset / 4, u32::from(indexed), 0, 0]
                     }
+                    HelperValue::PulledStream { input } => self.pulled_stream(input, bases[1]),
                     HelperValue::LodBias { sampler } => {
                         let bias = self.ctx.samplers[stage]
                             .get(sampler as usize)
                             .and_then(|s| s.as_ref())
                             .map_or(0.0, |s| s.desc.mip_lod_bias);
-                        [bias.to_bits(), 0, 0]
+                        [bias.to_bits(), 0, 0, 0]
                     }
                     HelperValue::MinLod { texture } => {
                         let (clamp, levels) = self.min_lod_of(stage, texture).unwrap_or((0.0, 1));
-                        [clamp.to_bits(), levels, 0]
+                        [clamp.to_bits(), levels, 0, 0]
                     }
                     _ => unreachable!("refused at conversion"),
                 };
                 let n = match slot.value {
                     HelperValue::LodBias { .. } => 1,
                     HelperValue::MinLod { .. } => 2,
+                    HelperValue::PulledStream { .. } => 4,
                     _ => 3,
                 };
                 for (k, w) in words[..n].iter().enumerate() {
@@ -2311,8 +2436,15 @@ impl<B: Backend> Device<B> {
         }
         let target_samples = samples.min(u32::from(u8::MAX)) as u8;
         let indirect = matches!(range, Range::Indirect { .. });
+        let pulled = self
+            .ctx
+            .layout
+            .as_ref()
+            .filter(|l| !l.pulled.is_empty())
+            .map_or(0, |l| l.id);
         let vk = StageVariant {
             from_arguments: indirect && vs.helpers.size > 0,
+            pulled,
             ..self.stage_variant(VERTEX, &vs, target_samples)
         };
         let pk = ps
@@ -2332,7 +2464,26 @@ impl<B: Backend> Device<B> {
                 .slow_paths()
                 .hit(SlowPath::DrawBaseFromArguments);
         }
+        if vk.pulled != 0 {
+            self.backend
+                .slow_paths()
+                .hit(SlowPath::InstanceRateInShader);
+        }
         let (program, helpers) = self.program(&vs, vk, ps.as_ref(), pk)?;
+        if !helpers[0].pulled.is_empty() {
+            let storage = vs
+                .reflection
+                .bindings
+                .iter()
+                .filter(|b| b.kind == SlotKind::Storage)
+                .count()
+                + helpers[0].pulled.len();
+            if storage > self.backend.caps().limits.storage_buffers_per_stage as usize {
+                return not_implemented(
+                    "more vertex inputs fetched in the program than the back end's storage bindings",
+                );
+            }
+        }
         let vertex_layout = self.vertex_layout()?;
         // Direct3D reads zeros from a slot the layout reads that has no buffer: the zero buffer, at
         // stride zero.
@@ -2347,8 +2498,12 @@ impl<B: Backend> Device<B> {
             None
         };
         self.grow_constants()?;
-        self.update_set(VERTEX)?;
-        self.update_set(PIXEL)?;
+        if vk.pulled != self.ctx.pulled_set {
+            self.ctx.sets_dirty[VERTEX] = true;
+        }
+        self.update_set(VERTEX, &helpers[0].pulled)?;
+        self.ctx.pulled_set = vk.pulled;
+        self.update_set(PIXEL, &[])?;
         // SV_VertexID and SV_InstanceID leave out the draw's bases, which the common form's indices
         // include: a vertex program reading them takes the bases from its helper constants or from
         // the indirect arguments; level-of-detail biases are helper constants too.

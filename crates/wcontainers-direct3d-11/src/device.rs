@@ -10,7 +10,7 @@ use wcontainers_gpu::{
     DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, Features, FillMode, Filter, Format,
     FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object,
     Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, SlowPath,
-    StageValue, StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension, TextureRegion,
+    StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension, TextureRegion,
     TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
 };
 
@@ -82,8 +82,6 @@ pub struct Device<B: Backend> {
     pub(crate) ahead: crate::ahead::Ahead<B>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
     pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
-    /// Vertex shaders' input signatures by the blake3 of their bytecode, for input layouts.
-    vertex_inputs: HashMap<[u8; 32], Vec<StageValue>>,
     /// What empty slots read.
     pub(crate) zeros: Zeros<B>,
     /// Set once the device is removed; later work is dropped and the API reports the removal.
@@ -217,7 +215,6 @@ impl<B: Backend> Device<B> {
             helper_blocks: None,
             ahead: crate::ahead::Ahead::new(),
             layouts: HashMap::new(),
-            vertex_inputs: HashMap::new(),
             zeros: Zeros {
                 buffer: None,
                 storage: None,
@@ -558,7 +555,14 @@ impl<B: Backend> Device<B> {
         // (padded with zeros past the program's bytes) never needs an edge merge.
         let granule = u64::from(self.backend.caps().limits.buffer_copy_alignment.max(1));
         let size = u64::from(d.byte_width).div_ceil(granule) * granule;
-        let gpu = self.backend.create_buffer(&gpu_buffer(d, size));
+        let mut desc = gpu_buffer(d, size);
+        // Vertex programs fetch the streams the back end cannot step by their rate.
+        if d.bind_flags & bind::VERTEX_BUFFER != 0
+            && !self.backend.caps().has(Features::INSTANCE_STEP_RATE)
+        {
+            desc.usage |= BufferUsage::STORAGE;
+        }
+        let gpu = self.backend.create_buffer(&desc);
         let gpu = self.gpu(gpu)?;
         if let Some(bytes) = init {
             let bytes = &bytes[..d.byte_width as usize];
@@ -1408,12 +1412,6 @@ impl<B: Backend> Device<B> {
         self.bury();
         let gpu = self.backend.create_shader(&module);
         let gpu = self.gpu(gpu)?;
-        if stage == wcontainers_gpu::SourceStage::Vertex {
-            self.vertex_inputs.insert(
-                *blake3::hash(bytecode).as_bytes(),
-                converted.reflection.inputs.clone(),
-            );
-        }
         let constant_sizes = constant_sizes(&module.module);
         let stand_ins = stand_ins(&module.module);
         let id = self.id();
@@ -1448,21 +1446,14 @@ impl<B: Backend> Device<B> {
         if elements.len() > 32 {
             return Err(Error::InvalidArg("an input layout has at most 32 elements"));
         }
-        let key = *blake3::hash(vs_bytecode).as_bytes();
-        let inputs = match self.vertex_inputs.get(&key) {
-            Some(inputs) => inputs.clone(),
-            None => {
-                let inputs = shader::convert(vs_bytecode, wcontainers_gpu::SourceStage::Vertex)?
-                    .0
-                    .reflection
-                    .inputs;
-                self.vertex_inputs.insert(key, inputs.clone());
-                inputs
-            }
-        };
+        // Direct3D matches the elements against the bytecode's input signature, whatever its
+        // stage; each input the input assembler does not generate needs an element.
+        let inputs = shader::input_signature(vs_bytecode)?;
         let mut next_offset = [0u32; 32];
         let mut instance_steps = [None; 32];
         let mut resolved = Vec::new();
+        let mut pulled = Vec::new();
+        let steps_natively = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
         for e in elements {
             if e.slot >= 32 {
                 return Err(Error::InvalidArg("input slot past 31"));
@@ -1482,35 +1473,42 @@ impl<B: Backend> Device<B> {
             };
             next_offset[slot] = offset + format::vertex_size(vf);
             let step = e.per_instance.then_some(e.step_rate);
-            if step.is_some_and(|r| r != 1)
-                && !self.backend.caps().has(Features::INSTANCE_STEP_RATE)
-            {
-                return not_implemented(
-                    "instance step rates other than one without the back end's",
-                );
-            }
-            if resolved.iter().any(|r: &LayoutElement| r.slot == e.slot)
+            if resolved
+                .iter()
+                .chain(&pulled)
+                .any(|r: &LayoutElement| r.slot == e.slot)
                 && instance_steps[slot] != step
             {
                 return Err(Error::InvalidArg("elements of one slot step differently"));
             }
             instance_steps[slot] = step;
             let input = inputs.iter().find(|i| {
-                i.system.is_none()
+                !i.generated()
                     && i.semantic.eq_ignore_ascii_case(&e.semantic)
-                    && i.semantic_index == e.semantic_index
+                    && i.index == e.semantic_index
             });
             if let Some(input) = input {
-                resolved.push(LayoutElement {
-                    location: input.location,
+                let element = LayoutElement {
+                    location: input.register,
                     slot: e.slot,
                     offset,
                     format: vf,
-                });
+                };
+                // Rates other than one where the back end steps by one only are fetched in the
+                // vertex program.
+                if step.is_some_and(|r| r != 1) && !steps_natively {
+                    pulled.push(element);
+                } else {
+                    resolved.push(element);
+                }
             }
         }
-        for input in inputs.iter().filter(|i| i.system.is_none()) {
-            if !resolved.iter().any(|r| r.location == input.location) {
+        for input in inputs.iter().filter(|i| !i.generated()) {
+            if !resolved
+                .iter()
+                .chain(&pulled)
+                .any(|r| r.location == input.register)
+            {
                 return Err(Error::InvalidArg(
                     "the layout lacks an input the shader reads",
                 ));
@@ -1520,6 +1518,7 @@ impl<B: Backend> Device<B> {
         Ok(Rc::new(InputLayout {
             id,
             elements: resolved,
+            pulled,
             instance_steps,
         }))
     }
