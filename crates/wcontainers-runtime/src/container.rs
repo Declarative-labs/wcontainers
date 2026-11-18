@@ -15,8 +15,8 @@ pub struct RuntimeSettings {
     pub cache: Option<PathBuf>,
 }
 
-/// A back end the runtime makes for each container.
-pub trait BackEnd: Execution {
+/// An executor: the back end the runtime makes for each container.
+pub trait Executor: Execution {
     /// What the containers of one runtime share, such as compiled translations.
     type Shared;
     /// How the back end runs a container: it changes speed, never behaviour.
@@ -76,14 +76,14 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Makes containers on one kind of back end.
-pub struct Runtime<B: BackEnd> {
-    shared: B::Shared,
+pub struct Runtime<E: Executor> {
+    shared: E::Shared,
 }
 
-impl<B: BackEnd> Runtime<B> {
+impl<E: Executor> Runtime<E> {
     pub fn new(settings: &RuntimeSettings) -> Self {
         Self {
-            shared: B::shared(settings),
+            shared: E::shared(settings),
         }
     }
 
@@ -93,17 +93,17 @@ impl<B: BackEnd> Runtime<B> {
         &self,
         spec: &Spec,
         image: &Image,
-        tuning: &B::Tuning,
-        machine: &Machine<B::Offer>,
+        tuning: &E::Tuning,
+        machine: &Machine<E::Offer>,
         mut system: S,
-    ) -> Result<Container<B, S>, Error> {
+    ) -> Result<Container<E, S>, Error> {
         let accepted = spec::accept(spec)?;
         if let Some(architecture) = image.architecture()
-            && architecture != B::ARCHITECTURE
+            && architecture != E::ARCHITECTURE
         {
             return Err(Error::Image(format!(
                 "it is for {architecture}; this back end runs {}",
-                B::ARCHITECTURE
+                E::ARCHITECTURE
             )));
         }
         let mut env = accepted.env;
@@ -116,7 +116,7 @@ impl<B: BackEnd> Runtime<B> {
             .ok_or_else(|| Error::NotFound(accepted.args[0].clone()))?;
         let mut kernel = Kernel::new();
         image.add_to(&mut kernel, &accepted.hostname)?;
-        let mut cpu = B::new(&self.shared, tuning, &machine.offer);
+        let mut cpu = E::new(&self.shared, tuning, &machine.offer);
         system.stop_flag(cpu.stop_flag());
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
@@ -143,17 +143,17 @@ impl<B: BackEnd> Runtime<B> {
 }
 
 /// A running container.
-pub struct Container<B: BackEnd, S: System> {
+pub struct Container<E: Executor, S: System> {
     kernel: Kernel,
-    cpu: B,
+    cpu: E,
     system: S,
     stepper: Stepper,
 }
 
-impl<B: BackEnd, S: System> Container<B, S> {
+impl<E: Executor, S: System> Container<E, S> {
     /// One step, for a caller with its own event loop: after [`Step::Idle`] the caller waits as it
     /// likes, or calls [`Container::idle`].
-    pub fn step(&mut self) -> Result<Step<S::End>, B::Failure> {
+    pub fn step(&mut self) -> Result<Step<S::End>, E::Failure> {
         self.stepper
             .step(&mut self.kernel, &mut self.cpu, &mut self.system)
     }
@@ -165,7 +165,7 @@ impl<B: BackEnd, S: System> Container<B, S> {
     }
 
     /// Runs to the end: the first process's wait status, or what the system ended it with.
-    pub fn run(&mut self) -> Result<Ending<S::End>, B::Failure> {
+    pub fn run(&mut self) -> Result<Ending<S::End>, E::Failure> {
         self.stepper
             .drive(&mut self.kernel, &mut self.cpu, &mut self.system)
     }
@@ -183,7 +183,7 @@ impl<B: BackEnd, S: System> Container<B, S> {
         &mut self.system
     }
 
-    pub fn back_end(&self) -> &B {
+    pub fn back_end(&self) -> &E {
         &self.cpu
     }
 }

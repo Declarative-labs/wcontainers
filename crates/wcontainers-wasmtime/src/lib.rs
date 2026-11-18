@@ -26,7 +26,7 @@ use wcontainers_abi::{
 };
 use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
 use wcontainers_runtime::{
-    Answer, BackEnd, Carry, Execution, Leaving, RuntimeSettings, StopFlag, Turn,
+    Answer, Carry, Execution, Executor, Leaving, RuntimeSettings, StopFlag, Turn,
 };
 use wcontainers_translator::contract::{self, Reason, TrapKind};
 use wcontainers_translator::translate;
@@ -2888,7 +2888,7 @@ pub struct Tuning {
     pub optimise: Optimise,
 }
 
-impl<G> BackEnd for CpuSide<G>
+impl<G> Executor for CpuSide<G>
 where
     G: Guest<Block = RegisterBlock>,
 {

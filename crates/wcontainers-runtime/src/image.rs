@@ -81,7 +81,7 @@ impl Image {
     }
 
     /// An image in the OCI image layout (the directory `docker save` writes as a tar): the manifest for
-    /// `architecture` (as the image configuration names it, [`crate::BackEnd::ARCHITECTURE`]) on
+    /// `architecture` (as the image configuration names it, [`crate::Executor::ARCHITECTURE`]) on
     /// Linux, its blobs checked against their digests and its layers applied in order.
     pub fn oci(directory: &Path, architecture: &str) -> Result<Self, Error> {
         let layout = directory.join("oci-layout");
