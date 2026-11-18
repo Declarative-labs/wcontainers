@@ -41,7 +41,7 @@ use scan::{FileRole, FileScan};
 
 pub const USAGE: &str = "usage: wcontainers-literals (check | init | list) [WORKSPACE_ROOT]\n\
                          \x20 check: fail on anything outside the baseline, a baseline line no longer needed, or a baseline that grew\n\
-                         \x20 init:  write the baseline from the tree, once, when it starts or has just arrived by a merge\n\
+                         \x20 init:  write the baseline from the tree, once, when it starts or has just arrived by a merge, and again after new rules\n\
                          \x20 list:  print every finding of every list, gated or not";
 
 /// The commands, each named by its variant in lower case.
