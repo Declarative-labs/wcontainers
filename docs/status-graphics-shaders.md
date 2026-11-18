@@ -13,9 +13,10 @@ draw bases from an indirect draw's arguments, with drawn tests; run 12 built the
 level-of-detail clamp with drawn tests; run 13 built clip distances, depth clamping and mirror-once
 addressing in the program with drawn tests; run 14 built pulled vertex inputs and constant buffers
 read through a texture with drawn tests; run 15 built filtering and border colours in the program
-with drawn tests against real Direct3D 11 on the RTX 3080 and against WARP;
-what remains is under Next. Run 15 merged origin/phase-2-graphics-direct3d-11 (which carried
--direct3d-12, -rig and -webgl; no conflicts; the others had nothing new).
+with drawn tests against real Direct3D 11 on the RTX 3080 and against WARP; run 16 began the stage
+helper of section 7: geometry shaders (DXBC) as compute, drawn against real Direct3D 11;
+what remains is under Next. Run 16 merged origin/phase-2-graphics-direct3d-12 and
+origin/phase-2-graphics-webgl (no conflicts; the others had nothing new).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -496,6 +497,59 @@ Run 15 (variants):
   held to WebGPU's own sampler (or WARP), and the own sampler to the GPU's Direct3D. Anisotropic
   cases are a known failure (Known gaps).
 
+Run 16 (the stage helper, first part: geometry shaders on WebGPU):
+- `src/stage.rs`, `src/stage/helper.rs`, `src/lower/geometry.rs`, `src/build.rs` (a small builder of
+  naga functions for the programs the crate makes itself). A DXBC geometry shader converts to two
+  modules: its compute form (`modules[0]`) and the vertex program that draws its output
+  (`modules[1]`, the pass-through); `reflection.extras` is `StageExtras::Geometry`, its outputs are
+  reflected as a vertex stage's (the pixel stage links to them, with `output_interpolation` as for a
+  vertex program), its slots are in set 0 as a compute program's. DXIL geometry shaders are refused
+  by naga's SPIR-V reader (`spirv-reader unsupported`, recorded).
+- The data, in buffers the helper owns (`stage.rs` says it in its module comment): vertex records
+  (the vertex stage's outputs, record `instance * count + vertex` in draw order, four-word slots:
+  the position, then each location the geometry shader reads), and the geometry output (each
+  invocation owns `max_vertices` records, then from `INDEX_BASE` `2 * max_vertices` index slots per
+  invocation, strips cut with the restart index, unused slots restarting; point output is drawn
+  without indices, unused vertices placed outside the clip volume). Every invocation writes at fixed
+  slots, so the output keeps Direct3D's order with no counting across invocations.
+- The geometry shader's compute form: one invocation per input primitive and geometry instance (x)
+  and API instance (y); it fills the input arrays from the records (lists n per primitive; strips
+  step by one, odd triangles (i, i + 2, i + 1)), gives `SV_PrimitiveID` (per API instance),
+  `SV_GSInstanceID` and the input vertex count, runs the shader, whose `EmitVertex`/`CutVertex` call
+  emit and cut functions writing the current outputs into its slots. Refused by name: streams other
+  than 0 (`GeometryStreams`), no position output, inputs of other shapes, clip and cull distances,
+  `SV_RenderTargetArrayIndex` and `SV_ViewportArrayIndex` (the rig's `gs_layers` and `raster.gs`),
+  and a geometry shader's key asking for the last vertex stage's rewrites (`GeometryVariant`).
+- The vertex stage's compute form (`stage::vertex_program`, made by `Stages::new`): the vertex
+  program converted with every input pulled (`VariantKey::pulled`), its entry point called by a
+  compute entry point that makes the vertex and instance numbers as a draw does (first plus the
+  place, or the index there, read from the index buffer as words, plus the base vertex), and writes
+  the record. Not pulled inputs are refused (`VertexInputNotPulled`).
+- `Stages<B>` (`stage::Stages`): `new(backend, vertex, geometry)` makes both compute programs;
+  `run(backend, &StageDraw)` records the two dispatches for one API draw (outside a pass) and returns
+  `FinalDraw` (the buffer, the index offset, topology, count), which the front draws in its pass with
+  `passthrough()` and its pixel program, `vertex_layout()`, restart on. The helper's own bindings are
+  in set 1 of its compute programs (values, index words, records, geometry output), which no compute
+  program of the API uses. It counts `SlowPath::GeometryAsCompute`. Refused by name in `run`:
+  indirect draws, indexed strips (`GeometryIndexedStrip`: Direct3D restarts them at the largest index,
+  which needs a pass numbering the primitives), triangle strips with adjacency, 8-bit indices; a
+  topology that does not give the shader's input primitive is `StageError::TopologyMismatch`.
+- New own shaders (`geometry.hlsl`, fxc, and dxc for the geometry shaders): `vs_geometry`,
+  `ps_geometry`, `gs_quads` (points to quads), `gs_cut` (none, one or two triangles by primitive
+  number, a cut and a four-vertex strip), `gs_instances` (`[instance(3)]`), `gs_lines` (line strips),
+  `gs_points` (a varying number of points), `gs_adjacent` (triangles with adjacency),
+  `gs_line_adjacent` (lines with adjacency). Every other own shader recompiled byte for byte as
+  committed.
+- `tests/geometry.rs` (any machine): what each declares, both modules and the vertex compute form
+  validate, the cache record round-trips with both modules' keys, the refusals.
+  `tests/geometry_draw.rs` (Windows, GPU job): thirteen cases (point, line, triangle lists and
+  strips, line lists and strips and triangle lists with adjacency, indexed with base vertices, API
+  instances with first instances, geometry instances) per seed of 64 vertices, through the WebGPU
+  back end against real Direct3D 11 on the RTX 3080.
+- Corpus records: the rig's `geometry.gs_adjacency`, `gs_points`, `gs_strips` and `streamout.gs`
+  now convert (stream output is declared to the API, not in the bytecode); `gs_layers` is refused
+  `RenderTargetArrayIndex`, `raster.gs` `ViewportArrayIndex`.
+
 Next (in order):
 - Comparisons in the program (shadow maps with a border colour, very common: WebGPU has no border
   colour): `SamplerState` needs the comparison function (an interface change: a word for it), then
@@ -511,10 +565,14 @@ Next (in order):
   and storage formats (after the storage image and typed buffer support they need), early tests,
   line coverage, the provoking rewrite, the primitive index from the stage helper, root signature
   layouts.
-- The stage helper of section 7 (the vertex stage as compute reads its inputs by `pull`'s fetch,
-  so it starts from there; geometry as compute and by replay, hull and domain with a
-  tessellator ported from Mesa's MIT code, stream output) with tests against real Direct3D; the
-  built-in compute programs (texture clears of 5.1) and the counter operations.
+- The stage helper of section 7, the rest: stream output (from the vertex or the geometry stage, in
+  Direct3D's layout, with overflow and the filled size; a count, a scan and a write, as WGSL
+  built-in programs), hull and domain with a tessellator ported from Mesa's MIT code, geometry by
+  replay on WebGL 2, indexed strips into a geometry shader (a pass numbering primitives across
+  restarts), triangle strips with adjacency, layer and viewport index outputs, clip distances
+  through the stage, DXIL geometry shaders (naga's SPIR-V reader: the geometry execution model),
+  the last vertex stage's variants on the pass-through. Tests against real Direct3D; the built-in
+  compute programs (texture clears of 5.1) and the counter operations.
 - The real programs' shaders (every converted one compiles in Chrome since run 10): their named
   failures worked down: render target array index 47, storage images 39 DXBC and 38 DXIL (no format), typed
   buffers 21 and 19, register spaces 10.
@@ -545,6 +603,19 @@ Next (in order):
   back end's writing; multisampled reads are absent there.
 
 ## How the Direct3D fronts call `convert`
+
+- Geometry shaders (WebGPU, `Features::COMPUTE`): convert the pixel shader first, then the geometry
+  shader with `output_interpolation` from the pixel shader's inputs (as for a vertex shader), and the
+  vertex shader with every input pulled (`pulled`, as for pulled inputs) and `draw_base: Helpers`.
+  `Stages::new(backend, &vertex, &geometry)` once per pair. Per draw, outside the pass:
+  `stages.run(backend, &StageDraw { vertex_sets, geometry_sets, index, topology, range })`, where
+  the vertex sets are its set 0 (pulled streams) and 3 (helper block: `PulledStream`s, `DrawBase`)
+  and the geometry sets its set 0 (its slots) and 3 (its helper block, if any), all with
+  `StageSet::COMPUTE`; an index buffer must have `BufferUsage::STORAGE` and a size that is a multiple
+  of 4. Then, in the pass, draw the returned `FinalDraw`: the program of `stages.passthrough()` and
+  the pixel shader, `stages.vertex_layout()`, `buffer` as stream 0, indices (u32) from `buffer` at
+  `index_offset` when given, its topology, restart on, `count` vertices or indices, one instance.
+  `tests/geometry_draw.rs` does exactly this.
 
 ```rust
 use wcontainers_shaders::{convert, Source, ConvertError};
@@ -684,6 +755,17 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 16, 2026-11-17, counts only:
+- `tests/geometry_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2 s,
+  scratch `run16/geometry7.log`): seeds 1 to 4, thirteen cases each, WebGPU (wgpu's Direct3D 12
+  path) against real Direct3D 11: 52 comparisons, 0 of 4096 texels differ in every one (allowance
+  0); Direct3D draws 59 to 1468 texels per picture. Before the test gave the vertex stage the draw's
+  bases (`run16/geometry5.log`), the cases with a first vertex, base vertex or first instance
+  differed, as Direct3D's vertex and instance numbers leave the bases out.
+- Laptop (i7-8750H, load average 0 to 0.6): the suite without the ignored corpora passes after
+  recording the new own and rig verdicts; clippy with warnings denied passes. Windows clippy with
+  warnings denied passes.
 
 Run 15, 2026-11-17, counts only:
 - `tests/filter_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 92 s,
@@ -1148,6 +1230,10 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `~/wcontainers-graphics/out/<corpus>`. The 191-shader corpus test is ignored without
   `--include-ignored` and fails without `WCONTAINERS_SHADER_CORPUS`; glslang runs only with both
   `GLSLANG` and `WCONTAINERS_SHADERS_OUT`.
+- Geometry shaders through the stage helper (Windows, one GPU job, about 2 s for 4 seeds):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test geometry_draw --no-run" -- "set WCONTAINERS_GEOMETRY_SEED=1&& set WCONTAINERS_GEOMETRY_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test geometry_draw -- --nocapture --test-threads 1"`.
+  Each comparison prints the texels Direct3D drew and how many differ; with
+  `WCONTAINERS_SHADERS_OUT` the pictures are kept.
 - Filtering in the program (Windows, one GPU job, about 90 s for 8 seeds):
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test filter_draw --no-run" -- "set WCONTAINERS_FILTER_SEED=1&& set WCONTAINERS_FILTER_CASES=8&& cargo test -j 3 -p wcontainers-shaders --test filter_draw -- --nocapture --test-threads 1"`.
   Each comparison prints texels apart from both references, from each, and before moving the level
@@ -1228,6 +1314,13 @@ were already there.
 
 ## Departures from the plan
 
+- The stage helper (6.4's sketch `Stages::draw(backend, call, outputs)`) is `Stages::run`, which
+  records the compute work outside the pass and returns what the front draws in its own pass: the
+  interface allows dispatches only outside a pass, and the front owns its passes. The helper's own
+  bindings are in set 1 of its compute programs (no compute program of the API uses set 1), so the
+  interface needed no new binding numbers. Adjacency topologies are the helper's own
+  `InputTopology` (they reach only the geometry stage), not the interface's `Topology`.
+
 - Filtering in the program is held to two references, real Direct3D 11 on the RTX 3080 and WARP,
   texel by texel equal to either (or within 1/256 of a level of detail of either, or a third answer
   where the two differ), not to one picture: the two differ from each other in most pictures with
@@ -1289,6 +1382,13 @@ were already there.
   its CMake does for that file.
 
 ## Known gaps found so far
+
+- The stage helper (run 16) refuses by name: indexed strips into a geometry shader, triangle strips
+  with adjacency, indirect draws, streams other than 0, layer and viewport index outputs, clip and
+  cull distances through a geometry shader, the last vertex stage's variants on its pass-through
+  program (so a geometry shader draws only where WebGPU has what those variants stand in for), DXIL
+  geometry shaders. Stream output and tessellation are not built. Its buffers grow and are never
+  shrunk.
 
 - Anisotropic filtering in the program (`filter_in_shader`, `border_in_shader`) is a known failure
   of `tests/filter_draw.rs`: the footprint is the implementation's own (the RTX 3080's and WARP's

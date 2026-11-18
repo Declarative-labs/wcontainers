@@ -61,6 +61,10 @@ pub mod code {
     pub const CONSTANT: u16 = 8;
     pub const UNDEF: u16 = 9;
     pub const SET_CS_WORKGROUP_SIZE: u16 = 16;
+    pub const SET_GS_INSTANCES: u16 = 17;
+    pub const SET_GS_INPUT_PRIMITIVE: u16 = 18;
+    pub const SET_GS_OUTPUT_VERTICES: u16 = 19;
+    pub const SET_GS_OUTPUT_PRIMITIVE: u16 = 20;
     pub const SET_PS_EARLY_FRAGMENT_TEST: u16 = 21;
     pub const SET_PS_DEPTH_GREATER_EQUAL: u16 = 22;
     pub const SET_PS_DEPTH_LESS_EQUAL: u16 = 23;
@@ -125,6 +129,8 @@ pub mod code {
     pub const IMAGE_SAMPLE: u16 = 357;
     pub const IMAGE_GATHER: u16 = 358;
     pub const IMAGE_COMPUTE_LOD: u16 = 359;
+    pub const EMIT_VERTEX: u16 = 416;
+    pub const EMIT_PRIMITIVE: u16 = 417;
     pub const DEMOTE: u16 = 448;
     pub const INTERPOLATE_AT_CENTROID: u16 = 480;
     pub const INTERPOLATE_AT_SAMPLE: u16 = 481;
@@ -221,6 +227,8 @@ pub mod builtin {
     pub const PRIMITIVE_ID: u64 = 5;
     pub const LAYER_INDEX: u64 = 6;
     pub const VIEWPORT_INDEX: u64 = 7;
+    pub const GS_VERTEX_COUNT_IN: u64 = 8;
+    pub const GS_INSTANCE_ID: u64 = 9;
     pub const SAMPLE_COUNT: u64 = 15;
     pub const SAMPLE_ID: u64 = 16;
     pub const SAMPLE_POSITION: u64 = 17;
@@ -264,6 +272,15 @@ pub mod stage {
 }
 
 /// Interpolation mode bits (`ir::InterpolationMode`).
+/// `ir::PrimitiveType`.
+pub mod primitive {
+    pub const POINTS: u64 = 0;
+    pub const LINES: u64 = 1;
+    pub const LINES_ADJ: u64 = 2;
+    pub const TRIANGLES: u64 = 3;
+    pub const TRIANGLES_ADJ: u64 = 4;
+}
+
 pub mod interp {
     pub const FLAT: u64 = 1;
     pub const CENTROID: u64 = 2;
