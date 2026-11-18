@@ -817,8 +817,13 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   it. `base_spec()` is the configuration of everything the kernel gives a container (its mounts, its
   read-only path, its namespaces, Docker's capabilities, root, `PATH`), with no program and no `root`: a
   plain tar's configuration (`Image::spec` of a tar) and an image's conversion start from it.
-  `spec_from_json` reads a `config.json`: oci-spec drops fields it does not model, so the JSON is compared
-  with what oci-spec read and the first field it did not read is refused by its path.
+  `spec_from_json` reads a `config.json` with oci-spec's types through `serde_ignored` (MIT OR Apache-2.0),
+  and gives back with the configuration the path of every property the specification, as oci-spec reads
+  it, does not define, and of every annotation (the runtime acts on none): the standard's extensibility rule
+  ("Runtimes MAY log unknown properties but MUST otherwise ignore them"), by the owner's ruling of
+  2026-11-18. Those are ignored, and the caller warns of each by path with a count (`wcon` does). A field the
+  specification defines that this runtime cannot honour is refused by name ("Runtimes MUST generate an error
+  when invalid or unsupported values are encountered").
 - **An OCI image** (`Image::oci`, a directory in the OCI image layout, which `docker save` writes as a tar):
   the index's manifest for linux and the back end's architecture (through nested indexes; a manifest whose
   configuration is not an image's, such as an attestation, is passed over), every blob checked against its
@@ -859,8 +864,8 @@ let ending = container.run()?;   // to the end; or container.step() and containe
   what a runtime's containers share (the compiler and its cache), `TranslatorSettings`, `Offer`, its architecture as the
   image configuration names it, and its stop flag. The kernel tests' stand-in is no `Executor`; the test
   driver makes it itself.
-- **Every field of the configuration is honoured or refused by name.** A `config.json` is read by
-  `spec_from_json`, so a field oci-spec does not read is refused too, and `accept` refuses any field of
+- **Every field of the configuration is honoured or refused by name.** A property the specification does
+  not define is ignored with a warning (`spec_from_json`, above), and `accept` refuses any field of
   oci-spec's it does not know. Honoured:
   `ociVersion` 1.x, `process.args`, `process.env`, `process.cwd` (absolute),
   `process.user.additionalGids`, `hostname` (absent or empty: `localhost`; runc sets no host name when it is
