@@ -121,8 +121,8 @@
 120_cs_store_snorm_code.dxbc	ok-wgsl glsl-write
 121_cs_code_1.dxbc	ok-wgsl glsl-write
 122_ps_code_16.dxbc	ok-wgsl glsl-write
-123_ps_atomics_code.dxbc	unsupported AtomicSignedness
-124_cs_atomics_code.dxbc	unsupported AtomicSignedness
+123_ps_atomics_code.dxbc	ok-wgsl glsl-write
+124_cs_atomics_code.dxbc	ok-wgsl glsl-write
 125_ps_code_17.dxbc	ok
 126_ps_2d_code.dxbc	ok-wgsl glsl-write
 127_ps_2d_array_code.dxbc	ok-wgsl glsl-write
@@ -157,9 +157,9 @@
 156_gather4_code.dxbc	ok-wgsl glsl-compile
 157_gather4_offset_code.dxbc	ok-wgsl glsl-compile
 158_gather4_green_code.dxbc	ok-wgsl glsl-compile
-159_gather4_po_code.dxbc	unsupported DynamicOffset
+159_gather4_po_code.dxbc	ok-wgsl glsl-compile
 160_gather4_c_code.dxbc	ok-wgsl glsl-compile
-161_gather4_po_c_code.dxbc	unsupported DynamicOffset
+161_gather4_po_c_code.dxbc	ok-wgsl glsl-compile
 162_vs_code_11.dxbc	ok
 163_ps_code_21.dxbc	ok
 164_ps_code_22.dxbc	ok-wgsl glsl-write
