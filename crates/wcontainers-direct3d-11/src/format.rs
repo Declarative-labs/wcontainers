@@ -355,3 +355,22 @@ pub fn row_bytes(format: Format, width: u32, height: u32) -> (u32, u32) {
     let (bw, bh, bytes) = format.block();
     (width.div_ceil(bw) * bytes, height.div_ceil(bh))
 }
+
+/// The components `format` has, a bit each from red, as a view reads them: a border colour is read
+/// as a texel of the view's format (`HelperValue::TextureComponents`). Depth reads as red.
+pub fn components(format: Format) -> u32 {
+    use Format::*;
+    match format {
+        R8Unorm | R8Snorm | R8Uint | R8Sint | R16Unorm | R16Snorm | R16Uint | R16Sint
+        | R16Float | R32Uint | R32Sint | R32Float | Bc4RUnorm | Bc4RSnorm | Stencil8
+        | Depth16Unorm | Depth24Plus | Depth24PlusStencil8 | Depth32Float
+        | Depth32FloatStencil8 => 0b0001,
+        Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint | Rg16Unorm | Rg16Snorm | Rg16Uint | Rg16Sint
+        | Rg16Float | Rg32Uint | Rg32Sint | Rg32Float | Bc5RgUnorm | Bc5RgSnorm => 0b0011,
+        Bgrx8Unorm | Bgrx8UnormSrgb | Rg11b10Float | Rgb9e5Float | B5g6r5Unorm | Rgbg8Unorm
+        | Grgb8Unorm | Rgb32Uint | Rgb32Sint | Rgb32Float | Bc6hRgbUfloat | Bc6hRgbFloat
+        | Etc2Rgb8Unorm | Etc2Rgb8UnormSrgb => 0b0111,
+        A8Unorm => 0b1000,
+        _ => 0b1111,
+    }
+}

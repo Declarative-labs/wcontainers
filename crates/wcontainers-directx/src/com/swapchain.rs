@@ -25,7 +25,7 @@ use super::*;
 /// `DXGI_PRESENT_TEST`.
 const PRESENT_TEST: u32 = 1;
 
-#[implement(IDXGIFactory2)]
+#[implement(IDXGIFactory6)]
 pub struct Factory {
     pub(super) private: Private,
     adapter: IDXGIAdapter1,
@@ -72,7 +72,7 @@ fn add_window(front: &Shared, hwnd: HWND) -> Result<u32> {
 
 impl Factory_Impl {
     fn me(&self) -> IDXGIFactory2 {
-        self.to_interface()
+        self.to_interface::<IDXGIFactory6>().into()
     }
 
     pub(super) fn get_parent(&self, _riid: *const GUID, parent: *mut *mut c_void) -> Result<()> {
@@ -92,6 +92,60 @@ impl Factory_Impl {
         } else {
             Err(DXGI_ERROR_NOT_FOUND.into())
         }
+    }
+
+    /// The debug layer the flag asks for is not served, so no flag holds.
+    pub(super) fn get_creation_flags(&self) -> DXGI_CREATE_FACTORY_FLAGS {
+        DXGI_CREATE_FACTORY_FLAGS(0)
+    }
+
+    /// The one adapter, by its identifier.
+    pub(super) fn enum_adapter_by_luid(
+        &self,
+        luid: &windows::Win32::Foundation::LUID,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        if let Some(p) = unsafe { out.as_mut() } {
+            *p = std::ptr::null_mut();
+        }
+        let ours = unsafe { self.adapter.GetDesc1()? }.AdapterLuid;
+        if (ours.LowPart, ours.HighPart) != (luid.LowPart, luid.HighPart) {
+            return Err(DXGI_ERROR_NOT_FOUND.into());
+        }
+        unsafe { self.adapter.query(riid, out).ok() }
+    }
+
+    /// The one adapter, whatever the preference.
+    pub(super) fn enum_adapter_by_gpu_preference(
+        &self,
+        index: u32,
+        _preference: DXGI_GPU_PREFERENCE,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        if let Some(p) = unsafe { out.as_mut() } {
+            *p = std::ptr::null_mut();
+        }
+        let adapter = self.enum_adapters1(index)?;
+        unsafe { adapter.query(riid, out).ok() }
+    }
+
+    /// Presenting without waiting for the display (tearing) is not offered: browsers pace frames.
+    pub(super) fn check_feature_support(
+        &self,
+        feature: DXGI_FEATURE,
+        data: *mut c_void,
+        size: u32,
+    ) -> Result<()> {
+        if feature != DXGI_FEATURE_PRESENT_ALLOW_TEARING
+            || data.is_null()
+            || size as usize != size_of::<BOOL>()
+        {
+            return Err(E_INVALIDARG.into());
+        }
+        unsafe { *data.cast::<BOOL>() = false.into() };
+        Ok(())
     }
 
     pub(super) fn is_current(&self) -> BOOL {
@@ -204,7 +258,7 @@ impl Factory_Impl {
         let mut kept = *d;
         kept.Width = width;
         kept.Height = height;
-        Ok(SwapChain {
+        Ok(IDXGISwapChain4::from(SwapChain {
             private: Private::default(),
             front: Locked::new(front),
             chain: Locked::new(RefCell::new(Some(chain))),
@@ -213,12 +267,12 @@ impl Factory_Impl {
             factory: self.me(),
             hwnd: hwnd.0 as isize,
             desc: Cell::new(kept),
-        }
+        })
         .into())
     }
 }
 
-#[implement(IDXGISwapChain1)]
+#[implement(IDXGISwapChain4)]
 pub struct SwapChain {
     pub(super) private: Private,
     front: Locked<Shared>,
@@ -424,6 +478,82 @@ impl SwapChain_Impl {
         d.BufferCount = now.buffers;
         d.Flags = flags.0 as u32;
         self.desc.set(d);
+        Ok(())
+    }
+
+    /// Taken only by swap chains made with a waitable object, as DXGI takes it.
+    pub(super) fn set_maximum_frame_latency(&self, frames: u32) -> Result<()> {
+        if self.desc.get().Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32 == 0
+        {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
+        let mut chain = self.chain.borrow_mut();
+        let chain = chain.as_mut().ok_or(DXGI_ERROR_INVALID_CALL)?;
+        chain.set_max_latency(frames).map_err(chain_hresult)
+    }
+
+    pub(super) fn get_maximum_frame_latency(&self) -> Result<u32> {
+        if self.desc.get().Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32 == 0
+        {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
+        let chain = self.chain.borrow();
+        Ok(chain.as_ref().map_or(1, |c| c.max_latency()))
+    }
+
+    pub(super) fn get_current_back_buffer_index(&self) -> u32 {
+        let chain = self.chain.borrow();
+        chain.as_ref().map_or(0, |c| c.current_index())
+    }
+
+    /// The present bit for the colour space the back buffers' format presents in (sRGB, or linear
+    /// light from 16-bit float buffers), as on an SDR display.
+    pub(super) fn check_color_space_support(&self, space: DXGI_COLOR_SPACE_TYPE) -> Result<u32> {
+        let format = self.desc.get().Format.0 as u32;
+        Ok(
+            if wcontainers_directx_graphics_infrastructure::presents_in(format, space.0 as u32) {
+                DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT.0 as u32
+            } else {
+                0
+            },
+        )
+    }
+
+    pub(super) fn set_color_space1(&self, space: DXGI_COLOR_SPACE_TYPE) -> Result<()> {
+        if self.check_color_space_support(space)? == 0 {
+            return Err(E_INVALIDARG.into());
+        }
+        Ok(())
+    }
+
+    /// `ResizeBuffers` with Direct3D 12's node masks and queues, which a Direct3D 11 device has none of.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resize_buffers1(
+        &self,
+        count: u32,
+        width: u32,
+        height: u32,
+        format: DXGI_FORMAT,
+        flags: &DXGI_SWAP_CHAIN_FLAG,
+        masks: *const u32,
+        queues: *const Option<IUnknown>,
+    ) -> Result<()> {
+        if !masks.is_null() || !queues.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
+        self.resize_buffers(count, width, height, format, flags)
+    }
+
+    /// Only the absence of HDR metadata is taken: the output is an SDR display.
+    pub(super) fn set_hdr_meta_data(
+        &self,
+        kind: DXGI_HDR_METADATA_TYPE,
+        _size: u32,
+        _data: *const c_void,
+    ) -> Result<()> {
+        if kind != DXGI_HDR_METADATA_TYPE_NONE {
+            return Err(missing("HDR metadata"));
+        }
         Ok(())
     }
 }

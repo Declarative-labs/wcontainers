@@ -10,7 +10,7 @@ import os, re, sys
 
 crate = sys.argv[1]
 traits = {}
-for api in ("Direct3D11", "Dxgi"):
+for api in ("Direct3D11", "Direct3D10", "Dxgi"):
     text = open(os.path.join(crate, "src", "Windows", "Win32", "Graphics", api, "mod.rs")).read()
     for m in re.finditer(r"pub trait (\w+)_Impl: [^{]*\{\n(.*?)\n\}", text, re.S):
         traits[m.group(1)] = [l.strip() for l in m.group(2).splitlines() if l.strip().startswith("fn ")]
@@ -19,6 +19,10 @@ CHILD = ["ID3D11DeviceChild"]
 # What DXGI offers on every resource, and on buffers and textures of one subresource.
 DXGI_RESOURCE = ["IDXGIResource1", "IDXGIResource", "IDXGIDeviceSubObject", "IDXGIObject"]
 DXGI_SURFACE = ["IDXGISurface1", "IDXGISurface"]
+# Direct3D 10's interfaces, which Direct3D 11's objects also offer.
+D3D10_CHILD = ["ID3D10DeviceChild"]
+D3D10_RESOURCE = ["ID3D10Resource"] + D3D10_CHILD
+D3D10_VIEW = ["ID3D10View"] + D3D10_CHILD
 for empty in ("ID3DDeviceContextState", "ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11ComputeShader", "ID3D11Predicate"):
     traits[empty] = []
 structs = {
@@ -27,20 +31,31 @@ structs = {
     + ["ID3D11Multithread", "ID3DUserDefinedAnnotation"],
     "Adapter": ["IDXGIAdapter1", "IDXGIAdapter", "IDXGIObject"],
     "Output": ["IDXGIOutput", "IDXGIObject"],
-    "Factory": ["IDXGIFactory2", "IDXGIFactory1", "IDXGIFactory", "IDXGIObject"],
-    "SwapChain": ["IDXGISwapChain1", "IDXGISwapChain", "IDXGIDeviceSubObject", "IDXGIObject"],
-    "Buffer": ["ID3D11Buffer", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE,
-    "Texture1D": ["ID3D11Texture1D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE,
-    "Texture2D": ["ID3D11Texture2D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE,
-    "Texture3D": ["ID3D11Texture3D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE,
-    "RenderTargetView": ["ID3D11RenderTargetView", "ID3D11View"] + CHILD,
-    "DepthStencilView": ["ID3D11DepthStencilView", "ID3D11View"] + CHILD,
-    "ShaderResourceView": ["ID3D11ShaderResourceView", "ID3D11View"] + CHILD,
+    "Factory": ["IDXGIFactory6", "IDXGIFactory5", "IDXGIFactory4", "IDXGIFactory3", "IDXGIFactory2",
+                "IDXGIFactory1", "IDXGIFactory", "IDXGIObject"],
+    "SwapChain": ["IDXGISwapChain4", "IDXGISwapChain3", "IDXGISwapChain2", "IDXGISwapChain1",
+                  "IDXGISwapChain", "IDXGIDeviceSubObject", "IDXGIObject"],
+    "Buffer": ["ID3D11Buffer", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
+    + ["ID3D10Buffer"] + D3D10_RESOURCE,
+    "Texture1D": ["ID3D11Texture1D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
+    + ["ID3D10Texture1D"] + D3D10_RESOURCE,
+    "Texture2D": ["ID3D11Texture2D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
+    + ["ID3D10Texture2D"] + D3D10_RESOURCE,
+    "Texture3D": ["ID3D11Texture3D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE
+    + ["ID3D10Texture3D"] + D3D10_RESOURCE,
+    "RenderTargetView": ["ID3D11RenderTargetView", "ID3D11View"] + CHILD
+    + ["ID3D10RenderTargetView"] + D3D10_VIEW,
+    "DepthStencilView": ["ID3D11DepthStencilView", "ID3D11View"] + CHILD
+    + ["ID3D10DepthStencilView"] + D3D10_VIEW,
+    "ShaderResourceView": ["ID3D11ShaderResourceView", "ID3D11View"] + CHILD
+    + ["ID3D10ShaderResourceView1", "ID3D10ShaderResourceView"] + D3D10_VIEW,
     "UnorderedAccessView": ["ID3D11UnorderedAccessView", "ID3D11View"] + CHILD,
-    "SamplerState": ["ID3D11SamplerState"] + CHILD,
-    "BlendState": ["ID3D11BlendState1", "ID3D11BlendState"] + CHILD,
-    "DepthStencilState": ["ID3D11DepthStencilState"] + CHILD,
-    "RasterizerState": ["ID3D11RasterizerState1", "ID3D11RasterizerState"] + CHILD,
+    "SamplerState": ["ID3D11SamplerState"] + CHILD + ["ID3D10SamplerState"] + D3D10_CHILD,
+    "BlendState": ["ID3D11BlendState1", "ID3D11BlendState"] + CHILD
+    + ["ID3D10BlendState1", "ID3D10BlendState"] + D3D10_CHILD,
+    "DepthStencilState": ["ID3D11DepthStencilState"] + CHILD + ["ID3D10DepthStencilState"] + D3D10_CHILD,
+    "RasterizerState": ["ID3D11RasterizerState1", "ID3D11RasterizerState"] + CHILD
+    + ["ID3D10RasterizerState"] + D3D10_CHILD,
     "InputLayout": ["ID3D11InputLayout"] + CHILD,
     "Query": ["ID3D11Query", "ID3D11Asynchronous"] + CHILD,
     "Predicate": ["ID3D11Predicate", "ID3D11Query", "ID3D11Asynchronous"] + CHILD,
@@ -71,9 +86,16 @@ hand = {
     "IDXGIFactory": "EnumAdapters MakeWindowAssociation GetWindowAssociation CreateSwapChain",
     "IDXGIFactory1": "EnumAdapters1 IsCurrent",
     "IDXGIFactory2": "IsWindowedStereoEnabled CreateSwapChainForHwnd",
+    "IDXGIFactory3": "GetCreationFlags",
+    "IDXGIFactory4": "EnumAdapterByLuid",
+    "IDXGIFactory5": "CheckFeatureSupport",
+    "IDXGIFactory6": "EnumAdapterByGpuPreference",
     "IDXGIDeviceSubObject": "GetDevice",
     "IDXGISwapChain": "Present GetBuffer SetFullscreenState GetFullscreenState GetDesc ResizeBuffers GetLastPresentCount",
     "IDXGISwapChain1": "GetDesc1 GetHwnd Present1 SetRotation GetRotation",
+    "IDXGISwapChain2": "SetMaximumFrameLatency GetMaximumFrameLatency",
+    "IDXGISwapChain3": "GetCurrentBackBufferIndex CheckColorSpaceSupport SetColorSpace1 ResizeBuffers1",
+    "IDXGISwapChain4": "SetHDRMetaData",
     "ID3D11DeviceContext": "VSSetConstantBuffers PSSetShaderResources PSSetShader PSSetSamplers VSSetShader DrawIndexed Draw Map Unmap PSSetConstantBuffers IASetInputLayout IASetVertexBuffers IASetIndexBuffer DrawIndexedInstanced DrawInstanced IASetPrimitiveTopology VSSetShaderResources VSSetSamplers OMSetRenderTargets OMSetBlendState OMSetDepthStencilState RSSetState RSSetViewports RSSetScissorRects CopySubresourceRegion CopyResource UpdateSubresource ClearRenderTargetView ClearDepthStencilView GenerateMips Begin End GetData ClearState Flush GetType GetContextFlags VSGetShader PSGetShader VSGetConstantBuffers PSGetConstantBuffers VSGetShaderResources PSGetShaderResources VSGetSamplers PSGetSamplers IAGetInputLayout IAGetVertexBuffers IAGetIndexBuffer IAGetPrimitiveTopology OMGetRenderTargets OMGetBlendState OMGetDepthStencilState RSGetState RSGetViewports RSGetScissorRects CSSetShader CSGetShader CSSetConstantBuffers CSGetConstantBuffers CSSetShaderResources CSGetShaderResources CSSetSamplers CSGetSamplers CSSetUnorderedAccessViews CSGetUnorderedAccessViews DrawInstancedIndirect DrawIndexedInstancedIndirect Dispatch DispatchIndirect ClearUnorderedAccessViewUint ClearUnorderedAccessViewFloat CopyStructureCount OMSetRenderTargetsAndUnorderedAccessViews OMGetRenderTargetsAndUnorderedAccessViews ExecuteCommandList FinishCommandList ResolveSubresource SetResourceMinLOD GetResourceMinLOD",
     "ID3D11Resource": "GetType SetEvictionPriority GetEvictionPriority",
     "ID3D11View": "GetResource",
@@ -84,6 +106,10 @@ hand = {
 for t in ["ID3D11Buffer", "ID3D11Texture1D", "ID3D11Texture2D", "ID3D11Texture3D", "ID3D11RenderTargetView", "ID3D11DepthStencilView", "ID3D11ShaderResourceView", "ID3D11UnorderedAccessView", "ID3D11SamplerState", "ID3D11BlendState", "ID3D11DepthStencilState", "ID3D11RasterizerState"]:
     hand[t] = "GetDesc"
 private = {"GetPrivateData", "SetPrivateData", "SetPrivateDataInterface"}
+# Direct3D 10's calls served by a hand-written method named with a 10 after the call's name, and
+# those served by Direct3D 11's own.
+hand10 = {"GetDesc", "GetDesc1", "GetResource", "GetType", "GetDevice"}
+same10 = {"GetEvictionPriority", "SetEvictionPriority"} | private
 # DXGI's calls on resources that Direct3D 11's own calls or the child's serve.
 on_resource = {
     ("IDXGIObject", "GetParent"): "self.child.query_device(riid, ppparent)",
@@ -142,7 +168,8 @@ out = ["// Written by a generator from the windows crate's (0.62.2) trait defini
        "// calls the hand-written method of the same name in snake case, or answers that it is not served,",
        "// under the library's lock.",
        "#![allow(non_snake_case, unused_variables, clippy::too_many_arguments)]", "",
-       "use windows::Win32::Graphics::Direct3D11::*;", "use windows::Win32::Graphics::Dxgi::*;", "",
+       "use windows::Win32::Graphics::Direct3D10::*;", "use windows::Win32::Graphics::Direct3D11::*;",
+       "use windows::Win32::Graphics::Dxgi::*;", "",
        "use super::*;", ""]
 for struct, tlist in structs.items():
     for t in tlist:
@@ -151,15 +178,21 @@ for struct, tlist in structs.items():
             sig = fix(sig)
             name = re.match(r"fn (\w+)\(", sig).group(1)
             end = sig.find(") ->") if ") ->" in sig else sig.rfind(")")
-            params = re.findall(r"(\w+): ", sig.split("(", 1)[1][: end - sig.index("(") - 1])
+            params = re.findall(r"((?:r#)?\w+): ", sig.split("(", 1)[1][: end - sig.index("(") - 1])
             params = [p for p in params if p != "self"]
             args = ", ".join(params)
             ret = sig[end + 1:].strip()
             unused = t.startswith("ID3D11DeviceContext") and unused_stage(name, params, f"{t}::{name}")
             if unused:
                 body = unused
-            elif t == "ID3D11DeviceChild":
+            elif t == "ID3D11DeviceChild" or (t == "ID3D10DeviceChild" and name in private):
                 body = f"self.child.{snake(name)}({args})"
+            elif t == "ID3D10DeviceChild" and name in hand10:
+                body = f"self.child.{snake(name)}10({args})"
+            elif t.startswith("ID3D10") and name in hand10:
+                body = f"self.{snake(name)}10({args})"
+            elif t.startswith("ID3D10") and name in same10:
+                body = f"self.{snake(name)}({args})"
             elif t in ("ID3D11Device", "IDXGIObject") and name in private:
                 owner = "child.private" if struct.startswith(("Buffer", "Texture")) else "private"
                 body = f"self.{owner}.{snake(name)}({args})"

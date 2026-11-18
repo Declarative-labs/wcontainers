@@ -81,6 +81,21 @@ pub struct Buffer<B: Backend> {
     pub shadow: RefCell<Vec<u8>>,
     /// A staging buffer's shadow against the GPU's bytes.
     pub staged: RefCell<Staged<B>>,
+    /// Counts the writes into it, for the copies of its windows.
+    pub writes: Cell<u64>,
+    /// Copies of its windows read by blocks longer than them.
+    pub windows: RefCell<Vec<Window<B>>>,
+}
+
+/// A copy of a constant buffer window of `length` bytes at `offset`, read by a block of `size` bytes:
+/// its bytes past the window are zero.
+pub struct Window<B: Backend> {
+    pub offset: u64,
+    pub length: u64,
+    pub size: u64,
+    /// The buffer's write count and back-end buffer at the last copy.
+    pub copied: Cell<Option<(u64, u64)>>,
+    pub twin: Kept<B, B::Buffer>,
 }
 
 /// A staging subresource's shadow against the GPU's copy of it.
@@ -304,7 +319,11 @@ pub struct LayoutElement {
 /// An input layout. The back end's vertex layout block is made per (layout, strides) at draws.
 pub struct InputLayout {
     pub id: u64,
+    /// The elements the back end fetches.
     pub elements: Vec<LayoutElement>,
+    /// The elements of slots stepping by instances at a rate the back end cannot step by, which
+    /// the vertex program fetches (`InstanceRateInShader`).
+    pub pulled: Vec<LayoutElement>,
     /// Per input slot: none (per vertex) or the instance step rate.
     pub instance_steps: [Option<u32>; 32],
 }
@@ -323,6 +342,9 @@ pub struct Shader<B: Backend> {
     pub samplers: u16,
     /// The texture slots the program reads, one bit each.
     pub textures: u128,
+    /// The sampler slots it gathers, compares or offsets through, which it cannot mirror once
+    /// around: through a mirror-once sampler the back end lacks it filters itself.
+    pub mirror_filtered: u16,
     /// The program reads the targets' sample count, so each draw converts it for theirs.
     pub reads_samples: bool,
     /// Where the plain program reads its helper constants.

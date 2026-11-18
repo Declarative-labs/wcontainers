@@ -6,7 +6,7 @@ use std::rc::{Rc, Weak};
 
 use wcontainers_gpu::{
     Backend, BindingLayoutKey, Combination, CombinationTracker, Format, MAX_BINDING_SETS,
-    PrepareDesc, ScalarKind, TargetLayout, Topology, VertexFormat,
+    PrepareDesc, ScalarKind, SlowPath, TargetLayout, Topology, VertexFormat,
 };
 
 use crate::device::Device;
@@ -107,6 +107,8 @@ pub(crate) struct Ahead<B: Backend> {
     /// The shaders made most recently of each stage, which a new shader of the other is paired with.
     last_vertex: Weak<Shader<B>>,
     last_pixel: Weak<Shader<B>>,
+    /// The counts last reported.
+    reported: [u64; 3],
 }
 
 impl<B: Backend> Ahead<B> {
@@ -116,6 +118,7 @@ impl<B: Backend> Ahead<B> {
             last: None,
             last_vertex: Weak::new(),
             last_pixel: Weak::new(),
+            reported: [0; 3],
         }
     }
 
@@ -296,15 +299,27 @@ impl<B: Backend> Device<B> {
     }
 }
 
-impl<B: Backend> Drop for Device<B> {
-    /// Reports how the pipelines built ahead were used (plan 4.4).
-    fn drop(&mut self) {
+impl<B: Backend> Device<B> {
+    /// Reports how the pipelines built ahead were used (plan 4.4), beside the combinations the
+    /// back end built at their first draw, where these changed since the last report: at each
+    /// present, since programs may end without releasing the device.
+    pub(crate) fn report_ahead(&mut self) {
         let (drawn, not) = self.ahead.prepared_use();
-        if drawn + not > 0 {
-            eprintln!(
-                "wcontainers direct3d 11: built ahead {} combinations: {drawn} drawn since, {not} not",
-                drawn + not
-            );
+        let missed = self.backend.slow_paths().count(SlowPath::PipelineMiss);
+        if [drawn, not, missed] == self.ahead.reported {
+            return;
         }
+        self.ahead.reported = [drawn, not, missed];
+        eprintln!(
+            "wcontainers direct3d 11: built ahead {} combinations: {drawn} drawn since, {not} not; \
+             {missed} built at their first draw",
+            drawn + not
+        );
+    }
+}
+
+impl<B: Backend> Drop for Device<B> {
+    fn drop(&mut self) {
+        self.report_ahead();
     }
 }
