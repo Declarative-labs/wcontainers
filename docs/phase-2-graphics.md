@@ -2084,6 +2084,7 @@ against the same Rust from the start; back ends never read them.
   the argument buffer of an indirect draw whose program reads the bases, at `DRAW_ARGUMENTS_BINDING` (11);
 the hull stage's patches and the tessellator's points a domain program reads, at `DOMAIN_PATCHES_BINDING`
 (13) and `DOMAIN_POINTS_BINDING` (14), buffers the stage helper owns;
+  a storage buffer a front's own counting program adds to, at `COUNTER_BINDING` (15);
   and the merged samplers of clamped textures, from `CLAMPED_SAMPLER_BINDING` (16) plus the index of
   the pair in `Reflection::sampled_pairs`.
 - Variants: `VariantKey` (4.5) is part of the converted shader's cache key. Its per-slot fields carry a
