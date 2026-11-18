@@ -706,6 +706,17 @@ Run 15, 2026-11-17, counts only:
   bits, made more texels differ, so neither is done.
 - `tests/variant_draw.rs` and `tests/draw.rs` on the desktop after the helper packing change: both
   pass (`run15/desktop-final.log`). Windows clippy with warnings denied passes.
+- Chrome 157 (`web/check`, one GPU job, about 3 s, `run15/chrome.log`): the filter variants of
+  `ps_filter` by both routes (by texture with a bias; by sampler with a resource clamp and
+  `TEXTURE_INFO`) and of the rig's 2D array, 3D and gather shaders, written by a test kept out of
+  the repository: WGSL 7 of 7 compile in Chrome's WebGPU, GLSL ES 2 of 2 in its WebGL 2.
+- Laptop (i7-8750H, load average 0.1 to 0.7): the whole suite with every corpus (`--include-ignored
+  --skip mutated`, the plan's corpus and the real programs' shaders) passes after recording the new
+  own verdicts (`vs_filter` converts; `ps_filter`'s plain GLSL ES has `textureGather`) and four rig
+  shaders that now compile as GLSL ES (the rig track recompiled its shaders at lower shader models,
+  so fxc no longer writes bitfield operations in them); every other verdict and cache record as
+  recorded (corpus test 179 s; `run15/full-suite2.log`). Clippy with warnings denied passes. Not
+  re-run: the WebAssembly comparison (plain conversions did not change).
 
 Run 14, 2026-11-17, counts only:
 - `tests/pull_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2.5 s,
