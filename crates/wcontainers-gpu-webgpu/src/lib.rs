@@ -792,8 +792,14 @@ fn caps(
                     && flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE),
                 FormatUse::BLEND,
             ),
+            // A resolve averages: integer formats never resolve, as in WebGPU and Direct3D, whatever
+            // the adapter's own flags allow.
             (
-                flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE),
+                flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE)
+                    && matches!(
+                        raw.sample_type(None, None),
+                        Some(wgpu::TextureSampleType::Float { .. })
+                    ),
                 FormatUse::RESOLVE,
             ),
             (
