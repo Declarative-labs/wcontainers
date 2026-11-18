@@ -299,5 +299,20 @@ int main(int argc, char **argv) {
     show("devpts mkdir unprivileged", mkdir("d", 0755));
     show("devpts create unprivileged", open("f", O_CREAT | O_RDWR, 0644));
     show("devpts symlink unprivileged", symlink("x", "s"));
+    // VmLck in the status file follows mlock, mlock2 on fault and munlock.
+    {
+        char *area = mmap(0, 1 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        const char *steps[] = {"before", "mlock 256 KiB", "mlock2 on fault 512 KiB more", "munlock all of it"};
+        for (int step = 0; step < 4; step++) {
+            if (step == 1) mlock(area, 256 << 10);
+            if (step == 2) syscall(SYS_mlock2, area + (256 << 10), 512 << 10, 1);
+            if (step == 3) munlock(area, 1 << 20);
+            char line[256];
+            FILE *status = fopen("/proc/self/status", "r");
+            while (fgets(line, sizeof line, status))
+                if (!strncmp(line, "VmLck:", 6)) printf("%s: %s", steps[step], line);
+            fclose(status);
+        }
+    }
     return 0;
 }

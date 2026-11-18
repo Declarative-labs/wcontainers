@@ -1967,6 +1967,13 @@ fn process_file(
             out.push('\n');
             if !ended {
                 let _ = writeln!(out, "VmSize:\t{:8} kB", vsize / 1024);
+                // Memory held by mlock (`locked_vm`): every page of a locked range.
+                let (locked, _) = process.map.borrow().locked_pages(0, u64::MAX);
+                let _ = writeln!(
+                    out,
+                    "VmLck:\t{:8} kB",
+                    locked * (wcontainers_abi::PAGE_SIZE / 1024)
+                );
             }
             let _ = write!(
                 out,
