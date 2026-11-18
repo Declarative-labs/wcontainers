@@ -978,6 +978,56 @@ pub fn fractional_viewports_are_refused<H: Host>() {
     assert_eq!(b.status(), DeviceStatus::Lost(LossReason::Error));
 }
 
+/// A viewport at the interface's bounds (with `m` the largest 2D texture: x at -2m, x + width at
+/// 2m - 1) draws; one past them, or with depths outside 0 to 1 or reversed, breaks the rule and
+/// loses the device rather than reaching GL, which would clamp it.
+pub fn viewports_past_their_bounds_are_refused<H: Host>() {
+    use crate::kit::{self, Kit};
+    let m = H::make().caps().limits.max_texture_2d as f32;
+    let depths = |min: f32, max: f32| Viewport {
+        min_depth: min.to_bits(),
+        max_depth: max.to_bits(),
+        ..kit::viewport(0.0, 0.0, 4.0, 4.0)
+    };
+    let cases = [
+        (kit::viewport(-2.0 * m, 0.0, m, 4.0), true),
+        (kit::viewport(m - 1.0, m - 1.0, m, m), true),
+        (depths(0.25, 0.25), true),
+        (kit::viewport(-2.0 * m - 1.0, 0.0, 4.0, 4.0), false),
+        (kit::viewport(m, 0.0, m, 4.0), false),
+        (kit::viewport(0.0, 0.0, m + 1.0, 4.0), false),
+        (kit::viewport(0.0, 0.0, 4.0, -1.0), false),
+        (depths(0.0, 1.5), false),
+        (depths(0.75, 0.25), false),
+    ];
+    for (vp, takes) in cases {
+        let mut b = H::make();
+        let k = Kit::new(&mut b);
+        let program = kit::program(&mut b, WRITE_ONE, "vs", "fs");
+        let f = Format::R32Uint;
+        let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+        let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+        let v = kit::target(&mut b, &t, f, 0, 0);
+        let vps = [vp];
+        b.begin_pass(&kit::pass(&v, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            &program,
+            None,
+            &vps,
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        let want = if takes {
+            DeviceStatus::Ok
+        } else {
+            DeviceStatus::Lost(LossReason::Error)
+        };
+        assert_eq!(b.status(), want, "the viewport {vp:?}");
+    }
+}
+
 /// Loads texel (0, 0) of level 0 of two views and adds them.
 const TWO_LOADS: &str = "
 @group(0) @binding(32) var a: texture_2d<u32>;
@@ -3991,4 +4041,267 @@ pub fn passes_without_attachments_rasterise<H: Host>() {
         assert_eq!(passed, [true, false], "{samples} samples");
         assert_eq!(b.status(), DeviceStatus::Ok, "{samples} samples");
     }
+}
+
+/// Immediates of every kind of type a struct holds: a float, a signed vector, an unsigned vector
+/// read in the vertex stage, a matrix (columns 16 bytes apart) and a vector of three.
+const IMMEDIATES: &str = "
+struct Imm {
+    a: f32,
+    b: vec2<i32>,
+    c: vec4<u32>,
+    m: mat3x3<f32>,
+    d: vec3<f32>,
+    e: u32,
+}
+var<immediate> k: Imm;
+struct Out {
+    @builtin(position) p: vec4<f32>,
+    @location(0) @interpolate(flat) c: u32,
+}
+@vertex fn vs(@builtin(vertex_index) v: u32) -> Out {
+    return Out(vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0), k.c.x);
+}
+@fragment fn fs(i: Out) -> @location(0) vec4<u32> {
+    return vec4<u32>(i.c, bitcast<u32>(k.a), bitcast<u32>(k.b.y) ^ k.e, bitcast<u32>(k.m[2][1] + k.d.z));
+}
+";
+
+/// Immediates reach both stages as plain uniforms, at the offsets the WGSL layout gives (`c` at 16,
+/// `m` at 32 with columns 16 apart, `d` at 80, `e` at 92), set again only when they change; bytes a
+/// draw does not give read zero. Each draw writes one texel of an `rgba32uint` target.
+pub fn immediates_reach_both_stages<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    assert!(b.caps().limits.immediate_bytes >= 96);
+    let modules = ["vs", "fs"].map(|entry| {
+        let module = naga::front::wgsl::parse_str(IMMEDIATES).expect("the WGSL parses");
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::IMMEDIATES,
+        )
+        .validate(&module)
+        .expect("the WGSL validates");
+        ShaderModule {
+            module,
+            info,
+            entry_point: entry.into(),
+            stage: if entry == "vs" {
+                ShaderStage::Vertex
+            } else {
+                ShaderStage::Fragment
+            },
+            key: [0; 32],
+        }
+    });
+    let v = b.create_shader(&modules[0]).expect("create_shader");
+    let f = b.create_shader(&modules[1]).expect("create_shader");
+    let program = b
+        .create_program(&Program::Render {
+            vertex: &v,
+            fragment: Some(&f),
+        })
+        .expect("create_program");
+    let k = Kit::new(&mut b);
+    let format = Format::Rgba32Uint;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        format,
+        [3, 1, 1],
+        1,
+        usage,
+        false,
+    );
+    let target = kit::target(&mut b, &t, format, 0, 0);
+    let immediates = |a: f32, cx: u32| {
+        let mut bytes = vec![0u8; 96];
+        let mut put = |at: usize, w: [u8; 4]| bytes[at..at + 4].copy_from_slice(&w);
+        put(0, a.to_le_bytes());
+        put(8, (-3i32).to_le_bytes());
+        put(12, (-7i32).to_le_bytes());
+        for (i, c) in [cx, 12, 13, 14].iter().enumerate() {
+            put(16 + 4 * i, c.to_le_bytes());
+        }
+        // m[2] = (0.25, 0.5, 0.75), at 32 + 2 * 16.
+        for (i, x) in [0.25f32, 0.5, 0.75].iter().enumerate() {
+            put(64 + 4 * i, x.to_le_bytes());
+        }
+        for (i, x) in [1.0f32, 2.0, 4.0].iter().enumerate() {
+            put(80 + 4 * i, x.to_le_bytes());
+        }
+        put(92, 0x100u32.to_le_bytes());
+        bytes
+    };
+    let first = immediates(1.5, 11);
+    let second = immediates(2.5, 21);
+    let short = 1.25f32.to_le_bytes();
+    let draws: [&[u8]; 4] = [&first, &second, &second, &short];
+    b.begin_pass(&kit::pass(&target, [0; 4], None));
+    let mut want = Vec::new();
+    for (i, bytes) in draws.iter().enumerate().take(3) {
+        let vp = [kit::viewport(i as f32, 0.0, 1.0, 1.0)];
+        let mut call = kit::call(&k, &program, None, &vp, Topology::TriangleList, 3);
+        call.immediates = bytes;
+        b.draw(&call);
+    }
+    // The short draw over the third texel: everything past its four bytes reads zero.
+    let vp = [kit::viewport(2.0, 0.0, 1.0, 1.0)];
+    let mut call = kit::call(&k, &program, None, &vp, Topology::TriangleList, 3);
+    call.immediates = draws[3];
+    b.draw(&call);
+    b.end_pass();
+    for (a, cx) in [(1.5f32, 11u32), (2.5, 21)] {
+        want.extend([cx, a.to_bits(), (-7i32 as u32) ^ 0x100, 4.5f32.to_bits()]);
+    }
+    want.extend([0, 1.25f32.to_bits(), 0, 0]);
+    let got: Vec<u32> = kit::read(&mut b, &t, 0, 0, [3, 1, 1], 16, false)
+        .chunks(4)
+        .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+        .collect();
+    assert_eq!(
+        got, want,
+        "texels: the first immediates, the second, the short ones"
+    );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Reads the three vertex formats GL ES cannot read as stored and writes what it read: row 0 the
+/// BGRA colour (as bytes), the 10-10-10-2 integers (packed again) and the 11-11-10 red's bits; row
+/// 1 the green's and blue's bits.
+const PACKED_ATTRIBUTES: &str = "
+struct In {
+    @builtin(vertex_index) v: u32,
+    @location(1) colour: vec4<f32>,
+    @location(2) ints: vec4<u32>,
+    @location(3) floats: vec3<f32>,
+}
+struct Out {
+    @builtin(position) p: vec4<f32>,
+    @location(0) @interpolate(flat) colour: vec4<f32>,
+    @location(1) @interpolate(flat) ints: vec4<u32>,
+    @location(2) @interpolate(flat) floats: vec3<f32>,
+}
+fn at(i: In, y: f32) -> Out {
+    let x = (f32(i.v) * 2.0 + 1.0) / 3.0 - 1.0;
+    return Out(vec4<f32>(x, y, 0.0, 1.0), i.colour, i.ints, i.floats);
+}
+@vertex fn vs_a(i: In) -> Out { return at(i, 0.5); }
+@vertex fn vs_b(i: In) -> Out { return at(i, -0.5); }
+@fragment fn fs_a(o: Out) -> @location(0) vec4<u32> {
+    let c = vec4<u32>(round(o.colour * 255.0));
+    let u = o.ints;
+    return vec4<u32>(c.x | (c.y << 8u) | (c.z << 16u) | (c.w << 24u),
+        u.x | (u.y << 10u) | (u.z << 20u) | (u.w << 30u), bitcast<u32>(o.floats.x), 0u);
+}
+@fragment fn fs_b(o: Out) -> @location(0) vec4<u32> {
+    return vec4<u32>(bitcast<u32>(o.floats.y), bitcast<u32>(o.floats.z), 0u, 0u);
+}
+";
+
+/// `Bgra8Unorm`, `Uint10_10_10_2` and `Float11_11_10` attributes (which GL ES reads as bytes or one
+/// word, converted in a program variant: `VertexFormatConverted`) reach the program with Direct3D's
+/// meaning: red from the third byte; red in the low ten bits; red the low eleven bits as a float of
+/// five exponent and six mantissa bits (a normal, a denormal, zero, infinity), blue the top ten.
+pub fn packed_vertex_formats_are_converted<H: Host>() {
+    use crate::kit::{self, Kit};
+    let mut b = H::make();
+    let mut layout = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    layout.streams[0] = Some(VertexStream {
+        stride: 12,
+        step: StepMode::Vertex,
+    });
+    for (i, format) in [
+        VertexFormat::Bgra8Unorm,
+        VertexFormat::Uint10_10_10_2,
+        VertexFormat::Float11_11_10,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        layout.attributes[i] = Some(VertexAttribute {
+            location: 1 + i as u32,
+            stream: 0,
+            offset: 4 * i as u32,
+            format,
+        });
+    }
+    let layout = b
+        .create_vertex_layout(&layout)
+        .expect("create_vertex_layout");
+    // Per vertex: green of 1.5, 2^-20 * 3 (a denormal), 2, 0; blue 0.75, 100, infinity.
+    let small = |r: u32, g: u32, bl: u32| r | g << 11 | bl << 22;
+    let floats = [
+        small(15 << 6 | 32, 3, 14 << 5 | 16),
+        small(15 << 6 | 32, 16 << 6, 21 << 5 | 18),
+        small(15 << 6 | 32, 0, 31 << 5),
+    ];
+    let mut bytes = Vec::new();
+    let mut want_a = Vec::new();
+    for (i, f) in floats.iter().enumerate() {
+        let i = i as u32;
+        bytes.extend([10 + i as u8, 20, 30, 40]);
+        let ints = (1000 - i) | 513 << 10 | 7 << 20 | i << 30;
+        bytes.extend(ints.to_le_bytes());
+        bytes.extend(f.to_le_bytes());
+        want_a.extend([
+            30 | 20 << 8 | (10 + i) << 16 | 40 << 24,
+            ints,
+            1.5f32.to_bits(),
+            0,
+        ]);
+    }
+    let want_b: Vec<u32> = [
+        (3.0 * 2f32.powi(-20), 0.75),
+        (2.0, 100.0),
+        (0.0, f32::INFINITY),
+    ]
+    .iter()
+    .flat_map(|(g, bl): &(f32, f32)| [g.to_bits(), bl.to_bits(), 0, 0])
+    .collect();
+    let vb = buffer(&mut b, BufferUsage::VERTEX, &bytes);
+    let k = Kit::new(&mut b);
+    let format = Format::Rgba32Uint;
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        format,
+        [3, 2, 1],
+        1,
+        usage,
+        false,
+    );
+    let target = kit::target(&mut b, &t, format, 0, 0);
+    let programs = [("vs_a", "fs_a"), ("vs_b", "fs_b")]
+        .map(|(v, f)| kit::program(&mut b, PACKED_ATTRIBUTES, v, f));
+    let vp = [kit::viewport(0.0, 0.0, 3.0, 2.0)];
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let before = b.slow_paths().count(SlowPath::VertexFormatConverted);
+    b.begin_pass(&kit::pass(&target, [0; 4], None));
+    for p in &programs {
+        let mut call = kit::call(&k, p, None, &vp, Topology::PointList, 3);
+        call.vertex_layout = &layout;
+        call.vertex_buffers = &streams;
+        b.draw(&call);
+    }
+    b.end_pass();
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert_eq!(
+        b.slow_paths().count(SlowPath::VertexFormatConverted) - before,
+        2
+    );
+    let got: Vec<u32> = kit::read(&mut b, &t, 0, 0, [3, 2, 1], 16, false)
+        .chunks(4)
+        .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+        .collect();
+    assert_eq!(got[..12], want_a[..], "row 0: colour, integers, red");
+    assert_eq!(got[12..], want_b[..], "row 1: green and blue");
 }

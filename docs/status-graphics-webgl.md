@@ -5,16 +5,25 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a is done. Since run 10 the shared suite (28 tests) passes in Chrome's WebGL 2 and natively on
-ANGLE with every extension; of the back end's 27 checks two fail on both (draws into array layers
-in Chrome, odd-sized base levels in mozangle; see "Known failures"). Also open:
+G3a is done. Since run 11 the shared suite (30 tests) and the back end's 30 checks pass in Chrome's
+WebGL 2 and natively on ANGLE with every extension (60 of 60 on both). What is still open:
 - Against the WebGPU back end, 5 of 6 comparisons pass. The one that fails is `r32float` filtered
   in the program here against WebGPU's hardware filter (one float step off in 5 of 16 values, from
   G1's in-shader filter); the same comparison route against route is byte-equal.
-- Routes without EXT_clip_control or WEBGL_provoking_vertex fail the 19 suite tests whose own raster
+- Routes without EXT_clip_control or WEBGL_provoking_vertex fail the 20 suite tests whose own raster
   blocks ask for what is absent, in Chrome and on ANGLE. G1 has to change that.
 - `TIMESTAMPS` is built but cannot run here: Chrome (every ANGLE back end) and mozangle give 0
   timestamp bits on the RTX 3080.
+
+Run 11 merged origin/phase-2-graphics (f7e5dfe), origin/phase-2-graphics-shaders and
+origin/phase-2-graphics-rig. Both of run 10's known failures are fixed. The Chrome one was not
+what run 10 guessed: drawing into a layer of a 2D array whose load is `DontCare` (or store
+`Discard`) invalidated the attachment, and Chrome (ANGLE on Direct3D 11) then lost the other
+layers of that level. Layers of 2D arrays are no longer invalidated. The mozangle one is fixed by
+a second patch to the test tool (upstream ANGLE's fix for immutable textures whose base level
+changes). Also new: viewports past the interface's new bounds are refused, immediates are plain
+uniforms (`immediate_bytes` 256), and `Bgra8Unorm`, `Uint10_10_10_2` and `Float11_11_10` vertex
+attributes draw through program variants (`VertexFormatConverted`).
 
 Run 10 merged origin/phase-2-graphics (e9387a6, which held the WebGPU branch's newest). It brought
 four new suite tests; the browser host now runs them. Two failed and are fixed: a scissor reaching
@@ -512,6 +521,39 @@ Chrome and on ANGLE with every extension.
     a 7 by 7 cube (three levels: the full chain), and gives the first differing texel with the box
     average. New check `levels_stay_as_written_while_others_are_read_and_drawn`.
 
+- G3 run 11:
+  - Merged origin/phase-2-graphics f7e5dfe (G1's run 11: viewport bounds, `capture_components`, two
+    new suite tests, which the browser host now runs), then origin/phase-2-graphics-shaders and
+    origin/phase-2-graphics-rig. No conflicts.
+  - Layers of 2D arrays are never invalidated (`DontCare` loads and `Discard` stores of an attachment
+    whose texture is a 2D array do nothing). In Chrome, invalidating one layer lost the other layers
+    of that level. That is why the mip draws left every layer but the last black, and why
+    `levels_stay_as_written_...` failed. Run 10 guessed that sampling the array while drawing into it
+    was the cause. This run first built that fix (draws sampled a copy of the levels they read,
+    under a new slow path): the copy was made, and the layers were still black. The slow path was
+    taken back out of the interface. With only the invalidation skipped, both checks pass in Chrome.
+  - Viewports are checked against the interface's new bounds (WebGPU's, by `max_texture_2d`), and
+    depths outside 0 to 1 or reversed are refused too; such a draw loses the device as a broken rule.
+    Before, GL clamped them. New check `viewports_past_their_bounds_are_refused`.
+  - Immediates (plan 5.8): `immediate_bytes` is 256. naga writes a program's immediates as one
+    uniform struct per stage; each scalar, vector and matrix of it is set from the draw's bytes at
+    its offset, only when the program's last bytes differ. Matrix columns are read 8 or 16 bytes
+    apart, as the WGSL layout puts them. Bytes past what a draw gives read zero, as GL's uniforms
+    start. New check `immediates_reach_both_stages`.
+  - Vertex formats GL ES cannot read as stored (`VertexFormatConverted`, counted per draw): GL reads
+    `Bgra8Unorm` as four normalised bytes and `Uint10_10_10_2` and `Float11_11_10` as one unsigned
+    word. A program variant per layout key (two bits per location) declares those inputs as such
+    and turns them into the program's values at the start of `main` (bytes swapped; ten-bit fields;
+    11 and 10-bit floats decoded, denormals and infinity included). Variants are relinked from the
+    program's GLSL at the first draw with each key, captures included (src/shader.rs `relink`, which
+    now also makes capture programs). New check `packed_vertex_formats_are_converted`, and a unit
+    test of the GLSL rewrite. An attribute location past the limit is now `Invalid`.
+  - The test tool: angle/immutable-base-level.patch carries upstream ANGLE's fix for immutable
+    textures whose base level changes (adapted: level 0's size comes from its image, since
+    mozangle's texture storage has no size query). The first build of it crashed the native suite
+    (access violation) on textures without images; it now keeps the old size there. Natively the
+    two level checks pass.
+
 ## How to run
 
 All from the checkout root on the Mac.
@@ -547,11 +589,12 @@ All from the checkout root on the Mac.
   `tools/graphics-rig/gpu-job -- "cargo test -j 3 -p wcontainers-gpu-webgl --test against_webgpu -- --test-threads=1"`.
 - The suite in Chrome alone (after build.cmd and a `--list` into a file, as all.cmd does):
   `node crates\wcontainers-gpu-webgl\browser\suite.mjs "%CARGO_TARGET_DIR%\webgl-pkg" <out-file> <list-file> [<extensions off>]`.
-- Once per desktop, and again whenever angle/ changes (done in run 5; 4 m 30 s of compiling):
+- Once per desktop, and again whenever angle/ changes (done in run 5, 4 m 30 s of compiling; done
+  again in run 11 for the second patch):
   `tools/graphics-rig/remote "crates\wcontainers-gpu-webgl\angle\build.cmd"` builds ANGLE's
   libEGL.dll and libGLESv2.dll from the patched mozangle crate into C:\wc\tools\angle-mozangle-0.7.1.
-  It downloads the crate from static.crates.io with curl.exe, unpacks it with tar.exe and patches it
-  with `git apply`.
+  It downloads the crate from static.crates.io with curl.exe, unpacks it with tar.exe and applies
+  both patches in angle/ with `git apply`. Other tracks loading these DLLs get the rebuilt ones.
 - The scenes, natively through ANGLE and in Chrome's WebGL 2, each checked against the rig's stored
   Direct3D 11 pictures (crates/wcontainers-graphics-test/references/d3d11, with their tolerances):
   `tools/graphics-rig/gpu-job --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "crates\wcontainers-gpu-webgl\browser\run.cmd C:\wc\out\webgl\g3a"`
@@ -576,7 +619,7 @@ All from the checkout root on the Mac.
 How another track uses the back end natively (G4's Windows library on WebGL 2): depend on
 `wcontainers-gpu-webgl`, and make the back end on the device thread with
 `WebGl::on_angle(Path::new(r"C:\wc\tools\angle-mozangle-0.7.1"), &[])` after running
-angle\build.cmd (run 5's version, with the patch). To present into a window, name it first with
+angle\build.cmd (run 11's version, with both patches). To present into a window, name it first with
 `unsafe { b.add_window(n, hwnd) }` and then `create_surface(n)` (since run 6). With every extension, the caps equal Chrome's on
 the same GPU, as section 10 asks. Before run 5 this paragraph said to switch EXT_clip_control off,
 because the unpatched ANGLE mirrored scissors under it. That is no longer needed: rebuild ANGLE
@@ -618,7 +661,7 @@ Limits on the RTX 3080, Chrome 157 and ANGLE alike: 16384 2D and cube, 2048 3D a
 uniform blocks per stage of 65536 bytes (the plan's 16384 was the Mac), 16 texture units per stage,
 16 attributes, stride 255 (WebGL's rule), 8 targets, 30 varying vectors, uniform offsets aligned to
 256, points 1 (the device's range is 1024, unused while `POINT_SIZE` is absent), lines 1 wide,
-anisotropy 16, immediates 0 (plain uniforms not built yet).
+anisotropy 16, immediates 256 (plain uniforms, since run 11).
 
 Formats, from GLES 3.0's table with EXT_color_buffer_float, OES_texture_float_linear and
 EXT_float_blend (all present here): every sized colour format GLES 3.0 holds as stored samples;
@@ -871,6 +914,35 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
     15:38): every 2D, cube and 3D case equal to the draws; 16 by 8 by 2, layer 0, level 1 texel 0:
     `generateMipmap` [84, 138, 99, 79], box average [84.25, 137.75, 98.75, 79.0], the draws
     [0, 0, 0, 0]; layer 1 equal.
+- 2026-11-17, G3 run 11, same desktop (RTX 3080, driver 32.0.16.2101; desktop clock times; queued
+  jobs, not timed, other tracks' jobs beside them). 30 suite tests and 30 checks (60).
+  - First job (ending about 16:20), with the copy route of the wrong guess: Chrome 157.0.8103.78
+    and ANGLE 56 of 58 with every extension; the two level checks still failed in Chrome with the
+    copy made (counted once per level), every layer but the last black. The two new suite tests,
+    the viewport check and the merge passed. Lint clean.
+  - Second job (16:35 to 16:43), the copy route removed and 2D array layers no longer invalidated:
+    Chrome 60 of 60 with every extension and without stencil texturing and the format extensions,
+    40 of 60 on both routes without the clip extensions. Natively every test crashed (access
+    violation): the first build of the new ANGLE patch read a missing image. With that fixed (job
+    ending about 16:58) the native suite gave 60 of 60.
+  - Final tree after the shaders and rig merges (job 17:04 to 17:12), lint clean on both targets in
+    its build, the 5 unit tests of src (capture.rs and the vertex input rewrite) pass, all 64 scene
+    verdicts as expected: Chrome 60 of 60 with every extension and 60 of 60 without
+    WEBGL_stencil_texturing and the format extensions, 40 of 60 without EXT_clip_control and 40 of
+    60 without it and WEBGL_provoking_vertex; ANGLE (mozangle 0.7.1 with both patches) 60 of 60 with
+    every extension and 40 of 60 on both reduced routes; against WebGPU 5 of 6. Every one of the 20
+    failures on the reduced routes is `create_raster: Absent(CLIP_DEPTH_ZERO_ONE)` or
+    `Absent(PROVOKING_VERTEX_FIRST)` from the suite's own raster blocks.
+- Per-draw cost, run 11 (Chrome 157.0.8103.78 headless, RTX 3080; `gpu-job --alone`; the same scene
+  and method as run 3; each launch of Chrome lost one WebGL context while its GPU process started):
+  - Run ending 17:17, CPU load 21% just after. WebGL 2: 10,000 draws, one set 4.9 ms (fastest
+    1.5 ms); a set per draw 9.0 ms (fastest 4.0 ms); 50,000 draws, one set 6.8 ms (0.136 us a
+    draw); a set per draw 16.5 ms (0.330 us). WebGPU: 2.9, 3.8, 7.2 and 17.8 ms.
+  - Run 17:21, CPU load 14% just after. WebGL 2: 4.6 ms (fastest 1.6), 6.3 ms (fastest 3.8), 6.0 ms
+    (0.120 us a draw) and 16.5 ms (0.330 us). WebGPU: 2.3, 3.8, 7.3 and 17.5 ms.
+  The 50,000-draw medians agree with runs 3 and 5 within about 20%. The 10,000-draw medians of both
+  back ends were noisy against their fastest frames, as in run 5's first run; the fastest frames
+  match the earlier medians. The cause of the noise was not found.
 - Per-draw cost, run 5 (Chrome 157.0.8103.78 headless, RTX 3080; `gpu-job --alone`; the same scene
   and method as run 3). Since the merge, the cost page has to make the WebGPU device inside a JSPI
   export. Before that fix the page hung twice, once for 10 minutes and once for 2.
@@ -936,38 +1008,15 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   refuses as the interface says (`Absent(CLIP_DEPTH_ZERO_ONE)`, `Absent(PROVOKING_VERTEX_FIRST)`).
   The suite (G1's crate) should take both from the caps, as the built-in programs do.
 
-- Found in run 10 (the run-9 entry below is kept for its history):
-  - In Chrome (ANGLE on Direct3D 11), a draw into level n of one layer of a 2D array, while the
-    program samples level n - 1 of the same array (all layers, as WebGL 2 binds it), writes as
-    if the texture read zeros, for every layer but the last. `levels_stay_as_written_...` draws
-    level 2 of each layer from level 1 in turn: layer 0 is wrong, layer 1 right, on 13 by 7 by 2
-    and 16 by 8 by 2; 2D, cube (every face) and 3D textures are right. No GL error is raised. So the
-    interface's mip draws leave every array layer but the last black in Chrome
-    (`generate_mipmap_equals_the_draws`: "the draws [0, 0, 0, 0]" where `generateMipmap` gives the
-    box average). Expected cause, not shown: Direct3D 11's hazard tracking takes a texture array
-    view as the span of subresources from its first to its last, which holds lower layers of the
-    level drawn into, and unbinds the view. Arrays now take `generateMipmap`; the draws remain for
-    formats it refuses, and any front draw of this shape is affected. A fix would sample a copy of
-    the levels read when the drawn texture is an array (a new slow path); not built.
-  - On native ANGLE (mozangle 0.7.1, the test tool) a texture whose level 0 has an odd side loses
-    the last row and column of level 0 (19 of 91 texels per layer on 13 by 7) as soon as its base
-    level is set above 0, for good (sampling every level again does not bring them back). Even
-    sides keep them; Chrome keeps them. Both checks above fail natively for it.
-- New in run 9, `generate_mipmap_equals_the_draws`, on an odd-sized 2D array (13 by 7, 2 layers,
-  4 levels, rgba8unorm and its sRGB form), not found yet:
-  - On ANGLE (mozangle) the interface's mip draws (`generate_mips_by_draws`) change level 0, every
-    texel of both layers when generating from level 1, and levels 0 and 1 when generating from
-    level 2. The levels above must never change. With `generateMipmap` on the array (second job)
-    the same levels changed, so it may be how this back end writes or reads levels of such an
-    array, or mozangle's base level handling (which already misanswers `textureSize`).
-  - In Chrome the levels above stay as written, but in the second job (generateMipmap on the
-    array) the draws had left 18 of 36 texels of level 1 at 0, one layer's worth, where
-    generateMipmap wrote values. Since generateMipmap now leaves arrays to the draws, the check
-    compares the draws with themselves there and passes; the bug in the draws is still there.
-  - 3D (8 by 8 by 4): generateMipmap and the draws differed in every texel of levels 1 to 3 on
-    ANGLE; which is right is not known.
-  - 2D (16 by 16) and cube (8 by 8) textures are equal in every format of the check, on both.
-  So `generateMipmap` takes only 2D and cube textures, and the check fails on ANGLE.
+- Fixed in run 11, both found in run 10:
+  - In Chrome (ANGLE on Direct3D 11), invalidating one layer of a 2D array (a pass's `DontCare` load
+    or `Discard` store) lost the other layers of that level, so the mip draws left every layer but
+    the last black. Layers of 2D arrays are no longer invalidated. Run 10's guess at the cause
+    (sampling the array while drawing into it) was wrong: a fix built on it did not help.
+  - mozangle 0.7.1 (the test tool) lost the last row and column of level 0 of an odd-sized texture
+    once its base level was raised. It is fixed by angle/immutable-base-level.patch.
+  - Before them (run 9), `generate_mipmap_equals_the_draws` found both, and 3D textures differed
+    between `generateMipmap` and the draws on ANGLE; with both fixes every shape is equal on both.
 
 ## Departures from the plan
 
@@ -1034,6 +1083,15 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   rewrite unneeded.
 - Passes without attachments draw into an `R8` renderbuffer of their own (run 10), which the
   interface's `EmptyPass` allows; with no draw buffer, nothing is written to it.
+- Attachments that are layers of 2D arrays are never invalidated (run 11): `DontCare` and `Discard`
+  are hints, and in Chrome invalidating a layer loses the level's other layers. Not counted as a
+  slow path, since nothing extra runs; the hint is only not given.
+- Immediates (run 11) are plain uniforms (plan 5.8 names `uniform4uiv`; each part is set by its
+  own type instead, as naga's GLSL writer declares them). Bytes a draw does not give read zero.
+- Vertex formats GL ES cannot read as stored are converted in a program variant per layout
+  (run 11), not fetched from a storage buffer or converted on upload as the interface's
+  `VertexFormat` text puts it: WebGL 2 has no storage buffers, and a variant reads the guest's bytes
+  in place. The first draw with a new layout key links a program (a stall the first time).
 
 - The back end's WebAssembly imports `next_task` from a module `wcontainers-device` (JSPI, plan
   4.8): the plan has the device thread suspend through JSPI but names no import; the call channel
@@ -1094,6 +1152,9 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   the default's body moved unchanged; the trait's default calls it. Plan 4.3's `generate_mips`
   text names it. The back end's override needs it for formats `generateMipmap` refuses.
 
+- 39b57ad4 and 9ba95585 (run 11): `SlowPath::SampledTargetCopied` added for a fix built on run 10's
+  wrong guess, then taken back out in the next commit. The interface is as it was.
+
 - (run 6) "interface: named the slow path of captures expanded into points in list order":
   `SlowPath::CaptureExpanded`, for draws an API's transform feedback cannot capture as they are
   (GLES 3.0 takes only lists without indices), and the plan's 5.8 text for it.
@@ -1132,24 +1193,24 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 - mozangle 0.7.1 (the ANGLE build tool in angle/, outside the workspace, never a dependency of the
   back end): BSD-3-Clause (its Cargo.toml and LICENSE, ANGLE's). angle/d3d11-clip-control.patch
   carries upstream ANGLE's changes ba845fcf25d0, 6092e0b75c22 and 1dd3a4c4053a (BSD-3-Clause,
-  github.com/google/angle), adapted to mozangle's older code.
+  github.com/google/angle), adapted to mozangle's older code. angle/immutable-base-level.patch
+  (run 11) carries upstream ANGLE's handling of immutable textures in
+  `TextureD3D::getLevelZeroWidth` and `getLevelZeroHeight` (read from its main branch at
+  chromium.googlesource.com/angle/angle), adapted: level 0's size is read from its image.
 
 ## Next
 
 What is left of G3's pass bar cannot be done in this crate:
 - G1's suite should take clip depth and provoking vertex from the caps. Until it does, the routes
-  without the extensions fail 19 suite tests.
+  without the extensions fail 20 suite tests (every suite test whose raster block asks for clip
+  depth from zero or provoking vertex First).
 - The r32float comparison against WebGPU's hardware filter stays one float step off (G1's helper).
 - `TIMESTAMPS` cannot run on the RTX 3080, which gives zero timestamp bits; a GPU or browser that
   gives some is needed to run that route.
 
-After that, in about this order:
-0. Draws into a layer of a 2D array that sample another level of it read zeros in Chrome (Known
-   failures): sample a copy of the levels read instead, counted under a new slow path, and show it
-   with `levels_stay_as_written_while_others_are_read_and_drawn`. Then the interface's mip draws on
-   arrays (integer twins, r32float without filtering) are right too.
-1. Immediates as plain uniforms (plan 5.8; `immediate_bytes` is 0 until then, as on the WebGPU
-   back end).
-2. Vertex formats GL ES cannot read as stored (BGRA8, 10-10-10-2 integer, 11-11-10), by a program
-   variant per layout or a conversion; now device loss naming them.
-3. Draws and captures whose base vertex reaches below vertex 0 (now device loss naming it).
+After that, in about this order (each refused honestly today, by device loss naming it):
+1. Draws and captures whose base vertex reaches below vertex 0.
+2. Copies from one- and two-channel signed normalised formats (and into them from formats read
+   wider than stored), through a buffer as plan 4.12 has them.
+3. `CLIP_DISTANCE` and `CULL_DISTANCE` with WEBGL_clip_cull_distance: the shaders track's naga now
+   writes the WebGL extension's directive (merged in run 11); the back end still leaves both absent.

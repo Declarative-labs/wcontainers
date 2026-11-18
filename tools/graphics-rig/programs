@@ -70,6 +70,8 @@ if [ -n "$census" ]; then
     mkdir -p "$here/census"
     for dir in "$scratch"/*/; do
         program=$(basename "$dir")
+        # A recording's second and third runs (<program>-again, -third) are not census files.
+        case $program in *-again | *-third) continue ;; esac
         if [ ${#programs[@]} -eq 0 ] || [[ " ${programs[*]} " == *" $program "* ]]; then
             [ ! -f "$dir/census.txt" ] || cp "$dir/census.txt" "$here/census/$program.txt"
         fi

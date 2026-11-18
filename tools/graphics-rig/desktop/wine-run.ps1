@@ -63,6 +63,7 @@ foreach ($choice in $Tests.Split(',')) {
         foreach ($line in Get-Content $baselineFile) { $fields = $line.Split(' '); $expected[$fields[0]] = $fields }
     }
     $results = New-Object System.Collections.Generic.List[string]
+    $filePassed = 0; $fileFailed = 0; $fileKnown = 0
     $fileClock = [Diagnostics.Stopwatch]::StartNew()
     foreach ($name in $names) {
         if ($excluded.ContainsKey("$file $name")) { "$file ${name}: excluded, $($excluded["$file $name"])"; continue }
@@ -111,29 +112,38 @@ foreach ($choice in $Tests.Split(',')) {
         $elsewhere = @()
         $launched++
         if ($replacements -and (Test-Path $report)) {
+            $here = @{}
             foreach ($line in Get-Content $report) {
                 $library, $from = $line -split ' from ', 2
                 if ($from -eq 'not loaded') { continue }
-                if ($from -ieq "$bin\$library") { $loadedBy[$library]++ } else { $elsewhere += "$library from $from" }
+                if ($from -ieq "$bin\$library") { $here[$library] = $true } else { $elsewhere += "$library from $from" }
             }
+            foreach ($library in $here.Keys) { $loadedBy[$library]++ }
         }
         $results.Add("$name $verdict $checks $failures $skipped $seconds")
         $what = "$verdict, $checks checks, $failures failed, $skipped skipped, $seconds s"
         if ($verdict -eq 'crash') { $what += (', exit 0x{0:x8}' -f $process.ExitCode) }
         if ($Record) { "$file ${name}: $what"; continue }
         $before = $expected[$name]
-        if ($elsewhere) { "$file ${name}: FAIL, did not load the replacement: $($elsewhere -join ', ')"; $failed++; $counted++ }
-        elseif (-not $before) { "$file ${name}: FAIL, not in the baseline; $what"; $failed++; $counted++ }
-        elseif ($before[1] -ne 'pass') { "$file ${name}: known, $($before[1]) on real Direct3D ($($before[3]) of $($before[2]) checks failed); here $what" }
-        elseif ($verdict -ne 'pass') { "$file ${name}: FAIL, passes on real Direct3D; here $what"; $failed++; $counted++ }
-        elseif ($checks -lt [int]$before[2] -or $skipped -gt [int]$before[4]) {
-            "$file ${name}: FAIL, ran $checks checks (real Direct3D $($before[2])) and skipped $skipped (real Direct3D $($before[4])), $seconds s"; $failed++; $counted++
-        }
-        else { "$file ${name}: pass, $checks checks (real Direct3D $($before[2])), $skipped skipped (real Direct3D $($before[4])), $seconds s"; $counted++ }
+        $line = if ($elsewhere) { "FAIL, did not load the replacement: $($elsewhere -join ', ')" }
+                elseif (-not $before) { "FAIL, not in the baseline; $what" }
+                elseif ($before[1] -ne 'pass') { "known, $($before[1]) on real Direct3D ($($before[3]) of $($before[2]) checks failed); here $what" }
+                elseif ($verdict -ne 'pass') { "FAIL, passes on real Direct3D; here $what" }
+                elseif ($checks -lt [int]$before[2] -or $skipped -gt [int]$before[4]) {
+                    "FAIL, ran $checks checks (real Direct3D $($before[2])) and skipped $skipped (real Direct3D $($before[4])), $seconds s"
+                }
+                else { "pass, $checks checks (real Direct3D $($before[2])), $skipped skipped (real Direct3D $($before[4])), $seconds s" }
+        "$file ${name}: $line"
+        if ($line.StartsWith('known')) { $fileKnown++ } else { $counted++; if ($line.StartsWith('FAIL')) { $failed++; $fileFailed++ } else { $filePassed++ } }
     }
     [IO.File]::WriteAllLines("$Out\$file-$driver.txt", [string[]]$results)
-    $passed = @($results | Where-Object { $_.Split(' ')[1] -eq 'pass' }).Count
-    "$file on ${driver}: $($results.Count) tests run, $passed passed, $([math]::Round($fileClock.Elapsed.TotalSeconds, 1)) s"
+    $seconds = [math]::Round($fileClock.Elapsed.TotalSeconds, 1)
+    if ($Record) {
+        $passed = @($results | Where-Object { $_.Split(' ')[1] -eq 'pass' }).Count
+        "$file on ${driver}: $($results.Count) tests run, $passed passed, $seconds s"
+    } else {
+        "$file on ${driver}: $($results.Count) tests run, $filePassed pass, $fileFailed FAIL, $fileKnown known (failing on real Direct3D, not counted), $seconds s"
+    }
 }
 foreach ($name in $replacements) { "replacement ${name}: loaded from $bin by $($loadedBy[$name]) of $launched tests run" }
 if (-not $Record) {

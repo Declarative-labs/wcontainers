@@ -17,16 +17,20 @@ trap { [Console]::Error.WriteLine("wine-tests: $_"); exit 1 }
 $wineCommit = '9f8c4ae4d35c7ff4153267aba9618c026f5f5583' # wine-11.22
 $vkd3dCommit = 'fb7f9ff3c1f8d972ee6f1b8c6a92caf6c8ba1e10' # vkd3d-2.1
 $mingwRelease = '20261104'
+# The release's SHA-256, as GitHub lists it for the asset.
+$mingwSha256 = '552191B5754C49A5A20723276A6FC56541EA1922C4C50B7B669022333FC1B40F'
 $root = 'C:\wc\wine'
 $mingw = "C:\wc\llvm-mingw\llvm-mingw-$mingwRelease-ucrt-x86_64"
 New-Item -ItemType Directory -Force $root, "$root\build", C:\wc\llvm-mingw, C:\wc\downloads | Out-Null
 
 if (-not (Test-Path "$mingw\bin\clang.exe")) {
     $zip = "C:\wc\downloads\llvm-mingw-$mingwRelease-ucrt-x86_64.zip"
-    if (-not (Test-Path $zip)) {
+    if (-not (Test-Path $zip) -or (Get-FileHash -Algorithm SHA256 $zip).Hash -ne $mingwSha256) {
         curl.exe -sSfL -o $zip "https://github.com/mstorsjo/llvm-mingw/releases/download/$mingwRelease/llvm-mingw-$mingwRelease-ucrt-x86_64.zip"
         if ($LASTEXITCODE) { throw 'llvm-mingw download failed' }
     }
+    $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash
+    if ($hash -ne $mingwSha256) { throw "$zip has SHA-256 $hash, not $mingwSha256" }
     Expand-Archive $zip C:\wc\llvm-mingw
 }
 

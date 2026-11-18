@@ -273,7 +273,8 @@ fn get_data_slot() -> usize {
 
 /// GetData of a wrapper: the context's own answer, except that while the frame clock runs a
 /// timestamp query is answered at once from that clock (in 100-nanosecond ticks, never disjoint),
-/// so the timings and query latency a program shows are the same on every run.
+/// so the timings and query latency a program shows are the same on every run. The context is
+/// still asked, so the implementation's queries run; an error it gives is reported.
 unsafe extern "system" fn wrapper_get_data(
     this: *mut c_void,
     query: *mut c_void,
@@ -285,6 +286,8 @@ unsafe extern "system" fn wrapper_get_data(
     let index = usize::from(wrapper.vtable == wrapper_tables()[1].as_ptr());
     let k = get_data_slot();
     WRAPPED_COUNTS[index * CONTEXT_SLOTS + k].fetch_add(1, Ordering::Relaxed);
+    let own: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, u32, u32) -> HRESULT =
+        unsafe { std::mem::transmute(*(*(wrapper.context as *const *const usize)).add(k)) };
     let kind = if crate::clock::running() {
         unsafe { IUnknown::from_raw_borrowed(&query) }
             .and_then(|q| q.cast::<ID3D11Query>().ok())
@@ -292,8 +295,24 @@ unsafe extern "system" fn wrapper_get_data(
     } else {
         None
     };
+    let mut answer = [0u64; 2];
+    let mut ask = |size: usize| {
+        let result = unsafe {
+            own(
+                wrapper.context,
+                query,
+                answer.as_mut_ptr().cast(),
+                size as u32,
+                flags,
+            )
+        };
+        if result.is_err() && !QUERY_ERROR.swap(true, Ordering::Relaxed) {
+            eprintln!("d3d11 forward: GetData of a timestamp query failed: {result:?}");
+        }
+    };
     match kind {
         Some(D3D11_QUERY_TIMESTAMP) if data.is_null() || size as usize >= size_of::<u64>() => {
+            ask(size_of::<u64>());
             if !data.is_null() {
                 unsafe { *(data as *mut u64) = crate::clock::now() };
             }
@@ -303,6 +322,7 @@ unsafe extern "system" fn wrapper_get_data(
             if data.is_null()
                 || size as usize >= size_of::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>() =>
         {
+            ask(size_of::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>());
             if !data.is_null() {
                 unsafe {
                     *(data as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT) =
@@ -314,19 +334,12 @@ unsafe extern "system" fn wrapper_get_data(
             }
             windows::Win32::Foundation::S_OK
         }
-        _ => {
-            let own: unsafe extern "system" fn(
-                *mut c_void,
-                *mut c_void,
-                *mut c_void,
-                u32,
-                u32,
-            ) -> HRESULT =
-                unsafe { std::mem::transmute(*(*(wrapper.context as *const *const usize)).add(k)) };
-            unsafe { own(wrapper.context, query, data, size, flags) }
-        }
+        _ => unsafe { own(wrapper.context, query, data, size, flags) },
     }
 }
+
+/// Whether the context gave an error for a timestamp query answered from the frame clock.
+static QUERY_ERROR: AtomicBool = AtomicBool::new(false);
 
 fn install(table: Table, vtable: usize, interface: &'static str) {
     let mut patched = PATCHED.lock().unwrap();
