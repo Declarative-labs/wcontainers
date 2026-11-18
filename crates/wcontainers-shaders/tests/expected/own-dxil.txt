@@ -1,8 +1,8 @@
 cs_atomics.dxil	spirv-reader unsupported
 cs_decrement.dxil	spirv-reader unsupported
-cs_images.dxil	spirv-reader image
+cs_images.dxil	unsupported StorageFormatKind
 cs_texels.dxil	spirv-reader unsupported
-cs_through.dxil	spirv-reader image
+cs_through.dxil	spirv-reader unsupported
 gs_adjacent.dxil	spirv-reader unsupported
 gs_cut.dxil	spirv-reader unsupported
 gs_instances.dxil	spirv-reader unsupported
@@ -32,7 +32,7 @@ ps_signed.dxil	ok
 ps_spaces.dxil	unsupported RegisterSpace
 ps_special.dxil	ok
 ps_table.dxil	unsupported NonFiniteConstant
-ps_texels.dxil	spirv-reader unsupported
+ps_texels.dxil	unsupported TypedBufferFormatKind
 ps_textured.dxil	ok
 vs_carry.dxil	ok
 vs_clip.dxil	ok-wgsl glsl-compile

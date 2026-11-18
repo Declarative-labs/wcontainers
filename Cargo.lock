@@ -3288,6 +3288,7 @@ dependencies = [
  "pollster",
  "postcard",
  "serde",
+ "spirv",
  "wcontainers-gpu",
  "wcontainers-gpu-webgl",
  "wcontainers-gpu-webgpu",

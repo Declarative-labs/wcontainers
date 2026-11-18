@@ -1070,7 +1070,9 @@ fn typed_buffers_draw_as_direct3d_does() {
     let floats: Vec<Format> = PIXEL_FLOATS.into_iter().filter(|&f| supported(f)).collect();
     let uints: Vec<Format> = PIXEL_UINTS.into_iter().filter(|&f| supported(f)).collect();
     let grid = grid();
+    // The same programs compiled by fxc (DXBC) and dxc (DXIL), each drawn by both routes.
     let code = [bytecode("vs_transform.dxbc"), bytecode("ps_texels.dxbc")];
+    let code_dxil = [bytecode("vs_transform.dxil"), bytecode("ps_texels.dxil")];
     let mut results = Vec::new();
     for seed in seed..seed + seeds {
         let mut s = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
@@ -1113,31 +1115,34 @@ fn typed_buffers_draw_as_direct3d_does() {
                 ..Default::default()
             },
         );
-        let mut draw = grid_draw(&code, false, &grid);
-        draw.format = Format::Rgba32Uint;
-        draw.clear = [0; 4];
-        draw.setup.texel_buffers = texel_buffers;
-        for (route, back_end) in [
-            (TexelBufferRoute::Storage, "webgpu"),
-            (TexelBufferRoute::Texture, "webgpu"),
-            (TexelBufferRoute::Texture, "webgl"),
-        ] {
-            draw.setup.ps_key = VariantKey {
-                texel_buffers: route,
-                texel_formats: vec![(0, formats[0]), (1, formats[1])],
-                ..Default::default()
-            };
-            let texels = match back_end {
-                "webgpu" => ours(&mut gpu, &draw, ProvokingVertex::First),
-                _ => ours(&mut gl, &draw, ProvokingVertex::Last),
-            };
-            results.push(compare(
-                format!("typed buffers seed {seed} {formats:?} {route:?} {back_end}"),
-                &reference,
-                &texels,
-                Format::Rgba32Uint,
-                (0, 0),
-            ));
+        for (code, dxil) in [(&code, false), (&code_dxil, true)] {
+            let mut draw = grid_draw(code, dxil, &grid);
+            draw.format = Format::Rgba32Uint;
+            draw.clear = [0; 4];
+            draw.setup.texel_buffers = texel_buffers.clone();
+            for (route, back_end) in [
+                (TexelBufferRoute::Storage, "webgpu"),
+                (TexelBufferRoute::Texture, "webgpu"),
+                (TexelBufferRoute::Texture, "webgl"),
+            ] {
+                draw.setup.ps_key = VariantKey {
+                    texel_buffers: route,
+                    texel_formats: vec![(0, formats[0]), (1, formats[1])],
+                    ..Default::default()
+                };
+                let texels = match back_end {
+                    "webgpu" => ours(&mut gpu, &draw, ProvokingVertex::First),
+                    _ => ours(&mut gl, &draw, ProvokingVertex::Last),
+                };
+                let source = if dxil { "dxil" } else { "dxbc" };
+                results.push(compare(
+                    format!("typed buffers seed {seed} {formats:?} {source} {route:?} {back_end}"),
+                    &reference,
+                    &texels,
+                    Format::Rgba32Uint,
+                    (0, 0),
+                ));
+            }
         }
     }
     let mut failed = 0;
