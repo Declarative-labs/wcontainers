@@ -18,6 +18,7 @@ fn webgpu() -> WebGpu {
     };
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = backends;
+    desc.flags |= WebGpu::INSTANCE_FLAGS;
     let instance = wgpu::Instance::new(desc);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,

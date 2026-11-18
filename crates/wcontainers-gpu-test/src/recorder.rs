@@ -1108,8 +1108,9 @@ pub(crate) fn varyings(s: &ShaderModule) -> Vec<u32> {
     }
 }
 
-/// A value passed between stages: its location, type, and interpolation and sampling (a float's
-/// unstated ones taken as perspective at the centre, as WGSL defaults them).
+/// A value passed between stages: its location, type, and interpolation and sampling, unstated ones
+/// taken as WGSL defaults them (a float perspective, an integer flat; flat sampled at the first
+/// vertex, perspective and linear at the centre).
 type StageValueAt = (
     u32,
     naga::TypeInner,
@@ -1139,12 +1140,16 @@ fn stage_values(s: &ShaderModule, output: bool) -> Vec<StageValueAt> {
         };
         let inner = &s.module.types[ty].inner;
         let float = inner.scalar_kind() == Some(naga::ScalarKind::Float);
-        Some((
-            location,
-            inner.clone(),
-            interpolation.or(float.then_some(naga::Interpolation::Perspective)),
-            sampling.or(float.then_some(naga::Sampling::Center)),
-        ))
+        let interpolation = interpolation.or(if float {
+            Some(naga::Interpolation::Perspective)
+        } else {
+            Some(naga::Interpolation::Flat)
+        });
+        let sampling = sampling.or(match interpolation {
+            Some(naga::Interpolation::Flat) => Some(naga::Sampling::First),
+            _ => Some(naga::Sampling::Center),
+        });
+        Some((location, inner.clone(), interpolation, sampling))
     };
     // Each binding, or a struct's members.
     let each = |binding: &Option<naga::Binding>, ty: naga::Handle<naga::Type>| {

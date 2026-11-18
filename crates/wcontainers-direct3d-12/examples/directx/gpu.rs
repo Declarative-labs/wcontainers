@@ -90,6 +90,7 @@ fn start() -> Thread {
         .spawn(move || {
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backends = wgpu::Backends::VULKAN;
+            desc.flags |= WebGpu::INSTANCE_FLAGS;
             let instance = wgpu::Instance::new(desc);
             let adapter =
                 pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {

@@ -2,8 +2,8 @@
 //! with real Direct3D 12 and through ours and compared line by line: placed resources that alias
 //! (buffers written by a copy, a storage view and the CPU; identical textures at one offset), copy
 //! and compute queues waiting on each other and on a late CPU signal, binary occlusion resolved,
-//! read back and used by `SetPredication`, `ExecuteIndirect`, and pipeline and stream output
-//! statistics.
+//! read back and used by `SetPredication`, `ExecuteIndirect`, pipeline and stream output
+//! statistics, and geometry shaders.
 
 use std::cell::Cell;
 use std::fmt::Write;
@@ -29,6 +29,18 @@ const DRAWS_PS: &[u8] =
 /// Reads items of `float2 a; uint b` at t0 and writes changed ones at u0.
 const CS: &[u8] =
     include_bytes!("../../../wcontainers-graphics-test/shaders/dxbc/compute.cs_structured.dxbc");
+/// The shaders crate's geometry test shaders (`tests/own/geometry.hlsl`, shader model 5.0).
+macro_rules! own {
+    ($name:literal) => {
+        include_bytes!(concat!(
+            "../../../wcontainers-shaders/tests/own/",
+            $name,
+            ".dxbc"
+        ))
+    };
+}
+const GEOMETRY_VS: &[u8] = own!("vs_geometry");
+const GEOMETRY_PS: &[u8] = own!("ps_geometry");
 const PAGE: u64 = 64 << 10;
 const SIZE: u32 = 64;
 
@@ -54,6 +66,7 @@ pub const CASES: &[&str] = &[
     "restart",
     "render-pass",
     "custom-heap",
+    "geometry",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -83,6 +96,7 @@ pub fn run(name: &str) -> Result<String> {
             "restart" => restart(&c),
             "render-pass" => render_pass(&c),
             "custom-heap" => custom_heap(&c),
+            "geometry" => geometry(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -2248,5 +2262,144 @@ unsafe fn custom_heap(c: &Ctx) -> Result<String> {
         x.Unmap(0, None);
         write!(out, "overlapping {}", words(&through)).unwrap();
         Ok(out)
+    }
+}
+
+/// Geometry shaders: points grown into quads (a root constant buffer seen by the geometry stage
+/// alone, two instances from instance 1), a triangle strip cut into none, one or two triangles,
+/// three geometry instances of indexed triangles with a base vertex, triangles with adjacency, and
+/// points made into a varying number of points.
+unsafe fn geometry(c: &Ctx) -> Result<String> {
+    unsafe {
+        let layout = [
+            element(s!("POSITION"), DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, None),
+            element(s!("COLOR"), DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, None),
+        ];
+        let root = c.root(
+            &[D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Descriptor: D3D12_ROOT_DESCRIPTOR {
+                        ShaderRegister: 0,
+                        RegisterSpace: 0,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_GEOMETRY,
+            }],
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        )?;
+        let pso = |gs: &[u8], kind| -> Result<ID3D12PipelineState> {
+            let mut blend = D3D12_BLEND_DESC::default();
+            blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8;
+            let code = |b: &[u8]| D3D12_SHADER_BYTECODE {
+                pShaderBytecode: b.as_ptr().cast(),
+                BytecodeLength: b.len(),
+            };
+            let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+                pRootSignature: transmute_copy(&root),
+                VS: code(GEOMETRY_VS),
+                GS: code(gs),
+                PS: code(GEOMETRY_PS),
+                BlendState: blend,
+                SampleMask: u32::MAX,
+                RasterizerState: D3D12_RASTERIZER_DESC {
+                    FillMode: D3D12_FILL_MODE_SOLID,
+                    CullMode: D3D12_CULL_MODE_NONE,
+                    DepthClipEnable: true.into(),
+                    ..Default::default()
+                },
+                InputLayout: D3D12_INPUT_LAYOUT_DESC {
+                    pInputElementDescs: layout.as_ptr(),
+                    NumElements: layout.len() as u32,
+                },
+                PrimitiveTopologyType: kind,
+                NumRenderTargets: 1,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                ..Default::default()
+            };
+            desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            c.device.CreateGraphicsPipelineState(&desc)
+        };
+        let point = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+        let triangle = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        let psos = [
+            pso(own!("gs_quads"), point)?,
+            pso(own!("gs_cut"), triangle)?,
+            pso(own!("gs_instances"), triangle)?,
+            pso(own!("gs_adjacent"), triangle)?,
+            pso(own!("gs_points"), point)?,
+        ];
+        // Twelve vertices around a circle, red and green 0, 0.2 or 1 and blue 0 or 1, so that no
+        // colour the pixel shader writes lies near a rounding boundary.
+        let shades = [0.0f32, 0.2, 1.0];
+        let vertices: Vec<u8> = (0..12)
+            .flat_map(|i| {
+                let turn = i as f32 * std::f32::consts::TAU / 12.0;
+                let r = if i % 2 == 0 { 0.7 } else { 0.4 };
+                [
+                    r * turn.cos(),
+                    r * turn.sin(),
+                    0.5,
+                    shades[i % 3],
+                    shades[(i / 3) % 3],
+                    (i % 2) as f32,
+                    1.0,
+                ]
+            })
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let vertices = c.upload(&vertices)?;
+        let indices16 = c.upload(&[0u16, 2, 4, 5, 7, 9].map(u16::to_le_bytes).concat())?;
+        let mut constants = [0.08f32, 0.08, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+            .map(f32::to_le_bytes)
+            .concat();
+        constants.resize(256, 0);
+        let constants = c.upload(&constants)?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (target, _heap, _rtv) = c.target(&list)?;
+        list.SetGraphicsRootSignature(&root);
+        list.SetGraphicsRootConstantBufferView(0, constants.GetGPUVirtualAddress());
+        list.IASetVertexBuffers(
+            0,
+            Some(&[D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: vertices.GetGPUVirtualAddress(),
+                SizeInBytes: 12 * 28,
+                StrideInBytes: 28,
+            }]),
+        );
+        list.IASetIndexBuffer(Some(&D3D12_INDEX_BUFFER_VIEW {
+            BufferLocation: indices16.GetGPUVirtualAddress(),
+            SizeInBytes: 12,
+            Format: DXGI_FORMAT_R16_UINT,
+        }));
+        let third = SIZE / 3;
+        let at = |i: u32| viewport(&list, (i % 3) * third, (i / 3) * third, third);
+        list.SetPipelineState(&psos[0]);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+        at(0);
+        list.DrawInstanced(4, 2, 1, 1);
+        list.SetPipelineState(&psos[1]);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        at(1);
+        list.DrawInstanced(7, 1, 2, 0);
+        list.SetPipelineState(&psos[2]);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        at(2);
+        list.DrawIndexedInstanced(6, 1, 0, 1, 0);
+        list.SetPipelineState(&psos[3]);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ);
+        at(3);
+        list.DrawInstanced(12, 1, 0, 0);
+        list.SetPipelineState(&psos[4]);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+        at(4);
+        list.DrawInstanced(12, 1, 0, 0);
+        c.run(&list)?;
+        // Each pixel in place, then how many of each colour.
+        let pixels = c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
+        Ok(format!("{} {}", words(&pixels), colours(&pixels)))
     }
 }
