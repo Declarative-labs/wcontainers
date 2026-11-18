@@ -127,8 +127,8 @@ pub struct FinalDraw<B: Backend> {
 }
 
 /// Buffers the helper owns, grown as draws need.
-struct Owned<B: Backend> {
-    buffer: B::Buffer,
+pub(super) struct Owned<B: Backend> {
+    pub(super) buffer: B::Buffer,
     size: u64,
 }
 
@@ -674,7 +674,7 @@ fn storage<B: Backend>(
 }
 
 /// Makes `owned` a buffer of at least `size` bytes.
-fn grow<B: Backend>(
+pub(super) fn grow<B: Backend>(
     backend: &mut B,
     owned: &mut Option<Owned<B>>,
     size: u64,

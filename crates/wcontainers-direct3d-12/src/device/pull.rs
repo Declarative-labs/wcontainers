@@ -4,8 +4,8 @@
 //! back end without them (`InstanceRateInShader`).
 
 use wcontainers_gpu::{
-    AddedBinding, BindingEntry, BindingResource, BufferRange, DRAW_ARGUMENTS_BINDING, HelperSlot,
-    RingKind, VertexFormat, helper_binding,
+    AddedBinding, BindingEntry, BindingResource, BufferRange, CLAMPED_SAMPLER_BINDING,
+    DRAW_ARGUMENTS_BINDING, HelperSlot, RingKind, VertexFormat, helper_binding,
 };
 
 use super::*;
@@ -15,13 +15,25 @@ use super::*;
 pub(super) struct Helpers {
     pub size: u32,
     pub slots: Vec<HelperSlot>,
+    /// The (texture, sampler) registers the program samples with, in the order of its merged
+    /// samplers (`CLAMPED_SAMPLER_BINDING`), where it applies a minimum level-of-detail clamp.
+    pub pairs: Vec<(u32, u32)>,
 }
 
 impl Helpers {
     pub fn of(c: &Converted) -> Self {
+        let clamped = c
+            .reflection
+            .helpers
+            .iter()
+            .any(|h| matches!(h.value, HelperValue::MinLod { .. }));
         Helpers {
             size: c.reflection.helper_size,
             slots: c.reflection.helpers.clone(),
+            pairs: match clamped {
+                true => c.reflection.sampled_pairs.clone(),
+                false => Vec::new(),
+            },
         }
     }
 }
@@ -234,7 +246,7 @@ impl<B: Backend> Device<B> {
                 false => DrawBaseSource::Helpers,
             },
             pulled: key.0.clone(),
-            ..VariantKey::default()
+            ..r.typed_key.clone()
         };
         let (code, fragment) = (r.vs_code.clone(), r.fragment.clone());
         let made = self.vertex_program(&code, variant, fragment.as_ref());
@@ -249,77 +261,158 @@ impl<B: Backend> Device<B> {
 
     /// The binding set of a vertex program's helper block holding what it reads: the draw's
     /// bases (`DrawBaseInHelpers`), where its indirect arguments lie, with them bound
-    /// (`DrawBaseFromArguments`), and its pulled inputs' words; for the back end's `stages` that
-    /// run it (the vertex stage, or compute for its form before a geometry stage).
+    /// (`DrawBaseFromArguments`), its pulled inputs' words and what its bindings give; for the
+    /// back end's `stages` that run it (the vertex stage, or compute for its form before a
+    /// geometry stage). `pixel` adds the pixel stage's block.
     pub(super) fn helper_set(
         &mut self,
         helpers: &Helpers,
         bases: &Bases<'_, B>,
         pulled: &[(u32, VertexFormat, [u32; 4])],
         stages: StageSet,
+        pixel: Option<&Helpers>,
     ) -> Result<B::BindingSet, Error> {
-        let size = helpers.size as usize;
-        let mut block = vec![0u8; size];
+        let mut blocks = Vec::with_capacity(2);
         let mut arguments = None;
-        for slot in &helpers.slots {
-            let words = match (slot.value, bases) {
-                (HelperValue::DrawBase, Bases::Direct(b)) => {
-                    self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
-                    [b[0], b[1], 0, 0]
-                }
-                (
-                    HelperValue::DrawArguments,
-                    Bases::Arguments {
-                        args,
-                        offset,
-                        indexed,
-                    },
-                ) => {
-                    self.backend
-                        .slow_paths()
-                        .hit(SlowPath::DrawBaseFromArguments);
-                    arguments = Some((*args, offset + if *indexed { 20 } else { 16 }));
-                    [(offset / 4) as u32, u32::from(*indexed), 0, 0]
-                }
-                (HelperValue::PulledStream { input }, _) => {
-                    pulled
-                        .iter()
-                        .find(|p| p.0 == input)
-                        .ok_or(Error::Invalid("a pulled input the draw does not fetch"))?
-                        .2
-                }
-                _ => {
-                    return Err(Error::NotImplemented(
-                        "a helper value the front does not write",
-                    ));
-                }
-            };
-            let at = slot.offset as usize;
-            let end = (at + 16).min(size);
-            if at >= end {
-                return Err(Error::Invalid("a helper slot past its block"));
+        if helpers.size != 0 {
+            let mut block = vec![0u8; helpers.size as usize];
+            for slot in &helpers.slots {
+                let words = match (slot.value, bases) {
+                    (HelperValue::DrawBase, Bases::Direct(b)) => {
+                        self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
+                        words(&[b[0], b[1]])
+                    }
+                    (
+                        HelperValue::DrawArguments,
+                        Bases::Arguments {
+                            args,
+                            offset,
+                            indexed,
+                        },
+                    ) => {
+                        self.backend
+                            .slow_paths()
+                            .hit(SlowPath::DrawBaseFromArguments);
+                        arguments =
+                            Some(((*args).clone(), offset + if *indexed { 20 } else { 16 }));
+                        words(&[(offset / 4) as u32, u32::from(*indexed)])
+                    }
+                    (HelperValue::PulledStream { input }, _) => words(
+                        &pulled
+                            .iter()
+                            .find(|p| p.0 == input)
+                            .ok_or(Error::Invalid("a pulled input the draw does not fetch"))?
+                            .2,
+                    ),
+                    (value, _) => self.bound_helper(bind::VERTEX, value)?,
+                };
+                put(&mut block, slot.offset, slot.value, words)?;
             }
-            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-            block[at..end].copy_from_slice(&bytes[..end - at]);
+            blocks.push((helper_binding(ShaderStage::Vertex), stages, block));
         }
+        let mut merged = Vec::new();
+        if let Some(p) = pixel.filter(|p| p.size != 0) {
+            let block = self.stage_block(p, bind::PIXEL)?;
+            blocks.push((
+                helper_binding(ShaderStage::Fragment),
+                StageSet::FRAGMENT,
+                block,
+            ));
+            merged = self.merged_samplers(p, bind::PIXEL, StageSet::FRAGMENT)?;
+        }
+        self.helper_blocks(&blocks, arguments.as_ref().map(|(b, s)| (b, *s)), &merged)
+    }
+
+    /// A clamped program's merged samplers (binding, the back end's stages, sampler): each pair
+    /// whose texture is under a clamp samples through its sampler with the minimum level raised
+    /// to the clamp.
+    pub(super) fn merged_samplers(
+        &mut self,
+        helpers: &Helpers,
+        visibility: u32,
+        stages: StageSet,
+    ) -> Result<Vec<(u32, StageSet, B::Sampler)>, Error> {
+        let mut merged = Vec::new();
+        for (n, &(texture, sampler)) in helpers.pairs.iter().enumerate() {
+            let Some(&(.., clamp)) = self
+                .bound_clamps
+                .iter()
+                .find(|c| c.0 == visibility && c.1 == texture)
+            else {
+                continue;
+            };
+            let v = self
+                .bound_samplers
+                .iter()
+                .find(|s| s.0 == visibility && s.1 == sampler)
+                .ok_or(Error::Invalid(
+                    "a clamped texture sampled through no sampler",
+                ))?
+                .2;
+            let s = self.clamped_sampler(&v, clamp)?;
+            merged.push((CLAMPED_SAMPLER_BINDING + n as u32, stages, s));
+        }
+        Ok(merged)
+    }
+
+    /// The helper block of a pixel or compute stage (API stage `visibility`), from what its
+    /// bindings give.
+    pub(super) fn stage_block(&self, helpers: &Helpers, visibility: u32) -> Result<Vec<u8>, Error> {
+        let mut block = vec![0u8; helpers.size as usize];
+        for slot in &helpers.slots {
+            let words = self.bound_helper(visibility, slot.value)?;
+            put(&mut block, slot.offset, slot.value, words)?;
+        }
+        Ok(block)
+    }
+
+    /// The words the last `binding_sets` found for `value` of the API stage `visibility`.
+    fn bound_helper(&self, visibility: u32, value: HelperValue) -> Result<Words, Error> {
+        self.bound_helpers
+            .iter()
+            .find(|h| h.0 == visibility && h.1 == value)
+            .map(|h| h.2)
+            .ok_or(Error::NotImplemented(
+                "a helper value the front does not write",
+            ))
+    }
+
+    /// A helper set of `blocks` (binding, the back end's stages, bytes), written into the data
+    /// ring, with an indirect draw's `arguments` (buffer, bytes) bound.
+    pub(super) fn helper_blocks(
+        &mut self,
+        blocks: &[(u32, StageSet, Vec<u8>)],
+        arguments: Option<(&B::Buffer, u64)>,
+        samplers: &[(u32, StageSet, B::Sampler)],
+    ) -> Result<B::BindingSet, Error> {
         let align = self.backend.caps().limits.min_uniform_offset_alignment;
-        let mut offset = [0];
+        let mut offsets = vec![0; blocks.len()];
+        let bytes: Vec<&[u8]> = blocks.iter().map(|b| b.2.as_slice()).collect();
         let ring = self
             .backend
-            .write_buffer_ring(RingKind::Data, &[&block], align, &mut offset)?;
-        let mut entries = vec![BindingEntry {
-            binding: helper_binding(ShaderStage::Vertex),
-            stages,
-            resource: BindingResource::UniformBuffer(BufferRange {
-                buffer: &ring,
-                offset: offset[0],
-                size: size as u64,
-            }),
-        }];
+            .write_buffer_ring(RingKind::Data, &bytes, align, &mut offsets)?;
+        let mut entries: Vec<_> = blocks
+            .iter()
+            .zip(&offsets)
+            .map(|((binding, stages, block), offset)| BindingEntry {
+                binding: *binding,
+                stages: *stages,
+                resource: BindingResource::UniformBuffer(BufferRange {
+                    buffer: &ring,
+                    offset: *offset,
+                    size: block.len() as u64,
+                }),
+            })
+            .collect();
+        entries.extend(samplers.iter().map(|(binding, stages, s)| BindingEntry {
+            binding: *binding,
+            stages: *stages,
+            resource: BindingResource::Sampler(s),
+        }));
         if let Some((args, size)) = arguments {
             entries.push(BindingEntry {
                 binding: DRAW_ARGUMENTS_BINDING,
-                stages,
+                stages: blocks.first().map_or(StageSet::VERTEX, |b| b.1),
                 resource: BindingResource::StorageBuffer {
                     range: BufferRange {
                         buffer: args,
@@ -332,4 +425,38 @@ impl<B: Backend> Device<B> {
         }
         Ok(self.backend.create_binding_set(&entries)?)
     }
+}
+
+/// A helper value's words: at most nine (`HelperValue::SamplerState`), zeros past its own.
+pub(super) type Words = [u32; 9];
+
+/// `w` as helper words.
+pub(super) fn words(w: &[u32]) -> Words {
+    let mut out = [0; 9];
+    out[..w.len()].copy_from_slice(w);
+    out
+}
+
+/// Writes helper value `value`'s words at `offset` of `block`.
+fn put(block: &mut [u8], offset: u32, value: HelperValue, words: Words) -> Result<(), Error> {
+    let n = match value {
+        HelperValue::LodBias { .. }
+        | HelperValue::TextureComponents { .. }
+        | HelperValue::TextureLevels { .. }
+        | HelperValue::TextureSamples { .. } => 1,
+        HelperValue::TexelBufferView { .. } | HelperValue::MinLod { .. } => 2,
+        HelperValue::DrawBase | HelperValue::DrawArguments => 3,
+        HelperValue::TexelLayout { .. } => 5,
+        HelperValue::SamplerState { .. } => 9,
+        _ => 4,
+    };
+    let at = offset as usize;
+    let n = n.min(block.len().saturating_sub(at) / 4);
+    if n == 0 {
+        return Err(Error::Invalid("a helper slot past its block"));
+    }
+    for (k, w) in words[..n].iter().enumerate() {
+        block[at + 4 * k..at + 4 * k + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    Ok(())
 }

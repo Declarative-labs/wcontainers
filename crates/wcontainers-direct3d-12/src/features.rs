@@ -4,7 +4,7 @@
 //! sampler feedback, tiled resources, rasterizer ordered views, conservative rasterisation and 64-bit
 //! integers absent.
 
-use wcontainers_directx_graphics_infrastructure::takes_samples;
+use wcontainers_directx_graphics_infrastructure::{dxgi_vertex_format, takes_samples};
 use wcontainers_gpu::{Caps, Features, Format, FormatUse};
 
 pub const FEATURE_LEVEL_11_0: u32 = 0xb000;
@@ -30,6 +30,18 @@ pub fn feature_level(caps: &Caps) -> Option<u32> {
     // 11_1 also needs logic operations and target-independent rasterisation, which no `Caps`
     // capability promises.
     Some(FEATURE_LEVEL_11_0)
+}
+
+/// `D3D12_FORMAT_SUPPORT1_BUFFER` and `D3D12_FORMAT_SUPPORT1_SHADER_LOAD`, which typed buffer
+/// views give: they are loaded.
+pub const SUPPORT1_TYPED_BUFFER: u32 = 0x1 | 0x100;
+
+/// Typed buffer views of DXGI format `value` are read: through storage buffers, decoded in the
+/// program (`TexelBufferAsStorage`), for the formats that have a vertex fetch form.
+pub fn typed_buffer(caps: &Caps, value: u32) -> bool {
+    !caps.has(Features::TEXEL_BUFFERS)
+        && caps.limits.storage_buffers_per_stage > 0
+        && dxgi_vertex_format(value).is_some()
 }
 
 /// `D3D12_FEATURE_FEATURE_LEVELS`: the highest of `requested` the device supports (every level
