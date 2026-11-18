@@ -419,6 +419,11 @@ fn bytes<T: bytemuck::Pod>(v: &[T]) -> &[u8] {
 
 /// Records the scene's draw into the open pass.
 pub fn draw(b: &mut B, p: &Prepared) {
+    draw_with(b, p, &[]);
+}
+
+/// Draws the scene with `immediates` set.
+pub fn draw_with(b: &mut B, p: &Prepared, immediates: &[u8]) {
     let vertex_buffers = [Some(VertexBinding {
         buffer: &p.vertices,
         offset: 0,
@@ -448,7 +453,7 @@ pub fn draw(b: &mut B, p: &Prepared) {
         scissors: &[],
         blend_constant: [0; 4],
         stencil_reference: [0; 2],
-        immediates: &[],
+        immediates,
         range: if indexed {
             DrawRange::Indexed {
                 first: 0,
