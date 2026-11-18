@@ -150,6 +150,8 @@ pub(crate) struct FdTable {
     released: Vec<FileRef>,
     /// Whether a close let go of record locks, whose waiters try again.
     let_go_locks: bool,
+    /// Notices that closes took message queue requests away, for the kernel to send.
+    pub notices: Vec<(crate::syscall::socket::SocketRef, Vec<u8>)>,
 }
 
 impl FdTable {
@@ -260,6 +262,7 @@ impl FdTable {
             lock_owner,
             released: Vec::new(),
             let_go_locks: false,
+            notices: Vec::new(),
             ..self.clone()
         }
     }
@@ -289,8 +292,10 @@ impl FdTable {
                     crate::locks::release_table(&mut node.record_locks, self.lock_owner);
                 // A queue's request to be told goes with a close by its process
                 // (`mqueue_flush_file`).
-                if let crate::fs::Content::Mqueue(queue) = &mut node.content {
-                    queue.flush(closer);
+                if let crate::fs::Content::Mqueue(queue) = &mut node.content
+                    && let Some(notice) = queue.flush(closer)
+                {
+                    self.notices.push(notice);
                 }
             }
         }

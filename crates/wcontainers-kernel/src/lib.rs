@@ -139,6 +139,8 @@ pub struct Kernel {
     /// Files closed with a descriptor table whose last holder has gone, for the kernel to finish
     /// releasing.
     released: Vec<file::FileRef>,
+    /// Notices that such closes took message queue requests away, for the kernel to send.
+    notices: Vec<(syscall::socket::SocketRef, alloc::vec::Vec<u8>)>,
     /// Parked threads whose wait ended, in line to run, whose calls are run again when their turn
     /// comes.
     woken: VecDeque<Tid>,
@@ -225,6 +227,7 @@ impl Kernel {
             running: None,
             parked: schedule::Parked::default(),
             released: Vec::new(),
+            notices: Vec::new(),
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
             monotonic_offset: 0,
@@ -565,6 +568,7 @@ impl Kernel {
             let mut table = table.into_inner();
             table.close_all(closer);
             self.released.extend(table.take_released());
+            self.notices.append(&mut table.notices);
             if table.take_let_go_locks() {
                 self.wake(process::Channel::Locks);
             }

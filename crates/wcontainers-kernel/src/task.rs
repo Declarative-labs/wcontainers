@@ -998,11 +998,16 @@ impl Kernel {
     /// One round of [`Self::files_released`]; returns whether a local socket was released.
     fn release_round(&mut self, cx: &mut Context<'_>) -> bool {
         let mut files = core::mem::take(&mut self.released);
+        let mut notices = core::mem::take(&mut self.notices);
         let mut let_go = false;
         for thread in self.threads.values() {
             let mut table = thread.files.borrow_mut();
             files.extend(table.take_released());
+            notices.append(&mut table.notices);
             let_go |= table.take_let_go_locks();
+        }
+        for (socket, cookie) in notices {
+            crate::syscall::socket::netlink::send_from_kernel(self, cx, &socket, cookie);
         }
         let sockets = files.iter().any(|file| {
             alloc::rc::Rc::strong_count(file) == 1
