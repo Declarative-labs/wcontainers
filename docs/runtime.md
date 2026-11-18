@@ -330,11 +330,12 @@ already does, decided by that measurement.
 - the translator's build identity: a hash made at build time of the sources of every crate the emitted
   code depends on: the translator, the guest interface (`wcontainers-guest-cpu`: `Personality`, `Guest`),
   every guest crate of the workspace (each crate that depends on the guest interface and not on the
-  translator, found from the manifests by the build script, so x86-64's joins when it lands), and
-  `wcontainers-abi` (the register block, `STOP_FLAG_OFFSET`, `THREAD_BLOCK_SIZE`), and the locked entry
-  (name, version, source, checksum) of every other crate they are built from, followed through the lock
-  file from the workspace crates' normal and build dependencies (wasm-encoder, the guest's decoder and float
-  crates, the translator's petgraph and what those depend on), so any change to them changes the key without
+  translator, found by the build script, so x86-64's joins when it lands), and `wcontainers-abi` (the
+  register block, `STOP_FLAG_OFFSET`, `THREAD_BLOCK_SIZE`), and the locked entry (name, version, source,
+  checksum) of every other crate they are built from, followed along normal and build dependencies through
+  the workspace as `cargo metadata --no-deps` gives it (the cargo_metadata crate) and the lock file (the
+  cargo-lock crate), so nothing is fetched (wasm-encoder, the guest's decoder and float crates, the
+  translator's petgraph and what those depend on), so any change to them changes the key without
   manual version numbers (built with the disk level, J2: the in-memory level lives inside one build). The
   build script reruns when the lock file, a crate's manifest or a hashed crate's sources change, and for
   nothing else under the crates directory,
@@ -376,10 +377,22 @@ use the kernel plan's copying method (its section 7), the one that also serves b
 - every page that shows a block carries the "shared pages" write lock (the lock layer below), so the
   guest's first write to it faults to the back end, which marks the page written in that memory, lifts the
   lock and carries the thread on from its block (counted "first write to a shared page");
+- one memory may show the same page of a block at more than one place (a file mapped twice, a ring buffer
+  mapped twice side by side). While the guest writes through one of them, the others carry the "view" lock,
+  which takes reading as well as writing, so the guest reaching any of them faults to the back end, which
+  makes the copies first (counted "shared page written through another page"). Code read for translation
+  makes the copies first too;
+- when the neighbouring page shows the same page of the block, one write may cross from one copy into the
+  other, which no single copy can hold. Such a write is made one instruction at a time (counted "write next
+  to another view made one instruction at a time"): both pages are unlocked, the lookup sends the
+  instruction's address to its own piece in the exact slot and the address after it to `load_code`, and
+  there the copies are made, each page giving the bytes it changed;
+- `ic ivau` (the guest's code changed hook) on a page that shows a block drops the pieces of that line
+  wherever the block is shown, in every memory, as the instruction reaches every CPU;
 - before the kernel sees anything (at every exit handed to it, and when the thread leaves `run`) the
   written pages are copied into the block and into every other memory that maps them, and locked again.
-  With one guest thread running at a time this is exact: no other memory runs and the kernel reads nothing
-  until the copies are made;
+  With one guest thread running at a time and the view lock this is exact: no other memory runs, no other
+  place of the same memory is reached before the copies are made, and the kernel reads nothing until then;
 - `Cpu::write` into a page that shows a block, and `shared_write`, write the block and every memory that
   maps it; `shared_unmap` and `Cpu::zero` end the sharing there, the memory keeping its copy or the zeros.
 A real shared mapping (rustix, `memfd_create` or `shm_open`) is a later speed path only on hosts whose
@@ -505,8 +518,10 @@ kernel last set them (execute included) and writes the table bytes from them, as
 (runner.rs:647-663). Reading and writing through `Cpu` ignores permissions (abi/cpu.rs:31-32). One layer
 sits on top, written by the back end alone: each page may carry write locks, each with its reason
 (translated code written without an announcement, x86 plan 5.7, which ARM64 does not need; tracking written
-pages; copying a page aside before its first write, section 12; shared pages, above). The table byte is always the kernel's permissions less write wherever a lock stands, made by one
-function from the record; no lock has its own override. A write that faults on a locked page goes to the
+pages; copying a page aside before its first write, section 12; shared pages, above), and one lock that
+takes reading too (the view lock, above). The table byte is always the kernel's permissions less write
+wherever a lock stands, and less read under the view lock, made by one function from the record; no lock
+has its own override. A write that faults on a locked page goes to the
 back end, which settles every lock on the page by its reason, and then either lets the write go on (the
 kernel's permissions allow it) or hands the kernel its `Exit::MemoryFault` (they do not); the kernel never
 sees a lock. Running code is checked at translation: an address on a page that does not allow running gives
@@ -750,7 +765,7 @@ methods as exports, `Cpu` and `Host` as imports) is asked of the kernel track.
   rustix, blake3, object (0.41, the kernel's version; wasmtime 50 brings its own object 0.40 and gimli
   0.33, so a build holds two versions of each), gimli (0.34, the translator test crate's version) for the
   unwind tables, rayon (1.12, the translator's) for the back end's own pool
-  (section 11), on macOS mach2, and, at build time only, blake3 and toml_edit (the build identity). The split keeps wasmtime out of every build that does not run WebAssembly
+  (section 11), on macOS mach2, and, at build time only, blake3, cargo_metadata and cargo-lock (the build identity). The split keeps wasmtime out of every build that does not run WebAssembly
   (the kernel tests on the stand-in, a later native back end).
 - No new test crate. The kernel test crate's driver calls `drive`; its stand-in implements `Execution`; its
   `TestHost` implements `Outside`, holding the per-turn work the driver loop does today (backend answers,
@@ -969,8 +984,10 @@ Each bar is checkable by running the named command on this Mac with Docker.
   translations in the cache's directory.
   Bar: with `--features runtime`, the tests `shell`, `script`, `scriptline`, `processes`, `zombie`,
   `orphans`, `procsignals`, `sigframe`, `faults`, `align`, `memory`, `mapflags`, `privatemap`, `sharedmap`,
-  `memfd`, `sysvshm`, `loader`, `loaderrors`, `terminal`, `write` and `unknown` all pass as they do with the
-  stand-in, at full, none and bounded look-ahead. Layer 1 with `CpuSide` passes 10,000 seeded sequences, and
+  `sharedviews`, `memfd`, `sysvshm`, `loader`, `loaderrors`, `terminal`, `write` and `unknown` all pass as
+  they do with the stand-in (or, where the stand-in is the known failure, against the reference), at full,
+  none and bounded look-ahead. `sharedviews` (added after J2's third check) shows one shared file at two
+  places of one process. Layer 1 with `CpuSide` passes 10,000 seeded sequences, and
   the one-million run is one command. System call and fork cost measured (section 15), with both sides of the
   fork copy (the copy, and the first writes after it).
 - **J3, the user surface.** The library surface of section 14 as the owner ruled it: `oci_spec::runtime::Spec`

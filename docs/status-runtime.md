@@ -22,6 +22,12 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 - J2 run 3 (2026-11-18): the five findings of J2 run 2's check are settled (next section). One stays a
   known failure, recorded: after a save is brought back on the WebAssembly back end the counter can go
   back, until the kernel makes its clock public (the kernel track's code).
+- J2 run 4 (2026-11-18): the three findings of J2 run 3's check are settled (next section). The blocking
+  one, a block of shared pages shown twice in one memory, is fixed exactly, also for a ring of one page
+  mapped twice side by side; the new kernel test `sharedviews` joins J2's bar. The bars, layer 1 with a new
+  seed, the stand-in's verdicts, the Linux check and the costs were run again on the fixed tree (J2 run 4
+  below). Nothing of J2 is left open but what was before: the progress count (the owner's ruling) and the
+  counter after a restore (the kernel's clock method).
 - J2 is complete: every part of plan section 16's J2 that the brief lets be built now is built, its bar
   passes at full, none and bounded, layer 1 passes 10,000 seeded sequences over the back end, the million
   is one command (not run here; the orchestrator's), and system call and fork cost are measured with both
@@ -31,6 +37,89 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   Layer 1 does not pass every seed: the kernel's `getcpu` (kernel track's code) differs from Linux with a bad
   cpu pointer and a good node pointer, on the stand-in too (next section).
 - Next: J3 (plan section 16).
+
+## Findings of J2 run 3's check, and how each was settled (J2 run 4)
+
+- One memory showing the same block's page at two places read stale bytes (blocking): fixed (2fa76074,
+  88ecb185). Each memory held one copy per place shown, and a write through one place reached the others
+  only at the next exit. Now, while the guest writes through one place, the memory's other places of that
+  page carry a new lock, the "view" lock, that takes reading as well as writing; reaching one of them
+  faults to the back end, which makes the copies first (counted "shared page written through another
+  page"). `load_code` makes them first too, before it reads code. A page whose neighbouring page shows the
+  same block's page (a ring of one page mapped twice side by side) could not take a write that crosses
+  from one into the other, since each copy would hold only its part: such a write is made one instruction
+  at a time (counted "write next to another view made one instruction at a time"). Both pages are
+  unlocked; the slot of the instruction's address is pointed at its own piece in the exact slot and the
+  slot of the next address (from `Guest::decode`'s length) is emptied, so the lookup runs that instruction
+  alone and then calls `load_code`, where the step ends and the copies are made, each page giving the
+  bytes it changed against the block. Also fixed on the way: `ic ivau` on a page that shows a block now
+  drops that line's pieces wherever the block is shown, in every memory (a parent ran its old code after a
+  child rewrote shared code). A first try that refused, as not supported, any block's page shown next to
+  itself writable is not kept: `mmap` places two one-page mappings of one file side by side, so it refused
+  common programs.
+  Tests: the back end's tests/views.rs (6: write through one place and read through the other, rings of
+  two pages and of one page with a store across the seam, each at full and none), and the kernel test crate's
+  guest/sharedviews.c with tests/sharedviews.rs (a7197a7b, 27ff0eac, its own commits): "data" (the
+  check's two views, and a child writing through one view), "ring" (two pages), "ring1" (one page), "code"
+  (code written through a writable view and run through an executable one; shared code rewritten by a
+  child). With the runtime all four pass at full, none and bounded (scratch j2run4/views-runtime-5-*.log;
+  load 20.3 to 22.9). On the stand-in "code" fails (`code views: 1 1 1` against `1 2 3`, Unicorn's stale
+  code, the check's second finding), so without the feature it is ignored as the stand-in's known failure;
+  the other three pass (views-standin-4.log, load 22.1). Before the fix the runtime failed "data" and "ring"
+  as the check found, and "code" died with SIGILL (views-runtime-old.log: exit 132).
+  The reference's child, running code it had just rewritten in shared memory and synced with
+  `__builtin___clear_cache` (which runs `dc cvau`, `ic ivau` and `isb` as `CTR_EL0` asks;
+  j2run4/sharedviews.dis), ran the old code (the check's "child 77"), while the parent then ran the new.
+  Both back ends run the new code there, as the architecture says. That case is left out of sharedviews (the
+  child exits with what it ran before rewriting) and recorded here, unexplained.
+- The stand-in runs stale code in two cases (minor, information for the kernel test crate): recorded; with
+  the shared code part changed as above, the stand-in now fails only the code views line, and "code" is
+  ignored without the feature for it.
+- The build identity parsed the lock file and manifests by hand (minor): build.rs now reads the workspace
+  with `cargo metadata --no-deps` (the cargo_metadata crate: each member's manifest path and its
+  dependencies with their kinds, as cargo reads them) and the lock file with the cargo-lock crate
+  (`Lockfile::load`, `Dependency::matches`), and walks normal and build dependencies from the translator and
+  every guest crate (a workspace crate built on the guest interface and not on the translator), hashing the
+  sources of each workspace crate from its manifest's own directory (no assumption that directory and
+  package names agree) and the locked entry (name, version, source, checksum) of every other. It hashes the
+  same 54 packages as before (4 workspace crates, 50 others; listed once with a build warning, then removed).
+  The check's suggestion, cargo's full resolved graph (`cargo metadata` without `--no-deps`), was built
+  first (df7cab06) and replaced: it needs every package of the whole workspace present, so on a fresh
+  registry the back end's build failed with `--offline` ("failed to download adler2", scratch
+  j2/linux/linux-check-6.log) and would fetch from the network without it. With the lock file read as
+  it is, nothing is fetched: the Linux check passes (linux-check-7.log, 24 tests, load 47.0 to 43.7).
+  Checked again: touching a kernel test file rebuilt nothing; touching an arm64 source reran the script.
+
+## J2 run 4: the bars on the fixed tree (this Mac, Apple M5 Max; other tracks running)
+
+The back end of every run below is 88ecb185's (later commits change only the build identity's way of
+finding its crates, which hashes the same 54 packages, and docs); logs in scratch j2run4/, made by
+j2run4/all.sh at 27ff0eac with the docs uncommitted.
+- J2's bar with sharedviews (j2run4/bar.sh): full 46 passed, 2 ignored, 92.7 s (load 23.2 to 35.3;
+  bar-full.log); none 46 passed, 2 ignored, 195.0 s (load 35.3 to 50.6; bar-none.log); bounded 46 passed, 2
+  ignored, 151.2 s (load 50.6 to 74.1; bar-bounded.log). The 46 are run 3's 42 and sharedviews' 4; ignored
+  as before: align's exclusive load (the translator's known failure) and memfd's huge pages.
+- Layer 1 over the back end with a new seed: 10,000 sequences, seed 2026111804, 32 on each file backend, 3
+  passed in 172.7 s (load 74.1 to 34.2; layer1-10000-2026111804.log).
+- The stand-in: the whole kernel test crate without the feature, 568.3 s (load 34.2 to 20.3;
+  verdicts.log, verdicts.txt): 195 passed, 0 failed, 6 ignored. Against run 3's verdict lines the
+  differences are sharedviews' four (three ok, "code" ignored as the stand-in's known failure) and
+  `threads_match_reference_on_backend_root`, which failed on the reference's side in run 3 and passes here.
+- The back end's own tests on this Mac: 24 passed (backend-2.log, load 18.9 to 20.3). On Linux (Docker,
+  linux/arm64): 24 passed, the paged out page "present 0, swapped 1" (j2/linux/linux-check-7.log, a scratch
+  worktree of 27ff0eac with the cargo-lock build script, 5979be8b's; load 47.0 to 43.7); its target,
+  registry and image are deleted. At 5979be8b the back end's tests on this Mac: 24 passed (backend-3.log,
+  load 28.6 to 26.2).
+- System call and fork cost again, since every exit's copy step changed (release; j2/cost/runtime_cost.rs
+  and copy_cost.rs copied in for the run and removed, the same method as runs 1 and 2; scratch
+  j2run4/cost/cost.sh, at 5979be8b; cost-1.log and copy-1.log): `getppid` ours 155.0 ns an iteration (min
+  140.2), the loop with no call 7.8 ns, reference 140.3 to 158.0 ns (load 41.2); fork, `_exit` and
+  `waitpid` with 448 heap pages ours 230.8 µs (min 207.9), reference 175.4 to 284.2 µs (load 41.2 to 39.2);
+  fork then rewriting the 448 pages ours 355.3 µs (min 328.4), reference 634.6 to 745.5 µs; the rewrite
+  alone ours 14.0 µs, reference 4.5 to 7.8 µs (load 39.2 to 37.7). Both sides of the copy on the back end
+  alone (J0's busybox sh layout, 446 pages written, medians of 15; load 29.7): `memory_duplicate` 74.2 µs
+  (min 65.2), the parent's first writes after it 214.2 µs, the same writes with no copy 18.4 µs. Within
+  run 2's figures (163 ns, 319 µs; the copy 71 to 95 µs after the records change).
 
 ## Findings of J2 run 2's check, and how each was settled (J2 run 3)
 
@@ -449,7 +538,9 @@ Linux VM on this Mac. Measured:
 The one build directory of this track is the checkout's own `target/` (CARGO_TARGET_DIR unset); the tests'
 translation cache is in it (target/wc-kernel-test/translations; delete it to make every translation again).
 Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/` and `j1run2/`, J2's in `j2/`.
-- J2's bar: scratch `j2/bar.sh NAME full|none|bounded [test arguments]` (log j2/NAME.log); by hand:
+- J2's bar since run 4 (with sharedviews): scratch `j2run4/bar.sh NAME full|none|bounded [test arguments]`
+  (log j2run4/NAME.log); run 4's bars, layer 1 and the stand-in's verdicts in one command:
+  `j2run4/all.sh`. Before run 4: scratch `j2/bar.sh NAME full|none|bounded [test arguments]` (log j2/NAME.log); by hand:
   `LOOK_AHEAD=<l> nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --no-fail-fast
   --test shell --test script ... --test unknown -- --test-threads 3` (the 21 tests of plan section 16 J2).
 - Layer 1 over the back end, one command: scratch `j2/layer1.sh CASES SEED [BACKEND_CASES]`, or
@@ -612,7 +703,9 @@ array of slots in microseconds.
   and unmaps blocks a 4 KiB page at a time. Each memory holds a copy; pages that show a block carry the
   "shared pages" write lock; the guest's first write faults to the back end (counted "first write to a
   shared page"), and written pages are copied into the block and every other memory before the kernel sees
-  anything. Exact while one guest thread runs at a time (plan section 8).
+  anything. Exact while one guest thread runs at a time, with the view lock on the memory's other places of
+  a page being written and a write next to another view of its page made one instruction at a time (plan
+  section 8; J2 run 4).
 - Progress has two meanings in J1, accepted by the orchestrator until the owner rules on the count: the
   stand-in counts its instructions and the WebAssembly back end counts stop checks passed (named, counted and
   warned once per run: "progress counted by stop checks"). The translator is not changed for it. No test
@@ -669,6 +762,17 @@ array of slots in microseconds.
 - After a save is brought back on the WebAssembly back end the counter is the host's clock, not the kernel's,
   so it can go back (a known failure, counted and warned); the plan's design needs the kernel's clock method,
   which the kernel track has not made public.
+- J2 run 4 added a guest program and test file to the kernel test crate (guest/sharedviews.c,
+  tests/sharedviews.rs, their own commits), not only the driver, and added `sharedviews` to J2's bar (plan
+  section 16 J2): no listed test showed one block at two places of one memory. Its "code" test is ignored
+  without the feature as the stand-in's known failure (Unicorn runs stale code), the plan's rule for a
+  test the stand-in cannot run; with the runtime it passes against the reference.
+- sharedviews' child does not run the code it rewrote in shared memory: on the reference it ran the old
+  code after `__builtin___clear_cache`, which the architecture does not allow and neither back end does
+  (recorded in J2 run 4's findings).
+- A write next to another view of its block's page is single-stepped through the exact slot and the
+  lookup, which the translator's contract gives for one instruction run exactly; the plan had no such
+  case (section 8 now has it).
 - With the feature, a kernel test run that saves holds the test process alone while it has a back end
   (44ff7829): the save forks a test process whose other threads run other tests, and a lock one of them
   holds at the fork (libunwind's, wasmtime's) never comes free in the copy. Plan section 11 said the copy
@@ -692,4 +796,10 @@ Added in J1, licences read from each crate's manifest in the registry on 2026-11
   the test that forks its process.
 - Added in J2 run 2 (licence read from the registry's manifest on 2026-11-18): toml_edit 0.25.19 (MIT OR
   Apache-2.0), a build dependency of wcontainers-wasmtime only, to find the workspace's guest crates.
+  Replaced in J2 run 4 by two build dependencies only (never in a shipped binary), licences read from the
+  registry's manifests on 2026-11-18: cargo_metadata 0.23.1 (MIT; already in the lock for the kernel test
+  crate; with camino, cargo-platform, semver, serde_json, thiserror, each MIT OR Apache-2.0) and cargo-lock
+  11.1.0 (Apache-2.0 OR MIT), which brings 31 crates new to the lock: toml, url, idna, percent-encoding,
+  form_urlencoded, utf8_iter and displaydoc (MIT OR Apache-2.0), synstructure (MIT), and the ICU crates (icu_*, zerovec, zerotrie, yoke, tinystr,
+  litemap, writeable, potential_utf, zerofrom; Unicode-3.0).
 - Not added yet: tar (J3), oci-spec (J3).
