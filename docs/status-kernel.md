@@ -4,7 +4,8 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K6b (larger runtimes), third run: /sys is a read-only sysfs whose lookups of Linux's entries are
+K6b (larger runtimes), third run, not complete (one layer 1 difference open, Next item 0):
+/sys is a read-only sysfs whose lookups of Linux's entries are
 counted, a mapped backend file's pages are read when first touched (by the program or by the
 kernel's copies) instead of whole, a program on the backend is read only where the loader needs
 it, Python's whole test_mmap runs (its LargeMmapTests too), and NS_GET_USERNS and NS_GET_PARENT
@@ -75,6 +76,31 @@ saves, other runs beside it):
   (4), "sys entry not built" (4, 6, 7: devices, fs, kernel); Node "address above the address
   space" and the rest as before; Python "proc fields not tracked" (0), "backend pages written
   whole", "page residency not tracked" (test_mmap). Nothing is read whole any more.
+
+Layer 1 seed 6262615 found a kernel difference (fixed): a local datagram socket that sends to
+its peer after the peer closed loses what its own queue held (`unix_dgram_disconnected`, so the
+empty datagram the peer sent before closing is gone, EAGAIN), and the same when it connects to
+another socket; a live peer connected back is told ECONNRESET. The check applies whenever the
+target is its peer, named or not (`unix_peer(sk) == other`). guest/sockedges.c
+`dgram_disconnects`, tests/inet.rs `socket_edges_match_reference`.
+
+Layer 1 seed 6262616 found another (fixed at 7d48131): a peek at a local stream goes on to each
+next buffer even when it wants no more bytes (`unix_stream_read_generic`'s `goto again`), so a
+peek of no bytes with an urgent byte queued after others is EAGAIN; guest/sockedges.c
+`zero_reads`. Seeds at 7d48131 (20000 sequences each, side by side, load 23 at the start, 54 at
+the end): 6262616 passed (331.9 s), 6262618 passed (332.3 s); 6262617 failed (155.0 s), not yet
+fixed: preadv2 with RWF_NOWAIT at the current position on a descriptor from
+`openat(4, path, O_NOCTTY)` after `mknodat(path, S_IFIFO | 0600)`, setresgid and setresuid to
+1000: ours EFAULT, the reference EOPNOTSUPP (Linux checks FMODE_NOWAIT before any copy; the
+file it opened lacks it and ours does not see so). Next, item 1. Earlier, 6262615 passed 20000
+at 5783036 (330.9 s, load 12), and 6262612 and 6262613 at e6369dd (342.6 s and 343.7 s, load 61).
+
+Whole suite (scratch k6b3/suite.log, started at e6369dd, 4 test threads; later binaries were
+rebuilt with the fixes above while it ran, load 8 to 70): every binary through python passed
+but inet's `option_reads_and_socket_corners_match_reference` (the reference race below, fixed);
+python passed in it. It was still running (record locks) when this run stopped; the zig cache
+in ~/.cache/zig was then held by other tracks' builds for over ten minutes, which stalls guest
+builds (tests here can set ZIG_GLOBAL_CACHE_DIR to a scratch directory of their own).
 
 Reference races found by this run's whole-suite and layer 1 runs (load 55 to 70), each shown to
 be the reference's: Linux may hand a loopback datagram to its socket after sendto returns, when
@@ -2841,6 +2867,9 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 After K6b (third run), in this order:
+0. Layer 1 seed 6262617 (above): find which file the sequence opens (dump the arena's path at
+   0x59) and why the reference refuses RWF_NOWAIT on it before the copy; fix, then three fresh
+   seeds from 6262619 on and the whole suite at the final kernel. Then K6b is complete.
 1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
    to know that the name an open file was opened by was unlinked while another link names the
    inode (Linux's `d_unlinked` of that dentry); the kernel keeps no dentries for backend names.
@@ -2922,6 +2951,6 @@ not seen as a setting; futex queues allocate when a futex first gets waiters; th
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
 5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
-6262601 to 6262615 (K6b), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+6262601 to 6262618 (K6b), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
