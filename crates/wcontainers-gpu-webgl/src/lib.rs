@@ -229,6 +229,8 @@ struct Pass {
     counting: bool,
     /// Per colour target: the multisampled texture and the view it resolves into at the end.
     resolves: [Option<(Texture, TextureView)>; MAX_COLOR_TARGETS],
+    /// The area every attachment holds, which scissors are clipped to.
+    size: (u32, u32),
 }
 
 /// Attachment points of one framebuffer: eight colours, depth and stencil.
@@ -309,6 +311,9 @@ pub struct WebGl {
     applied: Applied,
     programs: HashMap<(Id, Id), GlProgram>,
     framebuffers: HashMap<FramebufferKey, glow::Framebuffer>,
+    /// Framebuffers of passes without attachments, each on an `R8` renderbuffer of its own that no
+    /// draw writes (GLES 3.0 has no framebuffer without attachments).
+    empty_passes: HashMap<EmptyPass, glow::Framebuffer>,
     empty_fragment: glow::Shader,
     pass: Option<Pass>,
     /// How many buffers have a stale range, so draws look for them only when some do.
@@ -389,6 +394,7 @@ impl WebGl {
             applied: Applied::new(),
             programs: HashMap::new(),
             framebuffers: HashMap::new(),
+            empty_passes: HashMap::new(),
             empty_fragment,
             pass: None,
             stale_buffers: 0,
@@ -1196,6 +1202,66 @@ impl WebGl {
         self.applied.draw_framebuffer = Some(fb);
         self.framebuffers.insert(key, fb);
         fb
+    }
+
+    /// A pass without attachments: its own renderbuffer of the pass's size and samples, with no draw
+    /// buffer, so draws rasterise (for queries and depth-less tests) and write nothing.
+    fn begin_empty_pass(&mut self, empty: EmptyPass, occlusion: Option<QuerySet>) {
+        let gl = &self.gl;
+        let fb = match self.empty_passes.get(&empty) {
+            Some(fb) => *fb,
+            // SAFETY: plain GL calls on the current context.
+            None => unsafe {
+                let rb = gl.create_renderbuffer().expect("a renderbuffer object");
+                gl.bind_renderbuffer(glow::RENDERBUFFER, Some(rb));
+                let (w, h) = (empty.width as i32, empty.height as i32);
+                if empty.samples > 1 {
+                    gl.renderbuffer_storage_multisample(
+                        glow::RENDERBUFFER,
+                        empty.samples as i32,
+                        glow::R8,
+                        w,
+                        h,
+                    );
+                } else {
+                    gl.renderbuffer_storage(glow::RENDERBUFFER, glow::R8, w, h);
+                }
+                let fb = gl.create_framebuffer().expect("a framebuffer object");
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
+                gl.framebuffer_renderbuffer(
+                    glow::DRAW_FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::RENDERBUFFER,
+                    Some(rb),
+                );
+                gl.draw_buffers(&[glow::NONE]);
+                if gl.check_framebuffer_status(glow::DRAW_FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE
+                {
+                    self.lost.get_or_insert(LossReason::Error);
+                }
+                self.applied.draw_framebuffer = Some(fb);
+                self.empty_passes.insert(empty, fb);
+                fb
+            },
+        };
+        let mut discard = Points::default();
+        discard.push(glow::COLOR_ATTACHMENT0);
+        // SAFETY: plain GL calls on a live framebuffer.
+        unsafe {
+            if self.applied.draw_framebuffer != Some(fb) {
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb));
+                self.applied.draw_framebuffer = Some(fb);
+            }
+            gl.invalidate_framebuffer(glow::DRAW_FRAMEBUFFER, discard.get());
+        }
+        self.pass = Some(Pass {
+            framebuffer: fb,
+            discard,
+            occlusion,
+            counting: false,
+            resolves: Default::default(),
+            size: (empty.width, empty.height),
+        });
     }
 
     /// The attachment a view to draw into names: its texture, mip, and layer or slice.
@@ -2243,6 +2309,17 @@ fn f(bits: u32) -> f32 {
     f32::from_bits(bits)
 }
 
+/// The area a draw outside a pass (a capture) clips its scissor to.
+const NO_PASS: (u32, u32) = (i32::MAX as u32, i32::MAX as u32);
+
+/// A scissor clipped to a pass of `size`, as GL takes it.
+fn gl_rect(s: &ScissorRect, size: (u32, u32)) -> [i32; 4] {
+    let (x, y) = (s.x.min(size.0), s.y.min(size.1));
+    let width = s.width.min(size.0 - x);
+    let height = s.height.min(size.1 - y);
+    [x, y, width, height].map(|v| v as i32)
+}
+
 impl WebGl {
     /// [`Backend::draw`], with the draw's instances starting `later` instances past its first
     /// instance: `instance_index` and the per-instance streams as the full draw has them there.
@@ -2348,7 +2425,7 @@ impl WebGl {
             if v.scissor_test
                 && let Some(s) = call.scissors.first()
             {
-                let rect = [s.x as i32, s.y as i32, s.width as i32, s.height as i32];
+                let rect = gl_rect(s, self.pass.as_ref().map_or(NO_PASS, |p| p.size));
                 if v.scissor != rect {
                     gl.scissor(rect[0], rect[1], rect[2], rect[3]);
                     v.scissor = rect;
@@ -3110,9 +3187,8 @@ impl Backend for WebGl {
     }
 
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
-        if pass.empty.is_some() {
-            self.unbuilt("empty passes");
-            return;
+        if let Some(empty) = pass.empty {
+            return self.begin_empty_pass(empty, pass.occlusion.cloned());
         }
         let mut key: FramebufferKey = [None; MAX_COLOR_TARGETS + 1];
         let mut views: [Option<&TextureView>; MAX_COLOR_TARGETS + 1] =
@@ -3127,6 +3203,16 @@ impl Backend for WebGl {
             key[MAX_COLOR_TARGETS] = Some(Self::attachment(d.view, 0));
             views[MAX_COLOR_TARGETS] = Some(d.view);
         }
+        let size = views
+            .iter()
+            .flatten()
+            .fold((u32::MAX, u32::MAX), |(w, h), v| {
+                let level = |n: u32| (n >> v.desc.base_mip).max(1);
+                (
+                    w.min(level(v.texture.desc.width)),
+                    h.min(level(v.texture.desc.height)),
+                )
+            });
         if self.twins > 0 {
             for v in views.iter().flatten() {
                 self.fresh(&v.texture);
@@ -3232,6 +3318,7 @@ impl Backend for WebGl {
                 let c = pass.colors[i].as_ref()?;
                 Some((c.view.texture.clone(), c.resolve?.clone()))
             }),
+            size,
         });
     }
 
@@ -4181,7 +4268,7 @@ impl Backend for WebGl {
             gl.enable(glow::SCISSOR_TEST);
             v.scissor_test = true;
             for r in rects {
-                let rect = [r.x as i32, r.y as i32, r.width as i32, r.height as i32];
+                let rect = gl_rect(r, self.pass.as_ref().map_or(NO_PASS, |p| p.size));
                 if v.scissor != rect {
                     gl.scissor(rect[0], rect[1], rect[2], rect[3]);
                     v.scissor = rect;
@@ -4214,8 +4301,7 @@ impl Backend for WebGl {
     }
 
     /// Fills the levels by `generateMipmap` where GLES allows it (a format that renders and filters,
-    /// every layer, the texels' values in the texture's own format) and it is shown equal to the
-    /// interface's draws (2D and cube textures), else by those draws.
+    /// every layer, the texels' values in the texture's own format), else by the interface's draws.
     fn generate_mips(
         &mut self,
         texture: &Texture,
@@ -4225,13 +4311,11 @@ impl Backend for WebGl {
         layers: Range<u32>,
     ) -> Result<(), GpuError> {
         let levels = mips.start.max(1)..mips.end.min(desc.mip_levels);
-        let shown = matches!(desc.own_view(), ViewDimension::D2 | ViewDimension::Cube);
         let every_layer = layers.start == 0 && layers.end >= desc.depth_or_layers;
         let native = FormatUse::RENDER | FormatUse::FILTER;
         let raw = texture.tex();
         let Some(raw) = raw.filter(|_| {
             values == desc.format
-                && shown
                 && every_layer
                 && texture.host.is_none()
                 && self.caps.formats.get(values).contains(native)
