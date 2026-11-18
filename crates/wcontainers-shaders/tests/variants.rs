@@ -58,10 +58,10 @@ fn unbuilt_variants_are_refused_by_name() {
         ),
         (
             VariantKey {
-                mirror_once_in_shader: 1,
+                border_in_shader: 1,
                 ..Default::default()
             },
-            "MirrorOnceInShader",
+            "BorderInShader",
         ),
         (
             VariantKey {
@@ -559,4 +559,44 @@ fn clip_distances_and_depth_clamp_pass_through_the_linked_location() {
         &vs,
         "LinkedLocationTaken",
     );
+}
+
+/// Mirror-once addressing in the program: the sampler's state from the helper block picks the axes to
+/// fold, and the implicit level becomes the unfolded coordinate's gradients; gathers, comparisons and
+/// texel offsets are refused by name.
+#[test]
+fn mirror_once_folds_the_coordinate_with_its_own_gradients() {
+    let key = VariantKey {
+        mirror_once_in_shader: 1,
+        ..Default::default()
+    };
+    for c in both(&own_pair("ps_textured"), &key) {
+        assert_eq!(
+            c.reflection.helpers,
+            [slot(HelperValue::SamplerState { sampler: 0 }, 0)]
+        );
+        assert_eq!(c.reflection.helper_size, 48);
+        let text = wgsl(&c);
+        assert!(text.contains("textureSampleGrad("), "{text}");
+        assert!(text.contains("abs("), "{text}");
+        assert!(text.contains("== 4u"), "{text}");
+    }
+    let every = VariantKey {
+        mirror_once_in_shader: !0,
+        ..Default::default()
+    };
+    for (name, reason) in [
+        ("samplers.ps_gather", "MirrorOnceOnGather"),
+        ("samplers.ps_compare", "MirrorOnceOnComparison"),
+    ] {
+        for source in [
+            Source::Dxbc(&rig(&format!("dxbc/{name}.dxbc"))),
+            Source::Dxil(&rig(&format!("dxil/{name}.dxil"))),
+        ] {
+            assert_eq!(
+                convert(source, &every, None).map(|_| ()),
+                Err(ConvertError::Unsupported(reason))
+            );
+        }
+    }
 }

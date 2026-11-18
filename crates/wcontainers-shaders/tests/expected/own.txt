@@ -13,6 +13,7 @@ ps_local.dxbc	ok
 ps_loop.dxbc	ok
 ps_mingather.dxbc	ok-wgsl glsl-compile
 ps_minlod.dxbc	ok
+ps_mirror.dxbc	ok
 ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok

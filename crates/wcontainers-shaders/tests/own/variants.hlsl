@@ -89,3 +89,9 @@ VsOut vs_deep(float3 position : POSITION, float2 uv : TEXCOORD0, uint id : SV_Ve
     o.position.z = o.position.z * 5.0 - o.position.w * 2.2;
     return o;
 }
+
+// A sample far outside the texture across the grid, for addressing: u and v from -8 to 8, which also
+// sets the level of detail past 0 on a texture with levels.
+float4 ps_mirror(VsOut i) : SV_Target0 {
+    return albedo.Sample(linear_clamp, i.uv * 16.0 - 8.0) * tint;
+}

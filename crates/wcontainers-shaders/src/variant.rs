@@ -32,7 +32,7 @@ pub(crate) fn apply(
         draw_arguments(module, reflection, &mut outlined)?;
     }
     let mut clamps = Vec::new();
-    if variant.lod_bias != 0 || variant.min_lod_clamped != 0 {
+    if variant.lod_bias != 0 || variant.min_lod_clamped != 0 || variant.mirror_once_in_shader != 0 {
         samples(
             module,
             stage,
@@ -1558,6 +1558,7 @@ fn samples(
         sampler: u32,
         biased: bool,
         clamped: Option<(u32, Handle<Type>)>,
+        mirrored: bool,
     }
     let mut sites = Vec::new();
     for (owner, f) in owners(module) {
@@ -1580,18 +1581,21 @@ fn samples(
                 .filter(|&r| r < 128 && variant.min_lod_clamped & (1 << r) != 0)
                 .map(|r| (r, module.global_variables[g].ty));
             let biased = gather.is_none() && variant.lod_bias & (1 << s) != 0;
-            if biased || clamped.is_some() {
+            let mirrored = s < 16 && variant.mirror_once_in_shader & (1 << s) != 0;
+            if biased || clamped.is_some() || mirrored {
                 sites.push(Site {
                     owner,
                     h,
                     sampler: s,
                     biased,
                     clamped,
+                    mirrored,
                 });
             }
         }
     }
     let mut biases: Vec<(u32, (Handle<GlobalVariable>, u32))> = Vec::new();
+    let mut states: Vec<(u32, HelperMember)> = Vec::new();
     let mut merged: Vec<(usize, Handle<GlobalVariable>)> = Vec::new();
     for site in sites {
         let bias_at = site
@@ -1629,6 +1633,22 @@ fn samples(
         if site.clamped.is_some() && depth_ref.is_some() {
             return Err(ConvertError::Unsupported("MinLodOnComparison"));
         }
+        if site.mirrored {
+            // A comparison or a depth sample has no gradient form, a gather's texels would come in
+            // mirrored order, and a texel offset applies before the mirror.
+            for (refused, name) in [
+                (depth_ref.is_some(), "MirrorOnceOnComparison"),
+                (gather.is_some(), "MirrorOnceOnGather"),
+                (offset.is_some(), "MirrorOnceWithOffset"),
+            ] {
+                if refused {
+                    return Err(ConvertError::Unsupported(name));
+                }
+            }
+        }
+        let state_at = site
+            .mirrored
+            .then(|| sampler_state_helper(module, reflection, stage, site.sampler, &mut states));
         // The merged sampler of the pair, made on first use; gathers read level 0 whatever the
         // sampler's range, so they keep their own.
         let merged_sampler = match site.clamped {
@@ -1766,6 +1786,20 @@ fn samples(
                 other => other,
             },
         };
+        let (coordinate, level) = match state_at {
+            Some(state_at) => mirror_once(
+                module,
+                &mut callee,
+                &mut body,
+                state_at,
+                (
+                    coordinate,
+                    types[if merged_sampler.is_some() { 1 } else { 2 }],
+                ),
+                (types[0], level),
+            )?,
+            None => (coordinate, level),
+        };
         if stage != ShaderStage::Fragment && matches!(level, SampleLevel::Bias(_)) {
             return Err(ConvertError::Malformed(
                 "an implicit level outside a pixel shader".into(),
@@ -1797,6 +1831,131 @@ fn samples(
         outlined.add(site.owner, site.h, callee, operands[..n].to_vec());
     }
     Ok(())
+}
+
+/// The helper member holding sampler `sampler`'s state (`HelperValue::SamplerState`, nine words, read as
+/// three four-word vectors), made on first use.
+fn sampler_state_helper(
+    module: &mut Module,
+    reflection: &mut Reflection,
+    stage: ShaderStage,
+    sampler: u32,
+    states: &mut Vec<(u32, HelperMember)>,
+) -> HelperMember {
+    if let Some((_, h)) = states.iter().find(|(s, _)| *s == sampler) {
+        return *h;
+    }
+    let uvec4 = vector(module, 4, Scalar::U32);
+    let ty = module.types.insert(
+        Type {
+            name: None,
+            inner: TypeInner::Array {
+                base: uvec4,
+                size: naga::ArraySize::Constant(core::num::NonZeroU32::new(3).unwrap()),
+                stride: 16,
+            },
+        },
+        Span::UNDEFINED,
+    );
+    let value = HelperValue::SamplerState { sampler };
+    let h = helper(module, reflection, stage, value, ty, 48);
+    states.push((sampler, h));
+    h
+}
+
+/// `AddressMode::MirrorOnce`'s code in `HelperValue::SamplerState`.
+const MIRROR_ONCE_CODE: u32 = wcontainers_gpu::AddressMode::MirrorOnce as u32;
+
+/// Mirror-once addressing on a clamping sampler: each coordinate whose address mode in the sampler's
+/// state is mirror-once is taken as its absolute value, and an implicit level becomes the original
+/// coordinate's gradients (scaled by two to a bias), so the footprint and level of detail stay those of
+/// the unmirrored coordinate. Cube coordinates are directions, which no address mode touches.
+fn mirror_once(
+    module: &mut Module,
+    callee: &mut Function,
+    body: &mut Block,
+    state_at: HelperMember,
+    (coordinate, ty): (Handle<Expression>, Handle<Type>),
+    (image, level): (Handle<Type>, SampleLevel),
+) -> Result<(Handle<Expression>, SampleLevel)> {
+    use naga::BinaryOperator::{Equal, Multiply};
+    if let TypeInner::Image {
+        dim: naga::ImageDimension::Cube,
+        ..
+    } = module.types[image].inner
+    {
+        return Ok((coordinate, level));
+    }
+    let depth = matches!(
+        module.types[image].inner,
+        TypeInner::Image {
+            class: ImageClass::Depth { .. },
+            ..
+        }
+    );
+    let level = match level {
+        SampleLevel::Auto | SampleLevel::Bias(_) if depth => {
+            return Err(ConvertError::Unsupported("MirrorOnceOnDepth"));
+        }
+        SampleLevel::Auto | SampleLevel::Bias(_) => {
+            let [mut x, mut y] = [naga::DerivativeAxis::X, naga::DerivativeAxis::Y].map(|axis| {
+                push(
+                    callee,
+                    body,
+                    Expression::Derivative {
+                        axis,
+                        ctrl: naga::DerivativeControl::None,
+                        expr: coordinate,
+                    },
+                )
+            });
+            if let SampleLevel::Bias(b) = level {
+                let scale = math(callee, body, MathFunction::Exp2, [b; 2]);
+                x = binary(callee, body, Multiply, x, scale);
+                y = binary(callee, body, Multiply, y, scale);
+            }
+            SampleLevel::Gradient { x, y }
+        }
+        other => other,
+    };
+    let count = match module.types[ty].inner {
+        TypeInner::Vector { size, .. } => size as u32,
+        _ => 1,
+    };
+    let state = load_helper(callee, body, state_at);
+    let code = callee.expressions.append(
+        Expression::Literal(Literal::U32(MIRROR_ONCE_CODE)),
+        Span::UNDEFINED,
+    );
+    let mut components = Vec::new();
+    for axis in 0..count {
+        // The address modes are words 3, 4 and 5.
+        let word = 3 + axis;
+        let row = index(callee, body, state, word / 4);
+        let mode = index(callee, body, row, word % 4);
+        let mirrored = binary(callee, body, Equal, mode, code);
+        let c = if count == 1 {
+            coordinate
+        } else {
+            index(callee, body, coordinate, axis)
+        };
+        let folded = math(callee, body, MathFunction::Abs, [c; 2]);
+        components.push(push(
+            callee,
+            body,
+            Expression::Select {
+                condition: mirrored,
+                accept: folded,
+                reject: c,
+            },
+        ));
+    }
+    let coordinate = if count == 1 {
+        components[0]
+    } else {
+        push(callee, body, Expression::Compose { ty, components })
+    };
+    Ok((coordinate, level))
 }
 
 /// The helper member holding texture `texture`'s clamp and level count (two u32, the clamp's f32 bits

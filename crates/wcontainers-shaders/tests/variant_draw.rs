@@ -11,8 +11,8 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    BlendComponent, BlendFactor, BlendOp, DrawBaseSource, Format, HelperValue, LinkedValues,
-    ProvokingVertex, VariantFlags, VariantKey, VertexFormat,
+    AddressMode, BlendComponent, BlendFactor, BlendOp, DrawBaseSource, Filter, Format, HelperValue,
+    LinkedValues, ProvokingVertex, VariantFlags, VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -465,6 +465,74 @@ fn variants_draw_as_the_native_feature_does() {
             ] {
                 results.push(compare(
                     format!("lod_bias {route} {back_end} against direct3d 11"),
+                    &reference,
+                    &texels,
+                    Format::Rgba8Unorm,
+                    (0, 1),
+                ));
+            }
+        }
+
+        // Mirror-once addressing in u beside repeat in v, on a 4-level texture sampled far outside it
+        // (levels past 0 chosen): the program folds u on a clamping sampler, against real Direct3D
+        // 11's MIRROR_ONCE, on both back ends (neither has mirror-once). The mode must change
+        // Direct3D's picture from clamping, or the case shows nothing.
+        {
+            let code = [
+                bytecode(&format!("vs_transform.{route}")),
+                bytecode(&format!("ps_mirror.{route}")),
+            ];
+            let drawn = |u| {
+                direct3d_11(
+                    &d3d,
+                    "vs_transform",
+                    "ps_mirror",
+                    Format::Rgba8Unorm,
+                    [1.0, 0.75, 0.5, 1.5],
+                    true,
+                    &Reference {
+                        levels: 4,
+                        address: Some([u, D3D11_TEXTURE_ADDRESS_WRAP, D3D11_TEXTURE_ADDRESS_CLAMP]),
+                        ..Default::default()
+                    },
+                )
+                .0
+            };
+            let reference = drawn(D3D11_TEXTURE_ADDRESS_MIRROR_ONCE);
+            let (changed, _) = differ(
+                &drawn(D3D11_TEXTURE_ADDRESS_CLAMP),
+                &reference,
+                Format::Rgba8Unorm,
+            );
+            eprintln!("mirror_once {route}: the mode changes {changed} of Direct3D's texels");
+            assert!(changed > 0);
+            let mut variant = grid_draw(&code, dxil, &grid);
+            variant.setup.levels = 4;
+            variant.setup.address = [AddressMode::Clamp, AddressMode::Repeat, AddressMode::Clamp];
+            variant.setup.ps_key.mirror_once_in_shader = 1;
+            let codes = [Filter::Linear as u32; 3]
+                .into_iter()
+                .chain(
+                    [
+                        AddressMode::MirrorOnce,
+                        AddressMode::Repeat,
+                        AddressMode::Clamp,
+                    ]
+                    .map(|m| m as u32),
+                )
+                .chain([1, 0, f32::MAX.to_bits()]);
+            let words: Vec<u8> = codes.flat_map(u32::to_le_bytes).collect();
+            variant.setup.helpers[1] = helper_block(
+                variant.ps,
+                &variant.setup.ps_key,
+                &[(HelperValue::SamplerState { sampler: 0 }, &words)],
+            );
+            for (back_end, texels) in [
+                ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
+                ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
+            ] {
+                results.push(compare(
+                    format!("mirror_once {route} {back_end} against direct3d 11"),
                     &reference,
                     &texels,
                     Format::Rgba8Unorm,

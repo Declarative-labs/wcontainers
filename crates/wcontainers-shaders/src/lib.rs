@@ -130,7 +130,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         flags,
         filter_in_shader,
         border_in_shader,
-        mirror_once_in_shader,
+        mirror_once_in_shader: _,
         lod_bias: _,
         constants_as_storage: _,
         constants_as_texture,
@@ -163,7 +163,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     let asked = [
         (*filter_in_shader != 0, "FilterInShader"),
         (*border_in_shader != 0, "BorderInShader"),
-        (*mirror_once_in_shader != 0, "MirrorOnceInShader"),
         (*constants_as_texture != 0, "ConstantsAsTexture"),
         (!pulled.is_empty(), "VertexPulledInShader"),
         (!storage_formats.is_empty(), "StorageFormats"),

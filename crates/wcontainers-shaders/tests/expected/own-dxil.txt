@@ -8,6 +8,7 @@ ps_ids.dxil	ok
 ps_levels.dxil	ok-wgsl glsl-write
 ps_mingather.dxil	ok-wgsl glsl-compile
 ps_minlod.dxil	ok
+ps_mirror.dxil	ok
 ps_negate.dxil	ok
 ps_offset.dxil	ok
 ps_pack.dxil	unsupported PackedStageValues
