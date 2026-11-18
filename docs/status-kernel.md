@@ -4,6 +4,12 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, second run: LTP on ours now runs with the root on the file backend, presented as the
+reference's overlayfs root; built for the differences: overlay's direct I/O rules on the root,
+/sys/kernel/mm/hugepages with none reserved, the vm and other sysctls tests read, /proc/cmdline,
+oom_score_adj, oom_adj and oom_score, securebits; layer 1 sends netlink messages whose last
+one's alignment runs past the send. K6c is not complete. See "K6c, second run".
+
 K6c (the Linux Test Project's bar), first run: the K6b check's three findings are fixed, the
 whole-suite flake in threads `process_signal_takers_match_reference` has a new method, and the
 largest causes of LTP differences found so far are built (/proc/config.gz, the sysctls tests
@@ -34,6 +40,52 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, second run
+
+Built, each tested against the reference:
+- The root on the backend presents itself as Docker's overlayfs root (`Kind::Overlay`): statfs
+  type OVERLAYFS_SUPER_MAGIC with an id, the mount lines `overlay / overlay rw,relatime,
+  lowerdir=...,upperdir=...,workdir=...,nouserxattr` (made-up layer paths), name_to_handle_at
+  EOPNOTSUPP and AT_HANDLE_FID's `struct ovl_fh` (type 0xf8, 32 bytes, no uuid). Volumes on the
+  backend stay FUSE. guest/rootfiles.c (tests/rootbackend.rs).
+- Direct I/O on the root follows the reference's upper layer (measured): position and every
+  segment's length a multiple of 512, buffers of 4, else EINVAL; a read from the end on reads 0
+  unchecked; STATX_DIOALIGN 512 and 512. O_DIRECT is not passed to the backend for the root
+  (`open_flags`), as the backend's own alignment rules would apply to its message buffers.
+  guest/rootfiles.c.
+- /sys/kernel/mm/hugepages/hugepages-{64,2048,32768,1048576}kB with nr, free, resv, surplus and
+  overcommit counts 0 and demote_size (write-only `demote` left out); /proc/meminfo's HugePages
+  lines; /proc/sys/vm drop_caches (0200: EACCES to read, EROFS to write), nr_hugepages,
+  nr_overcommit_hugepages, hugetlb_shm_group. A lookup that misses below /sys's root is now
+  counted "sys entry not built" detail 9. tests/sysfs.rs `huge_pages_match_reference`. With
+  these, hugetlb tests break at drop_caches as the reference's do (4 checked).
+- /proc/<pid>/oom_score_adj and oom_adj (Linux's checks: range, base-0 numbers, the older file
+  may not lower without CAP_SYS_RESOURCE, the newer not below `oom_score_adj_min`), kept through
+  fork and exec, and oom_score (resident pages not tracked: counted "proc fields not tracked"
+  5). tests/procwrite.rs `oom_adjustments_match_reference` (guest/oomadj.c).
+- /proc/cmdline: the made-up machine's kernel started with no parameters ("\n").
+  guest/procwrite.c.
+- Sysctls: fs.inotify.max_queued_events (the enforced 16384), fs.protected_hardlinks and
+  protected_symlinks 1 (enforced), protected_fifos and protected_regular 0, kernel.domainname,
+  ns_last_pid, io_uring_disabled 0 and perf_event_paranoid 2 (both calls are refused by the
+  seccomp profile, as in the reference). tests/busybox.rs `system`.
+- Securebits (`PR_SET_SECUREBITS` with Linux's lock rules and CAP_SETPCAP; KEEP_CAPS, its lock
+  against PR_SET_KEEPCAPS, NO_SETUID_FIXUP, NOROOT at exec, NO_CAP_AMBIENT_RAISE; an exec clears
+  KEEP_CAPS). tests/securebits.rs (guest/securebits.c).
+- Layer 1: an eighth of sendto calls send netlink NLMSG_NOOP messages from the arena (20 bytes,
+  then 17), so a send can end inside the last message's alignment, the class of sys_net02's
+  crash. Seed 8484004, 300 sequences, matched (at b7941b4c's parent, load about 50).
+
+How LTP runs on ours now (src/ltp.rs): each test's container has its root on the backend,
+served from the image `wc-kernel-ltp-served:20260930` (the suite's files at /srv on alpine,
+built by ltp/build.sh) so nothing is unpacked per test, opened for the page cache as the
+runtimes' are (shared mappings need it). The watchdog counts backend answers as progress, so a
+call exchanging many messages is not called a hang.
+
+LTP comparison: the whole suite at ceb929e (root on the backend; before the sysfs, oom, cmdline,
+sysctl and securebits work), started 06:38 with 4 jobs, LTP_LIMIT 300, load 47 to 65; scratch
+k6c2/ours-4.tsv. RESULTS PENDING (see the table below when filled).
 
 ## K6c, first run
 
@@ -2445,6 +2497,13 @@ All on this shared Mac; noisy, not benchmarks.
 - A failing layer 1 case takes one to two minutes to shrink.
 
 ## Departures from the plan
+
+- K6c, second run: LTP on ours runs with the root on the file backend (the K6a departure of an
+  in-memory root is gone), and the backend's root presents itself as overlayfs, as the
+  reference's does; direct I/O on it follows the reference's upper layer's alignment
+  (measured), not the backend's.
+- K6c, second run: /sys holds /sys/kernel/mm/hugepages and nothing else of Linux's tree (section
+  15's chosen subset); the write-only `demote` files are left out. /proc/cmdline is empty.
 
 - K6c, first run: /proc/config.gz is the reference's configuration with what is not built
   turned off (src/fs/config.py), not a configuration written from nothing: options for drivers
