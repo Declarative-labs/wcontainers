@@ -1046,6 +1046,10 @@ impl Backend for WebGpu {
             usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
         }
         let srgb_twin = convert::srgb_twin(format);
+        // In the browser a resolve in the other twin is drawn from the samples (`ResolveByDraw`).
+        if cfg!(target_arch = "wasm32") && desc.samples > 1 && srgb_twin.is_some() {
+            usage |= allowed & wgpu::TextureUsages::TEXTURE_BINDING;
+        }
         let raw = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
