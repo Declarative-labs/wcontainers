@@ -5,19 +5,33 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a is done. After run 8, G3 (section 12's pass bar) is met in Chrome and natively on ANGLE with
-every extension. What remains cannot be fixed inside this crate:
-- Chrome's WebGL 2 passes the shared suite (24 tests) and the back end's 20 checks, 44 of 44, with
-  every extension and again without WEBGL_stencil_texturing and the four BC extensions.
-- Natively on ANGLE also 44 of 44 with every extension (since run 6 `present_shows_the_frame`
-  presents through an EGL window surface on a real window instead of a pbuffer).
+G3a is done. Since run 10 the shared suite (28 tests) passes in Chrome's WebGL 2 and natively on
+ANGLE with every extension; of the back end's 27 checks two fail on both (draws into array layers
+in Chrome, odd-sized base levels in mozangle; see "Known failures"). Also open:
 - Against the WebGPU back end, 5 of 6 comparisons pass. The one that fails is `r32float` filtered
   in the program here against WebGPU's hardware filter (one float step off in 5 of 16 values, from
   G1's in-shader filter); the same comparison route against route is byte-equal.
-- Routes without EXT_clip_control or WEBGL_provoking_vertex fail the 15 suite tests whose own raster
+- Routes without EXT_clip_control or WEBGL_provoking_vertex fail the 19 suite tests whose own raster
   blocks ask for what is absent, in Chrome and on ANGLE. G1 has to change that.
 - `TIMESTAMPS` is built but cannot run here: Chrome (every ANGLE back end) and mozangle give 0
   timestamp bits on the RTX 3080.
+
+Run 10 merged origin/phase-2-graphics (e9387a6, which held the WebGPU branch's newest). It brought
+four new suite tests; the browser host now runs them. Two failed and are fixed: a scissor reaching
+past the target (now clipped to the pass, as the interface's new rule says) and one depth texture
+read through two comparison samplers (naga's GLSL writer refuses a texture with two samplers; the
+back end now reads it through a copy of the texture's global variable per extra sampler). Passes
+without attachments are built (an `R8` renderbuffer of the pass's size and samples, no draw
+buffer). The run-9 mip mystery is found, and it was two things: mozangle loses the last row and
+column of level 0 of an odd-sized texture once its base level changes (the test tool; Chrome keeps
+them), and in Chrome a draw into one layer of a 2D array while sampling another level of the same
+array reads zeros for every layer but the last (so the interface's mip draws leave those layers
+black). `generateMipmap` equals the box average and now takes every shape. Both are in "Known
+failures"; suite and checks
+(28 and 27, 55): Chrome 53 of 55 with every extension and without stencil texturing and the format
+extensions (the two checks above), 34 of 55 on both routes without the clip extensions (now 19
+suite tests the suite's own raster blocks refuse, and the two checks); ANGLE 53 of 55 with every
+extension and 34 of 55 on both reduced routes; against WebGPU 5 of 6 as before.
 
 Run 9 merged origin/phase-2-graphics (02ab37d; origin/phase-2-graphics-webgpu had nothing new) and
 built, all in this crate apart from one interface commit: `generate_mips` by `generateMipmap` and
@@ -137,7 +151,7 @@ Chrome and on ANGLE with every extension.
   - Not built yet: reaching one loses the device (`LossReason::Error`, `Err(DeviceLost)` where the
     call returns a result) with the missing piece named in `WebGl::last_log()`, never a panic; a
     multisampled texture is refused as `Invalid` (the caps give one sample). Not built (queries, resolves,
-    multisampled textures and transform feedback were built later): empty passes, copies from signed normalised
+    multisampled textures, transform feedback and empty passes were built later): empty passes, copies from signed normalised
     formats and of formats a framebuffer cannot read (RGB9E5, BC), copies between depth and colour,
     texture-to-buffer copies of formats read wider than stored (depth included), depth read backs of
     cube textures, both aspects of one depth-stencil texture fetched by one draw, vertex formats GL
@@ -471,6 +485,32 @@ Chrome and on ANGLE with every extension.
     probe in the browser and waits for it by suspending. Called from a plain async export, the
     page hung. wasm-bindgen-futures is no longer used. Lint the example for WebAssembly by adding
     `--example draw-cost` to the wasm32 clippy command.
+
+- G3 run 10:
+  - Merged origin/phase-2-graphics e9387a6 (it already held the WebGPU branch's newest). The browser
+    host runs the suite's four new tests (`a_scissor_past_the_target_is_clipped_to_it`,
+    `a_stream_of_stride_zero_reads_its_first_element`,
+    `comparison_samplers_compare_with_the_stored_depth`, `resolves_average_in_the_format_named`).
+  - Scissors (draws and `clear_rects`) are clipped to the pass's area before they reach GL. Before,
+    a scissor of width `u32::MAX` became -1 (Chrome then drew nothing; on another route it drew
+    everywhere).
+  - A texture a program samples through two samplers (a comparison and a plain one, or two
+    comparisons): naga's GLSL writer combines each texture with one sampler and refused the shader
+    (`ImageMultipleSamplers`). src/shader.rs `split_samplers` now rewrites such a module before
+    writing it: each further sampler reads the texture through a copy of its global variable at a
+    binding past every front's (from 2^20), which the link maps back to the texture's slot, so
+    each pair gets a texture unit of its own. A texture expression sampled through two samplers
+    at once is still refused (`Invalid`, naming it). Found by the suite's comparison sampler test.
+  - Passes without attachments (`PassDesc::empty`, device loss before): an `R8` renderbuffer of
+    the pass's size and samples on a framebuffer with no draw buffer, cached by size and samples,
+    invalidated at the start and end. New check `passes_without_attachments_rasterise` (occlusion
+    queries at 1 and 4 samples).
+  - `generate_mips` by `generateMipmap` now takes 2D arrays and 3D textures too. In Chrome it equals
+    the box average of the four texels above on even sides, and equals the draws on odd 2D, odd
+    cube, 3D and every layer the draws write (see "Known failures" for the layers they do not).
+    `generate_mipmap_equals_the_draws` now also takes a 13 by 7 2D texture, a 16 by 8 2D array and
+    a 7 by 7 cube (three levels: the full chain), and gives the first differing texel with the box
+    average. New check `levels_stay_as_written_while_others_are_read_and_drawn`.
 
 ## How to run
 
@@ -813,6 +853,24 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
     extensions, 34 of 49 without EXT_clip_control and 34 of 49 without it and
     WEBGL_provoking_vertex; ANGLE (patched mozangle 0.7.1) 48 of 49 with every extension, 33 of
     49 on both reduced routes; against WebGPU 5 of 6.
+- 2026-11-17, G3 run 10, same desktop (RTX 3080, driver 32.0.16.2101; desktop clock times; queued
+  jobs, not timed, other tracks' jobs beside them). Merged origin/phase-2-graphics e9387a6. 28
+  suite tests and 27 checks (55).
+  - First job (14:37 to 14:45, after the merge and the browser host's new tests only): Chrome 51
+    of 53, ANGLE 50 of 53 with every extension (`a_scissor_past_the_target_is_clipped_to_it`,
+    `comparison_samplers_compare_with_the_stored_depth`, and natively
+    `generate_mipmap_equals_the_draws`); lint clean.
+  - Final tree (job 15:46 to 15:53), lint clean on both targets in its build, the 4 unit tests of
+    src/capture.rs pass, all 64 scene verdicts as expected: Chrome 157.0.8103.78 53 of 55 with
+    every extension and 53 of 55 without WEBGL_stencil_texturing and the format extensions, 34 of
+    55 without EXT_clip_control and 34 of 55 without it and WEBGL_provoking_vertex; ANGLE (patched
+    mozangle 0.7.1) 53 of 55 with every extension, 34 of 55 on both reduced routes; against WebGPU
+    5 of 6. The two failing checks everywhere are `generate_mipmap_equals_the_draws` and
+    `levels_stay_as_written_while_others_are_read_and_drawn` (Known failures).
+  - Chrome, `generate_mipmap_equals_the_draws` with `generateMipmap` on every shape (job ending
+    15:38): every 2D, cube and 3D case equal to the draws; 16 by 8 by 2, layer 0, level 1 texel 0:
+    `generateMipmap` [84, 138, 99, 79], box average [84.25, 137.75, 98.75, 79.0], the draws
+    [0, 0, 0, 0]; layer 1 equal.
 - Per-draw cost, run 5 (Chrome 157.0.8103.78 headless, RTX 3080; `gpu-job --alone`; the same scene
   and method as run 3). Since the merge, the cost page has to make the WebGPU device inside a JSPI
   export. Before that fix the page hung twice, once for 10 minutes and once for 2.
@@ -871,11 +929,30 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   `strips_take_flat_values_...`, `depth_writes_off_...`, `srgb_targets_...`,
   `values_are_interpolated_...`, `the_scissor_bounds_...`, `stencil_operations_...`,
   `near_clipping_...`, `linear_filtering_...`, `instances_start_...`, `indexed_strips_...`,
-  `multisampled_targets_...`, `occlusion_queries_...`; run 7): the suite's own raster blocks ask for clip depth from zero
+  `multisampled_targets_...`, `occlusion_queries_...`; run 7; since run 10 also
+  `a_scissor_past_the_target_...`, `a_stream_of_stride_zero_...`, `comparison_samplers_...` and
+  `resolves_average_...`, 19): the suite's own raster blocks ask for clip depth from zero
   (`depth_minus_one` false) and provoking vertex First, which the back end lacks on those routes and
   refuses as the interface says (`Absent(CLIP_DEPTH_ZERO_ONE)`, `Absent(PROVOKING_VERTEX_FIRST)`).
   The suite (G1's crate) should take both from the caps, as the built-in programs do.
 
+- Found in run 10 (the run-9 entry below is kept for its history):
+  - In Chrome (ANGLE on Direct3D 11), a draw into level n of one layer of a 2D array, while the
+    program samples level n - 1 of the same array (all layers, as WebGL 2 binds it), writes as
+    if the texture read zeros, for every layer but the last. `levels_stay_as_written_...` draws
+    level 2 of each layer from level 1 in turn: layer 0 is wrong, layer 1 right, on 13 by 7 by 2
+    and 16 by 8 by 2; 2D, cube (every face) and 3D textures are right. No GL error is raised. So the
+    interface's mip draws leave every array layer but the last black in Chrome
+    (`generate_mipmap_equals_the_draws`: "the draws [0, 0, 0, 0]" where `generateMipmap` gives the
+    box average). Expected cause, not shown: Direct3D 11's hazard tracking takes a texture array
+    view as the span of subresources from its first to its last, which holds lower layers of the
+    level drawn into, and unbinds the view. Arrays now take `generateMipmap`; the draws remain for
+    formats it refuses, and any front draw of this shape is affected. A fix would sample a copy of
+    the levels read when the drawn texture is an array (a new slow path); not built.
+  - On native ANGLE (mozangle 0.7.1, the test tool) a texture whose level 0 has an odd side loses
+    the last row and column of level 0 (19 of 91 texels per layer on 13 by 7) as soon as its base
+    level is set above 0, for good (sampling every level again does not bring them back). Even
+    sides keep them; Chrome keeps them. Both checks above fail natively for it.
 - New in run 9, `generate_mipmap_equals_the_draws`, on an odd-sized 2D array (13 by 7, 2 layers,
   4 levels, rgba8unorm and its sRGB form), not found yet:
   - On ANGLE (mozangle) the interface's mip draws (`generate_mips_by_draws`) change level 0, every
@@ -950,6 +1027,13 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   bookkeeping (twins, discards) for no fewer GL calls.
 - Draws with a provoking vertex the raster block does not name: `draw_fan_or_loop` follows the raster
   block, as the default's converted list also assumes; its `provoking` argument is not used.
+
+- A texture a program samples through several samplers is read through copies of its global
+  variable (run 10, `split_samplers`): naga's GLSL writer takes one sampler per texture, and the
+  shaders track owns naga. A change to naga's writer (one combined sampler per pair) would make the
+  rewrite unneeded.
+- Passes without attachments draw into an `R8` renderbuffer of their own (run 10), which the
+  interface's `EmptyPass` allows; with no draw buffer, nothing is written to it.
 
 - The back end's WebAssembly imports `next_task` from a module `wcontainers-device` (JSPI, plan
   4.8): the plan has the device thread suspend through JSPI but names no import; the call channel
@@ -1054,15 +1138,16 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 What is left of G3's pass bar cannot be done in this crate:
 - G1's suite should take clip depth and provoking vertex from the caps. Until it does, the routes
-  without the extensions fail 15 suite tests.
+  without the extensions fail 19 suite tests.
 - The r32float comparison against WebGPU's hardware filter stays one float step off (G1's helper).
 - `TIMESTAMPS` cannot run on the RTX 3080, which gives zero timestamp bits; a GPU or browser that
   gives some is needed to run that route.
 
 After that, in about this order:
-0. Find why levels of an odd-sized 2D array change under the mip draws and `generateMipmap`, and
-   which side is right for 3D (`generate_mipmap_equals_the_draws`, Known failures); then let
-   `generateMipmap` take arrays and 3D if it is shown equal.
+0. Draws into a layer of a 2D array that sample another level of it read zeros in Chrome (Known
+   failures): sample a copy of the levels read instead, counted under a new slow path, and show it
+   with `levels_stay_as_written_while_others_are_read_and_drawn`. Then the interface's mip draws on
+   arrays (integer twins, r32float without filtering) are right too.
 1. Immediates as plain uniforms (plan 5.8; `immediate_bytes` is 0 until then, as on the WebGPU
    back end).
 2. Vertex formats GL ES cannot read as stored (BGRA8, 10-10-10-2 integer, 11-11-10), by a program

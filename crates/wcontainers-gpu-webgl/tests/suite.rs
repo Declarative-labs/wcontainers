@@ -280,3 +280,13 @@ fn bgra_surfaces_present() {
 fn signed_normalised_formats_follow_their_extension() {
     checks::signed_normalised_formats_follow_their_extension::<Angle>();
 }
+
+#[test]
+fn levels_stay_as_written_while_others_are_read_and_drawn() {
+    checks::levels_stay_as_written_while_others_are_read_and_drawn::<Angle>();
+}
+
+#[test]
+fn passes_without_attachments_rasterise() {
+    checks::passes_without_attachments_rasterise::<Angle>();
+}
