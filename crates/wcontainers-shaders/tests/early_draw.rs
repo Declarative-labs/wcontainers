@@ -3,7 +3,7 @@
 //! first draw writes depth and stencil over part of the target, a second, whose pixel shader marks
 //! each pixel it runs for in a storage buffer, is tested against them. The marks and the colours must
 //! be equal. Seeded: `WCONTAINERS_EARLY_SEED` (default 1) and `WCONTAINERS_EARLY_CASES` seeds from it
-//! (default 16).
+//! (default 32).
 
 #![cfg(windows)]
 
@@ -67,29 +67,48 @@ fn rng(seed: u64) -> impl FnMut() -> u32 {
 fn case(seed: u64) -> Case {
     let mut next = rng(seed);
     let mut unit = move || (next() % 4096) as f32 / 4096.0;
-    let corner = |z: Option<f32>, unit: &mut dyn FnMut() -> f32| {
-        let x = unit() * 2.6 - 1.3;
-        let y = unit() * 2.6 - 1.3;
-        [x, y, z.unwrap_or_else(&mut *unit), 1.0]
+    // A large triangle: one corner in each of three regions of the target and past it, in either
+    // winding (so either stencil face), each corner at depth `z` or at its own.
+    let triangle = |z: Option<f32>, unit: &mut dyn FnMut() -> f32| {
+        let regions = [
+            (-1.4, -0.2, -1.4, -0.2),
+            (0.2, 1.4, -1.4, 1.4),
+            (-1.4, 1.4, 0.2, 1.4),
+        ];
+        let mut corners = regions.map(|(x0, x1, y0, y1)| {
+            let x = x0 + unit() * (x1 - x0);
+            let y = y0 + unit() * (y1 - y0);
+            [x, y, z.unwrap_or_else(&mut *unit), 1.0]
+        });
+        if unit() < 0.5 {
+            corners.swap(0, 1);
+        }
+        corners
     };
     let z = unit();
-    let occluder = [0; 3].map(|_| corner(Some(z), &mut unit));
-    let tested = [0; 3].map(|_| corner(None, &mut unit));
+    let occluder = triangle(Some(z), &mut unit);
+    let tested = triangle(None, &mut unit);
     let pick = |unit: &mut dyn FnMut() -> f32| COMPARES[(unit() * 8.0) as usize];
-    // Equal is kept for the stencil, where values are whole; a depth equal to a float drawn
-    // elsewhere is chance.
     let depth = (unit() < 0.875).then(|| pick(&mut unit));
     let stencil = (unit() < 0.75).then(|| (pick(&mut unit), pick(&mut unit)));
     let byte = |unit: &mut dyn FnMut() -> f32| (unit() * 256.0) as u8;
+    let clear_stencil = byte(&mut unit);
+    let occluder_stencil = byte(&mut unit);
+    // Often one of the stored values, so equal and not-equal tests take both answers.
+    let reference = match (unit() * 4.0) as u32 {
+        0 => clear_stencil,
+        1 => occluder_stencil,
+        _ => byte(&mut unit),
+    };
     Case {
         clear_depth: unit(),
-        clear_stencil: byte(&mut unit),
+        clear_stencil,
         occluder,
-        occluder_stencil: byte(&mut unit),
+        occluder_stencil,
         tested,
         depth,
         stencil,
-        reference: byte(&mut unit),
+        reference,
         read_mask: if unit() < 0.5 { 0xff } else { byte(&mut unit) },
     }
 }
@@ -542,7 +561,7 @@ fn early_tests_in_the_program_match_direct3d() {
         .unwrap_or(1);
     let seeds: u64 = std::env::var("WCONTAINERS_EARLY_CASES")
         .map(|s| s.parse().unwrap())
-        .unwrap_or(16);
+        .unwrap_or(32);
     let mut failures = Vec::new();
     for seed in seed..seed + seeds {
         let case = case(seed);

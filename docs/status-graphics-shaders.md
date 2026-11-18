@@ -38,7 +38,9 @@ program and made atomic minimums and maximums of the other signedness compare-ex
 made the tessellator compile under fxc, converted geometry shaders without a position, gathers with
 run-time offsets and DXIL helper lane queries; run 28 converted wave operations (WGSL's subgroups),
 DXIL gathers with run-time offsets and coherent storage accesses at workgroup scope, and gave the
-interface `STORAGE_OFFSET` (not built yet); what remains is under Next. Runs 21 to 28 merged origin/phase-2-graphics-webgpu,
+interface `STORAGE_OFFSET`; run 29 built `STORAGE_OFFSET` and `EARLY_TESTS`, numbered shader model
+5.1 DXBC by Direct3D 12's rule and fixed draw arguments dropping later helper members; what remains
+is under Next. Runs 21 to 29 merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
 the same three slow paths in two orders, ours kept).
 
@@ -1102,20 +1104,64 @@ shaders, Direct3D 12's gathers and views at any first element):
   `Access` at index expressions appended after it, and naga requires an expression's operands to come
   before it in the arena. Next under Next.
 
+Run 29 (what the fronts wait on: views at any first element, early tests, typed views in vertex
+shaders under indirect draws, shader model 5.1 register spaces):
+- Merged origin/phase-2-graphics, -webgl, -direct3d-11 and -direct3d-12 without conflicts. The
+  shared line's new slot test built a `ReflectedBinding` without our `stride`; fixed in the
+  interface commit below.
+- `STORAGE_OFFSET` is built (`variant/offset.rs`): every index into a storage view's runtime array
+  gets the view's offset in elements (`HelperValue::StorageOffset` over the stride) added, and every
+  length of it loses them. The carried naga has a new public `compact::reorder_expressions(module,
+  function, order)`, which rebuilds a function's expression arena in a given order with every handle
+  renumbered (built on compact's own private maps); the rewrite appends each access's expressions
+  and then reorders them ahead of it, which is what run 28's attempt lacked. A block with sized
+  members before its array is `StorageOffsetOfBlock`. Tests: `storage_bindings_give_their_stride_and_offsets`
+  (both routes, a helper value per view, valid modules) and the drawn
+  `storage_views_at_any_first_element_match_direct3d` (run 28's patch, applied).
+- The draw arguments rewrite (`DrawBaseSource::Arguments`) replaced the whole vertex helper block,
+  dropping members after the bases, so a vertex shader reading a typed buffer (its view's place,
+  `TexelBufferView`, is a later member) failed validation (the Direct3D 12 track's vertex-views
+  case). It now renames the bases' three members and keeps the rest. New own `vs_texels`
+  (texels.hlsl, fxc and dxc), test `draw_arguments_keep_the_typed_views_place`.
+- `EARLY_TESTS` is built (`variant/early.rs`): the pixel program's prologue reads the read-only
+  attachment's depth at `EARLY_DEPTH_BINDING` and stencil at `EARLY_STENCIL_BINDING`, compares as
+  `HelperValue::EarlyTests` says (a compare code minus one is the set of passing relations: less 1,
+  equal 2, greater 4; code 0 is off) against the fragment's depth, biased where the variant has
+  `DEPTH_BIAS`, and discards before the program runs when the test fails. Four samples test each
+  covered sample at its standard position (depth moved along its derivatives, as the clip
+  distances do) and discard when none passes; per-sample shading (`EarlyTestsPerSample`), other
+  counts (`EarlyTestsSamples`) and no count (`SampleCount`) are refused by name. Test
+  `early_tests_read_the_attachment_before_the_program`; drawn test `tests/early_draw.rs`
+  (`early.hlsl`: a first draw writes seeded depth and stencil over a large triangle, a second
+  `[earlydepthstencil]` pixel shader marks each pixel it runs for in a storage buffer, under seeded
+  depth and per-face stencil tests, reference and read mask; Depth32FloatStencil8 on WebGPU,
+  D32_FLOAT_S8X24_UINT on Direct3D 11): equal to real Direct3D 11 in 32 of 32 scenes. Not shown:
+  that the plain program differs in those scenes (expected, as WebGPU runs it before the tests).
+- Shader model 5.1 DXBC (which only Direct3D 12 runs) is numbered by Direct3D 12's rule, as DXIL:
+  each kind's slots in (space, register) order (`Lowering::slot`, the version read from the
+  container's SHEX or SHDR chunk). Shader model 5.0 and below keep the register as the slot and
+  refuse other spaces by name (`RegisterSpace`). `ps_spaces.dxbc` now converts with the same
+  bindings, slots and sampled pairs as its DXIL build (test
+  `register_spaces_are_numbered_by_the_programs_own_slots`).
+- Not done: `DynamicOffset` (the Direct3D 12 track's gather and gather_c files): gathers with
+  run-time offsets convert since run 27 (DXBC) and 28 (DXIL); what remains raising it is a load
+  with a run-time offset, which DXBC encodes only as an immediate, so the next run needs the
+  front's failing shader to see which instruction it is.
+
 Next (in order):
+- The fronts (theirs), now possible: `VariantFlags::STORAGE_OFFSET` where a raw or structured view's
+  offset is not a multiple of `min_storage_offset_alignment` (binding from the largest multiple of
+  the alignment and of `ReflectedBinding::stride` below the view), `VariantFlags::EARLY_TESTS` with
+  the depth-stencil attachment read-only and its depth and stencil views bound at
+  `EARLY_DEPTH_BINDING` and `EARLY_STENCIL_BINDING` (any single-sampled unsigned texture there for
+  a format without stencil) and `samples` set, shader model 5.1 DXBC by (space, register) from the
+  reflection as DXIL.
+- Early tests on 24-bit depth: the program compares the fragment's unrounded depth with the stored
+  24-bit value, where the fixed test rounds first (not yet measured; the drawn test uses 32-bit
+  float depth). If it differs, round the fragment's depth to the format's step in the helper block.
 - The WebGPU back end (theirs): ask wgpu for `SUBGROUP` where the adapter has it and declare
   `Features::SUBGROUPS`; then Godot's 3D platformer through the Direct3D 12 front (its 38 fragment
   pipelines stopped at the helper query before run 27 and at wave operations before run 28).
-- `STORAGE_OFFSET`: insert each access's offset expressions before it in the function's expression
-  arena (renumbering every later handle in expressions, statements, emit ranges and named
-  expressions; the carried naga's `compact` module has that renumbering, private: expose a function
-  there that inserts), then the rewrite of `run28/offset-attempt.rs` and its test
-  (`run28/compute_draw-storage-offset.patch`) apply as written. Then a block with sized members
-  before its array is `StorageOffsetOfBlock`.
-- The fronts (theirs), once built: `VariantFlags::STORAGE_OFFSET` where a raw or structured view's offset is not
-  a multiple of `min_storage_offset_alignment` (Direct3D 12: on every program with storage buffers,
-  as its pipelines are made before the views are known), binding from the largest multiple of the
-  alignment and of `ReflectedBinding::stride` below the view.
 - Fronts (theirs): `texture_layers` for bgfx's multisampled arrays (G4, and G5's
   multisample_array_texture), `swizzled` for Direct3D 12's component mappings and both fronts'
   stencil views (Godot's 3D platformer), and counting `Reflection::slow_paths`.
@@ -1171,7 +1217,7 @@ Next (in order):
   vertex's. The exact routes are the front's: lists drawn with each primitive's indices rotated
   ((a, b, c) as (c, a, b), winding kept), strips and fans made lists first. If that holds, the flag
   has no use and the interface could drop it; until decided it stays refused by name.
-- Decoded textures and targets written in the program, early tests, line coverage, the primitive
+- Decoded textures and targets written in the program, line coverage, the primitive
   index from the stage helper, root signature layouts.
 - The stage helper of section 7, the rest: stream output from streams other than 0 and rasterized
   together with streaming (a draw of the pass-through as well), geometry by
@@ -1197,8 +1243,6 @@ Next (in order):
   (dxil-spirv gives them a SPIR-V component; naga's reader drops it, so two values claim one
   location; refused as `PackedStageValues` until then). Both fit one wrapper, the one `draw_bases`
   already makes.
-- Shader model 5.1 DXBC with register spaces (vkd3d's register_space, sampler_register_space):
-  Direct3D 12's numbering on the DXBC route too, with the slot lookups of `lower.rs` by slot.
 - Send the carried naga changes upstream (below).
 - naga SPIR-V reader fixes for DXIL (6.2): typed buffers ("unsupported image dimension"), storage
   images without a format, `OpIsHelperInvocationEXT` (`IsHelperLane()`, wave operations), the sample mask kept as
@@ -1387,6 +1431,29 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 29, 2026-11-18, counts only (laptop load about 0.2 to 5.6; desktop shared through the queue,
+whose hazard slot other tracks' long runs held for most of the run), logs in scratch
+`graphics-shaders/run29`:
+- Laptop: the full suite of both crates with the corpora (`--include-ignored --skip mutated
+  --no-fail-fast`, suite2.log): everything passes except the own-shader records, which lacked the
+  four new files of each route; the records were copied from `classes.txt` and the corpus test then
+  passed 9 of 9 (corpus3.log). `ps_spaces.dxbc` is now `ok`; no game, rig or Wine corpus verdict
+  changed with shader model 5.1 numbering. Variant tests 25 of 25, the interface's 36 of 36, clippy
+  of both crates clean (suite2.log, variants4.log).
+- Recompiling every own shader on the desktop (`compile.cmd`) gave the committed bytes; new are
+  `vs_texels`, `vs_early`, `ps_early` and `ps_mark` (fxc and dxc).
+- Desktop (one GPU job each, RTX 3080): `early_draw` 32 seeded scenes (early3.log): in 21 Direct3D
+  ran the shader for 44 to 2017 of 4096 pixels, in 11 for none; in every scene the marks and the
+  target's texels of the fxc and the dxc build through WebGPU equal real Direct3D 11's (0 apart).
+  The first 16 scenes of the first version of the test (small triangles, 11 of them empty) were also
+  all equal (gpu3.log). `compute_draw` 5 of 5 (gpu3.log), among them
+  `storage_views_at_any_first_element_match_direct3d` (8 seeds, every view of `cs_atomics`,
+  `cs_shared` and `cs_decrement` at a seeded first element, 0 words apart by both routes).
+- WebAssembly (laptop, wasmtime; wasm1.log): the corpus test passes 9 of 9 under wasmtime, and the
+  written files equal the native ones except the known gap (`116_cs_group_index_code` WGSL,
+  `d599fbc7efa911be` WGSL and GLSL, and the two `cache.txt` holding them).
+- Not rerun this run: Chrome's compile of the written files.
 
 Run 28, 2026-11-18, counts only (laptop load about 1 to 5; desktop shared through the queue), logs in
 scratch `graphics-shaders/run28`:
@@ -2108,6 +2175,10 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `WCONTAINERS_TEXEL_CASES`, default 8 seeds, about 1.5 s).
 - Atomics, counters and storage textures (Windows, one GPU job, about 2 s for 4 seeds):
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test compute_draw --no-run" -- "set WCONTAINERS_COMPUTE_SEED=1&& set WCONTAINERS_COMPUTE_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test compute_draw -- --nocapture --test-threads 1"`.
+- Early tests in the program against real Direct3D 11 (Windows, one GPU job, under 1 s; seeded scenes,
+  default 32): `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test early_draw --no-run" -- "set WCONTAINERS_EARLY_SEED=1&& set WCONTAINERS_EARLY_CASES=32&& cargo test -j 3 -p wcontainers-shaders --test early_draw -- --nocapture --test-threads 1"`.
+  Each scene prints how many pixels Direct3D ran the shader for and the marks and texels apart, for
+  the fxc and the dxc build.
 - The built-in clear against WARP and the GPU's Direct3D 11 (Windows, one GPU job, about 3 s for
   256 cases): `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test clear_draw --no-run" -- "set WCONTAINERS_CLEAR_SEED=1&& set WCONTAINERS_CLEAR_CASES=256&& cargo test -j 3 -p wcontainers-shaders --test clear_draw -- --nocapture --test-threads 1"`.
 - The tessellator against the GPU's (Windows, one GPU job, about 12 s for 16 seeds):
@@ -2415,6 +2486,13 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 29, `CompareFn`'s variants numbered 1 to 8 (Direct3D's numbers) as the codes
+  `HelperValue::EarlyTests` holds, zero there a test that is off (its doc said "u32 codes" without
+  naming them), and `EARLY_STENCIL_BINDING`'s doc says a front binds any single-sampled unsigned
+  texture there for a format without stencil (WebGPU wants every declared binding bound; the
+  program reads it only where the stencil test is on). Commit "interface: numbered the compare
+  functions ...", which also gives the shared line's new slot test the `stride` field.
 
 - Run 28, `VariantFlags::STORAGE_OFFSET` and `ReflectedBinding::stride` (commit "interface: ...";
   plan text in 4.5): `HelperValue::StorageOffset` existed with nothing asking for it; storage views
