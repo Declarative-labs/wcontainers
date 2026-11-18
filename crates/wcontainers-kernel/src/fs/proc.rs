@@ -954,6 +954,10 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
                 out.push((name.to_vec(), child, position));
             };
             for (name, file) in PROCESS_FILES {
+                // A thread's own directory has no coredump_filter (`tid_base_stuff`).
+                if task.own && *file == ProcessFile::CoredumpFilter {
+                    continue;
+                }
                 add(name, Entry::ProcessFile(task, *file));
             }
             for (name, link) in PROCESS_LINKS {
