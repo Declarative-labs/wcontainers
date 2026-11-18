@@ -4958,6 +4958,11 @@ const IOCTL_REQUESTS: &[u64] = &[
     ioctl::TIOCGSOFTCAR as u64,
     ioctl::TIOCSSOFTCAR as u64,
     ioctl::TIOCVHANGUP as u64,
+    // Socket requests whose checks come in an order: the urgent mark (not on datagram sockets),
+    // and requests that change the network (their structure copied before the power is checked).
+    ioctl::SIOCATMARK as u64,
+    ioctl::SIOCSIFFLAGS as u64,
+    ioctl::SIOCADDRT as u64,
 ];
 
 /// Terminal requests whose argument is a value, not an address.
