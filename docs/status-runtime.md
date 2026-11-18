@@ -98,6 +98,9 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   back end is c2539861's (load 58.2 to 91.8; j2/linux/linux-check-4.log); the paged out page read
   "present 0, swapped 1" and was copied exactly.
 - The back end's own tests on this Mac: all pass at c2539861.
+- The stand-in unchanged: the whole kernel test crate without the feature at 0b4ffb30 (code as c2539861),
+  609.3 s (load 90.2 to 54.7; j2run2/verdicts.log): 190 passed, 0 failed, 5 ignored, and the sorted verdict
+  lines (j2run2/verdicts.txt) are identical to run 1's (j2/verdicts.txt).
 - System call and fork cost again, end to end (release, j2/cost/runtime_cost.rs copied in for the run and
   removed, the same method as run 1; c2539861; load 101.8 to 96.5; j2run2/cost/cost-3.log): `getppid` ours
   162.9 ns an iteration (min 147.3), the loop with no call 9.6 ns, reference 143.3 to 212.2 ns; fork, `_exit`
