@@ -1387,7 +1387,7 @@ pub fn write() {
             .iter()
             .enumerate()
             .filter(|(k, name)| {
-                let ours = typed(*table, name).unwrap_or(thunks + 16 * (instance * SLOTS + k));
+                let ours = typed(*table, name).unwrap_or(thunks + THUNK * (instance * SLOTS + k));
                 (unsafe { *entries.add(*k) }) != ours
             })
             .map(|(_, name)| *name)

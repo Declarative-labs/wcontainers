@@ -311,10 +311,10 @@ function Run-Program([string]$name, [string]$dir) {
     $expected = "tools\graphics-rig\census\$name.expected"
     if ($ended -and (Test-Path $expected)) {
         $counted = @{}
-        $lines = @(if (Test-Path $file) { Get-Content $file })
-        foreach ($line in $lines) { if ($line -match '^(\S+ \S+) (\d+)$') { $counted[$Matches[1]] = [long]$Matches[2] } }
+        $censusLines = @(if (Test-Path $file) { Get-Content $file })
+        foreach ($line in $censusLines) { if ($line -match '^(\S+ \S+) (\d+)$') { $counted[$Matches[1]] = [long]$Matches[2] } }
         $byLibraries = @{}
-        foreach ($line in $lines -match '^# of the counts below, made by the graphics libraries, not the program: ') {
+        foreach ($line in $censusLines -match '^# of the counts below, made by the graphics libraries, not the program: ') {
             foreach ($item in ($line -split ': ', 2)[1] -split ', ') { if ($item -match '^(\S+ \S+) (\d+)$') { $byLibraries[$Matches[1]] = [long]$Matches[2] } }
         }
         foreach ($line in @(Get-Content $expected | Where-Object { $_ -and $_ -notmatch '^#' })) {
