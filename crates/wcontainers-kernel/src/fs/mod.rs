@@ -185,6 +185,7 @@ impl FileSystem {
                     | Kind::Anon
                     | Kind::Mqueue
                     | Kind::Sockfs
+                    | Kind::Nsfs
             )
     }
 }
@@ -209,6 +210,8 @@ pub(crate) enum Kind {
     Fuse,
     /// Sockets, an inode each.
     Sockfs,
+    /// Namespaces, as `/proc/<pid>/ns` opens them.
+    Nsfs,
 }
 
 impl Kind {
@@ -232,7 +235,8 @@ impl Kind {
             | Kind::Secretmem
             | Kind::Anon
             | Kind::Fuse
-            | Kind::Sockfs => i64::MAX as u64,
+            | Kind::Sockfs
+            | Kind::Nsfs => i64::MAX as u64,
             Kind::Devpts | Kind::Proc | Kind::Mqueue => i32::MAX as u64,
         }
     }
@@ -250,6 +254,7 @@ impl Kind {
             Kind::Mqueue => crate::linux_extra::MQUEUE_MAGIC.into(),
             Kind::Fuse => FUSE_SUPER_MAGIC.into(),
             Kind::Sockfs => SOCKFS_MAGIC.into(),
+            Kind::Nsfs => NSFS_MAGIC.into(),
         }
     }
 }
@@ -338,6 +343,8 @@ pub(crate) enum Content {
     Backend(backend::Remote),
     /// A socket's own inode.
     Socket(crate::syscall::socket::SocketRef),
+    /// A namespace's inode on nsfs.
+    Namespace(proc::Namespace),
 }
 
 /// A regular file's bytes, which pages have been written (holes take no space), and tmpfs's seals.
@@ -822,7 +829,8 @@ impl Inode {
             | Content::Pipe(_)
             | Content::Pidfd(..)
             | Content::Anon
-            | Content::Socket(_) => 0,
+            | Content::Socket(_)
+            | Content::Namespace(_) => 0,
         }
     }
 
@@ -916,6 +924,11 @@ impl Inode {
         }
     }
 
+    /// Whether nothing may change it (`IS_IMMUTABLE`).
+    pub fn immutable(&self) -> bool {
+        self.fsflags & FS_IMMUTABLE_FL != 0
+    }
+
     pub fn is_secret(&self) -> bool {
         self.fs.kind == Kind::Secretmem
     }
@@ -991,6 +1004,10 @@ pub(crate) fn permission(
     mask: u32,
     caller: crate::process::Pid,
 ) -> Result<(), Errno> {
+    // `inode_permission`: nothing writes an immutable inode.
+    if mask & W_OK != 0 && inode.immutable() {
+        return Err(Errno::EPERM);
+    }
     if let Content::Proc(entry) = inode.content {
         match entry {
             proc::Entry::Process(_) if mask & W_OK != 0 => return Err(Errno::EPERM),

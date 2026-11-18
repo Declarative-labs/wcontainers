@@ -173,6 +173,9 @@ pub(crate) const FILEID_INO64_GEN: i32 = 0x81;
 pub(crate) const FILEID_INVALID: i32 = 0xff;
 /// The handle type kernfs and pidfs give: a 64-bit inode number.
 pub(crate) const FILEID_KERNFS: i32 = 0xfe;
+/// The handle type nsfs gives (`FILEID_NSFS`, not in linux-raw-sys): a namespace's id, type and
+/// number.
+pub(crate) const FILEID_NSFS: i32 = 0xf1;
 
 // The encoding of CPU clock ids below zero, from Linux's `linux/posix-timers_types.h`, which is not a
 // uapi header: the C library's `clock_getcpuclockid` and `pthread_getcpuclockid` make these ids.

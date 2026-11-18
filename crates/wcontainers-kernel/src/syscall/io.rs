@@ -874,11 +874,13 @@ pub(super) fn file_bytes(
             }
             _ => return Err(Errno::ENXIO),
         },
+        // nsfs files have no read (`ns_file_operations`).
         Content::Pipe(_)
         | Content::Symlink(_)
         | Content::Pidfd(..)
         | Content::Anon
-        | Content::Socket(_) => {
+        | Content::Socket(_)
+        | Content::Namespace(_) => {
             return Err(Errno::EINVAL);
         }
         // `mqueue_read_file`: the queue's size and request, which a read that returns bytes marks
@@ -1471,7 +1473,8 @@ pub(super) fn write_bytes(
         | Content::Pidfd(..)
         | Content::Anon
         | Content::Socket(_)
-        | Content::Mqueue(_) => {
+        | Content::Mqueue(_)
+        | Content::Namespace(_) => {
             return Err(Errno::EINVAL);
         }
     };
@@ -1832,7 +1835,10 @@ pub(super) fn lseek(
     let inode = file.node.borrow();
     let mut sequence = None;
     let new = match &inode.content {
-        Content::Pipe(_) | Content::Pidfd(..) | Content::Socket(_) => return Err(Errno::ESPIPE),
+        // nsfs files have no seek.
+        Content::Pipe(_) | Content::Pidfd(..) | Content::Socket(_) | Content::Namespace(_) => {
+            return Err(Errno::ESPIPE);
+        }
         // Signal descriptors keep their position at 0 (`noop_llseek`).
         Content::Anon => file.offset as i64,
         // A queue seeks as `default_llseek` does over the size it shows.
@@ -2937,7 +2943,8 @@ fn sync_file(
         | Content::Pidfd(..)
         | Content::Anon
         | Content::Mqueue(_)
-        | Content::Socket(_) => Err(Errno::EINVAL),
+        | Content::Socket(_)
+        | Content::Namespace(_) => Err(Errno::EINVAL),
         _ if inode.is_secret() => Err(Errno::EINVAL),
         _ => Ok(0),
     }

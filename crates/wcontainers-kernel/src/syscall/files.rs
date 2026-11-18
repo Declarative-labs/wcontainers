@@ -1973,6 +1973,10 @@ fn change_mode_unwatched(
     if node.borrow().is_anonymous() {
         return Err(Errno::EOPNOTSUPP);
     }
+    // `notify_change`: an immutable inode takes no change of mode, owner or times.
+    if node.borrow().immutable() {
+        return Err(Errno::EPERM);
+    }
     // A process's entries refuse mode changes, as Linux's `proc_setattr` does. The others take them.
     if let Content::Proc(entry) = node.borrow().content
         && entry.of_process().is_some()
@@ -2107,6 +2111,9 @@ fn change_owner_unwatched(
     }
     if inode.is_anonymous() {
         return Err(Errno::EOPNOTSUPP);
+    }
+    if inode.immutable() {
+        return Err(Errno::EPERM);
     }
     let changes_uid = uid != u32::MAX && uid != inode.uid;
     let changes_gid = gid != u32::MAX && gid != inode.gid;
@@ -2293,11 +2300,13 @@ pub(super) fn utimensat(
             Err(Errno::EOPNOTSUPP)
         };
     }
-    // A process's directory refuses every change (measured on the reference).
+    // A process's directory refuses every change (measured on the reference), as does an immutable
+    // inode (`notify_change`).
     if matches!(
         inode.content,
         Content::Proc(crate::fs::proc::Entry::Process(_))
-    ) {
+    ) || inode.immutable()
+    {
         return Err(Errno::EPERM);
     }
     let owner = credentials.owns_or_capable(inode.uid);

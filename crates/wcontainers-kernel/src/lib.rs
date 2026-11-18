@@ -92,6 +92,8 @@ pub(crate) struct Files {
     pub numbers: Numbers,
     pub root: Node,
     pub proc_fs: FileSystem,
+    /// nsfs, mounted at boot with the fourth anonymous device number (measured).
+    pub nsfs: FileSystem,
     pub pipe_fs: FileSystem,
     /// The internal tmpfs memory files and shared anonymous memory live on (Linux's `shm_mnt`, mounted
     /// first at boot, so it has the first anonymous device number).
@@ -252,6 +254,12 @@ impl Kernel {
                 numbers,
                 root,
                 proc_fs,
+                nsfs: FileSystem {
+                    kind: fs::Kind::Nsfs,
+                    device: fs::encode_device(0, 4),
+                    flags: 0,
+                    space: None,
+                },
                 pipe_fs,
                 memfd_fs: FileSystem {
                     kind: fs::Kind::Tmpfs,
@@ -600,6 +608,7 @@ impl Kernel {
             caller: pid,
             caller_thread: tid,
             fs: self.files.proc_fs.clone(),
+            nsfs: self.files.nsfs.clone(),
             boot: self.boot,
             kept: &self.files.proc_kept,
             counters: &self.counters,

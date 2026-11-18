@@ -399,6 +399,13 @@ fn own(
             _ => Err(Errno::ENOTTY),
         };
     }
+    let namespace = match file.borrow().node.borrow().content {
+        Content::Namespace(namespace) => Some(namespace),
+        _ => None,
+    };
+    if let Some(namespace) = namespace {
+        return namespace_ioctl(kernel, cx, tid, namespace, request, argument);
+    }
     let (unread, device) = {
         let file = file.borrow();
         let inode = file.node.borrow();
@@ -616,4 +623,31 @@ fn set_attributes(
     inode.fsflags = flags;
     inode.ctime = now;
     Some(Ok(0))
+}
+
+/// `ns_ioctl`: a namespace's type, and the user namespace's owner (root, the machine's first); the
+/// requests that give a descriptor of another namespace, and those of single types, are not built.
+fn namespace_ioctl(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    namespace: crate::fs::proc::Namespace,
+    request: u32,
+    argument: u64,
+) -> Result<u64, Errno> {
+    use crate::linux::ioctl::{NS_GET_NSTYPE, NS_GET_OWNER_UID};
+    match request {
+        NS_GET_NSTYPE => Ok(namespace.clone_flag().into()),
+        NS_GET_OWNER_UID if namespace == crate::fs::proc::Namespace::User => guest(kernel, cx, tid)
+            .put(argument, &0u32.to_le_bytes())
+            .map(|()| 0),
+        NS_GET_OWNER_UID => Err(Errno::EINVAL),
+        _ if (request >> 8) & 0xff == 0xb7 => Err(kernel.counters.refuse(
+            cx.host,
+            crate::counters::reason::IOCTL_NOT_BUILT,
+            request.into(),
+            Errno::ENOTTY,
+        )),
+        _ => Err(Errno::ENOTTY),
+    }
 }

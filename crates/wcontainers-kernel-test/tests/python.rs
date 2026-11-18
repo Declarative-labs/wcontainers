@@ -99,8 +99,6 @@ fn language_test_modules_match_reference() {
 }
 
 #[test]
-#[ignore = "known difference: /proc/<pid>/ns is not built, so test_posix's test_unshare_setns \
-            skips where the reference runs it (every other test matches); see the status file"]
 fn system_test_modules_match_reference() {
     let directory = directory();
     let mut command = vec!["python3", "/wc/suite.py"];
