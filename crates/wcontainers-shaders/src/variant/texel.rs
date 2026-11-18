@@ -15,7 +15,7 @@ use super::*;
 use crate::build::{self, Builder, Expr};
 
 /// The vertex format of the same bytes, whose layout and decoding a typed buffer element shares.
-fn vertex_format(format: Format) -> Option<VertexFormat> {
+pub(crate) fn vertex_format(format: Format) -> Option<VertexFormat> {
     use Format as F;
     use VertexFormat as V;
     Some(match format {

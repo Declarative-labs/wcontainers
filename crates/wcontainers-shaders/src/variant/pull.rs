@@ -26,7 +26,7 @@ pub(crate) enum Kind {
 pub(crate) type Component = (u32, u32, u32);
 
 /// A format's kind, components in RGBA order and element size in bytes.
-pub(super) fn layout(format: VertexFormat) -> (Kind, Vec<Component>, u32) {
+pub(crate) fn layout(format: VertexFormat) -> (Kind, Vec<Component>, u32) {
     use Kind::*;
     use VertexFormat as V;
     let packed = |kind, fields: &[(u32, u32)]| {
