@@ -652,7 +652,7 @@ Not absent features, so not yet allowed on the list (others' work, then this fro
 
 1. At the start of each run merge the shared line, webgpu, shaders and rig. Check whether the
    rig fixed its comparison (`tools/graphics-rig/desktop/wine-run.ps1`, "How to run"); until it
-   does, keep the one-line patch there uncommitted and never commit that file.
+   does, apply the one-line patch uncommitted for the run and never commit that file.
 2. The real program: once the shaders branch converts DXIL storage images of no format and
    buffer images and drops `BindingsBeyondLimit` (grep crates/wcontainers-shaders/src), run
    Godot (command under "Real program") and compare; or once the rig captures Direct3D 12
@@ -743,8 +743,10 @@ A working example of all of it is this track's Windows library: `examples/direct
   fails a check real Direct3D passes ("wine-run: You cannot call a method on a null-valued
   expression"): `$allowed = if (...) { ... } else { @() }` gives `$null` for a test with no
   known failures (PowerShell unrolls the empty array), and `$allowed.Contains` then throws. Until
-  the rig track fixes it, keep this one-line change in the checkout, uncommitted (the rig's
-  `remote` sends the working tree, so the desktop runs it), and never commit that file:
+  the rig track fixes it, apply this change after merging (`git apply` of scratch
+  run20/rig-wine-run-fix.patch; the rig's `remote` sends the working tree, so the desktop runs
+  it), never commit that file, and undo it (`git checkout` of the file) before the next merge
+  and at the end of a run:
   in tools/graphics-rig/desktop/wine-run.ps1 replace the `$allowed = ...` line and the
   `$worse = ...` line after the comment with `$worse = @($run.Failed.Keys | Where-Object { -not
   ($known.ContainsKey($name) -and $known[$name].Contains($_)) })` (scratch
