@@ -31,11 +31,11 @@ impl From<Unsupported> for Failure {
 
 /// What runs the guest's instructions behind the kernel: the stand-in CPU.
 #[cfg(not(feature = "runtime"))]
-type Back = crate::standin::StandIn;
+pub(crate) type Back = crate::standin::StandIn;
 
 /// What runs the guest's instructions behind the kernel: the translator's WebAssembly.
 #[cfg(feature = "runtime")]
-type Back = wcontainers_wasmtime::CpuSide<wcontainers_arm64::Arm64>;
+pub(crate) type Back = wcontainers_wasmtime::CpuSide<wcontainers_arm64::Arm64>;
 
 #[cfg(not(feature = "runtime"))]
 fn back_end(_seed: u64) -> Back {
@@ -45,7 +45,7 @@ fn back_end(_seed: u64) -> Back {
 /// One compiler for the test process, so a second container finds the first one's translations, with
 /// its cache's directory under the target directory, so every test binary of a build shares them.
 #[cfg(feature = "runtime")]
-fn back_end(seed: u64) -> Back {
+pub(crate) fn back_end(seed: u64) -> Back {
     use wcontainers_wasmtime::{Compiler, CpuSide, Optimise};
     static COMPILER: std::sync::OnceLock<std::sync::Arc<Compiler<wcontainers_arm64::Arm64>>> =
         std::sync::OnceLock::new();
