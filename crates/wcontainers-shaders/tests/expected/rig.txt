@@ -1,11 +1,11 @@
 blend.ps_dest.dxbc	ok
 blend.ps_dual.dxbc	ok
-blend.vs.dxbc	ok-wgsl glsl-compile
+blend.vs.dxbc	ok
 common.ps_color.dxbc	ok
 common.ps_color_9_1.dxbc	ok
 common.vs_color.dxbc	ok
 common.vs_color_9_1.dxbc	ok
-common.vs_full.dxbc	ok-wgsl glsl-compile
+common.vs_full.dxbc	ok
 compute.cs_append.dxbc	unsupported StorageCounter
 compute.cs_atomic.dxbc	unsupported Atomics
 compute.cs_consume.dxbc	unsupported StorageCounter
@@ -38,7 +38,7 @@ instanced.vs.dxbc	ok
 msaa.ps_coverage.dxbc	ok-wgsl glsl-compile
 msaa.ps_load.dxbc	ok-wgsl glsl-compile
 msaa.ps_sample.dxbc	ok-wgsl glsl-compile
-msaa.vs_full.dxbc	ok-wgsl glsl-compile
+msaa.vs_full.dxbc	ok
 quads.ps.dxbc	ok
 quads.vs.dxbc	ok
 raster.gs.dxbc	unsupported GeometryShader
@@ -76,4 +76,4 @@ views.ps_array.dxbc	ok
 views.ps_depth.dxbc	ok
 views.ps_level0.dxbc	ok
 views.ps_stencil.dxbc	ok
-views.ps_uint.dxbc	ok-wgsl glsl-compile
+views.ps_uint.dxbc	ok

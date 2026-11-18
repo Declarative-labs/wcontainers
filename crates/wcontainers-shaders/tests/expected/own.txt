@@ -4,6 +4,7 @@ ps_coarse.dxbc	ok
 ps_depth.dxbc	ok
 ps_deriv.dxbc	ok-wgsl glsl-write
 ps_dual.dxbc	ok
+ps_filter.dxbc	ok-wgsl glsl-compile
 ps_flat.dxbc	ok
 ps_ftoi.dxbc	ok
 ps_ids.dxbc	ok
@@ -31,6 +32,7 @@ ps_window.dxbc	ok
 vs_carry.dxbc	ok
 vs_clip.dxbc	ok-wgsl glsl-compile
 vs_deep.dxbc	ok
+vs_filter.dxbc	ok
 vs_fullscreen.dxbc	ok-wgsl glsl-compile
 vs_ids.dxbc	ok
 vs_pack.dxbc	ok

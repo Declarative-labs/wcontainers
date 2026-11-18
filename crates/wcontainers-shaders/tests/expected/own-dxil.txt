@@ -3,6 +3,7 @@ ps_clip.dxil	ok
 ps_coarse.dxil	ok
 ps_deriv.dxil	ok-wgsl glsl-write
 ps_dual.dxil	ok
+ps_filter.dxil	ok-wgsl glsl-compile
 ps_ftoi.dxil	ok
 ps_ids.dxil	ok
 ps_levels.dxil	ok-wgsl glsl-write
@@ -23,6 +24,7 @@ ps_textured.dxil	ok
 vs_carry.dxil	ok
 vs_clip.dxil	ok-wgsl glsl-compile
 vs_deep.dxil	ok
+vs_filter.dxil	ok
 vs_ids.dxil	ok
 vs_pack.dxil	unsupported PackedStageValues
 vs_pull.dxil	ok
