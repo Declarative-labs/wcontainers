@@ -17,20 +17,22 @@ root=$(git rev-parse --show-toplevel)
 . "$here/common.sh"
 build="cargo build -q -p wcontainers-graphics-test"
 record=
+kind=(--reference)
 args=()
 while [ $# -gt 0 ]; do
     case $1 in
         --record) record=1; shift ;;
         --build) build="$build && ($2)"; shift 2 ;;
+        --dll) kind=(); args+=("$1" "$2"); shift 2 ;;
         *) args+=("$1"); shift ;;
     esac
 done
 out="C:\\wc\\out\\$name"
 if [ -z "$record" ]; then
-    exec "$here/gpu-job" --desktop --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run check $out\\scenes ${args[*]-}"
+    exec "$here/gpu-job" "${kind[@]}" --desktop --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run check $out\\scenes ${args[*]-}"
 fi
 [ ${#args[@]} -eq 0 ] || { echo "scenes: --record takes no other arguments" >&2; exit 2; }
-"$here/gpu-job" --desktop --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run record $out\\record"
+"$here/gpu-job" --reference --desktop --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run record $out\\record"
 crate=$root/crates/wcontainers-graphics-test
 for dir in references/d3d11 references/d3d12 shaders/dxbc shaders/dxil; do
     rm -rf "${crate:?}/$dir"

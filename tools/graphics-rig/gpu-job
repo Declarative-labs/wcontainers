@@ -6,27 +6,33 @@
 # `remote`, and the job also checks that no other `remote` ran since, so the programs it runs were
 # built from this tree; without it, the job runs whatever the build directory holds. Higher
 # priorities start first (any integer); --alone waits until no other job runs and keeps the GPU to
-# itself, for timings. --desktop runs the command on a hidden desktop of the session of the user
+# itself, for timings. A job runs in the queue's group hazard, one at a time, unless --reference
+# says it draws only through Microsoft's Direct3D, wgpu or Chrome with the rig's own scenes and
+# programs (no conformance test on the GPU, no replacement library, no other track's code): Wine's
+# Direct3D 12 tests on real Direct3D reset the display driver six times, and a job that is neither
+# may hang the GPU too. --desktop runs the command on a hidden desktop of the session of the user
 # logged in at the desktop's console, for programs that present (the queue's own session refuses
 # swap chains); it fails when nobody is logged in. Commands are cmd.exe syntax; cargo's build
 # directory is C:\wc\target\<branch>.
-#   tools/graphics-rig/gpu-job [--priority N] [--alone] [--desktop] [--build <command>] -- <command>
+#   tools/graphics-rig/gpu-job [--priority N] [--alone] [--reference] [--desktop] [--build <command>] -- <command>
 set -euo pipefail
 priority=0
 alone=()
+reference=()
 desktop=()
 build=
 while [ $# -gt 0 ]; do
     case $1 in
         --priority) priority=$2; shift 2 ;;
         --alone) alone=(-Alone); shift ;;
+        --reference) reference=(-Reference); shift ;;
         --desktop) desktop=(-Desktop); shift ;;
         --build) build=$2; shift 2 ;;
         --) shift; break ;;
         *) break ;;
     esac
 done
-[ $# -gt 0 ] || { echo "usage: gpu-job [--priority N] [--alone] [--desktop] [--build <command>] -- <command>" >&2; exit 2; }
+[ $# -gt 0 ] || { echo "usage: gpu-job [--priority N] [--alone] [--reference] [--desktop] [--build <command>] -- <command>" >&2; exit 2; }
 [[ $priority =~ ^-?[0-9]+$ ]] || { echo "gpu-job: the priority must be an integer" >&2; exit 2; }
 root=$(git rev-parse --show-toplevel)
 # shellcheck source=tools/graphics-rig/common.sh
@@ -44,4 +50,4 @@ fi
 connect || exit 125
 set +e
 rig_powershell 'C:\wc\rig\submit.ps1' -Name "$name" -Tree "$tree" "-Priority:$priority" \
-    ${built[@]+"${built[@]}"} ${alone[@]+"${alone[@]}"} ${desktop[@]+"${desktop[@]}"} -Command "$command"
+    ${built[@]+"${built[@]}"} ${alone[@]+"${alone[@]}"} ${reference[@]+"${reference[@]}"} ${desktop[@]+"${desktop[@]}"} -Command "$command"

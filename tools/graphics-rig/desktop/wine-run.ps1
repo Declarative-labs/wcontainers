@@ -15,7 +15,9 @@
 # the evaluations real Direct3D fails, and when real Direct3D crashed in it, must run as many checks
 # before crashing; only an unstable one is reported but not counted. Exits 1 if any counted test
 # fails. Each test runs through gt-launch (-Launch), which reports where it loaded each replacement
-# from: a test that loaded one from anywhere else fails.
+# from: a test that loaded one from anywhere else fails. On the GPU, a test quarantined on the desktop
+# (C:\wc\rig\hazard.ps1, as "wine <file>:<test>") does not run, and a display driver reset while a
+# test runs quarantines that test and ends the run.
 param(
     [Parameter(Mandatory)][string]$Out,
     [Parameter(Mandatory)][string]$Baseline,
@@ -47,6 +49,31 @@ $wanted = if ($replacements) { $replacements -join ',' } else { '-' }
 $loadedBy = @{}
 foreach ($name in $replacements) { $loadedBy[$name] = 0 }
 $launched = 0
+. C:\wc\rig\hazard.ps1
+$quarantine = Get-Quarantine
+# The tests run on the GPU so far, with their times, to find the one running at a reset.
+$ran = New-Object System.Collections.Generic.List[object]
+$checkedTo = Get-Date
+# Stops the run if the display driver was reset or logged errors since the last look, quarantining
+# the test that was running then (or that had just ended: the driver logs a second or two late).
+function Check-Resets {
+    if ($Warp) { return }
+    $now = Get-Date
+    $events = Get-DisplayEvents $script:checkedTo $now.AddSeconds(2)
+    $script:checkedTo = $now
+    if (-not $events) { return }
+    $at = $events[0].TimeCreated
+    $suspect = $ran | Where-Object { $_.Start -le $at -and $at -le $_.End.AddSeconds(3) } | Select-Object -Last 1
+    $lines = $events | ForEach-Object { Format-DisplayEvent $_ }
+    if ($suspect) {
+        Add-Quarantine "wine $($suspect.Name)" "display driver reset at $($lines[0].Substring(0, 19)) while it ran, in $Out"
+        "$($suspect.Name): FAIL, the display driver was reset while it ran; it is now quarantined on the GPU and the run stops:"
+    } else {
+        "FAIL, the display driver was reset during the run, not while a test ran; the run stops:"
+    }
+    $lines | ForEach-Object { "  $_" }
+    exit 1
+}
 $excluded = @{}
 foreach ($line in Get-Content tools\graphics-rig\wine-excluded.txt) {
     if ($line -match '^(\w+) (\w+): (.*)$') { $excluded["$($Matches[1]) $($Matches[2])"] = $Matches[3] }
@@ -190,9 +217,16 @@ foreach ($choice in $Tests.Split(',')) {
     $fileClock = [Diagnostics.Stopwatch]::StartNew()
     foreach ($name in $names) {
         if ($excluded.ContainsKey("$file $name")) { "$file ${name}: excluded, $($excluded["$file $name"])"; continue }
+        if (-not $Warp -and $quarantine.ContainsKey("wine ${file}:$name")) {
+            "$file ${name}: not run on the GPU, quarantined ($($quarantine["wine ${file}:$name"].Split("`t")[1..2] -join ': '))"
+            continue
+        }
         $before = $expected[$name]
         # A test real Direct3D does not pass reports every check, so each failure is pinned to its evaluation.
+        $testStart = Get-Date
         $run = Run-Test $file $name $vkd3d ($before -and $before[1] -ne 'pass')
+        $ran.Add(@{ Name = "${file}:$name"; Start = $testStart; End = (Get-Date) })
+        Check-Resets
         $launched++
         foreach ($library in $run.Here) { $loadedBy[$library]++ }
         if ($Record) {
@@ -237,6 +271,13 @@ foreach ($choice in $Tests.Split(',')) {
         "$file ${name}: $line"
         if ($line.StartsWith('known')) { $fileKnown++ } else { $counted++; if ($line.StartsWith('FAIL')) { $failed++; $fileFailed++ } else { $filePassed++ } }
     }
+    if ($Record -and $chosen -and (Test-Path $baselineFile)) {
+        # Recording chosen tests keeps the other tests' lines of the baseline, in the file's order.
+        $order = @{}; for ($i = 0; $i -lt $all.Count; $i++) { $order[$all[$i]] = $i }
+        $byTest = { $order[$_.Split(' ')[0]] }
+        $results = @(@(Get-Content $baselineFile | Where-Object { $names -notcontains $_.Split(' ')[0] }) + $results | Sort-Object $byTest)
+        $failing = @(@(Get-Content "$Baseline\$file-$driver.failures" | Where-Object { $names -notcontains $_.Split(' ')[0] }) + $failing | Sort-Object $byTest)
+    }
     [IO.File]::WriteAllLines("$Out\$file-$driver.failures", [string[]]$failing)
     [IO.File]::WriteAllLines("$Out\$file-$driver.txt", [string[]]$results)
     $seconds = [math]::Round($fileClock.Elapsed.TotalSeconds, 1)
@@ -247,6 +288,7 @@ foreach ($choice in $Tests.Split(',')) {
         "$file on ${driver}: $($results.Count) tests run, $filePassed pass, $fileFailed FAIL, $fileKnown known (failing differently from run to run on real Direct3D, not counted), $seconds s"
     }
 }
+if (-not $Warp) { Start-Sleep -Seconds 2; Check-Resets }
 foreach ($name in $replacements) { "replacement ${name}: loaded from $bin by $($loadedBy[$name]) of $launched tests run" }
 if (-not $Record) {
     "$counted tests counted, $failed FAIL"
