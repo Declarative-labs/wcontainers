@@ -1,9 +1,34 @@
-# Graphics WebGL 2 back end status (G3)
+# Graphics WebGL 2 back end status (G3, G3b)
 
 Track: `crates/wcontainers-gpu-webgl`, the WebGL 2 back end on glow, branch `phase-2-graphics-webgl`.
 Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
+
+G3b (what the Direct3D 11 front and the shaders track need from this back end), run 1, 2026-11-18.
+Merged origin/phase-2-graphics-rig, -webgpu, -shaders and -direct3d-11 cleanly (the shared line
+had nothing new; -direct3d-12 not merged, nothing of it was needed). Done in this run:
+- The open findings of G3's passing check (scratch orchestrator/graphics-webgl-round2-open-findings.json):
+  - Signed normalised minimum judged wrongly (Chrome): a host write is now judged only on whole
+    components (16-bit ones aligned, so bytes 00 80 across two components are not -32768) of the
+    rows it writes (the padding between rows and slices is left out). The judgement is cleared
+    when the texture is written whole again, when a later write leaves the host copy with no
+    minimum while no draw has written the texture, and when a pass clears (or loads as don't
+    care) a texture of one subresource. New check
+    `signed_normalised_minimum_judged_by_whole_components` (the checker's two cases and three
+    clearing cases; Chrome only, natively it reports "not run: Rgba8Snorm does not render here").
+  - Checks whose route ran nothing are reported with the reason, not only the absent feature:
+    `not_run_because`, and `signed_normalised_texels_drawn_then_copied` natively now reports
+    "not run" (it returned silently before). The suite's own early returns are listed under
+    "The pass bar" below.
+  - The per-draw cost command now has `--desktop` (without it Chrome kept no WebGL 2 context in
+    the checker's run), and the spread of medians between runs is recorded under Measurements.
+- What the other tracks' status files ask of this back end, each settled (list under "G3b: what
+  the fronts ask" below): half floats read back (built), two devices on one thread natively
+  (built), GLSL ES 3.10's bit functions and gathers on GLSL ES 3.00 (built, plan 6.5), and the
+  rest refused by name or already built.
+- Not done yet: the frame-time measurement of a real program through the Direct3D 11 front on
+  this back end in Chrome (see Next).
 
 G3 is at its pass bar (item by item below) apart from named known failures that wait on other
 tracks, on hardware, or on what WebGL 2 cannot do (see "Not built" under "Done"). Run 18 (the
@@ -52,7 +77,71 @@ rounding; `depth-bias_depth` exactly equal to Direct3D 11); run 12 built the ext
 fixed layer invalidation in Chrome and the base level patch of mozangle; runs 1 to 10 built the back
 end. The git log has each run's commits.
 
+## G3b: what the fronts ask
+
+Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-shaders.md at
+93fed7c1, status-graphics.md). Each request and where it stands:
+- Reading half floats back (Direct3D 11's mips and targets scenes: a staging texture of a format
+  the back end cannot read back): built. `R16Float`, `Rg16Float` and `Rgba16Float` now have
+  `COPY_OUT`: read back now, later and into buffers through their bits drawn into the unsigned
+  integer twin (`CopyThroughBuffer`, `through_draw` in src/lib.rs), NaN payloads, infinities and
+  denormals kept. Check `half_floats_read_back_as_stored`; `copies_within_a_typeless_group` now
+  reads its half floats directly. Passes on ANGLE and in Chrome.
+- Two devices on one thread natively (Direct3D 11, Wine's tests): built. Every back end call makes
+  its own EGL context current first where another back end on the thread made its own current
+  (one thread-local compare per call natively, nothing in the browser), and dropping a back end no
+  longer terminates the default display the others share. Check
+  `two_devices_on_one_thread_keep_their_own_objects`.
+- Bit operations (`bfi`, `ubfe` and the like: `bitfieldExtract`, `bitfieldInsert`, `bitCount`,
+  `bitfieldReverse`, `findLSB`, `findMSB`), which GLSL ES 3.00 lacks (shaders track; plan 6.5):
+  built. The program defines them, for `int`, `uint` and their vectors, with shifts and masks
+  (`bit_functions` in src/shader.rs). Check `bit_operations_equal_their_definition`: every
+  operation, scalar and vector, signed and unsigned, against WGSL's definition computed on the
+  host, offsets and counts past the width included.
+- `textureGather` and `textureGatherOffset` (shaders track; plan 6.5): built. Each is rewritten to
+  four samples at the texel centres of the footprint at level 0 (`gathers_by_samples`), given the
+  bound view's size; cube footprints are sampled by direction, comparisons through the comparison
+  sampler. Check `gathers_equal_their_footprints`: 2D with linear filtering and repeat (footprints
+  past every edge), with an offset, an integer 2D array with nearest and clamp, a cube inside its
+  faces, a depth comparison. Departures: a sampler's minimum level of detail above 0 moves the
+  samples off level 0 where a gather stays on it.
+- A program GL refuses to link answers device lost at its first draw, not an error (shaders
+  track): kept. Links run in parallel and finish at the first draw, which has no error to return;
+  the programs that met it were the bit functions and gathers above.
+- Texture views (Direct3D 11's views scene, `E_NOTIMPL`): refused by name, `Absent(TEXTURE_VIEWS)`
+  at `create_view` and in binding sets; WebGL 2 has no views (plan 4.12: the front keeps a second
+  texture, `ReinterpretCopy`).
+- Polygon mode (raster scene): `POLYGON_MODE` with WEBGL_polygon_mode, which Chrome has (check
+  `polygons_filled_with_lines`) and the mozangle build lacks, so natively it is absent and refused
+  by name; `POLYGON_MODE_POINT` absent everywhere.
+- `TEXTURE_LEVEL_QUERY` (samplers scene, refused by the front by name): absent, GLSL ES 3.00 has no
+  `textureQueryLevels`; fronts bind the `TEXTURE_INFO` variant (plan 4.11).
+- The constants scene ("device lost in the back end, not read"): run in this run, see
+  Measurements, run G3b-1.
+- An empty `viewports` (shaders track: the interface does not say what it means): the interface
+  now says one viewport; this back end loses the device by the interface's rule (`Invalid`, "0
+  viewports in one draw") for any other count.
+- Read back later through `glGetBufferSubData`, which GLES lacks natively: built earlier (natively
+  through `glMapBufferRange`, platform.rs `get_buffer_sub_data`).
+- `noperspective` inputs (shaders track: not written for WebGL 2): refused, naga's GLSL writer
+  answers `MissingFeatures(NOPERSPECTIVE_QUALIFIER)` when the program is made. Not built: linear
+  interpolation needs the vertex stage to write the value times w and w beside it, which needs
+  both stages at once (Next).
+- `SAMPLE_MASK` and `SAMPLE_SHADING`: absent (WebGL has no OES_sample_variables directive for
+  `gl_SampleMask`; see Capabilities).
+- Fine derivatives: refused by naga's writer (`DERIVATIVE_CONTROL`), as the shaders track says.
+
 ## The pass bar, item by item (plan section 12, G3)
+
+The shared suite's own early returns (G1's crate): five of its tests return without drawing on
+WebGL 2 and both hosts count them as passes: `fragments_write_storage_buffers`,
+`vertices_pulled_from_storage_match_the_fetched_ones`,
+`typed_buffers_through_storage_read_their_views_place_and_length` (no storage),
+`programs_run_per_sample_and_read_samples` and `a_fragment_covering_no_sample_writes_nothing` (no
+sample shading or multisample reads). `instances_start_at_the_first_instance` and
+`indexed_strips_restart_and_add_the_base_vertex` use bases of 0 without `BASE_VERTEX_INSTANCE`;
+non-zero bases are covered by this crate's `vertex_and_instance_numbers_include_the_bases`. So of
+the suite's pass counts below, five ran nothing here.
 
 Where each item is shown; "check" is a function of examples/common/checks.rs (or extensions.rs), run
 by both hosts; "against" is a comparison of examples/common/against.rs, run natively by
@@ -119,7 +208,7 @@ tests/against_webgpu.rs and in Chrome by browser/against.mjs.
   not run here) and `constant_alpha_blends`.
 - The suite natively on ANGLE: every test and check with every extension (see "Measurements, run
   17"). A check whose feature is absent runs only its refusal and reports "not run": natively it
-  passes and prints "not run, feature absent:" (all.cmd lists those lines), in Chrome it is counted
+  passes and prints "not run:" (before G3b "not run, feature absent:"; all.cmd lists those lines), in Chrome it is counted
   as "not run". Since run 17 that includes `timestamps_and_their_disjoint_flag` and
   `fractional_depth_bias`, on both hosts.
 - Primitive restart only where asked (found by run 16's check, not a pass bar item): check
@@ -693,7 +782,7 @@ All from the checkout root on the Mac.
   (and again with `--target wasm32-unknown-unknown`).
 
 - all.cmd writes each native suite run to `<out>\suite-angle*.txt` (with every test's output) and
-  shows its summary, failures and the "not run, feature absent:" lines of checks that ran only
+  shows its summary, failures and the "not run:" lines of checks that ran only
   their refusal. Its last native run and its fourth Chrome run also switch `float_blits` off.
 - Everything at once (both scene routes in Chrome and on ANGLE; the suite with the checks in
   Chrome four ways (every extension, without EXT_clip_control, without it and WEBGL_provoking_vertex,
@@ -707,8 +796,9 @@ All from the checkout root on the Mac.
   (`--lib` runs the unit tests of src/capture.rs and src/restart.rs).
 - The per-draw cost of both back ends in Chrome, as an exclusive job (build.cmd builds the
   example, in release, into `%CARGO_TARGET_DIR%\webgl-cost-pkg`):
-  `tools/graphics-rig/gpu-job --alone --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "node crates\wcontainers-gpu-webgl\browser\cost.mjs %CARGO_TARGET_DIR%\webgl-cost-pkg C:\wc\out\webgl\cost.txt 30 \"10000 50000\""`
-  (frames timed per case, then the draw counts). About 15 s.
+  `tools/graphics-rig/gpu-job --alone --desktop --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "node crates\wcontainers-gpu-webgl\browser\cost.mjs %CARGO_TARGET_DIR%\webgl-cost-pkg C:\wc\out\webgl\cost.txt 30 \"10000 50000\""`
+  (frames timed per case, then the draw counts). About 15 s. Without `--desktop` Chrome kept no
+  WebGL 2 context in G3's check (run 18's measurements had it from all.cmd's desktop session).
 - BC1 to BC7 against real Direct3D 11 (run 17; all.cmd runs it into `<out>\bc-reference.txt`):
   `tools/graphics-rig/gpu-job -- "cargo test -j 3 -p wcontainers-gpu-webgl --test bc_reference -- --test-threads=1 --nocapture"`.
   It draws the rig's `textures-bc` and `textures-bc67` from the same seeded blocks, saves them
@@ -749,8 +839,9 @@ All from the checkout root on the Mac.
   page). For example `set WEBGL_CASES=20 && crates\wcontainers-gpu-webgl\browser\some.cmd <out> copies_`.
   Natively each seed is printed before its run (shown with `--nocapture`).
 - Checks whose feature the back end declares absent run nothing beyond the refusal that
-  `absent_features_are_refused` checks and call `not_run`; Chrome's suite output counts them as
-  "not run" (with the feature), natively they pass and print "not run, feature absent:".
+  `absent_features_are_refused` checks and call `not_run`; checks whose format lacks a use call
+  `not_run_because` (G3b run 1). Chrome's suite output counts them as "not run: <reason>";
+  natively they pass and print "not run: <test>: <reason>" (all.cmd lists those lines).
 - Lint and format: `nix develop -c cargo fmt -p wcontainers-gpu-webgl` and
   `nix develop -c cargo check -j 2 -p wcontainers-gpu-webgl [--target wasm32-unknown-unknown]` on the
   Mac; clippy on the desktop:
@@ -815,7 +906,8 @@ R11G11B10 filter, render and blend; 32-bit float filter, render and blend (RGB32
 integers render (not RGB32), never filter or blend; depth formats are depth targets, and those
 without stencil also sample. Copy out (read back): R8, RG8 and RGBA8 normalised and RGBA8 sRGB,
 every colour-renderable 8, 16 and 32-bit integer format, and R32F, RG32F and RGBA32F (with
-EXT_color_buffer_float); not 16-bit floats, packed formats, depth or stencil. Since run 3, samples:
+EXT_color_buffer_float); not packed formats, depth or stencil (since G3b run 1 16-bit floats copy
+out too, through their integer twin). Since run 3, samples:
 1, 2, 4 and 8 for the colour formats that render and are not integers, and for depth formats (as
 GL reports them on the RTX 3080); integer formats take one.
 No bits yet: the swizzled formats other than BGRA8 (BGRX8, B5G5R5A1, BGRA4), A8, Stencil8. Since
@@ -1136,6 +1228,31 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   reduced performance" (and the same for WebGPU). Per-draw timings taken there (G3's later work)
   must say so; whether a headed Chrome differs is not measured.
 
+## Measurements, run G3b-1
+
+- 2026-11-18, G3b run 1, desktop (RTX 3080, Chrome 157.0.8103.78), queued jobs beside other
+  tracks' work, not timed. 39 suite tests and 53 checks (92), the 5 new checks among them.
+  - The new checks and those they touch (some.cmd, out C:\wc\out\webgl\g3b-new, scratch
+    g3b/new2.log): 11 of 11 on ANGLE and 11 of 11 in Chrome (`bit_operations_...`, `gathers_...`,
+    `half_floats_...`, `two_devices_...`, `signed_normalised_minimum_...`, the snorm, typeless and
+    within-one-subresource copy checks). Natively both snorm checks report "not run: Rgba8Snorm
+    does not render here". Seed 0, one case each.
+  - Full run (all.cmd, out C:\wc\out\webgl\g3b-all1, scratch g3b/all1.log): Chrome 89 passed, 3 not
+    run (clip and cull distances, timestamps, fractional bias), 0 failed with every extension; 81
+    passed and 11 not run on the reduced route; 63 passed, 3 not run and the 26 known failures
+    without EXT_clip_control, and the same without it and WEBGL_provoking_vertex. ANGLE 92 of 92
+    with every extension (lines "not run:" for the absent features and the two snorm checks), 67
+    of 92 on both reduced routes (the 25 known, every one `Absent(CLIP_DEPTH_ZERO_ONE)` or
+    `Absent(PROVOKING_VERTEX_FIRST)` from the suite's own raster blocks). Against WebGPU natively
+    7 of 8, in Chrome 9 of 11 routes (the known two). BC reference 1 of 2 (the known decoded
+    route). Unit tests 10 of 10. Scene and rig verdicts as expected. Clippy with warnings denied,
+    native and wasm32: clean.
+- Spread of the per-draw cost (G3's check, recorded here): one of the checker's two runs had
+  WebGL 2 medians of 10,000 draws three to four times run 18's (6.2 ms against 1.7 to 1.8) while
+  its fastest frames matched (1.6 ms); the CPU load just after was 24% against 5% in the run that
+  matched. So single medians on this shared desktop vary that much between runs; compare
+  fastest frames, or repeat runs, before reading a difference.
+
 ## Measurements, run 13
 
 - 2026-11-17, G3 run 13, same desktop (RTX 3080, driver 32.0.16.2101; desktop clock times; queued
@@ -1417,6 +1534,17 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Departures from the plan
 
+- (G3b run 1) Plan 6.5's lowering of bit functions and `textureGather` is done on the GLSL text
+  naga writes, not in naga's module: the program gets definitions of GLSL ES 3.10's bit functions
+  under their own names (free in GLSL ES 3.00), and each gather call is rewritten to a helper.
+  naga's arenas need operands before their users, so lowering inside the module would mean
+  rebuilding each function's expressions; the text route is the one `textureSize` already takes.
+  Gathers are four samples at texel centres through the bound sampler rather than four
+  `texelFetch` reads (the plan's words): fetches ignore the address mode, which places footprints
+  past an edge. At a texel's centre a linear filter gives that texel exactly (measured: every
+  case of `gathers_equal_their_footprints` equal, ANGLE and Chrome on the RTX 3080); a sampler
+  whose minimum level of detail is above 0 would move the samples off level 0 (not tested).
+
 - (run 14) `MapIntent::Often` buffers take `DYNAMIC_DRAW`, as plan 4.6 says, and `Discard` writes
   orphan them (`bufferData` at their size, GL's renaming); plan 5.8's "kept small and renamed" is not
   built further: a buffer's size is the front's, and renaming on an `Ordered` write would copy the
@@ -1684,6 +1812,21 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Next
 
+G3b, in this order:
+1. The frame-time measurement: a real program of the rig (a Tool Kit sample or a Godot platformer,
+   both matching real Direct3D through the front) drawing through the Direct3D 11 front on this
+   back end in Chrome, where a frame's time goes on our side, and the per-draw cost against the
+   WebGPU back end on the same frames. No WebAssembly build of the front exists (its status), so
+   the route is: record the interface calls of a few frames natively through the front (the
+   recording back end of `wcontainers-gpu-test` records a call stream; it needs a wrapper that
+   forwards to a real back end, and the stream needs a file form, shaders as naga modules), then
+   replay the file in Chrome on both back ends, timing each call kind. Agree first with the
+   WebGPU track, which makes the same measurement, so both use one replay tool.
+2. `noperspective` inputs: the vertex stage writes the value times w and w beside it, the
+   fragment stage divides; needs the pair of stages at link time.
+3. The Direct3D 11 front's WebGL 2 scenes still failing after this run (Measurements, G3b-1).
+
+After G3b, from G3:
 What is left of G3's pass bar cannot be done in this crate:
 - G1's suite should take clip depth and provoking vertex from the caps. Until it does, the routes
   without the extensions fail 26 suite tests in Chrome, 25 natively.
