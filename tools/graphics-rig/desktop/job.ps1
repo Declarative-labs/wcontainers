@@ -36,7 +36,13 @@ function Finish([int]$Code) {
     if ($notes.Count) { [IO.File]::AppendAllLines($ErrorFile, $notes) }
     exit $Code
 }
-trap { $notes.Add("job: $_"); Finish 125 }
+# The wrapper's own failures go into the job history too, as an end, so a job that never ran leaves
+# evidence.
+trap {
+    $notes.Add("job: $_")
+    try { Add-HazardLines "$hazardLogs\jobs.log" @(('{0:yyyy-MM-dd HH:mm:ss.fff} end {1} {2} {3} exit 125, the job wrapper failed: {4}' -f (Get-Date), $Name, $Tree, $Group, "$_")) } catch { }
+    Finish 125
+}
 
 # Runs the command through the task wc-desktop and returns its exit code, its output and error
 # copied to this job's.
@@ -119,7 +125,7 @@ try {
     $completed = $true
 } finally {
     # An alone job that ran to its end lets the other groups go on once its resets are checked.
-    if ($Alone -and -not $completed -and -not (Test-Held)) { foreach ($other in 'default', 'hazard') { & $pueue -c $config start --group $other | Out-Null } }
+    if ($Alone -and -not $completed -and -not (Test-Held)) { Resume-Groups -Ending | Out-Null }
     if ($slot) { $slot.Close() }
     if ($lock) { $lock.Close() }
 }
@@ -136,6 +142,6 @@ if ($resets) {
 } elseif ($RigKey) {
     Add-Cleared $RigKey
 }
-if ($Alone -and -not (Test-Held)) { foreach ($other in 'default', 'hazard') { & $pueue -c $config start --group $other | Out-Null } }
+if ($Alone -and -not (Test-Held)) { Resume-Groups -Ending | Out-Null }
 Add-HazardLines "$hazardLogs\jobs.log" @(('{0:yyyy-MM-dd HH:mm:ss.fff} end {1} {2} {3} exit {4}{5}' -f $ended, $Name, $Tree, $group, $code, $(if ($resets) { ', display driver reset' } else { '' })))
 Finish $code

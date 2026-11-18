@@ -97,11 +97,14 @@ function Set-Hold([string[]]$Lines) {
 function Test-Held { Test-Path $hazardHeld }
 
 # Lets the GPU groups start jobs again, but not 'default' and 'hazard' while an alone job is queued
-# or running: it holds them back from its submission until it ends.
-function Resume-Groups {
+# or running: it holds them back from its submission until it ends. -Ending: called by the running
+# alone job as it ends, which leaves them held only for the next one queued.
+function Resume-Groups([switch]$Ending) {
     $state = & $hazardPueue -c $hazardConfig status --json | ConvertFrom-Json
+    $waiting = 'Queued', 'Stashed', 'Locked'
+    if (-not $Ending) { $waiting += 'Running' }
     $alone = @($state.tasks.PSObject.Properties.Value | Where-Object { $_.group -eq 'alone' -and
-            ($_.status.PSObject.Properties.Name | Where-Object { $_ -in 'Queued', 'Running', 'Stashed', 'Locked' }) })
+            ($_.status.PSObject.Properties.Name | Where-Object { $_ -in $waiting }) })
     foreach ($group in $hazardGroups) {
         if ($state.groups.$group.status -ne 'Running' -and ($group -eq 'alone' -or $alone.Count -eq 0)) {
             & $hazardPueue -c $hazardConfig start --group $group | Out-Null
