@@ -764,7 +764,8 @@ fn output_interpolation(module: &mut Module, asked: &[(u32, Interpolation)]) {
 /// dxil-spirv reads `SV_VertexID` and `SV_InstanceID` as `VertexIndex - BaseVertex` and `InstanceIndex -
 /// BaseInstance`; WGSL has no base built-ins. The entry point becomes a function called by a new entry
 /// point that passes the bases from the variant's source: zero (the front promises bases of zero) or
-/// the vertex stage's helper constants.
+/// the vertex stage's helper constants (which the variant pass reads from an indirect draw's
+/// arguments for [`DrawBaseSource::Arguments`]).
 fn draw_bases(
     module: &mut Module,
     variant: &VariantKey,
@@ -788,9 +789,8 @@ fn draw_bases(
     }
     let helpers = match variant.draw_base {
         DrawBaseSource::None => None,
-        DrawBaseSource::Helpers => Some(helper_block(module, reflection)),
-        DrawBaseSource::Arguments => {
-            return Err(ConvertError::Unsupported("DrawBaseFromArguments"));
+        DrawBaseSource::Helpers | DrawBaseSource::Arguments => {
+            Some(helper_block(module, reflection))
         }
     };
     let mut inner = core::mem::take(&mut module.entry_points[0].function);
@@ -1076,6 +1076,7 @@ fn stage_values(
                 BuiltIn::SampleIndex => (SystemValue::SampleIndex, 10),
                 BuiltIn::SampleMask => (SystemValue::Coverage, 66),
                 BuiltIn::FragDepth => (SystemValue::Depth, 65),
+                BuiltIn::ClipDistances => (SystemValue::ClipDistance, 2),
                 _ => return,
             };
             let element = signature.iter().find(|e| e.system == code);

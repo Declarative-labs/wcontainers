@@ -30,10 +30,10 @@ fn unbuilt_variants_are_refused_by_name() {
     let cases: Vec<(VariantKey, &str)> = vec![
         (
             VariantKey {
-                flags: VariantFlags::DEPTH_BIAS,
+                flags: VariantFlags::PROVOKING_LAST,
                 ..Default::default()
             },
-            "DepthBiasInShader",
+            "ProvokingRewrite",
         ),
         (
             VariantKey {
@@ -58,10 +58,10 @@ fn unbuilt_variants_are_refused_by_name() {
         ),
         (
             VariantKey {
-                min_lod_clamped: 1,
+                mirror_once_in_shader: 1,
                 ..Default::default()
             },
-            "MinLodClamp",
+            "MirrorOnceInShader",
         ),
         (
             VariantKey {
@@ -298,6 +298,88 @@ fn pixel_variants_convert_on_both_routes() {
     }
 }
 
+/// The minimum level-of-detail clamp: samples go through the merged sampler of their pair in the helper
+/// set, composed with the sampler's bias in one callee; loads and gathers are checked against the
+/// clamp; comparisons are refused, since their out-of-bounds answer depends on the sampler's function.
+#[test]
+fn min_lod_clamp_samples_through_the_merged_sampler() {
+    let key = VariantKey {
+        lod_bias: 1,
+        min_lod_clamped: 1,
+        ..Default::default()
+    };
+    for c in both(&own_pair("ps_textured"), &key) {
+        assert_eq!(
+            c.reflection.helpers,
+            [
+                slot(HelperValue::LodBias { sampler: 0 }, 0),
+                slot(HelperValue::MinLod { texture: 0 }, 16)
+            ]
+        );
+        let text = wgsl(&c);
+        assert!(text.contains("@group(3) @binding(16)"), "{text}");
+        assert!(text.contains("textureSampleBias("), "{text}");
+        assert!(text.contains("select("), "{text}");
+    }
+    let key = VariantKey {
+        min_lod_clamped: 1,
+        ..Default::default()
+    };
+    for name in [
+        "dxbc/samplers.ps_gather.dxbc",
+        "dxil/samplers.ps_gather.dxil",
+    ] {
+        let source = rig(name);
+        let source = if name.ends_with("dxil") {
+            Source::Dxil(&source)
+        } else {
+            Source::Dxbc(&source)
+        };
+        let c = convert(source, &key, None).unwrap();
+        let text = wgsl(&c);
+        assert!(text.contains("textureGather("), "{text}");
+        assert!(!text.contains("@group(3) @binding(16)"), "{text}");
+        assert!(text.contains("select("), "{text}");
+    }
+    for name in [
+        "dxbc/samplers.ps_compare.dxbc",
+        "dxil/samplers.ps_compare.dxil",
+    ] {
+        let source = rig(name);
+        let source = if name.ends_with("dxil") {
+            Source::Dxil(&source)
+        } else {
+            Source::Dxbc(&source)
+        };
+        assert_eq!(
+            convert(source, &key, None).map(|_| ()),
+            Err(ConvertError::Unsupported("MinLodOnComparison"))
+        );
+    }
+}
+
+/// A vertex program's clip distances become the common form's built-in array, on both routes.
+#[test]
+fn clip_distances_are_the_built_in_array() {
+    for c in both(&own_pair("vs_clip"), &VariantKey::default()) {
+        let text = wgsl(&c);
+        assert!(text.contains("enable clip_distances;"), "{text}");
+        assert!(
+            text.contains("@builtin(clip_distances) b1_: array<f32, 2>")
+                || text.contains("array<f32, 2>"),
+            "{text}"
+        );
+        assert!(
+            c.reflection
+                .outputs
+                .iter()
+                .any(|o| o.system == Some(wcontainers_gpu::SystemValue::ClipDistance)),
+            "{:?}",
+            c.reflection.outputs
+        );
+    }
+}
+
 /// Constant buffers read as storage move to the storage range, named as added.
 #[test]
 fn constants_read_as_storage_are_added_bindings() {
@@ -337,5 +419,43 @@ fn the_sample_count_comes_from_the_variant() {
         );
         let text = wgsl(&convert(fixed, &key, None).unwrap());
         assert!(text.contains("4u"), "{text}");
+    }
+}
+
+/// Depth bias in the program writes the biased depth from its helper, on both routes, and leaves a
+/// depth the program writes itself as it is.
+#[test]
+fn depth_bias_writes_the_biased_depth() {
+    let key = VariantKey {
+        flags: VariantFlags::DEPTH_BIAS,
+        ..Default::default()
+    };
+    for c in both(&own_pair("ps_textured"), &key) {
+        assert_eq!(c.reflection.helpers, [slot(HelperValue::DepthBias, 0)]);
+        let text = wgsl(&c);
+        assert!(text.contains("@builtin(frag_depth)"), "{text}");
+        assert!(text.contains("dpdx("), "{text}");
+    }
+    let own = convert(Source::Dxbc(&read("tests/own/ps_depth.dxbc")), &key, None).unwrap();
+    let text = wgsl(&own);
+    assert_eq!(text.matches("@builtin(frag_depth)").count(), 1, "{text}");
+}
+
+/// Bases from an indirect draw's arguments: the bases' block becomes the arguments' place, and the
+/// argument buffer is read in set 3, on both routes.
+#[test]
+fn draw_bases_from_arguments_read_the_argument_buffer() {
+    let key = VariantKey {
+        draw_base: DrawBaseSource::Arguments,
+        ..Default::default()
+    };
+    for c in both(&own_pair("vs_transform"), &key) {
+        assert_eq!(c.reflection.helpers, [slot(HelperValue::DrawArguments, 0)]);
+        let text = wgsl(&c);
+        assert!(
+            text.contains("@group(3) @binding(11) \nvar<storage> draw_arguments: array<u32>"),
+            "{text}"
+        );
+        assert!(text.contains("arguments_offset"), "{text}");
     }
 }

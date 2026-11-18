@@ -141,7 +141,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         texels_through_buffer,
         decoded,
         targets_in_shader,
-        min_lod_clamped,
+        min_lod_clamped: _,
         draw_base: _,
         output_interpolation: _,
         samples: _,
@@ -149,7 +149,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     } = variant;
     let unbuilt_flags = [
         (VariantFlags::PROVOKING_LAST, "ProvokingRewrite"),
-        (VariantFlags::DEPTH_BIAS, "DepthBiasInShader"),
         (VariantFlags::EARLY_TESTS, "EarlyTestsInShader"),
         (VariantFlags::LINE_COVERAGE, "AntialiasedLinesAsQuads"),
         (VariantFlags::CLIP_DISTANCE, "ClipDistanceInShader"),
@@ -177,7 +176,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         (*texels_through_buffer != 0, "TexelsThroughBuffer"),
         (!decoded.is_empty(), "NormAsInteger"),
         (!targets_in_shader.is_empty(), "TargetsInShader"),
-        (*min_lod_clamped != 0, "MinLodClamp"),
         (
             *layout != [0; 32] || root_signature.is_some(),
             "RootSignatureLayout",
@@ -189,33 +187,39 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     }
 }
 
-/// Validates a module with WebGPU's core capabilities, and dual-source blending where the module
-/// writes it (`VariantFlags::DUAL_SOURCE`, which a front asks for only where the back end has it).
-fn validate(module: &naga::Module) -> Result<naga::valid::ModuleInfo, ConvertError> {
-    let dual = module.entry_points.iter().any(|ep| {
-        let blend_src = |b: &Option<naga::Binding>| {
-            matches!(
-                b,
-                Some(naga::Binding::Location {
-                    blend_src: Some(_),
-                    ..
-                })
-            )
-        };
-        ep.function.result.as_ref().is_some_and(|r| {
-            blend_src(&r.binding)
-                || match &module.types[r.ty].inner {
-                    naga::TypeInner::Struct { members, .. } => {
-                        members.iter().any(|m| blend_src(&m.binding))
-                    }
-                    _ => false,
-                }
-        })
-    });
+/// The capabilities a module needs: WebGPU's core ones, plus the extensions it uses that a front asks
+/// for only where the back end has them (dual-source blending, `VariantFlags::DUAL_SOURCE`, and clip
+/// distances, WebGPU's `clip_distances` and GLSL ES's EXT_clip_cull_distance).
+pub fn capabilities(module: &naga::Module) -> Capabilities {
     let mut capabilities = WEBGPU_CAPABILITIES;
-    if dual {
-        capabilities |= Capabilities::DUAL_SOURCE_BLENDING;
+    for ep in &module.entry_points {
+        let Some(result) = &ep.function.result else {
+            continue;
+        };
+        let bindings: Vec<&naga::Binding> = match &module.types[result.ty].inner {
+            naga::TypeInner::Struct { members, .. } => {
+                members.iter().filter_map(|m| m.binding.as_ref()).collect()
+            }
+            _ => result.binding.iter().collect(),
+        };
+        for b in bindings {
+            match b {
+                naga::Binding::Location {
+                    blend_src: Some(_), ..
+                } => capabilities |= Capabilities::DUAL_SOURCE_BLENDING,
+                naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances) => {
+                    capabilities |= Capabilities::CLIP_DISTANCES
+                }
+                _ => {}
+            }
+        }
     }
+    capabilities
+}
+
+/// Validates a module with the capabilities it needs ([`capabilities`]).
+fn validate(module: &naga::Module) -> Result<naga::valid::ModuleInfo, ConvertError> {
+    let capabilities = capabilities(module);
     Validator::new(ValidationFlags::all(), capabilities)
         .validate(module)
         .map_err(|e| {
