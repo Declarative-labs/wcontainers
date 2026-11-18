@@ -1,15 +1,14 @@
 //! Pipes and named pipes, as Linux's `fs/pipe.c` keeps them: a ring of page-sized slots, small writes
 //! merged into the last slot, reads that take what is there, and waits that park until the other end
 //! moves.
-//! The container's standard output pipes are pipes whose reader is the host, which takes every byte
-//! as it is written.
+//! A pipe whose other side is an end outside keeps the room it promised the outside.
 
 use alloc::collections::VecDeque;
 use alloc::rc::Weak;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use wcontainers_abi::{PAGE_SIZE, Stream};
+use wcontainers_abi::PAGE_SIZE;
 
 use crate::file::{FileRef, OpenFile};
 use crate::linux::general::*;
@@ -39,8 +38,8 @@ pub(crate) struct Pipe {
     /// The open files of its ends, for counting readers and writers, each with the count of writers
     /// it has seen opened (`f_pipe`), which a named pipe's `POLLHUP` needs.
     ends: Vec<(Weak<RefCell<OpenFile>>, u32)>,
-    /// The host reads this pipe, at once: one of the container's standard streams.
-    pub host: Option<Stream>,
+    /// Bytes of room promised to a writer outside (credit given on its end) that have not come.
+    pub promised: u64,
     /// How many times a reader and a writer has opened it (`r_counter`, `w_counter`).
     pub opened_readers: u32,
     pub opened_writers: u32,
@@ -54,9 +53,8 @@ pub(crate) struct Pipe {
 
 impl Pipe {
     /// An unnamed pipe, made with one reader and one writer.
-    pub fn new(host: Option<Stream>) -> Self {
+    pub fn new() -> Self {
         Self {
-            host,
             opened_readers: 1,
             opened_writers: 1,
             ..Self::named()
@@ -69,7 +67,7 @@ impl Pipe {
             slots: VecDeque::new(),
             capacity: DEFAULT_SLOTS,
             ends: Vec::new(),
-            host: None,
+            promised: 0,
             opened_readers: 0,
             opened_writers: 0,
             held_by: None,
@@ -126,9 +124,6 @@ impl Pipe {
     }
 
     pub fn readers(&self) -> usize {
-        if self.host.is_some() {
-            return 1;
-        }
         self.count(OpenFile::readable)
     }
 
@@ -148,8 +143,50 @@ impl Pipe {
         self.slots.is_empty()
     }
 
+    /// Whether a writer inside finds no page free: room promised outside is not free.
     pub fn is_full(&self) -> bool {
-        self.slots.len() >= self.capacity
+        self.free_pages() == 0
+    }
+
+    /// Pages a writer inside may fill.
+    pub fn free_pages(&self) -> usize {
+        self.capacity
+            .saturating_sub(self.slots.len() + self.promised_pages())
+    }
+
+    /// Pages kept for the bytes promised outside.
+    pub fn promised_pages(&self) -> usize {
+        self.promised.div_ceil(PAGE_SIZE) as usize
+    }
+
+    /// Bytes the outside's writes can take: the free pages and the room left in a last page they
+    /// may join.
+    pub fn room_outside(&self) -> u64 {
+        let free = self.capacity.saturating_sub(self.slots.len()) as u64 * PAGE_SIZE;
+        let tail = match self.slots.back() {
+            Some(last) if last.merge => PAGE_SIZE - last.page.len() as u64,
+            _ => 0,
+        };
+        free + tail
+    }
+
+    /// Puts the outside's bytes in, filling the last page it may join and then new pages; the
+    /// room was promised, so they fit.
+    pub fn deliver(&mut self, mut bytes: &[u8]) {
+        debug_assert!(bytes.len() as u64 <= self.room_outside());
+        if let Some(last) = self.slots.back_mut().filter(|last| last.merge) {
+            let joined = bytes.len().min(PAGE_SIZE as usize - last.page.len());
+            last.page.extend_from_slice(&bytes[..joined]);
+            bytes = &bytes[joined..];
+        }
+        for page in bytes.chunks(PAGE_SIZE as usize) {
+            self.slots.push_back(Slot {
+                page: page.to_vec(),
+                read: 0,
+                packet: false,
+                merge: true,
+            });
+        }
     }
 
     /// Takes up to `count` bytes, slot by slot, into a buffer of which only the first `room` bytes
@@ -186,6 +223,10 @@ impl Pipe {
     /// is not whole pages, if it fits after what is there (`pipe_write`'s first step).
     pub fn mergeable(&self, length: usize, packet: bool) -> usize {
         let chars = length & (PAGE_SIZE as usize - 1);
+        // The last page's room may be what was promised outside.
+        if self.promised > 0 {
+            return 0;
+        }
         match self.slots.back() {
             Some(last)
                 if chars > 0

@@ -14,6 +14,7 @@ pub mod network;
 pub mod reference;
 pub mod runtimes;
 pub mod standin;
+pub mod streams;
 
 use std::path::Path;
 

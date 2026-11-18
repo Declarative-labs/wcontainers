@@ -1248,3 +1248,143 @@ fn remove_node(node: &Node) {
     let mut inode = node.borrow_mut();
     inode.nlink = inode.nlink.saturating_sub(1);
 }
+
+/// The terminal `docker run -t` gives the first process `pid`, as runc makes it: a pair from
+/// `/dev/ptmx`, unlocked, at the size given, its slave opened as `TIOCGPTPEER` opens it (flags
+/// `O_RDWR | O_NOCTTY | O_CLOEXEC`) and made the process's controlling terminal. Returns the
+/// master's file and the slave's.
+pub(crate) fn start_terminal(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    pid: Pid,
+    size: winsize,
+) -> Result<(FileRef, FileRef), Errno> {
+    let ptmx = kernel.with_walk(pid, |walk, process| {
+        walk.resolve(&process.cwd, PTMX_PATH, true)
+    })?;
+    let master = OpenFile::new(ptmx, O_RDWR | O_LARGEFILE, PTMX_PATH.to_vec(), 0);
+    open_master(kernel, cx, pid, &master)?;
+    let (pty, ..) = end(&master).expect("a terminal");
+    pty.borrow_mut().locked = false;
+    pty.borrow_mut().resize(size);
+    let (node, index) = {
+        let pair = pty.borrow();
+        (pair.slave_node.clone(), pair.index)
+    };
+    let flags = O_RDWR | O_NOCTTY | O_CLOEXEC;
+    let path = alloc::format!("/dev/pts/{index}").into_bytes();
+    let slave = OpenFile::new(node, flags & !O_NOCTTY, path, 0);
+    open_slave(kernel, cx, pid, &slave, &pty, flags)?;
+    set_controlling(kernel, pid, &pty);
+    Ok((master, slave))
+}
+
+/// Where runc opens the container's terminal pairs.
+const PTMX_PATH: &[u8] = b"/dev/ptmx";
+
+/// The outside's bytes into the master its end holds, within the room promised, as a master write
+/// takes them: the slave's line discipline takes them in at once. Returns how many were past the
+/// promise, which are dropped.
+pub(crate) fn from_outside(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    file: &FileRef,
+    bytes: &[u8],
+) -> usize {
+    let (pty, side, _) = end(file).expect("a terminal");
+    let taken = {
+        let mut pair = pty.borrow_mut();
+        let taken = bytes
+            .len()
+            .min(usize::try_from(pair.promised).unwrap_or(usize::MAX));
+        pair.promised -= taken as u64;
+        pair.process_echoes(side);
+        let written = pair.write(side, &bytes[..taken]);
+        debug_assert_eq!(written, taken, "the room was promised");
+        taken
+    };
+    after(kernel, cx, &pty);
+    if taken > 0 {
+        update_time(kernel, cx, &pty, side, true);
+    }
+    bytes.len() - taken
+}
+
+/// Room to promise the outside writing a master: the room toward the slave past what is promised,
+/// once that is worth a credit (a page, or any room with nothing promised), now promised.
+pub(crate) fn promise_outside(file: &FileRef) -> u64 {
+    let (pty, side, _) = end(file).expect("a terminal");
+    let mut pair = pty.borrow_mut();
+    let room = (pair.write_room(side) as u64).saturating_sub(pair.promised);
+    if room < wcontainers_abi::PAGE_SIZE && (pair.promised > 0 || room == 0) {
+        return 0;
+    }
+    pair.promised += room;
+    room
+}
+
+/// Up to `most` bytes the master its end holds has for the outside, taken as a master read takes
+/// them, the slave's writers woken.
+pub(crate) fn to_outside(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    file: &FileRef,
+    most: u64,
+) -> Vec<u8> {
+    let (pty, side, _) = end(file).expect("a terminal");
+    if !pty.borrow().sides[side].input_available(false) {
+        return Vec::new();
+    }
+    let mut bytes = Vec::new();
+    let room_made = {
+        let mut pair = pty.borrow_mut();
+        pair.sides[side].take(
+            &mut bytes,
+            usize::try_from(most).unwrap_or(usize::MAX),
+            false,
+        );
+        let other = 1 - side;
+        let wakeup = pair.sides[side].chars_in_buffer()
+            <= crate::linux_extra::TTY_THRESHOLD_UNTHROTTLE
+            && core::mem::take(&mut pair.sides[other].write_wakeup);
+        pair.settle();
+        wakeup.then_some(other)
+    };
+    if let Some(other) = room_made {
+        for file in async_files(&pty, other) {
+            kernel.send_io_signal(cx, &file, POLL_OUT);
+        }
+    }
+    after(kernel, cx, &pty);
+    if !bytes.is_empty() {
+        update_time(kernel, cx, &pty, side, false);
+    }
+    bytes
+}
+
+/// Whether a master an end holds is finished: the slave has no opener and nothing is left to send
+/// (a master read would fail with EIO).
+pub(crate) fn drained(file: &FileRef) -> bool {
+    let (pty, side, _) = end(file).expect("a terminal");
+    let pair = pty.borrow();
+    pair.closed[SLAVE] && !pair.sides[side].input_available(false)
+}
+
+/// A terminal end's new size, as `TIOCSWINSZ` on its master sets it.
+pub(crate) fn resize_from_outside(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    file: &FileRef,
+    columns: u16,
+    rows: u16,
+) {
+    let (pty, ..) = end(file).expect("a terminal");
+    let size = winsize {
+        ws_row: rows,
+        ws_col: columns,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    pty.borrow_mut().resize(size);
+    after(kernel, cx, &pty);
+}

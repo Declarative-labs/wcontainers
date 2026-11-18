@@ -5,12 +5,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
-    BackendRequestId, ConnectionId, CounterReading, Event, Host, HostError, Next, Stream, Warning,
+    BackendRequestId, ConnectionId, CounterReading, End, Event, Host, HostError, Next, Warning,
 };
 use wcontainers_kernel::{Errno, FileRecord, Kernel, Start};
 
 use crate::standin::{StandIn, Unsupported};
-use crate::{image, reference};
+use crate::streams::{Outside, StreamHost, Streams};
+use crate::{image, reference, streams};
 
 /// Why a run on our kernel gave no outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +52,12 @@ pub struct Run {
     pub saved: usize,
     /// How many turns on the CPU side it took.
     pub turns: u64,
+    /// The most input credit the kernel had given and not seen used.
+    pub most_input_credit: u64,
+    /// What the kernel did against the credit rules on its ends.
+    pub broken: Vec<String>,
+    /// Whether the kernel closed every output end once the container ended.
+    pub outputs_closed: bool,
 }
 
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
@@ -60,8 +67,8 @@ pub struct TestHost {
     /// How far the clocks have jumped ahead.
     skipped: u64,
     random: StdRng,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+    /// The other sides of the container's ends.
+    pub(crate) streams: Streams,
     warnings: Vec<Warned>,
     /// A clock that moves only when the driver says, so a run repeats exactly; none for the wall
     /// clock (layer 1, where the reference runs beside it).
@@ -76,9 +83,6 @@ pub struct TestHost {
     pub(crate) backend: Option<crate::backend::Backend>,
     /// Connections to the outside and lookups.
     network: crate::network::Network,
-    /// Whether what the container writes also goes to this process's own streams as it comes,
-    /// so a run that is stopped still shows it.
-    echo: bool,
 }
 
 impl TestHost {
@@ -88,15 +92,13 @@ impl TestHost {
             started: Instant::now(),
             skipped: 0,
             random: StdRng::seed_from_u64(seed),
-            stdout: Vec::new(),
-            stderr: Vec::new(),
+            streams: Streams::default(),
             warnings: Vec::new(),
             virtual_now: None,
             wall_base: 0,
             schedule: StdRng::seed_from_u64(seed ^ 0x5eed),
             backend: None,
             network: Default::default(),
-            echo: false,
         }
     }
 
@@ -145,8 +147,7 @@ impl TestHost {
             started: Instant::now(),
             skipped: self.skipped,
             random: StdRng::seed_from_u64(seed),
-            stdout: self.stdout.clone(),
-            stderr: self.stderr.clone(),
+            streams: self.streams.clone(),
             warnings: self.warnings.clone(),
             virtual_now: self.virtual_now.map(|_| 0),
             wall_base: 0,
@@ -155,7 +156,6 @@ impl TestHost {
             backend: self.backend.take(),
             // A new host has none of the old one's connections; its published ports go on.
             network: self.network.moved(),
-            echo: self.echo,
         };
         host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
@@ -218,18 +218,16 @@ impl Host for TestHost {
         Ok(())
     }
 
-    fn output(&mut self, stream: Stream, bytes: &[u8]) {
-        if self.echo {
-            use std::io::Write;
-            let _ = match stream {
-                Stream::Output => std::io::stdout().write_all(bytes),
-                Stream::Error => std::io::stderr().write_all(bytes),
-            };
-        }
-        match stream {
-            Stream::Output => self.stdout.extend_from_slice(bytes),
-            Stream::Error => self.stderr.extend_from_slice(bytes),
-        }
+    fn stream_send(&mut self, end: End, bytes: &[u8]) {
+        self.streams.send(end, bytes);
+    }
+
+    fn stream_credit(&mut self, end: End, bytes: u64) {
+        self.streams.credit(end, bytes);
+    }
+
+    fn stream_close(&mut self, end: End) {
+        self.streams.close(end);
     }
 
     fn connect(
@@ -276,6 +274,16 @@ impl Host for TestHost {
     }
 }
 
+impl StreamHost for TestHost {
+    fn streams(&mut self) -> &mut Streams {
+        &mut self.streams
+    }
+
+    fn choices(&mut self) -> &mut StdRng {
+        &mut self.schedule
+    }
+}
+
 /// The exit code `docker run` gives for a wait status.
 pub fn exit_code(wait_status: i32) -> i32 {
     let signal = wait_status & 0x7f;
@@ -308,6 +316,20 @@ pub struct Container<'a> {
     /// Where each process's address space ends: the host's memories are 32 or 64 bit
     /// ([`crate::standin::SPACE_32_BIT`], [`crate::standin::SPACE_64_BIT`]).
     pub address_space: u64,
+}
+
+/// As [`run_injected`], with the outside of the container's standard streams.
+pub fn run_outside(
+    container: &Container<'_>,
+    outside: Outside,
+    seed: u64,
+    injections: Injections,
+) -> Result<Run, Failure> {
+    let prepared = Prepared {
+        outside,
+        ..prepare(container)
+    };
+    run_prepared(prepared, container, seed, injections)
 }
 
 /// Runs a container on our kernel and the stand-in CPU until its first process ends.
@@ -384,6 +406,8 @@ pub struct Prepared {
     pub groups: Vec<u32>,
     /// Whether the container's output also goes to this process's streams as it comes.
     pub echo: bool,
+    /// The outside of its standard streams.
+    pub outside: Outside,
 }
 
 /// Puts a container's files in a new kernel's root, unless the root is on the backend.
@@ -396,6 +420,7 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
         kernel,
         groups: image::root_groups(container.files),
         echo: false,
+        outside: Outside::default(),
     }
 }
 
@@ -410,6 +435,7 @@ pub fn run_prepared(
         mut kernel,
         groups,
         echo,
+        outside,
     } = prepared;
     let mut at = moments_apart(seed ^ 0x5a7e, injections.saves, injections.save_gap);
     let (signal, signals) = injections.signal.unwrap_or((0, 0));
@@ -423,7 +449,9 @@ pub fn run_prepared(
     let mut report: Option<i32> = None;
     let mut cpu = StandIn::with_space(container.address_space);
     let mut host = TestHost::repeatable(seed);
-    host.echo = echo;
+    let standard = outside.standard();
+    host.streams = Streams::new(outside);
+    host.streams.echo = echo;
     host.network.published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some("/");
     if container.backend.is_some() {
@@ -452,8 +480,10 @@ pub fn run_prepared(
         hostname: reference::HOSTNAME.as_bytes(),
         groups: &groups,
         backend: container.backend.map(str::as_bytes),
+        standard,
     };
     kernel.start(&mut cpu, &mut host, &start);
+    streams::begin(&mut kernel, &mut cpu, &mut host);
     let status = loop {
         match kernel.next() {
             Next::Run {
@@ -489,6 +519,7 @@ pub fn run_prepared(
                 turns += 1;
                 TURNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 network_events(&mut kernel, &mut cpu, &mut host, Duration::ZERO);
+                streams::act(&mut kernel, &mut cpu, &mut host, false);
                 // The backend's answers arrive at moments and in an order drawn from the seed.
                 while host
                     .backend
@@ -564,12 +595,16 @@ pub fn run_prepared(
                         continue;
                     }
                 }
+                if streams::act(&mut kernel, &mut cpu, &mut host, true) {
+                    continue;
+                }
                 let Some(until) = until_nanoseconds else {
                     panic!(
-                        "the kernel is idle with nothing to wake it, and this host has no events; \
-                         output so far:\n{}{}",
-                        String::from_utf8_lossy(&host.stdout),
-                        String::from_utf8_lossy(&host.stderr)
+                        "the kernel is idle with nothing to wake it, and this host has no events \
+                         (the outside waits at {:?}); output so far:\n{}{}",
+                        host.streams.stuck_at(),
+                        String::from_utf8_lossy(&host.streams.stdout),
+                        String::from_utf8_lossy(&host.streams.stderr)
                     );
                 };
                 let now = host.monotonic_nanoseconds();
@@ -579,6 +614,7 @@ pub fn run_prepared(
             Next::Finished { status } => break status,
         }
     };
+    let outputs_closed = streams::finish(&mut kernel, &mut cpu, &mut host);
     if let Some(error) = kernel.start_failure() {
         // Never in a copy: no save is made before the first program runs.
         return Err(Failure::Start(error));
@@ -589,8 +625,8 @@ pub fn run_prepared(
     };
     let run = Run {
         outcome: Outcome {
-            stdout: host.stdout,
-            stderr: host.stderr,
+            stdout: host.streams.stdout,
+            stderr: host.streams.stderr,
             exit_code: exit_code(status),
         },
         warnings: host.warnings,
@@ -598,6 +634,9 @@ pub fn run_prepared(
         files,
         saved,
         turns,
+        most_input_credit: host.streams.most_input_credit,
+        broken: host.streams.broken,
+        outputs_closed,
     };
     Ok(finish(run, report))
 }
@@ -818,6 +857,12 @@ fn encode(run: &Run) -> Vec<u8> {
     number(&mut out, run.outcome.exit_code as u64);
     number(&mut out, run.saved as u64);
     number(&mut out, run.turns);
+    number(&mut out, run.most_input_credit);
+    number(&mut out, run.outputs_closed.into());
+    number(&mut out, run.broken.len() as u64);
+    for broken in &run.broken {
+        bytes(&mut out, broken.as_bytes());
+    }
     number(&mut out, run.warnings.len() as u64);
     for warned in &run.warnings {
         bytes(&mut out, warned.reason.as_bytes());
@@ -868,6 +913,9 @@ fn decode(input: &[u8]) -> Run {
     let exit_code = reader.number() as i32;
     let saved = reader.number() as usize;
     let turns = reader.number();
+    let most_input_credit = reader.number();
+    let outputs_closed = reader.number() != 0;
+    let broken = (0..reader.number()).map(|_| reader.text()).collect();
     let warnings = (0..reader.number())
         .map(|_| Warned {
             reason: reader.text(),
@@ -905,5 +953,8 @@ fn decode(input: &[u8]) -> Run {
         files,
         saved,
         turns,
+        most_input_credit,
+        broken,
+        outputs_closed,
     }
 }

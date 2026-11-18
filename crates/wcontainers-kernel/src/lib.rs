@@ -13,6 +13,7 @@ extern crate alloc;
 mod container;
 mod counters;
 mod credentials;
+mod ends;
 mod errno;
 mod file;
 mod fs;
@@ -42,6 +43,7 @@ use wcontainers_abi::{CounterReading, Cpu, Event, Exit, Host, Next};
 
 pub use container::{Attributes, FileRecord, NewFile, Start};
 pub use counters::reason;
+pub use ends::Standard;
 pub use errno::Errno;
 
 use counters::Counters;
@@ -190,6 +192,8 @@ pub struct Kernel {
     poll_watches: syscall::epoll::Watches,
     /// The names local sockets are bound to.
     sockets: syscall::socket::Names,
+    /// The byte streams to the outside.
+    ends: ends::Ends,
     machine: Machine,
     hostname: Vec<u8>,
     domainname: Vec<u8>,
@@ -251,6 +255,7 @@ impl Kernel {
             timers: Default::default(),
             poll_watches: Default::default(),
             sockets: Default::default(),
+            ends: Default::default(),
             signal_users: BTreeMap::new(),
             files: Files {
                 numbers,
@@ -384,7 +389,30 @@ impl Kernel {
                 }
                 request
             }
-            Event::TerminalInput { .. } | Event::TerminalResized { .. } => 0,
+            Event::StreamData { end, bytes } => {
+                self.entry_now = cx.monotonic();
+                self.stream_data(&mut cx, end, bytes);
+                self.settle(&mut cx);
+                return;
+            }
+            Event::StreamCredit { end, bytes } => {
+                self.entry_now = cx.monotonic();
+                self.stream_credit(&mut cx, end, bytes);
+                self.settle(&mut cx);
+                return;
+            }
+            Event::StreamClosed { end } => {
+                self.entry_now = cx.monotonic();
+                self.stream_closed(&mut cx, end);
+                self.settle(&mut cx);
+                return;
+            }
+            Event::TerminalResized { end, columns, rows } => {
+                self.entry_now = cx.monotonic();
+                self.terminal_resized(&mut cx, end, columns, rows);
+                self.settle(&mut cx);
+                return;
+            }
         };
         self.counters
             .count(cx.host, reason::EVENT_UNEXPECTED, detail);

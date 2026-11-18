@@ -2779,7 +2779,7 @@ fn fcntl_other(
                 return Err(Errno::EPERM);
             }
             let slots = (size / PAGE_SIZE) as usize;
-            if slots < pipe.occupancy() {
+            if slots < pipe.occupancy() + pipe.promised_pages() {
                 return Err(Errno::EBUSY);
             }
             pipe.capacity = slots;

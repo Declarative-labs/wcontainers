@@ -383,6 +383,9 @@ impl Kernel {
                 self.send_to_backend(cx);
                 continue;
             }
+            if !self.ends.is_empty() && self.serve_ends(cx) {
+                continue;
+            }
             if let Some(tid) = self.signalled.pop_front() {
                 let Some(thread) = self.threads.get(&tid) else {
                     continue;

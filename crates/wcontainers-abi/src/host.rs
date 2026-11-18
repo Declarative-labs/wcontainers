@@ -11,12 +11,10 @@ pub struct ConnectionId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BackendRequestId(pub u64);
 
-/// The container's standard output streams as the outside sees them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Stream {
-    Output,
-    Error,
-}
+/// One end of a byte stream between the kernel and the outside: a handle local to one kernel,
+/// whose other side the embedder holds. Each direction carries data, credit and closing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct End(pub u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostError {
@@ -82,10 +80,14 @@ pub enum Event<'a> {
         addresses: &'a [u8],
         error: i32,
     },
-    /// Bytes arrived for the container's terminal, such as keys typed.
-    TerminalInput { bytes: &'a [u8] },
-    /// The terminal changed size.
-    TerminalResized { columns: u16, rows: u16 },
+    /// Bytes for an end, never more than the credit the kernel gave on it.
+    StreamData { end: End, bytes: &'a [u8] },
+    /// The kernel may send this many more bytes on an end.
+    StreamCredit { end: End, bytes: u64 },
+    /// The outside has let go of an end: it sends and takes nothing more on it.
+    StreamClosed { end: End },
+    /// A terminal end's terminal changed size.
+    TerminalResized { end: End, columns: u16, rows: u16 },
 }
 
 /// What the kernel asks of the host. First bodies may be naive or answer [`HostError::NotSupported`]; the
@@ -104,9 +106,12 @@ pub trait Host {
     /// request is one FUSE defines as having no reply.
     fn backend_send(&mut self, request: BackendRequestId, message: &[u8]) -> Result<(), HostError>;
 
-    /// Bytes the container wrote to one of its standard streams. When the container has a terminal,
-    /// everything the terminal shows comes on [`Stream::Output`].
-    fn output(&mut self, stream: Stream, bytes: &[u8]);
+    /// Bytes out of an end, never more than the credit the outside gave on it.
+    fn stream_send(&mut self, end: End, bytes: &[u8]);
+    /// The outside may send this many more bytes on an end (added to what it may send already).
+    fn stream_credit(&mut self, end: End, bytes: u64);
+    /// The kernel sends nothing more on an end, data or credit; the outside frees it by closing it.
+    fn stream_close(&mut self, end: End);
 
     /// Start connecting to an outside address (4 or 16 bytes) and port. The result arrives as
     /// [`Event::Connected`]. `stream` is true for TCP and false for UDP. A UDP connection may be
