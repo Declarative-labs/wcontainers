@@ -228,6 +228,10 @@ Left, with why:
   60.9); bounded 36 passed (435.0 s, load 60.9 to 44.6; N drawn 237, 44, 38, 15, 51, 27 and 202). The repeats
   ran 2 runs per seed, seeds 1 to 3, at each look-ahead alone, all identical; threadsched had a leave after a
   turn ended at every seed and look-ahead.
+- Repeats at bounded, 10 runs per seed, seeds 1 to 3 (N 44, 15 and 38), at c981822a (scratch
+  j4run3/rep-bounded-10.log; 523.6 s, load 60.5 to 23.9): all 5 tests passed, every seed's 10 runs identical;
+  threadsched had a leave after a turn ended at every seed, with and without saves (turns 1669, 1621, 1619;
+  with saves 1614, 1633, 1670).
 - The threaded program through the surface at 582a1ab0 (j4run3/threaded-none.log, threaded-bounded.log, load
   43 to 47): none passed, bounded (N 114 for `LOOK_AHEAD_SEED` 0) passed; full passed in the owned suite
   (owned-2.log).
