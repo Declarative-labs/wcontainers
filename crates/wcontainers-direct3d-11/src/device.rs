@@ -885,6 +885,10 @@ impl<B: Backend> Device<B> {
                 needs |= n;
             }
         }
+        // A staging texture the CPU reads is read back from the GPU.
+        if d.usage == usage::STAGING && d.cpu_access_flags & cpu::READ != 0 {
+            needs |= FormatUse::COPY_OUT;
+        }
         if d.bind_flags & bind::UNORDERED_ACCESS != 0 && self.feature_level() < 0xb000 {
             return Err(Error::InvalidArg(
                 "unordered access needs feature level 11_0",

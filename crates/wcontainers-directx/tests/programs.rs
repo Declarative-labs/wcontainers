@@ -194,8 +194,6 @@ fn depth_and_colour_filtered_through_one_sampler_as_direct3d_does() {
 }
 
 #[test]
-#[ignore = "known failure: the front opens its own passes, which do not fit a depth buffer larger \
-            than its target (AttachmentsFitted is the pass tracker's); WebGPU refuses the pass"]
 fn a_depth_buffer_larger_than_its_target_as_direct3d_does() {
     case("deep");
 }

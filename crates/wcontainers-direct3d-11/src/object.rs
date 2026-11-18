@@ -345,8 +345,8 @@ pub struct DepthStencil<B: Backend> {
 /// A sampler made with its minimum level raised, by that minimum's bits.
 pub type ClampedSampler<B> = (u32, Kept<B, <B as Backend>::Sampler>);
 
-/// A raster block made with one sample mask.
-pub type MaskedRaster<B> = ((u32, bool), Kept<B, <B as Backend>::Raster>);
+/// A raster block made as one twin key (`context::RasterKey`).
+pub type MaskedRaster<B> = ((u32, bool, bool), Kept<B, <B as Backend>::Raster>);
 
 pub struct Rasterizer<B: Backend> {
     pub desc: RasterizerDesc,

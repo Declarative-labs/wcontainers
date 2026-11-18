@@ -8,11 +8,11 @@ use wcontainers_gpu::{
     ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment, DispatchCall,
     DispatchGroups, DrawCall, DrawRange, EmptyPass, Extent, Features, Filter, Format, FormatKind,
     FormatUse, HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp,
-    MAX_BINDING_SETS, Object, Origin, PassDesc, PassTargets, Program, ReadSource, ReadState,
-    RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage, SlotKind,
-    SlowPath, SourceStage, StageSet, StepMode, StoreOp, Target, TextureRegion, TextureUsage,
-    Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream,
-    Viewport as GpuViewport, WriteMode, helper_binding,
+    MAX_BINDING_SETS, Object, Origin, PassDesc, PassOps, PassTargets, Program, ReadSource,
+    ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage,
+    SlotKind, SlowPath, SourceStage, StageSet, StepMode, StoreOp, Target, TextureRegion,
+    TextureUsage, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, Viewport as GpuViewport, WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -136,6 +136,10 @@ pub struct ContextState<B: Backend> {
     /// address and sorted: a draw using one the other way ends the pass (`UsageScopeSplit`).
     pass_written: Vec<usize>,
     pass_read: Vec<usize>,
+    /// The open pass was begun by the pass tracker, which fitted its targets to a larger depth
+    /// buffer (`AttachmentsFitted`): the area every attachment covers, the draws' scissors cut
+    /// to it.
+    fitted: Option<ScissorRect>,
     /// The size of the open pass when it has no attachments.
     empty_pass: Option<EmptyPass>,
     clears: Vec<PendingClear<B>>,
@@ -193,6 +197,7 @@ impl<B: Backend> ContextState<B> {
             pass_open: false,
             pass_written: Vec::new(),
             pass_read: Vec::new(),
+            fitted: None,
             empty_pass: None,
             clears: Vec::new(),
             mapped: Vec::new(),
@@ -827,7 +832,12 @@ impl<B: Backend> Device<B> {
     pub(crate) fn end_pass(&mut self) {
         if self.ctx.pass_open {
             self.close_stretch(false);
-            self.backend.end_pass();
+            if self.ctx.fitted.take().is_some() {
+                let r = self.passes.end(&mut self.backend);
+                let _ = self.gpu(r);
+            } else {
+                self.backend.end_pass();
+            }
             self.ctx.pass_open = false;
             self.queries.pass_set = None;
             // Targets drawn on twins of their textures: what the pass drew copied out.
@@ -1259,6 +1269,22 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// Whether the bound depth-stencil view is larger than the colour targets, so their pass is
+    /// fitted (`AttachmentsFitted`).
+    fn fitted_targets(&self) -> bool {
+        let size = |v: &Rc<View<B>>| {
+            let e = v.texture.mip_extent(v.desc.first_mip);
+            (e.width, e.height)
+        };
+        self.ctx.depth.as_ref().is_some_and(|d| {
+            self.ctx
+                .targets
+                .iter()
+                .flatten()
+                .any(|t| size(t) != size(d))
+        })
+    }
+
     /// Opens a pass on the bound targets, taking pending clears of them as its loads.
     fn open_pass(&mut self) {
         if self.ctx.pass_open {
@@ -1287,6 +1313,51 @@ impl<B: Backend> Device<B> {
                 self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
                 self.copy_twin(t, true);
             }
+        }
+        // A depth buffer larger than the colour targets, which Direct3D allows: the pass tracker
+        // begins the pass, fitting the targets to it (`AttachmentsFitted`).
+        if self.fitted_targets() {
+            let mut ops = PassOps::LOAD_STORE;
+            for (i, t) in targets.iter().enumerate() {
+                if let Some(ClearValue::Color(bits)) = t.as_ref().and_then(clear_of) {
+                    ops.colors[i].0 = LoadOp::Clear(bits);
+                }
+            }
+            if let Some(ClearValue::DepthStencil {
+                depth: d,
+                stencil: s,
+            }) = depth.as_ref().and_then(clear_of)
+            {
+                ops.depth.load = d.map_or(LoadOp::Load, LoadOp::Clear);
+                ops.stencil.load = s.map_or(LoadOp::Load, LoadOp::Clear);
+            }
+            let flags = depth.as_ref().map_or(0, |v| v.desc.read_only);
+            ops.depth.read_only =
+                flags & DSV_READ_ONLY_DEPTH != 0 && ops.depth.load == LoadOp::Load;
+            ops.stencil.read_only =
+                flags & DSV_READ_ONLY_STENCIL != 0 && ops.stencil.load == LoadOp::Load;
+            let occlusion = self.pass_occlusion();
+            if !matches!(occlusion, Ok(None)) {
+                if let Err(e) = occlusion.and_then(|_| {
+                    not_implemented::<()>(
+                        "occlusion queries over a depth buffer larger than its targets",
+                    )
+                }) {
+                    self.lose(e);
+                }
+                return;
+            }
+            let pass_targets = self.pass_targets();
+            let r = self
+                .passes
+                .begin(&mut self.backend, pass_targets, ops)
+                .and_then(|()| self.passes.before_draw(&mut self.backend, &[]));
+            if let Ok(area) = self.gpu(r) {
+                self.ctx.fitted = area;
+                self.ctx.pass_open = true;
+                self.ctx.empty_pass = None;
+            }
+            return;
         }
         let colors = std::array::from_fn(|i| {
             targets[i].as_ref().map(|v| ColorAttachment {
@@ -2701,17 +2772,13 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// The bound raster block made with sample mask `mask`, kept on its rasterizer state from its
-    /// first use.
-    /// The bound raster block made with `mask` and, where the pixel program adds the depth bias,
-    /// without it; kept on the state from its first draw.
-    fn raster_twin(&mut self, mask: u32, unbiased: bool) -> Result<B::Raster> {
+    /// The bound raster block made as `key` says; kept on the state from its first draw.
+    fn raster_twin(&mut self, key: RasterKey) -> Result<B::Raster> {
         let r = self
             .ctx
             .raster
             .clone()
             .unwrap_or_else(|| self.defaults.raster.clone());
-        let key = (mask, unbiased);
         if let Some((_, k)) = r.masked.borrow().iter().find(|(m, _)| *m == key) {
             return Ok(k.handle.clone());
         }
@@ -2763,7 +2830,7 @@ impl<B: Backend> Device<B> {
     }
 
     /// The raster block a draw uses: the bound state's, or its twin of `masked`'s sample mask and bias.
-    pub(crate) fn raster_desc(&self, masked: Option<(u32, bool)>) -> wcontainers_gpu::RasterDesc {
+    pub(crate) fn raster_desc(&self, masked: Option<RasterKey>) -> wcontainers_gpu::RasterDesc {
         let r = self.ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
         match masked {
             Some(key) => twin_block(&r.desc, self.backend.caps(), key),
@@ -3113,10 +3180,22 @@ impl<B: Backend> Device<B> {
             return not_implemented("a sample mask without the back end's (SampleMaskInShader)");
         }
         let depth_bias = self.bias_step()?.is_some();
-        let masked_key =
-            (masks || depth_bias).then_some((if masks { mask } else { u32::MAX }, depth_bias));
+        // A fitted pass draws with the scissor test on, cut to the area every attachment covers.
+        let scissored = self.fitted_targets()
+            && !self
+                .ctx
+                .raster
+                .as_ref()
+                .unwrap_or(&self.defaults.raster)
+                .desc
+                .scissor;
+        let masked_key = (masks || depth_bias || scissored).then_some((
+            if masks { mask } else { u32::MAX },
+            depth_bias,
+            scissored,
+        ));
         let masked = match masked_key {
-            Some((mask, unbiased)) => Some(self.raster_twin(mask, unbiased)?),
+            Some(key) => Some(self.raster_twin(key)?),
             None => None,
         };
         let ps = self.ctx.ps.clone();
@@ -3524,6 +3603,15 @@ impl<B: Backend> Device<B> {
                     _ if !raster.desc.scissor => &[],
                     Some(rect) => std::slice::from_ref(rect),
                     None => &no_rect,
+                };
+                // A fitted pass draws only where every attachment is.
+                let mut cut = Vec::new();
+                let scissors: &[ScissorRect] = match ctx.fitted {
+                    Some(area) => {
+                        wcontainers_gpu::cut_scissors(scissors, area, &mut cut);
+                        &cut
+                    }
+                    None => scissors,
                 };
                 let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
                 bindings[0] = ctx.sets[VERTEX].as_ref().map(|k| &k.handle);
@@ -4461,15 +4549,20 @@ pub(crate) fn layout_desc(
 
 /// The raster block of `desc` with sample mask `key.0`, and without its depth bias where `key.1`
 /// (the pixel program adds it).
+/// A raster block's twin: its sample mask, without the depth bias (the pixel program adds it),
+/// and with the scissor test on (a fitted pass).
+pub(crate) type RasterKey = (u32, bool, bool);
+
 fn twin_block(
     desc: &crate::desc::RasterizerDesc,
     caps: &wcontainers_gpu::Caps,
-    key: (u32, bool),
+    key: RasterKey,
 ) -> wcontainers_gpu::RasterDesc {
     let mut block = wcontainers_gpu::RasterDesc {
         sample_mask: key.0,
         ..crate::device::raster_block(desc, caps)
     };
+    block.scissor |= key.2;
     if key.1 {
         block.depth_bias = 0;
         block.depth_bias_slope = 0;
