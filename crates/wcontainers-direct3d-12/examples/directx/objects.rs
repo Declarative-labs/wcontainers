@@ -89,11 +89,13 @@ not_implemented!(
 // ---- DXGI ----
 
 /// A DXGI factory, with the flags it was made with.
-#[implement(IDXGIFactory4)]
+#[implement(IDXGIFactory7)]
 pub struct Factory {
     pub flags: u32,
     /// The window `MakeWindowAssociation` named, as a number.
     window: std::sync::atomic::AtomicIsize,
+    /// The cookies `RegisterAdaptersChangedEvent` gave and not yet taken back, and the next one.
+    adapter_events: Mutex<(Vec<u32>, u32)>,
 }
 
 impl Factory {
@@ -107,6 +109,63 @@ impl Factory {
 
     pub fn EnumAdapters(&self, adapter: u32) -> Result<IDXGIAdapter> {
         self.EnumAdapters1(adapter)?.cast()
+    }
+
+    /// One adapter, first for every preference.
+    pub fn EnumAdapterByGpuPreference(
+        &self,
+        adapter: u32,
+        preference: DXGI_GPU_PREFERENCE,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        if !(0..=2).contains(&preference.0) {
+            return Err(E_INVALIDARG.into());
+        }
+        give(self.EnumAdapters1(adapter)?, riid, out)
+    }
+
+    /// Presents never tear: the host shows whole frames.
+    pub fn CheckFeatureSupport(
+        &self,
+        feature: DXGI_FEATURE,
+        data: *mut c_void,
+        size: u32,
+    ) -> Result<()> {
+        if feature != DXGI_FEATURE_PRESENT_ALLOW_TEARING
+            || data.is_null()
+            || size as usize != size_of::<BOOL>()
+        {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
+        // SAFETY: the caller's BOOL, checked above.
+        unsafe { data.cast::<BOOL>().write_unaligned(FALSE) };
+        Ok(())
+    }
+
+    /// The adapter list never changes, so the event is never set.
+    pub fn RegisterAdaptersChangedEvent(&self, event: HANDLE) -> Result<u32> {
+        if event.is_invalid() {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
+        let mut g = self
+            .adapter_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.1 += 1;
+        let cookie = g.1;
+        g.0.push(cookie);
+        Ok(cookie)
+    }
+
+    pub fn UnregisterAdaptersChangedEvent(&self, cookie: u32) -> Result<()> {
+        let mut g = self
+            .adapter_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = g.0.iter().position(|&c| c == cookie);
+        g.0.swap_remove(at.ok_or(DXGI_ERROR_INVALID_CALL)?);
+        Ok(())
     }
 
     pub fn EnumAdapterByLuid(
@@ -126,6 +185,7 @@ impl Factory {
         Self {
             flags,
             window: Default::default(),
+            adapter_events: Default::default(),
         }
     }
 
@@ -304,7 +364,7 @@ impl Adapter {
     /// The host's monitors, the primary first.
     /// A new factory: adapters do not keep the one that enumerated them.
     pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
-        give::<IDXGIFactory4>(Factory::new(0).into(), riid, out)
+        give::<IDXGIFactory7>(Factory::new(0).into(), riid, out)
     }
 
     pub fn EnumOutputs(&self, output: u32) -> Result<IDXGIOutput> {

@@ -12,6 +12,41 @@ use crate::base::HasBase;
 use crate::objects::*;
 use crate::present::*;
 
+impl IDXGIFactory7_Impl for Factory_Impl {
+    fn RegisterAdaptersChangedEvent(
+        &self,
+        hevent: windows::Win32::Foundation::HANDLE,
+    ) -> windows_core::Result<u32> {
+        Factory::RegisterAdaptersChangedEvent(self, hevent)
+    }
+    fn UnregisterAdaptersChangedEvent(&self, dwcookie: u32) -> windows_core::Result<()> {
+        Factory::UnregisterAdaptersChangedEvent(self, dwcookie)
+    }
+}
+
+impl IDXGIFactory6_Impl for Factory_Impl {
+    fn EnumAdapterByGpuPreference(
+        &self,
+        adapter: u32,
+        gpupreference: DXGI_GPU_PREFERENCE,
+        riid: *const windows_core::GUID,
+        ppvadapter: *mut *mut core::ffi::c_void,
+    ) -> windows_core::Result<()> {
+        Factory::EnumAdapterByGpuPreference(self, adapter, gpupreference, riid, ppvadapter)
+    }
+}
+
+impl IDXGIFactory5_Impl for Factory_Impl {
+    fn CheckFeatureSupport(
+        &self,
+        feature: DXGI_FEATURE,
+        pfeaturesupportdata: *mut core::ffi::c_void,
+        featuresupportdatasize: u32,
+    ) -> windows_core::Result<()> {
+        Factory::CheckFeatureSupport(self, feature, pfeaturesupportdata, featuresupportdatasize)
+    }
+}
+
 impl IDXGIFactory4_Impl for Factory_Impl {
     fn EnumAdapterByLuid(
         &self,

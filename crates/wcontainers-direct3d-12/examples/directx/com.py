@@ -43,7 +43,7 @@ def args(sig):
     return ', '.join(p.split(':')[0] for p in parts if p)
 
 OBJECTS = [
-    'Factory:IDXGIFactory4:MakeWindowAssociation,GetWindowAssociation,EnumAdapters1,EnumAdapters,EnumAdapterByLuid,IsCurrent,GetCreationFlags,IsWindowedStereoEnabled,CreateSwapChainForHwnd,CreateSwapChain',
+    'Factory:IDXGIFactory7:RegisterAdaptersChangedEvent,UnregisterAdaptersChangedEvent,EnumAdapterByGpuPreference,CheckFeatureSupport,MakeWindowAssociation,GetWindowAssociation,EnumAdapters1,EnumAdapters,EnumAdapterByLuid,IsCurrent,GetCreationFlags,IsWindowedStereoEnabled,CreateSwapChainForHwnd,CreateSwapChain',
     'Adapter:IDXGIAdapter4:GetDesc3,GetDesc2,GetDesc1,GetDesc,EnumOutputs,GetParent',
     'Output:IDXGIOutput6:GetParent,GetDesc,GetDesc1,GetDisplayModeList,GetDisplayModeList1,FindClosestMatchingMode,FindClosestMatchingMode1,CheckHardwareCompositionSupport,SupportsOverlays',
     'SwapChain:IDXGISwapChain4:GetParent,GetContainingOutput,Present,Present1,GetBuffer,ResizeBuffers,GetDesc1,GetDesc,GetHwnd,GetDevice,GetCurrentBackBufferIndex,GetLastPresentCount,SetMaximumFrameLatency,GetMaximumFrameLatency,GetFrameLatencyWaitableObject,GetFullscreenState,SetFullscreenState,IsTemporaryMonoSupported,CheckColorSpaceSupport,SetColorSpace1,SetHDRMetaData',
