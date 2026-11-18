@@ -2637,9 +2637,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K6b's next run, in this order:
-0. Run the whole suite at head once Docker is back (`nix develop -c cargo test --no-fail-fast
-   -p wcontainers-kernel -p wcontainers-kernel-test -- --test-threads 4`) and a fresh layer 1
-   seed at head (the three passing ones ran at e90a141, before 54c7ff8's /proc change).
+0. Read the whole-suite run started at 2d90fbe once Docker was back (scratch k6b/suite3.log;
+   `nix develop -c cargo test --no-fail-fast -p wcontainers-kernel -p wcontainers-kernel-test --
+   --test-threads 4`). Layer 1 seed 6262606 passed 20000 at 2d90fbe (346.4 s, load 19.9), the
+   one fresh seed with the last kernel change (54c7ff8) in; 6262603 to 6262605 ran at e90a141.
 1. Python's system test modules (tests/python.rs `system_test_modules_match_reference`,
    ignored with its reason): every test matches but test_posix's test_unshare_setns, which needs
    /proc/self/ns/uts (/proc/<pid>/ns is not built; the test opens and reads the link, then
