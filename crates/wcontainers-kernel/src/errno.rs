@@ -94,6 +94,11 @@ impl Errno {
         (-i64::from(self.0)) as u64
     }
 
+    /// Whether a call's return value is an error (Linux's `IS_ERR_VALUE`: the last 4095 values).
+    pub fn is_error_return(value: u64) -> bool {
+        value >= (-4095i64) as u64
+    }
+
     /// The restart answer a call's return value carries, if it is one.
     pub fn restart_of(value: u64) -> Option<Self> {
         use crate::linux_extra::*;

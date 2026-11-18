@@ -48,10 +48,12 @@ fn padded(name: &[u8]) -> usize {
     }
 }
 
-/// An inotify instance: its watches by number and the events not yet read.
+/// An inotify instance: its watches by number and the events not yet read. A watch holds its
+/// inode, as Linux's mark does (`fsnotify_get_inode_ref`), so a backend inode stays the one its
+/// node number finds while watched.
 #[derive(Default)]
 pub(crate) struct Instance {
-    watches: BTreeMap<i32, Weak<RefCell<Inode>>>,
+    watches: BTreeMap<i32, Rc<RefCell<Inode>>>,
     last: i32,
     queue: VecDeque<Event>,
 }
@@ -72,7 +74,7 @@ pub(super) fn marks(instance: &Rc<RefCell<Instance>>) -> Vec<(i32, crate::fs::No
         .iter()
         .rev()
         .filter_map(|(wd, inode)| {
-            let node = inode.upgrade()?;
+            let node = inode.clone();
             let mask = node
                 .borrow()
                 .watches
@@ -196,7 +198,7 @@ pub(super) fn inotify_add_watch(
         let mut own = instance.borrow_mut();
         own.last += 1;
         let wd = own.last;
-        own.watches.insert(wd, Rc::downgrade(&node));
+        own.watches.insert(wd, node.clone());
         wd
     };
     node.borrow_mut().watches.push(Mark {
@@ -220,11 +222,9 @@ pub(super) fn inotify_rm_watch(
         .watches
         .remove(&wd)
         .ok_or(Errno::EINVAL)?;
-    if let Some(node) = node.upgrade() {
-        node.borrow_mut().watches.retain(|mark| {
-            !(mark.wd == wd && core::ptr::eq(mark.instance.as_ptr(), Rc::as_ptr(&instance)))
-        });
-    }
+    node.borrow_mut().watches.retain(|mark| {
+        !(mark.wd == wd && core::ptr::eq(mark.instance.as_ptr(), Rc::as_ptr(&instance)))
+    });
     queue(kernel, &instance, wd, IN_IGNORED, 0, &[]);
     Ok(0)
 }
@@ -339,7 +339,8 @@ fn reported(
     tell(kernel, node, mask, 0, &[], directory, unlinked);
 }
 
-/// The directory and name an inode was made with or last moved to, if they still name it.
+/// The directory and name an inode was made with or last moved to, if they still name it. On
+/// the backend, the name its last lookup found, while the inode has a link.
 fn place_of(node: &Node) -> Option<(Node, Vec<u8>)> {
     let (parent, name) = {
         let inode = node.borrow();
@@ -348,6 +349,9 @@ fn place_of(node: &Node) -> Option<(Node, Vec<u8>)> {
             inode.place.name.clone(),
         )
     };
+    if crate::fs::backend::remote(&parent).is_some() {
+        return (node.borrow().nlink > 0).then_some((parent, name));
+    }
     let current = parent.borrow().directory()?.get(&name)?;
     Rc::ptr_eq(&current, node).then_some((parent, name))
 }
@@ -362,8 +366,13 @@ pub(crate) fn file_changed(kernel: &mut Kernel, file: &FileRef, mask: u32) {
         (file.node.clone(), file.dentry.clone())
     };
     let parent = dentry.and_then(|(parent, name)| parent.upgrade().map(|parent| (parent, name)));
-    // The name it was opened by is gone, and it was not moved to another (`d_unlinked`).
+    // The name it was opened by is gone, and it was not moved to another (`d_unlinked`). A
+    // backend directory's names are the backend's: there a name goes only with a link of the
+    // inode, which an unlink through the kernel takes.
     let names_it = parent.as_ref().is_some_and(|(parent, name)| {
+        if crate::fs::backend::remote(parent).is_some() {
+            return node.borrow().nlink > 0;
+        }
         parent
             .borrow()
             .directory()
@@ -588,10 +597,8 @@ pub(super) fn ioctl(
 pub(crate) fn released(instance: &Rc<RefCell<Instance>>) {
     let watches = core::mem::take(&mut instance.borrow_mut().watches);
     for (wd, node) in watches {
-        if let Some(node) = node.upgrade() {
-            node.borrow_mut().watches.retain(|mark| {
-                !(mark.wd == wd && core::ptr::eq(mark.instance.as_ptr(), Rc::as_ptr(instance)))
-            });
-        }
+        node.borrow_mut().watches.retain(|mark| {
+            !(mark.wd == wd && core::ptr::eq(mark.instance.as_ptr(), Rc::as_ptr(instance)))
+        });
     }
 }

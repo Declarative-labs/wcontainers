@@ -43,6 +43,16 @@ pub(super) fn encode(
             alloc::vec![generation(kernel, inode.ino), ino[0], ino[1]],
         )),
         Kind::Pidfs => Ok((FILEID_KERNFS, ino.to_vec())),
+        // `nsfs_encode_fh`: the namespace's id (here its number), its type and its number.
+        Kind::Nsfs => {
+            let crate::fs::Content::Namespace(namespace) = inode.content else {
+                return Err(Errno::EOPNOTSUPP);
+            };
+            Ok((
+                crate::linux_extra::FILEID_NSFS,
+                alloc::vec![ino[0], ino[1], namespace.clone_flag(), ino[0]],
+            ))
+        }
         // `fuse_encode_fh`: the node number's high and low words and its generation.
         Kind::Fuse => {
             let nodeid = crate::fs::backend::remote_number(inode);
@@ -59,6 +69,9 @@ pub(super) fn encode(
         {
             Ok((FILEID_INO64_GEN, alloc::vec![ino[0], ino[1], 0]))
         }
+        // kernfs's root has generation 1 (measured), and sysfs encodes no handles of its own.
+        Kind::Sysfs if identifier => Ok((FILEID_INO64_GEN, alloc::vec![ino[0], ino[1], 1])),
+        Kind::Sysfs => Err(Errno::EOPNOTSUPP),
         Kind::Proc
         | Kind::Devpts
         | Kind::Pipe

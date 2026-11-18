@@ -173,6 +173,9 @@ pub(crate) const FILEID_INO64_GEN: i32 = 0x81;
 pub(crate) const FILEID_INVALID: i32 = 0xff;
 /// The handle type kernfs and pidfs give: a 64-bit inode number.
 pub(crate) const FILEID_KERNFS: i32 = 0xfe;
+/// The handle type nsfs gives (`FILEID_NSFS`, not in linux-raw-sys): a namespace's id, type and
+/// number.
+pub(crate) const FILEID_NSFS: i32 = 0xf1;
 
 // The encoding of CPU clock ids below zero, from Linux's `linux/posix-timers_types.h`, which is not a
 // uapi header: the C library's `clock_getcpuclockid` and `pthread_getcpuclockid` make these ids.
@@ -601,6 +604,9 @@ pub(crate) const MSG_MSG_SIZE: u64 = 48;
 pub(crate) const TREE_NODE_SIZE: u64 = 48;
 pub(crate) const FILENT_SIZE: u64 = 80;
 pub(crate) const NOTIFY_COOKIE_LEN: u64 = 32;
+/// What the last byte of a SIGEV_THREAD cookie says (`linux/mqueue.h`).
+pub(crate) const NOTIFY_WOKENUP: u8 = 1;
+pub(crate) const NOTIFY_REMOVED: u8 = 2;
 pub(crate) const MQUEUE_MAGIC: u32 = 0x1980_0202;
 pub(crate) const SIGEVENT_SIZE: u64 = 64;
 /// The highest signal number (`_NSIG`).
@@ -670,6 +676,9 @@ pub(crate) const ICMPV6_PORT_UNREACH: u8 = 4;
 
 /// UDP's own options (`linux/udp.h`, which linux-raw-sys does not generate).
 pub(crate) const UDP_CORK: u32 = 1;
+pub(crate) const UDPLITE_SEND_CSCOV: u32 = 10;
+pub(crate) const UDPLITE_RECV_CSCOV: u32 = 11;
+pub(crate) const UDP_ENCAP: u32 = 100;
 pub(crate) const UDP_NO_CHECK6_TX: u32 = 101;
 pub(crate) const UDP_NO_CHECK6_RX: u32 = 102;
 pub(crate) const UDP_SEGMENT: u32 = 103;

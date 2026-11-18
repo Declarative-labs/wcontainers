@@ -18,6 +18,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 use super::{Content, FileSystem, Inode, Node, Place, Time};
 use crate::Errno;
 use crate::process::Tid;
+use wcontainers_abi::PAGE_SIZE;
 
 /// The FUSE protocol version the kernel speaks (Linux 6.9's, which `fuse-abi` describes).
 const MINOR: u32 = FUSE_KERNEL_MINOR_VERSION;
@@ -48,6 +49,22 @@ pub(crate) struct Settled {
     pub flags: u32,
     pub max_write: u32,
     pub max_read: u32,
+    /// How many pages a fault in a mapped file reads around it (Linux's `ra_pages`: its default,
+    /// `VM_READAHEAD_PAGES`, capped by INIT's answer).
+    pub readahead_pages: u64,
+}
+
+/// What INIT offers as the most to read ahead: Linux's default (`VM_READAHEAD_PAGES`), 128 KiB.
+const READAHEAD: u32 = 128 << 10;
+
+/// Pages of a mapped file asked for and not answered yet: the inode, the file pages the answer
+/// holds, and the threads that wait for them.
+struct Fill {
+    node: Weak<RefCell<Inode>>,
+    pages: core::ops::Range<u64>,
+    /// The file's count of changes through the kernel when asked (`Pages::changes`).
+    changes: u64,
+    waiters: Vec<Tid>,
 }
 
 /// A request a call made: its number, what it asked (opcode, node and body, hashed), and the
@@ -116,6 +133,16 @@ pub(crate) enum Answered {
     Call(Tid, u32, u64),
     /// Nothing waits for it (its opcode and when it was sent, if it was).
     Nobody(Option<(u32, u64)>),
+    /// Pages of a mapped file (its inode, if it is still held, and the file pages asked for), and
+    /// the threads that wait for them, with when it was sent.
+    Pages {
+        node: Option<Node>,
+        pages: core::ops::Range<u64>,
+        changes: u64,
+        result: Result<Rc<[u8]>, Errno>,
+        waiters: Vec<Tid>,
+        at: u64,
+    },
 }
 
 #[derive(Default)]
@@ -133,6 +160,10 @@ struct State {
     calls: BTreeMap<Tid, Asked>,
     outbox: Vec<Outgoing>,
     sent: BTreeMap<u64, Sent>,
+    /// Mapped files' pages asked for, by request.
+    fills: BTreeMap<u64, Fill>,
+    /// Pages a fault or copy outside a call needed and could not ask for, for their counter.
+    unasked: u64,
     /// Inodes the backend numbered, while the kernel holds them.
     nodes: BTreeMap<u64, Weak<RefCell<Inode>>>,
     /// Lookups the backend counted for each node, given back with FORGET when its inode goes.
@@ -172,10 +203,18 @@ pub(crate) struct Remote {
 }
 
 /// A mapped backend file's first `block.length` bytes in a block of shared pages, as Linux's page
-/// cache holds a mapped file: read from the backend when mapped, kept up to date by reads and
-/// writes through the kernel, and written back while a shared mapping may write them.
+/// cache holds a mapped file: each page read from the backend when first touched, kept up to date
+/// by reads and writes through the kernel, and written back while a shared mapping may write it.
 pub(crate) struct Pages {
     pub block: super::Block,
+    /// The file pages (by number) the block holds; the others are read when touched.
+    pub filled: rangemap::RangeSet<u64>,
+    /// File pages whose read failed, so the next touch of each faults (and the one after reads
+    /// again), as a page Linux could not bring up to date.
+    pub failed: rangemap::RangeSet<u64>,
+    /// Counts changes to the file's bytes through the kernel: pages asked for before one are not
+    /// taken from their answer, which may be older (Linux holds the page locked while it reads).
+    pub changes: u64,
     /// The open file its bytes are read and written back through (`fuse_write_file_get`).
     pub handle: Rc<Handle>,
     /// Whether a shared mapping that may write has shown it, so its bytes go back to the backend.
@@ -278,7 +317,7 @@ impl Client {
         let init = fuse_init_in {
             major: FUSE_KERNEL_VERSION,
             minor: MINOR,
-            max_readahead: 0,
+            max_readahead: READAHEAD,
             flags: INIT_FLAGS,
             flags2: 0,
             unused: [0; 11],
@@ -293,6 +332,7 @@ impl Client {
             flags: 0,
             max_write: DEFAULT_CHUNK,
             max_read: DEFAULT_CHUNK,
+            readahead_pages: u64::from(READAHEAD) / PAGE_SIZE,
         })
     }
 
@@ -318,9 +358,15 @@ impl Client {
         drop(ended);
     }
 
-    /// A thread ended: its call's replies go.
+    /// A thread ended: its call's replies go, and it waits for no pages.
     pub fn drop_call(&self, tid: Tid) {
-        let ended = self.state.borrow_mut().calls.remove(&tid);
+        let ended = {
+            let mut state = self.state.borrow_mut();
+            for fill in state.fills.values_mut() {
+                fill.waiters.retain(|waiter| *waiter != tid);
+            }
+            state.calls.remove(&tid)
+        };
         drop(ended);
     }
 
@@ -342,13 +388,111 @@ impl Client {
         !self.state.borrow().outbox.is_empty()
     }
 
-    /// Whether `tid`'s call waits for an answer.
+    /// Whether `tid`'s call waits for an answer, or for a mapped file's pages.
     pub fn waits(&self, tid: Tid) -> bool {
-        self.state
-            .borrow()
+        let state = self.state.borrow();
+        state
             .calls
             .get(&tid)
             .is_some_and(|asked| asked.waiting.is_some())
+            || state.fills.values().any(|fill| fill.waiters.contains(&tid))
+    }
+
+    /// Whether `tid` waits for a mapped file's pages its call or fault asked for.
+    pub fn waits_for_pages(&self, tid: Tid) -> bool {
+        self.state
+            .borrow()
+            .fills
+            .values()
+            .any(|fill| fill.waiters.contains(&tid))
+    }
+
+    /// `tid` no longer waits for the pages it asked for (its call ended without them).
+    pub fn stop_waiting_for_pages(&self, tid: Tid) {
+        for fill in self.state.borrow_mut().fills.values_mut() {
+            fill.waiters.retain(|waiter| *waiter != tid);
+        }
+    }
+
+    /// Asks for file pages `pages` of a mapped file through `handle`, as the asking thread's, in
+    /// as many reads as the backend's largest takes; pages already asked for are waited for, not
+    /// asked again. The answers fill the file's block as they come (`Kernel::backend_answered`).
+    /// Outside a call or fault nothing can be asked: counted, and false.
+    pub fn ask_pages(
+        &self,
+        node: &Node,
+        handle: &Handle,
+        pages: core::ops::Range<u64>,
+        changes: u64,
+    ) -> bool {
+        let chunk = (u64::from(self.settled().max_read) / PAGE_SIZE).max(1);
+        let mut state = self.state.borrow_mut();
+        let Some(asker) = state.asker else {
+            state.unasked += 1;
+            return false;
+        };
+        let mut at = pages.start;
+        while at < pages.end {
+            let asked = state.fills.values_mut().find(|fill| {
+                fill.pages.contains(&at)
+                    && fill
+                        .node
+                        .upgrade()
+                        .is_some_and(|asked| Rc::ptr_eq(&asked, node))
+            });
+            if let Some(fill) = asked {
+                if !fill.waiters.contains(&asker.tid) {
+                    fill.waiters.push(asker.tid);
+                }
+                at = fill.pages.end;
+                continue;
+            }
+            let end = pages.end.min(at + chunk);
+            state.last += 1;
+            let unique = state.last;
+            let input = fuse_read_in {
+                fh: handle.fh,
+                offset: at * PAGE_SIZE,
+                size: ((end - at) * PAGE_SIZE) as u32,
+                read_flags: 0,
+                lock_owner: 0,
+                flags: handle.flags,
+                padding: 0,
+            };
+            let opcode = fuse_opcode::FUSE_READ as u32;
+            let bytes = message(unique, opcode, handle.nodeid, &asker, &[input.as_bytes()]);
+            state.outbox.push(Outgoing {
+                unique,
+                opcode,
+                bytes,
+                answered: true,
+            });
+            state.sent.insert(
+                unique,
+                Sent {
+                    tid: None,
+                    opcode,
+                    nodeid: handle.nodeid,
+                    at: 0,
+                },
+            );
+            state.fills.insert(
+                unique,
+                Fill {
+                    node: Rc::downgrade(node),
+                    pages: at..end,
+                    changes,
+                    waiters: alloc::vec![asker.tid],
+                },
+            );
+            at = end;
+        }
+        true
+    }
+
+    /// How many times pages were needed where nothing could ask for them, since the last time.
+    pub fn unasked(&self) -> u64 {
+        core::mem::take(&mut self.state.borrow_mut().unasked)
     }
 
     /// Asks the backend: the answer's body, the error it gave, or `PARKED` while it is awaited.
@@ -495,6 +639,20 @@ impl Client {
         let Some(sent) = state.sent.remove(&unique) else {
             return Answered::Nobody(None);
         };
+        if let Some(fill) = state.fills.remove(&unique) {
+            return Answered::Pages {
+                node: fill.node.upgrade(),
+                pages: fill.pages,
+                changes: fill.changes,
+                result: if header.error == 0 {
+                    Ok(Rc::from(body))
+                } else {
+                    Err(Errno(header.error.unsigned_abs()))
+                },
+                waiters: fill.waiters,
+                at: sent.at,
+            };
+        }
         let result: Result<Rc<[u8]>, Errno> = if header.error == 0 {
             Ok(Rc::from(body))
         } else {
@@ -513,6 +671,7 @@ impl Client {
                     flags: init.flags,
                     max_write: init.max_write.clamp(4096, chunk.max(4096)),
                     max_read: chunk,
+                    readahead_pages: u64::from(init.max_readahead.min(READAHEAD)) / PAGE_SIZE,
                 });
             }
             // Each entry answered is one more lookup the backend counts.
@@ -684,6 +843,7 @@ impl Client {
                 fsflags: 0,
                 write_hint: 0,
                 watches: Vec::new(),
+                linkable: false,
             }));
             self.state
                 .borrow_mut()
@@ -1089,6 +1249,43 @@ pub(crate) fn create(
         directory: false,
     });
     let node = entry_node(&client, &body, directory, name)?;
+    Ok((node, handle))
+}
+
+/// `fuse_tmpfile`: a file with no name, asked as a create is, with the name Linux's dentry for it
+/// has (`/`). A backend without TMPFILE cannot make one (EOPNOTSUPP).
+pub(crate) fn tmpfile(
+    directory: &Node,
+    mode: u32,
+    umask: u32,
+    flags: u32,
+) -> Result<(Node, Rc<Handle>), Errno> {
+    let (client, nodeid) = on_backend(directory);
+    let (mode, umask) = masked(&client, mode, umask);
+    let input = fuse_create_in {
+        flags: open_flags(&client, flags),
+        mode,
+        umask,
+        open_flags: 0,
+    };
+    let body = match client.ask(
+        fuse_opcode::FUSE_TMPFILE,
+        nodeid,
+        &[input.as_bytes(), &name_part(b"/")],
+    ) {
+        Err(Errno::ENOSYS) => return Err(Errno::EOPNOTSUPP),
+        other => other?,
+    };
+    let out: fuse_open_out = first(body.get(size_of::<fuse_entry_out>()..).unwrap_or(&[]))?;
+    let handle = client.handle(|| Handle {
+        client: client.clone(),
+        nodeid: first::<fuse_entry_out>(&body).map_or(0, |entry| entry.nodeid),
+        fh: out.fh,
+        flags: input.flags,
+        open_flags: out.open_flags,
+        directory: false,
+    });
+    let node = entry_node(&client, &body, directory, b"/")?;
     Ok((node, handle))
 }
 
@@ -1678,6 +1875,31 @@ impl crate::Kernel {
                 self.counters
                     .count(cx.host, crate::reason::BACKEND_UNEXPECTED, unique);
             }
+            Answered::Pages {
+                node,
+                pages,
+                changes,
+                result,
+                waiters,
+                at,
+            } => {
+                self.counters.measure(
+                    crate::reason::BACKEND_MESSAGE,
+                    fuse_opcode::FUSE_READ as u64,
+                    now.saturating_sub(at),
+                );
+                if let Some(node) = node {
+                    crate::shared::pages_came(cx, &node, pages, changes, result);
+                }
+                for tid in waiters {
+                    if self.threads.get(&tid).is_some_and(|thread| {
+                        thread.call.wait == Some(crate::process::Channel::Backend)
+                            && !client.waits(tid)
+                    }) {
+                        self.wake_thread(tid);
+                    }
+                }
+            }
         }
     }
 
@@ -1788,11 +2010,11 @@ impl crate::Kernel {
                         if let Some(node) = client.node_of(out.nodeid)
                             && node.borrow().content.block().is_some()
                         {
-                            crate::shared::backend_written(cx, &node, out.offset, data);
                             if let Content::Backend(remote) = &node.borrow().content {
                                 let end = out.offset + data.len() as u64;
                                 remote.set_size(remote.size.get().max(end));
                             }
+                            crate::shared::backend_stored(cx, &node, out.offset, data);
                             let _ = crate::shared::changed(self, cx, &node);
                         }
                         Ok(())
@@ -1807,14 +2029,7 @@ impl crate::Kernel {
                     let bytes = client
                         .node_of(out.nodeid)
                         .and_then(|node| {
-                            let size = node.borrow().size();
-                            crate::shared::backend_bytes(
-                                cx,
-                                &node,
-                                out.offset,
-                                u64::from(out.size),
-                                size,
-                            )
+                            crate::shared::backend_held(cx, &node, out.offset, u64::from(out.size))
                         })
                         .unwrap_or_default();
                     let reply = fuse_notify_retrieve_in {

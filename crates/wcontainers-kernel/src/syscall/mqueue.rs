@@ -35,7 +35,7 @@ pub(crate) struct Limits {
 }
 
 /// A process to tell when a message comes to the empty queue (`notify_owner` and `notify`).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct Notify {
     pub owner: Pid,
     pub kind: u32,
@@ -43,6 +43,19 @@ pub(crate) struct Notify {
     pub value: u64,
     /// The owner's exec count when it asked; after an exec nothing is sent.
     pub exec_id: u64,
+    /// For SIGEV_THREAD, the netlink socket told and the cookie it is sent (`notify_sock`,
+    /// `notify_cookie`).
+    pub thread: Option<(crate::syscall::socket::SocketRef, Vec<u8>)>,
+}
+
+impl Notify {
+    /// `remove_notification`: a SIGEV_THREAD request taken away sends its cookie marked removed.
+    fn removed(self) -> Option<(crate::syscall::socket::SocketRef, Vec<u8>)> {
+        self.thread.map(|(socket, mut cookie)| {
+            cookie[NOTIFY_COOKIE_LEN as usize - 1] = NOTIFY_REMOVED;
+            (socket, cookie)
+        })
+    }
 }
 
 /// A sender waiting for room, with its message.
@@ -111,11 +124,17 @@ impl MessageQueue {
         events as u16
     }
 
-    /// `mqueue_flush_file`: a close by the process to be told takes its request away.
-    pub fn flush(&mut self, pid: Pid) {
-        if self.notify.is_some_and(|notify| notify.owner == pid) {
-            self.notify = None;
+    /// `mqueue_flush_file`: a close by the process to be told takes its request away; gives
+    /// the notice a SIGEV_THREAD request sends then.
+    pub fn flush(&mut self, pid: Pid) -> Option<(crate::syscall::socket::SocketRef, Vec<u8>)> {
+        if self
+            .notify
+            .as_ref()
+            .is_some_and(|notify| notify.owner == pid)
+        {
+            return self.notify.take().and_then(Notify::removed);
         }
+        None
     }
 
     /// `msg_insert`.
@@ -431,8 +450,14 @@ pub(super) fn mq_timedsend(
     Ok(0)
 }
 
-/// Sends the signal a request asked for, if it did and its process has not run another program.
+/// Sends the signal a request asked for, if it did and its process has not run another program,
+/// or a SIGEV_THREAD request's cookie marked woken.
 fn tell(kernel: &mut Kernel, cx: &mut Context<'_>, notify: Notify, pid: Pid, uid: u32) {
+    if let Some((socket, mut cookie)) = notify.thread {
+        cookie[NOTIFY_COOKIE_LEN as usize - 1] = NOTIFY_WOKENUP;
+        super::socket::netlink::send_from_kernel(kernel, cx, &socket, cookie);
+        return;
+    }
     if notify.kind != SIGEV_SIGNAL || notify.signal == 0 {
         return;
     }
@@ -612,14 +637,20 @@ pub(super) fn mq_notify(
         if kind == SIGEV_SIGNAL && signal > SIGNALS {
             return Err(Errno::EINVAL);
         }
-        if kind == SIGEV_THREAD {
-            // The cookie is read, then the descriptor must be a netlink socket; no socket exists here
-            // (`netlink_getsockbyfd`).
-            guest(kernel, cx, tid).read(value, NOTIFY_COOKIE_LEN)?;
-            super::io::open_file(kernel, tid, signal.into())?;
-            return Err(Errno::ENOTSOCK);
-        }
-        Some((kind, signal, value))
+        // The cookie is read, then the descriptor must be a netlink socket
+        // (`netlink_getsockbyfd`).
+        let thread = if kind == SIGEV_THREAD {
+            let cookie = guest(kernel, cx, tid).read(value, NOTIFY_COOKIE_LEN)?;
+            let file = super::io::open_file(kernel, tid, signal.into())?;
+            let socket = super::socket::of(&file).ok_or(Errno::ENOTSOCK)?;
+            if !socket.borrow().is_netlink() {
+                return Err(Errno::EINVAL);
+            }
+            Some((socket, cookie))
+        } else {
+            None
+        };
+        Some((kind, signal, value, thread))
     } else {
         None
     };
@@ -628,26 +659,35 @@ pub(super) fn mq_notify(
     let pid = kernel.threads[&tid].process;
     let exec_id = kernel.process_of(tid).self_exec_id;
     let now = kernel.now(cx);
-    let changed = with_queue(&node, |queue| match event {
+    let (changed, removed) = with_queue(&node, |queue| match event {
         None => {
-            let owner = queue.notify.is_some_and(|notify| notify.owner == pid);
-            if owner {
-                queue.notify = None;
-            }
-            Ok(owner)
+            let owner = queue
+                .notify
+                .as_ref()
+                .is_some_and(|notify| notify.owner == pid);
+            let removed = if owner {
+                queue.notify.take().and_then(Notify::removed)
+            } else {
+                None
+            };
+            Ok((owner, removed))
         }
         Some(_) if queue.notify.is_some() => Err(Errno::EBUSY),
-        Some((kind, signal, value)) => {
+        Some((kind, signal, value, thread)) => {
             queue.notify = Some(Notify {
                 owner: pid,
                 kind,
                 signal,
                 value,
                 exec_id,
+                thread,
             });
-            Ok(true)
+            Ok((true, None))
         }
     })?;
+    if let Some((socket, cookie)) = removed {
+        super::socket::netlink::send_from_kernel(kernel, cx, &socket, cookie);
+    }
     if changed {
         let mut inode = node.borrow_mut();
         inode.atime = now;

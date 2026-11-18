@@ -12,6 +12,7 @@ pub mod libctest;
 pub mod ltp;
 pub mod network;
 pub mod reference;
+pub mod runtimes;
 pub mod standin;
 
 use std::path::Path;
@@ -124,6 +125,7 @@ fn run_ours_on(
         backend,
         cached: false,
         published,
+        address_space: standin::SPACE_32_BIT,
     };
     driver::run_injected(&container, seed, injections)
         .unwrap_or_else(|failure| panic!("no outcome on our kernel: {failure:?}"))

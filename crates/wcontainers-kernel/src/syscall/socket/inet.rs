@@ -98,6 +98,8 @@ const TIME_WAIT: u64 = 60_000_000_000;
 /// (`tcp_sndbuf_expand` for its MSS), and the MSS before connecting (all measured).
 const TCP_SNDBUF: u64 = 16384;
 const TCP_RCVBUF: u64 = 131072;
+/// `tcp_rmem`'s largest (measured).
+const TCP_RMEM_MAX: u64 = 33_554_432;
 const TCP_CONNECTED_SNDBUF: u64 = 2_626_560;
 const TCP_MSS_UNCONNECTED: i32 = 536;
 /// The MSS while a SYN waits for its answer: 536 less the timestamp option (measured).
@@ -405,6 +407,45 @@ fn clamp_window(socket: &SocketRef) {
     });
     if clamp == 0 || clamp >= full {
         own.options.insert(key, full.to_le_bytes().to_vec());
+    }
+}
+
+/// `tcp_set_rcvlowat`: the mark is at most half the receive buffer (half of `tcp_rmem`'s largest
+/// while the buffer is not set), and an unset buffer grows to give a window that large, with
+/// the window clamp at the mark (`tcp_space_from_win` at the starting scaling ratio of one
+/// half). Readers that now have enough hear of it.
+pub(super) fn set_receive_low_water(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    value: i32,
+) {
+    let kept = {
+        let mut own = socket.borrow_mut();
+        let locked = own.inet.as_deref().unwrap().rcvbuf_set;
+        let cap = if locked {
+            own.rcvbuf / 2
+        } else {
+            TCP_RMEM_MAX / 2
+        };
+        let value = (value as u64).min(cap) as i32;
+        if !locked {
+            let space = value as u64 * 2;
+            if space > own.rcvbuf {
+                own.rcvbuf = space;
+                own.options
+                    .insert((SOL_TCP, TCP_WINDOW_CLAMP), value.to_le_bytes().to_vec());
+            }
+        }
+        value.max(1)
+    };
+    // `tcp_data_ready` with the new mark.
+    socket
+        .borrow_mut()
+        .options
+        .insert((SOL_SOCKET, SO_RCVLOWAT), kept.to_le_bytes().to_vec());
+    if inet_ref(socket).done || poll(socket) & EPOLLIN as u16 != 0 {
+        super::data_ready(kernel, cx, socket, EPOLLIN | EPOLLRDNORM);
     }
 }
 
@@ -2123,10 +2164,15 @@ pub(super) fn send(
     match protocol {
         Protocol::Tcp => {
             // `tcp_sendmsg_locked` reads only the socket-level messages, and any fault is EINVAL,
-            // once the connection is made: before, `sk_stream_wait_connect` fails or waits
-            // first, and the call runs again when it is made.
-            let established =
-                socket.borrow().state == State::Connected && inet_ref(socket).connecting.is_none();
+            // in ESTABLISHED or CLOSE_WAIT: in any other state (not yet connected, or shut for
+            // writing) `sk_stream_wait_connect` fails or waits first, and the call runs again
+            // when the connection is made.
+            let established = {
+                let own = socket.borrow();
+                own.state == State::Connected
+                    && own.shutdown & SEND_SHUTDOWN == 0
+                    && inet_ref(socket).connecting.is_none()
+            };
             if let Some(control) = message.control.as_ref().filter(|_| established) {
                 sent_control(kernel, cx, tid, socket, control, true, false)
                     .map_err(|_| Errno::EINVAL)?;
@@ -2994,6 +3040,29 @@ fn membership(socket: &SocketRef, name: u32, bytes: &[u8]) -> Result<u64, Errno>
     Ok(0)
 }
 
+/// Whether a socket joined a group on an interface.
+fn joined(socket: &SocketRef, group: [u8; 4], interface: u32) -> bool {
+    socket
+        .borrow()
+        .inet
+        .as_deref()
+        .is_some_and(|inet| inet.groups.contains(&(group, interface)))
+}
+
+/// `ip_check_mc_rcu`: an interface is a member of the all-hosts group from when it is up, and of
+/// any other group while some socket joined it there.
+pub(super) fn interface_in_group(kernel: &Kernel, group: [u8; 4], interface: u32) -> bool {
+    u32::from_be_bytes(group) == INADDR_ALLHOSTS_GROUP
+        || kernel
+            .sockets
+            .inet
+            .bound
+            .values()
+            .flatten()
+            .filter_map(Weak::upgrade)
+            .any(|other| joined(&other, group, interface))
+}
+
 /// A datagram to a multicast group or a broadcast address, given to every socket of the
 /// container that takes it (`__udp4_lib_mcast_deliver`): a group's only when it leaves by an
 /// interface where some socket joined it and the sender loops multicast back, and to a socket
@@ -3022,27 +3091,10 @@ fn deliver_many(
     if group.is_some() && looped {
         return;
     }
-    // The interface is a member of the group while some socket joined it there (`ip_check_mc_rcu`).
-    if let Some(group) = group {
-        let joined = |other: &SocketRef| {
-            other
-                .borrow()
-                .inet
-                .as_deref()
-                .is_some_and(|inet| inet.groups.contains(&(group, interface)))
-        };
-        let member = joined(socket)
-            || kernel
-                .sockets
-                .inet
-                .bound
-                .values()
-                .flatten()
-                .filter_map(Weak::upgrade)
-                .any(|other| joined(&other));
-        if !member {
-            return;
-        }
+    if let Some(group) = group
+        && !(joined(socket, group, interface) || interface_in_group(kernel, group, interface))
+    {
+        return;
     }
     let receivers = kernel.sockets.inet.holders(Protocol::Udp, to.port);
     for receiver in receivers {
@@ -4058,6 +4110,13 @@ pub(super) fn set_option(
                     inet(socket).pingpong = value == 0;
                     Some(Ok(0))
                 }
+                // `do_tcp_setsockopt`: a fast open connect is 0 or 1, chosen while closed.
+                TCP_FASTOPEN_CONNECT
+                    if !(0..=1).contains(&value)
+                        || tcp_state(&socket.borrow()) != crate::linux_extra::TCP_CLOSE =>
+                {
+                    Some(Err(Errno::EINVAL))
+                }
                 TCP_CORK | TCP_FASTOPEN_CONNECT => {
                     if value != 0 {
                         kernel.counters.count(
@@ -4187,6 +4246,7 @@ pub(super) fn set_option(
         SOL_UDP if protocol == Protocol::Udp => {
             use crate::linux_extra::{
                 UDP_CORK, UDP_GRO, UDP_NO_CHECK6_RX, UDP_NO_CHECK6_TX, UDP_SEGMENT,
+                UDPLITE_RECV_CSCOV, UDPLITE_SEND_CSCOV,
             };
             let value = match int_value(bytes, level) {
                 Ok(value) => value,
@@ -4211,6 +4271,8 @@ pub(super) fn set_option(
                     }
                     store(socket, value)
                 }
+                // Coverage is UDP-Lite's alone.
+                UDPLITE_SEND_CSCOV | UDPLITE_RECV_CSCOV => Some(Err(Errno::ENOPROTOOPT)),
                 _ => not_built(kernel, cx),
             }
         }
@@ -4552,10 +4614,14 @@ pub(super) fn get_option(
         },
         SOL_UDP if protocol == Protocol::Udp => {
             use crate::linux_extra::{
-                UDP_CORK, UDP_GRO, UDP_NO_CHECK6_RX, UDP_NO_CHECK6_TX, UDP_SEGMENT,
+                UDP_CORK, UDP_ENCAP, UDP_GRO, UDP_NO_CHECK6_RX, UDP_NO_CHECK6_TX, UDP_SEGMENT,
+                UDPLITE_RECV_CSCOV, UDPLITE_SEND_CSCOV,
             };
             match name {
                 UDP_CORK | UDP_NO_CHECK6_TX | UDP_NO_CHECK6_RX | UDP_GRO | UDP_SEGMENT => kept(0),
+                // `udp_lib_getsockopt`: plain UDP's coverage is always whole, and no
+                // encapsulation can be set here (UDP_ENCAP is not built), so each reads 0.
+                UDPLITE_SEND_CSCOV | UDPLITE_RECV_CSCOV | UDP_ENCAP => int(0),
                 _ => not_built(kernel, cx),
             }
         }

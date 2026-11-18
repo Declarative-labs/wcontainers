@@ -305,7 +305,8 @@ pub fn add_files(kernel: &mut Kernel, files: &[File]) {
     }
 }
 
-/// The files of a host directory, placed under `at` (as a read-only volume shows them).
+/// The files of a host directory and those below it, placed under `at` (as a read-only volume
+/// shows them).
 pub fn host_directory(directory: &Path, at: &str) -> Vec<File> {
     let mut files = vec![File {
         path: at.to_string(),
@@ -327,6 +328,11 @@ pub fn host_directory(directory: &Path, at: &str) -> Vec<File> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => panic!("metadata: {error}"),
         };
+        let path = format!("{at}/{}", entry.file_name().to_string_lossy());
+        if metadata.is_dir() {
+            files.extend(host_directory(&entry.path(), &path));
+            continue;
+        }
         if !metadata.is_file() {
             continue;
         }
@@ -337,7 +343,7 @@ pub fn host_directory(directory: &Path, at: &str) -> Vec<File> {
             Err(error) => panic!("reading a file: {error}"),
         };
         files.push(File {
-            path: format!("{at}/{}", entry.file_name().to_string_lossy()),
+            path,
             mode: metadata.permissions().mode() & 0o7777,
             uid: 0,
             gid: 0,

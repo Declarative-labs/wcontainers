@@ -36,6 +36,7 @@ fn same_on(name: &str, injections: driver::Injections, cached: bool) -> Vec<driv
             backend: Some(AT),
             cached,
             published: &[],
+            address_space: wcontainers_kernel_test::standin::SPACE_32_BIT,
         };
         let ours =
             driver::run_injected(&container, seed, injections).expect("an outcome on our kernel");
@@ -73,6 +74,29 @@ fn file_calls_match_reference() {
 fn attributes_and_allocation_match_reference() {
     for run in same_on_backend("backendattrs", driver::Injections::default()) {
         assert_warned_only(&run, &[]);
+    }
+}
+
+/// Mappings of backend files whose pages are read when first touched, by the program or by the
+/// kernel's copies, also saved and brought back: far into a sparse file past 5 GiB, shared and
+/// private, across a fork and with the file changed while mapped. Nothing is read whole.
+#[test]
+fn mapped_pages_read_when_touched_match_reference() {
+    use wcontainers_kernel::reason;
+    let injections = driver::Injections {
+        saves: 4,
+        save_gap: 10,
+        ..Default::default()
+    };
+    for run in same_on("backendmaps", injections, true) {
+        assert_warned_only(
+            &run,
+            &[
+                reason::BACKEND_PAGES_WRITTEN_WHOLE,
+                reason::FAULT_SYNDROME_APPROXIMATED,
+            ],
+        );
+        assert!(run.saved > 0);
     }
 }
 
@@ -228,15 +252,12 @@ fn assert_only_written_whole(run: &driver::Run) {
     );
 }
 
-/// Checks that a run warned of nothing but `allowed` and of backend files read whole when mapped.
+/// Checks that a run warned of nothing but `allowed`.
 fn assert_warned_only(run: &driver::Run, allowed: &[&str]) {
     let others: Vec<_> = run
         .warnings
         .iter()
-        .filter(|warning| {
-            warning.reason != wcontainers_kernel::reason::BACKEND_READ_WHOLE
-                && !allowed.contains(&warning.reason.as_str())
-        })
+        .filter(|warning| !allowed.contains(&warning.reason.as_str()))
         .collect();
     assert!(others.is_empty(), "{others:?}");
 }
@@ -324,6 +345,7 @@ fn messages_per_call() {
             backend: Some(AT),
             cached: false,
             published: &[],
+            address_space: wcontainers_kernel_test::standin::SPACE_32_BIT,
         };
         let run = driver::run(&container, 1).expect("an outcome on our kernel");
         assert_eq!(run.outcome.stdout, format!("{kind} done\n").into_bytes());

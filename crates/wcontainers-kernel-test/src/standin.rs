@@ -18,8 +18,11 @@ use wcontainers_abi::{
     Resume, SharedId, Syscall, ThreadId,
 };
 
-/// Every process gets 4 GiB, as on a host with 32 bit memories.
-const ADDRESS_SPACE_END: u64 = 1 << 32;
+/// A process's address space on a host with 32 bit memories.
+pub const SPACE_32_BIT: u64 = 1 << 32;
+/// A process's address space on a host with 64 bit memories, at the smallest cap such a host
+/// sets (Chrome's 16 GiB).
+pub const SPACE_64_BIT: u64 = 16 << 30;
 
 /// QEMU's exception numbers, as unicorn's interrupt hook reports them.
 const EXCEPTION_UNDEFINED: u32 = 1;
@@ -65,6 +68,8 @@ struct Memory {
     /// Whether its translated blocks count instructions. Unicorn adds its counting hook without
     /// translating again, so blocks made without it would never stop at a turn's end.
     counting: bool,
+    /// Where its address space ends.
+    end: u64,
 }
 
 /// A block of shared pages, in host memory that lives until the block is dropped.
@@ -78,8 +83,9 @@ struct Thread {
 }
 
 /// The stand-in CPU side.
-#[derive(Default)]
 pub struct StandIn {
+    /// Where every memory's address space ends.
+    end: u64,
     memories: HashMap<MemoryId, Memory>,
     threads: HashMap<ThreadId, Thread>,
     blocks: HashMap<SharedId, Block>,
@@ -122,7 +128,7 @@ fn register_at(id: i32) -> RegisterARM64 {
 }
 
 impl Memory {
-    fn new() -> Result<Self, CpuError> {
+    fn new(end: u64) -> Result<Self, CpuError> {
         let mut unicorn = Unicorn::new_with_data(Arch::ARM64, Mode::ARM, Stopped::default())
             .map_err(|_| CpuError::NotSupported)?;
         unicorn
@@ -158,16 +164,16 @@ impl Memory {
                 false
             })
             .expect("adding the fault hook");
-        let bytes =
-            MmapMut::map_anon(ADDRESS_SPACE_END as usize).map_err(|_| CpuError::OutOfMemory)?;
+        let bytes = MmapMut::map_anon(end as usize).map_err(|_| CpuError::OutOfMemory)?;
         Ok(Self {
             unicorn,
             bytes,
-            pages: vec![Permissions::empty(); (ADDRESS_SPACE_END / PAGE_SIZE) as usize],
+            pages: vec![Permissions::empty(); (end / PAGE_SIZE) as usize],
             mapped: BTreeMap::new(),
             shared: BTreeMap::new(),
-            touched: vec![0; (ADDRESS_SPACE_END / PAGE_SIZE / 64) as usize],
+            touched: vec![0; (end / PAGE_SIZE / 64) as usize],
             counting: false,
+            end,
         })
     }
 
@@ -180,7 +186,7 @@ impl Memory {
 
     /// A copy with the same bytes, permissions and shared ranges, on a new unicorn instance.
     fn duplicate(&self) -> Result<Self, CpuError> {
-        let mut copy = Self::new()?;
+        let mut copy = Self::new(self.end)?;
         for (word, bits) in self.touched.iter().enumerate() {
             if *bits == 0 {
                 continue;
@@ -192,7 +198,7 @@ impl Memory {
         copy.touched.clone_from(&self.touched);
         copy.pages.clone_from(&self.pages);
         copy.shared.clone_from(&self.shared);
-        copy.remap(0, ADDRESS_SPACE_END);
+        copy.remap(0, self.end);
         Ok(copy)
     }
 
@@ -212,7 +218,7 @@ impl Memory {
             .shared
             .range(address..)
             .next()
-            .map_or(ADDRESS_SPACE_END, |(start, _)| *start);
+            .map_or(self.end, |(start, _)| *start);
         // SAFETY: the address is inside the address space, which `bytes` covers.
         (
             unsafe { self.bytes.as_mut_ptr().add(address as usize) },
@@ -272,7 +278,7 @@ impl Memory {
 
     fn range(&self, address: u64, length: u64) -> Result<std::ops::Range<usize>, CpuError> {
         let end = address.checked_add(length).ok_or(CpuError::BadAddress)?;
-        if end > ADDRESS_SPACE_END {
+        if end > self.end {
             return Err(CpuError::BadAddress);
         }
         Ok(address as usize..end as usize)
@@ -363,8 +369,23 @@ impl Memory {
 }
 
 impl StandIn {
+    /// A CPU side as on a host with 32 bit memories.
     pub fn new() -> Self {
-        Self::default()
+        Self::with_space(SPACE_32_BIT)
+    }
+
+    /// A CPU side whose memories' address spaces end at `end`.
+    pub fn with_space(end: u64) -> Self {
+        Self {
+            end,
+            memories: HashMap::new(),
+            threads: HashMap::new(),
+            blocks: HashMap::new(),
+            last_memory: 0,
+            last_thread: 0,
+            last_block: 0,
+            last_instructions: 0,
+        }
     }
 
     /// A new CPU side holding what this one holds, as bringing back a saved container makes it: every
@@ -375,7 +396,7 @@ impl StandIn {
         let mut moved = Vec::new();
         for (id, block) in &self.blocks {
             let mut bytes = MmapMut::map_anon(block.bytes.len()).expect("host memory for a block");
-            bytes.copy_from_slice(&block.bytes);
+            copy_touched(&block.bytes, &mut bytes);
             moved.push((
                 block.bytes.as_ptr() as usize,
                 block.bytes.len(),
@@ -402,7 +423,7 @@ impl StandIn {
                     .iter()
                     .map(|(start, (end, base))| (*start, (*end, translate(*base))))
                     .collect();
-                copy.remap(0, ADDRESS_SPACE_END);
+                copy.remap(0, memory.end);
                 (*id, copy)
             })
             .collect();
@@ -420,6 +441,7 @@ impl StandIn {
             })
             .collect();
         Self {
+            end: self.end,
             memories,
             threads,
             blocks,
@@ -520,15 +542,19 @@ impl StandIn {
     }
 }
 
+impl Default for StandIn {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Cpu for StandIn {
     fn address_space(&self) -> AddressSpace {
-        AddressSpace {
-            end: ADDRESS_SPACE_END,
-        }
+        AddressSpace { end: self.end }
     }
 
     fn memory_new(&mut self) -> Result<MemoryId, CpuError> {
-        let memory = Memory::new()?;
+        let memory = Memory::new(self.end)?;
         self.last_memory += 1;
         let id = MemoryId(self.last_memory);
         self.memories.insert(id, memory);
@@ -709,5 +735,18 @@ impl Cpu for StandIn {
             .get_mut(&thread)
             .expect("thread exists")
             .registers = *from;
+    }
+}
+
+/// Copies the pages of `from` that hold anything into `to`, which is fresh zeroed memory of the
+/// same length, so a block much larger than what its mappings touched (a mapping far into a
+/// file) takes host memory only for what they touched.
+fn copy_touched(from: &MmapMut, to: &mut MmapMut) {
+    const CHUNK: usize = 4096;
+    for (index, chunk) in from.chunks(CHUNK).enumerate() {
+        if chunk.iter().any(|byte| *byte != 0) {
+            let start = index * CHUNK;
+            to[start..start + chunk.len()].copy_from_slice(chunk);
+        }
     }
 }

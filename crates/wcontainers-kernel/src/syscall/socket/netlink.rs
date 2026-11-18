@@ -292,6 +292,35 @@ fn queue(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid, socket: &SocketRef
     super::data_ready(kernel, cx, socket, EPOLLIN | EPOLLRDNORM);
 }
 
+/// `netlink_sendskb` of a message the kernel made for no request (a message queue's
+/// SIGEV_THREAD cookie): from port 0 with empty credentials.
+pub(crate) fn send_from_kernel(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    data: Vec<u8>,
+) {
+    let packet = Packet {
+        truesize: super::truesize(data.len() as u64, 0),
+        data,
+        consumed: 0,
+        files: Vec::new(),
+        cred: super::Cred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        },
+        sender: alloc::rc::Weak::new(),
+        source: None,
+        arrival: None,
+        time: None,
+        urgent: false,
+        owner: 0,
+    };
+    socket.borrow_mut().queue.push_back(packet);
+    super::data_ready(kernel, cx, socket, EPOLLIN | EPOLLRDNORM);
+}
+
 /// What a request gets: a dump (its parts, then NLMSG_DONE, each one read), one message, or
 /// nothing but an acknowledgement if asked for.
 enum Answer {
@@ -423,7 +452,9 @@ fn answer(
             .filter(|route| family == AF_UNSPEC || family == route.family)
             .map(|route| route_message(route, request, portid, NLM_F_MULTI as u16))
             .collect(),
-        _ if kind == RTM_GETROUTE as u32 => return route_get(family, body, request, portid, uid),
+        _ if kind == RTM_GETROUTE as u32 => {
+            return route_get(kernel, family, body, request, portid, uid, strict);
+        }
         _ if kind == RTM_GETRULE as u32 && dump => rules(family, request, portid),
         // Rules are only dumped (`fib_nl_dumprule` has no single form).
         _ if kind == RTM_GETRULE as u32 => return Err(Errno::EOPNOTSUPP),
@@ -919,11 +950,13 @@ fn route_table() -> Vec<Route> {
 /// with RTM_F_FIB_MATCH the table entry that chose it. IPv4's local and main tables are one
 /// table here, as on a Linux with no rules added, so both say the main table.
 fn route_get(
+    kernel: &Kernel,
     family: u32,
     body: &[u8],
     request: &[u8],
     portid: u32,
     uid: u32,
+    strict: bool,
 ) -> Result<Answer, Errno> {
     const RTMSG: usize = 12;
     if body.len() < RTMSG {
@@ -931,6 +964,7 @@ fn route_get(
     }
     let rtm_flags = u32::from_le_bytes(body[8..12].try_into().expect("4 bytes"));
     let (mut to, mut oif) = (None, None);
+    let mut kinds = Vec::new();
     let mut at = RTMSG;
     while body.len() - at >= 4 {
         let length = usize::from(u16::from_le_bytes([body[at], body[at + 1]]));
@@ -939,12 +973,19 @@ fn route_get(
             break;
         }
         let data = &body[at + 4..at + length];
+        kinds.push(u32::from(kind));
         if kind == RTA_DST as u16 {
             to = Some(data.to_vec());
         } else if kind == RTA_OIF as u16 && data.len() >= 4 {
             oif = Some(u32::from_le_bytes(data[..4].try_into().expect("4 bytes")));
         }
         at += length.next_multiple_of(ALIGN);
+    }
+    if family != AF_INET && family != AF_INET6 {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    if strict {
+        valid_route_question(family, body, rtm_flags, &kinds)?;
     }
     if family == AF_INET6 {
         let mut loopback = [0u8; 16];
@@ -978,9 +1019,6 @@ fn route_get(
         message.u8(RTA_PREF as u32, 0);
         return Ok(Answer::One(message.finish()));
     }
-    if family != AF_INET {
-        return Err(Errno::EOPNOTSUPP);
-    }
     let to: [u8; 4] = match to {
         None => [0; 4],
         Some(bytes) => bytes
@@ -990,53 +1028,72 @@ fn route_get(
             .expect("4 bytes"),
     };
     let main = rt_class_t::RT_TABLE_MAIN as u8;
+    // `fib_lookup`: the longest prefix that holds the address.
+    let address = u32::from_be_bytes(to);
+    let entry = route_table()
+        .into_iter()
+        .filter(|route| route.family == AF_INET)
+        .filter(|route| {
+            let prefix = u32::from(route.prefix);
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix)
+            };
+            let destination = u32::from_be_bytes(route.destination[..4].try_into().expect("4"));
+            address & mask == destination & mask
+        })
+        .max_by_key(|route| route.prefix)
+        .ok_or(Errno::ENETUNREACH)?;
     if rtm_flags & RTM_F_FIB_MATCH != 0 {
-        let address = u32::from_be_bytes(to);
-        let entry = route_table()
-            .into_iter()
-            .filter(|route| route.family == AF_INET)
-            .filter(|route| {
-                let prefix = u32::from(route.prefix);
-                let mask = if prefix == 0 {
-                    0
-                } else {
-                    u32::MAX << (32 - prefix)
-                };
-                let destination = u32::from_be_bytes(route.destination[..4].try_into().expect("4"));
-                address & mask == destination & mask
-            })
-            .max_by_key(|route| route.prefix)
-            .ok_or(Errno::ENETUNREACH)?;
         let entry = Route {
             table: main,
             ..entry
         };
         return Ok(Answer::One(route_message(&entry, request, portid, 0)));
     }
+    use crate::linux_extra::{RTCF_BROADCAST, RTCF_LOCAL, RTCF_MULTICAST};
     let a = network::ADDRESS;
     let loopback = [127, 0, 0, 1];
-    let on_subnet = to[..2] == a[..2];
-    let local = to[0] == 127 || to == a || to == [0; 4];
-    let broadcast = to == [255; 4] || to == network::BROADCAST;
+    let limited_broadcast = to == [255; 4];
     let multicast = to[0] & 0xf0 == 0xe0;
-    use crate::linux_extra::{RTCF_BROADCAST, RTCF_LOCAL, RTCF_MULTICAST};
-    let (kind, mut flags, mut interface, source, gateway) = if local {
-        let source = if to == a { a } else { loopback };
-        (RTN_LOCAL, RTCF_LOCAL, network::LOOPBACK_INDEX, source, None)
-    } else if broadcast {
-        let flags = RTCF_LOCAL | RTCF_BROADCAST;
-        (RTN_BROADCAST, flags, network::ETHERNET_INDEX, a, None)
-    } else if multicast {
-        let flags = RTCF_LOCAL | RTCF_MULTICAST;
-        (RTN_MULTICAST, flags, network::ETHERNET_INDEX, a, None)
-    } else if on_subnet {
-        (RTN_UNICAST, 0, network::ETHERNET_INDEX, a, None)
+    // `ip_route_output_key_hash_rcu`: no destination is this host; a local route leaves by the
+    // loopback; else `__mkroute_output` makes broadcasts and groups of the address alone, with
+    // no gateway, and a group is local only while the interface is a member.
+    let local = RTN_LOCAL as u8;
+    let (kind, mut flags, mut interface, source, mut gateway) = if to == [0; 4] {
+        (local, RTCF_LOCAL, network::LOOPBACK_INDEX, loopback, None)
+    } else if entry.kind == local {
+        let source = entry.source.unwrap_or(to);
+        (local, RTCF_LOCAL, network::LOOPBACK_INDEX, source, None)
     } else {
-        let gateway = Some(network::GATEWAY);
-        (RTN_UNICAST, 0, network::ETHERNET_INDEX, a, gateway)
+        let source = entry.source.unwrap_or(a);
+        let kind = if limited_broadcast {
+            RTN_BROADCAST as u8
+        } else if multicast {
+            RTN_MULTICAST as u8
+        } else {
+            entry.kind
+        };
+        let mut flags = if entry.interface == network::LOOPBACK_INDEX {
+            RTCF_LOCAL
+        } else {
+            0
+        };
+        let mut gateway = entry.gateway;
+        if kind == RTN_BROADCAST as u8 {
+            flags |= RTCF_BROADCAST | RTCF_LOCAL;
+            gateway = None;
+        } else if kind == RTN_MULTICAST as u8 {
+            flags |= RTCF_MULTICAST | RTCF_LOCAL;
+            if !super::inet::interface_in_group(kernel, to, entry.interface) {
+                flags &= !RTCF_LOCAL;
+            }
+            gateway = None;
+        }
+        (kind, flags, entry.interface, source, gateway)
     };
     // Out of an interface named: the loopback takes anything as for this host.
-    let mut gateway = gateway;
     match oif {
         None | Some(0) => {}
         Some(index) if index == network::LOOPBACK_INDEX => {
@@ -1049,7 +1106,7 @@ fn route_get(
     }
     flags |= RTM_F_CLONED;
     let mut message = Message::new(RTM_NEWROUTE as u16, 0, request, portid);
-    let mut head = [AF_INET as u8, 32, 0, 0, main, 0, 0, kind as u8, 0, 0, 0, 0];
+    let mut head = [AF_INET as u8, 32, 0, 0, main, 0, 0, kind, 0, 0, 0, 0];
     head[8..].copy_from_slice(&flags.to_le_bytes());
     message.push(&head);
     message.u32(RTA_TABLE as u32, u32::from(main));
@@ -1062,6 +1119,50 @@ fn route_get(
     message.u32(RTA_UID as u32, uid);
     message.attr(RTA_CACHEINFO as u32, &cache_information());
     Ok(Answer::One(message.finish()))
+}
+
+/// `inet_rtm_valid_getroute_req` and `inet6_rtm_valid_getroute_req` under
+/// NETLINK_GET_STRICT_CHK: whole-address prefixes, IPv4's other header fields unset, only the
+/// flags and attributes a question may carry.
+fn valid_route_question(family: u32, body: &[u8], flags: u32, kinds: &[u32]) -> Result<(), Errno> {
+    let full = if family == AF_INET6 { 128 } else { 32 };
+    let (dst_len, src_len) = (body[1], body[2]);
+    if (dst_len != 0 && dst_len != full) || (src_len != 0 && src_len != full) {
+        return Err(Errno::EINVAL);
+    }
+    let allowed_flags = if family == AF_INET6 {
+        RTM_F_FIB_MATCH
+    } else {
+        if body[4..8].iter().any(|&field| field != 0) {
+            return Err(Errno::EINVAL);
+        }
+        RTM_F_NOTIFY | RTM_F_LOOKUP_TABLE | RTM_F_FIB_MATCH
+    };
+    if flags & !allowed_flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let has = |kind: u32| kinds.contains(&kind);
+    if (has(RTA_SRC as u32) && src_len == 0) || (has(RTA_DST as u32) && dst_len == 0) {
+        return Err(Errno::EINVAL);
+    }
+    let allowed = [
+        RTA_IIF,
+        RTA_OIF,
+        RTA_SRC,
+        RTA_DST,
+        RTA_IP_PROTO,
+        RTA_SPORT,
+        RTA_DPORT,
+        RTA_MARK,
+        RTA_UID,
+    ];
+    if kinds
+        .iter()
+        .any(|kind| !allowed.iter().any(|&allowed| allowed as u32 == *kind))
+    {
+        return Err(Errno::EINVAL);
+    }
+    Ok(())
 }
 
 /// `rta_cacheinfo` of a route answer: its one reference (the answer's own; Linux's count also
