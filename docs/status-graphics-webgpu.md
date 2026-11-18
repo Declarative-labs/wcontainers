@@ -10,7 +10,8 @@ G2 passed its independent check. G2b (what the fronts need from this back end): 
 in "Run 13"). Run 14 measured instance data at more streams and made binding sets made again each
 frame find their bind groups. Run 15 moved copies of converted formats onto the GPU. Run 16
 merged, found nothing new asked, ran both full runs and measured the timestamp workload's cause
-(naga's loop bounding). Every request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
+(naga's loop bounding). Run 17 fixed the second G2b check's findings (query sets past 4096, query
+results from a ring, two stale hand-over sentences, the point fill test's report). Every request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
 graphics branch), and where each stands:
@@ -22,9 +23,17 @@ graphics branch), and where each stands:
   Direct3D 12 or browsers); wireframe `POLYGON_MODE` where wgpu has `POLYGON_MODE_LINE` (every
   native API; browsers have neither). tests/raster.rs.
 - Instance step rates in the program: measured at 4, 8 and 16 streams a draw, natively and in
-  Chrome (examples/scenes/pulled.rs, tests/pulled.rs, web/check; Measurements, run 14). Fetching
-  costs no more than vertex buffers once bind groups are not made again each frame, which run 14
-  built.
+  Chrome (examples/scenes/pulled.rs, tests/pulled.rs, web/check; Measurements, run 14). Storage
+  usage on every vertex buffer costs nothing (every buffer already has it). CPU a frame of 256
+  draws: with binding sets kept, fetching costs no more than vertex buffers (0.28 against 0.30 ms
+  at 4 streams on Vulkan, less at 8 and 16). With a set made per draw, the route the Direct3D 11
+  front takes, it costs clearly more: at 4 streams 0.53 against 0.30 ms on Vulkan, 0.60 against
+  0.37 on Direct3D 12, 0.6 against 0.3 in Chrome (G2b check: 0.7 against 0.3); at 8 streams 0.72
+  against 0.50, 0.79 against 0.55, 0.7 against 0.3; the gap closes at 16 streams natively (0.98
+  against 0.90, 1.11 against 1.09). The extra is the equal set's lookup (a set made per draw against sets kept: about 1 µs a draw
+  at 4 streams, 2 at 16, on both APIs). Run
+  14 removed the larger cost, bind groups made again each frame (1.25 ms at 4 streams on Vulkan
+  before).
 - `write_texture` of a block-compressed level smaller than a block (atg-simplemsaa_pc): built.
   Copy extents are rounded up to whole blocks. tests/blocks.rs
   `levels_smaller_than_a_block_take_their_texel_size`.
@@ -64,6 +73,37 @@ graphics branch), and where each stands:
 - Freeing the back end's tables when a program or block is destroyed (Direct3D 12: "its own tables
   keep their entries"): built (run 13). tests/scenes.rs
   `destroyed_programs_and_blocks_free_their_pipelines`.
+
+Run 17 = G2b run 7, 2026-11-18 (fixes from G2b's second independent check):
+- Merged origin/phase-2-graphics-rig, -shaders, -direct3d-12, -direct3d-11 and -webgl (no
+  conflicts; the shared line had nothing new). The one interface change (`ReflectedBinding::slot`,
+  from the shaders branch) needs nothing here. Read the four front status files' new text: nothing
+  new is asked of this back end. The Direct3D 11 front lists test_early_depth_stencil as WebGPU
+  having no forced early tests with storage writes, waiting on the shaders track's
+  `EarlyTestsInShader`; the Direct3D 12 front's bgfx frames match, its GPU-time line differing
+  because the rig's library does not fix timestamps by the frame clock on Direct3D 12 (not a gap
+  here); the WebGL track's one Chrome tie stays laid on G1's mip helper.
+- Query sets of more than WebGPU's 4096 queries (Direct3D 12 heaps may be larger; the check found
+  a set of 5000 lost the device): paged over WebGPU sets of 4096, query i in slot i % 4096 of page
+  i / 4096, the last own page going on with the occlusion spare slots and further spare pages
+  after it. Timestamps write on their own page. A pass part counts on one page; an occlusion
+  query begun on another page than its own takes a spare slot there (or the part moves to a page
+  with room, `QueriesSegmented`), and resolving replaces its own slot's count, as for carried
+  queries. Results crossing a page boundary are resolved page by page into 256-byte aligned places
+  and copied out in parts. examples/scenes/queries.rs `paged_sets` (tests/queries.rs natively,
+  web/check in Chrome): a set of 5000 with queries on both pages, one begun off its page, one
+  carried across a split, resolved across the boundary at an offset and read; a timestamp set of
+  5000 written on both pages and read in order.
+- Query results come from one ring (`Counters::query_rings`), taken from its start after each
+  submit, as staged bytes come from the staging ring (was: a new GPU buffer per resolve or read,
+  and another for carried queries' spare slots, which now take a region of the staging ring).
+  `results_ring`: 20 frames resolving and reading a query that draws on even frames only, every
+  result right, one ring made.
+- tests/raster.rs `point_fill_draws_the_corners` reports itself ignored with its reason where
+  `POLYGON_MODE_POINT` is absent (was: passed having checked nothing there).
+- Status: the instance step rate summary now says that a set made per draw (the Direct3D 11
+  front's route) costs clearly more CPU than vertex buffers up to 8 streams; the hand-over no
+  longer says converted-format copies wait on the device.
 
 Run 16 = G2b run 6, 2026-11-17 to 18:
 - Merged origin/phase-2-graphics-webgl, -direct3d-11, -direct3d-12 and -shaders (no conflicts;
@@ -678,13 +718,20 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   must be marked `#[wasm_bindgen(jspi)]`, as `draw_scene` and `suite_test` in examples/scenes are;
   `wcontainers_gpu_webgpu::block_on` runs a future (the adapter and device requests) the same way.
 - Binding sets equal to ones of the frame before (made again when bindings change) find the bind
-  group made then; keeping a set still saves its lookup (Measurements, run 14).
+  group made then; keeping a set still saves its lookup, about 1 µs a draw at 4 streams and 2 at 16
+  (Measurements, run 14).
+- Query sets may hold any number of queries: past WebGPU's 4096 a set they are paged over
+  several WebGPU sets. A pass counts on one page at a time, starting on the first; an occlusion
+  query whose own slot is on another page goes on in a spare slot of the pass's page, the pass
+  split onto a page with room when it has none (`QueriesSegmented`). Results are resolved into
+  one ring buffer, taken again from its start after each submit (`Counters::query_rings`).
 - Uniform-only buffers made with `MapIntent::Often` live in the uniform arena: give constant
   buffers rewritten per draw that intent and write them with `Discard`.
 - Formats WebGPU lacks are declared with what the back end does for them (`FormatConverted`,
   src/packed.rs): `A8Unorm`, `Bgrx8Unorm(Srgb)` as targets too; the 16-bit packed and two-pixel
-  formats sampled and copied only. A copy between a buffer and one of them waits on the device
-  (the bytes go through the host); a read back does not.
+  formats sampled and copied only. Copies between one of them and a buffer or a texture of
+  another format of equal blocks run on the GPU, through a texture of its raw blocks widened or
+  packed by a draw; neither copies nor read backs wait on the device.
 - Timestamps (`TIMESTAMPS`): `write_timestamp` outside a pass, `resolve_queries` gives nanoseconds,
   `timestamps_disjoint` is always false. Calibration against the CPU clock (Direct3D 12's
   `GetClockCalibration`) is made from base primitives, as examples/scenes/timestamps.rs `reading`
@@ -831,7 +878,9 @@ except where alone, CPU load not sampled; Mac load average near its 18 cores, no
     0.793 / 0.007, 0.433 / 0.007. 16 streams: 1.089 / 0.016, 1.106 / 0.008, 0.582 / 0.008.
   - So fetching in the program with kept sets costs less CPU than vertex buffers at every count
     (each vertex buffer is a call per draw); GPU time is a little more at 4 streams on Vulkan
-    (0.017 against 0.012 ms) and about half at 16 streams on this light scene; a set made per draw adds its lookup (about 0.2 to 0.25 ms a frame of 256 draws).
+    (0.017 against 0.012 ms) and about half at 16 streams on this light scene; a set made per draw adds its lookup (0.25 ms a frame of 256 draws at 4 streams, 0.5 at 16,
+    against kept sets), so on that route fetching costs more CPU than vertex buffers up to 8
+    streams.
     Storage usage itself costs nothing here: every buffer already has it.
 - In Chrome 157 (web/check, g2b4/webcheck1.log, not alone; `performance.now()` in 0.1 ms steps;
   the device's most is 8 streams there): 4 streams vertex buffers 0.3 / 0.016, a set per draw
@@ -1220,7 +1269,7 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Next (G2b)
 
-1. The independent check of G2b (again, after runs 13 to 16).
+1. The independent check of G2b (again, after run 17).
 2. The owner's decision on loop bounding natively (run 16 measured it as the whole of the
    timestamp workload's 1.3 and 1.5 times): wgpu's `create_shader_module_trusted` without
    `force_loop_bounding` takes Direct3D's time, but lets a guest's endless loop be undefined in
