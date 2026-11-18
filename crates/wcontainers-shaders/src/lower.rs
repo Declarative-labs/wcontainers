@@ -1577,7 +1577,7 @@ fn ones(s: Scalar) -> Literal {
 }
 
 /// The storage texture format of an interface format, where WGSL has one.
-fn storage_format(f: wcontainers_gpu::Format) -> Option<naga::StorageFormat> {
+pub(crate) fn storage_format(f: wcontainers_gpu::Format) -> Option<naga::StorageFormat> {
     use naga::StorageFormat as S;
     use wcontainers_gpu::Format as F;
     Some(match f {

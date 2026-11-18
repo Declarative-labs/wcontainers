@@ -19,7 +19,7 @@ use crate::ConvertError;
 
 mod constants;
 mod filter;
-mod pull;
+pub(crate) mod pull;
 pub(crate) mod texel;
 
 type Result<T> = core::result::Result<T, ConvertError>;
