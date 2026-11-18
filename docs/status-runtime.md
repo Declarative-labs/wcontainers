@@ -28,6 +28,9 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   seed, the stand-in's verdicts, the Linux check and the costs were run again on the fixed tree (J2 run 4
   below). Nothing of J2 is left open but what was before: the progress count (the owner's ruling) and the
   counter after a restore (the kernel's clock method).
+- J2 run 5 (2026-11-18): the two findings of J2 run 4's check are settled (next section): the build identity
+  now hashes every file of each hashed package's directory but its tests, so the ARM64 decoder's forms
+  table is in it; the reference's stale code in one process is recorded.
 - J2 is complete: every part of plan section 16's J2 that the brief lets be built now is built, its bar
   passes at full, none and bounded, layer 1 passes 10,000 seeded sequences over the back end, the million
   is one command (not run here; the orchestrator's), and system call and fork cost are measured with both
@@ -37,6 +40,36 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   Layer 1 does not pass every seed: the kernel's `getcpu` (kernel track's code) differs from Linux with a bad
   cpu pointer and a good node pointer, on the stand-in too (next section).
 - Next: J3 (plan section 16).
+
+## Findings of J2 run 4's check, and how each was settled (J2 run 5)
+
+- The build identity left out the ARM64 decoder's forms table (blocking): fixed (01ca6858). build.rs hashed
+  and watched only each workspace crate's manifest and `src/`, and wcontainers-arm64/src/forms.rs includes
+  `../arm/a64-forms.txt`, which decides which instructions are undefined. Now each hashed workspace crate
+  gives every file of its package directory (cargo's own bound of what a package is built from: a crate
+  cannot be packaged with an include from outside it), but the directories never built into a dependent
+  (`tests`, `benches`, `examples`, `target`); each top-level entry is watched, a directory with every file
+  in it. Checked (scratch j2run5/identity.sh, identity.log; load 57.5 to 52.1): a comment line appended to
+  the forms table reran the script and changed the identity (4b9be68c... to 832345c4...); removing it gave
+  4b9be68c... back; touching wcontainers-arm64/tests/exact.rs reran nothing; touching src/decode.rs reran
+  the script with the identity unchanged. The output names arm/ once and no tests directory. The identity
+  differs from run 4's (b09d7e24...), since the table is now in it, so every translation in a cache
+  directory is made again once. Plan section 7 corrected. The back end's tests: 24 passed
+  (j2run5/backend.log, load 41.7 to 35.3). J2's bar at full at 01ca6858, every translation made again under
+  the new identity: 46 passed, 0 failed, 2 ignored (the same two), 222.0 s with its build (load 34.3 to 62.6;
+  scratch j2run4/run5-full.log). The none and bounded bars, layer 1, the stand-in and the costs were not run
+  again: the change is the identity's text alone, which only names cache files.
+- The reference runs stale code in one process too (minor): recorded beside the child's case (J2 run 4's
+  findings below, and Departures). The check's program (scratch check-j2-run4/zzcheck4b.c, part
+  "codering") writes code through a writable `MAP_SHARED` view of a memfd that sits next to its executable
+  view, from a `str` run in the executable view, and syncs with `__builtin___clear_cache` on the executable
+  address. The reference (`alpine:3.22`, linux/arm64 in Docker on this Mac; `CTR_EL0` 0x99444c004, DIC 0,
+  IDC 1, so `ic ivau` runs) gives `code ring: 0 0 22 33` six runs of six (check-j2-run4/ref/): the old
+  instruction at the first rewrite, the new one after. Our back end gives `0 11 22 33` at full, none and
+  bounded, what the architecture requires; the stand-in `0 0 0 0`. So the reference is not an oracle for code
+  written through one view and run through another just after the sync, which matters for J6's JIT tests:
+  such a test compares with what the architecture requires, or rewrites before the reference's first run.
+  Nothing changed in the runtime.
 
 ## Findings of J2 run 3's check, and how each was settled (J2 run 4)
 
@@ -71,7 +104,8 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   `__builtin___clear_cache` (which runs `dc cvau`, `ic ivau` and `isb` as `CTR_EL0` asks;
   j2run4/sharedviews.dis), ran the old code (the check's "child 77"), while the parent then ran the new.
   Both back ends run the new code there, as the architecture says. That case is left out of sharedviews (the
-  child exits with what it ran before rewriting) and recorded here, unexplained.
+  child exits with what it ran before rewriting) and recorded here, unexplained. J2 run 4's check found the
+  same in one process with no fork (J2 run 5's findings above).
 - The stand-in runs stale code in two cases (minor, information for the kernel test crate): recorded; with
   the shared code part changed as above, the stand-in now fails only the code views line, and "code" is
   ignored without the feature for it.
@@ -80,7 +114,8 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   dependencies with their kinds, as cargo reads them) and the lock file with the cargo-lock crate
   (`Lockfile::load`, `Dependency::matches`), and walks normal and build dependencies from the translator and
   every guest crate (a workspace crate built on the guest interface and not on the translator), hashing the
-  sources of each workspace crate from its manifest's own directory (no assumption that directory and
+  sources of each workspace crate (since run 5 every file of its package directory but tests) from its
+  manifest's own directory (no assumption that directory and
   package names agree) and the locked entry (name, version, source, checksum) of every other. It hashes the
   same 54 packages as before (4 workspace crates, 50 others; listed once with a build warning, then removed).
   The check's suggestion, cargo's full resolved graph (`cargo metadata` without `--no-deps`), was built
@@ -553,6 +588,8 @@ Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/` a
   RUSTUP_TOOLCHAIN=1.99.0-aarch64-unknown-linux-gnu -w /src rust:1.99-slim sh -c 'uname -a; swapon --show;
   cargo test --locked -j 4 -p wcontainers-wasmtime -- --test-threads 3 --nocapture'`. Delete
   j2/linux/target and j2/linux/registry after the run, and the image (`docker rmi rust:1.99-slim`).
+- That the build identity follows the hashed packages' files and not their tests: scratch
+  `j2run5/identity.sh` (it appends a line to the forms table and removes it with `git checkout`).
 - procsignals, the bar's test that saves, N times at a look-ahead, each with a 15 minute limit: scratch
   `j2run2/procsignals-repeat.sh N none`.
 - Do not edit the crates while a bar runs: a later cargo invocation of the same run rebuilds from what is
@@ -769,7 +806,9 @@ array of slots in microseconds.
   test the stand-in cannot run; with the runtime it passes against the reference.
 - sharedviews' child does not run the code it rewrote in shared memory: on the reference it ran the old
   code after `__builtin___clear_cache`, which the architecture does not allow and neither back end does
-  (recorded in J2 run 4's findings).
+  (recorded in J2 run 4's findings). It also runs stale code in one process, every time, when code written
+  through a writable view is run through the executable view next to it just after the sync (J2 run 5's
+  findings): for such code the tests compare with what the architecture requires, not with the reference.
 - A write next to another view of its block's page is single-stepped through the exact slot and the
   lookup, which the translator's contract gives for one instruction run exactly; the plan had no such
   case (section 8 now has it).
