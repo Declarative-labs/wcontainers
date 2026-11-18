@@ -19,8 +19,14 @@ branches into it at the start and end of every run, keeps the whole workspace bu
     break, and a suite test where it states something a back end does (list below).
   - Start merges: webgl and direct3d-11 (fast-forwards: direct3d-11 already held webgl and this
     line), then direct3d-12, shaders and rig; no conflict. The whole workspace checks after them.
-  - End merges: webgpu (with one interface commit, 04bd53bf, covered below) and shaders, no
-    conflict; the others had nothing new. The whole workspace checks after them.
+  - End merges: webgpu (with one interface commit, 04bd53bf, covered below), shaders and then
+    webgl, no conflict. The whole workspace checks after them. The direct3d-12 branch's newest work
+    (6 commits, up to 1345db29) was merged too, but `wcontainers-direct3d-12` then did not build:
+    its new `device/geometry.rs` is written against an older stage helper than the shaders branch
+    this line already holds (`StageDraw::stream_output`, `StageError::Declaration`, a fourth
+    argument, `vertex_layout()` now an `Option`). That merge was not pushed and was taken off
+    again, so the line builds; the direct3d-12 track should merge this line (or the shaders
+    branch), fix its geometry route, and it comes in at the next merge.
 
 ## G1's tenth check, and how each finding was settled
 
