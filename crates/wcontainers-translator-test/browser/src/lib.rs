@@ -152,19 +152,8 @@ pub extern "C" fn cpu_state() -> *mut u8 {
 /// the thread's state, copied to [`cpu_state`], with the hook's arguments first (the rest 0). Its results are then read with
 /// [`cpu_hook_result`] and the slow path it was with [`cpu_hook_reason`].
 #[unsafe(no_mangle)]
-#[allow(clippy::too_many_arguments)]
-pub extern "C" fn cpu_hook(
-    hook: u32,
-    a: i64,
-    b: i64,
-    c: i64,
-    d: i64,
-    e: i64,
-    f: i64,
-    g: i64,
-    h: i64,
-) {
-    let args: [i64; HookType::MAX_PARAMS] = [a, b, c, d, e, f, g, h];
+pub extern "C" fn cpu_hook(hook: u32, a: i64, b: i64, c: i64, d: i64) {
+    let args: [i64; HookType::MAX_PARAMS] = [a, b, c, d];
     let types = &Arm64::HOOKS[hook as usize];
     let (count, length) = (types.params.len(), usize::from(types.state.len));
     let done = STATE.with_borrow_mut(|state| {

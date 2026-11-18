@@ -349,11 +349,11 @@ function run({
         if (inTranslator.byteLength === 0) inTranslator = new Uint8Array(translator.memory.buffer, cpuState, stateLength);
         return inTranslator;
       };
-      // `cpu_hook` takes eight arguments after the index; the arguments a hook does not have are 0.
-      if (contract.hookParams !== 8) throw new Error(`cpu_hook takes ${contract.hookParams} arguments`);
-      hooks[name] = (a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0) => {
+      // `cpu_hook` takes four arguments after the index; the arguments a hook does not have are 0.
+      if (contract.hookParams !== 4) throw new Error(`cpu_hook takes ${contract.hookParams} arguments`);
+      hooks[name] = (a = 0, b = 0, c = 0, d = 0) => {
         translatorView().set(inState);
-        translator.cpu_hook(index, wide(a), wide(b), wide(c), wide(d), wide(e), wide(f), wide(g), wide(h));
+        translator.cpu_hook(index, wide(a), wide(b), wide(c), wide(d));
         inState.set(translatorView());
         const why = translator.cpu_hook_reason();
         // Registers are not saved here, so the detail is the first argument, not the address.

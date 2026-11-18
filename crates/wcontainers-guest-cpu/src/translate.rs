@@ -625,8 +625,9 @@ pub struct HookType {
 }
 
 impl HookType {
-    /// The most parameters a hook may have; the runners check every hook against it at compile time.
-    pub const MAX_PARAMS: usize = 8;
+    /// The most parameters a hook may have; the runners check every hook against it at compile time. The
+    /// browser passes each as an argument of its own, so every one more costs every call of every hook.
+    pub const MAX_PARAMS: usize = 4;
     /// The most results, as many as `HookDone` holds.
     pub const MAX_RESULTS: usize = 2;
 }
