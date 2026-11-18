@@ -4,7 +4,8 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 
 ## Where things stand
 
-- J0 (the plan) is done: docs/runtime.md. J1 is done (run 1 of J1, 2026-11-17).
+- J0 (the plan) is done: docs/runtime.md. J1 was built in run 1 (2026-11-17); run 2 (2026-11-18) fixed the
+  findings of J1's independent check (below) and ran the bars again on the fixed, committed tree.
 - First light, 2026-11-17 23:2x: a program ran through both halves for the first time. The static hello
   passes against the reference with the kernel deciding and the translator's WebAssembly, run by wasmtime,
   running its instructions, at full, none and bounded look-ahead:
@@ -17,7 +18,7 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 - Built in J1:
   - crates/wcontainers-runtime: `Stepper::step` and `drive` (the one loop), `Execution` (with `Failure` and
     `restored`), `Outside` (with `End`; `turn`, `ran`, `arrived`, `stopped`, `idle`, `cpu_warning`),
-    `Answer`, `Carry`, `Turn` (counted turns only; free turns come with J3's timer), `Step`, `Ending`.
+    `Answer`, `Carry` (with `Leaving`), `Turn` (counted turns only; free turns come with J3's timer), `Step`, `Ending`.
   - crates/wcontainers-wasmtime: `Compiler` (engine with host-supplied memories and Unix signal traps, the
     thread module, the back end's own rayon pool, the probe, the in-memory cache) and `CpuSide<G>` (every
     `Cpu` method but `memory_duplicate`, `run` with carrying on in place and leaving, the hooks, translation
@@ -49,6 +50,51 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 - Next is J2 (plan section 16): the stand-in's own count with the loop's count of the kernel's changes of
   pc; the disk level of the cache with the build identity; fork with the exact copy (`memory_duplicate`)
   and `restored()` for the WebAssembly back end; signals, job control, terminals; Linux checks; the J2 bar.
+
+- Run 2's bars, at a572aa76 with only this file uncommitted (scratch j1run2/bars.sh; this Mac, other tracks
+  running): hello passes at full, none and bounded (N 60) (load 77.1 to 76.6); hello and busybox pass at full
+  in 43.3 s (load 76.6 to 90.4), bounded in 44.8 s (90.4 to 68.8) and none in 59.0 s (68.8 to 54.1); busybox 4
+  passed, 1 ignored (root_file_system, the known failure) each time.
+- Run 2's verdicts of the whole kernel test crate without the feature at a572aa76 (460 s, load 54.1 to 52.8;
+  j1run2/verdicts.log and verdicts.txt): 190 passed, 0 failed, 5 ignored, and the sorted verdict lines are
+  identical to run 1's after the move (j1/after/verdicts-after.txt). Against the merge commit the one
+  difference is still `queued_signals_match_reference` (the reference's own flake, above).
+- Leaving `run`, counted from run 2 (busybox at full, one test at a time, 177 runs: the root in memory and on
+  the backend; 64.4 s, load 48.3 to 45.7; j1run2/busybox-leaves.log): "the call waits" in 70 runs (1, 3, 887 a
+  run: min, median, max; 887 in `cmp /bin/busybox /bin/sh` on the backend, its file calls parking), "another
+  thread runs" in 6 (1 each), "the container finished" in every run (1), "new registers" and "the outside
+  asked" in none. Runs of `run` ("progress counted by stop checks"): 3, 6 and 893.
+
+## Findings of J1's check, and how each was settled (run 2)
+
+- Clock reads held a counted turn open (blocking): the clock hook reset the turn's count, so a guest reading
+  the counter in a loop never reached its limit and never got back to the kernel. The back end now keeps the
+  turn's count and the part already told by clock reads apart (`Data::report` for a read, `Data::end_turn` at
+  an exit), and a write to a locked page no longer restarts the turn's count. Tested by
+  crates/wcontainers-wasmtime/tests/turns.rs (a spin on `mrs cntvct_el0` in a counted turn of 1000, at full
+  and none; both failed with "the turn never ended" with the old hook put back, and pass now). The check's own
+  program (alarm, then a spin on the counter) passes against the reference with `--features runtime` at full,
+  58 s with build (load 67.4 at the start, 88.7 at the end; scratch j1run2/spin-full.log; the program and test
+  were copied in for the run and removed).
+- Leaving `run` was not counted (blocking): the loop now says why a thread leaves (`Carry::Leave(Leaving)`),
+  and the back end counts and warns each leave from a hook, with the call number as the detail (`u64::MAX`
+  after a stop): "left run: the call waits", "another thread runs", "new registers", "the container
+  finished", "the outside asked". A leave after a fault or trap is not counted again, since that thread is
+  out of the guest already (plan sections 5 and 10).
+- The guest's own hooks went through `Val` slices and a `Vec` per call (minor): now `Func::new_unchecked`
+  with a closure made per index at compile time (`cpu_hook_func::<G, I>`), as the translator's runner does.
+  Not timed; no J1 bar is float-heavy.
+- J1's text still listed the stop-check counting cost (minor): moved to J3 in the plan (section 16 J1 and
+  J3, section 19) and under Departures.
+- Plan disagreeing with what was built (minor): the header, J1's `set_permissions` bullet (the "shared
+  pages" lock), and section 5, which now names layer 1 (itself the CPU, calling the kernel directly) and
+  tests/standin.rs (the stand-in alone) as the tests below the loop.
+- RELR split (minor): section 7 records the check's count for busybox and musl (the same starts at three load
+  addresses, relocated or not: 558 and 1537); git and rg are counted when they first run.
+- Loose evidence (minor): hello's pass at full in run 1 is j1/hello-full-2.log (hello-full-1.log is the
+  first, failing attempt); j1/hello-full-1/2.log, busybox-full-record.log and busybox-bounded-none-1.log ran
+  on a tree with uncommitted changes, so the commit they measured is not named. Run 2's bar logs
+  (j1run2/*.log) each start with the commit and `git status`.
 
 ## Findings of J0's last check, and how each was settled
 
@@ -89,6 +135,9 @@ pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/`.
   hello -- --test-threads 3`, again with `LOOK_AHEAD=none` and with `LOOK_AHEAD=bounded` in front.
 - The bar: `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test hello --test
   busybox -- --test-threads 3` (full; the same with `LOOK_AHEAD=bounded` and `LOOK_AHEAD=none` also pass).
+- The back end's own tests (a counted turn under clock reads ends at its limit, and its leave is counted): `nix develop -c cargo test -j 4 -p wcontainers-runtime -p wcontainers-wasmtime --
+  --test-threads 3`.
+- Run 2's bars and verdicts, one command, logs beside it: scratch j1run2/bars.sh.
 - `LOOK_AHEAD` is `full` (also when unset), `none` or `bounded`; at `bounded` the container's N is drawn from
   1 to 64 from the run's seed and `LOOK_AHEAD_SEED` (0 if unset) and printed ("look-ahead bounded N"). hello
   and busybox run with seed 0, so `LOOK_AHEAD_SEED` is the knob that changes N for them.
@@ -120,7 +169,8 @@ pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/`.
 Load is `sysctl vm.loadavg` at the start and end of each run; other tracks were running. Logs in scratch j1/.
 - hello at full, none and bounded (N 60 from seed 0): passes; one translation of its one page of code from 2
   starts (entry 1, unwind 1, ELF data words 3 before merging), 1 piece at full and bounded, 18 at none; made in
-  17 to 22 ms translating and 1.2 to 2.3 ms compiling (hello-*.log; load 13.2 to 17.1).
+  17 to 22 ms translating and 1.2 to 2.3 ms compiling (hello-full-2.log, hello-none.log, hello-bounded.log;
+  load 13.2 to 17.1).
 - busybox, full, one command at a time (busybox-full-record.log and its summary; load 31.9 at the start, 33.2
   at the end; 178 runs, two per command, the root in memory then on the backend):
   - first use of each range, translated and compiled while the first command ran: musl's code (0xa2000 bytes)
@@ -247,6 +297,14 @@ array of slots in microseconds.
 - J1's step 1 was checked by the seeded runs before the commit was made, and by the whole-suite diff after it
   (the whole suite took 8 to 25 minutes at this load); the commit was pushed with first light, before the
   whole-suite diff ended, as the J1 task asked for a push as soon as hello passed.
+- Leaving `run` is counted for five reasons, not the plan's first three: the loop's two other leaves (the
+  container finished, the outside asked) cost the same and are named the same way (plan section 10).
+- The change that names why a thread leaves touched the stand-in's `run` (one pattern, `Carry::Leave(_)`) in
+  the same commit as the runtime crate (61c63df6), since either alone does not build; it is the one kernel
+  test crate change of run 2.
+- What counting every stop check costs against full speed was listed for J1 but is measured in J3: it needs
+  a turn that counts nothing, which J3's free turns bring.
+- The RELR split is counted for busybox and musl only (by J1's check); git and rg when they first run.
 - `zig cc` runs for the checks used a zig cache in scratch (`ZIG_GLOBAL_CACHE_DIR`), because every zig process
   on the machine waited on the shared cache's lock for over 30 minutes; it changes nothing built.
 
