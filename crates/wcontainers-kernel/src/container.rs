@@ -243,6 +243,68 @@ fn overlay_root_mount(fs: FileSystem) -> Mount {
     }
 }
 
+/// The huge page sizes the reference's ARM64 kernel offers with 4 KiB pages, in KiB, with the
+/// size each demotes to.
+const HUGE_PAGE_SIZES: [(u64, Option<u64>); 4] = [
+    (64, None),
+    (2048, Some(64)),
+    (32768, Some(2048)),
+    (1048576, Some(32768)),
+];
+
+/// `/sys/kernel/mm/hugepages`: a directory per huge page size, none of them ever reserved, as in
+/// a default container, where `/proc/sys/vm` cannot be written. Write-only `demote` is left out.
+fn make_huge_pages(numbers: &mut Numbers, sys: &Node, now: Time) {
+    let directory = |numbers: &mut Numbers, at: &Node, name: &[u8]| {
+        make(
+            numbers,
+            at,
+            name,
+            S_IFDIR | 0o755,
+            0,
+            0,
+            0,
+            now,
+            Content::Directory(Directory::new()),
+        )
+        .expect("a new container's file systems have room")
+    };
+    let kernel = directory(numbers, sys, b"kernel");
+    let mm = directory(numbers, &kernel, b"mm");
+    let huge = directory(numbers, &mm, b"hugepages");
+    for (size, demotes_to) in HUGE_PAGE_SIZES {
+        let at = directory(
+            numbers,
+            &huge,
+            alloc::format!("hugepages-{size}kB").as_bytes(),
+        );
+        let mut files: Vec<(&[u8], u32, alloc::string::String)> = alloc::vec![
+            (b"free_hugepages", 0o444, "0\n".into()),
+            (b"nr_hugepages", 0o644, "0\n".into()),
+            (b"nr_overcommit_hugepages", 0o644, "0\n".into()),
+            (b"resv_hugepages", 0o444, "0\n".into()),
+            (b"surplus_hugepages", 0o444, "0\n".into()),
+        ];
+        if let Some(to) = demotes_to {
+            files.push((b"demote_size", 0o644, alloc::format!("{to}kB\n")));
+        }
+        for (name, mode, text) in files {
+            make(
+                numbers,
+                &at,
+                name,
+                S_IFREG | mode,
+                0,
+                0,
+                0,
+                now,
+                Content::Regular(Regular::with_bytes(text.into_bytes())),
+            )
+            .expect("a new container's file systems have room");
+        }
+    }
+}
+
 /// The size Docker gives the tmpfs at `/dev` (runc's `size=65536k`) and at `/dev/shm` (its default
 /// `--shm-size` of 64 MiB).
 const DOCKER_TMPFS_BYTES: u64 = 64 << 20;
@@ -962,6 +1024,7 @@ impl Kernel {
             None,
         );
         sys.borrow_mut().ino = 1;
+        make_huge_pages(&mut self.files.numbers, &sys, now);
 
         let view = fs::proc::View {
             processes: &self.processes,

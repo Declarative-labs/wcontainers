@@ -176,9 +176,13 @@ const SYS_ENTRIES: [&[u8]; 9] = [
     b"module",
 ];
 
-/// Counts a lookup in `/sys` of a name Linux has there; detail: its index in [`SYS_ENTRIES`].
-fn sys_not_built(counters: &crate::counters::Counters, name: &[u8]) {
-    if let Some(index) = SYS_ENTRIES.iter().position(|entry| *entry == name) {
+/// Counts a lookup in `/sys` of a name not there: at the root, one Linux has there (detail: its
+/// index in [`SYS_ENTRIES`]); below it, any name, as those directories hold a chosen few of
+/// Linux's entries (detail: the length of [`SYS_ENTRIES`]).
+fn sys_not_built(counters: &crate::counters::Counters, at_root: bool, name: &[u8]) {
+    if !at_root {
+        counters.note(crate::reason::SYS_ENTRY_NOT_BUILT, SYS_ENTRIES.len() as u64);
+    } else if let Some(index) = SYS_ENTRIES.iter().position(|entry| *entry == name) {
         counters.note(crate::reason::SYS_ENTRY_NOT_BUILT, index as u64);
     }
 }
@@ -1450,7 +1454,7 @@ impl<'a> Walk<'a> {
                     Some(found) => found,
                     None => {
                         if inode.fs.kind == Kind::Sysfs {
-                            sys_not_built(self.proc.counters, name);
+                            sys_not_built(self.proc.counters, inode.ino == 1, name);
                         }
                         return Err(Errno::ENOENT);
                     }

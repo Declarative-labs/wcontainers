@@ -345,6 +345,10 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/sunrpc", Global::Directory),
     ("sys/user", Global::Directory),
     ("sys/vm", Global::Directory),
+    ("sys/vm/drop_caches", Global::File(0o200)),
+    ("sys/vm/hugetlb_shm_group", Global::File(0o644)),
+    ("sys/vm/nr_hugepages", Global::File(0o644)),
+    ("sys/vm/nr_overcommit_hugepages", Global::File(0o644)),
     ("sys/vm/overcommit_memory", Global::File(0o644)),
     ("sysvipc", Global::Directory),
     ("sysvipc/msg", Global::File(0o444)),
@@ -1424,7 +1428,10 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                         "MemTotal:       {total:8} kB\nMemFree:        {free:8} kB\n\
                          MemAvailable:   {free:8} kB\nBuffers:               0 kB\n\
                          Cached:                0 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n\
-                         Shmem:          {shared:8} kB\n"
+                         Shmem:          {shared:8} kB\nHugePages_Total:       0\n\
+                         HugePages_Free:        0\nHugePages_Rsvd:        0\n\
+                         HugePages_Surp:        0\nHugepagesize:       2048 kB\n\
+                         Hugetlb:               0 kB\n"
                     );
                 }
                 "stat" => {
@@ -1529,6 +1536,10 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 "sys/kernel/pid_max" => out.push_str("4194304\n"),
                 "sys/kernel/random/boot_id" => out.push_str(&uuid(source.boot_id)),
                 "sys/kernel/random/uuid" => out.push_str(&uuid(source.fresh_random)),
+                // No huge page is ever reserved, as none can be in a default container.
+                "sys/vm/hugetlb_shm_group"
+                | "sys/vm/nr_hugepages"
+                | "sys/vm/nr_overcommit_hugepages" => out.push_str("0\n"),
                 "sys/vm/overcommit_memory" => out.push_str("1\n"),
                 "sysvipc/msg" => out = crate::syscall::ipc::proc_msg(source.ipc),
                 "sysvipc/sem" => out = crate::syscall::ipc::proc_sem(source.ipc),
