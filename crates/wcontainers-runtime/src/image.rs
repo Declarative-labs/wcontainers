@@ -191,7 +191,7 @@ impl Image {
                     field: "config.Volumes".to_string(),
                     reason: format!(
                         "{volumes:?}: a volume is a mount of a directory from outside, which needs \
-                         the shipped outside's file backend"
+                         the local system's file backend"
                     ),
                 });
             }

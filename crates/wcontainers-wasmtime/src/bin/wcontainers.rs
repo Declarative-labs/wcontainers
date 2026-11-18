@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
-    BackEnd, Ending, Image, Machine, Runtime, RuntimeSettings, System, Warned, spec_from_json,
+    BackEnd, Ending, Image, LocalSystem, Machine, Runtime, RuntimeSettings, Warned, spec_from_json,
 };
 use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, Tuning};
 
@@ -89,7 +89,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
     }
 
     let runtime = Runtime::<Back>::new(&RuntimeSettings { cache });
-    let system = System::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()));
+    let system = LocalSystem::new(Box::new(std::io::stdout()), Box::new(std::io::stderr()));
     let tuning = Tuning {
         look_ahead,
         optimise,

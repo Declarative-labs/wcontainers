@@ -18,7 +18,7 @@ pub use container::{BackEnd, Container, Error, Machine, Runtime, RuntimeSettings
 pub use image::Image;
 pub use oci_spec;
 pub use spec::{base_spec, spec_from_json};
-pub use system::{System, Warned};
+pub use system::{LocalSystem, Warned};
 
 /// How a turn ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

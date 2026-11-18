@@ -14,7 +14,7 @@ use serde_json::json;
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::oci_spec::runtime::Spec;
 use wcontainers_runtime::{
-    Container, Ending, Image, Machine, Runtime, RuntimeSettings, Step, System, base_spec,
+    Container, Ending, Image, LocalSystem, Machine, Runtime, RuntimeSettings, Step, base_spec,
 };
 use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, Tuning};
 
@@ -170,9 +170,9 @@ fn container(
     cache: Option<PathBuf>,
     stdout: &Captured,
     stderr: &Captured,
-) -> Container<CpuSide<Arm64>, System> {
+) -> Container<CpuSide<Arm64>, LocalSystem> {
     let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache });
-    let system = System::new(Box::new(stdout.clone()), Box::new(stderr.clone()));
+    let system = LocalSystem::new(Box::new(stdout.clone()), Box::new(stderr.clone()));
     let tuning = Tuning {
         look_ahead: look_ahead(),
         optimise: Optimise::Speed,
@@ -636,7 +636,7 @@ fn the_command_line_program_runs_a_container() {
     );
 }
 
-/// The shipped outside's timer ends a free turn at the kernel's slice: a process that never makes a
+/// The local system's timer ends a free turn at the kernel's slice: a process that never makes a
 /// system call does not keep the shell from going on.
 #[test]
 fn a_busy_process_is_preempted_by_the_timer() {
@@ -816,7 +816,7 @@ fn a_program_not_in_the_path_is_not_found() {
     process.set_cwd("/bin".into());
     spec.set_process(Some(process));
     let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache: None });
-    let system = System::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
+    let system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
     let tuning = Tuning {
         look_ahead: look_ahead(),
         optimise: Optimise::Speed,

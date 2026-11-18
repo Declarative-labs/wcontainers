@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use serde_json::{Value, json};
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
-    Error, Image, Machine, Runtime, RuntimeSettings, System, base_spec, spec_from_json,
+    Error, Image, LocalSystem, Machine, Runtime, RuntimeSettings, base_spec, spec_from_json,
 };
 use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, Tuning};
 
@@ -43,7 +43,7 @@ fn base() -> Value {
 fn make(value: Value) -> Result<(), Error> {
     let spec = spec_from_json(&serde_json::to_vec(&value).unwrap())?;
     let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings::default());
-    let system = System::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
+    let system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
     let tuning = Tuning {
         look_ahead: LookAhead::Full,
         optimise: Optimise::Speed,

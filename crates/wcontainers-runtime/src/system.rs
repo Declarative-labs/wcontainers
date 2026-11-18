@@ -1,4 +1,4 @@
-//! The shipped outside for an operating system: its clocks and randomness, the container's output
+//! The local system for an operating system: its clocks and randomness, the container's output
 //! streams, free turns ended by a timer thread at the kernel's slice, and waiting in real time.
 //! Everything else the kernel may ask of a host (the file backend, the network, terminal input) it
 //! answers as not supported, which the kernel turns into the errors Linux gives without them.
@@ -29,8 +29,8 @@ pub struct Warned {
     pub cpu: bool,
 }
 
-/// The shipped outside.
-pub struct System {
+/// The local system.
+pub struct LocalSystem {
     started: Instant,
     output: Box<dyn Write + Send>,
     error: Box<dyn Write + Send>,
@@ -54,7 +54,7 @@ struct Deadline {
     wake: Condvar,
 }
 
-impl System {
+impl LocalSystem {
     /// An outside writing the container's standard output and error to these streams.
     pub fn new(output: Box<dyn Write + Send>, error: Box<dyn Write + Send>) -> Self {
         Self {
@@ -95,7 +95,7 @@ impl System {
     }
 }
 
-impl Drop for System {
+impl Drop for LocalSystem {
     fn drop(&mut self) {
         if let Some(timer) = &mut self.timer {
             *timer
@@ -152,7 +152,7 @@ fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
     }
 }
 
-impl Host for System {
+impl Host for LocalSystem {
     fn monotonic_nanoseconds(&mut self) -> u64 {
         self.now()
     }
@@ -227,8 +227,8 @@ impl Host for System {
     }
 }
 
-impl Outside for System {
-    /// The shipped outside never ends a run itself.
+impl Outside for LocalSystem {
+    /// The local system never ends a run itself.
     type End = core::convert::Infallible;
 
     fn stop_flag(&mut self, flag: StopFlag) {

@@ -193,7 +193,7 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
             "hooks" => absent(
                 name,
                 field,
-                "the shipped outside running host programs at the points the runtime \
+                "the local system running host programs at the points the runtime \
                  specification names",
             )?,
             "linux" => linux(field)?,
@@ -263,7 +263,7 @@ fn root(value: &Value) -> Result<(), Error> {
                 "root.path",
                 field,
                 "the root's files are the image argument; a root read from a directory of the host \
-                 needs the shipped outside's file backend",
+                 needs the local system's file backend",
             )?,
             "readonly" => absent("root.readonly", field, "read-only mounts in the kernel")?,
             _ => {
@@ -318,7 +318,7 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
                 field,
                 format!(
                     "{mount}: only the kernel's own mounts are made; bind mounts of host \
-                     directories need the shipped outside's file backend, other file systems the \
+                     directories need the local system's file backend, other file systems the \
                      kernel"
                 ),
             ));

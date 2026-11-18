@@ -18,7 +18,7 @@ tar = "0.4.46"
 flate2 = "1.1.11"
 # Image blobs are checked against their digests.
 sha2 = "0.10.9"
-# The shipped outside's randomness.
+# The local system's randomness.
 getrandom = "0.3.4"
 
 [lints]
