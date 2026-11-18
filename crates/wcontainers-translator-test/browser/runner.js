@@ -48,7 +48,8 @@ function run({
   codeStart,
   optimise,
   splitBytes,
-  standIn,
+  // The stand-in's system call numbers for the guest.
+  standIn: calls,
 }) {
   const translator = new WebAssembly.Instance(new WebAssembly.Module(translatorBytes)).exports;
   const result = (length) =>
@@ -178,7 +179,7 @@ function run({
     };
     const file = (fd) => (fd === 1n ? stdout : fd === 2n ? stderr : null);
     switch (number) {
-      case BigInt(standIn.write): {
+      case BigInt(calls.write): {
         const out = file(a[0]);
         if (!out) return -EBADF;
         const bytes = read(a[1], a[2]);
@@ -186,7 +187,7 @@ function run({
         out.push(...bytes);
         return a[2];
       }
-      case BigInt(standIn.writev): {
+      case BigInt(calls.writev): {
         const out = file(a[0]);
         if (!out) return -EBADF;
         // Linux takes the vector count as a 32 bit number.
@@ -210,14 +211,14 @@ function run({
         out.push(...gathered);
         return BigInt(gathered.length);
       }
-      case BigInt(standIn.exit):
-      case BigInt(standIn.exitGroup):
+      case BigInt(calls.exit):
+      case BigInt(calls.exitGroup):
         stop({ kind: "finished", status: Number(BigInt.asIntN(32, a[0])) });
         raiseStopFlag();
         return 0n;
       // brk: this stand-in never moves the break, and answers with the current one as Linux does when it
       // cannot.
-      case BigInt(standIn.brk):
+      case BigInt(calls.brk):
         return BigInt(programBreak);
       default:
         slowPath(reason("system call not implemented"), number, 0);
@@ -520,10 +521,9 @@ function run({
     stderr.length = 0;
     stopped = null;
     snapshot = null;
-    const block = new DataView(state.buffer, BLOCK_AT, contract.threadStateSize);
-    for (let i = 0; i < contract.threadStateSize; i++) block.setUint8(i, 0);
-    block.setBigUint64(contract.registerPc, BigInt(load), true);
-    block.setBigUint64(contract.registerSp, BigInt(sp), true);
+    const start = new Uint8Array(state.buffer, BLOCK_AT, contract.threadStateSize);
+    start.fill(0);
+    start.set(result(translator.initial_block(BigInt(load), BigInt(sp))));
 
     const started = performance.now();
     try {

@@ -102,6 +102,17 @@ impl GuestTest for Arm64 {
     const GENERAL_ONLY: &'static [&'static str] = &["-mcpu=generic-neon-fp_armv8"];
     const NAME: &'static str = "arm64";
 
+    fn relocation(kind: object::elf::RelocationType) -> Relocation {
+        use object::elf;
+        match kind {
+            elf::R_AARCH64_RELATIVE => Relocation::Relative,
+            elf::R_AARCH64_ABS64 | elf::R_AARCH64_GLOB_DAT | elf::R_AARCH64_JUMP_SLOT => {
+                Relocation::Absolute
+            }
+            _ => Relocation::Other,
+        }
+    }
+
     fn disassemble(code: &[u8]) -> String {
         format!("{:?}", decode(word(code)))
     }

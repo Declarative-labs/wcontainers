@@ -125,7 +125,7 @@ fn binary(out: &mut String, name: &str) {
         .iter()
         .find(|s| s.name == name)
         .unwrap_or_else(|| panic!("no set named {name}"));
-    let binary = Binary::read(source.name, &std::fs::read(source.file()).unwrap());
+    let binary = Binary::read::<Arm64>(source.name, &std::fs::read(source.file()).unwrap());
     let all = binary.starts.all();
     let mut start_sets = vec![(String::new(), all, false)];
     for (means, starts) in binary.starts.by_means() {

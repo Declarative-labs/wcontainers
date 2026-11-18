@@ -106,7 +106,7 @@ fn small_binaries_translate_and_load() {
         .iter()
         .filter(|s| matches!(s.name, "busybox" | "musl"))
     {
-        let binary = Binary::read(source.name, &std::fs::read(source.file()).unwrap());
+        let binary = Binary::read::<Arm64>(source.name, &std::fs::read(source.file()).unwrap());
         assert_eq!(binary.unwind_errors, 0, "{}", binary.name);
         let starts = binary.starts.all();
         for optimise in [Optimise::Speed, Optimise::Size] {
@@ -141,7 +141,7 @@ fn a_bad_unwind_entry_loses_only_itself() {
     use object::{Object, ObjectSection};
     let source = SOURCES.iter().find(|s| s.name == "musl").unwrap();
     let bytes = std::fs::read(source.file()).unwrap();
-    let whole = Binary::read(source.name, &bytes);
+    let whole = Binary::read::<Arm64>(source.name, &bytes);
     let file = object::File::parse(&*bytes).unwrap();
     let section = file.section_by_name(".eh_frame").unwrap();
     let (section_at, _) = section.file_range().unwrap();
@@ -163,7 +163,7 @@ fn a_bad_unwind_entry_loses_only_itself() {
     let at = section_at as usize + functions[functions.len() / 2] + 4;
     let mut broken = bytes.clone();
     broken[at..at + 4].copy_from_slice(&0x7fff_fff0u32.to_le_bytes());
-    let binary = Binary::read("musl with a bad CIE pointer", &broken);
+    let binary = Binary::read::<Arm64>("musl with a bad CIE pointer", &broken);
     assert_eq!(binary.unwind_errors, 1);
     assert!(binary.starts.unwind.is_subset(&whole.starts.unwind));
     assert!(
@@ -186,7 +186,7 @@ fn measure_binaries() {
     for source in chosen() {
         let file = std::fs::read(source.file()).unwrap();
         let started = Instant::now();
-        let binary = Binary::read(source.name, &file);
+        let binary = Binary::read::<Arm64>(source.name, &file);
         let reading = started.elapsed().as_secs_f64();
         let starts = binary.starts.all();
         let code = &binary.image[binary.code.start as usize..binary.code.end as usize];

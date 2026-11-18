@@ -20,6 +20,8 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     const GENERAL_ONLY: &'static [&'static str];
     /// The suffix of this CPU's names, as in `layer1_arm64`.
     const NAME: &'static str;
+    /// What a dynamic relocation type of a real binary does.
+    fn relocation(kind: object::elf::RelocationType) -> Relocation;
     /// One instruction as text for failure messages.
     fn disassemble(code: &[u8]) -> String;
 
@@ -69,6 +71,15 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     // --- blobs ---
     /// The stand-in's system call numbers.
     const STAND_IN: StandIn;
+}
+
+/// What a dynamic relocation does: add the load address, or put a symbol's address, or something the
+/// starts of functions are not found through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Relocation {
+    Relative,
+    Absolute,
+    Other,
 }
 
 /// An instruction's bytes: the first `length` of `bytes`.

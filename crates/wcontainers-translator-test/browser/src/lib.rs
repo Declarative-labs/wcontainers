@@ -208,6 +208,14 @@ pub extern "C" fn thread_module() -> i32 {
     answer(wcontainers_translator::thread_module::<G>())
 }
 
+/// The guest's thread block to start a program at `pc` with stack pointer `sp`, in the output buffer.
+/// Returns its length.
+#[unsafe(no_mangle)]
+pub extern "C" fn initial_block(pc: i64, sp: i64) -> i32 {
+    use zerocopy::IntoBytes;
+    answer(G::initial_block(pc as u64, sp as u64).as_bytes().to_vec())
+}
+
 /// Everything the runner must agree on with the translator and the shared crate, as JSON. Returns its
 /// length.
 #[unsafe(no_mangle)]

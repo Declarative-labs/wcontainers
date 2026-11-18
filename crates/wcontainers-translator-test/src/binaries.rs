@@ -1,6 +1,7 @@
 //! Real ARM64 Linux binaries, for measuring the translator at scale: each file's code and every start address
 //! the file offers.
 
+use crate::guest::{GuestTest, Relocation};
 use object::elf;
 use object::read::elf::{Dyn, ElfFile64, FileHeader, ProgramHeader, Rela, SectionHeader, Sym};
 use object::{Endianness, Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
@@ -161,8 +162,8 @@ impl Starts {
 type File<'a> = ElfFile64<'a, Endianness>;
 
 impl Binary {
-    pub fn read(name: &str, bytes: &[u8]) -> Binary {
-        let file = File::parse(bytes).expect("an ARM64 ELF file");
+    pub fn read<G: GuestTest>(name: &str, bytes: &[u8]) -> Binary {
+        let file = File::parse(bytes).expect("an ELF file");
         let endian = file.endian();
         let loads: Vec<_> = file
             .elf_program_headers()
@@ -197,7 +198,7 @@ impl Binary {
             let start = instructions.iter().map(|r| r.start).min().unwrap();
             start..instructions.iter().map(|r| r.end).max().unwrap()
         };
-        let code = code.start.next_multiple_of(4)..code.end / 4 * 4;
+        let code = code.start.next_multiple_of(G::ALIGN)..code.end / G::ALIGN * G::ALIGN;
         let mut binary = Binary {
             name: name.to_string(),
             image,
@@ -205,7 +206,7 @@ impl Binary {
             starts: Starts::default(),
             unwind_errors: 0,
         };
-        binary.find_starts(&file, base);
+        binary.find_starts::<G>(&file, base);
         binary
     }
 
@@ -221,7 +222,7 @@ impl Binary {
         Some(u64::from_le_bytes(bytes.try_into().unwrap()))
     }
 
-    fn find_starts(&mut self, file: &File<'_>, base: u64) {
+    fn find_starts<G: GuestTest>(&mut self, file: &File<'_>, base: u64) {
         let endian = file.endian();
         let mut starts = Starts::default();
         let code = |address| self.in_code(base, address);
@@ -271,14 +272,12 @@ impl Binary {
                     for rela in relas {
                         let place = rela.r_offset(endian);
                         let addend = rela.r_addend(endian) as u64;
-                        let value = match rela.r_type(endian, false) {
-                            elf::R_AARCH64_RELATIVE => Some(addend),
-                            elf::R_AARCH64_ABS64
-                            | elf::R_AARCH64_GLOB_DAT
-                            | elf::R_AARCH64_JUMP_SLOT => symbols
+                        let value = match G::relocation(rela.r_type(endian, false)) {
+                            Relocation::Relative => Some(addend),
+                            Relocation::Absolute => symbols
                                 .get(&rela.r_sym(endian, false))
                                 .map(|v| v.wrapping_add(addend)),
-                            _ => None,
+                            Relocation::Other => None,
                         };
                         if let Some(value) = value {
                             relocated.insert(place, value);

@@ -47,7 +47,9 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
    test bodies over `G`.
 3. The test files still pinned to `Arm64` (`::<Arm64>` calls, no wrapper): `programs.rs` (its other-host test
    needs the probe answers a guest has), `benchmarks.rs`, `output.rs` (ARM64's four probe answers),
-   `binaries.rs` with `relocation(kind)` from `src/binaries.rs`, and `src/bin/machine-code.rs`. `decoding.rs`
+   `binaries.rs` (`relocation` is in the guest's part now, but the image list `SOURCES` with musl's loader
+   path and the files under `target/binaries` are ARM64's: per guest, without losing M5's files), and
+   `src/bin/machine-code.rs`. `decoding.rs`
    and `valid.rs` test ARM64's decoder itself: name them as ARM64's (or move them to the ARM64 crate's tests).
 4. `programs/` per CPU (`PROGRAMS`: start code, assembly tests, `written_code.c`, `differences.c`),
    `ELF_MACHINE`, `MUSL_LOADER`, `auxiliary`.
@@ -70,6 +72,8 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 - The browser crate: the guest by a feature (`arm64`), built per guest under `target/browser/<name>`; the
   contract gives `pcOffset` and `flagsWordOffset`; the page takes the stand-in's numbers from its settings
   and steps slots by `align`.
+- `relocation(kind)` (taking `object`'s relocation type, not a `u32`) and the code range of a real binary by
+  `G::ALIGN` in `src/binaries.rs`.
 - Tests written once over `G` with an `_arm64` wrapper each: `layer1.rs`, `cases.rs` (layer 1 part),
   `browser.rs`, `float_hook.rs`, `lookaheads.rs`, `layer3.rs`.
 - Same cases: `same-cases.sh d27cd70 1 2 3 5309` (scratch `x2/run2/same-cases-1.log`, Mac load 15.7 to 19.5):
