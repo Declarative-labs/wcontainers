@@ -1414,7 +1414,9 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   other than one instance: natively where the back end has `INSTANCE_STEP_RATE` (WebGL 2's divisor),
   otherwise `InstanceRateInShader`. Direct3D reads zero past the end of a vertex buffer:
   for draws without indices the front draws the part past the end with a zero buffer bound
-  (`VertexFetchZeroed`), exact; for indexed draws, indices past the end get what WebGPU's robust access
+  (`VertexFetchZeroed`), exact; an indirect one's count is known only on the GPU, and WebGPU skips an
+  indirect draw reading past the end whole, a listed loss (`IndirectFetchPastEnd`, counted at each
+  indirect draw without indices fetching per-vertex streams); for indexed draws, indices past the end get what WebGPU's robust access
   gives (zero or a value from inside the buffer), a listed loss, as DXVK has on Vulkan without
   `robustBufferAccess2`.
 - Stream output that transform feedback cannot write as declared (gaps that must leave the buffer's
