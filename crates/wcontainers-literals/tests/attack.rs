@@ -8,7 +8,8 @@ mod common;
 
 use std::sync::OnceLock;
 
-use common::{Row, in_item, list, workspace};
+use common::{Row, list, workspace};
+use wcontainers_literals::List;
 
 const FILES: &[(&str, &str)] = &[
     (
@@ -320,32 +321,18 @@ fn rows() -> &'static [Row] {
     ROWS.get_or_init(|| list(&workspace("attack", FILES)))
 }
 
-/// The item holds a finding in a gated list (or in `list` when given).
-fn caught(item: &str, wanted: Option<&str>) {
-    let found = in_item(rows(), item);
-    let hit = found
-        .iter()
-        .any(|r| r.gated() && wanted.is_none_or(|w| r.list == w));
-    assert!(
-        hit,
-        "{item} was not caught{}; its findings: {found:#?}",
-        wanted
-            .map(|w| format!(" in the {w} list"))
-            .unwrap_or_default()
-    );
+/// The item holds a finding in a gated list (or in `wanted` when given).
+fn caught(item: &str, wanted: Option<List>) {
+    common::caught_in(FILES, rows(), item, wanted);
 }
 
 /// The item holds no gated finding.
 fn passes(item: &str) {
-    let gated: Vec<&Row> = in_item(rows(), item)
-        .into_iter()
-        .filter(|r| r.gated())
-        .collect();
-    assert!(gated.is_empty(), "{item} was wrongly caught: {gated:#?}");
+    common::passes_in(FILES, rows(), item);
 }
 
 macro_rules! caught {
-    ($($name:ident $(in $list:literal)?),* $(,)?) => { $(#[test] #[allow(non_snake_case)] fn $name() { caught(stringify!($name), None $(.or(Some($list)))?); })* };
+    ($($name:ident $(in $list:ident)?),* $(,)?) => { $(#[test] #[allow(non_snake_case)] fn $name() { caught(stringify!($name), None $(.or(Some(List::$list)))?); })* };
 }
 macro_rules! passes {
     ($($name:ident),* $(,)?) => { $(#[test] #[allow(non_snake_case)] fn $name() { passes(stringify!($name)); })* };
@@ -353,21 +340,21 @@ macro_rules! passes {
 
 caught! {
     v01_shift_by_12, v02_mask_0xfff, v03_one_shl_12, v04_inside_vec_macro, v05_match_arm, v06_array_length_in_let,
-    v07_const_generic, v08_closure, v09_inline_const_block, v10_local_const_other_name in "restated",
+    v07_const_generic, v08_closure, v09_inline_const_block, v10_local_const_other_name in Restated,
     v11_parsed_string, v12_char, v13_byte, v14_float, v15_cast, v16_duration, v17_path_string,
-    v18_test_retypes_page_size in "restated", v19_write_macro_hides_value, v20_format_hides_path,
-    v21_let_stdout_fd in "role", v22_root_uid_comparison in "role", v23_fd_argument in "role",
+    v18_test_retypes_page_size in Restated, v19_write_macro_hides_value, v20_format_hides_path,
+    v21_let_stdout_fd in Role, v22_root_uid_comparison in Role, v23_fd_argument in Role,
     v24_impl_in_const_block, V25_HANDLER, v26_production_under_any_test, v30_page, V31Aligned, v32_include,
     v34_generated_marker_in_a_doc, v35_folder_named_target, v36_folder_named_examples, v38_ok_or_hides_path,
     v39_assert_eq_hides_value, v41_unknown_macro_tokens, v42_min_counting, v43_elf_magic, v44_hex_string,
-    v45_size_of_disguise, PAGE_SIZE_DISGUISED in "restated", v46_struct_field, v47_wrapping_shl, v48_round_up,
-    v49_let_tuple, v50_negative_errno, v51_exit_status in "role", v53_assign_root in "role", v54_concat,
+    v45_size_of_disguise, PAGE_SIZE_DISGUISED in Restated, v46_struct_field, v47_wrapping_shl, v48_round_up,
+    v49_let_tuple, v50_negative_errno, v51_exit_status in Role, v53_assign_root in Role, v54_concat,
     v55_env_name, v56_context_hides_path, v57_err_hides_value, v58_io_error_hides_path, v59_index_with_meaning,
-    v60_index_one_meaning in "role", v62_long_string, v63_debug_assert_eq_message_value, v64_tracing_like,
+    v60_index_one_meaning in Role, v62_long_string, v63_debug_assert_eq_message_value, v64_tracing_like,
     v65_byte_array_literal, v66_let_else, v67_async_block, V68Trait, V69, v70_cfg_not_test, v71_cfg_on_statement,
     v72_module_file_named_tests, v73_user_macro_named_like_log, v74_expect_value, v75_unwrap_or,
     v76_assert_comparison, v78_string_from_number, v79_shift_assign, v80_compound_mask,
-    EINVAL in "redefinition", SEPARATOR in "redefinition", POLL_INTERVAL_MS in "redefinition",
+    EINVAL in Redefinition, SEPARATOR in Redefinition, POLL_INTERVAL_MS in Redefinition,
 }
 
 /// The same name and value as another constant: `Foo::PAGE_SIZE`, `X86::PAGE_SIZE` and more.rs's.
@@ -375,21 +362,18 @@ caught! {
 fn page_size_copies() {
     let copies: Vec<&Row> = rows()
         .iter()
-        .filter(|r| r.list == "redefinition" && r.literal.contains("PAGE_SIZE = 4096"))
+        .filter(|r| r.is_in(List::Redefinition) && r.literal.contains("PAGE_SIZE = 4096"))
         .collect();
-    let paths: Vec<String> = copies
-        .iter()
-        .map(|r| format!("{}:{}", r.path, r.line))
-        .collect();
+    let places: Vec<(&str, usize)> = copies.iter().map(|r| (r.path.as_str(), r.line)).collect();
     for wanted in [
-        "crates/victim/src/lib.rs:65",
-        "crates/victim/src/lib.rs:69",
-        "crates/victim/src/more.rs:3",
-        "crates/victim/tests/page.rs:7",
+        ("crates/victim/src/lib.rs", 65),
+        ("crates/victim/src/lib.rs", 69),
+        ("crates/victim/src/more.rs", 3),
+        ("crates/victim/tests/page.rs", 7),
     ] {
         assert!(
-            paths.iter().any(|p| p == wanted),
-            "{wanted} not reported as a copy: {paths:?}"
+            places.contains(&wanted),
+            "{wanted:?} not reported as a copy: {places:?}"
         );
     }
 }

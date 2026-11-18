@@ -5,57 +5,44 @@ Plan and rule: docs/literals.md. Branch: phase-1-literals.
 ## Done (milestone L1)
 
 - Crate `crates/wcontainers-literals`: the audit's scanner, changed to the final rule:
-  - -1, 0, 1, 2 free as arithmetic, gated in a role (uid, fd, pid, exit status and the rest);
+  - -1, 0, 1, 2 free as arithmetic, gated in a role (uid, fd, pid, exit status and the rest, and the C library's `getuid`, `setpgid` and the like); a name that also says count, mask, len, size, total or number is not a role;
   - the mark `// standalone NUMBER: reason` on the line above, refused without a reason, on text, with nothing under it, on a number any reachable constant has (any size), or on a number another mark also covers; every mark listed and counted by every run;
-  - text shown to a person free unless it holds a number, a path, or the value of a string constant its crate can reach (name-like words only);
+  - text shown to a person free unless it holds a number, a path, or the value of a string constant its crate can reach (name-like words only); a string in a message position with no space that is not one plain lower-case word is data, so code (`"HOME={}"`, `"{name}.tar"`, `"GET"`); a macro's string arguments after its format string are code;
   - one baseline for the workspace, `literals.baseline` at the root, sorted, one key per line;
-  - growth checked from git history (src/history.rs): the baseline's start on the first-parent chain, one `init` after it arrives by a merge, merges allowed to bring the other side's lines (checked back to the merge base), deletion and re-adding counted as growth, shallow clones refused; diffs read with `--text`, any git attribute on the baseline refused, a second unrelated start anywhere in the history refused, and the last commit that could add lines printed by every run and compared with the branch's upstream when it has one.
-  - scanned files: what `git ls-files --cached --others --exclude-standard` lists, plus every module placed with `#[path]` or declared under a test attribute wherever it lies; the old folder walk (hidden folders, CACHEDIR.TAG, node_modules) is gone.
+  - growth checked from git history (src/history.rs): lines may be added only by the start, the init after the baseline arrives by a merge, a change where the checker's own `src` differs from the baseline's previous change (new rules), or the change after a merge that brought new rules. Every such change, on every side of every merge, is listed by every run ("changes that could add lines to the baseline: N"). Merges may bring the other side's lines (checked back to the merge base); deletion and re-adding is growth; shallow clones, git attributes on the baseline and a second unrelated start fail; with an upstream, each change of the upstream's that could add lines must also be one on the branch.
+  - scanned files: what `git ls-files --cached --others --exclude-standard` lists, minus `skip` policy lines, plus every module a scanned file declares wherever it lies. The workspace manifest's `exclude` no longer takes anything out. The root of a shipped target placed in tests/ (`[lib] path`, `[[bin]] path`, `package.build`) and the modules it declares are code.
   - every linux-raw-sys version in Cargo.lock must be unpacked under CARGO_HOME, or the check stops with an error saying to run `cargo fetch`.
 - Commands: `check`, `init`, `list`. Every output line ends in `do:` and what to do.
-- Tests (all pass): `tests/attack.rs` (the audit's 110 snippet tests), `tests/second_attack.rs` (my 20 hiding and 10 legitimate snippets, and two tests of marks), `tests/third_attack.rs` (18 tests from the independent check of run 1's work), `tests/baseline.rs` (21 git scenarios), `tests/fixture.rs` (the audit's fixture, output reviewed line by line), `tests/workspace.rs` (the check on this workspace).
-- `literals.baseline`: main's state, 7972 lines at its start, 7958 now (run 2 removed the 14 `env!("CARGO_MANIFEST_DIR")` lines, now free), of which 11 are `generated` policy lines (kernel `src/linux/*.rs`, `src/syscall/list.rs`), proposed by init and as the audit expected. The check passes on this branch.
-- The crate passes its own rule with no marks and no baseline line: no gated finding under crates/wcontainers-literals, tests included (the first baseline had 17 lines for its tests, which wrote the output prefixes, git's name and "::"; the tests now import them, and the lines were removed); its 16 free numbers listed by `list` were read one by one in run 2 (pairs in `windows(2)`, "more than one parent", "one argument", the first column, the second change after an arrival, an index of the first or last segment) and none carries a role; the free numbers used as arithmetic (`checked_sub(1)`, `start + 1`) are the previous and the next.
+- Tests (all pass): `tests/attack.rs` (110, the audit's snippets), `tests/second_attack.rs` (32), `tests/third_attack.rs` (18), `tests/fourth_attack.rs` (19, the third run's review), `tests/baseline.rs` (23 git scenarios), `tests/fixture.rs` (1), `tests/workspace.rs` (1, the check on this workspace). Every snippet test first checks that the snippet is in the fixture text, so a renamed or deleted snippet fails.
+- `literals.baseline`: main's state. 7972 lines at its start; 7958 after run 2; 8059 now: run 3's rules gate 102 data strings in other crates' code (`format!("{name}.tar")`, `"HOME={}"`, `"cargo:rerun-if-changed={}"`, ...) and free one role line (`signal_mask: 0` in the kernel's `Thread::new`). Written by `init` in the commit that changed the rules (1696d3f1), which the history allows and lists. 11 of the lines are `generated` policy lines (kernel `src/linux/*.rs`, `src/syscall/list.rs`).
+- The crate passes its own rule with no marks and no baseline line, tests included. Run 3 named the separators it wrote (`LOCATION_SEPARATOR` ':', `PATH_SEPARATOR` "::" where it was written out, `NEGATIVE_SIGN`, the byte literal's `b'` and quote), and its tests now import the list names, kinds, separators, `DO`, `DELETE_LINE`, `MARKS_HEADING`, `MARK_WORD` and `policy_line` instead of writing them.
 
 ## How to run
 
-- `nix develop -c cargo run -q -p wcontainers-literals -- check` (exit 0 is clean); `-- list` for every finding; `-- init` once per track after the merge that brings the baseline.
+- `nix develop -c cargo run -q -p wcontainers-literals -- check` (exit 0 is clean); `-- list` for every finding; `-- init` once per track after the merge that brings the baseline, and again only after a merge that brings new rules.
 - `nix develop -c cargo test -p wcontainers-literals -- --test-threads 3`; the workspace check alone: `--test workspace`.
-- On a machine where Cargo has not yet downloaded the workspace's crates, run `cargo fetch` once: the check needs the linux-raw-sys sources, and stops with an error without them.
-- The bar on a scratch clone: `python3 -I pyro-parked/wcontainers-scratch/literals/bar.py <path to the built wcontainers-literals>` (clones the branch into scratch/literals/clone). Clean-build timing: `scratch/literals/clean-build.sh`.
+- On a machine where Cargo has not yet downloaded the workspace's crates, run `cargo fetch` once.
+- The bar on a scratch clone: `python3 -I pyro-parked/wcontainers-scratch/literals/bar.py <path to the built wcontainers-literals>` (clones the branch into scratch/literals/clone; cheats 1 to 17). Clean-build timing: `scratch/literals/clean-build.sh`.
 - Build output goes to `CARGO_TARGET_DIR=/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/literals/target`.
 
 ## Measurements (Apple M5 Max, shared with other tracks)
 
-- Check on the whole workspace (292 Rust files, 6 scripts), run 2: 2.36 to 2.55 s wall with the test build and 1.52 to 1.83 s with a release build, three runs each, at a load average of 48 to 51 (2026-11-18 15:08). Run 1 measured 1.9 to 2.4 s and 1.7 to 2.0 s, at a load of 66 to 77.
-- From an empty build folder, `cargo test -j 3 -p wcontainers-literals --test workspace` took 22 s including the build, at a load of 48 to 51 (`clean-build.sh`, run 2).
-- Whole crate test suite: 14 to 28 s, most of it the 21 git scenarios (14 to 28 s), at a load of 50 to 80 (run 2).
+- Check on the whole workspace (293 Rust files, 6 scripts), run 3: 2.88 to 3.85 s wall with the test build and 2.15 to 2.65 s with a release build, three runs each, at a load average of 112 to 125 (15:51). Run 2 measured 2.36 to 2.55 s and 1.52 to 1.83 s at a load of 48 to 51.
+- From an empty build folder, `cargo test -j 3 -p wcontainers-literals --test workspace` took 33 s including the build, at a load of 112 to 125 (`clean-build.sh`, run 3; 22 s at a load of 48 to 51 in run 2).
+- Whole crate test suite, run 3: 45.6 s wall including the build, most of it the 23 git scenarios (29 s), at a load average of 98 to 103 (15:45).
+- The bar, run 3: each check 2.0 to 2.8 s at a load of 75 to 98 (15:46 to 15:48), and 4.4 to 5.5 s in the second pass at a load of about 97.
 
-## Independent check of run 1, and how each finding was settled (run 2)
+## Independent check of run 2, and how each finding was settled (run 3)
 
-- Growth hidden by `literals.baseline binary` in .gitattributes: fixed. History is read with `--text`, and any attribute on the file fails. Bar cheat 7 and test `growth_behind_a_binary_attribute_fails`.
-- A folder holding CACHEDIR.TAG was skipped: fixed. The scan lists files with git, so build output is left out only by the ignore rules. Bar cheat 8 and test `code_in_tagged_hidden_and_ignored_folders_is_scanned`.
-- Missing linux-raw-sys sources were skipped silently: fixed. That is now an error naming `cargo fetch`. Bar cheat 11 and test `a_missing_reference_crate_is_an_error`.
-- A fresh start fast-forwarded onto the track: fixed. Starts are found over the whole history (`git log --full-history -m --diff-filter=A`), and two unrelated starts fail. Bar cheat 10, and tests `a_fresh_start_fast_forwarded_onto_the_track_fails` and `a_side_branch_that_starts_its_own_baseline_fails` (the latter used to record that it got through).
-- What remains of that hole is a second adoption: a fork from before the track adopted merges the literals branch, runs init with new literals, and replaces the track. There is still one start, so this is caught only by comparing with the upstream (test `a_second_adoption_is_seen_only_against_the_upstream`) or by a person comparing the printed commit. The document says so plainly, and asks each track to record that commit.
-- Marks: fixed. A mark on any value a reachable constant has is refused (`9` with `SIGNAL_KILL`), and the same number marked twice fails both marks. Bar cheat 12 and tests r07/r08.
-- `#[path]` into a hidden folder: fixed. Placed modules are scanned wherever they are. Bar cheat 9.
-- `env!("CARGO_PKG_VERSION")`: `CARGO_*` and `OUT_DIR` given to `env!`/`option_env!` are now free; any other name is still code.
-- The review's snippets:
-  - Now caught: `#[serde(rename = "st_uid")]` (restated), `ExitCode::from(2)`, `let (uid, gid) = (0, 0)`, `fn stdout_fd() -> i32 { 1 }`, `return -1` in `fn pid`, Python `4096>size`, shell `$((4096>>2))`.
-  - Still get through, now listed in the document with tests: a decimal in a message, a build script's `cargo:` lines, paths in scripts.
-
-The bar, run 2, on a scratch clone (`bar.py`, debug binary, load average 52 to 82, 2026-11-18 15:07):
-- Clean tree: passes, 2.26 s.
-- A bare literal added to the kernel fails with `+ code crates/wcontainers-kernel/src/lib.rs:686:39 ... 31337`.
-- A deleted baseline line fails with `+` for the literal it covered.
-- Growth fails with `>`, both uncommitted and committed.
-- A mark with a reason passes and is listed (`marks: 1` and the reason). A mark without a reason fails with `+ mark`.
-- Two branches that each mark a literal in a different crate (arm64, kernel-test): git merged them with no conflict, and the check passed.
-- Cheats 1 to 4 and 6 are caught as before: side-branch growth, deleting and re-adding the baseline, a skip policy line, a literal moved under cfg(test), and a shallow clone. Cheat 5, a literal written into a generated file, still gets through, as documented.
-- Cheats 7 to 12, from the review, are all caught (see above).
-
-Second attack (run 1, tests/second_attack.rs): 14 of 20 hiding snippets caught and 6 get through (1+1+1+1, 2<<2<<2, twelve 2s, a format width, write(2, ..), kill(-1, ..)). None of the 10 legitimate snippets is wrongly caught. Unchanged in run 2.
+- Workspace `exclude` hid a member's folder: fixed by dropping the special case; only a `skip` policy line (growth) takes a path out. Bar cheat 13 and test `f03_excluded_folder_is_scanned`.
+- A side adoption merged into a track that had adopted: cannot be told apart from another track's adoption merged through main, so it passes. It is now seen: every run lists every change that could add lines, on every side, and the side's init appears in it (bar cheat 14, test `a_side_adoption_merged_into_a_track_is_listed`). The old line "the last that could add lines", which hid it, is gone. Documented as a gap with what a reviewer compares.
+- Data in message positions: gated (see above), including a key split across format arguments (bar cheat 16, tests d01 to d05). A string with a space that a program parses still passes, documented with test g01.
+- A [[bin]] rooted in tests/: code, and its modules too (bar cheat 15, test f01).
+- `setuid(0)`, `getuid() == 0`: role (d06, d07). `pid_count`, `status_messages`, `signal_mask`: free (e01 to e03).
+- The checker's own "::" and ':': named. The punctuation-only constant in a sentence remains a documented gap (g04).
+- Booleans as numbers, a page size from std bit widths, a test writing a small named value: documented gaps with tests (g02, g03, g05).
+- `passes()` testing nothing: every snippet test now asserts the snippet is written in the fixture.
+- Naming a value can turn other tracks' test literals into `restated`: adoption step 8 says what to do.
 
 ## Dependencies and licences
 
@@ -63,19 +50,16 @@ syn 2.0.119, proc-macro2 1.0.107, quote 1.0.47, toml 1.2.1: MIT OR Apache-2.0. f
 
 ## Departures from the plan
 
-- The workspace manifest needed no line: `members = ["crates/*"]` already takes the crate. Cargo.lock gained the crate's own entry.
-- One baseline for the workspace, as the task asks, instead of the audit's one per crate. Growth is checked against the branch's own history in git, not against main, because each track starts its own baseline after merging.
+- The workspace manifest needed no line: `members = ["crates/*"]` already takes the crate.
+- One baseline for the workspace, as the task asks, instead of the audit's one per crate. Growth is checked against the branch's own history in git, not against main.
+- The baseline may grow at a change of the checker's rules (run 3). Without this, every tightening of the rules would fail every track that adopted the check, with no legal fix. Anyone can edit the checker's source to pass as new rules, so such a change is not proof; it is listed by every run for a reviewer to judge.
 - A policy line added after the baseline started counts as growth. There is no approval path for a new generated file or vendored folder yet; that is the orchestrator's decision.
-- `list` does not propose generated files; only `init` does (printed as `proposed:`), so the audit's fixture now lists its "@generated" file as code.
+- `list` does not propose generated files; only `init` does.
 - The free numbers count as no number in messages too (the audit exempted 0 and 1).
-- Improvements that would gate literals already on main could not be made, because the baseline cannot grow. They are listed as gaps in the document instead:
-  - a build script's `cargo:` lines as code (4 in crates/wcontainers-wasmtime/build.rs);
-  - numbers and paths in attribute strings (`#![recursion_limit = "256"]` in the browser crate);
-  - the module names in a role hint (`signal::sender_info(.., 0, 0)` in the kernel, 5 literals).
-  Attribute strings are gated only when they write out a string constant, and role hints read only a function's types, never its modules.
-- The upstream comparison works only where `@{upstream}` exists. A run without one says so in its summary line ("no upstream branch to compare it with"); it is not silent.
-- The rule's "a name that has a constant" in text is read as a word with an upper-case letter, a digit or one of `_ - . : /` that equals the value of a string constant its crate can reach: plain English words are left alone.
+- Still not gated, because it would gate literals on main that run 2 could not add (now possible with the rules path, left for a later run): numbers and paths in attribute strings, and module names in a role hint. Both are documented gaps.
+- The upstream comparison works only where `@{upstream}` exists; a run without one says so.
+- "A name that has a constant" in text is read as a word with an upper-case letter, a digit or one of `_ - . : /` that equals a string constant its crate can reach.
 
 ## Next
 
-- Milestone L1 is complete. Nothing further is planned in this file.
+- Milestone L1 is complete. Not yet done and possible now that new rules may rewrite the baseline: gating numbers and paths in attribute strings, and reading module names in role hints.

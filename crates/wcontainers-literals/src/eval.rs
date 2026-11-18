@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use syn::{BinOp, Expr, GenericArgument, Lit, PathArguments, Type, UnOp};
 
-use crate::findings::PATH_SEPARATOR;
+use crate::findings::{LOCATION_SEPARATOR, PATH_SEPARATOR};
 
 /// A value that literals and constants can share.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -22,11 +22,15 @@ pub enum Value {
     Char(char),
 }
 
+/// How Rust writes a byte literal: `b'x'`.
+const BYTE_PREFIX: &str = "b'";
+const BYTE_QUOTE: char = '\'';
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(v) => write!(f, "{v}"),
-            Value::Byte(b) => write!(f, "b'{}'", b.escape_ascii()),
+            Value::Byte(b) => write!(f, "{BYTE_PREFIX}{}{BYTE_QUOTE}", b.escape_ascii()),
             Value::Str(s) => write!(f, "{s:?}"),
             Value::Char(c) => write!(f, "{c:?}"),
         }
@@ -416,8 +420,11 @@ fn names_type(qualifier: &str) -> bool {
 impl ConstDef {
     pub fn display(&self) -> String {
         match &self.scope {
-            ConstScope::Reference(module) => format!("{module}::{}", self.bare),
-            _ => format!("{} ({}:{})", self.qualified, self.path, self.line),
+            ConstScope::Reference(module) => format!("{module}{PATH_SEPARATOR}{}", self.bare),
+            _ => format!(
+                "{} ({}{LOCATION_SEPARATOR}{})",
+                self.qualified, self.path, self.line
+            ),
         }
     }
 

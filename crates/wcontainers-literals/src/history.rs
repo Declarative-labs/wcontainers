@@ -1,8 +1,10 @@
 //! The baseline's history in git, so that it can only shrink. Every line the baseline gained after it
 //! started is reported with the commit that added it, unless a merge brought it from the other side,
-//! where the same rule is checked back to the merge base. Two changes may add lines: the commit that
-//! starts the file on a first-parent chain, and, when that commit is a merge (the file arrived from
-//! another branch), the next change, which is the branch's `init`.
+//! where the same rule is checked back to the merge base. These changes may add lines: the commit that
+//! starts the file on a first-parent chain; when that commit is a merge (the file arrived from another
+//! branch), the next change, which is the branch's `init`; and a change made where the checker's own
+//! source changed since the previous change (new rules), or the change after a merge that brought new
+//! rules. Every such change, on every side, is listed by every run, so that none passes unseen.
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
@@ -61,14 +63,23 @@ const REMOVED: char = '-';
 /// Where uncommitted lines come from, in a report.
 pub const WORKING_TREE: &str = "the working tree";
 const SHORT_COMMIT: usize = 12;
+const DIFF: &str = "diff";
+const QUIET: &str = "--quiet";
+/// Why a change may add lines.
+const AT_START: &str = "the start";
+const AFTER_ARRIVAL: &str = "the init after the baseline arrived by a merge";
+const NEW_RULES: &str = "the checker's rules changed";
+const AFTER_NEW_RULES: &str = "the change after a merge that brought new rules";
 const SHALLOW: &str = "the git history is shallow, so the baseline's growth cannot be checked: fetch the whole history (git fetch --unshallow)";
 
 pub struct History {
+    /// Every change, on every side, that was allowed to add lines, with why, oldest first per chain.
+    pub additions: Vec<String>,
     /// Lines added after the start that no parent had, each with the commit that added it.
     pub grown: Vec<(String, String)>,
     /// What is wrong with the history as a whole, each with what to do.
     pub problems: Vec<(String, &'static str)>,
-    /// Lines removed at some point since the start.
+    /// Lines removed at some point since the start, except by a change that could also add lines.
     pub removed: BTreeSet<String>,
     /// Where the baseline started on this branch.
     pub start: String,
@@ -117,6 +128,9 @@ struct Diff {
 struct Walker<'a> {
     root: &'a Path,
     rel: &'a str,
+    /// The checker's own source folder, relative to the root, whose changes are new rules.
+    rules: Option<&'a str>,
+    additions: Vec<String>,
     seen: HashSet<(String, Option<String>)>,
     grown: Vec<(String, String)>,
     removed: BTreeSet<String>,
@@ -126,10 +140,12 @@ struct Walker<'a> {
 #[derive(Default)]
 struct Chain {
     changes: usize,
-    started: bool,
     arrived: bool,
-    /// The last change allowed to add lines: the init after an arrival, or else the start.
-    anchor: Option<String>,
+    /// The changes allowed to add lines, with why.
+    allowed: Vec<(String, &'static str)>,
+    /// The last change, and whether a change after it may add lines (it was a merge with new rules).
+    last: Option<String>,
+    after_new_rules: bool,
 }
 
 const ATTRIBUTES: &str = "remove every attribute of literals.baseline from .gitattributes (and .git/info/attributes): attributes can hide its history";
@@ -269,8 +285,19 @@ impl Walker<'_> {
         Ok(roots)
     }
 
-    /// Where the file starts on a chain of changes, and the start's anchor.
-    fn start(&self, changes: &[Change]) -> Result<Chain, String> {
+    /// The checker's source differs between a commit and a later one, or the working tree.
+    fn rules_differ(&self, from: Option<&str>, to: Option<&str>) -> Result<bool, String> {
+        let (Some(rules), Some(from)) = (self.rules, from) else {
+            return Ok(false);
+        };
+        let mut args = vec![DIFF, QUIET, from];
+        args.extend(to);
+        args.extend([PATHS, rules]);
+        Ok(!run(self.root, &args)?.status.success())
+    }
+
+    /// Where the file starts on a chain of changes down to `stop`, and which changes may add lines.
+    fn start(&self, changes: &[Change], stop: Option<&str>) -> Result<Chain, String> {
         let started = match changes.first() {
             Some(first) => match first.parents.first() {
                 Some(parent) => !self.has_file(parent)?,
@@ -279,16 +306,34 @@ impl Walker<'_> {
             None => false,
         };
         let arrived = started && changes.first().is_some_and(|c| c.parents.len() > 1);
-        let anchor = match (arrived, changes.get(1), changes.first()) {
-            (true, Some(init), _) => Some(init.commit.clone()),
-            (_, _, Some(first)) if started => Some(first.commit.clone()),
-            _ => None,
-        };
+        let mut allowed = Vec::new();
+        let mut previous = stop.map(String::from);
+        let mut after_new_rules = false;
+        for (i, change) in changes.iter().enumerate() {
+            let new_rules = self.rules_differ(previous.as_deref(), Some(&change.commit))?;
+            let why = if started && i == usize::default() {
+                Some(AT_START)
+            } else if arrived && i == 1 {
+                Some(AFTER_ARRIVAL)
+            } else if new_rules {
+                Some(NEW_RULES)
+            } else if after_new_rules {
+                Some(AFTER_NEW_RULES)
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                allowed.push((change.commit.clone(), why));
+            }
+            after_new_rules = new_rules && change.parents.len() > 1;
+            previous = Some(change.commit.clone());
+        }
         Ok(Chain {
             changes: changes.len(),
-            started,
             arrived,
-            anchor,
+            allowed,
+            last: previous.filter(|_| !changes.is_empty()),
+            after_new_rules,
         })
     }
 
@@ -299,10 +344,15 @@ impl Walker<'_> {
         }
         let changes = self.changes(tip, stop)?;
         let diffs = self.diffs(tip, stop)?;
-        let chain = self.start(&changes)?;
-        let (started, arrived) = (chain.started, chain.arrived);
-        for (i, change) in changes.iter().enumerate() {
-            let exempt = (started && i == usize::default()) || (arrived && i == 1);
+        let chain = self.start(&changes, stop)?;
+        self.additions.extend(
+            chain
+                .allowed
+                .iter()
+                .map(|(c, why)| format!("{} {why}", short(c))),
+        );
+        for change in &changes {
+            let exempt = chain.allowed.iter().any(|(c, _)| *c == change.commit);
             if let Some((_, diff)) = diffs.iter().find(|(c, _)| *c == change.commit) {
                 if !exempt {
                     self.grown.extend(
@@ -311,7 +361,10 @@ impl Walker<'_> {
                             .map(|l| (l.clone(), short(&change.commit))),
                     );
                 }
-                self.removed.extend(diff.removed.iter().cloned());
+                // A change that may rewrite the baseline may also drop lines new rules no longer need.
+                if !exempt {
+                    self.removed.extend(diff.removed.iter().cloned());
+                }
             }
             for other in change.parents.iter().skip(1) {
                 let base = match change.parents.first() {
@@ -336,7 +389,13 @@ fn multiset_minus(a: &Keys, b: &Keys) -> Vec<String> {
 }
 
 /// The baseline `rel` (relative to `root`) as it is in the working tree, against its history.
-pub fn read(root: &Path, rel: &str, working: &Keys) -> Result<History, String> {
+/// `rules` is the checker's own source folder, relative to `root`, when it is in the tree.
+pub fn read(
+    root: &Path,
+    rel: &str,
+    rules: Option<&str>,
+    working: &Keys,
+) -> Result<History, String> {
     let shallow = text(root, &[REV_PARSE, IS_SHALLOW])?;
     if shallow.trim() == TRUE {
         return Err(SHALLOW.to_string());
@@ -344,6 +403,8 @@ pub fn read(root: &Path, rel: &str, working: &Keys) -> Result<History, String> {
     let mut walker = Walker {
         root,
         rel,
+        rules,
+        additions: Vec::new(),
         seen: HashSet::new(),
         grown: Vec::new(),
         removed: BTreeSet::new(),
@@ -375,7 +436,10 @@ pub fn read(root: &Path, rel: &str, working: &Keys) -> Result<History, String> {
         false => None,
     };
     let fresh = chain.changes == usize::default();
-    let may_init = fresh || (chain.arrived && chain.changes == 1);
+    // The working tree may add lines like a change on top of the chain (an init with new rules).
+    let working_rules = walker.rules_differ(chain.last.as_deref(), None)?;
+    let may_init =
+        fresh || (chain.arrived && chain.changes == 1) || working_rules || chain.after_new_rules;
     let merging = run(root, &[verify.as_slice(), &[MERGE_HEAD]].concat())?
         .status
         .success();
@@ -398,7 +462,9 @@ pub fn read(root: &Path, rel: &str, working: &Keys) -> Result<History, String> {
                 .map(|k| (k, WORKING_TREE.to_string())),
         );
     }
-    walker.removed.extend(multiset_minus(&committed, working));
+    if !may_init {
+        walker.removed.extend(multiset_minus(&committed, working));
+    }
     let tips: Vec<&str> = [(head, HEAD), (merging, MERGE_HEAD)]
         .into_iter()
         .filter_map(|(present, tip)| present.then_some(tip))
@@ -424,13 +490,15 @@ pub fn read(root: &Path, rel: &str, working: &Keys) -> Result<History, String> {
         .then(|| String::from_utf8_lossy(&upstream.stdout).trim().to_string());
     let compared = match &upstream {
         Some(up) => {
-            let theirs = walker.start(&walker.changes(up, None)?)?.anchor;
-            if let Some(theirs) = theirs.filter(|t| chain.anchor.as_ref() != Some(t)) {
+            let theirs = walker.start(&walker.changes(up, None)?, None)?.allowed;
+            for (commit, why) in theirs
+                .iter()
+                .filter(|(t, _)| !chain.allowed.iter().any(|(c, _)| c == t))
+            {
                 problems.push((
                     format!(
-                        "{rel} starts at {} on this branch but at {} on its upstream: the start was replaced",
-                        chain.anchor.as_deref().map(short).unwrap_or_default(),
-                        short(&theirs)
+                        "{rel} may grow at {} ({why}) on its upstream but not on this branch: the start was replaced",
+                        short(commit)
                     ),
                     START_MOVED,
                 ));
@@ -439,20 +507,30 @@ pub fn read(root: &Path, rel: &str, working: &Keys) -> Result<History, String> {
         }
         None => NO_UPSTREAM.to_string(),
     };
-    let anchor = chain.anchor.as_deref().map(short).unwrap_or_default();
     let start = if fresh {
         format!("{rel} has no history on this branch yet, so every line is its start")
-    } else if may_init {
+    } else if chain.arrived && chain.changes == 1 {
         format!(
             "{rel} arrived by a merge and has not changed since: run init once, then it only shrinks"
         )
+    } else if may_init {
+        format!(
+            "the checker's rules changed since {rel} last changed: this change may add lines (run init), then it only shrinks ({compared})"
+        )
     } else {
         format!(
-            "{rel} has {} changes on this branch's first-parent history, the last that could add lines {anchor} ({compared}); growth is checked",
+            "{rel} has {} changes on this branch's first-parent history ({compared}); growth is checked",
             chain.changes
         )
     };
+    let mut additions = Vec::new();
+    for a in walker.additions {
+        if !additions.contains(&a) {
+            additions.push(a);
+        }
+    }
     Ok(History {
+        additions,
         grown: walker.grown,
         problems,
         removed: walker.removed,

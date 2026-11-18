@@ -18,7 +18,7 @@ use crate::eval::{CExpr, ConstDef, ConstScope, IntType, Value};
 use crate::findings::{
     FILE_SCOPE, Finding, Kind, List, PATH_COMPONENT_SEPARATOR, PATH_SEPARATOR, clean_literal,
 };
-use crate::text::value_like;
+use crate::text::message_text;
 
 /// Numbers that are not magic where they are plain arithmetic: nothing, the first, the next, the
 /// previous, half and double.
@@ -118,6 +118,14 @@ const COUNTING_METHODS: &[&str] = &[
 const ROLE_WORDS: &[&str] = &[
     "uid", "gid", "euid", "egid", "suid", "sgid", "fsuid", "fsgid", "fd", "pid", "tid", "ppid",
     "pgid", "sid", "exit", "status", "stdin", "stdout", "stderr", "errno", "signal", "signo",
+];
+/// Written before a negated literal.
+const NEGATIVE_SIGN: char = '-';
+/// The C library's one-word accessors of an id (`getuid`, `setsid`, `getppid`).
+const ROLE_ACCESSOR_PREFIXES: &[&str] = &["get", "set"];
+/// Words that make a name a quantity or a set of ids rather than one id (`pid_count`, `signal_mask`).
+const QUANTITY_WORDS: &[&str] = &[
+    "count", "counter", "mask", "len", "length", "total", "size", "number",
 ];
 /// The plural ending of a word in a name (`fds`).
 const PLURAL_SUFFIX: char = 's';
@@ -281,7 +289,11 @@ impl FileScan {
         };
         let start = lit.span().start();
         let text = lit.to_token_stream().to_string();
-        let literal = clean_literal(&if negative { format!("-{text}") } else { text });
+        let literal = clean_literal(&if negative {
+            format!("{NEGATIVE_SIGN}{text}")
+        } else {
+            text
+        });
         let note = match (list, hint) {
             (List::Role, Some(h)) => format!("given to {h}"),
             _ => String::new(),
@@ -331,12 +343,12 @@ impl FileScan {
         }
     }
 
-    /// A string in a message position: gated only when it holds a number or a path (or, found
-    /// later, the value of a named constant).
+    /// A string in a message position: gated when it holds a number or a path, when it is data (no
+    /// space and not one plain word), or (found later) when it writes out a named constant's value.
     fn message(&mut self, e: &Expr) {
         match e {
             Expr::Lit(l) => match &l.lit {
-                Lit::Str(s) => self.record(&l.lit, false, None, !value_like(&s.value())),
+                Lit::Str(s) => self.record(&l.lit, false, None, message_text(&s.value())),
                 lit => self.report(lit, false, None),
             },
             _ => self.visit_expr(e),
@@ -587,9 +599,12 @@ impl FileScan {
                     target.iter().for_each(|t| self.visit_expr(t));
                     let compared = COMPARISON_MACROS.contains(&name.as_str());
                     let operands: Vec<&Expr> = args.iter().take(start).collect();
+                    // The first message argument is the text; the ones after it are values.
                     for (i, a) in args.iter().enumerate() {
-                        if i >= start {
+                        if i == start {
                             self.message(a);
+                        } else if i > start {
+                            self.visit_expr(a);
                         } else if let (true, [left, right]) = (compared, operands.as_slice()) {
                             let other = if i == usize::default() { right } else { left };
                             self.given(a, hint_of(other));
@@ -669,7 +684,7 @@ impl FileScan {
                 TokenTree::Literal(l) => {
                     let lit = Lit::new(l.clone());
                     let message = mode == TokenMode::Message
-                        && matches!(&lit, Lit::Str(s) if !value_like(&s.value()));
+                        && matches!(&lit, Lit::Str(s) if message_text(&s.value()));
                     self.record(&lit, false, None, message);
                     after_sigil = false;
                 }
@@ -997,12 +1012,23 @@ pub fn words(name: &str) -> Vec<String> {
     out
 }
 
+/// A name whose words say the value is an id, a descriptor or a status (`uid`, `stdout_fd`, and the
+/// C library's one-word `getuid` and `setpgid`), and not a quantity or a set of them (`pid_count`,
+/// `signal_mask`).
 fn names_role(hint: &str) -> bool {
-    words(hint).iter().any(|w| {
-        ROLE_WORDS.contains(&w.as_str())
+    let words = words(hint);
+    let role = |w: &str| {
+        ROLE_WORDS.contains(&w)
             || w.strip_suffix(PLURAL_SUFFIX)
                 .is_some_and(|s| ROLE_WORDS.contains(&s))
-    })
+    };
+    let accessor = |w: &str| {
+        ROLE_ACCESSOR_PREFIXES
+            .iter()
+            .any(|p| w.strip_prefix(p).is_some_and(role))
+    };
+    !words.iter().any(|w| QUANTITY_WORDS.contains(&w.as_str()))
+        && words.iter().any(|w| role(w) || accessor(w))
 }
 
 fn int_type_of(ty: &Type) -> Option<IntType> {
