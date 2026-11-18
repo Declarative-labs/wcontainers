@@ -11,6 +11,7 @@
 
 mod abi;
 mod base;
+mod cache;
 mod com;
 #[macro_use]
 mod exports;
