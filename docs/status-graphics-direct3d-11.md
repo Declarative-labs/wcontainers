@@ -1619,7 +1619,8 @@ None in G4 runs 3 to 12.
   average 47 at 23:51): Wine's d3d11 file 113 of 166 in 198.7 s (23:35) and 209.9 s (00:08).
   Real programs through the whole library, 120 frames each: chocolate-doom 4.4 s,
   atg-simplelightingpc 4.1 s, atg-simpleinstancingpc 3.7 s, atg-simplecomputepc 3.5 s,
-  godot-platformer-2d-d3d11 17.9 s. Building ahead on them: no combination built ahead (as
+  godot-platformer-2d-d3d11 17.9 s. At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11
+  (14.6 GB) and the checkout's own target (1.6 GB, from `cargo check`) were deleted. Building ahead on them: no combination built ahead (as
   before; item 8 of What comes next). Module size not measured again.
 
 - 2026-11-17, G4 run 13, the desktop (i9-9900K, RTX 3080) through the queue, not alone (other
