@@ -89,11 +89,13 @@ not_implemented!(
 // ---- DXGI ----
 
 /// A DXGI factory, with the flags it was made with.
-#[implement(IDXGIFactory4)]
+#[implement(IDXGIFactory7)]
 pub struct Factory {
     pub flags: u32,
     /// The window `MakeWindowAssociation` named, as a number.
     window: std::sync::atomic::AtomicIsize,
+    /// The cookies `RegisterAdaptersChangedEvent` gave and not yet taken back, and the next one.
+    adapter_events: Mutex<(Vec<u32>, u32)>,
 }
 
 impl Factory {
@@ -107,6 +109,63 @@ impl Factory {
 
     pub fn EnumAdapters(&self, adapter: u32) -> Result<IDXGIAdapter> {
         self.EnumAdapters1(adapter)?.cast()
+    }
+
+    /// One adapter, first for every preference.
+    pub fn EnumAdapterByGpuPreference(
+        &self,
+        adapter: u32,
+        preference: DXGI_GPU_PREFERENCE,
+        riid: *const GUID,
+        out: *mut *mut c_void,
+    ) -> Result<()> {
+        if !(0..=2).contains(&preference.0) {
+            return Err(E_INVALIDARG.into());
+        }
+        give(self.EnumAdapters1(adapter)?, riid, out)
+    }
+
+    /// Presents never tear: the host shows whole frames.
+    pub fn CheckFeatureSupport(
+        &self,
+        feature: DXGI_FEATURE,
+        data: *mut c_void,
+        size: u32,
+    ) -> Result<()> {
+        if feature != DXGI_FEATURE_PRESENT_ALLOW_TEARING
+            || data.is_null()
+            || size as usize != size_of::<BOOL>()
+        {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
+        // SAFETY: the caller's BOOL, checked above.
+        unsafe { data.cast::<BOOL>().write_unaligned(FALSE) };
+        Ok(())
+    }
+
+    /// The adapter list never changes, so the event is never set.
+    pub fn RegisterAdaptersChangedEvent(&self, event: HANDLE) -> Result<u32> {
+        if event.is_invalid() {
+            return Err(DXGI_ERROR_INVALID_CALL.into());
+        }
+        let mut g = self
+            .adapter_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.1 += 1;
+        let cookie = g.1;
+        g.0.push(cookie);
+        Ok(cookie)
+    }
+
+    pub fn UnregisterAdaptersChangedEvent(&self, cookie: u32) -> Result<()> {
+        let mut g = self
+            .adapter_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = g.0.iter().position(|&c| c == cookie);
+        g.0.swap_remove(at.ok_or(DXGI_ERROR_INVALID_CALL)?);
+        Ok(())
     }
 
     pub fn EnumAdapterByLuid(
@@ -126,6 +185,7 @@ impl Factory {
         Self {
             flags,
             window: Default::default(),
+            adapter_events: Default::default(),
         }
     }
 
@@ -304,7 +364,7 @@ impl Adapter {
     /// The host's monitors, the primary first.
     /// A new factory: adapters do not keep the one that enumerated them.
     pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
-        give::<IDXGIFactory4>(Factory::new(0).into(), riid, out)
+        give::<IDXGIFactory7>(Factory::new(0).into(), riid, out)
     }
 
     pub fn EnumOutputs(&self, output: u32) -> Result<IDXGIOutput> {
@@ -588,7 +648,7 @@ impl Device {
         };
         list.take(allocator)?;
         list.start(initial);
-        give::<ID3D12GraphicsCommandList4>(list.into(), riid, out)
+        give::<ID3D12GraphicsCommandList6>(list.into(), riid, out)
     }
 
     pub fn CreateDescriptorHeap(
@@ -946,7 +1006,7 @@ impl Device {
         for (f, &value) in fences.iter().zip(values) {
             // SAFETY: fences come from this library.
             waits.push((
-                unsafe { f.as_ref().ok_or(E_INVALIDARG)?.as_impl() }.id,
+                unsafe { our_fence(f.as_ref().ok_or(E_INVALIDARG)?) }.id,
                 value,
             ));
         }
@@ -981,7 +1041,7 @@ impl Device {
         value: u64,
     ) -> Result<()> {
         // SAFETY: fences come from this library.
-        unsafe { fence.ok()?.as_impl() }.Signal(value)
+        unsafe { our_fence(fence.ok()?) }.Signal(value)
     }
 
     /// A list made closed, with no allocator, as `ID3D12Device4` makes them.
@@ -1007,7 +1067,7 @@ impl Device {
             pass_end: Mutex::new(Vec::new()),
             base: Base::child(),
         };
-        give::<ID3D12GraphicsCommandList4>(list.into(), riid, out)
+        give::<ID3D12GraphicsCommandList6>(list.into(), riid, out)
     }
 
     /// No protected session can exist (`PROTECTED_RESOURCE_SESSION_SUPPORT` answers none).
@@ -1627,14 +1687,15 @@ impl Device {
     pub fn CreateFence(
         &self,
         initial: u64,
-        _flags: D3D12_FENCE_FLAGS,
+        flags: D3D12_FENCE_FLAGS,
         riid: *const GUID,
         out: *mut *mut c_void,
     ) -> Result<()> {
         let id = gpu::call(move |d| d.create_fence(initial));
-        give::<ID3D12Fence>(
+        give::<ID3D12Fence1>(
             Fence {
                 id,
+                flags,
                 base: Base::child(),
             }
             .into(),
@@ -2013,7 +2074,7 @@ impl Queue {
         let lists = unsafe { std::slice::from_raw_parts(lists, count as usize) };
         let mut commands = Vec::with_capacity(lists.len());
         for l in lists.iter().flatten() {
-            let Ok(l) = l.cast::<ID3D12GraphicsCommandList4>() else {
+            let Ok(l) = l.cast::<ID3D12GraphicsCommandList6>() else {
                 self.unsupported("ExecuteCommandLists of a list of another kind");
                 return;
             };
@@ -2043,7 +2104,7 @@ impl Queue {
 
     pub fn Signal(&self, fence: Ref<ID3D12Fence>, value: u64) -> Result<()> {
         // SAFETY: fences come from this library.
-        let fence = unsafe { fence.ok()?.as_impl() };
+        let fence = unsafe { our_fence(fence.ok()?) };
         let (queue, id) = (self.2, fence.id);
         gpu::call(move |d| d.queue_signal(queue, id, value)).map_err(hr)
     }
@@ -2097,7 +2158,7 @@ impl Queue {
 
     pub fn Wait(&self, fence: Ref<ID3D12Fence>, value: u64) -> Result<()> {
         // SAFETY: fences come from this library.
-        let fence = unsafe { fence.ok()?.as_impl() };
+        let fence = unsafe { our_fence(fence.ok()?) };
         let (queue, id) = (self.2, fence.id);
         gpu::call(move |d| d.queue_wait(queue, id, value)).map_err(hr)
     }
@@ -2123,13 +2184,19 @@ impl Allocator {
     }
 }
 
-#[implement(ID3D12Fence)]
+#[implement(ID3D12Fence1)]
 pub struct Fence {
     id: FenceId,
+    flags: D3D12_FENCE_FLAGS,
     base: Base,
 }
 
 impl Fence {
+    /// The flags it was made with; sharing changes nothing for a fence no other process sees.
+    pub fn GetCreationFlags(&self) -> D3D12_FENCE_FLAGS {
+        self.flags
+    }
+
     pub fn GetCompletedValue(&self) -> u64 {
         let id = self.id;
         gpu::call(move |d| d.completed(id))
@@ -2643,7 +2710,7 @@ impl Blob {
 
 // ---- Command lists ----
 
-#[implement(ID3D12GraphicsCommandList4)]
+#[implement(ID3D12GraphicsCommandList6)]
 pub struct List {
     kind: D3D12_COMMAND_LIST_TYPE,
     rec: Mutex<CommandList>,
@@ -2695,6 +2762,16 @@ pub unsafe fn ours(r: &ID3D12Resource) -> &Resource {
     // SAFETY: every resource of this library implements `ID3D12Resource2`, and an interface of a
     // single chain shares its pointer with the interfaces it extends.
     unsafe { std::mem::transmute::<&ID3D12Resource, &ID3D12Resource2>(r).as_impl() }
+}
+
+/// Our object behind a fence interface of this library.
+///
+/// # Safety
+/// The fence comes from this library.
+unsafe fn our_fence(f: &ID3D12Fence) -> &Fence {
+    // SAFETY: every fence of this library implements `ID3D12Fence1`, which extends `ID3D12Fence`
+    // alone and shares its pointer.
+    unsafe { std::mem::transmute::<&ID3D12Fence, &ID3D12Fence1>(f).as_impl() }
 }
 
 /// The resource behind an interface pointer of this library.
@@ -2920,7 +2997,7 @@ impl List {
     pub fn ExecuteBundle(&self, bundle: Ref<ID3D12GraphicsCommandList>) {
         let bundle = bundle
             .as_ref()
-            .and_then(|b| b.cast::<ID3D12GraphicsCommandList4>().ok());
+            .and_then(|b| b.cast::<ID3D12GraphicsCommandList6>().ok());
         let commands = bundle.as_ref().and_then(|b| {
             // SAFETY: command lists come from this library.
             let b: &List = unsafe { b.as_impl() };

@@ -266,11 +266,14 @@ pub enum SlowPath {
     /// An atomic minimum or maximum of the other signedness than the memory's other operations, made
     /// by a compare-exchange loop.
     AtomicExchangeLoop,
+    /// A blit swap chain's buffers past the first, which DXGI moves one place at each present,
+    /// moved by copies.
+    SequentialBuffersCopied,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 104] = [
+    pub const ALL: [SlowPath; 105] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -375,6 +378,7 @@ impl SlowPath {
         SlowPath::PixelInvocationsCounted,
         SlowPath::SwizzleInShader,
         SlowPath::AtomicExchangeLoop,
+        SlowPath::SequentialBuffersCopied,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -500,6 +504,7 @@ impl SlowPath {
             SlowPath::AtomicExchangeLoop => {
                 "atomic minimum or maximum made by a compare-exchange loop"
             }
+            SlowPath::SequentialBuffersCopied => "swap chain buffers moved by copies at present",
         }
     }
 }

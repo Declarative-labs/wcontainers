@@ -39,7 +39,7 @@ pub(super) fn null_shapes(bindings: &[StageBinding]) -> Vec<(null::Shape, bool)>
     bindings
         .iter()
         .filter_map(|b| {
-            let writable = matches!(b.form, Form::Image { writable: true });
+            let writable = matches!(b.form, Form::Image { writable: true, .. });
             b.shape.map(|s| (s, writable))
         })
         .collect()
@@ -52,8 +52,8 @@ enum Form {
     Plain,
     /// A buffer of the storage address space (raw and structured views); writable or not.
     Buffer { writable: bool },
-    /// A storage texture; writable or not.
-    Image { writable: bool },
+    /// A storage texture; read, written or both.
+    Image { read: bool, writable: bool },
 }
 
 /// `D3D12_SHADER_VISIBILITY` of each graphics stage.
@@ -113,6 +113,7 @@ pub(super) fn stage_bindings(
                         },
                     ) => {
                         form = Form::Image {
+                            read: access.contains(naga::StorageAccess::LOAD),
                             writable: access.contains(naga::StorageAccess::STORE),
                         };
                     }
@@ -525,15 +526,18 @@ impl<B: Backend> Device<B> {
                                 writable,
                                 SlowPath::AtomicsThroughBuffer,
                             )?,
-                            Form::Image { writable } if !self.stores(v.format) => self
-                                .texels_through(
+                            Form::Image { read, writable }
+                                if !self.stores(v.format, read, writable) =>
+                            {
+                                self.texels_through(
                                     &v,
                                     b,
                                     writable,
                                     SlowPath::StorageFormatThroughBuffer,
-                                )?,
+                                )?
+                            }
                             Form::Buffer { writable } => self.buffer_view(&v, writable)?,
-                            Form::Image { writable } => {
+                            Form::Image { writable, .. } => {
                                 self.note(v.resource, writable);
                                 let view = self.storage_texture(&v)?;
                                 self.bound_formats.push((
@@ -597,7 +601,7 @@ impl<B: Backend> Device<B> {
                     writable,
                 }
             }
-            (_, Form::Image { writable }) => {
+            (_, Form::Image { writable, .. }) => {
                 let shape = b
                     .shape
                     .ok_or(Error::NotImplemented("null views of this storage texture"))?;
@@ -859,14 +863,20 @@ impl<B: Backend> Device<B> {
         Ok(s)
     }
 
-    /// The back end stores into textures of DXGI format `value`.
-    fn stores(&self, value: u32) -> bool {
+    /// A storage texture of DXGI format `value` that the program reads, writes or both binds
+    /// as one on the back end. Read and written ones take only the 32-bit single-channel formats,
+    /// WGSL's `read_write` formats, as the converter does.
+    fn stores(&self, value: u32, read: bool, writable: bool) -> bool {
         dxgi(value).is_ok_and(|f| {
-            self.backend
-                .caps()
-                .formats
-                .get(f)
-                .contains(FormatUse::STORAGE_WRITE)
+            let uses = self.backend.caps().formats.get(f);
+            match (read, writable) {
+                (true, true) => {
+                    matches!(f, Format::R32Float | Format::R32Uint | Format::R32Sint)
+                        && uses.contains(FormatUse::STORAGE_READ | FormatUse::STORAGE_WRITE)
+                }
+                (true, false) => uses.contains(FormatUse::STORAGE_READ),
+                _ => uses.contains(FormatUse::STORAGE_WRITE),
+            }
         })
     }
 
