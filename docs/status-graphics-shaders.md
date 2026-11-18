@@ -731,12 +731,37 @@ Run 20 (the tessellator):
   ("argument pulled into unrelated predicate"), so the test runs wgpu on Vulkan. Chrome's compile
   not yet checked (Known gaps).
 
+- Hull shaders (DXBC, `src/lower/hull.rs`): a compute program, one invocation per patch (x) and API
+  instance (y), reading its input control points from the vertex records (positions from slot 0),
+  running the control point function once per output control point (its id stored before each
+  call), then the patch constant function, and writing the patch's record: each control point's
+  slots (user locations sorted, then `SV_Position` as data), the patch constants' slots, the outer
+  and inner factors; patch 0's invocation writes the header (`stage::tess`: words per patch and per
+  point, where constants and factors start, each location's slot). Reflection: `StageExtras::Hull`
+  (domain, partitioning with powers of two as integer as dxbc-spirv gives it, output, counts).
+- Domain shaders: a vertex program whose vertex number picks a point (u, v, patch, primitive);
+  `SV_DomainLocation` is (u, v, 1 - u - v) for triangles and (u, v, 0) otherwise, control point data
+  and patch constants come from the patch's record through the header's slots (zero for a location
+  the hull shader does not write), factors and the primitive number likewise. Outputs as a vertex
+  shader's.
+- The corpora: all 18 hull and domain shaders of Wine's corpus and the rig now convert, and their
+  WGSL and that of the 35 own ones (`tests/own/tessellation.hlsl`) compile in Chrome; GLSL ES has
+  no storage buffers or compute, so none is written for WebGL 2 (which has no tessellation).
+- Not yet drawn: hull and domain shaders run through `Stages` (Next).
+
 Next (in order):
-- Tessellation, the rest: hull shaders (DXBC) as compute writing `stage::tess`'s records, domain
-  shaders as the final draw's vertex program reading the points and patches, `Stages` with hull and
-  domain (the indexed indirect draw), a drawn test against real Direct3D 11 (the rig's
-  `tessellation` scene's shaders), then the corpora's hull and domain shaders. Chrome's compile of
-  `tessellator.wgsl`, and fxc's failure on it.
+- Tessellation, the rest: `Stages` with hull and domain shaders (a constructor taking them, a patch
+  list topology, the hull dispatch into a patches buffer sized from `StageExtras::Hull`'s location
+  counts, the tessellator, and a `FinalDraw` that is an indexed indirect draw of the tessellator's
+  indices with the two buffers the front binds at `DOMAIN_PATCHES_BINDING` and
+  `DOMAIN_POINTS_BINDING`); then a drawn test of real shaders (a vertex shader with pulled inputs,
+  a hull shader passing control points and a patch constant, a displacing domain shader) against
+  real Direct3D 11's solid picture, and the domain program through `vertex_as_compute` for stream
+  output and geometry shaders after tessellation. Vertex shaders without a position (they feed a
+  hull shader; `vs_patch` is refused `VertexWithoutPosition`) for the stage helper. The hull
+  shader's declared largest factor (dxbc-spirv applies it in the program; the reflection says 64).
+  DXIL hull and domain shaders (naga's SPIR-V reader: the tessellation execution models). fxc's
+  failure on `tessellator.wgsl`.
 - Typed buffers from DXIL (naga's SPIR-V reader: `Dim::Buffer` images into the same functions), and
   in geometry shaders (the stage helper fills `TexelBufferView`); the corpora with formats (below).
 - Corpus: run 19 gave the corpus test one view format per kind (Run 19); shaders whose views mix
@@ -956,6 +981,16 @@ let reflection = &converted.reflection;
 
 ## Measurements
 
+Run 20, 2026-11-17, counts only (desktop shared with the other tracks; laptop load 2 to 6):
+- `tessellator_matches_direct3d` (`run20/tess5.log` in scratch `graphics-shaders`), seeds 1 to 16,
+  32 topologies each: 512 draws of 8 patches, every patch's primitives equal the RTX 3080's
+  (Vulkan through wgpu for ours), about 12 s of GPU job.
+- The laptop suite (`run20/suite4.log`): 57 tests pass, none fail (the fuzz test skipped as in How
+  to run); the corpora's records changed only for the hull and domain shaders (9 corpus, 9 rig, 35
+  own) and `vs_patch` (`VertexWithoutPosition`).
+- Chrome 157 on the desktop (`run20/chrome2.log`): every new WGSL file compiles with WebGPU: corpus
+  9, own 35, rig 10, and `tessellator.wgsl` and `stream_out.wgsl` as written. A first attempt found
+  no WebGPU adapter in Chrome; the retry a few minutes later did.
 Run 19, 2026-11-17, counts only (the desktop shared with the other tracks, no timings taken):
 - `storage_clears_match_direct3d` (`run19-clear4.log` in scratch `graphics-shaders`), seeds 1 to
   256: every case passes; all 40 storage formats on both (WebGPU on wgpu's Direct3D 12 has
@@ -1687,8 +1722,11 @@ were already there.
 ## Known gaps found so far
 
 - The tessellator program fails fxc (wgpu's Direct3D 12 shader compiler on the desktop) with an
-  internal error, "argument pulled into unrelated predicate"; it runs on wgpu's Vulkan path. Chrome
-  compiles Direct3D 12 shaders with dxc where it can; its compile of the program is not checked yet.
+  internal error, "argument pulled into unrelated predicate"; it runs on wgpu's Vulkan path, and
+  Chrome 157's WebGPU compiles it.
+- Tessellator output buffers are sized for every patch reaching factor 64 (about 180 KB a patch),
+  since the counts are known only on the GPU; a draw of thousands of patches needs hundreds of MB.
+  To size by the counts instead (read back later, grown before the next draw) once draws run.
 - Inside a patch the GPU's tessellator gives the primitives in another order than the reference, and
   starts about two thirds of its triangles at another vertex (winding kept); ours follow the
   reference. A domain shader's flat outputs (taken from a triangle's first vertex) can then differ.
@@ -1794,6 +1832,13 @@ were already there.
 
 ## Interface changes
 
+- Run 20, `DOMAIN_PATCHES_BINDING` (13) and `DOMAIN_POINTS_BINDING` (14) in the helper set (commit
+  "interface: named the bindings in the helper set where a domain program reads ..."; plan text in
+  6.4's set 3 list): a domain program, the final draw's vertex program, reads the hull stage's
+  patches and the tessellator's points, which the front binds there for the stage helper.
+- Run 20, `StageExtras::Hull` gained `point_locations` and `constant_locations` (commit "interface:
+  gave a hull shader's reflection the locations it writes per control point and per patch"): the
+  stage helper sizes the patch records from them.
 - Run 18, `HelperValue::TexelLayout { slot }` given the view's width, height and layers or depth
   (five u32 in two 16-byte rows; commit "interface: gave the texel layout of a storage view read
   through a buffer the view's size ..."; plan text in 4.12): bounds and size queries need them, and
