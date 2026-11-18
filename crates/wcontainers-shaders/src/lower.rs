@@ -961,6 +961,7 @@ impl<'a> Lowering<'a> {
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
             | (SourceStage::Pixel, true, builtin::SAMPLE_ID | builtin::SAMPLE_MASK)
+            | (SourceStage::Pixel, true, builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX)
             | (SourceStage::Pixel, false, builtin::DEPTH | builtin::SAMPLE_MASK) => true,
             (
                 SourceStage::Compute,
@@ -1438,6 +1439,27 @@ impl<'a> Lowering<'a> {
             );
             return Ok(e.bitcast(f, body, count, Scalar::U32, Self::scalar(member.scalar)?));
         }
+        if let builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX = b {
+            // The draw's run's layer or viewport (a pixel shader's inputs; no stage before writes
+            // them where the front draws, or it splits the draw per layer or viewport).
+            let value = match b {
+                builtin::LAYER_INDEX => HelperValue::Layer,
+                _ => HelperValue::Viewport,
+            };
+            let u32_ty = self.scalar_ty(Scalar::U32);
+            let (var, index) = crate::variant::helper_once(
+                &mut self.module,
+                &mut self.reflection,
+                ShaderStage::Fragment,
+                value,
+                u32_ty,
+                4,
+            );
+            let p = e.add(f, body, Expression::GlobalVariable(var));
+            let p = e.add(f, body, Expression::AccessIndex { base: p, index });
+            let v = e.add(f, body, Expression::Load { pointer: p });
+            return Ok(e.bitcast(f, body, v, Scalar::U32, Self::scalar(member.scalar)?));
+        }
         let (bi, size, s) = match b {
             builtin::POSITION => (naga::BuiltIn::Position { invariant: false }, 4, Scalar::F32),
             builtin::VERTEX_ID => (naga::BuiltIn::VertexIndex, 1, Scalar::U32),
@@ -1571,6 +1593,8 @@ fn system_value(b: u64) -> Option<SystemValue> {
         builtin::SAMPLE_MASK => SystemValue::Coverage,
         builtin::DEPTH => SystemValue::Depth,
         builtin::CLIP_DISTANCE => SystemValue::ClipDistance,
+        builtin::LAYER_INDEX => SystemValue::RenderTargetArrayIndex,
+        builtin::VIEWPORT_INDEX => SystemValue::ViewportArrayIndex,
         _ => return None,
     })
 }

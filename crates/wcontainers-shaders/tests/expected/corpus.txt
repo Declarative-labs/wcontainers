@@ -38,7 +38,7 @@
 037_ps_cube_code_1.dxbc	ok
 038_vs_code_2.dxbc	ok
 039_vs_code_3.dxbc	unsupported RenderTargetArrayIndex
-040_ps_code_1.dxbc	unsupported RenderTargetArrayIndex
+040_ps_code_1.dxbc	ok
 041_simple_vs_1.dxbc	ok
 042_simple_hs_1.dxbc	ok-wgsl glsl-write
 043_simple_ds_1.dxbc	ok-wgsl glsl-write
@@ -168,7 +168,7 @@
 167_hs_code.dxbc	ok-wgsl glsl-write
 168_ds_code.dxbc	ok-wgsl glsl-write
 169_ps_code_23.dxbc	ok
-170_ps_code_24.dxbc	unsupported ViewportArrayIndex
+170_ps_code_24.dxbc	ok
 171_ps_unused_sample_index_code.dxbc	ok-wgsl glsl-write
 172_ps_sample_index_code.dxbc	ok-wgsl glsl-write
 173_ps_samplepos_code.dxbc	ok-wgsl glsl-write
