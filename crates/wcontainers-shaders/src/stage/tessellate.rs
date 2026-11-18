@@ -142,6 +142,28 @@ impl<B: Backend> Tessellator<B> {
         Ok(())
     }
 
+    /// The counts, points and indices buffers with their sizes, after a run.
+    pub(super) fn owned(&self) -> (&Owned<B>, &Owned<B>, &Owned<B>) {
+        let ran = "the tessellator ran";
+        (
+            self.counts.as_ref().expect(ran),
+            self.points.as_ref().expect(ran),
+            self.indices.as_ref().expect(ran),
+        )
+    }
+
+    /// Releases its program and buffers.
+    pub fn destroy(self, backend: &mut B) {
+        use wcontainers_gpu::Object;
+        backend.destroy(Object::Program(self.program));
+        for owned in [self.counts, self.points, self.indices]
+            .into_iter()
+            .flatten()
+        {
+            backend.destroy(Object::Buffer(owned.buffer));
+        }
+    }
+
     /// The indexed indirect draw's arguments (five words at offset 0), the draw's point total (word
     /// 5), and from word [`tess::COUNTS_BASE`] each patch's first point and first index.
     pub fn counts(&self) -> Option<&B::Buffer> {

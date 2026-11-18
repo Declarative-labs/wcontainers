@@ -1321,17 +1321,6 @@ impl<'a> Lowering<'a> {
                 self.reflect_value(id, false, Some(loc), comp, b, modes, None);
             }
         }
-        if matches!(self.stage, SourceStage::Vertex | SourceStage::Domain)
-            && !self.io.iter().any(|(id, io)| {
-                io.builtin == Some(builtin::POSITION)
-                    && self
-                        .ir
-                        .op(*id)
-                        .is_ok_and(|o| o.code == code::DCL_OUTPUT_BUILT_IN)
-            })
-        {
-            return Err(unsupported("VertexWithoutPosition"));
-        }
         if !members.is_empty() {
             let mut offset = 0;
             let mut struct_members = Vec::new();

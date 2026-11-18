@@ -28,7 +28,7 @@ mod helper;
 mod tessellate;
 pub use helper::{
     FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages, StreamOutput,
-    StreamOutputEntry, StreamTargets,
+    StreamOutputEntry, StreamTargets, TessellatedDraw,
 };
 pub use tessellate::{Tessellation, Tessellator};
 
@@ -443,6 +443,108 @@ pub(crate) fn vertex_as_compute(vertex: &Module, locations: &[u32]) -> Result<Mo
         incoming_ray_payload: None,
     });
     Ok(module)
+}
+
+fn is_position(b: &Binding) -> bool {
+    matches!(b, Binding::BuiltIn(BuiltIn::Position { .. }))
+}
+
+/// Gives a vertex program that writes no position (one feeding stream output, a geometry or a hull
+/// stage) the position (0, 0, 0, -1), outside every clip volume: drawn, it rasterises nothing, and its
+/// compute form carries it as the record's position slot. The entry point becomes a function called by a
+/// new entry point that adds the position to its outputs.
+pub(crate) fn clip_unpositioned(module: &mut Module) -> Result<()> {
+    let ep = &module.entry_points[0];
+    if ep.stage != naga::ShaderStage::Vertex {
+        return Ok(());
+    }
+    let mut outputs: Vec<(Handle<Type>, Binding, Option<u32>)> = Vec::new();
+    if let Some(r) = &ep.function.result {
+        match (&r.binding, &module.types[r.ty].inner) {
+            (Some(b), _) => outputs.push((r.ty, b.clone(), None)),
+            (None, TypeInner::Struct { members, .. }) => {
+                for (i, m) in members.iter().enumerate() {
+                    let b = m
+                        .binding
+                        .clone()
+                        .ok_or(ConvertError::Malformed("an unbound output".into()))?;
+                    outputs.push((m.ty, b, Some(i as u32)));
+                }
+            }
+            _ => return Err(ConvertError::Malformed("vertex outputs".into())),
+        }
+    }
+    if outputs.iter().any(|(_, b, _)| is_position(b)) {
+        return Ok(());
+    }
+    let mut entry = module.entry_points.remove(0);
+    let mut inner = core::mem::take(&mut entry.function);
+    let arguments = inner.arguments.clone();
+    for a in &mut inner.arguments {
+        a.binding = None;
+    }
+    if let Some(r) = &mut inner.result {
+        r.binding = None;
+    }
+    let returns = inner.result.is_some();
+    inner.name = Some("vertex_shader".into());
+    let callee = module.functions.append(inner, Span::UNDEFINED);
+    let vec4 = build::vec4(module, Scalar::F32);
+
+    let mut b = Builder::new("main");
+    let mut passed = Vec::new();
+    for (i, a) in arguments.into_iter().enumerate() {
+        b.f.arguments.push(a);
+        passed.push(b.argument(i as u32));
+    }
+    let out = b.call(callee, passed, returns);
+    let mut members = Vec::new();
+    let mut components = Vec::new();
+    for (ty, binding, member) in outputs {
+        let v = match (out, member) {
+            (Some(out), Some(m)) => b.field(out, m),
+            (Some(out), None) => out,
+            (None, _) => unreachable!("outputs without a result"),
+        };
+        members.push((ty, binding));
+        components.push(v);
+    }
+    let lit = |b: &mut Builder, x: f32| b.expr(naga::Expression::Literal(naga::Literal::F32(x)));
+    let zero = lit(&mut b, 0.0);
+    let below = lit(&mut b, -1.0);
+    let position = b.compose(vec4, alloc::vec![zero, zero, zero, below]);
+    members.push((
+        vec4,
+        Binding::BuiltIn(BuiltIn::Position { invariant: false }),
+    ));
+    components.push(position);
+    let span = 16 * members.len() as u32;
+    let ty = module.types.insert(
+        Type {
+            name: Some("PositionedOutputs".into()),
+            inner: TypeInner::Struct {
+                members: members
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (ty, binding))| StructMember {
+                        name: Some(format!("v{i}")),
+                        ty,
+                        binding: Some(binding),
+                        offset: 16 * i as u32,
+                    })
+                    .collect(),
+                span,
+            },
+        },
+        Span::UNDEFINED,
+    );
+    let value = b.compose(ty, components);
+    b.ret(Some(value));
+    let mut f = b.finish();
+    f.result = Some(FunctionResult { ty, binding: None });
+    entry.function = f;
+    module.entry_points.insert(0, entry);
+    Ok(())
 }
 
 /// The vertex program of the draw after a geometry stage: each vertex attribute is a four-word slot of

@@ -97,6 +97,7 @@ pub fn convert(
             Source::Dxil(bytes) => dxil::lower(bytes, variant)?,
             Source::SpirV(_) => return Err(ConvertError::Unsupported("SpirV")),
         };
+        stage::clip_unpositioned(&mut module)?;
         variant::apply(&mut module, stage, variant, &mut reflection)?;
         Ok((module, reflection, stage))
     })?;

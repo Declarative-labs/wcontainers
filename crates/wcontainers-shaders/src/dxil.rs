@@ -408,13 +408,6 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     if builtins.iter().any(|(b, _)| *b == BuiltIn::PrimitiveIndex) {
         return Err(ConvertError::Unsupported("PrimitiveId"));
     }
-    if ep.stage == naga::ShaderStage::Vertex
-        && !builtins
-            .iter()
-            .any(|(b, _)| matches!(b, BuiltIn::Position { .. }))
-    {
-        return Err(ConvertError::Unsupported("VertexWithoutPosition"));
-    }
     // dxil-spirv reads a component of a constant buffer picked at run time through a second view of
     // the buffer as scalars, 4 bytes apart; WebGPU's uniform arrays step by 16 bytes, and WGSL takes
     // one variable per binding.
