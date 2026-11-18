@@ -297,6 +297,7 @@ pub(crate) enum Global {
 }
 
 pub(crate) const GLOBAL: &[(&str, Global)] = &[
+    ("cgroups", Global::File(0o444)),
     ("cmdline", Global::File(0o444)),
     ("config.gz", Global::File(0o444)),
     ("cpuinfo", Global::File(0o444)),
@@ -1530,6 +1531,28 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
             match path {
                 // The made-up machine's kernel was started with no parameters.
                 "cmdline" => out.push('\n'),
+                // The control groups built into the reference's kernel, none on a version 1
+                // hierarchy; the made-up machine's one group is the container's.
+                "cgroups" => {
+                    out.push_str("#subsys_name\thierarchy\tnum_cgroups\tenabled\n");
+                    for name in [
+                        "cpuset",
+                        "cpu",
+                        "cpuacct",
+                        "blkio",
+                        "memory",
+                        "devices",
+                        "freezer",
+                        "net_cls",
+                        "perf_event",
+                        "net_prio",
+                        "hugetlb",
+                        "pids",
+                        "rdma",
+                    ] {
+                        let _ = writeln!(out, "{name}\t0\t1\t1");
+                    }
+                }
                 "cpuinfo" => {
                     let _ = write!(
                         out,

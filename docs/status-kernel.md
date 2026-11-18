@@ -3163,7 +3163,6 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
 - "sys entry not built": a name the reference's /sys holds, looked up in /sys, which holds none
   (ENOENT; detail: its index in block, bus, class, dev, devices, firmware, fs, kernel, module).
 - "seccomp listener not implemented": SECCOMP_FILTER_FLAG_NEW_LISTENER.
-- "call on another process not built": process_vm_readv and process_vm_writev on another process.
 - "socket family not built": socket and socketpair of a family other than AF_UNIX, AF_INET,
   AF_INET6 and AF_NETLINK, such as AF_PACKET (detail: the family; EAFNOSUPPORT).
 - "socket protocol not built": raw sockets (EPERM), ping sockets (EACCES; plan section 15: no

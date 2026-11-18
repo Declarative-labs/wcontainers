@@ -3,7 +3,7 @@
 // changing each. With an argument "private", it shows instead whether a private file mapping sees a
 // later write to the file; with "unbuilt", it opens entries of /proc Linux has and one it has not;
 // with "limits", it lists /proc/sys/kernel/keys and /proc/sys/user with the values that do not
-// depend on the machine's memory, and tries to write one.
+// depend on the machine's memory, tries to write one, and lists /proc/cgroups.
 
 #define _GNU_SOURCE
 #include <fcntl.h>
@@ -91,6 +91,15 @@ int main(int argc, char **argv) {
         sysctls("/proc/sys/user");
         int fd = open("/proc/sys/kernel/keys/gc_delay", O_WRONLY);
         printf("write gc_delay %d errno %d\n", fd, fd < 0 ? errno : 0);
+        // The control groups built, without the machine's count of groups.
+        FILE *cgroups = fopen("/proc/cgroups", "r");
+        char line[128], name[64];
+        int hierarchy, count, enabled;
+        fgets(line, sizeof line, cgroups);
+        fputs(line, stdout);
+        while (fscanf(cgroups, "%63s %d %d %d", name, &hierarchy, &count, &enabled) == 4)
+            printf("%s %d %d\n", name, hierarchy, enabled);
+        fclose(cgroups);
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "private") == 0) {
