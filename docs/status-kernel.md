@@ -4,7 +4,12 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K6b (larger runtimes), fourth run, complete: the layer 1 differences of seeds 6262617 and 6262620 are
+K6b (larger runtimes), fifth run: every finding of the K6b check is fixed (the Java test now
+reaches the safepoint poll's fault and checks it, the per-runtime lists of counted paths are
+complete, SO_PEEK_OFF on netlink, a sequenced packet send's pending error, /proc/filesystems,
+the runtime tests check their saves). See "K6b, fifth run" below.
+
+K6b (larger runtimes), fourth run: the layer 1 differences of seeds 6262617 and 6262620 are
 fixed (RWF_NOWAIT, listen on a named connected local socket), and the reference's layer 1
 runner waits for loopback packets to arrive after each call. See "K6b, fourth run" below.
 
@@ -24,6 +29,71 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6b, fifth run
+
+Fixed, each tested against the reference (the K6b check's findings):
+- Java safepoints: `Load` never read the armed polling page (no memory fault in any run). It
+  now ends with a thread in a loop that calls nothing, compiled after 2^21 rounds, while main
+  asks for three collections; the program prints that the thread was stopped for them, and
+  tests/java.rs checks that every run built a data abort's signal frame ("fault syndrome
+  approximated", detail 0x92000007), which without that loop the program never does. The
+  reference prints the same. Java's test: 128.8 s for both tests and three seeds each (load 15 at
+  the start, 32 at the end); Load 41.6 to 43.5 s a seed, about 26800 turns.
+- The runtime tests (python, node, go, java) now check that every run was saved as often as
+  asked (`runtimes::assert_same`).
+- SO_PEEK_OFF on a netlink socket (layer 1 seed 7373001): get and set are EOPNOTSUPP, as
+  netlink's operations have no `set_peek_off`; a set shorter than an int is EINVAL first.
+  guest/sockorder.c.
+- A local sequenced packet send (layer 1 seed 7373003) copies its control messages in (EFAULT),
+  then takes a pending error (ECONNRESET after the peer closed with unread messages), then wants
+  a connection (ENOTCONN), and only then reads the control messages (EINVAL), as
+  `____sys_sendmsg`, `unix_seqpacket_sendmsg` and `unix_dgram_sendmsg` do. Ours read them before
+  the error, and wanted a connection before copying them. guest/sockedges.c
+  `closed_with_unread` (malformed and unreachable control messages for each kind, and an
+  unconnected socket).
+- /proc/filesystems lists every file system that is built and registered in Linux, in Linux's
+  order: sysfs, tmpfs, proc, sockfs, pipefs, devpts, fuse, mqueue (it had tmpfs, proc and pipefs).
+  Those Linux has and this kernel does not are left out, as a Linux without them; mount needs
+  CAP_SYS_ADMIN, which a default container lacks. guest/mountinfo.c checks the lines of the
+  standard mounts' file systems, sockets' and pipes'.
+
+What each runtime hit that is counted, every reason and detail of the default three seeds with
+saves at 7577902 (each runtime's whole test binary with `--nocapture`, its "warned:" lines;
+scratch k6b5). The earlier lists in this file were incomplete:
+- Go: "address above the address space" (the arena hints from 0x4000000000 up; section 15),
+  "fault syndrome approximated" (0x92000007: its nil dereference recovered through SIGSEGV),
+  "prctl option not built" (1398164801, PR_SET_VMA: Go 1.25 names its mappings; EINVAL, as the
+  reference answers, measured by the check: linuxkit lacks CONFIG_ANON_VMA_NAME), "proc fields
+  not tracked" (3: /proc/self/mounts), "socket protocol not built" (8590000390, MPTCP; gap
+  list), "sys entry not built" (7: /sys/kernel, the huge page size), "tcp room modelled" (0).
+- Node, start-up and system.js alike: "address above the address space" (V8's hints), "proc
+  fields not tracked" (4: meminfo), "sys entry not built" (6: /sys/fs, its cgroup limits).
+- Java, start-up: "address above the address space", "backend pages written whole", "page
+  residency not tracked", "proc entry not built" (22: /proc/cgroups), "proc fields not tracked"
+  (4), "sys entry not built" (4, 6, 7: devices, fs, kernel). Load: the same and "fault syndrome
+  approximated" (0x92000007, the safepoint polls).
+- Python: system.py and the language modules "proc fields not tracked" (0: /proc/<pid>/stat);
+  the system modules the same, "backend pages written whole" and "page residency not tracked"
+  (test_mmap). Its tests passed in 2470.1 s (three tests, three seeds each, load 36 at the start
+  and 62 at the end, beside the layer 1 seeds and the whole suite): system.py 31.6 to 36.4 s a
+  seed, the language modules 261.7 to 336.2 s, the system modules 639.1 to 982.8 s.
+- Node's tests: 88.1 s (load 21 to 33), start-up 4.2 to 5.4 s a seed, system.js 26.2 to 31.5 s.
+  Go's: 11.5 s (load 13 to 16), 1.5 to 3.5 s a seed.
+
+Layer 1 at 7577902 (side by side with the Python tests, load 34 at the start, up to 89): the
+check's seeds 7373001 (30000 sequences, 526.4 s) and 7373003 (25000, 443.7 s) pass, and the
+fresh seeds 8484001, 8484002 and 8484003 (20000 each, 358.1, 358.1 and 358.8 s) pass.
+
+Whole suite at 7577902 (scratch k6b5/suite.log, a clean copy with its own build,
+`RUST_TEST_THREADS=4 cargo test --no-fail-fast -j 4 -p wcontainers-kernel -p
+wcontainers-kernel-test`, 61.5 minutes with the build, beside the Python tests and the layer 1
+seeds at first; load 56 at the start, 78 at the end): 214 passed, 0 failed, 6 ignored (the known
+ones, with their reasons).
+
+K6b is complete: every finding of the check is fixed and tested, every runtime matches the
+reference under three seeds with saves, the fresh layer 1 seeds pass with every fix in, and the
+whole suite passed.
 
 ## K6b, fourth run
 
@@ -120,7 +190,8 @@ saves, other runs beside it):
   Java's lib/modules), many remaps on the stand-in per fault. At 4b05204 the permissions are set
   again only around the pages that came: node for one seed 35.4 s (load 56), against about 49 s
   a seed before this run (147.2 s for three).
-- What each runtime hit that is counted (from the runs' warnings): Go "address above the
+- What each runtime hit that is counted (from the runs' warnings; incomplete, the full lists
+  are under "K6b, fifth run"): Go "address above the
   address space"; Java "address above the address space", "backend pages written whole", "page
   residency not tracked", "proc entry not built" (22: /proc/cgroups), "proc fields not tracked"
   (4), "sys entry not built" (4, 6, 7: devices, fs, kernel); Node "address above the address
@@ -238,7 +309,8 @@ probe (above). The runtime tests passed under the default three seeds there: pyt
 (system.py and the language modules; the system modules were still ignored), node 138.2 s,
 java 101.2 s, go 6.4 s (each binary's own time for all its tests and seeds).
 
-What each runtime hit that is counted, and where it stands (seed 1):
+What each runtime hit that is counted, and where it stands (seed 1; incomplete, the full lists
+are under "K6b, fifth run"):
 - Python: "backend file read whole when mapped" (its shared libraries; a counted slow path),
   "proc fields not tracked" (0: /proc/<pid>/stat), "call flag not built" (openat O_TMPFILE,
   detail 0x38_0040_4000: tempfile tries it in /tmp; now built, and the backend is asked, which
@@ -263,7 +335,7 @@ feature, counted where the kernel sees it:
   absent and mountinfo lists no cgroup2 mount. Java and Go read mountinfo to find cgroup limits;
   finding none, they take the machine's (one CPU, its memory), as the reference's unlimited
   default container gives them. A lookup of an entry Linux has there is counted "sys entry not
-  built" (Java: devices, fs and kernel).
+  built" (Java: devices, fs and kernel; Go: kernel; Node: fs).
 - "The address space is small": mappings asked above it are placed lower, counted "address
   above the address space" (Node, Go, Java); Java needs the 64 bit host's 16 GiB.
 - "More than one CPU": the runtimes see one CPU (Go's GOMAXPROCS, Java's processors).
@@ -366,9 +438,9 @@ The larger runtimes (layer 2, src/runtimes.rs, tests python.rs, node.rs, go.rs, 
     handler, a killed child; a directory): matches; 4.6 s, 6392 turns.
   - Java start-up (`java -version`): matches; 25 s, 6502 turns. Java `Load` (a fixed pool of 4
     threads, synchronized, ReentrantLock, atomics, ConcurrentHashMap, wait and interrupt; four
-    threads allocating under G1 with a 64 MiB heap while others hold some, then System.gc; G1's
-    collections stop threads at safepoints through the protected polling page): matches with
-    two saves; 50 s, 24372 turns.
+    threads allocating under G1 with a 64 MiB heap while others hold some, then System.gc):
+    matches with two saves; 50 s, 24372 turns. It never read the armed polling page (no memory
+    fault in any run, found by the K6b check); the fifth run added a compiled loop that does.
 - Kernel fixes these runs found, each with a test against the reference:
   - Node's fs.watch on the backend root: inotify watches now hold their inodes (a backend inode
     was dropped between lookups, so a watch never heard of a later lookup's events), and the
@@ -387,7 +459,8 @@ The larger runtimes (layer 2, src/runtimes.rs, tests python.rs, node.rs, go.rs, 
     /proc/<pid>/coredump_filter (HotSpot reads and writes it; per process, kept by fork and exec,
     written as `kstrtouint` reads a number in base 0; tests procwrite
     `coredump_filter_matches_reference`, proclist lists /proc/sys/net and its core).
-- What each runtime hit that is counted (seed 1; all on the written lists):
+- What each runtime hit that is counted (seed 1; incomplete, the full lists are under "K6b,
+  fifth run"):
   - Python: "backend file read whole when mapped" (its shared libraries), "proc fields not
     tracked" (0: /proc/<pid>/stat).
   - Node: "address above the address space" (V8's random hints), "backend file read whole when
@@ -2925,7 +2998,7 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-After K6b (fourth run), in this order (none of these holds K6b):
+After K6b (fifth run), in this order (none of these holds K6b):
 1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
    to know that the name an open file was opened by was unlinked while another link names the
    inode (Linux's `d_unlinked` of that dentry); the kernel keeps no dentries for backend names.
@@ -3005,6 +3078,6 @@ not seen as a setting; futex queues allocate when a futex first gets waiters; th
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
 5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
-6262601 to 6262624 (K6b), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+6262601 to 6262624 and 8484001 to 8484003 (K6b), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
