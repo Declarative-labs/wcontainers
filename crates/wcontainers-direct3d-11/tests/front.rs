@@ -241,6 +241,98 @@ fn triangle_scene() {
 }
 
 #[test]
+fn nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows() {
+    const NV12: u32 = 103;
+    let mut dev = device();
+    let bind = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
+    for (w, h) in [(7, 4), (8, 3)] {
+        assert!(matches!(
+            dev.create_texture(&tex2d(w, h, NV12, bind), &[]),
+            Err(Error::InvalidArg(_))
+        ));
+    }
+    let (w, h) = (8u32, 4u32);
+    let bytes: Vec<u8> = (0..w * h * 3 / 2).map(|i| (i * 7 + 1) as u8).collect();
+    let init = [SubresourceData {
+        bytes: &bytes,
+        row_pitch: w,
+        slice_pitch: 0,
+    }];
+    let texture = dev.create_texture(&tex2d(w, h, NV12, bind), &init).unwrap();
+    let view = |format| ViewDesc {
+        format,
+        dimension: ViewDim::Texture2D,
+        first_mip: 0,
+        mip_count: 1,
+        first_layer: 0,
+        layer_count: 1,
+        read_only: 0,
+    };
+    // Views name one plane by its format; the default and NV12's own are invalid.
+    for desc in [None, Some(view(NV12)), Some(view(63))] {
+        assert!(matches!(
+            dev.create_view(&texture, desc.as_ref(), bind::SHADER_RESOURCE),
+            Err(Error::InvalidArg(_))
+        ));
+    }
+    let luma = dev
+        .create_view(&texture, Some(&view(61)), bind::SHADER_RESOURCE)
+        .unwrap();
+    assert!(Rc::ptr_eq(&luma.texture, &texture));
+    let chroma = dev
+        .create_view(&texture, Some(&view(49)), bind::RENDER_TARGET)
+        .unwrap();
+    let plane = texture.chroma.as_ref().unwrap();
+    assert!(Rc::ptr_eq(&chroma.texture, plane));
+    assert_eq!((plane.desc.width, plane.desc.height), (w / 2, h / 2));
+
+    let mut staging_desc = tex2d(w, h, NV12, 0);
+    staging_desc.usage = usage::STAGING;
+    staging_desc.cpu_access_flags = cpu::READ;
+    let staging = Resource::Texture(dev.create_texture(&staging_desc, &[]).unwrap());
+    let nv12 = Resource::Texture(texture.clone());
+    let read = |dev: &mut Dev| {
+        dev.copy_resource(&staging, &nv12).unwrap();
+        let mapped = dev.map(&staging, 0, map::READ, 0).unwrap();
+        assert_eq!(mapped.row_pitch, w);
+        assert_eq!(mapped.depth_pitch, w * h * 3 / 2);
+        let got = unsafe { std::slice::from_raw_parts(mapped.data, bytes.len()) }.to_vec();
+        dev.unmap(&staging, 0);
+        got
+    };
+    assert_eq!(read(&mut dev), bytes);
+    // An odd box writes nothing; an even one writes its luma and the chroma under it.
+    let source = [0xa0u8; 4 * 2 * 3 / 2];
+    let odd = Box3 {
+        left: 1,
+        top: 2,
+        front: 0,
+        right: 5,
+        bottom: 4,
+        back: 1,
+    };
+    dev.update_subresource(&nv12, 0, Some(&odd), &source, 4, 0)
+        .unwrap();
+    assert_eq!(read(&mut dev), bytes);
+    let even = Box3 {
+        left: 2,
+        right: 6,
+        ..odd
+    };
+    dev.update_subresource(&nv12, 0, Some(&even), &source, 4, 0)
+        .unwrap();
+    let mut want = bytes.clone();
+    for y in 2..4 {
+        want[(y * w + 2) as usize..(y * w + 6) as usize].fill(0xa0);
+    }
+    // Chroma row 1 (under luma rows 2 and 3), pairs 1 and 2.
+    let at = (w * h + w + 2) as usize;
+    want[at..at + 4].fill(0xa0);
+    assert_eq!(read(&mut dev), want);
+    assert!(dev.removed.is_none());
+}
+
+#[test]
 fn a_target_view_of_a_buffer_draws_into_a_row_of_its_elements_copied_into_the_buffer() {
     let mut dev = device();
     let buffer = dev

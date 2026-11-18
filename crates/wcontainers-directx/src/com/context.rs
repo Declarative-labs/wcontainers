@@ -909,7 +909,26 @@ impl Context {
         }
     }
 
+    /// `OMSetRenderTargets`: the targets, with every pixel stage unordered access view unbound,
+    /// as `OMSetRenderTargetsAndUnorderedAccessViews` binding none.
     pub(super) fn om_set_render_targets(
+        &self,
+        n: u32,
+        list: *const Option<ID3D11RenderTargetView>,
+        depth: Ref<ID3D11DepthStencilView>,
+    ) {
+        self.om_set_render_targets_and_unordered_access_views(
+            n,
+            list,
+            depth,
+            n,
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        );
+    }
+
+    fn set_targets(
         &self,
         n: u32,
         list: *const Option<ID3D11RenderTargetView>,
@@ -1427,7 +1446,7 @@ impl Context {
                         b.back.saturating_sub(b.front),
                     )
                 });
-                let (row, rows) = format::row_bytes(t.format, w, h);
+                let (row, rows) = format::subresource_rows(t.desc.format, t.format, w, h);
                 if z == 0 || rows == 0 {
                     0
                 } else {
@@ -1541,7 +1560,7 @@ impl Context {
             Resource::Buffer(b) if sub == 0 => (b.desc.usage, (b.desc.byte_width, 1, 1)),
             Resource::Texture(t) if sub < t.desc.mip_levels * t.desc.array_size => {
                 let e = t.mip_extent(sub % t.desc.mip_levels);
-                let (row, rows) = format::row_bytes(t.format, e.width, e.height);
+                let (row, rows, _) = t.packed(sub % t.desc.mip_levels);
                 (t.desc.usage, (row, rows, e.depth_or_layers))
             }
             _ => return Err(E_INVALIDARG.into()),
@@ -1754,7 +1773,7 @@ impl Context {
     ) {
         const KEEP: u32 = u32::MAX;
         if n != KEEP {
-            self.om_set_render_targets(n, targets, depth);
+            self.set_targets(n, targets, depth);
         }
         if uav_n != KEEP {
             if (uav_start as usize).saturating_add(uav_n as usize) > UAV_SLOTS {

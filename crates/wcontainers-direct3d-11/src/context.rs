@@ -132,6 +132,10 @@ pub struct ContextState<B: Backend> {
     /// The input layout whose pulled streams the vertex stage's set binds (its id; zero for none).
     pulled_set: u64,
     pass_open: bool,
+    /// The resources the open pass's draws wrote as storage and read as shader resources, by
+    /// address and sorted: a draw using one the other way ends the pass (`UsageScopeSplit`).
+    pass_written: Vec<usize>,
+    pass_read: Vec<usize>,
     /// The size of the open pass when it has no attachments.
     empty_pass: Option<EmptyPass>,
     clears: Vec<PendingClear<B>>,
@@ -187,6 +191,8 @@ impl<B: Backend> ContextState<B> {
             windows: Default::default(),
             pulled_set: 0,
             pass_open: false,
+            pass_written: Vec::new(),
+            pass_read: Vec::new(),
             empty_pass: None,
             clears: Vec::new(),
             mapped: Vec::new(),
@@ -330,6 +336,22 @@ fn copy_formats(a: u32, b: u32, level: u32) -> Result<()> {
         Err(Error::InvalidArg(
             "a copy between formats of different groups",
         ))
+    }
+}
+
+/// Whether a box and a place in an NV12 texture fall on whole chroma pairs.
+fn even(b: &Box3, at: [u32; 3]) -> bool {
+    [b.left, b.top, b.right, b.bottom, at[0], at[1]]
+        .iter()
+        .all(|v| v.is_multiple_of(2))
+}
+
+/// The extent of NV12's chroma plane under an extent of its luma.
+fn half(e: Extent) -> Extent {
+    Extent {
+        width: e.width / 2,
+        height: e.height / 2,
+        ..e
     }
 }
 
@@ -1191,6 +1213,48 @@ impl<B: Backend> Device<B> {
             }
             if v.copied() {
                 self.copy_twin(v, false);
+            }
+        }
+    }
+
+    /// Before a draw: ends the open pass where the draw reads as a shader resource what an earlier
+    /// draw of the pass wrote as storage, or writes as storage what one read, which WebGPU's usage
+    /// scope forbids within a pass (`UsageScopeSplit`); then adds the draw's uses to the pass's.
+    fn split_scope(&mut self) {
+        let address = |v: &ShaderView<B>| match v {
+            ShaderView::Texture(v) => Rc::as_ptr(&v.texture) as usize,
+            ShaderView::Buffer(b) => Rc::as_ptr(&b.buffer) as usize,
+        };
+        let written: Vec<usize> = self.ctx.uavs[PIXEL]
+            .iter()
+            .flatten()
+            .map(|v| address(v))
+            .collect();
+        let read: Vec<usize> = [VERTEX, PIXEL]
+            .iter()
+            .flat_map(|&s| self.ctx.resources[s].iter().flatten())
+            .map(|v| address(v))
+            .collect();
+        let meets =
+            |a: &[usize], sorted: &[usize]| a.iter().any(|x| sorted.binary_search(x).is_ok());
+        if self.ctx.pass_open
+            && (meets(&written, &self.ctx.pass_read) || meets(&read, &self.ctx.pass_written))
+        {
+            self.backend.slow_paths().hit(SlowPath::UsageScopeSplit);
+            self.end_pass();
+        }
+        if !self.ctx.pass_open {
+            self.ctx.pass_written.clear();
+            self.ctx.pass_read.clear();
+        }
+        for (list, new) in [
+            (&mut self.ctx.pass_written, written),
+            (&mut self.ctx.pass_read, read),
+        ] {
+            for x in new {
+                if let Err(at) = list.binary_search(&x) {
+                    list.insert(at, x);
+                }
             }
         }
     }
@@ -3315,6 +3379,31 @@ impl<B: Backend> Device<B> {
         {
             return not_implemented("lines drawn by the quadrilateral or alpha-antialiased rule");
         }
+        // A pixel shader forcing early depth-stencil tests writes storage only for fragments that
+        // pass them; the back ends test after the shader (`EarlyTestsInShader` is not served).
+        let early = ps.as_ref().is_some_and(|ps| {
+            matches!(
+                ps.reflection.extras,
+                wcontainers_gpu::StageExtras::Pixel {
+                    early_tests: true,
+                    side_effects: true,
+                    ..
+                }
+            )
+        });
+        if early && self.ctx.depth.is_some() {
+            let ds = &self
+                .ctx
+                .depth_stencil
+                .as_ref()
+                .unwrap_or(&self.defaults.depth_stencil)
+                .desc;
+            if ds.depth_enable || ds.stencil_enable {
+                return not_implemented(
+                    "early depth-stencil tests before a pixel shader's storage writes",
+                );
+            }
+        }
         // The back ends bias triangles only.
         if (raster.depth_bias != 0 || raster.slope_scaled_depth_bias != 0.0)
             && !matches!(topology, Topology::TriangleList | Topology::TriangleStrip)
@@ -3498,6 +3587,7 @@ impl<B: Backend> Device<B> {
         }
         let twin_writes = self.twins_in(&[VERTEX, PIXEL], PIXEL);
         let through = self.through_in(PIXEL);
+        self.split_scope();
         self.open_pass();
         if !self.open_stretch() {
             // The pass's occlusion set has no slot left: the draw opens the next pass on another.
@@ -3652,6 +3742,11 @@ impl<B: Backend> Device<B> {
                 {
                     return Ok(());
                 }
+                // NV12 copies whole chroma pairs; Direct3D drops a box or place at an odd texel.
+                let planes = d.chroma.as_ref().zip(s.chroma.as_ref());
+                if planes.is_some() && !even(&b, at) {
+                    return Ok(());
+                }
                 self.settle();
                 let (x, y, z) = (b.left, b.top, b.front);
                 self.backend.copy_texture(
@@ -3667,6 +3762,29 @@ impl<B: Backend> Device<B> {
                     ),
                     extent,
                 );
+                if let Some((dc, sc)) = planes {
+                    self.backend.copy_texture(
+                        &sc.region(
+                            src_mip,
+                            src_layer,
+                            Origin {
+                                x: x / 2,
+                                y: y / 2,
+                                z,
+                            },
+                        ),
+                        &dc.region(
+                            dst_mip,
+                            dst_layer,
+                            Origin {
+                                x: at[0] / 2,
+                                y: at[1] / 2,
+                                z: at[2],
+                            },
+                        ),
+                        half(extent),
+                    );
+                }
                 self.texture_written(d, dst_sub)
             }
             _ => Err(Error::InvalidArg("a copy between a buffer and a texture")),
@@ -3798,26 +3916,45 @@ impl<B: Backend> Device<B> {
                 {
                     return Ok(());
                 }
+                // NV12 is written by whole chroma pairs, as copies are.
+                if t.chroma.is_some() && !even(&b, [b.left, b.top, b.front]) {
+                    return Ok(());
+                }
                 self.settle();
                 let origin = Origin {
                     x: b.left,
                     y: b.top,
                     z: b.front,
                 };
-                self.write_texels(
-                    t.format,
-                    &t.region(mip, layer, origin),
-                    Extent {
-                        width: b.right - b.left,
-                        height: b.bottom - b.top,
-                        depth_or_layers: b.back - b.front,
-                    },
-                    &SubresourceData {
-                        bytes,
-                        row_pitch,
-                        slice_pitch,
-                    },
-                );
+                let extent = Extent {
+                    width: b.right - b.left,
+                    height: b.bottom - b.top,
+                    depth_or_layers: b.back - b.front,
+                };
+                let data = SubresourceData {
+                    bytes,
+                    row_pitch,
+                    slice_pitch,
+                };
+                self.write_texels(t.format, &t.region(mip, layer, origin), extent, &data);
+                if let Some(chroma) = &t.chroma {
+                    // The chroma rows follow the luma's at the same pitch.
+                    let at = (row_pitch * extent.height) as usize;
+                    let origin = Origin {
+                        x: origin.x / 2,
+                        y: origin.y / 2,
+                        z: origin.z,
+                    };
+                    self.write_texels(
+                        chroma.format,
+                        &chroma.region(mip, layer, origin),
+                        half(extent),
+                        &SubresourceData {
+                            bytes: &bytes[at..],
+                            ..data
+                        },
+                    );
+                }
                 Ok(())
             }
         }
@@ -3902,17 +4039,16 @@ impl<B: Backend> Device<B> {
                 };
                 let (row, rows, _) = t.packed(region.mip);
                 let src = ReadSource::Texture { region, extent };
-                let stencil = t.stencil_region(sub);
+                let second = t.second_region(sub);
                 let mut shadow = t.shadow.borrow_mut();
                 let mut staged = t.staged.borrow_mut();
                 let s = sub as usize;
                 // A dynamic texture's shadow is the program's to fill; nothing is read back.
                 if d.usage == usage::STAGING {
-                    let stencil =
-                        stencil.map(|(region, extent)| ReadSource::Texture { region, extent });
-                    let texel = t.format.block().2 as usize;
-                    let stencil = stencil.as_ref().map(|s| (s, texel));
-                    self.refresh(&mut staged[s], &src, stencil, &mut shadow[s], reads, wait)?;
+                    let second = second
+                        .map(|(region, extent, how)| (ReadSource::Texture { region, extent }, how));
+                    let second = second.as_ref().map(|(s, how)| (s, *how));
+                    self.refresh(&mut staged[s], &src, second, &mut shadow[s], reads, wait)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(t) as usize, sub, kind));
                 Ok(Mapped {
@@ -3956,8 +4092,8 @@ impl<B: Backend> Device<B> {
                 .backend
                 .read_back(&ReadSource::Texture { region, extent });
             let r = self.gpu(r)?;
-            let stencil = match t.stencil_region(sub) {
-                Some((region, extent)) => {
+            let second = match t.second_region(sub) {
+                Some((region, extent, _)) => {
                     let s = self
                         .backend
                         .read_back(&ReadSource::Texture { region, extent });
@@ -3965,7 +4101,7 @@ impl<B: Backend> Device<B> {
                 }
                 None => None,
             };
-            Staged::Reading(r, stencil)
+            Staged::Reading(r, second)
         } else {
             Staged::Written
         };
@@ -3974,15 +4110,15 @@ impl<B: Backend> Device<B> {
     }
 
     /// Brings a staging subresource's shadow up to the GPU's bytes before a map hands it out: the
-    /// read back started at the copy, or one started now from `src` (and from `stencil`, the stencil
-    /// aspect of a format with depth and stencil, with the bytes of the shadow's texels); a write-only map that needs it is
+    /// read back started at the copy, or one started now from `src` (and from `second`, the
+    /// stencil aspect or NV12's chroma plane, see [`Second`]); a write-only map that needs it is
     /// `StagingRefreshed`. Without `wait`, a read back not yet done answers `StillDrawing` (after
     /// submitting, so it gets done).
     fn refresh(
         &mut self,
         staged: &mut Staged<B>,
         src: &ReadSource<'_, B>,
-        stencil: Option<(&ReadSource<'_, B>, usize)>,
+        second: Option<(&ReadSource<'_, B>, Second)>,
         shadow: &mut [u8],
         reads: bool,
         wait: bool,
@@ -3993,7 +4129,7 @@ impl<B: Backend> Device<B> {
                 self.settle();
                 let r = self.backend.read_back(src);
                 let r = self.gpu(r)?;
-                let s = match stencil {
+                let s = match second {
                     Some((src, _)) => {
                         let s = self.backend.read_back(src);
                         Some(self.gpu(s)?)
@@ -4023,13 +4159,22 @@ impl<B: Backend> Device<B> {
         if !reads {
             self.backend.slow_paths().hit(SlowPath::StagingRefreshed);
         }
-        match stencil_rb {
-            None => self.backend.finish_read(rb, shadow),
-            Some(s) => {
+        match (stencil_rb, second.map(|s| s.1)) {
+            (None, _) => self.backend.finish_read(rb, shadow),
+            (Some(s), Some(Second::Chroma)) => {
+                // The luma's rows, then the chroma's (as many bytes a row, half the rows).
+                let (luma, chroma) = shadow.split_at_mut(shadow.len() / 3 * 2);
+                self.backend.finish_read(rb, luma);
+                self.backend.finish_read(s, chroma);
+            }
+            (Some(s), how) => {
                 // Direct3D's layouts: D24_UNORM_S8_UINT is depth in the low 24 bits of a word and
                 // stencil in its high byte; D32_FLOAT_S8X24_UINT is the float, the stencil byte and
                 // three unused bytes. The back end gives depth in four bytes and stencil in one.
-                let texel = stencil.map_or(4, |s| s.1);
+                let texel = match how {
+                    Some(Second::Stencil(texel)) => texel,
+                    _ => 4,
+                };
                 let n = shadow.len() / texel;
                 let mut depth = vec![0u8; n * 4];
                 let mut stencil = vec![0u8; n];
@@ -4086,20 +4231,44 @@ impl<B: Backend> Device<B> {
                 let (row, rows, _) = t.packed(region.mip);
                 self.end_pass();
                 let shadow = &t.shadow.borrow()[sub as usize];
-                let Some((stencil, _)) = t.stencil_region(sub) else {
-                    self.backend.write_texture(
-                        &region,
-                        extent,
-                        shadow,
-                        row,
-                        rows,
-                        WriteMode::Ordered,
-                    );
-                    return;
+                let (stencil, texel) = match t.second_region(sub) {
+                    None => {
+                        self.backend.write_texture(
+                            &region,
+                            extent,
+                            shadow,
+                            row,
+                            rows,
+                            WriteMode::Ordered,
+                        );
+                        return;
+                    }
+                    Some((chroma, half, Second::Chroma)) => {
+                        // The luma's rows, then the chroma's at as many bytes a row.
+                        let luma = (row * extent.height) as usize;
+                        let (a, b) = shadow.split_at(luma);
+                        self.backend.write_texture(
+                            &region,
+                            extent,
+                            a,
+                            row,
+                            extent.height,
+                            WriteMode::Ordered,
+                        );
+                        self.backend.write_texture(
+                            &chroma,
+                            half,
+                            b,
+                            row,
+                            half.height,
+                            WriteMode::Ordered,
+                        );
+                        return;
+                    }
+                    Some((stencil, _, Second::Stencil(texel))) => (stencil, texel as u32),
                 };
                 // Each aspect of a format with depth and stencil apart, from Direct3D's layout
                 // (see `refresh`): depth in four bytes per texel, stencil in one.
-                let texel = t.format.block().2;
                 let (depth, stencils) = split_depth_stencil(texel, shadow);
                 let texels = row / texel;
                 self.backend.write_texture(

@@ -298,7 +298,7 @@ impl Device_Impl {
                 let mip = i % mips;
                 let (w, h) = ((d.width >> mip).max(1), (d.height >> mip).max(1));
                 let slices = (d.depth >> mip).max(1);
-                let (row, rows) = format::row_bytes(fmt, w, h);
+                let (row, rows) = format::subresource_rows(d.format, fmt, w, h);
                 let len = s.SysMemSlicePitch * (slices - 1) + s.SysMemPitch * (rows - 1) + row;
                 if s.pSysMem.is_null() {
                     return Err(E_INVALIDARG.into());

@@ -1,6 +1,6 @@
 //! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges`,
 //! `own_depth_copy`, `own_swap_chain`, `own_volumes`, `own_queries`, `own_interfaces`,
-//! `own_indirect`, `own_min_lod`, `own_packed` and `lifetimes`) run as ordinary
+//! `own_indirect`, `own_min_lod`, `own_packed`, `own_nv12`, `own_cases` and `lifetimes`) run as ordinary
 //! programs, once beside the system's d3d11.dll and once with our forwarding d3d11.dll and library
 //! beside them, and what each printed compared.
 #![cfg(windows)]
@@ -134,6 +134,87 @@ fn two_pixel_formats_sample_load_and_copy_as_direct3d_does() {
         assert_eq!(w, g, "the first line that differs");
     }
     assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn nv12_planes_view_write_copy_and_map_as_direct3d_does() {
+    let (code, want) = run("own_nv12", &place("nv12-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_nv12", &place("nv12-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+/// Runs one case of `own_cases` beside both libraries and compares what each printed: lines
+/// naming a filtered result within one unit a channel (Direct3D's filtering tolerance), every
+/// other line exactly.
+fn case(name: &str) {
+    let (code, want) = run_with(
+        "own_cases",
+        &place(&format!("{name}-system"), false),
+        &[name],
+    );
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run_with("own_cases", &place(&format!("{name}-ours"), true), &[name]);
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        if w.starts_with("filtered") {
+            assert!(
+                within_one(w, g),
+                "the first line that differs by more than one\n{w}\n{g}"
+            );
+        } else {
+            assert_eq!(w, g, "the first line that differs");
+        }
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn texture_atomics_as_direct3d_does() {
+    case("atomics");
+}
+
+#[test]
+fn typed_storage_stores_as_direct3d_does() {
+    case("typed");
+}
+
+#[test]
+fn a_storage_view_read_by_the_next_draw_on_the_same_targets_as_direct3d_does() {
+    case("split");
+}
+
+#[test]
+fn depth_and_colour_filtered_through_one_sampler_as_direct3d_does() {
+    case("depth_filter");
+}
+
+#[test]
+#[ignore = "known failure: the front opens its own passes, which do not fit a depth buffer larger \
+            than its target (AttachmentsFitted is the pass tracker's); WebGPU refuses the pass"]
+fn a_depth_buffer_larger_than_its_target_as_direct3d_does() {
+    case("deep");
+}
+
+#[test]
+fn copies_between_multisampled_textures_as_direct3d_does() {
+    case("msaa_copy");
+}
+
+#[test]
+fn stream_output_also_drawn_as_direct3d_does() {
+    case("stream");
+}
+
+#[test]
+#[ignore = "known failure: early depth-stencil tests before storage writes are not served \
+            (EarlyTestsInShader, shaders track); the front refuses the draw"]
+fn early_depth_tests_with_storage_writes_as_direct3d_does() {
+    case("early");
 }
 
 #[test]
