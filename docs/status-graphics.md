@@ -502,7 +502,8 @@ pointers to a function's locals passed to another function.
 - Run 5: direct3d-11 (its status only) and shaders (nine commits, one "interface:", covered under
   "Interface changes") merged without conflict; then, fetched again, webgl (six commits, one
   "interface:", covered) and shaders (its status) merged without conflict; webgpu, direct3d-12 and
-  rig had nothing new. End check after all of them below (`g1c5/end-check2.log`).
+  rig had nothing new. End check after all of them below (`g1c5/end-check2.log`). A last fetch
+  brought two more webgl commits (its status file only), merged after the push (e96876ce).
 
 - Run 4: no branch had anything new at the end (fetched after the work); nothing to merge. No build
   folder was made on the laptop or the desktop this run; scratch `g1c4/dl` holds two downloaded
