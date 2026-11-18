@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use wcontainers_gpu::{DrawBaseSource, Format, TexelBufferRoute, VariantKey};
+use wcontainers_gpu::{DrawBaseSource, Format, SlotKind, TexelBufferRoute, VariantKey};
 use wcontainers_shaders::{ConvertError, Source, cache, capabilities, convert};
 
 fn shaders(dir: &Path, ext: &str) -> Vec<PathBuf> {
@@ -452,7 +452,9 @@ fn dxil_draw_bases_from_the_helpers() {
 }
 
 /// Every rig shader compiled both by fxc (DXBC) and by dxc (DXIL) that converts by both routes gets the
-/// same bindings, sampled pairs and stage extras from each.
+/// same resources (kind, space, register, set), sampled pairs (by register) and stage extras from each;
+/// the DXIL route numbers each kind's resources from the kind's first binding in (space, register)
+/// order (Direct3D 12's rule), the DXBC route by register (Direct3D 11's).
 #[test]
 fn dxil_bindings_and_sampled_pairs_match_dxbc() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../wcontainers-graphics-test/shaders");
@@ -479,14 +481,42 @@ fn dxil_bindings_and_sampled_pairs_match_dxbc() {
             let mut v: Vec<_> = r
                 .bindings
                 .iter()
-                .map(|b| (b.set, b.binding, b.register, format!("{:?}", b.kind)))
+                .map(|b| (b.set, b.kind as u32, b.space, b.register))
                 .collect();
             v.sort();
             v
         };
         let (a, b) = (&a.reflection, &b.reflection);
         assert_eq!(bindings(a), bindings(b), "{name} bindings");
-        assert_eq!(a.sampled_pairs, b.sampled_pairs, "{name} sampled pairs");
+        for d in &a.bindings {
+            assert_eq!(d.binding, d.kind.binding(d.register).unwrap(), "{name}");
+        }
+        for d in &b.bindings {
+            let rank = b
+                .bindings
+                .iter()
+                .filter(|e| e.kind == d.kind && (e.space, e.register) < (d.space, d.register))
+                .count() as u32;
+            assert_eq!(d.slot(), rank, "{name}");
+        }
+        let register = |r: &wcontainers_gpu::Reflection, kind: SlotKind, slot: u32| {
+            r.bindings
+                .iter()
+                .find(|d| d.kind == kind && d.slot() == slot)
+                .map(|d| d.register)
+        };
+        let pairs = |r: &wcontainers_gpu::Reflection| -> Vec<_> {
+            r.sampled_pairs
+                .iter()
+                .map(|&(t, s)| {
+                    (
+                        register(r, SlotKind::Texture, t),
+                        register(r, SlotKind::Sampler, s),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(pairs(a), pairs(b), "{name} sampled pairs");
         assert_eq!(a.extras, b.extras, "{name} extras");
         compared += 1;
         sampling += usize::from(!a.sampled_pairs.is_empty());

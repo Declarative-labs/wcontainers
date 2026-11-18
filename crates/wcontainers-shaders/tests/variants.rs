@@ -120,17 +120,42 @@ fn a_container_with_a_wrong_checksum_is_refused() {
     }
 }
 
-/// Two programs at one register in two register spaces are refused until a root signature numbers
-/// them, on both routes.
+/// Direct3D 12's numbering (DXIL): each kind's slots are the program's resources in (space, register)
+/// order, so two textures at one register in two spaces get the first two texture bindings and the
+/// sampled pairs name slots. DXBC keeps Direct3D 11's numbering, which knows one space.
 #[test]
-fn register_spaces_are_refused_under_direct3d_11_numbering() {
-    for source in [
+fn dxil_numbers_register_spaces_by_the_programs_own_slots() {
+    let got = convert(
         Source::Dxbc(&read("tests/own/ps_spaces.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .map(|_| ());
+    assert_eq!(got, Err(ConvertError::Unsupported("RegisterSpace")));
+    let c = convert(
         Source::Dxil(&read("tests/own/ps_spaces.dxil")),
-    ] {
-        let got = convert(source, &VariantKey::default(), None).map(|_| ());
-        assert_eq!(got, Err(ConvertError::Unsupported("RegisterSpace")));
-    }
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    let mut bindings: Vec<_> = c
+        .reflection
+        .bindings
+        .iter()
+        .map(|b| (b.kind, b.space, b.register, b.set, b.binding, b.slot()))
+        .collect();
+    bindings.sort_by_key(|b| b.4);
+    assert_eq!(
+        bindings,
+        [
+            (SlotKind::Sampler, 0, 0, 1, 16, 0),
+            (SlotKind::Texture, 0, 0, 1, 32, 0),
+            (SlotKind::Texture, 1, 0, 1, 33, 1),
+        ]
+    );
+    let mut pairs = c.reflection.sampled_pairs.clone();
+    pairs.sort();
+    assert_eq!(pairs, [(0, 0), (1, 0)]);
 }
 
 /// A vertex program writes each output as the pixel program reads it, taken from the pixel program's

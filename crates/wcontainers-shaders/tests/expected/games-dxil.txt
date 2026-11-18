@@ -1,12 +1,12 @@
 0096d23ca785e8ea.dxil	ok
 00eaf531f284e938.dxil	ok
 0122c2d15b6c414e.dxil	ok
-01d60f2de93459ec.dxil	spirv-reader image
+01d60f2de93459ec.dxil	ok-wgsl glsl-write
 022523a83d3a47d3.dxil	ok
 0259cb2f5428ba6b.dxil	ok
 02eaef1d23db22a5.dxil	ok
 033a6eb5c18d6af0.dxil	ok
-0361b7318e7bb95d.dxil	spirv-reader image
+0361b7318e7bb95d.dxil	ok-wgsl glsl-write
 041242bbdb88f879.dxil	ok
 05491e1abbd16816.dxil	ok
 074b33f1bc8a600d.dxil	ok
@@ -15,50 +15,50 @@
 093dd20d1194b903.dxil	ok
 094d3bbe64d974a5.dxil	ok
 09a0c33437843ec0.dxil	ok
-0a9dfde222225de5.dxil	spirv-reader unsupported
+0a9dfde222225de5.dxil	ok-wgsl glsl-write
 0af8f13d46b03e29.dxil	ok
 0c17885409f555ea.dxil	ok
 0c8cd4518b3cc7d5.dxil	ok
 0e6dfbe1e2043041.dxil	ok
-0ea25b49f419f569.dxil	spirv-reader image
+0ea25b49f419f569.dxil	ok-wgsl glsl-write
 0fef49fabe872198.dxil	ok
-1033ac0bb39724c8.dxil	spirv-reader image
+1033ac0bb39724c8.dxil	ok-wgsl glsl-write
 1167fac33d58a31d.dxil	ok
 1214a0e460a4d983.dxil	ok
 134937cfa72159ac.dxil	ok
 147fdd03ba57dbf2.dxil	ok
-1495dd46c01d5739.dxil	spirv-reader unsupported
+1495dd46c01d5739.dxil	unsupported TypedBufferFormatKind
 14dd4b0c20eb7f6e.dxil	spirv-reader unsupported
 15f6a483af9cf0bc.dxil	ok
 164e085c567ecd86.dxil	ok
 1692a7991b2487af.dxil	ok
 1a11e2cf55d45572.dxil	ok
-1a566291bf007bb1.dxil	spirv-reader image
+1a566291bf007bb1.dxil	ok-wgsl glsl-write
 1a67171134469322.dxil	ok
 1bb9073ee3b661d6.dxil	ok
 1c0f31c03e2fe52a.dxil	ok
 1cf62599cc0e8fc0.dxil	ok
 1d9b58d6f6fa8934.dxil	ok
-1dffab8a38dbd858.dxil	unsupported RegisterSpace
+1dffab8a38dbd858.dxil	ok
 1e619431cb5363ad.dxil	ok
 1e7f4e8c36e33d84.dxil	ok
 1f507d4622959aed.dxil	ok
 1fbc0d7ce9d0d8af.dxil	ok
 20dc978ec86798b3.dxil	ok
 20fdcb9d89005e42.dxil	ok
-21120674e619f216.dxil	spirv-reader image
+21120674e619f216.dxil	ok-wgsl glsl-write
 21b8cccf7749e4c5.dxil	ok
 22a35c285201e27f.dxil	ok
 234f0aefb4ea6f0c.dxil	ok
-23cf517779ec6d47.dxil	spirv-reader unsupported
+23cf517779ec6d47.dxil	unsupported TypedBufferFormatKind
 2401e74f68882663.dxil	ok
 25372e77403791c8.dxil	ok
 25aaf97559695a98.dxil	ok
 26218b2c83db3773.dxil	ok
 26480ad9d7d2ad54.dxil	ok
 269d549e10248fad.dxil	ok
-26ed1860124e3c43.dxil	spirv-reader image
-277e12b2f0fb2fa7.dxil	spirv-reader image
+26ed1860124e3c43.dxil	spirv-reader unsupported
+277e12b2f0fb2fa7.dxil	spirv-reader invalid
 28df654177b8f65a.dxil	ok
 2af882d6fd50d4ff.dxil	ok
 2b212e266f770fad.dxil	ok
@@ -68,7 +68,7 @@
 2ff5b26960a7debb.dxil	ok
 3186c922775e8e90.dxil	ok
 31bd508858afd31a.dxil	ok-wgsl glsl-compile
-324d52c636e9b15e.dxil	unsupported RegisterSpace
+324d52c636e9b15e.dxil	ok
 32980b1526e359e7.dxil	ok
 32e381615df42080.dxil	ok
 337f529338d77304.dxil	ok
@@ -78,7 +78,7 @@
 3748612534df88b7.dxil	ok
 37cfadb387922bcb.dxil	ok
 39e2ad152cdcbb2f.dxil	ok
-3b4f6e40dc38c1f1.dxil	spirv-reader unsupported
+3b4f6e40dc38c1f1.dxil	unsupported TypedBufferFormatKind
 3bb57e9c59b9576f.dxil	ok
 3db963b8d1bac126.dxil	ok
 3e7b5c64beadc19b.dxil	ok
@@ -86,7 +86,7 @@
 3f087f4f7a3165e2.dxil	ok
 3f1189fb7238b95e.dxil	ok
 3fb906256a621271.dxil	ok
-4007e43c86f4c7d1.dxil	spirv-reader unsupported
+4007e43c86f4c7d1.dxil	ok-wgsl glsl-write
 408d1b1ca9f5ec85.dxil	ok
 4129c8d47cad7d26.dxil	ok
 4199b642070a8217.dxil	ok
@@ -95,32 +95,32 @@
 43831dfe16867f22.dxil	ok
 4426a45a87f6b8ef.dxil	ok
 45fd8d7c5a5b70b9.dxil	ok
-4604b58fd0638c9f.dxil	spirv-reader image
+4604b58fd0638c9f.dxil	ok-wgsl glsl-write
 460e74e916fb1ed4.dxil	ok
 4633f955425fa0e6.dxil	ok
 464a81329e22ad59.dxil	ok
 46705dae4c3ecb65.dxil	ok
 46be5c555774d134.dxil	spirv-reader unsupported
 46cbd7ce995909d1.dxil	ok
-46f1e6ee9d81688e.dxil	spirv-reader image
+46f1e6ee9d81688e.dxil	ok-wgsl glsl-write
 471d776c732b966d.dxil	ok
-4889737e0dbaad23.dxil	spirv-reader image
+4889737e0dbaad23.dxil	ok-wgsl glsl-write
 48bd9731e170c8cc.dxil	ok
 4a517b56b398603d.dxil	ok
 4aef0304a67ab324.dxil	ok
-4b180d5d8cb67ef5.dxil	spirv-reader unsupported
+4b180d5d8cb67ef5.dxil	unsupported TypedBufferFormatKind
 4b1abb284ec95243.dxil	ok
 4c260f03e687cfeb.dxil	ok
-4cba441c3dcecc6d.dxil	spirv-reader image
+4cba441c3dcecc6d.dxil	ok-wgsl glsl-write
 4d1db1c8ee91ecba.dxil	ok
 4dfbd35d17113042.dxil	ok
 4f5ebba6b38a614f.dxil	ok
 4f9acab5b6623742.dxil	ok
-501e856c92e31f8a.dxil	spirv-reader unsupported
+501e856c92e31f8a.dxil	ok-wgsl glsl-write
 501f55ef11ea3fc7.dxil	ok
-50fc2281964dee14.dxil	spirv-reader image
+50fc2281964dee14.dxil	ok-wgsl glsl-write
 5280b4e9e7a26574.dxil	ok
-52a59985aa0fc3b2.dxil	unsupported RegisterSpace
+52a59985aa0fc3b2.dxil	ok
 5340dae5558e0fa0.dxil	ok
 53faa9c1b35bd57e.dxil	ok
 5447fb50aad65d65.dxil	ok
@@ -128,8 +128,8 @@
 55f943a1376f46e8.dxil	ok
 55fd079a5b84a87b.dxil	ok
 56a0396eee05f879.dxil	ok
-57012659c853e8a9.dxil	spirv-reader image
-576d607f8070ef33.dxil	spirv-reader image
+57012659c853e8a9.dxil	ok-wgsl glsl-write
+576d607f8070ef33.dxil	ok-wgsl glsl-write
 57775646ecccb712.dxil	ok
 577cb4561691d5f1.dxil	ok
 5845442670263162.dxil	ok
@@ -142,7 +142,7 @@
 5efa38eaa5de32a6.dxil	ok
 5f0e4091a431e8d8.dxil	ok
 6140bb2beda361dc.dxil	ok
-61593b325cfef32f.dxil	spirv-reader image
+61593b325cfef32f.dxil	ok-wgsl glsl-write
 61e09ac6f55c5270.dxil	ok
 62927e888aa13742.dxil	ok
 62e4b0af40bff82a.dxil	ok
@@ -162,16 +162,16 @@
 6fa646cea2a0f84b.dxil	ok
 6fcd59d728cfde45.dxil	ok
 6fe45c92bc18c230.dxil	ok
-70051bad4e549471.dxil	spirv-reader image
-704df49dca599d8f.dxil	spirv-reader image
+70051bad4e549471.dxil	ok-wgsl glsl-write
+704df49dca599d8f.dxil	ok-wgsl glsl-write
 7098aa95cb1484e3.dxil	ok
 70b5ec7767df3af8.dxil	ok
 71eceb911546c2f4.dxil	ok
-732b39dc64d16680.dxil	spirv-reader unsupported
+732b39dc64d16680.dxil	ok-wgsl glsl-write
 7402d9d06822b2f8.dxil	ok
 74f0dd8b01fbc31b.dxil	ok
 752971380945dcbe.dxil	ok
-7641e940074add6d.dxil	unsupported RegisterSpace
+7641e940074add6d.dxil	ok-wgsl glsl-write
 766a5967f43b70f7.dxil	ok
 7704e707797ce3fb.dxil	ok
 782540557737427a.dxil	ok
@@ -187,7 +187,7 @@
 7e13c2d32fa803da.dxil	ok
 7f2a3e7fd1ae56c3.dxil	ok
 7f90d7ebb19b5d14.dxil	spirv-reader unsupported
-7fbd955e876d9f01.dxil	spirv-reader image
+7fbd955e876d9f01.dxil	ok-wgsl glsl-write
 802ec03830b6f5dc.dxil	ok
 80aa9bff211c2f81.dxil	ok
 8153828801e76c18.dxil	ok
@@ -196,22 +196,22 @@
 851f389414707f79.dxil	ok
 851f9d108c1125b3.dxil	ok
 86cde22c5a08a1b5.dxil	ok
-88a69e91147ffcb8.dxil	spirv-reader image
+88a69e91147ffcb8.dxil	ok-wgsl glsl-write
 892d0055b26cea0a.dxil	ok
 8961d21db165a5ee.dxil	ok
-89990a8df4db5a95.dxil	spirv-reader image
+89990a8df4db5a95.dxil	ok-wgsl glsl-write
 8bb15ba2a2eed80d.dxil	ok
 8c10334bd7195703.dxil	ok
 8c2dbdbfe35ac7f4.dxil	ok
-8c74ea28e7b31d4c.dxil	spirv-reader image
+8c74ea28e7b31d4c.dxil	ok-wgsl glsl-write
 8ceecb0101d12293.dxil	ok
 8efc4664ce492884.dxil	ok
-8fa3c5c6ed0643ab.dxil	unsupported RegisterSpace
-8fe3057949a2ffcb.dxil	spirv-reader unsupported
+8fa3c5c6ed0643ab.dxil	ok
+8fe3057949a2ffcb.dxil	ok-wgsl glsl-write
 905f344d11578932.dxil	ok
 912c3d71fffdf597.dxil	ok
 958b4bf936e1fc80.dxil	ok
-96ce2568e612aaff.dxil	spirv-reader image
+96ce2568e612aaff.dxil	ok-wgsl glsl-write
 970baf122ec10994.dxil	ok
 9710b69885b62156.dxil	ok
 976fdf9a74a3e46b.dxil	ok
@@ -222,21 +222,21 @@
 9bed191a3e0d4ac9.dxil	ok
 9cdb2f55b3606ed2.dxil	ok
 9d2ea00e5e8f4157.dxil	ok
-9dffe7d748cbaa6c.dxil	spirv-reader image
-9f477d72ec3f0d24.dxil	spirv-reader image
+9dffe7d748cbaa6c.dxil	ok-wgsl glsl-write
+9f477d72ec3f0d24.dxil	ok-wgsl glsl-write
 a001f2df66c88fb8.dxil	ok
 a09bcc07e265de04.dxil	ok
-a124648111dd823d.dxil	spirv-reader image
-a126fe294e3d3c30.dxil	spirv-reader image
-a14f16819c16c5d7.dxil	spirv-reader image
+a124648111dd823d.dxil	ok-wgsl glsl-write
+a126fe294e3d3c30.dxil	ok-wgsl glsl-write
+a14f16819c16c5d7.dxil	ok-wgsl glsl-write
 a1d124a355c95f30.dxil	ok
-a34ec25cad46672c.dxil	spirv-reader unsupported
+a34ec25cad46672c.dxil	unsupported TypedBufferFormatKind
 a48d8117d8e85146.dxil	ok
-a4d49b99cc6e646c.dxil	spirv-reader image
+a4d49b99cc6e646c.dxil	ok-wgsl glsl-write
 a51181f3fb7dc157.dxil	ok
-a532a57865304d69.dxil	spirv-reader unsupported
-a5e56fe271bbd14c.dxil	unsupported RegisterSpace
-a659ed43188247be.dxil	unsupported RegisterSpace
+a532a57865304d69.dxil	ok-wgsl glsl-write
+a5e56fe271bbd14c.dxil	ok
+a659ed43188247be.dxil	ok
 a67644984fe17110.dxil	ok
 a6da81543f7c3274.dxil	ok
 a8675a8a1c80454d.dxil	ok
@@ -244,11 +244,11 @@ a8fcb550a2b49a31.dxil	ok
 a93400665fe0b8f8.dxil	ok
 a9db9c83ccbe3eac.dxil	ok
 ab5ed9f559906700.dxil	ok
-aba0d0944f848cc0.dxil	unsupported RegisterSpace
+aba0d0944f848cc0.dxil	ok
 abc31d38a0ca970c.dxil	ok
 ac30cd0dfc317c9b.dxil	ok
 ac88dd015a949838.dxil	ok
-acf7f723bacad1a2.dxil	spirv-reader image
+acf7f723bacad1a2.dxil	ok-wgsl glsl-write
 ade6d8600fff9ed5.dxil	ok
 af69e97f260937d0.dxil	ok
 aff1e91e65fe88ba.dxil	ok
@@ -258,7 +258,7 @@ b2291463f9b8c095.dxil	ok
 b2545567868009d3.dxil	ok
 b2e0ac420ae65af5.dxil	ok
 b47daebd399986a5.dxil	ok
-b47e3090700322b1.dxil	spirv-reader image
+b47e3090700322b1.dxil	ok-wgsl glsl-write
 b48212ab52c400ce.dxil	ok
 b4d6bb9e7d81972d.dxil	ok
 b51d58d6da5e8c21.dxil	ok
@@ -268,18 +268,18 @@ b7d8d7372f70b88b.dxil	ok
 b89f71b9a638b216.dxil	ok
 b8c50d7db33414b3.dxil	ok
 ba45cf2411ffe1cc.dxil	ok
-bb3226cfcf3d0c35.dxil	spirv-reader image
+bb3226cfcf3d0c35.dxil	ok-wgsl glsl-write
 bb94ff57d9a3255c.dxil	ok
 bbe9caa64f87d36a.dxil	ok
 bc1d7ef552a06924.dxil	ok
 bc31b2db070f0cf1.dxil	ok
 bc4d587cfe33c753.dxil	ok
 bcca3220489c82b0.dxil	ok
-bde378de957e64c3.dxil	spirv-reader image
+bde378de957e64c3.dxil	ok-wgsl glsl-write
 becab6804e756e4a.dxil	ok
 bf8fa8b12367866c.dxil	ok
 c1a217c6813653cf.dxil	ok
-c213907681789ad7.dxil	unsupported RegisterSpace
+c213907681789ad7.dxil	ok
 c33c04ef685e7e1b.dxil	ok
 c3863c3aeb33e6a9.dxil	ok
 c479fedfb3248b2d.dxil	spirv-reader unsupported
@@ -300,11 +300,11 @@ cc717e7dff7bd1d4.dxil	ok
 cedfa307e1d7fa67.dxil	ok
 d0a0292be264ecc9.dxil	ok
 d0c732f20f55bbb6.dxil	ok
-d1041912dbb3ef62.dxil	spirv-reader unsupported
+d1041912dbb3ef62.dxil	ok-wgsl glsl-write
 d2dbba4f851f4bb0.dxil	ok
 d3408f0599e8b4c6.dxil	ok
-d3b735c9f7f5697b.dxil	spirv-reader image
-d3edd1042fcc6fc8.dxil	spirv-reader image
+d3b735c9f7f5697b.dxil	ok-wgsl glsl-write
+d3edd1042fcc6fc8.dxil	ok-wgsl glsl-write
 d3f74dd934bdac2e.dxil	ok
 d4422d5aa9c2a51f.dxil	ok
 d4cf2ff8fc02da43.dxil	ok
@@ -319,13 +319,13 @@ db41d3ea9ff948d7.dxil	ok
 dccaefc2642f1292.dxil	ok
 dd19a3564bd0f9f7.dxil	ok
 def951734e765edf.dxil	ok
-e0d44a0562e7a21e.dxil	spirv-reader unsupported
+e0d44a0562e7a21e.dxil	ok-wgsl glsl-write
 e16ca8cd21219bcd.dxil	ok
 e3c4502376c1b620.dxil	ok
 e48a9984066db3e8.dxil	ok
 e4f7c1de02d4ae96.dxil	ok
 e51610ac385cf9df.dxil	ok
-e52ae8c13c8048b8.dxil	spirv-reader unsupported
+e52ae8c13c8048b8.dxil	ok-wgsl glsl-write
 e5d1985b3eca7308.dxil	ok
 e65e2da1741f054d.dxil	ok
 e80379d863e36ef8.dxil	ok
@@ -336,11 +336,11 @@ ece940abd4e7eb8d.dxil	ok
 ed31669f40c4d62a.dxil	ok
 ee87c1f7296d289e.dxil	ok
 eea1006d96c6e3c2.dxil	ok
-f2bffeb171a5bea0.dxil	spirv-reader image
+f2bffeb171a5bea0.dxil	ok-wgsl glsl-write
 f2d8c32e4d122d16.dxil	ok
 f2f8f6fffaefce4a.dxil	ok
 f4496f6a810baf83.dxil	ok
-f44a31e9597bbbf6.dxil	spirv-reader image
+f44a31e9597bbbf6.dxil	ok-wgsl glsl-write
 f6305c63591d65c0.dxil	ok
 f6b663ac1cc70885.dxil	ok
 f72e106108311897.dxil	ok
@@ -351,11 +351,11 @@ fa14a6d3896620f8.dxil	ok
 fa2e40e8e48adb92.dxil	ok
 fae40619ed6c1900.dxil	ok
 fb80e27311846886.dxil	ok
-fbbd650751923af4.dxil	spirv-reader unsupported
+fbbd650751923af4.dxil	ok-wgsl glsl-write
 fc4ae0cfd197f786.dxil	ok
 fc7a4deb0e5bc814.dxil	ok
 fe47733ce6ab6c52.dxil	ok
-ff10302181e28fa2.dxil	spirv-reader image
-ff82239c939e3cd9.dxil	unsupported RegisterSpace
-ffa65a1fcae35ac8.dxil	spirv-reader unsupported
+ff10302181e28fa2.dxil	ok-wgsl glsl-write
+ff82239c939e3cd9.dxil	ok
+ffa65a1fcae35ac8.dxil	ok-wgsl glsl-write
 ffe757fc29d2bab9.dxil	ok

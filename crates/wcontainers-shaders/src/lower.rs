@@ -1692,7 +1692,7 @@ pub(crate) fn storage_format(f: wcontainers_gpu::Format) -> Option<naga::Storage
 }
 
 /// The scalar kind a storage format's texels are read and written as.
-fn storage_kind(f: naga::StorageFormat) -> ScalarKind {
+pub(crate) fn storage_kind(f: naga::StorageFormat) -> ScalarKind {
     use naga::StorageFormat as S;
     match f {
         S::R8Uint

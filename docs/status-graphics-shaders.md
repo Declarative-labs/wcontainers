@@ -23,8 +23,12 @@ built-in program clearing storage texture views (5.1) with a test against WARP a
 Direct3D 11, gave the corpus test view formats, and found the cause of the one WebAssembly
 difference; run 20 ported Direct3D's tessellator to a compute program (tested against the RTX
 3080's tessellator) and converted hull shaders (to compute) and domain shaders (to vertex
-programs), not yet drawn through `Stages`; what remains is under Next. Run 20 merged
-origin/phase-2-graphics-webgl, -direct3d-12 and -rig (no conflicts; the others had nothing new).
+programs), not yet drawn through `Stages`; run 21 (the first run of the G6 milestone's
+"run 1" series) converted DXIL's typed buffers and storage images without a format, which stopped
+Godot's Direct3D 12 compute shaders; run 22 numbered DXIL's resources by Direct3D 12's rule
+(register spaces and registers of any size), which stopped Godot's Direct3D 12 graphics shaders
+(`BindingsBeyondLimit`) and the games' `RegisterSpace`; what remains is under Next. Runs 21 and 22
+merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11, -direct3d-12 and -rig (no conflicts).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -751,7 +755,81 @@ Run 20 (the tessellator):
   no storage buffers or compute, so none is written for WebGL 2 (which has no tessellation).
 - Not yet drawn: hull and domain shaders run through `Stages` (Next).
 
+Run 21 (DXIL typed buffers and storage images, for Godot's Direct3D 12 shaders):
+- `src/dxil/images.rs`: before naga reads dxil-spirv's SPIR-V, each image type of a typed buffer
+  (`DimBuffer`) becomes a 1D image and each storage image without a format gets a 32-bit format of
+  its texel's kind (the words are edited in place; the variables' space, register and kind are
+  noted). After reading, numbering and the draw bases: storage images take the bound view's format
+  from `storage_formats` (refusals as DXBC's: `StorageFormat`, `StorageFormatAbsent`,
+  `StorageFormatKind`, `ReadWriteStorageFormat`), their access from what the program does (read,
+  write, or both); typed buffers take the DXBC route's forms (`texel_buffers`: `Storage` or
+  `Texture`, `Native` refused `TypedBuffer`), each load, size query and store becoming a call of
+  `variant::texel`'s functions (signed coordinates bitcast, narrower values padded), any other use
+  refused `TypedBufferUse`. The new functions are put before the module's own (`functions_first`,
+  shared with the float to integer pass; `place_calls` likewise).
+- naga's SPIR-V reader (carried, `third_party/naga`): takes the `NonPrivateTexel` image operand and
+  the `NonPrivatePointer` memory operand (every storage access of the IR is non-private), takes
+  `MakePointerAvailable`/`MakePointerVisible` with their scope only on workgroup memory (which
+  every target keeps coherent within its workgroup; dxil-spirv puts them on every groupshared
+  access), refuses them elsewhere (`UnsupportedMemoryAccess`) and refuses image write operands
+  other than hints and non-private (`UnsupportedImageWriteOperand`; before, all were dropped with
+  a warning, so a coherent write lost its coherence silently). `OpImageQuerySize` on an array now
+  gives the layer count as its last component (it gave the size alone, and `GetDimensions` of a
+  2D array read past it).
+- Corpora (laptop, counts below): games DXIL 47 more convert (WGSL; compute, so no GLSL ES), the
+  rig's DXIL 2 more. Still refused, all named: atomics on images and typed buffers (naga's reader
+  has no `OpImageTexelPointer`, "storage class %11": 5 games, 4 own, 1 rig), mixed view kinds in
+  the corpus test (`TypedBufferFormatKind` 5 games), `RegisterSpace` 10, and the rest as before.
+- At the end of run 21 the build folders were deleted (laptop
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders`, 23 GB; desktop
+  `C:\wc\target\phase-2-graphics-shaders`), so the next run builds from clean; `out` and the logs
+  are kept.
+- Tests: `storage_textures_match_direct3d` (compute_draw) and `typed_buffers_draw_as_direct3d_does`
+  (variant_draw) now also convert dxc's DXIL of the same HLSL and compare it with real Direct3D
+  11's result for fxc's DXBC (results under Measurements).
+
+Run 22 (Direct3D 12's numbering, for Godot's graphics shaders and the games' register spaces):
+- DXIL resources are numbered by Direct3D 12's rule (plan 6.4 as now written; see Departures):
+  within the stage's set, each kind's slots are the program's own resources of that kind in
+  (space, register) order from the kind's first binding. Any space and register fits; only a
+  program with more resources of a kind than its range holds is `BindingsBeyondLimit`. The front
+  finds each binding's descriptor by `ReflectedBinding::space` and `register` (G5's `locate`
+  already does), so no root signature enters the key. DXBC keeps Direct3D 11's numbering, so a
+  shader model 5.1 DXBC program using a space other than 0 is still `RegisterSpace`.
+- `cpp/dxil.cpp` gives dxil-spirv remappers that bind each resource at descriptor set = its
+  Direct3D class (constant buffer, shader resource view, unordered access view, sampler, counter)
+  and binding = its index in a table (class, space, register) returned beside the SPIR-V, so
+  resources of different classes at one register stay apart (before, a `StructuredBuffer` at t3
+  and a `RWStructuredBuffer` at u3 took one binding, and counters went to space + 1, colliding with
+  space 1). Shader resource views of buffers are now `SlotKind::Texture`, as on the DXBC route and
+  as G5's `locate` looks for them (it maps `Storage` to unordered access ranges only).
+- Interface: `ReflectedBinding::slot()` (binding minus its kind's first binding); `VariantKey`'s
+  per-slot fields and `Reflection::sampled_pairs` name slots, which are the registers under
+  Direct3D 11's numbering. The variant code (`slot_of`, constants as storage or a texture, DXIL's
+  storage and typed buffer formats) now looks slots up so. A front setting a per-slot field for a
+  DXIL program takes the slot from the plain conversion's reflection.
+- Tests: `dxil_numbers_register_spaces_by_the_programs_own_slots` (variants.rs: `ps_spaces.dxil`,
+  t0 in spaces 0 and 1, gets texture bindings 32 and 33 and pairs (0, 0), (1, 0); its fxc 5.1 build
+  stays `RegisterSpace`); `dxil_bindings_and_sampled_pairs_match_dxbc` now compares each resource's
+  kind, space, register and set and the pairs by register, and checks each route's own numbering;
+  `tests/own/twospaces.hlsl` (`ps_twospaces`, dxc with t0 in spaces 0 and 1, fxc reading t0
+  twice) drawn in `tests/draw.rs` against real Direct3D 12 (the test's root signature now has an
+  SRV range in each space).
+- Results (Measurements): the 10 games' DXIL shaders refused `RegisterSpace` convert (9 written as
+  both WGSL and GLSL ES, 1 WGSL only), `ps_spaces.dxil` and `ps_twospaces` convert; no other verdict
+  changed in any corpus. Every written WGSL compiles in Chrome. `ps_twospaces` draws equal to real
+  Direct3D 12 (DXIL) and 11 (DXBC) through both back ends.
+- At the end of run 22 the build folders were deleted again (laptop
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders`, 4.9 GB; desktop
+  `C:\wc\target\phase-2-graphics-shaders`); the next run builds from clean.
+
 Next (in order):
+- Godot on Direct3D 12 (G5's real program): run 22's numbering is expected to remove
+  `BindingsBeyondLimit` from its graphics shaders (not checked: Godot compiles its shaders at run
+  time, so they are not in the corpus); run Godot through G5's front after merging and read its
+  refusals. Then DXIL atomics on images and typed
+  buffers: naga's reader needs `OpImageTexelPointer` into the same texel functions (typed buffers)
+  and `texels_through_buffer` (images); naga's IR has no image atomic with a result.
 - Tessellation, the rest: `Stages` with hull and domain shaders (a constructor taking them, a patch
   list topology, the hull dispatch into a patches buffer sized from `StageExtras::Hull`'s location
   counts, the tessellator, and a `FinalDraw` that is an indexed indirect draw of the tessellator's
@@ -777,8 +855,7 @@ Next (in order):
   buffer at offsets from the helper constants"; separate guest buffers become one GPU buffer only if
   the front keeps every storage-capable buffer in one arena (or copies), which is the fronts' memory
   design, and the binding the packed buffer takes is not named. To settle with the interface track.
-- DXIL storage views and typed buffers (naga's SPIR-V reader:
-  image buffers, images without a format), then the through-buffer and typed buffer routes for DXIL.
+- DXIL storage views through a buffer (`texels_through_buffer`) and atomics (above).
 - Comparisons in the program (shadow maps with a border colour, very common: WebGPU has no border
   colour): `SamplerState` needs the comparison function (an interface change: a word for it), then
   the library compares each tap. Cube filtering in the program (seamless edges). Then the rest of
@@ -812,7 +889,8 @@ Next (in order):
   (dxil-spirv gives them a SPIR-V component; naga's reader drops it, so two values claim one
   location; refused as `PackedStageValues` until then). Both fit one wrapper, the one `draw_bases`
   already makes.
-- DXIL binding numbers by root signature (6.4, `VariantKey::layout`); today Direct3D 11's rule.
+- Shader model 5.1 DXBC with register spaces (vkd3d's register_space, sampler_register_space):
+  Direct3D 12's numbering on the DXBC route too, with the slot lookups of `lower.rs` by slot.
 - DXIL's `NonFiniteConstant` and `ConstantComponentIndexing`: both need new expressions placed
   before existing ones in a function's arena (naga requires operands to precede their users), so a
   small arena rebuild with handle remapping (the compact module has the remapping) comes first.
@@ -949,8 +1027,11 @@ let reflection = &converted.reflection;
 - `reflection.sampled_pairs` lists (texture register, sampler register) pairs in first-use order.
   `reflection.extras` for pixel shaders: early tests, side effects (UAV writes), discards, per sample.
 - DXIL: `convert(Source::Dxil(bytecode), &variant_key, None)`, same result shape. Bindings are
-  numbered as for Direct3D 11 for now (stage set, kind range + register; `space` kept in the
-  reflection), not yet by root signature. `draw_base` `None` (bases read as zero), `Helpers` and
+  numbered by Direct3D 12's rule (run 22): stage set as for Direct3D 11; within it each kind's
+  slots are the program's own resources of that kind in (space, register) order from the kind's
+  first binding (shader resource views, buffers among them, are `Texture`, unordered access views
+  `Storage`, counters `Counter` at their view's slot). Find each binding's descriptor by its
+  `space` and `register`; per-slot variant fields take `ReflectedBinding::slot()`. `draw_base` `None` (bases read as zero), `Helpers` and
   `Arguments` are taken as for DXBC. Inputs and outputs are listed as for DXBC
   (semantic names from the container's signatures, location = register), but unlike DXBC each value
   keeps its own width and type (`vs_transform.dxil` writes `@location(1) vec2<f32>`), so a
@@ -982,6 +1063,34 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 22, 2026-11-18, counts only (laptop load 1 to 3; desktop shared through the queue), logs in
+scratch `graphics-shaders/run22`:
+- Laptop, `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; `cargo test -p wcontainers-shaders -p wcontainers-gpu -- --include-ignored --skip mutated`
+  with every corpus: all pass once the records took the new verdicts (games-dxil: 10 from
+  `unsupported RegisterSpace` to `ok` 9 and `ok-wgsl glsl-write` 1; own-dxil: `ps_spaces.dxil` ok,
+  `ps_twospaces.dxil` ok; own: `ps_twospaces.dxbc` ok).
+- Chrome 157 on the RTX 3080 (`web/check`, one GPU job): WebGPU compiles every written WGSL file
+  (corpus 171, games 469, games-dxil 346, own 86, own-dxil 28, rig 74, rig-dxil 51); WebGL 2
+  fails only on bitfield operations, `textureGather` and multisampled samplers as before (corpus
+  13, games 10, games-dxil 1, own 5, own-dxil 2, rig 2, rig-dxil 2).
+- Desktop, `draw`, `compute_draw` and `variant_draw` (one GPU job, all pass): `ps_twospaces` 0 of
+  4096 texels differ on WebGPU and WebGL 2, DXIL against real Direct3D 12 and DXBC against real
+  Direct3D 11; every earlier case as before.
+
+Run 21, 2026-11-17, counts only (desktop shared with the other tracks through the queue; laptop
+load 1 to 4), logs in scratch `graphics-shaders/run21`:
+- `storage_textures_match_direct3d`, seeds 1 to 4 (draw2.log): fxc's DXBC and dxc's DXIL of
+  `cs_images` through the WebGPU back end, 32 textures, every one equal word for word to real
+  Direct3D 11's on the RTX 3080.
+- `typed_buffers_draw_as_direct3d_does`, seeds 1 to 8 (draw2.log): 48 comparisons (DXBC and DXIL,
+  each through storage on WebGPU and a texture on WebGPU and WebGL 2), all equal texel for texel.
+- Corpora (laptop, corpus3.log, suite1.log): games DXIL 361: 288 ok, 47 ok as WGSL only
+  (compute), 26 named refusals; own DXIL 44, rig DXIL 72 (2 more convert than run 20). The whole
+  suite passed on the laptop (corpus 9 tests, variants 17, cache 6, the rest).
+- Chrome 157 (chrome1.log, one GPU job): every written WGSL compiles (games DXIL 336, own DXIL 26,
+  rig DXIL 51); GLSL ES fails only where it did (multisampled samplers 2, `textureGather` 3).
 
 Run 20, 2026-11-17, counts only (desktop shared with the other tracks; laptop load 2 to 6):
 - `tessellator_matches_direct3d` (`run20/tess5.log` in scratch `graphics-shaders`), seeds 1 to 16,
@@ -1612,6 +1721,8 @@ were already there.
 
 ## Dependencies and licences
 
+- Run 21: `spirv` 0.4.0 (Apache-2.0; SPIR-V's enums, already in the tree under naga), used to read
+  and edit dxil-spirv's SPIR-V before naga reads it.
 - Run 20: `src/stage/tessellator.wgsl` is a port (to WGSL) of Microsoft's reference tessellator,
   MIT ("Copyright (c) Microsoft Corporation", the licence text at the head of Mesa's
   src/gallium/auxiliary/tessellator/tessellator.cpp, read 2026-11-17); the program's header names it.
@@ -1645,6 +1756,16 @@ were already there.
   WITH LLVM-exception, wasi-libc MIT-style and others), wasmtime (Apache-2.0 WITH LLVM-exception).
 
 ## Departures from the plan
+
+- Direct3D 12's numbering (run 22) is the program's own, not the root signature's: each kind's
+  slots are the program's resources in (space, register) order, in the stage's set. The plan had
+  sets by visibility and ranges in root signature order with the root signature's hash in the key.
+  The back ends make each pipeline's layout from its modules, so a root-signature numbering would
+  share nothing more, while it would make a program per root signature (more conversions and cache
+  entries) and need the root signature at every conversion; the front already finds descriptors by
+  space and register. The plan's 6.4 text is changed to match (interface commit). `VariantKey::layout`
+  and `convert`'s `root_signature` stay for root constants read as immediates (not built; refused
+  `RootSignatureLayout`).
 
 - Stores of normalised formats through typed buffers are held to Direct3D's permitted tolerance
   (0.6 of a code from the exact value, functional specification 3.2.3.4 and 3.2.3.6), not to the
@@ -1732,7 +1853,7 @@ were already there.
 - Inside a patch the GPU's tessellator gives the primitives in another order than the reference, and
   starts about two thirds of its triangles at another vertex (winding kept); ours follow the
   reference. A domain shader's flat outputs (taken from a triangle's first vertex) can then differ.
-- Typed buffers: DXIL's are refused by naga's SPIR-V reader; geometry shaders' are refused
+- Typed buffers: DXIL's atomics are refused by naga's SPIR-V reader; geometry shaders' are refused
   (`TypedBufferInGeometry`); through a texture, a view reaches at most 2048 times the back end's
   largest texture height elements (32M on ANGLE's 16384), short of Direct3D 10's 2^27, which the
   front must report.
@@ -1833,6 +1954,12 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 22, `ReflectedBinding::slot()` and the per-slot fields of `VariantKey`, the sampled pairs and
+  `AddedBinding::ConstantsAs*` named by slot (commit "interface: named variant slots by a binding's
+  place in its kind's range ..."; plan text in 6.4's Direct3D 12 sets): under Direct3D 12's
+  numbering registers can be any size and repeat across spaces, so a bit per register cannot name
+  them; the slot is the register under Direct3D 11's.
 
 - Run 20, `DOMAIN_PATCHES_BINDING` (13) and `DOMAIN_POINTS_BINDING` (14) in the helper set (commit
   "interface: named the bindings in the helper set where a domain program reads ..."; plan text in

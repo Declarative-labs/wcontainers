@@ -14,6 +14,7 @@ blake3 = { version = "1", default-features = false }
 crc32fast = { version = "1", default-features = false }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+spirv = "0.4"
 
 [build-dependencies]
 blake3 = "1"

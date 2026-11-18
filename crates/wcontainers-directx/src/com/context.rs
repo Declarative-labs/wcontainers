@@ -17,7 +17,7 @@ use windows::core::{
 
 use wcontainers_direct3d_11::desc::{Box3, Viewport, map};
 use wcontainers_direct3d_11::object::Resource;
-use wcontainers_direct3d_11::{COMPUTE, PIXEL, UAV_SLOTS, VERTEX, format};
+use wcontainers_direct3d_11::{COMPUTE, GEOMETRY, PIXEL, UAV_SLOTS, VERTEX, format};
 
 use super::counted::{Counted, Held};
 use super::*;
@@ -127,12 +127,15 @@ struct Bound {
     vs: Option<Held<VertexShader_Impl>>,
     ps: Option<Held<PixelShader_Impl>>,
     cs: Option<Held<ComputeShader_Impl>>,
-    /// Per stage (vertex, pixel, compute, then the geometry, hull and domain stages, whose
+    gs: Option<Held<GeometryShader_Impl>>,
+    /// The stream output targets.
+    so_targets: [Option<Held<Buffer_Impl>>; 4],
+    /// Per stage (vertex, pixel, compute, geometry, then the hull and domain stages, whose
     /// constant buffers and samplers are kept for the getters alone), per slot.
     constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; 6],
     /// Per stage and slot, the constants bound (first, count); none for the whole buffer.
     constant_ranges: [Vec<Option<(u32, u32)>>; 6],
-    resources: [Vec<Option<Held<ShaderResourceView_Impl>>>; 3],
+    resources: [Vec<Option<Held<ShaderResourceView_Impl>>>; 4],
     samplers: [Vec<Option<Held<SamplerState_Impl>>>; 6],
     uavs: [Vec<Option<Held<UnorderedAccessView_Impl>>>; 3],
     layout: Option<Held<InputLayout_Impl>>,
@@ -156,6 +159,8 @@ impl Default for Bound {
             vs: None,
             ps: None,
             cs: None,
+            gs: None,
+            so_targets: Default::default(),
             constant_buffers: Default::default(),
             constant_ranges: Default::default(),
             resources: Default::default(),
@@ -177,9 +182,8 @@ impl Default for Bound {
     }
 }
 
-/// The stages no shader can be made for (geometry, hull, domain): what is bound to them is kept for
-/// the getters, and no draw reads it.
-const GEOMETRY: usize = 3;
+/// The stages no shader can be made for (hull, domain): what is bound to them is kept for the
+/// getters, and no draw reads it.
 const HULL: usize = 4;
 const DOMAIN: usize = 5;
 
@@ -391,6 +395,92 @@ impl Context {
         self.bound.borrow_mut().vs = h;
     }
 
+    pub(super) fn gs_set_shader(
+        &self,
+        shader: Ref<ID3D11GeometryShader>,
+        _c: *const Option<ID3D11ClassInstance>,
+        _n: u32,
+    ) {
+        let h = held_one::<_, GeometryShader>(&shader);
+        let s = h.as_ref().map(|s| (*s.front).clone());
+        self.run("GSSetShader", move |f| {
+            f.gs_set_shader(s.clone());
+            Ok(())
+        });
+        self.bound.borrow_mut().gs = h;
+    }
+
+    pub(super) fn gs_get_shader(
+        &self,
+        out: OutRef<ID3D11GeometryShader>,
+        _c: OutRef<ID3D11ClassInstance>,
+        count: *mut u32,
+    ) {
+        no_instances(count);
+        let _ = out.write(public(&self.bound.borrow().gs));
+    }
+
+    pub(super) fn gs_set_shader_resources(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11ShaderResourceView>,
+    ) {
+        self.set_shader_resources(GEOMETRY, start, n, list);
+    }
+
+    pub(super) fn gs_get_shader_resources(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11ShaderResourceView>,
+    ) {
+        load(&self.bound.borrow().resources[GEOMETRY], start, n, out);
+    }
+
+    /// `SOSetTargets`: the slots past the buffers given are unbound; an offset of -1 appends where
+    /// the buffer was filled to, and no offsets start each buffer from its beginning.
+    pub(super) fn so_set_targets(
+        &self,
+        n: u32,
+        list: *const Option<ID3D11Buffer>,
+        offsets: *const u32,
+    ) {
+        if n > 4 {
+            self.run("SOSetTargets", |_| {
+                Err(wcontainers_direct3d_11::Error::InvalidArg(
+                    "more than four stream output targets",
+                ))
+            });
+            return;
+        }
+        let h = held::<_, Buffer>(list, n);
+        let b = fronts(&h, |b| &*b.front);
+        let o: Vec<u32> = if offsets.is_null() {
+            vec![0; h.len()]
+        } else {
+            (0..h.len()).map(|i| unsafe { *offsets.add(i) }).collect()
+        };
+        if self.run("SOSetTargets", move |f| f.so_set_targets(&b, &o)) {
+            let mut targets: [Option<Held<Buffer_Impl>>; 4] = Default::default();
+            for (t, h) in targets.iter_mut().zip(h) {
+                *t = h;
+            }
+            self.bound.borrow_mut().so_targets = targets;
+        }
+    }
+
+    pub(super) fn so_get_targets(&self, n: u32, out: *mut Option<ID3D11Buffer>) {
+        load(&self.bound.borrow().so_targets, 0, n, out);
+    }
+
+    pub(super) fn draw_auto(&self) {
+        self.run("DrawAuto", move |f| {
+            f.draw_auto();
+            Ok(())
+        });
+    }
+
     pub(super) fn ps_set_shader(
         &self,
         shader: Ref<ID3D11PixelShader>,
@@ -435,7 +525,7 @@ impl Context {
                 .collect()
         };
         let r = ranges.clone();
-        let kept = if stage >= GEOMETRY {
+        let kept = if stage >= HULL {
             self.unused_stage("SetConstantBuffers", start, n, CONSTANT_BUFFER_SLOTS)
         } else {
             self.run("SetConstantBuffers", move |f| {
@@ -598,7 +688,7 @@ impl Context {
     ) {
         let h = held::<_, SamplerState>(list, n);
         let s = fronts(&h, |s| &*s.front);
-        let kept = if stage >= GEOMETRY {
+        let kept = if stage >= HULL {
             self.unused_stage("SetSamplers", start, n, SAMPLER_SLOTS)
         } else {
             self.run("SetSamplers", move |f| f.set_samplers(stage, start, &s))
@@ -648,7 +738,7 @@ impl Context {
                 .map(|t| (*t.front).clone())
                 .chain(depth.iter().map(|d| (*d.front).clone()))
                 .collect();
-            for stage in [VERTEX, PIXEL, COMPUTE] {
+            for stage in [VERTEX, PIXEL, COMPUTE, GEOMETRY] {
                 let writer = if stage == COMPUTE { COMPUTE } else { PIXEL };
                 for h in resources[stage].iter_mut() {
                     let written = h.as_ref().is_some_and(|v| {
@@ -669,7 +759,7 @@ impl Context {
         {
             let front = self.front.borrow();
             let mut bound = self.bound.borrow_mut();
-            for stage in [VERTEX, PIXEL, COMPUTE] {
+            for stage in [VERTEX, PIXEL, COMPUTE, GEOMETRY] {
                 for (slot, h) in bound.resources[stage].iter_mut().enumerate() {
                     if h.is_some() && !front.shader_resource_bound(stage, slot as u32) {
                         gone.push(h.take());
@@ -2184,11 +2274,17 @@ impl Context {
             let vs = b.vs.as_ref().map(|s| (*s.front).clone());
             let ps = b.ps.as_ref().map(|s| (*s.front).clone());
             let cs = b.cs.as_ref().map(|s| (*s.front).clone());
+            let gs = b.gs.as_ref().map(|s| (*s.front).clone());
             self.run("VSSetShader", move |f| {
                 f.vs_set_shader(vs.clone());
                 f.ps_set_shader(ps.clone());
                 f.cs_set_shader(cs.clone());
+                f.gs_set_shader(gs.clone());
                 Ok(())
+            });
+            let targets = fronts(&b.so_targets, |t| &*t.front);
+            self.run("SOSetTargets", move |f| {
+                f.so_set_targets(&targets, &[u32::MAX; 4])
             });
             let layout = b.layout.as_ref().map(|l| (*l.front).clone());
             let topology = b.topology.0 as u32;
@@ -2212,16 +2308,19 @@ impl Context {
             self.run("OMSetRenderTargets", move |f| {
                 f.om_set_render_targets(&targets, depth.clone())
             });
-            for stage in [VERTEX, PIXEL, COMPUTE] {
+            for stage in [VERTEX, PIXEL, COMPUTE, GEOMETRY] {
                 let buffers = fronts(&b.constant_buffers[stage], |c| &*c.front);
                 let ranges: Vec<_> = (0..buffers.len())
                     .map(|i| b.constant_ranges[stage].get(i).copied().flatten())
                     .collect();
                 let views = fronts(&b.resources[stage], |v| &*v.front);
                 let samplers = fronts(&b.samplers[stage], |s| &*s.front);
-                let uavs = fronts(&b.uavs[stage], |u| &*u.front);
+                let uavs = b
+                    .uavs
+                    .get(stage)
+                    .map_or(Vec::new(), |u| fronts(u, |u| &*u.front));
                 self.run("SetShaderResources", move |f| {
-                    if stage != VERTEX {
+                    if stage == PIXEL || stage == COMPUTE {
                         f.set_uavs(stage, 0, &uavs, None)?;
                     }
                     f.set_constant_ranges(stage, 0, &buffers, &ranges)?;

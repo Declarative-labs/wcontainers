@@ -1065,7 +1065,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numclassinstances: u32,
     ) {
         let _call = self.call();
-        self.only_unbinding("ID3D11DeviceContext::GSSetShader", !pshader.is_null())
+        self.gs_set_shader(pshader, ppclassinstances, numclassinstances)
     }
     fn IASetPrimitiveTopology(
         &self,
@@ -1125,10 +1125,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::GSSetShaderResources",
-            super::context::binds(ppshaderresourceviews, numviews),
-        )
+        self.gs_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn GSSetSamplers(
         &self,
@@ -1193,14 +1190,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         poffsets: *const u32,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::SOSetTargets",
-            super::context::binds(ppsotargets, numbuffers),
-        )
+        self.so_set_targets(numbuffers, ppsotargets, poffsets)
     }
     fn DrawAuto(&self) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::DrawAuto")
+        self.draw_auto()
     }
     fn DrawIndexedInstancedIndirect(
         &self,
@@ -1595,8 +1589,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pnumclassinstances: *mut u32,
     ) {
         let _call = self.call();
-        super::context::no_instances(pnumclassinstances);
-        let _ = ppgeometryshader.write(None);
+        self.gs_get_shader(ppgeometryshader, ppclassinstances, pnumclassinstances)
     }
     fn IAGetPrimitiveTopology(
         &self,
@@ -1638,7 +1631,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *mut Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppshaderresourceviews, numviews)
+        self.gs_get_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn GSGetSamplers(
         &self,
@@ -1696,7 +1689,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
     }
     fn SOGetTargets(&self, numbuffers: u32, ppsotargets: *mut Option<ID3D11Buffer>) {
         let _call = self.call();
-        super::context::nothing_bound(ppsotargets, numbuffers)
+        self.so_get_targets(numbuffers, ppsotargets)
     }
     fn RSGetState(&self, pprasterizerstate: windows::core::OutRef<ID3D11RasterizerState>) {
         let _call = self.call();
@@ -4400,6 +4393,41 @@ impl ID3D11DeviceChild_Impl for VertexShader_Impl {
 impl ID3D11PixelShader_Impl for PixelShader_Impl {}
 
 impl ID3D11DeviceChild_Impl for PixelShader_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11GeometryShader_Impl for GeometryShader_Impl {}
+
+impl ID3D11DeviceChild_Impl for GeometryShader_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)

@@ -51,13 +51,61 @@ struct Blob {
   }
 };
 
+// Every resource the shader declares, as (class, space, register) triples: dxil-spirv is told to bind
+// each at descriptor set = its class and binding = its index here, so resources of different classes
+// at one register stay apart. Classes: 0 constant buffer, 1 shader resource view, 2 unordered access
+// view, 3 sampler, 4 an unordered access view's counter (binding: its view's index).
+struct Resources {
+  std::vector<uint32_t> table;
+
+  uint32_t index(uint32_t cls, const dxil_spv_d3d_binding& d) {
+    for (size_t i = 0; i + 2 < table.size(); i += 3)
+      if (table[i] == cls && table[i + 1] == d.register_space && table[i + 2] == d.register_index)
+        return uint32_t(i / 3);
+    table.insert(table.end(), { cls, d.register_space, d.register_index });
+    return uint32_t(table.size() / 3 - 1);
+  }
+
+  static void bind(dxil_spv_vulkan_binding* vk, uint32_t set, uint32_t binding) {
+    *vk = { };
+    vk->set = set;
+    vk->binding = binding;
+    vk->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_IDENTITY;
+  }
+
+  static dxil_spv_bool srv(void* self, const dxil_spv_d3d_binding* d, dxil_spv_srv_vulkan_binding* vk) {
+    *vk = { };
+    bind(&vk->buffer_binding, 1, static_cast<Resources*>(self)->index(1, *d));
+    return DXIL_SPV_TRUE;
+  }
+
+  static dxil_spv_bool sampler(void* self, const dxil_spv_d3d_binding* d, dxil_spv_vulkan_binding* vk) {
+    bind(vk, 3, static_cast<Resources*>(self)->index(3, *d));
+    return DXIL_SPV_TRUE;
+  }
+
+  static dxil_spv_bool uav(void* self, const dxil_spv_uav_d3d_binding* d, dxil_spv_uav_vulkan_binding* vk) {
+    *vk = { };
+    uint32_t i = static_cast<Resources*>(self)->index(2, d->d3d_binding);
+    bind(&vk->buffer_binding, 2, i);
+    bind(&vk->counter_binding, 4, i);
+    return DXIL_SPV_TRUE;
+  }
+
+  static dxil_spv_bool cbv(void* self, const dxil_spv_d3d_binding* d, dxil_spv_cbv_vulkan_binding* vk) {
+    *vk = { };
+    bind(&vk->vulkan.uniform_binding, 0, static_cast<Resources*>(self)->index(0, *d));
+    return DXIL_SPV_TRUE;
+  }
+};
+
 struct LogScope {
   explicit LogScope(std::string* first) { dxil_spv_set_thread_log_callback(log_error, first); }
   ~LogScope() { dxil_spv_set_thread_log_callback(nullptr, nullptr); }
 };
 
 int convert(const uint8_t* data, size_t size, uint32_t samples, uint32_t** out, size_t* out_words,
-            char** error) {
+            uint32_t** table, size_t* table_words, char** error) {
   // dxbc-spirv's container reader reports into this, not to stderr.
   wcs::ErrorLog container;
   if (!signed_or_bypassed(data, size)) {
@@ -76,6 +124,11 @@ int convert(const uint8_t* data, size_t size, uint32_t samples, uint32_t** out, 
     *error = wcs::copy(first.empty() ? "dxil-spirv could not convert the shader" : first);
     return 2;
   }
+  Resources resources;
+  dxil_spv_converter_set_srv_remapper(b.converter, Resources::srv, &resources);
+  dxil_spv_converter_set_sampler_remapper(b.converter, Resources::sampler, &resources);
+  dxil_spv_converter_set_uav_remapper(b.converter, Resources::uav, &resources);
+  dxil_spv_converter_set_cbv_remapper(b.converter, Resources::cbv, &resources);
   // The targets' sample count as a constant where the variant fixes it; otherwise dxil-spirv leaves a
   // specialisation constant, which the caller refuses.
   dxil_spv_option_rasterizer_sample_count count = { { DXIL_SPV_OPTION_RASTERIZER_SAMPLE_COUNT }, samples,
@@ -93,6 +146,12 @@ int convert(const uint8_t* data, size_t size, uint32_t samples, uint32_t** out, 
   }
   std::memcpy(*out, spirv.data, spirv.size);
   *out_words = spirv.size / 4;
+  if (!(*table = static_cast<uint32_t*>(std::malloc(resources.table.size() * 4 + 4)))) {
+    *error = wcs::copy("out of memory");
+    return 3;
+  }
+  std::memcpy(*table, resources.table.data(), resources.table.size() * 4);
+  *table_words = resources.table.size();
   return 0;
 }
 
@@ -149,11 +208,21 @@ extern "C" int wcs_dxil_constant_sizes(const uint8_t* data, size_t size, uint32_
   return wcs::contained("dxil-spirv", error, [&] { return constant_sizes(data, size, out, out_words, error); });
 }
 
-// Returns 0 and the SPIR-V in `out` (free with wcs_free), or nonzero with the reason in `error`.
+// Returns 0, the SPIR-V in `out` and the resources' (class, space, register) triples in `table` (both
+// freed with wcs_free), or nonzero with the reason in `error`.
 extern "C" int wcs_dxil_to_spirv(const uint8_t* data, size_t size, uint32_t samples, uint32_t** out,
-                                 size_t* out_words, char** error) {
+                                 size_t* out_words, uint32_t** table, size_t* table_words, char** error) {
   *out = nullptr;
   *out_words = 0;
+  *table = nullptr;
+  *table_words = 0;
   *error = nullptr;
-  return wcs::contained("dxil-spirv", error, [&] { return convert(data, size, samples, out, out_words, error); });
+  return wcs::contained("dxil-spirv", error, [&] {
+    int status = convert(data, size, samples, out, out_words, table, table_words, error);
+    if (status != 0 && *out) {
+      std::free(*out);
+      *out = nullptr;
+    }
+    return status;
+  });
 }

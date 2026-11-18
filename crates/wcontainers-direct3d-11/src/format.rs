@@ -65,8 +65,8 @@ pub fn storage_format(dxgi: u32, depth_bound: bool) -> Result<Format> {
 /// stored as `storage` with DXGI format `texture`. A typed texture is viewed as its own format; a
 /// typeless one as any member of its group, and Direct3D's depth views (`R24_UNORM_X8_TYPELESS`,
 /// `X24_TYPELESS_G8_UINT`, `R32_FLOAT` of `R32_TYPELESS` and the like) read one aspect of the depth
-/// format. Members whose bits another format of the group would have to reinterpret are not served
-/// (the back ends keep no copy for it yet, `ReinterpretCopy`).
+/// format. A member whose bits another format of the group stores is viewed through a texture of
+/// its own format kept beside the texture (`ReinterpretCopy`, see `reinterprets`).
 pub fn view_format(view: u32, texture: u32, storage: Format) -> Result<(Format, bool)> {
     use Format::*;
     if is_typeless(view) {
@@ -89,11 +89,13 @@ pub fn view_format(view: u32, texture: u32, storage: Format) -> Result<(Format, 
         return Ok((storage, stencil));
     }
     let format = texture_format(view).map_or_else(|| unserved(view), Ok)?;
-    if format.linear() == storage.linear() {
-        Ok((format, false))
-    } else {
-        not_implemented("a view reinterpreting a typeless texture's bits as another format")
-    }
+    Ok((format, false))
+}
+
+/// Whether a view of `format` of a texture stored as `storage` reads other bits than the storage
+/// format's, which no back end's view does (`ReinterpretCopy`).
+pub fn reinterprets(format: Format, storage: Format) -> bool {
+    format.linear() != storage.linear()
 }
 
 /// The sRGB format of a linear one, or the linear one of an sRGB one, where the pair exists.

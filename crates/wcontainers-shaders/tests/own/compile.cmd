@@ -1,4 +1,4 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl and tessellation.hlsl with
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl and tessellation.hlsl with
 @rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry, the compute and the typed buffer shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
@@ -20,6 +20,8 @@ cd /d %~dp0
 "%FXC%" /nologo /T ps_5_0 /E ps_size /Fo ps_size.dxbc more.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_1 /E ps_spaces /Fo ps_spaces.dxbc spaces.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_spaces -Fo ps_spaces.dxil spaces.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_twospaces /Fo ps_twospaces.dxbc twospaces.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_twospaces -D SPACES -Fo ps_twospaces.dxil twospaces.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_transform -Gis -Fo vs_transform.dxil own.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_textured -Gis -Fo ps_textured.dxil own.hlsl || exit /b 1
 for %%e in (ps_signed ps_offset ps_special ps_cases ps_pack) do (
