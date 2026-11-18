@@ -233,8 +233,8 @@ fn program_path(files: &[File], environment: &[&str], name: &str) -> String {
 }
 
 /// Runs `command` in the reference once and on our kernel under every seed of
-/// [`crate::schedule_seeds`] with `saves` each, checks that every run printed the same and ended
-/// the same way, and returns our runs.
+/// [`crate::schedule_seeds`] with `saves` each, checks that every run printed the same, ended the
+/// same way and was saved as often as asked, and returns our runs.
 pub fn assert_same(
     image: &str,
     directory: &Path,
@@ -263,6 +263,8 @@ pub fn assert_same(
             .collect();
         assert!(differences.is_empty(), "{}", differences.join("\n"));
         assert_eq!(ours.outcome, theirs, "seed {seed}");
+        // Every save asked for happened: a run shorter than its saves' moments would drop them.
+        assert_eq!(ours.saved, saves.count, "seed {seed}: saves made");
         runs.push(ours);
     }
     runs

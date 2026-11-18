@@ -1,6 +1,7 @@
 // A Java program against the system: threads sharing work and locks, garbage collection under
-// load on a small heap, and safepoints (each collection stops every thread by making a polling
-// page unreadable, which compiled code touches). Everything printed is the same on every run.
+// load on a small heap, and safepoints: a thread in a compiled loop is stopped for each collection
+// by the polling page its loop reads, which the safepoint makes unreadable, so the read faults.
+// Everything printed is the same on every run.
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
@@ -122,10 +123,41 @@ public class Load {
         System.out.println("collected " + (collections() > before));
     }
 
+    static volatile long progress;
+    static volatile boolean stop;
+
+    static void safepoints() throws Exception {
+        long before = collections();
+        // A loop that calls nothing, so compiled it reaches safepoints only through its poll.
+        Thread spinner = new Thread(() -> {
+            long i = 0;
+            while (!stop) {
+                i++;
+                if ((i & 0xffff) == 0) {
+                    progress = i;
+                }
+            }
+        });
+        spinner.start();
+        // Long enough for the loop to be compiled, then a collection while it runs, three times.
+        long wanted = 1L << 21;
+        for (int k = 0; k < 3; k++) {
+            while (progress < wanted) {
+                Thread.sleep(1);
+            }
+            System.gc();
+            wanted = progress + (1L << 18);
+        }
+        stop = true;
+        spinner.join();
+        System.out.println("spinner stopped for collections " + (collections() - before >= 3));
+    }
+
     public static void main(String[] arguments) throws Exception {
         System.out.println("java " + Runtime.version().feature());
         threads();
         garbage();
+        safepoints();
         System.out.println("done");
     }
 }

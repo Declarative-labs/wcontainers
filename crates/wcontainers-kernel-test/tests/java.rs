@@ -4,7 +4,12 @@
 
 use std::path::{Path, PathBuf};
 
+use wcontainers_kernel::reason;
 use wcontainers_kernel_test::runtimes::{self, JAVA, JDK};
+
+/// Where an exception syndrome's class starts, and the class of a data abort from user space.
+const ESR_EC_SHIFT: u64 = 26;
+const ESR_EC_DABT_LOW: u64 = 0x24;
 
 /// A directory holding the program's classes, compiled once per test binary.
 fn directory() -> PathBuf {
@@ -54,4 +59,17 @@ fn threads_and_collections_match_reference() {
     let command = ["java", "-Xmx64m", "-XX:+UseG1GC", "-cp", "/wc", "Load"];
     let runs = runtimes::assert_same(JAVA, &directory(), &command, saves(8_000));
     eprintln!("warned: {:?}", runtimes::warned(&runs));
+    // The compiled loop's polls of the unreadable page faulted and the runtime's handler took
+    // them: a data abort's frame was built in every run (without that loop, the program takes
+    // no memory faults).
+    for run in &runs {
+        assert!(
+            run.warnings.iter().any(|warning| {
+                warning.reason == reason::FAULT_SYNDROME_APPROXIMATED
+                    && warning.detail >> ESR_EC_SHIFT == ESR_EC_DABT_LOW
+            }),
+            "no safepoint poll faulted: {:?}",
+            run.warnings
+        );
+    }
 }
