@@ -103,6 +103,41 @@ select02 and prctl09 when run again (it failed them under load in the whole run)
 Still slower than 900 s: creat05, epoll_create03, fcntl12, inotify09. fork09 was lost to my
 removing its backend container by mistake (rerun in scratch k6c4/rd.tsv).
 
+Written gap list (plan section 15 causes only; not yet final: the slower tests still need
+their verdicts shown under a longer limit, and the comparison is not yet whole at this code):
+- Tracing one process from another (missing in phase one): ptrace01, 02, 03, 05, 06, 11.
+- No raw packets: cve-2017-7308, setsockopt02 and sendto02 (AF_PACKET); asapi_01 to 03 (raw
+  IPv6 sockets); cve-2017-2671 (ping sockets).
+- The network is not Linux's network stack: cve-2018-5803 and net.sctp
+  test_1_to_1_initmsg_connect (SCTP); cve-2021-26708 (vsock).
+- /proc and /sys describe a made-up machine and hold a chosen subset: sysfs sys_clocksource01,
+  sys_clockevents01, sys_cpu_topology01 and 02, sys_cpu_vulnerabilities01, sys_cpu_cache01,
+  sys_bdi01, sys_rtc01, sys_net01, sys_block_queue01, sys_block_size01, sys_mm_swap01,
+  sys_kernel01 (entries of devices, block, class and kernel that describe hardware); mm
+  kallsyms (the kernel's symbols).
+- One CPU: af_alg07 and cve-2019-8912 (need two CPUs: reference broken by AF_ALG, ours skipped
+  first), irqbalance01, getcwd04, writev03.
+- The address space is small: mtest01, mtest01w, mtest06, fork14, mallinfo2_01 (2 GiB malloc).
+- File access is slower until the cache: growfiles gf01 to gf29, rwtest01 to 04 (fs and
+  scsi_debug), iogen01, fsx01 to 22, ADSP038, DOR000 to 003, dio30, creat05, epoll_create03,
+  fcntl12, inotify09, open04, rename14, sendmsg02, timerfd_settime02. Evidence so far: about
+  1400 backend messages a second (gf01 needs about 5000 s), every close sends FLUSH (dup03 and
+  its kin pass in about 650 s where the reference takes 3 s). Each still has to be shown to give
+  the reference's verdict under a longer limit, or be measured as this cause.
+Not a section 15 cause, still differing (to build or find): /proc/<pid>/mem (cve-2016-5195,
+dirtyc0w, cve-2017-1000405, thp04), /proc/<pid>/attr (cve-2017-2618), /proc/keys
+(cve-2016-7042), IPV6_RTHDR (setsockopt11, cve-2026-53362), remap_file_pages (remap_file_pages01
+and 02, shmctl05 in syscalls and syscalls-ipc), smaps (mlock05), pagemap (mmap12), per-user pipe
+pages (pipe15), IOCB_CMD_POLL (io_submit04), MADV_GUARD_* (madvise12), MSG_MORE on UDP (send02),
+PROCMAP_QUERY (ioctl10), page residency (mincore03, mlock201), anon_vma merging after fork
+(vma01: needs to know which pages were written before fork), transparent huge pages (thp02,
+thp03, sys_thp01, thp01, mtest05?), hugetlb memfd (memfd_create04), O_TMPFILE on the backend root
+(openat03: the test backend has no TMPFILE), layout randomization (aslr01), autogroup
+(autogroup01), the cgroup2 mount (controllers; /proc/cgroups is built, rerun pending), the math
+float_bessel and float_exp_log and the races cve-2011-0999, 2014-0196, 2016-7117, 2017-10661,
+2017-17052, mmapstress10, mtest06_3, hackbench01, sched_stress (slow on the stand-in; not yet
+shown which cause), and copy_file_range03 (the harness's two clocks).
+
 Found and not a kernel fault:
 - The math float tests' heap corruption did not come back: float_iperb passed 3 of 3 (seeds 2
   to 4) at 914ec440, float_power and float_trigo passed at 294c1b40. The exclusive monitor was
