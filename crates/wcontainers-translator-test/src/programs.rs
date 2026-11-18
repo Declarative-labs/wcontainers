@@ -58,6 +58,23 @@ pub(crate) fn source_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("programs")
 }
 
+/// The folder of the guest's own program sources and headers, `programs/<guest>`.
+fn guest_directory<G: GuestTest>() -> PathBuf {
+    source_directory().join(G::NAME)
+}
+
+/// The source of a program: `<name>.c` (or `.cpp`, `.rs`, `.S`) in the guest's own folder, else among the
+/// shared ones.
+pub fn source<G: GuestTest>(name: &str) -> PathBuf {
+    [guest_directory::<G>(), source_directory()]
+        .iter()
+        .flat_map(|directory| {
+            ["c", "cpp", "rs", "S"].map(|extension| directory.join(format!("{name}.{extension}")))
+        })
+        .find(|source| source.exists())
+        .unwrap_or_else(|| panic!("no program {name} for {}", G::NAME))
+}
+
 pub(crate) fn zig(arguments: &[&str]) {
     let status = Command::new("zig")
         .args(arguments)
@@ -75,8 +92,8 @@ pub enum Library {
     C,
 }
 
-/// Build `programs/<name>.c` (or `.cpp`, C++ with its library; `.rs`, Rust with its standard library; `.S`,
-/// assembly) at an optimisation level, such as "-O2", into a flat blob.
+/// Build a program (see [`source`]: C, C++ with its library, Rust with its standard library, or assembly) at
+/// an optimisation level, such as "-O2", into a flat blob. The guest's folder is on the include path.
 pub fn build<G: GuestTest>(name: &str, optimisation: &str, library: Library) -> Blob {
     build_with::<G>(name, optimisation, library, &[])
 }
@@ -99,11 +116,7 @@ pub fn build_with<G: GuestTest>(
     // Tests build the same program at once, so each build works under its own names.
     let own = unique(&stem);
     let elf = out.join(format!("{own}.elf"));
-    let source = ["c", "cpp", "rs", "S"]
-        .iter()
-        .map(|extension| source_directory().join(format!("{name}.{extension}")))
-        .find(|source| source.exists())
-        .expect("a program of that name");
+    let source = source::<G>(name);
     let script = source_directory().join("flat.ld");
     let text = |p: &Path| p.to_str().unwrap().to_string();
     if source.extension().unwrap() == "rs" {
@@ -111,6 +124,7 @@ pub fn build_with<G: GuestTest>(
         return flatten(&elf, &own, stem);
     }
     let script = format!("-Wl,-T,{}", text(&script));
+    let include = format!("-I{}", text(&guest_directory::<G>()));
     let driver = if source.extension().unwrap() == "cpp" {
         "c++"
     } else {
@@ -126,6 +140,7 @@ pub fn build_with<G: GuestTest>(
         "-no-pie",
         "-fno-sanitize=all",
         &script,
+        &include,
         "-Wl,--build-id=none",
     ];
     if library == Library::None {

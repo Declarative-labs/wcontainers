@@ -9,8 +9,7 @@
 # Sets, comma separated (default all): bench busybox musl rg git python java go node bun (bench and musl for each
 # of the four probe answers, the rest for this machine's). Node and Bun take
 # many GB and minutes each; run them alone. The real binaries come from this checkout's target/binaries/<guest>.
-# Both sides run this tree's tests/output.rs, so they write the same list; for an earlier commit from before
-# the guest CPU interface its few calls are spelled the old way.
+# Both sides run this tree's tests/output.rs, so they write the same list.
 set -u
 root=$(git rev-parse --show-toplevel)
 cd "$root" || exit 1
@@ -31,12 +30,12 @@ if [ ! -f "$tree/Cargo.toml" ]; then
   fi
 fi
 output=$tree/crates/wcontainers-translator-test/tests/output.rs
-if [ -d "$tree/crates/wcontainers-guest-cpu" ]; then
+# This tree's tests/output.rs needs a commit with the real binaries kept per guest (3e4420d on); before
+# `PROBE_ANSWERS` it is given ARM64's four answers. Earlier commits are compared through lists kept from before.
+if grep -q 'PROBE_ANSWERS' "$tree/crates/wcontainers-translator-test/src/guest/mod.rs" 2>/dev/null; then
   cp crates/wcontainers-translator-test/tests/output.rs "$output"
 else
-  sed -e 's/translate::<Arm64>(/translate(/' -e 's/thread_module::<Arm64>()/thread_module()/' \
-    -e '/NO_OFFER/d' -e '/^use wcontainers_arm64::Arm64;$/d' \
-    crates/wcontainers-translator-test/tests/output.rs > "$output"
+  sed -e 's/G::PROBE_ANSWERS/[0i32, 1, 2, 3]/' crates/wcontainers-translator-test/tests/output.rs > "$output"
 fi
 before=$dir/lists/${base:0:12}
 now=$dir/lists/now

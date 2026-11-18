@@ -1,6 +1,6 @@
 // Tables in zeroed memory only, with no initialised data: a sieve, an open addressing hash table of 16 bit
 // keys, byte histograms, and a dense switch that compilers turn into a jump table. Output and exit status are
-// checked against real ARM64 Linux.
+// checked against real Linux.
 
 typedef unsigned long u64;
 typedef long i64;
@@ -8,14 +8,7 @@ typedef unsigned int u32;
 typedef unsigned short u16;
 typedef unsigned char u8;
 
-static i64 syscall3(i64 number, i64 a, i64 b, i64 c) {
-    register i64 x8 __asm__("x8") = number;
-    register i64 x0 __asm__("x0") = a;
-    register i64 x1 __asm__("x1") = b;
-    register i64 x2 __asm__("x2") = c;
-    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
-    return x0;
-}
+#include "syscall.h"
 
 static char out[2048];
 static u32 used;
@@ -27,7 +20,7 @@ static u64 seed;
 
 static void put(char c) {
     if (used == sizeof out) {
-        syscall3(64, 1, (i64)out, used);
+        syscall3(SYS_write, 1, (i64)out, used);
         used = 0;
     }
     out[used++] = c;
@@ -129,7 +122,7 @@ void _start(void) {
     for (u32 i = 0; i < 1000; i++) acc = step((u32)(next() % 13), acc, next());
     line("switch result:", acc);
 
-    syscall3(64, 1, (i64)out, used);
-    syscall3(93, (i64)(acc & 0x7f), 0, 0);
+    syscall3(SYS_write, 1, (i64)out, used);
+    syscall3(SYS_exit, (i64)(acc & 0x7f), 0, 0);
     for (;;) {}
 }

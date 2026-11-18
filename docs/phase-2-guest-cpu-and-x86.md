@@ -2421,7 +2421,7 @@ pub trait GuestTest: Guest {
     const STAND_IN: StandIn;
     /// The folder of per-CPU program sources, `programs/<this>/`: `start.S`, `syscall.h`, `switch.S`, the
     /// assembly tests, `written_code.c` (on x86, writing code with no announcement) and `differences.c`.
-    /// The C bodies and `flat.ld` stay shared.
+    /// The C bodies and `flat.ld` stay shared. (As built: `programs/<NAME>`, `switch.h`, no `start.S`.)
     const PROGRAMS: &'static str;
     /// The targeted corpora of smoke.rs, checks.rs and changes.rs, as named pieces of code with what each
     /// must do; the test bodies stay generic.
@@ -2494,6 +2494,16 @@ As built at X2 (`src/guest/mod.rs`), where building it showed a signature must c
   checks and changes each run in one test over the guest's list, every program on a thread of its own.
 - `auxiliary(offer)` is the constant `AUXILIARY` (no second offer until X8), and the blob record carries
   the entries to the runner, so a flat blob is told the same on both sides.
+- No `PROGRAMS` constant: the guest's program folder is `programs/<NAME>`. A program is looked for there
+  first, then among the shared ones, and the folder is on the include path. It holds `syscall.h` (the
+  system call numbers and `syscall3`), `switch.h` (not `switch.S`: the context switch as file-level
+  assembly, with `start_context` and `CALL_ON_STACK`, so each program stays one source file), the assembly
+  tests, `written_code.c` and `differences.c`. No `start.S`: the programs without a C library start from a
+  `_start` written in C. The benchmark set's translations are the same bytes after the move.
+- `PROBE_ANSWERS`: every answer the guest's probe can give (ARM64 0 to 3), so the byte for byte comparison
+  translates for every host, and `differences` is run for each.
+- Tests of one CPU's own types stay that CPU's (`decoding.rs`, `valid.rs`, the HWCAP check, the counters a
+  host without fused multiply-add must show), each named with its suffix.
 
 `Expect` is today's expectation of each corpus (the smoke output, the checks' counts, the changes' stops),
 unchanged. A translator trap maps to a `Stop` and to an exit status generically, from `TrapKind` and the

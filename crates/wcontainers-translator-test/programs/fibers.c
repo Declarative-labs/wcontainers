@@ -2,6 +2,8 @@
 #include <setjmp.h>
 #include <stdio.h>
 
+#include "switch.h"
+
 #ifndef SWITCHES
 #define SWITCHES 3000
 #endif
@@ -20,8 +22,7 @@ __attribute__((noinline, used)) void fiber_body(void) {
 
 // Moves to the fiber's stack and runs it; it never returns here.
 __attribute__((noinline)) static void start(void) {
-    __asm__ volatile("mov sp, %0\n\tbl fiber_body\n\tbrk #0" ::"r"(fiber_stack + sizeof fiber_stack)
-                     : "memory", "x30");
+    CALL_ON_STACK(fiber_stack + sizeof fiber_stack, fiber_body);
 }
 
 int main(void) {

@@ -123,6 +123,8 @@ impl GuestTest for Arm64 {
     }
 
     const DEFAULT_OFFER: () = ();
+    // Fused multiply-add fuses or not, times NaNs follow Arm's rules or not.
+    const PROBE_ANSWERS: &'static [i32] = &[0, 1, 2, 3];
 
     type Form = Form;
 

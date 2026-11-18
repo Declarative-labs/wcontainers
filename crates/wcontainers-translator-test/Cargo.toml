@@ -1,6 +1,6 @@
 [package]
 name = "wcontainers-translator-test"
-description = "Runners, reference and random cases that prove the translator against real ARM64 Linux."
+description = "Runners, reference and random cases that prove the translator against real Linux of each guest CPU."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,10 +23,11 @@ zerocopy.workspace = true
 rayon = "1.12.0"
 # The reference runner's content hash, under which it is kept on an SSH reference.
 blake3 = "1"
+# Reads a translated module's lookup table, to number its pieces' functions (src/bin/machine-code.rs).
+wasmparser = "0.263.0"
 
 [dev-dependencies]
 flate2 = "1.1"
-wasmparser = "0.263.0"
 
 [lints]
 workspace = true

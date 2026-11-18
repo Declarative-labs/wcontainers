@@ -1,26 +1,19 @@
 // Integer work a compiler turns into many instruction forms: arithmetic, division, shifts, bit tricks,
 // sorting through a function pointer, recursion and printing numbers. Output and exit status are checked
-// against real ARM64 Linux.
+// against real Linux.
 
 typedef unsigned long u64;
 typedef long i64;
 typedef unsigned int u32;
 typedef int i32;
 
-static i64 syscall3(i64 number, i64 a, i64 b, i64 c) {
-    register i64 x8 __asm__("x8") = number;
-    register i64 x0 __asm__("x0") = a;
-    register i64 x1 __asm__("x1") = b;
-    register i64 x2 __asm__("x2") = c;
-    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
-    return x0;
-}
+#include "syscall.h"
 
 static char buffer[4096];
 static u32 used;
 
 static void flush(void) {
-    syscall3(64, 1, (i64)buffer, used);
+    syscall3(SYS_write, 1, (i64)buffer, used);
     used = 0;
 }
 
@@ -160,6 +153,6 @@ int main(void) {
 
 __attribute__((section(".text._start"), noreturn)) void _start(void) {
     int status = main();
-    syscall3(94, status, 0, 0);
+    syscall3(SYS_exit_group, status, 0, 0);
     __builtin_unreachable();
 }

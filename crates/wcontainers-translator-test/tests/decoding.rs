@@ -1,5 +1,5 @@
-//! The decoder against Arm's list of forms: anything the CPU we present does not have is undefined, and
-//! unsupported (counted and warned) when a CPU with more features has it.
+//! ARM64's own: its decoder against Arm's list of forms. Anything the CPU we present does not have is
+//! undefined, and unsupported (counted and warned) when a CPU with more features has it.
 //!
 //! `WC_DECODE_CASES` words per form (default 64), seeded from `WC_DECODE_SEED` (default 1).
 
@@ -13,7 +13,7 @@ fn setting(name: &str, default: u64) -> u64 {
 }
 
 #[test]
-fn offered_features_are_the_ones_the_kernel_reports() {
+fn offered_features_are_the_ones_the_kernel_reports_arm64() {
     let bit = |feature: &str| match feature {
         "FEAT_FP" => hwcap::FP,
         "FEAT_AdvSIMD" => hwcap::ASIMD,
@@ -29,7 +29,7 @@ fn offered_features_are_the_ones_the_kernel_reports() {
 }
 
 #[test]
-fn words_of_forms_not_offered_are_undefined_or_unsupported() {
+fn words_of_forms_not_offered_are_undefined_or_unsupported_arm64() {
     let count = setting("WC_DECODE_CASES", 64) as u32;
     let seed = setting("WC_DECODE_SEED", 1);
     let mut failures = Vec::new();
@@ -73,7 +73,7 @@ fn words_of_forms_not_offered_are_undefined_or_unsupported() {
 /// Instructions of features we do not offer: pointer signing branches and loads, FlagM, SB, CSSC, MTE, the
 /// encryption extensions and scalable vectors.
 #[test]
-fn features_not_offered_are_unsupported() {
+fn features_not_offered_are_unsupported_arm64() {
     for word in [
         0xd65f_0bff, // retaa
         0xd61f_081f, // braaz
@@ -111,7 +111,7 @@ fn features_not_offered_are_unsupported() {
 /// above 1 in 32 bit, conditional select and compare with wrong fixed bits, and others. The CPU raises
 /// illegal instruction for each.
 #[test]
-fn words_in_no_form_are_undefined() {
+fn words_in_no_form_are_undefined_arm64() {
     for word in [
         0x52d7_c74f,
         0x12ca_4fde,
@@ -138,7 +138,7 @@ fn words_in_no_form_are_undefined() {
 /// word whose form is unproven. `WC_DECODE_WORDS` random words (default 200,000), seeded from
 /// `WC_DECODE_SEED`.
 #[test]
-fn translated_words_are_of_forms_layer_1_covers() {
+fn translated_words_are_of_forms_layer_1_covers_arm64() {
     use wcontainers_translator_test::guest::arm64::covered;
     let count = setting("WC_DECODE_WORDS", 200_000) as u32;
     let seed = setting("WC_DECODE_SEED", 1);
@@ -178,7 +178,7 @@ fn translated_words_are_of_forms_layer_1_covers() {
 /// needs a feature we do not offer.
 /// `WC_DECODE_CASES` words per form, seeded from `WC_DECODE_SEED`.
 #[test]
-fn every_offered_form_is_translated() {
+fn every_offered_form_is_translated_arm64() {
     use wcontainers_translator_test::guest::arm64::{covered, of_feature_not_offered};
     let count = setting("WC_DECODE_CASES", 64) as u32;
     let seed = setting("WC_DECODE_SEED", 1);

@@ -1,5 +1,5 @@
-//! Every module the translator makes is valid WebAssembly. Cases: `PROPTEST_CASES` (default 256); seed:
-//! `PROPTEST_RNG_SEED` (default 1).
+//! ARM64's own: every module the translator makes of ARM64 code is valid WebAssembly. Cases:
+//! `PROPTEST_CASES` (default 256); seed: `PROPTEST_RNG_SEED` (default 1).
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
@@ -36,7 +36,7 @@ fn check(wasm: &[u8]) -> Result<(), String> {
 }
 
 #[test]
-fn thread_module_is_valid() {
+fn thread_module_is_valid_arm64() {
     validate(&thread_module::<Arm64>());
 }
 
@@ -51,7 +51,7 @@ fn config() -> Config {
 
 /// A branch whose target wraps below the blob's start.
 #[test]
-fn target_below_zero() {
+fn target_below_zero_arm64() {
     // tbz x0, #0, -32768
     let blob = 0x3604_0000u32.to_le_bytes();
     let translation = translate::<Arm64>(
@@ -71,7 +71,7 @@ fn target_below_zero() {
 /// A chain of thousands of branches, each block nested in the next one's merge, with more blocks than one
 /// piece may hold: translated at full on a small stack, cut in parts, and valid.
 #[test]
-fn long_chains_translate_on_a_small_stack() {
+fn long_chains_translate_on_a_small_stack_arm64() {
     let mut words = Vec::new();
     for _ in 0..4000 {
         words.push(0xb400_0041u32); // cbz x1, +8
@@ -105,7 +105,7 @@ fn long_chains_translate_on_a_small_stack() {
 proptest! {
     #![proptest_config(config())]
     #[test]
-    fn code_modules_are_valid(words in prop::collection::vec(any::<u32>(), 1..64)) {
+    fn code_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64)) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let starts: Vec<u64> = (0..words.len() as u64).map(|i| 4 * i).collect();
         let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, &starts, LookAhead::None, Optimise::Speed, HOST, ()).unwrap();
@@ -114,7 +114,7 @@ proptest! {
 
     /// Random words at full look-ahead, from the first word and from a few others.
     #[test]
-    fn full_modules_are_valid(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4)) {
+    fn full_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4)) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut starts = vec![0];
         starts.extend(picks.iter().map(|p| 4 * p.index(words.len()) as u64));
@@ -124,7 +124,7 @@ proptest! {
 
     /// Random words at bounded look-ahead of random N, from a few starts: one piece in the table each.
     #[test]
-    fn bounded_modules_are_valid(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32) {
+    fn bounded_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut starts: Vec<u64> = picks.iter().map(|p| 4 * p.index(words.len()) as u64).collect();
         let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, &starts, LookAhead::Bounded(bound), Optimise::Speed, HOST, ()).unwrap();
@@ -138,7 +138,7 @@ proptest! {
 /// Words of every form of the CPU we present, each translated alone at look-ahead none and with others
 /// at full, on a host that needs every fix-up: valid modules. `WC_VALID_WORDS` words a form (default 16).
 #[test]
-fn every_form_is_valid() {
+fn every_form_is_valid_arm64() {
     use proptest::test_runner::{RngAlgorithm, TestRng};
     let count: u32 = std::env::var("WC_VALID_WORDS").map_or(16, |v| v.parse().unwrap());
     let mut rng = TestRng::from_seed(RngAlgorithm::ChaCha, &[7; 32]);

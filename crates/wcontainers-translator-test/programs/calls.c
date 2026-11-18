@@ -8,14 +8,7 @@ typedef long i64;
 #define CALLS 1000
 #endif
 
-static i64 syscall3(i64 number, i64 a, i64 b, i64 c) {
-    register i64 x8 __asm__("x8") = number;
-    register i64 x0 __asm__("x0") = a;
-    register i64 x1 __asm__("x1") = b;
-    register i64 x2 __asm__("x2") = c;
-    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
-    return x0;
-}
+#include "syscall.h"
 
 __attribute__((noinline)) u64 step(u64 x, u64 i) { return x * 31 + i; }
 
@@ -25,12 +18,12 @@ int main(void) {
     char digits[17];
     for (int k = 0; k < 16; k++) digits[k] = "0123456789abcdef"[(x >> (60 - 4 * k)) & 15];
     digits[16] = '\n';
-    syscall3(64, 1, (i64)digits, 17);
+    syscall3(SYS_write, 1, (i64)digits, 17);
     return 0;
 }
 
 __attribute__((section(".text._start"), noreturn)) void _start(void) {
     int status = main();
-    syscall3(94, status, 0, 0);
+    syscall3(SYS_exit_group, status, 0, 0);
     __builtin_unreachable();
 }

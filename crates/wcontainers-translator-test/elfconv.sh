@@ -13,10 +13,11 @@ root=$(pwd)
 out=$root/target/elfconv
 mkdir -p "$out"
 cp "$root/crates/wcontainers-translator-test/programs/bench.c" "$out/bench.c"
+cp "$root/crates/wcontainers-translator-test/programs/arm64/syscall.h" "$out/syscall.h"
 load() { sysctl -n vm.loadavg 2>/dev/null || cut -d' ' -f1-3 /proc/loadavg; }
 
 # Build and convert inside the image; bench.c's own _start is renamed away so glibc's starts it.
-docker run --rm --name wc-translator-elfconv-convert -v "$out":/work --entrypoint /bin/bash "$image" -c '
+docker run --rm --name wc-x86-elfconv-convert -v "$out":/work --entrypoint /bin/bash "$image" -c '
 export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}
 source /root/.bash_profile
 cd /root/elfconv/bin
@@ -30,7 +31,7 @@ for k in 1 2 3 4 5 6 7 8; do
 done'
 
 # Native times of the same glibc executables.
-docker run --rm --name wc-translator-elfconv-native -v "$out":/work --entrypoint /bin/bash "$image" -c "
+docker run --rm --name wc-x86-elfconv-native -v "$out":/work --entrypoint /bin/bash "$image" -c "
 TIMEFORMAT=%R
 for k in 1 2 3 4 5 6 7 8; do
   t=\$(for r in \$(seq $runs); do { time /work/bench-\$k.elf > /dev/null; } 2>&1; done | sort -n | head -1)

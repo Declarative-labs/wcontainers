@@ -34,6 +34,8 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
 
     /// What the CPU offers unless a test says otherwise.
     const DEFAULT_OFFER: Self::Offer;
+    /// Every answer the probe module can give, so a test can translate for hosts other than this one.
+    const PROBE_ANSWERS: &'static [i32];
 
     // --- layer 1: the forms ---
     type Form: Clone + core::fmt::Debug + Send + Sync + 'static;

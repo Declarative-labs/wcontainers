@@ -202,13 +202,12 @@ fn csmith_programs_match_linux<G: GuestTest>() {
 /// The hand-picked programs with the C library (number printing, sorting and the differences of section
 /// 8), with both compilers, every level and both positions.
 fn hand_picked_programs_match_linux<G: GuestTest>() {
-    let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("programs");
     let mut failures = Vec::new();
     for name in ["hello", "differences"] {
         for compiler in [Compiler::Clang, Compiler::Gcc] {
             for level in LEVELS {
                 for position in [Position::Fixed, Position::Independent] {
-                    let source = directory.join(format!("{name}.c"));
+                    let source = wcontainers_translator_test::programs::source::<G>(name);
                     let blob = build::<G>(&source, compiler, level, position);
                     let own = || ordinary::<G>(&source, compiler, level, position);
                     match compare::<G>(&blob, own) {

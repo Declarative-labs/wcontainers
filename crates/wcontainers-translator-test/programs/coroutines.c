@@ -1,6 +1,6 @@
 // Two coroutines on stacks of their own, switched by a hand-written context switch as coroutine libraries
-// do (callee-saved registers, sp and the return address swapped, then ret). Each yields SWITCHES values
-// from inside a recursion, so its frames live on across switches.
+// do (`swap_context`, in the CPU's switch.h). Each yields SWITCHES values from inside a recursion, so its
+// frames live on across switches.
 #include <stdint.h>
 #include <stdio.h>
 
@@ -8,41 +8,7 @@
 #define SWITCHES 3000
 #endif
 
-// x19 to x30, sp, d8 to d15.
-struct context {
-    uint64_t saved[21];
-};
-
-void swap_context(struct context *from, struct context *to);
-__asm__(".pushsection .text\n"
-        ".globl swap_context\n"
-        "swap_context:\n"
-        "  stp x19, x20, [x0, #0]\n"
-        "  stp x21, x22, [x0, #16]\n"
-        "  stp x23, x24, [x0, #32]\n"
-        "  stp x25, x26, [x0, #48]\n"
-        "  stp x27, x28, [x0, #64]\n"
-        "  stp x29, x30, [x0, #80]\n"
-        "  mov x9, sp\n"
-        "  str x9, [x0, #96]\n"
-        "  stp d8, d9, [x0, #104]\n"
-        "  stp d10, d11, [x0, #120]\n"
-        "  stp d12, d13, [x0, #136]\n"
-        "  stp d14, d15, [x0, #152]\n"
-        "  ldp x19, x20, [x1, #0]\n"
-        "  ldp x21, x22, [x1, #16]\n"
-        "  ldp x23, x24, [x1, #32]\n"
-        "  ldp x25, x26, [x1, #48]\n"
-        "  ldp x27, x28, [x1, #64]\n"
-        "  ldp x29, x30, [x1, #80]\n"
-        "  ldr x9, [x1, #96]\n"
-        "  mov sp, x9\n"
-        "  ldp d8, d9, [x1, #104]\n"
-        "  ldp d10, d11, [x1, #120]\n"
-        "  ldp d12, d13, [x1, #136]\n"
-        "  ldp d14, d15, [x1, #152]\n"
-        "  ret\n"
-        ".popsection\n");
+#include "switch.h"
 
 struct coroutine {
     struct context context;
@@ -90,8 +56,7 @@ __attribute__((noreturn, used)) static void body(void) {
 static void make(struct coroutine *c, unsigned long step) {
     c->step = step;
     c->left = SWITCHES;
-    c->context.saved[11] = (uint64_t)body;  // x30
-    c->context.saved[12] = (uint64_t)(c->stack + sizeof c->stack);  // sp
+    start_context(&c->context, body, c->stack + sizeof c->stack);
 }
 
 int main(void) {

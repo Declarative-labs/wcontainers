@@ -1,6 +1,7 @@
 //! Not a check: times the benchmark set (`programs/bench.c` at full size, -O2) natively and at full
 //! look-ahead in wasmtime and Chrome, with and without each check, and prints the size of the translation.
-//! Run with `--ignored --nocapture` in a release build. Knobs: `WC_BENCH_RUNS` (best of, default 3),
+//! Each is written once over the guest and run for each (`measure_benchmarks_arm64`). Run with `--ignored
+//! --nocapture` in a release build. Knobs: `WC_BENCH_RUNS` (best of, default 3),
 //! `WC_BENCH_WORKLOADS` (numbers from bench.c, default all), `WC_BENCH_VARIANTS` (which of the six check
 //! variants, numbered from 1, default all), `WC_BENCH_CHROME` (0 leaves Chrome out), `WC_BENCH_REPEAT` (how
 //! many times Chrome runs the program in the same instances, each run timed by itself, default 1),
@@ -11,6 +12,7 @@ use std::time::{Duration, Instant};
 use wcontainers_arm64::Arm64;
 use wcontainers_translator::{LookAhead, Omit, Optimise, translate};
 use wcontainers_translator_test::browser;
+use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{
     Blob, Library, build_with, native, native_seconds, translated_omitting,
 };
@@ -87,19 +89,19 @@ fn optimise() -> Optimise {
     }
 }
 
-fn size(blob: &Blob) {
+fn size<G: GuestTest>(blob: &Blob) {
     let code = &blob.bytes[..blob.code_bytes as usize];
     let mut best = (Duration::MAX, Duration::MAX, Vec::new());
     for _ in 0..5 {
         let start = Instant::now();
-        let mut translation = translate::<wcontainers_arm64::Arm64>(
+        let mut translation = translate::<G>(
             &blob.bytes,
             0..blob.code_bytes,
             &[0],
             LookAhead::Full,
             optimise(),
-            wcontainers_translator_test::runner::probe::<Arm64>(),
-            (),
+            wcontainers_translator_test::runner::probe::<G>(),
+            G::DEFAULT_OFFER,
         )
         .unwrap();
         let translating = start.elapsed();
@@ -126,9 +128,7 @@ fn size(blob: &Blob) {
     );
 }
 
-#[test]
-#[ignore]
-fn measure_benchmarks() {
+fn measure_benchmarks<G: GuestTest>() {
     let runs: u32 = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
     let chosen: Vec<usize> = std::env::var("WC_BENCH_WORKLOADS").map_or((1..=8).collect(), |v| {
         v.split(',').map(|n| n.parse().unwrap()).collect()
@@ -143,7 +143,7 @@ fn measure_benchmarks() {
         Err(_) => variants().to_vec(),
     };
     eprintln!("translated for {:?}", optimise());
-    size(&build_with::<Arm64>(
+    size::<G>(&build_with::<G>(
         "bench",
         "-O2",
         Library::None,
@@ -152,16 +152,16 @@ fn measure_benchmarks() {
     for k in chosen {
         let name = WORKLOADS[k - 1];
         let workload = format!("WORKLOAD={k}");
-        let blob = build_with::<Arm64>("bench", "-O2", Library::None, &["SCALE=1", &workload]);
-        let expected = native::<Arm64>(&blob);
-        let native_time = native_seconds::<Arm64>(&blob, runs);
+        let blob = build_with::<G>("bench", "-O2", Library::None, &["SCALE=1", &workload]);
+        let expected = native::<G>(&blob);
+        let native_time = native_seconds::<G>(&blob, runs);
         eprintln!("{name}: native {native_time:.3} s (load {})", load());
         for &(label, omit) in &variants {
             let mut best = f64::INFINITY;
             let mut counters = Vec::new();
             for _ in 0..runs {
                 let (ran, machine, _, time) =
-                    translated_omitting::<Arm64>(&blob, (LookAhead::Full, optimise()), omit);
+                    translated_omitting::<G>(&blob, (LookAhead::Full, optimise()), omit);
                 assert_eq!(ran, expected, "{name} with {label}");
                 best = best.min(time.as_secs_f64());
                 counters = machine.counters();
@@ -181,7 +181,7 @@ fn measure_benchmarks() {
             let mut best = vec![f64::INFINITY; repeat as usize];
             for _ in 0..runs {
                 let report =
-                    browser::repeated::<Arm64>(&blob, (LookAhead::Full, optimise()), omit, repeat);
+                    browser::repeated::<G>(&blob, (LookAhead::Full, optimise()), omit, repeat);
                 assert_eq!(report.ran, expected, "{name} in Chrome with {label}");
                 for (best, time) in best.iter_mut().zip(report.runs) {
                     *best = best.min(time);
@@ -205,28 +205,26 @@ fn measure_benchmarks() {
 /// in one module, and with every piece in a module of its own, so that each call goes through the lookup.
 /// Best of `WC_BENCH_RUNS`, for both settings; Chrome runs the program twice in the same instances, and
 /// `WC_BENCH_CHROME=0` leaves it out.
-#[test]
-#[ignore]
-fn measure_calls_between_modules() {
+fn measure_calls_between_modules<G: GuestTest>() {
     use wcontainers_translator_test::programs::{ran, ready_with};
     let runs: u32 = std::env::var("WC_BENCH_RUNS").map_or(3, |v| v.parse().unwrap());
     let calls: u64 = std::env::var("WC_CALLS").map_or(100_000_000, |v| v.parse().unwrap());
     let define = format!("CALLS={calls}");
-    let blob = build_with::<Arm64>("calls", "-O2", Library::None, &[&define]);
-    let expected = native::<Arm64>(&blob);
-    let native_time = native_seconds::<Arm64>(&blob, runs);
+    let blob = build_with::<G>("calls", "-O2", Library::None, &[&define]);
+    let expected = native::<G>(&blob);
+    let native_time = native_seconds::<G>(&blob, runs);
     eprintln!("calls: native {native_time:.3} s (load {})", load());
     for optimise in [Optimise::Speed, Optimise::Size] {
         let mut one = f64::INFINITY;
         let mut split = f64::INFINITY;
         for _ in 0..runs {
             let (ran_one, _, _, time) =
-                translated_omitting::<Arm64>(&blob, (LookAhead::Full, optimise), Omit::default());
+                translated_omitting::<G>(&blob, (LookAhead::Full, optimise), Omit::default());
             assert_eq!(ran_one, expected);
             one = one.min(time.as_secs_f64());
-            let mut machine = ready_with::<Arm64>(
+            let mut machine = ready_with::<G>(
                 &blob,
-                wcontainers_translator_test::runner::probe::<Arm64>(),
+                wcontainers_translator_test::runner::probe::<G>(),
                 |m| {
                     m.optimise_for(optimise);
                     m.load_split(&blob.bytes, 0..blob.code_bytes, blob.load, &[0], 1);
@@ -235,7 +233,7 @@ fn measure_calls_between_modules() {
             let started = Instant::now();
             let (stopped, registers) = machine.run();
             let time = started.elapsed().as_secs_f64();
-            assert_eq!(ran(&blob, &machine, stopped, &registers), expected);
+            assert_eq!(ran::<G>(&blob, &machine, stopped, &registers), expected);
             split = split.min(time);
         }
         eprintln!(
@@ -249,10 +247,10 @@ fn measure_calls_between_modules() {
         let (mut one, mut split) = (f64::INFINITY, f64::INFINITY);
         for _ in 0..runs {
             let report =
-                browser::repeated::<Arm64>(&blob, (LookAhead::Full, optimise), Omit::default(), 2);
+                browser::repeated::<G>(&blob, (LookAhead::Full, optimise), Omit::default(), 2);
             assert_eq!(report.ran, expected);
             one = report.runs.iter().fold(one, |a, &b| a.min(b));
-            let report = browser::repeated_split::<Arm64>(&blob, optimise, 2, 1);
+            let report = browser::repeated_split::<G>(&blob, optimise, 2, 1);
             assert_eq!(report.ran, expected);
             split = report.runs.iter().fold(split, |a, &b| a.min(b));
         }
@@ -262,4 +260,16 @@ fn measure_calls_between_modules() {
             load()
         );
     }
+}
+
+#[test]
+#[ignore]
+fn measure_benchmarks_arm64() {
+    measure_benchmarks::<Arm64>();
+}
+
+#[test]
+#[ignore]
+fn measure_calls_between_modules_arm64() {
+    measure_calls_between_modules::<Arm64>();
 }
