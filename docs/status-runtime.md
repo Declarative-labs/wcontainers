@@ -56,7 +56,8 @@ size the guest is told (plan section 8), which `Machine` holds once the kernel t
   check's logs). The kernel track's ed9cea02 ("let a local sequenced packet send take its pending error
   after copying and before reading its control messages"), merged here with K6b, settles it: the same seed
   and count pass over the back end at fff0aa77 (scratch j3/m-layer1-40000-6022140857.log, 664.8 s, load 28.7
-  to 34.2). The buffer CPU's run of the same seed: j3/m-layer1-buffer-40000-6022140857.log.
+  to 34.2), and so does the buffer CPU's (no feature; 655.0 s, load 34.2 to 34.4;
+  j3/m-layer1-buffer-40000-6022140857.log).
 - The copy cost was one low run (minor): J2 run 4's paragraph now gives the range of repeated runs with their
   loads (below): `memory_duplicate` 74.2 µs median at load 29.7 (this track's run 4) and 85.5 to 124.6 µs
   medians in the checks' repeats at loads 41 to 52 (check-j2-run3, check-j2-run4, check-j2-run5/cost).
@@ -93,7 +94,9 @@ J2's bar on the merged tree with the fix (scratch worktree j3/tree at fff0aa77, 
   passed, 2 ignored, 94.4 s (load 36.0 to 28.7; m-bar-bounded.log). The 47 are J2's 46 and the kernel
   track's new test in processes; ignored as before: align's exclusive load (the translator's known failure)
   and memfd's huge pages.
-- Layer 1: seed 6022140857 with 40,000 sequences over the back end passes (above).
+- Layer 1: seed 6022140857 with 40,000 sequences passes over the back end and on the buffer CPU (above); a
+  new seed, 10,000 sequences with seed 2026111831 and 32 on each file backend, 3 passed in 167.8 s (load 34.4
+  to 31.5; j3/m-layer1-10000-2026111831.log, whose header names every knob).
 
 Built in J3:
 - Free turns (5d86b31d): `Turn` is `Counted { limit }` or `Free`; `StopFlag` (runtime crate) raises the
