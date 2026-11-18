@@ -1,8 +1,8 @@
 000_default_vs_code.dxbc	ok
 001_vs_code.dxbc	ok
 002_ps_color_code.dxbc	ok
-003_vs_4_1.dxbc	unsupported VertexWithoutPosition
-004_vs_4_0.dxbc	unsupported VertexWithoutPosition
+003_vs_4_1.dxbc	ok
+004_vs_4_0.dxbc	ok
 005_ps_4_1.dxbc	ok
 006_ps_4_0.dxbc	ok
 007_ps_4_0_level_9_0.dxbc	ok
@@ -11,8 +11,8 @@
 010_gs_4_1.dxbc	ok-wgsl glsl-write
 011_gs_4_0.dxbc	ok-wgsl glsl-write
 012_ps_code.dxbc	ok
-013_vs_code_1.dxbc	unsupported VertexWithoutPosition
-014_simple_vs.dxbc	unsupported VertexWithoutPosition
+013_vs_code_1.dxbc	ok
+014_simple_vs.dxbc	ok
 015_simple_hs.dxbc	ok-wgsl glsl-write
 016_simple_ds.dxbc	ok-wgsl glsl-write
 017_simple_gs.dxbc	ok-wgsl glsl-write
@@ -39,13 +39,13 @@
 038_vs_code_2.dxbc	ok
 039_vs_code_3.dxbc	unsupported RenderTargetArrayIndex
 040_ps_code_1.dxbc	unsupported RenderTargetArrayIndex
-041_simple_vs_1.dxbc	unsupported VertexWithoutPosition
+041_simple_vs_1.dxbc	ok
 042_simple_hs_1.dxbc	ok-wgsl glsl-write
 043_simple_ds_1.dxbc	ok-wgsl glsl-write
 044_simple_gs_1.dxbc	ok-wgsl glsl-write
 045_simple_ps_1.dxbc	ok
 046_simple_cs_1.dxbc	ok-wgsl glsl-write
-047_vs_code_4.dxbc	unsupported VertexWithoutPosition
+047_vs_code_4.dxbc	ok
 048_ps_code_2.dxbc	ok
 049_ps_frac_code.dxbc	ok
 050_ps_code_3.dxbc	ok

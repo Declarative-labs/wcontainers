@@ -389,3 +389,528 @@ fn tessellator_matches_direct3d() {
     eprintln!("{compared} comparisons, {} failed", failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// The rig's Direct3D 11 tessellation scene's patches (its data, which the rig keeps private): hull
+/// and domain shader names, control points, and whether the patch is drawn solid (the others as
+/// lines, so every new vertex shows).
+fn scene_patches() -> Vec<(&'static str, &'static str, Vec<[f32; 7]>, bool)> {
+    let point = |x: f32, y: f32, k: u32| {
+        let [r, g, b] = wcontainers_graphics_test::d3d11::scenes::hue(k, 4);
+        [x, y, 0.5, r, g, b, 1.0]
+    };
+    let tri = vec![
+        point(0.0, 0.85, 0),
+        point(0.85, -0.75, 1),
+        point(-0.85, -0.75, 2),
+    ];
+    let quad = vec![
+        point(-0.85, 0.85, 0),
+        point(0.85, 0.85, 1),
+        point(0.85, -0.85, 2),
+        point(-0.85, -0.85, 3),
+    ];
+    let line = vec![point(-0.9, 0.0, 0), point(0.9, 0.0, 2)];
+    vec![
+        ("hs_tri", "ds_tri", tri.clone(), false),
+        ("hs_quad_odd", "ds_quad", quad.clone(), false),
+        ("hs_quad_even", "ds_quad", quad.clone(), false),
+        ("hs_quad_pow2", "ds_quad", quad.clone(), false),
+        ("hs_quad_integer", "ds_quad", quad, false),
+        ("hs_line", "ds_line", line, false),
+        ("hs_tri", "ds_tri", tri, true),
+    ]
+}
+
+/// The scene's factors, its constant buffer at b0 of the hull stage.
+const SCENE_FACTORS: [f32; 8] = [3.3, 4.7, 2.2, 5.9, 3.6, 2.4, 0.0, 0.0];
+const SCENE_WIDTH: u32 = 256;
+const SCENE_HEIGHT: u32 = 128;
+
+/// One set per number from `bindings`' entries.
+fn sets<B: Backend>(
+    b: &mut B,
+    entries: Vec<(u32, wcontainers_gpu::BindingEntry<'_, B>)>,
+) -> [Option<B::BindingSet>; 4] {
+    let mut by_set: [Vec<_>; 4] = Default::default();
+    for (set, e) in entries {
+        by_set[set as usize].push(e);
+    }
+    by_set.map(|e| (!e.is_empty()).then(|| b.create_binding_set(&e).unwrap()))
+}
+
+/// The scene drawn through the stage helper: the vertex and hull stages as compute, the tessellator,
+/// then the domain program's indexed indirect draw of its points.
+fn scene_ours<B: Backend>(b: &mut B, all_solid: bool) -> Vec<u8> {
+    use wcontainers_gpu::*;
+    use wcontainers_shaders::stage::{InputTopology, StageDraw, Stages};
+    use wcontainers_shaders::{Source, convert};
+    let rig = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../wcontainers-graphics-test/shaders/dxbc");
+    let read = |name: &str| std::fs::read(rig.join(format!("tessellation.{name}.dxbc"))).unwrap();
+    let plain = VariantKey::default();
+    let ps = convert(Source::Dxbc(&read("ps")), &plain, None).unwrap();
+    let ds_key = VariantKey {
+        output_interpolation: ps
+            .reflection
+            .inputs
+            .iter()
+            .filter(|v| v.system.is_none() && v.interpolation != Interpolation::Perspective)
+            .map(|v| (v.location, v.interpolation))
+            .collect(),
+        ..Default::default()
+    };
+    let vs_key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        ..Default::default()
+    };
+    let vs = convert(Source::Dxbc(&read("vs")), &vs_key, None).unwrap();
+    let fragment = b.create_shader(&ps.modules[0]).unwrap();
+    let constants: Vec<u8> = SCENE_FACTORS.iter().flat_map(|f| f.to_le_bytes()).collect();
+    let constant_buffer = buffer(b, &constants, BufferUsage::UNIFORM);
+    let mut helpers = vec![0u8; vs.reflection.helper_size as usize];
+    for h in &vs.reflection.helpers {
+        let words = match h.value {
+            HelperValue::PulledStream { input } => [if input == 0 { 0u32 } else { 12 }, 28, 0, 0],
+            _ => panic!("{h:?}"),
+        };
+        let at = h.offset as usize;
+        for (i, w) in words.iter().enumerate() {
+            helpers[at + 4 * i..at + 4 * i + 4].copy_from_slice(&w.to_le_bytes());
+        }
+    }
+    let helper_buffer = buffer(b, &helpers, BufferUsage::UNIFORM);
+    let blend = b
+        .create_blend(&BlendDesc {
+            targets: [RenderTargetBlend {
+                blend: None,
+                writes: ColorWrites::all(),
+            }; 8],
+            same_for_all: true,
+            alpha_to_coverage: false,
+            logic_op: None,
+        })
+        .unwrap();
+    let depth_stencil = b
+        .create_depth_stencil(&DepthStencilDesc {
+            depth_compare: None,
+            depth_write: false,
+            stencil: None,
+            stencil_read_mask: [0xff; 2],
+            stencil_write_mask: [0xff; 2],
+            depth_bounds: None,
+        })
+        .unwrap();
+    let raster = |b: &mut B, fill| {
+        b.create_raster(&RasterDesc {
+            fill,
+            cull: CullMode::None,
+            front: FrontFace::Clockwise,
+            depth_bias: 0,
+            depth_bias_slope: 0,
+            depth_bias_clamp: 0,
+            depth_clip: true,
+            scissor: false,
+            line_width: 1.0f32.to_bits(),
+            provoking: ProvokingVertex::First,
+            depth_minus_one: false,
+            sample_mask: !0,
+        })
+        .unwrap()
+    };
+    let (solid, lines) = (raster(b, FillMode::Solid), raster(b, FillMode::Line));
+    let no_streams = b
+        .create_vertex_layout(&VertexLayoutDesc {
+            streams: [None; MAX_VERTEX_STREAMS],
+            attributes: [None; MAX_VERTEX_STREAMS],
+        })
+        .unwrap();
+    let target = b
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: SCENE_WIDTH,
+            height: SCENE_HEIGHT,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let target_view = b
+        .create_view(
+            &target,
+            &TextureViewDesc {
+                format: Format::Rgba8Unorm,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        )
+        .unwrap();
+
+    for (i, (hs, ds, points, solid_fill)) in scene_patches().into_iter().enumerate() {
+        let hs = convert(Source::Dxbc(&read(hs)), &plain, None).unwrap();
+        let ds = convert(Source::Dxbc(&read(ds)), &ds_key, None).unwrap();
+        let mut stages = Stages::tessellated(b, &vs, &hs, &ds).unwrap();
+        let flat: Vec<f32> = points.iter().flatten().copied().collect();
+        let vertex_buffer = buffer(b, bytes_of(&flat), BufferUsage::STORAGE);
+        let size = (flat.len() * 4) as u64;
+        let whole = |buffer| BufferRange {
+            buffer,
+            offset: 0,
+            size,
+        };
+        let mut vertex_entries = Vec::new();
+        for r in &vs.reflection.bindings {
+            assert!(
+                matches!(r.added, Some(AddedBinding::PulledStream(_))),
+                "{r:?}"
+            );
+            vertex_entries.push((
+                r.set,
+                BindingEntry {
+                    binding: r.binding,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::StorageBuffer {
+                        range: whole(&vertex_buffer),
+                        writable: false,
+                    },
+                },
+            ));
+        }
+        vertex_entries.push((
+            HELPER_SET,
+            BindingEntry {
+                binding: helper_binding(ShaderStage::Compute),
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::UniformBuffer(BufferRange {
+                    buffer: &helper_buffer,
+                    offset: 0,
+                    size: helpers.len() as u64,
+                }),
+            },
+        ));
+        let vertex_sets = sets(b, vertex_entries);
+        assert!(
+            hs.reflection.helpers.is_empty(),
+            "{:?}",
+            hs.reflection.helpers
+        );
+        let hull_entries = hs
+            .reflection
+            .bindings
+            .iter()
+            .map(|r| {
+                assert_eq!((r.kind, r.register), (SlotKind::Uniform, 0), "{r:?}");
+                (
+                    r.set,
+                    BindingEntry {
+                        binding: r.binding,
+                        stages: StageSet::COMPUTE,
+                        resource: BindingResource::UniformBuffer(BufferRange {
+                            buffer: &constant_buffer,
+                            offset: 0,
+                            size: constants.len() as u64,
+                        }),
+                    },
+                )
+            })
+            .collect();
+        let hull_sets = sets(b, hull_entries);
+        let n = points.len() as u32;
+        let last = stages
+            .run(
+                b,
+                &StageDraw {
+                    vertex_sets: vertex_sets.each_ref().map(Option::as_ref),
+                    geometry_sets: hull_sets.each_ref().map(Option::as_ref),
+                    index: None,
+                    topology: InputTopology::PatchList(n as u8),
+                    range: DrawRange::Vertices {
+                        first: 0,
+                        count: n,
+                        first_instance: 0,
+                        instances: 1,
+                    },
+                    stream_output: None,
+                },
+            )
+            .unwrap()
+            .expect("patches");
+        let t = last.tessellated.as_ref().expect("a tessellated draw");
+
+        // The domain program reads the patches and points in its helper set.
+        assert!(
+            ds.reflection.bindings.is_empty(),
+            "{:?}",
+            ds.reflection.bindings
+        );
+        assert!(
+            ds.reflection.helpers.is_empty(),
+            "{:?}",
+            ds.reflection.helpers
+        );
+        fn read_only<B: Backend>(
+            binding: u32,
+            range: &BufferRange<B::Buffer>,
+        ) -> BindingEntry<'_, B> {
+            BindingEntry {
+                binding,
+                stages: StageSet::VERTEX,
+                resource: BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: &range.buffer,
+                        offset: range.offset,
+                        size: range.size,
+                    },
+                    writable: false,
+                },
+            }
+        }
+        let domain_set = b
+            .create_binding_set(&[
+                read_only(DOMAIN_PATCHES_BINDING, &t.patches),
+                read_only(DOMAIN_POINTS_BINDING, &t.points),
+            ])
+            .unwrap();
+        let vertex = b.create_shader(&ds.modules[0]).unwrap();
+        let program = b
+            .create_program(&Program::Render {
+                vertex: &vertex,
+                fragment: Some(&fragment),
+            })
+            .unwrap();
+        let mut pass = PassDesc {
+            colors: Default::default(),
+            depth: None,
+            empty: None,
+            occlusion: None,
+        };
+        pass.colors[0] = Some(ColorAttachment {
+            view: &target_view,
+            depth_slice: 0,
+            resolve: None,
+            load: match i {
+                0 => LoadOp::Clear(wcontainers_graphics_test::scene::CLEAR.map(f32::to_bits)),
+                _ => LoadOp::Load,
+            },
+            store: StoreOp::Store,
+        });
+        let mut bindings = [None; 4];
+        bindings[HELPER_SET as usize] = Some(&domain_set);
+        let cell = i as u32;
+        b.begin_pass(&pass);
+        b.draw(&DrawCall {
+            program: &program,
+            blend: &blend,
+            depth_stencil: &depth_stencil,
+            raster: if solid_fill || all_solid {
+                &solid
+            } else {
+                &lines
+            },
+            vertex_layout: &no_streams,
+            bindings,
+            vertex_buffers: &[],
+            index: Some(IndexBinding {
+                buffer: &last.buffer,
+                offset: 0,
+                format: IndexFormat::U32,
+            }),
+            topology: last.topology,
+            restart: false,
+            viewports: &[Viewport {
+                x: ((cell % 4) as f32 * 64.0).to_bits(),
+                y: ((cell / 4) as f32 * 64.0).to_bits(),
+                width: 64.0f32.to_bits(),
+                height: 64.0f32.to_bits(),
+                min_depth: 0.0f32.to_bits(),
+                max_depth: 1.0f32.to_bits(),
+            }],
+            scissors: &[],
+            blend_constant: [0; 4],
+            stencil_reference: [0; 2],
+            immediates: &[],
+            range: DrawRange::IndexedIndirect {
+                args: &t.arguments,
+                offset: 0,
+            },
+        });
+        b.end_pass();
+        stages.destroy(b);
+    }
+    let mut out = vec![0; (SCENE_WIDTH * SCENE_HEIGHT * 4) as usize];
+    b.read_back_now(
+        &ReadSource::Texture {
+            region: TextureRegion {
+                texture: &target,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            extent: Extent {
+                width: SCENE_WIDTH,
+                height: SCENE_HEIGHT,
+                depth_or_layers: 1,
+            },
+        },
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert!(
+        b.slow_paths().count(SlowPath::TessellationAsCompute) > 0,
+        "the slow path is counted"
+    );
+    out
+}
+
+/// The rig's tessellation scene with every patch drawn solid, by real Direct3D 11.
+fn direct3d_solid_scene(gpu: &Gpu) -> Vec<u8> {
+    let rig = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../wcontainers-graphics-test/shaders/dxbc");
+    let read = |name: &str| std::fs::read(rig.join(format!("tessellation.{name}.dxbc"))).unwrap();
+    let (target, rtv) = gpu
+        .target(
+            SCENE_WIDTH,
+            SCENE_HEIGHT,
+            windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM,
+        )
+        .unwrap();
+    gpu.begin(&rtv, None, SCENE_WIDTH, SCENE_HEIGHT);
+    gpu.program(&read("vs"), &read("ps"), &d3d11::scenes::colored_layout())
+        .unwrap();
+    let factors: Vec<u8> = SCENE_FACTORS.iter().flat_map(|f| f.to_le_bytes()).collect();
+    let constants = gpu.immutable(&factors, D3D11_BIND_CONSTANT_BUFFER).unwrap();
+    let solid = gpu.rasterizer(&d3d11::solid()).unwrap();
+    let c = &gpu.context;
+    unsafe {
+        c.HSSetConstantBuffers(0, Some(&[Some(constants)]));
+        c.RSSetState(&solid);
+    }
+    for (i, (hs, ds, points, _)) in scene_patches().into_iter().enumerate() {
+        let flat: Vec<f32> = points.iter().flatten().copied().collect();
+        let _vertices = gpu.vertices(0, bytes_of(&flat), 28).unwrap();
+        let topology = match points.len() {
+            2 => D3D_PRIMITIVE_TOPOLOGY_2_CONTROL_POINT_PATCHLIST,
+            3 => D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST,
+            _ => D3D_PRIMITIVE_TOPOLOGY_4_CONTROL_POINT_PATCHLIST,
+        };
+        unsafe {
+            c.RSSetViewports(Some(&[d3d11::cell(i as u32, 4, 64.0)]));
+            c.HSSetShader(&gpu.hs(&read(hs)).unwrap(), None);
+            c.DSSetShader(&gpu.ds(&read(ds)).unwrap(), None);
+            c.IASetPrimitiveTopology(topology);
+            c.Draw(points.len() as u32, 0);
+        }
+    }
+    unsafe {
+        c.HSSetShader(None, None);
+        c.DSSetShader(None, None);
+    }
+    gpu.read(&target, 0, 0).unwrap().to_rgba8().into_raw()
+}
+
+/// Per 64-texel cell of the scene: texels that differ, texels Direct3D drew (not the clear colour)
+/// that ours did not, texels only ours drew, and texels both drew more than 2 steps apart.
+fn by_cell(reference: &[u8], ours: &[u8]) -> Vec<[usize; 4]> {
+    let clear = &reference[..4];
+    let mut cells = vec![[0; 4]; 8];
+    for (i, (p, q)) in reference.chunks(4).zip(ours.chunks(4)).enumerate() {
+        let (x, y) = (i as u32 % SCENE_WIDTH, i as u32 / SCENE_WIDTH);
+        let c = &mut cells[(y / 64 * 4 + x / 64) as usize];
+        let d = p.iter().zip(q).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        if d == 0 {
+            continue;
+        }
+        c[0] += 1;
+        match (p == clear, q == clear) {
+            (false, true) => c[1] += 1,
+            (true, false) => c[2] += 1,
+            _ if d > 2 => c[3] += 1,
+            _ => {}
+        }
+    }
+    cells
+}
+
+/// The rig's tessellation scene (triangle, quad and isoline patches, each partitioning) with every
+/// patch drawn solid, through the stage helper, against real Direct3D 11 drawing the same: every
+/// texel of the surfaces equal; the isoline patch, being lines, as the scene's lines below.
+#[test]
+fn tessellated_patches_draw_as_direct3d_11_does() {
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let reference = direct3d_solid_scene(&gpu);
+    let mut backend = webgpu_on(wgpu::Backends::VULKAN);
+    let ours = scene_ours(&mut backend, true);
+    keep(
+        "tessellation-solid-direct3d",
+        &reference,
+        wcontainers_gpu::Format::Rgba8Unorm,
+    );
+    keep(
+        "tessellation-solid-ours",
+        &ours,
+        wcontainers_gpu::Format::Rgba8Unorm,
+    );
+    let cells = by_cell(&reference, &ours);
+    eprintln!("tessellated patches, solid, per cell (differ, missed, only ours, apart): {cells:?}");
+    for (i, c) in cells.iter().enumerate() {
+        match i {
+            // The isoline patch: lines, drawn by each API's line rule.
+            5 => assert_eq!((c[1], c[3]), (0, 0), "cell {i}"),
+            _ => assert_eq!(c[0], 0, "cell {i}"),
+        }
+    }
+}
+
+/// The rig's tessellation scene as it is (the patches drawn as lines but the last) through the stage
+/// helper, against real Direct3D 11 running the scene itself. Lines drawn from filled polygons follow
+/// each API's line rule (Vulkan's here, the back end's), so this one asks only that every texel
+/// Direct3D drew is drawn, and that the solid patch is equal; the rest is printed.
+#[test]
+fn rig_tessellation_scene_draws_as_direct3d_11_does() {
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let (_, scene) = d3d11::scenes::find("tessellation").unwrap();
+    let outputs = scene(&gpu).unwrap();
+    let wcontainers_graphics_test::output::Value::Picture(picture) = &outputs[0].value else {
+        panic!("the scene draws a picture");
+    };
+    let reference = picture.to_rgba8().into_raw();
+    // On Vulkan, as the tessellator's test, for the same reason.
+    let mut backend = webgpu_on(wgpu::Backends::VULKAN);
+    let ours = scene_ours(&mut backend, false);
+    keep(
+        "tessellation-scene-direct3d",
+        &reference,
+        wcontainers_gpu::Format::Rgba8Unorm,
+    );
+    keep(
+        "tessellation-scene-ours",
+        &ours,
+        wcontainers_gpu::Format::Rgba8Unorm,
+    );
+    let cells = by_cell(&reference, &ours);
+    eprintln!("tessellation scene, per cell (differ, missed, only ours, apart): {cells:?}");
+    for (i, c) in cells.iter().enumerate() {
+        assert_eq!(c[1], 0, "cell {i}");
+    }
+    // The last patch is drawn solid.
+    assert_eq!(cells[6][0], 0);
+}

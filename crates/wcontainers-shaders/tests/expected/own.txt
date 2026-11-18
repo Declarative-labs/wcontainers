@@ -87,7 +87,7 @@ vs_fullscreen.dxbc	ok-wgsl glsl-compile
 vs_geometry.dxbc	ok
 vs_ids.dxbc	ok
 vs_pack.dxbc	ok
-vs_patch.dxbc	unsupported VertexWithoutPosition
+vs_patch.dxbc	ok
 vs_pull.dxbc	ok
 vs_shade.dxbc	ok
 vs_transform.dxbc	ok
