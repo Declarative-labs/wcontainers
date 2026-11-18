@@ -4,8 +4,9 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K6c, third run: the test backend is reached over TCP and announces writes of many pages (dio13
-179 s to 28 s, dio16 past 300 s to 110 s); built core dumps, adjtimex and clock_adjtime, the
+K6c, third run: the whole LTP comparison at fb0bc97 matches 3989 of 4226 (committed). The test
+backend is reached over TCP and announces writes of many pages (dio13 179 s to 28 s, dio16 past
+300 s to 110 s); built core dumps, adjtimex and clock_adjtime, the
 AF_ALG refusal of the reference's host, timers set before the clock began, group joins on TCP
 sockets and TCP disconnects. K6c is not complete. See "K6c, third run".
 
@@ -3369,12 +3370,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K6c, in this order:
-1. The whole LTP run at fb0bc97 goes on detached (scratch k6c3/ours-5.tsv; if it has stopped,
-   continue it: `LTP_TAR=<scratch>/ltp/ltp-20260930.tar LTP_LIMIT=300 LTP_JOBS=4 nix develop -c
-   cargo run -p wcontainers-kernel-test --bin ltp -- ours <that file>`; the image
-   wc-kernel-ltp-served:20260930 must exist, ltp/build.sh makes it). When it ends, run every test
-   that differs again at the newest commit into a second file, and compare both with `ltp compare
-   crates/wcontainers-kernel-test/ltp/reference-20260930.tsv <file>`.
+1. Run the 237 tests that differ in the whole comparison at fb0bc97 again at the newest commit
+   (`grep` their ids from scratch k6c3/compare-5.txt, or `ltp compare` the committed
+   ltp/ours-20260930-fb0bc97.tsv with the reference) into a second file, LTP_LIMIT 300, and
+   compare; then the timeouts with a long limit (item 5).
 2. A wrong answer of the most serious kind, found late in this run (ours-5 at fb0bc97):
    math float_power, float_iperb and float_trigo (120 threads each) end with glibc's "double
    free or corruption (out)" and SIGABRT on ours; the reference passes. Find the cause before
