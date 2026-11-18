@@ -186,6 +186,55 @@ impl IDXGIObject_Impl for Factory_Impl {
     }
 }
 
+impl IDXGIAdapter4_Impl for Adapter_Impl {
+    fn GetDesc3(&self) -> windows_core::Result<DXGI_ADAPTER_DESC3> {
+        Adapter::GetDesc3(self)
+    }
+}
+
+impl IDXGIAdapter3_Impl for Adapter_Impl {
+    fn RegisterHardwareContentProtectionTeardownStatusEvent(
+        &self,
+        _hevent: windows::Win32::Foundation::HANDLE,
+    ) -> windows_core::Result<u32> {
+        Err(self.unsupported("RegisterHardwareContentProtectionTeardownStatusEvent"))
+    }
+    fn UnregisterHardwareContentProtectionTeardownStatus(&self, _dwcookie: u32) {
+        self.unsupported("UnregisterHardwareContentProtectionTeardownStatus");
+    }
+    fn QueryVideoMemoryInfo(
+        &self,
+        _nodeindex: u32,
+        _memorysegmentgroup: DXGI_MEMORY_SEGMENT_GROUP,
+        _pvideomemoryinfo: *mut DXGI_QUERY_VIDEO_MEMORY_INFO,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("QueryVideoMemoryInfo"))
+    }
+    fn SetVideoMemoryReservation(
+        &self,
+        _nodeindex: u32,
+        _memorysegmentgroup: DXGI_MEMORY_SEGMENT_GROUP,
+        _reservation: u64,
+    ) -> windows_core::Result<()> {
+        Err(self.unsupported("SetVideoMemoryReservation"))
+    }
+    fn RegisterVideoMemoryBudgetChangeNotificationEvent(
+        &self,
+        _hevent: windows::Win32::Foundation::HANDLE,
+    ) -> windows_core::Result<u32> {
+        Err(self.unsupported("RegisterVideoMemoryBudgetChangeNotificationEvent"))
+    }
+    fn UnregisterVideoMemoryBudgetChangeNotification(&self, _dwcookie: u32) {
+        self.unsupported("UnregisterVideoMemoryBudgetChangeNotification");
+    }
+}
+
+impl IDXGIAdapter2_Impl for Adapter_Impl {
+    fn GetDesc2(&self) -> windows_core::Result<DXGI_ADAPTER_DESC2> {
+        Adapter::GetDesc2(self)
+    }
+}
+
 impl IDXGIAdapter1_Impl for Adapter_Impl {
     fn GetDesc1(&self) -> windows_core::Result<DXGI_ADAPTER_DESC1> {
         Adapter::GetDesc1(self)
