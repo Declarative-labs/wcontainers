@@ -6,7 +6,7 @@ common.vs_color.dxil	ok
 common.vs_full.dxil	ok
 constants.ps_slots.dxil	ok
 constants.ps_window.dxil	ok
-d3d12.cs_add.dxil	spirv-reader unsupported
+d3d12.cs_add.dxil	ok-wgsl glsl-write
 d3d12.cs_image.dxil	ok-wgsl glsl-write
 d3d12.ps_bundle.dxil	ok
 d3d12.ps_constants.dxil	ok

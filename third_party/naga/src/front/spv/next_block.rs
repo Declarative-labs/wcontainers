@@ -1385,6 +1385,50 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     block.push(stmt, span);
                     emitter.start(ctx.expressions);
                 }
+                Op::ImageTexelPointer => {
+                    inst.expect(6)?;
+                    let result_type_id = self.next()?;
+                    let result_id = self.next()?;
+                    let image_id = self.next()?;
+                    let coordinate_id = self.next()?;
+                    let _sample_id = self.next()?;
+                    let image = self.lookup_expression.lookup(image_id)?.handle;
+                    let image_ty = ctx.get_image_expr_ty(image)?;
+                    match ctx.module.types[image_ty].inner {
+                        crate::TypeInner::Image { class, .. } if !class.is_multisampled() => {}
+                        _ => return Err(Error::UnsupportedInstruction(self.state, inst.op)),
+                    }
+                    let coordinate_lexp = self.lookup_expression.lookup(coordinate_id)?;
+                    let coordinate = self.get_expr_handle(
+                        coordinate_id,
+                        coordinate_lexp,
+                        ctx,
+                        &mut emitter,
+                        &mut block,
+                        body_idx,
+                    );
+                    // The texel as the image indexed by its whole coordinate (an array's layer
+                    // last), never emitted. Only atomic operations take it; the IR has no image
+                    // atomic with a result, so a module holding one is valid only once its
+                    // reader's caller replaces each.
+                    block.extend(emitter.finish(ctx.expressions));
+                    let handle = ctx.expressions.append(
+                        crate::Expression::Access {
+                            base: image,
+                            index: coordinate,
+                        },
+                        span,
+                    );
+                    emitter.start(ctx.expressions);
+                    self.lookup_expression.insert(
+                        result_id,
+                        LookupExpression {
+                            handle,
+                            type_id: result_type_id,
+                            block_id,
+                        },
+                    );
+                }
                 Op::ImageFetch | Op::ImageRead => {
                     let extra = inst.expect_at_least(5)?;
                     self.parse_image_load(

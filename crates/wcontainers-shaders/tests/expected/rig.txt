@@ -13,7 +13,7 @@ compute.cs_counter.dxbc	ok-wgsl glsl-write
 compute.cs_shared.dxbc	ok-wgsl glsl-write
 compute.cs_structured.dxbc	ok-wgsl glsl-write
 compute.cs_texture.dxbc	ok-wgsl glsl-write
-compute.ps_overlap.dxbc	unsupported StorageFormatKind
+compute.ps_overlap.dxbc	ok-wgsl glsl-write
 constants.ps_slots.dxbc	ok
 constants.ps_window.dxbc	ok
 depth.ps_depth.dxbc	ok

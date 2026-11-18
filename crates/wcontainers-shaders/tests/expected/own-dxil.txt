@@ -1,8 +1,9 @@
-cs_atomics.dxil	spirv-reader unsupported
-cs_decrement.dxil	spirv-reader unsupported
+cs_atomics.dxil	spirv-reader AtomicSMin
+cs_decrement.dxil	ok-wgsl glsl-write
 cs_images.dxil	unsupported StorageFormatKind
-cs_texels.dxil	spirv-reader unsupported
-cs_through.dxil	spirv-reader unsupported
+cs_shared.dxil	ok-wgsl glsl-write
+cs_texels.dxil	unsupported NonFiniteConstant
+cs_through.dxil	unsupported StorageFormatKind
 gs_adjacent.dxil	spirv-reader unsupported
 gs_cut.dxil	spirv-reader unsupported
 gs_instances.dxil	spirv-reader unsupported
@@ -18,6 +19,7 @@ ps_dual.dxil	ok
 ps_filter.dxil	ok-wgsl glsl-compile
 ps_ftoi.dxil	ok
 ps_ids.dxil	ok
+ps_layer.dxil	spirv-reader unsupported
 ps_levels.dxil	ok-wgsl glsl-write
 ps_mingather.dxil	ok-wgsl glsl-compile
 ps_minlod.dxil	ok

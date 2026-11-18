@@ -65,7 +65,7 @@ const CONSTANTS: u32 = 0;
 const VIEW: u32 = 1;
 const STORAGE: u32 = 2;
 const SAMPLER: u32 = 3;
-const COUNTER: u32 = 4;
+pub(super) const COUNTER: u32 = 4;
 
 /// Each resource's (class, space, register), at the index the SPIR-V's binding names.
 type Resources = Vec<[u32; 3]>;
@@ -216,12 +216,23 @@ pub(crate) fn lower(
     let mut module = naga::front::spv::Frontend::new(spirv.iter().copied(), &options)
         .parse()
         .map_err(|e| ConvertError::Reader(format!("{e}")))?;
+    let mut atomics = images::texel_atomics(&mut module)?;
+    // WebGPU's storage buffers are read-only or read-write; one the program only writes is the latter.
+    for (_, v) in module.global_variables.iter_mut() {
+        if let AddressSpace::Storage { access } = &mut v.space
+            && *access == naga::StorageAccess::STORE
+        {
+            *access |= naga::StorageAccess::LOAD;
+        }
+    }
     unconverted(&module)?;
     if !module.overrides.is_empty() {
         // dxil-spirv's only specialisation constant here: the targets' sample count.
         return Err(ConvertError::Unsupported("SampleCount"));
     }
-    direct3d_float_to_int(&mut module)?;
+    if let Some(moved) = direct3d_float_to_int(&mut module)? {
+        images::remap(&mut atomics, &moved);
+    }
     declared_sizes(dxil, &resources, &mut module)?;
     let images = images::globals(&module, &declared);
     crate::lower::derivatives_anywhere(&mut module);
@@ -239,7 +250,7 @@ pub(crate) fn lower(
         ShaderStage::Compute => StageExtras::Compute {
             workgroup_size: ep.workgroup_size,
         },
-        ShaderStage::Fragment => pixel_extras(&module),
+        ShaderStage::Fragment => pixel_extras(&module, !atomics.is_empty()),
         _ => StageExtras::None,
     };
     module.entry_points[0].name = "main".into();
@@ -272,13 +283,21 @@ pub(crate) fn lower(
     let slots = bindings(&mut module, &resources, set, &mut reflection)?;
     reflection.sampled_pairs = sampled_pairs(&module, &slots)?;
     draw_bases(&mut module, variant, &mut reflection)?;
-    images::finish(&mut module, variant, &images, stage, &mut reflection)?;
+    images::finish(
+        &mut module,
+        variant,
+        &images,
+        &mut atomics,
+        stage,
+        &mut reflection,
+    )?;
     Ok((module, reflection, stage))
 }
 
 /// What a pixel program asks of the pipeline beyond its code: early tests (reported, since WGSL cannot
-/// force them), writes to storage, discards, and running once per sample.
-fn pixel_extras(module: &Module) -> StageExtras {
+/// force them), writes to storage (`texel_atomics` where it runs atomics on typed views), discards,
+/// and running once per sample.
+fn pixel_extras(module: &Module, texel_atomics: bool) -> StageExtras {
     let ep = &module.entry_points[0];
     let functions =
         || core::iter::once(&ep.function).chain(module.functions.iter().map(|(_, f)| f));
@@ -297,7 +316,7 @@ fn pixel_extras(module: &Module) -> StageExtras {
             }
         }
     };
-    let mut side_effects = false;
+    let mut side_effects = texel_atomics;
     let mut discards = false;
     for f in functions() {
         let mut stack = vec![&f.body];
@@ -624,8 +643,11 @@ fn float_to_int_function(module: &mut Module, (kind, size): FloatToInt) -> Funct
 /// naga's float to integer conversion is not Direct3D's, which gives 0 for NaN and the integer's
 /// limits at and past them (WGSL and naga's HLSL stop at the largest float below the limit, and
 /// differ on NaN). dxbc-spirv builds Direct3D's for DXBC; here every f32 to i32 or u32 conversion of
-/// the DXIL module becomes a call of a function that gives it.
-fn direct3d_float_to_int(module: &mut Module) -> Result<(), ConvertError> {
+/// the DXIL module becomes a call of a function that gives it. Gives where the module's functions
+/// went, if they moved.
+fn direct3d_float_to_int(
+    module: &mut Module,
+) -> Result<Option<Vec<Handle<Function>>>, ConvertError> {
     // (function index, or entry point index + functions, and its conversions)
     let mut found = Vec::new();
     for (i, (_, f)) in module.functions.iter().enumerate() {
@@ -637,7 +659,7 @@ fn direct3d_float_to_int(module: &mut Module) -> Result<(), ConvertError> {
     }
     found.retain(|(_, c)| !c.is_empty());
     if found.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let (helpers, moved) = functions_first(module, |module| {
         let mut helpers: Vec<(FloatToInt, Handle<Function>)> = Vec::new();
@@ -670,7 +692,7 @@ fn direct3d_float_to_int(module: &mut Module) -> Result<(), ConvertError> {
             .collect();
         place_calls(f, &calls);
     }
-    Ok(())
+    Ok(Some(moved))
 }
 
 /// Runs `make`, which appends functions, so that they come before every function the module had

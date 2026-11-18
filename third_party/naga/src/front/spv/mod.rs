@@ -2429,6 +2429,19 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
         let base_lookup_ty = self.lookup_type.lookup(type_id)?;
         let base_inner = &module.types[base_lookup_ty.handle].inner;
 
+        // A texel pointer's type (`OpImageTexelPointer`): its texel's type, as for handles.
+        if storage_class == spirv::StorageClass::Image as u32 {
+            let handle = base_lookup_ty.handle;
+            self.lookup_type.insert(
+                id,
+                LookupType {
+                    handle,
+                    base_id: Some(type_id),
+                },
+            );
+            return Ok(());
+        }
+
         let space = if let Some(space) = base_inner.pointer_space() {
             space
         } else if self
@@ -3292,6 +3305,14 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
     ) -> Result<Handle<crate::Type>, Error> {
         log::debug!("\t\tlocating global variable in {handle:?}");
         match ctx.expressions[handle] {
+            // A texel pointer: the image's texel, not memory of an atomic type.
+            crate::Expression::Access { base, .. }
+                if ctx.get_image_expr_ty(base).is_ok_and(|ty| {
+                    matches!(ctx.module.types[ty].inner, crate::TypeInner::Image { .. })
+                }) =>
+            {
+                ctx.get_image_expr_ty(base)
+            }
             crate::Expression::Access { base, index } => {
                 log::debug!("\t\t  access {handle:?} {index:?}");
                 let ty = self.record_atomic_access(ctx, base)?;

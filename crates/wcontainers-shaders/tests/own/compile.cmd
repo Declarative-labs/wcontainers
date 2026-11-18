@@ -1,4 +1,4 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl and tessellation.hlsl with
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl, tessellation.hlsl and layers.hlsl with
 @rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry, the compute and the typed buffer shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
@@ -66,7 +66,7 @@ for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_adjacent gs_line_
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Gis -Fo %%e.dxil geometry.hlsl || exit /b 1
 )
-for %%e in (cs_atomics cs_decrement cs_images) do (
+for %%e in (cs_atomics cs_decrement cs_images cs_shared) do (
   "%FXC%" /nologo /T cs_5_0 /E %%e /Fo %%e.dxbc compute.hlsl || exit /b 1
   "%DXC%" -nologo -T cs_6_0 -E %%e -Gis -Fo %%e.dxil compute.hlsl || exit /b 1
 )
@@ -86,4 +86,7 @@ for %%m in (integer pow2 odd even) do for %%o in (point line) do (
 for %%e in (ds_tri ds_quad ds_line) do (
   "%FXC%" /nologo /T ds_5_0 /E %%e /Fo %%e.dxbc tessellation.hlsl || exit /b 1
 )
+"%FXC%" /nologo /T gs_5_0 /E gs_layers /Fo gs_layers.dxbc layers.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_layer /Fo ps_layer.dxbc layers.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_layer -Gis -Fo ps_layer.dxil layers.hlsl || exit /b 1
 echo %FXC% %DXC%

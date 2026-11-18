@@ -1389,7 +1389,8 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
 - Layered drawing (`SV_RenderTargetArrayIndex` from a geometry shader, for one-pass cube shadows and
   volume tables): the stage helper's output carries each primitive's layer, and the draw runs once per
   layer used, into a pass on that layer's view, keeping only that layer's primitives (`LayerSplit`).
-  Exact. The layer or viewport from the vertex shader (an optional Direct3D 11.3 capability) is
+  Exact. A pixel shader reading its layer or viewport index reads the run's (`HelperValue::Layer`,
+  `HelperValue::Viewport`; zero where no earlier stage writes one). The layer or viewport from the vertex shader (an optional Direct3D 11.3 capability) is
   reported absent. Several viewports: `MultiViewportSplit`.
 - Vertex input: every format can be named (`VertexFormat` has every component count of every type);
   WebGPU's missing ones are fetched in the program or converted (`VertexFormatConverted`). Step rates
