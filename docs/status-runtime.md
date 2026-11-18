@@ -14,13 +14,58 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   count of the kernel's changes of pc (the plan builds them together; both wait for the owner's ruling on
   the progress unit). The kernel's clock method has not landed on origin/phase-1 (no new commits there
   since 36d20013), so the clock hook still answers `Host::monotonic_nanoseconds`.
+- J2 run 2 (2026-11-18): the seven findings of J2 run 1's check are settled (next section) and the bars
+  run again on the fixed tree (J2 run 2 below).
 - J2 is complete: every part of plan section 16's J2 that the brief lets be built now is built, its bar
   passes at full, none and bounded, layer 1 passes 10,000 seeded sequences over the back end, the million
   is one command (not run here; the orchestrator's), and system call and fork cost are measured with both
   sides of the copy. One test the stand-in cannot run still fails with the runtime: align's unaligned
-  exclusive load, which the translator traps as Unicorn does (J2 section below); it stays ignored with the
-  stand-in's reason. The other, align's misaligned stack pointer, passes with the runtime.
+  exclusive load, which the translator faults as Unicorn does; with the feature it is ignored as the
+  translator's known failure. The other, align's misaligned stack pointer, runs and passes with the runtime.
+  Layer 1 does not pass every seed: the kernel's `getcpu` (kernel track's code) differs from Linux with a bad
+  cpu pointer and a good node pointer, on the stand-in too (next section).
 - Next: J3 (plan section 16).
+
+## Findings of J2 run 1's check, and how each was settled (J2 run 2)
+
+- Fork copy not exact on Linux after the host process forked (blocking): `/proc/self/pagemap` was opened
+  once per process and kept, and an open page map stays bound to the process that opened it. memory.rs
+  `copy_pages` now takes every run of one copy and opens the page map for each copy (9ea8a8aa). New test
+  tests/fork.rs `a_duplicate_made_after_the_host_process_forked_is_exact` (duplicate once, fork, then in the
+  copy write 256 pages of a new memory and duplicate it). On Linux it fails on the code before the fix
+  (`status 0x100`; scratch j2/linux/linux-before-fix.log, the test copied into a worktree of a3bb4728) and
+  passes at the fix (linux-check-2.log, e98abb5e) and after the records change (linux-check-3.log, 7679fe4b).
+- getcpu with a bad cpu pointer and a good node pointer (minor): not fixed here. It is the kernel track's
+  code (crates/wcontainers-kernel/src/syscall/system.rs `getcpu`, still the same on origin/phase-1-kernel at
+  940e9868), not the back end's, and the buffer CPU fails the same seed the same way. Linux writes the node
+  and then returns EFAULT; ours returns at the first failed write. Reproduce: `LAYER1_CASES=20000
+  LAYER1_SEED=918273645 cargo test -p wcontainers-kernel-test --test layer1 -- sequences_match_reference`
+  (with or without `--features runtime`). Listed for the owner.
+- align under the feature (minor): with `--features runtime` the misaligned stack pointer test runs (not
+  ignored) and passes; the unaligned exclusive load is ignored as the translator's known failure, named so
+  (e98abb5e, a kernel test crate test file, its own commit). Without the feature both keep Unicorn's
+  reasons. `--include-ignored` with the feature: stack pointer ok, exclusive load FAILED (scratch
+  j2run2/align-runtime.log, load 47.9 to 53.3).
+- The build identity named only the ARM64 guest (minor): build.rs now hashes the translator, the guest
+  interface, the abi, and every guest crate of the workspace, found from the manifests (a crate that
+  depends on `wcontainers-guest-cpu` and not on `wcontainers-translator`; today that finds
+  `wcontainers-arm64`), and reruns when a crate is added (1bee906a). The manifests are read with toml_edit.
+- Fixed cost of every fork (minor): the per-page records (permissions, write locks, may hold data) are one
+  record per page, kept in chunks of 4096 pages that copies share until one side changes one, and the
+  permission table is copied only for the records' chunks (7679fe4b). Measured (release, scratch
+  j2run2/cost/pairs.sh, binaries of the commit before and after, five alternating pairs; Apple M5 Max, load
+  45.5 read at the start and the end; pairs-1.log): a memory with two written pages duplicated, median of
+  41: before 69.9 to 75.7 µs, after 29.4 to 37.1 µs; `memory_new` alone before 27.8 to 32.7 µs, after 16.7 to
+  20.8 µs. J0's busybox sh layout, median of 15: before 109.5 to 151.0 µs, after 70.7 to 95.2 µs; the
+  parent's first writes after it before 185.7 to 268.5 µs, after 194.9 to 269.1 µs (unchanged). Tested by
+  the records' unit test in lib.rs and every fork test.
+- A cache directory that cannot be written panicked (minor): writing a file is now a counted, warned slow
+  path, "translation not kept in the cache's directory", with the host's error number as the detail; the
+  partial file is removed and the run goes on (9ea8a8aa). tests/cache.rs gives the compiler a path under a
+  file.
+- The Linux check's command was not in its log (minor): scratch j2/linux/check.sh SOURCE LOG runs it and
+  writes the docker command into each log's header ("How to run").
+
 
 ## J2 (run 1, 2026-11-18)
 
@@ -80,7 +125,8 @@ with seed 1 in 9.0 s (load 20.6). About 18 ms a sequence, so the million is expe
 Linux (Docker `rust:1.99-slim`, linux/arm64, kernel 7.0.14-linuxkit, 4 CPUs, swap 4 GB; the back end's
 tests at 0c084598; load 72.5 to 75.0; j2/linux/linux-check.log): all 13 pass: host-supplied memory, blocks
 of shared pages, the fork copy through `/proc/self/pagemap`, a back end brought back in a fork copy. In
-`copy_pages`'s test the page given `MADV_PAGEOUT` read "present 0, swapped 1" and was copied exactly.
+`copy_pages`'s test the page given `MADV_PAGEOUT` read "present 0, swapped 1" and was copied exactly. That
+run did not test a copy made after the host process forked, which was not exact (fixed in run 2, above).
 
 The CPU side's warnings per test (per test file, its runs summed; j2/warnings-full.log at full, made by
 j2/scripts/warnings.py --targets):
@@ -302,9 +348,13 @@ Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/` a
 - Layer 1 over the back end, one command: scratch `j2/layer1.sh CASES SEED [BACKEND_CASES]`, or
   `LAYER1_CASES=<n> LAYER1_SEED=<s> nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features
   runtime --test layer1 -- --test-threads 3`. The orchestrator's long run: `j2/layer1.sh 1000000 <seed>`.
-- The back end on Linux: scratch j2/linux/linux-check.log's header has the docker command (rust:1.99-slim,
-  the checkout mounted read-only, `RUSTUP_TOOLCHAIN=1.99.0-aarch64-unknown-linux-gnu`, `cargo test --locked
-  -p wcontainers-wasmtime`); its target and registry folders are deleted after the run.
+- The back end on Linux: scratch `j2/linux/check.sh <checkout> <log name> [cargo test arguments]`; it
+  writes the commit, the load and the docker command in the log's header:
+  `docker run --rm --platform linux/arm64 --cpus 4 -v <checkout>:/src:ro -v <here>/target:/target -v
+  <here>/registry:/usr/local/cargo/registry -e CARGO_TARGET_DIR=/target -e
+  RUSTUP_TOOLCHAIN=1.99.0-aarch64-unknown-linux-gnu -w /src rust:1.99-slim sh -c 'uname -a; swapon --show;
+  cargo test --locked -j 4 -p wcontainers-wasmtime -- --test-threads 3 --nocapture'`. Delete
+  j2/linux/target and j2/linux/registry after the run, and the image (`docker rmi rust:1.99-slim`).
 - Do not edit the crates while a bar runs: a later cargo invocation of the same run rebuilds from what is
   on disk (that is how j2/bounded-1-stale-build.log hung).
 - The bar, first step: `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test
@@ -497,6 +547,11 @@ array of slots in microseconds.
   crate's planned change (plan section 14), made as its own commit (0b6fefdb).
 - J2's bar runs three tests at a time; the per-test warnings come from a separate run at full with
   `--nocapture`, summed per test file because lines of tests running together interleave.
+- align.rs (a kernel test crate test file, not the driver) changed in J2 run 2 so that its ignores depend on
+  the feature (e98abb5e): the plan's rule that a test the stand-in cannot run must pass with the runtime
+  needs the stack pointer test to run with it.
+- The kernel's `getcpu` difference that layer 1 finds with seed 918273645 is left to the kernel track: this
+  track does not change the kernel.
 
 ## Dependencies
 
@@ -514,4 +569,6 @@ Added in J1, licences read from each crate's manifest in the registry on 2026-11
   OR Apache-2.0), on macOS only, for `mach_vm_copy`; blake3 1.8.7 also as a build dependency of
   wcontainers-wasmtime (the build identity); libc 0.2.191 (MIT OR Apache-2.0) as a dev-dependency only, for
   the test that forks its process.
+- Added in J2 run 2 (licence read from the registry's manifest on 2026-11-18): toml_edit 0.25.19 (MIT OR
+  Apache-2.0), a build dependency of wcontainers-wasmtime only, to find the workspace's guest crates.
 - Not added yet: tar (J3), oci-spec (J3).

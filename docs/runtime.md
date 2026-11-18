@@ -329,7 +329,9 @@ already does, decided by that measurement.
   one entry serves every ceiling of the same form,
 - the translator's build identity: a hash made at build time of the sources of every crate the emitted
   code depends on: the translator, the guest interface (`wcontainers-guest-cpu`: `Personality`, `Guest`),
-  the guest crate, and `wcontainers-abi` (the register block, `STOP_FLAG_OFFSET`, `THREAD_BLOCK_SIZE`), and
+  every guest crate of the workspace (each crate that depends on the guest interface and not on the
+  translator, found from the manifests by the build script, so x86-64's joins when it lands), and
+  `wcontainers-abi` (the register block, `STOP_FLAG_OFFSET`, `THREAD_BLOCK_SIZE`), and
   their locked versions of wasm-encoder, so any change to them changes the key without manual version
   numbers (built with the disk level, J2: the in-memory level lives inside one build),
 - wasmtime's own compatibility check, which `Module::deserialize` makes.
@@ -451,13 +453,18 @@ exit), then makes the child's store, guest memory and state memory, and:
     and copies each on its first write in either process), so a page that is compressed or paged out is
     copied like any other;
   - Linux: the pages `/proc/self/pagemap` shows present or swapped (bits 63 and 62), copied with `memcpy`; a
-    page that is neither has never been written, or was given back, and reads as zero in both;
+    page that is neither has never been written, or was given back, and reads as zero in both. The page map
+    is opened for each copy, since an open one stays bound to the process that opened it, and a save's
+    copy of the host process is another;
   - any other host: `memcpy` of the whole range.
   Residency (`mincore`) is not used: it reports a compressed or swapped page as not resident, which would
   give the child zeros;
 - takes the parent's per-page record (permissions, write locks, may hold data) and blocks shown, so the
-  child shows the same blocks at the same places;
-- copies the parent's permission table and the entries of its array of slots for every range of code, by
+  child shows the same blocks at the same places. The record is kept in chunks of 4096 pages that copies
+  share until one side changes one (a chunk that holds nothing is not there), so taking it costs the
+  chunks a process uses, not its whole address space;
+- copies the parent's permission table, for the pages of its record's chunks and the page before each
+  (the rest of the table is zero), and the entries of its array of slots for every range of code, by
   the same page copy: the child's record and translations are the parent's, so their bytes are too, and
   copying shares pages where rewriting them would touch every one;
 - takes the parent's code modules and piece lists at the same slot bases, and leaves instances to the
@@ -730,7 +737,7 @@ methods as exports, `Cpu` and `Host` as imports) is asked of the kernel track.
   rustix, blake3, object (0.41, the kernel's version; wasmtime 50 brings its own object 0.40 and gimli
   0.33, so a build holds two versions of each), gimli (0.34, the translator test crate's version) for the
   unwind tables, rayon (1.12, the translator's) for the back end's own pool
-  (section 11) and, on macOS, mach2. The split keeps wasmtime out of every build that does not run WebAssembly
+  (section 11), on macOS mach2, and, at build time only, blake3 and toml_edit (the build identity). The split keeps wasmtime out of every build that does not run WebAssembly
   (the kernel tests on the stand-in, a later native back end).
 - No new test crate. The kernel test crate's driver calls `drive`; its stand-in implements `Execution`; its
   `TestHost` implements `Outside`, holding the per-turn work the driver loop does today (backend answers,
@@ -820,7 +827,9 @@ let status = container.run()?;    // to the end; or `container.step()` from the 
 - **Layer 2 and 3 (real programs, LTP).** Every test of the kernel test crate runs with `--features runtime`.
   The bar is the same verdict as the same test with the stand-in, and as the reference, test by test. A test
   the stand-in cannot run (its emulator's alignment limits, driver.rs `Failure::StandIn`) must pass with the
-  runtime against the reference.
+  runtime against the reference. One does not yet: align's unaligned exclusive load, which the translator
+  faults as Unicorn does; with the feature it is ignored as the translator's known failure, and its other
+  test, which only the stand-in cannot run, runs.
 - **The CPU side's warnings.** The back end's slow paths reach the test outside apart from the kernel's, kept
   in their own list beside `Run::warnings`, so the kernel tests' assertions about the kernel's warnings
   stay exactly as written. Each milestone lists the CPU side's warnings per test in the status file, by
@@ -1091,7 +1100,9 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
   `getppid` loop 163 to 228 ns an iteration, of which the loop's stop check 9 ns, against the reference's
   140 to 335 ns in Docker's Linux VM; fork, exit and wait 339 and 740 µs in two runs (reference 179 to 980
   µs); the back end's copy of J0's busybox sh layout 125 to 131 µs whole, and the parent's first writes to
-  its 446 written pages after it 221 to 237 µs against 11 µs with no copy (loads 42 to 65). On Linux
+  its 446 written pages after it 221 to 237 µs against 11 µs with no copy (loads 42 to 65). With the
+  records in shared chunks (J2 run 2, five alternating pairs, load 45): the same copy 71 to 95 µs against
+  110 to 151 µs before, and a memory with two written pages 29 to 37 µs against 70 to 76 µs. On Linux
   (Docker, linux/arm64) the back end's tests pass, the `pagemap` copy included, with a page `MADV_PAGEOUT`
   left swapped out copied exactly.
 - From the brief, not measured here: unkernel's `getppid` 56 ns and fork 20 µs; the benchmark set's times
