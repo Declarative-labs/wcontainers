@@ -673,6 +673,15 @@ mod tests {
             }
             assert_eq!(kind.binding(kind.slots()), None, "{kind:?}");
         }
+        // The ranges follow one another, and a counter has the number of its storage slot.
+        for pair in kinds.windows(2) {
+            assert_eq!(
+                pair[0].first_binding() + pair[0].slots(),
+                pair[1].first_binding(),
+                "{pair:?}"
+            );
+        }
+        assert_eq!(SlotKind::Counter.slots(), SlotKind::Storage.slots());
     }
 
     /// Every binding of the helper set, each a single one or a range from its base (the clamped
