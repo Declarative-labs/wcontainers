@@ -186,6 +186,11 @@ pub trait Guest: Personality {
     /// Plain computation, which the flags' liveness may look past: registers from registers only (no memory,
     /// hook, control, trap or leaving).
     fn plain(i: &Self::Instruction) -> bool;
+    /// Whether a real CPU of this architecture may give a different result from the meaning's for this
+    /// instruction: the meaning fixes what the architecture leaves open to what the reference CPU does
+    /// (undefined flags), answers by design (cpuid, the time stamp counter), or estimates. A native output may
+    /// copy an instruction through only where this is false.
+    fn may_vary(i: &Self::Instruction) -> bool;
 
     // --- calls, returns and the stack ---
     /// Where a call leaves the return address.

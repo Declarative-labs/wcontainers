@@ -734,6 +734,10 @@ impl<const F: bool> Guest for Test<F> {
         matches!(i, Op::Nop | Op::Add(..) | Op::Inc(_))
     }
 
+    fn may_vary(_i: &Op) -> bool {
+        false
+    }
+
     const RETURN_ADDRESS: ReturnAddress = ReturnAddress::Stack { bytes: 8 };
     const RED_ZONE: u64 = 128;
     const SP_ALIGNMENT_CHECKED: bool = false;

@@ -723,6 +723,12 @@ impl Guest for Arm64 {
         )
     }
 
+    /// Not yet audited instruction by instruction, so no ARM64 instruction is said to be the same on every
+    /// CPU.
+    fn may_vary(_i: &Instruction) -> bool {
+        true
+    }
+
     /// `bl` and `blr` leave the return address in x30.
     const RETURN_ADDRESS: ReturnAddress = ReturnAddress::Register;
     const RED_ZONE: u64 = 0;
