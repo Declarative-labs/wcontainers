@@ -213,7 +213,7 @@ impl Lowering<'_> {
         let patch = b.add(before, x);
         let count = stage::value(&mut b, v, stage::word::COUNT);
         let instance_first = b.mul(instance, count);
-        let n_in = b.u32(points_in);
+        let n_in = stage::value(&mut b, v, stage::word::PATCH_POINTS);
         let first_point = b.mul(x, n_in);
         let first_record = b.add(instance_first, first_point);
 

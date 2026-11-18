@@ -1,5 +1,6 @@
 // Stream output (Direct3D's stream output stage) as one workgroup: the units of work (geometry
-// invocations, or the API's primitives when no geometry shader runs) are split into 256 runs; each
+// invocations, or the API's primitives when no geometry shader runs, or the primitives a tessellation
+// stage listed) are split into 256 runs; each
 // counts its runs' whole primitives, a scan over the workgroup gives each run its first primitive in
 // the stream, and each writes its primitives' vertices into the buffers, element by element, in the
 // order the stream has them. Writing stops for every buffer at the first primitive one of them cannot
@@ -34,7 +35,9 @@ struct Values {
     // API primitives per instance, and API vertices per instance (units are API primitives).
     primitives: u32,
     count: u32,
-    pad0: u32,
+    // 1: units are the primitives listed in `list` (their index total first, then from word 4 each
+    // primitive's records); `units` is then unused.
+    listed: u32,
     pad1: u32,
     // Bytes per vertex in each buffer; 0 where no buffer is bound.
     strides: vec4<u32>,
@@ -51,6 +54,9 @@ struct Values {
 @group(1) @binding(4) var<storage, read_write> out1: array<u32>;
 @group(1) @binding(5) var<storage, read_write> out2: array<u32>;
 @group(1) @binding(6) var<storage, read_write> out3: array<u32>;
+@group(1) @binding(7) var<storage, read> list: array<u32>;
+
+const LIST_HEADER: u32 = 4u;
 
 var<workgroup> scan: array<u32, 256>;
 var<workgroup> capacity: u32;
@@ -137,8 +143,14 @@ fn walk(unit: u32, first: u32, write: bool) -> u32 {
     return primitives;
 }
 
-// The records of API primitive `unit` (primitive-major within each instance).
+// The records of API primitive `unit` (primitive-major within each instance), or of listed
+// primitive `unit`.
 fn api_primitive(unit: u32) -> vec3<u32> {
+    if so.listed != 0u {
+        let at = LIST_HEADER + unit * so.vertices;
+        let last = LIST_HEADER + list[0] - 1u;
+        return vec3<u32>(list[at], list[min(at + 1u, last)], list[min(at + 2u, last)]);
+    }
     let instance = unit / so.primitives;
     let p = unit % so.primitives;
     let first = instance * so.count;
@@ -175,9 +187,10 @@ fn main(@builtin(local_invocation_index) t: u32) {
     }
     // Each invocation takes a run of units, counts their primitives, and after the scan writes them
     // from the primitives of the runs before it.
-    let per = (so.units + 255u) / 256u;
-    let begin = min(t * per, so.units);
-    let end = min(begin + per, so.units);
+    let units = select(so.units, list[0] / so.vertices, so.listed != 0u);
+    let per = (units + 255u) / 256u;
+    let begin = min(t * per, units);
+    let end = min(begin + per, units);
     var n = 0u;
     for (var unit = begin; unit < end; unit++) {
         n += select(1u, walk(unit, 0u, false), so.geometry != 0u);

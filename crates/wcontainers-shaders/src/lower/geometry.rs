@@ -31,6 +31,8 @@ pub(crate) struct Geometry {
 struct State {
     values: Handle<naga::GlobalVariable>,
     vertices: Handle<naga::GlobalVariable>,
+    /// The listed primitives after a tessellation stage (`stage::word::LISTED`).
+    list: Handle<naga::GlobalVariable>,
     out: Handle<naga::GlobalVariable>,
     /// This invocation's number in the draw, which picks its output slots.
     invocation: Handle<naga::GlobalVariable>,
@@ -93,6 +95,23 @@ impl Lowering<'_> {
         Ok(locations)
     }
 
+    /// The layer and viewport outputs' variables, if declared: each vertex record then ends with a
+    /// slot holding them (`stage::SELECTION_SLOT`).
+    fn selection(&self) -> Result<Option<[Option<Handle<naga::GlobalVariable>>; 2]>> {
+        let mut found = [None, None];
+        for (id, io) in &self.io {
+            if self.ir.op(*id)?.code != code::DCL_OUTPUT_BUILT_IN {
+                continue;
+            }
+            match io.builtin {
+                Some(builtin::LAYER_INDEX) => found[0] = Some(io.var),
+                Some(builtin::VIEWPORT_INDEX) => found[1] = Some(io.var),
+                _ => {}
+            }
+        }
+        Ok((found != [None, None]).then_some(found))
+    }
+
     fn strips(&self) -> bool {
         self.geometry
             .as_ref()
@@ -124,6 +143,15 @@ impl Lowering<'_> {
             vertex_array,
         );
         let word_array = build::runtime_array(m, u32_ty, 4);
+        let list = build::global(
+            m,
+            "stage_list",
+            AddressSpace::Storage {
+                access: StorageAccess::LOAD,
+            },
+            Some(stage::binding(stage::INDICES_BINDING)),
+            word_array,
+        );
         let out = build::global(
             m,
             "stage_geometry",
@@ -139,6 +167,7 @@ impl Lowering<'_> {
         let state = State {
             values,
             vertices,
+            list,
             out,
             invocation,
             emitted,
@@ -147,7 +176,8 @@ impl Lowering<'_> {
         };
         let outputs = self.geometry_locations(false)?;
         let strips = self.strips();
-        let record = stage::record_words(outputs.len());
+        let selection = self.selection()?;
+        let record = stage::record_words(outputs.len() + usize::from(selection.is_some()));
 
         // emit: the outputs' current values into the next slot, and its index into the strip.
         let mut b = Builder::new("gs_emit");
@@ -192,6 +222,26 @@ impl Lowering<'_> {
         for &loc in &outputs {
             let v = self.location_vec4(&mut b, loc)?;
             slots.push(v);
+        }
+        if let Some(vars) = selection {
+            let uvec4 = build::vec4(&mut self.module, Scalar::U32);
+            let mut comps = Vec::new();
+            for var in vars {
+                comps.push(match var {
+                    Some(var) => {
+                        let p = b.global(var);
+                        let v = b.load(p);
+                        match self.module.global_variables[var].ty {
+                            ty if self.module.types[ty].inner.scalar() == Some(Scalar::U32) => v,
+                            _ => b.bitcast(v, ScalarKind::Uint),
+                        }
+                    }
+                    None => b.u32(0),
+                });
+            }
+            let zero = b.u32(0);
+            comps.extend([zero, zero]);
+            slots.push((b.compose(uvec4, comps), ScalarKind::Uint));
         }
         for (i, (v, kind)) in slots.into_iter().enumerate() {
             let v = if kind == ScalarKind::Uint {
@@ -315,7 +365,8 @@ impl Lowering<'_> {
         let inputs = self.geometry_locations(true)?;
         let in_words = stage::record_words(inputs.len()) / 4;
         let outputs = self.geometry_locations(false)?;
-        let out_words = stage::record_words(outputs.len());
+        let selected = usize::from(self.selection()?.is_some());
+        let out_words = stage::record_words(outputs.len() + selected);
 
         let uvec3 = self.vec_ty(3, Scalar::U32)?;
         let mut b = Builder::new("main");
@@ -334,6 +385,26 @@ impl Lowering<'_> {
         let past = b.binary(BinaryOperator::GreaterEqual, x, total);
         b.when(past, |b| b.ret(None));
         let prim = b.binary(BinaryOperator::Divide, x, gsi);
+        // Listed primitives: the list's first word is its index total, which only the GPU knows, so
+        // invocations past it (the dispatch covers the most there can be) run no shader and close
+        // their slots.
+        let listed = stage::value(&mut b, values, stage::word::LISTED);
+        let zero = b.u32(0);
+        let is_listed = b.binary(BinaryOperator::NotEqual, listed, zero);
+        let list_total = {
+            let l = b.global(state.list);
+            let first = b.u32(0);
+            let p = b.at(l, first);
+            let words = b.load(p);
+            let nn = b.u32(n);
+            b.binary(BinaryOperator::Divide, words, nn)
+        };
+        let unlisted = b.binary(BinaryOperator::GreaterEqual, prim, list_total);
+        let idle = b.binary(BinaryOperator::LogicalAnd, is_listed, unlisted);
+        let runs = b.expr(naga::Expression::Unary {
+            op: naga::UnaryOperator::LogicalNot,
+            expr: idle,
+        });
         let gi = b.binary(BinaryOperator::Modulo, x, gsi);
         let before = b.mul(api_instance, total);
         let invocation = b.add(before, x);
@@ -372,6 +443,12 @@ impl Lowering<'_> {
             };
             let v = b.select(is_strip, along, list);
             let r = b.add(instance_first, v);
+            let header = b.u32(stage::tess::INDEX_HEADER);
+            let at = b.add(header, list);
+            let l = b.global(state.list);
+            let p = b.at(l, at);
+            let listed_r = b.load(p);
+            let r = b.select(is_listed, listed_r, r);
             let words = b.u32(in_words);
             records.push(b.mul(r, words));
         }
@@ -456,7 +533,9 @@ impl Lowering<'_> {
         }
 
         let main = self.functions[&self.main];
-        b.call(main, Vec::new(), false);
+        b.when(runs, |b| {
+            b.call(main, Vec::new(), false);
+        });
         // Unused index slots restart. Point output is drawn without indices (its slots serve stream
         // output): unused vertices lie outside the clip volume.
         {
@@ -514,6 +593,13 @@ impl Lowering<'_> {
                 }
                 (None, Some(builtin::POSITION)) => {
                     self.reflect_value(id, false, None, 0, member, 0, Some(SystemValue::Position))
+                }
+                (None, Some(which @ (builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX))) => {
+                    let system = match which {
+                        builtin::LAYER_INDEX => SystemValue::RenderTargetArrayIndex,
+                        _ => SystemValue::ViewportArrayIndex,
+                    };
+                    self.reflect_value(id, false, None, 0, member, 0, Some(system))
                 }
                 _ => return Err(unsupported("GeometryOutput")),
             }

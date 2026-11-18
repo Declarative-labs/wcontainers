@@ -71,7 +71,8 @@ impl<B: Backend> Tessellator<B> {
         )?;
         let points_bytes = patches64 * u64::from(per_points) * 16;
         grow(backend, &mut self.points, points_bytes, usage)?;
-        let indices_bytes = patches64 * u64::from(per_indices) * 4;
+        let indices_bytes =
+            (patches64 * u64::from(per_indices) + u64::from(tess::INDEX_HEADER)) * 4;
         grow(
             backend,
             &mut self.indices,
@@ -176,7 +177,8 @@ impl<B: Backend> Tessellator<B> {
         self.points.as_ref().map(|o| &o.buffer)
     }
 
-    /// The indices: u32 point numbers, three per triangle, two per line, one per point.
+    /// The indices: the draw's index total, then from word [`tess::INDEX_HEADER`] u32 point numbers,
+    /// three per triangle, two per line, one per point.
     pub fn indices(&self) -> Option<&B::Buffer> {
         self.indices.as_ref().map(|o| &o.buffer)
     }
