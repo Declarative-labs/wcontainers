@@ -1251,20 +1251,19 @@ impl Gl {
         true
     }
 
-    /// Whether a copy reads and writes one subresource (a level's layers, or a 3D level's slices,
-    /// that both regions cover), which every GL route refuses as a feedback loop.
+    /// Whether a copy reads and writes one subresource (layers of a level that both regions cover,
+    /// or one level of a 3D texture, whose slices GL copies into as one image), which every GL
+    /// route refuses as a feedback loop.
     fn within_one_subresource(
         &self,
         src: &TextureRegion<'_, Self>,
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) -> bool {
-        let first = |r: &TextureRegion<'_, Self>| match r.texture.desc.dimension {
-            TextureDimension::D3 => r.origin.z,
-            _ => r.layer,
-        };
-        let (s, d, n) = (first(src), first(dst), extent.depth_or_layers);
-        Rc::ptr_eq(&src.texture.0, &dst.texture.0) && src.mip == dst.mip && s < d + n && d < s + n
+        let (s, d, n) = (src.layer, dst.layer, extent.depth_or_layers);
+        Rc::ptr_eq(&src.texture.0, &dst.texture.0)
+            && src.mip == dst.mip
+            && (src.texture.desc.dimension == TextureDimension::D3 || (s < d + n && d < s + n))
     }
 
     /// A copy within one subresource, through a buffer holding the source region

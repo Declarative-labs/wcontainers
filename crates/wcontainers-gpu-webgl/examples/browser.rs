@@ -171,6 +171,8 @@ suite!(
     a_copy_within_one_depth_or_stencil_subresource_moves_the_region,
     the_occlusion_counter_counts_every_sample_that_passes,
     every_vertex_format_reads_its_element,
+    a_copy_within_one_3d_or_compressed_subresource_moves_the_region,
+    an_indexed_draw_past_a_streams_end_covers_only_what_its_stream_allows,
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,
