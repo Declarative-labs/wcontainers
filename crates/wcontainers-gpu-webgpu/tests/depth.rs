@@ -49,14 +49,7 @@ fn device() -> WebGpu {
     b
 }
 
-/// common.hlsl's coloured vertices: position and colour, passed through.
-const COLORED_WGSL: &str = r#"
-struct VOut { @builtin(position) pos: vec4f, @location(0) color: vec4f }
-@vertex fn vs(@location(0) pos: vec3f, @location(1) color: vec4f) -> VOut {
-    return VOut(vec4f(pos, 1.0), color);
-}
-@fragment fn ps(v: VOut) -> @location(0) vec4f { return v.color; }
-"#;
+use draw::COLORED_WGSL;
 
 /// The rig's `quad`: two triangles from (x0, y0) to (x1, y1), depth z0 on the left edge and z1 on
 /// the right.

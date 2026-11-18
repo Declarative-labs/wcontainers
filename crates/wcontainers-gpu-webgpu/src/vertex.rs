@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use wcontainers_gpu::{DrawCall, SlowPath, VertexFormat, VertexLayoutDesc};
 
-use crate::{BufferObj, Stream, WebGpu, convert};
+use crate::{BufferObj, GROUP, Stream, WebGpu, convert, with_group};
 
 /// Makes the shadow elements: each operation reads one attribute of a source element and writes
 /// it, widened where its format is lacking, at its place in the shadow element.
@@ -34,7 +34,7 @@ fn half(v: u32, m: u32) -> u32 {
     return (((v >> m) & 0x1fu) << 10u) | ((v & ((1u << m) - 1u)) << (10u - m));
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(GROUP)
 fn main(@builtin(global_invocation_id) id: vec3u) {
     let e = id.x + id.y * p.row;
     if e >= p.count {
@@ -82,9 +82,6 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 "#;
-
-/// Threads per workgroup of the program.
-const GROUP: u64 = 64;
 
 /// Bytes of the program's parameters: eight words and 32 operations.
 const PARAMS: usize = 32 + 32 * 16;
@@ -394,7 +391,7 @@ impl WebGpu {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(CONVERT_WGSL.into()),
+                source: wgpu::ShaderSource::Wgsl(with_group(CONVERT_WGSL).into()),
             });
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
             binding,

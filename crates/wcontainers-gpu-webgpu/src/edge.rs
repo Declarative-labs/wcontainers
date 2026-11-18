@@ -4,7 +4,7 @@
 
 use wcontainers_gpu::SlowPath;
 
-use crate::{Stream, WebGpu};
+use crate::{GROUP, Stream, WebGpu, with_group};
 
 /// Copies bytes of `src` over bytes of `dst` in the words it touches, keeping the rest of each word.
 const EDGE_WGSL: &str = r#"
@@ -17,7 +17,7 @@ fn src_byte(a: u32) -> u32 {
     return (src[a >> 2u] >> ((a & 3u) * 8u)) & 0xffu;
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(GROUP)
 fn main(@builtin(global_invocation_id) id: vec3u) {
     if id.x >= p.words {
         return;
@@ -34,9 +34,6 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     dst[w] = v;
 }
 "#;
-
-/// Threads per workgroup of the program.
-const GROUP: u64 = 64;
 
 /// Where and how much a native buffer copy may move.
 const ALIGN: u64 = wgpu::COPY_BUFFER_ALIGNMENT;
@@ -215,7 +212,7 @@ impl WebGpu {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(EDGE_WGSL.into()),
+                source: wgpu::ShaderSource::Wgsl(with_group(EDGE_WGSL).into()),
             });
         let storage = |binding, read_only| wgpu::BindGroupLayoutEntry {
             binding,

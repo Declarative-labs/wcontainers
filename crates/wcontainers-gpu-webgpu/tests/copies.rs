@@ -42,8 +42,7 @@ fn device() -> WebGpu {
         .0
 }
 
-const W: u32 = 8;
-const H: u32 = 4;
+use depth16::{H, W};
 
 fn region(texture: &Tex, x: u32, y: u32) -> TextureRegion<'_, WebGpu> {
     TextureRegion {

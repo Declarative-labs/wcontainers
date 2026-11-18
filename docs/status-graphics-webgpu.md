@@ -18,8 +18,12 @@ group copied into depth, prepared strips built for both index formats) and answe
 newest merges ask. G2b passed its fourth independent check. Run 19 is G2c run 1 (below): the
 check's open findings, the new requests (three-channel 32-bit textures), and where real programs'
 frame time goes. Run 20 is G2c run 2 (below): the interface's ruling on depth and stencil
-copies within one subresource built, subgroups, and the stencil view question answered. Every
-request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
+copies within one subresource built, subgroups, and the stencil view question answered. Run 21
+is G2c run 3 (below): the second G2c check's findings (the primitive index, the frame breakdown
+with counters, bytes and the machine's load, Direct3D 12 texture reads at unaligned offsets,
+three-channel copies at any width, Chrome's launch, subgroups in the browser, licences) and the
+first part of the literal sweep. Every request found is built and tested or refused by name
+(list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
 graphics branch), and where each stands:
@@ -149,11 +153,23 @@ graphics branch), and where each stands:
   wave operations): built (run 20). The device asks for wgpu's `SUBGROUP` where the adapter has
   it and declares `SUBGROUPS` then. Where it is: wgpu's Vulkan on the RTX 3080; wgpu's Direct3D
   12 only with DXC (shader model 6), so not with the FXC the fronts' instance uses; not in
-  Chrome, because wgpu 30's browser back end does not map WebGPU's `subgroups` feature (its
-  feature table has 16 entries, none of them subgroups), so the back end declares it absent
-  there. tests/subgroups.rs: declared exactly where the adapter has it; a fragment program using
-  `subgroupAll`, `subgroupAdd` and `subgroupBallot` draws every pixel as they define; a device
-  made without the feature declares none and refuses the program by name.
+  Chrome until run 21, because wgpu 30's browser back end did not map WebGPU's `subgroups` feature;
+  the vendored wgpu now maps it (run 21), so in Chrome it is declared where the adapter offers it.
+  tests/features.rs (was tests/subgroups.rs): declared exactly where the adapter has it; a
+  fragment program using `subgroupAll`, `subgroupAdd` and `subgroupBallot` draws every pixel as
+  they define; a device made without the feature declares none and refuses the program by name;
+  web/check runs the same draw in Chrome.
+- The primitive index (shaders track, run 31: "ask wgpu for `PRIMITIVE_INDEX` where the adapter
+  has it and declare `Features::PRIMITIVE_INDEX`", for the rig's geometry scene's ps_id; missed by
+  run 20, found by the second G2c check): built (run 21). The device asks for wgpu's
+  `PRIMITIVE_INDEX` where the adapter has it and declares `PRIMITIVE_INDEX` then. In the browser
+  the vendored wgpu now passes WebGPU's `primitive-index` (and `subgroups`) on: its feature table
+  had neither (third_party/wgpu, Departures). examples/scenes/features.rs, run natively by
+  tests/features.rs (declared exactly where the adapter has it; four triangles side by side, each
+  pixel reading its triangle's number; a device made without it declares none and refuses the
+  program by name; failed before: declared false where the adapter had it) and in Chrome by
+  web/check (`program_features`: fails if Chrome's adapter offers the feature and the device does
+  not declare it).
 - Stencil views reading 0 on wgpu's Direct3D 12 path (Direct3D 11 front, G4 run 19, Wine's
   test_depth_stencil_sampling): not reproduced in this back end. wgpu 30's Direct3D 12 stencil
   views use `X24_TYPELESS_G8_UINT` with a component mapping that moves the stencil (green) into
@@ -918,8 +934,10 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   1 ns, `TIMESTAMPS` is declared absent. On the RTX 3080 the period is 1 ns on both of wgpu's APIs
   with or without the flag (tests/timestamps.rs prints it), so there it changes nothing.
 - `SUBGROUPS` is declared where wgpu offers `SUBGROUP`: on the RTX 3080 through wgpu's Vulkan,
-  not through its Direct3D 12 with FXC (the fronts' instance; DXC would offer it), and not in
-  the browser with wgpu 30. A program using subgroups on a device without them is refused at
+  not through its Direct3D 12 with FXC (the fronts' instance; DXC would offer it), and in the
+  browser where the adapter offers `subgroups`. `PRIMITIVE_INDEX` likewise where wgpu offers
+  `PRIMITIVE_INDEX` (natively on both of wgpu's APIs on the RTX 3080; in the browser where the
+  adapter offers `primitive-index`). A program using subgroups on a device without them is refused at
   `create_shader` with `GpuError::Invalid`, so fronts check the capability first.
 - Make it from a wgpu adapter: ask for the device with `WebGpu::device_descriptor(&adapter)` (the
   features the back end uses where present, and the adapter's highest limits), then
@@ -965,7 +983,10 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   clock's rate (tests/timestamps.rs).
 - `WebGpu::counters()` says how many pipelines, bind groups, layouts, buffer and texture renames
   (and how many took pooled storage, how much pooled storage was destroyed) and staged writes were
-  made; `slow_paths()` the slow paths taken.
+  made, and how many bytes were written into buffers and textures; `slow_paths()` the slow paths
+  taken. At each power of two frames presented the back end prints both on standard error as
+  one line (`FRAME_REPORT`, "webgpu: frames=<n> name=count ..."), so any program's log gives a
+  frame's counts between two reports (examples/frames.rs `--log` reads them).
 - Anything the back end does not carry out yet (list below) marks the device lost with
   `LossReason::Error` and prints `webgpu: <reason>` on standard error, so `status()` shows it.
 
@@ -975,7 +996,7 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 `cargo check -j 2`.
 - Tests on the RTX 3080 (tests/bindings.rs, blocks.rs, converted.rs, copies.rs, depth.rs,
   direct3d.rs (Windows only), fitted.rs, prepare.rs, pulled.rs, queries.rs, raster.rs, scenes.rs, surface.rs
-  (Windows only), subgroups.rs, timestamps.rs, vertices.rs, writes.rs and suite.rs, the shared suite; they need a
+  (Windows only), features.rs, timestamps.rs, vertices.rs, writes.rs and suite.rs, the shared suite; they need a
   GPU, and the suite's present test and surface.rs a desktop, so
   `--desktop`; `WEBGPU_API=dx12|vulkan|metal` picks wgpu's API, default the platform's, Vulkan on
   the desktop), both APIs in one job:
@@ -1036,9 +1057,14 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   (examples/scenes/vertices.rs, seed 188, 64 vertices each) and texture renaming
   (examples/scenes/renames.rs), query sets past 4096 and the query ring
   (examples/scenes/queries.rs), BGRA vertices (vertices.rs), prepared strips (prepare.rs) and
-  copies between `depth16unorm` and its group (depth16.rs) in Chrome, prints the instance data routes' timings in Chrome
+  copies between `depth16unorm` and its group (depth16.rs), texture reads into buffers keeping
+  the bytes between rows (gaps.rs), three-channel copies at the widest texture (converted.rs),
+  and subgroups and the primitive index where Chrome's adapter offers them (features.rs) in
+  Chrome, prints the instance data routes' timings in Chrome
   (examples/scenes/pulled.rs, failing if their pictures differ), then runs the shared suite
-  in Chrome, one page per test (suite-chrome.txt). Prints
+  in Chrome, one page per test (suite-chrome.txt). Where Chrome's first launch gets no WebGPU
+  adapter at all (seen about one launch in four), draw.mjs exits with check.cmd's `NO_ADAPTER`
+  and is launched again, up to `LAUNCHES` (3) times. Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
   pictures and the suite's results are copied there. About 7 minutes cold, the job itself 15 s.
 - Where real programs' frame time goes: `crates/wcontainers-gpu-webgpu/frames/run [--real]
@@ -1046,7 +1072,10 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   real Direct3D for comparison). It needs samply 0.13.1 in C:\wc\tools and an SSH session that
   may profile the system (the queue's desktop session may not: wpr "Failed to enable the policy").
   Each program is three GPU jobs and two traces of the whole machine, about 1 to 10 minutes;
-  results print at the end.
+  results print at the end: per frame, the CPU by part and place, the rest of the machine's load
+  during each run (other processes' samples in the same trace, as a share of its 16 threads),
+  and the back end's counts a frame from the long run's log (`FRAME_REPORT` lines, frames 128 to
+  256 of a 360-frame run).
 - Timestamps in Chrome as users have it, alone: after web/check has built the page, a GPU job
   `node crates\wcontainers-gpu-webgpu\web\plain.mjs C:\wc\out\phase-2-graphics-webgpu-webgpu\pkg`
   (web/check runs it too).
@@ -1563,6 +1592,8 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   the window a surface is made from.
 - Immediates in the browser: `immediate_bytes` is 0 there (wgpu 30's browser back end has no
   `setImmediates`), so fronts spill them.
+- Copies of three-channel textures with buffers or between them are made in runs of columns the
+  device's widest 2D texture holds three times over (run 21); nothing is lost by width.
 - A converted vertex stream reaching past the largest storage binding (128 MiB by default) or
   more than 2^22 workgroups.
 - Drawing into the 16-bit packed formats: declared without `RENDER` (8-bit storage would keep
@@ -1709,6 +1740,22 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   into a texture of its own and not shown, with no error: the interface has no word for an
   unshown frame, and DXGI answers it with a success code (`DXGI_STATUS_OCCLUDED`).
 
+- Texture reads into a buffer at an offset off Direct3D 12's placement alignment (512) with gaps
+  between rows or layers go, on wgpu's Direct3D 12, through a buffer at offset 0 and one buffer
+  copy per row (`RowsRepacked`, run 21): wgpu-hal's Direct3D 12 copies such reads through a buffer
+  of its own and then copies that whole into place, gaps included, where the driver lacks
+  unrestricted pitches (dx12/command.rs `copy_texture_to_buffer` and `buf_tex_intermediate`; the
+  RTX 3080 on Windows 10 lacks them), so every byte between the rows was overwritten. Not
+  reported upstream yet. Vulkan and browsers copy directly. `RowsRepacked`'s name says "a pitch
+  the API does not take"; here it is a placement, the same route.
+- The vendored wgpu has a third change (run 21): its browser back end's feature table maps
+  WebGPU's `subgroups` and `primitive-index`, which wgpu 30 left out, so a browser device gets
+  them where the adapter offers them.
+- The back end prints a line of its counters at each power of two frames presented
+  (`FRAME_REPORT`). The plan asks for counters and warnings; a program's frame costs can only be
+  read from a log when the rig ends programs with `TerminateProcess` (no report at the end could
+  be printed), and powers of two keep it to a few lines a run.
+
 ## Interface changes
 
 - 1b06735 `interface: named the slow path of a resolve averaged by a draw loading every sample`:
@@ -1764,7 +1811,9 @@ js-sys 0.3.107 MIT OR Apache-2.0 (wasm-bindgen-futures is no longer used); polls
 bytemuck 1.25.2 Zlib OR Apache-2.0 OR MIT; fastrand 2.5.0 Apache-2.0 OR MIT (the random test). Tool: wasm-bindgen-cli 0.2.130 MIT OR Apache-2.0.
 
 New in run 19, test-only: serde_json 1.0.154 MIT OR Apache-2.0 (its Cargo.toml; already in the
-lock file), for examples/frames.rs. Tool on the desktop: samply 0.13.1 MIT OR Apache-2.0 (its
+lock file), and pdb 0.8.0 MIT OR Apache-2.0 with the crates it brings, scroll 0.11.0 MIT,
+fallible-iterator 0.2.0 MIT/Apache-2.0 and uuid 1.29.3 Apache-2.0 OR MIT (their Cargo.toml files,
+checked in run 21), for examples/frames.rs. Tool on the desktop: samply 0.13.1 MIT OR Apache-2.0 (its
 Cargo.toml at the tag), testing only.
 
 New in run 8, test-only: libtest-mimic 0.8.2 MIT/Apache-2.0 (its Cargo.toml); on macOS only,

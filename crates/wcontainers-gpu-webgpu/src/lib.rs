@@ -493,6 +493,14 @@ pub struct Fence {
     index: wgpu::SubmissionIndex,
 }
 
+/// Threads per workgroup of the back end's compute programs (`GROUP` in their text).
+const GROUP: u64 = 64;
+
+/// A compute program's text with its workgroup size, `GROUP`, defined ahead of it.
+fn with_group(program: &str) -> String {
+    format!("const GROUP: u32 = {GROUP}u;\n{program}")
+}
+
 /// WebGPU's largest sampler anisotropy: `maxAnisotropy` is clamped to it.
 const MAX_ANISOTROPY: u16 = 16;
 
