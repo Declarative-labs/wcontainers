@@ -21,8 +21,10 @@ run 18 built typed buffers (`texel_buffers`, both routes, DXBC) and storage text
 buffers (`texels_through_buffer`, DXBC) with tests against real Direct3D 11; run 19 built the
 built-in program clearing storage texture views (5.1) with a test against WARP and the GPU's
 Direct3D 11, gave the corpus test view formats, and found the cause of the one WebAssembly
-difference; what remains is under Next. Run 19 merged origin/phase-2-graphics, -webgpu, -webgl and
--direct3d-12 (no conflicts).
+difference; run 20 ported Direct3D's tessellator to a compute program (tested against the RTX
+3080's tessellator) and converted hull shaders (to compute) and domain shaders (to vertex
+programs), not yet drawn through `Stages`; what remains is under Next. Run 20 merged
+origin/phase-2-graphics-webgl, -direct3d-12 and -rig (no conflicts; the others had nothing new).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
