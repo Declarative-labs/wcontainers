@@ -59,6 +59,11 @@ The K6a check's findings, each tested against the reference:
   umount2_01).
 - sigpick (threads `process_signal_takers_match_reference`): the K6a fix holds; 6 of 6 runs
   alone passed (load about 15).
+- Layer 1, fresh seeds with every fix in (kernel at e90a141, 20000 sequences each): 6262603
+  (311.1 s, load 20.6 at the start), 6262604 and 6262605 (325.2 s each, side by side, load 14.2)
+  passed. Before the last fix 6262601 and 6262602 passed 20000 each (318 s, load 22) and
+  6262603 found the last one: a fixed mapping a socket refuses leaves its range unmapped, as
+  Linux's `mmap_region` has already taken the old mappings away (guest/sockedges.c).
 
 The larger runtimes (layer 2, src/runtimes.rs, tests python.rs, node.rs, go.rs, java.rs):
 - Each image is pinned by digest and used unmodified: python:3.13-alpine, node:22-alpine,
@@ -2707,6 +2712,7 @@ Left open from K3: poll and select waiters share one channel; a host wall clock 
 not seen as a setting; futex queues allocate when a futex first gets waiters; the one-million-
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
-5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
+6262601 to 6262605 (K6b), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
