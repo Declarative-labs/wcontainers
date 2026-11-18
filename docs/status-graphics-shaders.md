@@ -23,8 +23,10 @@ built-in program clearing storage texture views (5.1) with a test against WARP a
 Direct3D 11, gave the corpus test view formats, and found the cause of the one WebAssembly
 difference; run 20 ported Direct3D's tessellator to a compute program (tested against the RTX
 3080's tessellator) and converted hull shaders (to compute) and domain shaders (to vertex
-programs), not yet drawn through `Stages`; what remains is under Next. Run 20 merged
-origin/phase-2-graphics-webgl, -direct3d-12 and -rig (no conflicts; the others had nothing new).
+programs), not yet drawn through `Stages`; run 21 (the first run of the G6 milestone's
+"run 1" series) converted DXIL's typed buffers and storage images without a format, which stopped
+Godot's Direct3D 12 compute shaders; what remains is under Next. Run 21 merged
+origin/phase-2-graphics-webgpu, -webgl, -direct3d-11, -direct3d-12 and -rig (no conflicts).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -751,7 +753,44 @@ Run 20 (the tessellator):
   no storage buffers or compute, so none is written for WebGL 2 (which has no tessellation).
 - Not yet drawn: hull and domain shaders run through `Stages` (Next).
 
+Run 21 (DXIL typed buffers and storage images, for Godot's Direct3D 12 shaders):
+- `src/dxil/images.rs`: before naga reads dxil-spirv's SPIR-V, each image type of a typed buffer
+  (`DimBuffer`) becomes a 1D image and each storage image without a format gets a 32-bit format of
+  its texel's kind (the words are edited in place; the variables' space, register and kind are
+  noted). After reading, numbering and the draw bases: storage images take the bound view's format
+  from `storage_formats` (refusals as DXBC's: `StorageFormat`, `StorageFormatAbsent`,
+  `StorageFormatKind`, `ReadWriteStorageFormat`), their access from what the program does (read,
+  write, or both); typed buffers take the DXBC route's forms (`texel_buffers`: `Storage` or
+  `Texture`, `Native` refused `TypedBuffer`), each load, size query and store becoming a call of
+  `variant::texel`'s functions (signed coordinates bitcast, narrower values padded), any other use
+  refused `TypedBufferUse`. The new functions are put before the module's own (`functions_first`,
+  shared with the float to integer pass; `place_calls` likewise).
+- naga's SPIR-V reader (carried, `third_party/naga`): takes the `NonPrivateTexel` image operand and
+  the `NonPrivatePointer` memory operand (every storage access of the IR is non-private), takes
+  `MakePointerAvailable`/`MakePointerVisible` with their scope only on workgroup memory (which
+  every target keeps coherent within its workgroup; dxil-spirv puts them on every groupshared
+  access), refuses them elsewhere (`UnsupportedMemoryAccess`) and refuses image write operands
+  other than hints and non-private (`UnsupportedImageWriteOperand`; before, all were dropped with
+  a warning, so a coherent write lost its coherence silently). `OpImageQuerySize` on an array now
+  gives the layer count as its last component (it gave the size alone, and `GetDimensions` of a
+  2D array read past it).
+- Corpora (laptop, counts below): games DXIL 47 more convert (WGSL; compute, so no GLSL ES), the
+  rig's DXIL 2 more. Still refused, all named: atomics on images and typed buffers (naga's reader
+  has no `OpImageTexelPointer`, "storage class %11": 5 games, 4 own, 1 rig), mixed view kinds in
+  the corpus test (`TypedBufferFormatKind` 5 games), `RegisterSpace` 10, and the rest as before.
+- Tests: `storage_textures_match_direct3d` (compute_draw) and `typed_buffers_draw_as_direct3d_does`
+  (variant_draw) now also convert dxc's DXIL of the same HLSL and compare it with real Direct3D
+  11's result for fxc's DXBC (results under Measurements).
+
 Next (in order):
+- Godot on Direct3D 12 (G5's real program) after run 21: its compute shaders' storage images and
+  typed buffers convert now (their atomics do not: `OpImageTexelPointer`, below); its 8 graphics
+  shaders stop at `BindingsBeyondLimit`, Direct3D 11's numbering of registers past a kind's range.
+  That is root signature numbering (6.4: sets by visibility, ranges in root signature order,
+  `VariantKey::layout`, `convert`'s `root_signature`), which G5's binding then follows; not
+  started. Then DXIL atomics on images and typed buffers: naga's reader needs
+  `OpImageTexelPointer` into the same texel functions (typed buffers) and `texels_through_buffer`
+  (images); naga's IR has no image atomic with a result.
 - Tessellation, the rest: `Stages` with hull and domain shaders (a constructor taking them, a patch
   list topology, the hull dispatch into a patches buffer sized from `StageExtras::Hull`'s location
   counts, the tessellator, and a `FinalDraw` that is an indexed indirect draw of the tessellator's
@@ -777,8 +816,7 @@ Next (in order):
   buffer at offsets from the helper constants"; separate guest buffers become one GPU buffer only if
   the front keeps every storage-capable buffer in one arena (or copies), which is the fronts' memory
   design, and the binding the packed buffer takes is not named. To settle with the interface track.
-- DXIL storage views and typed buffers (naga's SPIR-V reader:
-  image buffers, images without a format), then the through-buffer and typed buffer routes for DXIL.
+- DXIL storage views through a buffer (`texels_through_buffer`) and atomics (above).
 - Comparisons in the program (shadow maps with a border colour, very common: WebGPU has no border
   colour): `SamplerState` needs the comparison function (an interface change: a word for it), then
   the library compares each tap. Cube filtering in the program (seamless edges). Then the rest of
@@ -982,6 +1020,19 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 21, 2026-11-17, counts only (desktop shared with the other tracks through the queue; laptop
+load 1 to 4), logs in scratch `graphics-shaders/run21`:
+- `storage_textures_match_direct3d`, seeds 1 to 4 (draw2.log): fxc's DXBC and dxc's DXIL of
+  `cs_images` through the WebGPU back end, 32 textures, every one equal word for word to real
+  Direct3D 11's on the RTX 3080.
+- `typed_buffers_draw_as_direct3d_does`, seeds 1 to 8 (draw2.log): 48 comparisons (DXBC and DXIL,
+  each through storage on WebGPU and a texture on WebGPU and WebGL 2), all equal texel for texel.
+- Corpora (laptop, corpus3.log, suite1.log): games DXIL 361: 288 ok, 47 ok as WGSL only
+  (compute), 26 named refusals; own DXIL 44, rig DXIL 72 (2 more convert than run 20). The whole
+  suite passed on the laptop (corpus 9 tests, variants 17, cache 6, the rest).
+- Chrome 157 (chrome1.log, one GPU job): every written WGSL compiles (games DXIL 336, own DXIL 26,
+  rig DXIL 51); GLSL ES fails only where it did (multisampled samplers 2, `textureGather` 3).
 
 Run 20, 2026-11-17, counts only (desktop shared with the other tracks; laptop load 2 to 6):
 - `tessellator_matches_direct3d` (`run20/tess5.log` in scratch `graphics-shaders`), seeds 1 to 16,
@@ -1612,6 +1663,8 @@ were already there.
 
 ## Dependencies and licences
 
+- Run 21: `spirv` 0.4.0 (Apache-2.0; SPIR-V's enums, already in the tree under naga), used to read
+  and edit dxil-spirv's SPIR-V before naga reads it.
 - Run 20: `src/stage/tessellator.wgsl` is a port (to WGSL) of Microsoft's reference tessellator,
   MIT ("Copyright (c) Microsoft Corporation", the licence text at the head of Mesa's
   src/gallium/auxiliary/tessellator/tessellator.cpp, read 2026-11-17); the program's header names it.
@@ -1732,7 +1785,7 @@ were already there.
 - Inside a patch the GPU's tessellator gives the primitives in another order than the reference, and
   starts about two thirds of its triangles at another vertex (winding kept); ours follow the
   reference. A domain shader's flat outputs (taken from a triangle's first vertex) can then differ.
-- Typed buffers: DXIL's are refused by naga's SPIR-V reader; geometry shaders' are refused
+- Typed buffers: DXIL's atomics are refused by naga's SPIR-V reader; geometry shaders' are refused
   (`TypedBufferInGeometry`); through a texture, a view reaches at most 2048 times the back end's
   largest texture height elements (32M on ANGLE's 16384), short of Direct3D 10's 2^27, which the
   front must report.
