@@ -65,6 +65,16 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   file.
 - The Linux check's command was not in its log (minor): scratch j2/linux/check.sh SOURCE LOG runs it and
   writes the docker command into each log's header ("How to run").
+- Found in this run, not by the check: a save's copy could hang for ever. The first bounded bar of run 2
+  (scratch j2/run2-bounded-hung.log, 7679fe4b) stopped in procsignals' `injected_signals_change_nothing`:
+  the deepest copy waited on a mutex while dropping the back end it was brought back from (`*cpu =
+  cpu.restored()` in the driver), inside rayon's `ThreadPool::drop` waking threads that are only in the
+  parent; a parent thread held that lock at the fork (stacks: j2run2/sample-*.txt). The compiler now drops
+  its pool only in the process that made it, and leaves it in a copy (a7c310e9). New unit test
+  `a_compiler_copied_by_fork_is_dropped_there` (400 forks while the pool's threads wake): before the fix it
+  hung and failed at its 20 s limit (j2run2/drop-before-fix.log); after it, four runs pass in about 2.4 s
+  each (drop-after-fix.log). The full and none bars that had passed at 7679fe4b are kept in
+  j2run2/superseded/; the bars were run again at the fix (below).
 
 
 ## J2 (run 1, 2026-11-18)
