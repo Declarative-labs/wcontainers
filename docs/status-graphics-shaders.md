@@ -1220,8 +1220,12 @@ Next (in order):
   tessellation files, Direct3D 11's test_quad_tessellation), patches of more control points
   (hull_shader_control_point_phase: drop the front's own check), and layered geometry through
   `Stages::selects` with a run per layer and viewport (layered_rendering, test_layered_rendering,
-  test_multiple_viewports, the rig's geometry scene's gs_layers). The DXIL pixel shader's layer
-  (naga's reader has no layer built-in) is still open.
+  test_multiple_viewports, the rig's geometry scene's gs_layers). Caution: such geometry shaders
+  converted to `Unsupported("RenderTargetArrayIndex")` before run 30 and convert now, and their
+  pass-through declares a helper block at set 3 binding 0; a front that does not check
+  `stages.selects()` and bind it per run fails at the final draw instead of refusing the shader.
+  Until a front draws the runs, it should refuse by name where `selects()` is true. The DXIL pixel
+  shader's layer (naga's reader has no layer built-in) is still open.
 - The fronts' routes (theirs, now possible): Direct3D 11's six Wine tests and atg-simplebezierpc,
   Direct3D 12's 13 tessellation files and vertex_id. Stream output from a vertex shader without a
   position has no drawn test here yet (the fronts' Wine tests will be the first).
