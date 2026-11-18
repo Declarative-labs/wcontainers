@@ -42,13 +42,16 @@ fn back_end(_seed: u64) -> Back {
     crate::standin::StandIn::new()
 }
 
-/// One compiler for the test process, so a second container finds the first one's translations.
+/// One compiler for the test process, so a second container finds the first one's translations, with
+/// its cache's directory under the target directory, so every test binary of a build shares them.
 #[cfg(feature = "runtime")]
 fn back_end(seed: u64) -> Back {
     use wcontainers_wasmtime::{Compiler, CpuSide, Optimise};
     static COMPILER: std::sync::OnceLock<std::sync::Arc<Compiler<wcontainers_arm64::Arm64>>> =
         std::sync::OnceLock::new();
-    let compiler = COMPILER.get_or_init(Compiler::new).clone();
+    let compiler = COMPILER
+        .get_or_init(|| Compiler::new(Some(crate::backend::out().join("translations"))))
+        .clone();
     CpuSide::new(compiler, look_ahead(seed), Optimise::Speed, ())
 }
 
@@ -94,24 +97,43 @@ fn report(cpu: &Back, container: &Container<'_>, took: Duration) {
     );
     let translated = cpu.translated();
     let at_run_time = translated.iter().filter(|t| t.at_run_time).count();
-    let made: Vec<_> = translated.iter().filter_map(|t| t.made).collect();
+    use wcontainers_wasmtime::Origin;
+    let made: Vec<(u64, u64)> = translated
+        .iter()
+        .filter_map(|t| match t.origin {
+            Origin::Made {
+                translating,
+                compiling,
+            } => Some((translating, compiling)),
+            _ => None,
+        })
+        .collect();
     let (translating, compiling) = made
         .iter()
         .fold((0, 0), |(t, c), (more_t, more_c)| (t + more_t, c + more_c));
+    let disk: Vec<u64> = translated
+        .iter()
+        .filter_map(|t| match t.origin {
+            Origin::Disk(nanoseconds) => Some(nanoseconds),
+            _ => None,
+        })
+        .collect();
     eprintln!(
-        "cpu side: {} translations ({} at run time), {} made ({:.1} ms translating, {:.1} ms compiling), {} from the cache; run {:.1} ms",
+        "cpu side: {} translations ({} at run time), {} made ({:.1} ms translating, {:.1} ms compiling), {} from disk ({:.1} ms), {} from memory; run {:.1} ms",
         translated.len(),
         at_run_time,
         made.len(),
         translating as f64 / 1e6,
         compiling as f64 / 1e6,
-        translated.len() - made.len(),
+        disk.len(),
+        disk.iter().sum::<u64>() as f64 / 1e6,
+        translated.len() - made.len() - disk.len(),
         took.as_secs_f64() * 1e3
     );
     for t in translated.iter().filter(|t| !t.at_run_time) {
         eprintln!(
-            "cpu side: range {:#x}+{:#x} at {:?}: {} starts {:?}, {} pieces, made {:?}",
-            t.start, t.length, t.look_ahead, t.starts, t.sources, t.pieces, t.made
+            "cpu side: range {:#x}+{:#x} at {:?}: {} starts {:?}, {} pieces, {:?}",
+            t.start, t.length, t.look_ahead, t.starts, t.sources, t.pieces, t.origin
         );
     }
 }
