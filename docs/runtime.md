@@ -585,10 +585,13 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
     read before it reads the clock (section 4), so a guest that reads the counter in a loop sees time move
     within one turn; the turn's own count is not reset by it, so the turn still ends at its limit (tested by
     crates/wcontainers-wasmtime/tests/turns.rs). Counting at every check costs a hook call per check; it is for tests, never for speed.
-  - *Free*: nothing is counted; the turn ends when the outside raises the running thread's flag. The back
-    end gives the outside a `Send` handle that raises whichever thread is running (an atomic store to the
-    state memory, as runner.rs:542-551). The shipped outside arms one timer thread with it at the slice's
-    deadline on the host's monotonic clock; with no slice no timer is armed. Costs nothing between checks.
+  - *Free* (`Turn::Free`): nothing is counted; the turn ends when the outside raises the running thread's
+    flag. The back end gives the outside a `StopFlag` (runtime crate; `Send`, cloned) that raises whichever
+    thread is running (an atomic store to its flag word in the state memory, as runner.rs:542-551), or the
+    next to run when none runs; the back end enters it at `run` and leaves it after. The stop hook then hands
+    the kernel `Exit::Stop` with no progress. The shipped outside arms one timer thread with it at the
+    slice's deadline on the host's monotonic clock; with no slice no timer is armed. Costs nothing between
+    checks.
   - The two kinds exist only because counting at every check costs a hook call per check. Once the
     translator emits the count with its limit word, they are one mechanism: every turn counts at full speed,
     a free turn is a counted turn with no limit, and raising the flag is storing a limit of 0. `Turn` then
@@ -778,80 +781,107 @@ methods as exports, `Cpu` and `Host` as imports) is asked of the kernel track.
   it is made in J1 and J2 on this branch as its own commits and named in the status file, because the kernel
   track also works in that crate.
 
-**User surface (the owner's rulings of 2026-11-17).** The library is the product; a command line program is
-a thin demonstration that only calls the library, built after the library surface works (J3, last). Names
-approved by the owner: the crates `wcontainers-runtime` and `wcontainers-wasmtime`, the types `Runtime`,
+**User surface (the owner's rulings of 2026-11-17), as built in J3.** The library is the product; the
+command line program is a thin demonstration that only calls the library (J3, last). Names approved by
+the owner: the crates `wcontainers-runtime` and `wcontainers-wasmtime`, the types `Runtime`,
 `RuntimeSettings` and `Image`. `ContainerSettings` is withdrawn: it hand-rolled what the Open Container
-Initiative (OCI) standardises and mixed what to run with how it runs. The surface takes three separate
-things, so that a change to how we run can change speed and never behaviour:
+Initiative (OCI) standardises and mixed what to run with how it runs. The surface takes what to run, the
+root's files, how we run and what machine the container sees as separate arguments, and an outside:
 
 ```rust
-let runtime = Runtime::<CpuSide<Arm64>>::new(RuntimeSettings {
-    cache: Some(path),     // where compiled translations are kept between runs; None keeps them in memory
-})?;
-// What to run: the OCI runtime configuration (`config.json`), as the oci-spec crate's type.
-let spec: oci_spec::runtime::Spec = /* read from a bundle, or made from an image, below */;
+let runtime = Runtime::<CpuSide<Arm64>>::new(&RuntimeSettings { cache: Some(path) });  // None: memory only
+let image = Image::oci(&layout, CpuSide::<Arm64>::ARCHITECTURE)?;  // or Image::tar(&file)
+let spec: oci_spec::runtime::Spec = image.spec()?;   // the image's conversion; or base_spec(), or config.json
 let mut container = runtime.container(
     &spec,
-    Image::Tar(path),      // the root's files: a `docker export` or layer tar; `spec.root.path` names it in a bundle
-    &Tuning { look_ahead: LookAhead::Full, optimise: Optimise::Speed },   // how we run it (name suggested)
-    &Machine { address_space: 1 << 48, memory: 4 << 30, arm64: () },     // what machine it sees (name suggested)
-    System::new(output),   // the outside: the shipped one, or the user's own `Outside`
-)?;                        // fails naming the first field it cannot honour
-let status = container.run()?;    // to the end; or `container.step()` from the user's own event loop
+    &image,
+    &Tuning { look_ahead: LookAhead::Full, optimise: Optimise::Speed },   // how we run it (suggested name)
+    &Machine { offer: () },                                              // what machine it sees (suggested)
+    System::new(Box::new(stdout()), Box::new(stderr())),                 // the shipped outside, or the user's
+)?;                       // Error::Refused names the first field it cannot honour
+let ending = container.run()?;   // to the end; or container.step() and container.idle() from the user's loop
 ```
 
-- **What to run** is `oci_spec::runtime::Spec` (the `oci-spec` crate, Apache-2.0; the brief names 0.10.0 of
-  2026-10-08, to be confirmed when it is added at J3). No type of ours repeats any of it.
-- **An OCI image** becomes that configuration by the image specification's own conversion
-  (image-spec `conversion.md`: Entrypoint and Cmd to `process.args`, Env to `process.env`, WorkingDir to
-  `process.cwd`, User to `process.user`, and the rest as that document says), using `oci-spec`'s image
-  types, and its layers are unpacked in order with whiteouts by established crates (`tar`, and `flate2` or
-  `zstd` for compressed layers, chosen when added). A plain tar of files stays the simple case of a root.
-  Whether images are read in the OCI image format as well as a plain tar is still open with the owner;
-  until he rules, J3 builds the plain tar and the conversion's mapping is written here so that adding the
-  format is only reading it.
-- **How we run it** (suggested name `Tuning`): the translator's look-ahead and speed-or-size setting,
-  and nothing else. It is part of every cache key and changes no behaviour.
-- **What machine the container appears to run on** (suggested name `Machine`), separate because the guest
-  can see it and it must be the same wherever the container runs: the container's address-space size and
-  the memory size it is told (section 8), and the CPU feature claim, typed per guest architecture through
-  the guest interface's `Guest::Offer`, one field for each architecture the build supports (`arm64:
-  <Arm64 as Guest>::Offer`, which is `()` today; x86-64's field, holding whether AVX is claimed, is added
-  with that guest). The architecture itself comes from the image.
-- **Every field of the configuration is honoured or refused by name.** A field we cannot honour makes
-  `container` fail with an error naming it; nothing is silently ignored. Honoured from J3: `ociVersion`
-  (1.x), `process.args`, `process.env`, `process.cwd`, `hostname`, `root.path`, `annotations` (data, no
-  behaviour), `linux.namespaces` entries without a `path` (every container has its own of each kind by
-  construction), and `process.user`, `process.capabilities`, `process.rlimits`, `process.noNewPrivileges`,
-  `process.user.umask`, `linux.sysctl` (the kernel's own), the default `mounts` (proc, tmpfs, devpts, mqueue,
-  sysfs) and `linux.seccomp` as far as the kernel's `Start` takes them, which J3 settles with the kernel
-  track (today `Start` takes the program, arguments, environment, working directory, host name, groups and
-  the backend, kernel container.rs:52-64). Refused, and what supporting each would take:
+- **What to run** is `oci_spec::runtime::Spec` (oci-spec 0.10.0, Apache-2.0). No type of ours repeats any of
+  it. `base_spec()` is the configuration of everything the kernel gives a container (its mounts, its
+  namespaces, Docker's capabilities, root, `PATH`), with no program: a plain tar's configuration starts from
+  it, and an image's is converted into it.
+- **An OCI image** (`Image::oci`, a directory in the OCI image layout, which `docker save` writes as a tar):
+  the index's manifest for linux and the back end's architecture (through nested indexes; a manifest whose
+  configuration is not an image's, such as an attestation, is passed over), every blob checked against its
+  sha256 digest and size, its layers (plain, gzip, or Docker's gzip media type; others refused by media
+  type) applied in order with whiteouts and opaque directories, by the `tar` and `flate2` crates. Entries with
+  extended attributes are refused (the kernel's `add_file` takes none). `Image::spec` is the image
+  specification's conversion: Entrypoint and Cmd to `process.args`, Env to `process.env`, WorkingDir to
+  `process.cwd` (`/` when empty), User to `process.user` (names from the root's `/etc/passwd` and
+  `/etc/group`, the groups listing the user as additional groups, as runc does), Labels to `annotations`,
+  StopSignal and ExposedPorts to their `org.opencontainers.image.` annotations, Volumes refused by name
+  (`config.Volumes`). A plain tar (`Image::tar`) is the simple case of a root.
+- **`process.args[0]`** is found as runc finds it: with a slash from the working directory, else in the
+  directories of `PATH` in `process.env`, the first regular file anyone may run, following the root's links;
+  a name not found goes to the kernel as it is, which fails the start as exec does (status 127).
+- **How we run it** is the back end's own type (`BackEnd::Tuning`; for the WebAssembly back end
+  `Tuning { look_ahead, optimise }`): it changes speed and never behaviour, and is part of every cache key.
+- **What machine the container appears to run on** is `Machine<Offer>`, separate because the guest sees it:
+  today the CPU feature claim (`offer`, the guest's `Guest::Offer`, `()` for ARM64; x86-64's AVX claim with
+  that guest). The address-space size and the memory size the guest is told join it when the kernel takes
+  them at start (section 8; asked of the kernel track): until then the kernel lays out inside the back end's
+  `address_space` and the guest is told that size, so `Machine` holds no field that would do nothing. The
+  architecture comes from the image and must be the back end's.
+- **The back end the runtime makes** is a trait of the runtime crate, `BackEnd: Execution` (name suggested):
+  what a runtime's containers share (the compiler and its cache), `Tuning`, `Offer`, its architecture as the
+  image configuration names it, and its stop flag. The kernel tests' stand-in is no `BackEnd`; the test
+  driver makes it itself.
+- **Every field of the configuration is honoured or refused by name.** The configuration is read as its JSON,
+  so a field the runtime does not know, oci-spec's newer ones included, is refused too. Honoured:
+  `ociVersion` 1.x, `root.path`, `process.args`, `process.env`, `process.cwd` (absolute),
+  `process.user.additionalGids`, `hostname` (absent: `localhost`), `annotations` (data, no behaviour), and
+  these when they are what the kernel gives: `process.user.uid` and `gid` 0, `process.user.umask` 0022,
+  `process.capabilities` Docker's 14 in bounding, effective and permitted and none in inheritable and ambient,
+  `process.rlimits` at the kernel's values, `process.terminal` and `process.noNewPrivileges` false,
+  `mounts` exactly the kernel's six (`/proc`, `/dev`, `/dev/pts`, `/sys`, `/dev/mqueue`, `/dev/shm`, each
+  with Docker's type, source and options), `linux.namespaces` exactly pid, network, ipc, uts, mount and
+  cgroup with no `path`. Refused, each with what supporting it would take:
+  - the user, umask, capabilities, limits and no_new_privs at other values, and `linux.sysctl`: the kernel
+    taking them at start (today `Start` takes the program, arguments, environment, working directory, host
+    name, groups and the backend, kernel container.rs);
+  - `mounts` other than the kernel's, or lacking one of them: bind mounts of host directories need the shipped
+    outside's file backend (J5), other file systems the kernel, and leaving one out the kernel taking its
+    mounts at start; id-mapped mounts (`mounts[n].uidMappings`): user namespaces;
   - `hooks` (they run host programs): the shipped outside running them at the lifecycle points the runtime
-    specification names; possible, not built;
+    specification names;
   - `linux.resources` and `linux.cgroupsPath` (cgroups): the kernel accounting CPU, memory, pids and I/O per
-    group and enforcing limits (asked of the kernel track);
-  - `linux.namespaces` entries with a `path` (joining another container's): several containers in one
-    kernel;
-  - `linux.uidMappings`, `linux.gidMappings` other than identity: user namespaces in the kernel;
-  - `linux.devices` beyond the default set: device nodes in the kernel for each, with the outside behind them;
-  - `mounts` of other types and bind mounts of host directories: the file backend (J5) for binds, the
-    kernel for other file system types;
-  - `root.readonly`, `linux.maskedPaths`, `linux.readonlyPaths`, `linux.rootfsPropagation`: read-only and
-    masking mounts in the kernel;
-  - `process.terminal` and `process.consoleSize`: the terminal surface (J5), with standard input settled
-    with the kernel track;
-  - `process.apparmorProfile`, `process.selinuxLabel`, `linux.mountLabel`: a security module in the kernel;
+    group and enforcing limits;
+  - `linux.namespaces` with a `path`: several containers in one kernel; user and time namespaces, and
+    `linux.uidMappings`, `linux.gidMappings` (and oci-spec's top-level `uidMappings`, `gidMappings`): user
+    and time namespaces in the kernel; a list lacking one of the six: the container would share the host's;
+  - `linux.devices`: device nodes in the kernel for each, with the outside behind them;
+  - `linux.seccomp`: the kernel installing the filter on the first process at start (it runs seccomp filters
+    a program installs);
+  - `root.readonly`, `linux.maskedPaths`, `linux.readonlyPaths`, `linux.rootfsPropagation`,
+    `linux.mountLabel`: read-only, masking and labelled mounts in the kernel;
+  - `process.terminal` and `process.consoleSize`: standard input in the kernel's interface (asked of the
+    kernel track) and the terminal surface;
+  - `process.apparmorProfile`, `process.selinuxLabel`: a security module in the kernel;
   - `process.oomScoreAdj`, `process.ioPriority`, `process.scheduler`, `process.execCPUAffinity`,
     `linux.personality`, `linux.intelRdt`, `linux.memoryPolicy`, `linux.timeOffsets`, `linux.netDevices`,
-    `domainname`: each the kernel taking the value at `Start` (most are values the kernel already keeps);
-  - the `solaris`, `windows`, `vm` and `zos` sections: another kind of host.
-- **The outside** is a parameter: `System` (the shipped outside, J3) takes byte streams for standard output
-  and error, and a user such as the owner's other project passes its own type implementing `Outside`.
-  Standard input is not in the surface yet: the kernel gives the first process /dev/null as descriptor 0,
-  the abi has only output streams, and terminal input events are counted as unexpected, so what the abi
-  needs for input is settled with the kernel track before J3 fixes the surface.
+    `domainname`: each the kernel taking the value at start;
+  - `process.commandLine`, `process.user.username`, and the `solaris`, `windows`, `vm` and `zos` sections:
+    another kind of host.
+- **The outside** is a parameter. `System`, the shipped one, writes standard output and error to the byte
+  streams it is given, answers the clocks from the host's, randomness from the system's (`getrandom`), keeps
+  the kernel's and the back end's warnings by reason, gives free turns ended by one timer thread at the
+  kernel's slice (the turn stores its deadline in an atomic and wakes the thread only for an earlier one), and
+  waits in real time in `idle`. It has no file backend, network or terminal input yet (J5): the kernel's calls
+  for them answer `NotSupported`, which the kernel turns into Linux's errors. Standard input is not in the
+  surface: the kernel gives the first process /dev/null as descriptor 0, the abi has only output streams, and
+  terminal input events are counted as unexpected; what the kernel's interface needs is asked of the kernel
+  track (status file). An outside learns the back end's stop flag through `Outside::stop_flag` before the
+  first turn; one that counts every turn, as the kernel tests' does, needs none.
+- **The command line program** (`wcontainers`, name suggested; crates/wcontainers-wasmtime/src/bin):
+  `--oci DIRECTORY` or `--tar FILE`, `--config config.json`, `--cache DIRECTORY`, `--look-ahead
+  full|none|N`, `--size`, and `-- ARGUMENTS` for `process.args`; it prints the warnings by reason and exits
+  with the container's status, 125 when the library refuses. Its arguments are read with pico-args.
 
 ## 15. Testing
 
@@ -994,15 +1024,21 @@ Each bar is checkable by running the named command on this Mac with Docker.
   the one-million run is one command. System call and fork cost measured (section 15), with both sides of the
   fork copy (the copy, and the first writes after it).
 - **J3, the user surface.** The library surface of section 14 as the owner ruled it: `oci_spec::runtime::Spec`
-  with every field honoured or refused by name, `Tuning` and `Machine` apart from it, images from a tar (and
-  the OCI image format if the owner rules for it), the on-disk cache, the shipped outside (free turns with
-  its timer thread, output streams, and standard input as settled with the kernel track before J3, section
-  14). Last, once the library bar passes, the command line program: thin, calling only the library, with
-  nothing the library lacks (its name is the owner's; suggested `wcontainers`).
-  Measured: what counting at every stop check costs hello and busybox against free turns (moved from J1).
-  Bar: a test runs `sh -c` with a pipeline in `alpine:3.22` (exported with Docker) through the public surface
-  and matches the reference; a configuration with a refused field fails naming that field; a second run of
-  the same container in a new process starts from the disk cache (measured).
+  with every field honoured or refused by name, `Tuning` and `Machine` apart from it, images from an OCI image
+  in the OCI layout (by the image specification's conversion) and from a plain tar, the on-disk cache, the
+  shipped outside (free turns with its timer thread, output streams; standard input waits for the kernel's
+  interface, asked of the kernel track). Last, once the library bar passes, the command line program: thin,
+  calling only the library, with nothing the library lacks (its name is the owner's; suggested
+  `wcontainers`). Free turns need the back end to run a turn with no stop-check hook: `Turn` gains a free
+  kind and the back end a `StopFlag` any host thread raises (section 9).
+  Measured: what counting at every stop check costs a busybox `echo` and a busybox shell loop against free
+  turns (moved from J1; the static hello is not in the alpine image the surface runs).
+  Bar: tests (crates/wcontainers-wasmtime/tests/surface.rs) run `sh -c` with a pipeline in `alpine:3.22`
+  through the public surface, once from the image in the OCI layout (`docker save`) and once from a plain tar
+  (`docker export`), and match the reference's output, error and status; one test per refused field
+  (tests/refused.rs) fails naming that field; a second run of the same container in a new process starts
+  from the disk cache (every range's translation from disk; measured); the command line program runs the
+  same pipeline from both and fails naming a refused field.
 - **J4, threads and turns.** Starts once the translator emits the guest-defined count (section 9), so seeded
   thread switches land at the same guest points at every look-ahead. Many threads per process, futexes,
   timers, outside events raising the flag in free turns. Bar: `threads`, `turns`, `timers`, `deadlines`,
@@ -1164,11 +1200,13 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
 
 ## 20. Decisions for the owner
 
-- **Names**: approved for the crates and `Runtime`, `RuntimeSettings`, `Image`. Yours to choose: the name of
-  how we run (suggested `Tuning`), of what machine the container sees (suggested `Machine`), and of the
-  command line program (suggested `wcontainers`).
-- **The user surface**: ruled (section 14). Still open with you: whether images are read in the OCI image
-  format as well as a plain tar.
+- **Names**: approved for the crates and `Runtime`, `RuntimeSettings`, `Image`. Yours to choose, as built in
+  J3 under suggested names: how we run (`Tuning`), what machine the container sees (`Machine`), the trait of a
+  back end the runtime makes (`BackEnd`), the shipped outside (`System`), the kernel's own configuration
+  (`base_spec`), and the command line program (`wcontainers`).
+- **The user surface**: ruled (section 14) and built in J3, the OCI image layout included as J3's task asked.
+  Yours: the host name a configuration without `hostname` gets (built: `localhost`; runc would keep the
+  host's, which the container never sees).
 - **Address ceilings** (section 8), the owner's direction taken as written there: the container's
   address-space size is the guest's Linux size (2^48 for ARM64), not the 4 GiB of the kernel plan's written
   list of differences; the proposed tiers (4 GiB, 16 GiB, the container's size) and the placement rule are

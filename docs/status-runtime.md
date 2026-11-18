@@ -4,6 +4,174 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 
 ## Where things stand
 
+- J0 (the plan), J1 (first light) and J2 (processes and the rest of the boundary) are done; their records are
+  below.
+- J3 run 1 (2026-11-18): the six findings of J2 run 5's check are settled first (next section); origin/phase-1
+  (the kernel through K6b, 2edbc451) is merged (db247ebf), which needed one back end fix (fff0aa77); then J3
+  is built: free turns, the library surface on the OCI runtime configuration, OCI images and plain tars, the
+  shipped outside, and the command line program. J3's bar passes (below).
+- Asked of the kernel track (next heading but one): standard input, and the values `Start` would need to
+  honour the fields refused today.
+- J3 is complete but for what waits on others: standard input (the kernel's interface), and the fields
+  refused until the kernel takes them.
+- Next: J4 (plan section 16), which starts once the translator emits the guest-defined progress count.
+
+## For the orchestrator
+
+- The loop's count of the kernel's changes of pc (plan section 16 J2, first bullet) is not built, with the
+  stand-in's count of the guest's own transfers, because either changes the stand-in's unit and so its
+  results. The brief exempts only the stand-in's count. Whether the loop's count may wait for the owner's
+  ruling on the progress unit too is yours or the owner's to confirm (J2 run 5's check, its fourth finding).
+
+## Asked of the kernel track
+
+Standard input (the brief: settle before J3 fixes the input and output surface). Today the first process has
+/dev/null as descriptor 0, `wcontainers_abi::Event::TerminalInput` exists but the kernel counts it as
+unexpected (kernel lib.rs `event`), and `Host` has only `output`. To give a container standard input the
+runtime needs, in the kernel and the abi:
+- `Start` saying the first process's descriptor 0 is input from outside (as `docker run -i`), in place of
+  /dev/null: a pipe whose write end the outside holds;
+- an event that hands bytes to that pipe (`Event::Input { bytes }`, or `TerminalInput` given that meaning
+  when there is no terminal) and one that closes its write end (end of file);
+- flow control: the kernel tells the host how many bytes the pipe takes now and when it has room again (as
+  `ConnectionReady` does for connections), so an outside never holds more than the pipe takes;
+- for `process.terminal`: `Start` asking for a terminal of a size (descriptors 0 to 2 on a pseudo-terminal
+  whose other side is the outside), `TerminalInput` and `TerminalResized` delivered to it, and output on
+  `Stream::Output` as the terminal shows it (the abi's comment says so already).
+With those the runtime adds an input stream to `System` (a reader thread raising the stop flag as bytes
+come) and honours `process.terminal` and `process.consoleSize`. Nothing of input is built in J3; the
+surface has no input argument, so nothing pretends.
+
+To honour fields refused today, `Start` would take: the user and group (`process.user.uid`, `gid`), the umask,
+the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl values, the mount list (to
+leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
+`scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
+size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## Findings of J2 run 5's check, and how each was settled (J3 run 1)
+
+- Layer 1's second kernel difference, the unix sequenced packet send after the peer closed with unread data
+  (minor): recorded here, and it is gone with the merged kernel. With J2's kernel (36d20013) seed 6022140857
+  with 40,000 cases gave `sendmmsg ... ours -32 theirs -104` on both the back end and the buffer CPU (the
+  check's logs). The kernel track's ed9cea02 ("let a local sequenced packet send take its pending error
+  after copying and before reading its control messages"), merged here with K6b, settles it: the same seed
+  and count pass over the back end at fff0aa77 (scratch j3/m-layer1-40000-6022140857.log, 664.8 s, load 28.7
+  to 34.2). The buffer CPU's run of the same seed: j3/m-layer1-buffer-40000-6022140857.log.
+- The copy cost was one low run (minor): J2 run 4's paragraph now gives the range of repeated runs with their
+  loads (below): `memory_duplicate` 74.2 µs median at load 29.7 (this track's run 4) and 85.5 to 124.6 µs
+  medians in the checks' repeats at loads 41 to 52 (check-j2-run3, check-j2-run4, check-j2-run5/cost).
+- The warnings per test were J2 run 1's (minor): the list at the merged tree, sharedviews and the newer
+  reasons included, is in J3's section below (from J2's bar at full with the back end's reports, fff0aa77).
+- The loop's count of the kernel's changes of pc (minor): put to the orchestrator above.
+- The stand-in writes part of an access that crosses into an inaccessible page and reports `si_addr` inside
+  the access (information): recorded. Unicorn's limitation, for the kernel test crate; the back end does
+  what the reference does (the check's zzcheck5 at full, none and bounded).
+- Run 4's passing layer 1 log does not show its count or seed (minor): they are in j2run4/all.sh, which ran
+  it: `LAYER1_CASES=10000 LAYER1_SEED=2026111804 LAYER1_BACKEND_CASES=32 LAYER1_CACHED_CASES=32`. J3's run
+  scripts (scratch j3/run.sh, j3/trun.sh) write every layer 1 knob into each log's header.
+
+## J3 run 1 (2026-11-18; this Mac, Apple M5 Max, 18 cores; other tracks running)
+
+Merged: origin/phase-1 at 2edbc451 (the kernel through K6b) into this branch (db247ebf). The driver's three
+conflicts were settled keeping both sides: the copy's report carries the kernel track's turn count and this
+track's CPU warnings; the save moments use the kernel track's `save_gap` in this track's `Injecting`; the
+stand-in is made with the container's `address_space` (the kernel track's `StandIn::with_space`), while the
+back end keeps its own ceiling from its output's widths whatever the container asks (only runtimes.rs asks
+for 16 GiB; J6's).
+
+The merged kernel reads a backend file's pages when first touched (kernel f45c8e0a): a mapped page stays
+without access until a fault fills it. The back end translated a code range whole at first use, so pages
+not yet filled were translated from zeros and ran as undefined instructions (busybox from the backend root
+printed nothing: scratch j3/bar-full.log, `shell` 1 passed 2 failed). Fixed (fff0aa77): a range is
+translated in runs of pages that allow running code, each run once (`CodeRange::covered`); a page that is not
+executable yet faults when reached and its run is translated when it may run. Tested by tests/code.rs
+`a_page_that_comes_later_faults_then_runs_{full,none}` (failed before the fix with `IllegalInstruction`).
+
+J2's bar on the merged tree with the fix (scratch worktree j3/tree at fff0aa77, its own target; j3/merged.sh):
+- full 47 passed, 2 ignored, 359.0 s with its build (load 17.5 to 62.0; j3/m-bar-full.log, with the back
+  end's reports); none 47 passed, 2 ignored, 222.6 s (load 62.0 to 36.0; m-bar-none.log); bounded 47
+  passed, 2 ignored, 94.4 s (load 36.0 to 28.7; m-bar-bounded.log). The 47 are J2's 46 and the kernel
+  track's new test in processes; ignored as before: align's exclusive load (the translator's known failure)
+  and memfd's huge pages.
+- Layer 1: seed 6022140857 with 40,000 sequences over the back end passes (above).
+
+Built in J3:
+- Free turns (5d86b31d): `Turn` is `Counted { limit }` or `Free`; `StopFlag` (runtime crate) raises the
+  running thread's flag from any host thread, or the next one's; the back end enters it for each `run`, sets
+  the flag word only for counted turns, and in a free turn the stop hook hands `Exit::Stop` with no progress
+  and warns no "progress counted by stop checks". The kernel test crate's driver and stand-in change one
+  line each for the enum (the same commit, since neither builds alone). Tested by tests/turns.rs
+  `a_free_turn_ends_when_the_flag_is_raised_{full,none}` (a raise from another thread after 50 ms ends a
+  `b .` loop; a raise before the turn ends it at once).
+- The library surface (23cdf0ad, 9f02646b, dcca457c; plan section 14 has it as built): `Runtime`,
+  `RuntimeSettings`, `BackEnd`, `Machine`, `Container` (`step`, `idle`, `run`, `start_failure`), `Error`
+  (`Refused { field, reason }`), `Image` (`tar`, `oci`, `spec`), `base_spec`, `System` (the shipped outside)
+  and `Warned`, in crates/wcontainers-runtime; `Tuning` and `BackEnd for CpuSide<G>` in
+  crates/wcontainers-wasmtime; no type of ours repeats one of oci-spec's (the configuration is
+  `oci_spec::runtime::Spec`, images are read with `ImageIndex`, `ImageManifest`, `ImageConfiguration` and
+  `Descriptor`).
+- The refused fields and what each would take: plan section 14 lists them; tests/refused.rs has one test for
+  each (54 refusals and the base configuration accepted: 55 passed, 0.15 s). Fields the kernel would need to
+  take at start are listed above under "Asked of the kernel track".
+- The command line program (dcca457c): crates/wcontainers-wasmtime/src/bin/wcontainers.rs, calling only the
+  library.
+
+J3's bar (crates/wcontainers-wasmtime/tests/surface.rs, refused.rs; Docker's `alpine:3.22` linux/arm64):
+- The pipeline `cat /etc/os-release | grep ^ID= | tr a-z A-Z; ls /bin | sort -r | head -3; echo one two three
+  | awk '{print $3, $1}' | sed s/three/3/; seq 1 100 | grep 7 | wc -l; echo to error >&2; exit 7` through
+  the public surface matches `docker run` (output, error, status 7) from the OCI image (`docker save`
+  unpacked) and from a plain tar (`docker export`); the fields honoured beyond the program (host name,
+  environment, working directory, additional groups, annotations) behave so; the command line program
+  gives the same from both and exits 125 naming `process.terminal`; each refused field is refused by name.
+- A second run in a new process from the disk cache (`a_second_process_starts_from_the_cache`, the pipeline
+  from the OCI image, each run a new test process, the test build; dcca457c, load 34.2 to 63.4 over the
+  suite; scratch j3/owned-1.log): the first, with an empty cache directory, made both ranges' translations
+  and 92 pieces at run time, 9.61 s from reading the image to the end; the second found both ranges and 92
+  pieces on disk and made 2 pieces (where a free turn stopped elsewhere), 0.268 s. One pair, so the times
+  only show the order of the difference.
+- The whole suite of what this track owns (`cargo test -p wcontainers-runtime -p wcontainers-wasmtime`, the
+  test build, dcca457c with only the plan's text uncommitted): runtime 4 passed; back end 3 unit, cache 3,
+  code 4, faults 2, fork 5, refused 55, surface 5 (and the cache run's child, ignored when run alone), turns 5,
+  views 6: 92 passed, 0 failed; 73.5 s with its build (load 34.2 to 63.4; scratch j3/owned-1.log).
+
+Measured: what counting at every stop check costs against free turns (release; scratch j3/cost/cost.sh and
+counting_cost.rs, copied into the back end's tests for the run and removed; an outside that wraps `System` and
+counts every turn with no limit, against `System`'s free turns; one runtime, a warm-up run of each, then 11
+alternating pairs; dcca457c with docs uncommitted; load 38.0 to 39.7; j3/cost/cost-1.log):
+- `echo hello` (busybox, a whole container from start to finish): free median 4.92 ms (min 4.57), counted
+  5.30 ms (min 4.86), counted over free median 1.09;
+- a busybox shell loop of 20,000 (`i=$((i+1))`): free median 263.6 ms (min 248.4), counted 484.3 ms (min
+  450.9), counted over free median 1.81.
+- So a hook call at every stop check nearly doubles a loop-bound program's time; the tests' counted turns
+  are for repeatability only (plan section 9).
+
+The CPU side's warnings per test, J2's bar at full on the merged tree (fff0aa77; per test file, its runs summed;
+j3/m-warnings-full.txt from j3/m-bar-full.log by j2/scripts/warnings.py --targets):
+- align: 1 runs; progress counted by stop checks 1
+- faults: 8 runs; jump through a register not recognised 1, left run: the container finished 1, memory fault 4, progress counted by stop checks 8
+- loader: 1 runs; left run: the container finished 1, progress counted by stop checks 1
+- loaderrors: 3 runs; continued after stack loss 8, jump through a register not recognised 312, left run: another thread runs 1, left run: the container finished 3, loop not proven 8301, memory fault 4, progress counted by stop checks 8, translated at run time 34
+- mapflags: 2 runs; jump through a register not recognised 3197, left run: the container finished 2, loop not proven 8, progress counted by stop checks 2, translated at run time 37
+- memfd: 1 runs; jump through a register not recognised 1079, left run: the container finished 1, progress counted by stop checks 1, translated at run time 17
+- memory: 12 runs; continued after stack loss 570, engine stack nearly full 8, jump through a register not recognised 283, left run: code changed under it 1, left run: the container finished 5, left to an address 2016, loop not proven 316, memory fault 2035, progress counted by stop checks 2040, translated at run time 83
+- orphans: 1 runs; continued after stack loss 43, jump through a register not recognised 22, left run: another thread runs 18, left run: new registers 5, left run: the call waits 1, left run: the container finished 1, progress counted by stop checks 25, translated at run time 53
+- privatemap: 1 runs; continued after stack loss 10, first write to a shared page 2, jump through a register not recognised 220, left run: another thread runs 4, left run: the container finished 1, left to an address 2, memory fault 13, progress counted by stop checks 18, translated at run time 33
+- processes: 4 runs; continued after stack loss 1385, first write to a shared page 6, jump through a register not recognised 738, left run: another thread runs 676, left run: new registers 8, left run: the call waits 6, left run: the container finished 4, left to an address 2, loop not proven 1024, memory fault 12, progress counted by stop checks 706, translated at run time 246
+- procsignals: 8 runs; continued after stack loss 1129, jump through a register not recognised 291, left run: another thread runs 511, left run: new registers 69, left run: the call waits 41, left run: the container finished 8, left run: the outside asked 14, loop not proven 18853, progress counted by stop checks 643, translated at run time 346
+- script: 8 runs; continued after stack loss 7, jump through a register not recognised 812, left run: the container finished 7, left to an address 1, loop not proven 3811, memory fault 35, progress counted by stop checks 42, translated at run time 43
+- scriptline: 1 runs; jump through a register not recognised 701, left run: the container finished 1, progress counted by stop checks 1, translated at run time 9
+- sharedmap: 1 runs; first write to a shared page 10, jump through a register not recognised 943, loop not proven 312, memory fault 1, progress counted by stop checks 1, translated at run time 45
+- sharedviews: 4 runs; code changed after it ran 4, continued after stack loss 12, first write to a shared page 8214, jump through a register not recognised 42, left run: another thread runs 4, left run: the container finished 4, left to an address 8, loop not proven 16411, progress counted by stop checks 8, shared page written through another page 8197, translated at run time 87, write next to another view made one instruction at a time 7
+- shell: 38 runs; continued after stack loss 6733, exact floating point requested 2, jump through a register not recognised 2445894, left run: another thread runs 1700, left run: new registers 118, left run: the call waits 191, left run: the container finished 38, left to an address 38, loop not proven 1109231, memory fault 1106, progress counted by stop checks 3153, translated at run time 4890
+- sigframe: 1 runs; continued after stack loss 34, jump through a register not recognised 712, left run: new registers 23, left run: the container finished 1, left to an address 7, loop not proven 639, memory fault 5, progress counted by stop checks 32, translated at run time 40
+- sysvshm: 1 runs; continued after stack loss 20, first write to a shared page 4, jump through a register not recognised 1715, left run: another thread runs 11, left run: the container finished 1, left to an address 2, loop not proven 9, progress counted by stop checks 12, translated at run time 94
+- terminal: 10 runs; continued after stack loss 1028, exact floating point requested 2, jump through a register not recognised 9879, left run: another thread runs 220, left run: new registers 44, left run: the call waits 94, left run: the container finished 10, left to an address 1, loop not proven 16232, memory fault 146, progress counted by stop checks 514, translated at run time 851
+- unknown: 2 runs; jump through a register not recognised 80, left run: the container finished 2, loop not proven 32, progress counted by stop checks 2, translated at run time 18
+- write: 2 runs; jump through a register not recognised 93, left run: the container finished 2, progress counted by stop checks 2, translated at run time 13
+- zombie: 1 runs; continued after stack loss 25, jump through a register not recognised 519, left run: another thread runs 12, left run: the container finished 1, loop not proven 461, progress counted by stop checks 13, translated at run time 47
+
+## Where J2 stood at its end
+
 - J0 (the plan) and J1 (first light: hello and busybox's single programs) are done; their record is below.
 - J2 run 1 (2026-11-18): the findings of J1 run 2's check are settled first (next section); then J2 is built:
   the cache's disk level with the translator's build identity, fork with the exact copy
@@ -38,8 +206,9 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   exclusive load, which the translator faults as Unicorn does; with the feature it is ignored as the
   translator's known failure. The other, align's misaligned stack pointer, runs and passes with the runtime.
   Layer 1 does not pass every seed: the kernel's `getcpu` (kernel track's code) differs from Linux with a bad
-  cpu pointer and a good node pointer, on the stand-in too (next section).
-- Next: J3 (plan section 16).
+  cpu pointer and a good node pointer, on the stand-in too; and with J2's kernel a unix sequenced packet send
+  after the peer closed with unread data gave EPIPE where Linux gives ECONNRESET (seed 6022140857, 40,000
+  cases, on the stand-in too), which the kernel at K6b fixes (J3 run 1).
 
 ## Findings of J2 run 4's check, and how each was settled (J2 run 5)
 
@@ -152,9 +321,14 @@ j2run4/all.sh at 27ff0eac with the docs uncommitted.
   `waitpid` with 448 heap pages ours 230.8 µs (min 207.9), reference 175.4 to 284.2 µs (load 41.2 to 39.2);
   fork then rewriting the 448 pages ours 355.3 µs (min 328.4), reference 634.6 to 745.5 µs; the rewrite
   alone ours 14.0 µs, reference 4.5 to 7.8 µs (load 39.2 to 37.7). Both sides of the copy on the back end
-  alone (J0's busybox sh layout, 446 pages written, medians of 15; load 29.7): `memory_duplicate` 74.2 µs
-  (min 65.2), the parent's first writes after it 214.2 µs, the same writes with no copy 18.4 µs. Within
-  run 2's figures (163 ns, 319 µs; the copy 71 to 95 µs after the records change).
+  alone (J0's busybox sh layout, 446 pages written, medians of 15): this run, at load 29.7,
+  `memory_duplicate` 74.2 µs (min 65.2), the parent's first writes after it 214.2 µs, the same writes with no
+  copy 18.4 µs. Repeated by the checks at higher load, the copy's medians range 85.5 to 124.6 µs (min 87 to
+  94 at load 49 to 52) and the first writes 249 to 327 µs (check-j2-run3: 85.5 and 103.0 µs;
+  check-j2-run4/cost-copy*.log: 103.1 to 124.6 µs; check-j2-run5/cost/copy-1..4.log: 98.5 to 123.3 µs, first
+  writes 249.3 to 327.2 µs, no copy 18.5 to 29.5 µs, load 49.1 to 51.5). So the copy is about 75 to 125 µs on
+  this Mac, depending on load. Run 2's figures: 163 ns, 319 µs; the copy 71 to 95 µs after the records
+  change.
 
 ## Findings of J2 run 2's check, and how each was settled (J2 run 3)
 
@@ -359,8 +533,8 @@ of shared pages, the fork copy through `/proc/self/pagemap`, a back end brought 
 `copy_pages`'s test the page given `MADV_PAGEOUT` read "present 0, swapped 1" and was copied exactly. That
 run did not test a copy made after the host process forked, which was not exact (fixed in run 2, above).
 
-The CPU side's warnings per test (per test file, its runs summed; j2/warnings-full.log at full, made by
-j2/scripts/warnings.py --targets):
+The CPU side's warnings per test in J2 run 1 (per test file, its runs summed; j2/warnings-full.log at full,
+made by j2/scripts/warnings.py --targets; J3 run 1 has them for the final tree):
 Commit 116b8410 with only this file changed; 57.7 s, load 71.4 to 65.5. "progress" is runs of `run` (warned
 once each); "finished", "another thread", "the call waits", "new registers", "the outside asked" and "code
 changed under it" are the leaves of `run`. align has no runs (both its tests are ignored).
@@ -571,8 +745,21 @@ Linux VM on this Mac. Measured:
 ## How to run
 
 The one build directory of this track is the checkout's own `target/` (CARGO_TARGET_DIR unset); the tests'
-translation cache is in it (target/wc-kernel-test/translations; delete it to make every translation again).
-Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/` and `j1run2/`, J2's in `j2/`.
+translation cache is in it (target/wc-kernel-test/translations; delete it to make every translation again;
+J3 run 1 deleted its 15 GB of old identities' files, and target/debug/incremental). A run that must not see
+edits made while it runs uses a scratch `git worktree` (J3: j3/tree, its own target, deleted at the end of the
+run). Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/` and `j1run2/`, J2's in
+`j2/` to `j2run5/`, J3's in `j3/`.
+- J3's surface, refusals, back end and runtime tests (Docker with `alpine:3.22` for linux/arm64):
+  `nix develop -c cargo test -j 4 -p wcontainers-runtime -p wcontainers-wasmtime -- --test-threads 3`
+  (`--nocapture` prints the two cache runs' times and each refusal's reason). Logged: scratch
+  `j3/run.sh NAME full test ...` (commit, status, layer 1 knobs and load in the header).
+- The command line program: `cargo build -p wcontainers-wasmtime --bin wcontainers`, then
+  `target/debug/wcontainers --oci <layout directory> [--cache <directory>] -- sh -c '...'` or `--tar <file>`.
+- What counting at every stop check costs: scratch `WC_COST_LAYOUT=<layout> j3/cost/cost.sh NAME`
+  (`WC_COST_PAIRS`, default 11).
+- J2's bar, layer 1 and the stand-in's verdicts on a scratch worktree: scratch `j3/merged.sh` (after
+  `git worktree add --detach j3/tree <commit>`).
 - J2's bar since run 4 (with sharedviews): scratch `j2run4/bar.sh NAME full|none|bounded [test arguments]`
   (log j2run4/NAME.log); run 4's bars, layer 1 and the stand-in's verdicts in one command:
   `j2run4/all.sh`. Before run 4: scratch `j2/bar.sh NAME full|none|bounded [test arguments]` (log j2/NAME.log); by hand:
@@ -817,6 +1004,28 @@ array of slots in microseconds.
   holds at the fork (libunwind's, wasmtime's) never comes free in the copy. Plan section 11 said the copy
   holds only the forking thread; it did not say the other threads' locks are lost with them.
 
+- J3 merged origin/phase-1 (the kernel through K6b) at the start of its run, as the task allowed; the driver's
+  conflicts were settled keeping both sides' tests working (J3 run 1).
+- Free turns changed `Turn` into an enum; the kernel test crate's driver and stand-in change one line each in
+  the same commit as the runtime (5d86b31d), since neither builds alone.
+- `Outside` has a seventh method, `stop_flag`, with a default that does nothing, for an outside that counts
+  every turn (plan section 5 says six).
+- `Machine` holds only the CPU feature claim: the address-space size and memory size the plan put in it wait
+  for the kernel to take them at start; a field that did nothing would pretend.
+- The back end the runtime makes is a trait of the runtime crate (`BackEnd`), with the back end's own
+  `Tuning`; the plan's sketch named `Tuning` and `Machine` as runtime types with the translator's look-ahead,
+  which the runtime crate cannot name without depending on the translator.
+- The cost of counting at every stop check is measured on busybox's `echo` and a busybox shell loop, not the
+  static hello: the surface runs the alpine image, which has no hello.
+- `a_second_process_starts_from_the_cache` asserts every range's translation comes from disk in the second
+  process, not every translation: pieces translated at run time where a free turn stopped mid-way differ
+  between runs (the timer's moments are real time), so some are made again; both counts are printed.
+- A configuration with no `hostname` gives the container `localhost` (runc keeps the host's, which the
+  container never sees); listed for the owner in plan section 20.
+- The mounts are honoured only when they are exactly the kernel's six with Docker's options, and the
+  namespaces only when they are exactly the kernel's six kinds: the kernel makes them whatever the
+  configuration says, so anything else would not be honoured.
+
 ## Dependencies
 
 Added in J1, licences read from each crate's manifest in the registry on 2026-11-17:
@@ -841,4 +1050,13 @@ Added in J1, licences read from each crate's manifest in the registry on 2026-11
   11.1.0 (Apache-2.0 OR MIT), which brings 31 crates new to the lock: toml, url, idna, percent-encoding,
   form_urlencoded, utf8_iter and displaydoc (MIT OR Apache-2.0), synstructure (MIT), and the ICU crates (icu_*, zerovec, zerotrie, yoke, tinystr,
   litemap, writeable, potential_utf, zerofrom; Unicode-3.0).
-- Not added yet: tar (J3), oci-spec (J3).
+- Added in J3 (licences read from cargo metadata on 2026-11-18), to wcontainers-runtime: oci-spec 0.10.0
+  (Apache-2.0; default features off, `runtime` and `image`), which brings const_format and
+  const_format_proc_macros 0.2.37 (Zlib), darling, darling_core and darling_macro 0.20.11 (MIT),
+  derive_builder, derive_builder_core and derive_builder_macro 0.20.2 (MIT OR Apache-2.0), getset 0.1.7
+  (MIT), ident_case 1.0.1 (MIT/Apache-2.0), konst 0.2.20 and konst_macro_rules 0.2.19 (Zlib), strsim 0.11.1
+  (MIT), strum and strum_macros 0.27.2 (MIT), unicode-xid 0.2.6 (MIT OR Apache-2.0); and, already in the
+  lock: tar 0.4.46 (MIT OR Apache-2.0), flate2 1.1.11 (MIT OR Apache-2.0), sha2 0.10.9 (MIT OR Apache-2.0),
+  getrandom 0.3.4 (MIT OR Apache-2.0), serde_json 1.0.154 (MIT OR Apache-2.0). To wcontainers-wasmtime:
+  pico-args 0.5.0 (MIT) and wcontainers-arm64 (the workspace's) for the command line program; tar and
+  serde_json as dev-dependencies.
