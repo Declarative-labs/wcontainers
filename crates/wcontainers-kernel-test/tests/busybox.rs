@@ -141,8 +141,12 @@ fn system() {
             "-c",
             "cd /proc/sys; for f in fs/dir-notify-enable fs/mqueue/* fs/pipe-max-size \
              kernel/msgmax kernel/msgmnb kernel/msgmni kernel/sem kernel/shmall kernel/shmmax \
-             kernel/shmmni kernel/random/entropy_avail kernel/random/poolsize; \
-             do echo $f $(cat $f); done; echo 1 > kernel/shmmni; echo $?",
+             kernel/shmmni kernel/random/entropy_avail kernel/random/poolsize \
+             fs/inotify/max_queued_events fs/protected_* kernel/domainname \
+             kernel/io_uring_disabled kernel/perf_event_paranoid vm/nr_hugepages \
+             vm/nr_overcommit_hugepages vm/hugetlb_shm_group; \
+             do echo $f $(stat -c %a $f) $(cat $f); done; cat vm/drop_caches; \
+             test -s kernel/ns_last_pid && echo has ns_last_pid; echo 1 > kernel/shmmni; echo $?",
         ],
         &[
             "sh",

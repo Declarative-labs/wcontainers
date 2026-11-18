@@ -315,6 +315,8 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/fs/aio-max-nr", Global::File(0o644)),
     ("sys/fs/aio-nr", Global::File(0o444)),
     ("sys/fs/dir-notify-enable", Global::File(0o644)),
+    ("sys/fs/inotify", Global::Directory),
+    ("sys/fs/inotify/max_queued_events", Global::File(0o644)),
     ("sys/fs/lease-break-time", Global::File(0o644)),
     ("sys/fs/leases-enable", Global::File(0o644)),
     ("sys/fs/mqueue", Global::Directory),
@@ -325,15 +327,23 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/fs/mqueue/queues_max", Global::File(0o644)),
     ("sys/fs/nr_open", Global::File(0o644)),
     ("sys/fs/pipe-max-size", Global::File(0o644)),
+    ("sys/fs/protected_fifos", Global::File(0o644)),
+    ("sys/fs/protected_hardlinks", Global::File(0o644)),
+    ("sys/fs/protected_regular", Global::File(0o644)),
+    ("sys/fs/protected_symlinks", Global::File(0o644)),
     ("sys/kernel", Global::Directory),
     ("sys/kernel/cap_last_cap", Global::File(0o444)),
+    ("sys/kernel/domainname", Global::File(0o644)),
     ("sys/kernel/hostname", Global::File(0o644)),
+    ("sys/kernel/io_uring_disabled", Global::File(0o644)),
     ("sys/kernel/msgmax", Global::File(0o644)),
     ("sys/kernel/msgmnb", Global::File(0o644)),
     ("sys/kernel/msgmni", Global::File(0o644)),
     ("sys/kernel/ngroups_max", Global::File(0o444)),
+    ("sys/kernel/ns_last_pid", Global::File(0o666)),
     ("sys/kernel/osrelease", Global::File(0o444)),
     ("sys/kernel/ostype", Global::File(0o444)),
+    ("sys/kernel/perf_event_paranoid", Global::File(0o644)),
     ("sys/kernel/pid_max", Global::File(0o644)),
     ("sys/kernel/random", Global::Directory),
     ("sys/kernel/random/boot_id", Global::File(0o444)),
@@ -514,6 +524,10 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
             "stat_interval stat_refresh swappiness user_reserve_kbytes vfs_cache_pressure ",
             "vfs_cache_pressure_denom watermark_boost_factor watermark_scale_factor",
         ),
+    ),
+    (
+        "sys/fs/inotify",
+        "max_queued_events max_user_instances max_user_watches",
     ),
 ];
 
@@ -1556,6 +1570,26 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     out.push_str(core::str::from_utf8(source.hostname).unwrap_or(""));
                     out.push('\n');
                 }
+                "sys/kernel/domainname" => {
+                    out.push_str(core::str::from_utf8(source.domainname).unwrap_or(""));
+                    out.push('\n');
+                }
+                // io_uring is refused by the container's system call filter, not by this.
+                "sys/kernel/io_uring_disabled" => out.push_str("0\n"),
+                "sys/kernel/ns_last_pid" => {
+                    let _ = writeln!(out, "{}", source.last_pid);
+                }
+                // perf_event_open is refused by the container's system call filter; Linux's
+                // default level.
+                "sys/kernel/perf_event_paranoid" => out.push_str("2\n"),
+                "sys/fs/inotify/max_queued_events" => {
+                    let _ = writeln!(out, "{}", crate::syscall::inotify::MAX_QUEUED);
+                }
+                // Links are followed and made under Linux's protections (`may_follow_link`,
+                // `may_linkat`); opens of others' FIFOs and regular files in sticky directories
+                // are not restricted (`may_create_in_sticky`).
+                "sys/fs/protected_hardlinks" | "sys/fs/protected_symlinks" => out.push_str("1\n"),
+                "sys/fs/protected_fifos" | "sys/fs/protected_regular" => out.push_str("0\n"),
                 "sys/kernel/ngroups_max" => out.push_str("65536\n"),
                 "sys/kernel/osrelease" => {
                     let _ = writeln!(out, "{}", machine.release);
@@ -1602,6 +1636,8 @@ pub(crate) struct Source<'a> {
     pub view: &'a View<'a>,
     pub machine: &'a crate::Machine,
     pub hostname: &'a [u8],
+    /// The UTS domain name.
+    pub domainname: &'a [u8],
     pub uptime_nanoseconds: u64,
     pub last_pid: i32,
     pub boot_id: [u8; 16],

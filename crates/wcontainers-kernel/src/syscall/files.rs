@@ -938,6 +938,7 @@ pub(super) fn proc_contents(
             view: walk.proc,
             machine: &kernel_ref.machine,
             hostname: &kernel_ref.hostname,
+            domainname: &kernel_ref.domainname,
             uptime_nanoseconds: uptime,
             last_pid: kernel_ref.last_id,
             boot_id: kernel_ref.boot_id,

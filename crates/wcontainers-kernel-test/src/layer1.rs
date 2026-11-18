@@ -153,6 +153,10 @@ const XATTR_NAMES: u64 = 0x3c00;
 /// Attribute values with meaning: file capabilities in their two forms (the long one with a root of
 /// 1000 and of 0), and an access control list.
 const XATTR_VALUES: u64 = 0x3f00;
+/// Netlink messages that ask for nothing back (`NLMSG_NOOP` without NLM_F_ACK, so no reply holds
+/// a runner's own port number): one of 20 bytes, then one of 17, whose alignment reaches past a
+/// send that ends with it.
+const NETLINK_MESSAGES: u64 = 0x3fc0;
 
 /// An argument each runner replaces by its caller's process number, so calls can name their own
 /// process although the two runners' numbers differ. Its negation, the caller's own process group, is
@@ -900,6 +904,25 @@ fn build_on(values: &[u64], raw: &[Raw], backend: bool) -> Sequence {
     for (index, value) in XATTR_VALUE_POOL.iter().enumerate() {
         let at = (XATTR_VALUES + index as u64 * 32) as usize;
         arena[at..at + value.len()].copy_from_slice(value);
+    }
+    for (offset, length, sequence) in [(0u64, 20u32, 1u32), (20, 17, 2)] {
+        let at = (NETLINK_MESSAGES + offset) as usize;
+        let header = linux_raw_sys::netlink::nlmsghdr {
+            nlmsg_len: length,
+            nlmsg_type: linux_raw_sys::netlink::NLMSG_NOOP as u16,
+            nlmsg_flags: linux_raw_sys::netlink::NLM_F_REQUEST as u16,
+            nlmsg_seq: sequence,
+            nlmsg_pid: 0,
+        };
+        let bytes = [
+            header.nlmsg_len.to_le_bytes().as_slice(),
+            &header.nlmsg_type.to_le_bytes(),
+            &header.nlmsg_flags.to_le_bytes(),
+            &header.nlmsg_seq.to_le_bytes(),
+            &header.nlmsg_pid.to_le_bytes(),
+        ]
+        .concat();
+        arena[at..at + bytes.len()].copy_from_slice(&bytes);
     }
     for (index, words) in ioctl_arguments().iter().enumerate() {
         let at = (IOCTL_ARGS + index as u64 * 64) as usize;
@@ -3806,8 +3829,17 @@ fn decode((kind, words): &Raw, path_at: &[u64], calls: &[u32]) -> Call {
             } else {
                 (0, 0)
             };
-            let size = pick(&[0u64, 1, 5, 100, 4096, 70000], c);
-            [fd(a), buffer(b), size, flags, address, length]
+            // An eighth send netlink messages, the last perhaps ending before its alignment.
+            let (buffer, size) = if e % 8 == 1 {
+                let messages = ARENA + NETLINK_MESSAGES;
+                pick(
+                    &[(messages, 37), (messages + 20, 17), (messages, 20)],
+                    e >> 3,
+                )
+            } else {
+                (buffer(b), pick(&[0u64, 1, 5, 100, 4096, 70000], c))
+            };
+            [fd(a), buffer, size, flags, address, length]
         }
         linux::__NR_recvfrom => {
             let flags = u64::from(net::MSG_DONTWAIT)

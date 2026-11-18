@@ -19,7 +19,7 @@ const LINK: &[u8] = b"anon_inode:inotify";
 /// `sizeof(struct inotify_event)`, to whose size names are padded.
 const EVENT: usize = 16;
 /// `fs.inotify.max_queued_events` (Linux's default).
-const MAX_QUEUED: usize = 16384;
+pub(crate) const MAX_QUEUED: usize = 16384;
 
 /// The events a watch may ask for.
 const ALL_EVENTS: u32 = IN_ALL_EVENTS;
