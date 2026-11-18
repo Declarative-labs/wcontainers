@@ -3,11 +3,19 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use wcontainers_direct3d_11::desc;
+use windows::Wdk::Graphics::Direct3D::{
+    D3DDDIFMT_A8R8G8B8, D3DKMT_CREATEDCFROMMEMORY, D3DKMT_DESTROYDCFROMMEMORY,
+    D3DKMTCreateDCFromMemory, D3DKMTDestroyDCFromMemory,
+};
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D10::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::*;
-use windows::core::{OutRef, Result};
+use windows::Win32::Graphics::Gdi::{CreateCompatibleDC, DeleteDC, GdiFlush, HDC};
+use windows::core::{BOOL, OutRef, Result};
 
 use super::counted::{Held, counted};
 
@@ -80,6 +88,15 @@ counted!(Buffer => Buffer_Impl {
 });
 
 impl Buffer {
+    /// `IDXGISurface1::GetDC`: buffers are never GDI-compatible.
+    pub(super) fn get_dc(&self, _discard: BOOL) -> Result<HDC> {
+        Err(DXGI_ERROR_INVALID_CALL.into())
+    }
+
+    pub(super) fn release_dc(&self, _dirty: *const RECT) -> Result<()> {
+        Err(DXGI_ERROR_INVALID_CALL.into())
+    }
+
     pub fn new(front: Rc<front::Buffer<Chosen>>, device: ID3D11Device) -> Self {
         Buffer {
             front: Locked::new(front),
@@ -151,6 +168,8 @@ macro_rules! texture {
             pub front: Locked<Rc<front::Texture<Chosen>>>,
             pub(super) child: Child,
             priority: Cell<u32>,
+            /// The device context `GetDC` handed out, until `ReleaseDC`.
+            dc: Cell<Option<Dc>>,
         }
 
         counted!($name => $imp {
@@ -166,7 +185,46 @@ macro_rules! texture {
                     front: Locked::new(front),
                     child: Child::new(device),
                     priority: Cell::new(NORMAL_PRIORITY),
+                    dc: Cell::new(None),
                 }
+            }
+
+            /// `IDXGISurface1::GetDC`: a memory device context on a bitmap holding the
+            /// texels of the texture's one subresource (left undefined with `discard`), written
+            /// back at `ReleaseDC`.
+            #[allow(dead_code)]
+            pub(super) fn get_dc(&self, discard: BOOL) -> Result<HDC> {
+                let t: &Rc<front::Texture<Chosen>> = &self.front;
+                if t.desc.misc_flags & desc::MISC_GDI_COMPATIBLE == 0 {
+                    return Err(DXGI_ERROR_INVALID_CALL.into());
+                }
+                if let Some(held) = self.dc.take() {
+                    self.dc.set(Some(held));
+                    return Err(DXGI_ERROR_INVALID_CALL.into());
+                }
+                let Some(mut dc) = Dc::new(t.desc.width, t.desc.height) else {
+                    return Err(windows::Win32::Foundation::E_OUTOFMEMORY.into());
+                };
+                if !discard.as_bool()
+                    && let Err(e) = dc.read(&self.child.front(), t)
+                {
+                    dc.delete();
+                    return Err(hresult(e));
+                }
+                let handle = dc.dc;
+                self.dc.set(Some(dc));
+                Ok(handle)
+            }
+
+            /// `IDXGISurface1::ReleaseDC`: what GDI drew is written into the texture.
+            #[allow(dead_code)]
+            pub(super) fn release_dc(&self, _dirty: *const RECT) -> Result<()> {
+                let Some(dc) = self.dc.take() else {
+                    return Err(DXGI_ERROR_INVALID_CALL.into());
+                };
+                let written = dc.write(&self.child.front(), &self.front);
+                dc.delete();
+                written.map_err(hresult)
             }
 
             pub(super) fn get_desc(&self, out: *mut $desc) {
@@ -193,11 +251,10 @@ macro_rules! texture {
                 Ok(dxgi_usage(self.front.desc.bind_flags))
             }
 
-            /// Whether DXGI sees the texture as a surface: one level of one layer (3D textures
-            /// never are).
-            #[allow(dead_code)]
+            /// Whether DXGI sees the texture as a surface: one level of one layer or slice.
             fn one_subresource(&self) -> bool {
-                self.front.desc.mip_levels == 1 && self.front.desc.array_size == 1
+                let d = &self.front.desc;
+                d.mip_levels == 1 && d.array_size == 1 && d.depth <= 1
             }
 
             #[allow(dead_code)]
@@ -215,6 +272,123 @@ macro_rules! texture {
             }
         }
     };
+}
+
+/// A memory device context on a bitmap of 32-bit texels in our memory, as DXGI makes them
+/// (`D3DKMTCreateDCFromMemory`).
+struct Dc {
+    device: HDC,
+    dc: HDC,
+    bitmap: HANDLE,
+    bits: Box<[u8]>,
+    width: u32,
+    height: u32,
+}
+
+impl Dc {
+    fn new(width: u32, height: u32) -> Option<Dc> {
+        let mut bits = vec![0u8; width as usize * height as usize * 4].into_boxed_slice();
+        let device = unsafe { CreateCompatibleDC(None) };
+        if device.is_invalid() {
+            return None;
+        }
+        let mut made = D3DKMT_CREATEDCFROMMEMORY {
+            pMemory: bits.as_mut_ptr().cast(),
+            Format: D3DDDIFMT_A8R8G8B8,
+            Width: width,
+            Height: height,
+            Pitch: width * 4,
+            hDeviceDc: device,
+            ..Default::default()
+        };
+        if unsafe { D3DKMTCreateDCFromMemory(&mut made) }.is_err() {
+            unsafe {
+                let _ = DeleteDC(device);
+            }
+            return None;
+        }
+        Some(Dc {
+            device,
+            dc: made.hDc,
+            bitmap: made.hBitmap,
+            bits,
+            width,
+            height,
+        })
+    }
+
+    fn pitch(&self) -> usize {
+        self.width as usize * 4
+    }
+
+    /// Copies the texture's texels into the bitmap, through a staging texture.
+    fn read(
+        &mut self,
+        front: &Shared,
+        t: &Rc<front::Texture<Chosen>>,
+    ) -> wcontainers_direct3d_11::Result<()> {
+        let mut f = front.borrow_mut();
+        let staging = f.create_texture(
+            &desc::TextureDesc {
+                mip_levels: 1,
+                usage: desc::usage::STAGING,
+                bind_flags: 0,
+                cpu_access_flags: desc::cpu::READ,
+                misc_flags: 0,
+                ..t.desc
+            },
+            &[],
+        )?;
+        let staging = front::Resource::Texture(staging);
+        f.copy_subresource_region(
+            &staging,
+            0,
+            [0; 3],
+            &front::Resource::Texture(t.clone()),
+            0,
+            None,
+        )?;
+        let mapped = f.map(&staging, 0, desc::map::READ, 0)?;
+        for y in 0..self.height as usize {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    mapped.data.add(y * mapped.row_pitch as usize),
+                    self.bits.as_mut_ptr().add(y * self.pitch()),
+                    self.pitch(),
+                )
+            };
+        }
+        f.unmap(&staging, 0);
+        Ok(())
+    }
+
+    /// Writes the bitmap's texels into the texture.
+    fn write(
+        &self,
+        front: &Shared,
+        t: &Rc<front::Texture<Chosen>>,
+    ) -> wcontainers_direct3d_11::Result<()> {
+        unsafe { GdiFlush().ok().ok() };
+        front.borrow_mut().update_subresource(
+            &front::Resource::Texture(t.clone()),
+            0,
+            None,
+            &self.bits,
+            self.pitch() as u32,
+            0,
+        )
+    }
+
+    fn delete(self) {
+        let gone = D3DKMT_DESTROYDCFROMMEMORY {
+            hDc: self.dc,
+            hBitmap: self.bitmap,
+        };
+        unsafe {
+            let _ = D3DKMTDestroyDCFromMemory(&gone);
+            let _ = DeleteDC(self.device);
+        }
+    }
 }
 
 texture!(
@@ -253,7 +427,8 @@ texture!(
     D3D11_RESOURCE_DIMENSION_TEXTURE3D,
     ID3D10Texture3D,
     ID3D10Texture3D_Vtbl,
-    -3
+    -4,
+    surface
 );
 
 /// Direct3D 11.3's descriptions of textures: no layout but the undefined one is served.
@@ -278,6 +453,8 @@ pub struct RenderTargetView {
     pub front: Locked<Rc<front::View<Chosen>>>,
     pub(super) resource: HeldResource,
     pub(super) child: Child,
+    /// The description of a view of a buffer, as the program gave it.
+    pub(super) buffer: Option<D3D11_RENDER_TARGET_VIEW_DESC>,
 }
 
 counted!(RenderTargetView => RenderTargetView_Impl {
@@ -295,18 +472,24 @@ impl RenderTargetView {
             front: Locked::new(front),
             resource,
             child: Child::new(device),
+            buffer: None,
         }
+    }
+
+    fn desc(&self) -> D3D11_RENDER_TARGET_VIEW_DESC {
+        self.buffer
+            .unwrap_or_else(|| convert::rtv_back(&self.front.desc))
     }
 
     pub(super) fn get_desc(&self, out: *mut D3D11_RENDER_TARGET_VIEW_DESC) {
         if let Some(out) = unsafe { out.as_mut() } {
-            *out = convert::rtv_back(&self.front.desc);
+            *out = self.desc();
         }
     }
 
     pub(super) fn get_desc1(&self, out: *mut D3D11_RENDER_TARGET_VIEW_DESC1) {
         if let Some(out) = unsafe { out.as_mut() } {
-            *out = unsafe { convert::same_fields(&convert::rtv_back(&self.front.desc)) };
+            *out = unsafe { convert::same_fields(&self.desc()) };
         }
     }
 
@@ -690,6 +873,40 @@ impl GeometryShader {
         }
     }
 }
+
+/// A hull or domain shader: the stage's slots and its conversion.
+macro_rules! stage_shader {
+    ($name:ident, $imp:ident, $iface:ident, $vtbl:ident) => {
+        pub struct $name {
+            pub front: Locked<Rc<front::Shader<Chosen>>>,
+            pub(super) child: Child,
+        }
+
+        counted!($name => $imp { main: $iface, $vtbl });
+
+        impl $name {
+            pub fn new(front: Rc<front::Shader<Chosen>>, device: ID3D11Device) -> Self {
+                $name {
+                    front: Locked::new(front),
+                    child: Child::new(device),
+                }
+            }
+        }
+    };
+}
+
+stage_shader!(
+    HullShader,
+    HullShader_Impl,
+    ID3D11HullShader,
+    ID3D11HullShader_Vtbl
+);
+stage_shader!(
+    DomainShader,
+    DomainShader_Impl,
+    ID3D11DomainShader,
+    ID3D11DomainShader_Vtbl
+);
 
 pub struct ComputeShader {
     pub front: Locked<Rc<front::Shader<Chosen>>>,

@@ -436,8 +436,8 @@ impl Device_Impl {
         as_one(out, |o| self.create_query(&d, o))
     }
 
-    /// The front texture behind a resource a target view names, refusing buffers (render target
-    /// views of buffers are not served) and foreign objects.
+    /// The front texture behind a resource a target view names, refusing buffers (their views
+    /// are made from a description naming them) and foreign objects.
     fn texture_of(
         resource: &Ref<ID3D11Resource>,
     ) -> Result<Rc<wcontainers_direct3d_11::object::Texture<Chosen>>> {
@@ -524,6 +524,30 @@ impl Device_Impl {
         desc: *const D3D11_RENDER_TARGET_VIEW_DESC,
         out: OutRef<ID3D11RenderTargetView>,
     ) -> Result<()> {
+        let given = unsafe { desc.as_ref() };
+        if let (Some(d), Some(wcontainers_direct3d_11::object::Resource::Buffer(b))) =
+            (given, resource.as_ref().and_then(resource_of))
+            && d.ViewDimension == D3D11_RTV_DIMENSION_BUFFER
+        {
+            let (first, count) = unsafe {
+                (
+                    d.Anonymous.Buffer.Anonymous1.FirstElement,
+                    d.Anonymous.Buffer.Anonymous2.NumElements,
+                )
+            };
+            let view = self
+                .front
+                .borrow_mut()
+                .create_buffer_target_view(&b, d.Format.0 as u32, first, count)
+                .map_err(hresult)?;
+            let r = resource
+                .as_ref()
+                .and_then(HeldResource::of)
+                .ok_or(E_INVALIDARG)?;
+            let mut v = RenderTargetView::new(view, r, self.me());
+            v.buffer = Some(*d);
+            return give(out, v.into());
+        }
         let texture = Self::texture_of(&resource)?;
         let d = unsafe { desc.as_ref() }.map(convert::rtv).transpose()?;
         let view = self
@@ -821,20 +845,50 @@ impl Device_Impl {
         &self,
         bytecode: *const c_void,
         length: usize,
-        _linkage: Ref<ID3D11ClassLinkage>,
-        _out: OutRef<ID3D11HullShader>,
+        linkage: Ref<ID3D11ClassLinkage>,
+        out: OutRef<ID3D11HullShader>,
     ) -> Result<()> {
-        self.unserved_shader(bytecode, length, SourceStage::Hull, "hull shaders")
+        let shader = self.tessellation_shader(bytecode, length, linkage, SourceStage::Hull)?;
+        give(out, HullShader::new(shader, self.me()).into())
     }
 
     pub(super) fn create_domain_shader(
         &self,
         bytecode: *const c_void,
         length: usize,
-        _linkage: Ref<ID3D11ClassLinkage>,
-        _out: OutRef<ID3D11DomainShader>,
+        linkage: Ref<ID3D11ClassLinkage>,
+        out: OutRef<ID3D11DomainShader>,
     ) -> Result<()> {
-        self.unserved_shader(bytecode, length, SourceStage::Domain, "domain shaders")
+        let shader = self.tessellation_shader(bytecode, length, linkage, SourceStage::Domain)?;
+        give(out, DomainShader::new(shader, self.me()).into())
+    }
+
+    /// A hull or domain shader: drawn through the stage helper's compute programs, so absent
+    /// without the back end's.
+    fn tessellation_shader(
+        &self,
+        bytecode: *const c_void,
+        length: usize,
+        linkage: Ref<ID3D11ClassLinkage>,
+        stage: SourceStage,
+    ) -> Result<Rc<wcontainers_direct3d_11::object::Shader<Chosen>>> {
+        if !linkage.is_null() {
+            return Err(missing("class linkage"));
+        }
+        if !self.compute() {
+            let what = "hull and domain shaders without the back end's compute programs";
+            return Err(self
+                .unserved_shader(bytecode, length, stage, what)
+                .expect_err("refused"));
+        }
+        if bytecode.is_null() || self.front.borrow().feature_level() < 0xb000 {
+            return Err(E_INVALIDARG.into());
+        }
+        let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
+        self.front
+            .borrow_mut()
+            .create_shader(code, stage)
+            .map_err(hresult)
     }
 
     pub(super) fn create_pixel_shader(

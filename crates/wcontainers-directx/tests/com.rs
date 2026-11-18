@@ -502,7 +502,7 @@ fn the_context_hands_back_what_is_bound() {
 }
 
 #[test]
-fn stages_the_front_lacks_take_unbinding_and_report_nothing_bound() {
+fn every_stage_takes_unbinding_and_reports_nothing_bound() {
     let (device, context) = device();
     unsafe {
         context.GSSetShader(None, None);
@@ -521,9 +521,9 @@ fn stages_the_front_lacks_take_unbinding_and_report_nothing_bound() {
 }
 
 /// Constant buffers and samplers bound to the geometry, hull and domain stages are kept for the
-/// getters, as Direct3D keeps them, though no shader of those stages can be made.
+/// getters, as Direct3D keeps them, with no shader of those stages bound.
 #[test]
-fn stages_the_front_lacks_keep_constant_buffers_and_samplers() {
+fn geometry_hull_and_domain_stages_keep_constant_buffers_and_samplers() {
     let (device, context) = device();
     unsafe {
         let desc = D3D11_BUFFER_DESC {
