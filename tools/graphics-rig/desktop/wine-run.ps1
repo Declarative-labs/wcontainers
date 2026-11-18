@@ -67,6 +67,8 @@ function Check-Resets {
     $lines = $events | ForEach-Object { Format-DisplayEvent $_ }
     if ($suspect) {
         Add-Quarantine "wine $($suspect.Name)" "display driver reset at $($lines[0].Substring(0, 19)) while it ran, in $Out"
+        # The job or remote command running this quarantines the test in place of its own command.
+        if ($env:WC_NARROWED) { Add-HazardLines $env:WC_NARROWED @("wine $($suspect.Name)") }
         "$($suspect.Name): FAIL, the display driver was reset while it ran; it is now quarantined on the GPU and the run stops:"
     } else {
         "FAIL, the display driver was reset during the run, not while a test ran; the run stops:"
@@ -74,9 +76,10 @@ function Check-Resets {
     $lines | ForEach-Object { "  $_" }
     exit 1
 }
+# The excluded tests; one marked "(gpu)" runs on WARP.
 $excluded = @{}
 foreach ($line in Get-Content tools\graphics-rig\wine-excluded.txt) {
-    if ($line -match '^(\w+) (\w+): (.*)$') { $excluded["$($Matches[1]) $($Matches[2])"] = $Matches[3] }
+    if ($line -match '^(\w+) (\w+)( \(gpu\))?: (.*)$' -and -not ($Matches[3] -and $Warp)) { $excluded["$($Matches[1]) $($Matches[2])"] = $Matches[4] }
 }
 
 # Runs one test in its own process through gt-launch. Returns its verdict, counts, the checks it

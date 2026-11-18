@@ -97,9 +97,11 @@ foreach ($n in 2, 4, 5, 6, 7) {
 foreach ($e in $bgfxExamples) {
     $all["bgfx-$e"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d11'; ignore = '0,236,320,36' }
 }
-# Two of them on bgfx's Direct3D 12 renderer: the plain cubes and the render-target chain.
+# Two of them on bgfx's Direct3D 12 renderer: the plain cubes and the render-target chain. The
+# overlay's GPU time line, above the memory line, is left out too: it shows Direct3D 12 timestamps,
+# which the frame clock does not answer.
 foreach ($e in '01-cubes', '38-bloom') {
-    $all["bgfx-$e-d3d12"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d12'; api = 'd3d12'; ignore = '0,236,320,36' }
+    $all["bgfx-$e-d3d12"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d12'; api = 'd3d12'; ignore = '0,208,320,64' }
 }
 # Microsoft's DirectX Tool Kit samples, run in the root of their repository, where they find their
 # media (under Media).
@@ -304,6 +306,26 @@ function Run-Program([string]$name, [string]$dir) {
     # The forwarding library answers timestamp queries from the frame clock but still asks the
     # implementation, and says when it gave an error.
     $wrong += @(($stdout.Result + $stderr.Result) -split "`n" | Where-Object { $_ -match '^d3d11 forward: GetData of a timestamp query failed' } | ForEach-Object { $_.Trim() })
+    # A program whose calls are known from its source must make each of them as often as that: its
+    # census's count less the calls the graphics libraries made themselves (census.txt says which).
+    $expected = "tools\graphics-rig\census\$name.expected"
+    if ($ended -and (Test-Path $expected)) {
+        $counted = @{}
+        $censusLines = @(if (Test-Path $file) { Get-Content $file })
+        foreach ($line in $censusLines) { if ($line -match '^(\S+ \S+) (\d+)$') { $counted[$Matches[1]] = [long]$Matches[2] } }
+        $byLibraries = @{}
+        foreach ($line in $censusLines -match '^# of the counts below, made by the graphics libraries, not the program: ') {
+            foreach ($item in ($line -split ': ', 2)[1] -split ', ') { if ($item -match '^(\S+ \S+) (\d+)$') { $byLibraries[$Matches[1]] = [long]$Matches[2] } }
+        }
+        foreach ($line in @(Get-Content $expected | Where-Object { $_ -and $_ -notmatch '^#' })) {
+            $method, $want = $line -split ' (?=\d+$)'
+            if (-not $counted.ContainsKey($method)) { $wrong += "census has no $method where the program makes $want"; continue }
+            $own = $counted[$method] - [long]$byLibraries[$method]
+            if ($own -ne [long]$want) {
+                $wrong += "census has $method $own from the program ($($counted[$method]) less $([long]$byLibraries[$method]) from the graphics libraries) where it makes $want"
+            }
+        }
+    }
     foreach ($library in $(if ($lines) { $names })) {
         $from = @($lines | Where-Object { $_ -like "$library from *" } | ForEach-Object { ($_ -split ' from ', 2)[1] })
         if (-not $from -or $from -contains 'not loaded') {

@@ -8,8 +8,10 @@
 # counted d3d12-device as ID3D12Device14
 # counted command-queue as ID3D12CommandQueue
 # counted swap-chain as IDXGISwapChain4
+# counted command-list as ID3D12GraphicsCommandList10
+# counted command-list as ID3D12GraphicsCommandList10
 # counted immediate-context and deferred-context through 0 wrapped contexts
-# 238 command lists executed with a table not counted (Windows' own, or made in a way not seen): their calls are not counted
+# of the counts below, made by the graphics libraries, not the program: command-list Close 119, command-list Reset 119, command-queue ExecuteCommandLists 119
 # not forwarded, so absent from this library: d3d12.dll D3D12DeviceRemovedExtendedData (data)
 d3d12-device Evict 119
 d3d12-device AddRef 49
@@ -43,8 +45,15 @@ command-list Close 240
 command-list ResourceBarrier 240
 command-list Reset 239
 command-list ClearRenderTargetView 120
+command-list DrawInstanced 120
+command-list IASetPrimitiveTopology 120
+command-list IASetVertexBuffers 120
 command-list OMSetRenderTargets 120
+command-list RSSetScissorRects 120
+command-list RSSetViewports 120
 command-list SetDescriptorHeaps 120
+command-list SetGraphicsRootDescriptorTable 120
+command-list SetGraphicsRootSignature 120
 command-list QueryInterface 119
 command-list AddRef 4
 command-list Release 2

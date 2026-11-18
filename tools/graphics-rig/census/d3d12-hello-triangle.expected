@@ -1,0 +1,17 @@
+# Calls D3D12HelloTriangle.cpp (DirectX-Graphics-Samples 68a2b1e9) makes in its 120 frames, lines
+# 292 to 315 and 265 once a frame, and Close once more at line 194: each count is checked against its
+# census.txt less the calls the graphics libraries made themselves (DXGI's own command list at each
+# present; the census's "made by the graphics libraries" line).
+command-list SetGraphicsRootSignature 120
+command-list RSSetViewports 120
+command-list RSSetScissorRects 120
+command-list ResourceBarrier 240
+command-list OMSetRenderTargets 120
+command-list ClearRenderTargetView 120
+command-list IASetPrimitiveTopology 120
+command-list IASetVertexBuffers 120
+command-list DrawInstanced 120
+command-list Reset 120
+command-list Close 121
+command-queue ExecuteCommandLists 120
+swap-chain Present 120

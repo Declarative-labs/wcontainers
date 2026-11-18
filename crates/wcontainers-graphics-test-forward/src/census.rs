@@ -4,7 +4,8 @@
 //! counts to <WC_OUT>\census.txt when the process ends. Devices, queues, command lists, swap chains
 //! and factories have their method tables patched with counting thunks the first time an object
 //! using one is created through this library (command lists: one of each kind the library makes
-//! on each new Direct3D 12 device). Contexts are handed to the program wrapped
+//! on each new Direct3D 12 device, and the copies of those tables the display driver gives lists at
+//! their first Reset). Contexts are handed to the program wrapped
 //! instead, since Direct3D 11 rewrites entries of a context's table as it runs: each wrapper method
 //! counts and jumps through the context's own table as it is at that moment. WC_CAPTURE lists frame
 //! numbers (comma separated): the back buffer is saved as <WC_OUT>\frame-<n>.png before those
@@ -42,6 +43,29 @@ static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// The command queue each Direct3D 12 swap chain presents on, by the swap chain's identity (its
 /// IUnknown), as given to the factory when it was made.
 static QUEUES: Mutex<Vec<(usize, ID3D12CommandQueue)>> = Mutex::new(Vec::new());
+/// The id of the thread making the census's own calls (saving a frame, patching command list
+/// tables) while it does, 0 otherwise: its calls are not counted, while other threads' are.
+pub static SAVING: AtomicU64 = AtomicU64::new(0);
+static OWN_CALLS: Mutex<()> = Mutex::new(());
+
+/// Runs `f` with the calls this thread makes left out of the census.
+fn uncounted<T>(f: impl FnOnce() -> T) -> T {
+    let _turn = OWN_CALLS.lock().unwrap_or_else(|e| e.into_inner());
+    SAVING.store(thread_id(), Ordering::Release);
+    let result = f();
+    SAVING.store(0, Ordering::Release);
+    result
+}
+
+fn thread_id() -> u64 {
+    u64::from(unsafe { windows::Win32::System::Threading::GetCurrentThreadId() })
+}
+
+/// Whether a call on this thread is counted: it is not one of the census's own.
+fn counted() -> bool {
+    SAVING.load(Ordering::Acquire) != thread_id()
+}
+
 /// Calls of each context method, immediate contexts first, then deferred ones.
 pub static WRAPPED_COUNTS: [AtomicU64; 2 * CONTEXT_SLOTS] =
     [const { AtomicU64::new(0) }; 2 * CONTEXT_SLOTS];
@@ -274,7 +298,7 @@ fn wrapper_tables() -> &'static [Vec<usize>; 2] {
         let thunks = (&raw const wc_wrapper_thunks) as usize;
         [0, 1].map(|t| {
             let mut table: Vec<usize> = (0..CONTEXT_SLOTS)
-                .map(|k| thunks + 32 * (t * CONTEXT_SLOTS + k))
+                .map(|k| thunks + 64 * (t * CONTEXT_SLOTS + k))
                 .collect();
             table[0] = wrapper_query as *const () as usize;
             table[get_data_slot()] = wrapper_get_data as *const () as usize;
@@ -324,7 +348,9 @@ unsafe extern "system" fn wrapper_query(
 ) -> HRESULT {
     let wrapper = unsafe { &*(this as *const Wrapper) };
     let index = usize::from(wrapper.vtable == wrapper_tables()[1].as_ptr());
-    WRAPPED_COUNTS[index * CONTEXT_SLOTS].fetch_add(1, Ordering::Relaxed);
+    if counted() {
+        WRAPPED_COUNTS[index * CONTEXT_SLOTS].fetch_add(1, Ordering::Relaxed);
+    }
     let context = unsafe { IUnknown::from_raw_borrowed(&wrapper.context) }.unwrap();
     let result = unsafe { context.query(iid, out) };
     let own = Table::Immediate
@@ -362,7 +388,9 @@ unsafe extern "system" fn wrapper_get_data(
     let wrapper = unsafe { &*(this as *const Wrapper) };
     let index = usize::from(wrapper.vtable == wrapper_tables()[1].as_ptr());
     let k = get_data_slot();
-    WRAPPED_COUNTS[index * CONTEXT_SLOTS + k].fetch_add(1, Ordering::Relaxed);
+    if counted() {
+        WRAPPED_COUNTS[index * CONTEXT_SLOTS + k].fetch_add(1, Ordering::Relaxed);
+    }
     let own: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void, u32, u32) -> HRESULT =
         unsafe { std::mem::transmute(*(*(wrapper.context as *const *const usize)).add(k)) };
     let kind = if crate::clock::running() {
@@ -468,27 +496,77 @@ fn install(table: Table, vtable: usize, interface: &'static str) {
         ));
         return;
     }
+    // A copy of a patched table holds thunks and typed hooks of ours; each entry gets the function
+    // they call in the end, so a call is counted once.
+    let source = copied_from(vtable);
     VTABLES[instance].store(vtable, Ordering::Release);
     for (k, name) in names.iter().enumerate() {
         unsafe {
-            ORIGINALS[base + k].store(*entries.add(k), Ordering::Release);
-            *entries.add(k) = typed(table, name).unwrap_or(thunks + 16 * (base + k));
+            let entry = *entries.add(k);
+            let real = match (thunk_index(entry), source) {
+                (Some(n), _) => ORIGINALS[n].load(Ordering::Acquire),
+                (None, Some(source)) if typed(table, name) == Some(entry) => {
+                    ORIGINALS[source * SLOTS + k].load(Ordering::Acquire)
+                }
+                _ => entry,
+            };
+            ORIGINALS[base + k].store(real, Ordering::Release);
+            *entries.add(k) = typed(table, name).unwrap_or(thunks + THUNK * (base + k));
         }
     }
     unsafe { VirtualProtect(entries.cast(), names.len() * 8, old, &mut old) }.ok();
     patched.push((table, interface));
 }
 
-/// Counts a call that came through a typed hook and returns the function it replaced.
+/// Which counting thunk an address is, if it is one.
+fn thunk_index(address: usize) -> Option<usize> {
+    let thunks = (&raw const wc_census_thunks) as usize;
+    (thunks..thunks + THUNK * INSTANCES * SLOTS)
+        .contains(&address)
+        .then(|| (address - thunks) / THUNK)
+}
+
+/// The instance a method table was copied from, when it is a copy of one patched here: its
+/// QueryInterface, never a typed hook, is then a thunk of that instance.
+fn copied_from(vtable: usize) -> Option<usize> {
+    thunk_index(unsafe { *(vtable as *const usize) }).map(|n| n / SLOTS)
+}
+
+/// Patches the table of `object` when it is a copy of one patched here, made after it was patched:
+/// the display driver gives a Direct3D 12 command list its own copy of the runtime's table, with
+/// its own functions for the draws and the state it sets, and the runtime's (ours) for the rest.
+///
+/// # Safety
+/// `object` is null or a live COM object of that kind.
+unsafe fn adopt(table: Table, object: *mut c_void) {
+    if config().is_none() || object.is_null() {
+        return;
+    }
+    let vtable = unsafe { *(object as *const usize) };
+    if VTABLES.iter().any(|v| v.load(Ordering::Acquire) == vtable) {
+        return;
+    }
+    if let Some(source) = copied_from(vtable) {
+        let interface = PATCHED.lock().unwrap()[source].1;
+        install(table, vtable, interface);
+    }
+}
+
+/// Counts a call that came through a typed hook and returns the function it replaced. A copy of a
+/// patched table that found no room left is not counted.
 fn enter(this: *mut c_void, name: &str) -> usize {
     let vtable = unsafe { *(this as *const usize) };
-    let instance = VTABLES
+    let patched = VTABLES
         .iter()
-        .position(|v| v.load(Ordering::Acquire) == vtable)
-        .expect("a typed hook is reached only through a patched table");
+        .position(|v| v.load(Ordering::Acquire) == vtable);
+    let instance = patched
+        .or_else(|| copied_from(vtable))
+        .expect("a typed hook is reached only through a patched table or a copy of one");
     let interface = PATCHED.lock().unwrap()[instance].1;
     let k = methods(interface).iter().position(|n| *n == name).unwrap();
-    COUNTS[instance * SLOTS + k].fetch_add(1, Ordering::Relaxed);
+    if patched.is_some() && counted() {
+        COUNTS[instance * SLOTS + k].fetch_add(1, Ordering::Relaxed);
+    }
     ORIGINALS[instance * SLOTS + k].load(Ordering::Acquire)
 }
 
@@ -510,6 +588,8 @@ fn typed(table: Table, name: &str) -> Option<usize> {
         }
         (Table::Device12, "CreateCommandQueue") => create_command_queue as *const () as usize,
         (Table::Device12, "CreateCommandQueue1") => create_command_queue1 as *const () as usize,
+        (Table::List, "Reset") => list_reset as *const () as usize,
+        (Table::List, "Close") => list_close as *const () as usize,
         (Table::Queue, "ExecuteCommandLists") => execute_command_lists as *const () as usize,
         (Table::Device, "GetImmediateContext") => get_immediate_context::<0> as *const () as usize,
         (Table::Device, "GetImmediateContext1") => get_immediate_context::<1> as *const () as usize,
@@ -706,14 +786,119 @@ unsafe extern "system" fn create_command_queue1(
     result
 }
 
-/// ExecuteCommandLists: counts the lists executed whose table is not counted (the Direct3D 12
-/// runtime's and DXGI's own lists, executed on the program's queue, or lists made in a way this
-/// library does not see), so the census says how many calls it may be missing.
+/// Calls of the typed command list and queue hooks that came from the graphics libraries themselves
+/// rather than the program, by table and method: Microsoft's DXGI resets, closes and executes a
+/// command list of its own on the program's queue at each present. They are counted with the
+/// program's.
+static BY_LIBRARIES: Mutex<Vec<(Table, &'static str, u64)>> = Mutex::new(Vec::new());
+
+/// Notes a call of a typed hook made by the graphics libraries, when it came from one.
+#[inline(never)]
+fn by_libraries(table: Table, name: &'static str) {
+    if !counted() || !from_libraries() {
+        return;
+    }
+    let mut calls = BY_LIBRARIES.lock().unwrap();
+    match calls.iter_mut().find(|(t, n, _)| *t == table && *n == name) {
+        Some((_, _, count)) => *count += 1,
+        None => calls.push((table, name, 1)),
+    }
+}
+
+/// Whether the typed hook that calls `by_libraries` was called from a graphics library rather than
+/// the program: a module in the system directory, or one named as a Direct3D or DXGI library
+/// (d3d11.dll, d3d12.dll, d3d12core.dll, dxgi.dll) wherever it was loaded from, as a replacement
+/// or the Agility SDK's runtime beside the program is; never this library.
+#[inline(never)]
+fn from_libraries() -> bool {
+    use windows::Win32::System::Diagnostics::Debug::RtlCaptureStackBackTrace;
+    use windows_sys::Win32::System::LibraryLoader::*;
+    let mut frames = [std::ptr::null_mut(); 1];
+    // Frame 0 is this function, frame 1 by_libraries and frame 2 the hook: frame 3 is where the
+    // hook was called from.
+    if unsafe { RtlCaptureStackBackTrace(3, &mut frames, None) } != 1 {
+        return false;
+    }
+    let mut module = std::ptr::null_mut();
+    let found = unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            frames[0].cast(),
+            &mut module,
+        )
+    };
+    if found == 0 {
+        return false;
+    }
+    static MODULES: Mutex<Vec<(usize, bool)>> = Mutex::new(Vec::new());
+    let mut modules = MODULES.lock().unwrap();
+    if let Some((_, library)) = modules.iter().find(|(m, _)| *m == module as usize) {
+        return *library;
+    }
+    let mut own = std::ptr::null_mut();
+    let found = unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (from_libraries as *const ()).cast(),
+            &mut own,
+        )
+    };
+    let path = |get: &dyn Fn(&mut [u16]) -> u32| {
+        let mut buffer = [0u16; 1024];
+        let len = get(&mut buffer) as usize;
+        String::from_utf16_lossy(&buffer[..len.min(buffer.len())]).to_lowercase()
+    };
+    let file = path(&|b| unsafe { GetModuleFileNameW(module, b.as_mut_ptr(), b.len() as u32) });
+    let system = path(&|b| unsafe {
+        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
+            b.as_mut_ptr(),
+            b.len() as u32,
+        )
+    });
+    let name = file.rsplit('\\').next().unwrap_or_default();
+    let library = found != 0
+        && own != module
+        && ((!system.is_empty() && file.starts_with(&format!("{system}\\")))
+            || ["d3d11.dll", "d3d12.dll", "d3d12core.dll", "dxgi.dll"].contains(&name));
+    modules.push((module as usize, library));
+    library
+}
+
+/// Reset and Close of a command list: the display driver gives a list its own copy of the table at
+/// its first Reset, which is patched before the program's next call.
+unsafe extern "system" fn list_reset(
+    this: *mut c_void,
+    allocator: *mut c_void,
+    state: *mut c_void,
+) -> HRESULT {
+    by_libraries(Table::List, "Reset");
+    unsafe { adopt(Table::List, this) };
+    let original: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> HRESULT =
+        unsafe { std::mem::transmute(enter(this, "Reset")) };
+    let result = unsafe { original(this, allocator, state) };
+    unsafe { adopt(Table::List, this) };
+    result
+}
+
+unsafe extern "system" fn list_close(this: *mut c_void) -> HRESULT {
+    by_libraries(Table::List, "Close");
+    unsafe { adopt(Table::List, this) };
+    let original: unsafe extern "system" fn(*mut c_void) -> HRESULT =
+        unsafe { std::mem::transmute(enter(this, "Close")) };
+    let result = unsafe { original(this) };
+    unsafe { adopt(Table::List, this) };
+    result
+}
+
+/// ExecuteCommandLists: counts the lists executed whose table was not counted then (made in a way
+/// this library does not see), so the census says how many lists' calls it may be missing, and
+/// patches their tables if they are copies of a patched one.
 unsafe extern "system" fn execute_command_lists(
     this: *mut c_void,
     count: u32,
     lists: *const *mut c_void,
 ) {
+    by_libraries(Table::Queue, "ExecuteCommandLists");
     let original: unsafe extern "system" fn(*mut c_void, u32, *const *mut c_void) =
         unsafe { std::mem::transmute(enter(this, "ExecuteCommandLists")) };
     if !lists.is_null() {
@@ -725,22 +910,23 @@ unsafe extern "system" fn execute_command_lists(
                 unsafe { *(list as *const usize) }
             };
             if !VTABLES.iter().any(|v| v.load(Ordering::Acquire) == table) {
-                OTHER_LISTS.fetch_add(1, Ordering::Relaxed);
+                if counted() {
+                    OTHER_LISTS.fetch_add(1, Ordering::Relaxed);
+                }
+                unsafe { adopt(Table::List, list) };
             }
         }
     }
     unsafe { original(this, count, lists) }
 }
 
-/// Command lists executed whose table is not counted.
+/// Command lists executed whose table was not counted then.
 static OTHER_LISTS: AtomicU64 = AtomicU64::new(0);
 
 /// Patches the command list tables of `device` from lists made here, of each kind, before the
-/// program records any; the calls made doing so are taken back out.
+/// program records any; the calls made doing so are not counted.
 fn patch_lists(device: &ID3D12Device) -> windows::core::Result<()> {
-    let counts = || COUNTS.iter();
-    let before: Vec<u64> = counts().map(|c| c.load(Ordering::Relaxed)).collect();
-    let result = (|| {
+    uncounted(|| {
         for kind in [
             D3D12_COMMAND_LIST_TYPE_DIRECT,
             D3D12_COMMAND_LIST_TYPE_BUNDLE,
@@ -753,11 +939,7 @@ fn patch_lists(device: &ID3D12Device) -> windows::core::Result<()> {
             unsafe { patch(Table::List, list.as_raw()) };
         }
         Ok(())
-    })();
-    for (count, before) in counts().zip(before) {
-        count.store(before, Ordering::Relaxed);
-    }
-    result
+    })
 }
 
 /// A COM object's identity: its IUnknown pointer.
@@ -883,14 +1065,9 @@ fn frame(chain: *mut c_void) {
     if config.capture.binary_search(&frame).is_err() {
         return;
     }
-    // Calls made while saving the frame are not the program's: they are taken back out.
-    let counts = || COUNTS.iter().chain(&WRAPPED_COUNTS);
-    let before: Vec<u64> = counts().map(|c| c.load(Ordering::Relaxed)).collect();
-    if let Err(error) = save(chain, frame, config) {
+    // Calls made while saving the frame are not the program's: they are not counted.
+    if let Err(error) = uncounted(|| save(chain, frame, config)) {
         note(format!("frame {frame} not saved: {error:#}"));
-    }
-    for (count, before) in counts().zip(before) {
-        count.store(before, Ordering::Relaxed);
     }
     if config.capture.last() == Some(&frame) {
         write();
@@ -1176,7 +1353,21 @@ pub fn write() {
     if other > 0 {
         let _ = writeln!(
             text,
-            "# {other} command lists executed with a table not counted (Windows' own, or made in a way not seen): their calls are not counted"
+            "# {other} command lists executed with a table not counted then (made in a way not seen): their calls before are not counted"
+        );
+    }
+    let mut libraries: Vec<String> = BY_LIBRARIES
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(table, name, count)| format!("{} {name} {count}", table.label()))
+        .collect();
+    libraries.sort();
+    if !libraries.is_empty() {
+        let _ = writeln!(
+            text,
+            "# of the counts below, made by the graphics libraries, not the program: {}",
+            libraries.join(", ")
         );
     }
     for note in NOTES.lock().unwrap().iter() {
@@ -1196,7 +1387,7 @@ pub fn write() {
             .iter()
             .enumerate()
             .filter(|(k, name)| {
-                let ours = typed(*table, name).unwrap_or(thunks + 16 * (instance * SLOTS + k));
+                let ours = typed(*table, name).unwrap_or(thunks + THUNK * (instance * SLOTS + k));
                 (unsafe { *entries.add(*k) }) != ours
             })
             .map(|(_, name)| *name)
@@ -1243,4 +1434,136 @@ pub fn write() {
     }
     let _ = std::fs::create_dir_all(&config.out)
         .and_then(|()| std::fs::write(config.out.join("census.txt"), text));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A method table of distinct stand-in functions, never called, and an object using it.
+    fn table(interface: &str, base: usize) -> &'static mut [usize] {
+        let entries: Vec<usize> = (0..methods(interface).len())
+            .map(|k| base + 16 * k)
+            .collect();
+        Box::leak(entries.into_boxed_slice())
+    }
+
+    fn object(table: &[usize]) -> *mut c_void {
+        Box::leak(Box::new(table.as_ptr() as usize)) as *mut usize as *mut c_void
+    }
+
+    fn instance(table: &[usize]) -> usize {
+        let vtable = table.as_ptr() as usize;
+        VTABLES
+            .iter()
+            .position(|v| v.load(Ordering::Acquire) == vtable)
+            .expect("patched")
+    }
+
+    /// Every counting and wrapper thunk has the length the census steps by: each starts with the
+    /// read of the calling thread's id.
+    #[test]
+    fn thunks_are_evenly_spaced() {
+        let start = [0x65, 0x4c, 0x8b, 0x1c, 0x25, 0x48, 0, 0, 0];
+        let census = (&raw const wc_census_thunks) as usize;
+        for n in [0, 1, INSTANCES * SLOTS - 1] {
+            let bytes = unsafe { std::slice::from_raw_parts((census + THUNK * n) as *const u8, 9) };
+            assert_eq!(bytes, start, "census thunk {n}");
+        }
+        for (t, table) in wrapper_tables().iter().enumerate() {
+            // Entry 0 and GetData are methods of this library, not thunks.
+            for k in [1, CONTEXT_SLOTS - 1] {
+                let bytes = unsafe { std::slice::from_raw_parts(table[k] as *const u8, 9) };
+                assert_eq!(bytes, start, "wrapper thunk {t} {k}");
+            }
+        }
+    }
+
+    /// A call through a counting thunk is counted on every thread but the one making the census's
+    /// own calls, while it makes them.
+    #[test]
+    fn the_census_own_calls_are_not_counted() {
+        static CALLED: AtomicU64 = AtomicU64::new(0);
+        extern "system" fn target(x: u64) -> u64 {
+            CALLED.fetch_add(1, Ordering::Relaxed);
+            x + 1
+        }
+        // The last thunk, which no other test patches.
+        let n = INSTANCES * SLOTS - 1;
+        ORIGINALS[n].store(target as *const () as usize, Ordering::Release);
+        let address = (&raw const wc_census_thunks) as usize + THUNK * n;
+        let thunk: extern "system" fn(u64) -> u64 = unsafe { std::mem::transmute(address) };
+        assert_eq!(thunk(1), 2);
+        uncounted(|| {
+            assert_eq!(thunk(2), 3);
+            assert_eq!(std::thread::spawn(move || thunk(3)).join().unwrap(), 4);
+        });
+        assert_eq!(thunk(4), 5);
+        assert_eq!(CALLED.load(Ordering::Relaxed), 4);
+        assert_eq!(COUNTS[n].load(Ordering::Relaxed), 3);
+    }
+
+    /// The display driver's copy of a patched command list table: its own functions for some
+    /// entries, the patched ones (thunks and typed hooks) for the rest. Patching the copy gives each
+    /// entry the function it calls in the end, so every call is counted once, on the copy.
+    #[test]
+    fn a_copy_of_a_patched_table_counts_each_call_once() {
+        // SAFETY: set before any census call reads it, in the one test that uses it.
+        unsafe { std::env::set_var("WC_OUT", std::env::temp_dir()) };
+        let interface = "ID3D12GraphicsCommandList";
+        let names = methods(interface);
+        let at = |name: &str| names.iter().position(|n| *n == name).unwrap();
+        let runtime = table(interface, 0x10_0000);
+        let real = runtime.to_vec();
+        install(Table::List, runtime.as_ptr() as usize, interface);
+        let source = instance(runtime);
+        assert_eq!(runtime[at("Reset")], list_reset as *const () as usize);
+        assert!(thunk_index(runtime[at("DrawInstanced")]).is_some());
+
+        let copy: &'static mut [usize] = Box::leak(runtime.to_vec().into_boxed_slice());
+        copy[at("DrawInstanced")] = 0x20_0000;
+        let list = object(copy);
+        // Not yet patched: a typed hook reached through the copy calls the runtime's function
+        // and counts nothing.
+        assert_eq!(enter(list, "Reset"), real[at("Reset")]);
+        assert_eq!(
+            COUNTS[source * SLOTS + at("Reset")].load(Ordering::Relaxed),
+            0
+        );
+
+        unsafe { adopt(Table::List, list) };
+        let patched = instance(copy);
+        assert_ne!(patched, source);
+        for (k, name) in names.iter().enumerate() {
+            let want = if *name == "DrawInstanced" {
+                0x20_0000
+            } else {
+                real[k]
+            };
+            assert_eq!(
+                ORIGINALS[patched * SLOTS + k].load(Ordering::Acquire),
+                want,
+                "{name}"
+            );
+            let entry = copy[k];
+            assert!(
+                typed(Table::List, name) == Some(entry)
+                    || thunk_index(entry) == Some(patched * SLOTS + k),
+                "{name}"
+            );
+        }
+        assert_eq!(enter(list, "Reset"), real[at("Reset")]);
+        assert_eq!(
+            COUNTS[patched * SLOTS + at("Reset")].load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            COUNTS[source * SLOTS + at("Reset")].load(Ordering::Relaxed),
+            0
+        );
+        // A table that is no copy of a patched one is left alone.
+        let other = table(interface, 0x30_0000);
+        unsafe { adopt(Table::List, object(other)) };
+        assert_eq!(other[0], 0x30_0000);
+    }
 }
