@@ -94,19 +94,27 @@ pub struct Context {
     /// A deferred context's mapped subresources (by resource address and subresource): the bytes
     /// the program writes, written into the resource when the command list runs.
     staged: RefCell<HashMap<(usize, u32), Staging>>,
-    /// What is bound, as the program's objects, for the `Get` methods; holding a library reference
-    /// on each, as Direct3D's context does.
-    bound: RefCell<Bound>,
+    /// What is bound and the state object, which the immediate context's are the device's: they
+    /// last while the device does, through any number of COM contexts made for it.
+    kept: Rc<Kept>,
     /// The default state, which the getters of the API whose behaviour is not active read.
     empty: RefCell<Bound>,
     /// Whether the call running came through Direct3D 10's device.
     pub(super) calling10: Cell<bool>,
-    /// The immediate context's state object, once the program swaps one in; a library reference,
-    /// as Direct3D's context holds none of the program's on it.
-    state: RefCell<Option<Held<DeviceContextState_Impl>>>,
     /// `ID3D11Multithread`: the program's `Enter` calls not yet left, and its protection flag.
     entered: Cell<u32>,
     protected: Cell<bool>,
+}
+
+/// A context's lasting state.
+#[derive(Default)]
+pub struct Kept {
+    /// What is bound, as the program's objects, for the `Get` methods; holding a library reference
+    /// on each, as Direct3D's context does.
+    bound: RefCell<Bound>,
+    /// The immediate context's state object, once the program swaps one in; a library reference,
+    /// as Direct3D's context holds none of the program's on it.
+    state: RefCell<Option<Held<DeviceContextState_Impl>>>,
 }
 
 /// A context state object (`CreateDeviceContextState`): the bindings it holds while another is
@@ -238,17 +246,21 @@ struct Staging {
 }
 
 impl Context {
-    pub(super) fn new(front: Shared, device: ID3D11Device, slot: Rc<Cell<*mut c_void>>) -> Self {
+    pub(super) fn new(
+        front: Shared,
+        device: ID3D11Device,
+        slot: Rc<Cell<*mut c_void>>,
+        kept: Rc<Kept>,
+    ) -> Self {
         Context {
             front: Locked::new(front),
             child: Child::new(device),
             slot: Locked::new(slot),
             recorded: None,
             staged: RefCell::new(HashMap::new()),
-            bound: RefCell::new(Bound::default()),
+            kept,
             empty: RefCell::new(Bound::default()),
             calling10: Cell::new(false),
-            state: RefCell::new(None),
             entered: Cell::new(0),
             protected: Cell::new(false),
         }
@@ -256,7 +268,12 @@ impl Context {
 
     /// A deferred context: its command lists start from the default state.
     pub(super) fn deferred(front: Shared, device: ID3D11Device) -> Self {
-        let mut c = Context::new(front, device, Rc::new(Cell::new(std::ptr::null_mut())));
+        let mut c = Context::new(
+            front,
+            device,
+            Rc::new(Cell::new(std::ptr::null_mut())),
+            Rc::default(),
+        );
         c.recorded = Some(Locked::new(RefCell::new(Vec::new())));
         c.run("ClearState", |f| {
             f.clear_state();
@@ -399,7 +416,7 @@ impl Context {
             f.vs_set_shader(s.clone());
             Ok(())
         });
-        self.bound.borrow_mut().vs = h;
+        self.kept.bound.borrow_mut().vs = h;
     }
 
     pub(super) fn gs_set_shader(
@@ -414,7 +431,7 @@ impl Context {
             f.gs_set_shader(s.clone());
             Ok(())
         });
-        self.bound.borrow_mut().gs = h;
+        self.kept.bound.borrow_mut().gs = h;
     }
 
     pub(super) fn gs_get_shader(
@@ -457,7 +474,7 @@ impl Context {
             f.hs_set_shader(s.clone());
             Ok(())
         });
-        self.bound.borrow_mut().hs = h;
+        self.kept.bound.borrow_mut().hs = h;
     }
 
     pub(super) fn hs_get_shader(
@@ -482,7 +499,7 @@ impl Context {
             f.ds_set_shader(s.clone());
             Ok(())
         });
-        self.bound.borrow_mut().ds = h;
+        self.kept.bound.borrow_mut().ds = h;
     }
 
     pub(super) fn ds_get_shader(
@@ -561,7 +578,7 @@ impl Context {
             for (t, h) in targets.iter_mut().zip(h) {
                 *t = h;
             }
-            let mut bound = self.bound.borrow_mut();
+            let mut bound = self.kept.bound.borrow_mut();
             bound.so_targets = targets;
             bound.so_offsets = kept;
         }
@@ -581,14 +598,18 @@ impl Context {
         if self.emulates10() != self.calling10.get() {
             self.empty.borrow()
         } else {
-            self.bound.borrow()
+            self.kept.bound.borrow()
         }
     }
 
     /// Whether a context state emulating Direct3D 10 is active on this context: Direct3D 11's
     /// calls on it then do nothing, and Direct3D 10's device's run here.
     pub(super) fn emulates10(&self) -> bool {
-        self.state.borrow().as_ref().is_some_and(|s| s.emulates10)
+        self.kept
+            .state
+            .borrow()
+            .as_ref()
+            .is_some_and(|s| s.emulates10)
     }
 
     pub(super) fn so_get_targets(&self, n: u32, out: *mut Option<ID3D11Buffer>) {
@@ -614,7 +635,7 @@ impl Context {
             f.ps_set_shader(s.clone());
             Ok(())
         });
-        self.bound.borrow_mut().ps = h;
+        self.kept.bound.borrow_mut().ps = h;
     }
 
     fn set_constant_buffers(
@@ -650,7 +671,7 @@ impl Context {
             f.set_constant_ranges(stage, start, &b, &r)
         });
         if kept {
-            let mut bound = self.bound.borrow_mut();
+            let mut bound = self.kept.bound.borrow_mut();
             store(&mut bound.constant_buffers[stage], start, h);
             store(&mut bound.constant_ranges[stage], start, ranges);
         }
@@ -773,7 +794,7 @@ impl Context {
         if self.run("SetShaderResources", move |f| {
             f.set_shader_resources(stage, start, &v)
         }) {
-            store(&mut self.bound.borrow_mut().resources[stage], start, h);
+            store(&mut self.kept.bound.borrow_mut().resources[stage], start, h);
             self.forget_unbound_resources();
         }
     }
@@ -807,7 +828,7 @@ impl Context {
         let s = fronts(&h, |s| &*s.front);
         let kept = self.run("SetSamplers", move |f| f.set_samplers(stage, start, &s));
         if kept {
-            store(&mut self.bound.borrow_mut().samplers[stage], start, h);
+            store(&mut self.kept.bound.borrow_mut().samplers[stage], start, h);
         }
     }
 
@@ -837,7 +858,7 @@ impl Context {
         if self.is_deferred() {
             // Direct3D's rule on the deferred context's own bindings: no view of a subresource
             // bound as a target or for unordered access is bound for reading.
-            let mut bound = self.bound.borrow_mut();
+            let mut bound = self.kept.bound.borrow_mut();
             let Bound {
                 resources,
                 uavs,
@@ -871,7 +892,7 @@ impl Context {
         }
         {
             let front = self.front.borrow();
-            let mut bound = self.bound.borrow_mut();
+            let mut bound = self.kept.bound.borrow_mut();
             for stage in [VERTEX, PIXEL, COMPUTE, GEOMETRY, HULL, DOMAIN] {
                 for (slot, h) in bound.resources[stage].iter_mut().enumerate() {
                     if h.is_some() && !front.shader_resource_bound(stage, slot as u32) {
@@ -890,7 +911,7 @@ impl Context {
             f.ia_set_input_layout(l.clone());
             Ok(())
         });
-        self.bound.borrow_mut().layout = h;
+        self.kept.bound.borrow_mut().layout = h;
     }
 
     pub(super) fn ia_set_primitive_topology(&self, topology: D3D_PRIMITIVE_TOPOLOGY) {
@@ -898,7 +919,7 @@ impl Context {
             f.ia_set_primitive_topology(topology.0 as u32);
             Ok(())
         });
-        self.bound.borrow_mut().topology = topology;
+        self.kept.bound.borrow_mut().topology = topology;
     }
 
     pub(super) fn ia_set_vertex_buffers(
@@ -924,7 +945,7 @@ impl Context {
         if self.run("IASetVertexBuffers", move |f| {
             f.ia_set_vertex_buffers(start, &slots)
         }) {
-            let mut bound = self.bound.borrow_mut();
+            let mut bound = self.kept.bound.borrow_mut();
             let end = (start + n) as usize;
             if bound.vertex_buffers.len() < end {
                 bound.vertex_buffers.resize(end, (None, 0, 0));
@@ -946,7 +967,7 @@ impl Context {
         if self.run("IASetIndexBuffer", move |f| {
             f.ia_set_index_buffer(b.clone(), format.0 as u32, offset)
         }) {
-            self.bound.borrow_mut().index = (h, format, offset);
+            self.kept.bound.borrow_mut().index = (h, format, offset);
         }
     }
 
@@ -983,7 +1004,7 @@ impl Context {
             f.om_set_render_targets(&targets, d.clone())
         }) {
             let old = {
-                let mut bound = self.bound.borrow_mut();
+                let mut bound = self.kept.bound.borrow_mut();
                 (
                     std::mem::replace(&mut bound.targets, h),
                     std::mem::replace(&mut bound.depth, hd),
@@ -1007,7 +1028,7 @@ impl Context {
             front.om_set_blend_state(s.clone(), f, mask);
             Ok(())
         });
-        self.bound.borrow_mut().blend = (h, f.unwrap_or([1.0; 4]), mask);
+        self.kept.bound.borrow_mut().blend = (h, f.unwrap_or([1.0; 4]), mask);
     }
 
     pub(super) fn om_set_depth_stencil_state(
@@ -1021,7 +1042,7 @@ impl Context {
             f.om_set_depth_stencil_state(s.clone(), reference);
             Ok(())
         });
-        self.bound.borrow_mut().depth_stencil = (h, reference);
+        self.kept.bound.borrow_mut().depth_stencil = (h, reference);
     }
 
     pub(super) fn rs_set_state(&self, state: Ref<ID3D11RasterizerState>) {
@@ -1031,7 +1052,7 @@ impl Context {
             f.rs_set_state(s.clone());
             Ok(())
         });
-        self.bound.borrow_mut().raster = h;
+        self.kept.bound.borrow_mut().raster = h;
     }
 
     pub(super) fn rs_set_viewports(&self, n: u32, viewports: *const D3D11_VIEWPORT) {
@@ -1059,7 +1080,7 @@ impl Context {
             f.rs_set_viewports(&v);
             Ok(())
         });
-        self.bound.borrow_mut().viewports = list;
+        self.kept.bound.borrow_mut().viewports = list;
     }
 
     pub(super) fn rs_set_scissor_rects(&self, n: u32, rects: *const RECT) {
@@ -1080,7 +1101,7 @@ impl Context {
             f.rs_set_scissor_rects(&r);
             Ok(())
         });
-        self.bound.borrow_mut().scissors = list;
+        self.kept.bound.borrow_mut().scissors = list;
     }
 
     pub(super) fn clear_render_target_view(
@@ -1142,7 +1163,7 @@ impl Context {
             f.set_predication(q.clone(), value);
             Ok(())
         });
-        self.bound.borrow_mut().predication = (h, value);
+        self.kept.bound.borrow_mut().predication = (h, value);
     }
 
     pub(super) fn get_predication(
@@ -1640,7 +1661,7 @@ impl Context {
             Ok(())
         });
         // The old bindings are released after the borrow ends: their drops may reach the context.
-        let old = std::mem::take(&mut *self.bound.borrow_mut());
+        let old = std::mem::take(&mut *self.kept.bound.borrow_mut());
         drop(old);
     }
 
@@ -1663,7 +1684,7 @@ impl Context {
             f.cs_set_shader(s.clone());
             Ok(())
         });
-        self.bound.borrow_mut().cs = h;
+        self.kept.bound.borrow_mut().cs = h;
     }
 
     pub(super) fn cs_get_shader(
@@ -1769,7 +1790,7 @@ impl Context {
         if self.run("SetUnorderedAccessViews", move |f| {
             f.set_uavs(stage, start, &v, counts.as_deref())
         }) {
-            store(&mut self.bound.borrow_mut().uavs[stage], start, h);
+            store(&mut self.kept.bound.borrow_mut().uavs[stage], start, h);
             self.forget_unbound_resources();
         }
     }
@@ -2315,21 +2336,21 @@ impl Context {
             let _ = previous.write(if self.is_deferred() {
                 None
             } else {
-                self.state.borrow().as_ref().map(Held::public)
+                self.kept.state.borrow().as_ref().map(Held::public)
             });
             return;
         };
-        let current = self.state.borrow_mut().take().unwrap_or_else(|| {
+        let current = self.kept.state.borrow_mut().take().unwrap_or_else(|| {
             let first: ID3DDeviceContextState =
                 DeviceContextState::new(self.child.device().clone(), false).into();
             Held::new(ours::<_, DeviceContextState>(Some(&first)).expect("ours"))
         });
         {
-            let mut bound = self.bound.borrow_mut();
+            let mut bound = self.kept.bound.borrow_mut();
             std::mem::swap(&mut *bound, &mut *current.bound.borrow_mut());
             std::mem::swap(&mut *bound, &mut *incoming.bound.borrow_mut());
         }
-        *self.state.borrow_mut() = Some(incoming);
+        *self.kept.state.borrow_mut() = Some(incoming);
         let _ = previous.write(Some(current.public()));
         self.run("ClearState", |f| {
             f.clear_state();
@@ -2392,7 +2413,7 @@ impl Context {
         if restore {
             self.reapply();
         } else {
-            let old = std::mem::take(&mut *self.bound.borrow_mut());
+            let old = std::mem::take(&mut *self.kept.bound.borrow_mut());
             drop(old);
         }
     }
@@ -2400,7 +2421,7 @@ impl Context {
     /// Binds again everything the context holds, on a front whose state was cleared.
     fn reapply(&self) {
         let (viewports, scissors) = {
-            let b = self.bound.borrow();
+            let b = self.kept.bound.borrow();
             let vs = b.vs.as_ref().map(|s| (*s.front).clone());
             let ps = b.ps.as_ref().map(|s| (*s.front).clone());
             let cs = b.cs.as_ref().map(|s| (*s.front).clone());

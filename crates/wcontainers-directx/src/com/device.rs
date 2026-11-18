@@ -30,6 +30,9 @@ use super::*;
 
 #[implement(ID3D11Device3, IDXGIDevice3, ID3D10Device1, ID3D10Multithread)]
 pub struct Device {
+    /// The immediate context's bindings and state object, kept for the device's life (dropped
+    /// first, while the front lives).
+    immediate_kept: Locked<Rc<super::context::Kept>>,
     pub front: Locked<Shared>,
     pub(super) private: Private,
     /// The immediate context while it lives, held without a reference (it holds one on the device).
@@ -136,6 +139,7 @@ pub fn create_device(
     let adapter = Adapter::new(wcontainers_gpu::Backend::caps(&front.backend));
     let level = front.feature_level();
     let device: ID3D11Device3 = Device {
+        immediate_kept: Locked::new(Rc::default()),
         front: Locked::new(Rc::new(RefCell::new(front))),
         private: Private::default(),
         context: Locked::new(Rc::new(Cell::new(std::ptr::null_mut()))),
@@ -1415,8 +1419,13 @@ impl Device_Impl {
     pub(super) fn immediate(&self) -> ID3D11DeviceContext3 {
         let raw = self.context.get();
         if raw.is_null() {
-            let c: ID3D11DeviceContext3 =
-                Context::new(self.front.clone(), self.me(), self.context.clone()).into();
+            let c: ID3D11DeviceContext3 = Context::new(
+                self.front.clone(),
+                self.me(),
+                self.context.clone(),
+                (*self.immediate_kept).clone(),
+            )
+            .into();
             self.context.set(c.as_raw());
             c
         } else {
