@@ -30,8 +30,10 @@ Godot's Direct3D 12 compute shaders; run 22 numbered DXIL's resources by Direct3
 (`BindingsBeyondLimit`) and the games' `RegisterSpace`; run 23 converted vertex shaders without a
 position and ran hull and domain shaders through `Stages`, drawn equal to real Direct3D 11; run 24
 converted DXIL atomics on typed buffers, storage textures and view counters, gave pixel shaders
-their layer and viewport index (46 game shaders), and lowered structured group-shared memory; what
-remains is under Next. Runs 21 to 24 merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11,
+their layer and viewport index (46 game shaders), and lowered structured group-shared memory; run 25
+gave DXIL storage textures the bound view's format, read DXIL's infinite and NaN constants, kept
+raw buffers to one view per binding and split arrays of textures (Godot's Direct3D 12 shaders); what
+remains is under Next. Runs 21 to 25 merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11,
 -direct3d-12 and -rig (no conflicts).
 
 Done:
@@ -925,6 +927,50 @@ group-shared memory):
   `C:\wc\target\phase-2-graphics-shaders`, 5.9 GB); the next run builds from clean. `out`,
   `outw` and the logs are kept.
 
+Run 25 (what the Direct3D 12 front's real programs wait on: Godot's shaders, sm6-uav-rwtexture):
+- Merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-12 and -rig (no conflicts; the shared
+  line and direct3d-11 had nothing new).
+- DXIL storage textures always take the bound view's format from `storage_formats`. dxil-spirv
+  gives a texture the program reads its own `R32f`, which we kept (only formatless ones were
+  retyped), so the Direct3D 12 front's `Rgba32Float` variant of vkd3d's sm6-uav-rwtexture still
+  came back `r32float`. Now a read and written four-channel view is refused
+  `ReadWriteStorageFormat`, which the fronts answer with `texels_through_buffer`. New own shader
+  `ps_halves` (`uav.hlsl`, dxc: half writes are a load and a store each); test
+  `read_written_four_channel_storage_goes_through_a_buffer`.
+- `src/dxil/nonfinite.rs`: an infinite or NaN constant (a literal, a module constant holding one, or a
+  private table starting at such values, as dxc writes `static const` arrays) becomes the result of a
+  call, at the start of the function using it, of a function that loads the float's bits from a
+  local variable and reinterprets them; a table is stored when the entry point starts. Run right
+  after reading (it moves functions and compacts). `NonFiniteConstant` remains only for such a value
+  in another address space or of a form not copied (refused by name). Own `ps_table.dxil` and
+  `cs_texels.dxil` convert; both are now drawn from their DXIL builds (below).
+- `cpp/dxil.cpp`: raw and structured buffers are `SSBO_SCALAR_ALIGNED` with dxil-spirv's
+  conservative vectorisation on, so dxil-spirv reads them in words and adds no `uvec2`/`uvec4`
+  views of the same buffer at the same binding (WGSL takes one variable per binding: 18 of Godot's
+  shaders failed validation, "Bindings for [1] conflict"). No other corpus verdict changed and the
+  drawn DXIL tests still pass (raw and structured buffers in `compute_draw`).
+- `src/dxil/arrays.rs`: an array of textures (`Texture2D t[8] : register(t0)`; sampled or depth,
+  not 1D, so typed buffers stay refused) becomes one texture per element at registers r to r + n - 1
+  (Direct3D 12's numbering gives each its slot). An element picked by a constant is that texture;
+  one picked at run time makes each image operation using it a call of a function switching on the
+  index (the last element for an index past the array, which Direct3D leaves undefined). Arrays of
+  storage views, samplers, typed buffers and any other use are still `ResourceArray`. The carried
+  naga's SPIR-V reader gives an element of an image array the element's type (it refused it as
+  "invalid image"). New own shader `ps_array` (`arrays.hlsl`, dxc); test
+  `texture_arrays_are_a_texture_per_element` checks the bindings and the switch; not drawn yet.
+- Godot's Direct3D 12 shaders in the games corpus: the 69 shaders the Direct3D 12 front's run 23
+  dumped as refused (scratch `graphics-direct3d-12/run23/dump`, Godot's own shaders compiled at run
+  time), copied as `godot-<stage>-<hash>.dxil` into scratch `graphics-shaders/godot` and `games`
+  and the laptop's `corpus/games`. Verdicts now: 58 convert (WGSL written; compute has no GLSL ES),
+  4 `StorageFormatKind` (the corpus test's one view format per kind), 2 `ResourceArray` (arrays of
+  other views), 3 "memory access 0x28 outside workgroup memory" and 1 "image load operand 0x200"
+  (`globallycoherent` views: WGSL has no device-scope coherence, left refused), 1
+  `IsHelperInvocationEXT`.
+- Drawn on the RTX 3080 (gpu1.log, gpu2.log in scratch `graphics-shaders/run25`): `cs_texels.dxil`
+  (DXIL typed buffers with atomics, loads and stores) against real Direct3D 11's run of the fxc build,
+  4 seeds, 0 elements apart (6 views of seeded formats each); `ps_table.dxil` against real Direct3D
+  12 and 11, both back ends, 0 of 4096 texels differ.
+
 Next (in order):
 - Direct3D 12 front (asked of G5): for DXIL its `typed_texture_slots` and `typed_key` key the
   per-slot fields by register, but DXIL slots are the view's place among the program's views of
@@ -933,8 +979,14 @@ Next (in order):
 - DXIL signed minimum and maximum on buffers dxil-spirv declares as unsigned words
   (`cs_atomics.dxil`, the D3D fronts' `AtomicSignedness`): a compare-exchange loop in the program
   (needs a named slow path) or the memory retyped where only signed ones use it.
-- DXIL's `NonFiniteConstant` (now what stops `cs_texels.dxil`, the drawn test of DXIL typed buffer
-  atomics) and `ConstantComponentIndexing`: the arena rebuild below.
+- DXIL's `ConstantComponentIndexing` (one game shader): the calls of `place_calls` (as
+  `nonfinite.rs` and `arrays.rs` use them) can read a scalar of a constant buffer through a helper
+  taking the index, so no arena rebuild is needed.
+- A drawn test of arrays of textures (`ps_array` or a compute shader picking `t[i]` per thread, against
+  real Direct3D 12); implicit-derivative samples of an element picked at run time differ within a
+  quad (the switch puts lanes of one quad in different cases): sample with gradients taken before
+  the switch if the drawn test shows it. The DXBC route (shader model 5.1 ranges) still refuses
+  arrays. Then the Direct3D 12 front's resource_arrays test and Godot rerun.
 - Layer and viewport outputs of geometry shaders through the stage helper (`LayerSplit`, the
   rig's 3 game geometry shaders and Wine's layered and multiple-viewport tests), and the DXIL
   pixel shader's layer (naga's reader has no layer built-in).
@@ -1000,9 +1052,6 @@ Next (in order):
   already makes.
 - Shader model 5.1 DXBC with register spaces (vkd3d's register_space, sampler_register_space):
   Direct3D 12's numbering on the DXBC route too, with the slot lookups of `lower.rs` by slot.
-- DXIL's `NonFiniteConstant` and `ConstantComponentIndexing`: both need new expressions placed
-  before existing ones in a function's arena (naga requires operands to precede their users), so a
-  small arena rebuild with handle remapping (the compact module has the remapping) comes first.
 - Send the carried naga changes upstream (below).
 - naga SPIR-V reader fixes for DXIL (6.2): typed buffers ("unsupported image dimension"), storage
   images without a format, `OpIsHelperInvocationEXT` (`IsHelperLane()`, wave operations), the sample mask kept as
@@ -1191,6 +1240,10 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 25, 2026-11-18, counts only (laptop load 1 to 4; desktop shared through the queue), logs in
+scratch `graphics-shaders/run25`: see Run 25 above for the drawn results; the full runs are at the
+end of this list when done.
 
 Run 24, 2026-11-18, counts only (laptop load 2 to 9; desktop shared through the queue), logs in
 scratch `graphics-shaders/run24`:
@@ -1774,6 +1827,9 @@ the tree as published"), plus these changes, each a later commit touching only `
   `GL_EXT_clip_cull_distance`.
 - GLSL writer (run 8), fine derivatives need `Features::DERIVATIVE_CONTROL` (GLSL 4.50, not ES)
   instead of being written as the plain functions.
+- SPIR-V reader (run 25), an image taken from an array of images (`Access`/`AccessIndex` on a
+  binding array) has the array's element type. This one is in commit 182398b1 together with the
+  crate's `arrays.rs`, not a commit of its own.
 Not yet sent upstream: that needs a GitHub account and fork the owner chooses, which this track does
 not have. Each change is its own commit touching only `third_party/naga`, so each can be sent as it
 stands (`git diff d380816 HEAD -- third_party/naga`).
