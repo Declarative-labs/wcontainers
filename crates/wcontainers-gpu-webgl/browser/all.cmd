@@ -5,7 +5,7 @@ rem off, and the shared suite in Chrome and on ANGLE with every extension, witho
 rem without both (and without the block compression extensions, EXT_texture_norm16, EXT_render_snorm and the
 rem extensions of blending, raster state, addressing and clip distances; in Chrome also without
 rem WEBGL_stencil_texturing, which ANGLE natively lacks), and the drawings compared with the
-rem WebGPU back end natively.
+rem WebGPU back end natively and in Chrome.
 rem all.cmd <out-dir>; run from the checkout root.
 setlocal
 set OUT=%~1
@@ -20,6 +20,7 @@ set SUITE=node crates\wcontainers-gpu-webgl\browser\suite.mjs "%CARGO_TARGET_DIR
 %SUITE% "%OUT%\suite-chrome-noclip.txt" "%OUT%\suite-list.txt" "EXT_clip_control" || set FAIL=1
 %SUITE% "%OUT%\suite-chrome-neither.txt" "%OUT%\suite-list.txt" "EXT_clip_control WEBGL_provoking_vertex" || set FAIL=1
 %SUITE% "%OUT%\suite-chrome-nostencil.txt" "%OUT%\suite-list.txt" "WEBGL_stencil_texturing %FORMATS%" || set FAIL=1
+node crates\wcontainers-gpu-webgl\browser\against.mjs "%CARGO_TARGET_DIR%\webgl-pkg" "%OUT%\against-chrome.txt" || set FAIL=1
 set WEBGL_OFF=
 cargo test -j 3 -p wcontainers-gpu-webgl --test suite -- --test-threads=1 || set FAIL=1
 set WEBGL_OFF=EXT_clip_control

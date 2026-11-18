@@ -1,5 +1,5 @@
-//! Textures kept on the host as well (`HostCopyKept`): formats GLES 3.0 cannot read back (RGB9E5 and
-//! the block-compressed ones), whose read backs come from the bytes written. Block-compressed
+//! Textures kept on the host as well (`HostCopyKept`): formats GLES 3.0 cannot read back (RGB9E5,
+//! the three-channel 32-bit ones and the block-compressed ones), whose read backs come from the bytes written. Block-compressed
 //! textures without their WebGL extension are stored decoded (`BlockDecoded`).
 
 use std::cell::RefCell;
@@ -8,7 +8,11 @@ use wcontainers_gpu::{Format, TextureDesc, TextureDimension};
 /// Whether textures of `format` keep a host copy: GPU writes never reach them (they are not
 /// renderable), and GL cannot read them back.
 pub fn kept(format: Format) -> bool {
-    format == Format::Rgb9e5Float || format.block().0 > 1
+    use Format as F;
+    matches!(
+        format,
+        F::Rgb9e5Float | F::Rgb32Float | F::Rgb32Uint | F::Rgb32Sint
+    ) || format.block().0 > 1
 }
 
 /// Every level of a texture, each its slices (layers, or depth slices in 3D) of tightly packed rows

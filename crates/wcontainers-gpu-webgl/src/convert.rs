@@ -67,7 +67,8 @@ pub fn depth_unit(format: Format) -> Option<[f32; 2]> {
     }
 }
 
-/// The fragment program copying `src` (sampled as `sampler`: "2D", "2DArray" or "3D") into a target
+/// The fragment program copying `src` (sampled as `sampler`: "2D", "2DArray", "3D" or "Cube", where
+/// `at.z` is the layer, slice or face) into a target
 /// of `dst`, or None where a format's bits are not recovered this way (sRGB, packed floats, formats
 /// GL ES lacks, signed normalised ones, whose -128 samples as -127 does) or `dst` cannot be drawn into.
 /// Into a depth format the program writes depth only, from the uniform `unit` where it is unorm.
@@ -83,10 +84,11 @@ pub fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
         Kind::Sint => "i",
         _ => "",
     };
-    let coord = if sampler == "2D" {
-        "q"
-    } else {
-        "ivec3(q, at.z)"
+    // GLSL ES 3.00 fetches no texel of a cube: a cube is sampled, nearest, towards the texel's centre.
+    let (fetch, towards) = match sampler {
+        "2D" => ("texelFetch(src, q, 0)", ""),
+        "Cube" => ("textureLod(src, towards(q), 0.0)", crate::depth::TOWARDS),
+        _ => ("texelFetch(src, ivec3(q, at.z), 0)", ""),
     };
     let half = |c: &str| format!("half_bits(v.{c})");
     let decode = match from {
@@ -155,9 +157,10 @@ uint half_bits(float f) {{
     if (e < 103u) return sign;
     return sign | ((m | 0x800000u) >> (126u - e));
 }}
+{towards}
 void main() {{
     ivec2 q = ivec2(gl_FragCoord.xy) + at.xy;
-    highp {prefix}vec4 v = texelFetch(src, {coord}, 0);
+    highp {prefix}vec4 v = {fetch};
     uvec4 r = {decode};
     {target} = {encode};
 }}

@@ -1361,12 +1361,17 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   takes integers: the front sets the enclosing whole-pixel viewport, binds the variant
   `VariantFlags::VIEWPORT_ADJUST` that scales and offsets the last vertex stage's clip x and y
   (`HelperValue::ViewportAdjust`, `x' = x * s + o * w`) so positions land where the fractional viewport
-  puts them, and cuts the scissor to the pixels whose centres the fractional viewport covers, since the
-  API draws nothing outside its viewport (`ViewportInShader`). Exact for single-sampled targets. On
-  multisampled targets, samples of the edge pixels that lie outside the fractional viewport while their
-  pixel's centre is inside are covered where the API would not cover them: a listed loss, at most part
-  of one pixel row or column on each edge: edge samples on the other side of the fractional edge from
-  their pixel's centre are drawn or left as the centre is, not as the sample is. A viewport past
+  puts them, and cuts the scissor to the pixels its API draws (`ViewportInShader`). Direct3D scissors
+  to the viewport implicitly, with each edge rounded towards negative infinity (D3D11.3 functional
+  specification, 15.7; wgpu on the RTX 3080's Direct3D 12 leaves the last row of a viewport ending at 13.75
+  undrawn although that row's centre is inside), so its front cuts the scissor that way: exact, the
+  half pixel at the left and top edges being a zone Direct3D leaves undefined. Vulkan clips to the
+  viewport only, so its front cuts the scissor to the pixels whose centres the viewport covers: exact
+  for single-sampled targets; on multisampled targets, samples of the edge pixels that lie outside the
+  fractional viewport while their pixel's centre is inside are covered where the API would not cover
+  them: a listed loss, at most part of one pixel row or column on each edge: edge samples on the other
+  side of the fractional edge from their pixel's centre are drawn or left as the centre is, not as the
+  sample is. A viewport past
   `Viewport`'s bounds (Direct3D bounds both edges by -32768 and 32767, so its widths reach past
   `max_texture_2d`) takes the same route: the whole-pixel viewport is one within the bounds that covers the
   attachments, and the adjustment puts positions where the API's viewport does. Exact, as the
