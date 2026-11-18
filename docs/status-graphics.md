@@ -252,6 +252,9 @@ G1c run 5 (from the shaders branch, merged at the end of the run):
   back ends do nothing new (they match `CompareFn` by name; no use of its number was found outside
   that test and the shaders crate). Plan 4.12's early tests now say both. Its slot test change
   (`stride: 0`) was already on this line (003c5ac2); the merge met no conflict.
+- 62e28dfe (webgl) serde derived on the resource, pass and clear descriptors, so the webgl track's
+  recorded call streams can be saved and replayed. Fits: derives, as `SlowPath`'s serde was. No
+  rule and no suite test: no back-end behaviour changes (the workspace checks with it).
 
 ## The WebGPU track's request, decided
 
@@ -367,7 +370,8 @@ pointers to a function's locals passed to another function.
   test): 1,206,788 calls, 24,004 copies within one subresource, 21,071 of them of depth or stencil,
   2,831 multisampled passes, 3,992 depth-stencil passes, 8,031 dispatches, recorded with no rule
   broken and replayed identically. Fault (scratch `g1c5/faults.log`, load 1.1): 1 of 1 caught.
-  End check after the end merges (scratch `g1c5/end-check.log`, load 0.4): the whole workspace
+  End checks after the end merges (scratch `g1c5/end-check.log`, load 0.4, and
+  `g1c5/end-check2.log` after the second round of merges, load about 5): the whole workspace
   checks; the owned crates' clippy and docs are clean with warnings denied; the same 234 tests
   pass.
 
@@ -496,7 +500,9 @@ pointers to a function's locals passed to another function.
 ## End of run
 
 - Run 5: direct3d-11 (its status only) and shaders (nine commits, one "interface:", covered under
-  "Interface changes") merged without conflict; the rest had nothing new. End check below.
+  "Interface changes") merged without conflict; then, fetched again, webgl (six commits, one
+  "interface:", covered) and shaders (its status) merged without conflict; webgpu, direct3d-12 and
+  rig had nothing new. End check after all of them below (`g1c5/end-check2.log`).
 
 - Run 4: no branch had anything new at the end (fetched after the work); nothing to merge. No build
   folder was made on the laptop or the desktop this run; scratch `g1c4/dl` holds two downloaded
