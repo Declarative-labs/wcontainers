@@ -337,6 +337,8 @@ pub struct WebGl {
     copy_programs: HashMap<(Format, Format, u32), CopyProgram>,
     /// A nearest-filtering sampler for the back end's own fetches, made at its first use.
     point_sampler: Option<glow::Sampler>,
+    /// Whether blits between textures of one float format keep every bit (the probe at creation).
+    float_blits: bool,
 }
 
 /// A program of `copy_by_draw`, with its uniforms `at` and, into unorm depth, `unit`.
@@ -371,9 +373,13 @@ impl Fetch {
     }
 }
 
+/// The name in `off` that takes blits keeping every bit of floats as missing, as where the probe
+/// finds they do not.
+pub const FLOAT_BLITS: &str = "float_blits";
+
 impl WebGl {
     /// Makes the back end on a current GL ES 3.0 or WebGL 2 context. `off` lists WebGL extension names
-    /// to treat as missing, so tests can take the routes of browsers without them.
+    /// (and [`FLOAT_BLITS`]) to treat as missing, so tests can take the routes of browsers without them.
     pub fn new(gl: glow::Context, platform: platform::Platform, off: &[&str]) -> WebGl {
         let extensions = platform::extensions(&gl, off);
         let renderer = platform::renderer(&gl);
@@ -434,6 +440,7 @@ impl WebGl {
             stencil_write: [None, None],
             copy_programs: HashMap::new(),
             point_sampler: None,
+            float_blits: false,
         };
         match b.probe_depth24() {
             Ok(unorm) => b.caps.features.set(Features::DEPTH24_UNORM, unorm),
@@ -450,7 +457,91 @@ impl WebGl {
                 b.own_program_failed(format!("webgl: the fractional depth bias probe: {log}"));
             }
         }
+        b.float_blits = !off.contains(&FLOAT_BLITS) && b.probe_float_blits();
         b
+    }
+
+    /// Whether `blitFramebuffer` between textures of one float format keeps every bit (NaN payloads
+    /// and signs, denormals), which GL does not promise: special 16-bit and 32-bit floats blitted,
+    /// drawn as bits into their unsigned integer twins and read back. False where float textures are
+    /// no targets (without EXT_color_buffer_float).
+    fn probe_float_blits(&mut self) -> bool {
+        let halves = [
+            0x7c01u16, 0x7dc4, 0xfe01, 0x7e00, 0x0001, 0x83ff, 0x8000, 0xfc00,
+        ];
+        let singles = [0x7f80_0001u32, 0xffc0_0001, 0x0000_0001, 0x807f_ffff];
+        let cases = [
+            (
+                Format::Rgba16Float,
+                Format::Rgba16Uint,
+                halves
+                    .iter()
+                    .flat_map(|h| h.to_le_bytes())
+                    .collect::<Vec<u8>>(),
+            ),
+            (
+                Format::Rgba32Float,
+                Format::Rgba32Uint,
+                singles.iter().flat_map(|s| s.to_le_bytes()).collect(),
+            ),
+        ];
+        cases.iter().all(|(format, twin, bytes)| {
+            self.caps.formats.get(*format).contains(FormatUse::RENDER)
+                && self.blit_keeps(*format, *twin, bytes)
+        })
+    }
+
+    /// Whether `bytes`, one row of `format`, come back the same after a blit into a second texture.
+    fn blit_keeps(&mut self, format: Format, twin: Format, bytes: &[u8]) -> bool {
+        let width = bytes.len() as u32 / format.block().2;
+        let make = |b: &mut Self, format| {
+            b.create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width,
+                height: 1,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::SAMPLE
+                    | TextureUsage::RENDER
+                    | TextureUsage::COPY_SRC
+                    | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            })
+        };
+        let made = [make(self, format), make(self, format), make(self, twin)];
+        let kept = match &made {
+            [Ok(from), Ok(to), Ok(bits)] => {
+                let region = |texture| TextureRegion {
+                    texture,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin::default(),
+                    stencil: false,
+                };
+                let extent = Extent {
+                    width,
+                    height: 1,
+                    depth_or_layers: 1,
+                };
+                let row = bytes.len() as u32;
+                self.write_texture(&region(from), extent, bytes, row, 1, WriteMode::Ordered);
+                self.blit_same(&region(from), &region(to), extent);
+                let mut got = vec![0; bytes.len()];
+                self.copy_by_draw(&region(to), &region(bits), extent)
+                    && self
+                        .read_texture_now(&region(bits), extent, &mut got)
+                        .is_ok()
+                    && got == bytes
+            }
+            _ => false,
+        };
+        for t in made.into_iter().flatten() {
+            self.destroy(Object::Texture(t));
+        }
+        kept
     }
 
     /// The 24-bit depth probe (plan section 4.11): a triangle at depth 0.1 drawn into a 1 by 1
@@ -595,6 +686,12 @@ impl WebGl {
     pub fn on_canvas(context: web_sys::WebGl2RenderingContext, off: &[&str]) -> WebGl {
         let (gl, platform) = platform::canvas(context);
         WebGl::new(gl, platform, off)
+    }
+
+    /// Whether the probe at creation found that blits keep every bit of 16-bit and 32-bit floats, so
+    /// copies within one float format are blits; else they take the counted routes.
+    pub fn exact_float_blits(&self) -> bool {
+        self.float_blits
     }
 
     /// The renderer GL reports, which names the GPU.
@@ -1191,9 +1288,9 @@ impl WebGl {
         }
     }
 
-    /// Copies a region of a depth or depth-stencil texture into one of the same format by
-    /// `blitFramebuffer`, layer by layer.
-    fn blit_depth(
+    /// Copies a region of a texture into one of the same format by `blitFramebuffer`, layer by layer:
+    /// a depth or depth-stencil one, or a float one where blits keep every bit.
+    fn blit_same(
         &mut self,
         src: &TextureRegion<'_, Self>,
         dst: &TextureRegion<'_, Self>,
@@ -1201,7 +1298,9 @@ impl WebGl {
     ) {
         let mask = match src.texture.desc.format.kind() {
             FormatKind::DepthStencil => glow::DEPTH_BUFFER_BIT | glow::STENCIL_BUFFER_BIT,
-            _ => glow::DEPTH_BUFFER_BIT,
+            FormatKind::Depth => glow::DEPTH_BUFFER_BIT,
+            FormatKind::Stencil => glow::STENCIL_BUFFER_BIT,
+            _ => glow::COLOR_BUFFER_BIT,
         };
         self.open_writes();
         let (sx, sy, dx, dy, w, h) = (
@@ -1984,6 +2083,52 @@ impl WebGl {
             depth_or_layers: extent.depth_or_layers,
         };
         self.write_texture(dst, into, &packed, cols * bytes, rows, WriteMode::Ordered);
+    }
+
+    /// A copy into a 16-bit float texture, whose bits no draw writes (a draw writes 32-bit floats,
+    /// which lose NaN payloads on the way): the source read back and written by the host
+    /// ([`SlowPath::HostCopyReadBack`]); a 16-bit float source, which GL does not read back, through
+    /// its bits drawn into a texture of its unsigned integer twin first.
+    fn copy_half_by_host(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        let twin = match src.texture.desc.format {
+            Format::R16Float => Format::R16Uint,
+            Format::Rg16Float => Format::Rg16Uint,
+            Format::Rgba16Float => Format::Rgba16Uint,
+            _ => return self.copy_host_kept(src, dst, extent),
+        };
+        let Ok(held) = self.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: twin,
+            width: extent.width,
+            height: extent.height,
+            depth_or_layers: extent.depth_or_layers,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        }) else {
+            return self.fail(LossReason::OutOfMemory);
+        };
+        let at = TextureRegion {
+            texture: &held,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        if self.copy_by_draw(src, &at, extent) {
+            self.slow.hit(SlowPath::CopyThroughBuffer);
+            self.copy_host_kept(&at, dst, extent);
+        } else {
+            self.unbuilt("copies of these formats");
+        }
+        self.destroy(Object::Texture(held));
     }
 
     /// Uploads a region of a block-compressed texture from its host copy: as blocks natively, else
@@ -3875,7 +4020,7 @@ impl Backend for WebGl {
         self.fresh(dst.texture);
         self.written(dst.texture);
         if from == to && from.is_depth_stencil() {
-            return self.blit_depth(src, dst, extent);
+            return self.blit_same(src, dst, extent);
         }
         if from.is_depth_stencil() || to.is_depth_stencil() {
             // A colour and a depth format of one typeless group.
@@ -3891,7 +4036,12 @@ impl Backend for WebGl {
             return;
         }
         let renderable = |f| self.caps.formats.get(f).contains(FormatUse::RENDER);
-        if from != to || !renderable(from) {
+        // copyTexSubImage may copy floats through arithmetic, which loses NaN payloads and denormals.
+        let float = format::float_bits(from);
+        if from == to && renderable(from) && float && self.float_blits {
+            return self.blit_same(src, dst, extent);
+        }
+        if from != to || !renderable(from) || float {
             let as_stored = src
                 .texture
                 .read
@@ -3902,12 +4052,15 @@ impl Backend for WebGl {
             );
             if as_stored && from.block() == to.block() {
                 self.copy_through_pbo(src, dst, extent);
-            } else if half && from != to {
+            } else if half {
                 // A draw writes half floats from 32-bit ones, which lose NaN payloads; the host
                 // writes the bits.
-                self.copy_host_kept(src, dst, extent);
+                self.copy_half_by_host(src, dst, extent);
             } else if self.copy_by_draw(src, dst, extent) {
                 self.slow.hit(SlowPath::CopyThroughBuffer);
+            } else if float {
+                // 32-bit floats are no targets without EXT_color_buffer_float.
+                self.copy_host_kept(src, dst, extent);
             } else {
                 self.unbuilt("copies of these formats");
             }
