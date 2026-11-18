@@ -11,12 +11,12 @@ use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, Swap
 use wcontainers_gpu::{
     AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, CopyBufferTexture,
     DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features, Format,
-    FormatKind, FormatUse, GpuError, IndexBinding, IndexFormat, LoadOp, MAX_COLOR_TARGETS,
-    MAX_VERTEX_STREAMS, MapIntent, Object, Origin, PassDesc, PrepareDesc, Program, ReadSource,
-    ReadState, SamplerDesc, ScissorRect, ShaderStage, SlowPath, StageSet, StepMode, StoreOp,
-    TargetLayout, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream,
-    ViewDimension, Viewport, WriteMode,
+    FormatKind, FormatUse, GpuError, IndexBinding, IndexFormat, Interpolation, LoadOp,
+    MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object, Origin, PassDesc, PrepareDesc,
+    Program, ReadSource, ReadState, SamplerDesc, ScissorRect, ShaderStage, SlowPath, StageSet,
+    StepMode, StoreOp, TargetLayout, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
+    TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -413,9 +413,19 @@ impl<B: Backend> Device<B> {
             if desc.flags & resource::FLAG_DENY_SHADER_RESOURCE == 0 {
                 usage |= TextureUsage::SAMPLE;
             }
-            // Multisampled textures are made to draw into whatever their flags say (WebGPU's rule).
+            // Multisampled textures, and single-sampled 2D ones a resolve may write, are made to
+            // draw into whatever their flags say: the back end multisamples and resolves only into
+            // textures drawn into, which Direct3D 12 does not require.
+            let resolves_into = desc.dimension == resource::DIMENSION_TEXTURE2D
+                && self
+                    .backend
+                    .caps()
+                    .formats
+                    .get(format)
+                    .contains(FormatUse::RESOLVE);
             if desc.flags & (resource::FLAG_RENDER_TARGET | resource::FLAG_DEPTH_STENCIL) != 0
                 || desc.sample_count > 1
+                || resolves_into
             {
                 usage |= TextureUsage::RENDER;
             }
@@ -778,12 +788,29 @@ impl<B: Backend> Device<B> {
     ) -> Result<PipelineId, Error> {
         self.live()?;
         let root = self.pipeline_root(desc.root, &[desc.vs, desc.ps])?;
-        let vs = self.convert(desc.vs, ShaderStage::Vertex)?;
         let ps = if desc.ps.is_empty() {
             None
         } else {
-            Some(self.convert(desc.ps, ShaderStage::Fragment)?)
+            Some(self.convert(desc.ps, ShaderStage::Fragment, VariantKey::default())?)
         };
+        // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
+        // pixel shader alone chooses: the vertex shader writes its outputs so.
+        let mut interpolation: Vec<(u32, Interpolation)> = ps
+            .iter()
+            .flat_map(|p| &p.reflection.inputs)
+            .filter(|i| i.system.is_none() && i.interpolation != Interpolation::Perspective)
+            .map(|i| (i.location, i.interpolation))
+            .collect();
+        interpolation.sort_by_key(|i| i.0);
+        interpolation.dedup_by_key(|i| i.0);
+        let vs = self.convert(
+            desc.vs,
+            ShaderStage::Vertex,
+            VariantKey {
+                output_interpolation: interpolation,
+                ..VariantKey::default()
+            },
+        )?;
         let mut inputs = desc.inputs.clone();
         resolve_offsets(&mut inputs)?;
         let reads = &vs.reflection.inputs;
@@ -932,7 +959,7 @@ impl<B: Backend> Device<B> {
         if !self.backend.caps().has(Features::COMPUTE) {
             return Err(Error::NotImplemented("compute shaders on this back end"));
         }
-        let cs = self.convert(cs, ShaderStage::Compute)?;
+        let cs = self.convert(cs, ShaderStage::Compute, VariantKey::default())?;
         let bindings = bind::stage_bindings(&cs, StageSet::COMPUTE);
         bind::check(&root, &bindings)?;
         self.prepare_nulls(&bind::null_shapes(&bindings))?;
@@ -968,27 +995,31 @@ impl<B: Backend> Device<B> {
 
     /// A DXIL or DXBC shader in the common form. Shaders reading helper constants wait for the
     /// variants that need them; the converter's own refusals are kept as messages.
-    fn convert(&mut self, code: &[u8], stage: ShaderStage) -> Result<Converted, Error> {
+    fn convert(
+        &mut self,
+        code: &[u8],
+        stage: ShaderStage,
+        variant: VariantKey,
+    ) -> Result<Converted, Error> {
         let source = if container_has(code, *b"DXIL") {
             Source::Dxil(code)
         } else {
             Source::Dxbc(code)
         };
-        let converted = wcontainers_shaders::convert(source, &VariantKey::default(), None)
-            .map_err(|e| {
-                let error = match e {
-                    ConvertError::Rejected(_) => Error::Invalid("the shader bytecode was refused"),
-                    ConvertError::Unsupported(_) | ConvertError::Reader(_) => {
-                        Error::NotImplemented("a shader feature the converter lacks")
-                    }
-                    ConvertError::Malformed(_) | ConvertError::Invalid(_) => {
-                        Error::NotImplemented("a shader the converter got wrong")
-                    }
-                };
-                self.messages
-                    .push(format!("a {stage:?} shader did not convert: {e}"));
-                error
-            })?;
+        let converted = wcontainers_shaders::convert(source, &variant, None).map_err(|e| {
+            let error = match e {
+                ConvertError::Rejected(_) => Error::Invalid("the shader bytecode was refused"),
+                ConvertError::Unsupported(_) | ConvertError::Reader(_) => {
+                    Error::NotImplemented("a shader feature the converter lacks")
+                }
+                ConvertError::Malformed(_) | ConvertError::Invalid(_) => {
+                    Error::NotImplemented("a shader the converter got wrong")
+                }
+            };
+            self.messages
+                .push(format!("a {stage:?} shader did not convert: {e}"));
+            error
+        })?;
         if converted.modules.len() != 1 || converted.modules[0].stage != stage {
             return Err(Error::Invalid("a shader of another stage"));
         }
@@ -1022,14 +1053,23 @@ impl<B: Backend> Device<B> {
             streams: [None; MAX_VERTEX_STREAMS],
             attributes: [None; MAX_VERTEX_STREAMS],
         };
+        let rates = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
         for (i, (e, location)) in inputs.iter().enumerate() {
             let slot = e.slot as usize;
-            desc.streams[slot] = Some(VertexStream {
-                stride: strides[slot],
-                step: if e.per_instance {
-                    StepMode::Instance(e.step_rate)
-                } else {
-                    StepMode::Vertex
+            desc.streams[slot] = Some(match (e.per_instance, e.step_rate) {
+                // Never stepping: every vertex and instance reads one element, which the draw
+                // binds at its first instance's.
+                (true, 0) if !rates => VertexStream {
+                    stride: 0,
+                    step: StepMode::Vertex,
+                },
+                (true, rate) => VertexStream {
+                    stride: strides[slot],
+                    step: StepMode::Instance(rate),
+                },
+                (false, _) => VertexStream {
+                    stride: strides[slot],
+                    step: StepMode::Vertex,
                 },
             });
             *desc
@@ -1683,16 +1723,16 @@ impl<B: Backend> Device<B> {
         float: bool,
         rects: &[Rect],
     ) -> Result<(), Error> {
-        if !rects.is_empty() {
-            return Err(Error::NotImplemented(
-                "clearing rectangles of an unordered access view",
-            ));
-        }
         match self
             .resources
             .get(v.resource.0 as usize)
             .map(|r| &r.storage)
         {
+            Some(Storage::Buffer { .. }) if !rects.is_empty() => {
+                return Err(Error::NotImplemented(
+                    "clearing rectangles of a buffer's unordered access view",
+                ));
+            }
             Some(Storage::Buffer { buffer, .. }) => {
                 let buffer = buffer.clone();
                 let raw = v.flags & 1 != 0;
@@ -1726,11 +1766,37 @@ impl<B: Backend> Device<B> {
                 let value = storage_clear_value(format, values, float).ok_or(
                     Error::NotImplemented("clearing an unordered access view of this format"),
                 )?;
+                // One-dimensional textures are stored as 2D ones of one row.
                 let layers = match v.dimension {
-                    4 => 0..1,
-                    5 | 8 => v.first_layer..v.first_layer.saturating_add(v.layers),
+                    2 | 4 => 0..1,
+                    3 | 5 | 8 => v.first_layer..v.first_layer.saturating_add(v.layers),
                     _ => return Err(Error::Invalid("an unordered access view's dimension")),
                 };
+                if !rects.is_empty() {
+                    if desc.dimension == TextureDimension::D3 {
+                        return Err(Error::NotImplemented(
+                            "clearing rectangles of a 3D texture's unordered access view",
+                        ));
+                    }
+                    let layers = layers.start..layers.end.min(desc.depth_or_layers);
+                    let target = TargetView {
+                        resource: v.resource,
+                        format: v.format,
+                        mip: v.mip,
+                        first_layer: layers.start,
+                        layers: layers.len() as u32,
+                    };
+                    let rects: Vec<_> = rects.iter().map(scissor).collect();
+                    for view in self.slice_views(&target)? {
+                        self.backend.clear_rects(
+                            &view,
+                            format,
+                            ClearValue::Color(value),
+                            &rects,
+                        )?;
+                    }
+                    return Ok(());
+                }
                 self.backend.clear_texture(
                     &texture,
                     &desc,
@@ -2539,6 +2605,11 @@ impl<B: Backend> Replay<B> {
                 "a predicated draw with a first instance on this back end",
             ));
         }
+        let first_instance = match &range {
+            DrawRange::Vertices { first_instance, .. }
+            | DrawRange::Indexed { first_instance, .. } => Some(*first_instance),
+            _ => None,
+        };
         let range = match (record, range) {
             (Some((args, offset)), DrawRange::Indexed { .. }) => DrawRange::IndexedIndirect {
                 args,
@@ -2690,18 +2761,33 @@ impl<B: Backend> Replay<B> {
         let inputs = std::mem::take(&mut d.render_mut(pid).inputs);
         let layout = d.vertex_layout(&inputs, &strides);
         let mut used = [false; MAX_VERTEX_STREAMS];
-        inputs
-            .iter()
-            .for_each(|(e, _)| used[e.slot as usize] = true);
+        // Streams that never step, bound at the first instance's element (see `vertex_layout`).
+        let mut fixed = [false; MAX_VERTEX_STREAMS];
+        let rates = d.backend.caps().has(Features::INSTANCE_STEP_RATE);
+        for (e, _) in &inputs {
+            used[e.slot as usize] = true;
+            fixed[e.slot as usize] |= e.per_instance && e.step_rate == 0 && !rates;
+        }
         d.render_mut(pid).inputs = inputs;
         let layout = layout?;
         let mut buffers: [Option<(B::Buffer, u64)>; MAX_VERTEX_STREAMS] =
             [const { None }; MAX_VERTEX_STREAMS];
-        for ((b, v), used) in buffers.iter_mut().zip(&self.vertex_buffers).zip(used) {
-            if let Some((id, offset)) = d.addresses.find(v.address)
+        for (((b, v), used), fixed) in buffers
+            .iter_mut()
+            .zip(&self.vertex_buffers)
+            .zip(used)
+            .zip(fixed)
+        {
+            if let Some((id, mut offset)) = d.addresses.find(v.address)
                 && used
                 && v.size > 0
             {
+                if fixed {
+                    let first = first_instance.ok_or(Error::NotImplemented(
+                        "a per-instance stream that never steps in an indirect draw",
+                    ))?;
+                    offset += u64::from(first) * u64::from(v.stride);
+                }
                 *b = Some((d.buffer(id)?.0.clone(), offset));
             }
         }
@@ -2817,19 +2903,22 @@ fn scissor(r: &Rect) -> ScissorRect {
     }
 }
 
-/// The components of a format whose components are each 8, 16 or 32 bits wide: count and bits.
-fn components(format: wcontainers_gpu::Format) -> Option<(usize, u32)> {
+/// The width in bits of each component of a format a storage clear writes, in memory order from
+/// the lowest bit.
+fn components(format: wcontainers_gpu::Format) -> Option<&'static [u32]> {
     use wcontainers_gpu::Format::*;
     Some(match format {
-        R8Unorm | R8Snorm | R8Uint | R8Sint => (1, 8),
-        Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint => (2, 8),
-        Rgba8Unorm | Rgba8Snorm | Rgba8Uint | Rgba8Sint => (4, 8),
-        R16Unorm | R16Snorm | R16Uint | R16Sint => (1, 16),
-        Rg16Unorm | Rg16Snorm | Rg16Uint | Rg16Sint => (2, 16),
-        Rgba16Unorm | Rgba16Snorm | Rgba16Uint | Rgba16Sint => (4, 16),
-        R32Uint | R32Sint | R32Float => (1, 32),
-        Rg32Uint | Rg32Sint | Rg32Float => (2, 32),
-        Rgba32Uint | Rgba32Sint | Rgba32Float => (4, 32),
+        R8Unorm | R8Snorm | R8Uint | R8Sint => &[8],
+        Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint => &[8; 2],
+        Rgba8Unorm | Rgba8Snorm | Rgba8Uint | Rgba8Sint => &[8; 4],
+        R16Unorm | R16Snorm | R16Uint | R16Sint | R16Float => &[16],
+        Rg16Unorm | Rg16Snorm | Rg16Uint | Rg16Sint | Rg16Float => &[16; 2],
+        Rgba16Unorm | Rgba16Snorm | Rgba16Uint | Rgba16Sint | Rgba16Float => &[16; 4],
+        R32Uint | R32Sint | R32Float => &[32],
+        Rg32Uint | Rg32Sint | Rg32Float => &[32; 2],
+        Rgba32Uint | Rgba32Sint | Rgba32Float => &[32; 4],
+        Rgb10a2Unorm | Rgb10a2Uint => &[10, 10, 10, 2],
+        Rg11b10Float => &[11, 11, 10],
         _ => return None,
     })
 }
@@ -2839,57 +2928,87 @@ fn normalised(format: wcontainers_gpu::Format) -> (bool, bool) {
     use wcontainers_gpu::Format::*;
     match format {
         R8Snorm | Rg8Snorm | Rgba8Snorm | R16Snorm | Rg16Snorm | Rgba16Snorm => (true, true),
-        R8Unorm | Rg8Unorm | Rgba8Unorm | R16Unorm | Rg16Unorm | Rgba16Unorm => (false, true),
+        R8Unorm | Rg8Unorm | Rgba8Unorm | R16Unorm | Rg16Unorm | Rgba16Unorm | Rgb10a2Unorm => {
+            (false, true)
+        }
         _ => (false, false),
     }
 }
 
-/// A storage clear's value as each component's stored bits (masked to its width).
+fn mask(bits: u32) -> u32 {
+    if bits == 32 {
+        u32::MAX
+    } else {
+        (1 << bits) - 1
+    }
+}
+
+/// A float as a float component of `bits` bits: 32 as is, 16 a half, 11 and 10 the unsigned small
+/// floats of `R11G11B10_FLOAT` (a half's exponent and top mantissa bits, negatives clamped to zero).
+fn small_float(f: f32, bits: u32) -> u32 {
+    match bits {
+        32 => f.to_bits(),
+        16 => u32::from(half::f16::from_f32(f).to_bits()),
+        _ if f.is_nan() => mask(bits),
+        _ => u32::from(half::f16::from_f32(f.max(0.0)).to_bits()) >> (15 - bits),
+    }
+}
+
+/// The value of a float component of `bits` stored bits.
+fn small_float_value(s: u32, bits: u32) -> f32 {
+    match bits {
+        32 => f32::from_bits(s),
+        16 => half::f16::from_bits(s as u16).to_f32(),
+        _ => half::f16::from_bits((s << (15 - bits)) as u16).to_f32(),
+    }
+}
+
+/// A storage clear's value as each component's stored bits (masked to its width). Integer values
+/// are the bits themselves; float values are converted to the format.
 fn storage_bits(
     format: wcontainers_gpu::Format,
     values: [u32; 4],
     float: bool,
 ) -> Option<Vec<u32>> {
-    let (count, bits) = components(format)?;
-    let mask = if bits == 32 {
-        u32::MAX
-    } else {
-        (1 << bits) - 1
-    };
-    let max = (mask >> 1) as f32;
+    let widths = components(format)?;
     let (snorm, norm) = normalised(format);
     Some(
-        values[..count]
+        widths
             .iter()
-            .map(|&v| {
+            .zip(values)
+            .map(|(&bits, v)| {
                 let f = f32::from_bits(v);
+                let m = mask(bits);
                 let stored = match (float, format.kind()) {
                     (false, _) => v,
                     (true, FormatKind::Uint) => f as u32,
                     (true, FormatKind::Sint) => f as i32 as u32,
-                    (true, _) if snorm => (f.clamp(-1.0, 1.0) * max).round() as i32 as u32,
-                    (true, _) if norm => (f.clamp(0.0, 1.0) * mask as f32).round() as u32,
-                    (true, _) => v,
+                    (true, _) if snorm => {
+                        (f.clamp(-1.0, 1.0) * (m >> 1) as f32).round() as i32 as u32
+                    }
+                    (true, _) if norm => (f.clamp(0.0, 1.0) * m as f32).round() as u32,
+                    (true, _) => small_float(f, bits),
                 };
-                stored & mask
+                stored & m
             })
             .collect(),
     )
 }
 
-/// One texel's bytes for a storage clear of a typed buffer view.
+/// One texel's bytes for a storage clear of a typed buffer view: the components packed from the
+/// lowest bit, little-endian.
 fn storage_texel(
     format: wcontainers_gpu::Format,
     values: [u32; 4],
     float: bool,
 ) -> Option<Vec<u8>> {
-    let bits = components(format)?.1;
-    Some(
-        storage_bits(format, values, float)?
-            .into_iter()
-            .flat_map(|c| c.to_le_bytes().into_iter().take(bits as usize / 8))
-            .collect(),
-    )
+    let widths = components(format)?;
+    let (mut packed, mut at) = (0u128, 0);
+    for (bits, s) in widths.iter().zip(storage_bits(format, values, float)?) {
+        packed |= u128::from(s) << at;
+        at += bits;
+    }
+    Some(packed.to_le_bytes()[..at as usize / 8].to_vec())
 }
 
 /// A storage clear as the value [`ClearValue::Color`] takes for the format.
@@ -2898,26 +3017,22 @@ fn storage_clear_value(
     values: [u32; 4],
     float: bool,
 ) -> Option<[u32; 4]> {
-    let (_, bits) = components(format)?;
+    let widths = components(format)?;
     let stored = storage_bits(format, values, float)?;
     let (snorm, norm) = normalised(format);
-    let mask = if bits == 32 {
-        u32::MAX
-    } else {
-        (1 << bits) - 1
-    };
     let mut out = [0; 4];
-    for (o, s) in out.iter_mut().zip(stored) {
+    for ((o, s), &bits) in out.iter_mut().zip(stored).zip(widths) {
+        let m = mask(bits);
         *o = match format.kind() {
             FormatKind::Uint => s,
             // Sign-extended from the component's width.
             FormatKind::Sint => (((s << (32 - bits)) as i32) >> (32 - bits)) as u32,
             _ if snorm => {
                 let signed = ((s << (32 - bits)) as i32) >> (32 - bits);
-                (signed as f32 / (mask >> 1) as f32).max(-1.0).to_bits()
+                (signed as f32 / (m >> 1) as f32).max(-1.0).to_bits()
             }
-            _ if norm => (s as f32 / mask as f32).to_bits(),
-            _ => s,
+            _ if norm => (s as f32 / m as f32).to_bits(),
+            _ => small_float_value(s, bits).to_bits(),
         };
     }
     Some(out)
@@ -3123,4 +3238,53 @@ pub(crate) fn stored_size(width: u64, max: u64) -> u64 {
     width
         .next_multiple_of(256)
         .min(max.max(width.next_multiple_of(4)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wcontainers_gpu::Format;
+
+    fn texel(format: Format, values: [f32; 4], float: bool) -> u32 {
+        let values = if float {
+            values.map(f32::to_bits)
+        } else {
+            values.map(|v| v as u32)
+        };
+        let bytes = storage_texel(format, values, float).unwrap();
+        u32::from_le_bytes(bytes.try_into().unwrap())
+    }
+
+    /// Typed buffer clears as vkd3d's test_clear_unordered_access_view_buffer expects them, which
+    /// real Direct3D 12 passes.
+    #[test]
+    fn storage_clears_pack_each_format() {
+        let half = Format::Rg16Float;
+        assert_eq!(texel(half, [4660.0, 43981.0, 0.0, 0.0], false), 0xabcd_1234);
+        assert_eq!(texel(half, [0.5, 1.0, 0.0, 0.0], true), 0x3c00_3800);
+        let norm = Format::Rg16Unorm;
+        assert_eq!(texel(norm, [0.25, 1.0, 0.0, 0.0], true), 0xffff_4000);
+        assert_eq!(texel(norm, [2.0, 0.0, 0.0, 0.0], true), 0x0000_ffff);
+        assert_eq!(texel(norm, [-1.0, 0.0, 1.0, 1.0], true), 0);
+        let small = Format::Rg11b10Float;
+        assert_eq!(texel(small, [0.0; 4], false), 0);
+        assert_eq!(texel(small, [0.5, 1.0, 2.0, 0.0], true), 0x801e_0380);
+        assert_eq!(texel(small, [0.5, 0.0, -1.0, 0.5], true), 0x0000_0380);
+        assert_eq!(
+            texel(Format::Rgba8Uint, [17.0, 34.0, 51.0, 68.0], false),
+            0x4433_2211
+        );
+        assert_eq!(
+            texel(Format::Rgb10a2Unorm, [1.0, 0.0, 1.0, 1.0], true),
+            0xc000_0000 | 0x3ff << 20 | 0x3ff
+        );
+    }
+
+    #[test]
+    fn storage_clears_of_textures_take_the_stored_bits_as_values() {
+        let v = storage_clear_value(Format::Rg16Float, [0x3c00, 0xbc00, 0, 0], false).unwrap();
+        assert_eq!(v[..2], [1.0f32.to_bits(), (-1.0f32).to_bits()]);
+        let v = storage_clear_value(Format::Rg11b10Float, [0x3c0, 0x380, 0x200, 0], false).unwrap();
+        assert_eq!(v[..3], [1.0f32, 0.5, 2.0].map(f32::to_bits));
+    }
 }

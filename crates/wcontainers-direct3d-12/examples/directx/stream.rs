@@ -182,8 +182,15 @@ pub unsafe fn read(stream: &D3D12_PIPELINE_STATE_STREAM_DESC) -> Result<Pipeline
                     return Err(E_INVALIDARG.into());
                 }
             }
-            // Amplification and mesh shaders, which `D3D12_OPTIONS7` reports absent, and types
-            // that do not exist.
+            // Amplification and mesh shaders, which `D3D12_OPTIONS7` reports absent: taken only
+            // empty.
+            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS | D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS => {
+                let code = value!(D3D12_SHADER_BYTECODE);
+                if !code.pShaderBytecode.is_null() && code.BytecodeLength != 0 {
+                    return Err(E_INVALIDARG.into());
+                }
+            }
+            // Types that do not exist.
             _ => return Err(E_INVALIDARG.into()),
         }
     }
