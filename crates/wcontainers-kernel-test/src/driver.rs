@@ -58,6 +58,8 @@ pub struct Run {
     pub broken: Vec<String>,
     /// Whether the kernel closed every output end once the container ended.
     pub outputs_closed: bool,
+    /// Whether the kernel closed the input end before the outside did.
+    pub input_closed: bool,
 }
 
 /// The host used in tests. Randomness comes from a seed so runs repeat exactly. When the kernel is idle
@@ -614,6 +616,7 @@ pub fn run_prepared(
             Next::Finished { status } => break status,
         }
     };
+    let input_closed = host.streams.input_closed_by_kernel();
     let outputs_closed = streams::finish(&mut kernel, &mut cpu, &mut host);
     if let Some(error) = kernel.start_failure() {
         // Never in a copy: no save is made before the first program runs.
@@ -637,6 +640,7 @@ pub fn run_prepared(
         most_input_credit: host.streams.most_input_credit,
         broken: host.streams.broken,
         outputs_closed,
+        input_closed,
     };
     Ok(finish(run, report))
 }
@@ -859,6 +863,7 @@ fn encode(run: &Run) -> Vec<u8> {
     number(&mut out, run.turns);
     number(&mut out, run.most_input_credit);
     number(&mut out, run.outputs_closed.into());
+    number(&mut out, run.input_closed.into());
     number(&mut out, run.broken.len() as u64);
     for broken in &run.broken {
         bytes(&mut out, broken.as_bytes());
@@ -915,6 +920,7 @@ fn decode(input: &[u8]) -> Run {
     let turns = reader.number();
     let most_input_credit = reader.number();
     let outputs_closed = reader.number() != 0;
+    let input_closed = reader.number() != 0;
     let broken = (0..reader.number()).map(|_| reader.text()).collect();
     let warnings = (0..reader.number())
         .map(|_| Warned {
@@ -956,5 +962,6 @@ fn decode(input: &[u8]) -> Run {
         most_input_credit,
         broken,
         outputs_closed,
+        input_closed,
     }
 }

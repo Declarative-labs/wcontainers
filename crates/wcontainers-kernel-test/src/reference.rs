@@ -12,6 +12,9 @@ pub const IMAGE: &str = "alpine:3.22";
 /// The container's host name, set so that both runners see the same environment.
 pub const HOSTNAME: &str = "wc-kernel";
 
+/// What `docker run -t` adds to the environment.
+pub const TERMINAL_VARIABLE: &str = "TERM=xterm";
+
 /// The environment a default Docker container gives its first process.
 pub const ENVIRONMENT: &[&str] = &[
     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -260,6 +263,9 @@ pub fn run_outside(
             .stderr(Stdio::from(slave))
             .spawn()
             .expect("running docker");
+        // The command holds the slave's copies until it goes; the master reads EIO only once
+        // every copy is closed.
+        drop(docker);
         threads.push(reader(
             master_file.try_clone().expect("master"),
             false,
@@ -296,6 +302,7 @@ pub fn run_outside(
         }
         child
     };
+    let mut found = crate::streams::Found::default();
     for step in &outside.script {
         match step {
             Step::Expect(bytes) => {
@@ -303,9 +310,7 @@ pub fn run_outside(
                 loop {
                     let seen = {
                         let shown = shown.lock().expect("shown");
-                        [&shown.0, &shown.1]
-                            .iter()
-                            .any(|shown| shown.windows(bytes.len()).any(|window| window == bytes))
+                        found.look(&shown.0, &shown.1, bytes)
                     };
                     if seen {
                         break;

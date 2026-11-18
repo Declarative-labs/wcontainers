@@ -20,11 +20,16 @@ pub const UNLIMITED: u64 = u64::MAX;
 /// The largest piece the outside sends at once; pieces are drawn from the seed up to this.
 const MOST_AT_ONCE: u64 = 1 << 16;
 
+/// How many turns a container that never waits runs before the outside's next piece reaches it;
+/// one that waits gets it when it waits, as a real outside's bytes take longer to come than a
+/// program takes to reach its next wait.
+const BUSY_TURNS: u64 = 10_000;
+
 /// One step of what the outside does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// Waits until what the container has shown (its output and error, or all its terminal shows)
-    /// holds these bytes.
+    /// Waits until what the container has shown (its output or error, or all its terminal shows)
+    /// holds these bytes after what the last step that waited found.
     Expect(Vec<u8>),
     /// Sends bytes in, in pieces as credit allows.
     Send(Vec<u8>),
@@ -44,8 +49,8 @@ pub struct Outside {
     /// Descriptors 0 to 2 are a terminal of this many columns and rows (`docker run -t`).
     pub terminal: Option<(u16, u16)>,
     pub script: Vec<Step>,
-    /// How many bytes of output it takes at a time, and only when the container can go on no other
-    /// way; none to take everything as it comes.
+    /// How many bytes of output (not error) it takes at a time, and only when the container can go
+    /// on no other way (none at all for 0); none to take everything as it comes.
     pub output_pace: Option<u64>,
     /// Breaks the credit rule on purpose: sends this many bytes past its credit with each piece.
     pub excess: u64,
@@ -92,6 +97,10 @@ pub struct Streams {
     /// The next step of the script, and what is left to send of a step that sends.
     step: usize,
     sending: Option<Vec<u8>>,
+    /// Turns run since the last piece was sent.
+    since_sent: u64,
+    /// How far into the output and the error the last step that waited found what it waited for.
+    found: Found,
     /// Credit the kernel gave on the input end and not yet used, and the most it ever was.
     pub input_credit: u64,
     pub most_input_credit: u64,
@@ -103,6 +112,7 @@ pub struct Streams {
     /// The ends the kernel closed, and the ones this side closed.
     pub closed_by_kernel: BTreeSet<End>,
     closed_here: BTreeSet<End>,
+    input_closed_first: bool,
     /// What the kernel did against the rules: sending past credit, or after its close.
     pub broken: Vec<String>,
     /// Whether what comes out also goes to this process's own streams.
@@ -155,6 +165,9 @@ impl Streams {
     }
 
     pub fn close(&mut self, end: End) {
+        if Some(end) == self.outside.input_end() && !self.closed_here.contains(&end) {
+            self.input_closed_first = true;
+        }
         if !self.closed_by_kernel.insert(end) {
             self.broken.push(format!("{end:?}: closed twice"));
         }
@@ -173,9 +186,59 @@ impl Streams {
             .all(|end| self.closed_by_kernel.contains(end) || self.closed_here.contains(end))
     }
 
+    /// Whether the kernel closed the input end (it had no reader left) before this side did.
+    pub fn input_closed_by_kernel(&self) -> bool {
+        self.input_closed_first
+    }
+
+    /// How much output credit the outside gives on `end` at a time, if it is slow.
+    fn pace(&self, end: End) -> Option<u64> {
+        self.outside.output_pace.filter(|_| end != ERROR)
+    }
+
+    /// The credit the outside gives on an output end now: what it gives at a time, once the end
+    /// is open and the credit given before is used up.
+    fn due(&self, end: End) -> u64 {
+        let open = !self.closed_by_kernel.contains(&end) && !self.closed_here.contains(&end);
+        let used = self.given.get(&end).copied().unwrap_or(0) == 0;
+        match open && used {
+            true => self.pace(end).unwrap_or(UNLIMITED),
+            false => 0,
+        }
+    }
+
     /// What the script waits for, for a run that can go on no further.
     pub fn stuck_at(&self) -> Option<&Step> {
         self.outside.script.get(self.step)
+    }
+}
+
+/// How far into what a container has shown the waiting steps have found what they waited for.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Found {
+    output: usize,
+    error: usize,
+}
+
+impl Found {
+    /// Whether `bytes` is in the output or the error past what was found before; if so, it is
+    /// found up to its end.
+    pub fn look(&mut self, output: &[u8], error: &[u8], bytes: &[u8]) -> bool {
+        let at = |shown: &[u8], from: usize| {
+            shown[from.min(shown.len())..]
+                .windows(bytes.len())
+                .position(|window| window == bytes)
+                .map(|position| from + position + bytes.len())
+        };
+        if let Some(end) = at(output, self.output) {
+            self.output = end;
+            return true;
+        }
+        if let Some(end) = at(error, self.error) {
+            self.error = end;
+            return true;
+        }
+        false
     }
 }
 
@@ -187,11 +250,10 @@ pub trait StreamHost: wcontainers_abi::Host {
 
 /// What the outside does at the start: credit for all the output when it takes everything.
 pub fn begin(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost) {
-    if host.streams().outside.output_pace.is_some() {
-        return;
-    }
     for end in host.streams().outside.outputs() {
-        give(kernel, cpu, host, end, UNLIMITED);
+        if host.streams().pace(end).is_none() {
+            give(kernel, cpu, host, end, UNLIMITED);
+        }
     }
 }
 
@@ -208,17 +270,15 @@ fn close_here(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost
 }
 
 /// The outside's next move, after a turn or (`idle`) when the container can go on no other way:
-/// a piece of what it sends (always when idle, else at moments drawn from the seed), output credit
+/// a piece of what it sends (when idle, or after [`BUSY_TURNS`] turns without), output credit
 /// when it is slow and the container idle, and the script's other steps. Whether it did anything.
 pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, idle: bool) -> bool {
     let mut acted = false;
-    if idle && let Some(pace) = host.streams().outside.output_pace {
+    if idle {
         for end in host.streams().outside.outputs() {
-            let streams = host.streams();
-            let open =
-                !streams.closed_by_kernel.contains(&end) && !streams.closed_here.contains(&end);
-            if open && streams.given.get(&end).copied().unwrap_or(0) == 0 {
-                give(kernel, cpu, host, end, pace);
+            let due = host.streams().due(end);
+            if due > 0 {
+                give(kernel, cpu, host, end, due);
                 acted = true;
             }
         }
@@ -230,10 +290,7 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
         };
         match step {
             Step::Expect(bytes) => {
-                let seen = [&streams.stdout, &streams.stderr]
-                    .iter()
-                    .any(|shown| shown.windows(bytes.len()).any(|window| window == bytes));
-                if !seen {
+                if !streams.found.look(&streams.stdout, &streams.stderr, &bytes) {
                     return acted;
                 }
                 streams.step += 1;
@@ -252,10 +309,11 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
                     streams.step += 1;
                     continue;
                 }
-                let now = idle || host.choices().random_ratio(1, 4);
-                if credit == 0 || !now {
+                streams.since_sent += u64::from(!idle);
+                if credit == 0 || !(idle || streams.since_sent >= BUSY_TURNS) {
                     return acted;
                 }
+                streams.since_sent = 0;
                 let most = credit.min(left.len() as u64).min(MOST_AT_ONCE);
                 let piece = host.choices().random_range(1..=most) as usize;
                 let excess = host.streams().outside.excess as usize;
@@ -301,7 +359,6 @@ pub fn act(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost, i
 /// After the container's end: takes the output still held, at the outside's pace, until the kernel
 /// closes every output end; then lets go of every end. Whether every output end was closed.
 pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost) -> bool {
-    let pace = host.streams().outside.output_pace.unwrap_or(UNLIMITED);
     loop {
         if host.streams().outputs_closed() {
             break;
@@ -309,11 +366,9 @@ pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &mut impl StreamHost
         let before = (host.streams().stdout.len(), host.streams().stderr.len());
         let mut gave = false;
         for end in host.streams().outside.outputs() {
-            let streams = host.streams();
-            let open =
-                !streams.closed_by_kernel.contains(&end) && !streams.closed_here.contains(&end);
-            if open && streams.given.get(&end).copied().unwrap_or(0) == 0 {
-                give(kernel, cpu, host, end, pace);
+            let due = host.streams().due(end);
+            if due > 0 {
+                give(kernel, cpu, host, end, due);
                 gave = true;
             }
         }
