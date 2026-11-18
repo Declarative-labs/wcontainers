@@ -59,7 +59,8 @@ const GREGS: [usize; 16] = [
 
 /// The runner's own frame, its XSAVE area and its thread pointers, while a case runs.
 static mut HOST_GREGS: [libc::greg_t; 23] = [0; 23];
-static mut HOST_FP: [u8; 8192] = [0; 8192];
+const HOST_FP_CAPACITY: usize = 8192;
+static mut HOST_FP: [u8; HOST_FP_CAPACITY] = [0; HOST_FP_CAPACITY];
 static mut HOST_FP_BYTES: usize = 0;
 static mut HOST_FS: u64 = 0;
 static mut HOST_GS: u64 = 0;
@@ -101,6 +102,23 @@ fn ymm_offset() -> usize {
     core::arch::x86_64::__cpuid_count(0xd, 2).ebx as usize
 }
 
+/// The legacy FXSAVE area's bytes.
+const LEGACY_FP_BYTES: usize = 512;
+
+/// Linux's `struct _fpx_sw_bytes`, in the last 48 bytes of the legacy area of a signal frame
+/// (arch/x86/include/uapi/asm/sigcontext.h).
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+struct FpxSoftwareBytes {
+    magic1: u32,
+    /// The frame's whole FP area, the XSAVE area and its trailing magic.
+    extended_size: u32,
+    xfeatures: u64,
+    xstate_size: u32,
+    padding: [u32; 7],
+}
+
 /// The frame's XSAVE area and its size: the legacy 512 bytes, or the whole area when the frame holds the
 /// extended state.
 unsafe fn fp_area(uc: *const libc::ucontext_t) -> (*mut u8, usize, bool) {
@@ -110,13 +128,19 @@ unsafe fn fp_area(uc: *const libc::ucontext_t) -> (*mut u8, usize, bool) {
             .add(1)
             .cast::<*mut u8>()
             .read();
-        let magic = (fp.add(464) as *const u32).read_unaligned();
-        let extended = magic == FP_XSTATE_MAGIC1;
+        let software = (fp.add(LEGACY_FP_BYTES - size_of::<FpxSoftwareBytes>())
+            as *const FpxSoftwareBytes)
+            .read_unaligned();
+        let extended = software.magic1 == FP_XSTATE_MAGIC1;
         let size = if extended {
-            (fp.add(464 + 8) as *const u32).read_unaligned() as usize
+            software.extended_size as usize
         } else {
-            512
+            LEGACY_FP_BYTES
         };
+        assert!(
+            size <= HOST_FP_CAPACITY,
+            "the frame's FP area is {size} bytes, more than the runner keeps"
+        );
         (fp, size, extended)
     }
 }
