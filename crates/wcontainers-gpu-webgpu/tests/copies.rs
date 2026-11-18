@@ -776,3 +776,183 @@ fn depth_and_stencil_parts_copy_and_read_back_exactly() {
         assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
     }
 }
+
+/// A copy between regions of one subresource (as Vulkan and OpenGL allow) goes through a buffer,
+/// counted; between two levels of one texture it is one copy.
+#[test]
+fn copies_within_one_subresource_go_through_a_buffer() {
+    let mut b = device();
+    let b = &mut b;
+    let t = b
+        .create_texture(&wcontainers_gpu::TextureDesc {
+            dimension: wcontainers_gpu::TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: W,
+            height: H,
+            depth_or_layers: 1,
+            mip_levels: 2,
+            samples: 1,
+            usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let texels: Vec<u8> = (0..W * H * 4).map(|i| (i * 13 + 5) as u8).collect();
+    b.write_texture(
+        &region(&t, 0, 0),
+        extent(W, H),
+        &texels,
+        W * 4,
+        H,
+        WriteMode::Ordered,
+    );
+    // Mip 0 at (2, 1) into mip 1 at (0, 0): different subresources.
+    let mut level1 = TextureRegion {
+        mip: 1,
+        ..region(&t, 0, 0)
+    };
+    b.copy_texture(&region(&t, 2, 1), &level1, extent(4, 2));
+    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinTexture), 0);
+    // Mip 0 at (0, 0) into mip 0 at (4, 2), 3 by 2: one subresource.
+    b.copy_texture(&region(&t, 0, 0), &region(&t, 4, 2), extent(3, 2));
+    assert_eq!(b.slow_paths().count(SlowPath::CopyWithinTexture), 1);
+    let mut want = texels.clone();
+    for y in 0..2 {
+        for x in 0..3 {
+            let (from, to) = ((y * W + x) * 4, ((y + 2) * W + x + 4) * 4);
+            let texel = texels[from as usize..][..4].to_vec();
+            want[to as usize..][..4].copy_from_slice(&texel);
+        }
+    }
+    assert_eq!(read(b, &t, 4), want, "mip 0");
+    level1.origin = Origin::default();
+    let rb = b
+        .read_back(&ReadSource::Texture {
+            region: level1,
+            extent: extent(4, 2),
+        })
+        .unwrap();
+    b.submit();
+    b.wait_read(&rb);
+    let mut got = vec![0; 32];
+    b.finish_read(rb, &mut got);
+    let mut want1 = Vec::new();
+    for y in 1..3 {
+        want1.extend_from_slice(&texels[((y * W + 2) * 4) as usize..][..16]);
+    }
+    assert_eq!(got, want1, "mip 1");
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// `r16unorm` and `r16uint` texels copied into `depth16unorm` (Direct3D's `R16_TYPELESS` group)
+/// keep their bits.
+#[test]
+fn sixteen_bit_group_copies_into_depth_keep_the_bits() {
+    let mut b = device();
+    let b = &mut b;
+    let words: Vec<u16> = (0..W * H)
+        .map(|i| {
+            [0, 1, 0x7fff, 0x8000, 0xfffe, 0xffff, 12345, 54321][i as usize % 8] ^ (i as u16 * 3)
+        })
+        .collect();
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    for source in [Format::R16Unorm, Format::R16Uint] {
+        if !b.caps().formats.get(source).contains(FormatUse::SAMPLE) {
+            eprintln!("{source:?} is absent on this device: not copied");
+            continue;
+        }
+        let (s, _) = draw::texture_2d(
+            b,
+            source,
+            W,
+            H,
+            TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+        )
+        .unwrap();
+        b.write_texture(
+            &region(&s, 0, 0),
+            extent(W, H),
+            &bytes,
+            W * 2,
+            H,
+            WriteMode::Ordered,
+        );
+        let (d, _) = depth_texture(b, Format::Depth16Unorm);
+        let before = b.slow_paths().count(SlowPath::DepthWrittenByDraw);
+        b.copy_texture(&region(&s, 0, 0), &region(&d, 0, 0), extent(W, H));
+        assert!(b.slow_paths().count(SlowPath::DepthWrittenByDraw) > before);
+        assert_eq!(read(b, &d, 2), bytes, "{source:?} into depth16unorm");
+        assert_eq!(b.status(), DeviceStatus::Ok, "{source:?}");
+    }
+}
+
+/// Query results resolved past the buffer's end are refused with a reason, the device kept.
+#[test]
+fn query_results_past_the_buffer_are_refused() {
+    let mut b = device();
+    let set = b
+        .create_query_set(wcontainers_gpu::QueryKind::OcclusionAny, 4)
+        .unwrap();
+    let dst = b
+        .create_buffer(&BufferDesc {
+            size: 24,
+            usage: BufferUsage::COPY_DST | BufferUsage::COPY_SRC,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    assert!(matches!(
+        b.resolve_queries(&set, 0, 4, &dst, 0),
+        Err(wcontainers_gpu::GpuError::Invalid(_))
+    ));
+    assert!(matches!(
+        b.resolve_queries(&set, 2, 4, &dst, 0),
+        Err(wcontainers_gpu::GpuError::Invalid(_))
+    ));
+    assert_eq!(b.resolve_queries(&set, 0, 3, &dst, 0), Ok(()));
+    let fence = b.submit();
+    b.wait_fence(&fence);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// A 3D level written with more rows to a slice in the data than the extent has keeps every slice.
+#[test]
+fn volume_writes_with_padded_slices_keep_every_slice() {
+    let mut b = device();
+    let b = &mut b;
+    let t = b
+        .create_texture(&wcontainers_gpu::TextureDesc {
+            dimension: wcontainers_gpu::TextureDimension::D3,
+            format: Format::Rgba8Unorm,
+            width: 2,
+            height: 2,
+            depth_or_layers: 2,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    // Rows of 8 bytes, 3 rows to a slice, the third of each slice padding.
+    let data: Vec<u8> = (0..48).map(|i| i as u8 + 1).collect();
+    let whole = Extent {
+        width: 2,
+        height: 2,
+        depth_or_layers: 2,
+    };
+    b.write_texture(&region(&t, 0, 0), whole, &data, 8, 3, WriteMode::Ordered);
+    let rb = b
+        .read_back(&ReadSource::Texture {
+            region: region(&t, 0, 0),
+            extent: whole,
+        })
+        .unwrap();
+    b.submit();
+    b.wait_read(&rb);
+    let mut got = vec![0; 32];
+    b.finish_read(rb, &mut got);
+    let want: Vec<u8> = [&data[0..16], &data[24..40]].concat();
+    assert_eq!(got, want);
+    assert_eq!(b.slow_paths().count(SlowPath::RowsRepacked), 1);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}

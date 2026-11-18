@@ -479,3 +479,56 @@ fn bc_copies_keep_the_blocks_natively_and_decoded() {
         }
     }
 }
+
+/// A level smaller than a block (here 3 by 2, of a 12 by 8 texture) written and read back with
+/// its size in texels, as Direct3D and WebGL 2 give it, on a device with BC and one without: the
+/// back end covers the whole block WebGPU asks for.
+#[test]
+fn levels_smaller_than_a_block_take_their_texel_size() {
+    for features in [
+        wgpu::Features::empty(),
+        wgpu::Features::TEXTURE_COMPRESSION_BC,
+    ] {
+        let mut b = device_without(features);
+        let b = &mut b;
+        for format in [Format::Bc1RgbaUnorm, Format::Bc3RgbaUnorm] {
+            let t = bc_texture(b, format, LEVELS);
+            let texels = |mip| Extent {
+                width: size(SIZE.0, mip),
+                height: size(SIZE.1, mip),
+                depth_or_layers: 1,
+            };
+            let levels: Vec<Vec<u8>> = (0..LEVELS)
+                .map(|mip| {
+                    (0..level_bytes(format, mip))
+                        .map(|i| (i as u32 * 7 + mip * 31) as u8)
+                        .collect()
+                })
+                .collect();
+            for (mip, blocks) in levels.iter().enumerate() {
+                let mip = mip as u32;
+                b.write_texture(
+                    &region(&t, mip),
+                    texels(mip),
+                    blocks,
+                    blocks_extent(mip).width / 4 * format.block().2,
+                    blocks_extent(mip).height / 4,
+                    WriteMode::Ordered,
+                );
+            }
+            for (mip, blocks) in levels.iter().enumerate() {
+                let mip = mip as u32;
+                let src = ReadSource::Texture {
+                    region: region(&t, mip),
+                    extent: texels(mip),
+                };
+                assert_eq!(
+                    &read(b, &src, blocks.len()),
+                    blocks,
+                    "{format:?} level {mip} ({features:?} left out)"
+                );
+            }
+            assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
+        }
+    }
+}
