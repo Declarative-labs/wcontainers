@@ -1,6 +1,7 @@
 cs_atomics.dxil	spirv-reader AtomicSMin
 cs_decrement.dxil	ok-wgsl glsl-write
 cs_images.dxil	unsupported StorageFormatKind
+cs_shared.dxil	ok-wgsl glsl-write
 cs_texels.dxil	unsupported NonFiniteConstant
 cs_through.dxil	unsupported StorageFormatKind
 gs_adjacent.dxil	spirv-reader unsupported

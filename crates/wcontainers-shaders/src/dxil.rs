@@ -217,6 +217,14 @@ pub(crate) fn lower(
         .parse()
         .map_err(|e| ConvertError::Reader(format!("{e}")))?;
     let mut atomics = images::texel_atomics(&mut module)?;
+    // WebGPU's storage buffers are read-only or read-write; one the program only writes is the latter.
+    for (_, v) in module.global_variables.iter_mut() {
+        if let AddressSpace::Storage { access } = &mut v.space
+            && *access == naga::StorageAccess::STORE
+        {
+            *access |= naga::StorageAccess::LOAD;
+        }
+    }
     unconverted(&module)?;
     if !module.overrides.is_empty() {
         // dxil-spirv's only specialisation constant here: the targets' sample count.

@@ -98,6 +98,16 @@ fn cases(seed: u64) -> Vec<Case> {
             groups: 4,
         },
         Case {
+            shader: "cs_shared",
+            views: vec![View {
+                bytes: vec![0; 2048],
+                raw: true,
+                counter: None,
+                append: false,
+            }],
+            groups: 2,
+        },
+        Case {
             shader: "cs_decrement",
             views: vec![View {
                 bytes: words(&returned),
