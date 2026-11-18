@@ -1256,6 +1256,10 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
     7 of 8, in Chrome 9 of 11 routes (the known two). BC reference 1 of 2 (the known decoded
     route). Unit tests 10 of 10. Scene and rig verdicts as expected. Clippy with warnings denied,
     native and wasm32: clean.
+  - The same full run again after the 10-10-10-2 read back and the loss messages (out
+    C:\wc\out\webgl\g3b-all2, scratch g3b/all2.log, the commit before this status's last):
+    identical counts on every route, unit tests 10 of 10. The copy checks touching 10-10-10-2
+    (8, some.cmd, scratch g3b/packed1.log) passed on ANGLE and in Chrome before it.
 - The Direct3D 11 front's scenes through its WebGL 2 build (the library built with
   `--features webgl` over this back end on ANGLE, the rig's references; scenes command as in the
   Direct3D 11 status, with `git submodule update --init --recursive -q` first in the build;
@@ -1790,7 +1794,8 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   were deleted in run 13; angle\build.cmd makes the second again (about 4 m 30 s). The track's
   build directory C:\wc\target\phase-2-graphics-webgl (19.6 GB) was deleted at the end of run 15,
   as the runs are now asked to; the next build.cmd makes it again from nothing. C: had 407 GB free
-  after. Run 16 built it again from nothing and deleted it at its end. Run 17 did the same (C: had 441 GB free after). Run 18 did the same (C: had 443 GB free after).
+  after. Run 16 built it again from nothing and deleted it at its end. Run 17 did the same (C: had 441 GB free after). Run 18 did the same (C: had 443 GB free after). G3b run 1 built it again (with the
+  Direct3D 11 library's WebGL 2 build in its `webgl` folder) and deleted it at its end.
 - C:\wc\tools\mozangle-0.7.1-patched (run 5): the mozangle crate's sources, unpacked and patched by
   angle\build.cmd. Its size was not measured.
 - Left by the independent check of the first run (not ours to remove without asking): the pictures
