@@ -1,9 +1,73 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 11 of G4 as a whole (2026-11-17).
+Runs so far: six on G4a, the first slice; then runs 1 to 12 of G4 as a whole (2026-11-17).
 
 ## Where things stand
+
+G4 run 12 (2026-11-17, about 18:50 to 19:40 Pacific). Merged origin/phase-2-graphics-webgl,
+-direct3d-12 and -shaders cleanly (-graphics, -webgpu and -rig had nothing new); the merged tree
+linted and passed front (34) and library (15 + 14) tests on the desktop and was pushed (fb6e1b1)
+before any change. The shaders crate brought filtering and border colours in the program. The
+Mac's disk filled for about ten minutes mid-run (nothing could run or be written); nothing was lost.
+- Samplers the back end lacks, through the shaders crate's variants (`StageVariant`, chosen per
+  draw): a sampler slot addressing by border where the back end has no `BORDER_COLOR`
+  (`border_in_shader`: the program filters through it, every address mode included), mirror-once
+  where it has no `MIRROR_ONCE` (`mirror_once_in_shader`; through `border_in_shader` where the
+  program gathers, compares or offsets through that slot, `Shader::mirror_filtered`, since the
+  mirror variant refuses those), and a texture slot whose view's format the back end cannot
+  filter, sampled through a filtering sampler (`filter_in_shader`; before, refused). The bound
+  sampler is made clamping on such axes (`gpu_sampler`); the helper block gets `SamplerState`
+  (`device::sampler_state`), `BorderColor` and `TextureComponents` (`format::components`). Slow
+  paths `BorderInShader`, `MirrorOnceInShader`, `FilterInShader`. The rig's samplers scene now
+  matches (5 outputs; the sixth absent: min/max filtering); Wine's test_create_sampler_state passes.
+- Constant buffer windows shorter than their shader's block (`*SetConstantBuffers1`): read through
+  a copy of the block's size whose bytes past the window are zero (`object::Window`, kept on the
+  buffer), copied again at a draw when the buffer was written since (`Buffer::writes`, counted at
+  `UpdateSubresource`, `Unmap` and copies; constant buffers take no other writes) or its back-end
+  buffer changed. Counted as `ConstantBufferGrown`. The rig's constants scene matches.
+- Feature levels 9_1, 9_2 and 9_3: devices are made at them (also from Direct3D's default list),
+  with their texture limits (2D, cube and 3D extents, no arrays; 10_x's and 11_x's limits are now
+  checked too) and shader models (`shader::check_model`: 9_x takes 4_0 programs carrying their
+  `Aon9` form, 10_0 4_0, 10_1 4_1, 11_x 5_x). The rig's levels scene matches (its 9_1 triangle,
+  largest difference 0); Wine's test_fl9_draw passes.
+- `D3D_DRIVER_TYPE_SOFTWARE` was numbered 5 (WARP's number); now 4, so a software driver without
+  a module answers `E_INVALIDARG` as real Direct3D does.
+- DXGI 1.3 to 1.6 factories (`IDXGIFactory6`: creation flags, `EnumAdapterByLuid`,
+  `EnumAdapterByGpuPreference`, `CheckFeatureSupport` answering no tearing) and DXGI 1.3 to 1.5
+  swap chains (`IDXGISwapChain4`: frame latency on waitable swap chains, the current buffer index,
+  `CheckColorSpaceSupport`/`SetColorSpace1` from the infrastructure crate's `presents_in`,
+  `ResizeBuffers1` without queues, `SetHDRMetaData` of no metadata; source size, matrix and the
+  waitable object stay unserved, named). The rig's device scene matches with the forwarding
+  d3d11.dll, dxgi.dll and wcontainers_directx.dll; with only d3d11.dll replaced it differs at its
+  line 25 (see Departures).
+- Depth bias in the pixel program (`StageVariant::depth_bias`, the shaders crate's `DEPTH_BIAS`
+  variant, slow path `DepthBiasInShader`) where the back end lacks the bias clamp
+  (`DEPTH_BIAS_CLAMP`, the WebGL 2 build on this ANGLE) or would move 24-bit depth it stores as
+  float by float steps (no `DEPTH24_UNORM`; before, refused): the draw takes a twin of the raster
+  block without the bias (`raster_twin`, beside the sample mask twins) and the helper block holds
+  units, slope, clamp and the format's step. Float depth is refused by name there (its step varies
+  with the depth), as is a draw without a pixel shader. Raster blocks leave out a clamp the back
+  end lacks.
+- Creation answers from Wine's tests: immutable and dynamic buffers need a binding and none the
+  GPU writes (stream output, target, unordered access), immutable textures likewise;
+  `CheckFeatureSupport(FORMAT_SUPPORT)` of a format the device lacks zeroes its answer;
+  `CreateGeometryShader`, `...WithStreamOutput`, `CreateHullShader` and `CreateDomainShader`
+  answer `E_INVALIDARG` for a null pointer, another stage or a model the level does not take, and
+  `E_NOTIMPL` otherwise (`unserved_shader`). test_resource_access now fails only by skipping 11_1.
+- Results: Wine's d3d11 file 90 of the 162 that pass on real Direct3D at 7aa02d9 (88 at run 11;
+  169 s; logs/g4r12z-wine.log): new passes test_create_sampler_state and test_fl9_draw, none lost
+  (the later changes were checked on the eight tests they touch, at d6d3441). The rig's scenes
+  through ours at 7aa02d9: 84 outputs match, 54 fail, 2 absent (76, 65, 1 at run 11;
+  logs/g4r12z-scenes.log); at d6d3441 the depth and msaa scenes match too (19 outputs,
+  logs/g4r12p-scenes.log). Still failing: raster (wireframe: WebGPU has no polygon mode), formats
+  (formats the back end lacks), views (reinterpreting views), compute (storage images), geometry,
+  tessellation and streamout (the shaders crate), device in the d3d11-only placement. Through the
+  WebGL 2 build at 7aa02d9: 32 match, 23 absent (26 at run 11; blend now matches;
+  logs/g4r12z-webgl.log); its depth scene now gets past the bias clamp and stops at depth clamping
+  (no `DEPTH_CLAMP`; the shaders crate's `DEPTH_CLAMP` variant is not wired in here yet). The eight
+  real programs still match real Direct3D with largest difference 0, now through our whole DXGI
+  (Measurements).
 
 G4 run 11 (2026-11-17, about 17:30 to 18:50 Pacific). Merged origin/phase-2-graphics-shaders, -rig,
 -webgl and -direct3d-12 cleanly (-graphics and -webgpu had nothing new); the merged tree built,
@@ -710,6 +774,17 @@ resources, views and states.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11: not passing. G4 run 12 (2026-11-17, our library copied in as d3d11.dll, RTX 3080
+  through the queue, not alone): full file at 7aa02d9: 90 of the 162 that pass on real Direct3D
+  (72 fail; 169 s; logs/g4r12z-wine.log). New: test_create_sampler_state, test_fl9_draw. The
+  buckets of run 11 below hold, with these changes: 9_x levels are served, so the eight tests that
+  loop over levels now fail on 11_1 (a gap) and on what each checks beyond it:
+  test_resource_access only skips 11_1 now; test_create_shader stops where the shaders crate
+  refuses a vertex shader (`VertexWithoutPosition`) and then crashes on the shader it never got;
+  test_format_support and test_swapchain_formats answer formats differently at some levels (not
+  yet read); test_device_interfaces asks for debug devices (`DXGI_ERROR_SDK_COMPONENT_MISSING`,
+  a gap: no debug layer). Border colours are served (test_create_sampler_state passes);
+  test_gather and test_gather_c stop at `DynamicOffset` (shaders crate).
 - d3d11: not passing. G4 run 11 (2026-11-17, our library copied in as d3d11.dll, RTX 3080
   through the queue, not alone): full file at 64b209a: 88 of the 162 that pass on real Direct3D
   (74 fail; 184 s; logs/g4r11g-wine.log). First gap of each failing test, by bucket (from each
@@ -969,27 +1044,26 @@ crate's `NormAsInteger`).
 
 ## What comes next (G4b and on)
 
-After G4 run 11, in order (the branch is pushed; everything on it built and passed on the desktop):
-1. Devices at feature levels 9_1 to 9_3: the rig's levels and device scenes and eight Wine tests
-   that loop over levels (each also skips 11_1, a real gap, so those eight stay failing; the
-   levels scene and device scene would pass). Needs 9_x's limits (texture sizes, no arrays but
-   cubes, no structured buffers or UAVs), `4_0_level_9_x` shaders only, `D3D11_FEATURE_D3D9_*`
-   answers and 9_x's format support.
-2. Mirror-once in the program (`mirror_once_in_shader`, built by the shaders crate): sampler
-   slots with `MIRROR_ONCE` where the back end lacks it, bound clamping, with the nine
-   `SamplerState` words (48 bytes) in the helper block. Border colours are still the shaders
-   crate's, so the samplers scene and test_create_sampler_state need both.
-3. Constant buffer windows shorter than their shader's block (the rig's constants scene): copy
-   the window into a buffer of the block's size whose bytes past it are zero, refreshed when the
-   source is written (a copy per draw would split passes).
-4. The WebGL 2 cases (26 of the rig's outputs match through the WebGL 2 build, 23 absent at 10_0;
-   Measurements): what stops the rest is the back end's (dual-source blending, texture views, a
-   depth bias clamp, polygon mode, reading half floats back) except per-target blends without
-   OES_draw_buffers_indexed (`TargetsSplit`, not built) and the depth bias clamp, which the
-   shaders crate's `DEPTH_BIAS` variant could serve in the program.
+After G4 run 12, in order (the branch is pushed; everything on it built and passed on the desktop):
+1. Depth clamping in the program where the back end has no `DEPTH_CLAMP` (the WebGL 2 build's
+   depth scene stops there): the shaders crate's `DEPTH_CLAMP` variant, set in both programs'
+   keys with the same `LinkedValues` (location one past both reflections'), and `DepthRange` in
+   the pixel helper block from the viewport.
+2. Reinterpreting views (the views scene, test_texture, test_texture1d, test_uav_load): typeless
+   textures stored as the integer format of their bits with views decoded in the program
+   (`VariantKey::decoded`, `targets_in_shader`, `NormAsInteger`), or a twin; the biggest piece of
+   this front's own work left.
+3. Wireframe without the back end's polygon mode (the raster scene on WebGPU): no slow path is
+   planned; read section 4 first (culling must still apply to the triangles).
+4. The WebGL 2 cases (32 of the rig's outputs match through the WebGL 2 build, 23 absent at 10_0;
+   Measurements): depth clamping (item 1), texture views (the back end's), polygon mode (this
+   ANGLE lacks `WEBGL_polygon_mode`), reading half floats back (mips), the constants and samplers
+   scenes (device lost in the back end: "naga could not write the shader as GLSL ES 3.00" for the
+   filter library, a loss for the constant window; not read yet).
 5. `ID3D11Device2`/`3` and `ID3D11DeviceContext2`/`3` (the Tool Kit samples' census names
    `CreateTexture2D1` and `CheckMultisampleQualityLevels1`; test_create_rasterizer_state's last
-   checks need `ID3D11RasterizerState2`), and `IDXGISwapChain3`'s color space calls.
+   checks need `ID3D11RasterizerState2`). Read test_format_support's and test_swapchain_formats'
+   per-level answers (9_x format support).
 6. Third family breadth: atg-simplemsaa_pc waits on the WebGPU back end's block-compressed small
    levels (Asked), atg-simplecomputepc on storage images, atg-simplebezierpc on hull and domain
    shaders; Godot through ANGLE on `GeometryShader`, bgfx on `TypedBuffer` and an nvapi64.dll
@@ -1017,7 +1091,13 @@ logs/<label>-<step>.log, printing each exit code and last lines. The steps are t
 
 - One Wine test alone: `tools/graphics-rig/wine-tests run --dll
   'd3d11.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll' d3d11:test_a/test_b`; each test's log
-  is pyro-parked/wcontainers-scratch/graphics-rig/wine-logs/d3d11-<test>-hardware.log.
+  is pyro-parked/wcontainers-scratch/graphics-rig/wine-logs/phase-2-graphics-direct3d-11/d3d11-<test>-hardware.log
+  (the copies directly in wine-logs/ are older).
+- Scenes through the whole library (our DXGI too, as programs in the container get it): the
+  scenes command with `--dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\d3d11.dll' --dll
+  'dxgi.dll=%CARGO_TARGET_DIR%\debug\dxgi.dll' --dll
+  'wcontainers_directx.dll=%CARGO_TARGET_DIR%\debug\wcontainers_directx.dll'` (the device scene
+  matches only so).
 - Real programs (G4 run 7), frames compared with real Direct3D's references by the rig:
   `tools/graphics-rig/programs run --dll 'd3d11.dll=%CARGO_TARGET_DIR%\debug\d3d11.dll' --dll
   'dxgi.dll=%CARGO_TARGET_DIR%\debug\dxgi.dll' --dll
@@ -1131,6 +1211,12 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Tests
 
+At G4 run 12: front.rs 37 tests (new: `border_and_mirror_once_addressing_the_back_end_lacks_is_applied_in_the_program`,
+`a_constant_window_shorter_than_its_block_is_read_through_a_copy_zero_past_it`,
+`a_depth_bias_clamp_the_back_end_lacks_is_added_by_the_pixel_program`; the unfilterable texture
+test now expects filtering in the program), com.rs 15, programs.rs 14; all passing on the desktop
+at d6d3441, lint of both builds clean with warnings denied.
+
 At G4 run 10: front.rs 34 tests, com.rs 15, programs.rs 14 (all run and passing on the desktop).
 Run 10 added front test `a_texture_under_a_minimum_level_clamp_is_sampled_through_a_merged_sampler`
 and programs test `minimum_level_clamps_and_both_helper_blocks_as_direct3d_does` (own_min_lod);
@@ -1204,6 +1290,20 @@ own_queries now also covers pipeline statistics and stream output queries.
 
 ## Departures from the plan
 
+- Run 12: a constant buffer window's copy is counted as `ConstantBufferGrown` (a buffer of the
+  shader's size whose bytes past the program's are zero), not a slow path of its own; its cost is a
+  copy, and a pass split, each time the buffer is written while the window is bound.
+- Run 12: `EnumAdapterByLuid` with another identifier answers `DXGI_ERROR_NOT_FOUND` (Microsoft's
+  page names no code; Wine's DXGI answers so). `IDXGIFactory3::GetCreationFlags` answers 0, since
+  the debug flag's layer is not served.
+- Run 12: the device scene's line 25 (the device made on an adapter reports that adapter) differs
+  when only d3d11.dll is replaced: the scene's adapter then comes from the system's DXGI and our
+  device reports our own adapter and its identifier. With our dxgi.dll too (as in the container)
+  it matches. Reporting the system's adapter would hand programs a factory that cannot make our
+  swap chains.
+- Run 12: depth bias in the program is refused on float depth formats (where the back end lacks
+  the clamp): Direct3D's float step depends on each primitive's largest depth exponent, which the
+  shaders crate's variant does not take.
 - Run 11: resources made with `MISC_SHARED` are taken although nothing can open them: the
   resource works for its device, and the sharing call (`GetSharedHandle`) is refused by name.
   Keyed-mutex resources stay refused (`E_NOTIMPL`), since their whole use is the sharing.
@@ -1316,7 +1416,7 @@ own_queries now also covers pipeline statistics and stream output queries.
 
 ## Interface changes
 
-None in G4 runs 3 to 11.
+None in G4 runs 3 to 12.
 
 - c8a7be9 "interface: copied combined depth-stencil textures whole in copy_texture": the
   documentation of `copy_texture` and `TextureRegion::stencil`, and the plan's sentence in 4.2: a copy
@@ -1328,6 +1428,14 @@ None in G4 runs 3 to 11.
   the plan's text in section 7 (Direct3D 11's constant buffers).
 
 ## Measurements
+
+- 2026-11-17, G4 run 12 (RTX 3080, through the queue, not alone; desktop CPU load 2 % at 19:33,
+  Mac load average 18 to 23): Wine's d3d11 file 90 of 162 in 169 s. Real programs through the
+  forwarding d3d11.dll, dxgi.dll and wcontainers_directx.dll at d6d3441, every compared frame
+  identical to real Direct3D's (largest difference 0): sdk-tutorial02, 04, 05, 06, 07,
+  chocolate-doom (4.3 s), atg-simplelightingpc (3.1 s), atg-simpleinstancingpc (3.3 s), 120
+  frames each (logs/g4r12s-programs.log). Rig scenes: see Where things stand. Module size and
+  building ahead's hits not measured again (no change that touches them).
 
 - 2026-11-17, G4 run 11 (RTX 3080, through the queue, not alone; desktop CPU load 25 % at 18:29,
   Mac load average 9 to 15): Wine's d3d11 file 88 of 162 in 184 s. Real programs through ours,
@@ -1472,9 +1580,6 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   hold two devices at once, so through the library the second device's context would take the
   first's calls. Making the context current again when another back end on the thread made its own
   current (and not terminating a display others use) would serve them.
-- Shaders track: `FilterInShader` (a texture the back end cannot filter, sampled linearly: depth
-  formats on WebGPU, float32 without `float32-filterable`) is refused by name; the front refuses
-  such draws until it is built.
 
 - Interface and shaders track (from Wine's test_depth_stencil_sampling): Direct3D's stencil views
   (`X24_TYPELESS_G8_UINT`, `X32_TYPELESS_G8X24_UINT`) give the stencil in the green channel;
@@ -1508,6 +1613,8 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   dxgi.dll only), so the forwarder placement can be checked by the scenes command.
 
 ## Licences
+
+G4 run 12 added no dependency and installed nothing on the desktop.
 
 G4 run 11 added the windows crate's `Win32_Graphics_Direct3D10` feature (same crate, MIT OR
 Apache-2.0) and installed nothing on the desktop.

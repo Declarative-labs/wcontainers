@@ -1836,6 +1836,71 @@ fn a_pass_without_targets_is_as_large_as_the_viewports_it_draws_through() {
 }
 
 #[test]
+fn a_depth_bias_clamp_the_back_end_lacks_is_added_by_the_pixel_program() {
+    const D24S8: u32 = 45;
+    let mut dev = device();
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    let depth = |dev: &mut Dev, format| {
+        let t = dev
+            .create_texture(&tex2d(16, 16, format, bind::DEPTH_STENCIL), &[])
+            .unwrap();
+        dev.create_view(&t, None, bind::DEPTH_STENCIL).unwrap()
+    };
+    let d24 = depth(&mut dev, D24S8);
+    begin(&mut dev, &rtv, Some(&d24), 16.0);
+    let v = dev
+        .create_shader(&corpus("common.vs_full"), SourceStage::Vertex)
+        .unwrap();
+    let p = dev
+        .create_shader(&corpus("constants.ps_window"), SourceStage::Pixel)
+        .unwrap();
+    dev.vs_set_shader(Some(v));
+    dev.ps_set_shader(Some(p));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let biased = RasterizerDesc {
+        depth_bias: 1000,
+        slope_scaled_depth_bias: 2.0,
+        depth_bias_clamp: 0.001,
+        ..RasterizerDesc::default_state()
+    };
+    let from = dev.backend.log.len();
+    let biased = dev.create_rasterizer_state(&biased).unwrap();
+    dev.rs_set_state(Some(biased));
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    // The draw takes a twin of the raster block without the bias; the program adds it from its
+    // helper block.
+    let rasters: Vec<&String> = log
+        .iter()
+        .filter(|l| l.starts_with("create_raster"))
+        .collect();
+    assert_eq!(rasters.len(), 2, "{rasters:?}");
+    // The state's own block leaves out the clamp the back end lacks.
+    assert!(rasters[0].ends_with("bias 1000 2 0"), "{}", rasters[0]);
+    assert!(rasters[1].ends_with("bias 0 0 0"), "{}", rasters[1]);
+    let count = |p: &str| log.iter().filter(|l| l.starts_with(p)).count();
+    assert_eq!(count("create_shader"), 1, "{log:#?}");
+    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    let words = helper_words(&dev, &log, fragment);
+    let values = [1000.0f32, 2.0, 0.001, 1.0 / 16_777_215.0].map(f32::to_bits);
+    assert!(words.windows(4).any(|w| w == values), "{words:?}");
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::DepthBiasInShader),
+        1
+    );
+    // Float depth's step varies with the depth: refused by name.
+    let d32 = depth(&mut dev, D32F);
+    dev.om_set_render_targets(&[Some(rtv.clone())], Some(d32))
+        .unwrap();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_some());
+}
+
+#[test]
 fn a_constant_window_shorter_than_its_block_is_read_through_a_copy_zero_past_it() {
     let mut dev = device();
     let target = dev
@@ -2051,7 +2116,7 @@ fn a_sample_mask_draws_through_a_raster_block_made_with_it_once() {
         .filter(|l| l.starts_with("create_raster"))
         .collect();
     assert_eq!(made.len(), 1, "{made:?}");
-    assert!(made[0].ends_with("mask 0x5"), "{}", made[0]);
+    assert!(made[0].contains("mask 0x5 "), "{}", made[0]);
     let masked = made[0].split(' ').nth(1).unwrap().to_string();
     let drawn = rasters(&dev, from);
     assert_eq!(drawn.len(), 5);

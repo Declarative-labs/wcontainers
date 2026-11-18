@@ -297,7 +297,7 @@ pub struct DepthStencil<B: Backend> {
 pub type ClampedSampler<B> = (u32, Kept<B, <B as Backend>::Sampler>);
 
 /// A raster block made with one sample mask.
-pub type MaskedRaster<B> = (u32, Kept<B, <B as Backend>::Raster>);
+pub type MaskedRaster<B> = ((u32, bool), Kept<B, <B as Backend>::Raster>);
 
 pub struct Rasterizer<B: Backend> {
     pub desc: RasterizerDesc,

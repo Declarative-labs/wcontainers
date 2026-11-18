@@ -200,7 +200,7 @@ impl<B: Backend> Device<B> {
             .create_depth_stencil(&depth_stencil_block(&ds_desc))
             .map_err(gpu_error)?;
         let raster = backend
-            .create_raster(&raster_block(&raster_desc))
+            .create_raster(&raster_block(&raster_desc, backend.caps()))
             .map_err(gpu_error)?;
         let defaults = Defaults {
             blend: Rc::new(Blend {
@@ -711,6 +711,16 @@ impl<B: Backend> Device<B> {
         match d.usage {
             usage::IMMUTABLE if !has_init => {
                 return Err(Error::InvalidArg("an immutable texture needs initial data"));
+            }
+            usage::IMMUTABLE
+                if d.bind_flags == 0
+                    || d.bind_flags
+                        & (bind::RENDER_TARGET | bind::DEPTH_STENCIL | bind::UNORDERED_ACCESS)
+                        != 0 =>
+            {
+                return Err(Error::InvalidArg(
+                    "an immutable texture is only read, through a binding",
+                ));
             }
             usage::STAGING if d.bind_flags != 0 || d.cpu_access_flags == 0 => {
                 return Err(Error::InvalidArg(
@@ -1340,15 +1350,12 @@ impl<B: Backend> Device<B> {
         if d.fill == 2 && !caps.has(Features::POLYGON_MODE) {
             return not_implemented("wireframe without the back end's polygon mode");
         }
-        if d.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP) {
-            return not_implemented("a depth bias clamp without the back end's");
-        }
         if !d.depth_clip && !caps.has(Features::DEPTH_CLAMP) {
             return not_implemented("depth clamping without the back end's depth clamp");
         }
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_raster(&raster_block(d));
+        let gpu = self.backend.create_raster(&raster_block(d, self.backend.caps()));
         let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Rasterizer {
@@ -1639,6 +1646,15 @@ fn check_buffer(d: &BufferDesc, has_init: bool) -> Result<()> {
     if d.misc_flags & MISC_ALLOW_RAW_VIEWS != 0 && d.bind_flags & views == 0 {
         return Err(Error::InvalidArg("a raw buffer is bound for views"));
     }
+    // What the GPU does not write, it reads through a binding.
+    let written = bind::STREAM_OUTPUT | bind::RENDER_TARGET | bind::UNORDERED_ACCESS;
+    if matches!(d.usage, usage::IMMUTABLE | usage::DYNAMIC)
+        && (d.bind_flags == 0 || d.bind_flags & written != 0)
+    {
+        return Err(Error::InvalidArg(
+            "an immutable or dynamic buffer is only read, through a binding",
+        ));
+    }
     match d.usage {
         usage::DEFAULT if d.cpu_access_flags == 0 => Ok(()),
         usage::IMMUTABLE if !has_init => Err(Error::InvalidArg("an immutable buffer needs data")),
@@ -1774,7 +1790,14 @@ pub(crate) fn depth_stencil_block(d: &DepthStencilDesc) -> GpuDepthStencil {
     }
 }
 
-pub(crate) fn raster_block(d: &RasterizerDesc) -> RasterDesc {
+/// The back end's raster block for Direct3D's description. A bias clamp the back end lacks is left
+/// out: draws with depth to bias add the bias in the pixel program instead (`DepthBiasInShader`).
+pub(crate) fn raster_block(d: &RasterizerDesc, caps: &Caps) -> RasterDesc {
+    let clamp = if caps.has(Features::DEPTH_BIAS_CLAMP) {
+        d.depth_bias_clamp
+    } else {
+        0.0
+    };
     RasterDesc {
         fill: if d.fill == 2 {
             FillMode::Line
@@ -1793,7 +1816,7 @@ pub(crate) fn raster_block(d: &RasterizerDesc) -> RasterDesc {
         },
         depth_bias: (d.depth_bias as f32).to_bits(),
         depth_bias_slope: d.slope_scaled_depth_bias.to_bits(),
-        depth_bias_clamp: d.depth_bias_clamp.to_bits(),
+        depth_bias_clamp: clamp.to_bits(),
         depth_clip: d.depth_clip,
         scissor: d.scissor,
         line_width: 1.0f32.to_bits(),

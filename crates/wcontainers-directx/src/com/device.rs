@@ -596,6 +596,81 @@ impl Device_Impl {
         give(out, ComputeShader::new(shader, self.me()).into())
     }
 
+    /// A shader of a stage this library does not draw yet: what Direct3D refuses (a null pointer,
+    /// another stage, a model the feature level does not take) is refused as it refuses it; the rest
+    /// is not served.
+    fn unserved_shader(
+        &self,
+        bytecode: *const c_void,
+        length: usize,
+        stage: SourceStage,
+        what: &'static str,
+    ) -> Result<()> {
+        if bytecode.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
+        let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
+        let level = self.front.borrow().feature_level();
+        if level < 0xa000
+            || wcontainers_direct3d_11::shader::stage(code).ok() != Some(stage)
+            || wcontainers_direct3d_11::shader::check_model(code, level).is_err()
+        {
+            return Err(E_INVALIDARG.into());
+        }
+        Err(missing(what))
+    }
+
+    pub(super) fn create_geometry_shader(
+        &self,
+        bytecode: *const c_void,
+        length: usize,
+        _linkage: Ref<ID3D11ClassLinkage>,
+        _out: OutRef<ID3D11GeometryShader>,
+    ) -> Result<()> {
+        self.unserved_shader(bytecode, length, SourceStage::Geometry, "geometry shaders")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn create_geometry_shader_with_stream_output(
+        &self,
+        bytecode: *const c_void,
+        length: usize,
+        _entries: *const D3D11_SO_DECLARATION_ENTRY,
+        _count: u32,
+        _strides: *const u32,
+        _stride_count: u32,
+        _rasterized: u32,
+        _linkage: Ref<ID3D11ClassLinkage>,
+        _out: OutRef<ID3D11GeometryShader>,
+    ) -> Result<()> {
+        self.unserved_shader(
+            bytecode,
+            length,
+            SourceStage::Geometry,
+            "geometry shaders with stream output",
+        )
+    }
+
+    pub(super) fn create_hull_shader(
+        &self,
+        bytecode: *const c_void,
+        length: usize,
+        _linkage: Ref<ID3D11ClassLinkage>,
+        _out: OutRef<ID3D11HullShader>,
+    ) -> Result<()> {
+        self.unserved_shader(bytecode, length, SourceStage::Hull, "hull shaders")
+    }
+
+    pub(super) fn create_domain_shader(
+        &self,
+        bytecode: *const c_void,
+        length: usize,
+        _linkage: Ref<ID3D11ClassLinkage>,
+        _out: OutRef<ID3D11DomainShader>,
+    ) -> Result<()> {
+        self.unserved_shader(bytecode, length, SourceStage::Domain, "domain shaders")
+    }
+
     pub(super) fn create_pixel_shader(
         &self,
         bytecode: *const c_void,
@@ -850,8 +925,10 @@ impl Device_Impl {
         }
         if feature == D3D11_FEATURE_FORMAT_SUPPORT {
             let d = unsafe { &mut *data.cast::<D3D11_FEATURE_DATA_FORMAT_SUPPORT>() };
-            d.OutFormatSupport = self.check_format_support(d.InFormat)?;
-            return Ok(());
+            // A format the device lacks answers no uses with the failure.
+            let support = self.check_format_support(d.InFormat);
+            d.OutFormatSupport = *support.as_ref().unwrap_or(&0);
+            return support.map(|_| ());
         }
         if feature == D3D11_FEATURE_FORMAT_SUPPORT2 {
             let d = unsafe { &mut *data.cast::<D3D11_FEATURE_DATA_FORMAT_SUPPORT2>() };
