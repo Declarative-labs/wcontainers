@@ -1,6 +1,7 @@
 //! Every kind of draw, one cell each: plain, instanced with and without a start instance, indexed
 //! with positive and negative base vertices and 16 and 32-bit indices, both indirect draws, and a
 //! vertex buffer bound at an offset. Instances read an offset per instance and a colour per two.
+//! The indirect draws (feature level 11_0) go to a picture of their own, in the same cells.
 
 use anyhow::Result;
 use windows::Win32::Graphics::Direct3D::*;
@@ -68,15 +69,21 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     let vertex = gpu.immutable(bytemuck::cast_slice(&positions), D3D11_BIND_VERTEX_BUFFER)?;
     let offset = gpu.immutable(bytemuck::cast_slice(&offsets), D3D11_BIND_VERTEX_BUFFER)?;
     let color = gpu.immutable(bytemuck::cast_slice(&colors), D3D11_BIND_VERTEX_BUFFER)?;
-    let args = gpu.buffer(
-        &D3D11_BUFFER_DESC {
-            ByteWidth: 4 * ARGS.len() as u32,
-            Usage: D3D11_USAGE_DEFAULT,
-            MiscFlags: D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS.0 as u32,
-            ..Default::default()
-        },
-        Some(bytemuck::cast_slice(&ARGS)),
-    )?;
+    let indirect = match gpu.lacks_level(D3D_FEATURE_LEVEL_11_0) {
+        Some(why) => Err(why),
+        None => {
+            let args = gpu.buffer(
+                &D3D11_BUFFER_DESC {
+                    ByteWidth: 4 * ARGS.len() as u32,
+                    Usage: D3D11_USAGE_DEFAULT,
+                    MiscFlags: D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS.0 as u32,
+                    ..Default::default()
+                },
+                Some(bytemuck::cast_slice(&ARGS)),
+            )?;
+            Ok((args, gpu.target(SIZE, SIZE, DXGI_FORMAT_R8G8B8A8_UNORM)?))
+        }
+    };
     unsafe {
         let c = &gpu.context;
         c.RSSetState(&gpu.rasterizer(&solid())?);
@@ -104,15 +111,27 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         c.IASetIndexBuffer(&i32, DXGI_FORMAT_R32_UINT, 0);
         at(5);
         c.DrawIndexedInstanced(6, 4, 2, indexed_base, 2);
-        at(6);
-        c.DrawInstancedIndirect(&args, 0);
-        c.IASetIndexBuffer(&i32, DXGI_FORMAT_R32_UINT, 4);
-        at(7);
-        // Starts at index 2 of the buffer bound 4 bytes in: index 3 of the whole buffer.
-        c.DrawIndexedInstancedIndirect(&args, 16);
+        if let Ok((args, (_, indirect_rtv))) = &indirect {
+            gpu.begin(indirect_rtv, None, SIZE, SIZE);
+            at(6);
+            c.DrawInstancedIndirect(args, 0);
+            c.IASetIndexBuffer(&i32, DXGI_FORMAT_R32_UINT, 4);
+            at(7);
+            // Starts at index 2 of the buffer bound 4 bytes in: index 3 of the whole buffer.
+            c.DrawIndexedInstancedIndirect(args, 16);
+            c.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+        }
         at(8);
         c.IASetVertexBuffers(0, 1, Some(&Some(vertex)), Some(&8), Some(&(8 * list_start)));
         c.DrawInstanced(6, 2, 0, 1);
     }
-    Ok(vec![Output::picture("", gpu.read(&target, 0, 0)?)])
+    Ok(vec![
+        Output::picture("", gpu.read(&target, 0, 0)?),
+        match indirect {
+            Ok((_, (indirect_target, _))) => {
+                Output::picture("indirect", gpu.read(&indirect_target, 0, 0)?)
+            }
+            Err(why) => Output::absent("indirect", why),
+        },
+    ])
 }

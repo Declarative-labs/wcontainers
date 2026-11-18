@@ -246,43 +246,48 @@ pub fn msaa_scene(gpu: &Gpu) -> Result<Vec<Output>> {
 /// own value, bound as one range of descriptors and blended their own ways.
 pub fn targets(gpu: &Gpu) -> Result<Vec<Output>> {
     const SIZE: u32 = targets11::SIZE;
-    let heap = gpu.descriptor_heap(
-        D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-        targets11::FORMATS.len() as u32,
-        false,
-    )?;
-    let mut textures = Vec::new();
-    for (i, &(format, clear, _)) in targets11::FORMATS.iter().enumerate() {
-        let value = D3D12_CLEAR_VALUE {
-            Format: format,
-            Anonymous: D3D12_CLEAR_VALUE_0 { Color: clear },
-        };
-        let texture = gpu.committed(
-            D3D12_HEAP_TYPE_DEFAULT,
-            &tex2d_desc(SIZE, SIZE, format, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET),
-            RT,
-            Some(&value),
+    let mut outputs = Vec::new();
+    for (prefix, blend, _) in targets11::PARTS {
+        let heap = gpu.descriptor_heap(
+            D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+            targets11::FORMATS.len() as u32,
+            false,
         )?;
-        let rtv = gpu.cpu(&heap, i as u32);
-        unsafe {
-            gpu.device.CreateRenderTargetView(&texture, None, rtv);
-            gpu.list.ClearRenderTargetView(rtv, &clear, None);
+        let mut textures = Vec::new();
+        for (i, &(format, clear, _)) in targets11::FORMATS.iter().enumerate() {
+            let value = D3D12_CLEAR_VALUE {
+                Format: format,
+                Anonymous: D3D12_CLEAR_VALUE_0 { Color: clear },
+            };
+            let texture = gpu.committed(
+                D3D12_HEAP_TYPE_DEFAULT,
+                &tex2d_desc(SIZE, SIZE, format, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET),
+                RT,
+                Some(&value),
+            )?;
+            let rtv = gpu.cpu(&heap, i as u32);
+            unsafe {
+                gpu.device.CreateRenderTargetView(&texture, None, rtv);
+                gpu.list.ClearRenderTargetView(rtv, &clear, None);
+            }
+            textures.push(texture);
         }
-        textures.push(texture);
+        let mut im = Immediate::new(gpu)?;
+        unsafe {
+            gpu.list
+                .OMSetRenderTargets(textures.len() as u32, Some(&gpu.cpu(&heap, 0)), true, None)
+        };
+        area(&gpu.list, 0, 0, SIZE, SIZE);
+        im.targets = targets11::FORMATS.iter().map(|f| f.0).collect();
+        im.blend = blend();
+        im.ps = dxil!("targets.ps");
+        im.draw_colored(&targets11::triangles())?;
+        for (&(_, _, name), texture) in targets11::FORMATS.iter().zip(&textures) {
+            outputs.push(Output::picture(
+                &format!("{prefix}{name}"),
+                gpu.read(texture, 0, RT)?,
+            ));
+        }
     }
-    let mut im = Immediate::new(gpu)?;
-    unsafe {
-        gpu.list
-            .OMSetRenderTargets(textures.len() as u32, Some(&gpu.cpu(&heap, 0)), true, None)
-    };
-    area(&gpu.list, 0, 0, SIZE, SIZE);
-    im.targets = targets11::FORMATS.iter().map(|f| f.0).collect();
-    im.blend = targets11::blend();
-    im.ps = dxil!("targets.ps");
-    im.draw_colored(&targets11::triangles())?;
-    targets11::FORMATS
-        .iter()
-        .zip(&textures)
-        .map(|(&(_, _, name), texture)| Ok(Output::picture(name, gpu.read(texture, 0, RT)?)))
-        .collect()
+    Ok(outputs)
 }

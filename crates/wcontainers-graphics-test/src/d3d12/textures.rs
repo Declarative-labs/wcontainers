@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use super::states::{Immediate, RT, fill_levels};
 use super::{Gpu, transition};
 use crate::d3d11::cell;
-use crate::d3d11::scenes::textures::{BC, SIZE, bc_blocks, subresources};
+use crate::d3d11::scenes::textures::{BC, BC_PARTS, SIZE, bc_blocks, bc67, subresources};
 use crate::dxil;
 use crate::output::Output;
 
@@ -241,18 +241,22 @@ pub fn textures(gpu: &Gpu) -> Result<Vec<Output>> {
         outputs.push(Output::picture(part, gpu.read(&target, 0, RT)?));
     }
 
-    // Block-compressed: each format's texels read exactly into a cell of a float target.
+    // Block-compressed: each format's texels read exactly into a cell of a float target, in
+    // Direct3D 11's parts.
     let float = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    let (target, rtv) = gpu.target(128, 128, float)?;
-    im.begin(Some(&rtv), None, DXGI_FORMAT_UNKNOWN, 128, 128);
-    im.targets = vec![float];
-    im.ps = dxil!("textures.ps_load");
-    unsafe { gpu.list.SetDescriptorHeaps(&[Some(views.clone())]) };
-    for i in 0..bc.len() {
-        im.viewport(cell(i as u32, 4, 32.0));
-        im.tables = vec![(1, gpu.gpu(&views, (kinds.len() + i) as u32))];
-        im.draw(3, [0.0; 4])?;
+    for (part, newer) in BC_PARTS {
+        let (target, rtv) = gpu.target(128, 128, float)?;
+        im.begin(Some(&rtv), None, DXGI_FORMAT_UNKNOWN, 128, 128);
+        im.targets = vec![float];
+        im.ps = dxil!("textures.ps_load");
+        unsafe { gpu.list.SetDescriptorHeaps(&[Some(views.clone())]) };
+        let formats = (0..bc.len()).filter(|&i| bc67(BC[i].0) == newer);
+        for (k, i) in formats.enumerate() {
+            im.viewport(cell(k as u32, 4, 32.0));
+            im.tables = vec![(1, gpu.gpu(&views, (kinds.len() + i) as u32))];
+            im.draw(3, [0.0; 4])?;
+        }
+        outputs.push(Output::picture(part, gpu.read(&target, 0, RT)?));
     }
-    outputs.push(Output::picture("bc", gpu.read(&target, 0, RT)?));
     Ok(outputs)
 }

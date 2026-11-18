@@ -14,8 +14,8 @@
 #       default), or only the named tests, each in its own process, on the GPU or on WARP
 #       (desktop/wine-run.ps1). Tests in wine-excluded.txt never run. --dll puts a replacement library
 #       beside the test programs (paths on the desktop, relative to its checkout). Prints each test's
-#       verdict against the baseline in tools/graphics-rig/wine-baseline (a test passing there must
-#       pass) and exits 1 if one does not. --record runs on real Direct3D and copies the results into
+#       verdict against the baseline in tools/graphics-rig/wine-baseline (a test may fail only the
+#       checks it fails there) and exits 1 if one does not. --record runs on real Direct3D and copies the results into
 #       wine-baseline, to be committed. Logs stay in C:\wc\out\<branch>\wine\logs and are copied to
 #       pyro-parked/wcontainers-scratch/graphics-rig/wine-logs/<branch> on the Mac.
 set -euo pipefail
@@ -59,7 +59,7 @@ mkdir -p "$logs"
 rig_scp "$host:C:/wc/out/$name/wine/logs/*.log" "$logs/" 2>/dev/null || true
 if [ -n "$record" ] && [ $code -eq 0 ]; then
     mkdir -p "$here/wine-baseline"
-    rig_scp "$host:C:/wc/out/$name/wine/*.txt" "$here/wine-baseline/"
+    rig_scp "$host:C:/wc/out/$name/wine/*.txt" "$host:C:/wc/out/$name/wine/*.failures" "$here/wine-baseline/"
     echo "wine-tests: results copied into $here/wine-baseline"
 fi
 exit $code
