@@ -4,6 +4,12 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6b (larger runtimes), third run: /sys is a read-only sysfs whose lookups of Linux's entries are
+counted, a mapped backend file's pages are read when first touched (by the program or by the
+kernel's copies) instead of whole, a program on the backend is read only where the loader needs
+it, Python's whole test_mmap runs (its LargeMmapTests too), and NS_GET_USERNS and NS_GET_PARENT
+are built. See "K6b, third run" just below.
+
 K6b (larger runtimes), second run: /proc/<pid>/ns and /proc/<pid>/mountinfo are built, the
 Python system test modules run with no test ignored, two whole-suite flakes (a guest program
 renamed under a starting container, the reference's per-user signal count shared with other
@@ -13,6 +19,45 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6b, third run
+
+Built, each tested against the reference:
+- /sys (tests/sysfs.rs, guest/sysfs.c): a read-only sysfs is mounted at /sys as in a default
+  container (`ro,nosuid,nodev,noexec,relatime`, the file system's own options `ro`, between
+  /dev/pts and /dev/mqueue in the mount table; guest/mountinfo.c now checks its line). Its root
+  is inode 1, mode 0555, size 0, its own device, statfs SYSFS_MAGIC with no blocks or inodes;
+  every change is EROFS, rmdir of it EBUSY, opening it for writing EISDIR, a long name ENOENT
+  (no length limit, as kernfs), handles only as identifiers (FILEID_INO64_GEN with generation
+  1). It holds none of Linux's entries: looking up one the reference's /sys has (block, bus,
+  class, dev, devices, firmware, fs, kernel, module) is ENOENT, counted "sys entry not built"
+  (detail its index), tested by `sys_entries_not_built_are_counted`.
+- Pages of mapped backend files read when first touched (shared.rs, the fault in signal.rs, the
+  copies in user.rs): a mapping only makes the file's block; a page not read yet has no access,
+  and its first touch reads the 32 pages around it (Linux's read-around, the read-ahead INIT now
+  offers), with the thread waiting for the answer and then going on from the instruction. A
+  kernel copy (a path, a write from mapped bytes, a read into them) that reaches such pages asks
+  for them and 32 pages ahead, and the call runs again once they came, as a call that waits for
+  the backend; a call that had done part of its work first keeps its short result, counted
+  "copy short of backend pages". Answers asked before a change through the kernel are not taken
+  (Linux holds the page locked); a failed read makes the next touch SIGBUS and the one after read
+  again. Reads of a mapped file take held pages from the block and the rest from the backend;
+  writes reach only held pages; write-back sends only held pages; STORE notices hold the pages
+  they cover whole, RETRIEVE gives held pages up to the first missing one. The stand-in's restore
+  copies only a block's pages that hold anything. tests/backend.rs
+  `mapped_pages_read_when_touched_match_reference` (guest/backendmaps.c, with saves: 256 MiB at
+  5 GiB into a sparse file, a 1 GiB mapping, the kernel's copies, fork, private copies, writes
+  while mapped, truncation and SIGBUS).
+- A program on the backend is read only where the loader needs it: its first 256 bytes, then
+  its program headers, its loader's name, its property note and the tails of writable segments
+  (read before the point of no return); its pages come as touched. The counter "backend file
+  read whole when mapped" is gone.
+- Python's whole test_mmap (LargeMmapTests too: 2 GiB and 4 GiB boundaries, a 5 GiB offset, a
+  6 GiB file) now runs in the system modules; alone it matched in 48 s (seed 1 with saves, load
+  79).
+- nsfs's NS_GET_USERNS (a new descriptor, closed at exec, of the machine's user namespace; EPERM
+  for the user namespace itself) and NS_GET_PARENT (EPERM for pid and user, EINVAL for the
+  rest), guest/procns.c.
 
 ## K6b, second run
 
@@ -107,11 +152,12 @@ feature, counted where the kernel sees it:
   IPPROTO_MPTCP)` is EPROTONOSUPPORT, as Linux without CONFIG_MPTCP, counted "socket protocol
   not built" (detail 8590000390). Go's listeners ask for it first and fall back to TCP.
 - "/proc and /sys describe a made-up machine and hold a chosen subset": /proc/cgroups (counted
-  "proc entry not built"), Docker's masks of /proc, and /sys: nothing is mounted at /sys, so the
-  cgroup2 hierarchy at /sys/fs/cgroup is absent and mountinfo lists no cgroup2 mount. Java and
-  Go read mountinfo to find cgroup limits; finding none, they take the machine's (one CPU, its
-  memory), as the reference's unlimited default container gives them. A lookup under /sys finds
-  whatever the image has there and is not counted (see Next).
+  "proc entry not built"), Docker's masks of /proc and /sys/firmware, and /sys's entries: /sys
+  is a read-only sysfs holding none (third run), so the cgroup2 hierarchy at /sys/fs/cgroup is
+  absent and mountinfo lists no cgroup2 mount. Java and Go read mountinfo to find cgroup limits;
+  finding none, they take the machine's (one CPU, its memory), as the reference's unlimited
+  default container gives them. A lookup of an entry Linux has there is counted "sys entry not
+  built" (Java: devices, fs and kernel).
 - "The address space is small": mappings asked above it are placed lower, counted "address
   above the address space" (Node, Go, Java); Java needs the 64 bit host's 16 GiB.
 - "More than one CPU": the runtimes see one CPU (Go's GOMAXPROCS, Java's processors).
@@ -2132,10 +2178,18 @@ All on this shared Mac; noisy, not benchmarks.
   and in the reference every process number is 5 higher than ours from the first fork on,
   because runc's init threads took 2 to 6 in the container's namespace. The kernel is not
   made to skip numbers to copy runc, whose thread count is its own.
-- K6b, second run: nothing is mounted at /sys (Docker mounts sysfs there, read-only, with the
-  cgroup2 hierarchy at /sys/fs/cgroup), so a lookup there finds what the image holds and is
-  not counted; plan section 15 allows /sys to be a chosen subset, but its "counter and warning
-  where the event can be seen" is not met for /sys yet (Next).
+- K6b, third run: /sys is a read-only sysfs holding none of Linux's entries (plan section 15's
+  chosen subset, here empty); a lookup of a name the reference's /sys has is ENOENT and counted
+  "sys entry not built". Its root's link count is 2, where the reference's is 11 (2 and its nine
+  directories). The cgroup2 mount at /sys/fs/cgroup and Docker's tmpfs over /sys/firmware are
+  not there (gap list).
+- K6b, third run: a mapped backend file's block starts at the file's first page, so a mapping
+  far into a file makes a block that reaches it (lazily backed on the stand-in, and a host that
+  cannot make one that large answers ENOMEM). The plan does not say; a block starting at the
+  lowest page mapped would remove this.
+- K6b, third run: INIT now offers the backend 128 KiB of read-ahead (Linux's default,
+  `VM_READAHEAD_PAGES`), where it offered 0: a fault in a mapped file reads the 32 pages around
+  it as Linux's read-around does, and a kernel copy reads 32 pages ahead.
 
 - K6a, first run: the Linux Test Project runs in an image of its own (Debian trixie with glibc
   and the suite at /opt/ltp), in the reference and on ours, not in alpine:3.22: glibc is what the
