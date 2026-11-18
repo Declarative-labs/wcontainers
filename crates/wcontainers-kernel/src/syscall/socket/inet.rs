@@ -173,6 +173,9 @@ pub(crate) struct Inet {
     pub errors: VecDeque<QueuedError>,
     /// A UDP datagram being corked.
     pub cork: Option<Corked>,
+    /// TCP bytes sent with MSG_MORE and held back, short of a whole segment, until a send
+    /// without it or the connection's end pushes them (`TCP_NAGLE_CORK`).
+    corked: Option<Packet>,
     /// What TCP_INFO tells of a connection's traffic.
     pub traffic: Traffic,
     /// The IPv4 multicast groups it joined, each on an interface (`mc_list`).
@@ -221,6 +224,7 @@ impl Inet {
             fin_read: false,
             errors: VecDeque::new(),
             cork: None,
+            corked: None,
             traffic: Traffic::default(),
             groups: Vec::new(),
         }
@@ -702,6 +706,15 @@ fn inet(socket: &SocketRef) -> core::cell::RefMut<'_, Inet> {
     core::cell::RefMut::map(socket.borrow_mut(), |own| {
         own.inet.as_deref_mut().expect("an internet socket")
     })
+}
+
+impl Inet {
+    /// The bytes MSG_MORE holds back.
+    pub(super) fn held(&self) -> u64 {
+        self.corked
+            .as_ref()
+            .map_or(0, |packet| packet.data.len() as u64)
+    }
 }
 
 fn inet_ref(socket: &SocketRef) -> core::cell::Ref<'_, Inet> {
@@ -1938,6 +1951,11 @@ fn send_fin(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef) {
     let Some(peer) = socket.borrow().peer.clone() else {
         return;
     };
+    // The FIN goes after what MSG_MORE held back.
+    let corked = inet(socket).corked.take();
+    if let Some(packet) = corked {
+        deliver(kernel, cx, socket, &peer, packet, false);
+    }
     let other_done = inet_ref(socket).done;
     if !other_done {
         inet(socket).closed_first = true;
@@ -2201,7 +2219,7 @@ pub(super) fn send(
             // Urgent data to the outside is refused only where it would go: an unconnected
             // socket fails first (`sk_stream_wait_connect`).
             let outside = established && inet_ref(socket).outside.is_some();
-            if message.flags & MSG_MORE != 0 && total > 0 && established {
+            if message.flags & MSG_MORE != 0 && total > 0 && outside {
                 kernel
                     .counters
                     .count(cx.host, crate::reason::OPTION_NOT_ACTED_ON, MSG_MORE.into());
@@ -2233,6 +2251,8 @@ fn tcp_send(
     nonblocking: bool,
 ) -> Result<u64, Errno> {
     let mut sent = kernel.threads[&tid].call.progress;
+    // Whether this call has sent bytes, whose acknowledgement pushes any held back after them.
+    let mut went = false;
     loop {
         {
             let mut own = socket.borrow_mut();
@@ -2331,61 +2351,85 @@ fn tcp_send(
         } else {
             (data, None)
         };
-        let size = data.len() as u64;
-        let packet = Packet {
-            data,
+        let fresh = data.len() as u64;
+        socket.borrow_mut().written += fresh;
+        // With MSG_MORE, bytes short of a whole segment are held back (`TCP_NAGLE_CORK`) and
+        // later ones join them; a whole segment goes, and its acknowledgement, which on loopback
+        // comes at once, pushes the rest (`tcp_data_snd_check`: Nagle's rule with nothing in
+        // flight), as it does for a whole segment an earlier round of this call sent. Without
+        // MSG_MORE everything held goes with the new bytes.
+        let more = message.flags & MSG_MORE != 0 && last.is_none();
+        let mut packet = inet(socket).corked.take().unwrap_or_else(|| Packet {
+            data: Vec::new(),
             consumed: 0,
             files: Vec::new(),
             cred: super::own_cred(kernel, tid),
             sender: Rc::downgrade(socket),
-            truesize: size,
+            truesize: 0,
             source: None,
             arrival: None,
             time: None,
             urgent: false,
             owner: 0,
-        };
-        socket.borrow_mut().written += size;
-        {
-            let mut own = inet(socket);
-            own.pingpong |= own.received;
+        });
+        packet.data.extend_from_slice(&data);
+        let family = socket.borrow().family;
+        let mss = send_mss(family, &inet_ref(socket).traffic) as usize;
+        if more && packet.data.len() < mss && !went {
+            inet(socket).corked = Some(packet);
+        } else {
+            went |= !packet.data.is_empty();
+            deliver(kernel, cx, socket, &peer, packet, last.is_some());
         }
-        inet(&peer).received = true;
-        let packet = Packet {
-            time: super::stamp(kernel, cx, &peer),
-            ..packet
-        };
-        // Bytes past the receiver's buffer are still on their way under Linux's window, so only
-        // a send that finds room there is told to the receiver's I/O signal.
-        let arrives = {
-            let other = peer.borrow();
-            let held: u64 = other.queue.iter().map(|packet| packet.truesize).sum();
-            held < other.rcvbuf
-        };
-        if size > 0 {
-            peer.borrow_mut().queue.push_back(packet);
-            if arrives {
-                super::data_ready(kernel, cx, &peer, EPOLLIN | EPOLLRDNORM);
-            } else {
-                kernel.wake_poll(channel(&peer), EPOLLIN | EPOLLRDNORM);
-            }
-        }
-        carry_between(
-            kernel,
-            socket,
-            &peer,
-            size + u64::from(last.is_some()),
-            false,
-        );
-        if size > 0 || last.is_some() {
-            arrived(kernel, cx, &peer);
-        }
-        sent += size;
+        sent += fresh;
         if let Some(byte) = last {
             urgent_arrives(kernel, cx, tid, socket, &peer, byte);
             sent += 1;
         }
     }
+}
+
+/// Bytes going from one end of a connection to the other's queue (with an urgent byte after them
+/// when `urgent`), told to the receiver; nothing goes when there is nothing.
+fn deliver(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    socket: &SocketRef,
+    peer: &SocketRef,
+    packet: Packet,
+    urgent: bool,
+) {
+    let size = packet.data.len() as u64;
+    if size == 0 && !urgent {
+        return;
+    }
+    {
+        let mut own = inet(socket);
+        own.pingpong |= own.received;
+    }
+    inet(peer).received = true;
+    let packet = Packet {
+        truesize: size,
+        time: super::stamp(kernel, cx, peer),
+        ..packet
+    };
+    // Bytes past the receiver's buffer are still on their way under Linux's window, so only
+    // a send that finds room there is told to the receiver's I/O signal.
+    let arrives = {
+        let other = peer.borrow();
+        let held: u64 = other.queue.iter().map(|packet| packet.truesize).sum();
+        held < other.rcvbuf
+    };
+    if size > 0 {
+        peer.borrow_mut().queue.push_back(packet);
+        if arrives {
+            super::data_ready(kernel, cx, peer, EPOLLIN | EPOLLRDNORM);
+        } else {
+            kernel.wake_poll(channel(peer), EPOLLIN | EPOLLRDNORM);
+        }
+    }
+    carry_between(kernel, socket, peer, size + u64::from(urgent), false);
+    arrived(kernel, cx, peer);
 }
 
 /// `tcp_check_urg` and `tcp_urg`: a new urgent byte at the end of the receiver's queue. An

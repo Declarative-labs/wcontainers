@@ -3318,7 +3318,8 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   check's sweep (guest/zk9opts.c) found UDP's 10, 11 and 100 refused, which now read 0 as
   Linux's.
 - "socket option not acted on": TCP_CORK, TCP_FASTOPEN_CONNECT, TCP_SAVE_SYN and TCP_TX_DELAY
-  set on, SO_MAX_PACING_RATE set to a limit, and TCP's MSG_MORE: kept and read back, but bytes
+  set on, SO_MAX_PACING_RATE set to a limit, and MSG_MORE on a TCP connection to the outside
+  (inside the container it holds bytes, K6c's fifth run): kept and read back, but bytes
   go to the peer at once where Linux holds or paces them (detail: level times 2^32 plus option,
   or the flag). Keepalive's options and TCP_THIN_LINEAR_TIMEOUTS, TCP_RTO_MIN_US and
   TCP_RTO_MAX_MS are kept and change nothing a program can see here: nothing is lost between

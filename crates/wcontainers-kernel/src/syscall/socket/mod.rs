@@ -4106,9 +4106,11 @@ pub(super) fn ioctl(
             TIOCOUTQ => {
                 let own = socket.borrow();
                 let amount = match &own.inet {
-                    Some(_) if kind == SOCK_STREAM => {
+                    // What is past the receiver's window, and every byte held back unsent.
+                    Some(inet) if kind == SOCK_STREAM => {
                         let window = own.peer.as_ref().map_or(0, |peer| peer.borrow().rcvbuf);
-                        own.written.saturating_sub(window)
+                        let held = inet.held();
+                        (own.written - held).saturating_sub(window) + held
                     }
                     Some(_) => 0,
                     None => own.written,
