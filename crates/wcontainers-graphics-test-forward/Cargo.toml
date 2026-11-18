@@ -26,7 +26,7 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Memory",
     "Win32_System_Threading",
 ] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
 
 [build-dependencies]
 object = { version = "0.41.0", default-features = false, features = ["read_core", "pe", "std"] }

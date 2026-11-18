@@ -274,7 +274,8 @@ fn get_data_slot() -> usize {
 /// GetData of a wrapper: the context's own answer, except that while the frame clock runs a
 /// timestamp query is answered at once from that clock (in 100-nanosecond ticks, never disjoint),
 /// so the timings and query latency a program shows are the same on every run. The context is
-/// still asked, so the implementation's queries run; an error it gives is reported.
+/// still asked, until it answers (flushing after the first ask), so the implementation's queries
+/// run and must complete; an error it gives, or no answer within `QUERY_WAIT`, is reported.
 unsafe extern "system" fn wrapper_get_data(
     this: *mut c_void,
     query: *mut c_void,
@@ -297,17 +298,32 @@ unsafe extern "system" fn wrapper_get_data(
     };
     let mut answer = [0u64; 2];
     let mut ask = |size: usize| {
-        let result = unsafe {
-            own(
-                wrapper.context,
-                query,
-                answer.as_mut_ptr().cast(),
-                size as u32,
-                flags,
-            )
+        let since = interrupt_time();
+        let mut flags = flags;
+        let failure = loop {
+            let result = unsafe {
+                own(
+                    wrapper.context,
+                    query,
+                    answer.as_mut_ptr().cast(),
+                    size as u32,
+                    flags,
+                )
+            };
+            if result.is_err() {
+                break format!("{result:?}");
+            }
+            if result == windows::Win32::Foundation::S_OK {
+                return;
+            }
+            if interrupt_time() - since > QUERY_WAIT {
+                break format!("not answered within {} s", QUERY_WAIT / 10_000_000);
+            }
+            flags = 0;
+            std::thread::yield_now();
         };
-        if result.is_err() && !QUERY_ERROR.swap(true, Ordering::Relaxed) {
-            eprintln!("d3d11 forward: GetData of a timestamp query failed: {result:?}");
+        if !QUERY_ERROR.swap(true, Ordering::Relaxed) {
+            eprintln!("d3d11 forward: GetData of a timestamp query failed: {failure}");
         }
     };
     match kind {
@@ -338,8 +354,20 @@ unsafe extern "system" fn wrapper_get_data(
     }
 }
 
-/// Whether the context gave an error for a timestamp query answered from the frame clock.
+/// Whether the context gave an error, or no answer, for a timestamp query answered from the frame
+/// clock.
 static QUERY_ERROR: AtomicBool = AtomicBool::new(false);
+/// How long a timestamp query may take to be answered, in 100-nanosecond units.
+const QUERY_WAIT: u64 = 5 * 10_000_000;
+
+/// Real time in 100-nanosecond units, from a clock the frame clock does not replace.
+fn interrupt_time() -> u64 {
+    let mut time = 0;
+    unsafe {
+        windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime(&mut time)
+    };
+    time
+}
 
 fn install(table: Table, vtable: usize, interface: &'static str) {
     let mut patched = PATCHED.lock().unwrap();
