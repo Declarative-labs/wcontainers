@@ -1329,6 +1329,8 @@ impl<B: Backend> Device<B> {
                     | HelperValue::TextureComponents { .. }
                     | HelperValue::TexelLayout { .. }
                     | HelperValue::MinLod { .. }
+                    | HelperValue::Layer
+                    | HelperValue::Viewport
             )
         }) {
             return Err(Error::NotImplemented(

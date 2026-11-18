@@ -372,11 +372,16 @@ impl<B: Backend> Device<B> {
     }
 
     /// The helper block of a pixel or compute stage (API stage `visibility`), from what its
-    /// bindings give.
+    /// bindings give. The layer and viewport a pixel shader reads are zero: no earlier stage
+    /// writes them (the converter refuses those outputs), so each draw is one run of layer 0
+    /// through viewport 0.
     pub(super) fn stage_block(&self, helpers: &Helpers, visibility: u32) -> Result<Vec<u8>, Error> {
         let mut block = vec![0u8; helpers.size as usize];
         for slot in &helpers.slots {
-            let words = self.bound_helper(visibility, slot.value)?;
+            let words = match slot.value {
+                HelperValue::Layer | HelperValue::Viewport => words(&[0]),
+                value => self.bound_helper(visibility, value)?,
+            };
             put(&mut block, slot.offset, slot.value, words)?;
         }
         Ok(block)
@@ -473,7 +478,9 @@ fn put(block: &mut [u8], offset: u32, value: HelperValue, words: Words) -> Resul
         HelperValue::LodBias { .. }
         | HelperValue::TextureComponents { .. }
         | HelperValue::TextureLevels { .. }
-        | HelperValue::TextureSamples { .. } => 1,
+        | HelperValue::TextureSamples { .. }
+        | HelperValue::Layer
+        | HelperValue::Viewport => 1,
         HelperValue::TexelBufferView { .. } | HelperValue::MinLod { .. } => 2,
         HelperValue::DrawBase | HelperValue::DrawArguments => 3,
         HelperValue::TexelLayout { .. } => 5,
