@@ -920,6 +920,10 @@ group-shared memory):
   draws each layer alone with the run's helper values): all equal, texel for texel and word for
   word. `cs_atomics.dxil` is held in `compute_draw` as a known refusal with its reason, so the test
   fails when that changes.
+- At the end of run 24 the build folders were deleted (laptop
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders`, 8.1 GB; desktop
+  `C:\wc\target\phase-2-graphics-shaders`, 5.9 GB); the next run builds from clean. `out`,
+  `outw` and the logs are kept.
 
 Next (in order):
 - Direct3D 12 front (asked of G5): for DXIL its `typed_texture_slots` and `typed_key` key the
@@ -1202,6 +1206,10 @@ scratch `graphics-shaders/run24`:
   `variant_draw` 3 of 3 (draw2.log): the layer and viewport test 0 texels apart in all four layers;
   the run's other variant comparisons 48, 0 failed. `cargo check -p wcontainers-direct3d-11 -p
   wcontainers-direct3d-12 --all-targets` builds (fronts.log).
+- WebAssembly (laptop, `wasm-run10.sh`, wasm.log): the corpus test under wasmtime 9 of 9 (330 s),
+  every verdict as native; written files equal to the native ones except the known gap's two
+  shaders (Known gaps: `116_cs_group_index_code` WGSL, `d599fbc7efa911be` WGSL and GLSL, and their
+  lines in each `cache.txt`).
 - Chrome 157.0.8103.78 on the RTX 3080 (chrome.log): every WGSL file compiles (corpus 181, games
   516, games DXIL 348, own 89, own DXIL 30, rig 76, rig DXIL 53); the GLSL ES failures are the known
   classes only (bitfield operations, `textureGather`, multisampled samplers: corpus 13, games 10,
@@ -2062,7 +2070,8 @@ were already there.
 - `draw_base: Arguments` serves WebGPU only: WebGL 2 has no storage buffers to read the arguments
   from (nor indirect draws; its front reads them back and draws directly with `Helpers`).
 
-- One real program shader (`d599fbc7efa911be.dxbc`, a bgfx shader) converts to a module whose
+- One real program shader (`d599fbc7efa911be.dxbc`, a bgfx shader) and, since run 24's check, one
+  of Wine's (`116_cs_group_index_code.dxbc`; not compared since run 19) convert to modules whose
   expression order differs between the native and WebAssembly builds (run 10): the two results of
   its unsigned divide come out in the other order. Same values, but a cache made natively and one
   made in the browser would disagree on its entry (counted, the first kept). Cause (run 19): C++
