@@ -3,9 +3,10 @@
 //! `gt-launch <report> <library>[,<library>...]|- <program> [<argument>...]`. The program runs with
 //! this one's standard handles, with this as the debugger of it and of every process it starts,
 //! until each has loaded every named library (then it is let go) or ends; nothing else of their run
-//! is changed (exceptions go to them as they would without a debugger, and the debug heap stays
-//! off). Writes `<library> from <path>` per library and place a process first loaded it from
-//! (`<library> from not loaded` if none) to <report> and exits with the program's exit code (2 if it could not
+//! is changed (exceptions go to them as they would without a debugger, a closed invalid handle is
+//! not raised, as without one, and the debug heap stays off); with `-` it is not debugged at all.
+//! Writes `<library> from <path>` per library and place a process first loaded it from (`<library>
+//! from not loaded` if none) to <report> and exits with the program's exit code (2 if it could not
 //! start).
 
 fn main() {
@@ -27,6 +28,7 @@ fn launch() -> anyhow::Result<i32> {
     use anyhow::Context;
     use windows::Win32::Foundation::{
         CloseHandle, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, EXCEPTION_BREAKPOINT, HANDLE,
+        STATUS_INVALID_HANDLE,
     };
     use windows::Win32::Storage::FileSystem::{FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW};
     use windows::Win32::System::Diagnostics::Debug::{
@@ -52,7 +54,12 @@ fn launch() -> anyhow::Result<i32> {
     let mut child = std::process::Command::new(program)
         .args(arguments)
         .env("_NO_DEBUG_HEAP", "1")
-        .creation_flags(DEBUG_PROCESS.0)
+        // With no library to look for, the program runs as it would alone.
+        .creation_flags(if wanted.is_empty() {
+            0
+        } else {
+            DEBUG_PROCESS.0
+        })
         .spawn()
         .with_context(|| format!("starting {program}"))?;
     let root = child.id();
@@ -63,12 +70,14 @@ fn launch() -> anyhow::Result<i32> {
         let _ = unsafe { CloseHandle(file) };
         path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
     };
-    unsafe { DebugSetProcessKillOnExit(false)? };
+    if !wanted.is_empty() {
+        unsafe { DebugSetProcessKillOnExit(false)? };
+    }
     // Processes being debugged: whether the loader's first breakpoint has passed, and which named
     // libraries each has loaded.
     let mut processes: HashMap<u32, (bool, Vec<bool>)> = HashMap::new();
     let mut root_let_go = false;
-    loop {
+    while !wanted.is_empty() {
         let mut event = DEBUG_EVENT::default();
         unsafe { WaitForDebugEvent(&mut event, INFINITE)? };
         let pid = event.dwProcessId;
@@ -102,10 +111,14 @@ fn launch() -> anyhow::Result<i32> {
                 }
             }
             EXCEPTION_DEBUG_EVENT => {
-                // The loader's breakpoint for a starting debugger is the debugger's; any other
-                // exception is the program's own business.
+                // The loader's breakpoint for a starting debugger is the debugger's, and so is
+                // an invalid handle closed, which Windows raises only under a debugger; any
+                // other exception is the program's own business.
                 let code = unsafe { event.u.Exception.ExceptionRecord.ExceptionCode };
-                if process.0 || code != EXCEPTION_BREAKPOINT {
+                let ours = (!process.0 && code == EXCEPTION_BREAKPOINT)
+                    || (code == STATUS_INVALID_HANDLE
+                        && unsafe { event.u.Exception.dwFirstChance } != 0);
+                if !ours {
                     status = DBG_EXCEPTION_NOT_HANDLED;
                 }
                 if code == EXCEPTION_BREAKPOINT {
@@ -114,7 +127,7 @@ fn launch() -> anyhow::Result<i32> {
             }
             _ => {}
         }
-        let done = !wanted.is_empty() && process.1.iter().all(|&loaded| loaded);
+        let done = process.1.iter().all(|&loaded| loaded);
         unsafe { ContinueDebugEvent(pid, event.dwThreadId, status)? };
         if event.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT {
             processes.remove(&pid);
