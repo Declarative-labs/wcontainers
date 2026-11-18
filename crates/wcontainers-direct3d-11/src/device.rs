@@ -1391,6 +1391,12 @@ impl<B: Backend> Device<B> {
         let textures = shader::texture_slots(&converted);
         let helpers = Rc::new(shader::Helpers::of(&converted));
         let module = converted.modules.pop().expect("one module");
+        if wcontainers_shaders::capabilities(&module.module)
+            .contains(naga::valid::Capabilities::CLIP_DISTANCES)
+            && !self.backend.caps().has(Features::CLIP_DISTANCE)
+        {
+            return not_implemented("clip distances without the back end's (ClipDistanceInShader)");
+        }
         self.live()?;
         self.bury();
         let gpu = self.backend.create_shader(&module);
