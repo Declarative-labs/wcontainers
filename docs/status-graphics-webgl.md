@@ -22,6 +22,9 @@ past a stream, none needing a change here). Done:
 - The 21 GL constants glow defines and this crate retyped are now glow's (section "Magic
   literals", which also says what is left of the audit's list).
 - The full run of the suite at the end: Measurements, run G3b-4.
+- At the end the desktop's C:\wc\target\phase-2-graphics-webgl (16.5 GB: the debug, WebAssembly
+  and Direct3D 11 WebGL 2 builds, and the shaders crate's tests for the diagnosis) was deleted;
+  no build folder was made on the Mac or in scratch. Nothing was installed on the desktop.
 
 G3b run 3, 2026-11-18 (about 12:00 to 14:00 Pacific). Merged origin/phase-2-graphics (76 new
 commits; -webgpu, -direct3d-11, -direct3d-12 and -shaders were already in it, -rig had nothing
