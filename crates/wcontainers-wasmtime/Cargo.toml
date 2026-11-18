@@ -21,6 +21,9 @@ object = { version = "0.41", default-features = false, features = ["read_core", 
 gimli = { version = "0.34.0", default-features = false, features = ["read"] }
 rayon = "1.12.0"
 zerocopy.workspace = true
+# The demonstration program's guest and its arguments.
+wcontainers-arm64 = { path = "../wcontainers-arm64" }
+pico-args = "0.5.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The fork copy: the system's own exact copy of a range of pages.
@@ -33,7 +36,6 @@ cargo_metadata = "0.23.1"
 cargo-lock = "11.1.0"
 
 [dev-dependencies]
-wcontainers-arm64 = { path = "../wcontainers-arm64" }
 # Copies the test process with fork, as the kernel tests' saves do.
 libc = "0.2.191"
 # Unpacks the OCI image `docker save` writes, and makes roots for tests.

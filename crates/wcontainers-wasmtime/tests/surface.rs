@@ -292,3 +292,47 @@ fn a_second_process_starts_from_the_cache() {
     assert!(!second.contains("ranges made 0, from disk 0;"), "{second}");
     let _ = std::fs::remove_dir_all(&cache);
 }
+
+/// The command line program runs the pipeline from the OCI image and from the plain tar as the
+/// reference does, and fails naming a refused field.
+#[test]
+fn the_command_line_program_runs_a_container() {
+    let (layout, files) = images();
+    let program = env!("CARGO_BIN_EXE_wcontainers");
+    let expected = reference(PIPELINE);
+    for source in [
+        ["--oci", layout.to_str().unwrap()],
+        ["--tar", files.to_str().unwrap()],
+    ] {
+        let output = Command::new(program)
+            .args(source)
+            .args(["--", "sh", "-c", PIPELINE])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.starts_with(&expected.stderr), "{stderr}");
+        assert_eq!(output.status.code(), Some(expected.exit_code));
+    }
+    let config = scratch().join(format!("config-{}.json", std::process::id()));
+    let mut spec = with_args(base_spec(), &["sh"]);
+    let mut process = spec.process().clone().unwrap();
+    process.set_terminal(Some(true));
+    spec.set_process(Some(process));
+    spec.save(&config).unwrap();
+    let output = Command::new(program)
+        .args([
+            "--tar",
+            files.to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("process.terminal is not supported"),
+        "{stderr}"
+    );
+}

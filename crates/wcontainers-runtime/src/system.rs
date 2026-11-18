@@ -17,12 +17,13 @@ use wcontainers_kernel::Kernel;
 
 use crate::{Execution, Outside, StopFlag, Turn};
 
-/// A warning as the outside keeps it: the kernel's or the back end's, by reason and detail.
+/// A warning as the outside keeps it: the kernel's or the back end's, by reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Warned {
     pub reason: String,
+    /// The detail it was last warned with.
     pub detail: u64,
-    /// How many times so far.
+    /// How many times so far, as the last warning counted.
     pub count: u64,
     /// From the back end, not the kernel.
     pub cpu: bool,
@@ -78,9 +79,12 @@ impl System {
         match self
             .warnings
             .iter_mut()
-            .find(|w| w.cpu == cpu && w.reason == warning.reason && w.detail == warning.detail)
+            .find(|w| w.cpu == cpu && w.reason == warning.reason)
         {
-            Some(kept) => kept.count = warning.count,
+            Some(kept) => {
+                kept.count = kept.count.max(warning.count);
+                kept.detail = warning.detail;
+            }
             None => self.warnings.push(Warned {
                 reason: warning.reason.to_string(),
                 detail: warning.detail,
@@ -181,7 +185,7 @@ impl Host for System {
             let count = self
                 .warnings
                 .iter()
-                .find(|w| w.reason == name && w.detail == detail)
+                .find(|w| w.reason == name)
                 .map_or(1, |w| w.count + 1);
             self.keep(
                 Warning {
