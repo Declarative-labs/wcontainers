@@ -643,11 +643,7 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     if bytes.len() > 15 || X86_64::excluded(&bytes).is_some() {
         return None;
     }
-    // A branch into its own bytes would run them on our side, where the reference stops there.
-    if instruction.op_count() == 1
-        && instruction.op0_kind() == iced_x86::OpKind::NearBranch64
-        && (CODE..CODE + bytes.len() as u64).contains(&instruction.near_branch64())
-    {
+    if branches_into_itself(&bytes) {
         return None;
     }
     // Divisions: half the dividends have rdx (or ah, dx, edx) the extension of the low half, as compilers
@@ -692,6 +688,15 @@ fn case(code: Code, seed: u64) -> Option<Case> {
         tracking: false,
         seed: draw.next(),
     })
+}
+
+/// A branch into its own bytes, which our side runs again where the reference stops there (and so never
+/// stops when it lands on its own start).
+fn branches_into_itself(bytes: &[u8]) -> bool {
+    let instruction = Decoder::with_ip(64, bytes, CODE, DecoderOptions::NONE).decode();
+    instruction.op_count() == 1
+        && instruction.op0_kind() == iced_x86::OpKind::NearBranch64
+        && (CODE..CODE + bytes.len() as u64).contains(&instruction.near_branch64())
 }
 
 fn memory_size(instruction: &Instruction) -> u32 {
@@ -864,6 +869,10 @@ fn no_form(draw: u64, seed: u64) -> Option<Case> {
             return None;
         }
         run.truncate(usize::from(length));
+        // Prefixes move a branch's target with its end.
+        if branches_into_itself(&run) {
+            return None;
+        }
         // The same answer from the bytes alone.
         let (again, same) = wcontainers_x86::decode(&run)?;
         if same != length || again.too_long != i.too_long {
