@@ -66,6 +66,18 @@ fn vertex_format(format: Format) -> Option<VertexFormat> {
     })
 }
 
+/// Where a view's elements are.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum TexelPlace {
+    /// A typed buffer's words, its view in [`HelperValue::TexelBufferView`].
+    Words,
+    /// A 2D texture of the format (`TexelBufferRoute::Texture`), the view as for `Words`.
+    Texture,
+    /// A storage texture's texels in a buffer of words (`VariantKey::texels_through_buffer`), laid
+    /// out as [`HelperValue::TexelLayout`] of this storage slot says.
+    Image(u32),
+}
+
 /// A format's kind, components and element size.
 pub(crate) type Layout = (Kind, Vec<Component>, u32);
 
@@ -78,14 +90,15 @@ pub(crate) struct TexelBuffer {
     size: u32,
     /// The scalar of atomic words, where the words are atomic.
     atomic: Option<Scalar>,
-    /// Read through a 2D texture of the format, laid out as `TEXEL_BUFFER_TEXTURE_WIDTH` says.
-    texture: bool,
+    place: TexelPlace,
     stage: ShaderStage,
     set: u32,
     binding: u32,
     load: Option<Handle<Function>>,
     store: Option<Handle<Function>>,
     length: Option<Handle<Function>>,
+    at: Option<Handle<Function>>,
+    size_of: Option<Handle<Function>>,
     atomics: Vec<(u64, Handle<Function>)>,
 }
 
@@ -122,7 +135,7 @@ impl TexelBuffer {
         var: Handle<GlobalVariable>,
         (kind, components, size): Layout,
         atomic: Option<Scalar>,
-        texture: bool,
+        place: TexelPlace,
         stage: ShaderStage,
         set: u32,
         binding: u32,
@@ -134,13 +147,15 @@ impl TexelBuffer {
             components,
             size,
             atomic,
-            texture,
+            place,
             stage,
             set,
             binding,
             load: None,
             store: None,
             length: None,
+            at: None,
+            size_of: None,
             atomics: Vec::new(),
         }
     }
@@ -162,6 +177,14 @@ impl TexelBuffer {
         reflection: &mut Reflection,
         b: &mut Builder,
     ) -> (Expr, Expr) {
+        if let TexelPlace::Image(_) = self.place {
+            // The texels from the buffer's start; as many as the layout holds.
+            let [pitch, rows, _, _, layers] = self.texel_layout(module, reflection, b);
+            let n = b.mul(pitch, rows);
+            let n = b.mul(n, layers);
+            let zero = b.u32(0);
+            return (zero, n);
+        }
         let vec2u = vector(module, 2, Scalar::U32);
         let member = helper_once(
             module,
@@ -176,6 +199,115 @@ impl TexelBuffer {
         );
         let v = b.raw(|f, body| load_helper(f, body, member));
         (b.field(v, 0), b.field(v, 1))
+    }
+
+    /// A storage texture's layout: row pitch in texels, rows per layer, width, height, and layers or
+    /// depth.
+    fn texel_layout(
+        &self,
+        module: &mut Module,
+        reflection: &mut Reflection,
+        b: &mut Builder,
+    ) -> [Expr; 5] {
+        let TexelPlace::Image(slot) = self.place else {
+            unreachable!("a layout belongs to a storage texture");
+        };
+        let vec4u = vector(module, 4, Scalar::U32);
+        let two = module.types.insert(
+            Type {
+                name: None,
+                inner: TypeInner::Array {
+                    base: vec4u,
+                    size: naga::ArraySize::Constant(core::num::NonZeroU32::new(2).unwrap()),
+                    stride: 16,
+                },
+            },
+            Span::UNDEFINED,
+        );
+        let member = helper_once(
+            module,
+            reflection,
+            self.stage,
+            HelperValue::TexelLayout { slot },
+            two,
+            32,
+        );
+        let v = b.raw(|f, body| load_helper(f, body, member));
+        let first = b.field(v, 0);
+        let second = b.field(v, 1);
+        [
+            b.field(first, 0),
+            b.field(first, 1),
+            b.field(first, 2),
+            b.field(first, 3),
+            b.field(second, 0),
+        ]
+    }
+
+    /// `texels_<set>_<binding>_at(x, y, z) -> u32`: the texel's index in the buffer, or past every
+    /// index where the coordinate is outside the view (z is the layer or the depth).
+    pub(crate) fn at(
+        &mut self,
+        module: &mut Module,
+        reflection: &mut Reflection,
+    ) -> Handle<Function> {
+        if let Some(f) = self.at {
+            return f;
+        }
+        let u32_ty = scalar(module, Scalar::U32);
+        let mut b = Builder::new(&format!("{}_at", self.name));
+        for name in ["x", "y", "z"] {
+            b.f.arguments.push(FunctionArgument {
+                name: Some(name.into()),
+                ty: u32_ty,
+                binding: None,
+            });
+        }
+        b.f.result = Some(FunctionResult {
+            ty: u32_ty,
+            binding: None,
+        });
+        let [x, y, z] = [0, 1, 2].map(|i| b.argument(i));
+        let [pitch, rows, width, height, layers] = self.texel_layout(module, reflection, &mut b);
+        let in_x = b.binary(B::Less, x, width);
+        let in_y = b.binary(B::Less, y, height);
+        let in_z = b.binary(B::Less, z, layers);
+        let inside = b.binary(B::LogicalAnd, in_x, in_y);
+        let inside = b.binary(B::LogicalAnd, inside, in_z);
+        let row = b.mul(z, rows);
+        let row = b.add(row, y);
+        let at = b.mul(row, pitch);
+        let at = b.add(at, x);
+        let none = b.u32(u32::MAX);
+        let index = b.select(inside, at, none);
+        b.ret(Some(index));
+        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        self.at = Some(f);
+        f
+    }
+
+    /// `texels_<set>_<binding>_size() -> vec3<u32>`: a storage texture's width, height, and layers or
+    /// depth.
+    pub(crate) fn size(
+        &mut self,
+        module: &mut Module,
+        reflection: &mut Reflection,
+    ) -> Handle<Function> {
+        if let Some(f) = self.size_of {
+            return f;
+        }
+        let vec3u = vector(module, 3, Scalar::U32);
+        let mut b = Builder::new(&format!("{}_size", self.name));
+        b.f.result = Some(FunctionResult {
+            ty: vec3u,
+            binding: None,
+        });
+        let [_, _, width, height, layers] = self.texel_layout(module, reflection, &mut b);
+        let v = b.compose(vec3u, vec![width, height, layers]);
+        b.ret(Some(v));
+        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        self.size_of = Some(f);
+        f
     }
 
     /// A word as u32, from a pointer to it.
@@ -213,7 +345,7 @@ impl TexelBuffer {
         let (offset, length) = self.view(module, reflection, &mut b);
         let inside = b.binary(B::Less, index, length);
         let size = b.u32(self.size);
-        if self.texture {
+        if self.place == TexelPlace::Texture {
             let first = b.binary(B::Divide, offset, size);
             let element = b.add(first, index);
             let mask = b.u32(TEXEL_BUFFER_TEXTURE_WIDTH - 1);
@@ -441,7 +573,9 @@ impl TexelBuffer {
         if let Some(&(_, f)) = self.atomics.iter().find(|(c, _)| *c == code) {
             return Ok(f);
         }
-        let ty = scalar(module, s);
+        // Float views exchange their bits as u32 words.
+        let natural = self.scalar();
+        let ty = scalar(module, natural);
         let u32_ty = scalar(module, Scalar::U32);
         let compared = matches!(fun, AtomicFunction::Exchange { compare: Some(_) });
         let mut b = Builder::new(&format!("{}_atomic_{code}", self.name));
@@ -463,17 +597,22 @@ impl TexelBuffer {
         }
         b.f.result = Some(FunctionResult { ty, binding: None });
         let index = b.argument(0);
+        let as_word = |b: &mut Builder, v: Expr| match natural == s {
+            true => v,
+            false => b.bitcast(v, s.kind),
+        };
         let value = b.argument(1);
+        let value = as_word(&mut b, value);
         let fun = match fun {
-            AtomicFunction::Exchange { compare: Some(_) } => AtomicFunction::Exchange {
-                compare: Some(b.argument(2)),
-            },
+            AtomicFunction::Exchange { compare: Some(_) } => {
+                let c = b.argument(2);
+                AtomicFunction::Exchange {
+                    compare: Some(as_word(&mut b, c)),
+                }
+            }
             other => other,
         };
-        let zero = b.expr(Expression::Literal(match s.kind {
-            ScalarKind::Sint => Literal::I32(0),
-            _ => Literal::U32(0),
-        }));
+        let zero = b.expr(Expression::Literal(literal(natural, 0)));
         let out = b.local(ty, Some(zero));
         let (offset, length) = self.view(module, reflection, &mut b);
         let inside = b.binary(B::Less, index, length);
@@ -488,7 +627,7 @@ impl TexelBuffer {
                 naga::PredeclaredType::AtomicCompareExchangeWeakResult(s),
             )
         } else {
-            ty
+            scalar(module, s)
         };
         let result = b.expr(Expression::AtomicResult {
             ty: rty,
@@ -501,6 +640,10 @@ impl TexelBuffer {
             result: Some(result),
         });
         let old = if compared { b.field(result, 0) } else { result };
+        let old = match natural == s {
+            true => old,
+            false => b.bitcast(old, natural.kind),
+        };
         b.store(out, old);
         let accept = b.close();
         b.stmt(Statement::If {

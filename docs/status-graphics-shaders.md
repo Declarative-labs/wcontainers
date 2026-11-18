@@ -17,8 +17,8 @@ with drawn tests against real Direct3D 11 on the RTX 3080 and against WARP; run 
 helper of section 7: geometry shaders (DXBC) as compute, drawn against real Direct3D 11; run 17
 built stream output through the stage helper, atomic operations, view counters (append, consume,
 `IncrementCounter`) and storage textures, each tested against real Direct3D 11 on the RTX 3080;
-run 18 built typed buffers (`texel_buffers`, both routes, DXBC) with tests against real Direct3D
-11; what remains is under Next. Run 18 merged origin/phase-2-graphics and -direct3d-11 (no
+run 18 built typed buffers (`texel_buffers`, both routes, DXBC) and storage textures through
+buffers (`texels_through_buffer`, DXBC) with tests against real Direct3D 11; what remains is under Next. Run 18 merged origin/phase-2-graphics and -direct3d-11 (no
 conflicts; the others had nothing new).
 
 Done:
@@ -639,6 +639,26 @@ Run 18 (typed buffers):
   `ps_texels` by the storage route on WebGPU and the texture route on WebGPU and WebGL 2, every
   texel against real Direct3D 11's picture. The shared harness binds typed buffers by the pixel
   key's route and fills their helper values (`Setup::texel_buffers`, `Reference::texel_buffers`).
+- Storage textures through a buffer of their texels (`texels_through_buffer`, by storage slot), DXBC:
+  the same functions as typed buffers (`TexelPlace::Image`), the texel at ((z * rows per layer + y)
+  * row pitch + x) from `HelperValue::TexelLayout` (interface change: it now also gives the view's
+  width, height and layers or depth, for bounds and size queries). Loads decode, stores encode
+  (narrow texels by compare-exchange on their word), atomics on 32-bit formats, float exchange as
+  u32 words; a texel outside the view reads zero and takes no writes; size queries from the layout.
+  1D, 1D array, 2D, 2D array and 3D views; refused by name: multisampled ones, geometry shaders
+  (`TexelsThroughBufferInGeometry`), formats without a typed form (`StorageFormatAbsent`), formats of
+  another kind (`StorageFormatKind`). Storage textures without the variant still refuse atomics
+  (`StorageImageAtomics`).
+- New own shader `cs_through` (`texels.hlsl`, fxc and dxc): atomics (add, max, or, with the value
+  before) on an R32_UINT texture, an R32_FLOAT texture read and written, a 2D array of a float format
+  and a 3D texture of an unsigned format written, their sizes, invocations past the views. Its values
+  are exact in f32 and each texel takes one kind of atomic, so the result depends on no order (a
+  first version mixed add and max on a texel, and its float arithmetic differed by 1 ulp between
+  the two compilers' orderings; both changed in the shader, not in the test).
+- `tests/compute.rs` `storage_textures_convert_through_buffers`; `tests/compute_draw.rs`
+  `storage_textures_through_buffers_match_direct3d` (seeded formats among those the device has as
+  typed storage views, seeded texels; our buffers' rows 3 texels longer and layers a row taller than
+  the views, padding seeded): every texel of every view against real Direct3D 11's textures.
 
 Next (in order):
 - Typed buffers from DXIL (naga's SPIR-V reader: `Dim::Buffer` images into the same functions), and
@@ -650,9 +670,12 @@ Next (in order):
 - The WebAssembly build's module differs from the native one for one game shader (Known gaps):
   find which side orders the divide-modulo helper's operations by platform (dxbc-spirv's IR as
   serialised, compared between the two builds, first) and make it deterministic.
-- Storage textures through a buffer (`texels_through_buffer`: read-write formats other than r32,
-  texture atomics; the typed buffer encoders and decoders of `texel.rs` serve it), storage packing;
-  DXIL storage views (naga's SPIR-V reader: image buffers).
+- Storage packing (`storage_packed`): open question first. The plan says only "packed into one
+  buffer at offsets from the helper constants"; separate guest buffers become one GPU buffer only if
+  the front keeps every storage-capable buffer in one arena (or copies), which is the fronts' memory
+  design, and the binding the packed buffer takes is not named. To settle with the interface track.
+- DXIL storage views and typed buffers (naga's SPIR-V reader:
+  image buffers, images without a format), then the through-buffer and typed buffer routes for DXIL.
 - Comparisons in the program (shadow maps with a border colour, very common: WebGPU has no border
   colour): `SamplerState` needs the comparison function (an interface change: a word for it), then
   the library compares each tap. Cube filtering in the program (seamless edges). Then the rest of
@@ -863,6 +886,13 @@ Run 18, 2026-11-17, counts only (the desktop shared with the other tracks, no ti
   fractions from 0.514 to 0.548 of a code (6 components in seed 4, 13 in seed 7, 0 to 9 elsewhere);
   the specification permits 0.6, so the test holds both to it (Departures). The first run found that
   past the length Direct3D gives the defaults where the format lacks components (fixed).
+- `storage_textures_through_buffers_match_direct3d`: seeds 1 to 16 (`through-2.txt`), every texel
+  of all four views equal (formats drawn: R16, R32, RG16, RG32, RGBA16 and RGBA32 floats; R8, RG8,
+  RGBA8, RG16, RGBA16, R32 and RG32 unsigned).
+- The whole drawn suite after it (`run18-gpu-2.txt`): `compute_draw` 4 tests (4 seeds), `draw` 3,
+  `filter_draw` (2 seeds, 108 comparisons, 0 failed), `geometry_draw` 2 (4 seeds), `pull_draw`,
+  `variant_draw` 2 (8 typed buffer seeds) pass. The laptop suite with every corpus
+  (`run18-tests-2.txt`) passes.
 - `typed_buffers_draw_as_direct3d_does`: seeds 1 to 40 (`texels-pixel-1.txt`, `run18-gpu-1.txt`),
   120 comparisons (storage on WebGPU, texture on WebGPU and WebGL 2), every texel equal.
 - After the harness change (`run18-gpu-1.txt`): `draw` 3 tests, `compute_draw` 3, `geometry_draw` 2
@@ -1638,6 +1668,10 @@ were already there.
 
 ## Interface changes
 
+- Run 18, `HelperValue::TexelLayout { slot }` given the view's width, height and layers or depth
+  (five u32 in two 16-byte rows; commit "interface: gave the texel layout of a storage view read
+  through a buffer the view's size ..."; plan text in 4.12): bounds and size queries need them, and
+  the row pitch is not the width.
 - Run 18, `VariantKey::texel_formats: Vec<(u32, Format)>` and `HelperValue::TexelBufferView { set,
   binding }` (commit "interface: gave the variant key the formats of typed buffers at texture slots
   ..."), then `TEXEL_BUFFER_TEXTURE_WIDTH` (2048) and the texture route's documentation (commit
