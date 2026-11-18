@@ -2,6 +2,7 @@
 //! answers `write`, `writev`, `exit`, `exit_group` and `brk`.
 
 use crate::guest::GuestTest;
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::ops::Range;
@@ -129,9 +130,9 @@ pub struct Host<G: GuestTest> {
     /// What the guest wrote to file descriptors 1 and 2.
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-    counters: HashMap<u32, (u64, Duration)>,
+    counters: FxHashMap<u32, (u64, Duration)>,
     /// How often each slow path was taken at each address or number.
-    places: HashMap<(u32, u64), u64>,
+    places: FxHashMap<(u32, u64), u64>,
     warnings: Vec<Warning<'static>>,
     /// Where the code of each blob loaded is, as guest addresses.
     code_ranges: Vec<Range<u64>>,
@@ -296,8 +297,8 @@ impl<G: GuestTest> Machine<G> {
                 snapshot: vec![0; thread_state_size::<G>()],
                 stdout: Vec::new(),
                 stderr: Vec::new(),
-                counters: HashMap::new(),
-                places: HashMap::new(),
+                counters: FxHashMap::default(),
+                places: FxHashMap::default(),
                 warnings: Vec::new(),
                 code_ranges: Vec::new(),
                 exact_pieces: HashMap::new(),
@@ -933,7 +934,9 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                 return 1;
             }
             // Raised from outside: the stand-in clears it and the thread carries on.
-            let pc = pc_of::<G>(&snapshot(&mut caller));
+            let mut pc = [0u8; 8];
+            read_shared(&state, BLOCK_AT as usize + G::PC_OFFSET, &mut pc);
+            let pc = u64::from_le_bytes(pc);
             slow_path(
                 caller.data_mut(),
                 Reason::StoppedByFlag.number(),

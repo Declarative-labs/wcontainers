@@ -53,15 +53,17 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   text holds the name matches too, a watcher's included; never start a second driver beside it). What it is doing: `tail -3
   .../p2/long/driver.log`. Done so far: `cut -f1,2,4,6,7,10 .../p2/long/ledger.txt`.
 - Restart after a stop or a fix (from the checkout root, all committed):
-  `WC_LONG_DIR=/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/translator/p2/long WC_LONG_SEED=100 WC_LONG_ACCEPT=c38b4ad nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh >> .../p2/long/driver.log 2>&1 &`
+  `WC_LONG_DIR=/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/translator/p2/long WC_LONG_SEED=100 WC_LONG_ACCEPT=c38b4ad WC_LONG_LIMIT=180 nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh >> .../p2/long/driver.log 2>&1 &`
   It skips every chunk that passed on c38b4ad or later and runs the rest. To stop it: `pkill -f long-runs.sh`,
   then stop its `cargo test` and remove its containers (`docker ps -aq --filter name=wc-translator- | xargs
   docker rm -f`).
 - Restarted 2026-11-16 16:44 on 92b0866 (the square root fix below) with `WC_LONG_ACCEPT=c38b4ad`: layer 1
   chunks 1, 2 and 4 kept from c38b4ad, chunk 3 run again. Chunk 5 had started on c38b4ad and was stopped
   (no ledger line). Restarted again 2026-11-16 22:59 on 445e3cf (the layer 2 generator fix), same command;
-  it is that run (driver pid 87380 at the time of writing) that is going now. Use `WC_LONG_ACCEPT=c38b4ad`
-  on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
+  it was stopped 2026-11-17 20:34 after layer 3 chunk 55 was stopped at the limit (failure 3 below).
+  Restarted 21:21 on de8f4a2 with `WC_LONG_LIMIT=180` added (a chunk may take 3 hours); chunk 55 runs again
+  first. That run (driver pid 84798 at the time of writing) is the one going now. Use `WC_LONG_ACCEPT=c38b4ad
+  WC_LONG_LIMIT=180` on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
   `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
 - Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
   s+=c[2]} END {print s}' .../p2/long/ledger.txt`. Any chunk that did not pass: `grep -v result=pass
@@ -132,6 +134,22 @@ Failures found by the run, each with its cause and fix:
    chunks 1 to 21 and 23 (passed before the fix) compared those translations with each other only. With the
    fix, cases from 525000 make some programs differently than before. Restarted 22:59 on 445e3cf, same
    command; chunk 22 runs again.
+3. Layer 3 chunk 55 (seed 100, cases 27000 to 27499, 445e3cf): stopped at the 90 minute limit, not a
+   mismatch. The case still running was case 27441 (Csmith 100027741, gcc -O0, position independent): the
+   only two cases with no program built were 27442 and 27443, the next in the same worker's run, and a
+   sample of the test showed one thread in guest code under `Machine::run` for over an hour. Replayed alone
+   in a scratch copy of 445e3cf, each setting timed (load 25 to 95): Linux 20.2 s with Docker (so about 19
+   s of the 20 s alarm), none 1,106 s, full for speed 119 s, full for size 174 s, full for speed stopping
+   everywhere 851 s, all with Linux's output; the rest (size stopping everywhere, bounded, mixed) was not
+   timed. So it is a program that runs almost to the alarm on Linux, and its eight translated runs together
+   take more than 90 minutes. A sample of the stopping run showed most of the time in the runner's stop
+   hook, not in the guest: a full register snapshot to read the pc (`snapshot`, memset, memmove) and SipHash
+   for the two slow path maps. Change (de8f4a2): the stop hook reads only the pc, and the runner's slow path
+   maps are `rustc-hash` maps; what is counted and warned is unchanged. Same case, full for speed stopping
+   everywhere: 353 s after against 851 s before (one run each, load 40 to 95, so the ratio is rough). The
+   chunk limit was raised to 180 minutes (`WC_LONG_LIMIT=180`) so such a case can finish; nothing in the
+   test was changed. Smoke, changes, programs, layer 2 (default) and layer 3 (12 cases, seed 7) pass on
+   de8f4a2. Chunk 55 runs again on de8f4a2.
 
 ## P1: close-out of M5 and the long-run driver
 
