@@ -1082,10 +1082,19 @@ impl<B: Backend> Device<B> {
                     ));
                 }
                 if let Some(domain) = &m.domain {
+                    // A domain stage run as compute; drawn too unless a geometry stage follows.
+                    let stages = match (&m.geometry.after_domain, &m.late) {
+                        (None, _) => StageSet::VERTEX,
+                        (Some(_), Some(_)) => StageSet::COMPUTE,
+                        (Some(_), None) => StageSet::COMPUTE | StageSet::VERTEX,
+                    };
+                    b.extend(bind::stage_bindings(domain, geometry::DOMAIN, stages));
+                }
+                if let Some(late) = &m.late {
                     b.extend(bind::stage_bindings(
-                        domain,
-                        geometry::DOMAIN,
-                        StageSet::VERTEX,
+                        late,
+                        bind::GEOMETRY,
+                        StageSet::COMPUTE,
                     ));
                 }
                 b
@@ -1100,7 +1109,7 @@ impl<B: Backend> Device<B> {
         let mut stages = vec![&vs];
         if let Some(m) = &made {
             stages.extend([&m.vertex]);
-            stages.extend(m.shader.iter().chain(&m.domain));
+            stages.extend(m.shader.iter().chain(&m.domain).chain(&m.late));
         }
         stages.extend(&ps);
         let slow_paths = programs_slow_paths(&stages);
@@ -1153,6 +1162,7 @@ impl<B: Backend> Device<B> {
         let vs_shader = match made.as_ref().filter(|m| m.shader.is_some()) {
             Some(geometry::Made {
                 domain: Some(domain),
+                late: None,
                 ..
             }) => &domain.modules[0],
             Some(m) => m
