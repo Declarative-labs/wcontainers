@@ -97,8 +97,9 @@ pub struct Context {
     /// What is bound, as the program's objects, for the `Get` methods; holding a library reference
     /// on each, as Direct3D's context does.
     bound: RefCell<Bound>,
-    /// The immediate context's state object, once the program swaps one in.
-    state: RefCell<Option<ID3DDeviceContextState>>,
+    /// The immediate context's state object, once the program swaps one in; a library reference,
+    /// as Direct3D's context holds none of the program's on it.
+    state: RefCell<Option<Held<DeviceContextState_Impl>>>,
     /// `ID3D11Multithread`: the program's `Enter` calls not yet left, and its protection flag.
     entered: Cell<u32>,
     protected: Cell<bool>,
@@ -2279,32 +2280,27 @@ impl Context {
         state: Ref<ID3DDeviceContextState>,
         previous: OutRef<ID3DDeviceContextState>,
     ) {
-        let next = state.as_ref().cloned();
-        let incoming = ours::<_, DeviceContextState>(next.as_ref());
-        if self.is_deferred() || incoming.is_none() {
+        let incoming = ours::<_, DeviceContextState>(state.as_ref()).map(Held::new);
+        let Some(incoming) = incoming.filter(|_| !self.is_deferred()) else {
             let _ = previous.write(if self.is_deferred() {
                 None
             } else {
-                self.state.borrow().clone()
+                self.state.borrow().as_ref().map(Held::public)
             });
             return;
-        }
-        let current = self
-            .state
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| DeviceContextState::new(self.child.device().clone()).into());
-        let outgoing = ours::<_, DeviceContextState>(Some(&current)).expect("ours");
+        };
+        let current = self.state.borrow_mut().take().unwrap_or_else(|| {
+            let first: ID3DDeviceContextState =
+                DeviceContextState::new(self.child.device().clone()).into();
+            Held::new(ours::<_, DeviceContextState>(Some(&first)).expect("ours"))
+        });
         {
             let mut bound = self.bound.borrow_mut();
-            std::mem::swap(&mut *bound, &mut *outgoing.bound.borrow_mut());
-            std::mem::swap(
-                &mut *bound,
-                &mut *incoming.expect("ours").bound.borrow_mut(),
-            );
+            std::mem::swap(&mut *bound, &mut *current.bound.borrow_mut());
+            std::mem::swap(&mut *bound, &mut *incoming.bound.borrow_mut());
         }
-        *self.state.borrow_mut() = next;
-        let _ = previous.write(Some(current));
+        *self.state.borrow_mut() = Some(incoming);
+        let _ = previous.write(Some(current.public()));
         self.run("ClearState", |f| {
             f.clear_state();
             Ok(())
@@ -2483,9 +2479,11 @@ fn get_list<T: Copy + Default>(list: &[T], count: *mut u32, out: *mut T) {
         *count = list.len() as u32;
         return;
     }
+    // Entries past those bound read zero; the count becomes the number written that are bound.
     for i in 0..*count as usize {
         unsafe { out.add(i).write(list.get(i).copied().unwrap_or_default()) };
     }
+    *count = (*count).min(list.len() as u32);
 }
 
 /// A resource's address, which names it among mapped subresources.

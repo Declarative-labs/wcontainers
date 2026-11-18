@@ -1,8 +1,8 @@
 //! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges`,
 //! `own_depth_copy`, `own_swap_chain`, `own_volumes`, `own_queries`, `own_interfaces`,
-//! `own_indirect`, `own_min_lod`, `own_packed`, `own_nv12`, `own_cases` and `lifetimes`) run as ordinary
-//! programs, once beside the system's d3d11.dll and once with our forwarding d3d11.dll and library
-//! beside them, and what each printed compared.
+//! `own_indirect`, `own_min_lod`, `own_packed`, `own_nv12`, `own_yuy2`, `own_cases` and
+//! `lifetimes`) run as ordinary programs, once beside the system's d3d11.dll and once with our
+//! forwarding d3d11.dll and library beside them, and what each printed compared.
 #![cfg(windows)]
 
 mod common;
@@ -129,6 +129,18 @@ fn two_pixel_formats_sample_load_and_copy_as_direct3d_does() {
     let (code, want) = run("own_packed", &place("packed-system", false));
     assert_eq!(code, 0, "{want}");
     let (code, got) = run("own_packed", &place("packed-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn yuy2_pixel_pairs_view_write_copy_and_map_as_direct3d_does() {
+    let (code, want) = run("own_yuy2", &place("yuy2-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_yuy2", &place("yuy2-ours", true));
     assert_eq!(code, 0, "{got}");
     for (w, g) in want.lines().zip(got.lines()) {
         assert_eq!(w, g, "the first line that differs");
