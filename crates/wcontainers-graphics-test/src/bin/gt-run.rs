@@ -391,7 +391,7 @@ fn frames(args: &[String]) -> Result<bool> {
                     })
                     .collect::<Result<Vec<_>>>()?;
                 println!(
-                    "{name}: {} of {} tiles drew differently from run to run (after each run: {}), at most {} pixels in one run",
+                    "{name}: {} of {} tiles drew differently from run to run (after each run: {}), at most {} pixels in one run outside the tiles the others changed",
                     allowance.tiles.len(),
                     none.tiles.len(),
                     growth.join(" "),
