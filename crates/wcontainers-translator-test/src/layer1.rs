@@ -178,7 +178,8 @@ fn translated_in_one_page<G: GuestTest>(cases: &[Case]) -> Vec<Outcome> {
 pub fn on_reference<G: GuestTest>(reference: &mut Reference, case: &Case) -> Outcome {
     let landed = reference
         .case(case.code.code(), case.seed, &case.state.0)
-        .unwrap_or_else(|e| panic!("the reference runner failed: {e}"));
+        .unwrap_or_else(|e| panic!("the reference runner failed: {e}"))
+        .landed();
     let signal = Signal {
         number: landed.signal,
         code: landed.code,

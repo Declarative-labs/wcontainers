@@ -428,8 +428,9 @@ are static binaries copied to `~/wcontainers-x86/proof`.
    slots in stack order) (else the runner's own values leak in), set the x87, SSE and AVX bits of the
    frame's XSAVE header (`xstate_bv` bits 0, 1 and 2) or the kernel loads their first state, read a
    component as its first state when its `xstate_bv` bit is clear, find the
-   upper ymm halves at the offset CPUID leaf 0xD sub-leaf 2 gives, mask `TF`, `RF` (bit 16) and `IF` out of
-   the comparison of rflags, mask `TF` out of every copy of rflags an instruction makes (the word
+   upper ymm halves at the offset CPUID leaf 0xD sub-leaf 2 gives, mask `RF` (bit 16) and `IF` out of the
+   comparison of rflags and report `TF` as the instruction left it, not as the runner's own trap flag left
+   it (section 7.3, as built at X2), mask `TF` out of every copy of rflags an instruction makes (the word
    `pushf` stores, r11 after `syscall`), enter NT and ID through its own rflags (run 7), stop every
    32-bit call by its arch, and step on after `TRAP_TRACE` at CODE only for a rep string instruction or a
    gather (run 8).
@@ -2400,7 +2401,8 @@ pub trait GuestTest: Guest {
     /// x86 MXCSR bits 0 to 5 when the case does not track, starts with MXCSR's mode at the default and
     /// writes no MXCSR, section 5.8; x87's status is always kept and always compared), TF in the
     /// copies of rflags an instruction makes
-    /// (`pushf`'s word, r11 after `syscall`), AC after `popf` (section 5.1), what a faulting access leaves
+    /// (`pushf`'s word, r11 after `syscall`; TF in rflags itself is compared, as the runner reports the TF
+    /// the instruction left, section 7.3), AC after `popf` (section 5.1), what a faulting access leaves
     /// unknown (ARM64), x87's last-instruction pointers. Never an undefined flag.
     fn may_differ(case: &Case, reference: &Outcome, translated: &Outcome) -> State;
     /// A reference signal as a generic stop, given the instruction's length: section 7.3's list (x86's
@@ -2456,7 +2458,9 @@ pub struct Case { pub code: Encoded, pub state: State, pub tracking: bool, pub s
 pub struct Signal { pub number: u32, pub code: u32, pub address: u64, pub pc: u64 }
 /// Where control went or why the thread stopped, in terms both sides share (today's `Stop`, grown).
 /// `Breakpoint` holds the `si_code` (so `int1` and `int3` are told apart); `FloatException` likewise.
-/// `StackFault` is x86's #SS (`MemoryFault::Stack` on the translated side).
+/// `StackFault` is x86's #SS (`MemoryFault::Stack` on the translated side). `Alignment` holds `si_addr`:
+/// ARM64 the faulting address; x86 0, as Linux reports the alignment check (#AC, only with AC set, which
+/// the translator never holds, section 5.1), seen on the i7-8750H.
 pub enum Stop { Landed(u64), Illegal, Breakpoint(u32), SingleStep, Syscall, MemoryFault(u64),
     Alignment(u64), GeneralProtection, StackFault, DivideError, FloatException(u32), Other(u32, u64) }
 pub struct Outcome { pub stop: Stop, pub state: State, pub changed: Vec<(u32, u8)> }
@@ -2551,11 +2555,16 @@ trait Machine {
     /// x87, SSE and AVX components and `xstate_bv` bits 0 to 2), and set the thread pointers (ARM64
     /// tpidr_el0, x86 `arch_prctl` FS and GS). x86 also sets the case's NT and ID in the handler's own
     /// rflags, since `rt_sigreturn` takes those from the caller, not the frame (section 2, run 7).
-    /// It first keeps the runner's own frame (and x86 its XSAVE area and thread pointers).
-    unsafe fn enter(context: *mut libc::ucontext_t, state: &[u128]);
+    /// It first keeps the runner's own frame (and x86 its XSAVE area and thread pointers). `Err` names
+    /// what Linux refused to set up (x86: `arch_prctl` refuses a base at or above 2^47 - 4096), with the
+    /// frame and thread pointers left the runner's; the case is then answered as refused.
+    unsafe fn enter(context: *mut libc::ucontext_t, state: &[u128]) -> Result<(), &'static str>;
     /// Read the frame back into a state (a component whose `xstate_bv` bit is clear as its first state),
-    /// after giving the runner its own thread pointer back, and put the runner's frame back.
-    unsafe fn leave(context: *mut libc::ucontext_t, state: &mut [u128]);
+    /// after giving the runner its own thread pointer back, and put the runner's frame back. Given the
+    /// instruction, the state it started from and the stop's `siginfo`: x86 reports TF as the instruction
+    /// left it (section 7.3).
+    unsafe fn leave(code: &[u8], start: &[u128], context: *mut libc::ucontext_t,
+        signal: *const libc::siginfo_t, state: &mut [u128]);
     /// Whether the stop leaves the case's instruction `code` unfinished, so the runner steps on (at most
     /// `limit(code, state)` times). x86: `TRAP_TRACE` with rip still at CODE. Only the instructions the
     /// trap flag stops part way get steps from `limit` (section 2, run 8), so a `ret`, `call` or `jmp`
@@ -2601,7 +2610,9 @@ NZCV at its `pstate` bits, tpidr_el0, v0 to v31, FPSR and FPCR: 69 fields.
 The wire format is length-prefixed records in both directions. The runner's first record names its fields
 and the reference CPU's model (`/proc/cpuinfo`'s `model name`, or ARM64's implementer and part). A case is the instruction's length and
 bytes, the seed of its data area, and the state as `FIELDS.len()` 16-byte little-endian values; its result
-is a status of its own (ran, or runner failed with a message), the signal, `si_code`, `si_addr`, the
+is a status of its own (ran; runner failed, with a message; or refused, with what the CPU's Linux would not
+set up of the starting state, such as a thread pointer, which no program can start from: `CaseRan::Refused`,
+never a stop), then for a case that ran the signal, `si_code`, `si_addr`, the
 state after, and the changed data bytes as (offset, value) pairs. A blob is its bytes, its load address,
 stack and program headers, the guest's auxiliary vector entries, its standard input and how many runs to time; its result is its output, its exit
 status, the best time and, when a signal ended it, its stop record. Cases run in one child process of the
@@ -2670,10 +2681,17 @@ so; it is never skipped silently.
   register into the frame including all vector registers, the whole x87 component (control, status and
   abridged tag words, the eight slots in stack order, rotated from the case's physical R0 to R7 by TOP, the
   last-instruction pointers zero) and the XSAVE header bits 0, 1 and 2 (section 2, run 4), sets the FS and GS
-  bases with `arch_prctl`, sets TF in the frame, sets the case's NT and ID in its own rflags with `pushfq; or;
+  bases with `arch_prctl` (first, before anything else changes: a base Linux refuses, at or above 2^47 -
+  4096, makes the case refused, answered so with the runner's own state untouched), sets TF in the frame,
+  sets the case's NT and ID in its own rflags with `pushfq; or;
   popfq` (Linux's `rt_sigreturn` keeps those bits from its caller and takes only the `FIX_EFLAGS` bits from
-  the frame; section 2, run 7) and returns. The handler that reads the case back clears NT and ID in its own
-  rflags the same way before the runner goes on. The next signal is read back, knowing the instruction's
+  the frame; section 2, run 7) and returns. The handler that reads the case back first clears NT, ID and AC
+  in its own rflags the same way before the runner goes on (a handler starts with the case's AC, and its own
+  unaligned accesses then fault: seen at X2 as a `popf` setting AC that ended the runner's child by
+  `SIGBUS`). TF in the frame is the runner's own, so the reported rflags hold the frame's TF only when the
+  stop is `TRAP_TRACE` and the instruction loads rflags (`popf`, `iret`, by iced's decode: no other user
+  instruction writes TF), and otherwise the case's starting TF, which is what the instruction left; a
+  `popf` that faults leaves TF as it was. The next signal is read back, knowing the instruction's
   length L:
   - `SIGTRAP` with `TRAP_TRACE` (2): landed at rip.
   - `SIGTRAP` with `SI_KERNEL` (128) and rip CODE + L + 1: the instruction ran and fell through with its
@@ -2683,7 +2701,8 @@ so; it is never skipped silently.
   - `SIGTRAP` with `TRAP_BRKPT` (1): `int1`, rip after it: `Breakpoint(1)`.
   - `SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGFPE`: faults with their codes. `SIGSEGV` with `SI_KERNEL` and
     address 0 is `GeneralProtection`; `SIGBUS` with `SI_KERNEL` and address 0 is `StackFault`; `SIGBUS`
-    with `BUS_ADRALN` is `Alignment(address)`.
+    with `BUS_ADRALN` is `Alignment(si_addr)`, which on x86 is always 0 (Linux gives #AC no address; seen
+    on the i7-8750H with AC set and an 8-byte load at an odd address).
   - `SIGSYS`, from the seccomp filter, which stops every call made from the instruction window `[CODE,
     CODE + 18)` (the end as seccomp reports a call's instruction pointer, after the `syscall`: the longest
     instruction and a `syscall`, `Machine::WINDOW`) and every call whose `seccomp_data.arch` is `AUDIT_ARCH_I386` wherever it was made: a
@@ -2741,7 +2760,10 @@ memory operands whose base and index point into DATA), encoded by iced's `Encode
 length. A share of the cases instead puts a memory operand's base, or rsp for the implicit stack accesses, in
 the last 64 bytes below 2^47 or at a non-canonical value (section 5.4), with every base register drawn, rsp
 and rbp and r12 and r13 among them and `fs:` and `gs:` prefixes among the operands, so that the page fault,
-general protection and the stack fault are each compared with the reference. Another share gives rip-relative
+general protection and the stack fault are each compared with the reference. The FS and GS bases themselves
+are drawn below 2^47 - 4096, what `arch_prctl` sets; a case the reference answers as refused fails with that
+reason, never compared (a canonical base above it, which `wrfsbase` can set, is not drawn while the runner
+sets bases by `arch_prctl`). Another share gives rip-relative
 operands displacements that reach the code area around the instruction (its own bytes and the `int3` filler,
 which both sides hold, section 7.2) or just past the code area's ends (a page fault on both sides). The
 accesses that are not one operand (section 5.4) get draws of their own: bit offsets of `bt` and its kin of

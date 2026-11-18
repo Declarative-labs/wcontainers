@@ -82,9 +82,11 @@ pub mod x86_64 {
 /// then the CPU's model name (a byte of length, then the name). A request starts with its kind.
 pub const RECORD_CASE: u8 = 0;
 pub const RECORD_BLOB: u8 = 1;
-/// A result starts with its status: the request ran, or the runner failed (a message follows).
+/// A result starts with its status: the request ran, the runner failed, or the CPU's Linux refused to set up
+/// the case's starting state (for the last two a message follows).
 pub const RESULT_RAN: u8 = 0;
 pub const RESULT_FAILED: u8 = 1;
+pub const RESULT_REFUSED: u8 = 2;
 
 /// The data area's starting contents for a seed.
 pub fn fill(seed: u64, into: &mut [u8]) {

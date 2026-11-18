@@ -129,7 +129,7 @@ impl Machine for Cpu {
         "fpcr",
     ];
 
-    unsafe fn enter(uc: *mut libc::ucontext_t, state: &[u128]) {
+    unsafe fn enter(uc: *mut libc::ucontext_t, state: &[u128]) -> Result<(), &'static str> {
         unsafe {
             (*addr_of_mut!(HOST)).write(core::ptr::read(&(*uc).uc_mcontext));
             HOST_THREAD_POINTER = thread_pointer();
@@ -146,9 +146,16 @@ impl Machine for Cpu {
             frame_float(uc).write_unaligned([state[FPSR] as u32, state[FPSR + 1] as u32]);
             set_thread_pointer(state[THREAD_POINTER] as u64);
         }
+        Ok(())
     }
 
-    unsafe fn leave(uc: *mut libc::ucontext_t, state: &mut [u128]) {
+    unsafe fn leave(
+        _: &[u8],
+        _: &[u128],
+        uc: *mut libc::ucontext_t,
+        _: *const libc::siginfo_t,
+        state: &mut [u128],
+    ) {
         unsafe {
             let guest_thread_pointer = thread_pointer();
             set_thread_pointer(HOST_THREAD_POINTER);

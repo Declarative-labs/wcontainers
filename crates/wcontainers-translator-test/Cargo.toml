@@ -26,6 +26,8 @@ blake3 = "1"
 # Reads a translated module's lookup table, to number its pieces' functions (src/bin/machine-code.rs).
 wasmparser = "0.263.0"
 rustc-hash = "2.1.3"
+# Bounds each zig build (src/programs.rs).
+wait-timeout = "0.2.1"
 
 [dev-dependencies]
 flate2 = "1.1"

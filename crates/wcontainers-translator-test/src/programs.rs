@@ -75,11 +75,25 @@ pub fn source<G: GuestTest>(name: &str) -> PathBuf {
         .unwrap_or_else(|| panic!("no program {name} for {}", G::NAME))
 }
 
+/// The longest one zig command may take. A build takes seconds; past this it is stuck, not slow.
+const ZIG_LIMIT: Duration = Duration::from_secs(600);
+
+/// Run zig with a cache of this checkout's own, so no zig process of another checkout holds its locks, and
+/// fail with a message when it does not end.
 pub(crate) fn zig(arguments: &[&str]) {
-    let status = Command::new("zig")
+    use wait_timeout::ChildExt;
+    let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/zig-cache");
+    let mut child = Command::new("zig")
         .args(arguments)
-        .status()
+        .env("ZIG_GLOBAL_CACHE_DIR", &cache)
+        .env("ZIG_LOCAL_CACHE_DIR", &cache)
+        .spawn()
         .expect("run zig (from the Nix shell)");
+    let Some(status) = child.wait_timeout(ZIG_LIMIT).expect("wait for zig") else {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("zig {arguments:?} did not end in {ZIG_LIMIT:?}");
+    };
     assert!(status.success(), "zig {arguments:?} failed");
 }
 

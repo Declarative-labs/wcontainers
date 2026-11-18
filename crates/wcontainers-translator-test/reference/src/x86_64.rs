@@ -11,6 +11,9 @@ pub struct Cpu;
 const TF: u64 = 0x100;
 /// NT and ID: `rt_sigreturn` takes these from the caller's rflags, not the frame's.
 const KEEP_BITS: u64 = 0x20_4000;
+/// Alignment check: a handler starts with the case's AC, under which the runner's own unaligned accesses
+/// would fault.
+const AC: u64 = 0x4_0000;
 const TRAP_TRACE: i32 = 2;
 const AUDIT_ARCH_X86_64: u32 = 0xc000_003e;
 const FP_XSTATE_MAGIC1: u32 = 0x4650_5853;
@@ -83,6 +86,16 @@ fn get_base(code: i64) -> u64 {
     value
 }
 
+/// Whether the instruction loads rflags from memory, so may write TF.
+fn loads_rflags(code: &[u8]) -> bool {
+    use iced_x86::{Decoder, DecoderOptions, Mnemonic};
+    let instruction = Decoder::with_ip(64, code, CODE, DecoderOptions::NONE).decode();
+    matches!(
+        instruction.mnemonic(),
+        Mnemonic::Popf | Mnemonic::Popfq | Mnemonic::Iret | Mnemonic::Iretd | Mnemonic::Iretq
+    )
+}
+
 /// Where the upper halves of the ymm registers are in an XSAVE area.
 fn ymm_offset() -> usize {
     core::arch::x86_64::__cpuid_count(0xd, 2).ebx as usize
@@ -136,10 +149,18 @@ impl Machine for Cpu {
         "ymmh9", "ymmh10", "ymmh11", "ymmh12", "ymmh13", "ymmh14", "ymmh15",
     ];
 
-    unsafe fn enter(uc: *mut libc::ucontext_t, state: &[u128]) {
+    /// Linux refuses a base at or above the top of user space (2^47 - 4096); nothing else changes then.
+    unsafe fn enter(uc: *mut libc::ucontext_t, state: &[u128]) -> Result<(), &'static str> {
         unsafe {
             HOST_FS = get_base(ARCH_GET_FS);
             HOST_GS = get_base(ARCH_GET_GS);
+            if arch_prctl(ARCH_SET_FS, state[FS] as u64) != 0 {
+                return Err("arch_prctl refused the FS base");
+            }
+            if arch_prctl(ARCH_SET_GS, state[GS] as u64) != 0 {
+                arch_prctl(ARCH_SET_FS, HOST_FS);
+                return Err("arch_prctl refused the GS base");
+            }
             let gregs = &mut (*uc).uc_mcontext.gregs;
             *addr_of_mut!(HOST_GREGS) = *gregs;
             for (field, &at) in GREGS.iter().enumerate() {
@@ -173,26 +194,40 @@ impl Machine for Cpu {
                 let bv = u64::from_le_bytes(get(fp.add(512))) | 7;
                 put(fp.add(512), &bv.to_le_bytes());
             }
-            arch_prctl(ARCH_SET_FS, state[FS] as u64);
-            arch_prctl(ARCH_SET_GS, state[GS] as u64);
             let keep = state[RFLAGS] as u64 & KEEP_BITS;
             core::arch::asm!("pushfq", "or qword ptr [rsp], {0}", "popfq", in(reg) keep);
         }
+        Ok(())
     }
 
-    unsafe fn leave(uc: *mut libc::ucontext_t, state: &mut [u128]) {
+    /// TF in the frame is the runner's own unless the instruction loaded rflags (`popf`, `iret`) and
+    /// finished, which a `TRAP_TRACE` stop shows; otherwise the case's starting TF is what it left.
+    unsafe fn leave(
+        code: &[u8],
+        start: &[u128],
+        uc: *mut libc::ucontext_t,
+        info: *const libc::siginfo_t,
+        state: &mut [u128],
+    ) {
         unsafe {
+            core::arch::asm!("pushfq", "and qword ptr [rsp], {0}", "popfq", in(reg) !(KEEP_BITS | AC));
             state[FS] = get_base(ARCH_GET_FS).into();
             state[GS] = get_base(ARCH_GET_GS).into();
             arch_prctl(ARCH_SET_FS, HOST_FS);
             arch_prctl(ARCH_SET_GS, HOST_GS);
-            core::arch::asm!("pushfq", "and qword ptr [rsp], {0}", "popfq", in(reg) !KEEP_BITS);
             let gregs = &mut (*uc).uc_mcontext.gregs;
             for (field, &at) in GREGS.iter().enumerate() {
                 state[field] = (gregs[at] as u64).into();
             }
             state[RIP] = (gregs[libc::REG_RIP as usize] as u64).into();
-            state[RFLAGS] = (gregs[libc::REG_EFL as usize] as u64 & !TF).into();
+            let rflags = gregs[libc::REG_EFL as usize] as u64;
+            let traced = (*info).si_signo == libc::SIGTRAP && (*info).si_code == TRAP_TRACE;
+            let tf = if traced && loads_rflags(code) {
+                rflags & TF
+            } else {
+                start[RFLAGS] as u64 & TF
+            };
+            state[RFLAGS] = (rflags & !TF | tf).into();
             *gregs = *addr_of!(HOST_GREGS);
 
             let (fp, _, extended) = fp_area(uc);

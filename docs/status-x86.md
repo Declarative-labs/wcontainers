@@ -29,6 +29,7 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   (the same day) moved ARM64's own program sources into `programs/arm64` and wrote the last ARM64-pinned
   test files (`programs.rs`, `benchmarks.rs`, `output.rs`, `binaries.rs`, `machine-code`) once over `G`
   (see "X2, run 4"). Run 5 (the same day) fixed what the independent check of X2 found (see "X2, run 5").
+  Run 6 (2026-11-18) fixed what the second check of X2 found (see "X2, run 6").
   Not built, proposed for X3: the recorded reference results and layer 1 batching of plan 7.3.
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
@@ -44,12 +45,57 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 
 ## X2: what comes next
 
-1. The second independent check of X2.
+1. The third independent check of X2.
 2. Plan 7.3's recorded reference results and layer 1 batching, proposed for X3 (see "Departures"); build them
    at X2 only if the orchestrator rules so. The plan's text now says they are not built.
 3. For X3: `presented`, `REFERENCE_HAS` and layer 1's rule for an `Err` case (plan 7.2 "As built"). For X4:
    the shared layer 2 model's operations are ARM64's (ccmp's nzcv immediate, ranges ARM64 encodes in one
    instruction), so x86's `assemble` expands them; the X2 check noted it.
+
+## X2, run 6 (2026-11-18)
+
+The second independent check of X2 found two blocking problems and four smaller ones (and a measurement).
+What was done about each:
+- Blocking, an ARM64 fact in the generic harness: `Binary::in_code` kept a real binary's function start only
+  at a multiple of 4. It now takes `G::ALIGN` (`in_code::<G>`, and `unwind_starts::<G>` that calls it), as the
+  code range two lines above already did. ARM64's starts are unchanged (its `ALIGN` is 4). A wider read
+  for others (grep of `src/`, `tests/`, `browser/runner.js` and the scripts for 4-byte steps, ARM64 names,
+  register numbers and HWCAP): the 4s left are i32 slot and flag words of the lookup array and the state
+  memory, the eh_frame entry's length word and `gap / 4`, none a CPU fact; `elfconv.sh` is ARM64's own
+  comparison tool (elfconv converts only ARM64).
+- Blocking, the x86 runner ignored a failed `arch_prctl` and answered the case as run. Now `Machine::enter`
+  returns `Result<(), &'static str>`; x86 sets FS and GS first, before anything else changes, and on a
+  refusal puts FS back and changes nothing. The case is answered with a new status, `RESULT_REFUSED` (2) and
+  the reason, which the harness gives as `CaseRan::Refused` (layer 1 fails with "the reference cannot start
+  this case"). New test `the_x86_64_reference_refuses_what_linux_refuses`: FS at 2^63 and at 2^47, GS at 2^47
+  and at 2^47 - 4096 refused; after them `mov rax, fs:[0]` with FS DATA + 0x40 reads the seed's word and a
+  GS of 2^47 - 8192 runs and reads back. Plan 7.2 (trait, wire), 7.3 and 7.4 (bases drawn below 2^47 - 4096)
+  say so.
+- zig: every zig command now runs with `ZIG_GLOBAL_CACHE_DIR` and `ZIG_LOCAL_CACHE_DIR` at the checkout's
+  `target/zig-cache`, so no other checkout's zig holds its locks, and is killed and fails with a message
+  after 10 minutes (`wait-timeout`). The first run fills the cache (a C library per target).
+- Plan 7.3 and `Stop::Alignment`: x86's `BUS_ADRALN` gives `si_addr` 0, so x86's stop is `Alignment(0)`.
+  New hand-made case: `mov rax, [rbx]` with AC set and rbx DATA + 1 gives SIGBUS `BUS_ADRALN`, rip CODE,
+  address 0 on the i7-8750H.
+- TF in the reported rflags: the runner now reports the frame's TF only when the stop is `TRAP_TRACE` (signal
+  and code both checked: SIGSEGV's `SEGV_ACCERR` is also 2) and iced decodes `popf` or `iret` (no other user
+  instruction writes TF), else the case's starting TF. New cases: `popf` of a word with TF and of one
+  without (TF as the word's), `popf` from an unmapped stack (SIGSEGV, TF clear, rsp unchanged), `nop` (TF
+  clear). Writing them found a real fault in the runner: a `popf` that set AC killed the case child with
+  SIGBUS, because Linux starts the handler with the case's AC and the handler's own unaligned accesses then
+  fault. The read-back handler now clears AC with NT and ID, first thing. Plan sections 2, 7.2 (`may_differ`,
+  `leave`) and 7.3 say so.
+- Suite time: see the proof below.
+
+Proof of run 6 (the Mac, Apple M5):
+- origin/phase-1-translator: nothing new at the start (2026-11-18 00:10).
+- x86 reference tests on the i7-8750H (`x2/run6/reference2.log`, Mac load 59 to 55, x86 load 4.3 just
+  before, another track builds there): 4 passed, 43 hand-made cases (38 before, 5 new).
+- `binaries` and `programs` after the changes (`x2/run6/affected.log`, 00:13 to 00:19, Mac load 72 to 67):
+  binaries 2 passed, 1 ignored; programs 15 passed, 2 ignored, 320 s, with the zig cache new and empty.
+- Same cases: `same-cases.sh d27cd70 1 2 3 8807` (`WC_OUTPUT_ROOT` scratch `x2/same`, log
+  `x2/run6/same-cases.log`, Mac load 86 to 94): layer 1 1215 forms and layer 2 64 programs the same for each
+  seed. Nothing this run changed draws cases.
 
 ## X2, run 5 (2026-11-17)
 
@@ -139,7 +185,8 @@ Proof of run 5 (the Mac, Apple M5):
 - Read of the harness for ARM64 facts outside the per-CPU part: none left in `src/` beyond `src/guest/`,
   `layout.rs`'s per-CPU code areas (shared with the runner by plan) and layer 2's model, whose operations
   are ARM64's by plan 7.2 "As built". In `tests/`, ARM64 appears only in the `_arm64` wrappers, the
-  ARM64-own tests above and the host counters of `differences_match_linux_on_every_host_arm64`.
+  ARM64-own tests above and the host counters of `differences_match_linux_on_every_host_arm64`. (Wrong:
+  `Binary::in_code` still kept a start only at a multiple of 4; the second X2 check found it, run 6 fixed it.)
 ## X2, run 3 (2026-11-17)
 
 - origin/phase-1-translator: fetched at the start, nothing new since 8b5e420.
@@ -1099,6 +1146,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
   41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2); in run 10, one run each of `tf`
   (8 trap-flag scenarios in 9 runs, 20 stops) and `rf` (8 signal frames), and 6 `stepper6` cases.
+- X2 run 6: the x86 reference's 43 hand-made cases, 2 blobs, the reconnection case and the refusal test
+  (4 refused cases and 2 that run), twice outside the suite (the first stopped at the `popf` that set AC,
+  above) and in the suite run.
 - X2 run 5: `same-cases.sh d27cd70` for seeds 1, 2, 3 and 7717 at 64 cases a form and 64 programs, both
   sides; `tests/cases.rs` at 1000 cases a form and 1 program for the same four seeds (this side only, for the
   no-form lists); d27cd70's no-form words at 64 and 1000 for the same seeds (scratch test); the x86
@@ -1147,6 +1197,8 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 - The toolchain gains the `x86_64-unknown-linux-musl` target (for the reference runner).
 - `rustc-hash` 2.1.3 (Apache-2.0 OR MIT): a normal dependency of the test crate, added by the translator track
   (its runner's counters), merged in X2 run 5.
+- `wait-timeout` 0.2.1 (MIT/Apache-2.0): since X2 run 6 a normal dependency of the test crate (bounds each zig
+  build); it was already in the lock through proptest's `rusty-fork`.
 - astro-float 0.9.6: MIT, with astro-float-num 0.3.7 and astro-float-macro 0.4.6 (both MIT), lazy_static,
   itertools, either (all MIT or Apache-2.0, already common). Planned for X7 (x87 transcendentals); not yet a
   dependency.
@@ -1230,8 +1282,14 @@ X2 (each also written into the plan's text in the same commit):
   reference is proven before an x86 `Guest` exists; `GuestTest` will name its `Target` (plan 7.2).
 - The seccomp window is given as its end as seccomp reports it (ARM64 8, x86 18), not 4 and 16 (plan 7.2).
 - `Machine` works on raw frame pointers, keeps and restores the runner's frame itself, gains `AUDIT_ARCH` and
-  `blob_stop`, and `limit` (with iced) decides before the case which instructions may be stepped, so nothing
-  decodes inside a handler (plan 7.2).
+  `blob_stop`, and `limit` (with iced) decides before the case which instructions may be stepped. Since run
+  6 x86's `leave` also decodes, after the runner's own thread pointer and flags are back, to tell `popf` and
+  `iret` (plan 7.2).
+- Run 6: `Machine::enter` can refuse (x86: a thread pointer `arch_prctl` refuses), answered as `RESULT_REFUSED`
+  and given as `CaseRan::Refused`, never as a stop; `leave` gets the instruction, the start state and the
+  `siginfo`, and x86 reports TF as the instruction left it instead of masking it, so plan section 2's mask of
+  TF in rflags is gone (TF stays masked only in the copies an instruction makes); the read-back handler
+  clears AC too; x86's `Alignment` holds 0, as Linux reports #AC (plan 2, 7.2, 7.3, 7.4).
 - Isolation: one long-lived case child, replaced when a case ends it, instead of a fork per batch; batching
   and the recorded results of plan 7.3 are not built yet, and plan 4 (item 12) and 7.3 now say so.
 - Both runners are static executables that are not position independent: x86's is built with `-C

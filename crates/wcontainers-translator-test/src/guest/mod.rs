@@ -169,7 +169,7 @@ pub enum Stop {
     Breakpoint(u32),
     Syscall,
     MemoryFault(u64),
-    /// SIGBUS with BUS_ADRALN at this address.
+    /// SIGBUS with BUS_ADRALN and this `si_addr`: ARM64 the faulting address, x86-64 always 0.
     Alignment(u64),
     GeneralProtection,
     StackFault,

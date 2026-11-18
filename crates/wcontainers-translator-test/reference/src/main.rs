@@ -53,11 +53,18 @@ pub trait Machine {
     /// The state's fields, in wire order.
     const FIELDS: &'static [&'static str];
     /// Keep the runner's own state from the frame and put the case's in its place (with the single-step
-    /// trap set, where that is how the CPU stops), and the case's thread pointers.
-    unsafe fn enter(context: *mut libc::ucontext_t, state: &[u128]);
+    /// trap set, where that is how the CPU stops), and the case's thread pointers. `Err` names what Linux
+    /// refused to set up; the frame and the thread pointers are then the runner's, untouched.
+    unsafe fn enter(context: *mut libc::ucontext_t, state: &[u128]) -> Result<(), &'static str>;
     /// Read the frame back into a state after giving the runner its own thread pointers back, and put the
-    /// runner's own state back into the frame.
-    unsafe fn leave(context: *mut libc::ucontext_t, state: &mut [u128]);
+    /// runner's own state back into the frame. `code` is the instruction and `start` the state it ran from.
+    unsafe fn leave(
+        code: &[u8],
+        start: &[u128],
+        context: *mut libc::ucontext_t,
+        info: *const libc::siginfo_t,
+        state: &mut [u128],
+    );
     /// Whether this stop leaves the instruction `code` unfinished, so the runner steps on.
     unsafe fn unfinished(
         code: &[u8],
@@ -87,15 +94,18 @@ static mut CODE_BYTES: [u8; 16] = [0; 16];
 static mut CODE_LENGTH: usize = 0;
 /// Steps left for an unfinished instruction.
 static mut STEPS_LEFT: u64 = 0;
+/// What Linux refused to set up for the case, if anything.
+static mut REFUSED: Option<&'static str> = None;
 
 /// Entry: keep the runner's frame, put the case's state in its place.
 extern "C" fn enter(_: libc::c_int, _: *mut libc::siginfo_t, context: *mut libc::c_void) {
     unsafe {
         let fields = Cpu::FIELDS.len();
-        Cpu::enter(
+        REFUSED = Cpu::enter(
             context as *mut libc::ucontext_t,
             &(&*addr_of!(GUEST))[..fields],
         )
+        .err();
     };
 }
 
@@ -110,7 +120,13 @@ extern "C" fn land(signal: libc::c_int, info: *mut libc::siginfo_t, context: *mu
             return;
         }
         let fields = Cpu::FIELDS.len();
-        Cpu::leave(uc, &mut (&mut *addr_of_mut!(LANDED))[..fields]);
+        Cpu::leave(
+            code,
+            &(&*addr_of!(GUEST))[..fields],
+            uc,
+            info,
+            &mut (&mut *addr_of_mut!(LANDED))[..fields],
+        );
         SIGNAL = [
             signal as u64,
             (*info).si_code as u64,
@@ -354,6 +370,12 @@ fn serve_cases(mut input: std::fs::File, mut output: std::fs::File) -> ! {
             timer(0);
         }
 
+        if let Some(refused) = unsafe { REFUSED } {
+            let mut result = vec![RESULT_REFUSED];
+            result.extend_from_slice(refused.as_bytes());
+            write_record(&mut output, &result);
+            continue;
+        }
         let data = unsafe { core::slice::from_raw_parts(DATA as *const u8, DATA_BYTES as usize) };
         let changed: Vec<(u32, u8)> = data
             .iter()

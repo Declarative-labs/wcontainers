@@ -221,9 +221,9 @@ impl Binary {
     }
 
     /// An image offset for a guest address, if it is a whole instruction in the code.
-    fn in_code(&self, base: u64, address: u64) -> Option<u64> {
+    fn in_code<G: GuestTest>(&self, base: u64, address: u64) -> Option<u64> {
         let offset = address.checked_sub(base)?;
-        (self.code.contains(&offset) && offset.is_multiple_of(4)).then_some(offset)
+        (self.code.contains(&offset) && offset.is_multiple_of(G::ALIGN)).then_some(offset)
     }
 
     fn word(&self, base: u64, address: u64) -> Option<u64> {
@@ -235,7 +235,7 @@ impl Binary {
     fn find_starts<G: GuestTest>(&mut self, file: &File<'_>, base: u64) {
         let endian = file.endian();
         let mut starts = Starts::default();
-        let code = |address| self.in_code(base, address);
+        let code = |address| self.in_code::<G>(base, address);
 
         starts.entry.extend(code(file.entry()));
         let dynamic: Vec<(elf::DynamicTag, u64)> = file
@@ -341,14 +341,14 @@ impl Binary {
             }
         }
 
-        (starts.unwind, self.unwind_errors) = self.unwind_starts(file, base);
+        (starts.unwind, self.unwind_errors) = self.unwind_starts::<G>(file, base);
         self.starts = starts;
     }
 
     /// The first address of every function the unwind tables (`.eh_frame`) describe, and how many entries
     /// could not be read, each warned of. An entry that cannot be read is skipped; reading stops only where an
     /// entry's length cannot be read, as nothing after it can be found.
-    fn unwind_starts(&self, file: &File<'_>, base: u64) -> (BTreeSet<u64>, u64) {
+    fn unwind_starts<G: GuestTest>(&self, file: &File<'_>, base: u64) -> (BTreeSet<u64>, u64) {
         use gimli::{Reader, UnwindSection};
         let mut found = BTreeSet::new();
         let mut errors = 0;
@@ -395,7 +395,7 @@ impl Binary {
                 gimli::EhFrameOffset(offset),
                 |section, bases, at| section.cie_from_offset(bases, at),
             ) {
-                Ok(fde) => found.extend(self.in_code(base, fde.initial_address())),
+                Ok(fde) => found.extend(self.in_code::<G>(base, fde.initial_address())),
                 Err(error) => warn(format!("a function's entry not read: {error}")),
             }
         }

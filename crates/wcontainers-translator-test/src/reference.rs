@@ -160,6 +160,24 @@ fn upload(host: &str, local: &std::path::Path, hash: &str) -> Result<String, Str
     }
 }
 
+/// What the real CPU made of a case: where it stopped, or that its Linux refused to set up the starting
+/// state (a thread pointer it does not accept), which no program can start from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaseRan {
+    Landed(Landed),
+    Refused(String),
+}
+
+impl CaseRan {
+    /// Where the case stopped; a refused case fails with what was refused.
+    pub fn landed(self) -> Landed {
+        match self {
+            CaseRan::Landed(landed) => landed,
+            CaseRan::Refused(why) => panic!("the reference cannot start this case: {why}"),
+        }
+    }
+}
+
 /// What a case did on the real CPU.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Landed {
@@ -281,7 +299,7 @@ impl Reference {
     /// Send a request and read its result. A connection lost on the way (the network dropped, the
     /// container ended) is a transport failure, not the guest's: the runner is started again and the
     /// request sent again, as each request stands alone.
-    fn request(&mut self, record: &[u8]) -> Result<Vec<u8>, String> {
+    fn request(&mut self, record: &[u8]) -> Result<(u8, Vec<u8>), String> {
         let mut lost = 0;
         let result = loop {
             let sent = write_record(&mut self.input, record);
@@ -300,8 +318,8 @@ impl Reference {
             *self = Self::start(&target);
         };
         match result[0] {
-            RESULT_RAN => Ok(result[1..].to_vec()),
-            _ => Err(String::from_utf8_lossy(&result[1..]).into_owned()),
+            RESULT_FAILED => Err(String::from_utf8_lossy(&result[1..]).into_owned()),
+            status => Ok((status, result[1..].to_vec())),
         }
     }
 
@@ -313,7 +331,7 @@ impl Reference {
 
     /// Run one instruction from `state` (its pc field is ignored: the instruction is at CODE) and the data
     /// area of `seed`. `Err` is the runner's own failure, never the guest's.
-    pub fn case(&mut self, code: &[u8], seed: u64, state: &[u128]) -> Result<Landed, String> {
+    pub fn case(&mut self, code: &[u8], seed: u64, state: &[u128]) -> Result<CaseRan, String> {
         assert_eq!(state.len(), self.fields, "a value for every field");
         let mut record = vec![RECORD_CASE, code.len() as u8];
         record.extend_from_slice(code);
@@ -321,20 +339,26 @@ impl Reference {
         for value in state {
             record.extend_from_slice(&value.to_le_bytes());
         }
-        let result = self.request(&record)?;
+        let (status, result) = self.request(&record)?;
+        if status == RESULT_REFUSED {
+            return Ok(CaseRan::Refused(
+                String::from_utf8_lossy(&result).into_owned(),
+            ));
+        }
+        assert_eq!(status, RESULT_RAN, "a case's result status");
         let mut result = Reader(&result);
         let (signal, code, address) = (result.u32(), result.u32(), result.u64());
         let state = (0..self.fields).map(|_| result.u128()).collect();
         let changed = (0..result.u32())
             .map(|_| (result.u32(), result.take(1)[0]))
             .collect();
-        Ok(Landed {
+        Ok(CaseRan::Landed(Landed {
             signal,
             code,
             address,
             state,
             changed,
-        })
+        }))
     }
 
     /// Run a blob. `Err` is the runner's own failure.
@@ -359,7 +383,8 @@ impl Reference {
         record.extend_from_slice(&(blob.stdin.len() as u32).to_le_bytes());
         record.extend_from_slice(blob.stdin);
         record.extend_from_slice(blob.bytes);
-        let result = self.request(&record)?;
+        let (status, result) = self.request(&record)?;
+        assert_eq!(status, RESULT_RAN, "a blob's result status");
         let mut result = Reader(&result);
         let status = result.u32() as i32;
         let seconds = f64::from_le_bytes(result.take(8).try_into().unwrap());

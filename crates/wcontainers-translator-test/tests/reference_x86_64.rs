@@ -8,7 +8,7 @@
 //! Needs `WC_REFERENCE_X86_64` (such as `tom@192.168.2.240`) on a host that is not x86-64; it fails without it.
 
 use wcontainers_translator_test::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE, fill};
-use wcontainers_translator_test::reference::{BlobRequest, Landed, Reference, X86_64};
+use wcontainers_translator_test::reference::{BlobRequest, CaseRan, Landed, Reference, X86_64};
 
 const SIGILL: u32 = 4;
 const SIGTRAP: u32 = 5;
@@ -24,6 +24,7 @@ const SEGV_ACCERR: u32 = 2;
 const ILL_ILLOPN: u32 = 2;
 const FPE_INTDIV: u32 = 1;
 const SYS_SECCOMP: u32 = 1;
+const BUS_ADRALN: u32 = 1;
 
 const CF: u128 = 1;
 const PF: u128 = 4;
@@ -31,7 +32,9 @@ const AF: u128 = 0x10;
 const ZF: u128 = 0x40;
 const SF: u128 = 0x80;
 const OF: u128 = 0x800;
+const TF: u128 = 0x100;
 const NT: u128 = 0x4000;
+const AC: u128 = 0x4_0000;
 const ID: u128 = 0x20_0000;
 /// rflags as Linux starts a thread: IF and the reserved bit 1.
 const START_FLAGS: u128 = 0x202;
@@ -85,7 +88,8 @@ impl Check<'_> {
         let landed = self
             .reference
             .case(code, SEED, &state)
-            .unwrap_or_else(|e| panic!("{name}: the runner failed: {e}"));
+            .unwrap_or_else(|e| panic!("{name}: the runner failed: {e}"))
+            .landed();
         assert_eq!(
             (landed.signal, landed.code),
             stop,
@@ -572,9 +576,98 @@ fn the_x86_64_reference_answers_by_the_manual() {
         },
     );
 
+    // With AC set, an 8-byte load at an odd address: alignment check, which Linux reports with si_addr 0.
+    check.case(
+        "mov rax, [rbx] misaligned with AC",
+        &[0x48, 0x8b, 0x03],
+        |s| {
+            s[at("rflags")] = START_FLAGS | AC;
+            s[at("rbx")] = (DATA + 1).into();
+        },
+        (SIGBUS, BUS_ADRALN),
+        |l, _| {
+            assert_eq!((rip(l), l.address), (CODE128, 0));
+        },
+    );
+
+    // popf writes TF; the runner's own TF is never reported.
+    for (name, set) in [
+        ("popf of a word with TF", true),
+        ("popf of a word without TF", false),
+    ] {
+        let offset = (0..DATA_WRITABLE as usize - 8)
+            .step_by(8)
+            .find(|&o| (data_word(o) & TF != 0) == set)
+            .unwrap();
+        check.case(
+            name,
+            &[0x9d],
+            |s| s[at("rsp")] = DATA as u128 + offset as u128,
+            STEP,
+            |l, _| {
+                assert_eq!(rip(l), CODE128 + 1);
+                assert_eq!(get(l, "rflags") & TF, data_word(offset) & TF);
+            },
+        );
+    }
+    check.case(
+        "popf from an unmapped stack leaves TF clear",
+        &[0x9d],
+        |s| s[at("rsp")] = 0x1000,
+        (SIGSEGV, SEGV_MAPERR),
+        |l, s| {
+            assert_eq!(rip(l), CODE128);
+            assert_eq!(get(l, "rflags") & TF, 0);
+            assert_eq!(get(l, "rsp"), s[at("rsp")]);
+        },
+    );
+    check.case(
+        "nop leaves TF clear",
+        &[0x90],
+        |_| {},
+        STEP,
+        |l, _| assert_eq!(get(l, "rflags") & TF, 0),
+    );
+
     let passed = check.passed;
     eprintln!("{passed} hand-made cases answered by the manual");
     assert!(passed >= 30);
+}
+
+/// A thread pointer Linux does not accept (at or above the top of user space, 2^47 - 4096) is reported as
+/// refused, not run; the runner's own thread pointer is untouched, so the next case runs.
+#[test]
+fn the_x86_64_reference_refuses_what_linux_refuses() {
+    let mut reference = Reference::start(&X86_64);
+    for (field, value) in [
+        ("fs_base", NON_CANONICAL),
+        ("fs_base", 1 << 47),
+        ("gs_base", 1 << 47),
+        ("gs_base", (1 << 47) - 0x1000),
+    ] {
+        let mut state = start();
+        state[at(field)] = value;
+        let ran = reference.case(&[0x90], SEED, &state).expect("the runner");
+        let CaseRan::Refused(why) = ran else {
+            panic!("{field} {value:#x}: ran, {ran:?}");
+        };
+        assert!(why.contains(&field[..2].to_uppercase()), "{why}");
+    }
+    let mut state = start();
+    state[at("fs_base")] = (DATA + 0x40).into();
+    let landed = reference
+        .case(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0], SEED, &state)
+        .expect("the runner")
+        .landed();
+    assert_eq!((landed.signal, landed.code), STEP);
+    assert_eq!(get(&landed, "rax"), data_word(0x40));
+    let mut state = start();
+    state[at("gs_base")] = (1 << 47) - 0x2000;
+    let landed = reference
+        .case(&[0x90], SEED, &state)
+        .expect("the runner")
+        .landed();
+    assert_eq!(get(&landed, "gs_base"), (1 << 47) - 0x2000);
 }
 
 /// A flat blob prints and exits with its status; another stops by its own illegal instruction, with its stop
@@ -658,7 +751,10 @@ fn the_x86_64_reference_runs_blobs() {
 fn the_x86_64_reference_comes_back_after_its_connection_is_lost() {
     let mut reference = Reference::start(&X86_64);
     let nop = |reference: &mut Reference| {
-        let landed = reference.case(&[0x90], SEED, &start()).expect("the runner");
+        let landed = reference
+            .case(&[0x90], SEED, &start())
+            .expect("the runner")
+            .landed();
         assert_eq!((landed.signal, landed.code), STEP);
         assert_eq!(rip(&landed), CODE128 + 1);
         landed
