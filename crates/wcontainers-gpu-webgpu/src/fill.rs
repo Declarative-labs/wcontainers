@@ -452,7 +452,6 @@ impl WebGpu {
             })
         };
         let whole_3d = three_d.then(|| held_view(None));
-        let (bw, _, _) = format.block();
         for l in 0..extent.depth_or_layers {
             let slice = first + l;
             let own = level_view(raw, wgpu::TextureAspect::All, 0, l);
@@ -492,7 +491,13 @@ impl WebGpu {
             let (at, size) = if into {
                 ([x, y], [extent.width, extent.height])
             } else {
-                ([0, 0], [extent.width.div_ceil(bw), extent.height])
+                (
+                    [0, 0],
+                    [
+                        crate::packed::raw_width(format, extent.width),
+                        extent.height,
+                    ],
+                )
             };
             let [w, h] = size.map(|n| n as f32);
             rp.set_viewport(at[0] as f32, at[1] as f32, w, h, 0.0, 1.0);
@@ -524,7 +529,7 @@ impl WebGpu {
                 wgpu::TextureViewDimension::D2,
             ),
             (false, d3) => (
-                wgpu::TextureSampleType::Float { filterable: false },
+                crate::packed::held_sample_type(format),
                 if d3 {
                     wgpu::TextureViewDimension::D3
                 } else {

@@ -1,7 +1,8 @@
 //! Formats WebGPU lacks held as `rgba8unorm` (`FormatConverted`): declared, copied exactly, loaded
 //! and filtered within their bounds of Direct3D's values, and 8-bit alpha drawn with its colour
 //! kept zero (examples/scenes/converted.rs; the same runs in Chrome through web/check, and against
-//! real Direct3D 11 in tests/direct3d.rs).
+//! real Direct3D 11 in tests/direct3d.rs). The three-channel 32-bit formats, held in their
+//! four-channel twins, keep every bit with alpha one.
 //!
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
 
@@ -39,5 +40,15 @@ fn converted_formats_copy_exactly_and_load_as_direct3d_says() {
     let seed = env("WEBGPU_SEED", 1);
     let cases = env("WEBGPU_CASES", 4) as u32;
     let line = converted::check(&mut b, seed, cases).unwrap();
+    eprintln!("{line}");
+}
+
+#[test]
+fn three_channel_formats_keep_every_bit_with_alpha_one() {
+    let (mut b, adapter) = pollster::block_on(draw::device(backends())).expect("a GPU adapter");
+    eprintln!("adapter: {adapter}");
+    let seed = env("WEBGPU_SEED", 1);
+    let cases = env("WEBGPU_CASES", 4) as u32;
+    let line = converted::three_channels(&mut b, seed, cases).unwrap();
     eprintln!("{line}");
 }
