@@ -45,6 +45,7 @@ pub const CASES: &[&str] = &[
     "depth-planes",
     "indirect-vertex-buffer",
     "indirect-vertex-id",
+    "predicated-resolve",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -66,6 +67,7 @@ pub fn run(name: &str) -> Result<String> {
             "depth-planes" => depth_planes(&c),
             "indirect-vertex-buffer" => indirect_vertex_buffer(&c),
             "indirect-vertex-id" => indirect_vertex_id(&c),
+            "predicated-resolve" => predicated_resolve(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -1313,6 +1315,134 @@ unsafe fn depth_planes(c: &Ctx) -> Result<String> {
                 write!(out, " plane {i}: {}", words(&bytes[at..at + 16])).unwrap();
             }
             write!(out, "; ").unwrap();
+        }
+        Ok(out)
+    }
+}
+
+/// A multisampled target cleared in one list, beside a texture written by a copy in it, then
+/// resolved into that texture under a predicate that skips and one that lets it through.
+unsafe fn predicated_resolve(c: &Ctx) -> Result<String> {
+    unsafe {
+        let ms = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &D3D12_RESOURCE_DESC {
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 4,
+                    Quality: 0,
+                },
+                ..target_desc()
+            },
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+        )?;
+        let copy = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &D3D12_RESOURCE_DESC {
+                Flags: D3D12_RESOURCE_FLAG_NONE,
+                ..target_desc()
+            },
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let pitch = 256u32;
+        let texels: Vec<u8> = (0..pitch * SIZE / 4)
+            .flat_map(|_| 0x3949_5969u32.to_le_bytes())
+            .collect();
+        let upload = c.upload(&texels)?;
+        let condition = filled(c, &[0; 8])?;
+        let views: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                NumDescriptors: 1,
+                ..Default::default()
+            })?;
+        let rtv = views.GetCPUDescriptorHandleForHeapStart();
+        c.device.CreateRenderTargetView(
+            &ms,
+            Some(&D3D12_RENDER_TARGET_VIEW_DESC {
+                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                ViewDimension: D3D12_RTV_DIMENSION_TEXTURE2DMS,
+                ..Default::default()
+            }),
+            rtv,
+        );
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        list.ClearRenderTargetView(rtv, &[0.345, 0.282, 0.219, 0.156], None);
+        list.CopyTextureRegion(
+            &D3D12_TEXTURE_COPY_LOCATION {
+                pResource: transmute_copy(&copy),
+                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    SubresourceIndex: 0,
+                },
+            },
+            0,
+            0,
+            0,
+            &D3D12_TEXTURE_COPY_LOCATION {
+                pResource: transmute_copy(&upload),
+                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                        Offset: 0,
+                        Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+                            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                            Width: SIZE,
+                            Height: SIZE,
+                            Depth: 1,
+                            RowPitch: pitch,
+                        },
+                    },
+                },
+            },
+            None,
+        );
+        c.run(&list)?;
+        // A transition into the state the resource is in.
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        list.ResourceBarrier(&[transition(
+            &copy,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )]);
+        let mut out = format!(
+            "same-state transition {:?}; ",
+            list.Close().map_err(|e| e.code())
+        );
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        list.ResourceBarrier(&[
+            transition(
+                &copy,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_RESOLVE_DEST,
+            ),
+            transition(
+                &ms,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
+            ),
+        ]);
+        c.run(&list)?;
+        for (name, op) in [
+            ("skipped", D3D12_PREDICATION_OP_EQUAL_ZERO),
+            ("resolved", D3D12_PREDICATION_OP_NOT_EQUAL_ZERO),
+        ] {
+            let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+            list.ResourceBarrier(&[transition(
+                &condition,
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_PREDICATION,
+            )]);
+            list.SetPredication(&condition, 0, op);
+            list.ResolveSubresource(&copy, 0, &ms, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+            list.SetPredication(None, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+            list.ResourceBarrier(&[transition(
+                &condition,
+                D3D12_RESOURCE_STATE_PREDICATION,
+                D3D12_RESOURCE_STATE_COMMON,
+            )]);
+            c.run(&list)?;
+            let pixels = c.pixels(&copy, D3D12_RESOURCE_STATE_RESOLVE_DEST)?;
+            write!(out, "{name} {}; ", colours(&pixels)).unwrap();
         }
         Ok(out)
     }

@@ -121,6 +121,14 @@ const STATE_GENERIC_READ: u32 = 0xac3;
 /// `D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS`.
 const FLAG_SIMULTANEOUS_ACCESS: u32 = 0x20;
 
+/// A resource state as Direct3D 12 takes one: exactly one write state, or read states only.
+pub fn check_state(state: u32) -> Result<(), Error> {
+    if state & WRITE_STATES != 0 && !state.is_power_of_two() {
+        return Err(Error::Invalid("a write state combined with another"));
+    }
+    Ok(())
+}
+
 /// The checks of `CreateCommittedResource` and `CreatePlacedResource` that Direct3D 12 makes of a
 /// description, its heap (`cpu_custom`: a custom heap the CPU sees), its initial state and whether a
 /// clear value is given.
@@ -131,9 +139,7 @@ pub fn check_creation(
     state: u32,
     clear: bool,
 ) -> Result<(), Error> {
-    if state & WRITE_STATES != 0 && !state.is_power_of_two() {
-        return Err(Error::Invalid("a write state combined with another"));
-    }
+    check_state(state)?;
     if desc.dimension == DIMENSION_BUFFER {
         if clear {
             return Err(Error::Invalid("a clear value for a buffer"));
