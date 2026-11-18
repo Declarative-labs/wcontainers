@@ -1,3 +1,8 @@
+gs_cut.dxbc	ok-wgsl glsl-write
+gs_instances.dxbc	ok-wgsl glsl-write
+gs_lines.dxbc	ok-wgsl glsl-write
+gs_points.dxbc	ok-wgsl glsl-write
+gs_quads.dxbc	ok-wgsl glsl-write
 ps_cases.dxbc	ok-wgsl glsl-compile
 ps_clip.dxbc	ok
 ps_coarse.dxbc	ok
@@ -7,6 +12,7 @@ ps_dual.dxbc	ok
 ps_filter.dxbc	ok-wgsl glsl-compile
 ps_flat.dxbc	ok
 ps_ftoi.dxbc	ok
+ps_geometry.dxbc	ok
 ps_ids.dxbc	ok
 ps_integer.dxbc	ok-wgsl glsl-compile
 ps_levels.dxbc	ok-wgsl glsl-write
@@ -34,6 +40,7 @@ vs_clip.dxbc	ok-wgsl glsl-compile
 vs_deep.dxbc	ok
 vs_filter.dxbc	ok
 vs_fullscreen.dxbc	ok-wgsl glsl-compile
+vs_geometry.dxbc	ok
 vs_ids.dxbc	ok
 vs_pack.dxbc	ok
 vs_pull.dxbc	ok

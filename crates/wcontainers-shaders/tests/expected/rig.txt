@@ -25,10 +25,10 @@ dynamic.ps_tint.dxbc	ok
 formats.ps_float.dxbc	ok
 formats.ps_sint.dxbc	ok
 formats.ps_uint.dxbc	ok
-geometry.gs_adjacency.dxbc	unsupported GeometryShader
-geometry.gs_layers.dxbc	unsupported GeometryShader
-geometry.gs_points.dxbc	unsupported GeometryShader
-geometry.gs_strips.dxbc	unsupported GeometryShader
+geometry.gs_adjacency.dxbc	ok-wgsl glsl-write
+geometry.gs_layers.dxbc	unsupported RenderTargetArrayIndex
+geometry.gs_points.dxbc	ok-wgsl glsl-write
+geometry.gs_strips.dxbc	ok-wgsl glsl-write
 geometry.ps.dxbc	ok
 geometry.ps_id.dxbc	unsupported PrimitiveId
 geometry.ps_primitive.dxbc	ok
@@ -41,14 +41,14 @@ msaa.ps_sample.dxbc	ok-wgsl glsl-compile
 msaa.vs_full.dxbc	ok
 quads.ps.dxbc	ok
 quads.vs.dxbc	ok
-raster.gs.dxbc	unsupported GeometryShader
+raster.gs.dxbc	unsupported ViewportArrayIndex
 raster.ps.dxbc	ok
 raster.vs.dxbc	ok
 samplers.ps_compare.dxbc	ok
 samplers.ps_compare_zero.dxbc	ok
 samplers.ps_gather.dxbc	ok-wgsl glsl-compile
 samplers.ps_sample.dxbc	ok
-streamout.gs.dxbc	unsupported GeometryShader
+streamout.gs.dxbc	ok-wgsl glsl-write
 streamout.vs_back.dxbc	ok
 targets.ps.dxbc	ok
 tessellation.ds_line.dxbc	unsupported DomainShader
