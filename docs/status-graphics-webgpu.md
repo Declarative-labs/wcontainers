@@ -822,6 +822,30 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 
 ## Measurements
 
+Run 17 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
+CPU load not sampled; Mac load average near its 18 cores, not sampled exactly; scratch run17):
+- All tests at 44a9c8b2 after `cargo clean` of this crate and the suite crate (full-native.log):
+  both APIs together 215 passed, 0 failed, 5 ignored (run 16's 212 and 4, plus the two new query
+  tests on each API, and the point fill test now reported ignored on Direct3D 12, where it
+  passed having checked nothing); the shared suite 39 of 39 on both. The query tests again at
+  c1948d84 (queries2.log): pass on both. Clippy with warnings denied passes natively and for
+  WebAssembly (clippy2.log).
+- Query sets of 5000 (tests/queries.rs): occlusion 4094 to 4097 read 19738, 19738, 19738, 0 and
+  the carried 4999 39476 on Vulkan (sample counts), 1, 1, 1, 0 and 2 on Direct3D 12 (binary, its
+  carried query summing two parts); timestamps across the page boundary in order on both. Twenty
+  frames of results from one query ring on both.
+- web/check at c1948d84 (web-check2.log, pictures in run17/web; the first run, web-check.log at
+  e4a9968b, passed too): twelve pictures equal to Direct3D 11's at tolerance 0, twists differ,
+  viewports equal (rounded 2540 differ); Chrome 157's adapter the RTX 3080 (D3D12, discrete, not
+  a fallback); timestamps 9.821 and 19.521 ms (ratio 1.99), GPU clock 303.790 ms apart with the
+  page clock between 300.1 and 307.5 ms; prepared first draws built nothing; converted formats,
+  vertex formats and renames pass; query sets of 5000 read 1, 1, 1, 0 and 2 with timestamps in
+  order, and 20 frames of results right from the device's one query ring; the suite in Chrome 39
+  passed, 0 failed.
+- At the end of the run the desktop's build folder C:\wc\target\phase-2-graphics-webgpu (6.46 GB)
+  and the Mac checkout's `cargo check` output (1.1 GB) were deleted; scratch holds no build
+  output (logs and pictures, 344 MB).
+
 Run 16 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01; Mac load average near its 18
 cores, not sampled exactly):
 - All tests at cd3aa677 (the merges) after `cargo clean` of this crate and the suite crate
