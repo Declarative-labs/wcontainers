@@ -877,7 +877,7 @@ the adapter):
   `INDEPENDENT_BLEND`, `SAMPLE_SHADING`, `SAMPLE_MASK`, `MULTISAMPLE_READ`, `TIMESTAMPS`, `INDIRECT`,
   `INDIRECT_FIRST_INSTANCE` where the adapter has indirect-first-instance (99.97%; without it, indirect
   draws with arguments a front cannot vouch for read them back, `IndirectReadBack`),
-  `BASE_VERTEX_INSTANCE`, `TEXTURE_VIEWS`, `VIEW_SWIZZLE` (Chrome 143),
+  `BASE_VERTEX_INSTANCE`, `TEXTURE_VIEWS`,
   `SEPARATE_SAMPLERS`, `SHADER_F16`, `SUBGROUPS`, `PRIMITIVE_INDEX` where the adapter has
   primitive-index (85.1%), `BACKGROUND_PREPARE`,
   `CLIP_DEPTH_ZERO_ONE`, `DEPTH_BIAS_CLAMP`, `TEXTURE_LEVEL_QUERY` (`textureNumLevels`,
@@ -2119,8 +2119,8 @@ the hull stage's patches and the tessellator's points a domain program reads, at
   the program (`CLIP_DISTANCE`, `DEPTH_CLAMP`) and the primitive index from the stage helper
   (`PRIMITIVE_ID_FROM_STAGE`) are its flags; the clamped texture
   slots are `min_lod_clamped`; storage slots run through a buffer are `texels_through_buffer`; where
-  the draw's bases come from is `draw_base`; a view's component mapping, applied by the program where
-  the back end lacks `VIEW_SWIZZLE` (`SwizzleInShader`), is `swizzled`.
+  the draw's bases come from is `draw_base`; a view's component mapping, applied by the program
+  (`SwizzleInShader`; views carry no mapping, 15.7), is `swizzled`.
 - Slow paths a program takes by itself, whatever its variant (an atomic minimum or maximum of the
   other signedness than its memory's, made by a compare-exchange loop: `AtomicExchangeLoop`), are
   listed in `Reflection::slow_paths`; the front counts and warns of them when it uses the program.
@@ -3027,12 +3027,13 @@ Each in the interface's style; made at G1d with a rule test in the recorder and 
   naming that set) and the front adds them to that set's binding set (a counted slow path). Which of
   the two Chrome allows is measured first.
 - **View component mappings.** `TextureViewDesc` gains a component mapping (`ViewComponent`, which
-  c6e80691 added) taken where `VIEW_SWIZZLE` is declared, so WebGPU's `texture-component-swizzle`
-  feature (Chrome 143 by 4.11; listed among WebGPU's optional features in the research, part 2,
-  question 2c) serves Vulkan's `VkComponentMapping`, OpenGL's texture swizzle
-  (core in 3.3) and Direct3D 12's mappings natively. Today `VIEW_SWIZZLE` has no call that uses it, so
-  every front applies mappings in the program (`SwizzleInShader`; the Direct3D 12 track's status says
-  so).
+  c6e80691 added), with a capability `VIEW_SWIZZLE` made in the same change and declared by back ends
+  that take it, so WebGPU's `texture-component-swizzle` feature (Chrome 143 by 4.11; listed among
+  WebGPU's optional features in the research, part 2, question 2c) serves Vulkan's
+  `VkComponentMapping`, OpenGL's texture swizzle (core in 3.3) and Direct3D 12's mappings natively;
+  `VariantKey::swizzled` is then filled only where the back end lacks it. Today views carry no mapping
+  and no capability names one (G1c removed a `VIEW_SWIZZLE` flag that no call used), so every front
+  applies mappings in the program (`SwizzleInShader`).
 - **Buffers whose uses are unknown at creation.** OpenGL buffers bind as anything; the OpenGL front
   creates them with every use but mapping. No change if every back end accepts that (WebGPU does;
   WebGL 2's `IndexBufferTwin` already covers indices); G9 checks it with a suite test.
