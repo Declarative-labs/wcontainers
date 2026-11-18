@@ -4,7 +4,11 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K6b (larger runtimes), third run, not complete (one layer 1 difference open, Next item 0):
+K6b (larger runtimes), fourth run: the layer 1 differences of seeds 6262617 and 6262620 are
+fixed (RWF_NOWAIT, listen on a named connected local socket), and the reference's layer 1
+runner waits for loopback packets to arrive after each call. See "K6b, fourth run" below.
+
+K6b (larger runtimes), third run:
 /sys is a read-only sysfs whose lookups of Linux's entries are
 counted, a mapped backend file's pages are read when first touched (by the program or by the
 kernel's copies) instead of whole, a program on the backend is read only where the loader needs
@@ -20,6 +24,36 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6b, fourth run
+
+Fixed, each tested against the reference:
+- Reads and writes that may not wait (RWF_NOWAIT, layer 1 seed 6262617: preadv2 on /dev/full,
+  ours EFAULT, the reference EOPNOTSUPP). /dev/full lacks FMODE_NOWAIT (null, zero, random and
+  urandom have it), so it is refused before any copy; so are the backend's regular files (FUSE
+  sets none; ours read them). Where the flag is taken, the call no longer waits: pipes, sockets
+  (MSG_DONTWAIT, as `sock_read_iter` and `sock_write_iter`), event, timer and signal descriptors
+  answer EAGAIN where they would wait (ours waited: a blocking pipe's read hung). The call's slot
+  holds `nowait` (Linux's IOCB_NOWAIT) for the run. guest/rwmodes.c now covers every device,
+  socket pairs, event, timer, signal, epoll, inotify, process descriptors, /proc directories,
+  unreachable buffers and blocking files that would wait; guest/backendfiles.c the backend.
+- listen on a local stream or sequenced packet socket that is named and connected (layer 1 seed
+  6262620: a socket pair's end bound to an automatic name): the reference answers 0 and changes
+  nothing (no SO_ACCEPTCONN, still connected; measured for socket pairs, connected and accepted
+  sockets, also after the peer closed); ours EINVAL. Unnamed it stays EINVAL. guest/sockedges.c
+  `connected_listens`.
+
+Layer 1 method: in a sequence that makes an internet socket, the reference's runner now waits
+after each call until every CPU's receive backlog is empty (see "For the independent check"), so
+the reference race of seed 6262614 (a loopback datagram handed over after sendto returned) no
+longer fails seeds. A probe of the backlog (scratch k6b4/src/softnet.c) saw it non-empty after
+490 of 200000 loopback sends (load about 25).
+
+Layer 1 seeds, 20000 sequences each, four side by side, load 23 at the start, 61 at the end:
+at 1af8108, 6262617 passed (339.3 s, the RWF_NOWAIT fix), 6262619 passed (339.3 s), 6262621
+passed (338.6 s); 6262620 failed (listen, fixed at 6c90da3). At 6c90da3 (every fix of this
+run in), four side by side, load 52 at the start, 39 at the end: 6262620 passed (332.4 s), and
+the fresh seeds 6262622 (332.5 s), 6262623 (332.3 s) and 6262624 (332.0 s) passed.
 
 ## K6b, third run
 
@@ -1008,6 +1042,12 @@ What layer 1 does not generate, and why:
 - Socket addresses read back (getsockname, getpeername, accept's and a receive's sender): an
   automatic local name and an ephemeral port are random. Sends to the loopback port 5099 only from
   the UDP socket a sequence starts with. tests/unixsock.rs and tests/inet.rs compare addresses.
+- Loopback timing: in a sequence that makes an internet socket the reference's runner, after each
+  call, waits until every CPU's receive backlog (/proc/net/softnet_stat's twelfth field) is seen
+  empty, up to 1 s, so a packet Linux handed to ksoftirqd under load has reached its receiver
+  before the next call; ours delivers at once. The child waits by spinning on a shared page (no
+  system call its filters could refuse). Where the file cannot be opened (ours: counted "proc
+  entry not built" once per runner) it does not wait.
 - CPU clock ids of process 1 (our caller is process 1, the reference's is not); those of the
   caller's own process and thread (encoded pid 0), of a missing process, and clock devices are
   generated. Sleeps on the profiling and user time CPU clocks: Linux samples those times at ticks, so
@@ -2951,6 +2991,6 @@ not seen as a setting; futex queues allocate when a futex first gets waiters; th
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
 5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
-6262601 to 6262618 (K6b), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+6262601 to 6262624 (K6b), and the checks' 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
