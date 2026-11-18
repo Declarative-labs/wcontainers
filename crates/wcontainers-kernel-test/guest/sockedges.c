@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -223,7 +224,38 @@ static void closed_with_unread(void) {
             result("and again", send(sv[0], "x", 1, MSG_NOSIGNAL | MSG_DONTWAIT));
             close(sv[0]);
         }
+        // The error against control messages: malformed ones, then ones out of reach.
+        for (int unreachable = 0; unreachable < 2; unreachable++) {
+            int sv[2];
+            socketpair(AF_UNIX, kinds[i] | SOCK_NONBLOCK, 0, sv);
+            send(sv[0], "unread", 6, 0);
+            close(sv[1]);
+            char what[64];
+            snprintf(what, sizeof what, "%s %s control after the peer closed", names[i],
+                     unreachable ? "unreachable" : "malformed");
+            if (unreachable) {
+                char byte = 'x';
+                struct iovec io = {&byte, 1};
+                struct msghdr m = {.msg_iov = &io, .msg_iovlen = 1,
+                                   .msg_control = (void *)16, .msg_controllen = 16};
+                // musl's sendmsg copies the control messages itself, so the call is made bare.
+                result(what, syscall(SYS_sendmsg, sv[0], &m, MSG_NOSIGNAL));
+            } else {
+                result(what, bad_cmsg_send(sv[0]));
+            }
+            result("and again", bad_cmsg_send(sv[0]));
+            close(sv[0]);
+        }
     }
+    // An unconnected sequenced packet socket: control messages out of reach, then malformed.
+    int s = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    char byte = 'x';
+    struct iovec io = {&byte, 1};
+    struct msghdr m = {.msg_iov = &io, .msg_iovlen = 1, .msg_control = (void *)16,
+                       .msg_controllen = 16};
+    result("unconnected seqpacket unreachable control", syscall(SYS_sendmsg, s, &m, MSG_NOSIGNAL));
+    result("unconnected seqpacket malformed control", bad_cmsg_send(s));
+    close(s);
 }
 
 static void all_hosts(void) {
