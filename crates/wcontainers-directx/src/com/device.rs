@@ -585,8 +585,12 @@ impl Device_Impl {
                 missing("class linkage")
             });
         }
-        if self.front.borrow().feature_level() < 0xb000 {
-            return Err(missing("compute shaders below feature level 11_0"));
+        // 10_x takes shader model 4 compute shaders where raw and structured buffers come with
+        // them (`D3D10_X_HARDWARE_OPTIONS`); the front checks the model against the level.
+        if self.front.borrow().feature_level() < 0xa000 || !self.compute() {
+            return Err(missing(
+                "compute shaders without the back end's compute programs",
+            ));
         }
         let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
         let shader = self
@@ -1005,6 +1009,10 @@ impl Device_Impl {
                 (*data.cast::<D3D11_FEATURE_DATA_D3D9_OPTIONS>()).FullNonPow2TextureSupport =
                     true.into();
             },
+            D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS if self.compute() => unsafe {
+                (*data.cast::<D3D11_FEATURE_DATA_D3D10_X_HARDWARE_OPTIONS>())
+                    .ComputeShaders_Plus_RawAndStructuredBuffers_Via_Shader_4_x = true.into();
+            },
             D3D11_FEATURE_D3D9_SIMPLE_INSTANCING_SUPPORT => unsafe {
                 (*data.cast::<D3D11_FEATURE_DATA_D3D9_SIMPLE_INSTANCING_SUPPORT>())
                     .SimpleInstancingSupported = true.into();
@@ -1012,6 +1020,12 @@ impl Device_Impl {
             _ => {}
         }
         Ok(())
+    }
+
+    /// The back end runs compute programs.
+    fn compute(&self) -> bool {
+        wcontainers_gpu::Backend::caps(&self.front.borrow().backend)
+            .has(wcontainers_gpu::Features::COMPUTE)
     }
 
     pub(super) fn get_feature_level(&self) -> D3D_FEATURE_LEVEL {

@@ -2112,8 +2112,10 @@ impl<B: Backend> Device<B> {
                 Ok(())
             }
             ShaderView::Buffer(span) => {
+                // Direct3D clears only float, unorm and snorm views with floats; on raw and
+                // structured views the call is dropped.
                 if float {
-                    return not_implemented("a float clear of a buffer view");
+                    return Ok(());
                 }
                 self.backend.clear_buffer(
                     &span.buffer.handle(),
