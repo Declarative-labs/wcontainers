@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 wcontainers-abi.workspace = true
 wcontainers-kernel = { path = "../wcontainers-kernel" }
+wcontainers-runtime = { path = "../wcontainers-runtime" }
 unicorn-engine = "2.1.5"
 memmap2 = "0.9.12"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp", "no_std"] }

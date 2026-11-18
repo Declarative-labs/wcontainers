@@ -1,13 +1,15 @@
 //! The driver loop and a host for tests: runs a program on the kernel with the stand-in CPU.
 
+use std::ops::ControlFlow;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
 use wcontainers_abi::{
-    BackendRequestId, ConnectionId, CounterReading, Event, Host, HostError, Next, Stream, Warning,
+    BackendRequestId, ConnectionId, CounterReading, Cpu, Event, Host, HostError, Stream, Warning,
 };
 use wcontainers_kernel::{Errno, FileRecord, Kernel, Start};
+use wcontainers_runtime::{Ending, Execution, Outside, Turn};
 
 use crate::standin::{StandIn, Unsupported};
 use crate::{image, reference};
@@ -19,6 +21,12 @@ pub enum Failure {
     Start(Errno),
     /// The program did something the stand-in CPU cannot run as the reference does.
     StandIn(Unsupported),
+}
+
+impl From<Unsupported> for Failure {
+    fn from(unsupported: Unsupported) -> Self {
+        Self::StandIn(unsupported)
+    }
 }
 
 /// What a program did, in a form both runners produce.
@@ -44,6 +52,8 @@ pub struct Warned {
 pub struct Run {
     pub outcome: Outcome,
     pub warnings: Vec<Warned>,
+    /// The CPU side's own slow paths, apart from the kernel's.
+    pub cpu_warnings: Vec<Warned>,
     pub counters: Vec<CounterReading>,
     /// The root file system when the container ended.
     pub files: Vec<FileRecord>,
@@ -77,6 +87,45 @@ pub struct TestHost {
     /// Whether what the container writes also goes to this process's own streams as it comes,
     /// so a run that is stopped still shows it.
     echo: bool,
+    /// The CPU side's own slow paths.
+    cpu_warnings: Vec<Warned>,
+    /// What a driven run has done to it between turns; none outside one.
+    injecting: Option<Injecting>,
+}
+
+/// What a driven run has done to it at moments drawn from its seed, and where it is.
+struct Injecting {
+    seed: u64,
+    injections: Injections,
+    /// Turn counts at which it is saved.
+    at: Vec<u64>,
+    signal: u32,
+    signal_at: Vec<u64>,
+    notice_at: Vec<u64>,
+    notices: StdRng,
+    turns: u64,
+    saved: usize,
+    /// In a copy, where its run is reported to the process it was copied from.
+    report: Option<i32>,
+}
+
+impl Injecting {
+    fn new(seed: u64, injections: Injections) -> Self {
+        let (signal, signals) = injections.signal.unwrap_or((0, 0));
+        Self {
+            seed,
+            injections,
+            at: moments(seed ^ 0x5a7e, injections.saves),
+            signal,
+            signal_at: moments(seed ^ 0x5197, signals),
+            // Notices come close together, so that a short program meets many of them.
+            notice_at: moments_apart(seed ^ 0x6e07, injections.notices, 10),
+            notices: StdRng::seed_from_u64(seed ^ 0x6e08),
+            turns: 0,
+            saved: 0,
+            report: None,
+        }
+    }
 }
 
 impl TestHost {
@@ -95,6 +144,8 @@ impl TestHost {
             backend: None,
             network: Default::default(),
             echo: false,
+            cpu_warnings: Vec::new(),
+            injecting: None,
         }
     }
 
@@ -107,19 +158,6 @@ impl TestHost {
         };
         host.wall_base = wall_clock() - 1_000_000_000;
         host
-    }
-
-    /// Advances a repeatable clock by the time one turn on the CPU side took: between 0.5 and 1.5
-    /// nanoseconds for each instruction it ran (a CPU's speed varies with its caches and its load),
-    /// and between 0.5 and 1.5 microseconds more, both drawn from the seed. The speed moves the
-    /// points where the scheduler switches threads, so seeds give different interleavings.
-    fn ran(&mut self, instructions: u64) {
-        let picoseconds = self.schedule.random_range(500..1500);
-        let step =
-            instructions.saturating_mul(picoseconds) / 1000 + self.schedule.random_range(500..1500);
-        if let Some(now) = &mut self.virtual_now {
-            *now += step;
-        }
     }
 }
 
@@ -154,6 +192,8 @@ impl TestHost {
             // A new host has none of the old one's connections; its published ports go on.
             network: self.network.moved(),
             echo: self.echo,
+            cpu_warnings: self.cpu_warnings.clone(),
+            injecting: self.injecting.take(),
         };
         host.wall_base = wall + wall_step - host.monotonic_nanoseconds();
         host
@@ -391,18 +431,9 @@ pub fn run_prepared(
         groups,
         echo,
     } = prepared;
-    let mut at = moments(seed ^ 0x5a7e, injections.saves);
-    let (signal, signals) = injections.signal.unwrap_or((0, 0));
-    let mut signal_at = moments(seed ^ 0x5197, signals);
-    // Notices come close together, so that a short program meets many of them.
-    let mut notice_at = moments_apart(seed ^ 0x6e07, injections.notices, 10);
-    let mut notices = StdRng::seed_from_u64(seed ^ 0x6e08);
-    let mut turns = 0u64;
-    let mut saved = 0;
-    // In a copy, where its run is reported to the process it was copied from.
-    let mut report: Option<i32> = None;
     let mut cpu = StandIn::new();
     let mut host = TestHost::repeatable(seed);
+    host.injecting = Some(Injecting::new(seed, injections));
     host.echo = echo;
     host.network.published = container.published.iter().copied().collect();
     let root_on_backend = container.backend == Some("/");
@@ -434,130 +465,14 @@ pub fn run_prepared(
         backend: container.backend.map(str::as_bytes),
     };
     kernel.start(&mut cpu, &mut host, &start);
-    let status = loop {
-        match kernel.next() {
-            Next::Run {
-                thread,
-                resume,
-                slice_nanoseconds,
-            } => {
-                // The seed chooses where in its slice each turn ends, so a run repeats for a seed
-                // and threads interleave differently under different seeds.
-                let mut slice_nanoseconds =
-                    slice_nanoseconds.map(|slice| host.schedule.random_range(1..=slice.max(1)));
-                // An answer owed arrives during the turn, at a moment drawn from the seed: the
-                // host raises the running thread's stop flag then, as the boundary says.
-                if host
-                    .backend
-                    .as_ref()
-                    .is_some_and(|backend| backend.waiting())
-                {
-                    let arrival = host.schedule.random_range(1..=ANSWER_ARRIVES_WITHIN);
-                    slice_nanoseconds = Some(slice_nanoseconds.map_or(arrival, |s| s.min(arrival)));
-                }
-                let exit = match cpu.run(thread, resume, slice_nanoseconds) {
-                    Ok(exit) => exit,
-                    // A copy cannot hand a failure back; it says what it was and ends.
-                    Err(unsupported) if report.is_some() => {
-                        panic!("the stand-in failed: {unsupported:?}")
-                    }
-                    Err(unsupported) => return Err(Failure::StandIn(unsupported)),
-                };
-                host.ran(cpu.last_instructions);
-
-                kernel.exit(&mut cpu, &mut host, exit);
-                turns += 1;
-                TURNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                network_events(&mut kernel, &mut cpu, &mut host, Duration::ZERO);
-                // The backend's answers arrive at moments and in an order drawn from the seed.
-                while host
-                    .backend
-                    .as_ref()
-                    .is_some_and(|backend| backend.waiting())
-                    && host.schedule.random_bool(0.5)
-                {
-                    deliver(&mut kernel, &mut cpu, &mut host);
-                }
-                while notice_at.first() == Some(&turns) {
-                    notice_at.remove(0);
-                    let notice = notice(&mut notices);
-                    kernel.event(
-                        &mut cpu,
-                        &mut host,
-                        Event::BackendNotice { notice: &notice },
-                    );
-                }
-                while signal_at.first() == Some(&turns) {
-                    signal_at.remove(0);
-                    kernel.kill(&mut cpu, &mut host, signal);
-                }
-                while at.first() == Some(&turns) {
-                    at.remove(0);
-                    saved += 1;
-                    let mut ends = [0; 2];
-                    // SAFETY: plain system calls; the copy goes on in this thread alone and ends with
-                    // `_exit` once it has reported.
-                    unsafe {
-                        assert_eq!(libc::pipe(ends.as_mut_ptr()), 0, "a pipe for the copy");
-                        match libc::fork() {
-                            -1 => panic!("fork failed"),
-                            0 => {
-                                libc::close(ends[0]);
-                                std::panic::set_hook(Box::new(|info| {
-                                    panic_in_copy(&info.to_string())
-                                }));
-                                if let Some(earlier) = report.replace(ends[1]) {
-                                    libc::close(earlier);
-                                }
-                            }
-                            copy => {
-                                libc::close(ends[1]);
-                                // The copy alone holds the network from here on.
-                                drop(std::mem::take(&mut host.network));
-                                return Ok(finish(copied_run(copy, ends[0]), report));
-                            }
-                        }
-                    }
-                    cpu = cpu.restored();
-                    host = host.moved(seed ^ ((saved as u64) << 32), injections.wall_step);
-                    kernel.restore(&mut cpu, &mut host);
-                }
-            }
-            Next::Idle { until_nanoseconds } => {
-                // An answer owed comes before any time passes.
-                if host
-                    .backend
-                    .as_ref()
-                    .is_some_and(|backend| backend.waiting())
-                {
-                    deliver(&mut kernel, &mut cpu, &mut host);
-                    continue;
-                }
-                // The outside answers in real time: a wait for it goes on as long as the kernel's
-                // next timer, and at most ten seconds.
-                if host.network.waiting() {
-                    let now = host.monotonic_nanoseconds();
-                    let wait = until_nanoseconds.map_or(NETWORK_PATIENCE, |until| {
-                        Duration::from_nanos(until.saturating_sub(now)).min(NETWORK_PATIENCE)
-                    });
-                    if network_events(&mut kernel, &mut cpu, &mut host, wait) {
-                        continue;
-                    }
-                }
-                let Some(until) = until_nanoseconds else {
-                    panic!(
-                        "the kernel is idle with nothing to wake it, and this host has no events; \
-                         output so far:\n{}{}",
-                        String::from_utf8_lossy(&host.stdout),
-                        String::from_utf8_lossy(&host.stderr)
-                    );
-                };
-                let now = host.monotonic_nanoseconds();
-                host.skipped += until.saturating_sub(now);
-                kernel.event(&mut cpu, &mut host, Event::Timer);
-            }
-            Next::Finished { status } => break status,
+    let status = match wcontainers_runtime::drive(&mut kernel, &mut cpu, &mut host) {
+        Ok(Ending::Finished { status }) => status,
+        Ok(Ending::Ended(run)) => return Ok(run),
+        // A copy cannot hand a failure back; it says what it was and ends.
+        Err(failure) if host.injecting().report.is_some() => {
+            panic!("the CPU side failed: {failure:?}")
         }
+        Err(failure) => return Err(failure.into()),
     };
     if let Some(error) = kernel.start_failure() {
         // Never in a copy: no save is made before the first program runs.
@@ -567,6 +482,8 @@ pub fn run_prepared(
         Some(backend) if root_on_backend => image::records(&backend.files()),
         _ => kernel.root_files(&mut cpu),
     };
+    let report = host.injecting().report;
+    let saved = host.injecting().saved;
     let run = Run {
         outcome: Outcome {
             stdout: host.stdout,
@@ -574,11 +491,178 @@ pub fn run_prepared(
             exit_code: exit_code(status),
         },
         warnings: host.warnings,
+        cpu_warnings: host.cpu_warnings,
         counters: kernel.counters().collect(),
         files,
         saved,
     };
     Ok(finish(run, report))
+}
+
+impl TestHost {
+    fn injecting(&mut self) -> &mut Injecting {
+        self.injecting.as_mut().expect("a driven run")
+    }
+}
+
+impl Outside for TestHost {
+    /// The run of a copy made at a save, as the process it was copied from gets it.
+    type End = Run;
+
+    fn turn(&mut self, slice_nanoseconds: Option<u64>) -> Turn {
+        // The seed chooses where in its slice each turn ends, so a run repeats for a seed and
+        // threads interleave differently under different seeds.
+        let mut limit = slice_nanoseconds.map(|slice| self.schedule.random_range(1..=slice.max(1)));
+        // An answer owed arrives during the turn, at a moment drawn from the seed: the host raises
+        // the running thread's stop flag then, as the boundary says.
+        if self
+            .backend
+            .as_ref()
+            .is_some_and(|backend| backend.waiting())
+        {
+            let arrival = self.schedule.random_range(1..=ANSWER_ARRIVES_WITHIN);
+            limit = Some(limit.map_or(arrival, |l| l.min(arrival)));
+        }
+        Turn { limit }
+    }
+
+    /// Advances a repeatable clock by the time one turn on the CPU side took: between 0.5 and 1.5
+    /// nanoseconds for each unit of progress (an instruction on the stand-in; a CPU's speed varies
+    /// with its caches and its load), and between 0.5 and 1.5 microseconds more, both drawn from the
+    /// seed. The speed moves the points where the scheduler switches threads, so seeds give
+    /// different interleavings.
+    fn ran(&mut self, progress: u64) {
+        let picoseconds = self.schedule.random_range(500..1500);
+        let step =
+            progress.saturating_mul(picoseconds) / 1000 + self.schedule.random_range(500..1500);
+        if let Some(now) = &mut self.virtual_now {
+            *now += step;
+        }
+    }
+
+    fn arrived(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+        let turns = {
+            let injecting = self.injecting();
+            injecting.turns += 1;
+            injecting.turns
+        };
+        TURNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        network_events(kernel, cpu, self, Duration::ZERO);
+        // The backend's answers arrive at moments and in an order drawn from the seed.
+        while self
+            .backend
+            .as_ref()
+            .is_some_and(|backend| backend.waiting())
+            && self.schedule.random_bool(0.5)
+        {
+            deliver(kernel, cpu, self);
+        }
+        while self.injecting().notice_at.first() == Some(&turns) {
+            let injecting = self.injecting();
+            injecting.notice_at.remove(0);
+            let notice = notice(&mut injecting.notices);
+            kernel.event(cpu, self, Event::BackendNotice { notice: &notice });
+        }
+        while self.injecting().signal_at.first() == Some(&turns) {
+            self.injecting().signal_at.remove(0);
+            let signal = self.injecting().signal;
+            kernel.kill(cpu, self, signal);
+        }
+        self.injecting().at.first() == Some(&turns)
+    }
+
+    /// Saves the container where the seed says: a new process holding a copy of this one's memory,
+    /// as a host that saves copies the kernel's memory and every guest memory. The copy goes on with
+    /// a new CPU side made from the saved memories and registers and a new host whose clock reads
+    /// differently, while this process only waits for the copy's run.
+    fn stopped<E: Execution>(&mut self, kernel: &mut Kernel, cpu: &mut E) -> ControlFlow<Run> {
+        loop {
+            let injecting = self.injecting();
+            if injecting.at.first() != Some(&injecting.turns) {
+                return ControlFlow::Continue(());
+            }
+            injecting.at.remove(0);
+            injecting.saved += 1;
+            let mut ends = [0; 2];
+            // SAFETY: plain system calls; the copy goes on in this thread alone and ends with
+            // `_exit` once it has reported.
+            unsafe {
+                assert_eq!(libc::pipe(ends.as_mut_ptr()), 0, "a pipe for the copy");
+                match libc::fork() {
+                    -1 => panic!("fork failed"),
+                    0 => {
+                        libc::close(ends[0]);
+                        std::panic::set_hook(Box::new(|info| panic_in_copy(&info.to_string())));
+                        if let Some(earlier) = self.injecting().report.replace(ends[1]) {
+                            libc::close(earlier);
+                        }
+                    }
+                    copy => {
+                        libc::close(ends[1]);
+                        // The copy alone holds the network from here on.
+                        drop(std::mem::take(&mut self.network));
+                        let report = self.injecting().report;
+                        return ControlFlow::Break(finish(copied_run(copy, ends[0]), report));
+                    }
+                }
+            }
+            *cpu = cpu.restored();
+            let injecting = self.injecting();
+            let seed = injecting.seed ^ ((injecting.saved as u64) << 32);
+            let wall_step = injecting.injections.wall_step;
+            *self = self.moved(seed, wall_step);
+            kernel.restore(cpu, self);
+        }
+    }
+
+    fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>) {
+        // An answer owed comes before any time passes.
+        if self
+            .backend
+            .as_ref()
+            .is_some_and(|backend| backend.waiting())
+        {
+            deliver(kernel, cpu, self);
+            return;
+        }
+        // The outside answers in real time: a wait for it goes on as long as the kernel's next
+        // timer, and at most ten seconds.
+        if self.network.waiting() {
+            let now = self.monotonic_nanoseconds();
+            let wait = until_nanoseconds.map_or(NETWORK_PATIENCE, |until| {
+                Duration::from_nanos(until.saturating_sub(now)).min(NETWORK_PATIENCE)
+            });
+            if network_events(kernel, cpu, self, wait) {
+                return;
+            }
+        }
+        let Some(until) = until_nanoseconds else {
+            panic!(
+                "the kernel is idle with nothing to wake it, and this host has no events; \
+                 output so far:\n{}{}",
+                String::from_utf8_lossy(&self.stdout),
+                String::from_utf8_lossy(&self.stderr)
+            );
+        };
+        let now = self.monotonic_nanoseconds();
+        self.skipped += until.saturating_sub(now);
+        kernel.event(cpu, self, Event::Timer);
+    }
+
+    fn cpu_warning(&mut self, warning: Warning<'_>) {
+        // Printed at counts 1, 2, 4, 8 and on, as the kernel's are.
+        if warning.count.is_power_of_two() {
+            eprintln!(
+                "cpu warning: {} (detail {:#x}, count {})",
+                warning.reason, warning.detail, warning.count
+            );
+        }
+        self.cpu_warnings.push(Warned {
+            reason: warning.reason.to_string(),
+            count: warning.count,
+            detail: warning.detail,
+        });
+    }
 }
 
 /// The longest the driver waits for the outside when nothing else can happen.
@@ -796,11 +880,13 @@ fn encode(run: &Run) -> Vec<u8> {
     bytes(&mut out, &run.outcome.stderr);
     number(&mut out, run.outcome.exit_code as u64);
     number(&mut out, run.saved as u64);
-    number(&mut out, run.warnings.len() as u64);
-    for warned in &run.warnings {
-        bytes(&mut out, warned.reason.as_bytes());
-        number(&mut out, warned.count);
-        number(&mut out, warned.detail);
+    for warnings in [&run.warnings, &run.cpu_warnings] {
+        number(&mut out, warnings.len() as u64);
+        for warned in warnings {
+            bytes(&mut out, warned.reason.as_bytes());
+            number(&mut out, warned.count);
+            number(&mut out, warned.detail);
+        }
     }
     number(&mut out, run.counters.len() as u64);
     for counter in &run.counters {
@@ -845,13 +931,17 @@ fn decode(input: &[u8]) -> Run {
     let stderr = reader.bytes();
     let exit_code = reader.number() as i32;
     let saved = reader.number() as usize;
-    let warnings = (0..reader.number())
-        .map(|_| Warned {
-            reason: reader.text(),
-            count: reader.number(),
-            detail: reader.number(),
-        })
-        .collect();
+    let mut warned = || -> Vec<Warned> {
+        (0..reader.number())
+            .map(|_| Warned {
+                reason: reader.text(),
+                count: reader.number(),
+                detail: reader.number(),
+            })
+            .collect()
+    };
+    let warnings = warned();
+    let cpu_warnings = warned();
     let counters = (0..reader.number())
         .map(|_| CounterReading {
             // The kernel's reasons are fixed names; the copy's are leaked to stay for the run.
@@ -878,6 +968,7 @@ fn decode(input: &[u8]) -> Run {
             exit_code,
         },
         warnings,
+        cpu_warnings,
         counters,
         files,
         saved,
