@@ -3088,6 +3088,7 @@ name = "wcontainers-direct3d-11"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "half",
  "naga",
  "wcontainers-directx-graphics-infrastructure",
  "wcontainers-gpu",
@@ -3169,6 +3170,7 @@ dependencies = [
  "bcdec_rs",
  "getrandom 0.4.3",
  "glow 0.18.0",
+ "half",
  "js-sys",
  "khronos-egl",
  "naga",
@@ -3286,6 +3288,7 @@ dependencies = [
  "pollster",
  "postcard",
  "serde",
+ "spirv",
  "wcontainers-gpu",
  "wcontainers-gpu-webgl",
  "wcontainers-gpu-webgpu",

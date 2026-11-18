@@ -33,6 +33,9 @@ pub(crate) struct HelperBlocks<B: Backend> {
 
 /// A program's key: its vertex (or compute) shader's id and variant, and its pixel shader's id
 /// (0 for none) and variant.
+/// A compute helper block as written and its binding set.
+pub(crate) type ComputeHelpers<B> = (Vec<u8>, Kept<B, <B as Backend>::BindingSet>);
+
 pub(crate) type ProgramKey = (u64, StageVariant, u64, StageVariant);
 
 /// A linked program and where its two stages read their helper constants.
@@ -78,6 +81,13 @@ pub struct Device<B: Backend> {
     /// The helper constants as last written. The front is the only writer of the back end's data
     /// ring, so the blocks stay as written until the front's next write.
     pub(crate) helper_blocks: Option<HelperBlocks<B>>,
+    /// The compute program's helper block as last written and its binding set; the draws' blocks
+    /// and this share the ring, so writing one forgets the other.
+    pub(crate) compute_helpers: Option<ComputeHelpers<B>>,
+    /// The lists of bound typed views' formats draws met (`StageVariant::formats`, which numbers
+    /// them from one).
+    pub(crate) format_lists: Vec<Vec<Format>>,
+    pub(crate) format_ids: HashMap<Vec<Format>, u32>,
     /// Combinations drawn and built ahead.
     pub(crate) ahead: crate::ahead::Ahead<B>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
@@ -96,7 +106,7 @@ pub(crate) struct Zeros<B: Backend> {
     /// The same bytes for empty structured and raw buffer slots.
     pub storage: Option<Kept<B, B::Buffer>>,
     /// A texture of one zero texel per layer and its view, by view dimension and kind.
-    pub textures: HashMap<(ViewDimension, FormatKind), ZeroView<B>>,
+    pub textures: HashMap<(ViewDimension, FormatKind, u32), ZeroView<B>>,
     pub sampler: Option<Rc<Sampler<B>>>,
 }
 
@@ -234,6 +244,9 @@ impl<B: Backend> Device<B> {
             tests_off: None,
             passes: Default::default(),
             helper_blocks: None,
+            compute_helpers: None,
+            format_lists: Vec::new(),
+            format_ids: HashMap::new(),
             ahead: crate::ahead::Ahead::new(),
             layouts: HashMap::new(),
             zeros: Zeros {
@@ -418,13 +431,15 @@ impl<B: Backend> Device<B> {
         Ok(Kept::new(gpu, id, Object::Buffer, &self.graveyard))
     }
 
-    /// A view of zeros of `kind` in `dimension`, made at its first use.
+    /// A view of zeros of `kind` in `dimension`, of `samples` samples (one, or four for a
+    /// multisampled 2D slot), made at its first use.
     pub(crate) fn zero_view(
         &mut self,
         dimension: ViewDimension,
         kind: FormatKind,
+        samples: u32,
     ) -> Result<B::TextureView> {
-        if let Some(z) = self.zeros.textures.get(&(dimension, kind)) {
+        if let Some(z) = self.zeros.textures.get(&(dimension, kind, samples)) {
             return Ok(z.view.handle.clone());
         }
         let format = match kind {
@@ -438,6 +453,12 @@ impl<B: Backend> Device<B> {
             ViewDimension::Cube | ViewDimension::CubeArray => (TextureDimension::D2, 6),
             ViewDimension::D3 => (TextureDimension::D3, 1),
         };
+        // Multisampled textures take no writes: they are cleared by a pass.
+        let filled = if samples > 1 {
+            TextureUsage::RENDER
+        } else {
+            TextureUsage::COPY_DST
+        };
         let desc = GpuTexture {
             dimension: texture_dimension,
             format,
@@ -445,31 +466,43 @@ impl<B: Backend> Device<B> {
             height: 1,
             depth_or_layers: layers,
             mip_levels: 1,
-            samples: 1,
-            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            samples,
+            usage: TextureUsage::SAMPLE | filled,
             cube: layers == 6,
             reinterpret: false,
         };
         let texture = self.backend.create_texture(&desc);
         let texture = self.gpu(texture)?;
-        self.backend.write_texture(
-            &TextureRegion {
-                texture: &texture,
-                mip: 0,
-                layer: 0,
-                origin: Origin { x: 0, y: 0, z: 0 },
-                stencil: false,
-            },
-            Extent {
-                width: 1,
-                height: 1,
-                depth_or_layers: layers,
-            },
-            &[0; 24],
-            4,
-            1,
-            WriteMode::Discard,
-        );
+        if samples > 1 {
+            let r = self.backend.clear_texture(
+                &texture,
+                &desc,
+                format,
+                0..1,
+                0..1,
+                wcontainers_gpu::ClearValue::Color([0; 4]),
+            );
+            self.gpu(r)?;
+        } else {
+            self.backend.write_texture(
+                &TextureRegion {
+                    texture: &texture,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin { x: 0, y: 0, z: 0 },
+                    stencil: false,
+                },
+                Extent {
+                    width: 1,
+                    height: 1,
+                    depth_or_layers: layers,
+                },
+                &[0; 24],
+                4,
+                1,
+                WriteMode::Discard,
+            );
+        }
         let view = self.backend.create_view(
             &texture,
             &TextureViewDesc {
@@ -485,7 +518,7 @@ impl<B: Backend> Device<B> {
         let view = self.gpu(view)?;
         let (t, v) = (self.id(), self.id());
         self.zeros.textures.insert(
-            (dimension, kind),
+            (dimension, kind, samples),
             ZeroView {
                 _texture: Kept::new(texture, t, Object::Texture, &self.graveyard),
                 view: Kept::new(view.clone(), v, Object::TextureView, &self.graveyard),
@@ -701,11 +734,9 @@ impl<B: Backend> Device<B> {
                 "mip generation needs shader resource and render target bindings",
             ));
         }
-        if cube
-            && (!d.array_size.is_multiple_of(6) || d.width != d.height || d.dimension != TexDim::D2)
-        {
+        if cube && (d.array_size < 6 || d.width != d.height || d.dimension != TexDim::D2) {
             return Err(Error::InvalidArg(
-                "a cube texture needs square faces in sixes",
+                "a cube texture needs at least six square faces",
             ));
         }
         match d.usage {
@@ -779,7 +810,9 @@ impl<B: Backend> Device<B> {
         init: &[SubresourceData<'_>],
     ) -> Result<Rc<Texture<B>>> {
         let (format, mips) = self.check_texture(d, !init.is_empty())?;
-        let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
+        // The back end's cubes are whole: a cube texture of other layer counts is a 2D array
+        // whose cube views see its first sixes.
+        let cube = d.misc_flags & MISC_TEXTURECUBE != 0 && d.array_size.is_multiple_of(6);
         let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
         for (flag, u) in [
             (bind::SHADER_RESOURCE, TextureUsage::SAMPLE),
@@ -986,7 +1019,7 @@ impl<B: Backend> Device<B> {
             dimension: match (t.dimension, arrayed) {
                 (TexDim::D2, false) if multisampled => ViewDim::Texture2DMS,
                 (TexDim::D2, true) if multisampled => ViewDim::Texture2DMSArray,
-                (TexDim::D2, _) if cube && t.array_size == 6 => ViewDim::TextureCube,
+                (TexDim::D2, _) if cube && t.array_size < 12 => ViewDim::TextureCube,
                 (TexDim::D2, _) if cube => ViewDim::TextureCubeArray,
                 (TexDim::D1, false) => ViewDim::Texture1D,
                 (TexDim::D1, true) => ViewDim::Texture1DArray,
@@ -1048,7 +1081,14 @@ impl<B: Backend> Device<B> {
             };
         }
         if v.layer_count == u32::MAX {
+            // A cube array sees the whole cubes left.
             v.layer_count = layers - v.first_layer.min(layers);
+            if v.dimension == ViewDim::TextureCubeArray {
+                v.layer_count -= v.layer_count % 6;
+            }
+        }
+        if v.dimension == ViewDim::TextureCube && desc.is_none() {
+            v.layer_count = 6;
         }
         if v.first_mip + v.mip_count > t.mip_levels
             || v.mip_count == 0
@@ -1076,7 +1116,7 @@ impl<B: Backend> Device<B> {
             ViewDim::TextureCube | ViewDim::TextureCubeArray
         );
         if cube
-            && (!texture.gpu_desc.cube
+            && (t.misc_flags & MISC_TEXTURECUBE == 0
                 || !v.layer_count.is_multiple_of(6)
                 || (v.dimension == ViewDim::TextureCube && v.layer_count != 6))
         {
@@ -1163,7 +1203,7 @@ impl<B: Backend> Device<B> {
         const APPEND: u32 = 2;
         const COUNTER: u32 = 4;
         let raw = flags & RAW != 0;
-        let (offset, size) =
+        let (offset, size, texel) =
             self.buffer_span(buffer, bind::UNORDERED_ACCESS, format, first, count, raw)?;
         let structured = buffer.desc.misc_flags & MISC_STRUCTURED != 0;
         let counted = flags & (APPEND | COUNTER);
@@ -1197,6 +1237,7 @@ impl<B: Backend> Device<B> {
             offset,
             size,
             counter,
+            texel,
         })))
     }
 
@@ -1209,7 +1250,7 @@ impl<B: Backend> Device<B> {
         count: u32,
         raw: bool,
     ) -> Result<Rc<ShaderView<B>>> {
-        let (offset, size) =
+        let (offset, size, texel) =
             self.buffer_span(buffer, bind::SHADER_RESOURCE, format, first, count, raw)?;
         self.live()?;
         Ok(Rc::new(ShaderView::Buffer(BufferSpan {
@@ -1217,12 +1258,15 @@ impl<B: Backend> Device<B> {
             offset,
             size,
             counter: None,
+            texel,
         })))
     }
 
-    /// The bytes (offset, size) that `count` elements from `first` of a buffer view cover: raw
-    /// (32-bit words, format `R32_TYPELESS`) or structured (the buffer's stride, no format). `needs`
-    /// is the bind flag the view's kind needs.
+    /// The bytes (offset, size) a view of `count` elements from `first` of a buffer binds: raw
+    /// (32-bit words, format `R32_TYPELESS`), structured (the buffer's stride, no format) or typed
+    /// (a format). A typed view is bound from its first byte rounded down to the back end's storage
+    /// offset alignment, its format, first element's byte in that range and count beside. `needs` is
+    /// the bind flag the view's kind needs.
     fn buffer_span(
         &self,
         buffer: &Buffer<B>,
@@ -1231,7 +1275,7 @@ impl<B: Backend> Device<B> {
         first: u32,
         count: u32,
         raw: bool,
-    ) -> Result<(u64, u64)> {
+    ) -> Result<(u64, u64, Option<TexelPlace>)> {
         const R32_TYPELESS: u32 = 39;
         let d = &buffer.desc;
         if d.bind_flags & needs == 0 {
@@ -1239,18 +1283,29 @@ impl<B: Backend> Device<B> {
                 "the resource lacks the bind flag the view needs",
             ));
         }
-        let stride = if raw {
+        let (stride, typed) = if raw {
             if format != R32_TYPELESS || d.misc_flags & MISC_ALLOW_RAW_VIEWS == 0 {
                 return Err(Error::InvalidArg("a raw view of a buffer not made for one"));
             }
-            4
+            (4, None)
         } else if d.misc_flags & MISC_STRUCTURED != 0 {
             if format != format::UNKNOWN {
                 return Err(Error::InvalidArg("a structured view with a format"));
             }
-            d.structure_byte_stride
+            (d.structure_byte_stride, None)
         } else {
-            return not_implemented("typed buffer views (TypedBuffer)");
+            if format == format::UNKNOWN {
+                return Err(Error::InvalidArg("a typed buffer view without a format"));
+            }
+            let f = format::texture_format_of(format)?;
+            match f.block() {
+                (1, 1, bytes) if !f.is_depth_stencil() => (bytes, Some(f)),
+                _ => {
+                    return Err(Error::InvalidArg(
+                        "a buffer view of a block or depth format",
+                    ));
+                }
+            }
         };
         let (offset, size) = (
             u64::from(first) * u64::from(stride),
@@ -1264,14 +1319,25 @@ impl<B: Backend> Device<B> {
                 .caps()
                 .limits
                 .min_storage_offset_alignment
-                .max(1),
+                .max(4),
         );
+        if let Some(f) = typed {
+            if self.backend.caps().limits.storage_buffers_per_stage == 0 {
+                return not_implemented(
+                    "typed buffer views read through a texture (TexelBufferAsTexture)",
+                );
+            }
+            let start = offset / align * align;
+            let end = (offset + size).next_multiple_of(4);
+            let within = u32::try_from(offset - start).expect("below the alignment");
+            return Ok((start, end - start, Some((f, within, count))));
+        }
         if !offset.is_multiple_of(align) {
             return not_implemented(
                 "a buffer view at an offset the back end does not bind at (StorageOffset)",
             );
         }
-        Ok((offset, size))
+        Ok((offset, size, None))
     }
 
     pub fn create_sampler_state(&mut self, d: &SamplerDesc) -> Result<Rc<Sampler<B>>> {
@@ -1355,7 +1421,9 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_raster(&raster_block(d, self.backend.caps()));
+        let gpu = self
+            .backend
+            .create_raster(&raster_block(d, self.backend.caps()));
         let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Rasterizer {
@@ -1372,7 +1440,13 @@ impl<B: Backend> Device<B> {
         stage: wcontainers_gpu::SourceStage,
     ) -> Result<Rc<Shader<B>>> {
         shader::check_model(bytecode, self.level)?;
-        let (mut converted, reads_samples) = shader::convert(bytecode, stage)?;
+        let typed = shader::typed_views(bytecode)?;
+        if typed.iter().any(|t| t.buffer)
+            && self.backend.caps().limits.storage_buffers_per_stage == 0
+        {
+            return not_implemented("typed buffers read through a texture (TexelBufferAsTexture)");
+        }
+        let (mut converted, reads_samples) = shader::convert(bytecode, stage, &typed)?;
         let samplers = shader::sampler_slots(&converted);
         let textures = shader::texture_slots(&converted);
         let mirror_filtered = shader::mirror_filtered_slots(&converted);
@@ -1403,6 +1477,7 @@ impl<B: Backend> Device<B> {
             mirror_filtered,
             reads_samples,
             helpers,
+            typed,
         });
         if matches!(
             stage,
@@ -1583,17 +1658,23 @@ fn stand_ins(module: &naga::Module) -> Vec<(u32, Option<StandIn>)> {
                 (ImageDimension::D3, _) => Some(ViewDimension::D3),
                 (ImageDimension::D1, _) => None,
             };
-            let kind = match class {
-                ImageClass::Sampled { kind, multi: false } => match kind {
-                    ScalarKind::Uint => Some(FormatKind::Uint),
-                    ScalarKind::Sint => Some(FormatKind::Sint),
-                    _ => Some(FormatKind::Float),
-                },
-                _ => None,
+            let (kind, multi) = match class {
+                ImageClass::Sampled { kind, multi } => (
+                    match kind {
+                        ScalarKind::Uint => Some(FormatKind::Uint),
+                        ScalarKind::Sint => Some(FormatKind::Sint),
+                        _ => Some(FormatKind::Float),
+                    },
+                    multi,
+                ),
+                _ => (None, false),
             };
+            let dimension = dimension.filter(|&d| !multi || d == ViewDimension::D2);
             Some((
                 binding,
-                dimension.zip(kind).map(|(d, k)| StandIn::Zeros(d, k)),
+                dimension
+                    .zip(kind)
+                    .map(|(d, k)| StandIn::Zeros(d, k, multi)),
             ))
         })
         .collect()
@@ -1610,6 +1691,11 @@ pub(crate) fn resolvable(format: Format) -> bool {
 fn check_buffer(d: &BufferDesc, has_init: bool) -> Result<()> {
     if d.byte_width == 0 {
         return Err(Error::InvalidArg("a buffer needs a size"));
+    }
+    if d.misc_flags & (MISC_GENERATE_MIPS | MISC_TEXTURECUBE) != 0 {
+        return Err(Error::InvalidArg(
+            "mip generation and cubes are for textures",
+        ));
     }
     if d.bind_flags & bind::CONSTANT_BUFFER != 0 {
         if !d.byte_width.is_multiple_of(16) {

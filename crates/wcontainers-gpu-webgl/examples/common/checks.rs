@@ -787,12 +787,27 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::Rg16Unorm, Format::Rg16Sint),
         (Format::Rgb32Float, Format::Rgb32Uint),
         (Format::Rgb32Sint, Format::Rgb32Float),
+        // Copies within one format, the commonest, keep every bit too.
+        (Format::R16Float, Format::R16Float),
+        (Format::Rg16Float, Format::Rg16Float),
+        (Format::Rgba16Float, Format::Rgba16Float),
+        (Format::R32Float, Format::R32Float),
+        (Format::Rg32Float, Format::Rg32Float),
+        (Format::Rgba32Float, Format::Rgba32Float),
+        (Format::Rgb32Float, Format::Rgb32Float),
+        (Format::Rgba8Unorm, Format::Rgba8Unorm),
+        (Format::Rgba8UnormSrgb, Format::Rgba8UnormSrgb),
+        (Format::Rgb10a2Unorm, Format::Rgb10a2Unorm),
+        (Format::Rgba16Unorm, Format::Rgba16Unorm),
+        (Format::Rg16Sint, Format::Rg16Sint),
+        (Format::Rgba32Uint, Format::Rgba32Uint),
     ];
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for (i, (from, to)) in pairs.into_iter().enumerate() {
         // Formats absent here (16-bit normalised without EXT_texture_norm16) are not copied.
         if !b.caps().formats.get(from).contains(FormatUse::SAMPLE)
             || !b.caps().formats.get(to).contains(FormatUse::SAMPLE)
+            || !(b.caps().formats.get(to).contains(FormatUse::COPY_OUT) || twin(to).is_some())
         {
             continue;
         }
@@ -853,22 +868,119 @@ pub fn copies_within_a_typeless_group<H: Host>() {
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
-/// `texels` texels of `format` from `seed`; half floats begin with infinities, NaNs with payloads,
-/// denormals and signed zero, whose bits a copy must keep.
+/// `texels` texels of `format` from `seed`; in 16-bit and 32-bit floats every third component is
+/// one of the infinities, NaNs with payloads (signalling and quiet, of either sign), denormals and
+/// signed zeros, whose bits a copy must keep.
 fn typeless_bytes(format: Format, texels: usize, seed: u32) -> Vec<u8> {
     let mut bytes = pattern(texels * format.block().2 as usize, seed);
-    if matches!(
-        format,
-        Format::R16Float | Format::Rg16Float | Format::Rgba16Float
-    ) {
-        let special: [u16; 8] = [
-            0x7c01, 0xfe01, 0x0001, 0x8000, 0x7c00, 0xfc00, 0x83ff, 0x7bff,
-        ];
-        for (at, h) in bytes.as_chunks_mut::<2>().0.iter_mut().zip(special) {
-            at.copy_from_slice(&h.to_le_bytes());
+    match format {
+        Format::R16Float | Format::Rg16Float | Format::Rgba16Float => {
+            let special: [u16; 8] = [
+                0x7c01, 0xfe01, 0x0001, 0x8000, 0x7c00, 0x7dc4, 0x83ff, 0x7e00,
+            ];
+            for (at, h) in bytes
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .step_by(3)
+                .zip(special.iter().cycle())
+            {
+                at.copy_from_slice(&h.to_le_bytes());
+            }
         }
+        Format::R32Float | Format::Rg32Float | Format::Rgba32Float | Format::Rgb32Float => {
+            let special: [u32; 8] = [
+                0x7f80_0001,
+                0xffc0_0001,
+                0x0000_0001,
+                0x8000_0000,
+                0x7f80_0000,
+                0x7fa5_5aa5,
+                0x807f_ffff,
+                0x7fc0_0000,
+            ];
+            for (at, s) in bytes
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .step_by(3)
+                .zip(special.iter().cycle())
+            {
+                at.copy_from_slice(&s.to_le_bytes());
+            }
+        }
+        _ => {}
     }
     bytes
+}
+
+/// The unsigned integer twin of a 16-bit float format, which GL does not read back.
+fn twin(format: Format) -> Option<Format> {
+    match format {
+        Format::R16Float => Some(Format::R16Uint),
+        Format::Rg16Float => Some(Format::Rg16Uint),
+        Format::Rgba16Float => Some(Format::Rgba16Uint),
+        _ => None,
+    }
+}
+
+/// Copies within one float format are blits, taking no slow path, where the probe found blits keep
+/// every bit; else they take a counted route. The bits kept are checked by
+/// `copies_within_a_typeless_group`, on both routes (all.cmd runs it with `float_blits` off).
+pub fn copies_within_one_float_format_take_the_probed_route<
+    H: Host<Backend = wcontainers_gpu_webgl::WebGl>,
+>() {
+    use crate::kit;
+    let mut b = H::make();
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    for format in [Format::Rgba16Float, Format::R32Float] {
+        let a = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [4, 4, 1],
+            1,
+            usage,
+            false,
+        );
+        let c = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [4, 4, 1],
+            1,
+            usage,
+            false,
+        );
+        let before = b.slow_paths().clone();
+        let at = |texture| TextureRegion {
+            texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        let extent = Extent {
+            width: 4,
+            height: 4,
+            depth_or_layers: 1,
+        };
+        b.copy_texture(&at(&a), &at(&c), extent);
+        let counted = [SlowPath::CopyThroughBuffer, SlowPath::HostCopyReadBack]
+            .map(|s| b.slow_paths().count(s) - before.count(s));
+        println!(
+            "{format:?}: exact float blits {}, counted {counted:?}",
+            b.exact_float_blits()
+        );
+        assert_eq!(
+            b.exact_float_blits(),
+            counted == [0, 0],
+            "{format:?}: counted {counted:?}"
+        );
+        b.destroy(Object::Texture(a));
+        b.destroy(Object::Texture(c));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
 /// Reads back the first layers of `texture` (of `format`, mip 0): directly, or where the format
@@ -884,12 +996,7 @@ fn read_typeless<B: Backend>(
     if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
         return kit::read(b, texture, 0, 0, size, texel, false);
     }
-    let twin = match format {
-        Format::R16Float => Format::R16Uint,
-        Format::Rg16Float => Format::Rg16Uint,
-        Format::Rgba16Float => Format::Rgba16Uint,
-        f => panic!("{f:?} has no twin to read through"),
-    };
+    let twin = twin(format).unwrap_or_else(|| panic!("{format:?} has no twin to read through"));
     let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     let t = kit::texture(b, TextureDimension::D2, twin, size, 1, usage, false);
     let extent = Extent {
@@ -923,6 +1030,8 @@ pub fn cube_faces_copied_between_typeless_formats<H: Host>() {
         (Format::Rgba8Sint, Format::Rgba8Unorm),
         (Format::Depth32Float, Format::R32Float),
         (Format::Depth16Unorm, Format::R16Uint),
+        (Format::Rgba16Float, Format::Rgba16Float),
+        (Format::R32Float, Format::R32Float),
     ];
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     let face = Extent {
@@ -1023,6 +1132,8 @@ pub fn copies_within_one_subresource<H: Host>() {
         (Format::Rgb32Float, TextureDimension::D2, [8, 4, 1]),
         (Format::Depth32Float, TextureDimension::D2, [8, 4, 2]),
         (Format::Depth24Plus, TextureDimension::D2, [8, 4, 1]),
+        (Format::Rgba16Float, TextureDimension::D3, [8, 4, 2]),
+        (Format::R16Float, TextureDimension::D2, [8, 4, 2]),
     ];
     let before = b.slow_paths().count(SlowPath::CopyWithinTexture);
     for (n, (format, dimension, size)) in cases.into_iter().enumerate() {
@@ -1055,10 +1166,10 @@ pub fn copies_within_one_subresource<H: Host>() {
             WriteMode::Ordered,
         );
         let read = |b: &mut H::Backend| {
-            if format == Format::Rg16Float {
-                read_typeless(b, &t, format, size)
-            } else {
+            if format.is_depth_stencil() {
                 kit::read(b, &t, 0, 0, size, texel, false)
+            } else {
+                read_typeless(b, &t, format, size)
             }
         };
         assert_eq!(read(&mut b), bytes, "{format:?} {dimension:?} as written");
@@ -3084,6 +3195,168 @@ pub fn block_compressed_and_shared_exponent_textures_read_back_as_written<H: Hos
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
+/// Loads the texel under each fragment.
+const LOAD_EACH: &str = "
+@group(0) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(t, vec2<i32>(p.xy), 0);
+}
+";
+
+/// Every interpolated value of BC4 and BC5 blocks (unsigned and signed, both modes: six values
+/// between the endpoints, and four with the two extremes) loaded into a 32-bit float target. Stored
+/// decoded (`BlockDecoded`), each must be the formula's value (bcdec_rs's float decoder) to the
+/// half float it is stored as. Natively compressed, the GPU decodes it as Direct3D on the same GPU
+/// does; that route's largest difference from the formula is printed, as a measurement.
+pub fn interpolated_bc4_and_bc5_values<H: Host>() {
+    use crate::kit::{self, Kit};
+    use Format as F;
+    let mut b = H::make();
+    let out_format = F::Rgba32Float;
+    if !b.caps().formats.get(out_format).contains(FormatUse::RENDER) {
+        return;
+    }
+    let k = Kit::new(&mut b);
+    let program = kit::program(&mut b, LOAD_EACH, "vs", "fs");
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        out_format,
+        [8, 4, 1],
+        1,
+        usage,
+        false,
+    );
+    let out_view = kit::target(&mut b, &out, out_format, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, 8.0, 4.0)];
+    // A BC4 block: two endpoints, then a 3-bit index per texel, row by row.
+    let block = |e: [u8; 2], index: &dyn Fn(u64) -> u64| {
+        let bits = (0..16).fold(0u64, |a, j| a | (index(j) << (3 * j)));
+        let mut out = [0u8; 8];
+        out[..2].copy_from_slice(&e);
+        out[2..].copy_from_slice(&bits.to_le_bytes()[..6]);
+        out
+    };
+    let compressed = b.caps().has(Features::BLOCK_COMPRESSION);
+    for format in [F::Bc4RUnorm, F::Bc4RSnorm, F::Bc5RgUnorm, F::Bc5RgSnorm] {
+        if !b.caps().formats.get(format).contains(FormatUse::SAMPLE) {
+            continue;
+        }
+        let signed = matches!(format, F::Bc4RSnorm | F::Bc5RgSnorm);
+        let two = matches!(format, F::Bc5RgUnorm | F::Bc5RgSnorm);
+        let (red, green) = if signed {
+            ([0x83, 101], [0x91, 0x7f])
+        } else {
+            ([250, 3], [17, 200])
+        };
+        // Two blocks side by side, the second with its endpoints swapped (the other mode).
+        let mut blocks = Vec::new();
+        for swap in [false, true] {
+            let order = |e: [u8; 2]| if swap { [e[1], e[0]] } else { e };
+            blocks.extend(block(order(red), &|j| j % 8));
+            if two {
+                blocks.extend(block(order(green), &|j| 7 - j % 8));
+            }
+        }
+        let bytes = blocks.len() as u32 / 2;
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [8, 4, 1],
+            1,
+            TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            false,
+        );
+        b.write_texture(
+            &TextureRegion {
+                texture: &t,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            Extent {
+                width: 8,
+                height: 4,
+                depth_or_layers: 1,
+            },
+            &blocks,
+            2 * bytes,
+            1,
+            WriteMode::Ordered,
+        );
+        let view = kit::view(&mut b, &t, format, ViewDimension::D2, 0, 1, 0, 1);
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&view),
+            }])
+            .expect("create_binding_set");
+        b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            &program,
+            Some(&set),
+            &vp,
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        let got: Vec<f32> = kit::read(&mut b, &out, 0, 0, [8, 4, 1], 16, false)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect();
+        let channels = if two { 2 } else { 1 };
+        let mut worst = 0f32;
+        for (n, block) in blocks.chunks_exact(bytes as usize).enumerate() {
+            let mut want = [0f32; 32];
+            if two {
+                bcdec_rs::bc5_float(block, &mut want, 8, signed);
+            } else {
+                bcdec_rs::bc4_float(block, &mut want, 4, signed);
+            }
+            for y in 0..4 {
+                for x in 0..4 {
+                    for c in 0..channels {
+                        let w = want[(y * 4 + x) * channels + c];
+                        let g = got[(y * 8 + n * 4 + x) * 4 + c];
+                        let differ = (w - g).abs();
+                        worst = worst.max(differ);
+                        // Half a half float's step below 1.
+                        assert!(
+                            compressed || differ <= 1.0 / 4096.0,
+                            "{format:?} decoded: texel ({}, {y}) channel {c}: {g}, the formula {w}",
+                            n * 4 + x
+                        );
+                    }
+                }
+            }
+        }
+        let route = if compressed {
+            "decoded by the GPU"
+        } else {
+            "stored decoded"
+        };
+        let step = if signed { 127.0 } else { 255.0 };
+        println!(
+            "{format:?} {route}: largest difference from the formula {worst:e} ({:.2} of an 8-bit step)",
+            worst * step
+        );
+        b.destroy(Object::BindingSet(set));
+        b.destroy(Object::TextureView(view));
+        b.destroy(Object::Texture(t));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
 /// A triangle over the target at clip z 0.5, writing its fragments' window z.
 const FRAGMENT_Z: &str = "
 @vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
@@ -3495,9 +3768,20 @@ pub fn absent_features_are_refused<H: Host>() {
     use crate::kit;
     let mut b = H::make();
     let caps = b.caps().clone();
+    // Plan 4.11's absent list for WebGL 2.
     let never = Features::COMPUTE
         | Features::VERTEX_STORAGE_READ
+        | Features::VERTEX_STORAGE_WRITE
         | Features::FRAGMENT_STORAGE_WRITE
+        | Features::INDIRECT_FIRST_INSTANCE
+        | Features::BASE_VERTEX_INSTANCE
+        | Features::TEXTURE_VIEWS
+        | Features::SEPARATE_SAMPLERS
+        | Features::TEXTURE_LEVEL_QUERY
+        | Features::MULTISAMPLE_READ
+        | Features::SUBGROUPS
+        | Features::FRACTIONAL_VIEWPORT
+        | Features::RESTART_SWITCH
         | Features::POLYGON_MODE_POINT
         | Features::LOGIC_OP
         | Features::WIDE_LINES

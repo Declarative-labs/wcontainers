@@ -1011,7 +1011,7 @@ impl<B: Backend> Device<B> {
         self.program(vs, vk, ps, StageVariant::default())?;
         let module = match ps {
             Some(p) => {
-                let mut c = crate::shader::convert(&p.bytecode, SourceStage::Pixel)?.0;
+                let mut c = crate::shader::convert(&p.bytecode, SourceStage::Pixel, &p.typed)?.0;
                 crate::counting::from_pixel_shader(&c.modules.pop().expect("one module"))?
             }
             None => crate::counting::without_pixel_shader()?,
@@ -1322,8 +1322,8 @@ impl<B: Backend> Device<B> {
             && pk != StageVariant::default()
             && !self.variants.contains_key(&(p.gpu.id, pk))
         {
-            let v =
-                self.convert_kept(&p.bytecode, SourceStage::Pixel, &pk.key(SourceStage::Pixel))?;
+            let key = self.variant_key(p, pk, SourceStage::Pixel);
+            let v = self.convert_kept(&p.bytecode, SourceStage::Pixel, &key)?;
             self.variants.insert((p.gpu.id, pk), v);
         }
         let (vertex, vh) = self
@@ -1391,7 +1391,7 @@ impl<B: Backend> Device<B> {
         let variant = VariantKey {
             output_interpolation: interpolation,
             pulled,
-            ..vk.key(SourceStage::Vertex)
+            ..self.variant_key(vs, vk, SourceStage::Vertex)
         };
         let v = self.convert_kept(&vs.bytecode, SourceStage::Vertex, &variant)?;
         self.interpolated.insert(key, v);
@@ -1419,10 +1419,12 @@ impl<B: Backend> Device<B> {
 
     /// What a draw asks of `stage`'s program `s`: the sampler slots it reads through a biased
     /// sampler, and the targets' `samples` where it reads them.
-    fn stage_variant(&self, stage: usize, s: &Shader<B>, samples: u8) -> StageVariant {
+    fn stage_variant(&mut self, stage: usize, s: &Shader<B>, samples: u8) -> StageVariant {
+        let formats = self.format_id(stage, s);
         let caps = self.backend.caps();
         let mut v = StageVariant {
             samples: if s.reads_samples { samples } else { 0 },
+            formats,
             ..StageVariant::default()
         };
         if s.samplers != 0 {
@@ -1479,6 +1481,57 @@ impl<B: Backend> Device<B> {
             }
         }
         v
+    }
+
+    /// The device's number for the formats of the typed views `s` declares as bound to `stage`
+    /// (`StageVariant::formats`); zero where they are the plain program's placeholders. A slot
+    /// holding no view of its kind keeps its placeholder.
+    fn format_id(&mut self, stage: usize, s: &Shader<B>) -> u32 {
+        if s.typed.is_empty() {
+            return 0;
+        }
+        let formats: Vec<Format> = s
+            .typed
+            .iter()
+            .map(|t| {
+                let slots = if t.storage {
+                    &self.ctx.uavs[stage]
+                } else {
+                    &self.ctx.resources[stage]
+                };
+                match slots.get(t.register as usize).and_then(Option::as_deref) {
+                    Some(ShaderView::Texture(v)) if t.storage && !t.buffer => v.format,
+                    Some(ShaderView::Buffer(BufferSpan {
+                        texel: Some((f, ..)),
+                        ..
+                    })) if t.buffer => *f,
+                    _ => t.placeholder(),
+                }
+            })
+            .collect();
+        if s.typed
+            .iter()
+            .zip(&formats)
+            .all(|(t, f)| t.placeholder() == *f)
+        {
+            return 0;
+        }
+        if let Some(&id) = self.format_ids.get(&formats) {
+            return id;
+        }
+        self.format_lists.push(formats.clone());
+        let id = self.format_lists.len() as u32;
+        self.format_ids.insert(formats, id);
+        id
+    }
+
+    /// The shaders crate's key for `v` of `s`, a shader of `stage`.
+    fn variant_key(&self, s: &Shader<B>, v: StageVariant, stage: SourceStage) -> VariantKey {
+        let formats = match v.formats {
+            0 => &[][..],
+            n => &self.format_lists[n as usize - 1],
+        };
+        v.key(stage, &s.typed, formats)
     }
 
     /// The smallest step of the bound depth target's format where the pixel program adds the depth
@@ -1783,35 +1836,44 @@ impl<B: Backend> Device<B> {
         self.grow_constants()?;
         self.refresh_windows()?;
         self.update_set(COMPUTE, &[])?;
-        if self.stage_variant(COMPUTE, &cs, 1) != StageVariant::default() {
+        let cv = self.stage_variant(COMPUTE, &cs, 1);
+        if (StageVariant { formats: 0, ..cv }) != StageVariant::default() {
             return not_implemented(
                 "a compute shader sampling in a way the back end's sampler lacks (a bias, a resource clamp, border or mirror-once addressing, an unfilterable format)",
             );
         }
-        let key = (
-            cs.gpu.id,
-            StageVariant::default(),
-            0,
-            StageVariant::default(),
-        );
-        let program = match self.programs.get(&key) {
-            Some(p) => p.program.handle.clone(),
+        let key = (cs.gpu.id, cv, 0, StageVariant::default());
+        let (program, helpers) = match self.programs.get(&key) {
+            Some(p) => (p.program.handle.clone(), p.helpers[0].clone()),
             None => {
-                let p = self
-                    .backend
-                    .create_program(&Program::Compute(&cs.gpu.handle));
+                if cv.formats != 0 && !self.variants.contains_key(&(cs.gpu.id, cv)) {
+                    let key = self.variant_key(&cs, cv, SourceStage::Compute);
+                    let v = self.convert_kept(&cs.bytecode, SourceStage::Compute, &key)?;
+                    self.variants.insert((cs.gpu.id, cv), v);
+                }
+                let (shader, helpers) = match self.variants.get(&(cs.gpu.id, cv)) {
+                    Some(v) if cv.formats != 0 => (&v.shader.handle, v.helpers.clone()),
+                    _ => (&cs.gpu.handle, cs.helpers.clone()),
+                };
+                let p = self.backend.create_program(&Program::Compute(shader));
                 let p = self.gpu(p)?;
                 let id = self.id();
                 self.programs.insert(
                     key,
                     Linked {
                         program: Kept::new(p.clone(), id, Object::Program, &self.graveyard),
-                        helpers: Default::default(),
+                        helpers: [helpers.clone(), Rc::default()],
                     },
                 );
-                p
+                (p, helpers)
             }
         };
+        if cs.typed.iter().any(|t| t.buffer) {
+            self.backend
+                .slow_paths()
+                .hit(SlowPath::TexelBufferAsStorage);
+        }
+        let helper_set = self.compute_helpers(&helpers)?;
         if !self.queries.statistics.is_empty() {
             let groups = match indirect {
                 None => groups,
@@ -1830,6 +1892,7 @@ impl<B: Backend> Device<B> {
         let args = indirect.map(|(b, offset)| (b.gpu.borrow(), offset));
         let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
         bindings[0] = self.ctx.sets[COMPUTE].as_ref().map(|k| &k.handle);
+        bindings[HELPER_SET as usize] = helper_set.as_ref();
         let call = DispatchCall {
             program: &program,
             bindings,
@@ -1845,6 +1908,53 @@ impl<B: Backend> Device<B> {
         let r = self.backend.dispatch(&call);
         drop(args);
         self.gpu(r)
+    }
+
+    /// The binding set of a compute program's helper constants (the typed buffer views' places),
+    /// written for this dispatch; none for a program without them.
+    fn compute_helpers(&mut self, h: &Helpers) -> Result<Option<B::BindingSet>> {
+        if h.size == 0 {
+            return Ok(None);
+        }
+        let mut block = vec![0u8; h.size as usize];
+        for slot in &h.values {
+            let HelperValue::TexelBufferView { binding, .. } = slot.value else {
+                return not_implemented("compute helper constants other than typed buffer views");
+            };
+            for (k, w) in self.texel_view(COMPUTE, binding).iter().enumerate() {
+                let at = slot.offset as usize + 4 * k;
+                block[at..at + 4].copy_from_slice(&w.to_le_bytes());
+            }
+        }
+        if let Some((written, set)) = &self.compute_helpers
+            && *written == block
+        {
+            return Ok(Some(set.handle.clone()));
+        }
+        let align = self.backend.caps().limits.min_uniform_offset_alignment;
+        let mut offsets = [0u64; 1];
+        let ring =
+            self.backend
+                .write_buffer_ring(RingKind::Data, &[&block[..]], align, &mut offsets);
+        let ring = self.gpu(ring)?;
+        self.helper_blocks = None;
+        let entries = [BindingEntry {
+            binding: helper_binding(ShaderStage::Compute),
+            stages: StageSet::COMPUTE,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &ring,
+                offset: offsets[0],
+                size: block.len() as u64,
+            }),
+        }];
+        let set = self.backend.create_binding_set(&entries);
+        let set = self.gpu(set)?;
+        let id = self.id();
+        self.compute_helpers = Some((
+            block,
+            Kept::new(set.clone(), id, Object::BindingSet, &self.graveyard),
+        ));
+        Ok(Some(set))
     }
 
     /// `CopyStructureCount`: the hidden counter of a buffer view, written into `dst` at `offset`.
@@ -1867,9 +1977,10 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("a count written past the buffer"));
         }
         self.settle();
+        dst.writes.set(dst.writes.get() + 1);
         self.backend
             .copy_buffer(&c.handle, 0, &dst.handle(), u64::from(offset), 4);
-        Ok(())
+        self.buffer_written(dst)
     }
 
     /// `ClearUnorderedAccessViewUint` (`float` false) and `Float`: buffer views take the first value
@@ -1880,6 +1991,24 @@ impl<B: Backend> Device<B> {
         }
         self.settle();
         match view {
+            ShaderView::Buffer(BufferSpan {
+                buffer,
+                offset,
+                texel: Some((format, first, count)),
+                ..
+            }) => {
+                if float {
+                    return not_implemented("a float clear of a typed buffer view");
+                }
+                let pattern = uint_element(*format, values)?;
+                self.backend.clear_buffer(
+                    &buffer.handle(),
+                    offset + u64::from(*first),
+                    u64::from(*count) * pattern.len() as u64,
+                    &pattern,
+                );
+                Ok(())
+            }
             ShaderView::Buffer(span) => {
                 if float {
                     return not_implemented("a float clear of a buffer view");
@@ -1899,11 +2028,17 @@ impl<B: Backend> Device<B> {
                     );
                 }
                 let integer = matches!(v.format.kind(), FormatKind::Uint | FormatKind::Sint);
-                if integer == float {
+                if integer && float {
                     return not_implemented(
-                        "a clear of an unordered access view converting between float and integer",
+                        "a float clear of an unordered access view of an integer format",
                     );
                 }
+                // A uint clear of a view of floats writes each value's low bits as the channel's.
+                let values = if integer || float {
+                    values
+                } else {
+                    channel_values(v.format, values)?
+                };
                 let r = self.backend.clear_texture(
                     &v.texture.gpu.handle,
                     &v.texture.gpu_desc,
@@ -1962,13 +2097,22 @@ impl<B: Backend> Device<B> {
                 SlotKind::Uniform => self.ctx.constant_buffers[stage]
                     .get(slot)
                     .is_some_and(Option::is_some),
-                // A view of the other kind (a texture where a buffer is read) reads as none.
+                // A view of the other kind (a texture where a buffer is read, integers where
+                // floats are) reads as none.
                 SlotKind::Texture => {
                     match self.ctx.resources[stage]
                         .get(slot)
                         .and_then(Option::as_deref)
                     {
-                        Some(ShaderView::Texture(_)) => !reads_buffer(b.binding),
+                        Some(ShaderView::Texture(v)) => {
+                            !reads_buffer(b.binding)
+                                && match stand_in(b.binding) {
+                                    Some(StandIn::Zeros(_, kind, _)) => {
+                                        same_kind(v.format.kind(), kind)
+                                    }
+                                    _ => true,
+                                }
+                        }
                         Some(ShaderView::Buffer(_)) => reads_buffer(b.binding),
                         None => false,
                     }
@@ -2011,14 +2155,14 @@ impl<B: Backend> Device<B> {
                         .map_or(16, |s| s.1);
                     Zero::Buffer(self.zero_buffer()?, declared)
                 }
-                (_, Some(StandIn::Zeros(dimension, kind))) => {
-                    Zero::View(self.zero_view(dimension, kind)?)
+                (_, Some(StandIn::Zeros(dimension, kind, multi))) => {
+                    Zero::View(self.zero_view(dimension, kind, if multi { 4 } else { 1 })?)
                 }
                 (_, Some(StandIn::DefaultSampler)) => Zero::Sampler(self.default_sampler()?),
                 (_, Some(StandIn::ZeroBuffer)) => Zero::Storage(self.zero_storage()?),
                 (_, None) => {
                     return not_implemented(
-                        "an empty slot read as a multisampled or depth texture, or a comparison sampler",
+                        "an empty slot read as a depth texture, a multisampled array or a comparison sampler",
                     );
                 }
             };
@@ -2178,7 +2322,9 @@ impl<B: Backend> Device<B> {
                     views.get(slot).and_then(Option::as_deref),
                     srvs.get(slot).and_then(Option::as_ref),
                 ) {
-                    (Some(ShaderView::Texture(v)), _) if !reads_buffer(b.binding) => {
+                    (Some(ShaderView::Texture(v)), _)
+                        if !empty.iter().any(|(n, _)| *n == b.binding) =>
+                    {
                         Some(BindingResource::Texture(&v.gpu.handle))
                     }
                     (_, Some((buffer, span))) if reads_buffer(b.binding) => {
@@ -2378,18 +2524,34 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// The first element's byte in the bound range and the element count of the typed buffer view
+    /// bound to `stage` at `binding`; none for an empty slot or a view of another kind.
+    fn texel_view(&self, stage: usize, binding: u32) -> [u32; 2] {
+        let texture = SlotKind::Texture.first_binding();
+        let storage = SlotKind::Storage.first_binding();
+        let view = match binding {
+            b if (texture..storage).contains(&b) => {
+                self.ctx.resources[stage].get((b - texture) as usize)
+            }
+            b => self.ctx.uavs[stage].get(b.wrapping_sub(storage) as usize),
+        };
+        match view.and_then(Option::as_deref) {
+            Some(ShaderView::Buffer(BufferSpan {
+                texel: Some((_, first, count)),
+                ..
+            })) => [*first, *count],
+            _ => [0, 0],
+        }
+    }
+
     fn write_helpers(
         &mut self,
         helpers: &[Rc<Helpers>; 2],
         bases: [u32; 2],
         args: Option<(&Rc<Buffer<B>>, u32, bool)>,
     ) -> Result<()> {
-        const MAX: usize = 256;
-        let mut blocks = [[0u8; MAX]; 2];
+        let mut blocks = helpers.each_ref().map(|h| vec![0u8; h.size as usize]);
         for (i, (h, stage)) in helpers.iter().zip([VERTEX, PIXEL]).enumerate() {
-            if h.size as usize > MAX {
-                return not_implemented("a helper block larger than 256 bytes");
-            }
             for slot in &h.values {
                 let mut words = [0u32; 9];
                 let n = match slot.value {
@@ -2464,6 +2626,10 @@ impl<B: Backend> Device<B> {
                         words[..2].copy_from_slice(&[clamp.to_bits(), levels]);
                         2
                     }
+                    HelperValue::TexelBufferView { binding, .. } => {
+                        words[..2].copy_from_slice(&self.texel_view(stage, binding));
+                        2
+                    }
                     _ => unreachable!("refused at conversion"),
                 };
                 for (k, w) in words[..n].iter().enumerate() {
@@ -2488,10 +2654,7 @@ impl<B: Backend> Device<B> {
             }
         }
         let samplers: Vec<u64> = merged.iter().map(|m| m.3).collect();
-        let blocks = [
-            &blocks[0][..helpers[0].size as usize],
-            &blocks[1][..helpers[1].size as usize],
-        ];
+        let blocks = [&blocks[0][..], &blocks[1][..]];
         let arguments = args.map_or(0, |(b, ..)| b.gpu.borrow().id);
         if self.helper_blocks.as_ref().is_some_and(|h| {
             h.arguments == arguments
@@ -2514,6 +2677,7 @@ impl<B: Backend> Device<B> {
             .backend
             .write_buffer_ring(RingKind::Data, &blocks, align, &mut offsets);
         let ring = self.gpu(ring)?;
+        self.compute_helpers = None;
         let args = args.map(|(b, ..)| (b.gpu.borrow(), b.size.get() & !3));
         let mut entries = Vec::with_capacity(3);
         for (i, stage) in [ShaderStage::Vertex, ShaderStage::Fragment]
@@ -2679,6 +2843,16 @@ impl<B: Backend> Device<B> {
             self.backend
                 .slow_paths()
                 .hit(SlowPath::InstanceRateInShader);
+        }
+        if vs
+            .typed
+            .iter()
+            .chain(ps.iter().flat_map(|p| &p.typed))
+            .any(|t| t.buffer)
+        {
+            self.backend
+                .slow_paths()
+                .hit(SlowPath::TexelBufferAsStorage);
         }
         let (program, helpers) = self.program(&vs, vk, ps.as_ref(), pk)?;
         if !helpers[0].pulled.is_empty() {
@@ -3607,7 +3781,10 @@ impl<B: Backend> Device<B> {
             return;
         }
         let t = &view.texture;
-        if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0 {
+        // Direct3D generates mips of formats it filters only: integer views take none.
+        if t.desc.misc_flags & desc::MISC_GENERATE_MIPS == 0
+            || matches!(view.format.kind(), FormatKind::Uint | FormatKind::Sint)
+        {
             return;
         }
         let v = &view.desc;
@@ -3676,4 +3853,70 @@ fn same_range<'a, B: Backend>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
         DrawRange::Indirect { args, offset } => DrawRange::Indirect { args, offset },
         DrawRange::IndexedIndirect { args, offset } => DrawRange::IndexedIndirect { args, offset },
     }
+}
+
+/// One element of `format` holding the low bits of each of `values` in its channel, as
+/// `ClearUnorderedAccessViewUint` writes it: formats whose channels are stored in RGBA order.
+fn uint_element(format: Format, values: [u32; 4]) -> Result<Vec<u8>> {
+    let (_, _, bytes) = format.block();
+    let mask = format.components();
+    let n = mask.count_ones();
+    let bits: &[u32] = match format {
+        Format::Rgb10a2Unorm | Format::Rgb10a2Uint => &[10, 10, 10, 2],
+        Format::Rg11b10Float => &[11, 11, 10],
+        Format::Bgra8Unorm
+        | Format::Bgra8UnormSrgb
+        | Format::Bgrx8Unorm
+        | Format::Bgrx8UnormSrgb
+        | Format::B5g6r5Unorm
+        | Format::Rgb9e5Float => {
+            return not_implemented("a clear of a typed buffer view of a packed or BGR format");
+        }
+        _ if mask == (1 << n) - 1 && bytes % n == 0 && [1, 2, 4, 8, 16].contains(&bytes) => {
+            &[8 * bytes / n; 4][..n as usize]
+        }
+        _ => return not_implemented("a clear of a typed buffer view of this format"),
+    };
+    let mut element = 0u128;
+    let mut at = 0;
+    for (&b, &v) in bits.iter().zip(&values) {
+        let mask = if b == 32 { u32::MAX } else { (1 << b) - 1 };
+        element |= u128::from(v & mask) << at;
+        at += b;
+    }
+    Ok(element.to_le_bytes()[..bytes as usize].to_vec())
+}
+
+/// The f32 bits that hold, in each channel of a view of floats in `format`, the low bits of each of
+/// `values`, as `ClearUnorderedAccessViewUint` writes them.
+fn channel_values(format: Format, values: [u32; 4]) -> Result<[u32; 4]> {
+    use Format::*;
+    let unorm =
+        |v: u32, bits: u32| (f64::from(v & ((1 << bits) - 1)) / f64::from((1 << bits) - 1)) as f32;
+    let snorm = |v: u32, bits: u32| {
+        let shift = 32 - bits;
+        let v = ((v << shift) as i32) >> shift;
+        (f64::from(v) / f64::from((1 << (bits - 1)) - 1)).max(-1.0) as f32
+    };
+    let mut out = [0f32; 4];
+    for (c, (o, &v)) in out.iter_mut().zip(&values).enumerate() {
+        *o = match format {
+            R32Float | Rg32Float | Rgba32Float => f32::from_bits(v),
+            R16Float | Rg16Float | Rgba16Float => half::f16::from_bits(v as u16).to_f32(),
+            R8Unorm | Rg8Unorm | Rgba8Unorm => unorm(v, 8),
+            R16Unorm | Rg16Unorm | Rgba16Unorm => unorm(v, 16),
+            R8Snorm | Rg8Snorm | Rgba8Snorm => snorm(v, 8),
+            R16Snorm | Rg16Snorm | Rgba16Snorm => snorm(v, 16),
+            Rgb10a2Unorm => unorm(v, if c == 3 { 2 } else { 10 }),
+            _ => return not_implemented("a uint clear of a view of floats of this format"),
+        };
+    }
+    Ok(out.map(f32::to_bits))
+}
+
+/// Whether a view of format kind `view` reads as a declaration of kind `declared`: integers as
+/// their own signedness only, the rest (depth included) as floats.
+fn same_kind(view: FormatKind, declared: FormatKind) -> bool {
+    let integer = |k| matches!(k, FormatKind::Uint | FormatKind::Sint);
+    !(integer(view) || integer(declared)) || view == declared
 }

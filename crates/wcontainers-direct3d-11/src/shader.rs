@@ -2,8 +2,8 @@
 //! crate into the common form.
 
 use wcontainers_gpu::{
-    AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, HELPER_SET, HelperSlot, HelperValue,
-    SlotKind, SourceStage, VariantFlags, VariantKey,
+    AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, Format, FormatKind, HELPER_SET,
+    HelperSlot, HelperValue, SlotKind, SourceStage, TexelBufferRoute, VariantFlags, VariantKey,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -83,6 +83,108 @@ fn chunks(bytecode: &[u8]) -> Result<Vec<([u8; 4], usize)>> {
             Ok((tag.try_into().unwrap(), at))
         })
         .collect()
+}
+
+/// A typed view a shader declares, whose format its program takes from the view bound at the draw:
+/// a typed buffer at a texture slot (`dcl_resource` of a buffer) or a typed unordered access view
+/// of a texture or a buffer (`dcl_uav_typed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypedView {
+    /// At an unordered access slot; otherwise at a texture slot.
+    pub storage: bool,
+    pub register: u32,
+    /// A view of a buffer.
+    pub buffer: bool,
+    /// The kind of value the declaration reads and writes.
+    pub kind: FormatKind,
+}
+
+impl TypedView {
+    /// The format the shader's plain program is converted with, of the view's kind: one 32-bit
+    /// channel for unordered access (which WebGPU reads and writes in one view), four for a typed
+    /// buffer read, so that an empty slot reads zero in every component as Direct3D's does.
+    pub fn placeholder(self) -> Format {
+        match (self.kind, self.storage) {
+            (FormatKind::Uint, true) => Format::R32Uint,
+            (FormatKind::Sint, true) => Format::R32Sint,
+            (_, true) => Format::R32Float,
+            (FormatKind::Uint, false) => Format::Rgba32Uint,
+            (FormatKind::Sint, false) => Format::Rgba32Sint,
+            (_, false) => Format::Rgba32Float,
+        }
+    }
+}
+
+/// The typed views a DXBC container's program declares, in the token format of Microsoft's
+/// `d3d11TokenizedProgramFormat.hpp`.
+pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
+    const DCL_RESOURCE: u32 = 88;
+    const DCL_UAV_TYPED: u32 = 156;
+    const CUSTOMDATA: u32 = 53;
+    const DIMENSION_BUFFER: u32 = 1;
+    let bad = Error::InvalidArg("malformed DXBC program");
+    let (_, at) = chunks(bytecode)?
+        .into_iter()
+        .find(|(tag, _)| tag == b"SHDR" || tag == b"SHEX")
+        .ok_or(bad)?;
+    let words = word(bytecode, at + 4)? as usize / 4;
+    let token = |i: usize| word(bytecode, at + 8 + 4 * i);
+    let mut views = Vec::new();
+    // Past the version and length tokens.
+    let mut i = 2;
+    while i < words {
+        let opcode = token(i)?;
+        let length = match opcode & 0x7ff {
+            CUSTOMDATA => token(i + 1)? as usize,
+            _ => (opcode >> 24 & 0x7f) as usize,
+        };
+        if length == 0 || i + length > words {
+            return Err(bad);
+        }
+        let dimension = opcode >> 11 & 0x1f;
+        let storage = match opcode & 0x7ff {
+            DCL_RESOURCE if dimension == DIMENSION_BUFFER => Some(false),
+            DCL_UAV_TYPED => Some(true),
+            _ => None,
+        };
+        if let Some(storage) = storage {
+            // The opcode's extended tokens, the operand and its own, its indices (one immediate in
+            // shader model 5.0; the identifier and the range's bounds in 5.1), the return type.
+            let mut j = i + 1;
+            let mut extended = opcode >> 31 != 0;
+            while extended {
+                extended = token(j)? >> 31 != 0;
+                j += 1;
+            }
+            let operand = token(j)?;
+            j += 1;
+            let mut extended = operand >> 31 != 0;
+            while extended {
+                extended = token(j)? >> 31 != 0;
+                j += 1;
+            }
+            let indices = (operand >> 20 & 3) as usize;
+            let register = match indices {
+                1 => token(j)?,
+                3 => token(j + 1)?,
+                _ => return Err(bad),
+            };
+            let kind = match token(j + indices)? & 0xf {
+                1 | 2 | 5 => FormatKind::Float,
+                3 => FormatKind::Sint,
+                4 => FormatKind::Uint,
+                _ => return Err(bad),
+            };
+            views.push(TypedView {
+                storage,
+                register,
+                buffer: dimension == DIMENSION_BUFFER,
+                kind,
+            });
+        }
+        i += length;
+    }
+    Ok(views)
 }
 
 /// One element of a DXBC container's input signature.
@@ -181,12 +283,26 @@ pub struct StageVariant {
     pub filter_in_shader: u128,
     /// The pixel program adds the depth bias (`DepthBiasInShader`).
     pub depth_bias: bool,
+    /// The formats of the bound typed views, one for each the shader declares, by the device's
+    /// number for the list; zero for the plain program's placeholders.
+    pub formats: u32,
 }
 
 impl StageVariant {
-    /// The shaders crate's key for this variant of a shader of `stage`.
-    pub fn key(self, stage: SourceStage) -> VariantKey {
-        let mut key = base_key(stage);
+    /// The shaders crate's key for this variant of a shader of `stage` declaring `typed`, whose
+    /// bound views have `formats`.
+    pub fn key(self, stage: SourceStage, typed: &[TypedView], formats: &[Format]) -> VariantKey {
+        let mut key = base_key(stage, typed);
+        for (t, &f) in typed.iter().zip(formats) {
+            let list = if t.storage {
+                &mut key.storage_formats
+            } else {
+                &mut key.texel_formats
+            };
+            if let Some(e) = list.iter_mut().find(|e| e.0 == t.register) {
+                e.1 = f;
+            }
+        }
         key.lod_bias = self.lod_bias;
         key.border_in_shader = self.border_in_shader;
         key.mirror_once_in_shader = self.mirror_once_in_shader;
@@ -254,28 +370,47 @@ impl Helpers {
 /// what it cannot convert yet is not implemented. The flag says the program reads the targets'
 /// sample count, which it is converted with at each draw; here it is converted for one sample, so its
 /// reflection is known.
-pub fn convert(bytecode: &[u8], expected: SourceStage) -> Result<(Converted, bool)> {
-    match raw(bytecode, expected, &base_key(expected))? {
+pub fn convert(
+    bytecode: &[u8],
+    expected: SourceStage,
+    typed: &[TypedView],
+) -> Result<(Converted, bool)> {
+    match raw(bytecode, expected, &base_key(expected, typed))? {
         Err(ConvertError::Unsupported("SampleCount")) => {
             let key = StageVariant {
                 samples: 1,
                 ..StageVariant::default()
             }
-            .key(expected);
+            .key(expected, typed, &[]);
             Ok((answer(raw(bytecode, expected, &key)?)?, true))
         }
         r => Ok((answer(r)?, false)),
     }
 }
 
-/// The variant every shader of `stage` is converted as: vertex shaders read the draw's bases from
-/// the helper constants, since `SV_VertexID` and `SV_InstanceID` leave them out (programs that read
-/// neither get no helper block).
-pub fn base_key(stage: SourceStage) -> VariantKey {
+/// The variant every shader of `stage` declaring `typed` is converted as: vertex shaders read the
+/// draw's bases from the helper constants, since `SV_VertexID` and `SV_InstanceID` leave them out
+/// (programs that read neither get no helper block); typed views take their placeholders, typed
+/// buffers read through storage buffers (`TexelBufferAsStorage`).
+pub fn base_key(stage: SourceStage, typed: &[TypedView]) -> VariantKey {
+    let formats = |storage: bool| {
+        typed
+            .iter()
+            .filter(|t| t.storage == storage)
+            .map(|t| (t.register, t.placeholder()))
+            .collect()
+    };
     VariantKey {
         draw_base: match stage {
             SourceStage::Vertex => DrawBaseSource::Helpers,
             _ => DrawBaseSource::None,
+        },
+        storage_formats: formats(true),
+        texel_formats: formats(false),
+        texel_buffers: if typed.iter().any(|t| t.buffer) {
+            TexelBufferRoute::Storage
+        } else {
+            TexelBufferRoute::Native
         },
         ..VariantKey::default()
     }
@@ -393,6 +528,7 @@ fn answer(r: core::result::Result<Converted, ConvertError>) -> Result<Converted>
                         | HelperValue::MinLod { .. }
                         | HelperValue::DepthBias
                         | HelperValue::PulledStream { .. }
+                        | HelperValue::TexelBufferView { .. }
                 )
             }) =>
         {
@@ -408,5 +544,87 @@ fn answer(r: core::result::Result<Converted, ConvertError>) -> Result<Converted>
             eprintln!("wcontainers direct3d 11: shader conversion failed: {e}");
             not_implemented("shaders the converter does not yet turn into a valid module")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A container holding one program chunk of `tokens`.
+    fn container(tokens: &[u32]) -> Vec<u8> {
+        let mut code = b"DXBC".to_vec();
+        code.resize(20, 0);
+        code.extend(1u32.to_le_bytes());
+        code.extend(((44 + tokens.len() * 4) as u32).to_le_bytes());
+        code.extend(1u32.to_le_bytes());
+        code.extend(36u32.to_le_bytes());
+        code.extend(b"SHEX");
+        code.extend(((tokens.len() * 4) as u32).to_le_bytes());
+        for t in tokens {
+            code.extend(t.to_le_bytes());
+        }
+        code
+    }
+
+    #[test]
+    fn typed_views_are_read_from_their_declarations() {
+        let one_index = 1 << 20;
+        let tokens = [
+            0x0005_0050,
+            13,
+            // dcl_uav_typed_texture2d (uint,uint,uint,uint) u2
+            156 | 3 << 11 | 4 << 24,
+            30 << 12 | one_index,
+            2,
+            0x4444,
+            // dcl_resource_buffer (float,float,float,float) t1
+            88 | 1 << 11 | 4 << 24,
+            7 << 12 | one_index,
+            1,
+            0x5555,
+            // dcl_resource_texture2d (sint,...) t0: a texture, not a typed buffer
+            88 | 3 << 11 | 4 << 24,
+            7 << 12 | one_index,
+            0,
+        ];
+        let mut tokens = tokens.to_vec();
+        tokens.push(0x3333);
+        tokens[1] = tokens.len() as u32;
+        let views = typed_views(&container(&tokens)).unwrap();
+        assert_eq!(
+            views,
+            [
+                TypedView {
+                    storage: true,
+                    register: 2,
+                    buffer: false,
+                    kind: FormatKind::Uint,
+                },
+                TypedView {
+                    storage: false,
+                    register: 1,
+                    buffer: true,
+                    kind: FormatKind::Float,
+                },
+            ]
+        );
+        let key = base_key(SourceStage::Compute, &views);
+        assert_eq!(key.storage_formats, [(2, Format::R32Uint)]);
+        assert_eq!(key.texel_formats, [(1, Format::Rgba32Float)]);
+        assert_eq!(key.texel_buffers, TexelBufferRoute::Storage);
+        let bound = StageVariant::default().key(
+            SourceStage::Compute,
+            &views,
+            &[Format::Rgba8Uint, Format::Rg16Float],
+        );
+        assert_eq!(bound.storage_formats, [(2, Format::Rgba8Uint)]);
+        assert_eq!(bound.texel_formats, [(1, Format::Rg16Float)]);
+    }
+
+    #[test]
+    fn truncated_declarations_are_refused() {
+        let tokens = [0x0005_0050, 4, 156 | 3 << 11 | 4 << 24, 30 << 12 | 1 << 20];
+        assert!(typed_views(&container(&tokens)).is_err());
     }
 }

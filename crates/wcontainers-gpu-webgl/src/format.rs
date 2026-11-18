@@ -124,6 +124,11 @@ pub fn gl_format(format: Format) -> Option<GlFormat> {
     }
 }
 
+/// Whether `format` holds 16-bit or 32-bit floats, whose NaN payloads and denormals a copy keeps.
+pub fn float_bits(format: Format) -> bool {
+    gl_format(format).is_some_and(|g| matches!(g.class, Class::Half | Class::Single))
+}
+
 /// Whether the interface's bytes of `format` hold blue first, where GL stores red first
 /// ([`wcontainers_gpu::SlowPath::FormatConverted`] on the way in and out).
 pub fn swapped(format: Format) -> bool {

@@ -1,6 +1,8 @@
 //! DXIL through dxil-spirv (C++, built by `build.rs`) to SPIR-V, read by naga's SPIR-V reader, then
 //! given the binding rule of plan section 6.4 and stripped of what WGSL cannot express.
 
+mod images;
+
 use crate::ConvertError;
 use alloc::format;
 use alloc::string::String;
@@ -179,7 +181,8 @@ pub(crate) fn lower(
     dxil: &[u8],
     variant: &VariantKey,
 ) -> Result<(Module, Reflection, ShaderStage), ConvertError> {
-    let spirv = to_spirv(dxil, variant.samples)?;
+    let mut spirv = to_spirv(dxil, variant.samples)?;
+    let declared = images::prepare(&mut spirv);
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
         strict_capabilities: false,
@@ -195,6 +198,7 @@ pub(crate) fn lower(
     }
     direct3d_float_to_int(&mut module)?;
     declared_sizes(dxil, &mut module)?;
+    let images = images::globals(&module, &declared);
     crate::lower::derivatives_anywhere(&mut module);
     let ep = module
         .entry_points
@@ -243,6 +247,7 @@ pub(crate) fn lower(
     let registers = bindings(&mut module, set, &mut reflection)?;
     reflection.sampled_pairs = sampled_pairs(&module, &registers)?;
     draw_bases(&mut module, variant, &mut reflection)?;
+    images::finish(&mut module, variant, &images, stage, &mut reflection)?;
     Ok((module, reflection, stage))
 }
 
@@ -616,17 +621,49 @@ fn direct3d_float_to_int(module: &mut Module) -> Result<(), ConvertError> {
     if found.is_empty() {
         return Ok(());
     }
-    // Callees precede their callers in naga's arena, so the new functions go first.
-    let old: Vec<_> = module.functions.drain().collect();
-    let mut helpers: Vec<(FloatToInt, Handle<Function>)> = Vec::new();
-    for (_, conversions) in &found {
-        for &(_, key, _) in conversions {
-            if !helpers.iter().any(|(k, _)| *k == key) {
-                let f = float_to_int_function(module, key);
-                helpers.push((key, module.functions.append(f, Span::UNDEFINED)));
+    let (helpers, moved) = functions_first(module, |module| {
+        let mut helpers: Vec<(FloatToInt, Handle<Function>)> = Vec::new();
+        for (_, conversions) in &found {
+            for &(_, key, _) in conversions {
+                if !helpers.iter().any(|(k, _)| *k == key) {
+                    let f = float_to_int_function(module, key);
+                    helpers.push((key, module.functions.append(f, Span::UNDEFINED)));
+                }
             }
         }
+        helpers
+    });
+    for (i, conversions) in found {
+        let f = match moved.get(i) {
+            Some(&h) => &mut module.functions[h],
+            None => &mut module.entry_points[i - n].function,
+        };
+        let calls: Vec<Placed> = conversions
+            .iter()
+            .map(|&(h, key, arg)| {
+                let helper = helpers.iter().find(|(k, _)| *k == key).map(|(_, h)| *h);
+                Placed {
+                    result: h,
+                    function: helper.expect("made above"),
+                    arguments: alloc::vec![arg],
+                    pre: None,
+                }
+            })
+            .collect();
+        place_calls(f, &calls);
     }
+    Ok(())
+}
+
+/// Runs `make`, which appends functions, so that they come before every function the module had
+/// (callees precede their callers in naga's arena). Returns what `make` gives and where each of the
+/// module's functions went.
+fn functions_first<T>(
+    module: &mut Module,
+    make: impl FnOnce(&mut Module) -> T,
+) -> (T, Vec<Handle<Function>>) {
+    let old: Vec<_> = module.functions.drain().collect();
+    let made = make(module);
     let moved: Vec<Handle<Function>> = old
         .into_iter()
         .map(|(_, f, span)| module.functions.append(f, span))
@@ -651,58 +688,63 @@ fn direct3d_float_to_int(module: &mut Module) -> Result<(), ConvertError> {
     for ep in module.entry_points.iter_mut() {
         remap(&mut ep.function);
     }
+    (made, moved)
+}
 
-    for (i, conversions) in found {
-        let f = match moved.get(i) {
-            Some(&h) => &mut module.functions[h],
-            None => &mut module.entry_points[i - n].function,
-        };
-        let calls: Vec<_> = conversions
-            .iter()
-            .map(|&(h, key, arg)| {
-                let helper = helpers.iter().find(|(k, _)| *k == key).map(|(_, h)| *h);
-                (h, helper.expect("made above"), arg)
-            })
-            .collect();
-        each_block(&mut f.body, &mut |block| {
-            let converts = |s: &Statement| matches!(s, Statement::Emit(r) if r.clone().any(|h| calls.iter().any(|c| c.0 == h)));
-            if !block.iter().any(converts) {
-                return;
-            }
-            for (s, span) in core::mem::take(block).span_into_iter() {
-                let Statement::Emit(range) = s else {
-                    block.push(s, span);
+/// A call that takes the place of expression `result`, its arguments made by the expressions in
+/// `pre` (appended for it, not yet emitted), which are emitted just before it.
+struct Placed {
+    result: Handle<Expression>,
+    function: Handle<Function>,
+    arguments: Vec<Handle<Expression>>,
+    pre: Option<Range<Expression>>,
+}
+
+/// Makes each of `calls` a call statement where its result was emitted, and its result the call's.
+fn place_calls(f: &mut Function, calls: &[Placed]) {
+    if calls.is_empty() {
+        return;
+    }
+    each_block(&mut f.body, &mut |block| {
+        let placed = |s: &Statement| matches!(s, Statement::Emit(r) if r.clone().any(|h| calls.iter().any(|c| c.result == h)));
+        if !block.iter().any(placed) {
+            return;
+        }
+        for (s, span) in core::mem::take(block).span_into_iter() {
+            let Statement::Emit(range) = s else {
+                block.push(s, span);
+                continue;
+            };
+            // The emitted run so far, split at each call.
+            let mut run: Option<(Handle<Expression>, Handle<Expression>)> = None;
+            for h in range {
+                let Some(c) = calls.iter().find(|c| c.result == h) else {
+                    run = Some((run.map_or(h, |r| r.0), h));
                     continue;
                 };
-                // The emitted run so far, split at each call.
-                let mut run: Option<(Handle<Expression>, Handle<Expression>)> = None;
-                for h in range {
-                    let Some(&(_, function, arg)) = calls.iter().find(|c| c.0 == h) else {
-                        run = Some((run.map_or(h, |r| r.0), h));
-                        continue;
-                    };
-                    if let Some((first, last)) = run.take() {
-                        block.push(Statement::Emit(Range::new_from_bounds(first, last)), span);
-                    }
-                    block.push(
-                        Statement::Call {
-                            function,
-                            arguments: alloc::vec![arg],
-                            result: Some(h),
-                        },
-                        span,
-                    );
-                }
-                if let Some((first, last)) = run {
+                if let Some((first, last)) = run.take() {
                     block.push(Statement::Emit(Range::new_from_bounds(first, last)), span);
                 }
+                if let Some(pre) = &c.pre {
+                    block.push(Statement::Emit(pre.clone()), span);
+                }
+                block.push(
+                    Statement::Call {
+                        function: c.function,
+                        arguments: c.arguments.clone(),
+                        result: Some(h),
+                    },
+                    span,
+                );
             }
-        });
-        for (h, function, _) in calls {
-            *f.expressions.get_mut(h) = Expression::CallResult(function);
+            if let Some((first, last)) = run {
+                block.push(Statement::Emit(Range::new_from_bounds(first, last)), span);
+            }
         }
+    });
+    for c in calls {
+        *f.expressions.get_mut(c.result) = Expression::CallResult(c.function);
     }
-    Ok(())
 }
 
 /// Writes the vertex program's float outputs with the interpolation the variant asks for their locations.

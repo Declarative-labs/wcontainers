@@ -155,13 +155,16 @@ wcontainers_gpu_test::suite!(Angle);
 mod checks;
 
 /// Runs a check of checks.rs with the patterns' seed from `WEBGL_SEED` (default 0) and as many
-/// seeds from it as `WEBGL_CASES` says (default 1).
+/// seeds from it as `WEBGL_CASES` says (default 1). A check whose feature is absent passes having
+/// run only the refusal, and prints "not run, feature absent:" with its name (libtest cannot skip
+/// at run time; all.cmd lists these lines).
 fn sampled(check: fn()) {
     let var = |name, default| std::env::var(name).map_or(default, |v| v.parse().expect(name));
     checks::seeded(check, var("WEBGL_SEED", 0), var("WEBGL_CASES", 1));
     let absent = checks::take_not_run();
     if !absent.is_empty() {
-        println!("not run: {absent:?} absent");
+        let name = std::thread::current().name().unwrap_or("?").to_string();
+        println!("not run, feature absent: {name}: {absent:?}");
     }
 }
 #[path = "../examples/common/kit.rs"]
@@ -270,6 +273,11 @@ fn vertices_captured_with_and_without_rasterising() {
 #[test]
 fn block_compressed_and_shared_exponent_textures_read_back_as_written() {
     sampled(checks::block_compressed_and_shared_exponent_textures_read_back_as_written::<Angle>);
+}
+
+#[test]
+fn interpolated_bc4_and_bc5_values() {
+    sampled(checks::interpolated_bc4_and_bc5_values::<Angle>);
 }
 
 #[test]
@@ -385,4 +393,9 @@ fn points_sized_by_the_program() {
 #[test]
 fn broken_rules_lose_the_device() {
     sampled(checks::broken_rules_lose_the_device::<Angle>);
+}
+
+#[test]
+fn copies_within_one_float_format_take_the_probed_route() {
+    sampled(checks::copies_within_one_float_format_take_the_probed_route::<Angle>);
 }
