@@ -9,6 +9,17 @@ use std::sync::{Arc, Mutex, PoisonError};
 use wcontainers_abi::{Cpu, Exit, Host, Next, Resume, ThreadId, Warning};
 pub use wcontainers_kernel::Kernel;
 
+mod container;
+mod image;
+mod spec;
+mod system;
+
+pub use container::{BackEnd, Container, Error, Machine, Runtime, RuntimeSettings};
+pub use image::Image;
+pub use oci_spec;
+pub use spec::base_spec;
+pub use system::{System, Warned};
+
 /// How a turn ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Turn {
@@ -150,6 +161,9 @@ pub trait Outside: Host {
     fn idle(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, until_nanoseconds: Option<u64>);
     /// A slow path of the back end, apart from the kernel's warnings.
     fn cpu_warning(&mut self, warning: Warning<'_>);
+    /// The back end's stop flag, before the first turn, for an outside that gives free turns; one that
+    /// counts every turn needs none.
+    fn stop_flag(&mut self, _flag: StopFlag) {}
 }
 
 /// What one step did.
@@ -209,23 +223,33 @@ impl Stepper {
             Next::Finished { status } => Ok(Step::Finished { status }),
         }
     }
+
+    /// Runs the container to its end: [`Stepper::step`] again and again, waiting in
+    /// [`Outside::idle`].
+    pub fn drive<E: Execution, O: Outside>(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut E,
+        outside: &mut O,
+    ) -> Result<Ending<O::End>, E::Failure> {
+        loop {
+            match self.step(kernel, cpu, outside)? {
+                Step::Ran => {}
+                Step::Idle { until_nanoseconds } => outside.idle(kernel, cpu, until_nanoseconds),
+                Step::Finished { status } => return Ok(Ending::Finished { status }),
+                Step::Ended(end) => return Ok(Ending::Ended(end)),
+            }
+        }
+    }
 }
 
-/// Runs the container to its end: [`Stepper::step`] again and again, waiting in [`Outside::idle`].
+/// Runs the container to its end from its first step.
 pub fn drive<E: Execution, O: Outside>(
     kernel: &mut Kernel,
     cpu: &mut E,
     outside: &mut O,
 ) -> Result<Ending<O::End>, E::Failure> {
-    let mut stepper = Stepper::default();
-    loop {
-        match stepper.step(kernel, cpu, outside)? {
-            Step::Ran => {}
-            Step::Idle { until_nanoseconds } => outside.idle(kernel, cpu, until_nanoseconds),
-            Step::Finished { status } => return Ok(Ending::Finished { status }),
-            Step::Ended(end) => return Ok(Ending::Ended(end)),
-        }
-    }
+    Stepper::default().drive(kernel, cpu, outside)
 }
 
 /// The loop's answer to the running thread's exits.

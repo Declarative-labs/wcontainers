@@ -24,8 +24,10 @@ use wcontainers_abi::{
     Access, AddressSpace, CounterReading, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions,
     RegisterBlock, Resume, SharedId, Syscall, ThreadId, Warning,
 };
-use wcontainers_guest_cpu::{Guest, HookBody, MemoryFault};
-use wcontainers_runtime::{Answer, Carry, Execution, Leaving, StopFlag, Turn};
+use wcontainers_guest_cpu::{Guest, GuestId, HookBody, MemoryFault};
+use wcontainers_runtime::{
+    Answer, BackEnd, Carry, Execution, Leaving, RuntimeSettings, StopFlag, Turn,
+};
 use wcontainers_translator::contract::{self, Reason, TrapKind};
 use wcontainers_translator::translate;
 use zerocopy::{FromBytes, IntoBytes};
@@ -691,11 +693,6 @@ where
             stepping: None,
             stop_flag: StopFlag::default(),
         }
-    }
-
-    /// What the outside raises to end a free turn.
-    pub fn stop_flag(&self) -> StopFlag {
-        self.stop_flag.clone()
     }
 
     /// Every slow path taken so far: how often and the time spent.
@@ -2722,5 +2719,39 @@ mod tests {
         assert_eq!(copy.data_runs(), vec![chunk - 2..chunk + 3]);
         // Beyond the records, a page holds nothing.
         assert!(pages.get(5 * chunk) == Page::NOTHING);
+    }
+}
+
+/// How the WebAssembly back end runs a container: it changes speed, never behaviour, and is part of
+/// every cache key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tuning {
+    pub look_ahead: LookAhead,
+    pub optimise: Optimise,
+}
+
+impl<G> BackEnd for CpuSide<G>
+where
+    G: Guest<Block = RegisterBlock>,
+{
+    type Shared = Arc<Compiler<G>>;
+    type Tuning = Tuning;
+    type Offer = G::Offer;
+    const ARCHITECTURE: &'static str = match G::ID {
+        GuestId::Arm64 => "arm64",
+        GuestId::X86_64 => "amd64",
+        GuestId::Rv64 => "riscv64",
+    };
+
+    fn shared(settings: &RuntimeSettings) -> Arc<Compiler<G>> {
+        Compiler::new(settings.cache.clone())
+    }
+
+    fn new(shared: &Arc<Compiler<G>>, tuning: &Tuning, offer: &G::Offer) -> Self {
+        CpuSide::new(shared.clone(), tuning.look_ahead, tuning.optimise, *offer)
+    }
+
+    fn stop_flag(&self) -> StopFlag {
+        self.stop_flag.clone()
     }
 }
