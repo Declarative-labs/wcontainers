@@ -899,6 +899,19 @@ fn stream_output_matches_direct3d() {
                 "{name}: direct3d wrote {} of {} primitives, ours {} of {}; words apart per buffer {apart:?}",
                 statistics[0], statistics[1], counts[0], counts[1]
             );
+            for (b, (a, o)) in reference.iter().zip(&streamed).enumerate() {
+                for (w, (x, y)) in a.chunks(4).zip(o.chunks(4)).enumerate() {
+                    if x != y {
+                        let x = u32::from_le_bytes(x.try_into().unwrap());
+                        let y = u32::from_le_bytes(y.try_into().unwrap());
+                        eprintln!(
+                            "  buffer {b} word {w}: direct3d {x:#010x} ({}), ours {y:#010x} ({})",
+                            f32::from_bits(x),
+                            f32::from_bits(y)
+                        );
+                    }
+                }
+            }
             if apart.iter().any(|&n| n > 0) || counts != statistics || statistics[0] == 0 {
                 failures.push(name);
             }
