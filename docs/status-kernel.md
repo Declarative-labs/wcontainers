@@ -124,6 +124,13 @@ LTP table at this run's end (not a whole comparison: the whole comparison at fb0
   swapping01 not yet rerun since /proc/swaps.
 - Excused with a gap: none final; the list below says which section 15 cause each would have.
 
+Whole suite at d3df2d6e (`cargo test -p wcontainers-kernel -p wcontainers-kernel-test
+--no-fail-fast -- --test-threads=2`, started 13:56, load 60 to 90; scratch k6c4/suite.log): still
+running when this run ended; so far 152 passed, 0 failed, 6 ignored, the Python modules running. Layer 1 at
+d3df2d6e: seeds 9191010, 9191011 and 9191012, each 300 sequences in memory, 32 on the backend and
+32 on the caching backend, matched (load about 70); 9191007 to 9191009 the same at 0da1cfb7, and
+9191006 (200 in memory) at 453fcb2c.
+
 Written gap list (plan section 15 causes only; not yet final: the slower tests still need
 their verdicts shown under a longer limit, and the comparison is not yet whole at this code):
 - Tracing one process from another (missing in phase one): ptrace01, 02, 03, 05, 06, 11.
