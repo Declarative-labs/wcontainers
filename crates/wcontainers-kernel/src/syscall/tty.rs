@@ -1099,6 +1099,11 @@ pub(crate) fn disassociate(kernel: &mut Kernel, cx: &mut Context<'_>, pid: Pid, 
     clear_session(kernel, session);
 }
 
+/// The path a slave's open file shows: its name in devpts.
+fn slave_path(index: u32) -> Vec<u8> {
+    alloc::format!("/dev/pts/{index}").into_bytes()
+}
+
 /// `TIOCGPTPEER` (`ptm_open_peer`): the slave opened with `flags`, without a path lookup.
 fn open_peer(
     kernel: &mut Kernel,
@@ -1109,7 +1114,7 @@ fn open_peer(
 ) -> Result<u64, Errno> {
     let node = pty.borrow().slave_node.clone();
     let index = pty.borrow().index;
-    let path = alloc::format!("/dev/pts/{index}").into_bytes();
+    let path = slave_path(index);
     let serial = kernel.credentials(tid).serial;
     let file = OpenFile::new(
         node,
@@ -1272,7 +1277,7 @@ pub(crate) fn start_terminal(
         (pair.slave_node.clone(), pair.index)
     };
     let flags = O_RDWR | O_NOCTTY | O_CLOEXEC;
-    let path = alloc::format!("/dev/pts/{index}").into_bytes();
+    let path = slave_path(index);
     let slave = OpenFile::new(node, flags & !O_NOCTTY, path, 0);
     open_slave(kernel, cx, pid, &slave, &pty, flags)?;
     set_controlling(kernel, pid, &pty);

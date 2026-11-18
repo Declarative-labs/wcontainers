@@ -383,7 +383,7 @@ impl Kernel {
                 self.send_to_backend(cx);
                 continue;
             }
-            if !self.ends.is_empty() && self.serve_ends(cx) {
+            if self.serve_ends(cx) {
                 continue;
             }
             if let Some(tid) = self.signalled.pop_front() {
@@ -485,6 +485,7 @@ impl Kernel {
     /// As [`Kernel::wake`] for a change to an object's readiness with the events in `key` (0 for
     /// any), which epoll items watching it take (`wake_up_poll`).
     pub(crate) fn wake_poll(&mut self, channel: Channel, key: u32) {
+        self.ends.woken(channel);
         let readiness = matches!(channel, Channel::Object(_)).then_some(Channel::Readiness);
         for tid in self.parked.on_either(channel, readiness) {
             self.wake_thread(tid);

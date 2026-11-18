@@ -9,6 +9,7 @@ use wcontainers_abi::End;
 
 use crate::file::FileRef;
 use crate::fs::Node;
+use crate::process::Channel;
 use crate::syscall::{pipe, tty};
 use crate::{Context, Kernel, reason};
 
@@ -56,14 +57,28 @@ struct Held {
 #[derive(Default)]
 pub(crate) struct Ends {
     held: BTreeMap<End, Held>,
+    /// The channels of the pipes and terminals the ends hold, whose wakes mean something moved.
+    watched: Vec<Channel>,
+    /// Something may have moved since the ends were last served.
+    pub moved: bool,
 }
 
 impl Ends {
-    pub fn is_empty(&self) -> bool {
-        self.held.is_empty()
+    /// Notes a wake on `channel`: if an end's pipe or terminal is on it, something moved.
+    pub fn woken(&mut self, channel: Channel) {
+        if self.watched.contains(&channel) {
+            self.moved = true;
+        }
     }
 
     pub fn add(&mut self, end: End, file: Option<FileRef>) {
+        if let Some(file) = &file {
+            self.watched.push(match tty::end(file) {
+                Some((pty, ..)) => tty::channel(&pty),
+                None => pipe::channel(&file.borrow().node),
+            });
+        }
+        self.moved = true;
         let held = Held {
             closed: file.is_none(),
             file,
@@ -124,6 +139,7 @@ impl Kernel {
     /// dropped and counted. Bytes after the kernel closed the end are dropped, as a write to a pipe
     /// with no reader fails.
     pub(crate) fn stream_data(&mut self, cx: &mut Context<'_>, end: End, bytes: &[u8]) {
+        self.ends.moved = true;
         let Some(held) = self.ends.held.get(&end) else {
             self.counters
                 .count(cx.host, reason::EVENT_UNEXPECTED, end.0.into());
@@ -145,6 +161,7 @@ impl Kernel {
 
     /// `Event::StreamCredit`: the kernel may send this many more bytes.
     pub(crate) fn stream_credit(&mut self, cx: &mut Context<'_>, end: End, bytes: u64) {
+        self.ends.moved = true;
         match self.ends.held.get_mut(&end) {
             Some(held) => held.credit = held.credit.saturating_add(bytes),
             None => self
@@ -155,6 +172,7 @@ impl Kernel {
 
     /// `Event::StreamClosed`: the outside has let go; so does the kernel, as a close of its file.
     pub(crate) fn stream_closed(&mut self, cx: &mut Context<'_>, end: End) {
+        self.ends.moved = true;
         let Some(held) = self.ends.held.remove(&end) else {
             self.counters
                 .count(cx.host, reason::EVENT_UNEXPECTED, end.0.into());
@@ -193,9 +211,13 @@ impl Kernel {
         }
     }
 
-    /// Moves what can move between the ends and the outside: output within credit, new credit
-    /// for room made, and closes for ends that are finished. Returns whether anything moved.
+    /// Moves what can move between the ends and the outside, once something may have moved:
+    /// output within credit, new credit for room made, and closes for ends that are finished.
+    /// Returns whether anything moved.
     pub(crate) fn serve_ends(&mut self, cx: &mut Context<'_>) -> bool {
+        if !core::mem::take(&mut self.ends.moved) {
+            return false;
+        }
         let mut moved = false;
         let ends: Vec<End> = self.ends.held.keys().copied().collect();
         for end in ends {
@@ -236,6 +258,8 @@ impl Kernel {
                 moved = true;
             }
         }
+        // What moved may let more move.
+        self.ends.moved |= moved;
         moved
     }
 
