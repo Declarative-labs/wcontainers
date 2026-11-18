@@ -12,10 +12,16 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   the thread left were never written). J2's bar passes at full, none and bounded (below).
 - Not built in J2, by the brief: the stand-in's count of the guest's own transfers and, with it, the loop's
   count of the kernel's changes of pc (the plan builds them together; both wait for the owner's ruling on
-  the progress unit). The kernel's clock method has not landed on origin/phase-1 (no new commits there
-  since 36d20013), so the clock hook still answers `Host::monotonic_nanoseconds`.
+  the progress unit). The kernel's clock method has not landed: origin/phase-1 (2edbc451, "merged the
+  kernel through k6b") and origin/phase-1-kernel (9568c985) still keep `monotonic` on the crate-private
+  `Context`, so the clock hook still answers `Host::monotonic_nanoseconds` (see J2 run 3).
+- origin/phase-1 is not merged into this branch in J2 (its K6b merge, 2edbc451, came after J2 started); J2's
+  bars and checks all ran on the kernel at 36d20013.
 - J2 run 2 (2026-11-18): the seven findings of J2 run 1's check are settled (next section) and the bars
   run again on the fixed tree (J2 run 2 below).
+- J2 run 3 (2026-11-18): the five findings of J2 run 2's check are settled (next section). One stays a
+  known failure, recorded: after a save is brought back on the WebAssembly back end the counter can go
+  back, until the kernel makes its clock public (the kernel track's code).
 - J2 is complete: every part of plan section 16's J2 that the brief lets be built now is built, its bar
   passes at full, none and bounded, layer 1 passes 10,000 seeded sequences over the back end, the million
   is one command (not run here; the orchestrator's), and system call and fork cost are measured with both
@@ -25,6 +31,43 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   Layer 1 does not pass every seed: the kernel's `getcpu` (kernel track's code) differs from Linux with a bad
   cpu pointer and a good node pointer, on the stand-in too (next section).
 - Next: J3 (plan section 16).
+
+## Findings of J2 run 2's check, and how each was settled (J2 run 3)
+
+- The counter goes backwards after a save is brought back (blocking): partly fixed, the rest a known failure
+  recorded here and listed for the owner. Cause: the test host's clock reads from 0 again after each save
+  (driver.rs `TestHost::moved`, on purpose: a host that started later), the kernel carries its own clock on
+  through `monotonic_offset` (kernel lib.rs:410), and the clock hook answers `Host::monotonic_nanoseconds`
+  without that offset, which only the kernel holds and keeps crate-private. The runtime cannot compute it
+  from anything public, so the exact fix is the kernel's one method (plan section 20), the kernel track's
+  code, not changed here. Done now: the slow path the plan named was not built; it is (f685bfdf): a back
+  end made by `restored()` counts and warns every counter read, "counter read without the kernel's offset",
+  sent to the outside at the read. Tested by tests/turns.rs `counter_reads_after_a_restore_are_warned`
+  (and not warned on a back end never restored). The check's program is now the kernel test crate's
+  guest/counterclock.c with tests/counterclock.rs (2dcdad96, a test file and a guest program of that crate,
+  its own commit): with no saves it passes on both; across 3 saves it passes on the stand-in and fails with
+  the runtime (`seed 1: ours "counter backwards 3"`, `theirs "counter backwards 0"`; 3963 reads warned), so
+  with the feature it is ignored as the back end's known failure, naming the reason (scratch
+  j2run3/counter-standin.log, counter-runtime.log with `--include-ignored`; load 47.9 to 42.8). Plan
+  sections 4, 11 and 16 J2 corrected (7b3c359c): they said the hook answers from the kernel's clock.
+- The build identity hashed only wasm-encoder's locked entry, by splitting the lock file's text (minor):
+  build.rs now reads Cargo.lock with toml_edit and follows it from the translator and every guest crate,
+  through each workspace crate's normal and build dependencies (from its manifest) and each other crate's
+  locked dependencies, hashing the sources of every workspace crate reached and the name, version, source
+  and checksum of every other crate reached (6270d0f0). Today it reaches 4 workspace crates (translator,
+  guest interface, abi, arm64) and 50 locked crates, among them yaxpeax-arm, yaxpeax-arch, rustc_apfloat,
+  petgraph and wasm-encoder (listed once with a build warning while writing it, then removed).
+- The build script watched the whole crates tree (minor): it now watches the lock file (a crate added to or
+  removed from the workspace changes it), each crate's manifest, and the hashed crates' sources (6270d0f0).
+  Checked: adding a file under crates/wcontainers-kernel-test/tests and guest/ rebuilt nothing; a line added
+  to crates/wcontainers-arm64/src/lib.rs reran the script and rebuilt the back end.
+- The status file's stale parenthesis about origin/phase-1 (minor): corrected above.
+- A cache file refused was not counted (minor): a file that exists but cannot be read, is not whole, or that
+  wasmtime refuses is now a counted, warned slow path, "translation in the cache's directory refused", with
+  the host's error number as the detail (`u64::MAX` when there is none) and the time spent; the translation
+  is made again and written in its place (f685bfdf). The not-kept slow path's name is now a constant
+  too. Tested by tests/cache.rs `a_file_that_is_refused_is_a_slow_path` (every file cut in half: made again
+  and warned; then a new compiler finds it on disk).
 
 ## Findings of J2 run 1's check, and how each was settled (J2 run 2)
 
@@ -401,7 +444,9 @@ Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/` a
 - procsignals, the bar's test that saves, N times at a look-ahead, each with a 15 minute limit: scratch
   `j2run2/procsignals-repeat.sh N none`.
 - Do not edit the crates while a bar runs: a later cargo invocation of the same run rebuilds from what is
-  on disk (that is how j2/bounded-1-stale-build.log hung).
+  on disk (that is how j2/bounded-1-stale-build.log hung). Since J2 run 3 the back end's build script reruns
+  only for the lock file, a manifest or the translator's and guests' sources, so a new test file alone no
+  longer rebuilds the back end.
 - The bar, first step: `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test
   hello -- --test-threads 3`, again with `LOOK_AHEAD=none` and with `LOOK_AHEAD=bounded` in front.
 - The bar: `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test hello --test
@@ -597,6 +642,12 @@ array of slots in microseconds.
   needs the stack pointer test to run with it.
 - The kernel's `getcpu` difference that layer 1 finds with seed 918273645 is left to the kernel track: this
   track does not change the kernel.
+- The check's counter program was added to the kernel test crate (guest/counterclock.c,
+  tests/counterclock.rs, 2dcdad96), not only the driver: it is the test of the clock hook's known failure,
+  ignored with the feature until the kernel's clock method lands, and it runs on the stand-in.
+- After a save is brought back on the WebAssembly back end the counter is the host's clock, not the kernel's,
+  so it can go back (a known failure, counted and warned); the plan's design needs the kernel's clock method,
+  which the kernel track has not made public.
 - With the feature, a kernel test run that saves holds the test process alone while it has a back end
   (44ff7829): the save forks a test process whose other threads run other tests, and a lock one of them
   holds at the fork (libunwind's, wasmtime's) never comes free in the copy. Plan section 11 said the copy
