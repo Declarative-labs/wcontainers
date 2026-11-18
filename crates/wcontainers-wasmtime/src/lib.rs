@@ -581,11 +581,14 @@ struct Code {
 struct CodeRange {
     range: Range<u64>,
     starts: Vec<u64>,
-    translated: bool,
+    /// The runs of its pages translated whole, each from the pages that allowed running code then: a
+    /// file's pages may come one run at a time as they are first touched.
+    covered: Vec<Range<u64>>,
     /// Its bytes changed after it was translated, so it is translated at run time only.
     changed: bool,
-    /// The hash of its bytes when it was last translated whole, kept across notices of the same range.
-    hash: Option<[u8; 32]>,
+    /// The first run translated whole and the hash of its bytes then, kept across notices of the same
+    /// range.
+    hash: Option<(Range<u64>, [u8; 32])>,
 }
 
 /// A compiled translation placed in a process's lookup tables.
@@ -867,10 +870,11 @@ where
             end += 1;
         }
         let process = self.processes.get_mut(&memory).expect("a memory");
+        let range = first * PAGE_SIZE..end * PAGE_SIZE;
         process.ranges.push(CodeRange {
-            range: first * PAGE_SIZE..end * PAGE_SIZE,
+            covered: vec![range.clone()],
+            range,
             starts: Vec::new(),
-            translated: true,
             changed: false,
             hash: None,
         });
@@ -914,6 +918,38 @@ where
     }
 
     /// A range's bytes as they are now, with their hash.
+    /// The pages of `range` about `address` that allow running code and are in no run of `covered`:
+    /// what is translated from there, so that no translation holds bytes of a page that may not run.
+    fn executable_run(
+        &self,
+        memory: MemoryId,
+        range: &Range<u64>,
+        covered: &[Range<u64>],
+        address: u64,
+    ) -> Range<u64> {
+        let process = self.process(memory);
+        let pages = range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE);
+        let usable = |page: u64| {
+            pages.contains(&page)
+                && process
+                    .pages
+                    .get(page)
+                    .allows
+                    .contains(Permissions::EXECUTE)
+                && !covered.iter().any(|run| run.contains(&(page * PAGE_SIZE)))
+        };
+        let page = address / PAGE_SIZE;
+        let mut first = page;
+        while first > pages.start && usable(first - 1) {
+            first -= 1;
+        }
+        let mut end = page + 1;
+        while usable(end) {
+            end += 1;
+        }
+        (first * PAGE_SIZE).max(range.start)..(end * PAGE_SIZE).min(range.end)
+    }
+
     fn code(&self, memory: MemoryId, range: &Range<u64>) -> Code {
         let bytes = self.code_bytes(memory, range);
         Code {
@@ -1224,7 +1260,7 @@ where
                 .ranges
                 .iter()
                 .map(|range| CodeRange {
-                    translated: false,
+                    covered: Vec::new(),
                     ..range.clone()
                 })
                 .collect();
@@ -1817,35 +1853,51 @@ where
         return 1;
     }
     let code = &side.process(memory).ranges[index];
-    if !code.translated && !code.changed {
-        let before = code.hash;
+    if !code.changed && !code.covered.iter().any(|run| run.contains(&address)) {
+        let first = code.covered.is_empty();
+        let before = code.hash.clone();
+        let run = side.executable_run(memory, &range, &code.covered, address);
         let mut starts = code.starts.clone();
-        let code = side.code(memory, &range);
         let reader = Reader { side, memory };
         let found = starts::image_starts(&reader, range.clone());
         let sources = found.as_ref().map(|(_, sources)| *sources);
         if let Some((more, _)) = found {
             starts.extend(more);
         }
+        // Offsets into the range become offsets into the run.
+        let starts: Vec<u64> = starts
+            .into_iter()
+            .map(|offset| range.start + offset)
+            .filter(|at| run.contains(at))
+            .map(|at| at - run.start)
+            .collect();
+        let changed = first
+            && before
+                .as_ref()
+                .is_some_and(|(old, hash)| side.code(memory, old).hash != *hash);
+        let code = side.code(memory, &run);
         let record = &mut side.processes.get_mut(&memory).expect("a memory").ranges[index];
-        record.translated = true;
-        if before.is_some_and(|before| before != code.hash) {
+        record.covered.push(run.clone());
+        if changed {
             record.changed = true;
             side.slow_path(reason::CODE_CHANGED_AFTER_IT_RAN, range.start, 0);
         } else if !starts.is_empty() {
-            record.hash = Some(code.hash);
+            if first {
+                record.hash = Some((run.clone(), code.hash));
+            }
             let look_ahead = side.look_ahead;
             let compiled = side.compile(&code, starts, look_ahead, false, sources);
-            side.add_load(&mut *caller, memory, compiled, range.start);
+            side.add_load(&mut *caller, memory, compiled, run.start);
         }
     }
     if side.slot(memory, address) == 0 {
         let started = Instant::now();
-        let code = side.code(memory, &range);
+        let run = side.executable_run(memory, &range, &[], address);
+        let code = side.code(memory, &run);
         let look_ahead = side.at_run_time();
-        let start = vec![address - range.start];
+        let start = vec![address - run.start];
         let compiled = side.compile(&code, start, look_ahead, true, None);
-        side.add_load(&mut *caller, memory, compiled, range.start);
+        side.add_load(&mut *caller, memory, compiled, run.start);
         let nanoseconds = started.elapsed().as_nanos() as u64;
         side.slow_path(Reason::TranslatedAtRunTime.name(), address, nanoseconds);
     }
@@ -2385,9 +2437,9 @@ where
             let overlaps = code.range.start < range.end && range.start < code.range.end;
             if overlaps {
                 changed |= code.changed;
-                match code.hash {
-                    Some(old) if code.range == range => hash = Some(old),
-                    Some(old) => compare.push((code.range.clone(), old)),
+                match &code.hash {
+                    Some(old) if code.range == range => hash = Some(old.clone()),
+                    Some(old) => compare.push(old.clone()),
                     None => {}
                 }
                 kept.extend(
@@ -2413,7 +2465,7 @@ where
             .push(CodeRange {
                 range,
                 starts: offsets,
-                translated: false,
+                covered: Vec::new(),
                 changed: changed || now_changed,
                 hash,
             });
