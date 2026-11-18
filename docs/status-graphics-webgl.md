@@ -5,6 +5,28 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
+G3b run 2, 2026-11-18 (about 08:30 to 10:15 Pacific). Merged origin/phase-2-graphics (it held
+-shaders and -direct3d-11 already; -webgpu and -rig had nothing new). The open findings of G3's
+check were fixed in run 1 (list below). Done in this run:
+- The shared line's three new suite tests (`a_copy_within_one_depth_or_stencil_subresource_moves_the_region`,
+  `the_occlusion_counter_counts_every_sample_that_passes`, `every_vertex_format_reads_its_element`)
+  pass on ANGLE and in Chrome; the browser host lacked them and now runs them. The full run after
+  the merge: see "Measurements, run G3b-2".
+- The frame-time measurement (the last item of G3b): a call stream of the interface
+  (src/trace.rs, features `trace` and `record`), recorded natively while a real rig program draws
+  through the Direct3D 11 front on this back end over ANGLE, and replayed in Chrome on the WebGL 2
+  and the WebGPU back ends (examples/replay.rs, browser/replay.mjs). One interface change for it
+  (serde on the descriptors). Measured on DirectX Tool Kit's SimpleLightingPC; where the time goes
+  is under "Measurements, run G3b-2", and the slow part found is first under Next.
+- Re-read the Direct3D 11, shaders and shared status files after the merge. New for this back end:
+  the shared line's three suite tests (above). The Direct3D 11 front's new WebGL 2 items are its
+  own: texture views at 10_0 (refused here by name, `TEXTURE_VIEWS`, the front's
+  `ReinterpretCopy`), per-target blends where OES_draw_buffers_indexed is absent (this back end
+  declares `INDEPENDENT_BLEND` where the extension is: Chrome and mozangle both have it), and
+  `resinfo` through `TEXTURE_INFO` (served by the front since its run 19).
+- Not run in this run: the Direct3D 11 front's WebGL 2 scenes (run 1's count stands, 65 outputs
+  passing; command under "Measurements, run G3b-1").
+
 G3b (what the Direct3D 11 front and the shaders track need from this back end), run 1, 2026-11-18.
 Merged origin/phase-2-graphics-rig, -webgpu, -shaders and -direct3d-11 cleanly (the shared line
 had nothing new; -direct3d-12 not merged, nothing of it was needed). Done in this run:
@@ -138,6 +160,11 @@ Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-
 - `SAMPLE_MASK` and `SAMPLE_SHADING`: absent (WebGL has no OES_sample_variables directive for
   `gl_SampleMask`; see Capabilities).
 - Fine derivatives: refused by naga's writer (`DERIVATIVE_CONTROL`), as the shaders track says.
+- (Run 2) The shared line's three new suite tests (copies within one depth or stencil
+  subresource, the occlusion counter, every vertex format, which the shared status says GL ES may
+  lack): pass on ANGLE and in Chrome with every extension; on the routes without
+  EXT_clip_control they stop at the suite's own raster block like the 25 known.
+- (Run 2) The frame-time measurement through the Direct3D 11 front: built (Measurements, run G3b-2).
 
 ## The pass bar, item by item (plan section 12, G3)
 
@@ -807,6 +834,29 @@ All from the checkout root on the Mac.
   `tools/graphics-rig/gpu-job --alone --desktop --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "node crates\wcontainers-gpu-webgl\browser\cost.mjs %CARGO_TARGET_DIR%\webgl-cost-pkg C:\wc\out\webgl\cost.txt 30 \"10000 50000\""`
   (frames timed per case, then the draw counts). About 15 s. Without `--desktop` Chrome kept no
   WebGL 2 context in G3's check (run 18's measurements had it from all.cmd's desktop session).
+- A real program's frames, recorded and replayed (G3b run 2; src/trace.rs). The `trace` feature
+  gives the call stream (`trace::Call`, postcard, shaders as naga modules; `trace::Replay` runs a
+  stream on any back end frame by frame). The `record` feature makes `WebGl` the recording
+  `trace::Traced<Gl>`, which writes every call into the file `WEBGL_TRACE` names (a second device
+  of the process into `<name>.1`) while drawing on ANGLE; without `WEBGL_TRACE` it makes no device.
+  The Direct3D 11 library is built on it with
+  `cargo build --release -p wcontainers-directx --features webgl,wcontainers-gpu-webgl/record --target-dir %CARGO_TARGET_DIR%\record`.
+  Through the rig's forwarding library (`programs run --dll`) the programs recurse until the
+  stack overflows (0xc00000fd): ANGLE inside this back end loads d3d11.dll by name and gets the
+  rig's forwarder, which hands it to our library again. So scratch g3b2/record-direct.ps1 (copied
+  to C:\wc\out\webgl\record-direct.ps1) runs one program with the three libraries beside it
+  and no forwarder, for `-Seconds`, then stops it:
+  `tools/graphics-rig/gpu-job --desktop --build "cargo build -j 3 --release -p wcontainers-directx --features webgl,wcontainers-gpu-webgl/record --target-dir %CARGO_TARGET_DIR%\record" -- "powershell -NoProfile -ExecutionPolicy Bypass -File C:\wc\out\webgl\record-direct.ps1 -Name atg-simplelightingpc -Exe xbox-atg-samples\PCSamples\IntroGraphics\SimpleLightingPC\x64\Release\SimpleLightingPC.exe -Cwd xbox-atg-samples -Seconds 10 -Library %CARGO_TARGET_DIR%\record\release"`.
+  The stream lands in C:\wc\out\webgl\trace\<name>.bin; the library's first device is a probe
+  that draws nothing, so the program's frames are in `<name>.bin.1`. Replay in Chrome on both
+  back ends (build.cmd builds the example `replay` into `%CARGO_TARGET_DIR%\webgl-replay-pkg`):
+  `tools/graphics-rig/gpu-job --alone --desktop --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "node crates\wcontainers-gpu-webgl\browser\replay.mjs %CARGO_TARGET_DIR%\webgl-replay-pkg C:\wc\out\webgl\trace\<program>.bin C:\wc\out\webgl\trace\<program>-replay.txt"`.
+  Each back end replays the stream twice, on a new device each time: once with each call timed
+  inside the back end, once timing whole frames only; frames before the tenth are left out. The round trip is tested natively:
+  `cargo test -p wcontainers-gpu-webgl --features record --test trace` (a scene recorded on
+  ANGLE, replayed on a new WebGL 2 back end and on the WebGPU back end, equal texels). With
+  `record`, only the library and that test build (other examples use `Gl`'s own methods).
+  Pages are served cross-origin isolated since run 2, so `performance.now()` reads to 5 us.
 - BC1 to BC7 against real Direct3D 11 (run 17; all.cmd runs it into `<out>\bc-reference.txt`):
   `tools/graphics-rig/gpu-job -- "cargo test -j 3 -p wcontainers-gpu-webgl --test bc_reference -- --test-threads=1 --nocapture"`.
   It draws the rig's `textures-bc` and `textures-bc67` from the same seeded blocks, saves them
@@ -1237,6 +1287,56 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   reduced performance" (and the same for WebGPU). Per-draw timings taken there (G3's later work)
   must say so; whether a headed Chrome differs is not measured.
 
+## Measurements, run G3b-2
+
+- 2026-11-18, desktop (i9-9900K, RTX 3080, driver 32.0.16.2101, Chrome 157.0.8103.78), queued
+  jobs beside other tracks' work, not timed. 39 + 3 suite tests and 53 checks (95).
+  - Full run after the merge (all.cmd, out C:\wc\out\webgl\g3b2-all1, scratch g3b2/all1.log):
+    ANGLE 95 of 95 with every extension; 68 of 95 on both reduced routes (the 27 known: run 1's 25
+    and the two new suite tests that need a raster block, all `Absent(CLIP_DEPTH_ZERO_ONE)` from the
+    suite's own blocks). Chrome 89 passed, 3 not run, and 3 failed only because the browser host
+    lacked the three new tests; after adding them (some.cmd, out C:\wc\out\webgl\g3b2-new,
+    scratch g3b2/new3.log) they pass in Chrome and on ANGLE (3 of 3 each). Against WebGPU natively
+    7 of 8, in Chrome 9 of 11 (the known two). BC reference 1 of 2 (the known decoded route).
+    Unit tests 10 of 10. Clippy with warnings denied: native all targets, `record` (library and
+    trace test), wasm32 (browser, draw-cost, replay with `trace`): clean.
+  - The trace round trip (tests/trace.rs, seed none: one fixed scene): 1 of 1, equal texels on a
+    new WebGL 2 back end and on the WebGPU back end (wgpu, Direct3D 12).
+- The frame-time measurement, 2026-11-18 09:58 desktop time, `gpu-job --alone --desktop`, CPU load
+  2% just before and 4% just after (Win32_Processor LoadPercentage), Chrome 157.0.8103.78 headless
+  on the RTX 3080 (WebGL 2 through ANGLE's Direct3D 11, WebGPU through Dawn's Direct3D 12).
+  Program: DirectX Tool Kit's SimpleLightingPC (the rig's atg-simplelightingpc), recorded for 10 s
+  through the Direct3D 11 library built on this back end with `record` over ANGLE (feature level
+  10_0): 580 frames, 713,736 bytes (scratch g3b2/atg-simplelightingpc.bin; result
+  g3b2/atg-simplelightingpc-replay2.txt, log g3b2/replay2.log). Each back end replayed it twice;
+  0 calls failed on either. Frames 10 to 579 (570 frames), each frame 2 passes, 4 draws, 3 buffer
+  writes, 2 binding sets made, 1 submit, 1 present:
+  - WebGL 2: whole frame median 5.34 ms (fastest 0.32, slowest 18.79) with calls untimed. Inside
+    the back end, per frame: submit 5.574 ms (one call), draws 0.092 ms (23.1 us a draw),
+    buffer writes 0.037 ms (12.3 us each), begin_pass 0.036 ms (18.1 us each), present 0.020 ms,
+    fence_done 0.011 ms, the rest under 0.004 ms. Slow paths over the replay: `CopyThroughBuffer`
+    291 (every second frame), `PipelineMiss` 1.
+  - WebGPU: whole frame median 0.78 ms (fastest 0.13, slowest 3.14). Inside the back end, per
+    frame: draws 0.212 ms (53.0 us a draw), submit 0.128 ms, begin_pass 0.126 ms (62.9 us each),
+    current_texture 0.092 ms, buffer writes 0.053 ms (17.8 us each), present 0.031 ms, the rest
+    under 0.011 ms. Slow paths: `PipelineMiss` 3.
+  - So on these frames a WebGL 2 draw costs our side less than half a WebGPU one (23 against 53
+    us), but the WebGL 2 frame is about seven times longer, nearly all of it in `submit`.
+    `submit` calls `getError`, which in Chrome waits for the GPU process to run everything sent
+    before it; every second frame that includes refreshing a texture's twin through a pixel buffer
+    (`copy_whole` in `fresh`, the `CopyThroughBuffer` count), which a draw only queues (its own 23
+    us). Which twin the program's frames refresh, and how the wait divides between the two, is not
+    measured yet (Next 1).
+  - A first replay (09:52, same job conditions, frames alternately timed per call and whole, scratch
+    g3b2/replay1.log) gave WebGL 2 whole frames 10.8 ms and WebGPU 0.83 ms; the alternation put
+    every frame with the twin copy among the untimed ones, so the page now replays twice instead.
+  - Our front's own time is not in these numbers: the front runs natively while recording, and has
+    no WebAssembly build.
+- Programs that did not record: through the rig's forwarder every program recursed (above, How to
+  run); with the libraries beside them, bgfx-01-cubes made 5 devices that drew nothing in 10 s and
+  Godot's 2D platformer (Godot's ANGLE on our library on our ANGLE) still overflowed its stack.
+  Neither was read further (the Direct3D 11 track's ground).
+
 ## Measurements, run G3b-1
 
 - 2026-11-18, G3b run 1, desktop (RTX 3080, Chrome 157.0.8103.78), queued jobs beside other
@@ -1558,6 +1658,17 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Departures from the plan
 
+- (G3b run 2) The frame-time measurement of a real program in Chrome runs the program natively
+  (no WebAssembly build of the Direct3D 11 front exists) and replays the interface calls it made
+  in Chrome. So it measures the back ends' share of a frame in Chrome, not the front's. The
+  recording sits in this crate (the `record` feature makes `WebGl` a type alias of the recording
+  wrapper) because the front's library names `wcontainers_gpu_webgl::WebGl` and this track owns
+  only this crate; the stream form and the replay are generic over `Backend`, so the WebGPU track
+  can replay the same files. The stream records the WebGL 2 caps the front saw (on ANGLE, equal
+  to Chrome's with every extension but the signed normalised targets), so the WebGPU replay runs
+  the routes the front chose for WebGL 2 (for example `TEXTURE_INFO` helpers), not those it would
+  choose for WebGPU.
+
 - (G3b run 1) Plan 6.5's lowering of bit functions and `textureGather` is done on the GLSL text
   naga writes, not in naga's module: the program gets definitions of GLSL ES 3.10's bit functions
   under their own names (free in GLSL ES 3.00), and each gather call is rewritten to a helper.
@@ -1734,6 +1845,12 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Interface changes
 
+- 62e28dfe (G3b run 2) "interface: derived serde for the resource, pass and clear descriptors, so a
+  call stream can be saved and replayed": `Serialize` and `Deserialize` on the descriptors that
+  had none (buffer, texture, view and sampler descriptions and their usages, origins, extents,
+  load and store operations, viewports, scissors, empty passes, query kinds, rings, fans and
+  loops, clear values, binding layout keys, stage sets), as the state blocks already had for the
+  cache. Used by src/trace.rs.
 - 4a72bce0 (run 15) "interface: cut the scissor of a fractional viewport drawn in the program to the
   pixels its api draws, as direct3d rounds each edge down": the doc comment of
   `Features::FRACTIONAL_VIEWPORT` and plan 4.12's "Fractional viewports". Direct3D scissors to the
@@ -1784,6 +1901,8 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Installed on the desktop
 
+- (G3b run 2) C:\wc\out\webgl\record-direct.ps1 (2 KB, the recording script of How to run) and
+  C:\wc\out\webgl\trace (the recorded streams and replay results, under 1 MB).
 - C:\wc\tools\wasm-bindgen-0.2.130-x86_64-pc-windows-msvc (20 MB): the wasm-bindgen command, from its release
   archive on github.com/wasm-bindgen/wasm-bindgen (MIT OR Apache-2.0).
 - C:\wc\tools\libclang-18.1.1: libclang.dll (84 MB) from the PyPI `libclang` 18.1.1 wheel (Apache-2.0
@@ -1804,6 +1923,10 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Licences
 
+- Only with the `trace` feature (G3b run 2, the call stream file): postcard 1.1.3, MIT OR
+  Apache-2.0; its cobs 0.3.0 (with thiserror 2), embedded-io 0.4.0 and 0.6.1: MIT OR Apache-2.0
+  (their Cargo.toml). serde 1 (already in the lock file). naga's own `serialize` and
+  `deserialize` features.
 - glow 0.18.0: MIT OR Apache-2.0 OR Zlib (its Cargo.toml); its slotmap 1.1.1: Zlib.
 - half 2.7.1 (run 16, half floats of decoded BC4 and BC5): MIT OR Apache-2.0 (its Cargo.toml;
   already in the lock file through naga). Its dependencies: cfg-if 1.0: MIT OR Apache-2.0;
@@ -1838,22 +1961,21 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Next
 
-G3b, in this order:
-1. The frame-time measurement: a real program of the rig (a Tool Kit sample or a Godot platformer,
-   both matching real Direct3D through the front) drawing through the Direct3D 11 front on this
-   back end in Chrome, where a frame's time goes on our side, and the per-draw cost against the
-   WebGPU back end on the same frames. No WebAssembly build of the front exists (its status), so
-   the route is: record the interface calls of a few frames natively through the front (the
-   recording back end of `wcontainers-gpu-test` records a call stream; it needs a wrapper that
-   forwards to a real back end, and the stream needs a file form, shaders as naga modules), then
-   replay the file in Chrome on both back ends, timing each call kind. Agree first with the
-   WebGPU track, which makes the same measurement, so both use one replay tool.
-2. `noperspective` inputs: the vertex stage writes the value times w and w beside it, the
-   fragment stage divides; needs the pair of stages at link time.
-3. Read the Direct3D 11 status again after its next runs: the constants scene (uniform block
-   limit), samplers (`TEXTURE_INFO`) and formats are the front's to move; rerun its WebGL 2
-   scenes then. The independent check can run two of them (mips and targets pass) with the
-   command under Measurements, run G3b-1.
+G3b is done apart from the independent check. In this order after it:
+1. The WebGL 2 frame's time in Chrome (Measurements, run G3b-2): `submit`'s `getError` waits for
+   Chrome's GPU process every frame. Measure it apart from the twin refresh (a replay with the
+   check moved), then: find GL errors where the back end already waits (read backs, fence waits),
+   with `isContextLost` at every submit for losses; and find which texture's twin SimpleLightingPC
+   refreshes every second frame (likely an sRGB target view of its swap chain's buffer) and whether
+   a draw or a blit can refresh it without the pixel buffer.
+2. Record more real programs: one with many draws a frame (bgfx's examples drew nothing through
+   the WebGL 2 build; Godot's compatibility renderer overflowed its stack: ask the Direct3D 11
+   track), and agree with the WebGPU track that it replays the same files (src/trace.rs is generic
+   over `Backend`; scratch g3b2/atg-simplelightingpc.bin is one).
+3. `noperspective` inputs: the vertex stage writes the value times w and w beside it, the
+   fragment stage divides; needs the pair of stages at link time (refused by name today).
+4. Rerun the Direct3D 11 front's WebGL 2 scenes after its next runs (constants: the uniform block
+   limit; formats; views at 10_0 through `ReinterpretCopy`).
 
 After G3b, from G3:
 What is left of G3's pass bar cannot be done in this crate:

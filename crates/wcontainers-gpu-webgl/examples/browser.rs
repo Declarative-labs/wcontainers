@@ -168,6 +168,9 @@ suite!(
     typed_buffers_through_a_texture_lie_2048_elements_to_a_row,
     captures_write_location_outputs_packed_in_draw_order,
     a_copy_within_one_subresource_moves_the_region,
+    a_copy_within_one_depth_or_stencil_subresource_moves_the_region,
+    the_occlusion_counter_counts_every_sample_that_passes,
+    every_vertex_format_reads_its_element,
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,
