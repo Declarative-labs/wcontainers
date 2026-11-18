@@ -189,16 +189,21 @@ fn a_back_end_brought_back_in_a_copy_of_the_process_compiles_there() {
         // SAFETY: ends the copy without running anything of the parent's.
         unsafe { libc::_exit(if value == 12 && compiled { 0 } else { 1 }) };
     }
+    wait(child);
+}
+
+/// Waits up to 120 s for a copy of this process to exit with 0.
+fn wait(child: libc::pid_t) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     let mut status = 0;
     loop {
-        // SAFETY: waits for the copy made above.
+        // SAFETY: waits for the caller's copy.
         let done = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
         if done == child {
             break;
         }
         if std::time::Instant::now() > deadline {
-            // SAFETY: the copy made above.
+            // SAFETY: the caller's copy.
             unsafe { libc::kill(child, libc::SIGKILL) };
             panic!("the copy did not finish in 120 s");
         }
@@ -208,4 +213,33 @@ fn a_back_end_brought_back_in_a_copy_of_the_process_compiles_there() {
         libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
         "status {status:#x}"
     );
+}
+
+/// After the host process has forked, a duplicate made in the copy of memory written only there is
+/// exact.
+#[test]
+fn a_duplicate_made_after_the_host_process_forked_is_exact() {
+    const PAGES: u64 = 256;
+    let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), LookAhead::Full, Optimise::Speed, ());
+    let (memory, _) = parent(&mut cpu);
+    cpu.memory_duplicate(memory).unwrap();
+    // SAFETY: the copy only uses the back end and leaves with `_exit`.
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0, "fork");
+    if child == 0 {
+        let memory = cpu.memory_new().unwrap();
+        cpu.set_permissions(memory, HIDDEN, PAGES * PAGE_SIZE, RW)
+            .unwrap();
+        for page in 0..PAGES {
+            let at = HIDDEN + page * PAGE_SIZE;
+            cpu.write(memory, at, &(page + 7).to_le_bytes()).unwrap();
+        }
+        let copy = cpu.memory_duplicate(memory).unwrap();
+        let wrong = (0..PAGES)
+            .filter(|page| word(&mut cpu, copy, HIDDEN + page * PAGE_SIZE) != page + 7)
+            .count();
+        // SAFETY: ends the copy without running anything of the parent's.
+        unsafe { libc::_exit(i32::from(wrong != 0)) };
+    }
+    wait(child);
 }

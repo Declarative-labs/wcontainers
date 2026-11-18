@@ -202,7 +202,7 @@ impl<G: Guest> Compiler<G> {
     }
 
     /// Keeps a translation in the cache's directory, written whole or not at all.
-    fn store(&self, file: &Path, compiled: &Compiled) {
+    fn store(&self, file: &Path, compiled: &Compiled) -> std::io::Result<()> {
         let mut bytes = CACHE_MAGIC.to_vec();
         bytes.extend((compiled.modules.len() as u64).to_le_bytes());
         for (module, pieces) in compiled.modules.iter().zip(&compiled.pieces) {
@@ -219,13 +219,14 @@ impl<G: Guest> Compiler<G> {
         let written = std::fs::create_dir_all(file.parent().expect("a directory"))
             .and_then(|()| std::fs::write(&partial, &bytes))
             .and_then(|()| std::fs::rename(&partial, file));
-        if let Err(error) = written {
-            panic!("keeping a translation in {}: {error}", file.display());
+        if written.is_err() {
+            let _ = std::fs::remove_file(&partial);
         }
+        written
     }
 
-    /// The compiled translation of a blob from its starts, from the cache or made now, and where it
-    /// came from.
+    /// The compiled translation of a blob from its starts, from the cache or made now, where it came
+    /// from, and why it could not be kept in the cache's directory when it could not.
     fn compiled(
         &self,
         bytes: &[u8],
@@ -234,7 +235,7 @@ impl<G: Guest> Compiler<G> {
         look_ahead: LookAhead,
         optimise: Optimise,
         offer: G::Offer,
-    ) -> (Arc<Compiled>, Origin) {
+    ) -> (Arc<Compiled>, Origin, Option<NotKept>) {
         starts.sort_unstable();
         starts.dedup();
         let key = Key {
@@ -245,7 +246,7 @@ impl<G: Guest> Compiler<G> {
             offer: G::offer_key(offer),
         };
         if let Some(compiled) = self.modules.lock().expect("the cache").get(&key) {
-            return (compiled.clone(), Origin::Memory);
+            return (compiled.clone(), Origin::Memory, None);
         }
         let file = self.directory.as_deref().map(|d| self.file(d, &key));
         let started = Instant::now();
@@ -256,7 +257,7 @@ impl<G: Guest> Compiler<G> {
                 .lock()
                 .expect("the cache")
                 .insert(key, compiled.clone());
-            return (compiled, Origin::Disk(nanoseconds));
+            return (compiled, Origin::Disk(nanoseconds), None);
         }
         let started = Instant::now();
         let length = bytes.len() as u64;
@@ -297,9 +298,16 @@ impl<G: Guest> Compiler<G> {
             count: pieces.iter().map(|p| p.len() as u32).sum(),
             pieces,
         });
-        if let Some(file) = &file {
-            self.store(file, &compiled);
-        }
+        let not_kept = file.as_deref().and_then(|file| {
+            let started = Instant::now();
+            let error = self.store(file, &compiled).err()?;
+            Some(NotKept {
+                error: error
+                    .raw_os_error()
+                    .map_or(u64::MAX, |number| number as u64),
+                nanoseconds: started.elapsed().as_nanos() as u64,
+            })
+        });
         self.modules
             .lock()
             .expect("the cache")
@@ -308,8 +316,15 @@ impl<G: Guest> Compiler<G> {
             translating: translated,
             compiling: compiled_in,
         };
-        (compiled, origin)
+        (compiled, origin, not_kept)
     }
+}
+
+/// A translation the cache's directory could not take: the host's error number (`u64::MAX` when it
+/// gave none) and the time spent trying.
+struct NotKept {
+    error: u64,
+    nanoseconds: u64,
 }
 
 /// One translation a back end used: where, how, and what it cost.
@@ -789,7 +804,7 @@ where
         sources: Option<Sources>,
     ) -> Arc<Compiled> {
         let count = starts.len();
-        let (compiled, origin) = self.compiler.compiled(
+        let (compiled, origin, not_kept) = self.compiler.compiled(
             &code.bytes,
             code.hash,
             starts,
@@ -807,6 +822,14 @@ where
             pieces: compiled.count,
             origin,
         });
+        if let Some(not_kept) = not_kept {
+            // The run goes on; a later one translates the same code again.
+            self.slow_path(
+                "translation not kept in the cache's directory",
+                not_kept.error,
+                not_kept.nanoseconds,
+            );
+        }
         compiled
     }
 
@@ -1029,25 +1052,18 @@ where
         );
         let host_page = memory::host_page();
         let copy = |from: *mut u8, to: *mut u8, runs: &mut dyn Iterator<Item = Range<u64>>| {
-            let mut merged: Vec<Range<u64>> = Vec::new();
+            let mut merged: Vec<Range<usize>> = Vec::new();
             for run in runs {
-                let run = run.start / host_page * host_page..run.end.next_multiple_of(host_page);
+                let run = (run.start / host_page * host_page) as usize
+                    ..run.end.next_multiple_of(host_page) as usize;
                 match merged.last_mut() {
                     Some(last) if last.end >= run.start => last.end = last.end.max(run.end),
                     _ => merged.push(run),
                 }
             }
-            for run in merged {
-                // SAFETY: whole host pages inside the two processes' own mappings, the new one still
-                // all zeros; no guest of either runs meanwhile.
-                unsafe {
-                    memory::copy_pages(
-                        from.add(run.start as usize),
-                        to.add(run.start as usize),
-                        (run.end - run.start) as usize,
-                    )
-                }
-            }
+            // SAFETY: runs of whole host pages, in order, inside the two processes' own mappings, the
+            // new one still all zeros; no guest of either runs meanwhile.
+            unsafe { memory::copy_pages(from, to, &merged) }
         };
         copy(
             source.base,

@@ -2,6 +2,7 @@
 //! state memory.
 
 use std::ffi::c_void;
+use std::ops::Range;
 
 use rustix::mm::{MapFlags, ProtFlags, mmap_anonymous, mprotect, munmap};
 use wasmtime::{LinearMemory, MemoryCreator, MemoryType};
@@ -138,74 +139,87 @@ pub fn host_page() -> u64 {
     rustix::param::page_size() as u64
 }
 
-/// Copies whole host pages from one anonymous mapping to another exactly: afterwards the destination
-/// holds what the source holds now, whatever the host has done with the source's pages (compressed,
-/// swapped out), and later writes to either are not seen by the other.
+/// Copies runs of whole host pages, given as byte offsets, from one anonymous mapping to another
+/// exactly: afterwards the destination holds what the source holds now, whatever the host has done
+/// with the source's pages (compressed, swapped out), and later writes to either are not seen by the
+/// other.
 ///
 /// # Safety
-/// `from`, `to` and `length` are multiples of the host's page size; both ranges are inside anonymous
-/// private mappings that can be read and written, they do not overlap, nothing else uses either
-/// meanwhile, and the destination holds zeros.
-pub unsafe fn copy_pages(from: *const u8, to: *mut u8, length: usize) {
-    if length == 0 {
+/// The runs are in order, do not overlap, and start and end at multiples of the host's page size;
+/// from both bases they lie inside anonymous private mappings that can be read and written and do not
+/// overlap each other, nothing else uses either meanwhile, and the destination's runs hold zeros.
+pub unsafe fn copy_pages(from: *const u8, to: *mut u8, runs: &[Range<usize>]) {
+    if runs.is_empty() {
         return;
     }
     #[cfg(target_os = "macos")]
-    {
+    for run in runs {
         // The system shares the pages and copies each on its first write in either mapping.
         // SAFETY: as the caller promises; the task is this process.
         let result = unsafe {
             mach2::vm::mach_vm_copy(
                 mach2::traps::mach_task_self(),
-                from as u64,
-                length as u64,
-                to as u64,
+                from.add(run.start) as u64,
+                (run.end - run.start) as u64,
+                to.add(run.start) as u64,
             )
         };
         assert_eq!(result, mach2::kern_return::KERN_SUCCESS, "mach_vm_copy");
     }
     #[cfg(target_os = "linux")]
     {
-        // Only pages the system shows present or swapped out can hold anything but zeros.
+        // Only pages the system shows present or swapped out can hold anything but zeros. The page
+        // map is opened for each copy: an open one stays bound to the process that opened it, which
+        // after a fork of the host process is not this one.
         use std::os::unix::fs::FileExt;
-        static PAGEMAP: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
-        let pagemap = PAGEMAP
-            .get_or_init(|| std::fs::File::open("/proc/self/pagemap").expect("/proc/self/pagemap"));
+        let pagemap = std::fs::File::open("/proc/self/pagemap").expect("/proc/self/pagemap");
         let page = host_page() as usize;
-        let pages = length / page;
-        let mut entries = vec![0u8; pages * 8];
-        pagemap
-            .read_exact_at(&mut entries, (from as usize / page * 8) as u64)
-            .expect("reading /proc/self/pagemap");
-        let held = |index: usize| {
-            let entry =
-                u64::from_le_bytes(entries[index * 8..index * 8 + 8].try_into().expect("8"));
-            entry & (3 << 62) != 0
-        };
-        let mut index = 0;
-        while index < pages {
-            if !held(index) {
-                index += 1;
-                continue;
-            }
-            let first = index;
-            while index < pages && held(index) {
-                index += 1;
-            }
-            // SAFETY: inside both ranges, as the caller promises.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    from.add(first * page),
-                    to.add(first * page),
-                    (index - first) * page,
+        let mut entries = Vec::new();
+        for run in runs {
+            let pages = (run.end - run.start) / page;
+            entries.resize(pages * 8, 0);
+            pagemap
+                .read_exact_at(
+                    &mut entries,
+                    ((from as usize + run.start) / page * 8) as u64,
                 )
+                .expect("reading /proc/self/pagemap");
+            let held = |index: usize| {
+                let entry =
+                    u64::from_le_bytes(entries[index * 8..index * 8 + 8].try_into().expect("8"));
+                entry & (3 << 62) != 0
+            };
+            let mut index = 0;
+            while index < pages {
+                if !held(index) {
+                    index += 1;
+                    continue;
+                }
+                let first = index;
+                while index < pages && held(index) {
+                    index += 1;
+                }
+                // SAFETY: inside both mappings, as the caller promises.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        from.add(run.start + first * page),
+                        to.add(run.start + first * page),
+                        (index - first) * page,
+                    )
+                }
             }
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    // SAFETY: as the caller promises.
-    unsafe {
-        std::ptr::copy_nonoverlapping(from, to, length)
+    for run in runs {
+        // SAFETY: as the caller promises.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                from.add(run.start),
+                to.add(run.start),
+                run.end - run.start,
+            )
+        }
     }
 }
 
@@ -323,7 +337,7 @@ mod tests {
         }
         let expected = source.to_vec();
         // SAFETY: whole pages of the two mappings, the destination all zeros.
-        unsafe { copy_pages(from, to, length) };
+        unsafe { copy_pages(from, to, &[0..length / 2, length / 2..length]) };
         assert!(copy == expected.as_slice());
         source[page] = 0xee;
         copy[2 * page] = 0xdd;
