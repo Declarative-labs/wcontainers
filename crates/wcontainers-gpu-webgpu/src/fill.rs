@@ -118,6 +118,8 @@ pub struct Fills {
     reads: HashMap<AspectRead, DepthProgram>,
     presents: HashMap<wgpu::TextureFormat, DepthProgram>,
     resolves: HashMap<wgpu::TextureFormat, DepthProgram>,
+    /// Keyed by the converted format, whether it widens into the texture, and whether that is 3D.
+    converts: HashMap<(Format, bool, bool), DepthProgram>,
 }
 
 /// A view of one level and layer of `texture` in `aspect`, in that aspect's own format.
@@ -411,6 +413,173 @@ impl WebGpu {
         rp.set_pipeline(&pipeline);
         rp.set_bind_group(0, &group, &[]);
         rp.draw(0..3, 0..1);
+    }
+
+    /// Converts between the held texels of a texture of the converted `format` (level `held.1`,
+    /// slices from `held.2`, the region at `held.3` of `extent`) and its raw blocks in `raw` (at
+    /// its origin, a layer a slice), in the frame's encoder outside a pass: widening the blocks into
+    /// the texture where `into`, else packing the texels into the blocks. One draw a slice.
+    pub(crate) fn convert_by_draw(
+        &mut self,
+        format: Format,
+        into: bool,
+        held: (&wgpu::Texture, u32, u32, [u32; 2]),
+        raw: &wgpu::Texture,
+        extent: wcontainers_gpu::Extent,
+    ) {
+        let (texture, mip, first, [x, y]) = held;
+        let three_d = texture.dimension() == wgpu::TextureDimension::D3;
+        let key = (format, into, three_d && !into);
+        // Held texels are moved as their bytes: an sRGB texture through its linear twin.
+        let linear = texture.format().remove_srgb_suffix();
+        if !self.fills.converts.contains_key(&key) {
+            let target = if into { linear } else { raw.format() };
+            let program = self.packing_program(format, into, key.2, target);
+            self.fills.converts.insert(key, program);
+        }
+        let held_view = |slice: Option<u32>| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                format: Some(linear),
+                dimension: Some(match slice {
+                    Some(_) => wgpu::TextureViewDimension::D2,
+                    None => wgpu::TextureViewDimension::D3,
+                }),
+                base_mip_level: mip,
+                mip_level_count: Some(1),
+                base_array_layer: slice.unwrap_or(0),
+                array_layer_count: Some(1),
+                ..Default::default()
+            })
+        };
+        let whole_3d = three_d.then(|| held_view(None));
+        let (bw, _, _) = format.block();
+        for l in 0..extent.depth_or_layers {
+            let slice = first + l;
+            let own = level_view(raw, wgpu::TextureAspect::All, 0, l);
+            let held = match &whole_3d {
+                Some(v) => v.clone(),
+                None => held_view(Some(slice)),
+            };
+            let (source, target) = if into { (&own, &held) } else { (&held, &own) };
+            let value = uniform(&self.device, [x, y, slice, extent.width]);
+            let program = &self.fills.converts[&key];
+            let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &program.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: value.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(source),
+                    },
+                ],
+            });
+            let pipeline = program.pipeline.clone();
+            let mut rp = self
+                .stream(Stream::Main)
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        depth_slice: (into && three_d).then_some(slice),
+                        resolve_target: None,
+                        ops: keep(),
+                    })],
+                    ..Default::default()
+                });
+            let (at, size) = if into {
+                ([x, y], [extent.width, extent.height])
+            } else {
+                ([0, 0], [extent.width.div_ceil(bw), extent.height])
+            };
+            let [w, h] = size.map(|n| n as f32);
+            rp.set_viewport(at[0] as f32, at[1] as f32, w, h, 0.0, 1.0);
+            rp.set_scissor_rect(at[0], at[1], size[0], size[1]);
+            rp.set_pipeline(&pipeline);
+            rp.set_bind_group(0, &group, &[]);
+            rp.draw(0..3, 0..1);
+        }
+    }
+
+    fn packing_program(
+        &mut self,
+        format: Format,
+        into: bool,
+        three_d: bool,
+        target: wgpu::TextureFormat,
+    ) -> DepthProgram {
+        let cover = self.cover();
+        let source = crate::packed::program(format, into, three_d);
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+        let (sample_type, view_dimension) = match (into, three_d) {
+            (true, _) => (
+                wgpu::TextureSampleType::Uint,
+                wgpu::TextureViewDimension::D2,
+            ),
+            (false, d3) => (
+                wgpu::TextureSampleType::Float { filterable: false },
+                if d3 {
+                    wgpu::TextureViewDimension::D3
+                } else {
+                    wgpu::TextureViewDimension::D2
+                },
+            ),
+        };
+        let layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    fragment_entry(0, UNIFORM),
+                    fragment_entry(
+                        1,
+                        wgpu::BindingType::Texture {
+                            sample_type,
+                            view_dimension,
+                            multisampled: false,
+                        },
+                    ),
+                ],
+            });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+        self.counters.pipelines += 1;
+        let pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &cover,
+                    entry_point: Some("cover"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("convert"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(target.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+        DepthProgram { pipeline, layout }
     }
 
     /// Clears colour target `index` of the open pass, of an integer format, to `bits` by a draw

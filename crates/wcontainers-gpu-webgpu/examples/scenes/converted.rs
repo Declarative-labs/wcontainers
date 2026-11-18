@@ -397,9 +397,12 @@ pub fn kept(format: Format, texels: &[u8]) -> Vec<u8> {
 
 /// Writes, read backs and copies of `texels` in `format`: read back whole; copied out into a
 /// buffer at a padded pitch whose padding stays; copied from that buffer into part of another
-/// texture; copied between textures. Every byte must come back (BGRX's X as one).
+/// texture; copied between textures of the format, and into one of another format of equal blocks
+/// and back; none waiting for the host; then [`volume_copies`]. Every byte must come back (BGRX's
+/// X as one).
 pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
     let texels = &kept(format, written)[..];
+    let waits = b.slow_paths().count(SlowPath::HostCopyReadBack);
     let h = SIZE.1 as usize;
     let row = row_bytes(format, SIZE.0);
     let len = row * h;
@@ -471,6 +474,120 @@ pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
     b.copy_texture(&at(&t, 2, 1), &at(&v, 0, 0), part);
     let got = read(b, &at(&v, 0, 0), part, want.len());
     ensure!(got == want, "{format:?}: copied between textures");
+    // Into a texture of another format of equal blocks and back, the bytes kept.
+    let other = match format.block() {
+        (1, 1, 1) => Format::R8Uint,
+        (1, 1, 2) => Format::R16Uint,
+        (1, 1, 4) => Format::R32Uint,
+        _ if format == Format::Rgbg8Unorm => Format::Grgb8Unorm,
+        _ => Format::Rgbg8Unorm,
+    };
+    let (o, _) = upload(b, other, Some(&vec![0; len]), TextureUsage::empty())?;
+    b.copy_texture(&at(&t, 2, 1), &at(&o, 0, 0), part);
+    let got = read(b, &at(&o, 0, 0), part, want.len());
+    ensure!(got == want, "{format:?}: copied into {other:?}");
+    let (back, _) = upload(b, format, Some(&vec![0; len]), TextureUsage::empty())?;
+    b.copy_texture(&at(&o, 0, 0), &at(&back, 4, 2), part);
+    let got = read(b, &at(&back, 4, 2), part, want.len());
+    ensure!(got == want, "{format:?}: copied from {other:?}");
+    ensure!(
+        b.slow_paths().count(SlowPath::HostCopyReadBack) == waits,
+        "{format:?}: copies with a buffer or between textures waited for the host"
+    );
+    volume_copies(b, format, texels)?;
+    Ok(())
+}
+
+/// Copies through buffers into and out of slices 1 and 2 of a 3D texture of three slices, each
+/// slice the texels with its rows turned by its number; slice 0 stays as made. No copy waits for
+/// the host.
+fn volume_copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
+    let waits = b.slow_paths().count(SlowPath::HostCopyReadBack);
+    let (row, h, pitch) = (row_bytes(format, SIZE.0), SIZE.1 as usize, 256usize);
+    let slices: Vec<u8> = (0..3)
+        .flat_map(|s| {
+            (0..h).flat_map(move |y| {
+                let r = &texels[(y + s) % h * row..][..row];
+                r.iter()
+                    .copied()
+                    .chain(std::iter::repeat_n(0xab, pitch - row))
+            })
+        })
+        .collect();
+    let buffer = |b: &mut B| {
+        gpu(b.create_buffer(&BufferDesc {
+            size: slices.len() as u64,
+            usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        }))
+    };
+    let (src, dst) = (buffer(b)?, buffer(b)?);
+    b.write_buffer(&src, 0, &slices, WriteMode::Ordered);
+    b.write_buffer(&dst, 0, &vec![0xab; slices.len()], WriteMode::Ordered);
+    let t = gpu(b.create_texture(&wcontainers_gpu::TextureDesc {
+        dimension: wcontainers_gpu::TextureDimension::D3,
+        format,
+        width: SIZE.0,
+        height: SIZE.1,
+        depth_or_layers: 3,
+        mip_levels: 1,
+        samples: 1,
+        usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::COPY_SRC,
+        cube: false,
+        reinterpret: false,
+    }))?;
+    let region = TextureRegion {
+        texture: &t,
+        mip: 0,
+        layer: 0,
+        origin: Origin { x: 0, y: 0, z: 1 },
+        stencil: false,
+    };
+    let two = Extent {
+        depth_or_layers: 2,
+        ..whole()
+    };
+    let slice = (pitch * h) as u64;
+    let copy = |buffer| CopyBufferTexture {
+        buffer,
+        offset: slice,
+        row_pitch: pitch as u32,
+        rows_per_layer: SIZE.1,
+    };
+    b.copy_buffer_to_texture(&copy(&src), &region, two);
+    b.copy_texture_to_buffer(&region, &copy(&dst), two);
+    let rb = gpu(b.read_back(&ReadSource::Buffer {
+        buffer: &dst,
+        offset: 0,
+        size: slices.len() as u64,
+    }))?;
+    b.submit();
+    b.wait_read(&rb);
+    let mut out = vec![0; slices.len()];
+    b.finish_read(rb, &mut out);
+    let s = slice as usize;
+    ensure!(
+        out[..s].iter().all(|&v| v == 0xab),
+        "{format:?}: a 3D copy wrote outside its slices"
+    );
+    let kept_slices: Vec<u8> = slices
+        .chunks(pitch)
+        .flat_map(|r| {
+            let mut k = kept(format, &r[..row]);
+            k.extend_from_slice(&r[row..]);
+            k
+        })
+        .collect();
+    ensure!(
+        out[s..] == kept_slices[s..],
+        "{format:?}: slices 1 and 2 of a 3D texture copied through buffers"
+    );
+    let now = b.slow_paths().count(SlowPath::HostCopyReadBack);
+    ensure!(
+        now == waits,
+        "{format:?}: copies with a buffer waited for the host {} times",
+        now - waits
+    );
     Ok(())
 }
 

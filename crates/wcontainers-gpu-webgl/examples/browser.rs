@@ -79,10 +79,11 @@ impl Device {
     pub fn report(&self) -> String {
         let used: Vec<_> = self.0.extensions().collect();
         format!(
-            "renderer: {}\nextensions used: {}\ncontext extensions: {}\n{}",
+            "renderer: {}\nextensions used: {}\ncontext extensions: {}\nexact float blits: {}\n{}",
             self.0.renderer(),
             used.join(" "),
             self.0.context_extensions().join(" "),
+            self.0.exact_float_blits(),
             scenes::caps_report(self.0.caps()),
         )
     }
@@ -175,6 +176,7 @@ suite!(
     copies_within_a_typeless_group,
     cube_faces_copied_between_typeless_formats,
     copies_within_one_subresource,
+    copies_within_one_float_format_take_the_probed_route,
     depth_and_stencil_written_read_back_as_written,
     copies_between_depth_and_colour_formats,
     copies_between_index_and_data_buffers,
@@ -190,6 +192,7 @@ suite!(
     vertices_captured_with_and_without_rasterising,
     captured_indices_drawn_both_ways,
     block_compressed_and_shared_exponent_textures_read_back_as_written,
+    interpolated_bc4_and_bc5_values,
     fragment_depth_follows_the_clip_convention,
     strips_fans_loops_and_indexed_draws_captured_in_list_order,
     absent_features_are_refused,

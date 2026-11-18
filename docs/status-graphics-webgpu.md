@@ -6,10 +6,11 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 ## Where things stand
 
 G2 passed its independent check. G2b (what the fronts need from this back end): runs 1 to 4 are
-"Run 11" to "Run 14" below. G2b's independent check found nine problems; run 13 fixed them (list
+"Run 11" to "Run 15" below. G2b's independent check found nine problems; run 13 fixed them (list
 in "Run 13"). Run 14 measured instance data at more streams and made binding sets made again each
-frame find their bind groups. Every request found is built and tested or refused by name (list
-below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
+frame find their bind groups. Run 15 moved copies of converted formats onto the GPU. Run 16
+merged, found nothing new asked, ran both full runs and measured the timestamp workload's cause
+(naga's loop bounding). Every request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
 graphics branch), and where each stands:
@@ -39,7 +40,7 @@ graphics branch), and where each stands:
 - Formats WebGPU lacks (`FormatConverted`; both Direct3D fronts ask for `A8_UNORM`, `B5G6R5`,
   `B5G5R5A1`, `B4G4R4A4`, the Direct3D 11 front also for `B8G8R8X8`, the Direct3D 12 front for
   the two-pixel formats): built (run 12, src/packed.rs). Held in an 8-bit RGBA format, widened on
-  the host at writes and packed again at read backs and copies out. `A8Unorm`, `Bgrx8Unorm` and
+  the host at writes and packed again at read backs; copies widen and pack on the GPU (run 15). `A8Unorm`, `Bgrx8Unorm` and
   `Bgrx8UnormSrgb` are sampled, filtered, drawn into, blended and resolved (only their own
   channels written); `B5g6r5Unorm`, `Bgr5a1Unorm`, `Bgra4Unorm`, `Rgbg8Unorm` and `Grgb8Unorm`
   are sampled, filtered and copied, and declared without `RENDER` (a draw would keep 8 bits a
@@ -63,6 +64,52 @@ graphics branch), and where each stands:
 - Freeing the back end's tables when a program or block is destroyed (Direct3D 12: "its own tables
   keep their entries"): built (run 13). tests/scenes.rs
   `destroyed_programs_and_blocks_free_their_pipelines`.
+
+Run 16 = G2b run 6, 2026-11-17 to 18:
+- Merged origin/phase-2-graphics-webgl, -direct3d-11, -direct3d-12 and -shaders (no conflicts;
+  the shared line and -rig had nothing new). The one interface change (from the shaders branch:
+  `DOMAIN_PATCHES_BINDING`, `DOMAIN_POINTS_BINDING`, a hull stage's `point_locations` and
+  `constant_locations`) needs nothing here. Read the four front status files' new text: nothing
+  new is asked of this back end. The Direct3D 11 front's new routes (typed views, typed buffers
+  through storage) and the Direct3D 12 front's (filtering in the program where the back end cannot
+  filter, multisampled arrays refused at creation) use what is declared; the WebGL track's new
+  comparisons with this back end pass natively, with one tie in Chrome that it lays on G1's mip
+  helper; the shaders track's tessellator program fails fxc (wgpu's Direct3D 12 compiler), its
+  own known gap, and compiles in Chrome.
+- The cause of the native timestamp workload's 1.3 and 1.5 times Direct3D 11's time, measured
+  (Measurements, run 16): naga's loop bounding (`ShaderRuntimeChecks::force_loop_bounding`), which
+  wgpu adds to every loop natively. Without it both APIs take Direct3D 11's time; without bounds
+  checks nothing changes. Not changed: wgpu says not to turn it off for untrusted programs, and a
+  guest's are untrusted (left to the owner). In Chrome wgpu passes WGSL on and Dawn's own handling
+  costs nothing measurable (9.82 ms, Direct3D 11's time).
+
+Run 15 = G2b run 5, 2026-11-17:
+- Merged origin/phase-2-graphics-direct3d-12, -shaders and -rig (no conflicts; the shared line,
+  -webgl and -direct3d-11 had nothing new). They changed nothing in the interface, this crate,
+  the suite crate or the lock file. Read what is new in the Direct3D 12 and shaders status files:
+  nothing new is asked of this back end. The Direct3D 12 front lists "naga's validation lacking
+  `STORAGE_TEXTURE_16BIT_NORM_FORMATS` where the WebGPU back end reports those formats as stored
+  into" under the converter (G6): checked here, the back end declares storage for 16-bit
+  normalised formats only on a device with wgpu's `TEXTURE_FORMAT_16BIT_NORM`, and its own
+  validator (`wgpu_naga_bridge::create_validator` with the device's features) then has that
+  capability, so the gap is the converter's validation, not this back end's.
+- Copies of converted formats run on the GPU (were: read back, waited for, and written again
+  through the host, `HostCopyReadBack`, a pause for every Direct3D 12 upload of such a texture).
+  A copy goes through a texture of the format's raw blocks (`r8uint`, `r16uint` or `r32uint`, one
+  texel a block, `packed::raw`): from a buffer, the bytes are copied into it and a draw a slice
+  widens them into the texture; into a buffer, a draw packs the texels into it and it is copied
+  out; between a converted format and another of equal blocks, packed into it or copied from the
+  other, then widened from it or copied into the other. The draws' programs
+  (`packed::program`) do in WGSL what `widen` and `pack` do on the host (bits repeated; nearest
+  value of the bits), sRGB BGRX through its linear twin, 3D textures slice by slice. Converted
+  textures are made with render and binding usage for this. Counted as `FormatConverted`.
+- Tests that fail without it: examples/scenes/converted.rs `copies` now fails if a copy with a
+  buffer or between textures counts `HostCopyReadBack`, copies into and back from a texture of
+  another format of equal blocks (`R8Uint`, `R16Uint`, `R32Uint`, the other two-pixel format),
+  and `volume_copies` copies through buffers into and out of slices 1 and 2 of a 3D texture of
+  three (slice 0 and the buffer outside them untouched). Run natively by tests/converted.rs and
+  tests/direct3d.rs, in Chrome by web/check. The unit test `copy_programs_are_valid` parses and
+  validates every program with naga.
 
 Run 14 = G2b run 4, 2026-11-17:
 - Merged origin/phase-2-graphics-webgl, -shaders and -direct3d-11 (no conflicts; the shared line,
@@ -727,6 +774,49 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 
 ## Measurements
 
+Run 16 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01; Mac load average near its 18
+cores, not sampled exactly):
+- All tests at cd3aa677 (the merges) after `cargo clean` of this crate and the suite crate
+  (scratch run16/full-native.log, shared with other tracks' jobs; job 1 min 8 s): both APIs
+  together 212 passed, 0 failed, 4 ignored (as run 15); the shared suite 39 of 39 on both. Clippy
+  with warnings denied passes natively and for WebAssembly (run16/clippy.log).
+- web/check at cd3aa677 (run16/web-check.log, pictures in run16/web): twelve pictures equal to
+  Direct3D 11's at tolerance 0, twists differ, viewports equal (rounded 2540 differ); Chrome's
+  adapter the RTX 3080 (D3D12, discrete, not a fallback); timestamps 9.821 and 19.551 ms (ratio
+  1.99), GPU clock 302.504 ms apart with the page clock between 300.0 and 305.0 ms; prepared first
+  draws built nothing; converted formats, vertex formats and renames pass; the suite in Chrome 39
+  passed, 0 failed.
+- The timestamp workload with wgpu's runtime checks switched off one by one (a temporary,
+  uncommitted change; `gpu-job --alone`, run16/checks-exp.log), first stretch / second, Direct3D
+  11's 9.43 / 18.90 ms each time: Vulkan, all checks 12.25 / 24.44 ms; no loop bounding 9.49 /
+  18.94; no bounds checks 12.26 / 24.44; neither 9.49 / 18.93. Direct3D 12: all checks 14.47 /
+  28.72; no loop bounding 9.51 / 18.94; no bounds checks 14.47 / 28.73; neither 9.51 / 18.95.
+  So loop bounding is the whole difference on this loop of 2048 cheap rounds; this workload reads
+  no buffers, so it says nothing about the bounds checks' cost elsewhere.
+- At the end of the run the desktop's build folder C:\wc\target\phase-2-graphics-webgpu (6.12 GB)
+  was deleted; no `cargo check` output and no scratch target folder was made on the Mac.
+
+Run 15 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
+CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
+- All tests at b517ab0e after `cargo clean` of this crate and the suite crate (scratch
+  run15/full-native.log; job 1 min 51 s): both APIs together 212 passed, 0 failed, 4 ignored (the
+  BC one-step comparison on each, 24-bit depth bias absent and the wireframe known failure on
+  Vulkan); the shared suite 39 of 39 on both. That is run 14's 210 plus the new unit test on each
+  API. The converted formats with 16 textures each (seed 1) pass on both APIs
+  (run15/converted2.log), and against Direct3D 11 with 4. Clippy with warnings denied passes
+  natively and for WebAssembly.
+- web/check (run15/web-check2.log, pictures in run15/web): the first run failed in Chrome at the
+  new 3D copy ("depthSlice is required for a 3D attachment": wgpu's browser back end dropped the
+  depth slice; fixed in the vendored wgpu, Departures). After the fix: all twelve pictures equal
+  Direct3D 11's at tolerance 0, twists differ as before, viewports equal (whole pixels 2540
+  differ); Chrome's adapter the RTX 3080; timestamps 9.820 and 19.549 ms (ratio 1.99), GPU clock
+  300.644 ms apart with the page clock between 300.1 and 304.3 ms; prepared first draws built
+  nothing; converted formats seed 1, 4 textures each, within bounds, with every copy on the GPU;
+  vertex formats and texture renames pass; the instance data routes draw alike; the suite in
+  Chrome 39 passed, 0 failed.
+- At the end of the run the desktop's build folder C:\wc\target\phase-2-graphics-webgpu (6.91 GB)
+  and the Mac checkout's `cargo check` output (553 MB) were deleted; the next build there is cold.
+
 Run 14 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs
 except where alone, CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
 - Instance data, release build, `gpu-job --alone`, 256 draws of 16 instances, 20 frames a route,
@@ -1120,8 +1210,7 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   more than 2^22 workgroups.
 - Drawing into the 16-bit packed formats: declared without `RENDER` (8-bit storage would keep
   more of a draw than Direct3D's 4, 5 or 6 bits; exact would need the program to round its output
-  and could not round a blend). Copies between a buffer and a converted texture pause the device
-  thread while the bytes cross the host (a compute program packing on the GPU would not).
+  and could not round a blend).
 - `OCCLUSION_COUNT`: absent for good (WebGPU's occlusion result is zero or not).
 - Natively the staging ring's bytes are copied twice (into wgpu's own staging memory, then by
   the GPU into the ring): wgpu 30 offers no mapped ring that needs no wait.
@@ -1131,11 +1220,13 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Next (G2b)
 
-1. The independent check of G2b (again, after run 13's fixes and run 14).
-2. Copies between a buffer and a converted texture on the GPU; why the timestamp workload takes 1.3 and 1.5 times
-   Direct3D 11's time through wgpu natively (expected, not measured: naga's loop bounding and
-   bounds checks; Chrome's Dawn takes Direct3D's time).
+1. The independent check of G2b (again, after runs 13 to 16).
+2. The owner's decision on loop bounding natively (run 16 measured it as the whole of the
+   timestamp workload's 1.3 and 1.5 times): wgpu's `create_shader_module_trusted` without
+   `force_loop_bounding` takes Direct3D's time, but lets a guest's endless loop be undefined in
+   the driver's compiler, as on real Direct3D.
 3. Read the fronts' status files again after merging.
+4. `PrepareDesc` has no index format (interface track's; see run 13).
 
 ## Departures from the plan
 
@@ -1178,9 +1269,12 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 - Scene pictures in this crate's tests are held to the rig's per-picture allowance (what WARP
   earns) so they hold on any GPU; the RTX 3080's exact equality is printed by them and asserted by
   web/check at tolerance 0.
-- wgpu is vendored (third_party/wgpu, 30.0.2 plus one fix in src/backend/webgpu.rs) so its browser
-  back end passes a render pass's occlusion query set to WebGPU; without it every occlusion query
-  in the browser failed. This touches the workspace manifest, outside this crate.
+- wgpu is vendored (third_party/wgpu, 30.0.2 plus two fixes in src/backend/webgpu.rs) so its
+  browser back end passes a render pass's occlusion query set and a colour attachment's depth
+  slice to WebGPU; without them every occlusion query in the browser failed, and so did every draw
+  into a slice of a 3D texture (Chrome: "depthSlice is required for a 3D attachment"). Neither is
+  reported upstream; whether wgpu's trunk has the second bug is not checked. This touches the
+  workspace manifest, outside this crate.
 - The `generate_mips` comparisons with Direct3D make each level from Direct3D's level above it, so
   one level's difference is not carried into the next and each tolerance is per step.
 
