@@ -343,14 +343,15 @@ impl Image {
 
     /// The program `process.args[0]` names, as runc finds it: a name with a slash from the working
     /// directory, any other name in the directories of `PATH` in `env`, the first that is a file anyone
-    /// may run. A name not found is handed on as it is, for the kernel to fail as exec does.
-    pub(crate) fn program(&self, name: &str, env: &[String], cwd: &str) -> String {
+    /// may run. None for a name with no slash found in none of them; a path with a slash is the
+    /// kernel's to fail as exec does.
+    pub(crate) fn program(&self, name: &str, env: &[String], cwd: &str) -> Option<String> {
         if name.contains('/') {
-            return if name.starts_with('/') {
+            return Some(if name.starts_with('/') {
                 name.to_string()
             } else {
                 format!("{}/{name}", cwd.trim_end_matches('/'))
-            };
+            });
         }
         let path = env
             .iter()
@@ -366,20 +367,37 @@ impl Image {
                     Some(Entry { attributes, kind: Kind::Regular(_) }) if attributes.mode & 0o111 != 0
                 )
             })
-            .unwrap_or_else(|| name.to_string())
     }
 
-    /// Puts the files in a new kernel's root, directories before what they hold and hard links last.
-    pub(crate) fn add_to(&self, kernel: &mut Kernel) -> Result<(), Error> {
+    /// Puts the files in a new kernel's root, directories before what they hold and hard links last,
+    /// with the files Docker writes in every container in place of the image's own.
+    pub(crate) fn add_to(&self, kernel: &mut Kernel, hostname: &str) -> Result<(), Error> {
+        let written = docker_files(hostname);
+        let etc = match self.files.get(&b"etc"[..]) {
+            None => Some((b"etc".to_vec(), docker_file(0o755, Kind::Directory))),
+            Some(Entry {
+                kind: Kind::Directory,
+                ..
+            }) => None,
+            Some(_) => {
+                return Err(Error::Image(
+                    "/etc is not a directory, where the host name and name server files go".into(),
+                ));
+            }
+        };
         let hard_links = self
             .files
             .iter()
             .filter(|(_, entry)| matches!(entry.kind, Kind::HardLink(_)));
-        let others = self
-            .files
+        let others = self.files.iter().filter(|(path, entry)| {
+            !matches!(entry.kind, Kind::HardLink(_))
+                && !written.iter().any(|(ours, _)| ours == *path)
+        });
+        let added = etc
             .iter()
-            .filter(|(_, entry)| !matches!(entry.kind, Kind::HardLink(_)));
-        for (path, entry) in others.chain(hard_links) {
+            .chain(&written)
+            .map(|(path, entry)| (path, entry));
+        for (path, entry) in others.chain(added).chain(hard_links) {
             let file = match &entry.kind {
                 Kind::Directory => NewFile::Directory,
                 Kind::Regular(bytes) => NewFile::Regular(bytes),
@@ -401,6 +419,40 @@ impl Image {
                 })?;
         }
         Ok(())
+    }
+}
+
+/// What Docker writes over its mounts in every container: the host name, the hosts file with the
+/// kernel's made-up address for it, and the kernel's name server.
+fn docker_files(hostname: &str) -> [(Vec<u8>, Entry); 3] {
+    let [a, b, c, d] = wcontainers_kernel::network::ADDRESS;
+    let [e, f, g, h] = wcontainers_kernel::network::NAME_SERVER;
+    let hosts = format!(
+        "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\nfe00::\tip6-localnet\n\
+         ff00::\tip6-mcastprefix\nff02::1\tip6-allnodes\nff02::2\tip6-allrouters\n\
+         {a}.{b}.{c}.{d}\t{hostname}\n"
+    );
+    let file = |bytes: String| docker_file(0o644, Kind::Regular(bytes.into_bytes()));
+    [
+        (b"etc/hostname".to_vec(), file(format!("{hostname}\n"))),
+        (b"etc/hosts".to_vec(), file(hosts)),
+        (
+            b"etc/resolv.conf".to_vec(),
+            file(format!("nameserver {e}.{f}.{g}.{h}\n")),
+        ),
+    ]
+}
+
+/// An entry owned by root, dated at 0 so that a run repeats.
+fn docker_file(mode: u32, kind: Kind) -> Entry {
+    Entry {
+        attributes: Attributes {
+            mode,
+            uid: 0,
+            gid: 0,
+            mtime_seconds: 0,
+        },
+        kind,
     }
 }
 
@@ -759,13 +811,17 @@ mod tests {
                 ("bin/sh", "->busybox"),
                 ("usr/", ""),
                 ("usr/bin", "->../bin"),
+                ("tmp/", ""),
+                ("tmp/run", "\x7fELF"),
             ]],
             None,
         );
         let env = ["PATH=/usr/local/bin:/usr/bin".to_string()];
-        assert_eq!(image.program("sh", &env, "/"), "/usr/bin/sh");
-        assert_eq!(image.program("ls", &env, "/"), "ls");
-        assert_eq!(image.program("./run", &env, "/tmp"), "/tmp/./run");
+        let found = |name, cwd| image.program(name, &env, cwd);
+        assert_eq!(found("sh", "/").as_deref(), Some("/usr/bin/sh"));
+        // Never from the working directory, which holds it.
+        assert_eq!(found("run", "/tmp"), None);
+        assert_eq!(found("./run", "/tmp").as_deref(), Some("/tmp/./run"));
     }
 
     #[test]

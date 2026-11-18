@@ -114,6 +114,11 @@ refused! {
     mounts_absent: "mounts", |v| { v.as_object_mut().unwrap().remove("mounts"); };
     linux_absent: "linux.namespaces", |v| { v.as_object_mut().unwrap().remove("linux"); };
     a_kernel_mount_left_out: "mounts", |v| { v["mounts"].as_array_mut().unwrap().remove(3); };
+    kernel_mounts_in_another_order: "mounts[1]", |v| v["mounts"].as_array_mut().unwrap().swap(1, 2);
+    a_kernel_mount_repeated: "mounts[6]", |v| {
+        let first = v["mounts"][0].clone();
+        v["mounts"].as_array_mut().unwrap().push(first);
+    };
     an_id_mapped_mount: "mounts[0].uidMappings", |v| v["mounts"][0]["uidMappings"] =
         json!([{"containerID": 0, "hostID": 1000, "size": 1}]);
     process_absent: "process", |v| { v.as_object_mut().unwrap().remove("process"); };

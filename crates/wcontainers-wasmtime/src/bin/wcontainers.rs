@@ -22,7 +22,11 @@ fn main() -> ExitCode {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("wcontainers: {error}");
-            ExitCode::from(125)
+            // As Docker: 127 for a program not found, 125 for the runtime's own failures.
+            match error.downcast_ref::<wcontainers_runtime::Error>() {
+                Some(wcontainers_runtime::Error::NotFound(_)) => ExitCode::from(127),
+                _ => ExitCode::from(125),
+            }
         }
     }
 }

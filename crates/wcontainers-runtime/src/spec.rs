@@ -245,9 +245,11 @@ pub(crate) fn accept(spec: &Spec) -> Result<Accepted, Error> {
         args,
         env: process.env().clone().unwrap_or_default(),
         cwd,
+        // As runc, an empty name sets none.
         hostname: spec
             .hostname()
             .clone()
+            .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "localhost".to_string()),
         groups: process.user().additional_gids().clone().unwrap_or_default(),
         uid: process.user().uid(),
@@ -275,7 +277,8 @@ fn root(value: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-/// The mounts must be the kernel's own, each as it makes it: it makes all of them, and no others.
+/// The mounts must be the kernel's own, each as it makes it and in its order: it makes all of them,
+/// once each, and no others, and the standard makes them in the listed order.
 fn check_mounts(value: &Value) -> Result<(), Error> {
     let kernel = mounts();
     let kernel = kernel.as_array().expect("a list");
@@ -289,6 +292,12 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
             .collect();
         options.sort();
         options
+    };
+    let same = |ours: &Value, mount: &Value| {
+        ours["destination"] == mount["destination"]
+            && ours["type"] == mount["type"]
+            && ours["source"] == mount["source"]
+            && options(ours) == options(mount)
     };
     for (index, mount) in given.iter().enumerate() {
         let field = format!("mounts[{index}]");
@@ -304,13 +313,7 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
                 "id-mapped mounts: user namespaces in the kernel",
             ));
         }
-        let same = kernel.iter().find(|ours| {
-            ours["destination"] == mount["destination"]
-                && ours["type"] == mount["type"]
-                && ours["source"] == mount["source"]
-                && options(ours) == options(mount)
-        });
-        if same.is_none() {
+        if !kernel.iter().any(|ours| same(ours, mount)) {
             return Err(refused(
                 field,
                 format!(
@@ -335,6 +338,25 @@ fn check_mounts(value: &Value) -> Result<(), Error> {
                 ),
             ));
         }
+    }
+    if let Some(index) = (0..given.len()).find(|&index| {
+        kernel
+            .get(index)
+            .is_none_or(|ours| !same(ours, &given[index]))
+    }) {
+        let order: Vec<&str> = kernel
+            .iter()
+            .filter_map(|ours| ours["destination"].as_str())
+            .collect();
+        return Err(refused(
+            format!("mounts[{index}]"),
+            format!(
+                "{}: the kernel makes its mounts once each, in the order {}; another order or a \
+                 repeat needs the kernel to take its mounts at start",
+                given[index],
+                order.join(", ")
+            ),
+        ));
     }
     Ok(())
 }

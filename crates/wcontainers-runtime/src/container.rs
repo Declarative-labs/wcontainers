@@ -49,6 +49,9 @@ pub enum Error {
     Configuration(String),
     /// The image is not one this runtime reads.
     Image(String),
+    /// `process.args[0]` has no slash and is in no directory of the process's `PATH`, which runc
+    /// refuses too.
+    NotFound(String),
     Io {
         path: PathBuf,
         error: std::io::Error,
@@ -61,6 +64,10 @@ impl std::fmt::Display for Error {
             Error::Refused { field, reason } => write!(f, "{field} is not supported: {reason}"),
             Error::Configuration(what) => write!(f, "the configuration: {what}"),
             Error::Image(what) => write!(f, "the image: {what}"),
+            Error::NotFound(name) => write!(
+                f,
+                "process.args[0] {name:?}: executable file not found in $PATH"
+            ),
             Error::Io { path, error } => write!(f, "{}: {error}", path.display()),
         }
     }
@@ -99,16 +106,18 @@ impl<B: BackEnd> Runtime<B> {
                 B::ARCHITECTURE
             )));
         }
-        let mut kernel = Kernel::new();
-        image.add_to(&mut kernel)?;
-        let mut cpu = B::new(&self.shared, tuning, &machine.offer);
-        outside.stop_flag(cpu.stop_flag());
         let mut env = accepted.env;
         // As runc: a process without HOME gets its user's home directory.
         if !env.iter().any(|variable| variable.starts_with("HOME=")) {
             env.push(format!("HOME={}", image.home(accepted.uid)));
         }
-        let path = image.program(&accepted.args[0], &env, &accepted.cwd);
+        let path = image
+            .program(&accepted.args[0], &env, &accepted.cwd)
+            .ok_or_else(|| Error::NotFound(accepted.args[0].clone()))?;
+        let mut kernel = Kernel::new();
+        image.add_to(&mut kernel, &accepted.hostname)?;
+        let mut cpu = B::new(&self.shared, tuning, &machine.offer);
+        outside.stop_flag(cpu.stop_flag());
         let arguments: Vec<&[u8]> = accepted.args.iter().map(|a| a.as_bytes()).collect();
         let environment: Vec<&[u8]> = env.iter().map(|v| v.as_bytes()).collect();
         kernel.start(
