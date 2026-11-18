@@ -37,6 +37,8 @@ fn geometry_shaders_declare_what_they_are() {
         ("gs_instances", 3, 3, 3, 3),
         ("gs_lines", 2, 3, 2, 1),
         ("gs_points", 1, 4, 1, 1),
+        ("gs_adjacent", 6, 3, 3, 1),
+        ("gs_line_adjacent", 4, 4, 2, 1),
     ];
     let vertex = vertex();
     for (name, inputs, max, outputs, instances) in expected {

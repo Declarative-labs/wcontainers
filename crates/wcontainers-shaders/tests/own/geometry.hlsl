@@ -109,6 +109,33 @@ void gs_points(point GsIn p[1], inout PointStream<GsOut> stream) {
     }
 }
 
+// Each triangle with adjacency becomes its own triangle (vertices 0, 2, 4), each vertex coloured by
+// the adjacent vertex after it.
+[maxvertexcount(3)]
+void gs_adjacent(triangleadj GsIn t[6], uint primitive : SV_PrimitiveID,
+                 inout TriangleStream<GsOut> stream) {
+    for (uint i = 0; i < 6; i += 2) {
+        GsOut o;
+        o.position = t[i].position;
+        o.colour = t[i + 1].colour;
+        o.ids = uint4(t[i].ids.x, t[i + 1].ids.x, primitive, 0);
+        stream.Append(o);
+    }
+}
+
+// Each line with adjacency becomes a line strip through its four vertices.
+[maxvertexcount(4)]
+void gs_line_adjacent(lineadj GsIn l[4], uint primitive : SV_PrimitiveID,
+                      inout LineStream<GsOut> stream) {
+    for (uint i = 0; i < 4; i++) {
+        GsOut o;
+        o.position = l[i].position;
+        o.colour = l[i].colour * tint;
+        o.ids = uint4(l[i].ids, primitive, i);
+        stream.Append(o);
+    }
+}
+
 float4 ps_geometry(GsOut i) : SV_Target0 {
     return float4(i.colour.rgb, 1.0) * 0.75 + float4((i.ids % 4) / 16.0);
 }

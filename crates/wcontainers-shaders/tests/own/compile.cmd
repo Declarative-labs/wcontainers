@@ -60,7 +60,7 @@ for %%e in (ps_dual ps_levels ps_samples ps_ids ps_minlod ps_mingather ps_mirror
 "%DXC%" -nologo -T ps_6_0 -E ps_filter -Gis -Fo ps_filter.dxil filter.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_geometry /Fo vs_geometry.dxbc geometry.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_geometry /Fo ps_geometry.dxbc geometry.hlsl || exit /b 1
-for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points) do (
+for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_adjacent gs_line_adjacent) do (
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Gis -Fo %%e.dxil geometry.hlsl || exit /b 1
 )

@@ -1,5 +1,7 @@
+gs_adjacent.dxil	spirv-reader unsupported
 gs_cut.dxil	spirv-reader unsupported
 gs_instances.dxil	spirv-reader unsupported
+gs_line_adjacent.dxil	spirv-reader unsupported
 gs_lines.dxil	spirv-reader unsupported
 gs_points.dxil	spirv-reader unsupported
 gs_quads.dxil	spirv-reader unsupported

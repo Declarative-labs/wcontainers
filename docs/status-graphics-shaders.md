@@ -537,13 +537,15 @@ Run 16 (the stage helper, first part: geometry shaders on WebGPU):
 - New own shaders (`geometry.hlsl`, fxc, and dxc for the geometry shaders): `vs_geometry`,
   `ps_geometry`, `gs_quads` (points to quads), `gs_cut` (none, one or two triangles by primitive
   number, a cut and a four-vertex strip), `gs_instances` (`[instance(3)]`), `gs_lines` (line strips),
-  `gs_points` (a varying number of points). Every other own shader recompiled byte for byte as
+  `gs_points` (a varying number of points), `gs_adjacent` (triangles with adjacency),
+  `gs_line_adjacent` (lines with adjacency). Every other own shader recompiled byte for byte as
   committed.
 - `tests/geometry.rs` (any machine): what each declares, both modules and the vertex compute form
   validate, the cache record round-trips with both modules' keys, the refusals.
-  `tests/geometry_draw.rs` (Windows, GPU job): nine cases (point, line, triangle lists and strips,
-  indexed with base vertices, API instances with first instances, geometry instances) per seed of
-  64 vertices, through the WebGPU back end against real Direct3D 11 on the RTX 3080.
+  `tests/geometry_draw.rs` (Windows, GPU job): thirteen cases (point, line, triangle lists and
+  strips, line lists and strips and triangle lists with adjacency, indexed with base vertices, API
+  instances with first instances, geometry instances) per seed of 64 vertices, through the WebGPU
+  back end against real Direct3D 11 on the RTX 3080.
 - Corpus records: the rig's `geometry.gs_adjacency`, `gs_points`, `gs_strips` and `streamout.gs`
   now convert (stream output is declared to the API, not in the bytecode); `gs_layers` is refused
   `RenderTargetArrayIndex`, `raster.gs` `ViewportArrayIndex`.
@@ -756,9 +758,9 @@ let reflection = &converted.reflection;
 
 Run 16, 2026-11-17, counts only:
 - `tests/geometry_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2 s,
-  scratch `run16/geometry6.log`): seeds 1 to 4, nine cases each, WebGPU (wgpu's Direct3D 12 path)
-  against real Direct3D 11: 36 comparisons, 0 of 4096 texels differ in every one (allowance 0);
-  Direct3D draws 59 to 1468 texels per picture. Before the test gave the vertex stage the draw's
+  scratch `run16/geometry7.log`): seeds 1 to 4, thirteen cases each, WebGPU (wgpu's Direct3D 12
+  path) against real Direct3D 11: 52 comparisons, 0 of 4096 texels differ in every one (allowance
+  0); Direct3D draws 59 to 1468 texels per picture. Before the test gave the vertex stage the draw's
   bases (`run16/geometry5.log`), the cases with a first vertex, base vertex or first instance
   differed, as Direct3D's vertex and instance numbers leave the bases out.
 - Laptop (i7-8750H, load average 0 to 0.6): the suite without the ignored corpora passes after
@@ -1228,6 +1230,10 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `~/wcontainers-graphics/out/<corpus>`. The 191-shader corpus test is ignored without
   `--include-ignored` and fails without `WCONTAINERS_SHADER_CORPUS`; glslang runs only with both
   `GLSLANG` and `WCONTAINERS_SHADERS_OUT`.
+- Geometry shaders through the stage helper (Windows, one GPU job, about 2 s for 4 seeds):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test geometry_draw --no-run" -- "set WCONTAINERS_GEOMETRY_SEED=1&& set WCONTAINERS_GEOMETRY_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test geometry_draw -- --nocapture --test-threads 1"`.
+  Each comparison prints the texels Direct3D drew and how many differ; with
+  `WCONTAINERS_SHADERS_OUT` the pictures are kept.
 - Filtering in the program (Windows, one GPU job, about 90 s for 8 seeds):
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test filter_draw --no-run" -- "set WCONTAINERS_FILTER_SEED=1&& set WCONTAINERS_FILTER_CASES=8&& cargo test -j 3 -p wcontainers-shaders --test filter_draw -- --nocapture --test-threads 1"`.
   Each comparison prints texels apart from both references, from each, and before moving the level
@@ -1382,7 +1388,7 @@ were already there.
   cull distances through a geometry shader, the last vertex stage's variants on its pass-through
   program (so a geometry shader draws only where WebGPU has what those variants stand in for), DXIL
   geometry shaders. Stream output and tessellation are not built. Its buffers grow and are never
-  shrunk. Line and triangle adjacency lists are converted but not drawn yet.
+  shrunk.
 
 - Anisotropic filtering in the program (`filter_in_shader`, `border_in_shader`) is a known failure
   of `tests/filter_draw.rs`: the footprint is the implementation's own (the RTX 3080's and WARP's

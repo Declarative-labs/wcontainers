@@ -1,5 +1,7 @@
+gs_adjacent.dxbc	ok-wgsl glsl-write
 gs_cut.dxbc	ok-wgsl glsl-write
 gs_instances.dxbc	ok-wgsl glsl-write
+gs_line_adjacent.dxbc	ok-wgsl glsl-write
 gs_lines.dxbc	ok-wgsl glsl-write
 gs_points.dxbc	ok-wgsl glsl-write
 gs_quads.dxbc	ok-wgsl glsl-write

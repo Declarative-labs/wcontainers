@@ -39,7 +39,7 @@ struct Case {
     indexed: Option<i32>,
 }
 
-const CASES: [Case; 9] = [
+const CASES: [Case; 13] = [
     Case {
         gs: "gs_quads",
         topology: InputTopology::PointList,
@@ -121,6 +121,42 @@ const CASES: [Case; 9] = [
         first_instance: 0,
         indexed: None,
     },
+    Case {
+        gs: "gs_adjacent",
+        topology: InputTopology::TriangleListAdjacency,
+        count: 18,
+        first: 2,
+        instances: 1,
+        first_instance: 0,
+        indexed: None,
+    },
+    Case {
+        gs: "gs_adjacent",
+        topology: InputTopology::TriangleListAdjacency,
+        count: 12,
+        first: 0,
+        instances: 2,
+        first_instance: 3,
+        indexed: Some(4),
+    },
+    Case {
+        gs: "gs_line_adjacent",
+        topology: InputTopology::LineListAdjacency,
+        count: 12,
+        first: 1,
+        instances: 1,
+        first_instance: 0,
+        indexed: None,
+    },
+    Case {
+        gs: "gs_line_adjacent",
+        topology: InputTopology::LineStripAdjacency,
+        count: 9,
+        first: 0,
+        instances: 1,
+        first_instance: 0,
+        indexed: None,
+    },
 ];
 
 fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
@@ -130,7 +166,10 @@ fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
         InputTopology::LineStrip => D3D_PRIMITIVE_TOPOLOGY_LINESTRIP,
         InputTopology::TriangleList => D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
         InputTopology::TriangleStrip => D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
-        _ => unreachable!(),
+        InputTopology::LineListAdjacency => D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ,
+        InputTopology::LineStripAdjacency => D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ,
+        InputTopology::TriangleListAdjacency => D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ,
+        InputTopology::TriangleStripAdjacency => D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ,
     }
 }
 
