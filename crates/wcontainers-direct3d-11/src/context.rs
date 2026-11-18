@@ -264,15 +264,13 @@ fn primitives(t: u32, count: u32) -> u64 {
 }
 
 /// Direct3D's answer to a copy between textures of DXGI formats `a` and `b`: formats of one typeless
-/// group copy their bits; Direct3D 10.1's conversions between groups are not served yet; others are
+/// group, and from feature level 10_1 its conversions between groups, copy their bits; others are
 /// invalid.
-fn copy_formats(a: u32, b: u32) -> Result<()> {
-    if format::typeless_group(a) == format::typeless_group(b) {
+fn copy_formats(a: u32, b: u32, level: u32) -> Result<()> {
+    if format::typeless_group(a) == format::typeless_group(b)
+        || (level >= desc::level::L10_1 && format::copy_cast(a, b))
+    {
         Ok(())
-    } else if format::copy_cast(a, b) {
-        not_implemented(
-            "copies between a block-compressed or shared-exponent format and an integer one",
-        )
     } else {
         Err(Error::InvalidArg(
             "a copy between formats of different groups",
@@ -2669,23 +2667,26 @@ impl<B: Backend> Device<B> {
             }
             (Resource::Texture(d), Resource::Texture(s)) => {
                 let (a, b) = (&d.desc, &s.desc);
-                let shape = |t: &TextureDesc| {
+                // Measured in blocks: a block-compressed texture copies with an uncompressed one
+                // whose texels are its blocks.
+                let shape = |t: &TextureDesc, f: Format| {
+                    let (bw, bh, _) = f.block();
                     (
                         t.dimension,
-                        t.width,
-                        t.height,
+                        t.width.div_ceil(bw),
+                        t.height.div_ceil(bh),
                         t.depth,
                         t.mip_levels,
                         t.array_size,
                         t.sample_count,
                     )
                 };
-                if shape(a) != shape(b) || Rc::ptr_eq(d, s) {
+                if shape(a, d.format) != shape(b, s.format) || Rc::ptr_eq(d, s) {
                     return Err(Error::InvalidArg(
                         "CopyResource needs two textures of one shape",
                     ));
                 }
-                copy_formats(a.format, b.format)?;
+                copy_formats(a.format, b.format, self.feature_level())?;
                 for sub in 0..a.mip_levels * a.array_size {
                     self.copy_subresource_region(dst, sub, [0; 3], src, sub, None)?;
                 }
@@ -2730,7 +2731,7 @@ impl<B: Backend> Device<B> {
                 self.buffer_written(d)
             }
             (Resource::Texture(d), Resource::Texture(s)) => {
-                copy_formats(d.desc.format, s.desc.format)?;
+                copy_formats(d.desc.format, s.desc.format, self.feature_level())?;
                 let (Some((src_mip, src_layer)), Some((dst_mip, dst_layer))) =
                     (s.subresource(src_sub), d.subresource(dst_sub))
                 else {
@@ -2760,14 +2761,17 @@ impl<B: Backend> Device<B> {
                     height: b.bottom - b.top,
                     depth_or_layers: b.back - b.front,
                 };
-                if at[0] + extent.width > de.width
-                    || at[1] + extent.height > de.height
+                // The destination's extent covers the same blocks; a block-compressed level is
+                // as large as its whole blocks.
+                let ((sbw, sbh, _), (dbw, dbh, _)) = (s.format.block(), d.format.block());
+                if at[0] + extent.width.div_ceil(sbw) * dbw > de.width.div_ceil(dbw) * dbw
+                    || at[1] + extent.height.div_ceil(sbh) * dbh > de.height.div_ceil(dbh) * dbh
                     || at[2] + extent.depth_or_layers > de.depth_or_layers
                 {
                     return Ok(());
                 }
-                // Depth-stencil subresources are copied whole; Direct3D drops a part.
-                if s.format.kind() == FormatKind::DepthStencil
+                // Subresources of depth-stencil textures are copied whole; Direct3D drops a part.
+                if (s.desc.bind_flags | d.desc.bind_flags) & desc::bind::DEPTH_STENCIL != 0
                     && (at != [0; 3]
                         || (extent.width, extent.height) != (se.width, se.height)
                         || (de.width, de.height) != (se.width, se.height))
