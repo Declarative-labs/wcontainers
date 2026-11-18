@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
 done
 out="C:\\wc\\out\\$name"
 if [ -z "$record" ]; then
-    exec "$here/gpu-job" "${kind[@]}" --desktop --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run check $out\\scenes ${args[*]-}"
+    exec "$here/gpu-job" ${kind[@]+"${kind[@]}"} --desktop --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run check $out\\scenes ${args[*]-}"
 fi
 [ ${#args[@]} -eq 0 ] || { echo "scenes: --record takes no other arguments" >&2; exit 2; }
 "$here/gpu-job" --reference --desktop --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run record $out\\record"
