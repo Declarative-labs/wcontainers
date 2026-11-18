@@ -76,6 +76,16 @@ if ($Built) {
     if ($builtFrom -ne $Tree) { throw "C:\wc\target\$Name holds a build of $builtFrom, not of $Tree; another remote ran after this job's build" }
 }
 
+# The display driver's resets (a GPU hang the driver recovered from, which also blanks the owner's
+# screen) and errors logged between two times, one line each.
+function DisplayResets([datetime]$From, [datetime]$To) {
+    @(Get-WinEvent -ErrorAction SilentlyContinue -FilterHashtable @{
+            LogName = 'System'; ProviderName = 'Display', 'nvlddmkm'; StartTime = $From; EndTime = $To; Level = 1, 2, 3 } |
+        Sort-Object TimeCreated |
+        ForEach-Object { '{0:HH:mm:ss} {1} {2}: {3}' -f $_.TimeCreated, $_.ProviderName, $_.Id, "$($_.Message)".Split("`n")[0].Trim() })
+}
+
+$started = Get-Date
 try {
     if ($Alone) {
         & $pueue -c $config pause --group default --wait | Out-Null
@@ -99,5 +109,15 @@ try {
 } finally {
     if ($Alone) { & $pueue -c $config start --group default | Out-Null }
     $lock.Close()
+}
+# A reset during the job fails it, whichever job beside it caused it, and is kept in a log.
+$resets = DisplayResets $started (Get-Date).AddSeconds(2)
+if ($resets) {
+    $notes.Add("job: FAIL, the display driver was reset or logged errors while this job ran (by it or a job beside it):")
+    $resets | ForEach-Object { $notes.Add("job:   $_") }
+    New-Item -ItemType Directory -Force C:\wc\logs | Out-Null
+    [IO.File]::AppendAllLines('C:\wc\logs\display-resets.log',
+        [string[]](@("{0:yyyy-MM-dd HH:mm:ss} job of $Name ($Tree): {1}" -f $started, $text) + $resets))
+    if ($code -eq 0) { $code = 1 }
 }
 Finish $code

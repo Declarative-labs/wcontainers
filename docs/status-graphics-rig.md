@@ -6,13 +6,12 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 ## Where things stand
 
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done and checked.
-R1 (the Direct3D reference library): the ninth run (2026-11-17) fixed the seven findings of the
-eighth run's check (see "Ninth run" under Measurements): program references are recorded over ten
-runs with stray pixels allowed (atg-simplemsaa_pc failed on real Direct3D), the bgfx examples are
-ones drawing no assets without a licence, more 10_0 ground runs at 10_0, a copy of the program
-outputs no longer drags the binaries along, the Direct3D 12 stencil scene draws from Direct3D 11's
-table, a timestamp query a replacement never answers fails the program, and Wine tests failing
-some checks on real Direct3D are held to the rest. R1 waits for the orchestrator's check. Its parts:
+R1 (the Direct3D reference library): the tenth run (2026-11-17) fixed the three findings of the
+ninth run's check (see "Tenth run" under Measurements): stray pixels no longer count the ignored
+readout, and each run of a program recording is its own job; a GPU job during which the display
+driver resets fails and is logged (which found a Wine test that hangs the GPU on real Direct3D,
+now excluded); Wine tests failing on real Direct3D are held to the exact evaluations it fails,
+and to the checks run before a crash. R1 waits for the orchestrator's check. Its parts:
 - Jobs that present run on a hidden desktop ("wc-rig") in the session of the user logged in at the
   console (`gpu-job --desktop`, see How to run): windows and swap chains work there and nothing
   shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
@@ -28,7 +27,7 @@ some checks on real Direct3D are held to the rest. R1 waits for the orchestrator
   WebGL 2 route's level in the plan) and 1 more at 10_1, with parts needing more marked absent.
 - Part 2, conformance tests: Wine's d3d11, d3d10core, dxgi and d3d12 test files and vkd3d's
   d3d12, d3d12_invalid_usage, hlsl_d3d12 tests and shader runner (8 files), each test in its own
-  process, chosen by name; 19 Wine tests that would change the owner's screen are never run
+  process, chosen by name; 20 Wine tests that would change the owner's screen or hang the GPU are never run
   (wine-excluded.txt). Baselines on the RTX 3080 and WARP in tools/graphics-rig/wine-baseline. A
   test passes only if it has no failure and runs at least as many checks, and skips no more, than
   on real Direct3D.
@@ -75,7 +74,11 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   output in files the job then prints; leftover processes are killed when the command ends. It
   fails after 30 s with a message when nobody is logged in. Prints the job's standard output on standard output and its
   standard error, the wrapper's messages and a timing line on standard error; exits with the job's
-  code (125: the queue client or the job's wrapper failed, with a message saying which).
+  code (125: the queue client or the job's wrapper failed, with a message saying which). A job
+  during which the System log got a Display or nvlddmkm warning or error (event 4101: the display
+  driver stopped responding and was reset, which blanks the owner's screen for a moment) fails
+  (exit 1 if the command gave 0) with "job: FAIL, the display driver was reset ..." and the events,
+  whichever job beside it caused it, and the events are added to C:\wc\logs\display-resets.log.
 - `tools/graphics-rig/queue-check`: sends the working tree, then on an idle queue submits sleeping jobs
   and checks that two jobs run together, that of twice as many jobs as slots submitted together
   exactly as many as there are slots run at once, that a later priority-10 job starts before an
@@ -206,13 +209,16 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   first, as other tracks' checkouts run the same command). Example:
   `wine-tests run d3d11:test_blend/test_texture` or
   `wine-tests run vkd3d-shader_runner:hlsl+abs.shader_test`. A test failing checks on real
-  Direct3D is held to every other check: the baseline's <file>-<driver>.failures lists each check
-  it failed (what Wine or vkd3d prints before "Test failed": file, line and context) and how often,
-  and a test passes only if it fails no check more often than real Direct3D ("FAIL, n checks fail
-  that real Direct3D passes ..."), runs as many checks, skips no more and does not crash where real
-  Direct3D did not. `--record` runs each test that does not pass twice; one whose failed checks
-  differ between the two is marked unstable in the baseline and only that kind is "known" (not
-  counted). A whole run of all eight files takes
+  Direct3D is held to every other check, evaluation by evaluation: it runs with every check
+  reported (WINETEST_REPORT_SUCCESS=1, VKD3D_TEST_DEBUG=2), so the n-th time a place in the source
+  (file:line) is checked is known; the baseline's <file>-<driver>.failures lists, for each place,
+  the evaluations real Direct3D failed (`test_x d3d11.c:17048 8-9,11-13,24-44`), and the test
+  passes only if it fails no other evaluation ("FAIL, n checks fail that real Direct3D passes, the
+  first (d3d11.c:17049#8): <its line>"), runs as many checks (for a test that crashed on real
+  Direct3D, the checks it reported before the crash), skips no more and does not crash where real
+  Direct3D did not. `--record` runs each test that does not pass twice more with every check
+  reported; one whose failed evaluations or number of checks differ between the two is marked
+  unstable in the baseline and only that kind is "known" (not counted). A whole run of all eight files takes
   about 9 minutes on the GPU, most of it the shader runner (about 1 s a file). vkd3d's tests give
   their verdict by vkd3d's summary line; on Windows its "todo" marks count as plain checks.
 - `tools/graphics-rig/programs build`: fetches the real programs at pinned commits (or downloads
@@ -257,12 +263,13 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   licences; tools/graphics-rig/program-references/<program> in the repository holds
   tolerances.txt and frames.sha256, and a program whose desktop references do not have those
   hashes fails ("run programs run --record"). `--record` (real Direct3D only) runs each program
-  `--runs` times (default 10), keeps the first run's frames, writes the tiles the other runs
-  changed as allowed and, as `stray`, the most pixels beyond the tolerance any other run had (a few
-  edge pixels of a multisampled mesh change on real Direct3D in tiles that move from job to job;
-  these may fall anywhere), prints after each run how many tiles the runs so far changed (to see
-  whether more runs would find more), and leaves out the tiles meeting a program's `ignore`
-  rectangle (bgfx's GPU memory readout, see programs.ps1); when a frame had more than a twentieth
+  `--runs` times (default 10), each run in its own GPU job (the last job records), keeps the first
+  run's frames, writes the tiles the other runs changed as allowed and leaves out the tiles meeting
+  a program's `ignore` rectangle (bgfx's GPU memory readout, see programs.ps1); as `stray` it
+  writes the most pixels one run had beyond the tolerance outside the ignored tiles (a few edge
+  pixels of a multisampled mesh change on real Direct3D in tiles that move from job to job; these
+  may fall anywhere), and prints after each run how many tiles
+  the runs so far changed (to see whether more runs would find more); when a frame had more than a twentieth
   of its tiles changed, the program drifts, and all its frames are written "unrepeatable" and
   reported as "not compared". It copies tolerances.txt and frames.sha256 into the checkout, to be
   committed. Each run's outputs on the desktop replace the last run's, and the copies of the
@@ -318,9 +325,9 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   (steps of a channel, or a float value). Prints pixel count, how many differ in any channel by more
   than the tolerance, the largest channel difference and the first differing pixel. Exit 0 when
   none differ beyond the tolerance, 1 when some do, 2 on error.
-- Tests: `cargo test -p wcontainers-graphics-test -p wcontainers-graphics-test-forward` (12 unit tests:
+- Tests: `cargo test -p wcontainers-graphics-test -p wcontainers-graphics-test-forward` (13 unit tests:
   comparison at each depth, NaN, counting per tile, the WARP allowance per tile, the allowance from
-  repeated runs, stray pixels, outputs without references, absent notes and lower capability
+  repeated runs, stray pixels and how they are counted, outputs without references, absent notes and lower capability
   answers) on the Mac or through `remote`; clippy with `-D warnings` on both machines,
   since most of the code is Windows-only; `shellcheck -x tools/graphics-rig/*` (minus the .cmd) for
   the Mac scripts.
@@ -911,6 +918,55 @@ check:
   `wine-tests run d3d11`: 166 counted, 0 FAIL (job 60 s); `programs run --dll
   d3d11.dll=<forwarding library> atg-simplemsaa_pc bgfx-26-occlusion`: both pass.
 
+Tenth run (2026-11-17, 19:49 to 21:30; desktop reachable throughout, owner at the console, other
+tracks' jobs beside ours; Mac load average 16 to 18). It fixed the three findings of the ninth
+run's check:
+- Stray pixels (blocking): they were the total pixels any repeated run differed in, the bgfx GPU
+  memory readout included, so bgfx-26-occlusion, 35-dynamic and 37-gpudrivenrendering allowed 52
+  to 173 pixels anywhere. Tried first: each run held to the tiles the other runs changed (leave
+  one out). bgfx then got 0, but atg-simplemsaa_pc too little: recorded over 10 runs in one job
+  (stray 2, 2, 0), 8 of 8 separate jobs passed, over 20 runs in one job 8 of 10, and with each run
+  its own job (new, `programs run --record` now does that) over 10 runs 11 of 12 and over 30 runs
+  17 of 20, every failure 2 pixels by 9 to 11 steps in a tile no recording run had changed. Its
+  unstable pixels move between tiles from job to job, so the rule now is the most pixels one run
+  had beyond the tolerance outside the ignored tiles. atg-simplemsaa_pc over 30 runs, each its own
+  job (4 min 10 s): stray 2, 11 and 11 (frames 10, 120, 60), changed tiles 4, 9 and 4, still
+  growing after the twentieth run; then 20 of 20 separate jobs passed, using at most 2 stray
+  pixels. Every other program recorded again over 10 runs, each its own job (16 min 30 s; about
+  1 min 40 s a job): tutorials, Tool Kit samples, Doom and Godot's four repeat exactly; the bgfx
+  examples change only their 60 ignored tiles (stray 0 now); bgfx-24-nbody unrepeatable as
+  before (700 tiles at frame 120). `programs run`: 21 of 21 pass (job 1 min 55 s). The check's
+  break, its frame-60 of bgfx-26-occlusion with a 12 by 12 magenta square at 640,400, against the
+  new references with `gt-run frames`: FAIL ("1 tiles of 16 by 16 beyond their allowance, the
+  worst at 640,400: 144 pixels, allowed 0"); its unpainted copy passes (174 pixels, all in the
+  readout).
+- Driver resets: each GPU job now reads the System log for Display and nvlddmkm warnings and
+  errors over its own time and fails with them (gpu-job). The query was checked on the check's
+  break (19:35:32 to 19:35:38: nvlddmkm 153 and Display 4101 found; 19:36 to 19:40: none). Its
+  first catch: the GPU Wine recording failed with a reset at 20:37:38, inside dxgi
+  test_swapchain_backbuffer_index (log written 20:37:36.7 to 20:37:39.8; its Direct3D 12 part got
+  0x887A0005 on real Direct3D), so that test is now excluded; the webgl track's job running beside
+  it was failed too, as the rule says. No reset in any later job of this run.
+- Wine checks in loops: a check is now its place in the source and which evaluation of it, and a
+  test real Direct3D does not pass runs with every check reported, so a replacement must fail the
+  very evaluations real Direct3D fails (test_clear_buffer_unordered_access_view: d3d11.c:17048
+  evaluations 8-9,11-13,24-44,46-53, not any 34), and a test that crashed on real Direct3D records
+  the checks run before the crash (vkd3d-d3d12 test_copy_block_compressed_texture 15 on the GPU and
+  16 on WARP; the 11 shader runner files crashing on WARP 316 to 1881). Baselines recorded again
+  (GPU job 8 min 2 s, WARP 4 min 0 s), none unstable; `wine-tests run`: 800 counted, 0 FAIL on
+  the GPU (8 min 1 s) and on WARP (2 min 53 s); one fewer than before, the excluded test. Breaks
+  on a recording of four tests: evaluation 8 of d3d11.c:17049 taken out of the allowed ones failed
+  test_clear_buffer_unordered_access_view ("1 checks fail that real Direct3D passes, the first
+  (d3d11.c:17049#8) ..."), and the crash test's recorded checks raised from 15 to 16 failed it
+  ("ran 15 checks (real Direct3D 16)"); both passed again when put back.
+- Whole suite: fmt, clippy with warnings denied and the 13 unit tests through `remote`, clippy
+  and tests on the Mac; shellcheck of the Mac scripts; `scenes` 255 passed, 0 failed, 0 absent
+  (15 s job); `loop` passes (18 s job); `cargo tree --workspace -e all --target all` (2929 lines)
+  names no Wine, vkd3d, Godot, Doom, bgfx or Xbox-ATG-Samples crate.
+- Check from a fresh clone at d7f8c38 (scratch, fresh-run10): `wine-tests run dxgi
+  vkd3d-d3d12:test_copy_block_compressed_texture`: 24 counted, 0 FAIL; `programs run --dll
+  d3d11.dll=<forwarding library> atg-simplemsaa_pc bgfx-26-occlusion`: both pass.
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -1021,9 +1077,10 @@ There is no plan document in this checkout; these depart from the task or brief 
   differing in the tests that skip for it; the line says by how much.
 - Wine's tests run one test per process rather than one file per process, so a crash loses one
   test; Wine's framework has no way to pick a test, so the build rewrites START_TEST in its copy.
-- Nineteen Wine tests that would change the owner's display are excluded, found by searching each
-  test's calls for ChangeDisplaySettings, SetFullscreenState, fullscreen swap chains,
-  SetGammaControl and ClipCursor.
+- Twenty Wine tests are excluded: nineteen that would change the owner's display, found by
+  searching each test's calls for ChangeDisplaySettings, SetFullscreenState, fullscreen swap
+  chains, SetGammaControl and ClipCursor, and dxgi test_swapchain_backbuffer_index, whose
+  Direct3D 12 part hangs the RTX 3080 and resets the display driver (tenth run).
 - vkd3d's tests are built like Wine's, with llvm-mingw rather than vkd3d's own configure and
   make (no MSYS or autotools on the desktop): the headers vkd3d's build generates come from
   llvm-mingw's widl (run in the output directory, as widl names each header's guard after the path
@@ -1049,10 +1106,11 @@ There is no plan document in this checkout; these depart from the task or brief 
   compiler define (its render thread would read frames against a clock moved by another thread).
 - A real program's frame has no WARP picture, so its allowance comes from ten runs on the GPU:
   tolerance 8 steps (the scenes' cap), the tiles the program draws differently from run to run
-  are left out, and the most pixels any run had beyond the tolerance may fall anywhere else
-  (`stray`): atg-simplemsaa_pc differs on real Direct3D in a few edge pixels whose tiles change
-  from job to job, so no number of runs in one job finds them all (Ninth run). tolerances.txt says
-  how many.
+  are left out, and the most pixels one run had beyond the tolerance outside the ignored
+  rectangle may fall anywhere else (`stray`): atg-simplemsaa_pc
+  differs on real Direct3D in a few edge pixels whose tiles change from job to job, so no number
+  of runs in one job finds them all (Ninth and tenth runs), and each run of a recording is its own
+  job. tolerances.txt says how many.
 - Only bgfx examples that load no meshes, textures or fonts of their own are run, and bgfx is
   fetched without its examples' asset directories: bgfx's docs/license.rst lists several of those
   assets (the Uffizi light probe, the Stanford bunny and others) without a licence, so they are not
@@ -1087,6 +1145,16 @@ There is no plan document in this checkout; these depart from the task or brief 
   one exactly, so it is WARP's DXIL path. The D3D12 picture's allowance therefore comes from
   Direct3D 11's WARP picture (How a picture passes); WARP itself now fails that D3D12 picture.
 
+- A scene or replacement that hangs the GPU makes the driver reset itself (TDR), which blanks the
+  owner's screen for a moment; the job then fails with the events (gpu-job). A trap for the
+  Direct3D 11 front, seen by the ninth run's check: on real Direct3D on the RTX 3080, drawing on
+  the immediate context after ExecuteCommandList(list, FALSE) without setting its state again (it
+  is then cleared) hung the GPU, the device was removed (0x887A0005) and the driver reset. The
+  first Wine recording with the check caught a reset at 20:37:38 inside dxgi
+  test_swapchain_backbuffer_index (run 20:37:36.7 to 20:37:39.8; its Direct3D 12 part got
+  0x887A0005), now excluded. The System log has seven earlier resets on 2026-11-17 (14:40 to
+  19:35), before jobs checked; the last was the check's deliberate break, the others most likely
+  this test in the ninth run's Wine runs (the queue keeps no history to prove it).
 - Jobs that present need someone logged in at the desktop's console (the owner normally is): the
   hidden desktop lives in that session. Without it, `gpu-job --desktop` fails after 30 s with a
   message; `scenes`, `loop`, `wine-tests run` and `programs run` all use it.
@@ -1094,9 +1162,9 @@ There is no plan document in this checkout; these depart from the task or brief 
   of Wine's tests fail on real Direct3D for that alone (see Measurements), and programs that stop
   drawing while occluded cannot be run there: Dear ImGui's Direct3D 11 example was tried and only
   test-presents after its first frame, so it was taken out of the list.
-- Nineteen of Wine's tests (wine-excluded.txt) are never run here because they would change the
-  owner's display (modes, fullscreen, gamma, cursor clipping); they need a machine whose display
-  nobody uses.
+- Twenty of Wine's tests (wine-excluded.txt) are never run here because they would change the
+  owner's display (modes, fullscreen, gamma, cursor clipping) or reset its driver; they need a
+  machine whose display nobody uses.
 - The census counts calls made through the program's objects, including those made by Windows' own
   libraries on them (most of the device's AddRef, Release, QueryInterface and GetPrivateData), and
   only on the device, contexts, swap chains and factories: methods of resources, views, states and
@@ -1111,11 +1179,13 @@ There is no plan document in this checkout; these depart from the task or brief 
   pixel by 9 steps in one check of four), so it is run for its census, its presents and the
   libraries it loads only.
 - atg-simplemsaa_pc draws a few edge pixels of its multisampled city differently on real
-  Direct3D from run to run (up to 13 pixels of a frame, by up to 12 steps), in tiles that change
-  from job to job: ten runs in one job found 3, 6 and 3 such tiles in its three frames and were
-  still finding new ones at the tenth. Its frames pass by the stray allowance (4, 9 and 9 pixels
-  anywhere); a replacement that differs in a few more edge pixels than that would fail. Cause not
-  known (the frame clock gives it the same times on every run).
+  Direct3D from run to run (up to 14 pixels of a frame, by up to 12 steps), in tiles that change
+  from job to job more than within one: thirty runs, each its own job, found 4, 9 and 4 such tiles
+  in its three frames and were still finding new ones after the twentieth. Its frames pass by the
+  stray allowance (2, 11 and 11 pixels anywhere, frames 10, 120 and 60); a replacement that
+  differs in a few more edge pixels than that would fail, and real Direct3D might too, rarely (20
+  of 20 separate jobs passed, using at most 2). Cause not known (the frame clock gives it the same
+  times on every run).
 - The bgfx examples' GPU memory readout (one line of their overlay) is not compared: it changed
   between runs of real Direct3D, and a replacement reports its own memory. Other readouts of the
   overlay (frame time, GPU time, latency) are fixed by the frame clock and are compared.
@@ -1253,4 +1323,4 @@ check. After that, R2 as the plan says. Open points left for later:
 - A forwarding dxgi.dll (or d3d12.dll) with the census, frame capture and frame clock, so that
   Direct3D 12 programs get a census and Microsoft's Direct3D 12 samples (DirectX-Graphics-Samples,
   MIT) can join the real programs (Known issues).
-- The 19 Wine tests that need a display nobody uses (Known issues).
+- The 20 Wine tests that need a display nobody uses (Known issues).
