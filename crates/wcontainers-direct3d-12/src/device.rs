@@ -30,6 +30,7 @@ use crate::list::{
 use crate::resource::{self, HeapType, ResourceDesc};
 use crate::root::{RootSignatureDesc, deserialize};
 use crate::state::{Blend, DepthStencil, InputElement, Raster, resolve_offsets, vertex_format};
+use pull::{Helpers, PulledKey, VertexProgram};
 
 macro_rules! id {
     ($($(#[$m:meta])* $name:ident),*) => {$(
@@ -64,6 +65,7 @@ mod alias;
 mod bind;
 mod indirect;
 mod null;
+mod pull;
 mod query;
 mod statistics;
 
@@ -194,12 +196,20 @@ struct Render<B: Backend> {
     strip_cut: u32,
     /// The vertex shader reads `SV_VertexID` or `SV_InstanceID`, which leave out the draw's bases.
     reads_bases: bool,
-    /// The vertex program's helper block: its size and where `HelperValue::DrawBase` sits in it.
-    base_block: (u32, u32),
+    /// The vertex program's helper block.
+    helpers: Helpers,
     /// For a pipeline reading the bases: the program whose vertex stage reads them from an
-    /// indirect draw's arguments, its helper block's size and where `HelperValue::DrawArguments`
-    /// sits in it. None where it did not convert; such draws read their arguments back.
-    arguments: Option<(B::Program, (u32, u32))>,
+    /// indirect draw's arguments. None where it did not convert; such draws read their arguments
+    /// back.
+    arguments: Option<VertexProgram<B>>,
+    /// Programs fetching some vertex inputs themselves, by the inputs and formats fetched and
+    /// whether the bases come from indirect arguments; None where it did not convert.
+    pulled: Vec<(PulledKey, Option<VertexProgram<B>>)>,
+    /// The vertex shader's bytecode, the interpolation its outputs take, and the pixel program,
+    /// from which the programs above are made.
+    vs_code: Vec<u8>,
+    interpolation: Vec<(u32, Interpolation)>,
+    fragment: Option<ShaderModule>,
     /// For counted occlusion queries: the vertex program, the pixel shader's bytecode, and the
     /// counting program made from them at the first counted draw.
     vertex: ShaderModule,
@@ -887,14 +897,6 @@ impl<B: Backend> Device<B> {
             })
             .collect();
         let reads_bases = vs.reflection.helper_size != 0;
-        let base_block = (
-            vs.reflection.helper_size,
-            vs.reflection
-                .helpers
-                .iter()
-                .find(|h| h.value == HelperValue::DrawBase)
-                .map_or(0, |h| h.offset),
-        );
         let instances_step_by_one = inputs
             .iter()
             .all(|(e, _)| !e.per_instance || e.step_rate == 1);
@@ -968,13 +970,21 @@ impl<B: Backend> Device<B> {
         }
         let program = program?;
         // Indirect draws of such a program read the bases from their arguments on the GPU.
+        let fragment = ps.as_ref().map(|p| p.modules[0].clone());
         let arguments = if reads_bases && self.backend.caps().has(Features::INDIRECT) {
             let key = VariantKey {
-                output_interpolation: interpolation,
+                output_interpolation: interpolation.clone(),
                 draw_base: DrawBaseSource::Arguments,
                 ..VariantKey::default()
             };
-            self.arguments_program(desc.vs, key, ps.as_ref())
+            self.vertex_program(desc.vs, key, fragment.as_ref())
+                .ok()
+                .filter(|p| {
+                    p.helpers
+                        .slots
+                        .iter()
+                        .any(|h| h.value == HelperValue::DrawArguments)
+                })
         } else {
             None
         };
@@ -989,8 +999,12 @@ impl<B: Backend> Device<B> {
             targets,
             strip_cut: desc.strip_cut,
             reads_bases,
-            base_block,
+            helpers: pull::Helpers::of(&vs),
             arguments,
+            pulled: Vec::new(),
+            vs_code: desc.vs.to_vec(),
+            interpolation,
+            fragment,
             vertex: vs.modules[0].clone(),
             pixel: desc.ps.to_vec(),
             counting: None,
@@ -1005,9 +1019,16 @@ impl<B: Backend> Device<B> {
             alpha_to_coverage: desc.blend.alpha_to_coverage,
             instances_step_by_one,
         };
+        // Built ahead with the strides of packed elements, where the back end fetches them so.
         let packed = packed_strides(&render.inputs);
-        let layout = self.vertex_layout(&render.inputs, &packed)?;
-        if let Some(topology) = topology {
+        let rates = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
+        let fetched = pull::pulled_streams(&render.inputs, &packed, rates)
+            .iter()
+            .all(Option::is_none);
+        if let Some(topology) = topology
+            && fetched
+        {
+            let layout = self.vertex_layout(&render.inputs, &packed)?;
             self.backend.prepare(&PrepareDesc {
                 program: &program,
                 blend: &render.blend,
@@ -1109,14 +1130,16 @@ impl<B: Backend> Device<B> {
         if converted.modules.len() != 1 || converted.modules[0].stage != stage {
             return Err(Error::Invalid("a shader of another stage"));
         }
-        if converted
-            .reflection
-            .helpers
-            .iter()
-            .any(|h| !matches!(h.value, HelperValue::DrawBase | HelperValue::DrawArguments))
-        {
+        if converted.reflection.helpers.iter().any(|h| {
+            !matches!(
+                h.value,
+                HelperValue::DrawBase
+                    | HelperValue::DrawArguments
+                    | HelperValue::PulledStream { .. }
+            )
+        }) {
             return Err(Error::NotImplemented(
-                "shaders reading helper constants other than the draw's bases",
+                "shaders reading helper constants other than the draw's bases and pulled inputs",
             ));
         }
         Ok(converted)
@@ -1169,43 +1192,16 @@ impl<B: Backend> Device<B> {
         Ok(program)
     }
 
-    /// The program of a vertex shader converted with `key` (reading the draw's bases from
-    /// indirect arguments) and the pipeline's pixel program, with its helper block's size and where
-    /// `HelperValue::DrawArguments` sits; None where it does not convert.
-    fn arguments_program(
-        &mut self,
-        vs: &[u8],
-        key: VariantKey,
-        ps: Option<&Converted>,
-    ) -> Option<(B::Program, (u32, u32))> {
-        let vs = self.convert(vs, ShaderStage::Vertex, key).ok()?;
-        let at = vs
-            .reflection
-            .helpers
-            .iter()
-            .find(|h| h.value == HelperValue::DrawArguments)?
-            .offset;
-        let vertex = self.backend.create_shader(&vs.modules[0]).ok()?;
-        let fragment = ps.and_then(|p| self.backend.create_shader(&p.modules[0]).ok());
-        let program = self.backend.create_program(&Program::Render {
-            vertex: &vertex,
-            fragment: fragment.as_ref(),
-        });
-        self.backend.destroy(Object::Shader(vertex));
-        if let Some(f) = fragment {
-            self.backend.destroy(Object::Shader(f));
-        }
-        Some((program.ok()?, (vs.reflection.helper_size, at)))
-    }
-
     pub fn destroy_pipeline(&mut self, id: PipelineId) {
         if let Some(p) = self.pipelines.try_remove(id.0 as usize) {
             self.backend.destroy(Object::Program(p.program));
             if let Some(r) = p.render {
-                let arguments = r.arguments.map(|a| a.0);
+                let arguments = r.arguments.map(|a| a.program);
+                let pulled = r.pulled.into_iter().filter_map(|p| p.1.map(|p| p.program));
                 for c in [r.counting, r.pixel_counting, arguments]
                     .into_iter()
                     .flatten()
+                    .chain(pulled)
                 {
                     self.backend.destroy(Object::Program(c));
                 }
@@ -2913,7 +2909,7 @@ impl<B: Backend> Replay<B> {
             }
         }
         self.settle(d)?;
-        let sets = d.binding_sets(&self.compute, pid)?;
+        let sets = d.binding_sets(&self.compute, pid, &[])?;
         d.alias_settle()?;
         let call = DispatchCall {
             program: &d.pipelines[pid.0 as usize].program,
@@ -2960,7 +2956,8 @@ impl<B: Backend> Replay<B> {
             .render
             .as_ref()
             .ok_or(Error::Invalid("drawing with a compute pipeline state"))?;
-        let base_block = render.reads_bases.then_some(render.base_block);
+        // An `ExecuteIndirect` draw of a program reading the bases reads them from its arguments.
+        let by_arguments = render.reads_bases && bases.is_none();
         if let (Some(_), DrawRange::Vertices { first_instance, .. })
         | (Some(_), DrawRange::Indexed { first_instance, .. }) = (record, &range)
             && *first_instance != 0
@@ -2986,66 +2983,15 @@ impl<B: Backend> Replay<B> {
             },
             (None, range) => range,
         };
-        let counted = match self.counted {
-            Some(_) => Some(self.prepare_counted(d, pid)?),
-            None => None,
-        };
-        let pixel_counting = match self.statistics {
-            Some(_) => self.count_draw(d, pid, &range)?,
-            None => None,
-        };
-        if !self.pass_open {
-            self.settle_unbound(d)?;
-        }
-        let mut sets = d.binding_sets(&self.graphics, pid)?;
-        // An `ExecuteIndirect` draw of a program reading the bases reads them from its arguments.
-        let by_arguments = base_block.is_some() && bases.is_none();
-        match (base_block, bases) {
-            (Some((size, at)), Some(bases)) => {
-                sets[HELPER_SET as usize] = Some(d.draw_base_set(bases, size, at)?);
-            }
-            (Some(_), None) => {
-                let (size, at) = d.pipelines[pid.0 as usize]
-                    .render
-                    .as_ref()
-                    .and_then(|r| r.arguments.as_ref())
-                    .ok_or(Error::Invalid("an indirect draw reading its bases"))?
-                    .1;
-                let (args, offset, indexed) = match &range {
-                    DrawRange::Indirect { args, offset } => (*args, *offset, false),
-                    DrawRange::IndexedIndirect { args, offset } => (*args, *offset, true),
-                    _ => unreachable!("a draw without bases is indirect"),
-                };
-                sets[HELPER_SET as usize] =
-                    Some(d.draw_arguments_set(args, offset, indexed, size, at)?);
-            }
-            _ => {}
-        }
-        if d.aliased != 0 {
-            self.note_draw(
-                d,
-                matches!(
-                    range,
-                    DrawRange::Indexed { .. } | DrawRange::IndexedIndirect { .. }
-                ),
-            );
-            if d.alias_due() {
-                self.end_pass(d)?;
-            }
-            d.alias_settle()?;
-        }
-        if let Some((heap, _, QueryState::Ended)) = self.query
-            && !self.pass_open
-            && self.pass_heap != Some(heap)
-        {
-            return Err(Error::NotImplemented("an occlusion query across passes"));
-        }
+        // Inputs the back end cannot fetch as laid out are fetched in the program.
+        let rates = d.backend.caps().has(Features::INSTANCE_STEP_RATE);
+        let inputs = std::mem::take(&mut d.render_mut(pid).inputs);
         let mut strides = [0; MAX_VERTEX_STREAMS];
         for (s, v) in strides.iter_mut().zip(&self.vertex_buffers) {
             *s = v.stride;
         }
-        let inputs = std::mem::take(&mut d.render_mut(pid).inputs);
-        let layout = d.vertex_layout(&inputs, &strides);
+        let pulled = pull::pulled_streams(&inputs, &strides, rates);
+        let fetch = d.fetch(&inputs, &self.vertex_buffers, &pulled, first_instance);
         let mut used = [false; MAX_VERTEX_STREAMS];
         // Streams that never step, bound at the first instance's element (see `vertex_layout`).
         let mut fixed = [false; MAX_VERTEX_STREAMS];
@@ -3055,8 +3001,8 @@ impl<B: Backend> Replay<B> {
         let mut ends = [0u64; MAX_VERTEX_STREAMS];
         for (e, _) in &inputs {
             let slot = e.slot as usize;
-            used[slot] = true;
-            fixed[slot] |= e.per_instance && e.step_rate == 0 && !rates;
+            used[slot] |= pulled[slot].is_none();
+            fixed[slot] |= e.per_instance && e.step_rate == 0 && !rates && pulled[slot].is_none();
             let size = vertex_format(e.format).map_or(0, |f| f.1);
             ends[slot] = ends[slot].max(u64::from(e.offset) + u64::from(size));
             reads[slot] = match (&range, e.per_instance) {
@@ -3084,7 +3030,98 @@ impl<B: Backend> Replay<B> {
             };
         }
         d.render_mut(pid).inputs = inputs;
-        let layout = layout?;
+        let fetch = fetch?;
+        let variant = if fetch.inputs.is_empty() {
+            None
+        } else if self.counted.is_some() || self.statistics.is_some() {
+            return Err(Error::NotImplemented(
+                "a counted draw of vertex inputs fetched in the program",
+            ));
+        } else {
+            let key: PulledKey = (
+                fetch.inputs.iter().map(|i| (i.0, i.1)).collect(),
+                by_arguments,
+            );
+            Some(d.pulled_program(pid, key)?)
+        };
+        let counted = match self.counted {
+            Some(_) => Some(self.prepare_counted(d, pid)?),
+            None => None,
+        };
+        let pixel_counting = match self.statistics {
+            Some(_) => self.count_draw(d, pid, &range)?,
+            None => None,
+        };
+        if !self.pass_open {
+            self.settle_unbound(d)?;
+        }
+        let r = d.pipelines[pid.0 as usize]
+            .render
+            .as_ref()
+            .expect("a graphics pipeline");
+        let program: Option<&VertexProgram<B>> = match (variant, by_arguments) {
+            (Some(i), _) => r.pulled[i].1.as_ref(),
+            (None, true) => Some(
+                r.arguments
+                    .as_ref()
+                    .ok_or(Error::Invalid("an indirect draw reading its bases"))?,
+            ),
+            (None, false) => None,
+        };
+        let helpers = program.map_or(&r.helpers, |p| &p.helpers).clone();
+        let streams = program.map_or(Vec::new(), |p| p.streams.clone());
+        let mut extra = Vec::with_capacity(streams.len());
+        for (binding, location) in streams {
+            let slot = r
+                .inputs
+                .iter()
+                .find(|(_, l)| *l == location)
+                .ok_or(Error::Invalid("a pulled input the pipeline lacks"))?
+                .0
+                .slot as usize;
+            let (buffer, offset, size) = fetch.ranges[slot]
+                .as_ref()
+                .ok_or(Error::Invalid("a pulled stream the draw does not bind"))?;
+            extra.push((binding, buffer, *offset, *size));
+        }
+        let mut sets = d.binding_sets(&self.graphics, pid, &extra)?;
+        if helpers.size != 0 {
+            let source = match (bases, &range) {
+                (Some(b), _) => pull::Bases::Direct(b),
+                (None, DrawRange::Indirect { args, offset }) => pull::Bases::Arguments {
+                    args: *args,
+                    offset: *offset,
+                    indexed: false,
+                },
+                (None, DrawRange::IndexedIndirect { args, offset }) => pull::Bases::Arguments {
+                    args: *args,
+                    offset: *offset,
+                    indexed: true,
+                },
+                _ => unreachable!("a draw without bases is indirect"),
+            };
+            sets[HELPER_SET as usize] = Some(d.helper_set(&helpers, &source, &fetch.inputs)?);
+        }
+        if d.aliased != 0 {
+            self.note_draw(
+                d,
+                matches!(
+                    range,
+                    DrawRange::Indexed { .. } | DrawRange::IndexedIndirect { .. }
+                ),
+            );
+            if d.alias_due() {
+                self.end_pass(d)?;
+            }
+            d.alias_settle()?;
+        }
+        if let Some((heap, _, QueryState::Ended)) = self.query
+            && !self.pass_open
+            && self.pass_heap != Some(heap)
+        {
+            return Err(Error::NotImplemented("an occlusion query across passes"));
+        }
+        let layout = fetch.layout;
         let mut buffers: [Option<(B::Buffer, u64)>; MAX_VERTEX_STREAMS] =
             [const { None }; MAX_VERTEX_STREAMS];
         // Streams a direct draw reads past their view's end: (slot, resource, buffer, offset,
@@ -3202,8 +3239,9 @@ impl<B: Backend> Replay<B> {
                 let p = &d.pipelines[pid.0 as usize];
                 let r = p.render.as_ref().expect("a graphics pipeline");
                 DrawCall {
-                    program: match (&r.arguments, by_arguments) {
-                        (Some((program, _)), true) => program,
+                    program: match (variant, &r.arguments, by_arguments) {
+                        (Some(i), ..) => &r.pulled[i].1.as_ref().expect("a made program").program,
+                        (None, Some(a), true) => &a.program,
                         _ => &p.program,
                     },
                     blend: &r.blend,

@@ -4,8 +4,7 @@
 //! sets are made from them (plan 4.5 and 5.2).
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, MAX_BINDING_SETS, ReflectedBinding, RingKind,
-    SlotKind, helper_binding,
+    BindingEntry, BindingResource, BufferRange, MAX_BINDING_SETS, ReflectedBinding, SlotKind,
 };
 
 use super::*;
@@ -252,102 +251,18 @@ enum Held<B: Backend> {
 }
 
 impl<B: Backend> Device<B> {
-    /// The binding sets of a draw with pipeline `pid` and root arguments `state`. Upload buffers a
-    /// binding reads are written to the GPU first.
-    /// The binding set of a vertex program's helper block holding the draw's bases (base vertex,
-    /// first instance, draw number 0) at `at` in a block of `size` bytes (`DrawBaseInHelpers`).
-    pub(super) fn draw_base_set(
-        &mut self,
-        bases: [u32; 2],
-        size: u32,
-        at: u32,
-    ) -> Result<B::BindingSet, Error> {
-        self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
-        let (size, at) = (size as usize, at as usize);
-        if at + 12 > size {
-            return Err(Error::NotImplemented(
-                "a helper block laid out past the draw's bases",
-            ));
-        }
-        let mut block = vec![0u8; size];
-        block[at..at + 4].copy_from_slice(&bases[0].to_le_bytes());
-        block[at + 4..at + 8].copy_from_slice(&bases[1].to_le_bytes());
-        let align = self.backend.caps().limits.min_uniform_offset_alignment;
-        let mut offset = [0];
-        let ring = self
-            .backend
-            .write_buffer_ring(RingKind::Data, &[&block], align, &mut offset)?;
-        Ok(self.backend.create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Vertex),
-            stages: StageSet::VERTEX,
-            resource: BindingResource::UniformBuffer(BufferRange {
-                buffer: &ring,
-                offset: offset[0],
-                size: size as u64,
-            }),
-        }])?)
-    }
-
-    /// The helper set of an indirect draw whose program reads the bases from its arguments: the
-    /// vertex helper block saying where they are, and the argument buffer up to them.
-    pub(super) fn draw_arguments_set(
-        &mut self,
-        args: &B::Buffer,
-        offset: u64,
-        indexed: bool,
-        size: u32,
-        at: u32,
-    ) -> Result<B::BindingSet, Error> {
-        self.backend
-            .slow_paths()
-            .hit(SlowPath::DrawBaseFromArguments);
-        let (size, at) = (size as usize, at as usize);
-        if at + 12 > size {
-            return Err(Error::NotImplemented(
-                "a helper block laid out past the draw's arguments",
-            ));
-        }
-        let mut block = vec![0u8; size];
-        block[at..at + 4].copy_from_slice(&((offset / 4) as u32).to_le_bytes());
-        block[at + 4..at + 8].copy_from_slice(&u32::from(indexed).to_le_bytes());
-        let align = self.backend.caps().limits.min_uniform_offset_alignment;
-        let mut ring_offset = [0];
-        let ring =
-            self.backend
-                .write_buffer_ring(RingKind::Data, &[&block], align, &mut ring_offset)?;
-        Ok(self.backend.create_binding_set(&[
-            BindingEntry {
-                binding: helper_binding(ShaderStage::Vertex),
-                stages: StageSet::VERTEX,
-                resource: BindingResource::UniformBuffer(BufferRange {
-                    buffer: &ring,
-                    offset: ring_offset[0],
-                    size: size as u64,
-                }),
-            },
-            BindingEntry {
-                binding: wcontainers_gpu::DRAW_ARGUMENTS_BINDING,
-                stages: StageSet::VERTEX,
-                resource: BindingResource::StorageBuffer {
-                    range: BufferRange {
-                        buffer: args,
-                        offset: 0,
-                        size: offset + if indexed { 20 } else { 16 },
-                    },
-                    writable: false,
-                },
-            },
-        ])?)
-    }
-
+    /// The binding sets of a draw with pipeline `pid` and root arguments `state`, with `extra`
+    /// read-only storage buffers (binding, buffer, offset, size) added to the vertex program's
+    /// set.
     pub(super) fn binding_sets(
         &mut self,
         state: &RootState,
         pid: PipelineId,
+        extra: &[(u32, &B::Buffer, u64, u64)],
     ) -> Result<[Option<B::BindingSet>; MAX_BINDING_SETS], Error> {
         let mut sets: [Option<B::BindingSet>; MAX_BINDING_SETS] = Default::default();
         let bindings = std::mem::take(&mut self.pipelines[pid.0 as usize].bindings);
-        if bindings.is_empty() {
+        if bindings.is_empty() && extra.is_empty() {
             return Ok(sets);
         }
         let result = self.resolve(state, &bindings);
@@ -359,43 +274,59 @@ impl<B: Backend> Device<B> {
             }
         };
         for (set, slot) in sets.iter_mut().enumerate() {
-            let entries: Vec<BindingEntry<'_, B>> = held
-                .iter()
-                .map(|(i, h)| (&bindings[*i], h))
-                .filter(|(b, _)| b.binding.set as usize == set)
-                .map(|(b, h)| BindingEntry {
-                    binding: b.binding.binding,
-                    stages: b.stages,
-                    resource: match h {
-                        Held::Uniform(buffer, offset, size) => {
-                            BindingResource::UniformBuffer(BufferRange {
+            let entries: Vec<BindingEntry<'_, B>> =
+                held.iter()
+                    .map(|(i, h)| (&bindings[*i], h))
+                    .filter(|(b, _)| b.binding.set as usize == set)
+                    .map(|(b, h)| BindingEntry {
+                        binding: b.binding.binding,
+                        stages: b.stages,
+                        resource: match h {
+                            Held::Uniform(buffer, offset, size) => {
+                                BindingResource::UniformBuffer(BufferRange {
+                                    buffer,
+                                    offset: *offset,
+                                    size: *size,
+                                })
+                            }
+                            Held::Texture(view) => BindingResource::Texture(view),
+                            Held::Sampler(sampler) => BindingResource::Sampler(sampler),
+                            Held::Storage {
                                 buffer,
-                                offset: *offset,
-                                size: *size,
-                            })
-                        }
-                        Held::Texture(view) => BindingResource::Texture(view),
-                        Held::Sampler(sampler) => BindingResource::Sampler(sampler),
-                        Held::Storage {
-                            buffer,
-                            offset,
-                            size,
-                            writable,
-                        } => BindingResource::StorageBuffer {
-                            range: BufferRange {
-                                buffer,
-                                offset: *offset,
-                                size: *size,
+                                offset,
+                                size,
+                                writable,
+                            } => BindingResource::StorageBuffer {
+                                range: BufferRange {
+                                    buffer,
+                                    offset: *offset,
+                                    size: *size,
+                                },
+                                writable: *writable,
                             },
-                            writable: *writable,
+                            Held::StorageTexture(view, writable) => {
+                                BindingResource::StorageTexture {
+                                    view,
+                                    writable: *writable,
+                                }
+                            }
                         },
-                        Held::StorageTexture(view, writable) => BindingResource::StorageTexture {
-                            view,
-                            writable: *writable,
+                    })
+                    .chain(extra.iter().filter(|_| set == 0).map(
+                        |&(binding, buffer, offset, size)| BindingEntry {
+                            binding,
+                            stages: StageSet::VERTEX,
+                            resource: BindingResource::StorageBuffer {
+                                range: BufferRange {
+                                    buffer,
+                                    offset,
+                                    size,
+                                },
+                                writable: false,
+                            },
                         },
-                    },
-                })
-                .collect();
+                    ))
+                    .collect();
             if !entries.is_empty() {
                 match self.backend.create_binding_set(&entries) {
                     Ok(s) => *slot = Some(s),
@@ -440,7 +371,7 @@ impl<B: Backend> Device<B> {
                     let align = self.backend.caps().limits.min_uniform_offset_alignment;
                     let mut offset = [0];
                     let buffer = self.backend.write_buffer_ring(
-                        RingKind::Data,
+                        wcontainers_gpu::RingKind::Data,
                         &[&bytes],
                         align,
                         &mut offset,

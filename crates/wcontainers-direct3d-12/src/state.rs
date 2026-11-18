@@ -376,7 +376,14 @@ pub fn resolve_offsets(elements: &mut [InputElement]) -> Result<(), Error> {
         if e.offset == APPEND_ALIGNED {
             e.offset = *slot;
         }
-        *slot = e.offset + vertex_format(e.format)?.1;
+        let size = vertex_format(e.format)?.1;
+        // Direct3D 12 refuses offsets not a multiple of the element's size, or of 4 if smaller.
+        if !e.offset.is_multiple_of(size.clamp(1, 4)) {
+            return Err(Error::Invalid(
+                "an input element's offset not aligned to its size",
+            ));
+        }
+        *slot = e.offset + size;
     }
     Ok(())
 }
