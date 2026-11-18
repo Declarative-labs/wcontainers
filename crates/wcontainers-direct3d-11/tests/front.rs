@@ -1544,6 +1544,84 @@ fn samplers_are_bound_comparing_as_the_program_reads_them() {
     );
 }
 
+/// The f32 at `at` of the uniform block a binding set made in `log` binds at `binding`.
+fn helper_f32(dev: &Dev, log: &[String], binding: u32, at: usize) -> Option<f32> {
+    let key = format!(" {binding}=uniform ");
+    let line = log
+        .iter()
+        .find(|l| l.starts_with("create_binding_set") && l.contains(&key))?;
+    let range = line.split(&key).nth(1)?.split(' ').next()?;
+    let (buffer, rest) = range.split_once('+')?;
+    let offset: usize = rest.split_once(':')?.0.parse().ok()?;
+    let bytes = dev.backend.buffer_bytes(buffer.parse().ok()?)?;
+    let word = bytes[offset + at..offset + at + 4].try_into().ok()?;
+    Some(f32::from_le_bytes(word))
+}
+
+#[test]
+fn a_sampler_with_a_level_of_detail_bias_is_read_through_a_program_that_adds_it() {
+    let mut dev = device();
+    sampling(&mut dev, "samplers.ps_sample");
+    let biased = SamplerDesc {
+        mip_lod_bias: 1.5,
+        ..SamplerDesc::default_state()
+    };
+    let biased = dev.create_sampler_state(&biased).unwrap();
+    dev.set_samplers(PIXEL, 0, &[Some(biased)]).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    // The pixel shader is converted again, once, with the bias read from its helper block.
+    let shaders = log
+        .iter()
+        .filter(|l| l.starts_with("create_shader"))
+        .count();
+    assert_eq!(shaders, 1, "{log:#?}");
+    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    assert_eq!(helper_f32(&dev, &log, fragment, 0), Some(1.5), "{log:#?}");
+    let sets = log
+        .iter()
+        .filter(|l| l.contains(&format!(" {fragment}=uniform ")))
+        .count();
+    assert_eq!(sets, 1, "{log:#?}");
+    assert!(dev.backend.slow_paths().count(SlowPath::LodBiasInShader) >= 2);
+
+    // Without a bias the plain program draws again, with no helper block.
+    dev.set_samplers(PIXEL, 0, &[None]).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(
+        !log.iter().any(|l| l.starts_with("create_shader")),
+        "{log:#?}"
+    );
+    // The helper set now holds the vertex program's bases alone.
+    let set = &log[find(&log, "create_binding_set")];
+    assert!(!set.contains(&format!(" {fragment}=uniform ")), "{set}");
+}
+
+#[test]
+fn dual_source_blending_draws_the_programs_second_output_where_the_back_end_blends_it() {
+    let mut dev = device();
+    dev.backend.caps.features |= wcontainers_gpu::Features::DUAL_SOURCE_BLEND;
+    ready(&mut dev, "blend.vs", "blend.ps_dual", &[], 12);
+    let mut blend = BlendDesc::default_state();
+    blend.targets[0].enable = true;
+    // D3D11_BLEND_SRC1_COLOR, D3D11_BLEND_INV_SRC1_COLOR.
+    blend.targets[0].src = 16;
+    blend.targets[0].dst = 17;
+    let blend = dev.create_blend_state(&blend).unwrap();
+    dev.om_set_blend_state(Some(blend), None, u32::MAX);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    find(&log, "create_shader");
+    find(&log, "draw ");
+}
+
 #[test]
 fn a_texture_the_back_end_cannot_filter_is_not_sampled_linearly() {
     let mut dev = device();

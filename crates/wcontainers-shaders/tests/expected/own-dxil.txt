@@ -8,6 +8,7 @@ ps_ids.dxil	ok
 ps_levels.dxil	ok-wgsl glsl-write
 ps_mingather.dxil	ok-wgsl glsl-compile
 ps_minlod.dxil	ok
+ps_mirror.dxil	ok
 ps_negate.dxil	ok
 ps_offset.dxil	ok
 ps_pack.dxil	unsupported PackedStageValues
@@ -20,6 +21,7 @@ ps_table.dxil	unsupported NonFiniteConstant
 ps_textured.dxil	ok
 vs_carry.dxil	ok
 vs_clip.dxil	ok-wgsl glsl-compile
+vs_deep.dxil	ok
 vs_ids.dxil	ok
 vs_pack.dxil	unsupported PackedStageValues
 vs_transform.dxil	ok

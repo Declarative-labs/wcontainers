@@ -11,8 +11,8 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    BlendComponent, BlendFactor, BlendOp, DrawBaseSource, Format, HelperValue, ProvokingVertex,
-    VariantFlags, VariantKey, VertexFormat,
+    AddressMode, BlendComponent, BlendFactor, BlendOp, DrawBaseSource, Filter, Format, HelperValue,
+    LinkedValues, ProvokingVertex, VariantFlags, VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -59,6 +59,21 @@ fn helper_block(source: Source<'_>, key: &VariantKey, values: &[(HelperValue, &[
         block[at..at + bytes.len()].copy_from_slice(bytes);
     }
     block
+}
+
+/// The first location past every one the draw's two programs list, as a front links them for the
+/// values clip distances and depth clamping add.
+fn linked_location(draw: &Draw<'_>) -> u32 {
+    let vs = convert(draw.vs, &VariantKey::default(), None).unwrap();
+    let ps = convert(draw.ps, &VariantKey::default(), None).unwrap();
+    vs.reflection
+        .outputs
+        .iter()
+        .chain(&ps.reflection.inputs)
+        .filter(|v| v.system.is_none())
+        .map(|v| v.location + 1)
+        .max()
+        .unwrap_or(0)
 }
 
 fn floats(v: &[f32]) -> Vec<u8> {
@@ -458,6 +473,76 @@ fn variants_draw_as_the_native_feature_does() {
             }
         }
 
+        // Mirror-once addressing in u beside repeat in v, on a 4-level texture sampled far outside it
+        // (levels past 0 chosen): the program folds u on a clamping sampler, against real Direct3D
+        // 11's MIRROR_ONCE, on both back ends (neither has mirror-once). The mode must change
+        // Direct3D's picture from clamping, or the case shows nothing.
+        {
+            let code = [
+                bytecode(&format!("vs_transform.{route}")),
+                bytecode(&format!("ps_mirror.{route}")),
+            ];
+            let drawn = |u| {
+                direct3d_11(
+                    &d3d,
+                    "vs_transform",
+                    "ps_mirror",
+                    Format::Rgba8Unorm,
+                    [1.0, 0.75, 0.5, 1.5],
+                    true,
+                    &Reference {
+                        levels: 4,
+                        address: Some([u, D3D11_TEXTURE_ADDRESS_WRAP, D3D11_TEXTURE_ADDRESS_CLAMP]),
+                        ..Default::default()
+                    },
+                )
+                .0
+            };
+            let reference = drawn(D3D11_TEXTURE_ADDRESS_MIRROR_ONCE);
+            let (changed, _) = differ(
+                &drawn(D3D11_TEXTURE_ADDRESS_CLAMP),
+                &reference,
+                Format::Rgba8Unorm,
+            );
+            eprintln!("mirror_once {route}: the mode changes {changed} of Direct3D's texels");
+            assert!(changed > 0);
+            let mut variant = grid_draw(&code, dxil, &grid);
+            variant.setup.levels = 4;
+            variant.setup.address = [AddressMode::Clamp, AddressMode::Repeat, AddressMode::Clamp];
+            variant.setup.ps_key.mirror_once_in_shader = 1;
+            let codes = [Filter::Linear as u32; 3]
+                .into_iter()
+                .chain(
+                    [
+                        AddressMode::MirrorOnce,
+                        AddressMode::Repeat,
+                        AddressMode::Clamp,
+                    ]
+                    .map(|m| m as u32),
+                )
+                .chain([1, 0, f32::MAX.to_bits()]);
+            let words: Vec<u8> = codes.flat_map(u32::to_le_bytes).collect();
+            variant.setup.helpers[1] = helper_block(
+                variant.ps,
+                &variant.setup.ps_key,
+                &[(HelperValue::SamplerState { sampler: 0 }, &words)],
+            );
+            for (back_end, texels) in [
+                ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
+                ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
+            ] {
+                results.push(compare(
+                    format!("mirror_once {route} {back_end} against direct3d 11"),
+                    &reference,
+                    &texels,
+                    Format::Rgba8Unorm,
+                    // The level of detail from explicit gradients rounds apart from the implicit
+                    // one: trilinear weights move by a step.
+                    (SIZE as usize * SIZE as usize, 1),
+                ));
+            }
+        }
+
         // The per-resource minimum level-of-detail clamp, which neither back end has: against real
         // Direct3D 11's SetResourceMinLOD on a 4-level texture, unclamped, fractional (samples blend
         // levels 1 and 2, loads of level 0 read zero), at the last level, and past it (every access
@@ -558,6 +643,109 @@ fn variants_draw_as_the_native_feature_does() {
                 Format::Rgba8Unorm,
                 (0, 0),
             ));
+
+            // The distances passed as values and clipped by the pixel program, where the back end
+            // has none (WebGPU on wgpu's Direct3D 12 path, WebGL 2 without the extension): one sample
+            // against Direct3D 11, four against the native distances on Vulkan, resolved.
+            let linked = LinkedValues {
+                location: linked_location(&native),
+                clip_distances: 2,
+            };
+            let mut variant = native.clone();
+            for key in [&mut variant.setup.vs_key, &mut variant.setup.ps_key] {
+                key.flags = VariantFlags::CLIP_DISTANCE;
+                key.linked = linked;
+                key.samples = 1;
+            }
+            for (back_end, texels) in [
+                ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
+                ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
+            ] {
+                results.push(compare(
+                    format!("clip_distance {route} {back_end} against direct3d 11"),
+                    &reference,
+                    &texels,
+                    Format::Rgba8Unorm,
+                    // The same pixels drawn; attributes interpolated over the whole triangle round
+                    // apart from those over the clipped one by a step or two. A pixel drawn on one
+                    // side only would differ by far more.
+                    (SIZE as usize * SIZE as usize, 2),
+                ));
+            }
+            let mut native4 = native.clone();
+            native4.setup.samples = 4;
+            let reference4 = ours(&mut vulkan, &native4, ProvokingVertex::First);
+            let mut variant4 = variant.clone();
+            variant4.setup.samples = 4;
+            variant4.setup.ps_key.samples = 4;
+            let texels = ours(&mut gpu, &variant4, ProvokingVertex::First);
+            results.push(compare(
+                format!("clip_distance {route} webgpu four samples against vulkan's native"),
+                &reference4,
+                &texels,
+                Format::Rgba8Unorm,
+                (SIZE as usize * SIZE as usize, 2),
+            ));
+        }
+
+        // Depth clamped instead of clipped, with depth reaching past both ends of the clip volume and
+        // a depth range of 0.25 to 0.75: against real Direct3D 11 with DepthClipEnable false, depth
+        // buffers compared as f32 steps. Clipping must change Direct3D's depth, or the case shows
+        // nothing.
+        {
+            let code = [
+                bytecode(&format!("vs_deep.{route}")),
+                bytecode(&format!("ps_textured.{route}")),
+            ];
+            let range = [0.25f32, 0.75];
+            let drawn = |clip_off| {
+                direct3d_11(
+                    &d3d,
+                    "vs_deep",
+                    "ps_textured",
+                    Format::Rgba8Unorm,
+                    [1.0, 0.75, 0.5, 1.5],
+                    true,
+                    &Reference {
+                        depth: Some(range),
+                        depth_clip_off: clip_off,
+                        ..Default::default()
+                    },
+                )
+                .0
+            };
+            let (reference, clipped) = (drawn(true), drawn(false));
+            let (changed, _) = differ(&clipped, &reference, Format::Depth32Float);
+            eprintln!("depth_clamp {route}: clipping changes {changed} of Direct3D's texels");
+            assert!(changed > 0);
+            let mut variant = grid_draw(&code, dxil, &grid);
+            variant.setup.depth = true;
+            variant.setup.viewport = [0.0, 0.0, SIZE as f32, SIZE as f32, range[0], range[1]];
+            let linked = LinkedValues {
+                location: linked_location(&variant),
+                clip_distances: 0,
+            };
+            for key in [&mut variant.setup.vs_key, &mut variant.setup.ps_key] {
+                key.flags = VariantFlags::DEPTH_CLAMP;
+                key.linked = linked;
+            }
+            variant.setup.helpers[1] = helper_block(
+                variant.ps,
+                &variant.setup.ps_key,
+                &[(HelperValue::DepthRange, &floats(&range))],
+            );
+            for (back_end, texels) in [
+                ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
+                ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
+            ] {
+                results.push(compare(
+                    format!("depth_clamp {route} {back_end} against direct3d 11"),
+                    &reference,
+                    &texels,
+                    Format::Depth32Float,
+                    (SIZE as usize * SIZE as usize, 2),
+                ));
+            }
         }
 
         // The counting variant: blended One plus One into an rgba8unorm target (the grid's triangles do
