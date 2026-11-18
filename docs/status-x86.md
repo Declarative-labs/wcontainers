@@ -25,9 +25,11 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   test crate generic over it (runner, layer 1, programs, changes, mixed, layer 3, browser), the browser crate
   per guest by a feature, and layer 1's and four other test files written once over `G`. Run 3 (the same
   day) moved layer 2's emitter, the three hand-made corpora and the real binaries into ARM64's part, gave
-  flat blobs the guest's own auxiliary entries on both sides, and made `long-runs.sh` run one guest. Not
-  done yet: `programs/` per CPU and the test files built on it, the recorded reference results (see "X2,
-  run 3", "What comes next").
+  flat blobs the guest's own auxiliary entries on both sides, and made `long-runs.sh` run one guest. Run 4
+  (the same day) moved ARM64's own program sources into `programs/arm64` and wrote the last ARM64-pinned
+  test files (`programs.rs`, `benchmarks.rs`, `output.rs`, `binaries.rs`, `machine-code`) once over `G`
+  (see "X2, run 4"). Not built, proposed for X3: the recorded reference results and layer 1 batching of
+  plan 7.3.
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -40,21 +42,48 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
   crate and the runner for both CPUs; `cargo fmt --check`: clean.
 - origin/phase-1-translator: fetched at the start and end, nothing new since 8b5e420 (merged).
 
-## X2: what comes next, in order
+## X2: what comes next
 
-1. `programs/` per CPU (`PROGRAMS`, plan 7.2): the C programs' `syscall3` (inline `svc` with x8) and system
-   call numbers into `programs/arm64/syscall.h`, the `.S` tests, `written_code.c` (`ic ivau`) and
-   `differences.c` into `programs/arm64/`, `coroutines.c`' switch into `switch.S`; `build_with` adds `-I
-   programs/<NAME>`. Show the bench set's translated bytes unchanged afterwards (`same-output.sh 2274314
-   bench`), since the bench set is compiled from `bench.c`.
-2. Then the test files still pinned to `Arm64` over `G` with `_arm64` wrappers: `programs.rs` (its program
-   lists, and its other-host test needs the probe answers a guest has), `benchmarks.rs`, `output.rs`
-   (ARM64's four probe answers), `binaries.rs` (the files are per guest now), `src/bin/machine-code.rs`.
-   `decoding.rs` and `valid.rs` test ARM64's decoder itself: name them as ARM64's.
-3. Plan 7.3's recorded reference results and layer 1 batching (see "Departures": proposed for X3).
-4. The whole suite, its time against X1 run 6's 25 minutes, a read of the harness for ARM64 facts left
-   outside the per-CPU part; merge origin/phase-1-translator.
+1. The independent check of X2.
+2. Plan 7.3's recorded reference results and layer 1 batching, proposed for X3 (see "Departures"); build them
+   at X2 only if the orchestrator rules so.
 
+## X2, run 4 (2026-11-17)
+
+- origin/phase-1-translator: fetched at the start and the end, nothing new since 8b5e420.
+- `programs/arm64/`: `syscall.h` (`syscall3` with `svc` and the numbers `SYS_write`, `SYS_writev`, `SYS_exit`,
+  `SYS_exit_group`, used by bench, calls, buffers, integers, tables, walks), `switch.h` (coroutines' context
+  switch, `start_context`, and `CALL_ON_STACK` for fibers), the five `.S` tests, `written_code.c` and
+  `differences.c`. `programs::source::<G>` looks in `programs/<NAME>` first, then the shared folder, and
+  `build_with` puts the guest's folder on the include path. `elfconv.sh` copies `syscall.h` beside bench.c
+  (not run this time: it needs elfconv's 6.1 GB image).
+- Written once over `G`, each with `_arm64` tests: `programs.rs` (its 15 tests as before),
+  `benchmarks.rs`, `output.rs`, `binaries.rs`, and `machine-code` (its program stays ARM64's). Instruction
+  starts and counts come from `boundaries::<G>` and slots from `G::ALIGN`, where they were `/ 4`.
+  `GuestTest::PROBE_ANSWERS` gives every probe answer: `output.rs` translates for each, and `differences`
+  now matches Linux for all four answers (was one), with ARM64's counter checks on the same host as before.
+  `decoding.rs` and `valid.rs` and the HWCAP check are named as ARM64's own.
+- `machine-code` printed `8 + i` as a piece's function index, stale since phase one; it now reads the index
+  from the module's lookup table (integers -O2: the first piece is function 25).
+- `same-output.sh` gives a commit from before `PROBE_ANSWERS` ARM64's four answers; it no longer adapts
+  `output.rs` for commits from before the interface (their lists are kept, under scratch `x1/same/lists`).
+- Bench bytes after the move, against 32631fc (this run's start): `same-output.sh 32631fc5 bench` (scratch
+  `x2/run4/same-output.log`, Mac load 20.5 to 31.9): the same, 505 modules. After `output.rs` became
+  generic, `bench,musl` (`same-output-2.log`, load 21.9 to 22.9): bench the same, 505 modules; musl the
+  same, 120 modules.
+- Same cases: `same-cases.sh d27cd70 1 2 3 6151` (scratch `x2/run4/same-cases.log`, Mac load 17.7 to 27.5):
+  layer 1 1215 forms and layer 2 64 programs the same for each of the four seeds.
+- `tests/programs.rs` before the commit (`x2/run4/programs.log`, load 20 to 29): 15 passed, 2 ignored.
+- Suite at 7bcb0d6 (`WC_REFERENCE_X86_64=tom@192.168.2.240`, scratch `x2/run4/suite.log`): 76 passed, 0
+  failed, 11 ignored, 24 minutes 12 seconds, Mac load 18.3 at start, 38 to 48 part way, 23.1 at end (run 3:
+  76, 0, 11 in 20 minutes 50 seconds at 14.4 to 21.1; X1 run 6: 25 minutes at 13.4 to 22.0). The x86
+  reference's two tests passed on the i7-8750H (its load 2.9 just after; another track's builds run there).
+- Clippy with `-D warnings` on the test crate (all targets) and `cargo fmt --check`: clean. The reference
+  runner and the browser crate did not change.
+- Read of the harness for ARM64 facts outside the per-CPU part: none left in `src/` beyond `src/guest/`,
+  `layout.rs`'s per-CPU code areas (shared with the runner by plan) and layer 2's model, whose operations
+  are ARM64's by plan 7.2 "As built". In `tests/`, ARM64 appears only in the `_arm64` wrappers, the
+  ARM64-own tests above and the host counters of `differences_match_linux_on_every_host_arm64`.
 ## X2, run 3 (2026-11-17)
 
 - origin/phase-1-translator: fetched at the start, nothing new since 8b5e420.
@@ -889,6 +918,10 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   wcontainers-translator-test --test reference_x86_64 -- --nocapture`; the float hook in Chrome old against
   new, `<scratch>/x2/chrome-hook.sh <old tree> <rounds>`.
 - The suite now needs `WC_REFERENCE_X86_64=tom@192.168.2.240` (the x86 reference test fails without it).
+- Per-guest tests are named with the guest's suffix: `floats_speed_arm64`, `switching_speed_arm64`
+  (`--test programs`), `measure_benchmarks_arm64`, `measure_calls_between_modules_arm64` (`--test
+  benchmarks`), `measure_binaries_arm64` (`--test binaries`), `write_output_arm64` (`--test output`); the
+  decoder's and validity tests are ARM64's own (`..._arm64`).
 - Long runs of one guest: `WC_LONG_DIR=<dir> WC_LONG_GUEST=arm64 nohup nix develop -c
   crates/wcontainers-translator-test/long-runs.sh > <log> 2>&1 &` (ledger `<dir>/arm64/ledger.txt`).
 - M5's real binaries are now under `target/binaries/arm64`.
@@ -1007,6 +1040,9 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
   41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2); in run 10, one run each of `tf`
   (8 trap-flag scenarios in 9 runs, 20 stops) and `rf` (8 signal frames), and 6 `stepper6` cases.
+- X2 run 4: `tests/cases.rs` for seeds 1, 2, 3 and 6151 at 64 cases a form and 64 programs, both sides;
+  `tests/programs.rs` once and the suite once at the defaults (seed 1); the x86 reference's 38 cases and 2
+  blobs in the suite.
 - X2 run 3: `tests/cases.rs` for seeds 1, 2, 3 and 4127 at 64 cases a form and 64 programs, both sides;
   layer 2 twice at the defaults (seed 1, 64 programs; the first run's 8 native cases met Docker down);
   changes at the defaults; the x86 reference's 38 cases and 2 blobs once outside the suite; the suite once.
@@ -1042,6 +1078,8 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 - iced-x86 1.22.0: MIT. Since X2 a dependency of the reference runner when built for x86-64 (decoder and
   `instr_info`, to tell rep string instructions and gathers); X3 adds it to the x86 crate.
 - `blake3` is since X2 a normal dependency of the test crate (the reference runner's content hash).
+- `wasmparser` 0.263 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) is since X2 run 4 a normal
+  dependency of the test crate (was a dev-dependency): `machine-code` reads a module's lookup table with it.
 - The toolchain gains the `x86_64-unknown-linux-musl` target (for the reference runner).
 - astro-float 0.9.6: MIT, with astro-float-num 0.3.7 and astro-float-macro 0.4.6 (both MIT), lazy_static,
   itertools, either (all MIT or Apache-2.0, already common). Planned for X7 (x87 transcendentals); not yet a
@@ -1159,6 +1197,16 @@ X2 (each also written into the plan's text in the same commit):
 - Proposed: plan 7.3's recorded reference results and layer 1 batching are built at X3, with x86's layer 1,
   the first run whose reference is remote and many cases a form; X2's pass bar does not name them. Not yet
   ruled on.
+- Programs (run 4, plan 7.2 "As built"): no `PROGRAMS` constant, the folder is `programs/<NAME>`, looked in
+  first and on the include path; `switch.h` (file-level assembly, `start_context`, `CALL_ON_STACK`) in place
+  of `switch.S`, so each program stays one source file; no `start.S` (the programs start from a C `_start`).
+- `GuestTest::PROBE_ANSWERS` (not in the plan's listing): every answer the probe can give. `output.rs` and the
+  `differences` program run for each; `differences_match_linux_on_other_hosts` (one host) became
+  `differences_match_linux_on_every_host_arm64` (all four, with ARM64's counter checks on the host it had).
+- Tests of one CPU's own types stay that CPU's and are named with its suffix: `decoding.rs`, `valid.rs`,
+  `blobs_are_told_the_hwcap_of_the_abi_arm64`.
+- `machine-code` numbers a piece's function by the module's lookup table, not 8 + its position (stale since
+  phase one: the pieces start after the translator's own functions and the guest's hooks).
 - The browser page reads the pc by `pcOffset` and nothing else of the register block (it read x0 to x30 and
   sp, unused); `syscall` offsets, `codeChanges` and `traps` of plan 7.2's contract are not added, since the
   page gets the call's number and arguments from the hook and traps by `trapKinds` already.
