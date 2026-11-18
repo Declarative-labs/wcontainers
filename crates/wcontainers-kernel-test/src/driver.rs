@@ -528,6 +528,13 @@ pub fn prepare(container: &Container<'_>) -> Prepared {
     }
 }
 
+/// Held alone by a run that saves and shared by every other run of this test process, while the run
+/// has a back end: a save copies the process with fork, which carries only the saving thread, so no
+/// other thread may be inside the back end then, holding locks of wasmtime or of the system's
+/// unwinder that the copy needs to compile.
+#[cfg(feature = "runtime")]
+static SAVING: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
 /// As [`run_injected`], on a kernel [`prepare`] made for the container.
 pub fn run_prepared(
     prepared: Prepared,
@@ -540,6 +547,18 @@ pub fn run_prepared(
         groups,
         echo,
     } = prepared;
+    #[cfg(feature = "runtime")]
+    let (_alone, _shared);
+    #[cfg(feature = "runtime")]
+    if injections.saves > 0 {
+        _alone = SAVING
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    } else {
+        _shared = SAVING
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
     let mut cpu = back_end(seed);
     let mut host = TestHost::repeatable(seed);
     host.injecting = Some(Injecting::new(seed, injections));
