@@ -159,6 +159,28 @@ impl Format {
         }
     }
 
+    /// The components a view of this format reads from its texels, a bit each from red; the others
+    /// read their defaults, zero and one for alpha. Depth and stencil read as red. The measure of
+    /// [`crate::HelperValue::TextureComponents`].
+    pub fn components(self) -> u32 {
+        use Format::*;
+        match self {
+            R8Unorm | R8Snorm | R8Uint | R8Sint | R16Unorm | R16Snorm | R16Uint | R16Sint
+            | R16Float | R32Uint | R32Sint | R32Float | Bc4RUnorm | Bc4RSnorm | Stencil8
+            | Depth16Unorm | Depth24Plus | Depth24PlusStencil8 | Depth32Float
+            | Depth32FloatStencil8 => 0b0001,
+            Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint | Rg16Unorm | Rg16Snorm | Rg16Uint
+            | Rg16Sint | Rg16Float | Rg32Uint | Rg32Sint | Rg32Float | Bc5RgUnorm | Bc5RgSnorm => {
+                0b0011
+            }
+            Bgrx8Unorm | Bgrx8UnormSrgb | Rg11b10Float | Rgb9e5Float | B5g6r5Unorm | Rgbg8Unorm
+            | Grgb8Unorm | Rgb32Uint | Rgb32Sint | Rgb32Float | Bc6hRgbUfloat | Bc6hRgbFloat
+            | Etc2Rgb8Unorm | Etc2Rgb8UnormSrgb => 0b0111,
+            A8Unorm => 0b1000,
+            _ => 0b1111,
+        }
+    }
+
     /// Whether this format holds depth, stencil or both.
     pub fn is_depth_stencil(self) -> bool {
         matches!(
