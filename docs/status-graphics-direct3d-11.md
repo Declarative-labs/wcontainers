@@ -51,6 +51,9 @@ helper (geometry shaders, stream output); the WebGPU back end `A8_UNORM` and con
   atg-simplelightingpc, atg-simpleinstancingpc; logs/g4s1e-programs.log); atg-simplecomputepc
   now runs to 120 frames but its frames differ (154515 pixels, not read yet); bgfx-01-cubes fails
   at start (exit 1 once, an access violation once; not read yet).
+- At the end of the run the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (41.5 GB, both
+  builds) and the scratch wincheck/target (1.3 GB) were deleted, so the next run builds from
+  clean (several minutes at -j 3); logs and C:\wc\out are kept.
 
 G4 run 12 (2026-11-17, about 18:50 to 19:40 Pacific). Merged origin/phase-2-graphics-webgl,
 -direct3d-12 and -shaders cleanly (-graphics, -webgpu and -rig had nothing new); the merged tree
