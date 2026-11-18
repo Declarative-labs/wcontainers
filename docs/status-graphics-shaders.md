@@ -14,9 +14,11 @@ level-of-detail clamp with drawn tests; run 13 built clip distances, depth clamp
 addressing in the program with drawn tests; run 14 built pulled vertex inputs and constant buffers
 read through a texture with drawn tests; run 15 built filtering and border colours in the program
 with drawn tests against real Direct3D 11 on the RTX 3080 and against WARP; run 16 began the stage
-helper of section 7: geometry shaders (DXBC) as compute, drawn against real Direct3D 11;
-what remains is under Next. Run 16 merged origin/phase-2-graphics-direct3d-12 and
-origin/phase-2-graphics-webgl (no conflicts; the others had nothing new).
+helper of section 7: geometry shaders (DXBC) as compute, drawn against real Direct3D 11; run 17
+built stream output through the stage helper, atomic operations, view counters (append, consume,
+`IncrementCounter`) and storage textures, each tested against real Direct3D 11 on the RTX 3080;
+what remains is under Next. Run 17 merged origin/phase-2-graphics-direct3d-11, -direct3d-12 and
+-rig (no conflicts; the others had nothing new).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -550,7 +552,66 @@ Run 16 (the stage helper, first part: geometry shaders on WebGPU):
   now convert (stream output is declared to the API, not in the bytecode); `gs_layers` is refused
   `RenderTargetArrayIndex`, `raster.gs` `ViewportArrayIndex`.
 
+Run 17 (stream output, atomics, counters, storage textures):
+- Stream output through the stage helper (`src/stage/stream_out.wgsl`, `stage::stream_program`,
+  `StreamOutput`, `StreamTargets`; `Stages::new(backend, vertex, Option<geometry>,
+  Option<&StreamOutput>)`): from the vertex stage alone or the geometry stage, one workgroup of 256
+  splits the units (geometry invocations, or API primitives) into runs, counts each run's whole
+  primitives, scans, and writes each primitive's vertices element by element in Direct3D's layout
+  (entries with a buffer, first component, count, gaps). Writing stops for every buffer at the first
+  primitive one cannot hold; the filled sizes advance; words 4 and 5 of the filled buffer are the
+  primitives written and needed (the stream output statistics query). Strips give odd triangles as
+  (i, i + 2, i + 1), which real Direct3D 11 matches. `passthrough()` and `vertex_layout()` give
+  `None` when nothing is drawn. Point output now writes index slots too. Stream 0 only.
+- Found by it: DXBC's `mad` was lowered as a multiply then an add; the RTX 3080's Direct3D fuses it,
+  so streamed positions were 1 ulp apart. It is now naga's `fma` (as dxbc-spirv's own SPIR-V writer
+  emits `Fma`), leaving the device the choice it has for the native program. Every other drawn test
+  (`draw`, `variant_draw`, `filter_draw`, `geometry_draw`) still passes after it.
+- Atomics (`FunctionLowering::atomic`): shared memory and raw or structured storage buffers that an
+  atomic operation uses are declared with atomic scalars, their plain loads and stores becoming
+  atomic loads and stores; every operation of the IR (add, subtract, signed and unsigned minimum and
+  maximum, and, or, xor, exchange, compare-exchange, increment, decrement). The atomic scalar is
+  signed where the declaration takes signed minimums or maximums; one taking both is refused
+  `AtomicSignedness`. A compare-exchange always takes its result (naga's HLSL writer has no form
+  without one). WGSL's compare-exchange is the weak one (Known gaps).
+- View counters: `DCL_UAV_COUNTER` is one `atomic<u32>` storage buffer at the slot's
+  `SlotKind::Counter` binding (224 plus the slot), listed in the reflection; `IMM_ATOMIC_ALLOC` is an
+  atomic add returning the value before, `IMM_ATOMIC_CONSUME` an atomic subtract returning the value
+  after, as Direct3D defines them.
+- Storage textures: a typed storage view of a texture takes its format from
+  `VariantKey::storage_formats` (the bound view's; refused `StorageFormat` without it,
+  `StorageFormatAbsent` for formats WGSL cannot store, `StorageFormatKind` when the declaration's
+  type is of another kind); access from the declaration: read-only, write-only, or read-write, which
+  WebGPU has for `r32float`, `r32uint` and `r32sint` only (others refused `ReadWriteStorageFormat`
+  until the through-buffer route). Loads, stores (the value made four components of the format's
+  kind), size and layer queries. Atomics on them are refused `StorageImageAtomics` (WebGPU has none:
+  `AtomicsThroughBuffer`).
+- New own shaders (`compute.hlsl`, fxc and dxc; every other own shader recompiled byte for byte):
+  `cs_atomics` (every atomic on shared memory and a raw buffer, signed ones on a structured buffer,
+  compare-exchange loops, a counter view, append and consume views), `cs_decrement` (a decremented
+  counter), `cs_images` (rgba8unorm, r32float read-write, an rgba16uint array, rg32sint).
+- `tests/compute.rs` (any machine): what each declares, WGSL read back and validated.
+  `tests/compute_draw.rs` (Windows, GPU job): both cases per seed against real Direct3D 11 on the
+  RTX 3080, every word of every view and every counter (via `CopyStructureCount`) compared; what
+  depends on invocation order (the appended values, the last exchange) is put in order first.
+  `tests/geometry_draw.rs` gained `stream_output_matches_direct3d`: eight cases (geometry shaders
+  with cuts, strips, lines, points, instances; the vertex stage alone with strips, indexed lists
+  with a base vertex and instances, lines, points; the first buffer filling up) per seed, every byte
+  of both buffers and the statistics query against real Direct3D 11.
+- DXIL compute shaders with these views are refused by naga's SPIR-V reader ("unsupported image
+  dimension", the typed buffer gap below).
+
 Next (in order):
+- Corpus records: run 17 updated them for geometry, atomics, counters and storage textures (below).
+  Storage textures in the corpora convert only with a format, so under the default key they are
+  refused `StorageFormat` and not compiled in Chrome; give the corpus test the formats the rig's
+  real programs bind, then compile them in Chrome.
+- The WebAssembly build's module differs from the native one for one game shader (Known gaps):
+  find which side orders the divide-modulo helper's operations by platform (dxbc-spirv's IR as
+  serialised, compared between the two builds, first) and make it deterministic.
+- Typed buffers (`TexelBufferRoute`), storage textures through a buffer (`texels_through_buffer`:
+  read-write formats other than r32, texture atomics), storage packing; DXIL storage views (naga's
+  SPIR-V reader: image buffers).
 - Comparisons in the program (shadow maps with a border colour, very common: WebGPU has no border
   colour): `SamplerState` needs the comparison function (an interface change: a word for it), then
   the library compares each tap. Cube filtering in the program (seamless edges). Then the rest of
@@ -565,14 +626,13 @@ Next (in order):
   and storage formats (after the storage image and typed buffer support they need), early tests,
   line coverage, the provoking rewrite, the primitive index from the stage helper, root signature
   layouts.
-- The stage helper of section 7, the rest: stream output (from the vertex or the geometry stage, in
-  Direct3D's layout, with overflow and the filled size; a count, a scan and a write, as WGSL
-  built-in programs), hull and domain with a tessellator ported from Mesa's MIT code, geometry by
+- The stage helper of section 7, the rest: stream output from streams other than 0 and rasterized
+  together with streaming (a draw of the pass-through as well), hull and domain with a tessellator ported from Mesa's MIT code, geometry by
   replay on WebGL 2, indexed strips into a geometry shader (a pass numbering primitives across
   restarts), triangle strips with adjacency, layer and viewport index outputs, clip distances
   through the stage, DXIL geometry shaders (naga's SPIR-V reader: the geometry execution model),
   the last vertex stage's variants on the pass-through. Tests against real Direct3D; the built-in
-  compute programs (texture clears of 5.1) and the counter operations.
+  compute programs (texture clears of 5.1).
 - The real programs' shaders (every converted one compiles in Chrome since run 10): their named
   failures worked down: render target array index 47, storage images 39 DXBC and 38 DXIL (no format), typed
   buffers 21 and 19, register spaces 10.
@@ -755,6 +815,35 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 17, 2026-11-17, counts only (the desktop shared with the other tracks, no timings taken):
+- `tests/geometry_draw.rs` (scratch `run17/gd3.log`), seeds 1 to 8: the geometry pictures 104
+  comparisons, 0 texels differ; stream output 64 comparisons, every byte of both buffers and both
+  statistics equal to real Direct3D 11's. Before `mad` became `fma` (`run17/gd2.log`): 8 of 32
+  stream output comparisons had one or two words 1 ulp apart (all `gs_cut`, the lerp).
+- After the `fma` change (`run17/draws1.log`): `draw` 3 tests pass; `variant_draw` passes;
+  `filter_draw` seeds 1 to 8, 396 comparisons, 0 failed, 32 anisotropic known failures as before.
+- Chrome's compile of every written file after run 17's changes (`run17/chrome.log`, one GPU job):
+  every WGSL file compiles (corpus 143, games 418, games DXIL 289, rig 64, rig DXIL 49, own 50, own
+  DXIL 26); WebGL 2 refuses only what GLSL ES 3.00 lacks (bitfield operations, `textureGather`,
+  multisampled samplers): corpus 13, games 10, games DXIL 1, rig 2, rig DXIL 2, own 5, own DXIL 2.
+  Geometry, atomics and counters convert to WGSL only (`ok-wgsl glsl-write`: compute).
+- Corpus records after run 17 (laptop, `run17/linux-all3.log`): 56 storage textures now refused
+  `StorageFormat` (no format under the default key) where they were `StorageImage`; 10 geometry
+  shaders and 13 shaders with atomics or counters now convert; 2 refused `AtomicSignedness`; 3 game
+  geometry shaders now refused `RenderTargetArrayIndex`.
+- WebAssembly against native after run 17 (laptop, `run17/wasm.log`, scratch script
+  `wasm-run10.sh`): the corpus test passes under wasmtime (9 tests); written files equal byte for
+  byte in corpus, rig, rig DXIL, own, own DXIL and games DXIL; in games 3 differ, all from one shader
+  (`d599fbc7efa911be.dxbc`: its WGSL, its GLSL and its line in `cache.txt`, Known gaps).
+- The whole suite before the push (`run17/final-gpu.log`, one GPU job, about 100 s): `draw`,
+  `variant_draw`, `filter_draw` (396 comparisons, 32 anisotropic known failures), `pull_draw`,
+  `geometry_draw` (52 and 32 comparisons) and `compute_draw` (8 and 4 seeds) all pass; on the laptop
+  every test passes with the corpora and glslang (`run17/linux-all3.log`, then the corpus test
+  again after the records).
+- `tests/compute_draw.rs` (`run17/cd2.log`), seeds 1 to 4: atomics and counters 8 comparisons, 0
+  words apart, counters equal (256, 256, 0; 0); storage textures 16 comparisons (4 formats), 0 words
+  apart.
 
 Run 16, 2026-11-17, counts only:
 - `tests/geometry_draw.rs` on the desktop (RTX 3080, shared, no timings; one GPU job, about 2 s,
@@ -1234,6 +1323,13 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test geometry_draw --no-run" -- "set WCONTAINERS_GEOMETRY_SEED=1&& set WCONTAINERS_GEOMETRY_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test geometry_draw -- --nocapture --test-threads 1"`.
   Each comparison prints the texels Direct3D drew and how many differ; with
   `WCONTAINERS_SHADERS_OUT` the pictures are kept.
+- Stream output: the same job runs `stream_output_matches_direct3d` (about 3 s for 8 seeds of both
+  tests together).
+- Atomics, counters and storage textures (Windows, one GPU job, about 2 s for 4 seeds):
+  `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test compute_draw --no-run" -- "set WCONTAINERS_COMPUTE_SEED=1&& set WCONTAINERS_COMPUTE_CASES=4&& cargo test -j 3 -p wcontainers-shaders --test compute_draw -- --nocapture --test-threads 1"`.
+- Compiling own shaders: `tests/own/compile.cmd` on the desktop (through `tools/graphics-rig/remote`);
+  run 17 fetched the new files back as hex (`certutil -encodehex -f <file> <file>.hex 12`, then
+  `type`) and decoded them here.
 - Filtering in the program (Windows, one GPU job, about 90 s for 8 seeds):
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test filter_draw --no-run" -- "set WCONTAINERS_FILTER_SEED=1&& set WCONTAINERS_FILTER_CASES=8&& cargo test -j 3 -p wcontainers-shaders --test filter_draw -- --nocapture --test-threads 1"`.
   Each comparison prints texels apart from both references, from each, and before moving the level
@@ -1382,6 +1478,19 @@ were already there.
   its CMake does for that file.
 
 ## Known gaps found so far
+
+- Conversion is not byte-identical between the WebAssembly and native builds for one game shader
+  (`d599fbc7efa911be.dxbc`, run 17): the helper function returning (x / y, x % y) loads its operands
+  for the modulo first natively and for the division first in WebAssembly, so the WGSL, GLSL and
+  module key differ (the meaning is the same). The same source key on both, so the difference arises
+  in conversion; the lowering iterates no hash map in an order that reaches the output (phis are
+  sorted), so dxbc-spirv's IR order on a 32-bit target is the first suspect. Run 10's comparison had
+  no difference; not investigated further in run 17.
+
+- WGSL has only the weak compare-exchange (`atomicCompareExchangeWeak`), which may fail without
+  cause; Direct3D's does not. Where the browser's back end writes it as a strong one (Direct3D 12's
+  `InterlockedCompareExchange`, Vulkan's `OpAtomicCompareExchange`) the result is exact; a spurious
+  failure elsewhere would return the compared value while not exchanging. Not seen; not tested apart.
 
 - The stage helper (run 16) refuses by name: indexed strips into a geometry shader, triangle strips
   with adjacency, indirect draws, streams other than 0, layer and viewport index outputs, clip and

@@ -1,5 +1,5 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl and geometry.hlsl with
-@rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's and the geometry shaders also
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl and compute.hlsl with
+@rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry and the compute shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
 setlocal
@@ -63,5 +63,9 @@ for %%e in (ps_dual ps_levels ps_samples ps_ids ps_minlod ps_mingather ps_mirror
 for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_adjacent gs_line_adjacent) do (
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Gis -Fo %%e.dxil geometry.hlsl || exit /b 1
+)
+for %%e in (cs_atomics cs_decrement cs_images) do (
+  "%FXC%" /nologo /T cs_5_0 /E %%e /Fo %%e.dxbc compute.hlsl || exit /b 1
+  "%DXC%" -nologo -T cs_6_0 -E %%e -Gis -Fo %%e.dxil compute.hlsl || exit /b 1
 )
 echo %FXC% %DXC%

@@ -120,6 +120,13 @@ fn geometry_refusals_are_named() {
     );
 }
 
+#[test]
+fn the_stream_output_program_validates() {
+    let m = stage::stream_program().unwrap();
+    assert_eq!(m.stage, wcontainers_gpu::ShaderStage::Compute);
+    wgsl(&m);
+}
+
 /// Prints the WGSL of the stage helper's programs for one geometry shader, for reading.
 #[test]
 #[ignore = "prints programs for reading"]
