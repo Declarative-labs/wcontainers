@@ -1322,12 +1322,11 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
     }
     fn SetResourceMinLOD(&self, presource: windows::core::Ref<ID3D11Resource>, minlod: f32) {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::SetResourceMinLOD")
+        self.set_resource_min_lod(presource, minlod)
     }
     fn GetResourceMinLOD(&self, presource: windows::core::Ref<ID3D11Resource>) -> f32 {
         let _call = self.call();
-        self.unserved("ID3D11DeviceContext::GetResourceMinLOD");
-        Default::default()
+        self.get_resource_min_lod(presource)
     }
     fn ResolveSubresource(
         &self,

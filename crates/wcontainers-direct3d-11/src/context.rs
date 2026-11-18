@@ -8,14 +8,15 @@ use wcontainers_gpu::{
     DispatchGroups, DrawCall, DrawRange, EmptyPass, Extent, Features, Filter, Format, FormatKind,
     FormatUse, HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp,
     MAX_BINDING_SETS, Object, Origin, PassDesc, PassTargets, Program, ReadSource, ReadState,
-    RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderStage, SlotKind, SlowPath, SourceStage,
-    StageSet, StepMode, StoreOp, Target, TextureUsage, Topology, VariantKey, VertexAttribute,
-    VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
-    helper_binding,
+    RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage, SlotKind,
+    SlowPath, SourceStage, StageSet, StepMode, StoreOp, Target, TextureUsage, Topology, VariantKey,
+    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport,
+    WriteMode, helper_binding,
 };
 
 use crate::desc::{
-    self, Box3, SubresourceData, TexDim, TextureDesc, Viewport, map, topology, usage,
+    self, Box3, DepthStencilDesc, SubresourceData, TexDim, TextureDesc, Viewport, map, topology,
+    usage,
 };
 use crate::device::{
     Device, HelperBlocks, Linked, Variant, ZERO_BYTES, gpu_buffer, integer_format, resolvable,
@@ -230,16 +231,46 @@ fn plain_topology(t: u32) -> Option<Topology> {
     })
 }
 
+/// The pixel counter's programs in the device's counting programs, by the place of a pixel
+/// shader's id: one count a pixel, the same on multisampled targets (the first covered sample
+/// counts), and one count a sample.
+const PER_PIXEL: u64 = u64::MAX;
+const PER_PIXEL_MASKED: u64 = u64::MAX - 1;
+const PER_SAMPLE: u64 = u64::MAX - 2;
+
+/// Whether topology `t` is a strip, whose indexed draws restart at a cut index.
+fn strip_topology(t: u32) -> bool {
+    matches!(t, topology::LINESTRIP | topology::TRIANGLESTRIP)
+}
+
+/// The primitives `count` vertices of topology `t` make (Direct3D's input assembler: incomplete
+/// primitives are dropped).
+fn primitives(t: u32, count: u32) -> u64 {
+    let n = u64::from(count);
+    match t {
+        topology::POINTLIST => n,
+        topology::LINELIST => n / 2,
+        topology::LINESTRIP => n.saturating_sub(1),
+        topology::TRIANGLELIST => n / 3,
+        topology::TRIANGLESTRIP => n.saturating_sub(2),
+        topology::LINELIST_ADJ => n / 4,
+        topology::LINESTRIP_ADJ => n.saturating_sub(3),
+        topology::TRIANGLELIST_ADJ => n / 6,
+        topology::TRIANGLESTRIP_ADJ => n.saturating_sub(4) / 2,
+        // Patch lists of 1 to 32 control points.
+        33..=64 => n / u64::from(t - 32),
+        _ => 0,
+    }
+}
+
 /// Direct3D's answer to a copy between textures of DXGI formats `a` and `b`: formats of one typeless
-/// group copy their bits; Direct3D 10.1's conversions between groups are not served yet; others are
+/// group, and from feature level 10_1 its conversions between groups, copy their bits; others are
 /// invalid.
-fn copy_formats(a: u32, b: u32) -> Result<()> {
-    if format::typeless_group(a) == format::typeless_group(b) {
+fn copy_formats(a: u32, b: u32, level: u32) -> Result<()> {
+    if format::typeless_group(a) == format::typeless_group(b)
+        || (level >= desc::level::L10_1 && format::copy_cast(a, b))
+    {
         Ok(())
-    } else if format::copy_cast(a, b) {
-        not_implemented(
-            "copies between a block-compressed or shared-exponent format and an integer one",
-        )
     } else {
         Err(Error::InvalidArg(
             "a copy between formats of different groups",
@@ -651,6 +682,14 @@ impl<B: Backend> Device<B> {
             }
             self.ctx.counted_copy = false;
         }
+        if !self.queries.statistics.is_empty() {
+            let r = self
+                .pixel_counter
+                .flush(&mut self.backend, &mut self.passes);
+            if let Err(e) = r {
+                let _ = self.gpu::<()>(Err(e));
+            }
+        }
     }
 
     /// `SetPredication`.
@@ -675,7 +714,7 @@ impl<B: Backend> Device<B> {
     /// Before a resource is written while counted occlusion queries run: the draws kept read it as
     /// it was.
     fn before_write(&mut self) {
-        if !self.queries.counted.is_empty() {
+        if !self.queries.counted.is_empty() || !self.queries.statistics.is_empty() {
             self.end_pass();
         }
     }
@@ -690,6 +729,7 @@ impl<B: Backend> Device<B> {
         ps: Option<&Rc<Shader<B>>>,
     ) -> Result<(B::Program, bool)> {
         let program = self.counting_program(vs, vk, ps)?;
+        self.track_targets()?;
         let ds = &self
             .ctx
             .depth_stencil
@@ -699,6 +739,18 @@ impl<B: Backend> Device<B> {
         let writes = self.ctx.depth.is_some()
             && ((ds.depth_enable && ds.depth_write)
                 || (ds.stencil_enable && ds.stencil_write_mask != 0));
+        if writes && !self.ctx.counted_copy {
+            if !self.ctx.clears.is_empty() {
+                self.open_pass();
+            }
+            self.end_pass();
+            self.ctx.counted_copy = true;
+        }
+        Ok((program, writes))
+    }
+
+    /// Sets the bound targets into the pass tracker for the counters, where they changed.
+    fn track_targets(&mut self) -> Result<()> {
         let key: Vec<usize> = self
             .ctx
             .targets
@@ -713,14 +765,178 @@ impl<B: Backend> Device<B> {
             self.gpu(r)?;
             self.ctx.counted_targets = key;
         }
-        if writes && !self.ctx.counted_copy {
-            if !self.ctx.clears.is_empty() {
-                self.open_pass();
+        Ok(())
+    }
+
+    /// Before a draw while pipeline statistics queries run and a pixel shader is bound: the targets
+    /// set into the pass tracker, the depth-stencil block with both tests off, and the program the
+    /// pixel counter replays the draw with, counting one per pixel shader invocation.
+    fn prepare_pixel_counted(
+        &mut self,
+        vs: &Rc<Shader<B>>,
+        vk: StageVariant,
+        ps: &Rc<Shader<B>>,
+        samples: u32,
+    ) -> Result<(B::Program, Rc<DepthStencil<B>>)> {
+        let per_sample = matches!(
+            ps.reflection.extras,
+            wcontainers_gpu::StageExtras::Pixel {
+                per_sample: true,
+                ..
             }
-            self.end_pass();
-            self.ctx.counted_copy = true;
+        ) || ps.reflection.inputs.iter().any(|i| {
+            i.system == Some(wcontainers_gpu::SystemValue::SampleIndex)
+                || matches!(
+                    i.interpolation,
+                    Interpolation::PerspectiveSample | Interpolation::LinearSample
+                )
+        });
+        let (id, code) = match (samples > 1, per_sample) {
+            (false, _) => (
+                PER_PIXEL,
+                "@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
+            ),
+            (true, false) => (
+                PER_PIXEL_MASKED,
+                "struct Out { @location(0) count: vec4<f32>, @builtin(sample_mask) mask: u32 }
+                 @fragment fn main(@builtin(sample_mask) covered: u32) -> Out {
+                     return Out(vec4<f32>(1.0), covered & (~covered + 1u));
+                 }",
+            ),
+            (true, true) => (
+                PER_SAMPLE,
+                "@fragment fn main(@builtin(sample_index) i: u32) -> @location(0) vec4<f32> {
+                     return vec4<f32>(1.0);
+                 }",
+            ),
+        };
+        self.track_targets()?;
+        let off = match &self.tests_off {
+            Some(d) => d.clone(),
+            None => {
+                let d = self.create_depth_stencil_state(&DepthStencilDesc {
+                    depth_enable: false,
+                    depth_write: false,
+                    stencil_enable: false,
+                    ..DepthStencilDesc::default_state()
+                })?;
+                self.tests_off = Some(d.clone());
+                d
+            }
+        };
+        let key = (vs.gpu.id, vk, id);
+        if let Some(p) = self.counting.get(&key) {
+            return Ok((p.handle.clone(), off));
         }
-        Ok((program, writes))
+        let module = ShaderModule::from_wgsl(code, "main", ShaderStage::Fragment)
+            .or_else(|_| not_implemented("the pixel counter's program on this back end"))?;
+        let fragment = self.backend.create_shader(&module);
+        let fragment = self.gpu(fragment)?;
+        let vertex = self
+            .interpolated
+            .get(&(vs.gpu.id, vk, ps.gpu.id))
+            .map_or(&vs.gpu.handle, |s| &s.shader.handle);
+        let program = self.backend.create_program(&Program::Render {
+            vertex,
+            fragment: Some(&fragment),
+        });
+        self.backend.destroy(Object::Shader(fragment));
+        let program = self.gpu(program)?;
+        let id = self.id();
+        self.counting.insert(
+            key,
+            Kept::new(program.clone(), id, Object::Program, &self.graveyard),
+        );
+        Ok((program, off))
+    }
+
+    /// Adds a draw to the running pipeline statistics queries: input assembler, vertex shader and
+    /// clipper counts from its arguments, as a GPU without vertex reuse or clipping splits counts
+    /// them (indirect arguments and the indices of indexed strips read back).
+    fn count_draw_statistics(
+        &mut self,
+        range: Range,
+        instances: u32,
+        args: Option<&Rc<Buffer<B>>>,
+    ) -> Result<()> {
+        let (range, instances) = match range {
+            Range::Indirect { indexed, offset } => {
+                let args = args.expect("indirect arguments");
+                let (r, _, n) = self.read_indirect(args, offset, indexed)?;
+                (r, n)
+            }
+            r => (r, instances),
+        };
+        let t = self.ctx.topology;
+        let (count, per_instance) = match range {
+            Range::Indexed { count, start, .. } if strip_topology(t) => {
+                self.indexed_strip(start, count)?
+            }
+            Range::Indexed { count, .. } | Range::Vertices { count, .. } => {
+                (u64::from(count), primitives(t, count))
+            }
+            Range::Indirect { .. } => unreachable!("read back above"),
+        };
+        let vertices = count * u64::from(instances);
+        let prims = per_instance * u64::from(instances);
+        use crate::query::statistic::*;
+        self.add_statistics(&[
+            (IA_VERTICES, vertices),
+            (IA_PRIMITIVES, prims),
+            (VS_INVOCATIONS, vertices),
+            (C_INVOCATIONS, prims),
+            (C_PRIMITIVES, prims),
+        ]);
+        Ok(())
+    }
+
+    /// The vertices and primitives of an indexed strip of `count` indices from `start`, read
+    /// back: each cut index (all ones) ends one strip and starts the next, and is no vertex.
+    fn indexed_strip(&mut self, start: u32, count: u32) -> Result<(u64, u64)> {
+        let Some((buffer, format, offset)) = self.ctx.index.clone() else {
+            return Ok((0, 0));
+        };
+        let size = match format {
+            IndexFormat::U16 => 2u64,
+            _ => 4,
+        };
+        let first = u64::from(offset) + u64::from(start) * size;
+        let bytes = (u64::from(count) * size).min(buffer.size.get().saturating_sub(first));
+        if bytes == 0 {
+            return Ok((0, 0));
+        }
+        self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+        self.settle();
+        let handle = buffer.handle();
+        let rb = self.backend.read_back(&ReadSource::Buffer {
+            buffer: &handle,
+            offset: first,
+            size: bytes,
+        });
+        drop(handle);
+        let rb = self.gpu(rb)?;
+        if self.backend.read_state(&rb) == ReadState::Pending {
+            self.backend.wait_read(&rb);
+        }
+        let mut data = vec![0u8; bytes as usize];
+        self.backend.finish_read(rb, &mut data);
+        let cut = |i: &[u8]| i.iter().all(|&b| b == 0xff);
+        let line = self.ctx.topology == topology::LINESTRIP;
+        let (mut vertices, mut total) = (0u64, 0u64);
+        for run in data
+            .chunks(size as usize)
+            .collect::<Vec<_>>()
+            .split(|i| cut(i))
+        {
+            let n = run.len() as u64;
+            vertices += n;
+            total += if line {
+                n.saturating_sub(1)
+            } else {
+                n.saturating_sub(2)
+            };
+        }
+        Ok((vertices, total))
     }
 
     /// The bound targets as the pass tracker takes them.
@@ -970,6 +1186,28 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
+    /// An indirect dispatch's group counts read back (`IndirectReadBack`), for pipeline statistics.
+    fn read_dispatch(&mut self, args: &Buffer<B>, offset: u32) -> Result<[u32; 3]> {
+        self.backend.slow_paths().hit(SlowPath::IndirectReadBack);
+        self.settle();
+        let handle = args.handle();
+        let rb = self.backend.read_back(&ReadSource::Buffer {
+            buffer: &handle,
+            offset: u64::from(offset),
+            size: 12,
+        });
+        drop(handle);
+        let rb = self.gpu(rb)?;
+        if self.backend.read_state(&rb) == ReadState::Pending {
+            self.backend.wait_read(&rb);
+        }
+        let mut bytes = [0u8; 12];
+        self.backend.finish_read(rb, &mut bytes);
+        Ok(std::array::from_fn(|i| {
+            u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into().unwrap())
+        }))
+    }
+
     /// An indirect draw's arguments read back (`IndirectReadBack`), as the range, first instance and
     /// instance count of a direct draw: for back ends without indirect draws or without a first
     /// instance in them.
@@ -1154,11 +1392,69 @@ impl<B: Backend> Device<B> {
                 }
             }
         }
+        let mut min_lod_clamped = 0;
+        if s.textures != 0 {
+            for i in 0..self.ctx.resources[stage].len().min(128) {
+                if s.textures & (1 << i) != 0 && self.min_lod_of(stage, i as u32).is_some() {
+                    min_lod_clamped |= 1 << i;
+                }
+            }
+        }
         StageVariant {
             lod_bias,
+            min_lod_clamped,
             samples: if s.reads_samples { samples } else { 0 },
             ..StageVariant::default()
         }
+    }
+
+    /// The minimum level-of-detail clamp of the texture view bound to `stage`'s `slot`, in the view's
+    /// levels, and the view's level count; none where the clamp leaves every level of the view.
+    fn min_lod_of(&self, stage: usize, slot: u32) -> Option<(f32, u32)> {
+        let v = self.ctx.resources[stage]
+            .get(slot as usize)?
+            .as_deref()?
+            .texture()?;
+        let clamp = v.texture.min_lod.get() - v.desc.first_mip as f32;
+        (clamp > 0.0).then_some((clamp, v.desc.mip_count))
+    }
+
+    /// The sampler bound to `stage`'s `slot` (Direct3D's default where none is) with its minimum
+    /// level raised to `clamp`, made at its first use.
+    fn clamped_sampler(
+        &mut self,
+        stage: usize,
+        slot: u32,
+        clamp: f32,
+    ) -> Result<(B::Sampler, u64)> {
+        let s = match self.ctx.samplers[stage]
+            .get(slot as usize)
+            .cloned()
+            .flatten()
+        {
+            Some(s) => s,
+            None => {
+                self.default_sampler()?;
+                self.zeros.sampler.clone().expect("made")
+            }
+        };
+        let [min, max] = s.made.lod_range.map(f32::from_bits);
+        // Direct3D clamps the level to the sampler's range and then to the resource's clamp.
+        let lod_range = [min.max(clamp), max.max(clamp)].map(f32::to_bits);
+        if let Some((_, k)) = s.clamped.borrow().iter().find(|(m, _)| *m == lod_range[0]) {
+            return Ok((k.handle.clone(), k.id));
+        }
+        let gpu = self.backend.create_sampler(&GpuSampler {
+            lod_range,
+            ..s.made
+        });
+        let gpu = self.gpu(gpu)?;
+        let id = self.id();
+        s.clamped.borrow_mut().push((
+            lod_range[0],
+            Kept::new(gpu.clone(), id, Object::Sampler, &self.graveyard),
+        ));
+        Ok((gpu, id))
     }
 
     /// The strides of the bound vertex buffers in the slots the input layout reads, zero elsewhere.
@@ -1314,7 +1610,9 @@ impl<B: Backend> Device<B> {
         self.grow_constants()?;
         self.update_set(COMPUTE)?;
         if self.stage_variant(COMPUTE, &cs, 1) != StageVariant::default() {
-            return not_implemented("a compute shader sampling through a biased sampler");
+            return not_implemented(
+                "a compute shader sampling through a biased sampler or a clamped texture",
+            );
         }
         let key = (
             cs.gpu.id,
@@ -1340,6 +1638,21 @@ impl<B: Backend> Device<B> {
                 p
             }
         };
+        if !self.queries.statistics.is_empty() {
+            let groups = match indirect {
+                None => groups,
+                Some((b, offset)) => self.read_dispatch(b, offset)?,
+            };
+            let size = match cs.reflection.extras {
+                wcontainers_gpu::StageExtras::Compute { workgroup_size } => workgroup_size,
+                _ => [1; 3],
+            };
+            let threads = groups
+                .iter()
+                .chain(&size)
+                .fold(1u64, |n, &g| n * u64::from(g));
+            self.add_statistics(&[(crate::query::statistic::CS_INVOCATIONS, threads)]);
+        }
         let args = indirect.map(|(b, offset)| (b.gpu.borrow(), offset));
         let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
         bindings[0] = self.ctx.sets[COMPUTE].as_ref().map(|k| &k.handle);
@@ -1824,10 +2137,15 @@ impl<B: Backend> Device<B> {
                             .map_or(0.0, |s| s.desc.mip_lod_bias);
                         [bias.to_bits(), 0, 0]
                     }
+                    HelperValue::MinLod { texture } => {
+                        let (clamp, levels) = self.min_lod_of(stage, texture).unwrap_or((0.0, 1));
+                        [clamp.to_bits(), levels, 0]
+                    }
                     _ => unreachable!("refused at conversion"),
                 };
                 let n = match slot.value {
                     HelperValue::LodBias { .. } => 1,
+                    HelperValue::MinLod { .. } => 2,
                     _ => 3,
                 };
                 for (k, w) in words[..n].iter().enumerate() {
@@ -1836,13 +2154,32 @@ impl<B: Backend> Device<B> {
                 }
             }
         }
+        // The merged samplers of textures under a minimum level-of-detail clamp; both stages
+        // number theirs from the same binding, so only one of them may have any.
+        if !helpers[0].merged.is_empty() && !helpers[1].merged.is_empty() {
+            return not_implemented(
+                "minimum level-of-detail clamps on textures both draw stages sample",
+            );
+        }
+        let mut merged = Vec::new();
+        for (h, stage) in helpers.iter().zip([VERTEX, PIXEL]) {
+            for &(binding, (texture, sampler)) in &h.merged {
+                let (clamp, _) = self.min_lod_of(stage, texture).unwrap_or((0.0, 1));
+                let (s, id) = self.clamped_sampler(stage, sampler, clamp)?;
+                merged.push((binding, stage, s, id));
+            }
+        }
+        let samplers: Vec<u64> = merged.iter().map(|m| m.3).collect();
         let blocks = [
             &blocks[0][..helpers[0].size as usize],
             &blocks[1][..helpers[1].size as usize],
         ];
         let arguments = args.map_or(0, |(b, ..)| b.gpu.borrow().id);
         if self.helper_blocks.as_ref().is_some_and(|h| {
-            h.arguments == arguments && h.blocks[0] == blocks[0] && h.blocks[1] == blocks[1]
+            h.arguments == arguments
+                && h.blocks[0] == blocks[0]
+                && h.blocks[1] == blocks[1]
+                && h.samplers == samplers
         }) {
             return Ok(());
         }
@@ -1895,6 +2232,17 @@ impl<B: Backend> Device<B> {
                 },
             });
         }
+        for (binding, stage, s, _) in &merged {
+            entries.push(BindingEntry {
+                binding: *binding,
+                stages: if *stage == VERTEX {
+                    StageSet::VERTEX
+                } else {
+                    StageSet::FRAGMENT
+                },
+                resource: BindingResource::Sampler(s),
+            });
+        }
         let set = self.backend.create_binding_set(&entries);
         drop(entries);
         drop(args);
@@ -1903,6 +2251,7 @@ impl<B: Backend> Device<B> {
         self.helper_blocks = Some(HelperBlocks {
             blocks: blocks.map(<[u8]>::to_vec),
             arguments,
+            samplers,
             set: Kept::new(set, id, Object::BindingSet, &self.graveyard),
         });
         Ok(())
@@ -1975,6 +2324,9 @@ impl<B: Backend> Device<B> {
         if vk.lod_bias | pk.lod_bias != 0 {
             self.backend.slow_paths().hit(SlowPath::LodBiasInShader);
         }
+        if vk.min_lod_clamped | pk.min_lod_clamped != 0 {
+            self.backend.slow_paths().hit(SlowPath::MinLodClamp);
+        }
         if vk.from_arguments {
             self.backend
                 .slow_paths()
@@ -2000,7 +2352,7 @@ impl<B: Backend> Device<B> {
         // SV_VertexID and SV_InstanceID leave out the draw's bases, which the common form's indices
         // include: a vertex program reading them takes the bases from its helper constants or from
         // the indirect arguments; level-of-detail biases are helper constants too.
-        let reads_helpers = helpers[0].size > 0 || helpers[1].size > 0;
+        let reads_helpers = helpers.iter().any(|h| h.size > 0 || !h.merged.is_empty());
         if reads_helpers {
             let (base, arguments) = match range {
                 Range::Vertices { start, .. } => (start, None),
@@ -2008,6 +2360,9 @@ impl<B: Backend> Device<B> {
                 Range::Indirect { indexed, offset } => (0, args.map(|b| (b, offset, indexed))),
             };
             self.write_helpers(&helpers, [base, first_instance], arguments)?;
+        }
+        if !self.queries.statistics.is_empty() {
+            self.count_draw_statistics(range, instances, args)?;
         }
 
         let indexed = matches!(
@@ -2123,6 +2478,13 @@ impl<B: Backend> Device<B> {
                 return not_implemented("counting the samples of a pixel shader variant");
             }
             Some(self.prepare_counted(&vs, vk, ps.as_ref())?)
+        };
+        // A draw without a pixel shader invokes none.
+        let pixel_counting = match &ps {
+            Some(p) if !self.queries.statistics.is_empty() => {
+                Some(self.prepare_pixel_counted(&vs, vk, p, samples)?)
+            }
+            _ => None,
         };
         self.count_combination(&vs, ps.as_ref(), topology, samples);
         let alpha_to_coverage = self
@@ -2255,6 +2617,21 @@ impl<B: Backend> Device<B> {
             ));
             self.gpu(kept)?;
         }
+        if let Some((counting, off)) = &pixel_counting {
+            let counted = CountedDraw {
+                counting,
+                alpha_to_coverage: false,
+                writes_depth_stencil: false,
+                instances_step_by_one,
+            };
+            let kept = with_call!(call => self.pixel_counter.draw(
+                &mut self.backend,
+                &mut self.passes,
+                &DrawCall { depth_stencil: &off.gpu.handle, ..call },
+                &counted,
+            ));
+            self.gpu(kept)?;
+        }
         self.open_pass();
         if !self.open_stretch() {
             // The pass's occlusion set has no slot left: the draw opens the next pass on another.
@@ -2290,23 +2667,26 @@ impl<B: Backend> Device<B> {
             }
             (Resource::Texture(d), Resource::Texture(s)) => {
                 let (a, b) = (&d.desc, &s.desc);
-                let shape = |t: &TextureDesc| {
+                // Measured in blocks: a block-compressed texture copies with an uncompressed one
+                // whose texels are its blocks.
+                let shape = |t: &TextureDesc, f: Format| {
+                    let (bw, bh, _) = f.block();
                     (
                         t.dimension,
-                        t.width,
-                        t.height,
+                        t.width.div_ceil(bw),
+                        t.height.div_ceil(bh),
                         t.depth,
                         t.mip_levels,
                         t.array_size,
                         t.sample_count,
                     )
                 };
-                if shape(a) != shape(b) || Rc::ptr_eq(d, s) {
+                if shape(a, d.format) != shape(b, s.format) || Rc::ptr_eq(d, s) {
                     return Err(Error::InvalidArg(
                         "CopyResource needs two textures of one shape",
                     ));
                 }
-                copy_formats(a.format, b.format)?;
+                copy_formats(a.format, b.format, self.feature_level())?;
                 for sub in 0..a.mip_levels * a.array_size {
                     self.copy_subresource_region(dst, sub, [0; 3], src, sub, None)?;
                 }
@@ -2351,7 +2731,7 @@ impl<B: Backend> Device<B> {
                 self.buffer_written(d)
             }
             (Resource::Texture(d), Resource::Texture(s)) => {
-                copy_formats(d.desc.format, s.desc.format)?;
+                copy_formats(d.desc.format, s.desc.format, self.feature_level())?;
                 let (Some((src_mip, src_layer)), Some((dst_mip, dst_layer))) =
                     (s.subresource(src_sub), d.subresource(dst_sub))
                 else {
@@ -2381,14 +2761,17 @@ impl<B: Backend> Device<B> {
                     height: b.bottom - b.top,
                     depth_or_layers: b.back - b.front,
                 };
-                if at[0] + extent.width > de.width
-                    || at[1] + extent.height > de.height
+                // The destination's extent covers the same blocks; a block-compressed level is
+                // as large as its whole blocks.
+                let ((sbw, sbh, _), (dbw, dbh, _)) = (s.format.block(), d.format.block());
+                if at[0] + extent.width.div_ceil(sbw) * dbw > de.width.div_ceil(dbw) * dbw
+                    || at[1] + extent.height.div_ceil(sbh) * dbh > de.height.div_ceil(dbh) * dbh
                     || at[2] + extent.depth_or_layers > de.depth_or_layers
                 {
                     return Ok(());
                 }
-                // Depth-stencil subresources are copied whole; Direct3D drops a part.
-                if s.format.kind() == FormatKind::DepthStencil
+                // Subresources of depth-stencil textures are copied whole; Direct3D drops a part.
+                if (s.desc.bind_flags | d.desc.bind_flags) & desc::bind::DEPTH_STENCIL != 0
                     && (at != [0; 3]
                         || (extent.width, extent.height) != (se.width, se.height)
                         || (de.width, de.height) != (se.width, se.height))

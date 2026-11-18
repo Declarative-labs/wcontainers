@@ -1,9 +1,63 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 9 of G4 as a whole (2026-11-17).
+Runs so far: six on G4a, the first slice; then runs 1 to 10 of G4 as a whole (2026-11-17).
 
 ## Where things stand
+
+G4 run 10 (2026-11-17, about 16:30 to 17:40 Pacific). Merged origin/phase-2-graphics-webgl,
+-direct3d-12 and -shaders cleanly (-graphics, -webgpu and -rig had nothing new); the merged tree
+built, linted and passed every test on the desktop before any change, and was pushed. The shaders
+crate brought the minimum level-of-detail clamp variant and native clip distances.
+- `SetResourceMinLOD` and `GetResourceMinLOD`: the clamp lives on the texture (`Texture::min_lod`)
+  and is taken only on the immediate context and only for textures made with
+  `D3D11_RESOURCE_MISC_RESOURCE_CLAMP` (0x80), as real Direct3D does (own_min_lod showed a
+  deferred context's call and an unflagged texture's call dropped). At each draw, texture slots a
+  program reads whose view's texture is clamped past the view's first level choose the
+  `min_lod_clamped` variant (`StageVariant::min_lod_clamped`, `MinLodClamp`); its `MinLod`
+  helper values (clamp in the view's levels, level count) go into the helper block, and each
+  sampled pair it samples through gets a merged sampler at `CLAMPED_SAMPLER_BINDING` plus the
+  pair's index: the pair's sampler (Direct3D's default for an empty slot) with its range raised
+  to the clamp, made once per clamp on the sampler (`Sampler::clamped`). The value of the clamp
+  is not in the key. Both draw stages sampling clamped textures is refused by name (Asked of the
+  interface); so is a compute shader with a biased sampler or clamped texture.
+- Vertex shaders writing clip distances are refused by name (`ClipDistanceInShader`) where the
+  back end has no `CLIP_DISTANCE` (wgpu's Direct3D 12 path has none); before, the back end failed.
+- Pipeline statistics queries (plan 4.12): input assembler, vertex shader and clipper counts from
+  the draws' arguments (indirect arguments read back, `IndirectReadBack`; an indexed strip's
+  indices read back, `ReadBackWait`, cut indices ending strips and counting as no vertex, as real
+  Direct3D counts them), compute invocations from dispatches (groups times the workgroup size),
+  and pixel shader invocations from a second occlusion counter (`Device::pixel_counter`) replaying
+  each draw with the depth and stencil tests off through a program counting one per pixel (on
+  multisampled targets the first covered sample writes; one per sample for a per-sample shader).
+  Answers are now eleven words (`query::Answer`). Stream output statistics answer zero and the
+  overflow predicates false (see Departures); per-stream ones need 11_0; `CreatePredicate` takes
+  only the occlusion and first overflow predicate, `CreateQuery` gives every overflow predicate
+  as `ID3D11Predicate`.
+- Direct3D 10.1's copy conversions: an uncompressed colour format of 64 or 128 bits with a
+  block-compressed format of that block size, and the R32 formats with R9G9B9E5 and the packed
+  4:2:2 ones, from feature level 10_1 (dropped on 10_0, as real Direct3D does); sizes measured in
+  blocks for `CopyResource`'s shape and the destination's bounds. Partial copies of textures bound
+  as depth-stencil are dropped, as real Direct3D drops them.
+- The 18 `Child::new` sites were checked for the leak run 9 found: every other one makes its COM
+  object in the same expression, so a dropped object gives its device reference back. None leaks.
+- New tests against real Direct3D: `own_min_lod` (programs.rs
+  `minimum_level_clamps_and_both_helper_blocks_as_direct3d_does`): sampling at an explicit
+  fractional level, implicit sampling, loads and gathers under clamps 0, 0.5, 1.5, 2.75, 4 and 5
+  (past the last level), through a view from level one, with a sampler whose minimum is higher,
+  an unflagged texture, `GetResourceMinLOD` answers, a deferred context's call; and a draw with a
+  start vertex the vertex shader's `SV_VertexID` leaves out and a pixel sampler bias (both helper
+  blocks, also with a clamp). Every row identical except the biased rows (see Departures).
+  `own_queries` now also covers pipeline statistics (direct, instanced, indirect, scissored and
+  an indexed strip with a cut) and stream output queries; identical line by line.
+- Results: Wine's d3d11 file 82 of the 162 that pass on real Direct3D (79 before; full run at
+  b6fc365, 172 s, RTX 3080 through the queue, not alone; logs/g4r10z-wine.log). New passes:
+  test_pipeline_statistics_query, test_create_query, test_compressed_format_compatibility. The
+  rig's Direct3D 11 scenes: 74 of 143 outputs match (66 of 145 at run 9; logs/g4r10z-scenes.log):
+  the queries and copies scenes now match (largest difference 0). The WebGL 2 build built, linted
+  and ran every scene (logs/g4r10z-webgl.log): none draws, since every rig scene asks for feature
+  level 11_0 alone and the WebGL 2 build offers 10_0 (`DXGI_ERROR_UNSUPPORTED`, as Direct3D
+  answers); the WebGL 2 cases need scenes or own programs asking for 10_0 (next steps, item 4).
 
 G4 run 9 (2026-11-17, about 15:50 to 16:40 Pacific). Merged origin/phase-2-graphics, -webgl,
 -direct3d-12, -shaders and -rig cleanly (-webgpu had nothing new). The shaders crate now builds
@@ -597,6 +651,17 @@ topology; adjacency topologies without a geometry shader through `AdjacencyDropp
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
+- d3d11: not passing. G4 run 10 (2026-11-17, our library copied in as d3d11.dll, RTX 3080
+  through the queue, not alone): full file at b6fc365: 82 of the 162 that pass on real Direct3D
+  (80 fail; 172 s; logs/g4r10z-wine.log). New passes: test_pipeline_statistics_query,
+  test_create_query, test_compressed_format_compatibility. test_format_compatibility now gets
+  past the 10.1 conversions and stops where the WebGPU back end cannot copy `R16_UNORM` into
+  `D16_UNORM` (Asked). First named gaps, counted from the run at dc8d2f1 less the tests passing
+  since (approximate): software, reference and WARP drivers
+  7, typed buffers 8, geometry shaders and stream output 8, storage images 4, atomics 3, storage
+  counters 2, instance step rates 3, VertexWithoutPosition 3, DynamicOffset 2, ClipDistance 2,
+  formats the back end lacks 3, reinterpreting views 2, one each of the rest; 19 with nothing
+  named (6 skip what the Direct3D 10 interfaces would give, then wrong answers listed in run 8).
 - d3d11: not passing. G4 run 9 (2026-11-17, our library copied in as d3d11.dll, RTX 3080 through
   the queue, not alone): full file at b9d283d: 78 of the 162 that pass on real Direct3D (84 fail;
   191 s; logs/g4r9k-wine.log); then at d51d9fb test_deferred_context_rendering passes too, so 79.
@@ -803,45 +868,41 @@ crate's `NormAsInteger`).
 
 ## What comes next (G4b and on)
 
-After G4 run 9, in order (the branch is pushed; everything on it built and passed on the desktop):
+After G4 run 10, in order (the branch is pushed; everything on it built and passed on the desktop):
 1. The third engine family waits on the shaders crate: `GeometryShader` (Godot through ANGLE,
    whose programs link a point sprite geometry shader) or `TypedBuffer` (bgfx's compute shaders).
    Whichever lands first, run that program. For bgfx also decide how its NVAPI calls are met: on
    a machine without NVIDIA's driver there is no nvapi64.dll; on the desktop a stand-in
    nvapi64.dll exporting nothing (any library without `nvapi_QueryInterface`, given with
    `--dll nvapi64.dll=...`) stands for that. A real fixture belongs in the rig.
-2. Direct3D 10 interfaces on Direct3D 11 objects (`ID3D10Device`, `ID3D10Buffer`, textures,
-   views and states): six Wine d3d11 tests skip checks without them (test_create_buffer,
-   test_texture1d/2d/3d_interfaces, test_depthstencil_view_interfaces, test_create_blend_state;
-   also the fewer checks of test_create_rasterizer_state, test_private_data); Wine's d3d10core
-   file needs them (with a d3d10core.dll of ours), and `CheckInterfaceSupport` should then answer
-   for `ID3D10Device`.
-3. Pipeline statistics queries (the rig's queries scene and test_pipeline_statistics_query,
-   test_create_query stop there): the plan's 4.12 way, counts from the draws' arguments and pixel
-   shader invocations from a counting replay with the depth and stencil tests off.
-4. Other objects built before their out pointer is checked would leak a device reference the
-   same way the command list did (a `Child` gives it back only through its last COM release):
-   check the 18 `Child::new` sites.
-5. Devices at feature levels 9_1 to 9_3 (the rig's levels scene, test_fl9_draw's checks).
-6. The WebGL 2 cases: programs that ask for 10_0 (every rig scene asks for 11_0 alone);
+2. Direct3D 10 interfaces on Direct3D 11 objects (`ID3D10Buffer`, `ID3D10Texture1D/2D/3D`, views
+   and states; their `GetDevice` gives null on a device made by Direct3D 11, as Wine's tests
+   expect): the largest bucket the front owns. Six Wine d3d11 tests skip checks without them
+   (test_create_buffer, test_texture1d/2d/3d_interfaces, test_depthstencil_view_interfaces,
+   test_create_blend_state; also the fewer checks of test_create_rasterizer_state,
+   test_private_data, test_dxgi_resources); Wine's d3d10core file needs them (with a d3d10core.dll
+   of ours), and `CheckInterfaceSupport` should then answer for `ID3D10Device`. It needs the
+   windows crate's Direct3D10 feature and the generator's interface lists extended.
+3. Devices at feature levels 9_1 to 9_3 (the rig's levels scene, test_fl9_draw's checks).
+4. The WebGL 2 cases: programs that ask for 10_0 (every rig scene asks for 11_0 alone);
    per-target blends without OES_draw_buffers_indexed (`TargetsSplit`, not built); `resinfo`
-   through the shaders crate's `TEXTURE_INFO` (now built: a variant like the others of run 9,
-   writing `TextureLevels`); the run 9 variants through the WebGL 2 build (no `SAMPLE_MASK` or
-   dual-source there).
-7. Constant buffer windows shorter than their shader's block (the rig's constants scene): copy
+   through the shaders crate's `TEXTURE_INFO` (built: a variant writing `TextureLevels`); the
+   variants of runs 9 and 10 through the WebGL 2 build (no `SAMPLE_MASK` or dual-source there).
+5. Constant buffer windows shorter than their shader's block (the rig's constants scene): copy
    the window into a buffer of the block's size whose bytes past it are zero, refreshed when the
    source is written (a copy per draw would split passes).
-8. The listed cases still without a test against real Direct3D (texture atomics,
-   earlydepthstencil with storage writes, SetResourceMinLOD, a depth buffer larger than its target,
-   rasterised stream output, typed storage views, NV12 and YUY2, R8G8_B8G8, a copy between
-   multisampled textures, antialiased lines, UsageScopeSplit, both helper blocks in one draw,
-   FilterInShader on depth); most wait on other tracks. Indirect draws reading their bases now
-   have one (own_indirect); LOD bias and dual-source blending have Wine's test_dual_source_blend,
-   the rig's blend scene and test_texture's bias rows (before its A8 case).
-9. Building-ahead hit counts on real programs (keep copies of the programs' output.log in this
+6. The listed cases still without a test against real Direct3D (texture atomics,
+   earlydepthstencil with storage writes, a depth buffer larger than its target, rasterised stream
+   output, typed storage views, NV12 and YUY2, R8G8_B8G8, a copy between multisampled textures,
+   antialiased lines, UsageScopeSplit, FilterInShader on depth); most wait on other tracks.
+   SetResourceMinLOD and both helper blocks in one draw have own_min_lod (run 10).
+7. Building-ahead hit counts on real programs (keep copies of the programs' output.log in this
    track's scratch), and the module size (the WebAssembly build is not planned yet).
-10. Move the context fully onto the pass tracker (fitted attachments, `UsageScopeSplit`); today
-    the tracker only holds the targets for the occlusion counter.
+8. Move the context fully onto the pass tracker (fitted attachments, `UsageScopeSplit`); today
+   the tracker only holds the targets for the two occlusion counters.
+9. A compute shader sampling a clamped texture or through a biased sampler is refused by name
+   (the dispatch path picks no variant yet); pipeline statistics' compute invocations are counted
+   but not yet compared with real Direct3D.
 
 ## How to run
 
@@ -892,10 +953,10 @@ caught by it, so it does see that code.
 
 From the checkout root on the Mac (the desktop does all building and testing). The desktop's
 checkout needs the shaders crate's submodules, so commands start with `git submodule update --init --recursive -q`.
-- Front tests (recording back end, no GPU), 31 tests:
+- Front tests (recording back end, no GPU), 34 tests:
   `tools/graphics-rig/remote "git submodule update --init --recursive -q && cargo test -q -j 3 -p wcontainers-direct3d-11"`.
 - Library tests (COM behaviour, the forwarder, threads, our programs; they make real devices and a
-  window, so a GPU job on the hidden desktop), 26 tests (com 14, programs 12):
+  window, so a GPU job on the hidden desktop), 29 tests (com 15, programs 14):
   `tools/graphics-rig/gpu-job --desktop --build "git submodule update --init --recursive -q && cargo test -q -j 3 -p wcontainers-directx --no-run" -- "cargo test -q -j 3 -p wcontainers-directx -- --test-threads 1"`
   (add `--nocapture` to see what the programs print).
   The random lifetimes comparison takes `WC_LIFETIMES=<first seed>,<seeds>,<steps>` (default 1,8,300);
@@ -967,6 +1028,11 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Tests
 
+At G4 run 10: front.rs 34 tests, com.rs 15, programs.rs 14 (all run and passing on the desktop).
+Run 10 added front test `a_texture_under_a_minimum_level_clamp_is_sampled_through_a_merged_sampler`
+and programs test `minimum_level_clamps_and_both_helper_blocks_as_direct3d_does` (own_min_lod);
+own_queries now also covers pipeline statistics and stream output queries.
+
 - crates/wcontainers-direct3d-11/tests/front.rs, 25 tests since G4 run 5 (the bases in the
   helper block and indirect draws read back, in place of the removal test; building ahead; depth
   with stencil staging in Direct3D's layouts; empty input layouts), never run; 22 before (since G4 run 1 also: depth-stencil
@@ -1035,6 +1101,19 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Departures from the plan
 
+- Run 10: the plan (4.12) calls `LodBiasInShader` exact for implicit-level sampling. Measured on
+  the RTX 3080 (own_min_lod, `samplers.ps_sample` with a 1.5 bias): one unit of green apart at 4
+  of 256 texels, where the bias the program adds rounds the level apart from the sampler's own.
+  The comparison takes rows drawn through a biased sampler within one unit a channel (Direct3D's
+  filtering tolerance); every other row is compared exactly.
+- Run 10: pipeline statistics' vertex shader invocations equal the vertices fetched, as the plan
+  says for a GPU without vertex reuse; real Direct3D on the RTX 3080 reuses vertices even in draws
+  without indices (9 invocations for 18 vertices in own_queries), so that member is not compared.
+  Pixel shader invocations count covered pixels (or samples, for a per-sample shader), not helper
+  pixels; Direct3D only promises a lower bound there, and the tests check that.
+- Run 10: stream output statistics answer zero and the overflow predicates false, since no stream
+  output can run (geometry shaders with stream output are refused, targets cannot be bound). They
+  must count once stream output is served.
 - Run 9: a sampler whose `MinLOD` is above its `MaxLOD` is made with the maximum raised to the
   minimum, since WebGPU refuses such a range; what real Direct3D samples then is not checked (the
   one Wine case uses no texture).
@@ -1232,6 +1311,14 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 
 ## Asked of other tracks
 
+- WebGPU back end (G4 run 10, Wine's test_format_compatibility): `copy_texture` from `R16Unorm`
+  into `Depth16Unorm` (one typeless group in Direct3D) fails "a copy into depth from a format
+  outside its typeless group" and the device is lost.
+- Interface (G4 run 10): the merged samplers of a minimum level-of-detail clamp are numbered from
+  `CLAMPED_SAMPLER_BINDING` in the one helper set by both draw stages, so a draw whose vertex and
+  pixel shaders both sample clamped textures cannot bind both; the front refuses it by name.
+  Separate ranges per stage (as the helper blocks have) would serve it.
+
 - Shaders track (G4 run 8): `GeometryShader` (ANGLE links a point sprite geometry shader into
   every program Godot uses) and `TypedBuffer` (bgfx's compute shaders) are what stop the third
   engine family.
@@ -1280,6 +1367,8 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   dxgi.dll only), so the forwarder placement can be checked by the scenes command.
 
 ## Licences
+
+G4 runs 9 and 10 added no dependency and installed nothing on the desktop.
 
 G4 run 8 added no dependency and installed nothing on the desktop.
 

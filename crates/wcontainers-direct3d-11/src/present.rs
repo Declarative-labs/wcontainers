@@ -1,7 +1,7 @@
 //! Swap chains: the shared infrastructure's, with each back buffer handed to the program as a
 //! texture of this front.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
@@ -101,6 +101,7 @@ impl<B: Backend> Device<B> {
                 shadow: RefCell::new(Vec::new()),
                 staged: RefCell::new(Vec::new()),
                 chain: true,
+                min_lod: Cell::new(0.0),
             }));
             index += 1;
         }

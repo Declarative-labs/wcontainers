@@ -2,7 +2,8 @@
 //! crate into the common form.
 
 use wcontainers_gpu::{
-    DrawBaseSource, HelperSlot, HelperValue, SlotKind, SourceStage, VariantFlags, VariantKey,
+    CLAMPED_SAMPLER_BINDING, DrawBaseSource, HELPER_SET, HelperSlot, HelperValue, SlotKind,
+    SourceStage, VariantFlags, VariantKey,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -53,6 +54,9 @@ pub struct StageVariant {
     /// The vertex program reads the draw's bases from an indirect draw's arguments
     /// (`DrawBaseFromArguments`).
     pub from_arguments: bool,
+    /// Texture slots whose bound view's resource has a minimum level-of-detail clamp past the
+    /// view's first level (`MinLodClamp`).
+    pub min_lod_clamped: u128,
 }
 
 impl StageVariant {
@@ -60,6 +64,7 @@ impl StageVariant {
     pub fn key(self, stage: SourceStage) -> VariantKey {
         let mut key = base_key(stage);
         key.lod_bias = self.lod_bias;
+        key.min_lod_clamped = self.min_lod_clamped;
         key.samples = self.samples;
         if self.dual_source {
             key.flags |= VariantFlags::DUAL_SOURCE;
@@ -71,18 +76,34 @@ impl StageVariant {
     }
 }
 
-/// Where a converted program reads its helper constants: the block's size and each value's offset.
+/// Where a converted program reads its helper constants: the block's size and each value's offset;
+/// and the (texture slot, sampler slot) pairs it samples through merged samplers of a minimum
+/// level-of-detail clamp, each bound at `CLAMPED_SAMPLER_BINDING` plus its index.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Helpers {
     pub size: u32,
     pub values: Vec<HelperSlot>,
+    pub merged: Vec<(u32, (u32, u32))>,
 }
 
 impl Helpers {
     pub fn of(c: &Converted) -> Self {
+        let pairs = &c.reflection.sampled_pairs;
+        let merged = c
+            .modules
+            .iter()
+            .flat_map(|m| m.module.global_variables.iter())
+            .filter_map(|(_, g)| g.binding.as_ref())
+            .filter(|b| b.group == HELPER_SET && b.binding >= CLAMPED_SAMPLER_BINDING)
+            .filter_map(|b| {
+                let n = b.binding - CLAMPED_SAMPLER_BINDING;
+                pairs.get(n as usize).map(|&p| (b.binding, p))
+            })
+            .collect();
         Helpers {
             size: c.reflection.helper_size,
             values: c.reflection.helpers.clone(),
+            merged,
         }
     }
 }
@@ -127,6 +148,19 @@ pub fn sampler_slots(c: &Converted) -> u16 {
         .fold(0, |m, b| m | (1 << b.register))
 }
 
+/// The texture slots a converted program reads, one bit each.
+pub fn texture_slots(c: &Converted) -> u128 {
+    c.reflection
+        .bindings
+        .iter()
+        .filter(|b| b.kind == SlotKind::Texture && b.added.is_none() && b.register < 128)
+        .fold(0, |m, b| {
+            let n = b.count.clamp(1, 128 - b.register);
+            let bits = if n == 128 { !0 } else { (1u128 << n) - 1 };
+            m | (bits << b.register)
+        })
+}
+
 /// Converts a shader of `expected` stage as the variant `key` asks.
 pub fn convert_variant(
     bytecode: &[u8],
@@ -167,6 +201,7 @@ fn answer(r: core::result::Result<Converted, ConvertError>) -> Result<Converted>
                     HelperValue::DrawBase
                         | HelperValue::DrawArguments
                         | HelperValue::LodBias { .. }
+                        | HelperValue::MinLod { .. }
                 )
             }) =>
         {

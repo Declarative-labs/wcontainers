@@ -1,8 +1,8 @@
 //! A small Direct3D 11 program on queries: an event polled to completion, occlusion predicates
 //! around draws that pass samples and draws scissored to nothing, predicates that overlap, a
 //! predicate ended twice, `GetData` before an end and with wrong sizes, counted occlusion queries
-//! (overlapping, against depth the draws write, across a depth clear and a buffer write), timestamps
-//! and their disjoint query answering, and the interfaces and sizes of each. Prints the answers, for
+//! (overlapping, against depth the draws write, across a depth clear and a buffer write), pipeline
+//! statistics, timestamps and their disjoint query answering, and the interfaces and sizes of each. Prints the answers, for
 //! comparing with real Direct3D line by line.
 
 #[cfg(windows)]
@@ -273,6 +273,143 @@ fn main() -> windows::core::Result<()> {
         c.OMSetRenderTargets(Some(&[rtv.clone()]), None);
     }
 
+    // Pipeline statistics: the input assembler, vertex shader and clipper counts of draws made
+    // directly, instanced, indirectly and scissored to nothing, and of an indexed strip cut in two;
+    // pixel shader invocations at least the pixels covered (helper pixels may add some).
+    let statistics = |name: &str, q: &ID3D11Query| {
+        let mut s = D3D11_QUERY_DATA_PIPELINE_STATISTICS::default();
+        let mut hr = 1;
+        for _ in 0..10_000_000 {
+            hr = get(
+                q,
+                (&mut s as *mut D3D11_QUERY_DATA_PIPELINE_STATISTICS).cast(),
+                88,
+            );
+            if hr != 1 {
+                break;
+            }
+        }
+        // Vertex shader invocations are the device's: it may reuse vertices, as real Direct3D
+        // on the RTX 3080 does even in draws without indices.
+        println!(
+            "{name} GetData {hr:#010x} ia {} {} gs {} {} clipper {} {} hs {} ds {} cs {}",
+            s.IAVertices,
+            s.IAPrimitives,
+            s.GSInvocations,
+            s.GSPrimitives,
+            s.CInvocations,
+            s.CPrimitives,
+            s.HSInvocations,
+            s.DSInvocations,
+            s.CSInvocations
+        );
+        s.PSInvocations
+    };
+    let args = {
+        let words: Vec<u8> = [3u32, 2, 0, 0]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        let mut b = None;
+        unsafe {
+            device.CreateBuffer(
+                &D3D11_BUFFER_DESC {
+                    ByteWidth: 16,
+                    Usage: D3D11_USAGE_DEFAULT,
+                    MiscFlags: D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS.0 as u32,
+                    ..Default::default()
+                },
+                Some(&D3D11_SUBRESOURCE_DATA {
+                    pSysMem: words.as_ptr().cast(),
+                    ..Default::default()
+                }),
+                Some(&mut b),
+            )?
+        };
+        b.unwrap()
+    };
+    let indices = {
+        let words: Vec<u8> = [0u16, 1, 2, 0xffff, 0, 1, 2, 1]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        let mut b = None;
+        unsafe {
+            device.CreateBuffer(
+                &D3D11_BUFFER_DESC {
+                    ByteWidth: words.len() as u32,
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: D3D11_BIND_INDEX_BUFFER.0 as u32,
+                    ..Default::default()
+                },
+                Some(&D3D11_SUBRESOURCE_DATA {
+                    pSysMem: words.as_ptr().cast(),
+                    ..Default::default()
+                }),
+                Some(&mut b),
+            )?
+        };
+        b.unwrap()
+    };
+    let (direct, strip) = (
+        make(D3D11_QUERY_PIPELINE_STATISTICS)?,
+        make(D3D11_QUERY_PIPELINE_STATISTICS)?,
+    );
+    unsafe {
+        c.Begin(&direct);
+        full();
+        empty();
+        c.RSSetState(None);
+        c.DrawInstanced(3, 2, 0, 0);
+        c.DrawInstancedIndirect(&args, 0);
+        c.End(&direct);
+    }
+    let pixels = statistics("statistics direct", &direct);
+    println!(
+        "statistics direct pixels at least 4 x 256 {}",
+        pixels >= 4 * 256
+    );
+    unsafe {
+        c.Begin(&strip);
+        c.IASetIndexBuffer(&indices, DXGI_FORMAT_R16_UINT, 0);
+        c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        c.DrawIndexed(8, 0, 0);
+        c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        c.End(&strip);
+    }
+    let pixels = statistics("statistics strip", &strip);
+    println!("statistics strip pixels at least 256 {}", pixels >= 256);
+    let unused = make(D3D11_QUERY_PIPELINE_STATISTICS)?;
+    unsafe {
+        c.Begin(&unused);
+        c.End(&unused);
+    }
+    let pixels = statistics("statistics none", &unused);
+    println!("statistics none pixels {pixels}");
+
+    // Stream output's queries around a draw that streams nothing out.
+    let (so, overflow) = (
+        make(D3D11_QUERY_SO_STATISTICS)?,
+        make(D3D11_QUERY_SO_OVERFLOW_PREDICATE)?,
+    );
+    unsafe {
+        c.Begin(&so);
+        c.Begin(&overflow);
+        full();
+        c.End(&overflow);
+        c.End(&so);
+    }
+    let mut written = [u64::MAX; 2];
+    let mut hr = 1;
+    for _ in 0..10_000_000 {
+        hr = get(&so, written.as_mut_ptr().cast(), 16);
+        if hr != 1 {
+            break;
+        }
+    }
+    println!("stream output statistics GetData {hr:#010x} {written:?}");
+    poll("stream output overflow", &overflow);
+
     // Timestamps answer; their values, and whether the counter was continuous, are the device's.
     let (disjoint, start, end) = (
         make(D3D11_QUERY_TIMESTAMP_DISJOINT)?,
@@ -304,6 +441,15 @@ fn main() -> windows::core::Result<()> {
         ("occlusion", D3D11_QUERY_OCCLUSION),
         ("timestamp", D3D11_QUERY_TIMESTAMP),
         ("disjoint", D3D11_QUERY_TIMESTAMP_DISJOINT),
+        ("statistics", D3D11_QUERY_PIPELINE_STATISTICS),
+        (
+            "stream output statistics",
+            D3D11_QUERY_SO_STATISTICS_STREAM2,
+        ),
+        (
+            "stream output overflow",
+            D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3,
+        ),
     ] {
         let q = make(kind)?;
         let size = unsafe { q.GetDataSize() };

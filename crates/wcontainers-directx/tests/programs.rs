@@ -1,6 +1,6 @@
 //! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges`,
 //! `own_depth_copy`, `own_swap_chain`, `own_volumes`, `own_queries`, `own_interfaces`,
-//! `own_indirect` and `lifetimes`) run as ordinary
+//! `own_indirect`, `own_min_lod` and `lifetimes`) run as ordinary
 //! programs, once beside the system's d3d11.dll and once with our forwarding d3d11.dll and library
 //! beside them, and what each printed compared.
 #![cfg(windows)]
@@ -122,6 +122,44 @@ fn indirect_draws_read_their_bases_as_direct3d_does() {
         assert_eq!(w, g, "the first line that differs");
     }
     assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn minimum_level_clamps_and_both_helper_blocks_as_direct3d_does() {
+    let (code, want) = run("own_min_lod", &place("min-lod-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_min_lod", &place("min-lod-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        // A bias the program adds to an implicit level rounds the level apart from the sampler's
+        // own on the RTX 3080 (one unit at 4 of 256 texels): within Direct3D's filtering
+        // tolerance, one unit a channel. Everything else is exact.
+        if w.contains("biased") {
+            assert!(
+                within_one(w, g),
+                "the first line that differs by more than one\n{w}\n{g}"
+            );
+        } else {
+            assert_eq!(w, g, "the first line that differs");
+        }
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+/// Whether two printed rows name the same thing and their hex bytes differ by at most one each.
+fn within_one(want: &str, got: &str) -> bool {
+    let (Some((wn, wh)), Some((gn, gh))) = (want.rsplit_once(' '), got.rsplit_once(' ')) else {
+        return want == got;
+    };
+    let byte = |h: &str, i: usize| i16::from_str_radix(&h[i..i + 2], 16).ok();
+    wn == gn
+        && wh.len() == gh.len()
+        && (0..wh.len())
+            .step_by(2)
+            .all(|i| match (byte(wh, i), byte(gh, i)) {
+                (Some(a), Some(b)) => (a - b).abs() <= 1,
+                _ => wh[i..i + 2] == gh[i..i + 2],
+            })
 }
 
 #[test]
