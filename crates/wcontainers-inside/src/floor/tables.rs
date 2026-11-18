@@ -155,20 +155,33 @@ impl Table {
         Some((entry & OUTPUT_ADDRESS & !span_mask) + (va & span_mask & !(PAGE_SIZE - 1)))
     }
 
-    /// Maps the page at `va` to `frame`.
+    /// Maps the page at `va`, which nothing maps, to `frame`. (A mapped page changes through `protect`, which
+    /// invalidates.)
     pub fn map(&self, frames: &mut Frames, va: u64, frame: u64, attributes: El1Attributes) {
         let entry = frame | attributes.bits() as u64 | table_or_page();
+        let slot = self.slot(frames, va, LEAF_LEVEL);
         // SAFETY: the entry is ours, reached through the linear map.
-        unsafe { ptr::write_volatile(self.slot(frames, va, LEAF_LEVEL), entry) };
+        assert!(
+            !valid(unsafe { ptr::read_volatile(slot) }),
+            "mapping a mapped page"
+        );
+        // SAFETY: as above.
+        unsafe { ptr::write_volatile(slot, entry) };
         barrier();
     }
 
-    /// Maps the block at `va` to the block of frames at `block`.
+    /// Maps the block at `va`, which nothing maps, to the block of frames at `block`.
     pub fn map_block(&self, frames: &mut Frames, va: u64, block: u64, attributes: El1Attributes) {
         let entry = (block | attributes.bits() as u64 | El1Attributes::VALID.bits() as u64)
             & !(El1Attributes::TABLE_OR_PAGE.bits() as u64);
+        let slot = self.slot(frames, va, BLOCK_LEVEL);
         // SAFETY: as in `map`.
-        unsafe { ptr::write_volatile(self.slot(frames, va, BLOCK_LEVEL), entry) };
+        assert!(
+            !valid(unsafe { ptr::read_volatile(slot) }),
+            "mapping a mapped block"
+        );
+        // SAFETY: as in `map`.
+        unsafe { ptr::write_volatile(slot, entry) };
         barrier();
     }
 

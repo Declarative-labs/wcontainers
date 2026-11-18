@@ -69,7 +69,9 @@ From the checkout, in the Nix shell:
 
 ## N1 measurements (M5 Max, macOS 27.2, the floor test; load 55 to 92 over the runs)
 
-- Bar cases, each run: 20 of 20 pass (five runs after the last fix).
+- Bar cases, each run: 20 of 20 pass (six runs after the last fix, the last from a clean build of both
+  crates: `cargo clean -p` of both, then the whole suite, 27 s, load 41 to 63; doorbell 892 ns, stop median
+  2.25 µs there).
 - Doorbell round trip (EL1 `hvc` to the monitor and back, 1000 timed by the guest's counter): 897, 912 and
   906 ns (three runs, load 72 to 86).
 - Virtual timer interrupt, deadline to the inside's handler (24 per run): median 41 ns in each of three
