@@ -1,0 +1,1179 @@
+//! wcontainers-literals: holds the workspace to the rule that every number and every string a program
+//! interprets comes from one clear place (docs/literals.md), against a baseline that only shrinks.
+//!
+//! [`check`] prints only what needs doing, one line each, and fails when there is any:
+//!   `+` a gated finding the baseline does not accept;
+//!   `-` a baseline line that no longer occurs (delete it: that is how the baseline shrinks);
+//!   `~` a baselined literal that is still there but now sits in a list that is not gated (hidden, not
+//!       fixed);
+//!   `>` a line the baseline gained after it started (see the history module);
+//!   `!` a baseline that is not sorted.
+//! It also prints every mark with its reason, and how many there are.
+//!
+//! The baseline's `policy` lines say which paths are skipped, generated or test code; they are the only
+//! way a path leaves the check, and they may only shrink like every other line.
+
+mod baseline;
+mod deps;
+mod eval;
+mod findings;
+mod history;
+mod marks;
+mod modules;
+mod scan;
+mod scripts;
+mod text;
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
+
+pub use baseline::BASELINE_FILE;
+use deps::Crates;
+use eval::{ConstDef, ConstScope, Value};
+use findings::{
+    FIELD_SEPARATOR, FILE_SCOPE, Finding, Kind, List, PATH_COMPONENT_SEPARATOR, PATH_SEPARATOR,
+    clean_literal,
+};
+use scan::{FileRole, FileScan};
+
+pub const USAGE: &str = "usage: wcontainers-literals (check | init | list) [WORKSPACE_ROOT]\n\
+                         \x20 check: fail on anything outside the baseline, a baseline line no longer needed, or a baseline that grew\n\
+                         \x20 init:  write the baseline from the tree, once, when it starts or has just arrived by a merge\n\
+                         \x20 list:  print every finding of every list, gated or not";
+const CHECK_COMMAND: &str = "check";
+const INIT_COMMAND: &str = "init";
+const LIST_COMMAND: &str = "list";
+/// Cargo writes a crate name with underscores where its package name has hyphens.
+const CRATE_NAME_JOINER: char = '_';
+const PACKAGE_NAME_JOINER: char = '-';
+/// The extension of Rust source files.
+pub(crate) const RUST_EXTENSION: &str = "rs";
+/// A crate's (and a workspace's) manifest.
+pub(crate) const MANIFEST: &str = "Cargo.toml";
+/// Cargo marks every build folder it creates with this file; a folder named `target` without it is
+/// source like any other.
+const BUILD_FOLDER_TAG: &str = "CACHEDIR.TAG";
+/// npm's package folder, skipped only next to the package.json that it was installed for.
+const NODE_PACKAGES: &str = "node_modules";
+const NODE_MANIFEST: &str = "package.json";
+const HIDDEN_PREFIX: char = '.';
+/// The workspace manifest's list of folders that are not part of the workspace (vendored code); Cargo's
+/// own declaration, owned by whoever owns the root manifest, so it always applies.
+pub(crate) const WORKSPACE_TABLE: &str = "workspace";
+const EXCLUDE_KEY: &str = "exclude";
+/// A crate's folders of test code, by their position in the crate (not anywhere in a path).
+const TEST_DIRECTORIES: &[&str] = &["tests", "benches", "examples"];
+/// A file whose first lines carry one of these markers is proposed as a `generated` policy line by init.
+const GENERATED_MARKERS: &[&str] = &["@generated", "do not edit", "automatically generated"];
+const GENERATED_HEADER_LINES: usize = 5;
+/// Words that many constants' names share without being the same fact.
+const GENERIC_WORDS: &[&str] = &[
+    "max", "min", "size", "len", "length", "count", "bytes", "bits", "default", "offset", "mask",
+    "shift", "num", "total", "limit", "first", "last", "start", "end", "base", "flag", "flags",
+    "value", "id",
+];
+/// How many matching constants a note names before it summarises the rest as a count.
+const MAX_NOTE_MATCHES: usize = 3;
+const NOTE_LIST_SEPARATOR: &str = ", ";
+/// Prefixes of the check's output lines.
+const NEW_MARK: &str = "+ ";
+const STALE_MARK: &str = "- ";
+const HIDDEN_MARK: &str = "~ ";
+const GROWN_MARK: &str = "> ";
+const ORDER_MARK: &str = "! ";
+/// Introduces what to do about an output line.
+const DO: &str = "do: ";
+const DELETE_LINE: &str = "delete this line from literals.baseline";
+const UNHIDE: &str = "undo the move and name the value: it was hidden, not fixed";
+const DO_NOT_GROW: &str =
+    "delete this line from literals.baseline and name the value instead: the baseline only shrinks";
+const SORT_IT: &str = "sort literals.baseline (LC_ALL=C sort), which is how the check writes it";
+/// The first field of a baseline policy line.
+const POLICY_LIST: &str = "policy";
+/// Characters around a word of a message that are punctuation, not part of the word.
+const WORD_PUNCTUATION: &[char] = &[
+    '"', '\'', '`', ',', '.', ':', ';', '(', ')', '[', ']', '!', '?',
+];
+/// Characters that make a word of a message look like a name rather than plain English.
+const NAME_CHARACTERS: &[char] = &['_', '-', '.', ':', '/'];
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum PolicyKind {
+    /// Not scanned at all (vendored code).
+    Skip,
+    /// Scanned into the generated list.
+    Generated,
+    /// Scanned into the test list (a harness crate whose tests live in src/).
+    Test,
+}
+
+impl PolicyKind {
+    const ALL: [PolicyKind; 3] = [PolicyKind::Skip, PolicyKind::Generated, PolicyKind::Test];
+
+    fn name(self) -> String {
+        format!("{self:?}").to_lowercase()
+    }
+
+    fn named(name: &str) -> Option<PolicyKind> {
+        PolicyKind::ALL.into_iter().find(|k| k.name() == name)
+    }
+}
+
+#[derive(Default, Clone)]
+struct Policy {
+    lines: Vec<(PolicyKind, String)>,
+}
+
+impl Policy {
+    fn key(kind: PolicyKind, path: &str) -> String {
+        [POLICY_LIST.to_string(), kind.name(), path.to_string()].join(&FIELD_SEPARATOR.to_string())
+    }
+
+    fn parse_line(line: &str) -> Option<(PolicyKind, String)> {
+        let mut fields = line.split(FIELD_SEPARATOR);
+        if fields.next() != Some(POLICY_LIST) {
+            return None;
+        }
+        let kind = PolicyKind::named(fields.next()?)?;
+        Some((kind, fields.next()?.to_string()))
+    }
+
+    fn of_keys(keys: &baseline::Keys) -> Policy {
+        Policy {
+            lines: keys.keys().filter_map(|k| Policy::parse_line(k)).collect(),
+        }
+    }
+
+    fn covers(&self, kind: PolicyKind, rel: &str) -> bool {
+        self.lines.iter().any(|(k, p)| *k == kind && under(rel, p))
+    }
+}
+
+/// `rel` is `prefix` or inside it, component by component.
+fn under(rel: &str, prefix: &str) -> bool {
+    prefix.is_empty()
+        || rel == prefix
+        || rel
+            .strip_prefix(prefix)
+            .is_some_and(|r| r.starts_with(PATH_COMPONENT_SEPARATOR))
+}
+
+struct SourceFile {
+    path: PathBuf,
+    rel: String,
+    crate_dir: String,
+    role: FileRole,
+}
+
+fn rel_string(path: &Path, root: &Path) -> String {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(PATH_COMPONENT_SEPARATOR)
+}
+
+#[derive(Default)]
+struct Walk {
+    rust: Vec<SourceFile>,
+    scripts: Vec<(PathBuf, String)>,
+    crate_dirs: BTreeSet<String>,
+}
+
+fn is_build_output(dir: &Path, name: &str) -> bool {
+    dir.join(BUILD_FOLDER_TAG).is_file()
+        || (name == NODE_PACKAGES
+            && dir
+                .parent()
+                .is_some_and(|p| p.join(NODE_MANIFEST).is_file()))
+}
+
+/// Every Rust file and script under `dir`, skipping build output, hidden folders and `skip` policy.
+fn walk(dir: &Path, root: &Path, crate_dir: &str, policy: &Policy, out: &mut Walk) {
+    let crate_dir = if dir.join(MANIFEST).is_file() {
+        let d = rel_string(dir, root);
+        out.crate_dirs.insert(d.clone());
+        d
+    } else {
+        crate_dir.to_string()
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let rel = rel_string(&path, root);
+        if policy.covers(PolicyKind::Skip, &rel) {
+            continue;
+        }
+        if path.is_dir() {
+            if !(name.starts_with(HIDDEN_PREFIX) || is_build_output(&path, &name)) {
+                walk(&path, root, &crate_dir, policy, out);
+            }
+        } else if path.extension().is_some_and(|e| e == RUST_EXTENSION) {
+            let in_crate = rel
+                .strip_prefix(&crate_dir)
+                .map(|r| r.trim_start_matches(PATH_COMPONENT_SEPARATOR))
+                .unwrap_or(&rel);
+            let test = TEST_DIRECTORIES
+                .iter()
+                .any(|t| in_crate.split(PATH_COMPONENT_SEPARATOR).next() == Some(*t));
+            let role = if test || policy.covers(PolicyKind::Test, &rel) {
+                FileRole::Test
+            } else if policy.covers(PolicyKind::Generated, &rel) {
+                FileRole::Generated
+            } else {
+                FileRole::Code
+            };
+            out.rust.push(SourceFile {
+                path,
+                rel,
+                crate_dir: crate_dir.clone(),
+                role,
+            });
+        } else if scripts::is_script(&path) {
+            out.scripts.push((path, crate_dir.clone()));
+        }
+    }
+}
+
+/// Folders the workspace manifest excludes from the workspace, as paths relative to the root.
+fn workspace_excludes(root: &Path) -> Result<Vec<String>, String> {
+    let Ok(text) = std::fs::read_to_string(root.join(MANIFEST)) else {
+        return Ok(Vec::new());
+    };
+    let manifest: toml::Table = text.parse().map_err(|e| format!("{MANIFEST}: {e}"))?;
+    let excludes = manifest
+        .get(WORKSPACE_TABLE)
+        .and_then(|w| w.get(EXCLUDE_KEY))
+        .and_then(|e| e.as_array());
+    Ok(excludes
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .map(|p| rel_string(&root.join(p), root))
+        .collect())
+}
+
+fn has_generated_marker(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|text| {
+        text.lines().take(GENERATED_HEADER_LINES).any(|l| {
+            let l = l.to_lowercase();
+            GENERATED_MARKERS.iter().any(|m| l.contains(m))
+        })
+    })
+}
+
+/// Runs `f` on every item on every core; the order of the results is not the order of the items.
+fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = AtomicUsize::new(usize::default());
+    let workers = std::thread::available_parallelism()
+        .unwrap_or(NonZeroUsize::MIN)
+        .get();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (usize::default()..workers)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut out = Vec::new();
+                    while let Some(item) = items.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        out.push(f(item));
+                    }
+                    out
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("scanner thread panicked"))
+            .collect()
+    })
+}
+
+/// Files declared as modules under a test-only attribute become test files, with their own modules;
+/// a file production code places with `#[path]` is code even under tests/.
+fn mark_test_modules(files: &mut [SourceFile]) {
+    let is_test = |attrs: &[syn::Attribute]| attrs.iter().any(scan::is_test_attribute);
+    let declared: Vec<modules::Declared> = parallel(files, |file| {
+        if file.role == FileRole::Test {
+            return modules::Declared::default();
+        }
+        let Ok(ast) = std::fs::read_to_string(&file.path)
+            .map_err(|_| ())
+            .and_then(|t| syn::parse_file(&t).map_err(|_| ()))
+        else {
+            return modules::Declared::default();
+        };
+        modules::declared(&file.path, &ast, &is_test)
+    });
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let placed: Vec<PathBuf> = declared
+        .iter()
+        .flat_map(|d| d.placed.iter().map(|p| canonical(p)))
+        .collect();
+    for file in files.iter_mut() {
+        if file.role != FileRole::Test
+            && declared
+                .iter()
+                .flat_map(|d| &d.test)
+                .any(|m| file.path == m.file || file.path.starts_with(&m.folder))
+        {
+            file.role = FileRole::Test;
+        } else if file.role == FileRole::Test && placed.contains(&canonical(&file.path)) {
+            file.role = FileRole::Code;
+        }
+    }
+}
+
+/// A mark found in a file, with where it is.
+struct FileMark {
+    path: String,
+    crate_dir: String,
+    mark: marks::Mark,
+}
+
+/// What scanning one file gives.
+#[derive(Default)]
+struct FileResult {
+    findings: Vec<Finding>,
+    consts: Vec<ConstDef>,
+    marks: Vec<FileMark>,
+}
+
+fn scan_file(file: &SourceFile, reference: Option<&str>) -> FileResult {
+    let text = match std::fs::read_to_string(&file.path) {
+        Ok(t) => t,
+        Err(e) => {
+            return FileResult {
+                findings: vec![unparsed(
+                    file,
+                    &e.to_string(),
+                    proc_macro2::LineColumn {
+                        line: usize::default(),
+                        column: usize::default(),
+                    },
+                )],
+                ..FileResult::default()
+            };
+        }
+    };
+    let module = reference.map(|label| {
+        let stem = file
+            .path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        format!("{label}{PATH_SEPARATOR}{stem}")
+    });
+    match syn::parse_file(&text) {
+        Ok(ast) => {
+            let mut scan = FileScan::new(
+                file.rel.clone(),
+                file.crate_dir.clone(),
+                file.role,
+                module,
+                scan::folder_of(&file.path),
+            );
+            scan.scan_file(&ast);
+            let marks = match reference {
+                Some(_) => Vec::new(),
+                None => marks::parse(&text)
+                    .into_iter()
+                    .map(|mark| FileMark {
+                        path: file.rel.clone(),
+                        crate_dir: file.crate_dir.clone(),
+                        mark,
+                    })
+                    .collect(),
+            };
+            FileResult {
+                findings: scan.findings,
+                consts: scan.consts,
+                marks,
+            }
+        }
+        Err(e) if reference.is_none() => FileResult {
+            findings: vec![unparsed(file, &e.to_string(), e.span().start())],
+            ..FileResult::default()
+        },
+        Err(_) => FileResult::default(),
+    }
+}
+
+fn unparsed(file: &SourceFile, message: &str, at: proc_macro2::LineColumn) -> Finding {
+    Finding {
+        list: List::Unparsed,
+        path: file.rel.clone(),
+        line: at.line,
+        column: at.column + 1,
+        kind: Kind::Parse,
+        item: FILE_SCOPE.to_string(),
+        literal: clean_literal(message),
+        value: None,
+        note: String::new(),
+        crate_dir: file.crate_dir.clone(),
+        in_const: false,
+    }
+}
+
+fn scan_all(files: &[SourceFile], reference: Option<&str>) -> FileResult {
+    let mut all = FileResult::default();
+    for r in parallel(files, |file| scan_file(file, reference)) {
+        all.findings.extend(r.findings);
+        all.consts.extend(r.consts);
+        all.marks.extend(r.marks);
+    }
+    all.consts
+        .sort_by(|a, b| (&a.path, a.line, a.column).cmp(&(&b.path, b.line, b.column)));
+    all.marks
+        .sort_by(|a, b| (&a.path, a.mark.line).cmp(&(&b.path, b.mark.line)));
+    all
+}
+
+/// The package a reference label stands for (`linux_raw_sys::aarch64` is linux-raw-sys).
+fn reference_package(module: &str) -> String {
+    module
+        .split(PATH_SEPARATOR)
+        .next()
+        .unwrap_or_default()
+        .replace(CRATE_NAME_JOINER, &PACKAGE_NAME_JOINER.to_string())
+}
+
+/// How close a constant is to the crate a literal is in, which orders the names a note gives: the
+/// owner of a fact is the crate the others depend on, so upstream crates come first.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Closeness {
+    /// Hand-written in a crate this one depends on.
+    Upstream,
+    /// Hand-written in this crate.
+    SameCrate,
+    /// Generated, or in a reference crate, that this crate can reach.
+    Reachable,
+    /// Anywhere else.
+    Elsewhere,
+}
+
+/// Constants by value, for naming what a literal restates.
+struct ValueIndex<'a> {
+    by_value: HashMap<&'a Value, Vec<&'a ConstDef>>,
+    crates: &'a Crates,
+}
+
+impl<'a> ValueIndex<'a> {
+    fn new(defs: &'a [ConstDef], crates: &'a Crates) -> ValueIndex<'a> {
+        let mut by_value: HashMap<&Value, Vec<&ConstDef>> = HashMap::new();
+        for d in defs.iter().filter(|d| d.scope != ConstScope::Test) {
+            if let Some(v) = d.value.as_ref().filter(|v| !v.is_free()) {
+                by_value.entry(v).or_default().push(d);
+            }
+        }
+        ValueIndex { by_value, crates }
+    }
+
+    fn closeness(&self, d: &ConstDef, crate_dir: &str) -> Closeness {
+        let upstream = self.crates.upstream(crate_dir, &d.crate_dir);
+        match &d.scope {
+            ConstScope::Code if upstream => Closeness::Upstream,
+            ConstScope::Code if d.crate_dir == crate_dir => Closeness::SameCrate,
+            ConstScope::Generated if upstream || d.crate_dir == crate_dir => Closeness::Reachable,
+            ConstScope::Reference(module)
+                if self
+                    .crates
+                    .uses_package(crate_dir, &reference_package(module)) =>
+            {
+                Closeness::Reachable
+            }
+            _ => Closeness::Elsewhere,
+        }
+    }
+
+    /// The constants with this value, closest first, leaving out the item the literal is in.
+    fn matches(
+        &self,
+        value: &Value,
+        crate_dir: &str,
+        own: Option<(&str, &str)>,
+    ) -> Vec<(Closeness, &'a ConstDef)> {
+        let mut defs: Vec<(Closeness, &ConstDef)> = self
+            .by_value
+            .get(value)
+            .into_iter()
+            .flatten()
+            .filter(|d| own.is_none_or(|(path, item)| !(d.path == path && d.item == item)))
+            .map(|d| (self.closeness(d, crate_dir), *d))
+            .collect();
+        defs.sort_by_key(|(c, d)| (*c, self.crates.depth(&d.crate_dir), d.path.as_str(), d.line));
+        defs
+    }
+
+    /// The constants with this value that the crate can name: its own and its upstream crates'.
+    fn nameable(
+        &self,
+        value: &Value,
+        crate_dir: &str,
+        own: Option<(&str, &str)>,
+    ) -> Vec<(Closeness, &'a ConstDef)> {
+        self.matches(value, crate_dir, own)
+            .into_iter()
+            .filter(|(c, _)| *c != Closeness::Elsewhere)
+            .collect()
+    }
+
+    /// The first few names, closest first, and how many more there are.
+    fn names(defs: &[(Closeness, &ConstDef)]) -> Option<String> {
+        if defs.is_empty() {
+            return None;
+        }
+        let mut names: Vec<String> = defs
+            .iter()
+            .take(MAX_NOTE_MATCHES)
+            .map(|(_, d)| d.display())
+            .collect();
+        if let Some(rest) = defs
+            .len()
+            .checked_sub(MAX_NOTE_MATCHES)
+            .filter(|r| *r > usize::default())
+        {
+            names.push(format!("+{rest} more"));
+        }
+        Some(names.join(NOTE_LIST_SEPARATOR))
+    }
+
+    fn note(defs: &[(Closeness, &ConstDef)]) -> Option<String> {
+        ValueIndex::names(defs).map(|n| format!("= {n}"))
+    }
+}
+
+/// A value specific enough that writing it where a constant of the same value can be named restates
+/// that constant: a number that does not fit in a byte, or text of more than one character.
+fn distinctive(value: &Value) -> bool {
+    match value {
+        Value::Int(v) => v.unsigned_abs() > u128::from(u8::MAX),
+        Value::Str(s) => s.chars().nth(1).is_some(),
+        Value::Byte(_) | Value::Char(_) => false,
+    }
+}
+
+/// The specific words of a constant's name: its words other than [`GENERIC_WORDS`].
+fn specific_words(name: &str) -> Vec<String> {
+    scan::words(name)
+        .into_iter()
+        .filter(|w| !GENERIC_WORDS.contains(&w.as_str()))
+        .collect()
+}
+
+/// Tests and constant initialisers that restate, by value, a constant their crate can already name.
+/// A literal in a test is gated on its value alone; a literal in a named constant only when the two
+/// names also share a specific word (`LOCAL_PAGE` and `PAGE_SIZE`), so that a different fact of the
+/// same value can be given its own name.
+fn restated(all: &mut [Finding], index: &ValueIndex) {
+    for f in all
+        .iter_mut()
+        .filter(|f| matches!(f.list, List::Test | List::Const))
+    {
+        let Some(value) = f.value.as_ref().filter(|v| distinctive(v)) else {
+            continue;
+        };
+        let wanted = |c: Closeness| match f.list {
+            List::Test => matches!(c, Closeness::Upstream | Closeness::SameCrate),
+            _ => c == Closeness::Upstream,
+        };
+        let own_words = specific_words(f.item.rsplit(PATH_SEPARATOR).next().unwrap_or_default());
+        let named_alike = |d: &ConstDef| {
+            !f.in_const
+                || specific_words(&d.bare)
+                    .iter()
+                    .any(|w| own_words.contains(w))
+        };
+        let defs: Vec<(Closeness, &ConstDef)> = index
+            .matches(
+                value,
+                &f.crate_dir,
+                Some((f.path.as_str(), f.item.as_str())),
+            )
+            .into_iter()
+            .filter(|(c, d)| wanted(*c) && d.scope == ConstScope::Code && named_alike(d))
+            .collect();
+        if let Some(names) = ValueIndex::names(&defs) {
+            let was = f.list.name();
+            f.list = List::Restated;
+            f.note = format!("{was} literal restates {names}");
+        }
+    }
+}
+
+/// A word of a message that looks like a name (a key, a variable, a crate) rather than plain English.
+fn name_like(word: &str) -> bool {
+    word.chars().nth(1).is_some()
+        && word
+            .chars()
+            .any(|c| c.is_uppercase() || c.is_ascii_digit() || NAME_CHARACTERS.contains(&c))
+}
+
+/// Messages that write out, word for word, the value of a named string constant the crate can reach:
+/// the name belongs in the message through its constant.
+fn named_in_messages(all: &mut [Finding], index: &ValueIndex) {
+    for f in all.iter_mut().filter(|f| f.list == List::Message) {
+        let Some(Value::Str(message)) = &f.value else {
+            continue;
+        };
+        let text = text::without_placeholders(message);
+        let named = text
+            .split_whitespace()
+            .map(|w| w.trim_matches(WORD_PUNCTUATION))
+            .filter(|w| name_like(w))
+            .find_map(|w| {
+                let defs = index.nameable(&Value::Str(w.to_string()), &f.crate_dir, None);
+                ValueIndex::names(&defs).map(|names| (w.to_string(), names))
+            });
+        if let Some((word, names)) = named {
+            f.list = List::Restated;
+            f.note = format!("message writes out {word}, which is {names}");
+        }
+    }
+}
+
+/// Constants that restate, by the same name and value, a constant defined elsewhere; reported on the
+/// copy: a constant is left out when its crate owns the fact over every other definition's crate.
+fn redefinitions(defs: &[ConstDef], crates: &Crates) -> Vec<Finding> {
+    let mut by_bare: HashMap<&str, Vec<&ConstDef>> = HashMap::new();
+    for d in defs.iter().filter(|d| d.value.is_some()) {
+        by_bare.entry(&d.bare).or_default().push(d);
+    }
+    // A reference crate is upstream of everything; a generated copy is the owner within its crate.
+    let upstream_of = |d: &ConstDef, o: &ConstDef| match o.scope {
+        ConstScope::Reference(_) => false,
+        _ => {
+            crates.owns(&d.crate_dir, &o.crate_dir)
+                || (o.crate_dir == d.crate_dir
+                    && d.scope == ConstScope::Code
+                    && o.scope == ConstScope::Test)
+        }
+    };
+    let mut out = Vec::new();
+    for d in defs
+        .iter()
+        .filter(|d| matches!(d.scope, ConstScope::Code | ConstScope::Test))
+    {
+        let Some(value) = &d.value else { continue };
+        let alias = d.alias();
+        if d.trait_impl && alias == Some(d.bare.as_str()) {
+            continue;
+        }
+        let others: Vec<&&ConstDef> = by_bare
+            .get(d.bare.as_str())
+            .into_iter()
+            .flatten()
+            .filter(|o| !(o.path == d.path && o.line == d.line))
+            .filter(|o| o.value.as_ref().is_some_and(|v| v.same_as(value)))
+            .filter(|o| {
+                matches!(o.scope, ConstScope::Reference(_))
+                    || !(d.associated() && o.associated())
+                    || o.qualified == d.qualified
+            })
+            .collect();
+        if others.is_empty() || others.iter().all(|o| upstream_of(d, o)) {
+            continue;
+        }
+        let kind = match value {
+            Value::Int(_) => Kind::Int,
+            Value::Byte(_) => Kind::Byte,
+            Value::Str(_) => Kind::Str,
+            Value::Char(_) => Kind::Char,
+        };
+        let also: Vec<String> = others.iter().map(|o| o.display()).collect();
+        let second_name = alias
+            .map(|a| format!("a second name for {a}: import it with `use` instead; "))
+            .unwrap_or_default();
+        out.push(Finding {
+            list: List::Redefinition,
+            path: d.path.clone(),
+            line: d.line,
+            column: d.column,
+            kind,
+            item: d.item.clone(),
+            literal: clean_literal(&format!("{} = {value}", d.qualified)),
+            value: Some(value.clone()),
+            note: format!("{second_name}also {}", also.join(NOTE_LIST_SEPARATOR)),
+            crate_dir: d.crate_dir.clone(),
+            in_const: true,
+        });
+    }
+    out
+}
+
+/// Applies every mark: a mark with a reason over a gated number that has no name moves that number to
+/// the marked list and is reported; any other mark is a finding of the mark list.
+fn apply_marks(all: &mut Vec<Finding>, found: &[FileMark], index: &ValueIndex) -> Vec<String> {
+    let mut report = Vec::new();
+    let mut problems = Vec::new();
+    for FileMark {
+        path,
+        crate_dir,
+        mark,
+    } in found
+    {
+        let covered: Vec<usize> = all
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                f.list == List::Code
+                    && f.path == *path
+                    && f.line == mark.target
+                    && matches!(f.kind, Kind::Int | Kind::Float)
+                    && f.literal == mark.literal
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let named = covered
+            .iter()
+            .filter_map(|&i| all[i].value.as_ref())
+            .filter(|v| distinctive(v))
+            .find_map(|v| ValueIndex::names(&index.nameable(v, crate_dir, None)));
+        let problem = match (&mark.reason, covered.is_empty(), named) {
+            (Err(p), ..) => Some(p.note().to_string()),
+            (Ok(_), true, _) => Some(format!(
+                "no unnamed number {} in code on line {} below the mark",
+                mark.literal, mark.target
+            )),
+            (Ok(_), false, Some(names)) => Some(format!(
+                "{} has a name, {names}: use it; a mark is only for a number no name fits",
+                mark.literal
+            )),
+            (Ok(reason), false, None) => {
+                covered.iter().for_each(|&i| all[i].list = List::Marked);
+                report.push(format!(
+                    "{path}:{}: {} {}: {reason}",
+                    mark.line,
+                    marks::MARK_WORD,
+                    mark.literal
+                ));
+                None
+            }
+        };
+        if let Some(note) = problem {
+            problems.push(Finding {
+                list: List::Mark,
+                path: path.clone(),
+                line: mark.line,
+                column: 1,
+                kind: Kind::Mark,
+                item: FILE_SCOPE.to_string(),
+                literal: clean_literal(&mark.literal),
+                value: None,
+                note,
+                crate_dir: crate_dir.clone(),
+                in_const: false,
+            });
+        }
+    }
+    all.extend(problems);
+    report
+}
+
+/// Everything one scan of the tree found.
+struct Scanned {
+    findings: Vec<Finding>,
+    /// One line per valid mark: where, the number and the reason.
+    marks: Vec<String>,
+    /// `generated` policy lines for files that say they are generated (proposed by init).
+    proposed: Vec<String>,
+    summary: String,
+}
+
+/// Scans the workspace under `root` with the baseline's policy.
+fn scan_tree(root: &Path, mut policy: Policy) -> Result<Scanned, String> {
+    let started = Instant::now();
+    policy.lines.extend(
+        workspace_excludes(root)?
+            .into_iter()
+            .map(|p| (PolicyKind::Skip, p)),
+    );
+    let mut tree = Walk::default();
+    walk(root, root, "", &policy, &mut tree);
+    let proposed = tree
+        .rust
+        .iter()
+        .filter(|f| f.role == FileRole::Code && has_generated_marker(&f.path))
+        .map(|f| Policy::key(PolicyKind::Generated, &f.rel))
+        .collect();
+    mark_test_modules(&mut tree.rust);
+
+    let FileResult {
+        findings: mut all,
+        consts: mut defs,
+        marks: found,
+    } = scan_all(&tree.rust, None);
+    for (label, dir) in lock_references(root) {
+        let mut files = Walk::default();
+        walk(&dir, &dir, "", &Policy::default(), &mut files);
+        defs.extend(scan_all(&files.rust, Some(&label)).consts);
+    }
+    eval::evaluate(&mut defs);
+    let crates = Crates::read(root, &tree.crate_dirs);
+
+    let index = ValueIndex::new(&defs, &crates);
+    for f in all.iter_mut().filter(|f| f.list != List::Message) {
+        if let Some(v) = &f.value {
+            let note = ValueIndex::note(&index.matches(
+                v,
+                &f.crate_dir,
+                Some((f.path.as_str(), f.item.as_str())),
+            ))
+            .unwrap_or_default();
+            f.note = [f.note.as_str(), note.as_str()]
+                .iter()
+                .filter(|n| !n.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(NOTE_LIST_SEPARATOR);
+        }
+    }
+    restated(&mut all, &index);
+    named_in_messages(&mut all, &index);
+    all.extend(redefinitions(&defs, &crates));
+    let marks = apply_marks(&mut all, &found, &index);
+    for (path, crate_dir) in &tree.scripts {
+        all.extend(scripts::scan(
+            &rel_string(path, root),
+            crate_dir,
+            path,
+            &|v, c| ValueIndex::note(&index.matches(v, c, None)),
+        ));
+    }
+    all.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+
+    let mut counts: BTreeMap<List, (usize, usize)> = BTreeMap::new();
+    for f in &all {
+        let entry = counts.entry(f.list).or_default();
+        if f.kind.is_text() {
+            entry.1 += 1
+        } else {
+            entry.0 += 1
+        }
+    }
+    let lists: Vec<String> = counts
+        .iter()
+        .map(|(l, (n, s))| format!("{} {n} numbers {s} strings", l.name()))
+        .collect();
+    let summary = format!(
+        "wcontainers-literals: {} Rust files, {} scripts, {:?}; {}",
+        tree.rust.len(),
+        tree.scripts.len(),
+        started.elapsed(),
+        lists.join(NOTE_LIST_SEPARATOR)
+    );
+    Ok(Scanned {
+        findings: all,
+        marks,
+        proposed,
+        summary,
+    })
+}
+
+/// What a run printed, and whether a check passed.
+#[derive(Default)]
+pub struct Outcome {
+    pub clean: bool,
+    /// The findings (when listing) or the check's `+ - ~ > !` lines, each with what to do.
+    pub lines: Vec<String>,
+    /// Every mark with its reason, after a line that counts them.
+    pub marks: Vec<String>,
+    /// File counts, time taken, the numbers and strings in each list, and where the baseline started.
+    pub summary: Vec<String>,
+}
+
+impl Outcome {
+    /// Everything, as the command prints it.
+    pub fn report(&self) -> String {
+        [
+            self.lines.as_slice(),
+            self.marks.as_slice(),
+            self.summary.as_slice(),
+        ]
+        .concat()
+        .join(&NEW_LINE.to_string())
+    }
+}
+
+const NEW_LINE: char = '\n';
+
+fn marks_report(marks: Vec<String>) -> Vec<String> {
+    std::iter::once(format!("marks: {}", marks.len()))
+        .chain(marks)
+        .collect()
+}
+
+fn canonical(root: &Path) -> Result<PathBuf, String> {
+    root.canonicalize()
+        .map_err(|e| format!("{}: {e}", root.display()))
+}
+
+/// Every finding of every list under `root`, gated or not.
+pub fn list(root: &Path) -> Result<Outcome, String> {
+    let root = canonical(root)?;
+    let accepted = baseline::parse(&baseline::read(&root.join(BASELINE_FILE))?);
+    let scanned = scan_tree(&root, Policy::of_keys(&accepted))?;
+    let clean = !scanned.findings.iter().any(|f| f.list.gated());
+    let lines = scanned.findings.iter().map(|f| f.to_string()).collect();
+    Ok(Outcome {
+        clean,
+        lines,
+        marks: marks_report(scanned.marks),
+        summary: vec![scanned.summary],
+    })
+}
+
+/// Writes the baseline from the tree: the gated findings, the policy lines the baseline already has,
+/// and a `generated` line for each file that says it is generated. Refuses once the baseline has
+/// started on this branch.
+pub fn init(root: &Path) -> Result<Outcome, String> {
+    let root = canonical(root)?;
+    let path = root.join(BASELINE_FILE);
+    let accepted = baseline::parse(&baseline::read(&path)?);
+    let history = history::read(&root, BASELINE_FILE, &accepted)?;
+    if !history.may_init {
+        return Err(format!(
+            "{}: init writes the baseline once; from now on it only shrinks",
+            history.start
+        ));
+    }
+    let mut policy = Policy::of_keys(&accepted);
+    let first = scan_tree(&root, policy.clone())?;
+    policy
+        .lines
+        .extend(first.proposed.iter().filter_map(|k| Policy::parse_line(k)));
+    let scanned = if first.proposed.is_empty() {
+        first
+    } else {
+        scan_tree(&root, policy.clone())?
+    };
+    let mut keys: Vec<String> = scanned
+        .findings
+        .iter()
+        .filter(|f| f.list.gated())
+        .map(|f| f.key())
+        .collect();
+    keys.extend(
+        policy
+            .lines
+            .iter()
+            .map(|(k, p)| Policy::key(*k, p))
+            .collect::<BTreeSet<_>>(),
+    );
+    let written = keys.len();
+    std::fs::write(&path, baseline::render(keys))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    let lines = scanned
+        .proposed
+        .iter()
+        .map(|p| format!("proposed: {p}"))
+        .collect();
+    let summary = vec![
+        scanned.summary,
+        format!("wrote {written} lines to {}", path.display()),
+    ];
+    Ok(Outcome {
+        clean: true,
+        lines,
+        marks: marks_report(scanned.marks),
+        summary,
+    })
+}
+
+/// The check: nothing outside the baseline, no baseline line that is no longer needed, nothing hidden,
+/// and a baseline that has only shrunk since it started on this branch.
+pub fn check(root: &Path) -> Result<Outcome, String> {
+    let root = canonical(root)?;
+    let path = root.join(BASELINE_FILE);
+    let text = baseline::read(&path)?;
+    let mut accepted = baseline::parse(&text);
+    let current = accepted.clone();
+    let scanned = scan_tree(&root, Policy::of_keys(&accepted))?;
+    let history = history::read(&root, BASELINE_FILE, &current)?;
+    let mut lines = Vec::new();
+    if let Some(line) = baseline::first_unsorted(&text) {
+        lines.push(format!(
+            "{ORDER_MARK}{BASELINE_FILE}:{line}{FIELD_SEPARATOR}{DO}{SORT_IT}"
+        ));
+    }
+
+    // Where each literal not gated now sits, by everything but its list; a marked number is fixed.
+    let mut ungated: HashMap<String, &Finding> = HashMap::new();
+    for f in scanned
+        .findings
+        .iter()
+        .filter(|f| !f.list.gated() && f.list != List::Marked)
+    {
+        ungated.entry(f.rest_key()).or_insert(f);
+    }
+    let hidden = |key: &str| -> Option<String> {
+        let (list, rest) = key.split_once(FIELD_SEPARATOR)?;
+        let f = ungated.get(rest)?;
+        Some(format!(
+            "{key}{FIELD_SEPARATOR}# was {list}, now in the {} list at {}:{}{FIELD_SEPARATOR}{DO}{UNHIDE}",
+            f.list.name(),
+            f.path,
+            f.line
+        ))
+    };
+    for f in scanned.findings.iter().filter(|f| f.list.gated()) {
+        match accepted.get_mut(&f.key()) {
+            Some(n) if *n > usize::default() => *n -= 1,
+            _ => lines.push(format!(
+                "{NEW_MARK}{f}{FIELD_SEPARATOR}{DO}{}",
+                f.list.instruction()
+            )),
+        }
+    }
+    let mut hidden_keys = HashSet::new();
+    for (key, left) in &accepted {
+        if let Some((_, prefix)) = Policy::parse_line(key) {
+            if !root.join(prefix).exists() {
+                lines.push(format!(
+                    "{STALE_MARK}{key}{FIELD_SEPARATOR}{DO}{DELETE_LINE}"
+                ));
+            }
+            continue;
+        }
+        for _ in usize::default()..*left {
+            lines.push(match hidden(key) {
+                Some(h) => {
+                    hidden_keys.insert(key.clone());
+                    format!("{HIDDEN_MARK}{h}")
+                }
+                None => format!("{STALE_MARK}{key}{FIELD_SEPARATOR}{DO}{DELETE_LINE}"),
+            });
+        }
+    }
+    for key in history
+        .removed
+        .iter()
+        .filter(|k| !current.contains_key(*k) && !hidden_keys.contains(*k))
+    {
+        if let Some(h) = hidden(key) {
+            lines.push(format!("{HIDDEN_MARK}{h} (removed from the baseline)"));
+        }
+    }
+    for (key, commit) in history
+        .grown
+        .iter()
+        .filter(|(k, _)| current.contains_key(k))
+    {
+        lines.push(format!("{GROWN_MARK}{key}{FIELD_SEPARATOR}# added by {commit}{FIELD_SEPARATOR}{DO}{DO_NOT_GROW}"));
+    }
+    Ok(Outcome {
+        clean: lines.is_empty(),
+        lines,
+        marks: marks_report(scanned.marks),
+        summary: vec![scanned.summary, history.start],
+    })
+}
+
+/// The reference crate whose constants a workspace constant must not restate, and the architectures
+/// of it that are read (the guests the project runs).
+const REFERENCE_PACKAGE: &str = "linux-raw-sys";
+const REFERENCE_ARCHITECTURES: &[&str] = &["aarch64", "x86_64"];
+const LOCK_FILE: &str = "Cargo.lock";
+const LOCK_PACKAGES: &str = "package";
+const LOCK_NAME: &str = "name";
+const LOCK_VERSION: &str = "version";
+/// Where Cargo unpacks downloaded crates, under its home.
+const CARGO_HOME_VARIABLE: &str = "CARGO_HOME";
+const HOME_VARIABLE: &str = "HOME";
+const CARGO_HOME_FOLDER: &str = ".cargo";
+const REGISTRY_SOURCES: &[&str] = &["registry", "src"];
+const PACKAGE_SOURCES: &str = "src";
+
+/// The workspace root at or above a folder: the nearest manifest with a `[workspace]` table.
+pub fn workspace_root(dir: &Path) -> Result<PathBuf, String> {
+    let start = canonical(dir)?;
+    start
+        .ancestors()
+        .find(|d| {
+            std::fs::read_to_string(d.join(MANIFEST))
+                .ok()
+                .and_then(|t| t.parse::<toml::Table>().ok())
+                .is_some_and(|m| m.contains_key(WORKSPACE_TABLE))
+        })
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("no workspace manifest at or above {}", start.display()))
+}
+
+/// The labels and source folders of the versions of linux-raw-sys the lock file names, from Cargo's
+/// sources.
+fn lock_references(root: &Path) -> Vec<(String, PathBuf)> {
+    let Some(lock) = std::fs::read_to_string(root.join(LOCK_FILE))
+        .ok()
+        .and_then(|t| t.parse::<toml::Table>().ok())
+    else {
+        return Vec::new();
+    };
+    let versions: Vec<String> = lock
+        .get(LOCK_PACKAGES)
+        .and_then(|p| p.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|p| p.get(LOCK_NAME).and_then(|n| n.as_str()) == Some(REFERENCE_PACKAGE))
+        .filter_map(|p| {
+            p.get(LOCK_VERSION)
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .collect();
+    let home = std::env::var_os(CARGO_HOME_VARIABLE)
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os(HOME_VARIABLE).map(|h| PathBuf::from(h).join(CARGO_HOME_FOLDER))
+        });
+    let Some(registries) = home.map(|h| REGISTRY_SOURCES.iter().fold(h, |p, s| p.join(s))) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&registries) else {
+        return Vec::new();
+    };
+    let mut registries: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
+    registries.sort();
+    let label = REFERENCE_PACKAGE.replace(PACKAGE_NAME_JOINER, &CRATE_NAME_JOINER.to_string());
+    let mut out = Vec::new();
+    for arch in REFERENCE_ARCHITECTURES {
+        let found = versions.iter().find_map(|v| {
+            registries
+                .iter()
+                .map(|r| {
+                    r.join(format!("{REFERENCE_PACKAGE}{PACKAGE_NAME_JOINER}{v}"))
+                        .join(PACKAGE_SOURCES)
+                        .join(arch)
+                })
+                .find(|d| d.is_dir())
+        });
+        if let Some(dir) = found.and_then(|d| d.canonicalize().ok()) {
+            out.push((format!("{label}{PATH_SEPARATOR}{arch}"), dir));
+        }
+    }
+    out
+}
+
+/// The command line: `check`, `init` or `list`, on the workspace at or above the given folder or the
+/// current one.
+pub fn main_with(args: &[String]) -> Result<Outcome, String> {
+    let (command, dir) = match args {
+        [command] => (command, std::env::current_dir().map_err(|e| e.to_string())?),
+        [command, dir] => (command, PathBuf::from(dir)),
+        _ => return Err(USAGE.to_string()),
+    };
+    let root = workspace_root(&dir)?;
+    match command.as_str() {
+        CHECK_COMMAND => check(&root),
+        INIT_COMMAND => init(&root),
+        LIST_COMMAND => list(&root),
+        _ => Err(USAGE.to_string()),
+    }
+}

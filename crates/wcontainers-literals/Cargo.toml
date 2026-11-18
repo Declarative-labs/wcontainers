@@ -1,0 +1,19 @@
+[package]
+name = "wcontainers-literals"
+description = "Fails the workspace's tests when a number or a meaningful string does not come from one named place, against a baseline that only shrinks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+syn = { version = "2", default-features = false, features = ["full", "visit", "parsing", "printing", "clone-impls"] }
+proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
+quote = { version = "1", default-features = false }
+toml = { version = "1", default-features = false, features = ["parse", "std", "serde"] }
+fnv = { version = "1", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
