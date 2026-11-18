@@ -58,8 +58,11 @@ int main(void) {
     pthread_t thread;
     pthread_create(&thread, NULL, other_thread, NULL);
     pthread_join(thread, NULL);
+    prctl(PR_SET_TIMERSLACK, 70000);
     if (fork() == 0) {
         show("child");
+        prctl(PR_SET_TIMERSLACK, 0);
+        printf("child after setting 0: %ld\n", (long)prctl(PR_GET_TIMERSLACK));
         _exit(0);
     }
     wait(NULL);

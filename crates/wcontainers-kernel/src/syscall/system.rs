@@ -447,7 +447,7 @@ fn change_schedule(
     if is_real_time(policy) || policy == SCHED_DEADLINE {
         thread.timer_slack = 0;
     } else if thread.timer_slack == 0 {
-        thread.timer_slack = crate::process::TIMER_SLACK;
+        thread.timer_slack = thread.default_timer_slack;
     }
     Ok(0)
 }

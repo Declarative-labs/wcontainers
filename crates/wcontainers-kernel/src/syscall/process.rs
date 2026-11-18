@@ -1323,7 +1323,7 @@ pub(super) fn prctl(
                 SCHED_FIFO | SCHED_RR | SCHED_DEADLINE
             ) {
                 thread.timer_slack = if second == 0 {
-                    crate::process::TIMER_SLACK
+                    thread.default_timer_slack
                 } else {
                     second
                 };

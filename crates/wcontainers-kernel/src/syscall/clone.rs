@@ -248,6 +248,7 @@ fn make_child(
     thread.runtime = 0;
     thread.forced = 0;
     thread.parent_death_signal = 0;
+    thread.default_timer_slack = thread.timer_slack;
     thread.robust_list = (0, 0);
     thread.clear_child_tid = if flags & CLONE_CHILD_CLEARTID != 0 {
         child_tid
@@ -331,6 +332,7 @@ fn make_thread(
     thread.runtime = 0;
     thread.forced = 0;
     thread.parent_death_signal = 0;
+    thread.default_timer_slack = thread.timer_slack;
     thread.robust_list = (0, 0);
     thread.clear_child_tid = if flags & CLONE_CHILD_CLEARTID != 0 {
         child_tid

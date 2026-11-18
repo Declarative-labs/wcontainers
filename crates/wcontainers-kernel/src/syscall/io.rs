@@ -1506,7 +1506,7 @@ fn write_proc(
                 SCHED_FIFO | SCHED_RR | SCHED_DEADLINE
             ) {
                 leader.timer_slack = if slack == 0 {
-                    crate::process::TIMER_SLACK
+                    leader.default_timer_slack
                 } else {
                     slack
                 };
