@@ -1915,6 +1915,7 @@ dependencies = [
  "object 0.40.0",
  "proptest",
  "rayon",
+ "rustc-hash",
  "serde_json",
  "wasmparser 0.263.0",
  "wasmtime",

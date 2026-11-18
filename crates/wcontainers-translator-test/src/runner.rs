@@ -1,6 +1,7 @@
 //! A small wasmtime runner: one guest thread, its memory, the hooks, and a stand-in for the kernel that
 //! answers `write`, `writev`, `exit`, `exit_group` and `brk`.
 
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::OnceLock;
@@ -112,9 +113,9 @@ pub struct Host {
     /// What the guest wrote to file descriptors 1 and 2.
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-    counters: HashMap<Reason, (u64, Duration)>,
+    counters: FxHashMap<Reason, (u64, Duration)>,
     /// How often each slow path was taken at each address or number.
-    places: HashMap<(Reason, u64), u64>,
+    places: FxHashMap<(Reason, u64), u64>,
     warnings: Vec<Warning<'static>>,
     /// Where the code of each blob loaded is, as guest addresses.
     code_ranges: Vec<Range<u64>>,
@@ -240,8 +241,8 @@ impl Machine {
                 snapshot: RegisterBlock::ZERO,
                 stdout: Vec::new(),
                 stderr: Vec::new(),
-                counters: HashMap::new(),
-                places: HashMap::new(),
+                counters: FxHashMap::default(),
+                places: FxHashMap::default(),
                 warnings: Vec::new(),
                 code_ranges: Vec::new(),
                 exact_pieces: HashMap::new(),
@@ -754,7 +755,13 @@ fn hooks(linker: &mut Linker<Host>) {
                 return 1;
             }
             // Raised from outside: the stand-in clears it and the thread carries on.
-            let pc = snapshot(&mut caller).pc;
+            let mut pc = [0u8; 8];
+            read_shared(
+                &state,
+                BLOCK_AT as usize + core::mem::offset_of!(RegisterBlock, pc),
+                &mut pc,
+            );
+            let pc = u64::from_le_bytes(pc);
             slow_path(caller.data_mut(), Reason::StoppedByFlag, pc, Duration::ZERO);
             if caller.data().stop_everywhere {
                 raise_stop_flag(&caller);
