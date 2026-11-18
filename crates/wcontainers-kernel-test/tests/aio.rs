@@ -10,3 +10,10 @@ fn asynchronous_io_matches_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "aio", &[]);
 }
+
+/// A completed request counts an eventfd up to its overflow.
+#[test]
+fn eventfd_overflow_matches_reference() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    wcontainers_kernel_test::assert_same_output(&out, "eventfdoverflow", &[]);
+}
