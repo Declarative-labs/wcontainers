@@ -1,8 +1,10 @@
 //! The call census and frame capture, on when WC_OUT names a directory. Counts every call a program
 //! makes to the methods of its Direct3D 11 devices, immediate and deferred contexts, its Direct3D 12
-//! devices and command queues (not yet its command lists), its swap chains and DXGI factories, and writes the counts to <WC_OUT>\census.txt when the process ends. Devices,
-//! swap chains and factories have their method tables patched with counting thunks the first time
-//! an object using one is created through this library. Contexts are handed to the program wrapped
+//! devices, command queues and command lists, its swap chains and DXGI factories, and writes the
+//! counts to <WC_OUT>\census.txt when the process ends. Devices, queues, command lists, swap chains
+//! and factories have their method tables patched with counting thunks the first time an object
+//! using one is created through this library (command lists: one the library makes on each new
+//! Direct3D 12 device, and every list a queue is given to execute). Contexts are handed to the program wrapped
 //! instead, since Direct3D 11 rewrites entries of a context's table as it runs: each wrapper method
 //! counts and jumps through the context's own table as it is at that moment. WC_CAPTURE lists frame
 //! numbers (comma separated): the back buffer is saved as <WC_OUT>\frame-<n>.png before those
@@ -67,15 +69,17 @@ pub enum Table {
     Factory,
     Device12,
     Queue,
+    List,
 }
 
 impl Table {
-    const ALL: [Table; 7] = [
+    const ALL: [Table; 8] = [
         Table::Device,
         Table::Immediate,
         Table::Deferred,
         Table::Device12,
         Table::Queue,
+        Table::List,
         Table::SwapChain,
         Table::Factory,
     ];
@@ -89,6 +93,7 @@ impl Table {
             Table::Factory => "factory",
             Table::Device12 => "d3d12-device",
             Table::Queue => "command-queue",
+            Table::List => "command-list",
         }
     }
 
@@ -145,6 +150,49 @@ impl Table {
                 (ID3D12Device::IID, "ID3D12Device"),
             ],
             Table::Queue => &[(ID3D12CommandQueue::IID, "ID3D12CommandQueue")],
+            Table::List => &[
+                (
+                    ID3D12GraphicsCommandList10::IID,
+                    "ID3D12GraphicsCommandList10",
+                ),
+                (
+                    ID3D12GraphicsCommandList9::IID,
+                    "ID3D12GraphicsCommandList9",
+                ),
+                (
+                    ID3D12GraphicsCommandList8::IID,
+                    "ID3D12GraphicsCommandList8",
+                ),
+                (
+                    ID3D12GraphicsCommandList7::IID,
+                    "ID3D12GraphicsCommandList7",
+                ),
+                (
+                    ID3D12GraphicsCommandList6::IID,
+                    "ID3D12GraphicsCommandList6",
+                ),
+                (
+                    ID3D12GraphicsCommandList5::IID,
+                    "ID3D12GraphicsCommandList5",
+                ),
+                (
+                    ID3D12GraphicsCommandList4::IID,
+                    "ID3D12GraphicsCommandList4",
+                ),
+                (
+                    ID3D12GraphicsCommandList3::IID,
+                    "ID3D12GraphicsCommandList3",
+                ),
+                (
+                    ID3D12GraphicsCommandList2::IID,
+                    "ID3D12GraphicsCommandList2",
+                ),
+                (
+                    ID3D12GraphicsCommandList1::IID,
+                    "ID3D12GraphicsCommandList1",
+                ),
+                (ID3D12GraphicsCommandList::IID, "ID3D12GraphicsCommandList"),
+            ],
         }
     }
 }
@@ -462,6 +510,7 @@ fn typed(table: Table, name: &str) -> Option<usize> {
         }
         (Table::Device12, "CreateCommandQueue") => create_command_queue as *const () as usize,
         (Table::Device12, "CreateCommandQueue1") => create_command_queue1 as *const () as usize,
+        (Table::Queue, "ExecuteCommandLists") => execute_command_lists as *const () as usize,
         (Table::Device, "GetImmediateContext") => get_immediate_context::<0> as *const () as usize,
         (Table::Device, "GetImmediateContext1") => get_immediate_context::<1> as *const () as usize,
         (Table::Device, "GetImmediateContext2") => get_immediate_context::<2> as *const () as usize,
@@ -657,6 +706,48 @@ unsafe extern "system" fn create_command_queue1(
     result
 }
 
+/// ExecuteCommandLists: patches the table of any list whose table is not counted yet (a list of a
+/// kind the library did not make on the device), so its later recordings are counted.
+unsafe extern "system" fn execute_command_lists(
+    this: *mut c_void,
+    count: u32,
+    lists: *const *mut c_void,
+) {
+    let original: unsafe extern "system" fn(*mut c_void, u32, *const *mut c_void) =
+        unsafe { std::mem::transmute(enter(this, "ExecuteCommandLists")) };
+    if !lists.is_null() {
+        for k in 0..count as usize {
+            unsafe { patch(Table::List, *lists.add(k)) };
+        }
+    }
+    unsafe { original(this, count, lists) }
+}
+
+/// Patches the command list tables of `device` from lists made here, of each kind, before the
+/// program records any; the calls made doing so are taken back out.
+fn patch_lists(device: &ID3D12Device) -> windows::core::Result<()> {
+    let counts = || COUNTS.iter();
+    let before: Vec<u64> = counts().map(|c| c.load(Ordering::Relaxed)).collect();
+    let result = (|| {
+        for kind in [
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            D3D12_COMMAND_LIST_TYPE_BUNDLE,
+            D3D12_COMMAND_LIST_TYPE_COMPUTE,
+            D3D12_COMMAND_LIST_TYPE_COPY,
+        ] {
+            let allocator: ID3D12CommandAllocator = unsafe { device.CreateCommandAllocator(kind)? };
+            let list: ID3D12GraphicsCommandList =
+                unsafe { device.CreateCommandList(0, kind, &allocator, None)? };
+            unsafe { patch(Table::List, list.as_raw()) };
+        }
+        Ok(())
+    })();
+    for (count, before) in counts().zip(before) {
+        count.store(before, Ordering::Relaxed);
+    }
+    result
+}
+
 /// A COM object's identity: its IUnknown pointer.
 fn identity(object: *mut c_void) -> Option<usize> {
     let unknown = unsafe { IUnknown::from_raw_borrowed(&object) }?;
@@ -761,6 +852,13 @@ pub unsafe fn created12(device: *mut c_void) {
     match unsafe { CreateDXGIFactory2::<IDXGIFactory2>(DXGI_CREATE_FACTORY_FLAGS(0)) } {
         Ok(factory) => unsafe { patch(Table::Factory, factory.as_raw()) },
         Err(error) => note(format!("factory not counted: {error}")),
+    }
+    let lists = unsafe { IUnknown::from_raw_borrowed(&device) }
+        .unwrap()
+        .cast::<ID3D12Device>()
+        .and_then(|d| patch_lists(&d));
+    if let Err(error) = lists {
+        note(format!("command lists counted only once executed: {error}"));
     }
     unsafe { patch(Table::Device12, device) };
 }
@@ -1064,12 +1162,6 @@ pub fn write() {
     }
     for note in NOTES.lock().unwrap().iter() {
         let _ = writeln!(text, "# {note}");
-    }
-    if patched.iter().any(|(table, _)| *table == Table::Device12) {
-        let _ = writeln!(
-            text,
-            "# Direct3D 12 command lists are not counted: patching their table from CreateCommandList crashed Godot"
-        );
     }
     for export in crate::UNFORWARDED {
         let _ = writeln!(
