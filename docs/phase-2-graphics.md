@@ -1059,7 +1059,8 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   in the layout `copy_texture_to_buffer` writes (rows padded to the copy alignment), and binds the
   variant that reads, writes and runs atomics on that storage slot through the buffer at the same
   binding (`VariantKey::texels_through_buffer`, the view's format from `VariantKey::storage_formats`;
-  the row pitch and rows per layer in `HelperValue::TexelLayout`). The program encodes and decodes the
+  the row pitch, rows per layer and the view's width, height and layers in
+  `HelperValue::TexelLayout`, for its bounds and size queries). The program encodes and decodes the
   format as Direct3D's conversion rules say; float exchange is u32 exchange of the bits; a texel
   narrower than 32 bits is written by a compare-exchange loop on its 32-bit word, so neighbouring texels
   written at the same time by other invocations are kept and one of two racing writes to the same texel
