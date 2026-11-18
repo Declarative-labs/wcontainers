@@ -59,9 +59,10 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 ## How to run
 
 From the checkout, in the Nix shell:
-- the bar: `CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER=$PWD/crates/wcontainers-hypervisor/sign-and-run nix
-  develop -c cargo test -j 4 -p wcontainers-hypervisor --test floor` (the runner signs the binary ad hoc
-  with crates/wcontainers-hypervisor/hypervisor.entitlements and runs it; about half a second);
+- the bar: `nix develop -c cargo test -j 4 -p wcontainers-hypervisor --test floor` (about half a second; the
+  test signs a copy of itself ad hoc with crates/wcontainers-hypervisor/hypervisor.entitlements and runs
+  that, since Hypervisor.framework refuses an unsigned binary); the whole suite of both crates is
+  `nix develop -c cargo test -j 4 -p wcontainers-inside -p wcontainers-hypervisor`;
 - lint: `nix develop -c cargo clippy -j 4 -p wcontainers-inside -p wcontainers-hypervisor --all-targets --
   -D warnings` and `nix develop -c cargo clippy -j 4 -p wcontainers-inside --target aarch64-unknown-none
   --bins --lib -- -D warnings`.

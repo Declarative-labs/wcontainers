@@ -1,6 +1,0 @@
-#!/bin/sh
-# Signs a test binary ad hoc with the hypervisor entitlement and runs it: Hypervisor.framework refuses an
-# unsigned binary. Used as cargo's runner for the floor test.
-set -e
-codesign -s - --entitlements "$(dirname "$0")/hypervisor.entitlements" -f "$1" 2>/dev/null
-exec "$@"

@@ -1,6 +1,6 @@
 //! N1's bar: boots the floor's cases program under the monitor, serves its link, makes the stops from another
 //! thread, and checks every case passed. Then boots it once more in a machine with EL2 for the counter trial,
-//! which is recorded only. Run signed with the hypervisor entitlement (see docs/status-native.md).
+//! which is recorded only. It runs itself as a copy signed with the hypervisor entitlement.
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -57,7 +57,38 @@ mod macos {
         sent: AtomicU64,
     }
 
+    /// Set in the environment of the signed copy the test runs itself as.
+    const SIGNED: &str = "WCONTAINERS_FLOOR_TEST_SIGNED";
+
+    /// Hypervisor.framework refuses a binary without the hypervisor entitlement, which cargo's test binaries
+    /// lack: the test signs a copy of itself ad hoc with the entitlement and runs that.
+    fn run_signed() -> ! {
+        let me = std::env::current_exe().expect("the test's own path");
+        let copy = me.with_extension("signed");
+        std::fs::copy(&me, &copy).expect("copying the test");
+        let entitlements = concat!(env!("CARGO_MANIFEST_DIR"), "/hypervisor.entitlements");
+        let signed = std::process::Command::new("codesign")
+            .args(["-s", "-", "-f", "--entitlements", entitlements])
+            .arg(&copy)
+            .output()
+            .expect("running codesign");
+        assert!(
+            signed.status.success(),
+            "codesign: {}",
+            String::from_utf8_lossy(&signed.stderr)
+        );
+        let status = std::process::Command::new(&copy)
+            .args(std::env::args_os().skip(1))
+            .env(SIGNED, "1")
+            .status()
+            .expect("running the signed test");
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
     pub fn main() {
+        if std::env::var_os(SIGNED).is_none() {
+            run_signed();
+        }
         let el2_supported = Host::el2_supported();
         let started = Instant::now();
         let shared = machine(false);
