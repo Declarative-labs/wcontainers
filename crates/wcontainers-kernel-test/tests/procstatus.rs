@@ -38,7 +38,7 @@ fn entries_not_built_are_counted() {
     // The reference has the first two; a name Linux has not is not counted.
     assert_eq!(
         String::from_utf8_lossy(&theirs.stdout),
-        "/proc/self/mountstats: 1\n/proc/sys/kernel/random/entropy_avail: 1\n/proc/nonexistent: 0\n"
+        "/proc/self/mountstats: 1\n/proc/sys/kernel/random/urandom_min_reseed_secs: 1\n/proc/nonexistent: 0\n"
     );
     let not_built: u64 = ours
         .counters
