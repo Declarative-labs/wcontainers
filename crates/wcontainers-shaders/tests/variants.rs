@@ -775,3 +775,26 @@ fn filtering_in_the_program_reads_texels_with_loads() {
         );
     }
 }
+
+/// A four-channel float storage texture both read and written (shader model 6's half writes) has
+/// no read-write storage form in WebGPU: plain, it is refused by name; through a buffer, it is
+/// read and written there.
+#[test]
+fn read_written_four_channel_storage_goes_through_a_buffer() {
+    let code = read("tests/own/ps_halves.dxil");
+    let mut key = VariantKey {
+        storage_formats: vec![(0, wcontainers_gpu::Format::Rgba32Float)],
+        ..VariantKey::default()
+    };
+    let refused = convert(Source::Dxil(&code), &key, None).map(|c| wgsl(&c));
+    assert!(
+        matches!(
+            refused,
+            Err(ConvertError::Unsupported("ReadWriteStorageFormat"))
+        ),
+        "{refused:?}"
+    );
+    key.texels_through_buffer = 1;
+    let text = wgsl(&convert(Source::Dxil(&code), &key, None).unwrap());
+    assert!(!text.contains("texture_storage"), "{text}");
+}

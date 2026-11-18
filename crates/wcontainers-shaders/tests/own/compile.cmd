@@ -1,4 +1,4 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl, tessellation.hlsl and layers.hlsl with
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl, tessellation.hlsl, layers.hlsl and uav.hlsl with
 @rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry, the compute and the typed buffer shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
@@ -89,4 +89,5 @@ for %%e in (ds_tri ds_quad ds_line) do (
 "%FXC%" /nologo /T gs_5_0 /E gs_layers /Fo gs_layers.dxbc layers.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_layer /Fo ps_layer.dxbc layers.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_layer -Gis -Fo ps_layer.dxil layers.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_halves -Gis -Fo ps_halves.dxil uav.hlsl || exit /b 1
 echo %FXC% %DXC%

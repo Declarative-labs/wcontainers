@@ -18,6 +18,7 @@ ps_deriv.dxil	ok-wgsl glsl-write
 ps_dual.dxil	ok
 ps_filter.dxil	ok-wgsl glsl-compile
 ps_ftoi.dxil	ok
+ps_halves.dxil	ok-wgsl glsl-write
 ps_ids.dxil	ok
 ps_layer.dxil	spirv-reader unsupported
 ps_levels.dxil	ok-wgsl glsl-write
