@@ -231,6 +231,8 @@ struct Pass {
     resolves: [Option<(Texture, TextureView)>; MAX_COLOR_TARGETS],
     /// The area every attachment holds, which scissors are clipped to.
     size: (u32, u32),
+    /// How many colour targets it draws into.
+    color_targets: usize,
 }
 
 /// Attachment points of one framebuffer: eight colours, depth and stencil.
@@ -500,7 +502,7 @@ impl WebGl {
                 self.open_writes();
                 self.gl.clear_buffer_f32_slice(glow::DEPTH, 0, &[1.0]);
             }
-            state::plain(&self.gl, &mut self.values, [0, 0, 1, 1]);
+            state::plain(&self.gl, &mut self.values, [0, 0, 1, 1], &self.platform);
             let (gl, v) = (&self.gl, &mut self.values);
             // SAFETY: plain GL state calls, recorded in the values so the next draw sets its own.
             unsafe {
@@ -510,7 +512,7 @@ impl WebGl {
                 v.depth_func = glow::ALWAYS;
                 gl.enable(glow::POLYGON_OFFSET_FILL);
                 gl.polygon_offset(0.0, units);
-                v.polygon_offset = Some((0.0, units));
+                v.polygon_offset = Some((0.0, units, 0.0));
             }
             self.own_draw();
             self.applied.program = 0;
@@ -1112,10 +1114,6 @@ impl WebGl {
                 gl.disable(glow::SCISSOR_TEST);
                 v.scissor_test = false;
             }
-            if v.color_mask != [true; 4] {
-                gl.color_mask(true, true, true, true);
-                v.color_mask = [true; 4];
-            }
             if !v.depth_mask {
                 gl.depth_mask(true);
                 v.depth_mask = true;
@@ -1125,6 +1123,7 @@ impl WebGl {
                 v.stencil_write_mask = 0xff;
             }
         }
+        state::open_masks(gl, v);
         self.applied.blend = 0;
         self.applied.depth_stencil = 0;
         self.applied.raster = 0;
@@ -1261,6 +1260,7 @@ impl WebGl {
             counting: false,
             resolves: Default::default(),
             size: (empty.width, empty.height),
+            color_targets: 0,
         });
     }
 
@@ -1490,7 +1490,7 @@ impl WebGl {
         self.applied.draw_framebuffer = Some(target);
         self.applied.program = 0;
         self.open_writes();
-        state::plain(&self.gl, &mut self.values, rect);
+        state::plain(&self.gl, &mut self.values, rect, &self.platform);
         self.own_draw();
     }
 
@@ -1600,24 +1600,28 @@ impl WebGl {
         self.applied.draw_framebuffer = Some(fb);
         self.applied.program = 0;
         self.open_writes();
-        state::plain(&self.gl, &mut self.values, [0, 0, w as i32, h as i32]);
+        state::plain(
+            &self.gl,
+            &mut self.values,
+            [0, 0, w as i32, h as i32],
+            &self.platform,
+        );
         let (gl, v) = (&self.gl, &mut self.values);
         let keep = [glow::KEEP; 3];
         // SAFETY: plain GL state calls, recorded in the values so the next draw sets its own.
         unsafe {
             gl.clear_buffer_f32_slice(glow::COLOR, 0, &[0.0; 4]);
-            gl.enable(glow::BLEND);
-            v.blend = true;
-            gl.blend_equation_separate(glow::FUNC_ADD, glow::FUNC_ADD);
-            v.blend_equation = [glow::FUNC_ADD; 2];
-            let func = [
-                glow::CONSTANT_COLOR,
-                glow::ONE,
-                glow::CONSTANT_COLOR,
-                glow::ONE,
-            ];
-            gl.blend_func_separate(func[0], func[1], func[2], func[3]);
-            v.blend_func = func;
+            let add = state::GlTarget {
+                on: true,
+                func: [
+                    glow::CONSTANT_COLOR,
+                    glow::ONE,
+                    glow::CONSTANT_COLOR,
+                    glow::ONE,
+                ],
+                ..state::GlTarget::OFF
+            };
+            state::uniform(gl, v, &add);
             gl.enable(glow::STENCIL_TEST);
             v.stencil_test = true;
             gl.stencil_op(keep[0], keep[1], keep[2]);
@@ -2414,12 +2418,23 @@ impl WebGl {
             unsafe { self.gl.use_program(Some(program.raw)) };
             self.applied.program = program.id;
             self.applied.sets = [u64::MAX; MAX_BINDING_SETS];
+            let n = program.stages.0.clip_distances;
+            if self.values.clip_distances != n {
+                state::clip_distances(&self.gl, &mut self.values, n);
+            }
         }
-        let (gl, v) = (&self.gl, &mut self.values);
         if self.applied.blend != call.blend.0.0 {
-            state::blend(gl, v, &call.blend.0.1);
+            // GL blends a second source into one colour target only.
+            if call.blend.0.1.second_source
+                && self.pass.as_ref().is_some_and(|p| p.color_targets > 1)
+            {
+                self.invalid("a second-source blend with more than one colour target".into());
+                return;
+            }
+            state::blend(&self.gl, &mut self.values, &call.blend.0.1, &self.platform);
             self.applied.blend = call.blend.0.0;
         }
+        let (gl, v) = (&self.gl, &mut self.values);
         let reference = call.stencil_reference[0];
         if self.applied.depth_stencil != call.depth_stencil.0.0
             || self.applied.stencil_reference != reference
@@ -2799,6 +2814,9 @@ impl Backend for WebGl {
             AddressMode::Mirror => Ok(glow::MIRRORED_REPEAT),
             AddressMode::Clamp => Ok(glow::CLAMP_TO_EDGE),
             AddressMode::Border => Err(GpuError::Absent(Features::BORDER_COLOR)),
+            AddressMode::MirrorOnce if self.caps.has(Features::MIRROR_ONCE) => {
+                Ok(platform::MIRROR_CLAMP_TO_EDGE)
+            }
             AddressMode::MirrorOnce => Err(GpuError::Absent(Features::MIRROR_ONCE)),
         };
         if desc.anisotropy > self.caps.limits.max_anisotropy {
@@ -2859,6 +2877,10 @@ impl Backend for WebGl {
         if module.stage == ShaderStage::Compute {
             return Err(GpuError::Absent(Features::COMPUTE));
         }
+        let needs = shader::needs(module);
+        if let Some(f) = needs.difference(self.caps.features).iter().next() {
+            return Err(GpuError::Absent(f));
+        }
         let id = self.id();
         let shader = shader::compile(&self.gl, id, module, self.flip_y)?;
         Ok(Handle(Rc::new(shader)))
@@ -2895,7 +2917,10 @@ impl Backend for WebGl {
         } else {
             &desc.targets[..]
         };
-        if !desc.same_for_all && used.iter().any(|t| *t != used[0]) {
+        if !desc.same_for_all
+            && used.iter().any(|t| *t != used[0])
+            && !self.caps.has(Features::INDEPENDENT_BLEND)
+        {
             return Err(GpuError::Absent(Features::INDEPENDENT_BLEND));
         }
         let second = used.iter().filter_map(|t| t.blend).any(|(c, a)| {
@@ -2903,7 +2928,7 @@ impl Backend for WebGl {
                 .into_iter()
                 .any(state::second_source)
         });
-        if second {
+        if second && !self.caps.has(Features::DUAL_SOURCE_BLEND) {
             return Err(GpuError::Absent(Features::DUAL_SOURCE_BLEND));
         }
         // WebGL refuses the constant colour and the constant alpha as a colour blend's two factors.
@@ -2942,15 +2967,26 @@ impl Backend for WebGl {
     }
 
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Block<state::GlRaster>, GpuError> {
+        let has = |f| self.caps.has(f);
         let absent = [
-            (desc.fill != FillMode::Solid, Features::POLYGON_MODE),
+            (
+                desc.fill == FillMode::Line && !has(Features::POLYGON_MODE),
+                Features::POLYGON_MODE,
+            ),
+            (desc.fill == FillMode::Point, Features::POLYGON_MODE_POINT),
             (
                 desc.provoking == ProvokingVertex::First
                     && !self.caps.has(Features::PROVOKING_VERTEX_FIRST),
                 Features::PROVOKING_VERTEX_FIRST,
             ),
-            (!desc.depth_clip, Features::DEPTH_CLAMP),
-            (f(desc.depth_bias_clamp) != 0.0, Features::DEPTH_BIAS_CLAMP),
+            (
+                !desc.depth_clip && !has(Features::DEPTH_CLAMP),
+                Features::DEPTH_CLAMP,
+            ),
+            (
+                f(desc.depth_bias_clamp) != 0.0 && !has(Features::DEPTH_BIAS_CLAMP),
+                Features::DEPTH_BIAS_CLAMP,
+            ),
             (
                 f(desc.depth_bias).fract() != 0.0
                     && !self.caps.has(Features::FRACTIONAL_DEPTH_BIAS),
@@ -3396,6 +3432,7 @@ impl Backend for WebGl {
                 Some((c.view.texture.clone(), c.resolve?.clone()))
             }),
             size,
+            color_targets: pass.colors.iter().flatten().count(),
         });
     }
 

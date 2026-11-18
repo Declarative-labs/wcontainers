@@ -1,7 +1,8 @@
 //! Query heaps, `ResolveQueryData` and `SetPredication` (plan 5.2 and 4.12): binary occlusion as the
-//! back end's any-sample queries turned into exactly 0 or 1 after the resolve, and predicated draws
-//! and dispatches recorded as indirect ones whose counts a small compute program zeroes when the
-//! predicate skips them, so nothing waits.
+//! back end's any-sample queries turned into exactly 0 or 1 after the resolve, the values the front
+//! counts itself (exact occlusion, pipeline and stream output statistics) written into a buffer of
+//! the heap's as each query ends, and predicated draws and dispatches recorded as indirect ones whose
+//! counts a small compute program zeroes when the predicate skips them, so nothing waits.
 
 use wcontainers_gpu::{
     BindingEntry, BindingResource, BufferRange, QueryKind, RingKind, ShaderModule,
@@ -12,10 +13,26 @@ use super::*;
 /// `D3D12_QUERY_HEAP_TYPE` values.
 const HEAP_OCCLUSION: u32 = 0;
 const HEAP_TIMESTAMP: u32 = 1;
+pub(super) const HEAP_PIPELINE_STATISTICS: u32 = 2;
+pub(super) const HEAP_SO_STATISTICS: u32 = 3;
 /// `D3D12_QUERY_TYPE` values.
 pub const QUERY_OCCLUSION: u32 = 0;
 pub const QUERY_BINARY_OCCLUSION: u32 = 1;
 pub const QUERY_TIMESTAMP: u32 = 2;
+pub const QUERY_PIPELINE_STATISTICS: u32 = 3;
+/// `SO_STATISTICS_STREAM0` to `STREAM3`.
+pub const QUERY_SO_STATISTICS: std::ops::RangeInclusive<u32> = 4..=7;
+
+/// The bytes of one query's value the front writes, by heap type: an exact occlusion count,
+/// `D3D12_QUERY_DATA_PIPELINE_STATISTICS`, `D3D12_QUERY_DATA_SO_STATISTICS`.
+fn value_size(heap: u32) -> Option<u64> {
+    match heap {
+        HEAP_OCCLUSION => Some(8),
+        HEAP_PIPELINE_STATISTICS => Some(88),
+        HEAP_SO_STATISTICS => Some(16),
+        _ => None,
+    }
+}
 
 /// One argument record of a predicated draw or dispatch: five words, the count first.
 const RECORD: u64 = 20;
@@ -48,13 +65,13 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }
 ";
 
-/// A query heap: its interface query set and `D3D12_QUERY_HEAP_TYPE`.
+/// A query heap: its `D3D12_QUERY_HEAP_TYPE`, the interface query set of binary occlusion and
+/// timestamps, and the values the front writes as each query ends.
 pub(super) struct QueryHeap<B: Backend> {
-    set: B::QuerySet,
+    set: Option<B::QuerySet>,
     kind: u32,
     count: u32,
-    /// An occlusion heap's exact counts, written as each counted query ends.
-    counts: Option<B::Buffer>,
+    values: Option<B::Buffer>,
 }
 
 /// The predicate set by `SetPredication` while a list replays.
@@ -68,6 +85,13 @@ pub(super) struct Predicate<B: Backend> {
     next: u64,
     /// The value, once read back for an operation that has no indirect form.
     value: Option<u64>,
+}
+
+impl<B: Backend> Predicate<B> {
+    /// Whether its value is still to be read back.
+    pub(super) fn value_unknown(&self) -> bool {
+        self.value.is_none()
+    }
 }
 
 /// The argument records of the draws and dispatches `commands` make, bundles' included.
@@ -107,14 +131,37 @@ pub(super) enum Own {
     Predicate,
     /// Zeroes the commands of `ExecuteIndirect` past its count (`indirect.rs`).
     Expand,
+    /// Rewrites a strip's indices to restart at another value (`device.rs`, `draw`).
+    Restart,
 }
 
 /// The front's own compute programs, made at first use.
-pub(super) struct Programs<B: Backend>([Option<B::Program>; 3]);
+pub(super) struct Programs<B: Backend>([Option<B::Program>; 4]);
+
+/// 32-bit indices of a strip from 16-bit (`wide` 0) or 32-bit ones, `cut` becoming 0xffffffff.
+const RESTART: &str = "
+@group(0) @binding(32) var<storage, read> src: array<u32>;
+@group(0) @binding(160) var<storage, read_write> dst: array<u32>;
+struct Restart { first: u32, count: u32, wide: u32, cut: u32 }
+@group(0) @binding(0) var<uniform> p: Restart;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+    if id.x >= p.count { return; }
+    let i = p.first + id.x;
+    var v: u32;
+    if p.wide == 0u {
+        v = (src[i >> 1u] >> ((i & 1u) * 16u)) & 0xffffu;
+    } else {
+        v = src[i];
+    }
+    if p.cut != 0u && v == p.cut { v = 0xffffffffu; }
+    dst[id.x] = v;
+}
+";
 
 impl<B: Backend> Default for Programs<B> {
     fn default() -> Self {
-        Programs([None, None, None])
+        Programs([None, None, None, None])
     }
 }
 
@@ -123,41 +170,61 @@ impl<B: Backend> Device<B> {
     pub fn create_query_heap(&mut self, kind: u32, count: u32) -> Result<QueryHeapId, Error> {
         self.live()?;
         let set = match kind {
-            HEAP_OCCLUSION => self
-                .backend
-                .create_query_set(QueryKind::OcclusionAny, count)?,
+            HEAP_OCCLUSION => Some(
+                self.backend
+                    .create_query_set(QueryKind::OcclusionAny, count)?,
+            ),
             HEAP_TIMESTAMP if self.backend.caps().has(Features::TIMESTAMPS) => {
-                self.backend.create_query_set(QueryKind::Timestamp, count)?
+                Some(self.backend.create_query_set(QueryKind::Timestamp, count)?)
             }
             HEAP_TIMESTAMP => return Err(Error::NotImplemented("timestamps on this back end")),
-            _ => {
-                return Err(Error::NotImplemented(
-                    "pipeline and stream output statistics queries",
-                ));
-            }
+            HEAP_PIPELINE_STATISTICS | HEAP_SO_STATISTICS => None,
+            4 => return Err(Error::NotImplemented("video decode statistics queries")),
+            5 => return Err(Error::NotImplemented("copy queue timestamps")),
+            7 => return Err(Error::NotImplemented("mesh shader pipeline statistics")),
+            _ => return Err(Error::Invalid("unknown query heap type")),
         };
-        let counts = match kind {
-            HEAP_OCCLUSION => Some(self.backend.create_buffer(&BufferDesc {
-                size: u64::from(count.max(1)) * 8,
+        let values = match value_size(kind) {
+            Some(size) => match self.backend.create_buffer(&BufferDesc {
+                size: u64::from(count.max(1)) * size,
                 usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
                 intent: MapIntent::Rarely,
-            })?),
-            _ => None,
+            }) {
+                Ok(b) => Some(b),
+                Err(e) => {
+                    if let Some(s) = set {
+                        self.backend.destroy(Object::QuerySet(s));
+                    }
+                    return Err(e.into());
+                }
+            },
+            None => None,
         };
         Ok(QueryHeapId(self.query_heaps.insert(QueryHeap {
             set,
             kind,
             count,
-            counts,
+            values,
         }) as u32))
     }
 
     pub fn destroy_query_heap(&mut self, id: QueryHeapId) {
         if let Some(h) = self.query_heaps.try_remove(id.0 as usize) {
-            self.backend.destroy(Object::QuerySet(h.set));
-            if let Some(c) = h.counts {
-                self.backend.destroy(Object::Buffer(c));
+            if let Some(s) = h.set {
+                self.backend.destroy(Object::QuerySet(s));
             }
+            if let Some(v) = h.values {
+                self.backend.destroy(Object::Buffer(v));
+            }
+        }
+    }
+
+    /// The type of query heap `heap` if query `index` lies in it.
+    pub(super) fn heap_kind(&self, heap: QueryHeapId, index: u32) -> Result<u32, Error> {
+        match self.query_heaps.get(heap.0 as usize) {
+            Some(h) if index < h.count => Ok(h.kind),
+            Some(_) => Err(Error::Invalid("a query past its heap's end")),
+            None => Err(Error::Invalid("no such query heap")),
         }
     }
 
@@ -170,6 +237,7 @@ impl<B: Backend> Device<B> {
             Own::Binary => BINARY,
             Own::Predicate => PREDICATE,
             Own::Expand => super::indirect::EXPAND,
+            Own::Restart => RESTART,
         };
         let module = ShaderModule::from_wgsl(source, "main", ShaderStage::Compute)?;
         let shader = self.backend.create_shader(&module)?;
@@ -261,30 +329,31 @@ impl<B: Backend> Device<B> {
         if first.checked_add(count).is_none_or(|end| end > h.count) {
             return Err(Error::Invalid("resolving queries past the heap's end"));
         }
-        match (h.kind, kind) {
-            (HEAP_OCCLUSION, QUERY_BINARY_OCCLUSION | QUERY_OCCLUSION)
-            | (HEAP_TIMESTAMP, QUERY_TIMESTAMP) => {}
+        let written = match (h.kind, kind) {
+            (HEAP_OCCLUSION, QUERY_BINARY_OCCLUSION) | (HEAP_TIMESTAMP, QUERY_TIMESTAMP) => false,
+            (HEAP_OCCLUSION, QUERY_OCCLUSION)
+            | (HEAP_PIPELINE_STATISTICS, QUERY_PIPELINE_STATISTICS) => true,
+            (HEAP_SO_STATISTICS, k) if QUERY_SO_STATISTICS.contains(&k) => true,
             _ => return Err(Error::Invalid("a query type its heap does not hold")),
-        }
+        };
         if count == 0 {
             return Ok(());
         }
-        let size = u64::from(count) * 8;
-        if kind == QUERY_OCCLUSION {
-            let counts = h
-                .counts
-                .clone()
-                .ok_or(Error::Invalid("an occlusion heap"))?;
+        if written {
+            let each = value_size(h.kind).expect("a heap of written values");
+            let size = u64::from(count) * each;
+            let values = h.values.clone().expect("a heap of written values");
             let (target, heap_type) = self.buffer(dst)?;
             let target = target.clone();
             self.backend
-                .copy_buffer(&counts, u64::from(first) * 8, &target, dst_offset, size);
+                .copy_buffer(&values, u64::from(first) * each, &target, dst_offset, size);
             if heap_type == HeapType::Readback {
                 self.read_into(dst, dst_offset, size)?;
             }
             return Ok(());
         }
-        let set = h.set.clone();
+        let size = u64::from(count) * 8;
+        let set = h.set.clone().expect("a heap with a query set");
         let scratch = self.scratch(
             size,
             BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
@@ -310,37 +379,34 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// Writes the exact count of the counted occlusion query `index` of `heap`, in order with the
-    /// work recorded around it.
-    pub(super) fn write_count(
+    /// Writes the value of query `index` of `heap`, which the front counted, in order with the work
+    /// recorded around it: one u64 a field of the heap type's value.
+    pub(super) fn write_value(
         &mut self,
         heap: QueryHeapId,
         index: u32,
-        count: u64,
+        value: &[u64],
     ) -> Result<(), Error> {
-        match self.query_heaps.get(heap.0 as usize) {
-            Some(QueryHeap {
-                counts: Some(c),
-                count: n,
-                ..
-            }) if index < *n => {
-                let c = c.clone();
-                self.backend.write_buffer(
-                    &c,
-                    u64::from(index) * 8,
-                    &count.to_le_bytes(),
-                    WriteMode::Ordered,
-                );
+        let h = self
+            .query_heaps
+            .get(heap.0 as usize)
+            .ok_or(Error::Invalid("no such query heap"))?;
+        match (&h.values, value_size(h.kind)) {
+            (Some(v), Some(size)) if index < h.count && size == value.len() as u64 * 8 => {
+                let v = v.clone();
+                let bytes: Vec<u8> = value.iter().flat_map(|f| f.to_le_bytes()).collect();
+                self.backend
+                    .write_buffer(&v, u64::from(index) * size, &bytes, WriteMode::Ordered);
                 Ok(())
             }
-            _ => Err(Error::Invalid("a counted query of no occlusion heap")),
+            _ => Err(Error::Invalid("a query of another heap type")),
         }
     }
 
     /// The query set of an occlusion heap, for a pass to count in.
     pub(super) fn occlusion_set(&self, heap: QueryHeapId) -> Result<B::QuerySet, Error> {
         match self.query_heaps.get(heap.0 as usize) {
-            Some(h) if h.kind == HEAP_OCCLUSION => Ok(h.set.clone()),
+            Some(h) if h.kind == HEAP_OCCLUSION => Ok(h.set.clone().expect("an occlusion set")),
             _ => Err(Error::Invalid(
                 "an occlusion query in a heap of another kind",
             )),
@@ -351,7 +417,7 @@ impl<B: Backend> Device<B> {
     pub(super) fn timestamp(&mut self, heap: QueryHeapId, index: u32) -> Result<(), Error> {
         match self.query_heaps.get(heap.0 as usize) {
             Some(h) if h.kind == HEAP_TIMESTAMP && index < h.count => {
-                let set = h.set.clone();
+                let set = h.set.clone().expect("a timestamp set");
                 self.backend.write_timestamp(&set, index)?;
                 Ok(())
             }

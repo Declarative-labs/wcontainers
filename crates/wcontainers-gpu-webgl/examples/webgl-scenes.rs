@@ -1,5 +1,6 @@
-//! Draws the graphics rig's first three Direct3D 11 scenes through the WebGL 2 back end and checks them
-//! against the stored real Direct3D pictures, with each picture's recorded tolerance.
+//! Draws the graphics rig's first three Direct3D 11 scenes, and its pictures of polygon filling, depth
+//! bias and depth clipping, through the WebGL 2 back end and checks them against the stored real
+//! Direct3D pictures, with each picture's recorded tolerance.
 //!
 //!   webgl-scenes angle <angle-dir> <out-dir> [--off <extensions>]...
 //!       draws on ANGLE's OpenGL ES 3.0 from <angle-dir> (the libEGL.dll and libGLESv2.dll that
@@ -12,6 +13,8 @@
 //! each of which must fail the comparison, and the scenes are drawn by other routes to the same picture
 //! or to one made from it (`Change`, `Expected`), which must pass. Exits 1 on any other verdict.
 
+#[path = "common/rig.rs"]
+mod rig;
 #[path = "common/scenes.rs"]
 mod scenes;
 
@@ -127,6 +130,82 @@ fn verdict(
     Ok(wanted)
 }
 
+/// Compares one of the rig's pictures (None where the back end lacks its feature) with the stored
+/// Direct3D one, within its recorded allowance; returns whether it passes.
+fn rig_verdict(output: &rig::Output, bytes: Option<&[u8]>, out: &Path) -> Result<bool> {
+    let name = output.name;
+    let Some(bytes) = bytes.filter(|b| !b.is_empty()) else {
+        println!("skip {name}: absent {:?}", output.needs);
+        return Ok(true);
+    };
+    let (w, h) = (output.width, output.height);
+    let reference = format!("{name}.{}", if output.depth { "exr" } else { "png" });
+    let Some(allowance) = check::read_tolerances(&references().join(check::TOLERANCES))?
+        .remove(&reference)
+        .flatten()
+    else {
+        bail!("{reference} has no allowance");
+    };
+    let theirs = load(&references().join(&reference))?;
+    let (beyond, exact, largest) = if output.depth {
+        let theirs = theirs.to_rgba32f().into_raw();
+        let ours: Vec<f32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect();
+        anyhow::ensure!(ours.len() == theirs.len(), "{name}: the sizes differ");
+        let texel = |d: f64| {
+            let mut n = 0;
+            for (a, b) in ours.chunks(4).zip(theirs.chunks(4)) {
+                n += u64::from(a.iter().zip(b).any(|(a, b)| f64::from((a - b).abs()) > d));
+            }
+            n
+        };
+        // The first texels beyond the allowance, for the log.
+        let w = w as usize;
+        for (i, (a, b)) in ours
+            .chunks(4)
+            .zip(theirs.chunks(4))
+            .enumerate()
+            .filter(|(_, (a, b))| {
+                a.iter()
+                    .zip(*b)
+                    .any(|(a, b)| f64::from((a - b).abs()) > allowance.tolerance)
+            })
+            .take(3)
+        {
+            println!(
+                "     {name} ({}, {}): ours {a:?}, Direct3D {b:?}",
+                i % w,
+                i / w
+            );
+        }
+        let largest = ours
+            .iter()
+            .zip(&theirs)
+            .map(|(a, b)| f64::from((a - b).abs()))
+            .fold(0.0, f64::max);
+        (texel(allowance.tolerance), texel(0.0), largest)
+    } else {
+        let ours = picture_from_rows(w, h, bytes, w as usize * 4).into();
+        save(&ours, &out.join(format!("{name}.png")))?;
+        let d = compare::compare(&theirs, &ours, allowance.tolerance)?;
+        let e = compare::compare(&theirs, &ours, 0.0)?;
+        (d.differing, e.differing, e.largest)
+    };
+    let pass = beyond <= allowance.pixels;
+    println!(
+        "{} {name}: {beyond} of {} pixels beyond {} (allowed {}); exactly equal but {exact} pixels, largest difference {largest}",
+        if pass { "ok  " } else { "FAIL" },
+        w * h,
+        allowance.tolerance,
+        allowance.pixels,
+    );
+    Ok(pass)
+}
+
 fn angle(dir: &Path, out: &Path, off: &[&str]) -> Result<bool> {
     use wcontainers_gpu::Backend;
     let mut gl = wcontainers_gpu_webgl::WebGl::on_angle(dir, off).map_err(anyhow::Error::msg)?;
@@ -151,6 +230,12 @@ fn angle(dir: &Path, out: &Path, off: &[&str]) -> Result<bool> {
         all &= verdict(scene, change, &texels, &drawn, out)?;
         drawn.push((scene, change, texels));
     }
+    for o in &rig::OUTPUTS {
+        let bytes = rig::draw(&mut gl, o)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("{} (GL log: {})", o.name, gl.last_log()))?;
+        all &= rig_verdict(o, bytes.as_deref(), out)?;
+    }
     Ok(all)
 }
 
@@ -162,6 +247,11 @@ fn check_browser(dir: &Path) -> Result<bool> {
         let texels = std::fs::read(&raw).with_context(|| format!("reading {}", raw.display()))?;
         all &= verdict(scene, change, &texels, &drawn, dir)?;
         drawn.push((scene, change, texels));
+    }
+    for o in &rig::OUTPUTS {
+        let raw = dir.join(format!("rig-{}.rgba", o.name));
+        let bytes = std::fs::read(&raw).with_context(|| format!("reading {}", raw.display()))?;
+        all &= rig_verdict(o, Some(&bytes), dir)?;
     }
     Ok(all)
 }

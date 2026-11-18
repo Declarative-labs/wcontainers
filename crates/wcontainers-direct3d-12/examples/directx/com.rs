@@ -1551,6 +1551,76 @@ impl ID3D12Object_Impl for Allocator_Impl {
     }
 }
 
+impl ID3D12GraphicsCommandList4_Impl for List_Impl {
+    fn BeginRenderPass(
+        &self,
+        numrendertargets: u32,
+        prendertargets: *const D3D12_RENDER_PASS_RENDER_TARGET_DESC,
+        pdepthstencil: *const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC,
+        flags: D3D12_RENDER_PASS_FLAGS,
+    ) {
+        List::BeginRenderPass(self, numrendertargets, prendertargets, pdepthstencil, flags)
+    }
+    fn EndRenderPass(&self) {
+        List::EndRenderPass(self)
+    }
+    fn InitializeMetaCommand(
+        &self,
+        _pmetacommand: windows_core::Ref<ID3D12MetaCommand>,
+        _pinitializationparametersdata: *const core::ffi::c_void,
+        _initializationparametersdatasizeinbytes: usize,
+    ) {
+        self.unsupported("InitializeMetaCommand");
+    }
+    fn ExecuteMetaCommand(
+        &self,
+        _pmetacommand: windows_core::Ref<ID3D12MetaCommand>,
+        _pexecutionparametersdata: *const core::ffi::c_void,
+        _executionparametersdatasizeinbytes: usize,
+    ) {
+        self.unsupported("ExecuteMetaCommand");
+    }
+    fn BuildRaytracingAccelerationStructure(
+        &self,
+        _pdesc: *const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC,
+        _numpostbuildinfodescs: u32,
+        _ppostbuildinfodescs: *const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC,
+    ) {
+        self.unsupported("BuildRaytracingAccelerationStructure");
+    }
+    fn EmitRaytracingAccelerationStructurePostbuildInfo(
+        &self,
+        _pdesc: *const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC,
+        _numsourceaccelerationstructures: u32,
+        _psourceaccelerationstructuredata: *const u64,
+    ) {
+        self.unsupported("EmitRaytracingAccelerationStructurePostbuildInfo");
+    }
+    fn CopyRaytracingAccelerationStructure(
+        &self,
+        _destaccelerationstructuredata: u64,
+        _sourceaccelerationstructuredata: u64,
+        _mode: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE,
+    ) {
+        self.unsupported("CopyRaytracingAccelerationStructure");
+    }
+    fn SetPipelineState1(&self, _pstateobject: windows_core::Ref<ID3D12StateObject>) {
+        self.unsupported("SetPipelineState1");
+    }
+    fn DispatchRays(&self, _pdesc: *const D3D12_DISPATCH_RAYS_DESC) {
+        self.unsupported("DispatchRays");
+    }
+}
+
+impl ID3D12GraphicsCommandList3_Impl for List_Impl {
+    fn SetProtectedResourceSession(
+        &self,
+        pprotectedresourcesession: windows_core::Ref<ID3D12ProtectedResourceSession>,
+    ) {
+        List::SetProtectedResourceSession(self, pprotectedresourcesession)
+    }
+}
+
 impl ID3D12GraphicsCommandList2_Impl for List_Impl {
     fn WriteBufferImmediate(
         &self,

@@ -4,18 +4,18 @@
 
 use glow::HasContext;
 use wcontainers_gpu::{
-    BlendDesc, BlendFactor, BlendOp, CompareFn, CullMode, DepthStencilDesc, FrontFace,
-    ProvokingVertex, RasterDesc, StencilFace, StencilOp, StepMode, Topology, VertexFormat,
-    VertexLayoutDesc,
+    BlendDesc, BlendFactor, BlendOp, CompareFn, CullMode, DepthStencilDesc, FillMode, FrontFace,
+    MAX_COLOR_TARGETS, ProvokingVertex, RasterDesc, RenderTargetBlend, StencilFace, StencilOp,
+    StepMode, Topology, VertexFormat, VertexLayoutDesc,
 };
+
+use crate::platform::Platform;
 
 /// What GL holds now, for the values blocks and draws set.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlValues {
-    pub blend: bool,
-    pub blend_equation: [u32; 2],
-    pub blend_func: [u32; 4],
-    pub color_mask: [bool; 4],
+    /// Per colour target: blending, its equation and factors, and the write mask.
+    pub targets: [GlTarget; MAX_COLOR_TARGETS],
     pub alpha_to_coverage: bool,
     pub depth_test: bool,
     pub depth_func: u32,
@@ -28,7 +28,14 @@ pub struct GlValues {
     pub stencil_write_mask: u8,
     pub cull: Option<u32>,
     pub front_face: u32,
-    pub polygon_offset: Option<(f32, f32)>,
+    /// Slope factor, constant units and clamp, when the offset is on.
+    pub polygon_offset: Option<(f32, f32, f32)>,
+    /// Whether the line offset is on (WEBGL_polygon_mode).
+    pub line_offset: bool,
+    pub fill_lines: bool,
+    pub depth_clamp: bool,
+    /// How many clip distances are enabled, from distance 0.
+    pub clip_distances: u8,
     pub scissor_test: bool,
     pub viewport: [i32; 4],
     pub depth_range: [f32; 2],
@@ -42,10 +49,7 @@ impl GlValues {
     /// GL's initial values, with the viewport and scissor unknown so the first draw sets them.
     pub fn initial(clip_depth: u32) -> GlValues {
         GlValues {
-            blend: false,
-            blend_equation: [glow::FUNC_ADD; 2],
-            blend_func: [glow::ONE, glow::ZERO, glow::ONE, glow::ZERO],
-            color_mask: [true; 4],
+            targets: [GlTarget::OFF; MAX_COLOR_TARGETS],
             alpha_to_coverage: false,
             depth_test: false,
             depth_func: glow::LESS,
@@ -57,6 +61,10 @@ impl GlValues {
             cull: None,
             front_face: glow::CCW,
             polygon_offset: None,
+            line_offset: false,
+            fill_lines: false,
+            depth_clamp: false,
+            clip_distances: 0,
             scissor_test: false,
             viewport: [i32::MIN; 4],
             depth_range: [0.0, 1.0],
@@ -88,57 +96,138 @@ fn enable(gl: &glow::Context, cap: u32, on: bool) {
     unsafe { if on { gl.enable(cap) } else { gl.disable(cap) } }
 }
 
-/// A blend block as the GL values it stands for.
-#[derive(Debug)]
-pub struct GlBlend {
-    on: bool,
-    equation: [u32; 2],
-    func: [u32; 4],
-    color_mask: [bool; 4],
-    alpha_to_coverage: bool,
+/// One colour target's blending and write mask.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlTarget {
+    pub on: bool,
+    pub equation: [u32; 2],
+    pub func: [u32; 4],
+    pub mask: [bool; 4],
 }
 
-impl GlBlend {
-    /// `create_blend` has refused what WebGL 2 lacks; every target blends as target 0.
-    pub fn new(d: &BlendDesc) -> GlBlend {
-        let t = d.targets[0];
-        let (equation, func) = match t.blend {
-            Some((c, a)) => (
-                [op(c.op), op(a.op)],
-                [factor(c.src), factor(c.dst), factor(a.src), factor(a.dst)],
-            ),
-            None => (
-                [glow::FUNC_ADD; 2],
-                [glow::ONE, glow::ZERO, glow::ONE, glow::ZERO],
-            ),
-        };
+impl GlTarget {
+    /// GL's initial values: no blending, every channel written.
+    pub const OFF: GlTarget = GlTarget {
+        on: false,
+        equation: [glow::FUNC_ADD; 2],
+        func: [glow::ONE, glow::ZERO, glow::ONE, glow::ZERO],
+        mask: [true; 4],
+    };
+
+    fn new(t: &RenderTargetBlend) -> GlTarget {
         use wcontainers_gpu::ColorWrites as C;
         let w = t.writes;
-        GlBlend {
-            on: t.blend.is_some(),
-            equation,
-            func,
-            color_mask: [
-                w.contains(C::R),
-                w.contains(C::G),
-                w.contains(C::B),
-                w.contains(C::A),
-            ],
-            alpha_to_coverage: d.alpha_to_coverage,
+        let mask = [
+            w.contains(C::R),
+            w.contains(C::G),
+            w.contains(C::B),
+            w.contains(C::A),
+        ];
+        match t.blend {
+            Some((c, a)) => GlTarget {
+                on: true,
+                equation: [op(c.op), op(a.op)],
+                func: [factor(c.src), factor(c.dst), factor(a.src), factor(a.dst)],
+                mask,
+            },
+            None => GlTarget {
+                mask,
+                ..GlTarget::OFF
+            },
         }
     }
 }
 
-pub fn blend(gl: &glow::Context, v: &mut GlValues, b: &GlBlend) {
-    set_if!(v.blend, b.on, |on| enable(gl, glow::BLEND, on));
-    if b.on {
-        set_if!(v.blend_equation, b.equation, |e: [u32; 2]| gl
-            .blend_equation_separate(e[0], e[1]));
-        set_if!(v.blend_func, b.func, |f: [u32; 4]| gl
-            .blend_func_separate(f[0], f[1], f[2], f[3]));
+/// A blend block as the GL values it stands for.
+#[derive(Debug)]
+pub struct GlBlend {
+    targets: [GlTarget; MAX_COLOR_TARGETS],
+    /// Every target as target 0, set by GL's calls for all targets at once.
+    same: bool,
+    alpha_to_coverage: bool,
+    /// Whether a factor reads the fragment's second output.
+    pub second_source: bool,
+}
+
+impl GlBlend {
+    /// `create_blend` has refused what the context lacks.
+    pub fn new(d: &BlendDesc) -> GlBlend {
+        let targets = if d.same_for_all {
+            [GlTarget::new(&d.targets[0]); MAX_COLOR_TARGETS]
+        } else {
+            d.targets.each_ref().map(GlTarget::new)
+        };
+        GlBlend {
+            same: targets.iter().all(|t| *t == targets[0]),
+            targets,
+            alpha_to_coverage: d.alpha_to_coverage,
+            second_source: d
+                .targets
+                .iter()
+                .filter_map(|t| t.blend)
+                .any(|(c, a)| [c.src, c.dst, a.src, a.dst].into_iter().any(second_source)),
+        }
     }
-    set_if!(v.color_mask, b.color_mask, |m: [bool; 4]| gl
-        .color_mask(m[0], m[1], m[2], m[3]));
+}
+
+/// Sets every target's `T` to `value` by one call for all targets, when any differs.
+fn all_targets<T: PartialEq + Copy>(
+    v: &mut GlValues,
+    value: T,
+    field: fn(&mut GlTarget) -> &mut T,
+    set: impl FnOnce(T),
+) {
+    if v.targets.iter_mut().any(|t| *field(t) != value) {
+        set(value);
+        for t in &mut v.targets {
+            *field(t) = value;
+        }
+    }
+}
+
+/// Sets every target to `t` by GL's calls for all targets, only where they differ.
+pub fn uniform(gl: &glow::Context, v: &mut GlValues, t: &GlTarget) {
+    all_targets(v, t.on, |x| &mut x.on, |on| enable(gl, glow::BLEND, on));
+    if t.on {
+        // SAFETY: a plain GL state call on the current context.
+        all_targets(
+            v,
+            t.equation,
+            |x| &mut x.equation,
+            |e| unsafe { gl.blend_equation_separate(e[0], e[1]) },
+        );
+        // SAFETY: a plain GL state call on the current context.
+        all_targets(
+            v,
+            t.func,
+            |x| &mut x.func,
+            |f| unsafe { gl.blend_func_separate(f[0], f[1], f[2], f[3]) },
+        );
+    }
+    // SAFETY: a plain GL state call on the current context.
+    all_targets(
+        v,
+        t.mask,
+        |x| &mut x.mask,
+        |m| unsafe { gl.color_mask(m[0], m[1], m[2], m[3]) },
+    );
+}
+
+pub fn blend(gl: &glow::Context, v: &mut GlValues, b: &GlBlend, platform: &Platform) {
+    if b.same {
+        uniform(gl, v, &b.targets[0]);
+    } else {
+        // OES_draw_buffers_indexed, which `create_blend` asked for.
+        for (i, (t, x)) in b.targets.iter().zip(&mut v.targets).enumerate() {
+            let i = i as u32;
+            set_if!(x.on, t.on, |on| platform.enable_i(glow::BLEND, i, on));
+            if t.on {
+                set_if!(x.equation, t.equation, |e| platform.blend_equation_i(i, e));
+                set_if!(x.func, t.func, |f| platform.blend_func_i(i, f));
+            }
+            set_if!(x.mask, t.mask, |m| platform.color_mask_i(i, m));
+        }
+    }
     set_if!(v.alpha_to_coverage, b.alpha_to_coverage, |on| enable(
         gl,
         glow::SAMPLE_ALPHA_TO_COVERAGE,
@@ -222,8 +311,10 @@ pub fn depth_stencil(gl: &glow::Context, v: &mut GlValues, d: &GlDepthStencil, r
 pub struct GlRaster {
     cull: Option<u32>,
     front_face: u32,
-    /// Slope factor and constant units, when either is not zero.
-    polygon_offset: Option<(f32, f32)>,
+    /// Slope factor, constant units and clamp, when the factor or the units are not zero.
+    polygon_offset: Option<(f32, f32, f32)>,
+    fill_lines: bool,
+    depth_clamp: bool,
     scissor_test: bool,
     /// The clip depth convention, where EXT_clip_control sets it.
     clip_depth: Option<u32>,
@@ -237,6 +328,7 @@ impl GlRaster {
         let ccw = (d.front == FrontFace::CounterClockwise) != flipped;
         let bias = f32::from_bits(d.depth_bias);
         let slope = f32::from_bits(d.depth_bias_slope);
+        let clamp = f32::from_bits(d.depth_bias_clamp);
         GlRaster {
             cull: match d.cull {
                 CullMode::None => None,
@@ -244,7 +336,9 @@ impl GlRaster {
                 CullMode::Back => Some(glow::BACK),
             },
             front_face: if ccw { glow::CCW } else { glow::CW },
-            polygon_offset: (bias != 0.0 || slope != 0.0).then_some((slope, bias)),
+            polygon_offset: (bias != 0.0 || slope != 0.0).then_some((slope, bias, clamp)),
+            fill_lines: d.fill == FillMode::Line,
+            depth_clamp: !d.depth_clip,
             scissor_test: d.scissor,
             clip_depth: (!flipped).then_some(if d.depth_minus_one {
                 crate::platform::NEGATIVE_ONE_TO_ONE
@@ -268,12 +362,7 @@ impl GlRaster {
     }
 }
 
-pub fn raster(
-    gl: &glow::Context,
-    v: &mut GlValues,
-    r: &GlRaster,
-    platform: &crate::platform::Platform,
-) {
+pub fn raster(gl: &glow::Context, v: &mut GlValues, r: &GlRaster, platform: &Platform) {
     if v.cull != r.cull {
         match r.cull {
             Some(face) => {
@@ -289,13 +378,41 @@ pub fn raster(
     }
     set_if!(v.front_face, r.front_face, |f| gl.front_face(f));
     if v.polygon_offset != r.polygon_offset {
-        enable(gl, glow::POLYGON_OFFSET_FILL, r.polygon_offset.is_some());
-        if let Some((factor, units)) = r.polygon_offset {
+        if v.polygon_offset.is_none() || r.polygon_offset.is_none() {
+            enable(gl, glow::POLYGON_OFFSET_FILL, r.polygon_offset.is_some());
+        }
+        match r.polygon_offset {
+            // EXT_polygon_offset_clamp, which `create_raster` asked for.
+            Some((factor, units, clamp)) if clamp != 0.0 => {
+                platform.polygon_offset_clamp(factor, units, clamp)
+            }
             // SAFETY: a plain GL state call.
-            unsafe { gl.polygon_offset(factor, units) };
+            Some((factor, units, _)) => unsafe { gl.polygon_offset(factor, units) },
+            None => {}
         }
         v.polygon_offset = r.polygon_offset;
     }
+    // WEBGL_polygon_mode, which `create_raster` asked for when a block draws lines; edges take the
+    // offset as filled polygons do in Direct3D.
+    set_if!(v.fill_lines, r.fill_lines, |lines| platform.polygon_mode(
+        if lines {
+            crate::platform::LINE
+        } else {
+            crate::platform::FILL
+        }
+    ));
+    let line_offset = r.fill_lines && r.polygon_offset.is_some();
+    set_if!(v.line_offset, line_offset, |on| enable(
+        gl,
+        crate::platform::POLYGON_OFFSET_LINE,
+        on
+    ));
+    // EXT_depth_clamp, which `create_raster` asked for when a block clamps.
+    set_if!(v.depth_clamp, r.depth_clamp, |on| enable(
+        gl,
+        crate::platform::DEPTH_CLAMP,
+        on
+    ));
     set_if!(v.scissor_test, r.scissor_test, |on| enable(
         gl,
         glow::SCISSOR_TEST,
@@ -378,8 +495,11 @@ impl GlLayout {
 
 /// The state of a draw of the back end's own into the viewport `rect`: no blending, tests or culling.
 /// The caller opens the write masks and the scissor.
-pub fn plain(gl: &glow::Context, v: &mut GlValues, rect: [i32; 4]) {
-    set_if!(v.blend, false, |on| enable(gl, glow::BLEND, on));
+pub fn plain(gl: &glow::Context, v: &mut GlValues, rect: [i32; 4], platform: &Platform) {
+    all_targets(v, false, |t| &mut t.on, |on| enable(gl, glow::BLEND, on));
+    set_if!(v.fill_lines, false, |_| platform
+        .polygon_mode(crate::platform::FILL));
+    clip_distances(gl, v, 0);
     set_if!(v.alpha_to_coverage, false, |on| enable(
         gl,
         glow::SAMPLE_ALPHA_TO_COVERAGE,
@@ -397,6 +517,27 @@ pub fn plain(gl: &glow::Context, v: &mut GlValues, rect: [i32; 4]) {
     }
     set_if!(v.viewport, rect, |r: [i32; 4]| gl
         .viewport(r[0], r[1], r[2], r[3]));
+}
+
+/// Enables clip distances 0 to `n` and no others: GL leaves a distance a program does not write
+/// undefined while it is enabled.
+pub fn clip_distances(gl: &glow::Context, v: &mut GlValues, n: u8) {
+    let held = v.clip_distances;
+    for i in n.min(held)..n.max(held) {
+        enable(gl, crate::platform::CLIP_DISTANCE0 + u32::from(i), i < n);
+    }
+    v.clip_distances = n;
+}
+
+/// Opens every channel of every target's write mask.
+pub fn open_masks(gl: &glow::Context, v: &mut GlValues) {
+    // SAFETY: a plain GL state call.
+    all_targets(
+        v,
+        [true; 4],
+        |t| &mut t.mask,
+        |m| unsafe { gl.color_mask(m[0], m[1], m[2], m[3]) },
+    );
 }
 
 pub fn mode(t: Topology) -> u32 {
@@ -458,7 +599,8 @@ pub fn second_source(f: BlendFactor) -> bool {
     )
 }
 
-/// GL's blend factor. `create_blend` refuses the second-source factors, so they never reach here.
+/// GL's blend factor; the second-source ones are WEBGL_blend_func_extended's, which `create_blend`
+/// asked for.
 pub fn factor(f: BlendFactor) -> u32 {
     match f {
         BlendFactor::Zero => glow::ZERO,
@@ -476,12 +618,10 @@ pub fn factor(f: BlendFactor) -> u32 {
         BlendFactor::OneMinusConstant => glow::ONE_MINUS_CONSTANT_COLOR,
         BlendFactor::ConstantAlpha => glow::CONSTANT_ALPHA,
         BlendFactor::OneMinusConstantAlpha => glow::ONE_MINUS_CONSTANT_ALPHA,
-        BlendFactor::Src1
-        | BlendFactor::OneMinusSrc1
-        | BlendFactor::Src1Alpha
-        | BlendFactor::OneMinusSrc1Alpha => {
-            unreachable!("create_blend refuses second-source factors")
-        }
+        BlendFactor::Src1 => crate::platform::SRC1_COLOR,
+        BlendFactor::OneMinusSrc1 => crate::platform::ONE_MINUS_SRC1_COLOR,
+        BlendFactor::Src1Alpha => crate::platform::SRC1_ALPHA,
+        BlendFactor::OneMinusSrc1Alpha => crate::platform::ONE_MINUS_SRC1_ALPHA,
     }
 }
 

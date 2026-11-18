@@ -7,6 +7,8 @@
 mod checks;
 #[path = "common/kit.rs"]
 mod kit;
+#[path = "common/rig.rs"]
+mod rig;
 #[path = "common/scenes.rs"]
 mod scenes;
 
@@ -43,7 +45,18 @@ impl Device {
     }
 
     /// Draws a scene (`change` empty, or the name of a change) and returns its texels.
+    /// The rig's pictures are scene `rig`, their names as the change; one the back end lacks a
+    /// feature for gives no texels.
     pub fn draw(&mut self, scene: &str, change: &str) -> Result<Vec<u8>, JsError> {
+        if scene == "rig" {
+            let output = rig::OUTPUTS
+                .iter()
+                .find(|o| o.name == change)
+                .ok_or_else(|| JsError::new("unknown rig picture"))?;
+            return rig::draw(&mut self.0, output)
+                .map(Option::unwrap_or_default)
+                .map_err(|e| JsError::new(&format!("{e}; GL log: {}", self.0.last_log())));
+        }
         let scene = Scene::from_name(scene).ok_or_else(|| JsError::new("unknown scene"))?;
         let change = Change::from_name(change).ok_or_else(|| JsError::new("unknown change"))?;
         scenes::draw(&mut self.0, scene, change)
@@ -52,10 +65,11 @@ impl Device {
 
     /// Every picture to draw, one `<scene> <change>` per line.
     pub fn pictures() -> String {
-        Change::PICTURES
+        let scenes = Change::PICTURES
             .iter()
-            .map(|(s, c)| format!("{} {}\n", s.name(), c.name()))
-            .collect()
+            .map(|(s, c)| format!("{} {}\n", s.name(), c.name()));
+        let rig = rig::OUTPUTS.iter().map(|o| format!("rig {}\n", o.name));
+        scenes.chain(rig).collect()
     }
 
     /// The renderer, the extensions, and the capability list, as text.
@@ -169,6 +183,14 @@ suite!(
     signed_normalised_formats_follow_their_extension,
     levels_stay_as_written_while_others_are_read_and_drawn,
     passes_without_attachments_rasterise,
+    independent_blends_per_target,
+    second_source_blends,
+    depth_clamped_to_the_viewport_range,
+    depth_bias_clamped,
+    polygons_filled_with_lines,
+    mirror_once_addressing,
+    clip_and_cull_distances,
+    points_sized_by_the_program,
 );
 
 thread_local! {
