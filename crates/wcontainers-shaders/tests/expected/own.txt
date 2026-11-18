@@ -1,6 +1,7 @@
 cs_atomics.dxbc	ok-wgsl glsl-write
 cs_decrement.dxbc	ok-wgsl glsl-write
 cs_images.dxbc	unsupported StorageFormat
+cs_texels.dxbc	unsupported TypedBuffer
 gs_adjacent.dxbc	ok-wgsl glsl-write
 gs_cut.dxbc	ok-wgsl glsl-write
 gs_instances.dxbc	ok-wgsl glsl-write
