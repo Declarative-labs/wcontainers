@@ -6,31 +6,39 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 ## Where things stand
 
 G3 is at its pass bar (item by item below) apart from named known failures that wait on other
-tracks or on hardware. Run 17 (the fifth run of the G3 milestone task) merged
-origin/phase-2-graphics-webgpu, origin/phase-2-graphics-shaders and origin/phase-2-graphics-rig
-(the shared line had nothing new; Direct3D 11 and 12 not merged, nothing here needs them), and
-fixed what the independent check of run 16 found:
-- Primitive restart in draws that must not restart. WebGL 2 restarts at the largest index value in
-  every indexed draw, lists included, and cannot turn it off, while the interface restarts strips
-  only where `restart` is set. A list (or a fan, loop or strip drawn with `restart` false) holding
-  that value lost its primitive silently. Now each buffer holding indices tracks, per index width,
-  the byte ranges that may hold the largest value (src/restart.rs): host writes are scanned exactly,
-  GPU writes (copies, captures, texture copies) mark their range unknown. A draw with `restart`
-  false whose range may hold the value reads its indices back and, where one is there, draws them
-  widened to 32 bits from the index ring (`RestartRewrite`, counted); 32-bit ones are lowered by
-  their smallest value and the base vertex raised by it. Fans and loops from guest indices are
-  rewritten on the host before the ring. Captures restart only where `restart` is set. A draw whose
-  32-bit indices hold both 0 and 2^32 - 1 loses the device as not built. Check
-  `lists_draw_the_largest_index_as_a_vertex`, unit tests in src/restart.rs.
-- `timestamps_and_their_disjoint_flag` and `fractional_depth_bias` now report "not run" where their
-  feature is absent (they passed silently before), and so do the transform feedback and constant
-  alpha checks, whose features are always present here.
-- `copies_within_a_typeless_group` copies within the 10-10-10-2 group (read back by a program
-  loading the texels, since GL reads neither format back) and between the formats of the R8, RG8
-  and RG32 groups, and says which pairs it skips for an absent format.
-- BC1 to BC7 against real Direct3D 11: tests/bc_reference.rs draws the rig's `textures-bc` and
-  `textures-bc67` pictures (the same seeded blocks, loaded texel by texel into a float target)
-  on both routes and checks them by the rig's rule (see "Measurements, run 17").
+tracks, on hardware, or on what WebGL 2 cannot do (see "Not built" under "Done"). Run 18 (the
+sixth run of the G3 milestone task) merged origin/phase-2-graphics-webgpu,
+origin/phase-2-graphics-shaders and origin/phase-2-graphics-rig (the shared line had nothing new)
+and fixed what the independent check of run 17 found:
+- Copies from and into signed normalised formats. A copy from `r8snorm` (or any snorm format) into
+  another format of its group lost the device as not built. WebGL 2 cannot read their bits: a
+  draw samples -128 as -127 does, and `readPixels` returns -128 as -127. Now every signed
+  normalised texture keeps a host copy (`HostCopyKept`, src/host.rs), which host writes, buffer
+  copies and copies into it fill, so copies out of it come from the host. Without EXT_render_snorm
+  (mozangle) no draw writes them, so they also copy out (`COPY_OUT`). With it (Chrome), a pass
+  drawing into one marks its host copy behind; a draw writes no -128, so its texels are drawn into
+  a texture of the signed integer twin and read back into the host copy before it is read
+  (`HostCopyReadBack`), or copied on the GPU by a draw into a destination that renders
+  (`CopyThroughBuffer`). Texels written -128 by the host and then drawn over cannot be told from
+  -127 afterwards; copying their bits loses the device as not built (named). Copies from 16-bit
+  floats into a texture kept on the host now go through the float's integer twin. Checks:
+  `copies_within_a_typeless_group` (13 signed normalised pairs, the smallest value in every fifth
+  component) and the new `signed_normalised_texels_drawn_then_copied` (Chrome only; natively the
+  formats do not render, and it says so).
+- A host write covering only part of an index never updated where the largest index may be, so a
+  one-byte write completing 0xffff was drawn as a restart. Now every index a write touches is
+  re-judged: it may hold the largest value only if every byte the write put into it is 0xff
+  (src/restart.rs, unit test `writes_of_part_of_an_index_may_complete_the_largest_value`, and a
+  case in `lists_draw_the_largest_index_as_a_vertex`). The ranges are kept in the `rangemap`
+  crate's `RangeSet` instead of a hand-written list.
+- The per-draw cost scene also draws indexed lists without restart (see "Measurements, run 18").
+- The status lists every route that is not built (under "Done"), the licences of image's `exr`
+  dependencies, and what the seeded runs of run 17 actually covered.
+
+Run 17 tracked where indices may hold the largest value (WebGL 2 restarts there in every indexed
+draw) and rewrote draws that must not restart (`RestartRewrite`), reported the timestamp and
+fractional bias checks as not run where their feature is absent, copied within the 10-10-10-2,
+R8, RG8 and RG32 groups, and compared BC1 to BC7 with real Direct3D 11 (tests/bc_reference.rs).
 
 Run 16 copied floats within one format by blits where a probe finds they keep every bit, stored
 decoded BC4 and BC5 as half floats, and put NaN payloads, infinities and denormals into every
@@ -70,8 +78,9 @@ tests/against_webgpu.rs and in Chrome by browser/against.mjs.
   (run 14, depth included), `copies_between_depth_and_colour_formats` (run 13),
   `bgra_textures_keep_their_byte_order`, and within one subresource `copies_within_one_subresource`
   (run 14) and the suite's `a_copy_within_one_subresource_moves_the_region`. Since run 17 the
-  typeless check also copies within the 10-10-10-2 group and the R8, RG8 and RG32 groups. Signed
-  normalised sources are refused (device loss naming them; see "Departures").
+  typeless check also copies within the 10-10-10-2 group and the R8, RG8 and RG32 groups. Since
+  run 18 also from and into the signed normalised formats (their smallest value included), and
+  `signed_normalised_texels_drawn_then_copied` in Chrome.
 - `generate_mips` exact against G2 for `r32float` without OES_texture_float_linear and an integer
   twin of a 16-bit normalised format: against, route against route byte-equal; against WebGPU's
   hardware filter a known failure (G1's helper). The integer twin where box averages are exact ties
@@ -115,7 +124,8 @@ tests/against_webgpu.rs and in Chrome by browser/against.mjs.
   `fractional_depth_bias`, on both hosts.
 - Primitive restart only where asked (found by run 16's check, not a pass bar item): check
   `lists_draw_the_largest_index_as_a_vertex`.
-- Per-draw cost against G2 on one scene: Measurements (runs 3, 5, 11 and 14).
+- Per-draw cost against G2 on one scene: Measurements (runs 3, 5, 11 and 14; since run 18 also
+  indexed lists without restart).
 
 ## Done
 
@@ -206,9 +216,27 @@ tests/against_webgpu.rs and in Chrome by browser/against.mjs.
     waited for in the browser are ready at once (WebGL updates a sync object only between tasks).
   - What is not built loses the device when reached (`LossReason::Error`, `Err(DeviceLost)` where
     the call returns a result) with the missing piece named in `WebGl::last_log()`, never a panic.
-    Not built today: copies from signed normalised formats (see "Departures") and negative stream
-    offsets after a base vertex (see "Next"). Everything else this list once held was built in
-    later runs.
+    Not built today (every `unbuilt` call in src/lib.rs, as of run 18):
+    - copies of multisampled depth, stencil and sRGB textures (`copy_samples`);
+    - sRGB twins of formats `readPixels` reads wider than stored (no format with an sRGB twin is
+      read that way today);
+    - depth written into a format no depth write route takes (`write_depth`);
+    - copies into a texture kept on the host from a format that is neither read back nor a 16-bit
+      float (no such pair in one typeless group today);
+    - the bits of signed normalised texels written -128 by the host or a copy and drawn over after
+      (Chrome only): a draw reads -128 as -127, and nothing tells which texels the pass covered;
+    - copies within a format that neither renders nor reads back nor is kept on the host, and
+      copies between depth and colour formats no draw carries (`R11G11B10` without
+      EXT_color_buffer_float is one);
+    - depth and stencil views of one texture fetched by one draw (Direct3D 11 allows it; GL fetches
+      one of the two per texture at a time);
+    - negative stream offsets after a base vertex;
+    - draws, fans and loops without restart whose 32-bit indices hold both 0 and 2^32 - 1, or whose
+      lowered indices need a base vertex past 2^31 - 1;
+    - captures (`capture_vertices`) reaching below vertex 0 by a negative base vertex, or past
+      vertex 2^31 - 1.
+    `fetches of multisampled textures` also reads "not built", but needs `MULTISAMPLE_READ`, which
+    is absent, so no valid call reaches it.
 - platform.rs: the context. In the browser `WebGl::on_canvas(WebGl2RenderingContext, off)`;
   natively `WebGl::on_angle(dir, off)` loads `libEGL` from `dir` with khronos-egl (EGL 1.0 calls only)
   and makes an OpenGL ES 3.0 context current on a 1 by 1 pbuffer. `off` names WebGL extensions to
@@ -767,7 +795,10 @@ EXT_texture_compression_bptc: all four in Chrome 157 and mozangle on the RTX 308
 WEBGL_clip_cull_distance but absent until they clip in Chrome (see "Known failures").
 Everything else is absent: `POLYGON_MODE_POINT` (WebGL draws polygon edges only), `OCCLUSION_COUNT`
 and `MULTISAMPLE_READ` (WebGL 2 has neither), and `SAMPLE_SHADING`, which OES_sample_variables and
-OES_shader_multisample_interpolation would give; not built yet. The adapter is WebGL's renderer string
+OES_shader_multisample_interpolation would give (both in Chrome 157 on the RTX 3080); not built:
+naga's GLSL writer takes the `sample` qualifier only from GLSL ES 3.20
+(third_party/naga/src/back/glsl/features.rs, `SAMPLE_QUALIFIER`), so the second extension needs a
+change in naga first (the shaders track's); it already writes OES_sample_variables' directive. The adapter is WebGL's renderer string
 (unmasked in Chrome), PCI numbers 0 (WebGL gives none), software when it names SwiftShader,
 llvmpipe or Microsoft Basic Render Driver.
 
@@ -791,7 +822,8 @@ No bits yet: the swizzled formats other than BGRA8 (BGRX8, B5G5R5A1, BGRA4), A8,
 run 9, with EXT_texture_norm16 (Chrome 157 and mozangle on the RTX 3080): `r16unorm`, `rg16unorm`,
 `rgba16unorm` sample, filter, render, blend, resolve and copy out; the snorm ones sample and filter;
 without it none of the six has a use. With EXT_render_snorm (Chrome only) the signed normalised
-formats render and blend too (one sample, no copy out). `PRESENT` on `bgra8unorm` too. Since run 8: `bgra8unorm` and `bgra8unorm-srgb` as `rgba8unorm` and its sRGB form
+formats render and blend too (one sample, no copy out); without it (mozangle) they copy out from
+their host copy (run 18). `PRESENT` on `bgra8unorm` too. Since run 8: `bgra8unorm` and `bgra8unorm-srgb` as `rgba8unorm` and its sRGB form
 (sample, filter, render, blend, resolve, samples 1 to 8, copy out), red and blue swapped on the host. Since run 4:
 the 14 BC formats sample, filter and copy out (read back from the host copy) on every route, and
 RGB9E5 copies out too.
@@ -1185,6 +1217,46 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   - Within 0.3 ms of run 14's on every case except WebGPU's 50,000 draws with a set per draw
     (17.7 ms there).
 
+## Measurements, run 18
+
+- 2026-11-18, G3 run 18, same desktop (RTX 3080, Chrome 157.0.8103.78). 39 suite tests and 48
+  checks (87), 7 comparisons with the WebGPU back end (11 routes), 2 BC reference tests.
+  - Full run (all.cmd, queued job, out C:\wc\out\webgl\r18a, log in scratch run18/all1.log):
+    Chrome 84 passed, 3 not run (clip and cull distances, timestamps, fractional bias), 0 failed
+    with every extension; 78 passed and 9 not run without WEBGL_stencil_texturing, float_blits,
+    the format and the raster extensions; 58 passed, 3 not run and the 26 known failures without
+    EXT_clip_control, and the same without it and WEBGL_provoking_vertex. ANGLE 87 of 87 with every
+    extension (7 only refused), 62 of 87 on both reduced routes (the 25 known). Against WebGPU
+    natively 7 of 8 tests, in Chrome 9 of 11 routes (the known two). BC reference 1 of 2 (the
+    known decoded route). Unit tests 10 of 10. Scene and rig verdicts all as expected. Clippy with
+    warnings denied, native and wasm32 (browser and draw-cost examples): clean.
+  - `copies_within_a_typeless_group` (now with 13 signed normalised pairs) and
+    `signed_normalised_texels_drawn_then_copied` pass in Chrome and on ANGLE (natively the second
+    prints "not drawn": snorm formats do not render on mozangle).
+  - Seeded, `WEBGL_SEED=777`, `WEBGL_CASES=20` (seeds 777 to 796): on ANGLE the 11 checks that
+    read the seed (`block_compressed_and_shared_exponent_...`,
+    `copies_between_depth_and_colour_formats`, `copies_between_index_and_data_buffers`,
+    `copies_into_and_out_of_host_kept_textures`, `copies_within_a_typeless_group`,
+    `copies_within_one_subresource`, `cube_faces_copied_between_typeless_formats`,
+    `depth_and_stencil_written_read_back_as_written`, `generate_mipmap_equals_the_draws`,
+    `levels_stay_as_written_while_others_are_read_and_drawn`,
+    `sixteen_bit_normalised_formats_follow_their_extension`): 11 of 11 (scratch run18/seeded.log).
+    On ANGLE and in Chrome, `copies_within_a_typeless_group` (seeded) with
+    `signed_normalised_texels_drawn_then_copied` and `lists_draw_the_largest_index_as_a_vertex`
+    (not seeded): 3 of 3 on both (run18/seeded-chrome.log).
+  - Per-draw cost, `gpu-job --alone`, Chrome 157 on the RTX 3080, 30 frames a case, medians in ms a
+    frame (10k one set / 10k set per draw / 50k one set / 50k set per draw), two runs (CPU load
+    14% and 11% just after each):
+    - WebGL 2 strips: 1.8 / 4.0 / 6.8 / 16.7, then 1.7 / 3.9 / 5.8 / 16.6.
+    - WebGL 2 indexed lists without restart (one lookup of where the largest index may be per
+      draw): 1.9 / 5.6 / 7.0 / 17.1, then 1.8 / 4.1 / 7.3 / 17.1. The 5.6 is one noisy run (its
+      fastest frame 3.9).
+    - WebGPU strips: 1.6 / 3.9 / 7.4 / 17.8, then 1.6 / 3.9 / 7.4 / 17.9.
+    - WebGPU indexed lists: 1.7 / 3.8 / 8.0 / 18.7, then 1.7 / 4.3 / 8.0 / 20.2.
+    So indexed draws cost about 0.01 to 0.03 us more than strips on both back ends, and WebGL 2
+    stays at or below WebGPU at 50k draws. What the lookup alone costs is not separated from the
+    rest of the indexed path.
+
 ## Measurements, run 17
 
 - 2026-11-18, G3 run 17, same desktop (RTX 3080; queued jobs, not timed; its CPU load read 13%
@@ -1206,7 +1278,11 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   - `copies_within_a_typeless_group` passes in Chrome and on ANGLE, the 10-10-10-2, R8, RG8 and RG32
     pairs included.
   - Seeded on ANGLE: `WEBGL_SEED=777`, `WEBGL_CASES=20` (seeds 777 to 796), the 9 `copies_`
-    tests and `lists_draw_...`: 10 of 10 pass (scratch run17/seeded.log).
+    tests and `lists_draw_...`: 10 of 10 pass (scratch run17/seeded.log). Corrected in run 18:
+    only 5 of those 10 read the seed (`copies_within_a_typeless_group`,
+    `copies_within_one_subresource`, `copies_between_depth_and_colour_formats`,
+    `copies_between_index_and_data_buffers` and `copies_into_and_out_of_host_kept_textures`); the
+    other 5 ran the same data 20 times.
   - BC against real Direct3D 11 (tests/bc_reference.rs, the rig's `textures-bc` and
     `textures-bc67` from the same seed): through GL's compressed formats (every extension) both
     pictures are exactly equal to Direct3D 11's, every format 0 difference. Decoded on the host
@@ -1380,9 +1456,12 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   (cdcfbc4, a one-line Cargo.toml change): their process forking and timeouts do not build for
   WebAssembly, the suite's host in Chrome needs the crate there, and the crate uses neither. G1
   should keep it.
-- Copies from signed normalised formats, and copies into them from formats read wider than stored,
-  are not built (a draw cannot recover -128, which samples as -127 does); plan 4.12 has them as
-  copies through a buffer.
+- (run 18) Signed normalised textures keep a host copy (plan 4.12 has their typeless copies go
+  through a buffer, which `readPixels` cannot fill: it returns -128 as -127). So a buffer copy into
+  one reads the buffer back first (`HostCopyReadBack`, a wait), as for the other formats kept on
+  the host, and each holds its size again in host memory. With EXT_render_snorm, draws into one
+  are read back into the host copy only when it is read. The one case left is not built: texels
+  -128 from the host then drawn over (see "Not built").
 
 - ANGLE natively is Mozilla's ANGLE (mozangle 0.7.1: Firefox 153 ESR, ANGLE commit 7b0bc3d196d4 of
   2026-06-09), built from source, not Chrome's: Chrome 157's libEGL.dll and libGLESv2.dll are 453 KB
@@ -1577,7 +1656,10 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   zerocopy 0.8 and zerocopy-derive: BSD-2-Clause OR Apache-2.0 OR MIT.
 - Tests only, Windows (run 17, tests/bc_reference.rs): image 0.25.10 (`exr`, `png`), rand 0.9.5
   and rand_chacha 0.9.0: MIT OR Apache-2.0 (their Cargo.toml; already in the lock file through
-  the rig's crate, whose seeded blocks they reproduce).
+  the rig's crate, whose seeded blocks they reproduce). image's `exr` brings exr 1.74.2 and
+  lebe 0.5.3: BSD-3-Clause (their Cargo.toml; recorded in run 18).
+- rangemap 1.8.0 (run 18, the index ranges of src/restart.rs): MIT/Apache-2.0 (its Cargo.toml);
+  no dependencies by default.
 - bcdec_rs 0.2.1 (run 4, for `BlockDecoded`): MIT (its Cargo.toml; the plan's section 3 records its
   repository's LICENSE). No dependencies.
 - khronos-egl 6.0.0 (native only, feature `dynamic`): MIT/Apache-2.0 (its Cargo.toml); its
@@ -1616,8 +1698,14 @@ After that, in about this order:
 1. A draw without restart from GPU-written indices holding the largest value reads them back at
    every draw; keep the widened indices until the buffer is written again.
 2. Draws and captures whose base vertex reaches below vertex 0.
-3. Copies from one- and two-channel signed normalised formats, through a buffer as plan 4.12 has
+3. `CLIP_DISTANCE` and `CULL_DISTANCE` in Chrome (see "Known failures"): built but kept absent,
+   so `clip_and_cull_distances` runs nowhere.
+4. `SAMPLE_SHADING` with OES_sample_variables and OES_shader_multisample_interpolation, where
+   Chrome has them (absent today, and refused when a shader is made since run 14); needs naga to
+   write the `sample` qualifier on GLSL ES 3.00 with the extension (see "Capabilities").
+5. Copies between signed normalised textures drawn into (Chrome) go through the host, a wait;
+   both render, so copyTexSubImage could copy them on the GPU.
+6. The present-feature routes of `TIMESTAMPS` and `FRACTIONAL_DEPTH_BIAS` (`write_timestamp`,
+   `timestamps_disjoint`, a fractional `polygonOffset`) have run on no GPU: the RTX 3080 gives
+   zero timestamp bits and ANGLE rounds bias units. A GPU and browser that have them would test
    them.
-4. `CLIP_DISTANCE` and `CULL_DISTANCE` in Chrome (see "Known failures").
-5. `SAMPLE_SHADING` with OES_sample_variables and OES_shader_multisample_interpolation, where
-   Chrome has them (absent today, and refused when a shader is made since run 14).
