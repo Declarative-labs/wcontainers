@@ -677,7 +677,7 @@ impl SwapChain {
 
     /// A new factory: swap chains do not keep the one that made them.
     pub fn GetParent(&self, riid: *const GUID, out: *mut *mut c_void) -> Result<()> {
-        give::<IDXGIFactory4>(crate::objects::Factory::new(0).into(), riid, out)
+        give::<IDXGIFactory7>(crate::objects::Factory::new(0).into(), riid, out)
     }
 
     /// The output showing most of the window.

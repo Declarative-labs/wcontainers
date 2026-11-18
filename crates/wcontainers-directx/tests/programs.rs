@@ -72,17 +72,17 @@ fn own_refused_is_refused_through_ours_and_served_by_direct3d() {
     assert_eq!(code, 0, "{text}");
     assert_eq!(
         text,
-        "CreateHullShader 0x00000000\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
+        "CreateTexture2D(keyed mutex) 0x00000000\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
          CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x00000000\nCheckMultisampleQualityLevels(4) 0x00000000 1\n\
          CreateTexture2D(4 samples) 0x00000000\nGetDeviceRemovedReason 0x00000000\n"
     );
     let (code, ours) = run("own_refused", &place("refused-ours", true));
     assert_eq!(code, 0, "{ours}");
-    // E_NOTIMPL for hull shaders; the two queries, structured views, 4 samples and the
+    // E_NOTIMPL for keyed-mutex sharing; the two queries, structured views, 4 samples and the
     // dual-source draw served as Direct3D serves them.
     assert_eq!(
         ours,
-        "CreateHullShader 0x80004001\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
+        "CreateTexture2D(keyed mutex) 0x80004001\nCreateQuery(occlusion) 0x00000000\nCreateQuery(timestamp) 0x00000000\n\
          CreateBuffer(structured) 0x00000000\nCreateShaderResourceView(structured) 0x00000000\nCheckMultisampleQualityLevels(4) 0x00000000 1\n\
          CreateTexture2D(4 samples) 0x00000000\nGetDeviceRemovedReason 0x00000000\n"
     );

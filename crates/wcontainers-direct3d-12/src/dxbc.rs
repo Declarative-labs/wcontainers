@@ -1,6 +1,7 @@
 //! What a DXBC shader declares that a pipeline needs before converting it: its typed unordered
 //! access views and typed buffers, whose formats the converted program takes from the bound views
-//! (`VariantKey::storage_formats`, `VariantKey::texel_formats`). Read from the program chunk's
+//! (`VariantKey::storage_formats`, `VariantKey::texel_formats`), and its multisampled array
+//! textures, whose layer counts it takes from them (`VariantKey::texture_layers`). Read from the program chunk's
 //! declarations, in the token format of Microsoft's `d3d11TokenizedProgramFormat.hpp`.
 
 /// The kind of value a typed view's declaration reads and writes.
@@ -31,15 +32,52 @@ const DCL_RESOURCE: u32 = 88;
 const DCL_UAV_TYPED: u32 = 156;
 /// `D3D10_SB_OPCODE_CUSTOMDATA`, whose length is the word after its opcode.
 const CUSTOMDATA: u32 = 53;
-/// `D3D10_SB_RESOURCE_DIMENSION_BUFFER`.
+/// `D3D10_SB_RESOURCE_DIMENSION_BUFFER` and `..._TEXTURE2DMSARRAY`.
 const DIMENSION_BUFFER: u32 = 1;
+const DIMENSION_2D_MS_ARRAY: u32 = 9;
 
 /// The typed unordered access views and typed buffers `code` declares (shader resource views of
 /// textures left out); `None` where `code` holds no DXBC program chunk or its tokens are
 /// malformed.
 pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
-    let tokens = program(code)?;
     let mut views = Vec::new();
+    declarations(code, |opcode, instruction| {
+        let dimension = (opcode >> 11) & 0x1f;
+        let buffer = dimension == DIMENSION_BUFFER;
+        let storage = match opcode & 0x7ff {
+            DCL_UAV_TYPED => true,
+            DCL_RESOURCE if buffer => false,
+            _ => return Some(()),
+        };
+        let (register, kind) = typed_view(instruction)?;
+        views.push(TypedView {
+            storage,
+            buffer,
+            slot: register,
+            kind,
+        });
+        Some(())
+    })?;
+    Some(views)
+}
+
+/// The texture slots of the multisampled array textures (`Texture2DMSArray`) `code` declares;
+/// `None` where it holds no DXBC program chunk or its tokens are malformed.
+pub fn multisampled_arrays(code: &[u8]) -> Option<Vec<u32>> {
+    let mut slots = Vec::new();
+    declarations(code, |opcode, instruction| {
+        if opcode & 0x7ff == DCL_RESOURCE && (opcode >> 11) & 0x1f == DIMENSION_2D_MS_ARRAY {
+            slots.push(typed_view(instruction)?.0);
+        }
+        Some(())
+    })?;
+    Some(slots)
+}
+
+/// Calls `f` with each instruction's opcode token and words; `None` where `code` holds no
+/// program chunk, its tokens are malformed or `f` fails.
+fn declarations(code: &[u8], mut f: impl FnMut(u32, &[u32]) -> Option<()>) -> Option<()> {
+    let tokens = program(code)?;
     // Past the version and length words.
     let mut at = 2;
     while at < tokens.len() {
@@ -51,25 +89,10 @@ pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
         if length == 0 {
             return None;
         }
-        let instruction = tokens.get(at..at + length)?;
-        let buffer = (opcode >> 11) & 0x1f == DIMENSION_BUFFER;
-        let storage = match opcode & 0x7ff {
-            DCL_UAV_TYPED => Some(true),
-            DCL_RESOURCE if buffer => Some(false),
-            _ => None,
-        };
-        if let Some(storage) = storage {
-            let (register, kind) = typed_view(instruction)?;
-            views.push(TypedView {
-                storage,
-                buffer,
-                slot: register,
-                kind,
-            });
-        }
+        f(opcode, tokens.get(at..at + length)?)?;
         at += length;
     }
-    Some(views)
+    Some(())
 }
 
 /// One `dcl_uav_typed` or `dcl_resource`: the opcode, its extended tokens, the operand with its
@@ -212,6 +235,20 @@ mod tests {
                 view(false, true, 4, Kind::Uint),
             ])
         );
+    }
+
+    #[test]
+    fn multisampled_arrays_are_read_from_declarations() {
+        // dcl_resource_texture2dmsarray (float,float,float,float) t2, dcl_resource_texture2dms
+        // t3 (left out).
+        let ms_array = DCL_RESOURCE | (9 << 11) | (4 << 24);
+        let ms = DCL_RESOURCE | (4 << 11) | (4 << 24);
+        let srv = 0x0010_1000 | (7 << 12);
+        let tokens = [0x50, 0, ms_array, srv, 2, 0x5555, ms, srv, 3, 0x5555];
+        assert_eq!(multisampled_arrays(&container(&tokens)), Some(vec![2]));
+        assert_eq!(typed_views(&container(&tokens)), Some(vec![]));
+        let code = include_bytes!("../../wcontainers-shaders/tests/own/ps_msarray.dxbc");
+        assert_eq!(multisampled_arrays(code), Some(vec![0]));
     }
 
     #[test]

@@ -160,6 +160,30 @@ impl<B: Backend> Device<B> {
     /// Copies the levels and layers view `v` sees between its texture and its twin: into the twin
     /// before a use, out of it after a write.
     pub(super) fn copy_twin(&mut self, v: &View<B>, into: bool) {
+        if let Some((buffer, offset)) = &v.buffer {
+            let extent = v.texture.mip_extent(0);
+            let (_, _, bytes) = v.format.block();
+            let handle = buffer.handle();
+            let copy = CopyBufferTexture {
+                buffer: &handle,
+                offset: *offset,
+                row_pitch: extent.width * bytes,
+                rows_per_layer: 1,
+            };
+            let texture = TextureRegion {
+                texture: &v.texture.gpu.handle,
+                mip: 0,
+                layer: 0,
+                origin: Origin { x: 0, y: 0, z: 0 },
+                stencil: false,
+            };
+            if into {
+                self.backend.copy_buffer_to_texture(&copy, &texture, extent);
+            } else {
+                self.backend.copy_texture_to_buffer(&texture, &copy, extent);
+            }
+            return;
+        }
         let Some(twin) = &v.twin else {
             return;
         };

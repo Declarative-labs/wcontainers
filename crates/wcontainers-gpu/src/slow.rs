@@ -260,6 +260,9 @@ pub enum SlowPath {
     /// Pixel shader invocations counted by drawing each draw again, with the depth and stencil tests
     /// off, through a program adding to a counter, where the back end has no statistics queries.
     PixelInvocationsCounted,
+    /// A blit swap chain's buffers past the first, which DXGI moves one place at each present,
+    /// moved by copies.
+    SequentialBuffersCopied,
     /// A view's component mapping applied by the program to what it reads, where the back end's views
     /// have none.
     SwizzleInShader,
@@ -270,7 +273,7 @@ pub enum SlowPath {
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 104] = [
+    pub const ALL: [SlowPath; 105] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -373,6 +376,7 @@ impl SlowPath {
         SlowPath::CaptureExpanded,
         SlowPath::CopyWithinTexture,
         SlowPath::PixelInvocationsCounted,
+        SlowPath::SequentialBuffersCopied,
         SlowPath::SwizzleInShader,
         SlowPath::AtomicExchangeLoop,
     ];
@@ -496,6 +500,7 @@ impl SlowPath {
             SlowPath::PixelInvocationsCounted => {
                 "pixel shader invocations counted by drawing again"
             }
+            SlowPath::SequentialBuffersCopied => "swap chain buffers moved by copies at present",
             SlowPath::SwizzleInShader => "view component mapping applied in the program",
             SlowPath::AtomicExchangeLoop => {
                 "atomic minimum or maximum made by a compare-exchange loop"

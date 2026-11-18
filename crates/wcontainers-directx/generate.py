@@ -23,7 +23,7 @@ DXGI_SURFACE = ["IDXGISurface1", "IDXGISurface"]
 D3D10_CHILD = ["ID3D10DeviceChild"]
 D3D10_RESOURCE = ["ID3D10Resource"] + D3D10_CHILD
 D3D10_VIEW = ["ID3D10View"] + D3D10_CHILD
-for empty in ("ID3DDeviceContextState", "ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11ComputeShader", "ID3D11GeometryShader", "ID3D11Predicate"):
+for empty in ("ID3DDeviceContextState", "ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11ComputeShader", "ID3D11GeometryShader", "ID3D11HullShader", "ID3D11DomainShader", "ID3D11Predicate"):
     traits[empty] = []
 structs = {
     "Device": ["ID3D11Device3", "ID3D11Device2", "ID3D11Device1", "ID3D11Device", "IDXGIDevice3", "IDXGIDevice2", "IDXGIDevice1", "IDXGIDevice", "IDXGIObject"],
@@ -41,7 +41,7 @@ structs = {
     + ["ID3D10Texture1D"] + D3D10_RESOURCE,
     "Texture2D": ["ID3D11Texture2D1", "ID3D11Texture2D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
     + ["ID3D10Texture2D"] + D3D10_RESOURCE,
-    "Texture3D": ["ID3D11Texture3D1", "ID3D11Texture3D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE
+    "Texture3D": ["ID3D11Texture3D1", "ID3D11Texture3D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
     + ["ID3D10Texture3D"] + D3D10_RESOURCE,
     "RenderTargetView": ["ID3D11RenderTargetView1", "ID3D11RenderTargetView", "ID3D11View"] + CHILD
     + ["ID3D10RenderTargetView"] + D3D10_VIEW,
@@ -63,6 +63,8 @@ structs = {
     "PixelShader": ["ID3D11PixelShader"] + CHILD,
     "GeometryShader": ["ID3D11GeometryShader"] + CHILD,
     "ComputeShader": ["ID3D11ComputeShader"] + CHILD,
+    "HullShader": ["ID3D11HullShader"] + CHILD,
+    "DomainShader": ["ID3D11DomainShader"] + CHILD,
     "CommandList": ["ID3D11CommandList"] + CHILD,
     "DeviceContextState": ["ID3DDeviceContextState"] + CHILD,
 }
@@ -81,6 +83,7 @@ hand = {
     "ID3D11Multithread": "Enter Leave SetMultithreadProtected GetMultithreadProtected",
     "ID3DUserDefinedAnnotation": "BeginEvent EndEvent SetMarker GetStatus",
     "IDXGIResource": "GetUsage",
+    "IDXGISurface1": "GetDC ReleaseDC",
     "ID3D11BlendState1": "GetDesc1",
     "ID3D11RasterizerState1": "GetDesc1",
     "ID3D11RasterizerState2": "GetDesc2",
@@ -102,7 +105,7 @@ hand = {
     "IDXGISwapChain2": "SetMaximumFrameLatency GetMaximumFrameLatency",
     "IDXGISwapChain3": "GetCurrentBackBufferIndex CheckColorSpaceSupport SetColorSpace1 ResizeBuffers1",
     "IDXGISwapChain4": "SetHDRMetaData",
-    "ID3D11DeviceContext": "VSSetConstantBuffers PSSetShaderResources PSSetShader PSSetSamplers VSSetShader DrawIndexed Draw Map Unmap PSSetConstantBuffers IASetInputLayout IASetVertexBuffers IASetIndexBuffer DrawIndexedInstanced DrawInstanced IASetPrimitiveTopology VSSetShaderResources VSSetSamplers OMSetRenderTargets OMSetBlendState OMSetDepthStencilState RSSetState RSSetViewports RSSetScissorRects CopySubresourceRegion CopyResource UpdateSubresource ClearRenderTargetView ClearDepthStencilView GenerateMips Begin End GetData ClearState Flush GetType GetContextFlags VSGetShader PSGetShader VSGetConstantBuffers PSGetConstantBuffers VSGetShaderResources PSGetShaderResources VSGetSamplers PSGetSamplers IAGetInputLayout IAGetVertexBuffers IAGetIndexBuffer IAGetPrimitiveTopology OMGetRenderTargets OMGetBlendState OMGetDepthStencilState RSGetState RSGetViewports RSGetScissorRects CSSetShader CSGetShader CSSetConstantBuffers CSGetConstantBuffers CSSetShaderResources CSGetShaderResources CSSetSamplers CSGetSamplers CSSetUnorderedAccessViews CSGetUnorderedAccessViews DrawInstancedIndirect DrawIndexedInstancedIndirect Dispatch DispatchIndirect ClearUnorderedAccessViewUint ClearUnorderedAccessViewFloat CopyStructureCount OMSetRenderTargetsAndUnorderedAccessViews OMGetRenderTargetsAndUnorderedAccessViews ExecuteCommandList FinishCommandList ResolveSubresource SetResourceMinLOD GetResourceMinLOD GSSetShader GSGetShader GSSetShaderResources GSGetShaderResources SOSetTargets SOGetTargets DrawAuto",
+    "ID3D11DeviceContext": "VSSetConstantBuffers PSSetShaderResources PSSetShader PSSetSamplers VSSetShader DrawIndexed Draw Map Unmap PSSetConstantBuffers IASetInputLayout IASetVertexBuffers IASetIndexBuffer DrawIndexedInstanced DrawInstanced IASetPrimitiveTopology VSSetShaderResources VSSetSamplers OMSetRenderTargets OMSetBlendState OMSetDepthStencilState RSSetState RSSetViewports RSSetScissorRects CopySubresourceRegion CopyResource UpdateSubresource ClearRenderTargetView ClearDepthStencilView GenerateMips Begin End GetData ClearState Flush GetType GetContextFlags VSGetShader PSGetShader VSGetConstantBuffers PSGetConstantBuffers VSGetShaderResources PSGetShaderResources VSGetSamplers PSGetSamplers IAGetInputLayout IAGetVertexBuffers IAGetIndexBuffer IAGetPrimitiveTopology OMGetRenderTargets OMGetBlendState OMGetDepthStencilState RSGetState RSGetViewports RSGetScissorRects CSSetShader CSGetShader CSSetConstantBuffers CSGetConstantBuffers CSSetShaderResources CSGetShaderResources CSSetSamplers CSGetSamplers CSSetUnorderedAccessViews CSGetUnorderedAccessViews DrawInstancedIndirect DrawIndexedInstancedIndirect Dispatch DispatchIndirect ClearUnorderedAccessViewUint ClearUnorderedAccessViewFloat CopyStructureCount OMSetRenderTargetsAndUnorderedAccessViews OMGetRenderTargetsAndUnorderedAccessViews ExecuteCommandList FinishCommandList ResolveSubresource SetResourceMinLOD GetResourceMinLOD GSSetShader GSGetShader GSSetShaderResources GSGetShaderResources SOSetTargets SOGetTargets DrawAuto HSSetShader HSGetShader HSSetShaderResources HSGetShaderResources DSSetShader DSGetShader DSSetShaderResources DSGetShaderResources",
     "ID3D11Resource": "GetType SetEvictionPriority GetEvictionPriority",
     "ID3D11View": "GetResource",
     "ID3D11Asynchronous": "GetDataSize",
@@ -135,20 +138,10 @@ def unused_stage(name, p, what):
     """The body of a context method on a stage or feature not served: served while it binds nothing."""
     if name in ("SetPredication", "GetPredication"):
         return f"self.{snake(name)}({', '.join(p)})"
-    if re.fullmatch(r"(HS|DS)SetShader", name):
-        return f'self.only_unbinding("{what}", !{p[0]}.is_null())'
     if re.fullmatch(r"(GS|HS|DS)Set(ConstantBuffers1?|Samplers)", name):
         return f"self.{snake(name)}({', '.join(p)})"
     if re.fullmatch(r"(GS|HS|DS)Get(ConstantBuffers1?|Samplers)", name):
         return f"self.{snake(name)}({', '.join(p)})"
-    if re.fullmatch(r"(HS|DS)SetShaderResources", name):
-        return f'self.only_unbinding("{what}", super::context::binds({p[2]}, {p[1]}))'
-    if re.fullmatch(r"(GS|HS|DS)GetConstantBuffers1", name):
-        return f"super::context::nothing_bound(super::context::out_array({p[2]}), {p[1]})"
-    if re.fullmatch(r"(GS|HS|DS)Get(ConstantBuffers|Samplers)", name) or re.fullmatch(r"(HS|DS)GetShaderResources", name):
-        return f"super::context::nothing_bound({p[2]}, {p[1]})"
-    if re.fullmatch(r"(HS|DS)GetShader", name):
-        return f"super::context::no_instances({p[2]}); let _ = {p[0]}.write(None);"
     return None
 
 
