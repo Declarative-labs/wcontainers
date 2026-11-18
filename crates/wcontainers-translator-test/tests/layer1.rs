@@ -215,3 +215,8 @@ fn bytes_in_no_form_stop_as_on_the_cpu_arm64() {
 fn every_form_matches_the_cpu_x86_64() {
     every_form_matches_the_cpu::<X86_64>();
 }
+
+#[test]
+fn bytes_in_no_form_stop_as_on_the_cpu_x86_64() {
+    bytes_in_no_form_stop_as_on_the_cpu::<X86_64>();
+}

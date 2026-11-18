@@ -30,6 +30,8 @@ pub use flags::{Flag, Flags};
 pub use guest::{Control, Offer, Reason, Trap};
 #[cfg(feature = "translate")]
 pub use meaning::written;
+#[cfg(feature = "translate")]
+pub use operand::{General, general as general_register, size_of_memory as memory_size_bytes};
 
 /// The x86-64 guest, 64-bit user mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

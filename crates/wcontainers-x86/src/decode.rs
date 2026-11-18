@@ -36,13 +36,12 @@ pub fn decode(code: &[u8]) -> Option<(Instruction, u8)> {
     let prefixes = prefix_run(code);
     let address32 = code[..prefixes].contains(&0x67);
     let mut too_long = false;
-    // iced stops reading at 15 bytes; the CPU counts on, and its limit wins over every other rule.
-    if iced.is_invalid() && iced.len() == 15 {
+    // iced stops reading at 15 bytes and at what makes an encoding invalid; the CPU counts the whole
+    // encoding, and its limit wins over every other rule.
+    if iced.is_invalid() {
         let length = cpu_length(code, prefixes)?;
-        if length > 15 {
-            too_long = true;
-            iced.set_len(length.min(255));
-        }
+        too_long = length > 15;
+        iced.set_len(length.min(255));
     }
     let length = iced.len() as u8;
     Some((
@@ -69,7 +68,7 @@ fn is_legacy_prefix(b: u8) -> bool {
     )
 }
 
-/// The length the CPU counts for an encoding iced reports as 15 invalid bytes: the prefixes that can change
+/// The length the CPU counts for an encoding iced reports as invalid: the prefixes that can change
 /// what follows (the last 66, the last 67, the last of F2 and F3, and a REX directly before the opcode) are
 /// kept, the rest are counted and dropped, and iced decodes what is left. Before a VEX or EVEX instruction
 /// (C4, C5 or 62 in 64-bit mode) only 67 changes its length.
@@ -92,17 +91,70 @@ fn cpu_length(code: &[u8], prefixes: usize) -> Option<usize> {
     if matches!(body.first(), Some(0xc4 | 0xc5 | 0x62)) {
         (operand, repeat, rex) = (false, None, None);
     }
-    let mut rest: Vec<u8> = Vec::with_capacity(4 + body.len().min(15));
-    rest.extend(operand.then_some(0x66));
-    rest.extend(address.then_some(0x67));
-    rest.extend(repeat);
-    rest.extend(rex);
-    let kept = rest.len();
-    rest.extend(&body[..body.len().min(15)]);
-    let mut decoder = Decoder::with_ip(64, &rest, 0, options());
-    let instruction = decoder.decode();
-    if decoder.last_error() == DecoderError::NoMoreBytes {
-        return None;
+    let decode_with = |operand: bool, repeat: Option<u8>| {
+        let mut rest: Vec<u8> = Vec::with_capacity(4 + body.len().min(15));
+        rest.extend(operand.then_some(0x66));
+        rest.extend(address.then_some(0x67));
+        rest.extend(repeat);
+        rest.extend(rex);
+        let kept = rest.len();
+        rest.extend(&body[..body.len().min(15)]);
+        let mut decoder = Decoder::with_ip(64, &rest, 0, options());
+        let instruction = decoder.decode();
+        let complete = decoder.last_error() != DecoderError::NoMoreBytes;
+        (instruction, kept, complete)
+    };
+    let (instruction, kept, complete) = decode_with(operand, repeat);
+    if instruction.is_invalid() && matches!(body.first(), Some(0xc4 | 0xc5 | 0x62)) {
+        // iced stops at the field that makes it invalid; the CPU counts the whole VEX or EVEX instruction.
+        return Some(prefixes + vex_length(body)?);
     }
-    Some(prefixes - kept + instruction.len())
+    if instruction.is_invalid() {
+        // An opcode whose mandatory prefix makes it invalid is still counted by the CPU with its ModRM and
+        // immediate: the same opcode without the repeat prefix, and then without 66, has them.
+        for (operand, repeat) in [(operand, None), (false, None)] {
+            let (valid, kept, complete) = decode_with(operand, repeat);
+            if !valid.is_invalid() {
+                return complete.then_some(prefixes - kept + valid.len());
+            }
+        }
+    }
+    complete.then_some(prefixes - kept + instruction.len())
+}
+
+/// The length of a VEX (C4, C5) or EVEX (62) instruction by its fields alone: the prefix, the opcode, a
+/// ModRM with the SIB and displacement it asks for (every one but VEX `vzeroupper` and `vzeroall`, 0F 77),
+/// and an immediate byte in the 0F3A map and for the 0F map's opcodes that take one (70 to 73, C2, C4 to
+/// C6). `None` when it runs past the end of `body`. Checked against the reference CPU by layer 1's cases in
+/// no form.
+fn vex_length(body: &[u8]) -> Option<usize> {
+    // The reference CPU's length decoder reads only the low two bits of the map field.
+    let (prefix, map) = match body[0] {
+        0xc5 => (2, 1),
+        0xc4 => (3, *body.get(1)? & 3),
+        _ => (4, *body.get(1)? & 3),
+    };
+    let opcode = *body.get(prefix)?;
+    let mut length = prefix + 1;
+    if !(body[0] != 0x62 && map == 1 && opcode == 0x77) {
+        let modrm = *body.get(length)?;
+        length += 1;
+        let (mode, rm) = (modrm >> 6, modrm & 7);
+        if mode != 3 && rm == 4 {
+            let sib = *body.get(length)?;
+            length += 1;
+            if mode == 0 && sib & 7 == 5 {
+                length += 4;
+            }
+        }
+        length += match (mode, rm) {
+            (1, _) => 1,
+            (2, _) | (0, 5) => 4,
+            _ => 0,
+        };
+    }
+    if map == 3 || (map == 1 && matches!(opcode, 0x70..=0x73 | 0xc2 | 0xc4..=0xc6)) {
+        length += 1;
+    }
+    (length <= body.len()).then_some(length)
 }

@@ -127,8 +127,10 @@ impl GuestTest for X86_64 {
             .boxed()
     }
 
-    fn no_form(_seed: u64) -> BoxedStrategy<Case> {
-        panic!("x86-64's cases of bytes in no form come later in milestone X3")
+    fn no_form(seed: u64) -> BoxedStrategy<Case> {
+        any::<u64>()
+            .prop_filter_map("not in no form", move |draw| no_form(draw, seed))
+            .boxed()
     }
 
     fn hand_cases() -> Vec<Designed> {
@@ -773,4 +775,69 @@ fn field_of(r: Register) -> Option<usize> {
         53..=68 => Some(v - 53),
         _ => None,
     }
+}
+
+/// A case of bytes in no form, drawn from `draw`, with the data area from `seed`: half are random bytes iced
+/// decodes as no instruction, half a run of prefixes before an instruction of a form or a VEX or EVEX one,
+/// 13 to 16 bytes in all, so that both sides of the 15-byte limit are reached. A run that makes an instruction
+/// of 15 bytes or fewer is kept only when the instruction's meaning is written, so that what is compared is
+/// the decoding.
+fn no_form(draw: u64, seed: u64) -> Option<Case> {
+    const PREFIXES: [u8; 27] = [
+        0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0xf0, 0xf2, 0xf3, 0x40, 0x41, 0x42, 0x43,
+        0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f,
+    ];
+    let mut draw = Draw(draw);
+    let forms = X86_64::forms();
+    let base = case(
+        forms[draw.below(forms.len() as u64) as usize].code,
+        draw.next(),
+    )?;
+    let bytes: Vec<u8> = if draw.chance(50) {
+        let random: Vec<u8> = (0..15).map(|_| draw.next() as u8).collect();
+        let (i, length) = wcontainers_x86::decode(&random)?;
+        if !i.iced.is_invalid() || i.too_long {
+            return None;
+        }
+        random[..usize::from(length)].to_vec()
+    } else {
+        let body: Vec<u8> = match draw.below(4) {
+            // A VEX or EVEX start after a prefix that makes it invalid.
+            0 => {
+                let mut v = vec![[0xc4, 0xc5, 0x62][draw.below(3) as usize]];
+                v.extend((0..6).map(|_| draw.next() as u8));
+                v
+            }
+            _ => base.code.code().to_vec(),
+        };
+        let total = 13 + draw.below(4) as usize;
+        if body.len() >= total {
+            return None;
+        }
+        let mut run: Vec<u8> = (0..total - body.len())
+            .map(|_| PREFIXES[draw.below(PREFIXES.len() as u64) as usize])
+            .collect();
+        run.extend(body);
+        // The whole encoding must be in the case's bytes: past them the reference reads its filler.
+        let (i, length) = wcontainers_x86::decode(&run)?;
+        if !(i.too_long || i.iced.is_invalid() || wcontainers_x86::written(&i)) {
+            return None;
+        }
+        run.truncate(usize::from(length));
+        // The same answer from the bytes alone.
+        let (again, same) = wcontainers_x86::decode(&run)?;
+        if same != length || again.too_long != i.too_long {
+            return None;
+        }
+        run
+    };
+    if X86_64::excluded(&bytes).is_some() {
+        return None;
+    }
+    Some(Case {
+        code: Encoded::new(&bytes),
+        state: base.state,
+        tracking: false,
+        seed,
+    })
 }
