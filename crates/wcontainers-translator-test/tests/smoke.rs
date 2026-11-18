@@ -9,7 +9,7 @@ use wcontainers_translator_test::runner::{Machine, Stopped, Syscalls, fields};
 
 const LOAD: u64 = 0x10000;
 /// The one executable page the programs run in.
-const PAGE: u64 = 0x1000;
+const PAGE: u64 = wcontainers_abi::PAGE_SIZE;
 
 /// Load `code` at `LOAD` at `look_ahead`, every register 0 but the pc.
 fn ready<G: GuestTest>(code: &[u8], look_ahead: LookAhead) -> Machine<G> {

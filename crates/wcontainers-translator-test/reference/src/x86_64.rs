@@ -137,6 +137,7 @@ fn slot(value: u128) -> [u8; 16] {
 impl Machine for Cpu {
     const FILLER: u8 = crate::x86_64::FILLER;
     const CODE_SPAN: u64 = crate::x86_64::CODE_SPAN;
+    const RUNNER: core::ops::Range<u64> = crate::x86_64::RUNNER;
     /// The longest instruction and the `syscall` after it.
     const WINDOW: u64 = 16 + 2;
     const AUDIT_ARCH: u32 = AUDIT_ARCH_X86_64;

@@ -54,6 +54,7 @@ const FPSR: usize = 67;
 impl Machine for Cpu {
     const FILLER: u8 = aarch64::FILLER;
     const CODE_SPAN: u64 = aarch64::CODE_SPAN;
+    const RUNNER: core::ops::Range<u64> = aarch64::RUNNER;
     /// The instruction and the address after a `svc` there.
     const WINDOW: u64 = 8;
     const AUDIT_ARCH: u32 = AUDIT_ARCH_AARCH64;

@@ -48,6 +48,8 @@ pub trait Machine {
     /// The code area: the byte it is filled with and how far it reaches either side of CODE.
     const FILLER: u8;
     const CODE_SPAN: u64;
+    /// Where the runner's own memory is, which no case reaches.
+    const RUNNER: core::ops::Range<u64>;
     /// The end of the instruction window, from CODE: a system call whose reported instruction pointer (the
     /// address after the call) is in `CODE..CODE + WINDOW` raises SIGSYS instead of running.
     const WINDOW: u64;
@@ -311,6 +313,17 @@ fn failed(message: &str) -> Vec<u8> {
 /// The case child: sets up the areas, the handlers and the filter once, then runs the cases it is sent.
 fn serve_cases(mut input: std::fs::File, mut output: std::fs::File) -> ! {
     let fields = Cpu::FIELDS.len();
+    // The runner's image and heap must be where the harness keeps cases from reaching.
+    let image = serve_cases as *const () as u64;
+    let data = addr_of!(GUEST) as u64;
+    let heap = unsafe { libc::sbrk(0) } as u64;
+    for at in [image, data, heap] {
+        assert!(
+            Cpu::RUNNER.contains(&at),
+            "the runner's own memory at {at:#x} is outside {:#x?}",
+            Cpu::RUNNER
+        );
+    }
     map(DATA, DATA_BYTES, libc::PROT_READ | libc::PROT_WRITE);
     let area = CODE - Cpu::CODE_SPAN;
     map(area, 2 * Cpu::CODE_SPAN, libc::PROT_READ | libc::PROT_WRITE);

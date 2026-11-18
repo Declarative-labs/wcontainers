@@ -8,6 +8,7 @@
 //!
 //! Needs `WC_REFERENCE_X86_64` (such as `tom@192.168.2.240`) on a host that is not x86-64; it fails without it.
 
+use wcontainers_abi::PAGE_SIZE;
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE, fill};
 use wcontainers_translator_test::programs::{Ran, check_ordinary_programs};
@@ -59,7 +60,7 @@ fn at(name: &str) -> usize {
 
 fn start() -> Vec<u128> {
     let mut state = vec![0u128; X86_64.fields.len()];
-    state[at("rsp")] = (DATA + 0x1000).into();
+    state[at("rsp")] = (DATA + PAGE_SIZE).into();
     state[at("rflags")] = START_FLAGS;
     state[at("mxcsr")] = 0x1f80;
     state[at("fcw")] = 0x37f;
@@ -476,7 +477,7 @@ fn the_x86_64_reference_answers_by_the_manual() {
         &[0x0f, 0x34],
         |s| {
             s[at("rax")] = 20;
-            s[at("rbp")] = (DATA + 0x1000).into();
+            s[at("rbp")] = (DATA + PAGE_SIZE).into();
         },
         (SIGSYS, SYS_SECCOMP),
         |_, _| {},
@@ -527,7 +528,7 @@ fn the_x86_64_reference_answers_by_the_manual() {
         (SIGSEGV, SI_KERNEL),
         |l, s| {
             assert!(
-                data_word(0) >> 47 != 0 && data_word(0) >> 47 != 0x1_ffff,
+                !wcontainers_x86::is_canonical(data_word(0) as u64),
                 "the seed's first word is not canonical"
             );
             assert_eq!((rip(l), get(l, "rsp")), (CODE128, s[at("rsp")]));
@@ -646,9 +647,9 @@ fn the_x86_64_reference_refuses_what_linux_refuses() {
     let mut reference = Reference::start(&X86_64);
     for (field, value) in [
         ("fs_base", NON_CANONICAL),
-        ("fs_base", 1 << 47),
-        ("gs_base", 1 << 47),
-        ("gs_base", (1 << 47) - 0x1000),
+        ("fs_base", wcontainers_x86::USER_END.into()),
+        ("gs_base", wcontainers_x86::USER_END.into()),
+        ("gs_base", wcontainers_x86::USER_TOP.into()),
     ] {
         let mut state = start();
         state[at(field)] = value;

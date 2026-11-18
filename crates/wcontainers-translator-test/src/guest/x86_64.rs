@@ -5,11 +5,14 @@ use super::*;
 use crate::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
 use crate::reference::Target;
 use iced_x86::{
-    Code, Decoder, DecoderOptions, Encoder, Formatter, Instruction, IntelFormatter, MemoryOperand,
-    Mnemonic, OpCodeOperandKind as K, Register,
+    Code, Decoder, DecoderOptions, Encoder, Formatter, Instruction, InstructionInfoFactory,
+    IntelFormatter, MemoryOperand, Mnemonic, OpAccess, OpCodeOperandKind as K, OpKind, Register,
 };
 use proptest::prelude::*;
 use std::sync::OnceLock;
+use wcontainers_abi::PAGE_SIZE;
+use wcontainers_x86::encoding::{ESCAPE, OPERAND_SIZE, REP, REPNE, REX, REX_W, is_rex};
+use wcontainers_x86::{USER_END, USER_TOP};
 use wcontainers_x86::{X86_64, X86Block};
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -244,7 +247,9 @@ impl GuestTest for X86_64 {
     fn excluded(code: &[u8]) -> Option<&'static str> {
         let instruction = Decoder::with_ip(64, code, CODE, DecoderOptions::NONE).decode();
         match instruction.code() {
-            Code::Int_imm8 if instruction.immediate8() == 0x80 => {
+            Code::Int_imm8
+                if instruction.immediate8() == wcontainers_x86::LINUX_32_BIT_SYSTEM_CALL =>
+            {
                 Some("int 0x80: a 32-bit system call on the reference")
             }
             Code::Sysenter => Some("sysenter: a 32-bit system call on the reference"),
@@ -283,7 +288,7 @@ impl GuestTest for X86_64 {
                 (0x1001, core::mem::offset_of!(X86Block, gs_base)),
                 (0x1002, core::mem::offset_of!(X86Block, fs_base)),
             ],
-            limit: (1 << 47) - 4096,
+            limit: USER_TOP,
         }),
     };
 
@@ -497,9 +502,10 @@ fn target(draw: &mut Draw, bytes: u64) -> u64 {
         13 => DATA + DATA_WRITABLE - bytes + draw.below(2 * bytes),
         14 => DATA - bytes + draw.below(2 * bytes),
         15 => DATA + DATA_BYTES - bytes + draw.below(2 * bytes),
-        16 | 17 => (1 << 47) - 64 + draw.below(64),
-        18 => 0x8000_0000_0000_0000 | draw.next() >> 1,
-        _ => (0xffff_8000_0000_0000u64).wrapping_sub(draw.below(64)),
+        16 | 17 => USER_END - 64 + draw.below(64),
+        18 => 1 << (u64::BITS - 1) | draw.next() >> 1,
+        // Just below the upper canonical half.
+        _ => USER_END.wrapping_neg().wrapping_sub(draw.below(64)),
     }
 }
 
@@ -537,8 +543,8 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     };
     state[RIP] = CODE.into();
     state[RFLAGS] = rflags(&mut draw);
-    state[FS] = (draw.next() % ((1 << 47) - 4096)).into();
-    state[GS] = (draw.next() % ((1 << 47) - 4096)).into();
+    state[FS] = (draw.next() % USER_TOP).into();
+    state[GS] = (draw.next() % USER_TOP).into();
     state[MXCSR] = 0x1f80;
     state[FCW] = 0x37f;
     for x in &mut state[XMM..XMM + 16] {
@@ -639,7 +645,10 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     };
     let mut encoder = Encoder::new(64);
     encoder.encode(&instruction, CODE).ok()?;
-    let bytes = encoder.take_buffer();
+    let mut bytes = encoder.take_buffer();
+    if code.mnemonic() == Mnemonic::Reservednop {
+        bytes = with_drawn_prefixes(&mut draw, bytes);
+    }
     if bytes.len() > 15 || X86_64::excluded(&bytes).is_some() {
         return None;
     }
@@ -680,7 +689,16 @@ fn case(code: Code, seed: u64) -> Option<Case> {
         if size == 16 && draw.chance(80) {
             to &= !15;
         }
-        aim(&mut draw, &mut state, &m, to, address32);
+        // A bit offset in a register moves the address by whole operands: most are aimed with it.
+        let moved = if draw.chance(75) {
+            bit_offset_move(&instruction, &state)
+        } else {
+            0
+        };
+        aim(&mut draw, &mut state, &m, to.wrapping_sub(moved), address32);
+    }
+    if reaches_runner(&bytes, &state) {
+        return None;
     }
     Some(Case {
         code: Encoded::new(&bytes),
@@ -688,6 +706,121 @@ fn case(code: Code, seed: u64) -> Option<Case> {
         tracking: false,
         seed: draw.next(),
     })
+}
+
+/// A reserved NOP's encoding with `66`, `F2` and `F3` drawn before it in any order and REX.W drawn, so that
+/// the cases reach every encoding of the space (`endbr64`, `rdsspq`, MPX's, those of features not yet known),
+/// as the translator's decoder gives them all as reserved NOPs; the encoding as built where it does not.
+fn with_drawn_prefixes(draw: &mut Draw, bytes: Vec<u8>) -> Vec<u8> {
+    let mut legacy: Vec<u8> = [OPERAND_SIZE, REPNE, REP]
+        .into_iter()
+        .filter(|_| draw.chance(40))
+        .collect();
+    for k in (1..legacy.len()).rev() {
+        legacy.swap(k, draw.below(k as u64 + 1) as usize);
+    }
+    let opcode = bytes
+        .iter()
+        .position(|&b| b == ESCAPE)
+        .expect("a two-byte opcode");
+    let mut drawn = legacy;
+    drawn.extend_from_slice(&bytes[..opcode]);
+    if draw.chance(30) {
+        match drawn.last_mut() {
+            Some(rex) if is_rex(*rex) => *rex |= REX_W,
+            _ => drawn.push(REX | REX_W),
+        }
+    }
+    drawn.extend_from_slice(&bytes[opcode..]);
+    let reserved = wcontainers_x86::decode(&drawn).is_some_and(|(i, length)| {
+        usize::from(length) == drawn.len() && i.iced.mnemonic() == Mnemonic::Reservednop
+    });
+    if reserved { drawn } else { bytes }
+}
+
+/// How far a bit offset in a register (`bt [m], r` and its kin) moves the address: whole operands, by the
+/// offset's sign-extended value. Zero for every other instruction, and where the offset's register is also
+/// in the address, so that it cannot be aimed apart from it.
+fn bit_offset_move(instruction: &Instruction, state: &[u128]) -> u64 {
+    if !matches!(
+        instruction.mnemonic(),
+        Mnemonic::Bt | Mnemonic::Bts | Mnemonic::Btr | Mnemonic::Btc
+    ) || instruction.op0_kind() != OpKind::Memory
+        || instruction.op1_kind() != OpKind::Register
+    {
+        return 0;
+    }
+    let offset = instruction.op1_register();
+    let field = field_of(offset);
+    if field.is_none()
+        || [instruction.memory_base(), instruction.memory_index()]
+            .iter()
+            .any(|&r| field_of(r) == field)
+    {
+        return 0;
+    }
+    let bits = offset.size() as u32 * 8;
+    let value = register_value(offset, state).expect("a general register");
+    let signed = (value << (u64::BITS - bits)) as i64 >> (u64::BITS - bits);
+    ((signed >> bits.trailing_zeros()) * i64::from(bits / 8)) as u64
+}
+
+/// The value of a register an address is made of, from the state: a general register at its width, a
+/// segment's base (FS and GS; the others are zero in 64-bit mode).
+fn register_value(r: Register, state: &[u128]) -> Option<u64> {
+    match r {
+        Register::FS => Some(state[FS] as u64),
+        Register::GS => Some(state[GS] as u64),
+        Register::ES | Register::CS | Register::SS | Register::DS => Some(0),
+        _ => {
+            let value = state[field_of(r)?] as u64;
+            Some(match r.size() {
+                8 => value,
+                size => value & (u64::MAX >> (u64::BITS - size as u32 * 8)),
+            })
+        }
+    }
+}
+
+/// Whether any memory the instruction reaches from `state` (its operands, the stack, the string
+/// registers, a bit offset's move) is the reference runner's own, where the CPU would read or write the
+/// runner itself where a clean process faults.
+fn reaches_runner(bytes: &[u8], state: &[u128]) -> bool {
+    let runner = crate::layout::x86_64::RUNNER;
+    let instruction = Decoder::with_ip(64, bytes, CODE, DecoderOptions::NONE).decode();
+    if instruction.is_invalid() {
+        return false;
+    }
+    let moved = bit_offset_move(&instruction, state);
+    let mut factory = InstructionInfoFactory::new();
+    factory
+        .info(&instruction)
+        .used_memory()
+        .iter()
+        .filter(|m| m.access() != OpAccess::NoMemAccess)
+        .any(|m| {
+            let value = |r: Register| match r {
+                Register::None => Some(0),
+                Register::RIP => Some(instruction.next_ip()),
+                r => register_value(r, state),
+            };
+            let (Some(base), Some(index), Some(segment)) =
+                (value(m.base()), value(m.index()), value(m.segment()))
+            else {
+                return true;
+            };
+            let mut effective = m
+                .displacement()
+                .wrapping_add(base)
+                .wrapping_add(index.wrapping_mul(u64::from(m.scale())))
+                .wrapping_add(moved);
+            if m.address_size() == iced_x86::CodeSize::Code32 {
+                effective &= u64::from(u32::MAX);
+            }
+            let start = effective.wrapping_add(segment);
+            let end = start.saturating_add(m.memory_size().size().max(1) as u64);
+            start < runner.end && end > runner.start
+        })
 }
 
 /// A branch into its own bytes, which our side runs again where the reference stops there (and so never
@@ -790,7 +923,7 @@ fn aim(draw: &mut Draw, state: &mut [u128], m: &MemoryOperand, to: u64, address3
                 .wrapping_add(scaled)
                 .wrapping_add(m.displacement as u64);
             let base = to.wrapping_sub(effective);
-            if base < (1 << 47) - 4096 {
+            if base < USER_TOP {
                 let field = if m.segment_prefix == Register::FS {
                     FS
                 } else {
@@ -880,7 +1013,7 @@ fn no_form(draw: u64, seed: u64) -> Option<Case> {
         }
         run
     };
-    if X86_64::excluded(&bytes).is_some() {
+    if X86_64::excluded(&bytes).is_some() || reaches_runner(&bytes, &base.state.0) {
         return None;
     }
     Some(Case {
@@ -894,7 +1027,7 @@ fn no_form(draw: u64, seed: u64) -> Option<Case> {
 /// A case of `code` from the state a thread starts in: registers zero, the stack in the data area.
 pub fn plain(code: &[u8]) -> Case {
     let mut state = vec![0u128; FIELDS];
-    state[RSP] = (DATA + 0x1000).into();
+    state[RSP] = (DATA + PAGE_SIZE).into();
     state[RIP] = CODE.into();
     state[RFLAGS] = 0x202;
     state[MXCSR] = 0x1f80;
@@ -929,6 +1062,20 @@ fn hand_cases() -> Vec<Designed> {
             fields: vec![(RIP, (CODE + 2).into())],
             compared: true,
         },
+        // The destination's address adds the moved stack pointer before the address-size prefix wraps it.
+        designed(
+            "pop [esp + d] wrapping past 2^32",
+            &[0x67, 0x8f, 0x84, 0x24, 0xf8, 0xef, 0xff, 0xbb],
+            Stop::MemoryFault(0),
+            true,
+        ),
+        Designed {
+            name: "endbr64",
+            case: plain(&[0xf3, 0x0f, 0x1e, 0xfa]),
+            stop: Some(Stop::Landed(CODE + 4)),
+            fields: vec![],
+            compared: true,
+        },
         Designed {
             name: "int3",
             case: plain(&[0xcc]),
@@ -937,4 +1084,42 @@ fn hand_cases() -> Vec<Designed> {
             compared: true,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reserved NOP forms' cases reach encodings with each of `66`, `F2` and `F3` first, and with REX.W.
+    #[test]
+    fn reserved_nop_cases_draw_prefixes() {
+        let cases: Vec<Vec<u8>> = (0..4096)
+            .filter_map(|draw| case(Code::Reservednop_rm32_r32_0F1E, draw))
+            .map(|c| c.code.code().to_vec())
+            .collect();
+        for prefix in [OPERAND_SIZE, REPNE, REP] {
+            assert!(cases.iter().any(|b| b[0] == prefix), "{prefix:#x}");
+        }
+        assert!(
+            cases
+                .iter()
+                .any(|b| b.iter().any(|&x| is_rex(x) && x & REX_W != 0))
+        );
+    }
+
+    /// Accesses into the reference runner's own memory are found: through a bit offset's move and a plain
+    /// load (the independent check's cases), and not for the same load into the data area.
+    #[test]
+    fn accesses_into_the_runner_are_found() {
+        let in_runner = crate::layout::x86_64::RUNNER.start + 0x9_adeb;
+        let mut btr = plain(&[0x4c, 0x0f, 0xb3, 0x14, 0x2d, 0, 0, 0, 0]);
+        btr.state.0[5] = 0x4400_2ffb;
+        btr.state.0[10] = 0xe04b_efbd;
+        assert!(reaches_runner(btr.code.code(), &btr.state.0));
+        let mut load = plain(&[0x48, 0x8b, 0x03]);
+        load.state.0[3] = in_runner.into();
+        assert!(reaches_runner(load.code.code(), &load.state.0));
+        load.state.0[3] = DATA.into();
+        assert!(!reaches_runner(load.code.code(), &load.state.0));
+    }
 }

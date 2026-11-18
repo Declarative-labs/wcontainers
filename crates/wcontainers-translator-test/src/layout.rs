@@ -68,6 +68,10 @@ pub const CODE: u64 = 0x5000_0000;
 pub mod aarch64 {
     pub const FILLER: u8 = 0;
     pub const CODE_SPAN: u64 = 128 << 20;
+    /// Where the reference runner's own memory is: its image, linked at the start (the image base in
+    /// `reference/.cargo/config.toml`), and the heap Linux places up to 1 GiB after it, with room to grow;
+    /// the runner checks it is there at start. No case may reach it.
+    pub const RUNNER: core::ops::Range<u64> = 0x8000_0000..0xd000_0000;
 }
 
 /// x86-64's code area: `int3`, 32 KiB either side (a branch further out stops by the trap flag at its
@@ -75,6 +79,8 @@ pub mod aarch64 {
 pub mod x86_64 {
     pub const FILLER: u8 = 0xcc;
     pub const CODE_SPAN: u64 = 32 << 10;
+    /// As ARM64's.
+    pub const RUNNER: core::ops::Range<u64> = 0x6000_0000..0xb000_0000;
 }
 
 /// The reference's wire: records both ways, each a little-endian u32 length and that many bytes. The runner

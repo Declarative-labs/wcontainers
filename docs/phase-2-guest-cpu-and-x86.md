@@ -725,6 +725,15 @@ pub trait Guest: Personality {
     /// `PcRelative`, `CondCompare`, `CondSelect`, `Unary`, `Binary`, `MulAdd`, `Nothing`); x86 the
     /// register-only forms of the integer instructions.
     fn plain(i: &Self::Instruction) -> bool;
+    /// Whether a real CPU of this architecture may give a different result from the meaning's for this
+    /// instruction (the brief's "mark what depends on the host CPU", from X3): the meaning fixes what the
+    /// architecture leaves open to what the reference CPU does (undefined flags), answers by design (cpuid,
+    /// the time stamp counter, Linux's 32-bit system call gates), estimates, or stops where a CPU with more
+    /// features runs on (an invalid encoding, an instruction outside the default claims or with no meaning
+    /// yet). A native output may copy an instruction through only where this is false. ARM64 says true for
+    /// every instruction until its meanings are audited; x86 as section 5.1 lists; a test checks x86's
+    /// answers for each kind.
+    fn may_vary(i: &Self::Instruction) -> bool;
 
     // --- calls, returns and the stack ---
     /// Where a call leaves the return address.
@@ -1433,7 +1442,9 @@ Tests (section 7 gives the detail):
   (crate `wcontainers-x86`, `flags.rs`); `SHAPES` is empty and `condition_direct` answers false until X4's
   flags liveness. Shifts and rotates work their flags out at once into a `Packed` word (kept as they were
   when the masked count is zero, or for `rcl` and `rcr` when the count modulo the width plus one is), so the
-  nine-local `Shift` shape waits for X4 too. What the reference CPU leaves where Intel says undefined, found
+  nine-local `Shift` shape waits for X4 too; so do `bt` and its kin, `clc`, `stc` and `cmc`, which pack the
+  five flags they keep with the new CF into a `Packed` word (working out every flag of the instruction
+  before) until X4 gives them a shape that keeps the earlier one. What the reference CPU leaves where Intel says undefined, found
   by layer 1 and a scratch sweep of every shift and rotate at every width and count 0 to 31 (scratch
   `x3/run1/shifts.txt`): OF after a shift or rotate is what a count of one gives, from the value before it,
   for every count, except `rol` and `ror` of a register by an immediate above one, which keep OF; AF is clear
@@ -2675,6 +2686,11 @@ Linux loads at a random high address, so x86's is built with `-C relocation-mode
 at 1.5 GiB (its static start code calls undefined weak functions at 0, which must be within 2 GiB) and
 ARM64's at 2 GiB as before, with the heap Linux places up to 1 GiB after each; all above every guest
 address of the tests (below 0x5800_0000). Seen on the i7-8750H: image at 0x6000_0000, heap at 0x8417_2000.
+The runner's own memory is still reachable by a case's registers (a 32-bit address, a bit offset), and the
+CPU would then read or write the runner where a clean process faults, so each runner's place is one range in
+`layout.rs` (`RUNNER`: the image base and 1.25 GiB after it), which the runner checks at start, and x86's
+case generator drops every case whose accesses (iced's `used_memory` from the case's registers, with a bit
+offset's move) reach it (found by the independent check of X3).
 Both are the same records over the same pipes, so nothing else differs. `start` fails with a message naming the variable when it is unset; the
 test then fails, never skips. `cases(&[Case]) -> Vec<(Signal, State, Vec<(u32, u8)>)>`, `blob(..)` and
 the model (read once from `/proc/cpuinfo` on the reference, from the runner's first record) are what it
@@ -2814,7 +2830,8 @@ sets bases by `arch_prctl`). Another share gives rip-relative
 operands displacements that reach the code area around the instruction (its own bytes and the `int3` filler,
 which both sides hold, section 7.2) or just past the code area's ends (a page fault on both sides). The
 accesses that are not one operand (section 5.4) get draws of their own: bit offsets of `bt` and its kin of
-every sign and size, a share reaching an unmapped page or past 2^47; gather indexes and masks with a share of
+every sign and size, three quarters of them aimed with the operand (the base or index set so that the
+address after the offset's move is the drawn target: the data area, its edges, past 2^47, non-canonical); gather indexes and masks with a share of
 the elements on an unmapped page, across the page end or masked off there; masks of the masked moves and
 `maskmovdqu` (all-zero among them) with the operand placed across the end of DATA, below its start or near
 2^47. A gather that faults part way is stepped on by the reference runner (section 7.3) and compared at its
@@ -2934,7 +2951,8 @@ Measured throughout, recorded with machine and load: translation speed, output s
   selector 0x33. The trait of section 7.2 is the one built; where building it shows a signature must change,
   the change is recorded in the status file.
 - **X3, x86 at look-ahead none, integers.** `wcontainers-x86` with the decoder, the block, the base integer
-  instructions (moves, arithmetic and logic at every width, lea, push and pop, call and ret, jmp and jcc, cmov
+  instructions (moves, arithmetic and logic at every width, lea, push and pop, call and ret, jmp and jcc
+  (`jrcxz` and `jecxz` with them, on the manual's Jcc page; `loop` and its kin are X5's), cmov
   and setcc, shifts and rotates, multiply and divide, string instructions without rep, syscall), lazy flags,
   the build-time claim table from iced's tables (section 2) with its test, the canonical check on branches
   through a register or memory (a call's after its push), `X86_64::memory_fault`, the 128-by-64 division

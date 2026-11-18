@@ -41,7 +41,7 @@ pub const fn area_bytes<G: GuestTest>() -> usize {
 
 /// Where a program's area starts in its blob: no access reaches below it, into the code and tables.
 pub fn area_offset<G: GuestTest>(blob: &Blob) -> usize {
-    blob.bytes.len() - 4096 - area_bytes::<G>()
+    blob.bytes.len() - wcontainers_abi::PAGE_SIZE as usize - area_bytes::<G>()
 }
 /// Bytes of the stack every function frame keeps below what random accesses through sp reach, for the
 /// registers every function saves and restores, so a caller's loop or group across a call keeps them.

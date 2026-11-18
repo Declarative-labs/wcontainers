@@ -1639,8 +1639,21 @@ X3 (each also written into the plan's text where the plan is wrong):
   masks on xmm registers, `simd.rs`) are built at X3, not X5: musl's start and string routines reach them, and
   the X3 pass bar asks for hello world. They are layer 1 forms like any other and pass at 1,000 cases a form.
 - Flags as built (plan 5.1): no flags-word functions yet (`SHAPES` empty, `condition_direct` false), and the
-  shifts and rotates work their flags out at once into a packed word; the lazy `Shift` shape and direct
+  shifts and rotates, `bt` and its kin, `clc`, `stc` and `cmc` work their flags out at once into a packed
+  word (the last seven pack the five flags they keep with the new CF, which works out every flag of the
+  instruction before them): this costs run speed until X4. The lazy `Shift` and `Bits` shapes and direct
   conditions come with X4's flags liveness.
+- `jrcxz` and `jecxz` are built at X3 (the manual puts them on the Jcc page); `loop`, `xlat`, `bswap`, `bsf`,
+  `bsr`, `leave`, `pushfq`, `cmpxchg`, `xadd` and the rep string instructions stay X5's "every default
+  instruction". Until then each gives illegal instruction, counted as "unsupported instruction reached".
+- `Guest::may_vary` (added to the interface at X3) is in plan 3.2 now. x86's answer is true for an invalid
+  encoding, every `Code` outside the default claims (illegal instruction by design where a CPU with the
+  feature runs it), a default `Code` with no meaning yet, `int 0x80` and `sysenter`, and the instructions
+  with undefined flags (bt and its kin among them); false for kernel-only `Code`s of claimed features, an
+  instruction over 15 bytes, and the reserved NOPs (NOPs while the kernel leaves CET and MPX off).
+- The reference runner's place is one range per CPU in `layout.rs` (`RUNNER`), which the runner checks at
+  start, and x86's case generator drops cases that reach it (plan 7.2). Seen at once: the i7-8750H put the
+  runner's heap 0x3b5c_9000 bytes after its image (x86-64 Linux randomises the heap by up to 1 GiB).
 - Plan 5.4's canonical rule was wrong for the kernel's half: an access there is canonical and a page fault on
   the reference. Plan 5.2's length rule ran only for 15-byte `INVALID`s; it now runs for every `INVALID`.
   `Index::BitOffset` gained the operand's own index (plan 3.2).
