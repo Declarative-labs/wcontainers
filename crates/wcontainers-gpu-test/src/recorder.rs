@@ -47,6 +47,8 @@ pub(crate) enum Bound {
         buffer: Id,
         offset: u64,
         size: u64,
+        /// Bound as a uniform buffer, not a storage one.
+        uniform: bool,
         writable: bool,
     },
     Texture(Id),
@@ -1825,10 +1827,10 @@ impl Backend for Recorder {
                     return Err(GpuError::Absent(Features::FRAGMENT_STORAGE_WRITE));
                 }
                 if let BindingResource::StorageBuffer { range: r, .. } = e.resource
-                    && !r.size.is_multiple_of(4)
+                    && !r.size.is_multiple_of(STORAGE_WORD)
                 {
                     return Err(GpuError::Invalid(
-                        "a storage binding whose size is not a multiple of four",
+                        "a storage binding whose size is not a whole number of words",
                     ));
                 }
                 if let BindingResource::StorageBuffer {
@@ -1893,6 +1895,7 @@ impl Backend for Recorder {
                         buffer: *r.buffer,
                         offset: r.offset,
                         size: r.size,
+                        uniform: true,
                         writable: false,
                     },
                     BindingResource::StorageBuffer { writable: true, .. }
@@ -1904,6 +1907,7 @@ impl Backend for Recorder {
                         buffer: *r.buffer,
                         offset: r.offset,
                         size: r.size,
+                        uniform: false,
                         writable,
                     },
                     BindingResource::Texture(v) => Bound::Texture(*v),

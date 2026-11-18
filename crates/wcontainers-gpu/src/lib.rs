@@ -94,3 +94,6 @@ pub const MAX_VERTEX_STREAMS: usize = 32;
 /// compute) stage reads alone, what the fragment stage reads alone, what every stage reads (Direct3D 12
 /// ranges visible to all stages), and the helper constants ([`HELPER_SET`]).
 pub const MAX_BINDING_SETS: usize = 4;
+/// The bytes of one word of a storage buffer: a storage binding's size is a whole number of them
+/// (WebGPU's rule), and so is the size of a buffer such a binding reaches the end of.
+pub const STORAGE_WORD: u64 = size_of::<u32>() as u64;

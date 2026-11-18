@@ -241,7 +241,18 @@ fn gathers_by_samples(source: String) -> String {
             rest = after;
             continue;
         };
-        let end = args.find(',').unwrap_or(0);
+        // The first argument, up to its comma outside brackets.
+        let mut depth = 0i32;
+        let end = args
+            .find(|c| {
+                match c {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => depth -= 1,
+                    _ => {}
+                }
+                c == ',' && depth == 0
+            })
+            .unwrap_or(0);
         let name = args[..end].trim();
         out.push_str(&format!("{helper}({name}, textureSize({name}, 0)"));
         rest = &args[end..];
@@ -551,6 +562,24 @@ fn arguments(module: &ShaderModule) -> impl Iterator<Item = naga::Binding> + '_ 
 /// globals its entry point uses, its types and its expressions. Storage that a fragment program only
 /// reads is named by `FRAGMENT_STORAGE_WRITE`, as binding sets name it: the interface has no bit of
 /// its own for it.
+/// How many uniform blocks the GLSL of `module`'s entry point declares: one per uniform buffer it
+/// reads.
+pub fn uniform_blocks(module: &ShaderModule) -> u32 {
+    let m = &module.module;
+    let Some(i) = m
+        .entry_points
+        .iter()
+        .position(|e| e.name == module.entry_point)
+    else {
+        return 0;
+    };
+    let used = module.info.get_entry_point(i);
+    m.global_variables
+        .iter()
+        .filter(|(h, v)| v.space == naga::AddressSpace::Uniform && !used[*h].is_empty())
+        .count() as u32
+}
+
 pub fn needs(module: &ShaderModule) -> Features {
     use naga::{
         AddressSpace, Binding, BuiltIn, Expression, ImageClass, ImageQuery, Sampling, ScalarKind,
@@ -1169,5 +1198,20 @@ mod tests {
         assert_eq!(out.matches("float _wc_small_float(").count(), 1);
         let main = out.find("void main() {").expect("main");
         assert!(out[main..].contains("_p2vs_location3 = vec3(vec4(_wc_small_float("));
+    }
+
+    #[test]
+    fn gathers_name_their_whole_first_argument() {
+        let source = "#version 300 es\nvoid main() { v = textureGather(s[f(1, 2)], p, 0); \
+                      w = textureGatherOffset(t, q, ivec2(1, 0), 2); }\n";
+        let out = gathers_by_samples(source.into());
+        assert!(
+            out.contains("_wc_gather(s[f(1, 2)], textureSize(s[f(1, 2)], 0), p, 0)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("_wc_gather_offset(t, textureSize(t, 0), q, ivec2(1, 0), 2)"),
+            "{out}"
+        );
     }
 }

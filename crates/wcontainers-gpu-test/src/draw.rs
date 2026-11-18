@@ -132,9 +132,6 @@ impl Resources for Bindings<'_> {
         if level < 0 || level >= i64::from(v.desc.mip_count) {
             return Ok([0.0; 4]);
         }
-        if sample.is_some() != (t.desc.samples > 1) {
-            return Err("a load naming a sample from a single-sampled texture, or none from a multisampled one".into());
-        }
         let mip = v.desc.base_mip + level as u32;
         let (w, h, d) = level_size(&t.desc, mip);
         let layer = layer.unwrap_or(0);
@@ -357,6 +354,27 @@ pub(crate) fn entry(module: &ShaderModule) -> Result<usize, Error> {
         .iter()
         .position(|e| e.name == module.entry_point)
         .ok_or_else(|| format!("no entry point {}", module.entry_point))
+}
+
+/// Whether a fragment program runs per sample: it reads the sample index, or a value interpolated
+/// at the sample.
+fn runs_per_sample(fragment: Option<&ShaderModule>) -> Result<bool, Error> {
+    let mut per_sample = false;
+    if let Some(fs) = fragment {
+        let fun = &fs.module.entry_points[entry(fs)?].function;
+        arguments(&fs.module, fun, |binding, _| {
+            per_sample |= matches!(
+                binding,
+                Binding::BuiltIn(BuiltIn::SampleIndex)
+                    | Binding::Location {
+                        sampling: Some(naga::Sampling::Sample),
+                        ..
+                    }
+            );
+            Ok(Value::U32(0))
+        })?;
+    }
+    Ok(per_sample)
 }
 
 /// The arguments of an entry point, each input made by `input`.
@@ -815,10 +833,11 @@ impl Recorder {
         Ok(())
     }
 
-    /// Checks what the program's bindings take of the resources bound there: a sampler that compares
-    /// exactly where the program compares, no linear filter paired with a texture this back end does
-    /// not filter, buffers at least the size of the program's blocks, and entries naming every stage
-    /// that reads them. Bindings missing or of another kind are refused where the program reads them.
+    /// Checks what the program's bindings take of the resources bound there: a resource of the kind
+    /// the program declares at every binding it reads, a sampler that compares exactly where the
+    /// program compares, no linear filter paired with a texture this back end does not filter,
+    /// buffers at least the size of the program's blocks, and entries naming every stage that reads
+    /// them.
     pub(crate) fn program_bindings(
         &self,
         shaders: &[&ShaderModule],
@@ -852,11 +871,18 @@ impl Recorder {
                 if info[h].is_empty() {
                     continue;
                 }
-                if entry_at(rb).is_some_and(|(_, stages, _)| !stages.contains(stage)) {
+                let Some((_, stages, held)) = entry_at(rb) else {
+                    return Err(format!(
+                        "nothing bound at group {} binding {}",
+                        rb.group, rb.binding
+                    ));
+                };
+                if !stages.contains(stage) {
                     return Err(format!(
                         "a binding the {name} stage reads whose entry leaves that stage out"
                     ));
                 }
+                self.binding_kind(m, g, rb, held)?;
                 match m.types[g.ty].inner {
                     TypeInner::Sampler { comparison } => {
                         if let Some(d) = sampler(rb)?
@@ -905,6 +931,115 @@ impl Recorder {
             }
         }
         Ok(())
+    }
+
+    /// Checks a resource bound where the program reads `var` is of the kind it declares, as WebGPU's
+    /// binding layouts, which back ends take from the program, hold it: a sampler, a texture view of
+    /// the program's dimension, sample type and multisampling, a uniform buffer for a uniform block,
+    /// a storage buffer writable exactly where the program's block is.
+    fn binding_kind(
+        &self,
+        m: &naga::Module,
+        var: &naga::GlobalVariable,
+        rb: &naga::ResourceBinding,
+        held: &Bound,
+    ) -> Result<(), Error> {
+        let (group, binding) = (rb.group, rb.binding);
+        match (&m.types[var.ty].inner, var.space) {
+            // Resource tables hold arrays of bindings; the table's own rules apply there.
+            (TypeInner::BindingArray { .. }, _) => Ok(()),
+            (TypeInner::Sampler { .. }, _) => match held {
+                Bound::Sampler(_) => Ok(()),
+                _ => Err(format!("no sampler at ({group}, {binding})")),
+            },
+            (
+                &TypeInner::Image {
+                    dim,
+                    arrayed,
+                    class,
+                },
+                _,
+            ) => {
+                let Bound::Texture(view) = held else {
+                    return Err(format!("no texture at ({group}, {binding})"));
+                };
+                let view = self.view(*view)?;
+                let samples = self.texture(view.texture)?.desc.samples;
+                let aspect = match view.desc.format.kind() {
+                    FormatKind::DepthStencil if view.desc.stencil => FormatKind::Stencil,
+                    FormatKind::DepthStencil => FormatKind::Depth,
+                    kind => kind,
+                };
+                // WebGPU's compatible sample types: depth also reads as unfilterable floats,
+                // stencil as unsigned integers.
+                let (fits, multi) = match class {
+                    naga::ImageClass::Sampled { kind, multi } => (
+                        match kind {
+                            ScalarKind::Sint => aspect == FormatKind::Sint,
+                            ScalarKind::Uint => {
+                                matches!(aspect, FormatKind::Uint | FormatKind::Stencil)
+                            }
+                            _ => matches!(aspect, FormatKind::Float | FormatKind::Depth),
+                        },
+                        multi,
+                    ),
+                    naga::ImageClass::Depth { multi } => (aspect == FormatKind::Depth, multi),
+                    naga::ImageClass::Storage { .. } | naga::ImageClass::External => {
+                        return Err(format!(
+                            "no storage or external texture at ({group}, {binding})"
+                        ));
+                    }
+                };
+                if !fits {
+                    return Err(format!(
+                        "a {:?} view at ({group}, {binding}) where the program reads another sample type",
+                        view.desc.format
+                    ));
+                }
+                if multi != (samples > 1) {
+                    return Err(format!(
+                        "a texture at ({group}, {binding}) multisampled where the program's is not, or the reverse"
+                    ));
+                }
+                let dimension = match (dim, arrayed) {
+                    (naga::ImageDimension::D2, false) => Some(ViewDimension::D2),
+                    (naga::ImageDimension::D2, true) => Some(ViewDimension::D2Array),
+                    (naga::ImageDimension::Cube, false) => Some(ViewDimension::Cube),
+                    (naga::ImageDimension::Cube, true) => Some(ViewDimension::CubeArray),
+                    (naga::ImageDimension::D3, false) => Some(ViewDimension::D3),
+                    _ => None,
+                };
+                if dimension != Some(view.desc.dimension) {
+                    return Err(format!(
+                        "a view at ({group}, {binding}) of another dimension than the program reads"
+                    ));
+                }
+                Ok(())
+            }
+            (_, naga::AddressSpace::Uniform) => match held {
+                Bound::Buffer { uniform: true, .. } => Ok(()),
+                Bound::Buffer { .. } => Err(format!(
+                    "a storage buffer at group {group} binding {binding}, a uniform block in the program"
+                )),
+                _ => Err(format!("no buffer at group {group} binding {binding}")),
+            },
+            (_, naga::AddressSpace::Storage { access }) => match held {
+                Bound::Buffer { uniform: true, .. } => Err(format!(
+                    "a uniform buffer at group {group} binding {binding}, a storage block in the program"
+                )),
+                Bound::Buffer { writable, .. } => {
+                    if *writable == access.contains(naga::StorageAccess::STORE) {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "a storage buffer at group {group} binding {binding} writable where the program's block is not, or the reverse"
+                        ))
+                    }
+                }
+                _ => Err(format!("no buffer at group {group} binding {binding}")),
+            },
+            _ => Ok(()),
+        }
     }
 
     /// Checks the draw's buffers were made for how it uses them, and the usage-scope rule of a pass: a
@@ -1085,6 +1220,77 @@ impl Recorder {
 
     /// The (fetch index, vertex index) of each vertex the range names, None where a strip restarts.
     /// Whether an indexed draw fetches a vertex past the end of a stream stepped by vertex.
+    /// Checks what WebGPU checks of a draw's state when it is encoded, whatever the draw then covers
+    /// or fetches: every vertex input the program reads has an attribute in a stream with a buffer,
+    /// no read-only aspect of the depth attachment is written, a program runs per sample only with
+    /// [`Features::SAMPLE_SHADING`], and blending goes only into formats that blend.
+    fn state_rules(&self, call: &DrawCall<'_, Self>, state: &DrawState) -> Result<(), Error> {
+        let pass = self.pass.as_ref().ok_or("draw outside a pass")?;
+        let m = &state.vertex.module;
+        arguments(
+            m,
+            &m.entry_points[entry(&state.vertex)?].function,
+            |b, _| {
+                if let Binding::Location { location, .. } = *b {
+                    let a = state
+                        .layout
+                        .attributes
+                        .iter()
+                        .flatten()
+                        .find(|a| a.location == location)
+                        .ok_or_else(|| format!("no attribute at location {location}"))?;
+                    state.layout.streams[usize::from(a.stream)]
+                        .ok_or("an attribute of an unused stream")?;
+                    call.vertex_buffers
+                        .get(usize::from(a.stream))
+                        .and_then(Option::as_ref)
+                        .ok_or("an attribute of a stream with no buffer bound")?;
+                }
+                Ok(Value::U32(0))
+            },
+        )?;
+        if let Some((_, depth, stencil)) = pass.depth {
+            let ds = state.depth_stencil;
+            if depth.is_some_and(|a| a.read_only) && ds.depth_write && ds.depth_compare.is_some() {
+                return Err("a draw writing depth into a read-only attachment".into());
+            }
+            let writes_stencil = ds.stencil.is_some_and(|faces| {
+                [faces.0, faces.1]
+                    .iter()
+                    .zip(ds.stencil_write_mask)
+                    .any(|(f, mask)| {
+                        mask != 0
+                            && [f.fail, f.depth_fail, f.pass]
+                                .iter()
+                                .any(|&o| o != StencilOp::Keep)
+                    })
+            });
+            if stencil.is_some_and(|a| a.read_only) && writes_stencil {
+                return Err("a draw writing stencil into a read-only attachment".into());
+            }
+        }
+        if runs_per_sample(state.fragment.as_deref())?
+            && !self.caps().features.contains(Features::SAMPLE_SHADING)
+        {
+            return Err("a program run per sample without SAMPLE_SHADING".into());
+        }
+        for (i, color) in pass.colors.iter().enumerate() {
+            let Some((view, _, _)) = color else { continue };
+            let rule = if state.blend.same_for_all {
+                state.blend.targets[0]
+            } else {
+                state.blend.targets[i]
+            };
+            let format = self.view(*view)?.desc.format;
+            if rule.blend.is_some() && !self.caps().formats.get(format).contains(FormatUse::BLEND) {
+                return Err(format!(
+                    "blending into {format:?}, which this back end does not blend"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn fetches_past_a_stream(
         &self,
         call: &DrawCall<'_, Self>,
@@ -1310,6 +1516,7 @@ impl Recorder {
             .chain(state.fragment.as_deref())
             .collect();
         self.program_bindings(&shaders, &state.sets)?;
+        self.state_rules(call, &state)?;
         self.usage_scope(call, &state)?;
         for (buffer, start, end) in self.draw_reads(call, &state)? {
             self.touch(buffer, start, end);
@@ -1334,7 +1541,8 @@ impl Recorder {
         if state.blend.alpha_to_coverage {
             return Err("alpha to coverage is not drawn by the recording back end yet".into());
         }
-        // A draw fetching past a stream is dropped whole, after the attachment rules are held.
+        // A draw fetching past a stream is dropped whole, after every rule above and the attachment
+        // rules below are held.
         let dropped = self.fetches_past_a_stream(call, &state)?;
         // Take the attachments out while the draw writes them.
         let mut colors: Vec<Option<Target>> = Vec::new();
@@ -1462,30 +1670,12 @@ impl Recorder {
     ) -> Result<(), Error> {
         let (list, first_instance, instances) = self.vertex_list(call)?;
         let raster = state.raster;
-        let ds = state.depth_stencil;
         let depth_read_only = depth_ops
             .and_then(|(_, d, _)| d)
             .is_some_and(|a| a.read_only);
         let stencil_read_only = depth_ops
             .and_then(|(_, _, s)| s)
             .is_some_and(|a| a.read_only);
-        if depth_read_only && ds.depth_write && ds.depth_compare.is_some() {
-            return Err("a draw writing depth into a read-only attachment".into());
-        }
-        let writes_stencil = ds.stencil.is_some_and(|faces| {
-            [faces.0, faces.1]
-                .iter()
-                .zip(ds.stencil_write_mask)
-                .any(|(f, mask)| {
-                    mask != 0
-                        && [f.fail, f.depth_fail, f.pass]
-                            .iter()
-                            .any(|&o| o != StencilOp::Keep)
-                })
-        });
-        if stencil_read_only && writes_stencil {
-            return Err("a draw writing stencil into a read-only attachment".into());
-        }
         let k: Vec<f64> = call
             .blend_constant
             .iter()
@@ -1721,25 +1911,7 @@ impl Recorder {
                 ));
             }
         };
-        // A program reading the sample index, or a value interpolated at the sample, runs per sample.
-        let mut per_sample = false;
-        if let Some(fs) = fragment {
-            let fun = &fs.module.entry_points[entry(fs)?].function;
-            arguments(&fs.module, fun, |binding, _| {
-                per_sample |= matches!(
-                    binding,
-                    Binding::BuiltIn(BuiltIn::SampleIndex)
-                        | Binding::Location {
-                            sampling: Some(naga::Sampling::Sample),
-                            ..
-                        }
-                );
-                Ok(Value::U32(0))
-            })?;
-        }
-        if per_sample && !self.caps().features.contains(Features::SAMPLE_SHADING) {
-            return Err("a program run per sample without SAMPLE_SHADING".into());
-        }
+        let per_sample = runs_per_sample(fragment)?;
         let inside = |q: (i64, i64)| {
             !edges.iter().zip(&biased).any(|(&(a, b), &tl)| {
                 let e = edge(a, b, q);
@@ -1937,11 +2109,6 @@ impl Recorder {
                             }
                             let mut result = src;
                             if let Some((color, alpha)) = rule.blend {
-                                if !self.caps().formats.get(format).contains(FormatUse::BLEND) {
-                                    return Err(format!(
-                                        "blending into {format:?}, which this back end does not blend"
-                                    ));
-                                }
                                 // Normalised targets clamp what is blended into them, the constant
                                 // too.
                                 let (src, k) = if texel::normalised(format) {

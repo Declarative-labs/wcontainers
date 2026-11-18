@@ -47,11 +47,16 @@ pub fn write_holds_minimum(
     })
 }
 
-/// Whether a host write of `extent` at `origin` of level `mip` covers every texel of the texture.
-pub fn covers_texture(desc: &TextureDesc, mip: u32, origin: [u32; 3], extent: [u32; 3]) -> bool {
+/// Whether a host write of `extent` at `origin` of level `mip` covers every texel of the level.
+pub fn covers_level(desc: &TextureDesc, mip: u32, origin: [u32; 3], extent: [u32; 3]) -> bool {
     let (row, rows, slices) = shape(desc, mip);
     let b = HostCopy::blocks(desc, mip, origin, extent);
-    desc.mip_levels == 1 && origin == [0; 3] && (b.row, b.rows, b.slices) == (row, rows, slices)
+    origin == [0; 3] && (b.row, b.rows, b.slices) == (row, rows, slices)
+}
+
+/// How many slices (layers, or depth slices in 3D) level `mip` has.
+pub fn slices(desc: &TextureDesc, mip: u32) -> u32 {
+    shape(desc, mip).2 as u32
 }
 
 /// Every level of a texture, each its slices (layers, or depth slices in 3D) of tightly packed rows
@@ -147,8 +152,15 @@ impl HostCopy {
     }
 
     /// Whether any texel of the signed normalised `format` holds its smallest value.
-    pub fn holds_minimum(&self, format: Format) -> bool {
-        holds_minimum(format, &self.bytes.borrow())
+    /// Whether level `mip` holds a signed normalised minimum.
+    pub fn holds_minimum(&self, format: Format, mip: u32) -> bool {
+        let bytes = self.bytes.borrow();
+        let end = self
+            .levels
+            .get(mip as usize + 1)
+            .copied()
+            .unwrap_or(bytes.len());
+        holds_minimum(format, &bytes[self.levels[mip as usize]..end])
     }
 
     /// Takes every byte of `other`, a host copy of the same shape.

@@ -6,21 +6,21 @@
 #![cfg(windows)]
 
 use std::path::PathBuf;
-use wcontainers_gpu_webgl::WebGl;
+use wcontainers_gpu_webgl::Gl;
 
 struct Angle;
 
 impl wcontainers_gpu_test::Host for Angle {
-    type Backend = WebGl;
+    type Backend = Gl;
 
-    fn make() -> WebGl {
+    fn make() -> Gl {
         let dir = std::env::var_os("WEBGL_ANGLE_DIR").map_or_else(
             || PathBuf::from(r"C:\wc\tools\angle-mozangle-0.7.1"),
             PathBuf::from,
         );
         let off = std::env::var("WEBGL_OFF").unwrap_or_default();
         let off: Vec<&str> = off.split_whitespace().collect();
-        let mut b = WebGl::on_angle(&dir, &off).expect("ANGLE's OpenGL ES 3.0 context");
+        let mut b = Gl::on_angle(&dir, &off).expect("ANGLE's OpenGL ES 3.0 context");
         use wcontainers_gpu::Backend;
         assert_eq!(
             b.status(),
@@ -31,14 +31,14 @@ impl wcontainers_gpu_test::Host for Angle {
         b
     }
 
-    fn window(b: &mut WebGl) -> u32 {
+    fn window(b: &mut Gl) -> u32 {
         const WINDOW: u32 = 1;
         // SAFETY: the window is never destroyed while the test runs.
         unsafe { b.add_window(WINDOW, window::open()) };
         WINDOW
     }
 
-    fn shown(_: &mut WebGl, _: u32) -> Vec<u8> {
+    fn shown(_: &mut Gl, _: u32) -> Vec<u8> {
         window::shown()
     }
 }
@@ -351,6 +351,11 @@ fn bgra_textures_keep_their_byte_order() {
 }
 
 #[test]
+fn bgrx_textures_hold_alpha_one() {
+    sampled(checks::bgrx_textures_hold_alpha_one::<Angle>);
+}
+
+#[test]
 fn sampled_views_are_whole_textures_of_one_mip_range() {
     sampled(checks::sampled_views_are_whole_textures_of_one_mip_range::<Angle>);
 }
@@ -428,6 +433,11 @@ fn points_sized_by_the_program() {
 #[test]
 fn broken_rules_lose_the_device() {
     sampled(checks::broken_rules_lose_the_device::<Angle>);
+}
+
+#[test]
+fn stages_past_the_uniform_buffer_limit_are_refused() {
+    sampled(checks::stages_past_the_uniform_buffer_limit_are_refused::<Angle>);
 }
 
 #[test]
