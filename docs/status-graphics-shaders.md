@@ -1342,6 +1342,12 @@ rt-format-mismatch, the Direct3D 11 track's test_cb_relative_addressing; the lit
   tests (3635 findings, mostly test data, which is free, and constants the tests should import).
   Nothing another crate owns was defined here; the shared facts (`WORD` in wcontainers-gpu and the
   like) wait on their owners' constants.
+- At the end of the run the build folders were deleted: the laptop's
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.2 GB) and the desktop's
+  `C:\wc\target\phase-2-graphics-shaders`. No build output was made in scratch (`run33` holds
+  logs, 288 KB). On the Mac only `cargo check`/`clippy -j 2` ran, in this checkout's own target;
+  each change to build.rs rebuilds the C++ there (its hash covers build.rs), so build.rs is best
+  changed with the laptop's loop.
 
 Next (in order):
 - The magic-number sweep, continued a part per run (run 33's "Left").
@@ -1690,7 +1696,13 @@ the queue's hazard group), logs in scratch `graphics-shaders/run33`:
 - Laptop (suite1.log, the tree before the last layout and SPIR-V changes; suite2.log after):
   `cargo test --no-fail-fast -p wcontainers-shaders -- --include-ignored --skip mutated` all pass,
   the corpus test 9 of 9 (every corpus's verdicts as recorded, so dxbc-spirv's numbers read from
-  its header convert every shader as before), 412 s for the corpus binary.
+  its header convert every shader as before), 412 s for the corpus binary. suite3.log, after the
+  helper blocks' sizes and alignments were derived: the same, all pass, clippy with warnings denied
+  clean (corpus binary 509 s, laptop load about 6).
+- Desktop, RTX 3080 (draw5.log, after that change, Windows clippy clean): `variant_draw`,
+  `early_draw` (8 scenes), `pull_draw`, `clear_draw` (64 cases), `geometry_draw` (2 seeds),
+  `compute_draw` (2 seeds) and `shadow_draw` all pass against real Direct3D 11 (every comparison
+  printed 0 failed). draw4.log: `draw` 5 of 5 pass.
 
 Run 32, 2026-11-18, counts only (laptop load 1.8 to 4.1, another track building; desktop shared
 through the queue), logs in scratch `graphics-shaders/run32`:
