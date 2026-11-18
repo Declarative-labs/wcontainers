@@ -15,7 +15,7 @@ pub const SHEBANG: &str = "#!";
 /// Starts a comment in both shell and Python when it begins a word.
 const COMMENT_MARK: char = '#';
 const QUOTES: &[char] = &['\'', '"'];
-/// Shell syntax that holds digits but no value: a descriptor redirection (`2>`, `>&2`), a positional
+/// Shell syntax that holds digits but no value: a one-digit descriptor redirection (`2>`, `>&2`), a positional
 /// parameter or field (`$1`, `${2}`), and a character class (`[0-9]`).
 const REDIRECTIONS: &[char] = &['<', '>'];
 const DUPLICATE: char = '&';
@@ -35,8 +35,11 @@ fn syntax(chars: &[char], start: usize, end: usize) -> bool {
     let before = at(previous);
     let before2 = at(previous.and_then(|p| p.checked_sub(1)));
     let after = chars.get(end).copied();
-    let redirected = after.is_some_and(|c| REDIRECTIONS.contains(&c))
-        || (before == Some(DUPLICATE) && before2.is_some_and(|c| REDIRECTIONS.contains(&c)));
+    // A descriptor in a redirection is one digit: `4096>size` and `$((4096>>2))` compare and shift.
+    let descriptor = end == start + 1;
+    let redirected = descriptor
+        && (after.is_some_and(|c| REDIRECTIONS.contains(&c))
+            || (before == Some(DUPLICATE) && before2.is_some_and(|c| REDIRECTIONS.contains(&c))));
     let parameter = before == Some(PARAMETER)
         || (before == Some(PARAMETER_BRACE) && before2 == Some(PARAMETER));
     let class = (before == Some(CLASS_OPEN) && after == Some(CLASS_RANGE))

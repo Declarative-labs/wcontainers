@@ -435,10 +435,10 @@ fn a_merge_brings_the_other_side_s_accepted_lines() {
     assert!(out.clean, "{}", out.report());
 }
 
-/// Still gets through (docs/literals.md): a side branch forked from before the baseline existed starts
-/// its own baseline, so its lines arrive by the merge as another branch's start.
+/// A side branch forked from before the baseline existed starts a baseline of its own: the baseline
+/// then has two starts, which fails.
 #[test]
-fn a_side_branch_that_starts_its_own_baseline_gets_through() {
+fn a_side_branch_that_starts_its_own_baseline_fails() {
     let root = repository("fresh-side", FILES);
     git(&root, &["checkout", "-q", "-b", "side"]);
     git(&root, &["checkout", "-q", "main"]);
@@ -454,6 +454,116 @@ fn a_side_branch_that_starts_its_own_baseline_gets_through() {
     assert!(!merge.status.success());
     git(&root, &["checkout", "--theirs", BASELINE_FILE]);
     commit_all(&root, "merged the side branch");
+    started_twice(&root);
+}
+
+fn started_twice(root: &Path) {
+    let out = check(root);
+    assert!(
+        lines_starting(&out, GROWN_MARK)
+            .iter()
+            .any(|l| l.contains("started more than once")),
+        "{}",
+        out.report()
+    );
+}
+
+/// The same, with the track merged into the fresh start and then fast-forwarded to it, so that the
+/// fresh start is on the track's own first-parent history.
+#[test]
+fn a_fresh_start_fast_forwarded_onto_the_track_fails() {
+    let root = repository("fresh-forward", FILES);
+    git(&root, &["branch", "before"]);
+    git(&root, &["checkout", "-q", "-b", "track"]);
+    wcontainers_literals::init(&root).expect("init");
+    commit_all(&root, "baseline");
+    git(&root, &["checkout", "-q", "-b", "tmp", "before"]);
+    append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 31337 }\n");
+    wcontainers_literals::init(&root).expect("init on the fork");
+    commit_all(&root, "a larger baseline");
+    let merge = common::git_output(&root, &["merge", "-q", "--no-edit", "track"]);
+    assert!(!merge.status.success());
+    git(&root, &["checkout", "--ours", BASELINE_FILE]);
+    commit_all(&root, "merged the track");
+    git(&root, &["checkout", "-q", "track"]);
+    git(&root, &["merge", "-q", "--ff-only", "tmp"]);
+    started_twice(&root);
+}
+
+/// Marking the baseline binary would hide its diffs; the history is read as text and the attribute
+/// itself fails.
+#[test]
+fn growth_behind_a_binary_attribute_fails() {
+    let root = started("binary");
+    append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 31337 }\n");
+    set_baseline(&root, &with(&baseline(&root), &key("five", "31337")));
+    std::fs::write(
+        root.join(".gitattributes"),
+        format!("{BASELINE_FILE} binary\n"),
+    )
+    .expect("write the attributes");
+    commit_all(&root, "grew it behind an attribute");
+    let grown = lines_starting(&check(&root), GROWN_MARK);
+    assert!(grown.iter().any(|l| l.contains("31337")), "{grown:?}");
+    assert!(grown.iter().any(|l| l.contains("attributes")), "{grown:?}");
+}
+
+/// Still gets through without an upstream (docs/literals.md): a fork from before the track adopted the
+/// check merges the literals branch and runs init again, with a new literal, then takes the track in
+/// keeping its own copy. With the track's upstream known, the moved start fails.
+#[test]
+fn a_second_adoption_is_seen_only_against_the_upstream() {
+    let origin = repository("second-adoption", FILES);
+    git(&origin, &["branch", "before"]);
+    git(&origin, &["checkout", "-q", "-b", "literals"]);
+    wcontainers_literals::init(&origin).expect("init");
+    commit_all(&origin, "baseline of main");
+    git(&origin, &["checkout", "-q", "-b", "track", "before"]);
+    git(
+        &origin,
+        &["merge", "-q", "--no-ff", "--no-edit", "literals"],
+    );
+    wcontainers_literals::init(&origin).expect("the track's init");
+    commit_all(&origin, "the track's baseline");
+    git(&origin, &["checkout", "-q", "main"]);
+    let clone = origin.with_file_name("second-adoption-clone");
+    if clone.exists() {
+        std::fs::remove_dir_all(&clone).expect("remove the old clone");
+    }
+    git(
+        &origin,
+        &[
+            "clone",
+            "-q",
+            "-b",
+            "track",
+            ".",
+            clone.to_str().expect("a path"),
+        ],
+    );
+    let root = clone;
+    git(&root, &["checkout", "-q", "-b", "tmp", "origin/before"]);
+    append(&root, LIB, "\npub fn five(x: u64) -> u64 { x * 31337 }\n");
+    commit_all(&root, "a literal before adopting");
+    git(&root, &["merge", "-q", "--no-edit", "origin/literals"]);
+    wcontainers_literals::init(&root).expect("a second init");
+    commit_all(&root, "a second baseline");
+    let merge = common::git_output(&root, &["merge", "-q", "--no-edit", "track"]);
+    if !merge.status.success() {
+        git(&root, &["checkout", "--ours", BASELINE_FILE]);
+        commit_all(&root, "merged the track");
+    }
+    git(&root, &["checkout", "-q", "track"]);
+    git(&root, &["merge", "-q", "--ff-only", "tmp"]);
+    let out = check(&root);
+    assert!(
+        lines_starting(&out, GROWN_MARK)
+            .iter()
+            .any(|l| l.contains("upstream")),
+        "{}",
+        out.report()
+    );
+    git(&root, &["branch", "--unset-upstream"]);
     let out = check(&root);
     assert!(out.clean, "{}", out.report());
 }

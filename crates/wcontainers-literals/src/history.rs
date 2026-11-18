@@ -18,12 +18,18 @@ const FIRST_PARENT: &str = "--first-parent";
 const COMBINED_DIFF: &str = "--diff-merges=dense-combined";
 const PATCH: &str = "-p";
 const NO_CONTEXT: &str = "-U0";
+/// A diff as plain lines whatever the attributes say, so that marking the file binary hides nothing.
 const PLAIN_DIFF: &[&str] = &[
+    "--text",
     "--no-color",
     "--no-ext-diff",
     "--no-textconv",
     "--no-renames",
 ];
+/// Every commit that adds the file, on every side of every merge.
+const FULL_HISTORY: &str = "--full-history";
+const EACH_PARENT: &str = "-m";
+const ADDED_FILTER: &str = "--diff-filter=A";
 const CHANGE_FORMAT: &str = "--format=%H %P";
 const PATCH_FORMAT: &str = "--format=commit %H";
 const COMMIT_PREFIX: &str = "commit ";
@@ -36,12 +42,17 @@ const HEAD: &str = "HEAD";
 /// Present while a merge is being made.
 const MERGE_HEAD: &str = "MERGE_HEAD";
 const MERGE_BASE: &str = "merge-base";
+const IS_ANCESTOR: &str = "--is-ancestor";
 const SHOW: &str = "show";
 const CAT_FILE: &str = "cat-file";
 const EXISTS: &str = "-e";
 /// `REV:./PATH` names a file relative to the folder git runs in.
 const IN_REVISION: &str = ":./";
 const TRUE: &str = "true";
+const CHECK_ATTRIBUTES: &[&str] = &["check-attr", "--all", "--"];
+/// The branch this one pushes to and pulls from.
+const UPSTREAM: &str = "@{upstream}";
+const NO_UPSTREAM: &str = "no upstream branch to compare it with";
 /// How a diff starts, and how its hunks do (`@@` for one parent, one `@` more per extra parent).
 const DIFF_PREFIX: &str = "diff ";
 const HUNK_MARK: char = '@';
@@ -55,6 +66,8 @@ const SHALLOW: &str = "the git history is shallow, so the baseline's growth cann
 pub struct History {
     /// Lines added after the start that no parent had, each with the commit that added it.
     pub grown: Vec<(String, String)>,
+    /// What is wrong with the history as a whole, each with what to do.
+    pub problems: Vec<(String, &'static str)>,
     /// Lines removed at some point since the start.
     pub removed: BTreeSet<String>,
     /// Where the baseline started on this branch.
@@ -110,10 +123,18 @@ struct Walker<'a> {
 }
 
 /// What a first-parent chain says about its own start.
+#[derive(Default)]
 struct Chain {
     changes: usize,
+    started: bool,
     arrived: bool,
+    /// The last change allowed to add lines: the init after an arrival, or else the start.
+    anchor: Option<String>,
 }
+
+const ATTRIBUTES: &str = "remove every attribute of literals.baseline from .gitattributes (and .git/info/attributes): attributes can hide its history";
+const STARTED_TWICE: &str = "keep the one baseline that started on the literals branch: merge that branch, run init once, and never start another";
+const START_MOVED: &str = "rebuild the branch on top of its upstream without replacing the baseline's start: the start never changes once pushed";
 
 impl Walker<'_> {
     fn in_revision(&self, revision: &str) -> String {
@@ -214,16 +235,42 @@ impl Walker<'_> {
         Ok(diffs)
     }
 
-    /// Checks the chain from `tip` down to `stop`, and every other side merged into it.
-    fn chain(&mut self, tip: &str, stop: Option<&str>) -> Result<Chain, String> {
-        if !self.seen.insert((tip.to_string(), stop.map(String::from))) {
-            return Ok(Chain {
-                changes: usize::default(),
-                arrived: false,
-            });
+    /// Every commit reachable from `tips` that made the file when none of its parents had it, and no
+    /// earlier such commit is its ancestor.
+    fn origins(&self, tips: &[&str]) -> Result<BTreeSet<String>, String> {
+        let mut args = vec![LOG, FULL_HISTORY, EACH_PARENT, ADDED_FILTER, CHANGE_FORMAT];
+        args.extend(tips);
+        args.extend([PATHS, self.rel]);
+        let mut origins = BTreeSet::new();
+        for line in text(self.root, &args)?.lines() {
+            let mut ids = line.split_whitespace();
+            let Some(commit) = ids.next() else { continue };
+            let mut made = true;
+            for parent in ids {
+                made &= !self.has_file(parent)?;
+            }
+            if made {
+                origins.insert(commit.to_string());
+            }
         }
-        let changes = self.changes(tip, stop)?;
-        let diffs = self.diffs(tip, stop)?;
+        // A start after another one (the file deleted and added again) is growth on its own chain.
+        let mut roots = BTreeSet::new();
+        for o in &origins {
+            let mut later = false;
+            for other in origins.iter().filter(|other| *other != o) {
+                later |= run(self.root, &[MERGE_BASE, IS_ANCESTOR, other, o])?
+                    .status
+                    .success();
+            }
+            if !later {
+                roots.insert(o.clone());
+            }
+        }
+        Ok(roots)
+    }
+
+    /// Where the file starts on a chain of changes, and the start's anchor.
+    fn start(&self, changes: &[Change]) -> Result<Chain, String> {
         let started = match changes.first() {
             Some(first) => match first.parents.first() {
                 Some(parent) => !self.has_file(parent)?,
@@ -232,6 +279,28 @@ impl Walker<'_> {
             None => false,
         };
         let arrived = started && changes.first().is_some_and(|c| c.parents.len() > 1);
+        let anchor = match (arrived, changes.get(1), changes.first()) {
+            (true, Some(init), _) => Some(init.commit.clone()),
+            (_, _, Some(first)) if started => Some(first.commit.clone()),
+            _ => None,
+        };
+        Ok(Chain {
+            changes: changes.len(),
+            started,
+            arrived,
+            anchor,
+        })
+    }
+
+    /// Checks the chain from `tip` down to `stop`, and every other side merged into it.
+    fn chain(&mut self, tip: &str, stop: Option<&str>) -> Result<Chain, String> {
+        if !self.seen.insert((tip.to_string(), stop.map(String::from))) {
+            return Ok(Chain::default());
+        }
+        let changes = self.changes(tip, stop)?;
+        let diffs = self.diffs(tip, stop)?;
+        let chain = self.start(&changes)?;
+        let (started, arrived) = (chain.started, chain.arrived);
         for (i, change) in changes.iter().enumerate() {
             let exempt = (started && i == usize::default()) || (arrived && i == 1);
             if let Some((_, diff)) = diffs.iter().find(|(c, _)| *c == change.commit) {
@@ -252,10 +321,7 @@ impl Walker<'_> {
                 self.chain(other, base.as_deref())?;
             }
         }
-        Ok(Chain {
-            changes: changes.len(),
-            arrived,
-        })
+        Ok(chain)
     }
 }
 
@@ -282,6 +348,18 @@ pub fn read(root: &Path, rel: &str, working: &Keys) -> Result<History, String> {
         grown: Vec::new(),
         removed: BTreeSet::new(),
     };
+    let mut problems = Vec::new();
+    let attributes = text(root, &[CHECK_ATTRIBUTES, &[rel]].concat())?;
+    if !attributes.trim().is_empty() {
+        let found: Vec<&str> = attributes.lines().map(str::trim).collect();
+        problems.push((
+            format!(
+                "{rel} has git attributes: {}",
+                found.join(crate::NOTE_LIST_SEPARATOR)
+            ),
+            ATTRIBUTES,
+        ));
+    }
     let mut verify = vec![REV_PARSE];
     verify.extend(VERIFY);
     let head = run(root, &[verify.as_slice(), &[HEAD]].concat())?
@@ -290,10 +368,7 @@ pub fn read(root: &Path, rel: &str, working: &Keys) -> Result<History, String> {
     let chain = if head {
         walker.chain(HEAD, None)?
     } else {
-        Chain {
-            changes: usize::default(),
-            arrived: false,
-        }
+        Chain::default()
     };
     let committed = match head {
         true => walker.version(HEAD)?.map(|t| baseline::parse(&t)),
@@ -324,6 +399,47 @@ pub fn read(root: &Path, rel: &str, working: &Keys) -> Result<History, String> {
         );
     }
     walker.removed.extend(multiset_minus(&committed, working));
+    let tips: Vec<&str> = [(head, HEAD), (merging, MERGE_HEAD)]
+        .into_iter()
+        .filter_map(|(present, tip)| present.then_some(tip))
+        .collect();
+    let origins = match tips.is_empty() {
+        true => BTreeSet::new(),
+        false => walker.origins(&tips)?,
+    };
+    if origins.len() > 1 {
+        let all: Vec<String> = origins.iter().map(|c| short(c)).collect();
+        problems.push((
+            format!(
+                "{rel} was started more than once, by {}: lines a second start brings are not checked",
+                all.join(crate::NOTE_LIST_SEPARATOR)
+            ),
+            STARTED_TWICE,
+        ));
+    }
+    let upstream = run(root, &[verify.as_slice(), &[UPSTREAM]].concat())?;
+    let upstream = upstream
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&upstream.stdout).trim().to_string());
+    let compared = match &upstream {
+        Some(up) => {
+            let theirs = walker.start(&walker.changes(up, None)?)?.anchor;
+            if let Some(theirs) = theirs.filter(|t| chain.anchor.as_ref() != Some(t)) {
+                problems.push((
+                    format!(
+                        "{rel} starts at {} on this branch but at {} on its upstream: the start was replaced",
+                        chain.anchor.as_deref().map(short).unwrap_or_default(),
+                        short(&theirs)
+                    ),
+                    START_MOVED,
+                ));
+            }
+            format!("compared with its upstream {}", short(up))
+        }
+        None => NO_UPSTREAM.to_string(),
+    };
+    let anchor = chain.anchor.as_deref().map(short).unwrap_or_default();
     let start = if fresh {
         format!("{rel} has no history on this branch yet, so every line is its start")
     } else if may_init {
@@ -332,12 +448,13 @@ pub fn read(root: &Path, rel: &str, working: &Keys) -> Result<History, String> {
         )
     } else {
         format!(
-            "{rel} has {} changes on this branch's first-parent history; growth is checked",
+            "{rel} has {} changes on this branch's first-parent history, the last that could add lines {anchor} ({compared}); growth is checked",
             chain.changes
         )
     };
     Ok(History {
         grown: walker.grown,
+        problems,
         removed: walker.removed,
         start,
         may_init,

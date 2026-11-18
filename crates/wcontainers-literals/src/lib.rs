@@ -69,13 +69,18 @@ const PACKAGE_NAME_JOINER: char = '-';
 pub(crate) const RUST_EXTENSION: &str = "rs";
 /// A crate's (and a workspace's) manifest.
 pub(crate) const MANIFEST: &str = "Cargo.toml";
-/// Cargo marks every build folder it creates with this file; a folder named `target` without it is
-/// source like any other.
-const BUILD_FOLDER_TAG: &str = "CACHEDIR.TAG";
-/// npm's package folder, skipped only next to the package.json that it was installed for.
-const NODE_PACKAGES: &str = "node_modules";
-const NODE_MANIFEST: &str = "package.json";
-const HIDDEN_PREFIX: char = '.';
+/// The files git tracks, and new files it does not ignore: build output and other ignored files are
+/// left out by the repository's own ignore rules, and everything committed is scanned.
+const LIST_FILES: &[&str] = &[
+    "ls-files",
+    "-z",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "--deduplicate",
+];
+/// How `git ls-files -z` ends each path.
+const LIST_END: char = '\0';
 /// The workspace manifest's list of folders that are not part of the workspace (vendored code); Cargo's
 /// own declaration, owned by whoever owns the root manifest, so it always applies.
 pub(crate) const WORKSPACE_TABLE: &str = "workspace";
@@ -93,7 +98,9 @@ const GENERIC_WORDS: &[&str] = &[
 ];
 /// How many matching constants a note names before it summarises the rest as a count.
 const MAX_NOTE_MATCHES: usize = 3;
-const NOTE_LIST_SEPARATOR: &str = ", ";
+pub(crate) const NOTE_LIST_SEPARATOR: &str = ", ";
+/// Rust's separator between the digits of a number (`0x0101_0101`).
+const DIGIT_SEPARATOR: char = '_';
 /// Prefixes of the check's output lines.
 pub const NEW_MARK: &str = "+ ";
 pub const STALE_MARK: &str = "- ";
@@ -199,44 +206,12 @@ struct Walk {
     crate_dirs: BTreeSet<String>,
 }
 
-fn is_build_output(dir: &Path, name: &str) -> bool {
-    dir.join(BUILD_FOLDER_TAG).is_file()
-        || (name == NODE_PACKAGES
-            && dir
-                .parent()
-                .is_some_and(|p| p.join(NODE_MANIFEST).is_file()))
-}
-
-/// Every Rust file and script under `dir`, skipping build output, hidden folders and `skip` policy.
-fn walk(dir: &Path, root: &Path, crate_dir: &str, policy: &Policy, out: &mut Walk) {
-    let crate_dir = if dir.join(MANIFEST).is_file() {
-        let d = rel_string(dir, root);
-        out.crate_dirs.insert(d.clone());
-        d
-    } else {
-        crate_dir.to_string()
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
-    entries.sort();
-    for path in entries {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let rel = rel_string(&path, root);
-        if policy.covers(PolicyKind::Skip, &rel) {
-            continue;
-        }
-        if path.is_dir() {
-            if !(name.starts_with(HIDDEN_PREFIX) || is_build_output(&path, &name)) {
-                walk(&path, root, &crate_dir, policy, out);
-            }
-        } else if path.extension().is_some_and(|e| e == RUST_EXTENSION) {
+impl Walk {
+    /// Files a source file of `crate_dir` at `path` (relative `rel`), by its kind and place.
+    fn add(&mut self, path: PathBuf, rel: String, crate_dir: &str, policy: &Policy) {
+        if path.extension().is_some_and(|e| e == RUST_EXTENSION) {
             let in_crate = rel
-                .strip_prefix(&crate_dir)
+                .strip_prefix(crate_dir)
                 .map(|r| r.trim_start_matches(PATH_COMPONENT_SEPARATOR))
                 .unwrap_or(&rel);
             let test = TEST_DIRECTORIES
@@ -249,14 +224,66 @@ fn walk(dir: &Path, root: &Path, crate_dir: &str, policy: &Policy, out: &mut Wal
             } else {
                 FileRole::Code
             };
-            out.rust.push(SourceFile {
+            self.rust.push(SourceFile {
                 path,
                 rel,
-                crate_dir: crate_dir.clone(),
+                crate_dir: crate_dir.to_string(),
                 role,
             });
         } else if scripts::is_script(&path) {
-            out.scripts.push((path, crate_dir.clone()));
+            self.scripts.push((path, crate_dir.to_string()));
+        }
+    }
+}
+
+/// Every Rust file and script git tracks or would track under `root`, except `skip` policy.
+fn walk(root: &Path, policy: &Policy) -> Result<Walk, String> {
+    let out = history::run(root, LIST_FILES)?;
+    if !out.status.success() {
+        return Err(format!(
+            "cannot list the files of {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+    let mut files: Vec<&str> = listed
+        .split(LIST_END)
+        .filter(|r| !r.is_empty() && !policy.covers(PolicyKind::Skip, r))
+        .collect();
+    files.sort();
+    let mut tree = Walk::default();
+    for rel in &files {
+        if let Some(dir) = rel.strip_suffix(MANIFEST)
+            && (dir.is_empty() || dir.ends_with(PATH_COMPONENT_SEPARATOR))
+        {
+            tree.crate_dirs
+                .insert(dir.trim_end_matches(PATH_COMPONENT_SEPARATOR).to_string());
+        }
+    }
+    for rel in files {
+        let crate_dir = tree
+            .crate_dirs
+            .iter()
+            .filter(|d| under(rel, d))
+            .max_by_key(|d| d.len())
+            .cloned()
+            .unwrap_or_default();
+        tree.add(root.join(rel), rel.to_string(), &crate_dir, policy);
+    }
+    Ok(tree)
+}
+
+/// Every Rust file under a folder that is not a repository (a reference crate's sources).
+fn walk_folder(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for path in entries.filter_map(Result::ok).map(|e| e.path()) {
+        if path.is_dir() {
+            walk_folder(&path, out);
+        } else if path.extension().is_some_and(|e| e == RUST_EXTENSION) {
+            out.push(path);
         }
     }
 }
@@ -314,31 +341,67 @@ fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R>
 }
 
 /// Files declared as modules under a test-only attribute become test files, with their own modules;
-/// a file production code places with `#[path]` is code even under tests/.
-fn mark_test_modules(files: &mut [SourceFile]) {
+/// a file production code places with `#[path]` is code even under tests/, and is scanned wherever it
+/// is (an ignored, excluded or skipped folder), as is a declared test module git does not list.
+fn mark_test_modules(root: &Path, files: &mut Vec<SourceFile>) {
     let is_test = |attrs: &[syn::Attribute]| attrs.iter().any(scan::is_test_attribute);
-    let declared: Vec<modules::Declared> = parallel(files, |file| {
+    let declare = |file: &SourceFile| {
         if file.role == FileRole::Test {
-            return modules::Declared::default();
+            return (file.crate_dir.clone(), modules::Declared::default());
         }
         let Ok(ast) = std::fs::read_to_string(&file.path)
             .map_err(|_| ())
             .and_then(|t| syn::parse_file(&t).map_err(|_| ()))
         else {
-            return modules::Declared::default();
+            return (file.crate_dir.clone(), modules::Declared::default());
         };
-        modules::declared(&file.path, &ast, &is_test)
-    });
+        (
+            file.crate_dir.clone(),
+            modules::declared(&file.path, &ast, &is_test),
+        )
+    };
     let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let mut known: HashSet<PathBuf> = files.iter().map(|f| canonical(&f.path)).collect();
+    let mut declared = parallel(files, declare);
+    let mut from = usize::default();
+    loop {
+        let mut new = Vec::new();
+        for (crate_dir, d) in &declared[from..] {
+            let wanted = d
+                .placed
+                .iter()
+                .map(|p| (p, FileRole::Code))
+                .chain(d.test.iter().map(|m| (&m.file, FileRole::Test)));
+            for (p, role) in wanted {
+                let Ok(path) = p.canonicalize() else {
+                    continue;
+                };
+                if known.insert(path.clone()) {
+                    new.push(SourceFile {
+                        rel: rel_string(&path, root),
+                        path,
+                        crate_dir: crate_dir.clone(),
+                        role,
+                    });
+                }
+            }
+        }
+        if new.is_empty() {
+            break;
+        }
+        from = declared.len();
+        declared.extend(parallel(&new, declare));
+        files.extend(new);
+    }
     let placed: Vec<PathBuf> = declared
         .iter()
-        .flat_map(|d| d.placed.iter().map(|p| canonical(p)))
+        .flat_map(|(_, d)| d.placed.iter().map(|p| canonical(p)))
         .collect();
     for file in files.iter_mut() {
         if file.role != FileRole::Test
             && declared
                 .iter()
-                .flat_map(|d| &d.test)
+                .flat_map(|(_, d)| &d.test)
                 .any(|m| file.path == m.file || file.path.starts_with(&m.folder))
         {
             file.role = FileRole::Test;
@@ -725,17 +788,22 @@ fn redefinitions(defs: &[ConstDef], crates: &Crates) -> Vec<Finding> {
     out
 }
 
-/// Applies every mark: a mark with a reason over a gated number that has no name moves that number to
-/// the marked list and is reported; any other mark is a finding of the mark list.
+/// A mark that may stand, the findings it covers, and its reason.
+type Standing<'a> = (&'a FileMark, Vec<usize>, String);
+
+/// Applies every mark: a mark with a reason over a gated number that has no name, and that no other
+/// mark also covers, moves that number to the marked list and is reported; any other mark is a finding
+/// of the mark list.
 fn apply_marks(all: &mut Vec<Finding>, found: &[FileMark], index: &ValueIndex) -> Vec<String> {
-    let mut report = Vec::new();
     let mut problems = Vec::new();
-    for FileMark {
-        path,
-        crate_dir,
-        mark,
-    } in found
-    {
+    // Marks that may stand, with the findings they cover, by the number's value.
+    let mut standing: BTreeMap<String, Vec<Standing>> = BTreeMap::new();
+    for fm in found {
+        let FileMark {
+            path,
+            crate_dir,
+            mark,
+        } = fm;
         let covered: Vec<usize> = all
             .iter()
             .enumerate()
@@ -751,7 +819,6 @@ fn apply_marks(all: &mut Vec<Finding>, found: &[FileMark], index: &ValueIndex) -
         let named = covered
             .iter()
             .filter_map(|&i| all[i].value.as_ref())
-            .filter(|v| distinctive(v))
             .find_map(|v| ValueIndex::names(&index.nameable(v, crate_dir, None)));
         let problem = match (&mark.reason, covered.is_empty(), named) {
             (Err(p), ..) => Some(p.note().to_string()),
@@ -764,33 +831,65 @@ fn apply_marks(all: &mut Vec<Finding>, found: &[FileMark], index: &ValueIndex) -
                 mark.literal
             )),
             (Ok(reason), false, None) => {
-                covered.iter().for_each(|&i| all[i].list = List::Marked);
-                report.push(format!(
-                    "{path}:{}: {} {}: {reason}",
-                    mark.line,
-                    marks::MARK_WORD,
-                    mark.literal
-                ));
+                let value = covered
+                    .first()
+                    .and_then(|&i| all[i].value.as_ref())
+                    .map_or_else(
+                        || mark.literal.replace(DIGIT_SEPARATOR, ""),
+                        |v| v.to_string(),
+                    );
+                standing
+                    .entry(value)
+                    .or_default()
+                    .push((fm, covered, reason.clone()));
                 None
             }
         };
         if let Some(note) = problem {
-            problems.push(Finding {
-                list: List::Mark,
-                path: path.clone(),
-                line: mark.line,
-                column: 1,
-                kind: Kind::Mark,
-                item: FILE_SCOPE.to_string(),
-                literal: clean_literal(&mark.literal),
-                value: None,
-                note,
-                crate_dir: crate_dir.clone(),
-                in_const: false,
-            });
+            problems.push((fm, note));
         }
     }
-    all.extend(problems);
+    let mut report = Vec::new();
+    for marks in standing.values() {
+        if let [(FileMark { path, mark, .. }, covered, reason)] = marks.as_slice() {
+            covered.iter().for_each(|&i| all[i].list = List::Marked);
+            report.push(format!(
+                "{path}:{}: {} {}: {reason}",
+                mark.line,
+                marks::MARK_WORD,
+                mark.literal
+            ));
+            continue;
+        }
+        let places: Vec<String> = marks
+            .iter()
+            .map(|(fm, ..)| format!("{}:{}", fm.path, fm.mark.line))
+            .collect();
+        for (fm, ..) in marks {
+            problems.push((
+                fm,
+                format!(
+                    "{} is marked in {} places ({}): a number written twice is one fact, so name it once",
+                    fm.mark.literal,
+                    marks.len(),
+                    places.join(NOTE_LIST_SEPARATOR)
+                ),
+            ));
+        }
+    }
+    all.extend(problems.into_iter().map(|(fm, note)| Finding {
+        list: List::Mark,
+        path: fm.path.clone(),
+        line: fm.mark.line,
+        column: 1,
+        kind: Kind::Mark,
+        item: FILE_SCOPE.to_string(),
+        literal: clean_literal(&fm.mark.literal),
+        value: None,
+        note,
+        crate_dir: fm.crate_dir.clone(),
+        in_const: false,
+    }));
     report
 }
 
@@ -812,25 +911,34 @@ fn scan_tree(root: &Path, mut policy: Policy) -> Result<Scanned, String> {
             .into_iter()
             .map(|p| (PolicyKind::Skip, p)),
     );
-    let mut tree = Walk::default();
-    walk(root, root, "", &policy, &mut tree);
+    let mut tree = walk(root, &policy)?;
     let proposed = tree
         .rust
         .iter()
         .filter(|f| f.role == FileRole::Code && has_generated_marker(&f.path))
         .map(|f| Policy::key(PolicyKind::Generated, &f.rel))
         .collect();
-    mark_test_modules(&mut tree.rust);
+    mark_test_modules(root, &mut tree.rust);
 
     let FileResult {
         findings: mut all,
         consts: mut defs,
         marks: found,
     } = scan_all(&tree.rust, None);
-    for (label, dir) in lock_references(root) {
-        let mut files = Walk::default();
-        walk(&dir, &dir, "", &Policy::default(), &mut files);
-        defs.extend(scan_all(&files.rust, Some(&label)).consts);
+    for (label, dir) in lock_references(root)? {
+        let mut paths = Vec::new();
+        walk_folder(&dir, &mut paths);
+        paths.sort();
+        let files: Vec<SourceFile> = paths
+            .into_iter()
+            .map(|path| SourceFile {
+                rel: rel_string(&path, &dir),
+                path,
+                crate_dir: String::new(),
+                role: FileRole::Code,
+            })
+            .collect();
+        defs.extend(scan_all(&files, Some(&label)).consts);
     }
     eval::evaluate(&mut defs);
     let crates = Crates::read(root, &tree.crate_dirs);
@@ -1089,6 +1197,9 @@ pub fn check(root: &Path) -> Result<Outcome, String> {
     {
         lines.push(format!("{GROWN_MARK}{key}{FIELD_SEPARATOR}# added by {commit}{FIELD_SEPARATOR}{DO}{DO_NOT_GROW}"));
     }
+    for (what, action) in &history.problems {
+        lines.push(format!("{GROWN_MARK}{what}{FIELD_SEPARATOR}{DO}{action}"));
+    }
     Ok(Outcome {
         clean: lines.is_empty(),
         lines,
@@ -1127,15 +1238,13 @@ pub fn workspace_root(dir: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("no workspace manifest at or above {}", start.display()))
 }
 
-/// The labels and source folders of the versions of linux-raw-sys the lock file names, from Cargo's
-/// sources.
-fn lock_references(root: &Path) -> Vec<(String, PathBuf)> {
-    let Some(lock) = std::fs::read_to_string(root.join(LOCK_FILE))
-        .ok()
-        .and_then(|t| t.parse::<toml::Table>().ok())
-    else {
-        return Vec::new();
+/// The labels and source folders of every version of linux-raw-sys the lock file names, from Cargo's
+/// sources; a version that is not unpacked is an error, since its constants could not be compared.
+fn lock_references(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let Ok(text) = std::fs::read_to_string(root.join(LOCK_FILE)) else {
+        return Ok(Vec::new());
     };
+    let lock: toml::Table = text.parse().map_err(|e| format!("{LOCK_FILE}: {e}"))?;
     let versions: Vec<String> = lock
         .get(LOCK_PACKAGES)
         .and_then(|p| p.as_array())
@@ -1148,37 +1257,46 @@ fn lock_references(root: &Path) -> Vec<(String, PathBuf)> {
                 .map(String::from)
         })
         .collect();
+    if versions.is_empty() {
+        return Ok(Vec::new());
+    }
     let home = std::env::var_os(CARGO_HOME_VARIABLE)
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os(HOME_VARIABLE).map(|h| PathBuf::from(h).join(CARGO_HOME_FOLDER))
-        });
-    let Some(registries) = home.map(|h| REGISTRY_SOURCES.iter().fold(h, |p, s| p.join(s))) else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(&registries) else {
-        return Vec::new();
-    };
-    let mut registries: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
-    registries.sort();
+        })
+        .unwrap_or_default();
+    let registries = REGISTRY_SOURCES.iter().fold(home, |p, s| p.join(s));
+    let mut sources: Vec<PathBuf> = std::fs::read_dir(&registries)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .collect();
+    sources.sort();
     let label = REFERENCE_PACKAGE.replace(PACKAGE_NAME_JOINER, &CRATE_NAME_JOINER.to_string());
     let mut out = Vec::new();
-    for arch in REFERENCE_ARCHITECTURES {
-        let found = versions.iter().find_map(|v| {
-            registries
+    for version in &versions {
+        for arch in REFERENCE_ARCHITECTURES {
+            let found = sources
                 .iter()
                 .map(|r| {
-                    r.join(format!("{REFERENCE_PACKAGE}{PACKAGE_NAME_JOINER}{v}"))
+                    r.join(format!("{REFERENCE_PACKAGE}{PACKAGE_NAME_JOINER}{version}"))
                         .join(PACKAGE_SOURCES)
                         .join(arch)
                 })
                 .find(|d| d.is_dir())
-        });
-        if let Some(dir) = found.and_then(|d| d.canonicalize().ok()) {
+                .and_then(|d| d.canonicalize().ok());
+            let Some(dir) = found else {
+                return Err(format!(
+                    "{REFERENCE_PACKAGE} {version}, which {LOCK_FILE} names, has no {arch} sources under {}, so the workspace's constants cannot be compared with it: run `cargo fetch` in the workspace, then the check again",
+                    registries.display()
+                ));
+            };
             out.push((format!("{label}{PATH_SEPARATOR}{arch}"), dir));
         }
     }
-    out
+    Ok(out)
 }
 
 /// The command line: `check`, `init` or `list`, on the workspace at or above the given folder or the

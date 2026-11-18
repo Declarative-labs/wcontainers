@@ -32,7 +32,8 @@ impl Row {
     }
 }
 
-/// Writes a workspace of `files` (path, text) under the test build folder, replacing any earlier one.
+/// Writes a workspace of `files` (path, text) under the test build folder, replacing any earlier one,
+/// in a new git repository on branch main with nothing committed: the check scans the files git lists.
 pub fn workspace(name: &str, files: &[(&str, &str)]) -> PathBuf {
     let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     if root.exists() {
@@ -44,6 +45,7 @@ pub fn workspace(name: &str, files: &[(&str, &str)]) -> PathBuf {
             .expect("make the folder");
         std::fs::write(&path, text).expect("write the file");
     }
+    git(&root, &["init", "-q", "-b", "main"]);
     root
 }
 
@@ -116,14 +118,16 @@ pub fn git(root: &Path, args: &[&str]) -> String {
 /// A git repository holding `files` on branch main, committed.
 pub fn repository(name: &str, files: &[(&str, &str)]) -> PathBuf {
     let root = workspace(name, files);
-    git(&root, &["init", "-q", "-b", "main"]);
     commit_all(&root, "start");
     root
 }
 
 pub fn commit_all(root: &Path, message: &str) {
     git(root, &["add", "-A"]);
-    git(root, &["commit", "-q", "--allow-empty", "-m", message]);
+    git(
+        root,
+        &["commit", "-q", "--allow-empty", "--message", message],
+    );
 }
 
 pub fn append(root: &Path, path: &str, text: &str) {

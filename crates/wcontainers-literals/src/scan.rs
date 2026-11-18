@@ -85,6 +85,11 @@ const MATCHES_MACRO: &str = "matches";
 const MACRO_RULES: &str = "macro_rules";
 /// `include!("file")` pulls Rust source into the file; it is scanned where it is included.
 const INCLUDE_MACRO: &str = "include";
+/// Macros that read a variable of the build's environment by a name written as a literal.
+const ENVIRONMENT_MACROS: &[&str] = &["env", "option_env"];
+/// The variables Cargo sets for a build: their names are Cargo's, and the macros take only literals.
+const CARGO_VARIABLE_PREFIX: &str = "CARGO_";
+const CARGO_OUT_DIR: &str = "OUT_DIR";
 /// Method calls that are arithmetic, so 0 and 1 as their argument are plain arithmetic too.
 const ARITHMETIC_METHOD_PREFIXES: &[&str] = &[
     "wrapping_",
@@ -177,6 +182,10 @@ pub struct FileScan {
     log_macros: Vec<String>,
     /// The name a match arm's pattern is compared with, for 0 and 1 in the pattern.
     pattern_hint: Option<String>,
+    /// The function whose value a `return` gives.
+    return_hint: Option<String>,
+    /// The function whose value the next block's last expression gives.
+    value_hint: Option<String>,
     included: Vec<PathBuf>,
     pub findings: Vec<Finding>,
     pub consts: Vec<ConstDef>,
@@ -204,6 +213,8 @@ impl FileScan {
             formatter_depth: usize::default(),
             log_macros: Vec::new(),
             pattern_hint: None,
+            return_hint: None,
+            value_hint: None,
             included: Vec::new(),
             findings: Vec::new(),
             consts: Vec::new(),
@@ -303,6 +314,20 @@ impl FileScan {
         match free_lit(e, false) {
             Some((lit, negative)) => self.report(lit, negative, hint.as_deref()),
             None => self.visit_expr(e),
+        }
+    }
+
+    /// A value bound to a pattern: a tuple goes element by element (`let (uid, gid) = (0, 0)`).
+    fn bound(&mut self, pat: &Pat, e: &Expr) {
+        match (pat, e) {
+            (Pat::Type(t), _) => self.bound(&t.pat, e),
+            (Pat::Tuple(p), Expr::Tuple(t)) if p.elems.len() == t.elems.len() => {
+                p.elems
+                    .iter()
+                    .zip(&t.elems)
+                    .for_each(|(p, e)| self.bound(p, e));
+            }
+            _ => self.given(e, hint_of_pat(pat)),
         }
     }
 
@@ -492,6 +517,21 @@ impl FileScan {
         }
     }
 
+    /// `env!("CARGO_PKG_VERSION")`: a variable Cargo defines, named the only way the macro allows.
+    fn cargo_variable(mac: &syn::Macro) -> bool {
+        let Some(last) = mac.path.segments.last() else {
+            return false;
+        };
+        if !ENVIRONMENT_MACROS.contains(&last.ident.to_string().as_str()) {
+            return false;
+        }
+        match mac.parse_body_with(Punctuated::<Expr, Token![,]>::parse_terminated) {
+            Ok(args) => matches!(args.first(), Some(Expr::Lit(l)) if matches!(&l.lit, Lit::Str(v)
+                if v.value().starts_with(CARGO_VARIABLE_PREFIX) || v.value() == CARGO_OUT_DIR)),
+            Err(_) => false,
+        }
+    }
+
     fn include(&mut self, mac: &syn::Macro) -> bool {
         let Ok(Lit::Str(file)) = mac.parse_body::<Lit>() else {
             return false;
@@ -536,6 +576,9 @@ impl FileScan {
             return;
         }
         if name == INCLUDE_MACRO && self.include(mac) {
+            return;
+        }
+        if FileScan::cargo_variable(mac) {
             return;
         }
         if let Some(start) = self.message_start(mac) {
@@ -648,15 +691,19 @@ impl FileScan {
         }
     }
 
-    /// The numbers inside an attribute (`#[repr(align(4096))]`); its strings are names or text.
+    /// The literals inside an attribute (`#[repr(align(4096))]`). Its strings must be literals, so
+    /// they are listed as messages, gated only when they write out the value of a string constant
+    /// (`#[serde(rename = "st_uid")]` where a constant holds "st_uid").
     fn attribute_numbers(&mut self, ts: TokenStream) {
         for tt in ts {
             match tt {
                 TokenTree::Group(g) => self.attribute_numbers(g.stream()),
                 TokenTree::Literal(l) => {
                     let lit = Lit::new(l);
-                    if matches!(lit, Lit::Int(_) | Lit::Float(_)) {
-                        self.report(&lit, false, None);
+                    match &lit {
+                        Lit::Int(_) | Lit::Float(_) => self.report(&lit, false, None),
+                        Lit::Str(_) => self.record(&lit, false, None, true),
+                        _ => {}
                     }
                 }
                 _ => {}
@@ -699,6 +746,8 @@ impl FileScan {
             syn::FnArg::Typed(t) => mentions(&t.ty.to_token_stream(), FORMATTER_TYPE),
             syn::FnArg::Receiver(_) => false,
         });
+        let returns = self.return_hint.replace(sig.ident.to_string());
+        self.value_hint = Some(sig.ident.to_string());
         self.with_test(attrs, |s| {
             s.with_scope(sig.ident.to_string(), |s| {
                 s.formatter_depth += usize::from(formatter);
@@ -706,6 +755,8 @@ impl FileScan {
                 s.formatter_depth -= usize::from(formatter);
             })
         });
+        self.return_hint = returns;
+        self.value_hint = None;
     }
 }
 
@@ -874,7 +925,22 @@ fn is_comparison(op: &BinOp) -> bool {
 /// The name an expression goes by: a variable, a field, a function or method.
 fn hint_of(e: &Expr) -> Option<String> {
     match e {
-        Expr::Path(p) => p.path.segments.last().map(|s| s.ident.to_string()),
+        // The function and the types it belongs to (`ExitCode::from` is given an exit status), not the
+        // modules it sits in.
+        Expr::Path(p) => {
+            let last = p.path.segments.len().checked_sub(1);
+            Some(
+                p.path
+                    .segments
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| (i, s.ident.to_string()))
+                    .filter(|(i, s)| Some(*i) == last || s.starts_with(char::is_uppercase))
+                    .map(|(_, s)| s)
+                    .collect::<Vec<_>>()
+                    .join(HINT_SEPARATOR),
+            )
+        }
         Expr::Field(f) => match &f.member {
             Member::Named(i) => Some(i.to_string()),
             Member::Unnamed(_) => hint_of(&f.base),
@@ -1057,7 +1123,21 @@ impl<'ast> Visit<'ast> for FileScan {
 
     fn visit_block(&mut self, b: &'ast Block) {
         if self.const_depth == usize::default() {
-            return visit::visit_block(self, b);
+            // A block's last expression is the value of what holds the block: the function, or the
+            // branch of an `if` that is that value.
+            let value = self.value_hint.take();
+            let last = b.stmts.len().checked_sub(1);
+            for (i, st) in b.stmts.iter().enumerate() {
+                match st {
+                    Stmt::Expr(e, None) if Some(i) == last && value.is_some() => {
+                        self.value_hint = value.clone();
+                        self.given(e, value.clone());
+                        self.value_hint = None;
+                    }
+                    _ => self.visit_stmt(st),
+                }
+            }
+            return;
         }
         // In a constant's initialiser only the block's value is the definition; its statements compute.
         let last = b.stmts.len().checked_sub(1);
@@ -1097,7 +1177,7 @@ impl<'ast> Visit<'ast> for FileScan {
         self.with_test(&l.attrs, |s| {
             s.visit_pat(&l.pat);
             if let Some(init) = &l.init {
-                s.given(&init.expr, hint_of_pat(&l.pat));
+                s.bound(&l.pat, &init.expr);
                 if let Some((_, diverge)) = &init.diverge {
                     s.visit_expr(diverge);
                 }
@@ -1292,7 +1372,17 @@ impl FileScan {
                     });
                 }
             }
-            Expr::Closure(_) | Expr::While(_) | Expr::ForLoop(_) | Expr::Loop(_) => {
+            Expr::Return(r) => {
+                if let Some(value) = &r.expr {
+                    self.given(value, self.return_hint.clone());
+                }
+            }
+            Expr::Closure(_) => {
+                let returns = self.return_hint.take();
+                self.outside_const(|s| visit::visit_expr(s, e));
+                self.return_hint = returns;
+            }
+            Expr::While(_) | Expr::ForLoop(_) | Expr::Loop(_) => {
                 self.outside_const(|s| visit::visit_expr(s, e))
             }
             Expr::MethodCall(m) => self.method_call(m),
