@@ -727,6 +727,40 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 
 ## Measurements
 
+Run 14 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs
+except where alone, CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
+- Instance data, release build, `gpu-job --alone`, 256 draws of 16 instances, 20 frames a route,
+  median of the 19 after the first, CPU to record and submit a frame / GPU time of the pass.
+  Before the bind group change (scratch g2b4/pulled1.log), sets made per draw made 5120 bind
+  groups: Vulkan 4 streams 1.249 ms, 8 streams 1.667 ms, 16 streams 2.526 ms CPU; Direct3D 12
+  2.010, 2.082, 3.539 ms. After it (g2b4/pulled2.log), in ms CPU / GPU:
+  - Vulkan, 4 streams: vertex buffers 0.304 / 0.012, a set per draw 0.533 / 0.017, sets kept
+    0.282 / 0.017. 8 streams: 0.503 / 0.026, 0.721 / 0.024, 0.326 / 0.018. 16 streams: 0.898 /
+    0.038, 0.980 / 0.020, 0.476 / 0.020.
+  - Direct3D 12, 4 streams: 0.373 / 0.008, 0.604 / 0.007, 0.358 / 0.007. 8 streams: 0.552 / 0.011,
+    0.793 / 0.007, 0.433 / 0.007. 16 streams: 1.089 / 0.016, 1.106 / 0.008, 0.582 / 0.008.
+  - So fetching in the program with kept sets costs less CPU than vertex buffers at every count
+    (each vertex buffer is a call per draw), and at 16 streams about half the GPU time on this
+    light scene; a set made per draw adds its lookup (about 0.2 to 0.25 ms a frame of 256 draws).
+    Storage usage itself costs nothing here: every buffer already has it.
+- In Chrome 157 (web/check, g2b4/webcheck1.log, not alone; `performance.now()` in 0.1 ms steps;
+  the device's most is 8 streams there): 4 streams vertex buffers 0.3 / 0.016, a set per draw
+  0.6 / 0.015, sets kept 0.2 / 0.015; 8 streams 0.3 / 0.029, 0.7 / 0.017, 0.2 / 0.019; 256 bind
+  groups made by each pulled route.
+- All tests at fded1660 after `cargo clean` of this crate and the suite crate (g2b4/full1.log):
+  Vulkan 104 passed, 0 failed, 3 ignored (the BC one-step comparison, 24-bit depth bias absent,
+  the wireframe known failure); Direct3D 12 106 passed, 0 failed, 1 ignored. The shared suite 39 of
+  39 on both; timestamps 2 of 2 on both. Clippy with warnings denied passes natively and for
+  WebAssembly.
+- web/check at the status commit after fded1660, after cleaning this crate, naga, the interface
+  and the suite crate on both targets (g2b4/webcheck1.log, pictures in g2b4/web): all twelve
+  pictures equal Direct3D 11's at tolerance 0, the twists differ as before, viewports equal (whole
+  pixels 2540 differ); Chrome's adapter the RTX 3080 (D3D12, discrete, not a fallback); timestamps
+  9.820 and 19.552 ms (ratio 1.99), GPU clock 302.636 ms apart with the page clock between 300.1
+  and 305.2 ms; prepared first draws built nothing; converted formats seed 1, 4 textures within
+  bounds; vertex formats seed 188, 64 each; texture renames pass; the instance data routes draw
+  alike; the suite in Chrome 39 passed, 0 failed.
+
 Run 13 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
 CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
 - Whole suite of this crate at 15512108 after `cargo clean` of it and the suite crate (scratch
