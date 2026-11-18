@@ -32,8 +32,10 @@ position and ran hull and domain shaders through `Stages`, drawn equal to real D
 converted DXIL atomics on typed buffers, storage textures and view counters, gave pixel shaders
 their layer and viewport index (46 game shaders), and lowered structured group-shared memory; run 25
 gave DXIL storage textures the bound view's format, read DXIL's infinite and NaN constants, kept
-raw buffers to one view per binding and split arrays of textures (Godot's Direct3D 12 shaders); what
-remains is under Next. Runs 21 to 25 merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11,
+raw buffers to one view per binding and split arrays of textures (Godot's Direct3D 12 shaders); run
+26 read multisampled array textures as a texture per layer, applied views' component mappings in the
+program and made atomic minimums and maximums of the other signedness compare-exchange loops; what
+remains is under Next. Runs 21 to 26 merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11,
 -direct3d-12 and -rig (no conflicts).
 
 Done:
@@ -971,7 +973,53 @@ Run 25 (what the Direct3D 12 front's real programs wait on: Godot's shaders, sm6
   4 seeds, 0 elements apart (6 views of seeded formats each); `ps_table.dxil` against real Direct3D
   12 and 11, both back ends, 0 of 4096 texels differ.
 
+Run 26 (what the fronts' real programs wait on: bgfx's multisampled arrays, Godot's view mappings):
+- Merged origin/phase-2-graphics-direct3d-11 and -direct3d-12 (no conflicts; the others had nothing
+  new).
+- Interface change `VariantKey::texture_layers` and `AddedBinding::TextureLayer` (below). A
+  `Texture2DMSArray` is refused `MultisampledArrayTexture` until the key gives its slot's layer
+  count; then its variable becomes layer 0 at the slot's binding, layers 1 to n - 1 are added texture
+  bindings, each load is a call switching on the layer (zero past the count), the layer count query
+  is the key's count (`src/variant/layers.rs`, after every other rewrite, both routes). Own shaders
+  `ps_fill` and `ps_msarray` (`msarray.hlsl`, fxc and dxc); tests
+  `multisampled_array_layers_are_a_texture_each` (variants.rs) and
+  `multisampled_array_layers_read_as_direct3d_does` (variant_draw.rs: real Direct3D 11 fills three
+  layers of 4 samples a value per sample and reads them with the layer picked at run time, past the
+  count too, and `GetDimensions`; ours fills a texture per layer): both builds 0 of 4096 texels
+  apart on the RTX 3080 (run26/gpu1.log).
+- Interface change `VariantKey::swizzled`, `ViewComponent` and `SlowPath::SwizzleInShader` (below):
+  each load and sample of a mapped slot becomes a call composing its result from the mapping (a
+  constant one is 1 or 1.0 by the texel's kind); a gather of component c gathers the component c
+  maps to, or is the constant (`src/variant/swizzle.rs`, first of the rewrites, so filtering in the
+  program and the layers act inside it). Depth-class textures (comparisons) with a mapping are
+  refused `SwizzledDepth`. Tests `swizzled_slots_compose_what_they_read` (variants.rs) and the
+  `swizzled` case of `variants_draw_as_the_native_feature_does` (the plain program reading texels
+  uploaded already mapped, against the variant on the unmapped ones, both back ends).
+- Interface change `Reflection::slow_paths` and `SlowPath::AtomicExchangeLoop` (below). A signed
+  atomic minimum or maximum on memory whose other atomics are unsigned (or the reverse) is a
+  compare-exchange loop: DXBC in `lower.rs` (`exchange_loop`; the memory is declared unsigned when
+  both are used), DXIL in the carried naga's SPIR-V reader (it refused them), reported by scanning
+  dxil-spirv's SPIR-V (`atomic_signedness_differs`). Typed views keep `AtomicSignedness`.
+  `cs_atomics` now also takes signed minimums and maximums of its raw view's unsigned words; its
+  DXIL build converts; test `atomics_of_the_other_signedness_are_exchange_loops`; the drawn result
+  against real Direct3D 11 is in `compute_draw` (Measurements).
+- The laptop stopped answering (no ping, no SSH) partway through run 26, so this run's tests ran on
+  the desktop (Departures). Its build folder (`~/wcontainers-graphics/target/phase-2-graphics-shaders`,
+  rebuilt early in this run) could not be deleted: delete it first next run if no build needs it.
+- Commit 6898e7cb went out without the own corpus records of `ps_fill` and `ps_msarray`, so
+  `own_shaders_give_their_recorded_verdicts` failed on it; b99ca30f records them. At the end of run
+  26 the desktop's `C:\wc\target\phase-2-graphics-shaders` was deleted.
+
 Next (in order):
+- Fronts (theirs): `texture_layers` for bgfx's multisampled arrays (G4, and G5's
+  multisample_array_texture), `swizzled` for Direct3D 12's component mappings and both fronts'
+  stencil views (Godot's 3D platformer), and counting `Reflection::slow_paths`.
+- The corpus records of Wine's `123_ps_atomics_code` and `124_cs_atomics_code` (now converting) and
+  of the games' multisampled array shaders: rerun the corpus test with the corpus (laptop) and copy
+  `classes.txt` over the records.
+- `IsHelperInvocationEXT` (Godot: 1 fragment shader in the corpus, 17 in its 3D platformer): find
+  what dxil-spirv guards with it there (`IsHelperLane()`, wave operations, or sampling feedback);
+  WGSL has no helper query, so a lowering must be exact or refused.
 - Direct3D 12 front (asked of G5): for DXIL its `typed_texture_slots` and `typed_key` key the
   per-slot fields by register, but DXIL slots are the view's place among the program's views of
   its kind (run 22's numbering); a program with views at u1 and u3 has slots 0 and 1. Take the
@@ -1240,6 +1288,18 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 26, 2026-11-18, counts only (desktop shared through the queue; the laptop unreachable), logs in
+scratch `graphics-shaders/run26`:
+- Desktop: `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; `cargo test -p wcontainers-shaders -p wcontainers-gpu --no-fail-fast` (every test not
+  ignored, GPU ones included, default seeds) passes (gpu4.log): `compute_draw` 24 comparisons 0
+  failed (`cs_atomics` with its exchange loops, both builds, 0 words apart at seeds 1 to 4),
+  `variant_draw` 48 comparisons 0 failed (`swizzled` both builds and back ends 0 of 4096 texels),
+  the multisampled array 0 texels apart on both builds, filtering 396 comparisons with the 32 known
+  anisotropic failures. `cargo check -p wcontainers-direct3d-11 -p wcontainers-direct3d-12
+  --all-targets` builds (fronts.log). Not rerun: the corpus, games and WebAssembly runs and Chrome's
+  compile (they need the laptop).
 
 Run 25, 2026-11-18, counts only (laptop load 1 to 4; desktop shared through the queue), logs in
 scratch `graphics-shaders/run25`:
@@ -2000,6 +2060,10 @@ were already there.
 
 ## Departures from the plan
 
+- Run 26: the laptop stopped answering, so the non-GPU tests ran on the desktop (3 cargo jobs,
+  inside the GPU job) instead; the corpus and WebAssembly runs, which need the laptop's corpus and
+  tools, were not rerun.
+
 - Vertex programs without a position (run 23): the plan is silent. They convert with the position
   (0, 0, 0, -1) added, which every clip test rejects, so a direct draw of one rasterises nothing
   instead of the conversion being refused; the stage helper's routes (stream output, hull and
@@ -2202,6 +2266,17 @@ were already there.
   `glGetBufferSubData`, which ANGLE's GLES lacks (`read_back_now` works).
 
 ## Interface changes
+
+- Run 26, `VariantKey::texture_layers: Vec<(u32, u32)>` and `AddedBinding::TextureLayer(slot,
+  layer)` (commit "interface: gave the variant key the layer counts of multisampled array
+  textures ..."; plan text in 4.2 and 6.4): plan 4.2 has fronts hold a multisampled array as a
+  texture per layer, which a program can only read through a binding per layer.
+- Run 26, `VariantKey::swizzled: Vec<(u32, [ViewComponent; 4])>`, `ViewComponent` and
+  `SlowPath::SwizzleInShader` (plan text in 6.4): the default for back ends without
+  `VIEW_SWIZZLE` (wgpu 30 has none), as the Direct3D 11 and 12 tracks asked.
+- Run 26, `Reflection::slow_paths: Vec<SlowPath>` (with serde derives on `SlowPath`) and
+  `SlowPath::AtomicExchangeLoop`: slow paths a program takes by itself whatever its variant, so the
+  front can count and warn of them.
 
 - Run 24, `HelperValue::Layer` and `HelperValue::Viewport` (commit "interface: gave fragment
   programs the layer and viewport of the draw's run as helper values"; plan text in 4.12's layered
