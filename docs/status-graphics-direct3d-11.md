@@ -42,6 +42,8 @@ G4 run 15 (2026-11-18, about 00:05 to 01:15 Pacific). Merged origin/phase-2-grap
 - At 8862cef on the desktop: lint of both builds clean with warnings denied, front tests 40 +
   cache 1 + 3 unit pass (logs/g4s3y-*), library tests com 15 and programs 14 pass
   (logs/g4s3z-lib.log).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (13.1 GB) and the
+  checkout's own target (588 MB, from `cargo check`) were deleted.
 - The status file was cut from 1,880 lines: the run entries before run 13 and the Wine file's runs
   1 to 12 are in its git history.
 
