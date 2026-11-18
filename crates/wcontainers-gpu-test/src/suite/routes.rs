@@ -730,3 +730,40 @@ pub fn captures_write_location_outputs_packed_in_draw_order<H: Host>() {
     }
     ok(&mut b);
 }
+
+/// A copy between two regions of one subresource that do not overlap, as Vulkan and OpenGL allow
+/// (a back end whose API refuses it copies through a buffer, `CopyWithinTexture`): the right half
+/// of a 4 by 2 texture takes the left half's texels, which stay.
+pub fn a_copy_within_one_subresource_moves_the_region<H: Host>() {
+    let mut b = H::make();
+    needs(&b, Format::Rgba8Unorm, FormatUse::COPY_OUT);
+    let t = texture(
+        &mut b,
+        Format::Rgba8Unorm,
+        (4, 2),
+        1,
+        1,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    );
+    let bytes = pattern(32, 9);
+    b.write_texture(
+        &region(&t, 0, 0, 0, 0),
+        extent(4, 2, 1),
+        &bytes,
+        16,
+        2,
+        WriteMode::Ordered,
+    );
+    b.copy_texture(
+        &region(&t, 0, 0, 0, 0),
+        &region(&t, 0, 0, 2, 0),
+        extent(2, 2, 1),
+    );
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(4, 2, 1), 4);
+    let mut expected = bytes.clone();
+    for y in 0..2 {
+        expected.copy_within(y * 16..y * 16 + 8, y * 16 + 8);
+    }
+    assert_eq!(got, expected);
+    ok(&mut b);
+}

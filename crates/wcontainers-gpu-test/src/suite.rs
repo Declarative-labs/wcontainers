@@ -65,6 +65,7 @@ macro_rules! suite {
             constants_read_through_a_texture_lie_256_rows_to_a_texture_row,
             missing_components_read_their_defaults,
             captures_write_location_outputs_packed_in_draw_order,
+            a_copy_within_one_subresource_moves_the_region,
             present_shows_the_frame,
         );
     };

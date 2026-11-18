@@ -2173,6 +2173,26 @@ impl Backend for Recorder {
                 return Err("copy between formats of different typeless groups".into());
             }
             let (sd, dd) = (r.texture(*src.texture)?.desc, r.texture(*dst.texture)?.desc);
+            // Regions of one texture: the levels, the layers or slices, the rows and the columns
+            // all meet where the regions overlap.
+            let span = |a: u32, b: u32, n: u32| {
+                u64::from(a) < u64::from(b) + u64::from(n)
+                    && u64::from(b) < u64::from(a) + u64::from(n)
+            };
+            let (s, d) = (src.origin, dst.origin);
+            let (sz, dz) = if sd.dimension == TextureDimension::D3 {
+                (s.z, d.z)
+            } else {
+                (src.layer, dst.layer)
+            };
+            if src.texture == dst.texture
+                && src.mip == dst.mip
+                && span(sz, dz, extent.depth_or_layers)
+                && span(s.y, d.y, extent.height)
+                && span(s.x, d.x, extent.width)
+            {
+                return Err("a copy between overlapping regions of one texture".into());
+            }
             if sd.samples > 1 || dd.samples > 1 {
                 let whole = |d: &TextureDesc, at: &TextureRegion<'_, Self>| {
                     at.origin == (Origin { x: 0, y: 0, z: 0 })

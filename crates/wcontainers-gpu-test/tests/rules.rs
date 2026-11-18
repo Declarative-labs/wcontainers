@@ -1201,6 +1201,34 @@ fn each_use_needs_its_usage_flag() {
     ));
 }
 
+/// A copy may go between regions of one subresource that do not overlap, and between layers.
+#[test]
+fn texture_copies_within_one_texture_do_not_overlap() {
+    let mut r = Recorder::new();
+    let t = shaped(&mut r, TextureDimension::D2, 4, 2, 1);
+    let at = |x, y, layer| TextureRegion {
+        texture: &t,
+        mip: 0,
+        layer,
+        origin: Origin { x, y, z: 0 },
+        stencil: false,
+    };
+    let two = Extent {
+        width: 2,
+        height: 2,
+        depth_or_layers: 1,
+    };
+    r.copy_texture(&at(0, 0, 0), &at(2, 2, 0), two);
+    r.copy_texture(&at(0, 0, 0), &at(0, 0, 1), two);
+    r.copy_texture(&at(0, 0, 0), &at(2, 0, 0), two);
+    assert!(r.violations.is_empty());
+    r.copy_texture(&at(0, 0, 0), &at(1, 1, 0), two);
+    assert_eq!(
+        r.violations,
+        ["a copy between overlapping regions of one texture"]
+    );
+}
+
 #[test]
 fn texture_copies_stay_in_one_typeless_group() {
     let mut r = Recorder::new();
