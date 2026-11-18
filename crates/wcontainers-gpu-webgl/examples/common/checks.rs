@@ -449,9 +449,8 @@ pub fn discard_then_no_overwrite_writes<H: Host>() {
 }
 
 /// Depth and stencil read back as stored (`DepthReadByDraw` on WebGL 2): a pass clears a 4 by 4 target
-/// to depth 0.25 and stencil 0x5a, then `clear_rects` sets the middle 2 by 2 to 1 and 0xc3. Depth
-/// in unorm formats within one step (GL lets the conversion round either way). Formats the back end
-/// cannot read back (no `COPY_OUT`) are left out: stencil needs WEBGL_stencil_texturing.
+/// to depth 0.25 and stencil 0x5a, then `clear_rects` sets the middle 2 by 2 to 1 and 0xc3, all read
+/// back exactly. Formats the back end cannot read back (no `COPY_OUT`) are left out.
 pub fn depth_and_stencil_read_back<H: Host>() {
     let mut b = H::make();
     let formats = [
@@ -553,8 +552,8 @@ pub fn depth_and_stencil_read_back<H: Host>() {
             got
         };
         let (bytes, one, tolerance) = match format {
-            Format::Depth16Unorm => (2, 65535.0, 1),
-            Format::Depth24Plus | Format::Depth24PlusStencil8 => (4, 16_777_215.0, 1),
+            Format::Depth16Unorm => (2, 65535.0, 0),
+            Format::Depth24Plus | Format::Depth24PlusStencil8 => (4, 16_777_215.0, 0),
             _ => (4, 0.0, 0),
         };
         let depth = read(&mut b, false, bytes);
@@ -770,20 +769,13 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         let src = make(&mut b, from);
         let dst = make(&mut b, to);
         let bytes = pattern(32 * texel, 0x9e37_79b9 ^ i as u32);
-        let region = |texture, x, y| TextureRegion {
-            texture,
-            mip: 0,
-            layer: 0,
-            origin: Origin { x, y, z: 0 },
-            stencil: false,
-        };
         let whole = Extent {
             width: 4,
             height: 4,
             depth_or_layers: 2,
         };
         b.write_texture(
-            &region(&src, 0, 0),
+            &layer_at(&src, 0, 0, 0, false),
             whole,
             &bytes,
             4 * texel as u32,
@@ -791,7 +783,7 @@ pub fn copies_within_a_typeless_group<H: Host>() {
             WriteMode::Ordered,
         );
         b.write_texture(
-            &region(&dst, 0, 0),
+            &layer_at(&dst, 0, 0, 0, false),
             whole,
             &vec![0; 32 * texel],
             4 * texel as u32,
@@ -804,7 +796,11 @@ pub fn copies_within_a_typeless_group<H: Host>() {
             height: 2,
             depth_or_layers: 2,
         };
-        b.copy_texture(&region(&src, 1, 1), &region(&dst, 0, 2), part);
+        b.copy_texture(
+            &layer_at(&src, 0, 1, 1, false),
+            &layer_at(&dst, 0, 0, 2, false),
+            part,
+        );
         let got = kit::read(&mut b, &dst, 0, 0, [4, 4, 2], texel, false);
         let mut want = vec![0u8; 32 * texel];
         for layer in 0..2 {
@@ -819,6 +815,253 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         assert_eq!(got, want, "{from:?} to {to:?} (device {:?})", b.status());
         b.destroy(Object::Texture(src));
         b.destroy(Object::Texture(dst));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Stored depth values of `format` in its buffer layout (16-bit unorm; 24-bit unorm in the low bits of
+/// a word; 32-bit floats from 0 to 1, as draws can write them), one per texel, 0 and 1 among them.
+fn depth_values(format: Format, texels: usize, seed: u32) -> Vec<u8> {
+    let raw = pattern(texels * 4, seed);
+    let words = raw
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| u32::from_le_bytes(*w));
+    let (one, bytes) = match format {
+        Format::Depth16Unorm | Format::R16Unorm => (65535u32, 2),
+        Format::Depth24Plus | Format::Depth24PlusStencil8 => (16_777_215, 4),
+        _ => (0, 4),
+    };
+    words
+        .enumerate()
+        .flat_map(|(i, w)| {
+            let v = match (i, one) {
+                (0, 0) => 0,
+                (1, 0) => 1f32.to_bits(),
+                (_, 0) => ((w >> 8) as f32 / 16_777_216.0).to_bits(),
+                (0, _) => 0,
+                (1, one) => one,
+                (_, one) => w & one,
+            };
+            v.to_le_bytes().into_iter().take(bytes)
+        })
+        .collect()
+}
+
+/// Level 0 of `texture` from layer `layer` and texel (`x`, `y`), the stencil aspect with `stencil`.
+fn layer_at<B: Backend>(
+    texture: &B::Texture,
+    layer: u32,
+    x: u32,
+    y: u32,
+    stencil: bool,
+) -> TextureRegion<'_, B> {
+    TextureRegion {
+        texture,
+        mip: 0,
+        layer,
+        origin: Origin { x, y, z: 0 },
+        stencil,
+    }
+}
+
+/// Depth and stencil written by the host and copied from buffers read back as written: each aspect
+/// of a two-layer texture of every depth format written whole, then a part of each layer copied in
+/// from a buffer at an offset and a pitch of its own; the other aspect of a combined format stays.
+pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let formats = [
+        Format::Depth16Unorm,
+        Format::Depth24Plus,
+        Format::Depth32Float,
+        Format::Depth24PlusStencil8,
+        Format::Depth32FloatStencil8,
+    ];
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let whole = Extent {
+        width: 4,
+        height: 4,
+        depth_or_layers: 2,
+    };
+    for (n, format) in formats.into_iter().enumerate() {
+        if !b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+            continue;
+        }
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [4, 4, 2],
+            1,
+            usage,
+            false,
+        );
+        let combined = format.kind() == FormatKind::DepthStencil;
+        let aspects: &[bool] = if combined { &[false, true] } else { &[false] };
+        let mut want = Vec::new();
+        for &stencil in aspects {
+            let bytes = if stencil {
+                1
+            } else {
+                format.block().2.min(4) as usize
+            };
+            let seed = 0x51ed_270b ^ (n as u32 * 2 + stencil as u32);
+            let all = if stencil {
+                pattern(32, seed)
+            } else {
+                depth_values(format, 32, seed)
+            };
+            b.write_texture(
+                &layer_at(&t, 0, 0, 0, stencil),
+                whole,
+                &all,
+                4 * bytes as u32,
+                4,
+                WriteMode::Ordered,
+            );
+            // Two by two texels at (1, 2) of each layer, from a buffer whose rows are three texels
+            // apart, starting at its third texel.
+            let part = if stencil {
+                pattern(3 * 4 * bytes, seed ^ 0xffff)
+            } else {
+                depth_values(format, 3 * 4, seed ^ 0xffff)
+            };
+            let mut padded = vec![0u8; 2 * bytes];
+            padded.extend_from_slice(&part);
+            let src = buffer(&mut b, BufferUsage::empty(), &padded);
+            b.copy_buffer_to_texture(
+                &CopyBufferTexture {
+                    buffer: &src,
+                    offset: 2 * bytes as u64,
+                    row_pitch: 3 * bytes as u32,
+                    rows_per_layer: 2,
+                },
+                &layer_at(&t, 0, 1, 2, stencil),
+                Extent {
+                    width: 2,
+                    height: 2,
+                    depth_or_layers: 2,
+                },
+            );
+            let mut expected = all;
+            for layer in 0..2 {
+                for y in 0..2 {
+                    for x in 0..2 {
+                        let d = ((layer * 16 + (y + 2) * 4 + x + 1) * bytes)..;
+                        let s = ((layer * 6 + y * 3 + x) * bytes)..;
+                        expected[d.start..d.start + bytes]
+                            .copy_from_slice(&part[s.start..s.start + bytes]);
+                    }
+                }
+            }
+            want.push((stencil, bytes, expected));
+            b.destroy(Object::Buffer(src));
+        }
+        for (stencil, bytes, expected) in want {
+            let got = kit::read(&mut b, &t, 0, 0, [4, 4, 2], bytes, stencil);
+            let status = b.status();
+            assert_eq!(
+                got,
+                expected,
+                "{format:?}, {} (device {status:?}: {:?})",
+                if stencil { "stencil" } else { "depth" },
+                b.slow_paths()
+            );
+        }
+        b.destroy(Object::Texture(t));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Copies between a colour and a depth format of one typeless group (`r32float` and
+/// `depth32float`, `r16unorm` and `depth16unorm`) keep every value, both ways: a part of each layer
+/// of a two-layer texture is copied into the other format at another place and back.
+pub fn copies_between_depth_and_colour_formats<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let whole = Extent {
+        width: 4,
+        height: 4,
+        depth_or_layers: 2,
+    };
+    let part = Extent {
+        width: 3,
+        height: 2,
+        depth_or_layers: 2,
+    };
+    for (i, (colour, depth)) in [
+        (Format::R32Float, Format::Depth32Float),
+        (Format::R16Unorm, Format::Depth16Unorm),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let caps = &b.caps().formats;
+        if !caps.get(colour).contains(FormatUse::COPY_OUT)
+            || !caps.get(depth).contains(FormatUse::COPY_OUT)
+        {
+            continue;
+        }
+        let bytes = colour.block().2 as usize;
+        for (from, to) in [(colour, depth), (depth, colour)] {
+            let src = kit::texture(
+                &mut b,
+                TextureDimension::D2,
+                from,
+                [4, 4, 2],
+                1,
+                usage,
+                false,
+            );
+            let dst = kit::texture(&mut b, TextureDimension::D2, to, [4, 4, 2], 1, usage, false);
+            let values = depth_values(colour, 32, 0x2545_f491 ^ i as u32 ^ (from == depth) as u32);
+            let zeros = depth_values(colour, 1, 0).repeat(32);
+            b.write_texture(
+                &layer_at(&src, 0, 0, 0, false),
+                whole,
+                &values,
+                4 * bytes as u32,
+                4,
+                WriteMode::Ordered,
+            );
+            b.write_texture(
+                &layer_at(&dst, 0, 0, 0, false),
+                whole,
+                &zeros,
+                4 * bytes as u32,
+                4,
+                WriteMode::Ordered,
+            );
+            // Three by two texels from (1, 1) to (0, 2), in both layers.
+            b.copy_texture(
+                &layer_at(&src, 0, 1, 1, false),
+                &layer_at(&dst, 0, 0, 2, false),
+                part,
+            );
+            let got = kit::read(&mut b, &dst, 0, 0, [4, 4, 2], bytes, false);
+            let status = b.status();
+            let mut want = zeros;
+            for layer in 0..2 {
+                for y in 0..2 {
+                    for x in 0..3 {
+                        let at = |x: usize, y: usize| (layer * 16 + y * 4 + x) * bytes;
+                        let (s, d) = (at(x + 1, y + 1), at(x, y + 2));
+                        want[d..d + bytes].copy_from_slice(&values[s..s + bytes]);
+                    }
+                }
+            }
+            assert_eq!(
+                got,
+                want,
+                "{from:?} to {to:?} (device {status:?}: {:?})",
+                b.slow_paths()
+            );
+            b.destroy(Object::Texture(src));
+            b.destroy(Object::Texture(dst));
+        }
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
 }

@@ -329,12 +329,22 @@ pub struct WebGl {
     depth_read: [Option<depth::DepthRead>; 4],
     /// The stencil bit draws' program, made at its first use.
     bits_program: Option<glow::Program>,
+    /// The stencil write programs for 2D and 2D array sources.
+    stencil_write: [Option<depth::StencilWrite>; 2],
     /// The programs of copies by draws, by source format, destination format and source target, with
     /// their uniform `at`.
-    copy_programs: HashMap<(Format, Format, u32), (glow::Program, glow::UniformLocation)>,
+    /// Programs of `copy_by_draw` by formats and source target.
+    copy_programs: HashMap<(Format, Format, u32), CopyProgram>,
     /// A nearest-filtering sampler for the back end's own fetches, made at its first use.
     point_sampler: Option<glow::Sampler>,
 }
+
+/// A program of `copy_by_draw`, with its uniforms `at` and, into unorm depth, `unit`.
+type CopyProgram = (
+    glow::Program,
+    glow::UniformLocation,
+    Option<glow::UniformLocation>,
+);
 
 /// What the back end's own fetch draws read: depth or stencil, of a 2D or a 2D array texture.
 #[derive(Clone, Copy, Debug)]
@@ -405,6 +415,7 @@ impl WebGl {
             surface: None,
             depth_read: [None, None, None, None],
             bits_program: None,
+            stencil_write: [None, None],
             copy_programs: HashMap::new(),
             point_sampler: None,
         };
@@ -1007,7 +1018,12 @@ impl WebGl {
             glow::TEXTURE_3D => "3D",
             _ => return false,
         };
-        if !self.caps.formats.get(to).contains(FormatUse::RENDER) {
+        let drawn = if to.is_depth_stencil() {
+            FormatUse::DEPTH_STENCIL
+        } else {
+            FormatUse::RENDER
+        };
+        if !self.caps.formats.get(to).contains(drawn) {
             return false;
         }
         let key = (from, to, src.texture.target);
@@ -1016,9 +1032,14 @@ impl WebGl {
                 return false;
             };
             let built = depth::link(&self.gl, &source).and_then(|p| {
-                // SAFETY: a plain query of a linked program.
-                unsafe { self.gl.get_uniform_location(p, "at") }
-                    .map(|at| (p, at))
+                // SAFETY: plain queries of a linked program.
+                let (at, unit) = unsafe {
+                    (
+                        self.gl.get_uniform_location(p, "at"),
+                        self.gl.get_uniform_location(p, "unit"),
+                    )
+                };
+                at.map(|at| (p, at, unit))
                     .ok_or_else(|| "the copy program has no uniform at".to_string())
             });
             match built {
@@ -1035,6 +1056,9 @@ impl WebGl {
             self.fail(LossReason::OutOfMemory);
             return true;
         }
+        if from.is_depth_stencil() {
+            self.aspect(src.texture, false);
+        }
         let rect = [
             dst.origin.x as i32,
             dst.origin.y as i32,
@@ -1043,7 +1067,7 @@ impl WebGl {
         ];
         for i in 0..extent.depth_or_layers {
             let fb = self.texture_framebuffer(dst.texture, dst.mip, self.read_layer(dst, i));
-            let (program, at) = &self.copy_programs[&key];
+            let (program, at, unit) = &self.copy_programs[&key];
             // SAFETY: plain GL calls; the program is alive.
             unsafe {
                 self.gl.use_program(Some(*program));
@@ -1053,8 +1077,15 @@ impl WebGl {
                     src.origin.y as i32 - rect[1],
                     self.read_layer(src, i) as i32,
                 );
+                if let Some(u) = convert::depth_unit(to) {
+                    self.gl.uniform_2_f32(unit.as_ref(), u[0], u[1]);
+                }
             }
-            self.own_draw_into(fb, rect);
+            if to.is_depth_stencil() {
+                self.own_depth_draw_into(fb, rect);
+            } else {
+                self.own_draw_into(fb, rect);
+            }
         }
         true
     }
@@ -1492,6 +1523,156 @@ impl WebGl {
         self.open_writes();
         state::plain(&self.gl, &mut self.values, rect, &self.platform);
         self.own_draw();
+    }
+
+    /// As [`WebGl::own_draw_into`], for a program writing depth into the depth attachment of
+    /// `target`: the depth test passes always and writes, in the full depth range; stencil stays.
+    fn own_depth_draw_into(&mut self, target: glow::Framebuffer, rect: [i32; 4]) {
+        // SAFETY: a plain GL call; the framebuffer is alive.
+        unsafe {
+            self.gl
+                .bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(target))
+        };
+        self.applied.draw_framebuffer = Some(target);
+        self.applied.program = 0;
+        self.open_writes();
+        state::plain(&self.gl, &mut self.values, rect, &self.platform);
+        let (gl, v) = (&self.gl, &mut self.values);
+        // SAFETY: plain GL state calls, recorded in the values so the next draw sets its own.
+        unsafe {
+            gl.enable(glow::DEPTH_TEST);
+            v.depth_test = true;
+            if v.depth_func != glow::ALWAYS {
+                gl.depth_func(glow::ALWAYS);
+                v.depth_func = glow::ALWAYS;
+            }
+            if v.depth_range != [0.0, 1.0] {
+                gl.depth_range_f32(0.0, 1.0);
+                v.depth_range = [0.0, 1.0];
+            }
+        }
+        self.own_draw();
+    }
+
+    /// Writes depth or stencil texels, from the host or from the bound pixel unpack buffer, by draws:
+    /// into an integer texture of the aspect's bytes first, from which a draw writes the depth
+    /// ([`SlowPath::DepthWrittenByDraw`]) or draws write the stencil bit by bit. GL takes neither
+    /// aspect of a combined format alone, nor 24-bit depth as Direct3D stores it, from bytes.
+    fn write_depth(
+        &mut self,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+        texels: Texels<'_>,
+        row_pitch: u32,
+        rows_per_layer: u32,
+    ) {
+        let format = match (dst.stencil, dst.texture.desc.format) {
+            (true, _) => Format::R8Uint,
+            (false, Format::Depth16Unorm) => Format::R16Uint,
+            _ => Format::R32Uint,
+        };
+        let Ok(scratch) = self.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width: extent.width,
+            height: extent.height,
+            depth_or_layers: extent.depth_or_layers,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        }) else {
+            return self.fail(LossReason::OutOfMemory);
+        };
+        let src = TextureRegion {
+            texture: &scratch,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        self.upload(&src, extent, texels, row_pitch, rows_per_layer);
+        if dst.stencil {
+            self.stencil_by_draw(&src, dst, extent);
+        } else if self.copy_by_draw(&src, dst, extent) {
+            self.slow.hit(SlowPath::DepthWrittenByDraw);
+        } else {
+            self.unbuilt("depth written into textures of this format");
+        }
+        self.destroy(Object::Texture(scratch));
+    }
+
+    /// Writes the stencil of `dst` from the `r8uint` texels of `src` (2D or 2D array), layer by
+    /// layer: one draw sets the region's stencil to 0, then one per bit sets that bit where the
+    /// source has it ([`SlowPath::StencilWrittenByDraw`]). Depth stays.
+    fn stencil_by_draw(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        self.slow.hit(SlowPath::StencilWrittenByDraw);
+        let k = usize::from(src.texture.target == glow::TEXTURE_2D_ARRAY);
+        if self.stencil_write[k].is_none() {
+            match depth::build_stencil_write(&self.gl, k == 1) {
+                Ok(p) => self.stencil_write[k] = Some(p),
+                Err(log) => {
+                    self.own_program_failed(log);
+                    return;
+                }
+            }
+        }
+        if self.bind_source(src.texture, src.mip).is_err() {
+            return self.fail(LossReason::OutOfMemory);
+        }
+        let rect = [
+            dst.origin.x as i32,
+            dst.origin.y as i32,
+            extent.width as i32,
+            extent.height as i32,
+        ];
+        for i in 0..extent.depth_or_layers {
+            let fb = self.texture_framebuffer(dst.texture, dst.mip, self.read_layer(dst, i));
+            // SAFETY: a plain GL call; the framebuffer is alive.
+            unsafe { self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fb)) };
+            self.applied.draw_framebuffer = Some(fb);
+            self.applied.program = 0;
+            self.open_writes();
+            state::plain(&self.gl, &mut self.values, rect, &self.platform);
+            let program = self.stencil_write[k].as_ref().expect("built above");
+            let (gl, v) = (&self.gl, &mut self.values);
+            let replace = [glow::KEEP, glow::KEEP, glow::REPLACE];
+            // SAFETY: plain GL calls, recorded in the values so the next draw sets its own.
+            unsafe {
+                gl.use_program(Some(program.program));
+                gl.uniform_3_i32(
+                    Some(&program.at),
+                    src.origin.x as i32 - rect[0],
+                    src.origin.y as i32 - rect[1],
+                    (src.layer + i) as i32,
+                );
+                gl.enable(glow::STENCIL_TEST);
+                v.stencil_test = true;
+                gl.stencil_op(replace[0], replace[1], replace[2]);
+                v.stencil_op = [replace; 2];
+            }
+            // Bit 0 of the loop is the clear: no fragment discarded, 0 written through every bit.
+            for (bit, reference, mask) in
+                std::iter::once((0, 0, 0xff)).chain((0..8).map(|b| (1u32 << b, 0xff, 1u8 << b)))
+            {
+                let program = self.stencil_write[k].as_ref().expect("built above");
+                // SAFETY: plain GL state calls.
+                unsafe {
+                    self.gl.uniform_1_u32(Some(&program.bit), bit);
+                    self.gl.stencil_func(glow::ALWAYS, reference, 0xff);
+                    self.gl.stencil_mask(u32::from(mask));
+                }
+                self.values.stencil_func = [(glow::ALWAYS, reference as u8, 0xff); 2];
+                self.values.stencil_write_mask = mask;
+                self.own_draw();
+            }
+        }
     }
 
     /// Draws the back end's full-screen triangle with GL's lower-left window origin.
@@ -3265,6 +3446,15 @@ impl Backend for WebGl {
                 return self.upload_blocks(region, extent);
             }
         }
+        if region.texture.desc.format.is_depth_stencil() {
+            return self.write_depth(
+                region,
+                extent,
+                Texels::Bytes(data),
+                row_pitch,
+                rows_per_layer,
+            );
+        }
         if format::swapped(region.texture.desc.format) {
             self.slow.hit(SlowPath::FormatConverted);
             let mut swapped = data.to_vec();
@@ -3560,11 +3750,19 @@ impl Backend for WebGl {
         self.fresh(src.texture);
         self.fresh(dst.texture);
         self.written(dst.texture);
+        if from == to && from.is_depth_stencil() {
+            return self.blit_depth(src, dst, extent);
+        }
         if from.is_depth_stencil() || to.is_depth_stencil() {
-            if from != to {
-                self.unbuilt("copies between depth and colour formats");
+            // A colour and a depth format of one typeless group.
+            if self.copy_by_draw(src, dst, extent) {
+                self.slow.hit(if to.is_depth_stencil() {
+                    SlowPath::DepthWrittenByDraw
+                } else {
+                    SlowPath::CopyThroughBuffer
+                });
             } else {
-                self.blit_depth(src, dst, extent);
+                self.unbuilt("copies between depth and colour formats from cube textures");
             }
             return;
         }
@@ -3674,13 +3872,12 @@ impl Backend for WebGl {
         self.written(dst.texture);
         // SAFETY: a plain GL call; the buffer holds other data.
         unsafe { self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(data)) };
-        self.upload(
-            dst,
-            extent,
-            Texels::Offset(src.offset as u32),
-            src.row_pitch,
-            src.rows_per_layer,
-        );
+        let texels = Texels::Offset(src.offset as u32);
+        if dst.texture.desc.format.is_depth_stencil() {
+            self.write_depth(dst, extent, texels, src.row_pitch, src.rows_per_layer);
+        } else {
+            self.upload(dst, extent, texels, src.row_pitch, src.rows_per_layer);
+        }
         // SAFETY: a plain GL call; host uploads need no unpack buffer bound.
         unsafe { self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None) };
     }

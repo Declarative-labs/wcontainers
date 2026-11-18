@@ -38,8 +38,9 @@ fn fragment(array: bool, stencil: bool) -> String {
     let value = if stencil {
         "texelFetch(src, COORD, 0).r"
     } else {
-        // A float cannot hold 2^24 - 0.5, so a depth of 1 would round past 24 bits; kept at scale.
-        "scale == 0u ? floatBitsToUint(d) : min(uint(d * float(scale) + 0.5), scale)"
+        // The product rounds once to the nearest float, which from 2^23 up is the nearest integer:
+        // adding 0.5 before truncating would round again (or not at all, fused).
+        "scale == 0u ? floatBitsToUint(d) : min(uint(round(d * float(scale))), scale)"
     }
     .replace("COORD", coord);
     format!(
@@ -84,6 +85,52 @@ pub fn build(gl: &glow::Context, array: bool, stencil: bool) -> Result<DepthRead
             .ok_or("the depth read program has no uniform at")?;
         let scale = gl.get_uniform_location(program, "scale");
         Ok(DepthRead { program, at, scale })
+    }
+}
+
+/// The program writing stencil from an `r8uint` texture, and its uniforms.
+#[derive(Debug)]
+pub struct StencilWrite {
+    pub program: glow::Program,
+    /// As [`DepthRead::at`]: the source's offset from the fragment, and its layer.
+    pub at: glow::UniformLocation,
+    /// The bit drawn: fragments whose source value lacks it are discarded; 0 discards none.
+    pub bit: glow::UniformLocation,
+}
+
+/// Keeps the fragments whose source texel holds `bit`, for draws that set that stencil bit.
+fn stencil_write(array: bool) -> String {
+    let (sampler, coord) = if array {
+        ("usampler2DArray", "ivec3(p, at.z)")
+    } else {
+        ("usampler2D", "p")
+    };
+    format!(
+        "#version 300 es
+precision highp float;
+precision highp int;
+uniform highp {sampler} src;
+uniform ivec3 at;
+uniform uint bit;
+void main() {{
+    ivec2 p = ivec2(gl_FragCoord.xy) + at.xy;
+    if ((texelFetch(src, {coord}, 0).r & bit) != bit) discard;
+}}
+"
+    )
+}
+
+/// Builds the stencil write program for 2D (`array` false) or 2D array sources. Err holds GL's log.
+pub fn build_stencil_write(gl: &glow::Context, array: bool) -> Result<StencilWrite, String> {
+    let program = link(gl, &stencil_write(array))?;
+    // SAFETY: plain queries of a linked program.
+    unsafe {
+        let at = gl.get_uniform_location(program, "at");
+        let bit = gl.get_uniform_location(program, "bit");
+        match (at, bit) {
+            (Some(at), Some(bit)) => Ok(StencilWrite { program, at, bit }),
+            _ => Err("the stencil write program lacks a uniform".into()),
+        }
     }
 }
 

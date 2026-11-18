@@ -182,6 +182,16 @@ fn copies_within_a_typeless_group() {
 }
 
 #[test]
+fn depth_and_stencil_written_read_back_as_written() {
+    checks::depth_and_stencil_written_read_back_as_written::<Angle>();
+}
+
+#[test]
+fn copies_between_depth_and_colour_formats() {
+    checks::copies_between_depth_and_colour_formats::<Angle>();
+}
+
+#[test]
 fn loads_count_levels_from_the_view() {
     checks::loads_count_levels_from_the_view::<Angle>();
 }

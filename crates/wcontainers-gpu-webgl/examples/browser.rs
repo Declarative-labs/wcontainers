@@ -158,6 +158,8 @@ suite!(
     depth_and_stencil_read_back,
     stencil_sampled_and_read_back,
     copies_within_a_typeless_group,
+    depth_and_stencil_written_read_back_as_written,
+    copies_between_depth_and_colour_formats,
     loads_count_levels_from_the_view,
     fractional_viewports_are_refused,
     viewports_past_their_bounds_are_refused,
