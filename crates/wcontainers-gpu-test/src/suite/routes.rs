@@ -885,3 +885,131 @@ pub fn typed_buffers_through_storage_read_their_views_place_and_length<H: Host>(
     assert_close(&got, &expected, 1, 4, 4);
     ok(&mut b);
 }
+
+/// A typed buffer read through a texture (`TexelBufferRoute::Texture`): the buffer copied into a
+/// 2D texture of the view's format `TEXEL_BUFFER_TEXTURE_WIDTH` texels wide, element e counted from
+/// the buffer's start at texel (e % width, e / width), and the view's place from the fragment
+/// helper constants. An `r32uint` buffer of 2100 elements, a view from byte 16, read at view
+/// elements 0, 1, 2043, 2044 and 2095 (buffer elements 4, 5, 2047, 2048 and 2099).
+pub fn typed_buffers_through_a_texture_lie_2048_elements_to_a_row<H: Host>() {
+    let mut b = H::make();
+    needs(&b, Format::R32Uint, FormatUse::SAMPLE);
+    needs(
+        &b,
+        Format::Rgba32Uint,
+        FormatUse::RENDER | FormatUse::COPY_OUT,
+    );
+    const ELEMENTS: u32 = 2100;
+    const READ: [u32; 5] = [0, 1, 2043, 2044, 2095];
+    const TEXELS: &str = "
+    @group(0) @binding(32) var texels: texture_2d<u32>;
+    @group(3) @binding(12) var<uniform> view: vec4<u32>;
+    @vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+        return vec4<f32>(p, 0.5, 1.0);
+    }
+    @fragment fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<u32> {
+        var read = array<u32, 5>(0u, 1u, 2043u, 2044u, 2095u);
+        let e = view.x / 4u + read[u32(at.x)];
+        return vec4<u32>(textureLoad(texels, vec2<u32>(e % 2048u, e / 2048u), 0).x, e, 0u, 1u);
+    }
+    ";
+    let width = TEXEL_BUFFER_TEXTURE_WIDTH;
+    let element = |e: u32| e * 7 + 3;
+    let bytes: Vec<u8> = (0..ELEMENTS)
+        .flat_map(|e| element(e).to_le_bytes())
+        .collect();
+    let src = buffer(
+        &mut b,
+        bytes.len() as u64,
+        BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&src, 0, &bytes, WriteMode::Discard);
+    let tex = texture(
+        &mut b,
+        Format::R32Uint,
+        (width, ELEMENTS.div_ceil(width)),
+        1,
+        1,
+        TextureUsage::COPY_DST | TextureUsage::SAMPLE,
+    );
+    for (first, count) in [(0, width), (width, ELEMENTS - width)] {
+        b.copy_buffer_to_texture(
+            &CopyBufferTexture {
+                buffer: &src,
+                offset: u64::from(first) * 4,
+                row_pitch: width * 4,
+                rows_per_layer: 1,
+            },
+            &region(&tex, 0, 0, 0, first / width),
+            extent(count, 1, 1),
+        );
+    }
+    let uniforms = buffer(&mut b, 16, BufferUsage::UNIFORM | BufferUsage::COPY_DST);
+    let words: Vec<u8> = [16u32, ELEMENTS - 4, 0, 0]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    b.write_buffer(&uniforms, 0, &words, WriteMode::Discard);
+    let tv = view(&mut b, &tex, Format::R32Uint);
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&tv),
+        }])
+        .expect("create_binding_set");
+    let helpers = b
+        .create_binding_set(&[BindingEntry {
+            binding: helper_binding(ShaderStage::Fragment),
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &uniforms,
+                offset: 0,
+                size: 16,
+            }),
+        }])
+        .expect("create_binding_set");
+    let out = texture(
+        &mut b,
+        Format::Rgba32Uint,
+        (READ.len() as u32, 1),
+        1,
+        1,
+        TextureUsage::RENDER | TextureUsage::COPY_SRC,
+    );
+    let ov = view(&mut b, &out, Format::Rgba32Uint);
+    let vb = quad(&mut b);
+    let p = program(&mut b, TEXELS, "vs", "fs");
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    b.begin_pass(&color_pass::<H::Backend>(&ov, LoadOp::Clear([0; 4])));
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    draw_into(
+        &mut b,
+        &p,
+        &rs,
+        &vl,
+        [Some(&set), None, None, Some(&helpers)],
+        &streams,
+        Topology::TriangleStrip,
+        once(4),
+        (READ.len() as u32, 1),
+    );
+    b.end_pass();
+    let got = read_texture(
+        &mut b,
+        region(&out, 0, 0, 0, 0),
+        extent(READ.len() as u32, 1, 1),
+        16,
+    );
+    let expected: Vec<u8> = READ
+        .iter()
+        .flat_map(|&r| [element(r + 4), r + 4, 0, 1])
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    assert_eq!(got, expected);
+    ok(&mut b);
+}

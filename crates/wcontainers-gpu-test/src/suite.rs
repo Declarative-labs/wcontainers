@@ -65,6 +65,7 @@ macro_rules! suite {
             constants_read_through_a_texture_lie_256_rows_to_a_texture_row,
             missing_components_read_their_defaults,
             typed_buffers_through_storage_read_their_views_place_and_length,
+            typed_buffers_through_a_texture_lie_2048_elements_to_a_row,
             captures_write_location_outputs_packed_in_draw_order,
             a_copy_within_one_subresource_moves_the_region,
             present_shows_the_frame,
