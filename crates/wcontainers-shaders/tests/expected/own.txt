@@ -39,6 +39,7 @@ ps_size.dxbc	ok
 ps_spaces.dxbc	unsupported RegisterSpace
 ps_special.dxbc	ok
 ps_table.dxbc	ok
+ps_texels.dxbc	unsupported TypedBuffer
 ps_textured.dxbc	ok
 ps_window.dxbc	ok
 vs_carry.dxbc	ok

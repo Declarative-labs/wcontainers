@@ -18,8 +18,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use wcontainers_gpu::{
-    DrawBaseSource, Reflection, ShaderModule, ShaderStage, StageExtras, TexelBufferRoute,
-    VariantFlags, VariantKey,
+    DrawBaseSource, Reflection, ShaderModule, ShaderStage, StageExtras, VariantFlags, VariantKey,
 };
 
 /// Shader bytecode in one of the forms the fronts hand over.
@@ -172,7 +171,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         constants_as_texture: _,
         pulled: _,
         storage_formats: _,
-        texel_buffers,
+        texel_buffers: _,
         texel_formats: _,
         storage_packed,
         texels_through_buffer,
@@ -198,10 +197,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         return Err(ConvertError::Unsupported(name));
     }
     let asked = [
-        (
-            *texel_buffers == TexelBufferRoute::Texture,
-            "TexelBufferAsTexture",
-        ),
         (*storage_packed != 0, "StoragePacked"),
         (*texels_through_buffer != 0, "TexelsThroughBuffer"),
         (!decoded.is_empty(), "NormAsInteger"),

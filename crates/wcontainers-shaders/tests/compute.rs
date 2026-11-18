@@ -155,5 +155,5 @@ fn typed_buffers_convert_for_every_format_through_storage() {
     assert_eq!(refused(&k), "TypedBufferAtomicFormat");
     let mut k = plain;
     k.texel_buffers = TexelBufferRoute::Texture;
-    assert_eq!(refused(&k), "TexelBufferAsTexture");
+    assert_eq!(refused(&k), "TypedBufferStorageAsTexture");
 }

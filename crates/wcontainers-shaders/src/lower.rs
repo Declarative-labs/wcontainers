@@ -574,13 +574,16 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// A typed buffer, read through a storage buffer of words by the variant's route: its format
-    /// from the variant (the bound view's), its words atomic where an atomic operation uses them or
-    /// where elements narrower than a word are written.
+    /// A typed buffer, read through a storage buffer of words or a 2D texture by the variant's route:
+    /// its format from the variant (the bound view's), its words atomic where an atomic operation uses
+    /// them or where elements narrower than a word are written.
     fn texel_buffer(&mut self, id: u32, op: &Op, storage: bool) -> Result<()> {
-        if self.variant.texel_buffers != TexelBufferRoute::Storage {
-            return Err(unsupported("TypedBuffer"));
-        }
+        let texture = match self.variant.texel_buffers {
+            TexelBufferRoute::Native => return Err(unsupported("TypedBuffer")),
+            TexelBufferRoute::Storage => false,
+            TexelBufferRoute::Texture if !storage => true,
+            TexelBufferRoute::Texture => return Err(unsupported("TypedBufferStorageAsTexture")),
+        };
         if self.stage == SourceStage::Geometry {
             return Err(unsupported("TypedBufferInGeometry"));
         }
@@ -611,7 +614,18 @@ impl<'a> Lowering<'a> {
             None if written && TexelBuffer::narrow(layout.2) => Some(Scalar::U32),
             None => None,
         };
-        let words = TexelBuffer::words(&mut self.module, atomic);
+        let ty = if texture {
+            self.ty(TypeInner::Image {
+                dim: ImageDimension::D2,
+                arrayed: false,
+                class: ImageClass::Sampled {
+                    kind: declared.kind,
+                    multi: false,
+                },
+            })
+        } else {
+            TexelBuffer::words(&mut self.module, atomic)
+        };
         let read_only = !storage || op.lits.get(4).is_some_and(|f| f & 2 != 0);
         let access = if read_only {
             naga::StorageAccess::LOAD
@@ -623,8 +637,12 @@ impl<'a> Lowering<'a> {
         } else {
             SlotKind::Texture
         };
-        let space = AddressSpace::Storage { access };
-        self.resource_in(id, op, slot, words, space, None, false)?;
+        let space = if texture {
+            AddressSpace::Handle
+        } else {
+            AddressSpace::Storage { access }
+        };
+        self.resource_in(id, op, slot, ty, space, None, false)?;
         let var = self.resources[&id].var;
         let binding = self.module.global_variables[var].binding.unwrap().binding;
         let stage = match self.stage {
@@ -632,7 +650,7 @@ impl<'a> Lowering<'a> {
             SourceStage::Pixel => ShaderStage::Fragment,
             _ => ShaderStage::Compute,
         };
-        let buffer = TexelBuffer::declared(var, layout, atomic, stage, self.set, binding);
+        let buffer = TexelBuffer::declared(var, layout, atomic, texture, stage, self.set, binding);
         self.texels.insert(id, buffer);
         Ok(())
     }
