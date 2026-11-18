@@ -44,6 +44,8 @@ this front already gave); the merged tree linted with warnings denied on the des
   now stops at a pixel shader declaring `Texture2DMSArray` (`MultisampledArrayTexture`, shaders
   track; Asked).
 - Module size (release, on the desktop): see Measurements.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (17.8 GB, both builds,
+  debug and release) and the checkout's own target (698 MB, from `cargo check`) were deleted.
 - Resolves name a swap chain buffer's sRGB twin as DXGI's targets do (the Tool Kit's
   DeviceResources resolves its MSAA target into the `B8G8R8A8_UNORM` back buffer as
   `B8G8R8A8_UNORM_SRGB`): atg-simplemsaa_pc went from whole frames wrong (the resolve dropped)
