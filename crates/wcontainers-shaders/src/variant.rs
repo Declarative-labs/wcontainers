@@ -18,6 +18,7 @@ use wcontainers_gpu::{
 use crate::ConvertError;
 
 mod constants;
+mod filter;
 mod pull;
 
 type Result<T> = core::result::Result<T, ConvertError>;
@@ -41,7 +42,12 @@ pub(crate) fn apply(
         draw_arguments(module, reflection, &mut outlined)?;
     }
     let mut clamps = Vec::new();
-    if variant.lod_bias != 0 || variant.min_lod_clamped != 0 || variant.mirror_once_in_shader != 0 {
+    if variant.lod_bias != 0
+        || variant.min_lod_clamped != 0
+        || variant.mirror_once_in_shader != 0
+        || variant.filter_in_shader != 0
+        || variant.border_in_shader != 0
+    {
         samples(
             module,
             stage,
@@ -273,8 +279,6 @@ fn helper(
         group: HELPER_SET,
         binding: helper_binding(stage),
     };
-    let align = if size > 8 { 16 } else { size };
-    let offset = reflection.helper_size.next_multiple_of(align);
     let found = module
         .global_variables
         .iter()
@@ -287,6 +291,15 @@ fn helper(
         },
         None => Vec::new(),
     };
+    // Packed after the last member's end, not the block's padded size, as std140 packs a uniform
+    // block (GLSL ES reads the block by those rules, not by the offsets the module gives).
+    let end = members
+        .iter()
+        .map(|m| m.offset + module.types[m.ty].inner.size(module.to_ctx()))
+        .max()
+        .unwrap_or(0);
+    let align = if size > 8 { 16 } else { size };
+    let offset = end.next_multiple_of(align);
     members.push(StructMember {
         name: Some(helper_name(value)),
         ty,
@@ -324,9 +337,44 @@ fn helper(
     (var, index)
 }
 
+/// The member of the stage's helper block for `value`, made by [`helper`] when it is not there yet.
+fn helper_once(
+    module: &mut Module,
+    reflection: &mut Reflection,
+    stage: ShaderStage,
+    value: HelperValue,
+    ty: Handle<Type>,
+    size: u32,
+) -> HelperMember {
+    if reflection.helpers.iter().any(|s| s.value == value) {
+        let binding = naga::ResourceBinding {
+            group: HELPER_SET,
+            binding: helper_binding(stage),
+        };
+        let name = helper_name(value);
+        let found = module
+            .global_variables
+            .iter()
+            .find(|(_, g)| g.binding == Some(binding))
+            .and_then(|(g, var)| match &module.types[var.ty].inner {
+                TypeInner::Struct { members, .. } => members
+                    .iter()
+                    .position(|m| m.name.as_deref() == Some(name.as_str()))
+                    .map(|i| (g, i as u32)),
+                _ => None,
+            });
+        if let Some(at) = found {
+            return at;
+        }
+    }
+    helper(module, reflection, stage, value, ty, size)
+}
+
 fn helper_name(value: HelperValue) -> String {
     match value {
         HelperValue::LodBias { sampler } => format!("lod_bias_{sampler}"),
+        HelperValue::BorderColor { sampler } => format!("border_{sampler}"),
+        HelperValue::SamplerState { sampler } => format!("sampler_{sampler}"),
         HelperValue::TextureLevels { texture } => format!("levels_{texture}"),
         HelperValue::TextureSamples { texture } => format!("samples_{texture}"),
         HelperValue::MinLod { texture } => format!("min_lod_{texture}"),
@@ -1431,6 +1479,8 @@ fn draw_arguments(
 struct Outlined {
     callees: Vec<(String, Function)>,
     sites: Vec<Site>,
+    /// Library functions the callees call, put ahead of them.
+    library: filter::Library,
 }
 
 /// An expression to be replaced by a call: which function holds it (an index into the module's
@@ -1463,6 +1513,10 @@ impl Outlined {
         }
         let old = core::mem::take(&mut module.functions);
         let count = old.len();
+        // The library first, at the handles its callers were given.
+        for f in self.library.ahead.into_inner() {
+            module.functions.append(f, Span::UNDEFINED);
+        }
         let mut handles = Vec::new();
         for (_, f) in self.callees {
             handles.push(module.functions.append(f, Span::UNDEFINED));
@@ -1471,21 +1525,26 @@ impl Outlined {
         for f in old.into_inner() {
             moved.push(module.functions.append(f, Span::UNDEFINED));
         }
-        let remap = |h: &mut Handle<naga::Function>| *h = moved[h.index()];
-        each_function(module, |f| {
+        let remap = |f: &mut Function| {
             for (_, e) in f.expressions.iter_mut() {
                 if let Expression::CallResult(callee) = e {
-                    remap(callee);
+                    *callee = moved[callee.index()];
                 }
             }
             each_block(&mut f.body, &mut |b: &mut Block| {
                 for s in b.iter_mut() {
                     if let Statement::Call { function, .. } = s {
-                        remap(function);
+                        *function = moved[function.index()];
                     }
                 }
             });
-        });
+        };
+        for &h in &moved {
+            remap(&mut module.functions[h]);
+        }
+        for ep in &mut module.entry_points {
+            remap(&mut ep.function);
+        }
         for (owner, h, callee, arguments) in self.sites {
             let f = if owner < count {
                 &mut module.functions[moved[owner]]
@@ -1629,11 +1688,19 @@ fn samples(
         owner: usize,
         h: Handle<Expression>,
         sampler: u32,
+        image: Handle<GlobalVariable>,
+        texture: Option<u32>,
         biased: bool,
         clamped: Option<(u32, Handle<Type>)>,
         mirrored: bool,
+        /// Filtered in the program: by its texture (`filter_in_shader`) or its sampler
+        /// (`border_in_shader`).
+        filtered: Option<bool>,
     }
     let mut sites = Vec::new();
+    // Pairs sampled natively and pairs only filtered in the program, which leave the reflection.
+    let mut native = Vec::new();
+    let mut unpaired = Vec::new();
     for (owner, f) in owners(module) {
         for (h, e) in f.expressions.iter() {
             let Expression::ImageSample {
@@ -1650,23 +1717,41 @@ fn samples(
                 continue;
             };
             let t = global_of(f, image).ok_or(ConvertError::Unsupported("TextureArgument"))?;
-            let clamped = register_of(module, reflection, t, SlotKind::Texture)
+            let texture = register_of(module, reflection, t, SlotKind::Texture);
+            let clamped = texture
                 .filter(|&r| r < 128 && variant.min_lod_clamped & (1 << r) != 0)
                 .map(|r| (r, module.global_variables[g].ty));
-            let biased = gather.is_none() && variant.lod_bias & (1 << s) != 0;
+            let biased = gather.is_none() && s < 16 && variant.lod_bias & (1 << s) != 0;
             let mirrored = s < 16 && variant.mirror_once_in_shader & (1 << s) != 0;
-            if biased || clamped.is_some() || mirrored {
+            let by_texture =
+                texture.is_some_and(|r| r < 128 && variant.filter_in_shader & (1 << r) != 0);
+            let by_sampler = s < 16 && variant.border_in_shader & (1 << s) != 0;
+            let filtered = (by_texture || by_sampler).then_some(by_texture);
+            if let Some(r) = texture {
+                if filtered.is_some() {
+                    unpaired.push((r, s));
+                } else {
+                    native.push((r, s));
+                }
+            }
+            if biased || clamped.is_some() || mirrored || filtered.is_some() {
                 sites.push(Site {
                     owner,
                     h,
                     sampler: s,
+                    image: t,
+                    texture,
                     biased,
                     clamped,
                     mirrored,
+                    filtered,
                 });
             }
         }
     }
+    reflection
+        .sampled_pairs
+        .retain(|p| native.contains(p) || !unpaired.contains(p));
     let mut biases: Vec<(u32, (Handle<GlobalVariable>, u32))> = Vec::new();
     let mut states: Vec<(u32, HelperMember)> = Vec::new();
     let mut merged: Vec<(usize, Handle<GlobalVariable>)> = Vec::new();
@@ -1685,6 +1770,30 @@ fn samples(
                     h
                 }
             });
+        if let Some(by_texture) = site.filtered {
+            let state = sampler_state_helper(module, reflection, stage, site.sampler, &mut states);
+            let clamp = site
+                .clamped
+                .map(|(texture, _)| min_lod_helper(module, reflection, stage, texture, clamps));
+            filter::sample(
+                module,
+                stage,
+                variant.flags,
+                reflection,
+                outlined,
+                (site.owner, site.h),
+                filter::Sources {
+                    image: site.image,
+                    texture: site.texture,
+                    sampler: site.sampler,
+                    by_texture,
+                    state,
+                    bias: bias_at,
+                    clamp,
+                },
+            )?;
+            continue;
+        }
         let f = function(module, site.owner).clone();
         let Expression::ImageSample {
             image,
@@ -2241,7 +2350,6 @@ fn texture_info(
             sites.push((owner, h, r, samples));
         }
     }
-    let mut helpers: Vec<(HelperValue, (Handle<GlobalVariable>, u32))> = Vec::new();
     for (owner, h, texture, samples) in sites {
         let value = if samples {
             HelperValue::TextureSamples { texture }
@@ -2249,14 +2357,7 @@ fn texture_info(
             HelperValue::TextureLevels { texture }
         };
         let u32_ty = scalar(module, Scalar::U32);
-        let at = match helpers.iter().find(|(v, _)| *v == value) {
-            Some((_, at)) => *at,
-            None => {
-                let at = helper(module, reflection, stage, value, u32_ty, 4);
-                helpers.push((value, at));
-                at
-            }
-        };
+        let at = helper_once(module, reflection, stage, value, u32_ty, 4);
         let mut callee = Function {
             name: Some(helper_name(value)),
             result: Some(FunctionResult {

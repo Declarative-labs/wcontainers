@@ -2051,7 +2051,8 @@ against the same Rust from the start; back ends never read them.
   bias, both at offset 0 of their blocks, never meet. The front writes each block with
   `write_buffer_ring` when one of its values changed and binds both in set 3; a value both stages need
   (a storage offset of a Direct3D 12 range visible to all stages) is written into each. The values: storage offset remainders, samplers' level-of-detail bias,
-  border colour and state (for filtering and addressing in the program), texture level and sample
+  border colour and state and the components of a texture's format (for filtering and addressing in
+  the program), texture level and sample
   counts where the back end's language cannot ask (`TEXTURE_INFO`), depth bias, pulled streams' offset, stride and step,
   the sample mask, packed storage offsets, the texel layout of storage views read through a buffer,
   how each target combined in the program blends, the early tests a program runs itself, a texture's

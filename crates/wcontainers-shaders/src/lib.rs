@@ -128,8 +128,8 @@ fn contained<T>(f: impl FnOnce() -> Result<T, ConvertError>) -> Result<T, Conver
 fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), ConvertError> {
     let VariantKey {
         flags,
-        filter_in_shader,
-        border_in_shader,
+        filter_in_shader: _,
+        border_in_shader: _,
         mirror_once_in_shader: _,
         lod_bias: _,
         constants_as_storage: _,
@@ -161,8 +161,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         return Err(ConvertError::Unsupported(name));
     }
     let asked = [
-        (*filter_in_shader != 0, "FilterInShader"),
-        (*border_in_shader != 0, "BorderInShader"),
         (!storage_formats.is_empty(), "StorageFormats"),
         (
             *texel_buffers != TexelBufferRoute::Native,
