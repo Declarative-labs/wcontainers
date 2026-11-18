@@ -909,3 +909,30 @@ fn atomics_of_the_other_signedness_are_exchange_loops() {
         }
     }
 }
+
+/// Every storage view (not the counters) gives its element's size, by both routes; reading views from
+/// an offset (`STORAGE_OFFSET`) is refused by name until it is built.
+#[test]
+fn storage_bindings_give_their_stride_and_offsets_are_refused() {
+    let code = own_pair("cs_atomics");
+    for c in both(&code, &VariantKey::default()) {
+        let storage: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .filter(|b| b.kind == SlotKind::Storage)
+            .collect();
+        assert_eq!(storage.len(), 5, "{:?}", c.reflection.bindings);
+        assert!(storage.iter().all(|b| b.stride == 4), "{storage:?}");
+    }
+    let key = VariantKey {
+        flags: VariantFlags::STORAGE_OFFSET,
+        ..Default::default()
+    };
+    for source in [Source::Dxbc(&code[0]), Source::Dxil(&code[1])] {
+        assert!(matches!(
+            convert(source, &key, None),
+            Err(ConvertError::Unsupported("StorageOffset"))
+        ));
+    }
+}

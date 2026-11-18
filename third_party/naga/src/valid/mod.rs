@@ -241,6 +241,7 @@ impl Capabilities {
             Self::COOPERATIVE_MATRIX => Some(Ext::WgpuCooperativeMatrix),
             Self::RAY_TRACING_PIPELINE => Some(Ext::WgpuRayTracingPipeline),
             Self::PER_VERTEX => Some(Ext::WgpuPerVertex),
+            Self::SUBGROUP => Some(Ext::Subgroups),
             Self::BUFFER_BINDING_ARRAY
             | Self::BUFFER_BINDING_ARRAY_NON_UNIFORM_INDEXING
             | Self::STORAGE_BUFFER_BINDING_ARRAY

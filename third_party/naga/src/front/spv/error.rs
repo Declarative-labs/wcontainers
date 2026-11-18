@@ -83,6 +83,8 @@ pub enum Error {
     UnsupportedImageWriteOperand(u32),
     #[error("unsupported memory access {0:#x} outside workgroup memory")]
     UnsupportedMemoryAccess(u32),
+    #[error("unsupported memory operand {mask:#x} at scope {scope}, wider than the workgroup")]
+    UnsupportedMemoryScope { mask: u32, scope: u32 },
     #[error("invalid parameter {0:?}")]
     InvalidParameter(spirv::Op),
     #[error("invalid operand count {1} for {0:?}")]

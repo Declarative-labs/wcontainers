@@ -20,6 +20,7 @@ use crate::ConvertError;
 mod constants;
 mod filter;
 mod layers;
+pub(crate) mod offset;
 pub(crate) mod pull;
 mod swizzle;
 pub(crate) mod texel;

@@ -21,7 +21,7 @@ ps_dual.dxil	ok
 ps_fill.dxil	ok-wgsl glsl-compile
 ps_filter.dxil	ok-wgsl glsl-compile
 ps_ftoi.dxil	ok
-ps_gatheroff.dxil	spirv-reader unsupported
+ps_gatheroff.dxil	ok-wgsl glsl-compile
 ps_halves.dxil	ok-wgsl glsl-write
 ps_helper.dxil	ok-wgsl glsl-write
 ps_ids.dxil	ok
@@ -44,6 +44,7 @@ ps_table.dxil	ok
 ps_texels.dxil	unsupported TypedBufferFormatKind
 ps_textured.dxil	ok
 ps_twospaces.dxil	ok
+ps_wave.dxil	ok-wgsl glsl-write
 vs_carry.dxil	ok
 vs_clip.dxil	ok-wgsl glsl-compile
 vs_deep.dxil	ok
