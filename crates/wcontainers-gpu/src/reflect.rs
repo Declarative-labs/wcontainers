@@ -651,17 +651,27 @@ mod tests {
 
     #[test]
     fn a_bindings_slot_is_its_place_in_its_kinds_range() {
-        for kind in [SlotKind::Uniform, SlotKind::Texture, SlotKind::Counter] {
-            let b = ReflectedBinding {
-                kind,
-                space: 0,
-                register: 0,
-                count: 1,
-                set: 1,
-                binding: kind.binding(5).unwrap(),
-                added: None,
-            };
-            assert_eq!(b.slot(), 5);
+        let kinds = [
+            SlotKind::Uniform,
+            SlotKind::Sampler,
+            SlotKind::Texture,
+            SlotKind::Storage,
+            SlotKind::Counter,
+        ];
+        for kind in kinds {
+            for slot in 0..kind.slots() {
+                let b = ReflectedBinding {
+                    kind,
+                    space: 0,
+                    register: 0,
+                    count: 1,
+                    set: 1,
+                    binding: kind.binding(slot).unwrap(),
+                    added: None,
+                };
+                assert_eq!(b.slot(), slot, "{kind:?}");
+            }
+            assert_eq!(kind.binding(kind.slots()), None, "{kind:?}");
         }
     }
 
