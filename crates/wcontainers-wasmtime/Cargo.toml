@@ -31,6 +31,8 @@ blake3 = "1"
 
 [dev-dependencies]
 wcontainers-arm64 = { path = "../wcontainers-arm64" }
+# Copies the test process with fork, as the kernel tests' saves do.
+libc = "0.2.191"
 
 [lints]
 workspace = true

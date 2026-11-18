@@ -166,3 +166,46 @@ fn a_back_end_brought_back_holds_the_same_and_translates_again() {
         .unwrap();
     assert_eq!(load(&mut back, memory, SHOWN + PAGE_SIZE), 9);
 }
+
+/// In a copy of this process made by fork, which holds only the forking thread, a back end brought
+/// back translates and compiles new code in its own pool and runs it.
+#[test]
+fn a_back_end_brought_back_in_a_copy_of_the_process_compiles_there() {
+    let mut cpu = CpuSide::<Arm64>::new(Compiler::new(None), LookAhead::Full, Optimise::Speed, ());
+    let (memory, _) = parent(&mut cpu);
+    let thread = cpu.thread_new(memory).unwrap();
+    // Rayon's global pool has threads here, which the copy will not have.
+    rayon::join(|| {}, || {});
+    // SAFETY: the copy only runs the back end and leaves with `_exit`.
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0, "fork");
+    if child == 0 {
+        let mut back = cpu.restored();
+        let value = run(&mut back, thread, HEAP + 11 * PAGE_SIZE);
+        let compiled = back
+            .translated()
+            .iter()
+            .any(|t| matches!(t.origin, Origin::Made { .. }));
+        // SAFETY: ends the copy without running anything of the parent's.
+        unsafe { libc::_exit(if value == 12 && compiled { 0 } else { 1 }) };
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let mut status = 0;
+    loop {
+        // SAFETY: waits for the copy made above.
+        let done = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
+        if done == child {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            // SAFETY: the copy made above.
+            unsafe { libc::kill(child, libc::SIGKILL) };
+            panic!("the copy did not finish in 120 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+        "status {status:#x}"
+    );
+}
