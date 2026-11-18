@@ -255,7 +255,8 @@ pub enum SlowPath {
     /// as points in list order, one draw per run of consecutive vertices, with indices read back first.
     CaptureExpanded,
     /// A copy between regions of one subresource (as Vulkan and OpenGL allow) made through a
-    /// temporary buffer, where the API copies only between different subresources.
+    /// temporary buffer (or, for depth and stencil, a temporary texture), where the API copies only
+    /// between different subresources.
     CopyWithinTexture,
     /// Pixel shader invocations counted by drawing each draw again, with the depth and stencil tests
     /// off, through a program adding to a counter, where the back end has no statistics queries.

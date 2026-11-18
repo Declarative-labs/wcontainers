@@ -236,8 +236,11 @@ Recording:
   `CopyTextureRegion` need different subresources); WebGPU forbids a buffer as both source and
   destination, so its back end copies through a temporary buffer (`CopyWithinBuffer`). WebGL 2 copies
   within one buffer natively. Likewise `copy_texture` may copy between non-overlapping regions of one
-  subresource (`vkCmdCopyImage`, `glCopyImageSubData`); WebGPU refuses one subresource as both, so its
-  back end copies through a buffer (`CopyWithinTexture`).
+  subresource (`vkCmdCopyImage`, `glCopyImageSubData`), in every format, depth and stencil too; WebGPU
+  refuses one subresource as both, so its back end copies through a buffer, and a depth or stencil
+  region (which it cannot copy into from a buffer) through a temporary texture of the same format by
+  the routes above, the copy in and the copy out (`CopyWithinTexture`). Direct3D's copies of depth
+  and stencil take whole subresources, so only the OpenGL and Vulkan fronts will ask for this.
 - `submit() -> Fence`, `fence_done(&fence)`, `wait_fence(&fence)`.
 
 Bytes out:
@@ -275,7 +278,10 @@ Fast paths, all in the crate with their defaults:
   once it has grown.
 - `prepare(&PrepareDesc)`: a combination of blocks, target formats and topology to build ahead of its
   first draw. Default: nothing (the first draw builds it). WebGPU overrides it with
-  `createRenderPipelineAsync`.
+  `createRenderPipelineAsync`. It names no index format: Direct3D 11, OpenGL and Vulkan bind the index
+  buffer at the draw, not with the state, so no front knows it when it prepares. A back end whose
+  pipeline holds the index format of strips (WebGPU's `stripIndexFormat`) prepares a strip topology for
+  both formats.
 - `clear_texture(&texture, &TextureDesc, format, mips, layers, ClearValue)`: levels and layers (depth
   slices of a 3D texture) seen in the texture's format or its sRGB twin. Default: for each level and
   layer or slice, a view to draw into of that level and layer (which every back end makes, 4.2) and a
@@ -1395,8 +1401,12 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   Exact. A pixel shader reading its layer or viewport index reads the run's (`HelperValue::Layer`,
   `HelperValue::Viewport`; zero where no earlier stage writes one). The layer or viewport from the vertex shader (an optional Direct3D 11.3 capability) is
   reported absent. Several viewports: `MultiViewportSplit`.
-- Vertex input: every format can be named (`VertexFormat` has every component count of every type);
-  WebGPU's missing ones are fetched in the program or converted (`VertexFormatConverted`). Step rates
+- Vertex input: every format can be named (`VertexFormat` has every component count of every type),
+  and every back end takes every one, converting what its API lacks itself (WebGPU: a shadow stream a
+  compute program makes at the first draw reading the buffer through that layout, kept until the
+  buffer is written; `VertexFormatConverted`). So no capability lists vertex formats, and a front
+  fetches in the program only for its own reasons (step rates, below; integers read with the other
+  signedness). Step rates
   other than one instance: natively where the back end has `INSTANCE_STEP_RATE` (WebGL 2's divisor),
   otherwise `InstanceRateInShader`. Direct3D reads zero past the end of a vertex buffer:
   for draws without indices the front draws the part past the end with a zero buffer bound
@@ -1817,8 +1827,8 @@ converted vertex shader.
   answer is copied from the mapped range into guest memory by `finish_read`.
 - In the back end itself: fans and loops by the default conversion; unaligned buffer writes, copies and
   clears (`UnalignedBufferEdge`); passes without targets on its own attachment; formats WebGPU lacks
-  (three-component 8 and 16-bit vertex formats, B5G6R5 and other 16-bit packed formats, A8) converted on
-  upload (`VertexFormatConverted`, `FormatConverted`); BC textures decoded where `BLOCK_COMPRESSION` is
+  (three-component 8 and 16-bit vertex formats, read through shadow streams; B5G6R5 and other 16-bit
+  packed formats, A8, converted on upload) (`VertexFormatConverted`, `FormatConverted`); BC textures decoded where `BLOCK_COMPRESSION` is
   absent, and the packed-pair formats `Rgbg8Unorm` and `Grgb8Unorm` always, with host blocks for copies
   and read backs (`BlockDecoded`, `HostCopyReadBack`); copies
   between a BC and an uncompressed texture of the same block size, and between formats of one typeless
@@ -2085,8 +2095,9 @@ against the same Rust from the start; back ends never read them.
   `AddressMode`, which converted programs and so the cache keep) and the components of a texture's
   format (`Format::components`) (for filtering and addressing in the program), texture level and sample
   counts where the back end's language cannot ask (`TEXTURE_INFO`), depth bias, pulled streams' offset, stride and step,
-  the sample mask, packed storage offsets, the texel layout of storage views read through a buffer, where a typed buffer view read
-  through a storage buffer starts and how many elements it has,
+  the sample mask, packed storage offsets, the texel layout of storage views read through a buffer (pitches
+  and the view's size), where a typed buffer view read through a storage buffer or a texture starts and how
+  many elements it has, the layer and viewport of the draw's run,
   how each target combined in the program blends, the early tests a program runs itself, a texture's
   minimum level-of-detail clamp, the viewport adjustment, and the draw's bases or where an indirect
   draw's arguments are (`DrawBase`, `DrawArguments`) (`HelperValue`). Set 3 also holds the
