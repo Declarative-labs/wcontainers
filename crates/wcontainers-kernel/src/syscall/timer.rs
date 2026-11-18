@@ -75,7 +75,8 @@ struct Timer {
     overrun: u64,
     overrun_last: u64,
     /// Intervals that passed before the kernel's clock began, for a timer set to a time on the
-    /// wall clock from before then: its first expiry counts them with its own.
+    /// wall clock from before then: counted with those its first expiry missed (a POSIX timer's
+    /// overrun when it fires, a descriptor's ticks when they are read).
     credit: u64,
     /// A descriptor's expirations not yet read, and whether it fired and waits to be rearmed by a
     /// read.
@@ -352,7 +353,6 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
     };
     let clock_now = now(kernel, timer.clock).unwrap_or(expires);
     kernel.timers.disarm(id);
-    let credit = core::mem::take(&mut kernel.timers.all.get_mut(&id).expect("timer").credit);
     match timer.owner {
         Owner::Posix {
             pid,
@@ -364,7 +364,7 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
             let periodic = timer.interval > 0;
             let entry = kernel.timers.all.get_mut(&id).expect("timer");
             entry.expires = periodic.then_some(expires);
-            entry.overrun += credit;
+            entry.overrun += core::mem::take(&mut entry.credit);
             let (target, signal, value) = match notify {
                 Notify::None => return,
                 Notify::Process { signal, value } => (None, signal, value),
@@ -419,7 +419,7 @@ fn fire(kernel: &mut Kernel, cx: &mut Context<'_>, id: u64) {
             // Rearmed by the read that takes its ticks (`timerfd_read_iter`).
             let timer = kernel.timers.all.get_mut(&id).expect("timer");
             timer.expires = Some(expires);
-            timer.ticks += 1 + credit;
+            timer.ticks += 1;
             timer.expired = true;
             let _ = clock_now;
             if let Some(file) = file.upgrade() {
@@ -1178,7 +1178,7 @@ fn catch_up(kernel: &mut Kernel, id: u64) {
     let (count, next) = forward(expires, clock_now, timer.interval);
     kernel.timers.arm(id, next);
     let timer = kernel.timers.all.get_mut(&id).expect("timer");
-    timer.ticks += count.saturating_sub(1);
+    timer.ticks += count.saturating_sub(1) + core::mem::take(&mut timer.credit);
     timer.expired = false;
 }
 
