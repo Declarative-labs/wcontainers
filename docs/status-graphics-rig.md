@@ -7,11 +7,13 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) and R1 (the
 Direct3D reference library) are done and checked. R2 (keeping the owner's PC safe, and what the
-Direct3D 12 track waits for), three runs on 2026-11-17 and 18: the findings of R1's last check
-and of R2's first check are fixed; the display driver resets are traced and the queue now
-protects the PC from them, failed logons are recorded as they happen, Chrome's wrapper comes back
-with every Chrome install, and every script keeps one SSH connection per branch (see "The owner's
-PC" below). The forwarding library stands in for d3d12.dll as well as d3d11.dll: every Direct3D
+Direct3D 12 track waits for), four runs on 2026-11-17 and 18: the findings of R1's last check
+and of R2's checks are fixed; the display driver resets are traced and the queue now protects
+the PC from them (a watcher holds the queue the moment Windows logs a reset, every job that saw
+one is quarantined, and remote commands never run beside a job of a kind that resets it), failed
+logons are recorded as they happen, Chrome's wrapper comes back with every Chrome install, and
+every script keeps one SSH connection per branch, with refused attempts bounded across all
+branches (see "The owner's PC" below). The forwarding library stands in for d3d12.dll as well as d3d11.dll: every Direct3D
 12 scene passes through it, and it counts a Direct3D 12 program's device, queue, command list,
 factory and swap chain calls and saves its frames, so bgfx's Direct3D 12 renderer, Godot's
 Forward+ renderer on Direct3D 12 and two of Microsoft's Direct3D 12 samples are compared frame by
@@ -1294,6 +1296,49 @@ ours; Mac load average 45 to 70):
   logs kept): `scenes blend draws` 12 passed; `programs run d3d12-hello-triangle
   bgfx-38-bloom-d3d12` both pass (the sample's census matching its .expected file).
 
+R2 fourth run (2026-11-18, from 01:10; desktop reachable throughout, other tracks' jobs beside
+ours; Mac load average about 60 to 65):
+- The new hazard.ps1 checked first on a scratch copy (scratch r2run4/sim.ps1 and sim.log; its
+  logs, quarantine, slot and a stand-in pueue under C:\wc\scratch-r2run4, deleted after), 22
+  checks, all pass: two jobs that see one reset are both quarantined (the independent check's
+  case), one whose Wine test narrowed itself is not, an older remote.ps1 passing a number is;
+  dxgi_test.exe, dxgi_test and DXGI_TEST.EXE are refused while a dxgi test is quarantined,
+  d3d11_test.exe and wine-run.ps1 are not; a job waits for the two remote commands holding the
+  slot (3.2 s), a remote command waits while a job holds it and while one wants it, and goes on
+  after; loading hazard.ps1 from C:\wc\incoming takes the slot and from elsewhere does not; the
+  watcher's query matches the 24 Display and nvlddmkm events of 2026-11-17 in the System log (8
+  of them 4101), and run on a record of the 20:37:38 reset it held the (scratch) queue and named
+  the running hazard job and remote command, not the ended one. Every desktop script parses.
+- Live, after `setup-desktop` installed it at 01:28: `resets suspect "echo r2d harmless suspect"`,
+  then `gpu-job -- "echo r2d harmless suspect&& rem C:\wc\out\elsewhere"` and `remote "echo r2d
+  harmless suspect"` were refused (125) naming the quarantine; `gpu-job -- "echo
+  C:\wc\wine\build\dxgi_test.exe"` and `remote "echo dxgi_test"` were refused naming the
+  quarantined dxgi test; `gpu-job -- "echo d3d11_test.exe is allowed"` was not refused by the
+  quarantine. Lifted after. Remote commands of this branch waited for other tracks' hazard jobs
+  several times ("remote: waiting for a GPU job ...").
+- `queue-check`: the first try failed one rule; 13 of its sleep jobs failed with 125 (the job's
+  wrapper), one after waiting 6.6 minutes, while no job of any track started for 7 minutes; their
+  messages were deleted with the check's folder, so the cause is not known (no reset, no change of
+  the checkout). The second try (outputs kept) passed all but "a job submitted during an alone job
+  started after it ended": another track's alone job ended and resumed the groups while ours was
+  queued, so a job started between them. Fixed (an ending alone job leaves the groups held for the
+  next queued one), and the wrapper's own failures now go into jobs.log. Third try: all six pass.
+- `programs run --census` of the six Direct3D 12 programs, twice (a job each): all pass, frames
+  as before, no "entries changed" line (the first try had one on every table: the check still
+  stepped by the old thunk length; fixed). The samples: Reset 239, Close 240, ExecuteCommandLists
+  239, of which the graphics libraries' 119 each, so the program's own 120, 121 and 120, matching
+  their .expected files (ExecuteCommandLists added, from source lines 265 and 335). With
+  `--dll dxgi.dll=C:\Windows\System32\dxgi.dll` (dxgi.dll loaded from the program's directory),
+  both samples and godot-platformer-2d-d3d12 pass, the libraries' line still there. With one
+  line changed to Reset 121 the run failed: "census has command-list Reset 120 from the program
+  (239 less 119 from the graphics libraries) where it makes 121". Godot 3D's device AddRef was
+  2525 and 2549 in the two runs; bgfx-01-cubes-d3d12's Wait 591 against 590 committed.
+- Unit tests through `remote` after the census change: 3 of the forwarding crate pass (a copied
+  table, the thunks' layout, the census's own calls left out on its thread only), clippy clean.
+- The reset record was checked against the System and Application logs and each checkout's
+  reflog on the desktop (scratch r2run4/resets-context.txt, resets-summary.txt, dred.txt); the
+  failed logons of FakeUser against the Security and OpenSSH logs (fakeuser.txt).
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -1488,6 +1533,10 @@ There is no plan document in this checkout; these depart from the task or brief 
   the corpus for the shader track now holds 4_0, 4_1 and 5_0 bytecode.
 - Texts hold only facts every correct implementation shares; values the implementation chooses
   (timestamps, helper pixel invocations, append order) are recorded as facts about them or sorted.
+- Commands sent with `remote` are not queued (they are mostly builds, which need no GPU slot and
+  would take the queue's slots from GPU jobs), but they may reach the GPU, so they share a GPU slot
+  that a job of the kinds seen to reset the driver holds alone: such a job and a remote command
+  never run together. The price is waiting on both sides (Known issues).
 
 ## Known issues
 
@@ -1695,7 +1744,7 @@ under Microsoft's licence terms, Chrome for Testing under Google's terms.
 
 ## Next
 
-R2 is done (third run: the findings of its first check fixed) and waits for its independent
+R2 is done (fourth run: the findings of its second check fixed) and waits for its independent
 check. Open points, for later:
 - Direct3D 12 timestamps are not answered from the frame clock (bgfx's GPU time line is left out
   instead); only the two samples have a census checked against their source.
