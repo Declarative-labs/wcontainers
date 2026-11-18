@@ -412,6 +412,33 @@ static void dgram_disconnects(void) {
     close(c);
 }
 
+// Reads of no bytes from a local stream, with and without an urgent byte queued after others:
+// a peek goes on past what it wants to the urgent byte.
+static void zero_reads(void) {
+    static char data[4096], buf[8];
+    for (int oob = 0; oob < 2; oob++)
+        for (int peek = 0; peek < 2; peek++)
+            for (int length = 1; length <= 4096; length *= 4096) {
+                int p[2];
+                socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, p);
+                send(p[0], data, length, oob ? MSG_OOB : 0);
+                printf("urgent %d peek %d length %d: ", oob, peek, length);
+                result("no bytes", recv(p[1], buf, 0, (peek ? MSG_PEEK : 0) | MSG_DONTWAIT));
+                result("then", recv(p[1], buf, sizeof buf, MSG_DONTWAIT));
+                close(p[0]);
+                close(p[1]);
+            }
+    // A peek of exactly the first buffer's bytes, with an urgent byte after.
+    int p[2];
+    socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, p);
+    send(p[0], "abc", 3, 0);
+    send(p[0], "de", 2, MSG_OOB);
+    result("peek of the first", recv(p[1], buf, 3, MSG_PEEK | MSG_DONTWAIT));
+    result("peek past it", recv(p[1], buf, 5, MSG_PEEK | MSG_DONTWAIT));
+    close(p[0]);
+    close(p[1]);
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     signal(SIGPIPE, SIG_IGN);
@@ -428,5 +455,6 @@ int main(int argc, char **argv) {
     closed_with_unread();
     all_hosts();
     dgram_disconnects();
+    zero_reads();
     return 0;
 }

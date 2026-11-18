@@ -2279,8 +2279,12 @@ fn receive_stream(
         0
     } as usize;
     let mut index = 0;
+    // A local stream's peek goes on to each next buffer even once it has all it wants
+    // (`unix_stream_read_generic`'s `goto again`), where it stops at the urgent byte or at a
+    // buffer of other credentials or with descriptors.
+    let walk = peek && !is_inet;
     loop {
-        if copied >= size && size > 0 {
+        if copied >= size && size > 0 && !walk {
             break;
         }
         if socket.borrow().queue.get(index).is_some() {
@@ -2417,6 +2421,12 @@ fn receive_stream(
             }
             skip = 0;
             index += 1;
+            if walk {
+                if index >= socket.borrow().queue.len() {
+                    break;
+                }
+                continue;
+            }
         }
         if size == 0 {
             break;
