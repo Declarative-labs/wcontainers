@@ -1921,8 +1921,10 @@ dependencies = [
  "tar",
  "unicorn-engine",
  "wcontainers-abi",
+ "wcontainers-arm64",
  "wcontainers-kernel",
  "wcontainers-runtime",
+ "wcontainers-wasmtime",
  "zerocopy",
 ]
 
