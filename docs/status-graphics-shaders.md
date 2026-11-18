@@ -670,7 +670,11 @@ Next (in order):
 - The WebAssembly build's module differs from the native one for one game shader (Known gaps):
   find which side orders the divide-modulo helper's operations by platform (dxbc-spirv's IR as
   serialised, compared between the two builds, first) and make it deterministic.
-- Storage packing (`storage_packed`); DXIL storage views and typed buffers (naga's SPIR-V reader:
+- Storage packing (`storage_packed`): open question first. The plan says only "packed into one
+  buffer at offsets from the helper constants"; separate guest buffers become one GPU buffer only if
+  the front keeps every storage-capable buffer in one arena (or copies), which is the fronts' memory
+  design, and the binding the packed buffer takes is not named. To settle with the interface track.
+- DXIL storage views and typed buffers (naga's SPIR-V reader:
   image buffers, images without a format), then the through-buffer and typed buffer routes for DXIL.
 - Comparisons in the program (shadow maps with a border colour, very common: WebGPU has no border
   colour): `SamplerState` needs the comparison function (an interface change: a word for it), then
