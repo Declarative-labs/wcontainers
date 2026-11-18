@@ -225,17 +225,19 @@ pub enum BorderColor {
     Custom([u32; 4]),
 }
 
-/// A comparison, for depth and stencil tests and comparison samplers.
+/// A comparison, for depth and stencil tests and comparison samplers. The numbers are the codes
+/// [`crate::HelperValue::EarlyTests`] holds (zero there is a test that is off), which converted
+/// programs (and so the cache) keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CompareFn {
-    Never,
-    Less,
-    Equal,
-    LessEqual,
-    Greater,
-    NotEqual,
-    GreaterEqual,
-    Always,
+    Never = 1,
+    Less = 2,
+    Equal = 3,
+    LessEqual = 4,
+    Greater = 5,
+    NotEqual = 6,
+    GreaterEqual = 7,
+    Always = 8,
 }
 
 /// A sampler to create.
