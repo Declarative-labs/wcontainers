@@ -755,9 +755,9 @@ pub fn a_copy_within_one_subresource_moves_the_region<H: Host>() {
 }
 
 /// The same for the depth and stencil formats a back end copies out, each written with values a
-/// draw writes exactly (float depth in eighths, 16-bit depth and stencil any), and the formats with
-/// both, each aspect read back: a back end whose API copies these only between subresources goes
-/// through a temporary texture of the same format, counted `CopyWithinTexture`.
+/// draw writes exactly (float depth in eighths, 16-bit depth and stencil any), 24-bit depth and the
+/// formats with both, each aspect read back: a back end whose API copies these only between
+/// subresources goes through a temporary texture of the same format, counted `CopyWithinTexture`.
 pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<H: Host>() {
     let mut b = H::make();
     let depth32 = (0..8u32)
@@ -775,17 +775,22 @@ pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<H: Host>(
             copy_within_one_subresource(&mut b, format, texel, bytes);
         }
     }
-    for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
+    for format in [
+        Format::Depth24Plus,
+        Format::Depth24PlusStencil8,
+        Format::Depth32FloatStencil8,
+    ] {
         if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
-            copy_within_one_combined_subresource(&mut b, format);
+            copy_within_one_depth_subresource(&mut b, format);
         }
     }
 }
 
-/// As [`copy_within_one_subresource`] for a format with depth and stencil, whose one copy moves
-/// both aspects: depth written and read in eighths (24-bit depth within one step of 2^-24), stencil
-/// any.
-fn copy_within_one_combined_subresource<B: Backend>(b: &mut B, format: Format) {
+/// As [`copy_within_one_subresource`] for a format whose depth reads back as a value, not its
+/// bytes, and whose one copy moves its stencil too where it has one: depth written and read in
+/// eighths (24-bit depth within one step of 2^-24), stencil any.
+fn copy_within_one_depth_subresource<B: Backend>(b: &mut B, format: Format) {
+    let has_stencil = format != Format::Depth24Plus;
     let t = texture(
         b,
         format,
@@ -815,14 +820,16 @@ fn copy_within_one_combined_subresource<B: Backend>(b: &mut B, format: Format) {
         2,
         WriteMode::Ordered,
     );
-    b.write_texture(
-        &aspect(true),
-        extent(4, 2, 1),
-        &stencil,
-        4,
-        2,
-        WriteMode::Ordered,
-    );
+    if has_stencil {
+        b.write_texture(
+            &aspect(true),
+            extent(4, 2, 1),
+            &stencil,
+            4,
+            2,
+            WriteMode::Ordered,
+        );
+    }
     b.copy_texture(
         &region(&t, 0, 0, 0, 0),
         &region(&t, 0, 0, 2, 0),
@@ -832,7 +839,7 @@ fn copy_within_one_combined_subresource<B: Backend>(b: &mut B, format: Format) {
     let from = |i: usize| if i % 4 >= 2 { i - 2 } else { i };
     let got = read_texture(b, aspect(false), extent(4, 2, 1), 4);
     let step = match format {
-        Format::Depth24PlusStencil8 => 1.0 / 16_777_215.0,
+        Format::Depth24Plus | Format::Depth24PlusStencil8 => 1.0 / 16_777_215.0,
         _ => 0.0,
     };
     for i in 0..8 {
@@ -843,9 +850,11 @@ fn copy_within_one_combined_subresource<B: Backend>(b: &mut B, format: Format) {
             "{format:?} depth of texel {i}: {g}, not {e}"
         );
     }
-    let got = read_texture(b, aspect(true), extent(4, 2, 1), 1);
-    let expected: Vec<u8> = (0..8).map(|i| stencil[from(i)]).collect();
-    assert_eq!(got, expected, "{format:?} stencil");
+    if has_stencil {
+        let got = read_texture(b, aspect(true), extent(4, 2, 1), 1);
+        let expected: Vec<u8> = (0..8).map(|i| stencil[from(i)]).collect();
+        assert_eq!(got, expected, "{format:?} stencil");
+    }
     ok(b);
 }
 

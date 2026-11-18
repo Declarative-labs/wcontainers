@@ -169,12 +169,15 @@ mod web {
         Ok(stamps.line())
     }
 
-    /// The formats held converted, checked on the browser's WebGPU: one line of the largest
-    /// differences, or the failed check.
+    /// The formats held converted, the three-channel ones too, checked on the browser's WebGPU:
+    /// a line of the largest differences and one of the three-channel formats, or the failed
+    /// check.
     #[wasm_bindgen(jspi)]
     pub fn converted(seed: u64, cases: u32) -> Result<String, JsError> {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
-        super::converted::check(&mut b, seed, cases).map_err(js)
+        let line = super::converted::check(&mut b, seed, cases).map_err(js)?;
+        let three = super::converted::three_channels(&mut b, seed, cases).map_err(js)?;
+        Ok(format!("{line}\n{three}"))
     }
 
     /// The vertex formats WebGPU lacks, `n` seeded vertices each, read through shadow streams on

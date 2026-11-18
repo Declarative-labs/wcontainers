@@ -42,7 +42,7 @@ pub enum IndexSource<'a> {
 
 /// Which ring [`Backend::write_buffer_ring`] writes into. Indices have a ring of their own because WebGL 2
 /// never lets one buffer hold both indices and other data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RingKind {
     /// Index values, bound as [`DrawCall::index`].
     Indices,
@@ -51,14 +51,14 @@ pub enum RingKind {
 }
 
 /// The primitive kinds [`Backend::draw_fan_or_loop`] draws.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FanOrLoop {
     TriangleFan,
     LineLoop,
 }
 
 /// A clear value for [`Backend::clear_texture`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ClearValue {
     /// Raw bits: f32 for float formats, the integer for integer formats.
     Color([u32; 4]),

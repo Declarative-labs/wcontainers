@@ -60,9 +60,9 @@ pub fn texture_format(format: Format) -> Option<T> {
         Rgba16Uint => T::Rgba16Uint,
         Rgba16Sint => T::Rgba16Sint,
         Rgba16Float => T::Rgba16Float,
-        Rgba32Uint => T::Rgba32Uint,
-        Rgba32Sint => T::Rgba32Sint,
-        Rgba32Float => T::Rgba32Float,
+        Rgba32Uint | Rgb32Uint => T::Rgba32Uint,
+        Rgba32Sint | Rgb32Sint => T::Rgba32Sint,
+        Rgba32Float | Rgb32Float => T::Rgba32Float,
         Stencil8 => T::Stencil8,
         Depth16Unorm => T::Depth16Unorm,
         Depth24Plus => T::Depth24Plus,
@@ -95,7 +95,6 @@ pub fn texture_format(format: Format) -> Option<T> {
             block: wgpu::AstcBlock::B4x4,
             channel: wgpu::AstcChannel::UnormSrgb,
         },
-        Rgb32Uint | Rgb32Sint | Rgb32Float => return None,
     })
 }
 

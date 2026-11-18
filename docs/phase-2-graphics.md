@@ -1340,7 +1340,10 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
     which WebGPU lets a draw also bind as a texture. The front binds the variant
     `VariantFlags::EARLY_TESTS`: it reads depth at `EARLY_DEPTH_BINDING` and stencil at
     `EARLY_STENCIL_BINDING` in `HELPER_SET` at the fragment's pixel (each covered sample, from the
-    input sample mask, on multisampled targets), applies the draw's compare functions, reference and
+    input sample mask, on multisampled targets; for a format without stencil, any single-sampled
+    unsigned integer texture is bound there, read only where the stencil test is on), applies the
+    draw's compare functions (as `CompareFn`'s numbers, 1 to 8, zero for a test that is off; the
+    cache keeps them, and a `wcontainers-gpu` unit test holds them), reference and
     read mask from `HelperValue::EarlyTests` to the fragment's depth with the raster block's bias added
     (the fixed bias applies after the shader, so the program adds it as `DepthBiasInShader` does), and
     discards before any side effect if no covered sample passes. The fixed tests still run after it on
@@ -1414,9 +1417,12 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   other than one instance: natively where the back end has `INSTANCE_STEP_RATE` (WebGL 2's divisor),
   otherwise `InstanceRateInShader`. Direct3D reads zero past the end of a vertex buffer:
   for draws without indices the front draws the part past the end with a zero buffer bound
-  (`VertexFetchZeroed`), exact; for indexed draws, indices past the end get what WebGPU's robust access
-  gives (zero or a value from inside the buffer), a listed loss, as DXVK has on Vulkan without
-  `robustBufferAccess2`.
+  (`VertexFetchZeroed`), exact; for indexed draws, indices past the end get what WebGPU gives: zero,
+  a value from inside the buffer, or the whole draw cancelled, which WebGPU's index resolution
+  allows (checked: the specification's vertex processing); a listed loss. The exact route is the
+  pulled variant for the draw's streams (`VariantKey::pulled`), which the Vulkan driver takes when
+  its program enables robust access (15.4); here every indexed draw would pay for it, since
+  Direct3D has no such switch.
 - Stream output that transform feedback cannot write as declared (gaps that must leave the buffer's
   bytes alone, several elements per buffer in separate mode) is captured whole into a scratch buffer and
   repacked by a second capture that also reads the destination's old bytes (`StreamOutRepacked`).
@@ -1795,10 +1801,10 @@ lets an implementation omit the 24-bit ones. `vkCmdCopyBuffer` within one buffer
 Direct3D's (4.12). Fractional viewports are native. A viewport whose `minDepth` exceeds `maxDepth` (allowed by Vulkan
 and used for reversed depth): `ViewportDepthFlip`. A sampler's `mipLodBias`: `LodBiasInShader`; the
 `maxSamplerLodBias` limit is reported as 15.99, the range Direct3D also allows. `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT`
-sets `cube`. Vulkan's features and subgroup properties are reported as 15.4 lists them: the
-optional features the interface has a route for are present, natively or through counted slow paths
-(engines ask for them at start-up, research vulkan-on-webgpu-inputs Q5a), and sparse binding is
-absent. WebGL 2 cannot host Vulkan (Vulkan requires compute).
+sets `cube`. Vulkan's features and subgroup properties are reported as 15.4 lists them: each of
+1.1's 67 features is named there, present (natively, by a program rewrite, or through a counted slow
+path; engines ask for them at start-up, research vulkan-on-webgpu-inputs Q5a) or absent with its
+reason. WebGL 2 cannot host Vulkan (Vulkan requires compute).
 
 ### 5.6 Direct3D 9 (later, with 32-bit x86)
 
@@ -1867,9 +1873,12 @@ converted vertex shader.
   and instance numbers and draw bases (`DrawBaseInHelpers`, `DrawBaseFromArguments`); typed storage
   stores of formats without `texture-formats-tier1` (`StorageFormatThroughBuffer`); alpha-antialiased
   lines (`AntialiasedLinesAsQuads`); Direct3D 12's aliased placed resources (`AliasCopied`).
-- Absent and reported as such: transform feedback (the stage helper builds stream output instead), logic
-  ops, wide lines, sample counts other than 1 and 4, 64-bit shader types, resource tables, persistent
-  mapping, sparse resources.
+- Absent and reported as such in the back end's own `Caps`: transform feedback (the stage helper
+  builds stream output instead), logic ops, wide lines, sample counts other than 1 and 4, 64-bit
+  shader types, resource tables, persistent mapping, sparse resources. These are the back end's
+  native abilities, not what a front reports to its program: a front may still serve a feature of
+  its API through a counted slow path, as Vulkan's logic ops, wide lines and 64-bit types are
+  (`LogicOpInShader`, `WideLinesAsQuads`, `Int64Emulated`, `F64Emulated`, 15.4).
 
 ### 5.8 The WebGL 2 back end carrying these out
 
@@ -2714,8 +2723,14 @@ rest come from the research files, which name their sources.
 
 Built on: Mesa's OpenGL state tracker (st/mesa, with its GLSL compiler producing NIR) over a Gallium
 driver of ours, `wcontainers-opengl`, which is a front onto `wcontainers-gpu` like the Direct3D ones
-(generic over `B`, resolved at compile time). Mesa is vendored at a pinned release under
-`third_party/mesa` with a patch set kept as one patch per change. New directories:
+(generic over `B`, resolved at compile time). Mesa enters the repository as a git submodule at
+`third_party/mesa`, as `dxbc-spirv` and `dxil-spirv` do (6.2), not as copied files: Mesa's tree
+holds GPL-2.0 and GPL-1.0-or-later files (the Linux uapi headers in `include/drm-uapi`, the svga
+driver's headers) and SGI-B-2.0 ones (`src/glx`), and the project copies no GPL file (its licences
+directory lists Apache-2.0, BSL-1.0, GPL-1.0-or-later, GPL-2.0-only, MIT and SGI-B-2.0, research 1
+and Mesa's `licenses/`). The submodule points at a fork of ours whose branch is the pinned release
+plus the patch set, one commit per change, so this repository holds none of Mesa's files and its
+build links none of those (below). New directories in the fork:
 `src/gallium/drivers/wcontainers` (the screen's create function in C and its meson file, which links
 a Rust static library built by cargo), the Vulkan driver's directory (15.4) likewise, and the
 container's frontend (below). Changes to Mesa's own files, because Mesa names its drivers in fixed
@@ -2803,6 +2818,7 @@ Licences: Mesa's core is MIT, files carry SPDX tags (research 1): what a WebGPU 
 MIT plus BSL-1.0 (`src/c11` threads), BSD-3-Clause (soft-float, used by `F64Emulated`), BSD-2-Clause
 (xxhash) and the Khronos headers' Apache-2.0; no GPL or SGI file is built (GLX and the svga driver are
 off). G9 lists every linked file's SPDX tag from the build's own dependency list, not from memory.
+The GPL and SGI files stay in the submodule's tree, never copied into this repository (above).
 
 **The MIT-headed WebGPU driver for Mesa.** It is `gex_wgpu` in `github.com/MercuryWorkshop/mesa-wink`
 (branch `wink`). Checked at the source on 2026-11-18 (and by G1c's independent check, every file of
@@ -2919,48 +2935,172 @@ What is reported (5.5 points here), by research Q1 and Q3:
   wvk, on the same runtime over WebGPU, reports 1.3 by default without buffer device addresses (not
   a conformant 1.3) and 1.2 under `WINK_VK_API_VERSION=1.2`, with timeline semaphores, so the step
   to 1.2 is expected to be small; it stays the owner's decision (15.9), not planned here.
-- Required by 1.1 and served: `multiview` (`MultiviewSerial`), `robustBufferAccess` (WebGPU's own
-  robust access), host-visible coherent memory (5.5: guest memory written at submit, ranges the GPU
-  wrote read back before a fence reports done; counted), and subgroups (1.1 requires the basic
-  operations in the compute stage, checked in the specification's limits chapter): `subgroupSize` 1,
-  every invocation a subgroup of its own, in every stage, with the operations exact at that size
-  (basic, vote, arithmetic, ballot, shuffle, shuffle relative, clustered) and no quad operations; the
-  driver lowers them in NIR to their one-invocation meaning before the common form, so no back end
-  is asked for anything. wvk reports the same (checked: `wvk_physical_device.c`, `subgroupSize = 1`).
+- Host-visible coherent memory, which 1.1 requires: guest memory written at submit, ranges the GPU
+  wrote read back before a fence reports done (5.5), counted.
+- Subgroups, which are properties, not features (1.1 requires the basic operations in the compute
+  stage, checked in the specification's limits chapter): `subgroupSize` 1, every invocation a
+  subgroup of its own, in every stage, with the operations exact at that size (basic, vote,
+  arithmetic, ballot, shuffle, shuffle relative, clustered) and no quad operations; the driver
+  lowers them in NIR to their one-invocation meaning before the common form, so no back end is
+  asked for anything. wvk reports the same (checked: `wvk_physical_device.c`, `subgroupSize = 1`).
   Larger subgroups through `Features::SUBGROUPS` are a later step: WebGPU's subgroup size varies
   between the adapter's minimum and maximum, and 1.1 reports one size.
-- Present natively: `imageCubeArray`, `independentBlend` and `sampleRateShading` (WebGPU's core
-  has them), `textureCompressionETC2` and `textureCompressionASTC_LDR` where the adapter has
-  WebGPU's feature for each, and `dualSrcBlend`, `shaderClipDistance` and `depthClamp`
-  where the adapter has WebGPU's optional feature for each. Without it, those three are present
-  through the routes the Direct3D fronts take (`BlendInShader`, `ClipDistanceInShader`,
-  `DepthClampInShader`), counted.
-- `textureCompressionBC` on every adapter: natively where it has `texture-compression-bc`,
-  otherwise held decoded (`BlockDecoded`, 5.7), counted, as the Direct3D fronts' BC textures are.
+- Features. Vulkan 1.1 has 67: the 55 of `VkPhysicalDeviceFeatures` and the 12 of 1.1's six
+  feature structures (`VkPhysicalDevice16BitStorageFeatures`, `...MultiviewFeatures`,
+  `...VariablePointersFeatures`, `...ProtectedMemoryFeatures`,
+  `...SamplerYcbcrConversionFeatures`, `...ShaderDrawParametersFeatures`), counted in `vk.xml`
+  (checked 2026-11-18). Each is named once in the five lists below: 41 present (three of them only
+  where the adapter has what they need) and 26 absent. Nothing else decides a feature; G10 checks
+  the driver's answer against these lists.
+
+Present natively (11):
+- `fullDrawIndexUint32`: WebGPU splits only strips at the restart value; a list takes every 32-bit
+  value as an index (checked: the WebGPU specification's primitive assembly, 23.2.3), and a strip
+  drawn with restart off is `RestartRewrite` (5.7).
+- `imageCubeArray`, `independentBlend`, `sampleRateShading` and `depthBiasClamp`: WebGPU's core
+  (`DEPTH_BIAS_CLAMP`).
+- `samplerAnisotropy`: the sampler's anisotropy, up to 16. WebGPU takes it only with every filter
+  linear, so a sampler with anisotropy and a nearest filter is made with anisotropy 1; Vulkan leaves
+  the scheme to the implementation, which "should consider" the filters (checked: the
+  specification's texel anisotropic filtering).
+- `fragmentStoresAndAtomics`: `FRAGMENT_STORAGE_WRITE`; atomics on a storage texture whose format
+  has none, `AtomicsThroughBuffer`.
+- `multiDrawIndirect`: one interface indirect draw per draw of the call, as OpenGL 4.6's (5.4); the
+  draw count is a host value, so nothing is read back, and each draw costs what a separate indirect
+  draw costs.
+- `inheritedQueries`: secondary command buffers replay inside the primary's pass (5.5), so a query
+  the primary began counts their draws.
+- `textureCompressionETC2` and `textureCompressionASTC_LDR`: where the adapter has WebGPU's feature
+  for each; absent otherwise.
+
+Present natively where the adapter has WebGPU's feature, otherwise by the route the Direct3D fronts
+take on the same back end, counted (6):
+- `dualSrcBlend` (`BlendInShader`), `shaderClipDistance` (`ClipDistanceInShader`), `depthClamp`
+  (`DepthClampInShader`).
+- `textureCompressionBC`: `texture-compression-bc`, otherwise held decoded (`BlockDecoded`, 5.7).
   Vulkan requires one compression family; with BC always present, no adapter loses Vulkan for want
   of one.
-- Present through counted slow paths, by the routes the interface already has and the Direct3D
-  and OpenGL fronts take on the same back end (wvk serves most of these on WebGPU too, some only
-  where the adapter has a feature: its `occlusionQueryPrecise` only with `float32-blendable` or
-  native Vulkan, its `shaderCullDistance` only with `clip-distances`, checked in
-  `wvk_physical_device.c`):
-  `geometryShader`, `tessellationShader` (the stage helper, which matched Direct3D 11 on the RTX 3080
-  in the shaders track), `shaderDrawParameters` (`DrawBaseInHelpers`), `logicOp`
+- `drawIndirectFirstInstance`: `INDIRECT_FIRST_INSTANCE` (99.97% of adapters), otherwise the
+  arguments read back and drawn directly (`IndirectReadBack`), as Direct3D's.
+- `shaderStorageImageExtendedFormats`: `texture-formats-tier1`, otherwise
+  `StorageFormatThroughBuffer`.
+
+Present through program rewrites the shaders crate already makes for Direct3D, made on the NIR
+route's output (15.3) and, as for Direct3D, not slow paths (4):
+- `shaderStorageImageReadWithoutFormat` and `shaderStorageImageWriteWithoutFormat`: the variant
+  named by the bound view's format (4.5), as Direct3D's typed storage views; read-write formats
+  WebGPU lacks through `StorageFormatThroughBuffer`.
+- `shaderImageGatherExtended`: a gather's offset given at run time moves the coordinate by the
+  offset in texels of level 0, which picks the same four texels (the shaders crate's route for
+  Direct3D's `gather4_po`); `textureGatherOffsets` is four gathers, each giving the one texel the
+  specification takes from it.
+- `shaderSampledImageArrayDynamicIndexing`: each element of an array its own binding, an element
+  picked at run time by a function switching on the index (the shaders crate's route for Direct3D
+  12's texture arrays, `dxil/arrays.rs`); G8 widens it from textures to arrays of samplers and of
+  combined image samplers. Arrays of any kind indexed by constants are an element's own binding on
+  every route.
+
+Present through counted slow paths, by the routes the Direct3D and OpenGL fronts take on the same
+back end (20). wvk serves most of these on WebGPU too, some only where the adapter has a feature: its
+`occlusionQueryPrecise` only with `float32-blendable` or native Vulkan, its `shaderCullDistance`
+only with `clip-distances` (checked in `wvk_physical_device.c`).
+- `robustBufferAccess` (required). Shader access natively: WebGPU's robust access gives an
+  out-of-range read a value within the binding or zero and keeps an out-of-range write within it or
+  drops it, which Vulkan allows. Vertex input takes routes, because WebGPU's index resolution may
+  cancel a whole draw when any of its vertex fetches is out of range (checked: the WebGPU
+  specification's vertex processing, "Optionally (implementation-defined), empty vertexIndexList
+  and return, cancelling the draw call"), and a cancelled draw is not among the results Vulkan
+  allows (values from within the buffer, zero, or (0,0,0,x); checked: the specification's robust
+  buffer access, which bounds vertex input by the bound vertex buffer range). The interface already
+  refuses a fetch past a stream's end (the recording back end does), so the driver keeps every
+  fetch it hands over in range. Draws whose ranges it sees on the CPU (draws without indices, and
+  the instance streams of every direct draw; WebGPU's validation refuses those past the end): the
+  part past a stream's end drawn with a zero buffer bound (`VertexFetchZeroed`), exact, as the
+  Direct3D fronts'. Indexed and indirect draws, whose vertices it cannot see, on a device made with
+  the feature enabled: the program's variant that fetches every vertex stream from storage with
+  bounds checks against the bound range, reads past it giving zero (`VertexPulledInShader`,
+  `VariantKey::pulled`, 4.12), so WebGPU never meets a fetch out of range. On a device made without
+  it, Vulkan leaves such reads undefined and the streams are bound natively. A direct indexed draw
+  whose indices reach past the bound index buffer breaks Vulkan's valid usage without
+  `robustBufferAccess2`, which is not reported; the driver drops it with a warning rather than hand
+  WebGPU a draw its validation refuses. The pulled route's cost against native fetch is measured at
+  G10 on the programs that enable the feature.
+- `geometryShader`, `tessellationShader` (the stage helper, which matched Direct3D 11 on the RTX
+  3080 in the shaders track) and `shaderTessellationAndGeometryPointSize` (the stage helper's points
+  carry their size and are drawn as quads, `PointsAsQuads`, as OpenGL 4.6's).
+- `multiview` (required; `MultiviewSerial`), and `multiviewGeometryShader` and
+  `multiviewTessellationShader` (each serial draw runs the stage helper).
+- `shaderDrawParameters` (`DrawBaseInHelpers`, `DrawBaseFromArguments`), `logicOp`
   (`LogicOpInShader` with `TargetReadPerPrimitive`, as `glLogicOp`), `fillModeNonSolid`
   (`FillModeConverted`, as `glPolygonMode`), `largePoints` (`PointsAsQuads`), `multiViewport`
   (`MultiViewportSplit`), `shaderFloat64` (`F64Emulated`, as OpenGL 4.6), `shaderCullDistance`
   (`CullDistanceAsGeometry`, as OpenGL 4.6), `vertexPipelineStoresAndAtomics`
-  (`VertexStorageAsCompute`), `occlusionQueryPrecise` where the back end has blendable `r32float`
-  (the occlusion counter, 4.12, exact where WebGPU's query promises only non-zero; without it the
-  counter's `r16float` refuses some draws, a known failure, so the feature is reported false and
-  the native query answers, as Vulkan allows), `pipelineStatisticsQuery` (the Direct3D 12 front's
-  counts: the host's from each draw's arguments, `PixelInvocationsCounted` for fragment
-  invocations). Two need a slow path the interface does not name yet (15.7): `wideLines`, drawn as
-  quads as `AntialiasedLinesAsQuads` draws Direct3D's lines, and `shaderInt64`, by Mesa's
-  `nir_lower_int64` into pairs of words.
-- Absent: sparse binding and residency. WebGPU binds no memory to part of a resource; binding pages
-  of one memory to several resources would need `AliasCopied`'s copies at every bind, and none of
-  the programs 15.8 tests uses it. A scope choice, not a missing route; a later decision.
+  (`VertexStorageAsCompute`).
+- `occlusionQueryPrecise`, only where the back end has blendable `r32float`: the occlusion counter
+  (4.12), exact where WebGPU's query promises only non-zero. Without it the counter's `r16float`
+  refuses some draws (a known failure), so the feature is false and the native query answers, as
+  Vulkan allows.
+- `pipelineStatisticsQuery`: the Direct3D 12 front's counts, the host's from each draw's arguments
+  and `PixelInvocationsCounted` for fragment invocations.
+- Three need a slow path the interface does not name yet (15.7): `wideLines`, drawn as quads as
+  `AntialiasedLinesAsQuads` draws Direct3D's lines (`WideLinesAsQuads`); `shaderInt64`, by Mesa's
+  `nir_lower_int64` into pairs of words (`Int64Emulated`); `alphaToOne` (`AlphaToOneInShader`):
+  Mesa's `nir_lower_alpha_to_coverage` turns alpha into the sample mask in the program, then
+  `nir_lower_alpha_to_one` writes alpha one (both in `src/compiler/nir/nir_lower_alpha.c`, MIT,
+  checked); Vulkan specifies no algorithm from alpha to coverage beyond a count of ones
+  proportional to alpha (checked: the specification's multisample coverage), so the program's
+  pattern is one an implementation may use. Two steps of the NIR route (15.3) serve that pass's
+  output, which WGSL cannot say as it stands (checked in the source): its `demote_samples` of the
+  uncovered samples becomes the program's sample mask output, ANDed with any mask the program
+  writes itself (all ones where it writes none), which removes the same samples; and its 16-bit
+  integer arithmetic (`nir_u2u16`, 16-bit multiplies and a 16-bit rotate) is carried in 32-bit
+  words holding the zero-extended value, for the operations that pass uses only: conversions,
+  and, or, multiply and shift left masked to the low 16 bits after; shift counts masked to their
+  low 4 bits, as NIR's 16-bit shifts take them; shift right on the zero-extended value. These give
+  the same bits as 16-bit operations (held at G8 by a test over every 16-bit value and count).
+  Programs' 16-bit integers stay absent (below): they would bring every other 16-bit operation. The
+  OpenGL driver takes the same route for `GL_SAMPLE_ALPHA_TO_ONE`.
+
+Absent, each with its reason (26):
+- `depthBounds`: WebGPU has no depth bounds test, and a program cannot read the stored depth of an
+  attachment its pass writes (one usage scope, 4.7); the Direct3D fronts report it absent too
+  (4.12).
+- `shaderStorageImageMultisample`: a multisampled texture is never a storage texture (4.2, WebGPU's
+  rule).
+- `shaderUniformBufferArrayDynamicIndexing`, `shaderStorageBufferArrayDynamicIndexing` and
+  `shaderStorageImageArrayDynamicIndexing`: WebGPU has no binding arrays (`RESOURCE_TABLES` absent),
+  and the shaders crate's switch serves sampled textures only (it refuses arrays of buffers and
+  storage views by name, `ResourceArray`). Widening the switch to every load, store and atomic of a
+  buffer or storage view is possible and not planned. Arrays indexed by constants still work.
+- `shaderInt16`: WGSL has no 16-bit integers. Mesa can widen 16-bit arithmetic to 32 bits
+  (`nir_lower_bit_size`), but that its results equal 16-bit ones at every operation (shifts by 16
+  or more among them) is not checked, so it is not planned.
+- `storageBuffer16BitAccess`, `uniformAndStorageBuffer16BitAccess`, `storagePushConstant16` and
+  `storageInputOutput16`: each covers 16-bit integers and floats together. Without 16-bit integers
+  in WGSL, a 16-bit integer in a buffer would be half of a 32-bit word written by reading and
+  writing the word, which races with an invocation writing the other half. WebGPU's `shader-f16`
+  gives floats only.
+- `shaderResourceMinLod`: WGSL's sampling takes no clamp per call and cannot ask which level it
+  would choose, so a clamp in the program would replace the GPU's choice of level with its own (not
+  the same picture). `MinLodClamp` differs: it clamps a whole view through its sampler.
+- `shaderResourceResidency` and the nine sparse features (`sparseBinding`, `sparseResidencyBuffer`,
+  `sparseResidencyImage2D`, `sparseResidencyImage3D`, `sparseResidency2Samples`,
+  `sparseResidency4Samples`, `sparseResidency8Samples`, `sparseResidency16Samples`,
+  `sparseResidencyAliased`): WebGPU binds no memory to part of a resource; binding pages of one
+  memory to several resources would need `AliasCopied`'s copies at every bind, and none of the
+  programs 15.8 tests uses it. A scope choice, not a missing route; a later decision.
+- `variableMultisampleRate`: a pass without attachments draws into the back end's own attachment
+  of one sample count (4.7, 4.12). Reported false, Vulkan requires one sample count per such subpass,
+  which is what that serves.
+- `variablePointersStorageBuffer` and `variablePointers`: a WGSL pointer cannot be chosen at run
+  time between variables (no `select` or merge of pointers), and the common form has no such
+  pointer; rewriting each use into code per choice is not planned.
+- `protectedMemory`: neither browser API nor the interface has protected memory.
+- `samplerYcbcrConversion`: a scope choice, as sparse binding is. It serves video frames, none of
+  15.8's programs uses it, and a route exists (each plane a texture of the interface's formats, the
+  conversion in the program by Mesa's runtime, `nir_vk_lower_ycbcr_tex` in
+  `src/vulkan/runtime/vk_nir_convert_ycbcr.c`, MIT, checked); a later decision.
+
 - Reporting the slow features present follows the brief (a counted, warned slow path, not absence)
   and the Direct3D fronts' practice. A program that asks for one and leans on it runs slowly and
   says so through the counter; Blender's Vulkan path, which the research found needs several of
@@ -2970,7 +3110,8 @@ What is reported (5.5 points here), by research Q1 and Q3:
   `VertexPulledInShader`), 128 bytes of push constants (`ImmediatesSpilled`).
 
 What the interface lacks for it (proposed in 15.7): four descriptor sets with the helper set beside
-them, view component mappings, and the slow path names `WideLinesAsQuads` and `Int64Emulated`.
+them, view component mappings, and the slow path names `WideLinesAsQuads`, `Int64Emulated` and
+`AlphaToOneInShader`.
 
 How it is proven (G10): VK-GL-CTS's `vk-default` list through deqp-runner with a fails list,
 NotSupported counted as passing (the CTS's own rule), in shards through the queue, natively on the
@@ -3148,10 +3289,12 @@ Each in the interface's style; made at G1d with a rule test in the recorder and 
 - **Buffers whose uses are unknown at creation.** OpenGL buffers bind as anything; the OpenGL front
   creates them with every use but mapping. No change if every back end accepts that (WebGPU does;
   WebGL 2's `IndexBufferTwin` already covers indices); G9 checks it with a suite test.
-- **Three slow path names**: `WideLinesAsQuads` (lines wider than one pixel drawn as quads, the
-  route of `AntialiasedLinesAsQuads`) and `Int64Emulated` (64-bit integers as pairs of 32-bit words)
-  for Vulkan's optional features (15.4), and `HelpersInProgramSet` (above). Each a named reason added
-  at the end of `SlowPath`.
+- **Four slow path names**: `WideLinesAsQuads` (lines wider than one pixel drawn as quads, the
+  route of `AntialiasedLinesAsQuads`), `Int64Emulated` (64-bit integers as pairs of 32-bit words)
+  and `AlphaToOneInShader` (alpha to coverage made in the program as the sample mask, then alpha
+  one; Vulkan's `alphaToOne` and OpenGL's `GL_SAMPLE_ALPHA_TO_ONE`) for the fronts' optional
+  features (15.4), and `HelpersInProgramSet` (above). Each a named reason added at the end of
+  `SlowPath`.
 - **Nothing else is expected**: 5.3 to 5.5 found routes for the rest in the existing interface.
 
 ### 15.8 Milestones of the second batch
@@ -3160,8 +3303,15 @@ Each is checked by an independent agent against its pass bar. Measurements state
 its load, as everywhere.
 
 - **G1d, the interface for the second batch.** The changes of 15.7, each with a rule test and a
-  suite test; the shared line kept as in the first batch. Pass bar: as G1b's. Needs: the owner's
-  answers on 15.9.
+  suite test; the shared line kept as in the first batch. Pass bar: each change is in commits that
+  touch only `crates/wcontainers-gpu` (and this plan's text), whose messages start "interface:",
+  in the interface's style (section 12's rule: a base primitive, a fast path with a default, or a
+  capability); every rule a caller can break with it is refused by the recording back end and
+  broken once in a test; every new behaviour has a suite test, listed in `suite!`, that passes on
+  the recording back end; the interface crates' tests pass and their lint and docs are clean with
+  warnings denied; the whole workspace builds on the shared line after the other tracks' branches
+  are merged; and the status file lists each change with its tests under "Interface changes".
+  Needs: the owner's answers on 15.9.
 - **G7, the call channel and the stand-ins.** `wcontainers-gpu-channel` (stream format, tickets,
   result words, the guest block pools), the encoder and decoder generators for all five APIs, the
   Direct3D stand-ins for Wine, and the three existing Windows libraries moved onto the channel
@@ -3172,9 +3322,19 @@ its load, as everywhere.
   the kernel track's character device and parking (the `ioctl` of 15.5), or a stand-in for it in the
   Windows-library build, which needs nothing.
 - **G8, the NIR route.** `wcontainers-nir`, both candidates of 15.3 measured, one chosen, the cache
-  keyed as 15.3 says. Pass bar: 15.3's, the outputs of every converted shader held to llvmpipe's or
-  lavapipe's. Needs: Mesa pinned and building on the laptop (with llvmpipe and lavapipe), and the
-  rig's queue for shaders past the recorder's limits.
+  keyed as 15.3 says, and the program rewrites 15.4 takes from the shaders crate made on the
+  route's output (formatless storage, gathers with offsets at run time, arrays of textures,
+  samplers and combined image samplers indexed at run time), each with a corpus shader using it;
+  and the two steps 15.4's `alphaToOne` needs (`demote_samples` as the sample mask output, the
+  pass's 16-bit integer operations in 32-bit words), with the fragment shaders of
+  `dEQP-VK.pipeline.monolithic.multisample.alpha_to_one.*` after `nir_lower_alpha_to_coverage` and
+  `nir_lower_alpha_to_one` in the corpus, and the widened operations held to 16-bit ones by a test
+  over every 16-bit value and shift count. Whether lavapipe runs the lowered NIR
+  (`demote_samples`) is checked first; where it does not, those shaders are held by G10's CTS
+  cases, listed so. Pass bar: 15.3's, the outputs of every converted shader held to llvmpipe's or
+  lavapipe's. Needs:
+  Mesa pinned and building on the laptop (with llvmpipe and lavapipe), and the rig's queue for
+  shaders past the recorder's limits.
 - **G9, OpenGL natively.** `wcontainers-opengl` and Mesa built for Windows with it, llvmpipe beside.
   Pass bar, on the RTX 3080 through deqp-runner, over 15.2's lists from the pinned mustpass: the
   measure is passed cases over cases run, where a case run is any result but NotSupported, a pass
@@ -3206,7 +3366,15 @@ its load, as everywhere.
   (any result but NotSupported) at least 98.5% passed (wvk's published share, a floor, not a
   like-for-like comparison: 15.4); vkcube, the Sascha Willems
   samples that need only what 15.4 reports, and Godot's Forward+ and Mobile renderers match the RTX
-  3080's Vulkan or lavapipe within the rig's allowance; the reported features are exactly 15.4's.
+  3080's Vulkan or lavapipe within the rig's allowance; the reported features are exactly 15.4's
+  (the 67 features as `vulkaninfo` lists them on the RTX 3080, against 15.4's five lists; and a
+  test of the driver over the recording back end, `Recorder::with_caps` taking away in turn each
+  capability a feature depends on, giving each adapter-dependent feature's answer both ways);
+  `robustBufferAccess`'s vertex half (15.4) held by `dEQP-VK.robustness.vertex_access.*` (draws
+  with and without indices) among `vk-default`, and by a test of the driver over the recording
+  back end, which refuses any fetch past a stream's end: indexed and indirect draws whose indices
+  reach past a stream on a device with the feature enabled are drawn through the pulled variant and
+  read zero there, and draws without indices past the end through `VertexFetchZeroed`.
   The browser half: `vulkan.wasm` in Chrome on WebGPU, `vk-default` built for WebAssembly as G9b
   builds dEQP (the CTS calling the driver's entry points without a loader), with the same measure.
   Needs: G1d, G8 (G9b's way of running the suites in Chrome for the browser half).
@@ -3249,7 +3417,8 @@ its load, as everywhere.
   WebGPU, reports 1.3 without buffer device addresses by default, which is not a conformant 1.3,
   and 1.2 under an environment variable; 15.4).
 - Vulkan's optional features reported present through counted slow paths (15.4) rather than absent,
-  and sparse binding absent.
+  and the 26 absent ones of 15.4, two of them scope choices with a route (sparse binding and
+  residency, and Y'CbCr conversion).
 - Consumed arguments copied into the call streams rather than read in place (15.1, 15.5), a
   narrowing of the brief.
 - The back end as its own WebAssembly module per page that every front module calls (15.2), a
@@ -3263,9 +3432,13 @@ its load, as everywhere.
   (Xwayland) are in scope; taking them also takes a GLX stand-in of ours and the Vulkan ICD's X11
   surfaces (15.5), proven at G13.
 - Sound capture (the microphone): in or out.
+- Direct3D's indexed draws whose indices reach past a vertex buffer's end: kept a listed loss
+  (WebGPU may cancel the whole draw, 4.12), or drawn through the pulled variant as Vulkan's robust
+  devices are (15.4), which every indexed draw would pay for.
 - The interface changes of 15.7, which change the fronts' code.
 - Names: `wcontainers-opengl`, `wcontainers-vulkan`, `wcontainers-nir`, `wcontainers-gpu-channel`,
-  and the modules `gpu-webgpu.wasm`, `gpu-webgl.wasm`, `opengl.wasm`, `vulkan.wasm`.
+  and the modules `gpu-webgpu.wasm`, `gpu-webgl.wasm`, `opengl.wasm`, `vulkan.wasm`; and where our
+  fork of Mesa, the submodule of 15.2, is kept.
 - Licences of what is new to the project: Mesa (MIT with the permissive files of 15.2), bindgen,
   cpal and smithay (to confirm at their milestones), and VK-GL-CTS, dEQP and piglit for testing only
   (with Emscripten for their browser build only, if wasi-sdk cannot build them, G9b); Weston's demo

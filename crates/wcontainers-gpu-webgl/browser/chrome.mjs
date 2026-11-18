@@ -12,6 +12,7 @@ const require = createRequire(join(here, '../../../tools/graphics-rig/browser/pa
 const { chromium } = require('playwright-core');
 
 // Serves <name>.html and <name>.js from this directory and /pkg/ from <pkg>; resolves to the server.
+// Pages are cross-origin isolated, so performance.now() reads to 5 us rather than 100 us.
 export async function serve(pkg) {
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
   const server = createServer(async (request, response) => {
@@ -19,7 +20,11 @@ export async function serve(pkg) {
     const file = /^\/[a-z]+\.(html|js)$/.test(path) ? join(here, path.slice(1)) : path.startsWith('/pkg/') ? join(pkg, path.slice(5)) : null;
     if (!file) return response.writeHead(404).end();
     try {
-      response.writeHead(200, { 'content-type': types[extname(file)] ?? 'application/octet-stream' }).end(await readFile(file));
+      response.writeHead(200, {
+        'content-type': types[extname(file)] ?? 'application/octet-stream',
+        'cross-origin-opener-policy': 'same-origin',
+        'cross-origin-embedder-policy': 'require-corp',
+      }).end(await readFile(file));
     } catch {
       response.writeHead(404).end();
     }

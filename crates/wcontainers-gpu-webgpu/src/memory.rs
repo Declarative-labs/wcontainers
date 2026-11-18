@@ -1729,9 +1729,9 @@ impl WebGpu {
             return;
         }
         // A converted texture's rows arrive in its held format and are packed into its blocks.
-        let out_row = o
-            .packed
-            .map_or(o.row, |f| packed::packed_bytes(f, o.row / 4));
+        let out_row = o.packed.map_or(o.row, |f| {
+            packed::packed_bytes(f, o.row / u64::from(packed::held_bytes(f)))
+        });
         if (dst.len() as u64) < out_row * o.rows {
             self.fail(&format!(
                 "finish_read into {} bytes, fewer than the read back's {}",
