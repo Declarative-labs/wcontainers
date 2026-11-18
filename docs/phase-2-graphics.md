@@ -503,9 +503,20 @@ and none with a linear filter (min, mag or mip) where the program pairs it with 
 set. A uniform or storage binding is at least the size of the block the program declares there (a
 runtime-sized array counted as one element), as WebGPU's `minBindingSize` and WebGL 2's
 `UNIFORM_BLOCK_DATA_SIZE` require (`ConstantBufferGrown`, 5.1). A storage binding's size is a
-multiple of four, as WebGPU's bind group rule requires; a front whose API's view or range is not
-rounds its bytes up to it within the buffer (the API's out-of-range rules then cover the bytes
-added), as the Vulkan driver does with a descriptor's range (15.4).
+whole number of words (`STORAGE_WORD`, four bytes), as WebGPU's bind group rule requires; a front
+whose API's view or range is not rounds its bytes up (the API's out-of-range rules then cover the
+bytes added), as the Vulkan driver does with a descriptor's range (15.4). So that a range reaching
+the end of its buffer stays inside it rounded, a front whose API makes buffers of other sizes and
+may bind them as storage makes them with their size rounded up to a whole number of words
+(`BufferDesc`'s doc): the OpenGL driver for every buffer object (`glBufferData` of six bytes bound
+whole as a shader storage buffer), the Direct3D fronts for buffers with unordered access or
+shader resource bindings, and the Vulkan driver by its memory requirements (15.4). Every binding
+the program reads is bound, whatever the draw then covers or fetches, with the kind the program
+declares there (`BindingEntry`'s doc): the WebGPU back end takes its binding layouts from the
+program, so a uniform buffer where the program declares storage, a read-only storage binding of a
+block the program writes, or a texture view of another dimension, sample type or multisampling
+is refused by WebGPU at the draw. The recording back end refuses each before it rasterises or
+drops anything.
 `prepare` takes the layout keys too (`PrepareDesc::layouts`; the zero key, every texture filterable, is
 what a Direct3D 12 pipeline state is prepared with before any descriptor is known), and the cache
 records them, so a combination first seen with other keys is prepared at the next start. The pipeline
@@ -2772,7 +2783,9 @@ What the driver does, by the plan's earlier sections: `create_*_state` makes blo
 marks dirty, `draw_vbo` names blocks and binding sets, `pipe_context::blit` and clears go through
 Gallium's `util_blitter` drawing with our own blocks, queries through the interface's queries and the
 occlusion counter, `resource_copy_region` through `copy_texture` (copies within one subresource of
-every format, G1c), maps through the interface's write modes (5.3). Shaders arrive as NIR and go
+every format, G1c), maps through the interface's write modes (5.3), buffer objects made a whole
+number of storage words in size so that one bound whole as a shader storage buffer stays inside it
+(4.5). Shaders arrive as NIR and go
 through the NIR route (15.3) into the common form, then the shaders crate's `convert` with the
 variant key the draw needs. Versions, as 5.3 and 5.4: 4.6 core on WebGPU (64-bit floats by Mesa's
 soft-float lowering, `F64Emulated`), 3.1 on WebGL 2 (no multisampled textures there). Caps report
