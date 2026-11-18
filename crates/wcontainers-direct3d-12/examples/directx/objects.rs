@@ -1816,7 +1816,10 @@ impl Device {
             }
             D3D12_FEATURE_FORMAT_SUPPORT => {
                 let d = unsafe { fill::<D3D12_FEATURE_DATA_FORMAT_SUPPORT>(data, size)? };
-                let s = format_support(&caps, d.Format.0 as u32);
+                let mut s = format_support(&caps, d.Format.0 as u32);
+                if features::typed_buffer(&caps, d.Format.0 as u32) {
+                    s.support1 |= features::SUPPORT1_TYPED_BUFFER;
+                }
                 d.Support1 = D3D12_FORMAT_SUPPORT1(s.support1 as i32);
                 d.Support2 = D3D12_FORMAT_SUPPORT2(s.support2 as i32);
                 if s.is_empty() {

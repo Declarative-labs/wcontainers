@@ -27,6 +27,8 @@ pub(super) struct StageBinding {
     shape: Option<null::Shape>,
     /// Textures read by comparison, which the back end samples only in depth formats.
     compared: bool,
+    /// A typed buffer read through a storage buffer (`HelperValue::TexelBufferView` names it).
+    texel: bool,
 }
 
 /// The null texture shapes `bindings` may read, and whether each is written.
@@ -114,6 +116,13 @@ pub(super) fn stage_bindings(
                     _ => {}
                 }
             }
+            let texel = c.reflection.helpers.iter().any(|h| {
+                h.value
+                    == HelperValue::TexelBufferView {
+                        set: b.set,
+                        binding: b.binding,
+                    }
+            });
             StageBinding {
                 stages,
                 visibility,
@@ -122,6 +131,7 @@ pub(super) fn stage_bindings(
                 form,
                 shape,
                 compared,
+                texel,
             }
         })
         .collect()
@@ -135,6 +145,14 @@ enum Source {
     /// A table's parameter and the descriptor's index from the table's start.
     Table(usize, u32),
     Static(usize),
+}
+
+/// The helper value giving a typed buffer binding's place and length.
+fn texel_value(b: &StageBinding) -> HelperValue {
+    HelperValue::TexelBufferView {
+        set: b.binding.set,
+        binding: b.binding.binding,
+    }
 }
 
 /// A root parameter's `D3D12_SHADER_VISIBILITY` covers the binding's stage.
@@ -400,7 +418,8 @@ impl<B: Backend> Device<B> {
             .ok_or(Error::Invalid("drawing with no root signature"))?;
         let root = self.roots[root_id.0 as usize].clone();
         let mut held = Vec::with_capacity(bindings.len());
-        self.bound_storage.clear();
+        self.bound_formats.clear();
+        self.bound_helpers.clear();
         for (index, b) in bindings.iter().enumerate() {
             let source = locate(&root, b).ok_or(Error::Invalid(
                 "the bound root signature lacks a binding a shader reads",
@@ -452,6 +471,9 @@ impl<B: Backend> Device<B> {
                         (SlotKind::Uniform, Descriptor::ConstantBuffer { address, .. }) => {
                             self.constant_buffer(address, b.declared)?
                         }
+                        (SlotKind::Texture, Descriptor::ShaderResource(v)) if b.texel => {
+                            self.texel_view(&v, b, false)?
+                        }
                         (SlotKind::Texture, Descriptor::ShaderResource(v))
                             if b.form != Form::Plain =>
                         {
@@ -464,13 +486,16 @@ impl<B: Backend> Device<B> {
                             self.view_counter(&v)?
                         }
                         (SlotKind::Storage, Descriptor::UnorderedAccess(v)) => match b.form {
+                            Form::Buffer { writable } if b.texel => {
+                                self.texel_view(&v, b, writable)?
+                            }
                             Form::Buffer { writable } => self.buffer_view(&v, writable)?,
                             Form::Image { writable } => {
                                 self.note(v.resource, writable);
                                 let view = self.storage_texture(&v)?;
-                                self.bound_storage.push((
+                                self.bound_formats.push((
                                     b.visibility,
-                                    b.binding.register,
+                                    (true, b.binding.register),
                                     dxgi(v.format)?,
                                 ));
                                 Held::StorageTexture(view, writable)
@@ -506,20 +531,27 @@ impl<B: Backend> Device<B> {
                 0,
                 b.declared.clamp(16, null::NULL_BYTES).next_multiple_of(16),
             ),
-            (_, Form::Buffer { writable }) => Held::Storage {
-                buffer: self.null_buffer(writable)?,
-                offset: 0,
-                size: null::NULL_BYTES,
-                writable,
-            },
+            (_, Form::Buffer { writable }) => {
+                if b.texel {
+                    // A null typed buffer holds no element; its format stays the program's.
+                    self.bound_helpers
+                        .push((b.visibility, texel_value(b), [0; 4]));
+                }
+                Held::Storage {
+                    buffer: self.null_buffer(writable)?,
+                    offset: 0,
+                    size: null::NULL_BYTES,
+                    writable,
+                }
+            }
             (_, Form::Image { writable }) => {
                 let shape = b
                     .shape
                     .ok_or(Error::NotImplemented("null views of this storage texture"))?;
                 // A null view's format is the program's own: its reads are zeros and its
                 // writes are dropped in any format.
-                self.bound_storage
-                    .push((b.visibility, b.binding.register, shape.format));
+                self.bound_formats
+                    .push((b.visibility, (true, b.binding.register), shape.format));
                 Held::StorageTexture(self.null_view(shape, writable)?, writable)
             }
             (_, Form::Plain) => {
@@ -601,6 +633,50 @@ impl<B: Backend> Device<B> {
         let offset = v.first_element * element;
         let size = u64::from(v.count) * element;
         self.storage_range(v.resource, offset, size, writable)
+    }
+
+    /// A typed buffer view read through a storage buffer of its words: bound from its first
+    /// element rounded down to the storage alignment, its place in the bound range and its
+    /// element count in the program's helper block, its format noted for the program's variant.
+    fn texel_view(
+        &mut self,
+        v: &ResourceView,
+        b: &StageBinding,
+        writable: bool,
+    ) -> Result<Held<B>, Error> {
+        if v.flags & 1 != 0 || v.stride != 0 {
+            return Err(Error::Invalid("a raw or structured view of a typed buffer"));
+        }
+        let width = match self.resources.get(v.resource.0 as usize) {
+            Some(Resource {
+                storage: Storage::Buffer { .. },
+                desc,
+                ..
+            }) => desc.width,
+            _ => return Err(Error::Invalid("a buffer view of a texture")),
+        };
+        let format = dxgi(v.format)?;
+        let element = u64::from(format.block().2);
+        let offset = v.first_element * element;
+        let size = u64::from(v.count) * element;
+        if offset + size > width {
+            return Err(Error::Invalid("a buffer view past its buffer's end"));
+        }
+        let align = u64::from(self.backend.caps().limits.min_storage_offset_alignment);
+        let start = offset - offset % align;
+        let rest = offset - start;
+        let bound = (rest + size).max(4).min(width.next_multiple_of(4) - start);
+        self.backend
+            .slow_paths()
+            .hit(SlowPath::TexelBufferAsStorage);
+        self.bound_formats.push((
+            b.visibility,
+            (b.binding.kind != SlotKind::Texture, b.binding.register),
+            format,
+        ));
+        self.bound_helpers
+            .push((b.visibility, texel_value(b), [rest as u32, v.count, 0, 0]));
+        self.storage_range(v.resource, start, bound, writable)
     }
 
     /// A storage binding of bytes `offset..offset + size` of buffer `id`.

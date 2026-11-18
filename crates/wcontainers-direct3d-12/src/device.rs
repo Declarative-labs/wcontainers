@@ -16,9 +16,9 @@ use wcontainers_gpu::{
     MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter, Origin, PassDesc, PassTargets,
     PassTracker, PrepareDesc, Program, ReadSource, ReadState, SamplerDesc, ScissorRect,
     ShaderModule, ShaderStage, SlowPath, StageSet, StepMode, StoreOp, Target, TargetLayout,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
-    VariantFlags, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream,
-    ViewDimension, Viewport, WriteMode,
+    TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
+    Topology, VariantFlags, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -183,8 +183,10 @@ struct Pipeline<B: Backend> {
     bindings: Vec<bind::StageBinding>,
     /// A compute pipeline's threads in one group; zero for graphics pipelines.
     group_threads: u64,
-    /// The stage whose storage texture formats come from the bound views, if one does.
+    /// The stage whose typed view formats come from the bound views, if one does.
     formats: Option<Box<formats::Formats<B>>>,
+    /// The helper block of the pixel (or compute) stage of `program`.
+    helpers: Helpers,
 }
 
 /// A graphics pipeline's fixed state.
@@ -216,6 +218,9 @@ struct Render<B: Backend> {
     vs_code: Vec<u8>,
     interpolation: Vec<(u32, Interpolation)>,
     fragment: Option<ShaderModule>,
+    /// The formats the vertex shader's typed views are converted with, and its typed buffers'
+    /// route (`formats::typed_key`).
+    typed_key: VariantKey,
     /// For counted occlusion queries: the vertex program, the pixel shader's bytecode, and the
     /// counting program made from them at the first counted draw.
     vertex: ShaderModule,
@@ -331,8 +336,10 @@ pub struct Device<B: Backend> {
     nulls: null::Nulls<B>,
     /// Messages not yet shown, such as why a shader did not convert.
     messages: Vec<String>,
-    /// The storage textures the last binding sets made bind: API stage, register and format.
-    bound_storage: Vec<(u32, u32, Format)>,
+    /// The typed views the last binding sets made bind: API stage, slot and format.
+    bound_formats: Vec<(u32, formats::Slot, Format)>,
+    /// The helper values the last binding sets made give: API stage, value and its words.
+    bound_helpers: Vec<(u32, HelperValue, [u32; 4])>,
     /// The error that removed the device, if one did.
     removed: Option<Error>,
 }
@@ -376,7 +383,8 @@ impl<B: Backend> Device<B> {
             tests_off: None,
             nulls: null::Nulls::default(),
             messages: Vec::new(),
-            bound_storage: Vec::new(),
+            bound_formats: Vec::new(),
+            bound_helpers: Vec::new(),
             removed: None,
         }
     }
@@ -851,6 +859,7 @@ impl<B: Backend> Device<B> {
         let root = self.pipeline_root(desc.root, &[desc.vs, desc.gs, desc.ps])?;
         let has_geometry = !desc.gs.is_empty();
         let staged = has_geometry || desc.stream_output.is_some();
+        let vs_typed = formats::typed_key(desc.vs, self.texel_route());
         let ps = if desc.ps.is_empty() {
             None
         } else {
@@ -863,8 +872,7 @@ impl<B: Backend> Device<B> {
                     VariantFlags::empty()
                 },
                 samples: desc.samples.clamp(1, 32) as u8,
-                storage_formats: formats::first_formats(desc.ps),
-                ..VariantKey::default()
+                ..formats::typed_key(desc.ps, self.texel_route())
             };
             let converted = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
             Some((converted, key))
@@ -895,7 +903,7 @@ impl<B: Backend> Device<B> {
                 // `SV_VertexID` and `SV_InstanceID` leave out the draw's bases, which the program
                 // then reads from its helper block.
                 draw_base: DrawBaseSource::Helpers,
-                ..VariantKey::default()
+                ..vs_typed.clone()
             },
         )?;
         let mut inputs = desc.inputs.clone();
@@ -934,7 +942,12 @@ impl<B: Backend> Device<B> {
             )?),
             false => None,
         };
-        let reads_bases = vs.reflection.helper_size != 0 && !has_geometry;
+        let reads_bases = !has_geometry
+            && vs
+                .reflection
+                .helpers
+                .iter()
+                .any(|h| h.value == HelperValue::DrawBase);
         let instances_step_by_one = inputs
             .iter()
             .all(|(e, _)| !e.per_instance || e.step_rate == 1);
@@ -1046,7 +1059,7 @@ impl<B: Backend> Device<B> {
             let key = VariantKey {
                 output_interpolation: interpolation.clone(),
                 draw_base: DrawBaseSource::Arguments,
-                ..VariantKey::default()
+                ..vs_typed.clone()
             };
             self.vertex_program(desc.vs, key, fragment.as_ref())
                 .ok()
@@ -1076,6 +1089,7 @@ impl<B: Backend> Device<B> {
             vs_code: desc.vs.to_vec(),
             interpolation,
             fragment,
+            typed_key: vs_typed,
             vertex: vs.modules[0].clone(),
             pixel: desc.ps.to_vec(),
             counting: None,
@@ -1121,6 +1135,7 @@ impl<B: Backend> Device<B> {
             bindings,
             group_threads: 0,
             formats: ps_key.and_then(|k| formats::Formats::of(bind::PIXEL, desc.ps, &k)),
+            helpers: ps.as_ref().map(Helpers::of).unwrap_or_default(),
         }) as u32))
     }
 
@@ -1135,10 +1150,7 @@ impl<B: Backend> Device<B> {
         if !self.backend.caps().has(Features::COMPUTE) {
             return Err(Error::NotImplemented("compute shaders on this back end"));
         }
-        let key = VariantKey {
-            storage_formats: formats::first_formats(cs),
-            ..VariantKey::default()
-        };
+        let key = formats::typed_key(cs, self.texel_route());
         let code = cs;
         let cs = self.convert(code, ShaderStage::Compute, key.clone())?;
         let bindings = bind::stage_bindings(&cs, 0, StageSet::COMPUTE);
@@ -1159,6 +1171,7 @@ impl<B: Backend> Device<B> {
             bindings,
             group_threads,
             formats: formats::Formats::of(0, code, &key),
+            helpers: Helpers::of(&cs),
         }) as u32))
     }
 
@@ -1239,13 +1252,22 @@ impl<B: Backend> Device<B> {
                 HelperValue::DrawBase
                     | HelperValue::DrawArguments
                     | HelperValue::PulledStream { .. }
+                    | HelperValue::TexelBufferView { .. }
             )
         }) {
             return Err(Error::NotImplemented(
-                "shaders reading helper constants other than the draw's bases and pulled inputs",
+                "shaders reading helper constants the front does not write",
             ));
         }
         Ok(converted)
+    }
+
+    /// How programs read typed buffers on this back end.
+    fn texel_route(&self) -> TexelBufferRoute {
+        match self.backend.caps().has(Features::TEXEL_BUFFERS) {
+            true => TexelBufferRoute::Native,
+            false => TexelBufferRoute::Storage,
+        }
     }
 
     /// A pipeline's counting program (its pixel shader writing 1.0 to target 0 and nothing
@@ -1270,8 +1292,7 @@ impl<B: Backend> Device<B> {
             let key = VariantKey {
                 flags: VariantFlags::COUNTING,
                 samples,
-                storage_formats: formats::first_formats(&pixel),
-                ..VariantKey::default()
+                ..formats::typed_key(&pixel, self.texel_route())
             };
             self.convert(&pixel, ShaderStage::Fragment, key)?
                 .modules
@@ -3045,13 +3066,21 @@ impl<B: Backend> Replay<B> {
             }
         }
         self.settle(d)?;
-        let sets = d.binding_sets(&self.compute, pid, None, &[], StageSet::COMPUTE)?;
+        let mut sets = d.binding_sets(&self.compute, pid, None, &[], StageSet::COMPUTE)?;
         let bound = d.bound_program(pid, false)?;
+        let pipeline = &d.pipelines[pid.0 as usize];
+        let helpers = bound.as_ref().map_or(&pipeline.helpers, |b| &b.1);
+        if helpers.size != 0 {
+            let block = d.stage_block(helpers, 0)?;
+            let compute = wcontainers_gpu::helper_binding(ShaderStage::Compute);
+            sets[HELPER_SET as usize] =
+                Some(d.helper_blocks(&[(compute, StageSet::COMPUTE, block)], None)?);
+        }
         d.alias_settle()?;
         let call = DispatchCall {
             program: bound
                 .as_ref()
-                .unwrap_or(&d.pipelines[pid.0 as usize].program),
+                .map_or(&d.pipelines[pid.0 as usize].program, |b| &b.0),
             bindings: sets.each_ref().map(Option::as_ref),
             immediates: &[],
             groups: match record {
@@ -3245,7 +3274,10 @@ impl<B: Backend> Replay<B> {
         }
         let mut sets = d.binding_sets(&self.graphics, pid, None, &extra, StageSet::VERTEX)?;
         let bound = d.bound_program(pid, variant.is_some() || by_arguments)?;
-        if helpers.size != 0 {
+        d.vertex_formats(pid)?;
+        let pipeline = &d.pipelines[pid.0 as usize];
+        let pixel = bound.as_ref().map_or(&pipeline.helpers, |b| &b.1).clone();
+        if helpers.size != 0 || pixel.size != 0 {
             let source = match (bases, &range) {
                 (Some(b), _) => pull::Bases::Direct(b),
                 (None, DrawRange::Indirect { args, offset }) => pull::Bases::Arguments {
@@ -3260,8 +3292,13 @@ impl<B: Backend> Replay<B> {
                 },
                 _ => unreachable!("a draw without bases is indirect"),
             };
-            sets[HELPER_SET as usize] =
-                Some(d.helper_set(&helpers, &source, &fetch.inputs, StageSet::VERTEX)?);
+            sets[HELPER_SET as usize] = Some(d.helper_set(
+                &helpers,
+                &source,
+                &fetch.inputs,
+                StageSet::VERTEX,
+                Some(&pixel),
+            )?);
         }
         if d.aliased != 0 {
             self.note_draw(
@@ -3454,7 +3491,7 @@ impl<B: Backend> Replay<B> {
                     program: match (variant, &r.arguments, by_arguments) {
                         (Some(i), ..) => &r.pulled[i].1.as_ref().expect("a made program").program,
                         (None, Some(a), true) => &a.program,
-                        _ => bound.as_ref().unwrap_or(&p.program),
+                        _ => bound.as_ref().map_or(&p.program, |b| &b.0),
                     },
                     blend: &r.blend,
                     depth_stencil: match (&r.depth_stencil_bound, bound_depth) {

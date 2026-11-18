@@ -1,53 +1,76 @@
-//! Typed unordered access views of textures: WebGPU's storage textures name their format in the
-//! program, Direct3D's only in the bound view. A pixel or compute shader declaring such views is
-//! converted at pipeline creation with each one's format taken as the 32-bit single-channel
-//! format of its declared kind (the only formats Direct3D guarantees typed loads of), and for
-//! bound views of other formats the program is converted again with theirs, at the first draw or
-//! dispatch binding them, and kept per pipeline (`VariantKey::storage_formats`).
+//! Typed views whose format only the bound view names: WebGPU's storage textures name their
+//! format in the program, and typed buffers read through storage buffers decode theirs there
+//! (`TexelBufferAsStorage`). A shader declaring such views is converted at pipeline creation with
+//! each one's format taken as the 32-bit single-channel format of its declared kind (the only
+//! formats Direct3D guarantees typed loads of), and for bound views of other formats the program
+//! is converted again with theirs, at the first draw or dispatch binding them, and kept per
+//! pipeline (`VariantKey::storage_formats`, `VariantKey::texel_formats`).
 
 use super::*;
-use crate::dxbc::{Kind, typed_texture_views};
+use crate::dxbc::{Kind, typed_views};
+use pull::Helpers;
 
-/// Programs made for a set of bound formats, by register; `None` where the conversion failed.
-type Variant<B> = (Vec<(u32, Format)>, Option<<B as Backend>::Program>);
+/// A typed view's slot: a storage slot (else a texture slot) and its register.
+pub(super) type Slot = (bool, u32);
 
-/// A pipeline's program stage whose storage texture formats come from the bound views.
+/// A program made for a set of bound formats with its helper layout; `None` where the
+/// conversion failed.
+type Variant<B> = (
+    Vec<(Slot, Format)>,
+    Option<(<B as Backend>::Program, Helpers)>,
+);
+
+/// A pipeline's program stage whose typed view formats come from the bound views.
 pub(super) struct Formats<B: Backend> {
     /// The API stage (`D3D12_SHADER_VISIBILITY`, 0 for compute) and its bytecode.
     visibility: u32,
     code: Vec<u8>,
-    /// The key it was converted with, `storage_formats` aside.
+    /// The key it was converted with, the formats aside.
     key: VariantKey,
-    /// The formats the pipeline's own program was made with, by register.
-    made: Vec<(u32, Format)>,
+    /// The formats the pipeline's own program was made with, by slot.
+    made: Vec<(Slot, Format)>,
     /// Programs made for other bound formats.
     variants: Vec<Variant<B>>,
 }
 
-/// The formats a shader's typed texture views are first converted with, by register; empty for
-/// DXIL and for shaders declaring none.
-pub(super) fn first_formats(code: &[u8]) -> Vec<(u32, Format)> {
-    let mut formats: Vec<(u32, Format)> = typed_texture_views(code)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(register, kind)| {
-            let format = match kind {
-                Kind::Float => Format::R32Float,
-                Kind::Uint => Format::R32Uint,
-                Kind::Sint => Format::R32Sint,
-            };
-            (register, format)
-        })
-        .collect();
-    formats.sort_by_key(|f| f.0);
-    formats
+/// The key fields a shader's typed views are first converted with: their formats by slot, and
+/// `route` where it declares typed buffers. Default for DXIL and for shaders declaring none.
+pub(super) fn typed_key(code: &[u8], route: TexelBufferRoute) -> VariantKey {
+    let mut key = VariantKey::default();
+    for v in typed_views(code).unwrap_or_default() {
+        let format = match v.kind {
+            Kind::Float => Format::R32Float,
+            Kind::Uint => Format::R32Uint,
+            Kind::Sint => Format::R32Sint,
+        };
+        match v.storage {
+            true => key.storage_formats.push((v.register, format)),
+            false => key.texel_formats.push((v.register, format)),
+        }
+        if v.buffer {
+            key.texel_buffers = route;
+        }
+    }
+    key.storage_formats.sort_by_key(|f| f.0);
+    key.texel_formats.sort_by_key(|f| f.0);
+    key
+}
+
+/// The formats of `key` by slot, sorted.
+fn slots(key: &VariantKey) -> Vec<(Slot, Format)> {
+    let storage = key.storage_formats.iter().map(|&(r, f)| ((true, r), f));
+    let texel = key.texel_formats.iter().map(|&(r, f)| ((false, r), f));
+    let mut all: Vec<_> = storage.chain(texel).collect();
+    all.sort_by_key(|s| s.0);
+    all
 }
 
 impl<B: Backend> Formats<B> {
-    /// The record of a stage converted with `key`, whose `storage_formats` it made the program
-    /// with; `None` when it has no such views.
+    /// The record of a stage converted with `key`, whose formats it made the program with;
+    /// `None` when it has no such views.
     pub(super) fn of(visibility: u32, code: &[u8], key: &VariantKey) -> Option<Box<Self>> {
-        if key.storage_formats.is_empty() {
+        let made = slots(key);
+        if made.is_empty() {
             return None;
         }
         Some(Box::new(Formats {
@@ -55,16 +78,17 @@ impl<B: Backend> Formats<B> {
             code: code.to_vec(),
             key: VariantKey {
                 storage_formats: Vec::new(),
+                texel_formats: Vec::new(),
                 ..key.clone()
             },
-            made: key.storage_formats.clone(),
+            made,
             variants: Vec::new(),
         }))
     }
 
     pub(super) fn destroy(self, backend: &mut B) {
         for (_, p) in self.variants {
-            if let Some(p) = p {
+            if let Some((p, _)) = p {
                 backend.destroy(Object::Program(p));
             }
         }
@@ -72,42 +96,47 @@ impl<B: Backend> Formats<B> {
 }
 
 impl<B: Backend> Device<B> {
-    /// The program to draw or dispatch with for the storage textures the last `binding_sets`
-    /// bound: `None` for the pipeline's own, else the one converted for their formats.
-    /// `vertex_variant` says the draw uses a vertex program other than the pipeline's own,
-    /// which such programs are not made with.
+    /// The program to draw or dispatch with for the typed views the last `binding_sets` bound,
+    /// with its helper layout: `None` for the pipeline's own, else the one converted for their
+    /// formats. Views bound with no format (null views) keep the program's. `vertex_variant` says
+    /// the draw uses a vertex program other than the pipeline's own, which such programs are not
+    /// made with.
     pub(super) fn bound_program(
         &mut self,
         pid: PipelineId,
         vertex_variant: bool,
-    ) -> Result<Option<B::Program>, Error> {
+    ) -> Result<Option<(B::Program, Helpers)>, Error> {
         let Some(f) = &self.pipelines[pid.0 as usize].formats else {
             return Ok(None);
         };
-        let mut bound: Vec<(u32, Format)> = self
-            .bound_storage
-            .iter()
-            .filter(|b| b.0 == f.visibility)
-            .map(|b| (b.1, b.2))
-            .collect();
-        bound.sort_by_key(|b| b.0);
+        let mut bound = f.made.clone();
+        for &(visibility, slot, format) in &self.bound_formats {
+            if visibility == f.visibility
+                && let Some(b) = bound.iter_mut().find(|b| b.0 == slot)
+            {
+                b.1 = format;
+            }
+        }
         if bound == f.made {
             return Ok(None);
         }
         if vertex_variant {
             return Err(Error::NotImplemented(
-                "a vertex program fetching its inputs with storage textures of other formats",
+                "a vertex program fetching its inputs with typed views of other formats",
             ));
         }
-        let refused = Error::NotImplemented("storage textures of formats the shader cannot take");
+        let refused = Error::NotImplemented("typed views of formats the shader cannot take");
         if let Some((_, p)) = f.variants.iter().find(|v| v.0 == bound) {
             return p.clone().map(Some).ok_or(refused);
         }
         let (visibility, code) = (f.visibility, f.code.clone());
-        let key = VariantKey {
-            storage_formats: bound.clone(),
-            ..f.key.clone()
-        };
+        let mut key = f.key.clone();
+        for &((storage, register), format) in &bound {
+            match storage {
+                true => key.storage_formats.push((register, format)),
+                false => key.texel_formats.push((register, format)),
+            }
+        }
         // A program made at the draw, as a state combination first met there.
         self.backend.slow_paths().hit(SlowPath::PipelineMiss);
         let made = self.formats_program(pid, visibility, &code, key);
@@ -119,6 +148,23 @@ impl<B: Backend> Device<B> {
         made.map(Some)
     }
 
+    /// Refuses typed views bound to the vertex stage in formats other than those its program
+    /// was made with: vertex programs are not converted again for them.
+    pub(super) fn vertex_formats(&self, pid: PipelineId) -> Result<(), Error> {
+        let Some(r) = &self.pipelines[pid.0 as usize].render else {
+            return Ok(());
+        };
+        let made = slots(&r.typed_key);
+        for &(visibility, slot, format) in &self.bound_formats {
+            if visibility == bind::VERTEX && made.iter().any(|m| m.0 == slot && m.1 != format) {
+                return Err(Error::NotImplemented(
+                    "typed views of other formats in a vertex shader",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The pipeline's program with its `visibility` stage converted from `code` with `key`.
     fn formats_program(
         &mut self,
@@ -126,13 +172,13 @@ impl<B: Backend> Device<B> {
         visibility: u32,
         code: &[u8],
         key: VariantKey,
-    ) -> Result<B::Program, Error> {
+    ) -> Result<(B::Program, Helpers), Error> {
         if visibility == 0 {
             let cs = self.convert(code, ShaderStage::Compute, key)?;
             let shader = self.backend.create_shader(&cs.modules[0])?;
             let program = self.backend.create_program(&Program::Compute(&shader));
             self.backend.destroy(Object::Shader(shader));
-            return Ok(program?);
+            return Ok((program?, Helpers::of(&cs)));
         }
         let ps = self.convert(code, ShaderStage::Fragment, key)?;
         let vertex = self.pipelines[pid.0 as usize]
@@ -155,6 +201,6 @@ impl<B: Backend> Device<B> {
         });
         self.backend.destroy(Object::Shader(vertex));
         self.backend.destroy(Object::Shader(fragment));
-        Ok(program?)
+        Ok((program?, Helpers::of(&ps)))
     }
 }
