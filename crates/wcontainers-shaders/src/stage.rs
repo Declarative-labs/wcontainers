@@ -7,8 +7,8 @@
 //!   one per user location the geometry stage reads, in location order.
 //! - Geometry output: records of the same shape for the vertices each geometry invocation emits,
 //!   invocation i owning `max_vertices` records from `i * max_vertices`; then, from word
-//!   `INDEX_BASE`, `2 * max_vertices` index slots per invocation for strips, ending each cut strip with
-//!   the restart index.
+//!   `INDEX_BASE`, `2 * max_vertices` index slots per invocation: the emitted vertices' numbers in
+//!   order, each cut strip ended with the restart index, unused slots restarting.
 //!
 //! Its own bindings live in set [`STAGE_SET`] of its compute programs, which no compute program of the
 //! API uses (set 1 is the pixel stage's).
@@ -25,7 +25,10 @@ use naga::{
 use wcontainers_gpu::{Interpolation, Reflection, ScalarKind as ValueKind, SystemValue};
 
 mod helper;
-pub use helper::{FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages};
+pub use helper::{
+    FinalDraw, InputTopology, StageDraw, StageError, StageIndex, Stages, StreamOutput,
+    StreamOutputEntry, StreamTargets,
+};
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
@@ -132,12 +135,19 @@ pub fn vertex_program(
     vertex: &crate::Converted,
     geometry: &crate::Converted,
 ) -> Result<wcontainers_gpu::ShaderModule> {
-    let inputs = locations(&geometry.reflection.inputs);
+    vertex_program_for(vertex, &locations(&geometry.reflection.inputs))
+}
+
+/// The compute form of `vertex` writing records with a slot for each of `inputs` (locations).
+pub(crate) fn vertex_program_for(
+    vertex: &crate::Converted,
+    inputs: &[u32],
+) -> Result<wcontainers_gpu::ShaderModule> {
     let source = &vertex.modules[0];
-    let module = vertex_as_compute(&source.module, &inputs)?;
+    let module = vertex_as_compute(&source.module, inputs)?;
     let mut key = blake3::Hasher::new();
     key.update(&source.key).update(b"vertex records");
-    for l in &inputs {
+    for l in inputs {
         key.update(&l.to_le_bytes());
     }
     Ok(wcontainers_gpu::ShaderModule {
@@ -146,6 +156,20 @@ pub fn vertex_program(
         entry_point: "main".into(),
         stage: wcontainers_gpu::ShaderStage::Compute,
         key: *key.finalize().as_bytes(),
+    })
+}
+
+/// The stream output program (`stream_out.wgsl`), which [`Stages`] runs after the last stage.
+pub fn stream_program() -> Result<wcontainers_gpu::ShaderModule> {
+    let text = include_str!("stage/stream_out.wgsl");
+    let module = naga::front::wgsl::parse_str(text)
+        .map_err(|e| ConvertError::Malformed(format!("the stream output program: {e}")))?;
+    Ok(wcontainers_gpu::ShaderModule {
+        info: crate::validate(&module)?,
+        module,
+        entry_point: "main".into(),
+        stage: wcontainers_gpu::ShaderStage::Compute,
+        key: *blake3::hash(text.as_bytes()).as_bytes(),
     })
 }
 

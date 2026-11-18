@@ -127,6 +127,8 @@ struct Resource {
     image: Option<(u64, bool)>,
     /// The texture holds depth (it is compared against).
     depth: bool,
+    /// A storage view: loads take no level.
+    storage: bool,
 }
 
 /// One input or output declaration of the IR.
@@ -184,6 +186,9 @@ struct Lowering<'a> {
     workgroup: [u32; 3],
     /// Images and samplers used in depth comparisons, by declaring id.
     compared: HashSet<u32>,
+    /// Shared memory and storage buffers some atomic operation uses, by declaring id: their scalars
+    /// are declared atomic. The bits say which minimum and maximum it takes: 1 signed, 2 unsigned.
+    atomic: HashMap<u32, u8>,
     semantics: HashMap<u32, (String, u32)>,
     discards: bool,
     side_effects: bool,
@@ -245,6 +250,7 @@ impl<'a> Lowering<'a> {
             conservative: None,
             workgroup: [1; 3],
             compared: HashSet::default(),
+            atomic: HashMap::default(),
             semantics: HashMap::default(),
             discards: false,
             side_effects: false,
@@ -302,12 +308,41 @@ impl<'a> Lowering<'a> {
 
     /// The naga type of an IR type with one member, arrays included.
     fn ir_ty(&mut self, t: &Ty) -> Result<Handle<Type>> {
+        self.ir_ty_of(t, false)
+    }
+
+    /// The IR type of declaration `dcl`, its scalar the one its atomic operations take: signed where
+    /// they take signed minimums or maximums, unsigned where unsigned ones. Both cannot be declared.
+    fn declared_ty(&self, dcl: u32) -> Result<Ty> {
+        let mut t = self.ir.op(dcl)?.ty.clone();
+        let scalar = match self.atomic.get(&dcl) {
+            Some(3) => return Err(unsupported("AtomicSignedness")),
+            Some(1) => scalar::I32,
+            Some(2) => scalar::U32,
+            _ => return Ok(t),
+        };
+        if let [member] = &mut t.members[..] {
+            member.scalar = scalar;
+        }
+        Ok(t)
+    }
+
+    /// [`Self::ir_ty`], with the member atomic where `atomic` (a 32-bit integer).
+    fn ir_ty_of(&mut self, t: &Ty, atomic: bool) -> Result<Handle<Type>> {
         let member = match t.members[..] {
             [member] => member,
             [] => return Err(malformed("a declaration without a type".into())),
             _ => return Err(unsupported("StructType")),
         };
-        let mut handle = self.basic(member)?;
+        let mut handle = if atomic {
+            let s = Self::scalar(member.scalar)?;
+            if member.size != 1 || !matches!(s, Scalar::U32 | Scalar::I32) {
+                return Err(unsupported("AtomicType"));
+            }
+            self.ty(TypeInner::Atomic(s))
+        } else {
+            self.basic(member)?
+        };
         let mut size = basic_size(member);
         let mut align = basic_align(member);
         for &count in &t.dims {
@@ -363,6 +398,17 @@ impl<'a> Lowering<'a> {
                     self.compared.insert(dcl);
                 }
             }
+            let dcl = match op.code {
+                code::LDS_ATOMIC => op.refs[0],
+                code::BUFFER_ATOMIC => self.ir.op(op.refs[0])?.refs[0],
+                _ => continue,
+            };
+            let sign = match op.lits.first() {
+                Some(6 | 7) => 1,
+                Some(8 | 9) => 2,
+                _ => 0,
+            };
+            *self.atomic.entry(dcl).or_default() |= sign;
         }
         for id in 1..=self.ir.ops.len() as u32 {
             let op = self.ir.op(id)?;
@@ -433,7 +479,8 @@ impl<'a> Lowering<'a> {
                 match k {
                     kind::BUFFER_TYPED => return Err(unsupported("TypedBuffer")),
                     kind::BUFFER_RAW | kind::BUFFER_STRUCTURED => {
-                        let ty = self.ir_ty(&op.ty)?;
+                        let ty = self.declared_ty(id)?;
+                        let ty = self.ir_ty_of(&ty, self.atomic.contains_key(&id))?;
                         let read_only = !storage || op.lits.get(4).is_some_and(|f| f & 2 != 0);
                         let access = if read_only {
                             naga::StorageAccess::LOAD
@@ -443,10 +490,15 @@ impl<'a> Lowering<'a> {
                         let space = AddressSpace::Storage { access };
                         self.resource_in(id, op, slot, ty, space, None, false)?;
                     }
-                    _ => {
-                        if storage {
-                            return Err(unsupported("StorageImage"));
+                    _ if storage => {
+                        let (dim, arrayed, multi) = image_dim(k)?;
+                        if multi {
+                            return Err(unsupported("MultisampledStorage"));
                         }
+                        let ty = self.storage_image(op, dim, arrayed)?;
+                        self.resource(id, op, slot, ty, Some((k, arrayed)), false)?;
+                    }
+                    _ => {
                         let (dim, arrayed, multi) = image_dim(k)?;
                         let depth = self.compared.contains(&id);
                         let member = op
@@ -470,9 +522,18 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            code::DCL_UAV_COUNTER => return Err(unsupported("StorageCounter")),
+            code::DCL_UAV_COUNTER => {
+                // One atomic word of its own, at the counter binding of the view's slot.
+                let uav = self.ir.op(op.refs[1])?;
+                let ty = self.ty(TypeInner::Atomic(Scalar::U32));
+                let space = AddressSpace::Storage {
+                    access: naga::StorageAccess::LOAD | naga::StorageAccess::STORE,
+                };
+                self.resource_in(id, uav, SlotKind::Counter, ty, space, None, false)?;
+            }
             code::DCL_LDS => {
-                let ty = self.ir_ty(&op.ty)?;
+                let ty = self.declared_ty(id)?;
+                let ty = self.ir_ty_of(&ty, self.atomic.contains_key(&id))?;
                 let var = self.global(format!("lds{id}"), AddressSpace::WorkGroup, None, ty, None);
                 self.memory.insert(id, var);
             }
@@ -506,6 +567,49 @@ impl<'a> Lowering<'a> {
             _ => return Err(malformed(format!("declaration {}", op.code))),
         }
         Ok(())
+    }
+
+    /// The type of a storage texture view: its format from the variant (the bound view's), its access
+    /// from the declaration. Read-write access exists in WebGPU for 32-bit single-channel formats only.
+    fn storage_image(
+        &mut self,
+        op: &Op,
+        dim: ImageDimension,
+        arrayed: bool,
+    ) -> Result<Handle<Type>> {
+        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let format = self
+            .variant
+            .storage_formats
+            .iter()
+            .find(|(slot, _)| *slot == register)
+            .ok_or(unsupported("StorageFormat"))?
+            .1;
+        let format = storage_format(format).ok_or(unsupported("StorageFormatAbsent"))?;
+        let member = op
+            .ty
+            .basic()
+            .ok_or_else(|| malformed("storage image type".into()))?;
+        if Self::scalar(member.scalar)?.kind != storage_kind(format) {
+            return Err(unsupported("StorageFormatKind"));
+        }
+        let flags = op.lits.get(4).copied().unwrap_or(0);
+        let access = if flags & 2 != 0 {
+            naga::StorageAccess::LOAD
+        } else if flags & 4 != 0 {
+            naga::StorageAccess::STORE
+        } else {
+            use naga::StorageFormat as S;
+            if !matches!(format, S::R32Float | S::R32Uint | S::R32Sint) {
+                return Err(unsupported("ReadWriteStorageFormat"));
+            }
+            naga::StorageAccess::LOAD | naga::StorageAccess::STORE
+        };
+        Ok(self.ty(TypeInner::Image {
+            dim,
+            arrayed,
+            class: ImageClass::Storage { format, access },
+        }))
     }
 
     fn resource(
@@ -569,7 +673,16 @@ impl<'a> Lowering<'a> {
             ty,
             None,
         );
-        self.resources.insert(id, Resource { var, image, depth });
+        let storage = slot == SlotKind::Storage;
+        self.resources.insert(
+            id,
+            Resource {
+                var,
+                image,
+                depth,
+                storage,
+            },
+        );
         self.reflection.bindings.push(ReflectedBinding {
             kind: slot,
             space: space_index,
@@ -1293,6 +1406,83 @@ fn ones(s: Scalar) -> Literal {
     }
 }
 
+/// The storage texture format of an interface format, where WGSL has one.
+fn storage_format(f: wcontainers_gpu::Format) -> Option<naga::StorageFormat> {
+    use naga::StorageFormat as S;
+    use wcontainers_gpu::Format as F;
+    Some(match f {
+        F::R8Unorm => S::R8Unorm,
+        F::R8Snorm => S::R8Snorm,
+        F::R8Uint => S::R8Uint,
+        F::R8Sint => S::R8Sint,
+        F::R16Unorm => S::R16Unorm,
+        F::R16Snorm => S::R16Snorm,
+        F::R16Uint => S::R16Uint,
+        F::R16Sint => S::R16Sint,
+        F::R16Float => S::R16Float,
+        F::Rg8Unorm => S::Rg8Unorm,
+        F::Rg8Snorm => S::Rg8Snorm,
+        F::Rg8Uint => S::Rg8Uint,
+        F::Rg8Sint => S::Rg8Sint,
+        F::R32Uint => S::R32Uint,
+        F::R32Sint => S::R32Sint,
+        F::R32Float => S::R32Float,
+        F::Rg16Unorm => S::Rg16Unorm,
+        F::Rg16Snorm => S::Rg16Snorm,
+        F::Rg16Uint => S::Rg16Uint,
+        F::Rg16Sint => S::Rg16Sint,
+        F::Rg16Float => S::Rg16Float,
+        F::Rgba8Unorm => S::Rgba8Unorm,
+        F::Rgba8Snorm => S::Rgba8Snorm,
+        F::Rgba8Uint => S::Rgba8Uint,
+        F::Rgba8Sint => S::Rgba8Sint,
+        F::Bgra8Unorm => S::Bgra8Unorm,
+        F::Rgb10a2Unorm => S::Rgb10a2Unorm,
+        F::Rgb10a2Uint => S::Rgb10a2Uint,
+        F::Rg11b10Float => S::Rg11b10Ufloat,
+        F::Rg32Uint => S::Rg32Uint,
+        F::Rg32Sint => S::Rg32Sint,
+        F::Rg32Float => S::Rg32Float,
+        F::Rgba16Unorm => S::Rgba16Unorm,
+        F::Rgba16Snorm => S::Rgba16Snorm,
+        F::Rgba16Uint => S::Rgba16Uint,
+        F::Rgba16Sint => S::Rgba16Sint,
+        F::Rgba16Float => S::Rgba16Float,
+        F::Rgba32Uint => S::Rgba32Uint,
+        F::Rgba32Sint => S::Rgba32Sint,
+        F::Rgba32Float => S::Rgba32Float,
+        _ => return None,
+    })
+}
+
+/// The scalar kind a storage format's texels are read and written as.
+fn storage_kind(f: naga::StorageFormat) -> ScalarKind {
+    use naga::StorageFormat as S;
+    match f {
+        S::R8Uint
+        | S::R16Uint
+        | S::Rg8Uint
+        | S::R32Uint
+        | S::Rg16Uint
+        | S::Rgba8Uint
+        | S::Rgb10a2Uint
+        | S::Rg32Uint
+        | S::Rgba16Uint
+        | S::Rgba32Uint
+        | S::R64Uint => ScalarKind::Uint,
+        S::R8Sint
+        | S::R16Sint
+        | S::Rg8Sint
+        | S::R32Sint
+        | S::Rg16Sint
+        | S::Rgba8Sint
+        | S::Rg32Sint
+        | S::Rgba16Sint
+        | S::Rgba32Sint => ScalarKind::Sint,
+        _ => ScalarKind::Float,
+    }
+}
+
 fn image_dim(k: u64) -> Result<(ImageDimension, bool, bool)> {
     Ok(match k {
         kind::IMAGE_1D | kind::IMAGE_2D => (ImageDimension::D2, false, false),
@@ -1331,7 +1521,12 @@ impl Emit {
     }
 
     fn add(&mut self, f: &mut Function, block: &mut Block, expr: Expression) -> Handle<Expression> {
-        if expr.needs_pre_emit() || matches!(expr, Expression::CallResult(_)) {
+        if expr.needs_pre_emit()
+            || matches!(
+                expr,
+                Expression::CallResult(_) | Expression::AtomicResult { .. }
+            )
+        {
             self.flush(f, block);
             let h = f.expressions.append(expr, Span::UNDEFINED);
             self.start = f.expressions.len();
@@ -2380,7 +2575,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 let res = self.image(r[0])?;
                 let (k, arrayed) = res.image.unwrap();
                 let image = self.add(b, Expression::GlobalVariable(res.var));
-                let level = if k == kind::IMAGE_2D_MS || r[1] == 0 {
+                let level = if k == kind::IMAGE_2D_MS || r[1] == 0 || res.storage {
                     None
                 } else {
                     Some(self.get_as(b, r[1], Scalar::U32)?)
@@ -2438,10 +2633,15 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 self.add(b, Expression::ImageQuery { image, query })
             }
             c::IMAGE_COMPUTE_LOD => return Err(unsupported("CalculateLevelOfDetail")),
-            c::IMAGE_STORE | c::IMAGE_ATOMIC => return Err(unsupported("StorageImage")),
-            c::LDS_ATOMIC | c::BUFFER_ATOMIC | c::COUNTER_ATOMIC => {
-                return Err(unsupported("Atomics"));
+            c::IMAGE_STORE => {
+                self.image_store(b, op)?;
+                return Ok(());
             }
+            c::IMAGE_ATOMIC => return Err(unsupported("StorageImageAtomics")),
+            c::LDS_ATOMIC | c::BUFFER_ATOMIC | c::COUNTER_ATOMIC => match self.atomic(b, op)? {
+                Some(v) => v,
+                None => return Ok(()),
+            },
             c::INTERPOLATE_AT_CENTROID | c::INTERPOLATE_AT_SAMPLE | c::INTERPOLATE_AT_OFFSET => {
                 return Err(unsupported("InterpolateAt"));
             }
@@ -2465,8 +2665,149 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         Ok(())
     }
 
+    /// An atomic operation on shared memory, a storage buffer or a view's counter; its result (the
+    /// value before, or after for a counter's decrement as Direct3D defines it) unless it has none.
+    fn atomic(&mut self, b: &mut Block, op: &Op) -> Result<Option<Handle<Expression>>> {
+        use naga::AtomicFunction as A;
+        let r = &op.refs;
+        let what = *op
+            .lits
+            .first()
+            .ok_or_else(|| malformed("atomic without its operation".into()))?;
+        let (pointer, s) = if op.code == code::COUNTER_ATOMIC {
+            let (res, _) = self.buffer(r[0])?;
+            self.l.side_effects = true;
+            (
+                self.add(b, Expression::GlobalVariable(res.var)),
+                Scalar::U32,
+            )
+        } else {
+            let (var, ty) = if op.code == code::LDS_ATOMIC {
+                self.memory_var(code::LDS_LOAD, r[0])?
+            } else {
+                self.l.side_effects = true;
+                let (res, ty) = self.buffer(r[0])?;
+                (res.var, ty)
+            };
+            match self.walk(b, var, &ty, r[1], 1)? {
+                Place::Element(p, element, None | Some(Index::Const(0))) if element.size == 1 => {
+                    (p, Lowering::scalar(element.scalar)?)
+                }
+                _ => return Err(malformed("atomic on a vector".into())),
+            }
+        };
+        let want = op
+            .ty
+            .basic()
+            .map(|m| Lowering::scalar(m.scalar))
+            .transpose()?;
+        let operand = |me: &mut Self, b: &mut Block, k: u32| -> Result<Handle<Expression>> {
+            let v = me.get_as(b, r[2], s)?;
+            Ok(if me.basic_of(r[2])?.size == 1 {
+                v
+            } else {
+                me.add(b, Expression::AccessIndex { base: v, index: k })
+            })
+        };
+        let (fun, value) = match what {
+            // Load and store: atomic loads and stores in naga's form.
+            0 => {
+                let v = self.add(b, Expression::Load { pointer });
+                return Ok(Some(self.retyped(b, v, s, want)));
+            }
+            1 => {
+                let value = operand(self, b, 0)?;
+                self.stmt(b, Statement::Store { pointer, value });
+                return Ok(None);
+            }
+            2 => (A::Exchange { compare: None }, operand(self, b, 0)?),
+            3 => {
+                let compare = operand(self, b, 0)?;
+                (
+                    A::Exchange {
+                        compare: Some(compare),
+                    },
+                    operand(self, b, 1)?,
+                )
+            }
+            4 => (A::Add, operand(self, b, 0)?),
+            5 => (A::Subtract, operand(self, b, 0)?),
+            6..=9 => {
+                let signed = what <= 7;
+                if signed != (s == Scalar::I32) {
+                    return Err(unsupported("AtomicSignedness"));
+                }
+                let fun = if what % 2 == 0 { A::Min } else { A::Max };
+                (fun, operand(self, b, 0)?)
+            }
+            10 => (A::And, operand(self, b, 0)?),
+            11 => (A::InclusiveOr, operand(self, b, 0)?),
+            12 => (A::ExclusiveOr, operand(self, b, 0)?),
+            13 | 14 => {
+                let one = match s {
+                    Scalar::I32 => Literal::I32(1),
+                    _ => Literal::U32(1),
+                };
+                let fun = if what == 13 { A::Add } else { A::Subtract };
+                (fun, self.lit(b, one))
+            }
+            _ => return Err(malformed(format!("atomic operation {what}"))),
+        };
+        let compared = matches!(fun, A::Exchange { compare: Some(_) });
+        // A compare-exchange always takes its result: naga's HLSL writer has no form without it.
+        let result = (want.is_some() || compared).then(|| {
+            let ty = if compared {
+                self.l.module.generate_predeclared_type(
+                    naga::PredeclaredType::AtomicCompareExchangeWeakResult(s),
+                )
+            } else {
+                self.l.scalar_ty(s)
+            };
+            self.add(
+                b,
+                Expression::AtomicResult {
+                    ty,
+                    comparison: compared,
+                },
+            )
+        });
+        self.stmt(
+            b,
+            Statement::Atomic {
+                pointer,
+                fun,
+                value,
+                result,
+            },
+        );
+        let (Some(mut v), Some(_)) = (result, want) else {
+            return Ok(None);
+        };
+        if compared {
+            v = self.add(b, Expression::AccessIndex { base: v, index: 0 });
+        }
+        if op.code == code::COUNTER_ATOMIC && what == 14 {
+            let one = self.lit(b, Literal::U32(1));
+            v = self.bin(b, BinaryOperator::Subtract, v, one);
+        }
+        Ok(Some(self.retyped(b, v, s, want)))
+    }
+
+    /// `v` of scalar `from` as the result type's scalar.
+    fn retyped(
+        &mut self,
+        b: &mut Block,
+        v: Handle<Expression>,
+        from: Scalar,
+        want: Option<Scalar>,
+    ) -> Handle<Expression> {
+        match want {
+            Some(to) => self.e.bitcast(&mut self.f, b, v, from, to),
+            None => v,
+        }
+    }
+
     fn memory_var(&mut self, opcode: u16, dcl: u32) -> Result<(Handle<GlobalVariable>, Ty)> {
-        let ir = self.l.ir;
         if opcode == code::CONSTANT_LOAD {
             return self.l.constant_array(dcl);
         }
@@ -2479,7 +2820,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             .memory
             .get(&dcl)
             .ok_or_else(|| malformed(format!("memory {dcl}")))?;
-        Ok((var, ir.op(dcl)?.ty.clone()))
+        Ok((var, self.l.declared_ty(dcl)?))
     }
 
     fn buffer(&self, desc: u32) -> Result<(Resource, Ty)> {
@@ -2489,7 +2830,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             .resources
             .get(&dcl)
             .ok_or_else(|| malformed(format!("descriptor {desc}")))?;
-        Ok((res, self.l.ir.op(dcl)?.ty.clone()))
+        Ok((res, self.l.declared_ty(dcl)?))
     }
 
     fn image(&self, desc: u32) -> Result<Resource> {
@@ -2989,7 +3330,9 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             };
             coordinate = self.bin(b, BinaryOperator::Add, coordinate, off);
         }
-        let (sample, level) = if k == kind::IMAGE_2D_MS {
+        let (sample, level) = if res.storage {
+            (None, None)
+        } else if k == kind::IMAGE_2D_MS {
             (Some(self.get(b, sample)?), None)
         } else if mip != 0 {
             (None, Some(self.get(b, mip)?))
@@ -3010,6 +3353,57 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             return self.depth_vec4(b, v, op);
         }
         Ok(v)
+    }
+
+    /// A store to a storage texture: the value made the four components of the format's kind.
+    fn image_store(&mut self, b: &mut Block, op: &Op) -> Result<()> {
+        let r = &op.refs;
+        let res = self.image(r[0])?;
+        let (k, _) = res.image.unwrap();
+        self.l.side_effects = true;
+        let image = self.add(b, Expression::GlobalVariable(res.var));
+        let array_index = self.layer(b, r[1])?;
+        let coordinate = self.coords(b, k, r[2], false)?;
+        let kind = match self.l.module.types[self.l.module.global_variables[res.var].ty].inner {
+            TypeInner::Image {
+                class: ImageClass::Storage { format, .. },
+                ..
+            } => storage_kind(format),
+            _ => {
+                return Err(malformed(
+                    "store to a texture that is not a storage view".into(),
+                ));
+            }
+        };
+        let s = Scalar { kind, width: 4 };
+        let v = self.get_as(b, r[3], s)?;
+        let n = self.basic_of(r[3])?.size;
+        let value = if n == 4 {
+            v
+        } else {
+            let mut components = Vec::new();
+            for i in 0..4u32 {
+                components.push(if i >= u32::from(n) {
+                    self.lit(b, zero(s))
+                } else if n == 1 {
+                    v
+                } else {
+                    self.add(b, Expression::AccessIndex { base: v, index: i })
+                });
+            }
+            let ty = self.l.vec_ty(4, s)?;
+            self.add(b, Expression::Compose { ty, components })
+        };
+        self.stmt(
+            b,
+            Statement::ImageStore {
+                image,
+                coordinate,
+                array_index,
+                value,
+            },
+        );
+        Ok(())
     }
 
     fn arithmetic(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
@@ -3116,13 +3510,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             c::F_MUL | c::I_MUL => bin(self, b, B::Multiply, rs)?,
             c::F_DIV | c::U_DIV => bin(self, b, B::Divide, rs)?,
             c::U_MOD => bin(self, b, B::Modulo, rs)?,
-            c::F_MAD => {
-                let x = self.get_as(b, r[0], rs)?;
-                let y = self.get_as(b, r[1], rs)?;
-                let z = self.get_as(b, r[2], rs)?;
-                let m = self.bin(b, B::Multiply, x, y);
-                self.bin(b, B::Add, m, z)
-            }
+            // Direct3D's `mad` may be fused; `fma` leaves the device the same choice it has for it.
+            c::F_MAD => math(self, b, M::Fma, rs)?,
             c::F_RCP => {
                 let x = self.get_as(b, r[0], rs)?;
                 let one = self.splat_lit(b, Literal::F32(1.0), res.size)?;
