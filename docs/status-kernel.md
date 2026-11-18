@@ -124,6 +124,59 @@ Built, each tested against the reference:
 - kill and rt_sigqueueinfo take any thread's number and signal its process.
 - statx's and fdinfo's mount ids are numbered as mountinfo numbers the mounts.
 
+Also since: sched_setparam and sched_setscheduler refuse another user's thread without
+CAP_SYS_NICE (`check_same_owner`; schedattr test); sendfile keeps the rounds it moved across
+backend waits (it returned one 64 KiB round: sendfile09), with `Client::checkpoint` starting the
+call's record of questions again at each round; SIOCATMARK is ENOTTY on UDP and EOPNOTSUPP on
+local non-stream sockets, and the network-changing socket ioctls copy their structure (EFAULT)
+before checking CAP_NET_ADMIN (inet `socket_ioctl_checks_match_reference`); layer 1 now asks
+SIOCATMARK, SIOCSIFFLAGS and SIOCADDRT (seed 9191002, 200 sequences, matched).
+
+LTP comparison (layer 3), table at the end of this run:
+- The whole suite at fb0bc97 (TCP backend, before every other fix of this run) runs detached:
+  scratch k6c3/ours-5.tsv (output ours-5.out, start and load in ours-5.load: 07:58, load 26 to
+  50, 4 jobs, LTP_LIMIT 300). At 10:10 it had 1274 of 4226 tests (it is in ltp-aiodio.part3,
+  whose fsx tests each run out the 300 s). Comparison k6c3/compare-5-partial.txt:
+  - Tests matching: 1190 of 1274.
+  - Differing, 84, by cause:
+    - Slower than 300 s, 46: fs 23 (growfiles gf01 to gf29, rwtest01 to 04, iogen01: about 14
+      backend messages per iteration at about 1400 a second; the reference's gf01 makes 524289
+      iterations in 11 s), ltp-aiodio part2 1 and part3 15 (fsx), cve 5 (races of many
+      iterations: cve-2011-0999, 2014-0196, 2016-7117, 2017-10661, 2017-17052), dio30,
+      kernel_misc aslr01 (also: our layout is not randomized, below). Not yet shown to give the
+      reference's verdict under a longer limit.
+    - Fixed since fb0bc97, rerun one by one and matching: ftest02, ftest06, proc01. Fixed, not yet
+      rerun: AF_ALG 12 (crypto af_alg01 to 08, cve-2017-17805, 17806, 2019-8912, 2026-31431),
+      cve-2018-9568 (TCP disconnect), cve-2018-11508 (clock_adjtime), cve-2026-43499
+      (PR_SET_MM_MAP), cve-2017-8890 (MCAST_JOIN_GROUP on TCP), cve-2018-12896 (timer overrun).
+    - Parts not built, 6: controllers 8 (no cgroup2 mount at /sys/fs/cgroup and no
+      /proc/cgroups), /proc/<pid>/mem (cve-2016-5195, cve-2017-1000405), /proc/<pid>/attr
+      (cve-2017-2618), /proc/keys and keyctl (cve-2016-7042), IPV6_RTHDR sticky options
+      (cve-2026-53362).
+    - Section 15 causes, 5: raw packets (cve-2017-7308 AF_PACKET), ping sockets (cve-2017-2671),
+      the network is not Linux's (cve-2018-5803 SCTP, cve-2021-26708 vsock), one CPU
+      (irqbalance01).
+- 157 tests that differed in the first run's whole comparison (outside the groups above) were run
+  again at d4f72728 (scratch k6c3/redo-a.tsv, 2 jobs, load 37 to 51): 64 matched. Of the 93,
+  fixed since and matching when rerun: creat07, execve04, eventfd06, get_robust_list01,
+  rt_sigqueueinfo01, statx01, mlock203, munlockall01, mmap14; fixed, not rerun: sched_setparam05,
+  sendfile09 and 09_64, sockioctl01. Still differing: the parts not
+  built (ptrace 6: section 15; remap_file_pages 3 and shmctl05; io_submit04 (IOCB_CMD_POLL);
+  madvise12 (MADV_GUARD_INSTALL and REMOVE); setsockopt02 and sendto02 (AF_PACKET: section 15);
+  setsockopt11 (IPV6_RTHDR); socket01 and socketpair01 (family 0 and protocol checks);
+  send02 (MSG_MORE on UDP not acted on); asapi_01 to 03 (raw IPv6 sockets: section 15);
+  /proc entries kallsyms, swaps, sys/kernel/sched_autogroup_enabled, threads-max (built since),
+  fs/pipe-user-pages-soft (pipe15), inotify max_user_instances (built since)); wrong answers:
+  mincore03 and mlock201 (page residency not tracked), times03 (system time shows 0: all CPU
+  time is the user's), vma01 (adjacent mappings merged where Linux keeps two), madvise02,
+  sched_setaffinity01, ioctl10 (PROCMAP_QUERY not built), thp02 and thp03 (transparent huge
+  pages not described), aslr01 (no layout randomization), clock_nanosleep02, select02 and prctl09
+  (the reference failed them: timing under load; ours passed); section 15: mtest01, mtest01w,
+  mtest06 and fork14 (the address space is small), getcwd04, writev03 and irqbalance01 (one
+  CPU), sysfs 11 (/sys holds a chosen subset), sctp (the network is not Linux's).
+- Excused with a gap: none final yet; the draft list below stands, with the section 15 causes
+  named above.
+
 LTP reruns at the newest code, one by one: ftest02, ftest06 (pass), proc01 (fail, as the
 reference), statx01, rt_sigqueueinfo01, mlock203, munlockall01, mmap14, execve04, creat07,
 get_robust_list01, eventfd06 (pass); mlock201 still fails (mincore: page residency not
@@ -1604,30 +1657,37 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
 
 ## System calls
 
-Done (246): brk, cachestat, capget, capset, chdir, chroot, clock_getres, clock_gettime,
-clock_nanosleep, clone, close, close_range, copy_file_range, dup, dup3, execve, execveat, exit,
-exit_group, faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2,
-fchown, fchownat, fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat,
-fstatfs, fsync, ftruncate, futex, futex_requeue, futex_wait, futex_waitv, futex_wake, get_robust_list, getcpu, getcwd, getdents64, getegid, geteuid, getgid,
-getgroups, getitimer, getpgid, getpid, getppid, getpriority, getrandom, getresgid, getresuid, getrlimit,
-getrusage, getsid, gettid, gettimeofday, getuid, getxattr, ioctl, ioprio_get, ioprio_set, kill,
-lgetxattr, linkat, listxattr, llistxattr, lremovexattr, lseek, lsetxattr, madvise, map_shadow_stack,
-membarrier, memfd_create, memfd_secret, mincore, mq_getsetattr, mq_notify, mq_open,
-mq_timedreceive, mq_timedsend, mq_unlink, mkdirat, mknodat, mlock, mlock2, mlockall, mmap,
-mprotect, mremap, msgctl, msgget, msgrcv, msgsnd, msync, munlock, munlockall, munmap, name_to_handle_at, nanosleep, newfstatat,
-openat, openat2, personality, pidfd_open, pidfd_send_signal, pipe2, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64,
-preadv, preadv2, prlimit64, process_vm_readv, process_vm_writev, pselect6, pwrite64, pwritev,
-pwritev2, process_mrelease, read, readahead, readlinkat, readv, removexattr, renameat, renameat2, restart_syscall,
-rseq, rt_sigaction, rt_sigpending, rt_sigprocmask, rt_sigqueueinfo, rt_sigreturn, rt_sigsuspend,
-rt_sigtimedwait, rt_tgsigqueueinfo, sched_get_priority_max, sched_get_priority_min,
-sched_getaffinity, sched_getattr, sched_getparam, sched_getscheduler, sched_rr_get_interval,
-sched_setaffinity, sched_setattr, sched_setparam, sched_setscheduler, sched_yield, seccomp,
-semctl, semget, semop, semtimedop, sendfile, set_robust_list, set_tid_address, setfsgid, setfsuid, setgid, setgroups, setpgid,
-setitimer, setpriority, setregid, setresgid, setresuid, setreuid, setrlimit, setsid, setuid, setxattr, shmat,
-shmctl, shmdt, shmget, sigaltstack, signalfd4, splice, statfs, statx, symlinkat, sync, sync_file_range, syncfs,
-sysinfo, tee, tgkill, timer_create, timer_delete, timer_getoverrun, timer_gettime,
-timer_settime, timerfd_create, timerfd_gettime, timerfd_settime, times, tkill, truncate, umask, uname, unlinkat, utimensat, vmsplice, wait4,
-waitid, write, writev.
+Done (256, counted from the dispatch table at the end of K6c's third run): accept, accept4,
+adjtimex, bind, brk, cachestat, capget, capset, chdir, chroot, clock_adjtime, clock_getres,
+clock_gettime, clock_nanosleep, clone, close, close_range, connect, copy_file_range, dup, dup3,
+epoll_create1, epoll_ctl, epoll_pwait, epoll_pwait2, eventfd2, execve, execveat, exit, exit_group,
+faccessat, faccessat2, fadvise64, fallocate, fchdir, fchmod, fchmodat, fchmodat2, fchown, fchownat,
+fcntl, fdatasync, fgetxattr, flistxattr, flock, fremovexattr, fsetxattr, fstat, fstatfs, fsync,
+ftruncate, futex, futex_requeue, futex_wait, futex_waitv, futex_wake, get_robust_list, getcpu,
+getcwd, getdents64, getegid, geteuid, getgid, getgroups, getitimer, getpeername, getpgid, getpid,
+getppid, getpriority, getrandom, getresgid, getresuid, getrlimit, getrusage, getsid, getsockname,
+getsockopt, gettid, gettimeofday, getuid, getxattr, inotify_add_watch, inotify_init1,
+inotify_rm_watch, io_cancel, io_destroy, io_getevents, io_pgetevents, io_setup, io_submit, ioctl,
+ioprio_get, ioprio_set, kill, lgetxattr, linkat, listen, listxattr, llistxattr, lremovexattr, lseek,
+lsetxattr, madvise, map_shadow_stack, membarrier, memfd_create, memfd_secret, mincore, mkdirat,
+mknodat, mlock, mlock2, mlockall, mmap, mprotect, mq_getsetattr, mq_notify, mq_open,
+mq_timedreceive, mq_timedsend, mq_unlink, mremap, msgctl, msgget, msgrcv, msgsnd, msync, munlock,
+munlockall, munmap, name_to_handle_at, nanosleep, newfstatat, openat, openat2, personality,
+pidfd_open, pidfd_send_signal, pipe2, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64,
+preadv, preadv2, prlimit64, process_mrelease, process_vm_readv, process_vm_writev, pselect6,
+pwrite64, pwritev, pwritev2, read, readahead, readlinkat, readv, recvfrom, recvmmsg, recvmsg,
+removexattr, renameat, renameat2, restart_syscall, rseq, rt_sigaction, rt_sigpending,
+rt_sigprocmask, rt_sigqueueinfo, rt_sigreturn, rt_sigsuspend, rt_sigtimedwait, rt_tgsigqueueinfo,
+sched_get_priority_max, sched_get_priority_min, sched_getaffinity, sched_getattr, sched_getparam,
+sched_getscheduler, sched_rr_get_interval, sched_setaffinity, sched_setattr, sched_setparam,
+sched_setscheduler, sched_yield, seccomp, semctl, semget, semop, semtimedop, sendfile, sendmmsg,
+sendmsg, sendto, set_robust_list, set_tid_address, setdomainname, setfsgid, setfsuid, setgid,
+setgroups, sethostname, setitimer, setpgid, setpriority, setregid, setresgid, setresuid, setreuid,
+setrlimit, setsid, setsockopt, setuid, setxattr, shmat, shmctl, shmdt, shmget, shutdown,
+sigaltstack, signalfd4, socket, socketpair, splice, statfs, statx, symlinkat, sync, sync_file_range,
+syncfs, sysinfo, tee, tgkill, timer_create, timer_delete, timer_getoverrun, timer_gettime,
+timer_settime, timerfd_create, timerfd_gettime, timerfd_settime, times, tkill, truncate, umask,
+uname, unlinkat, utimensat, vmsplice, wait4, waitid, write, writev.
 
 Partial (inside the list above), each with its reason:
 - fcntl: record locks are built (above), waits between processes and EDEADLK included. Not built,
@@ -1719,8 +1779,9 @@ Partial (inside the list above), each with its reason:
   middle of an attachment: two pieces made, one closed) sets only the attach time; Linux sets both.
 - vmsplice: copies the pages when called (counted "vmsplice pages copied"); Linux's pipe holds the
   caller's pages, so a later change to them shows in what is read.
-- Core dumps: not written (counted "core dump not written"; Linux writes `core` and sets 0x80 when the
-  limit is above zero; the reference's default limit is 0).
+- Core dumps: written as Linux's ELF core (K6c's third run); which pages were touched is not
+  known (anonymous memory counts as touched, pages of zeros as holes), and a death whose registers
+  were lost writes none (counted "core dump not written").
 
 Refused by Docker's profile as in the reference (65; they never reach the kernel there, so nothing to
 build): lookup_dcookie, umount2, mount, pivot_root, nfsservctl, quotactl, unshare, kexec_load,
@@ -1740,14 +1801,12 @@ accept, accept4, connect, getsockname, getpeername, sendto, recvfrom, sendmsg, r
 recvmmsg, shutdown, setsockopt, getsockopt. Socket families: local (AF_UNIX), IPv4 and IPv6 (TCP
 and UDP), netlink (NETLINK_ROUTE); others counted "socket family not built".
 
-Missing (8, each counted "system call not implemented" and ENOSYS), with what each needs:
-- Processes: ptrace (tracing is out of phase one).
+Missing (6, each counted "system call not implemented" and ENOSYS), with what each needs:
+- Processes: ptrace (tracing is out of phase one, section 15).
 - fanotify_mark (fanotify_init is refused by Docker's profile, so no group can exist; see Next).
-- Single-process calls not built, each before K6's bar: adjtimex and clock_adjtime (reading the
-  clock's adjustment state: the made-up machine's values; setting needs CAP_SYS_TIME, which Docker's
-  root lacks), remap_file_pages (deprecated in Linux, emulated there with mmap over a shared mapping),
-  landlock_create_ruleset, landlock_add_rule and landlock_restrict_self (Landlock's rules applied in the
-  path walk).
+- remap_file_pages (deprecated in Linux, emulated there with mmap over a shared mapping), and
+  landlock_create_ruleset, landlock_add_rule and landlock_restrict_self (Landlock's rules applied in
+  the path walk).
 
 ## Known gaps (with reasons)
 
@@ -3295,30 +3354,36 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K6c, in this order:
-1. Let the whole LTP run at ceb929e finish (scratch k6c2/ours-4.tsv; if it is no longer
-   running, continue it: `LTP_TAR=<scratch>/ltp/ltp-20260930.tar LTP_LIMIT=300 LTP_JOBS=4
-   nix develop -c cargo run -p wcontainers-kernel-test --bin ltp -- ours <that file>`; the
-   image wc-kernel-ltp-served:20260930 must exist: ltp/build.sh makes it). Then run again
-   every test that differs, at the newest commit, into a second file and compare with
-   `ltp compare crates/wcontainers-kernel-test/ltp/reference-20260930.tsv <file>`.
-2. Find why tests are so slow on the backend root (dio16: 5 s reference, 75 s in-memory root,
-   past 300 s on the backend): measure the backend round trips per second through the test
-   host's docker pipe and how many messages a direct 64 KiB write makes. Then run the timeouts
-   with a longer LTP_LIMIT to show their verdicts.
-3. Core dumps (abort01, kill11, waitpid01): measured in the reference: core_pattern "core",
-   core_uses_pid 0, RLIMIT_CORE 0 by default; with a limit a file "core" (0600, ELF core) is
-   written in the cwd and the status has the core bit. The core must be written as a kernel
-   operation that can park (the cwd is on the backend), as an exiting thread's call slot.
-   linux-raw-sys has elf64_hdr, elf64_phdr, elf64_note and NT_*, not elf_prstatus.
-4. AF_ALG; /proc/<pid>/mem (FOLL_FORCE rules: reads of PROT_NONE and writes to private
-   mappings); smaps, pagemap, attr; hugetlbfs memory files with no pages (measured: memfd
-   MFD_HUGETLB works, blksize the page size, ftruncate needs its multiple, write EINVAL, read
-   zeros, mmap ENOMEM, fallocate ENOSPC, statfs HUGETLBFS_MAGIC, sizes 64K/2M/32M/1G, others
-   ENODEV); the cgroup2 mount; keyctl; clock_adjtime.
-5. Settle the gap list (draft under "K6c, second run") and write the Reported items: the
-   system calls list (done, partial, missing), the results file of the last whole comparison
-   committed under ltp/, and every counter (Not built, by counter).
-6. Three fresh layer 1 seeds at the end (fresh seeds start at 8484005).
+1. The whole LTP run at fb0bc97 goes on detached (scratch k6c3/ours-5.tsv; if it has stopped,
+   continue it: `LTP_TAR=<scratch>/ltp/ltp-20260930.tar LTP_LIMIT=300 LTP_JOBS=4 nix develop -c
+   cargo run -p wcontainers-kernel-test --bin ltp -- ours <that file>`; the image
+   wc-kernel-ltp-served:20260930 must exist, ltp/build.sh makes it). When it ends, run every test
+   that differs again at the newest commit into a second file, and compare both with `ltp compare
+   crates/wcontainers-kernel-test/ltp/reference-20260930.tsv <file>`.
+2. Rerun the fixed-not-rerun tests listed under "K6c, third run" and confirm.
+3. Parts not built that tests reach, largest first: the cgroup2 mount at /sys/fs/cgroup (read
+   only, the container's root cgroup, with /proc/cgroups; the reference's files are listed in
+   scratch notes: cgroup.*, cpu.*, cpuset.*, hugetlb.*, io.*, memory.*, pids.*, rdma.*), which
+   the 8 controllers tests reach; /proc/<pid>/mem (FOLL_FORCE: reads of PROT_NONE, writes into
+   private file mappings copy the page; dirtyc0w, cve-2016-5195, cve-2017-1000405, thp04);
+   smaps, pagemap, attr; per-user pipe pages (fs.pipe-user-pages-soft and hard, pipe15:
+   `account_pipe_buffers`; root in Docker has no CAP_SYS_RESOURCE, so the soft limit applies);
+   page residency for mincore (mincore03, mlock201); system time (times03: time the kernel spends
+   in a call could count as the thread's system time); keyctl and /proc/keys; IPV6_RTHDR;
+   PROCMAP_QUERY; MSG_MORE on UDP; remap_file_pages; the madvise advices counted.
+4. The slow tests (46 timeouts): run them with a long limit (LTP_LIMIT 3600, 2 jobs) to show
+   their verdicts; growfiles needs about 5000 s each at the measured 1400 messages a second, so
+   show a sample and excuse the rest under section 15 (file access is slower until the cache)
+   only with that evidence. Large reads on the backend run their chunks again on each wait
+   (quadratic in chunks, like sendfile was): give read, write and copy_file_range rounds with
+   `Client::checkpoint` as sendfile has.
+5. Settle the written gap list from section 15 only (the draft under "K6c, second run", and
+   the causes named in this run's table), commit the results file of the last whole comparison
+   under ltp/, and write the counters list (Not built, by counter). The system calls list is
+   current (Done 256, Missing 6, Refused 65).
+6. Three fresh layer 1 seeds at the end (fresh seeds start at 9191003).
+7. The whole suite (started detached at adc5628c, scratch k6c3/suite.log, load in suite.load):
+   read its result.
 
 After K6b (fifth run), in this order (none of these holds K6b):
 1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
@@ -3400,6 +3465,7 @@ not seen as a setting; futex queues allocate when a futex first gets waiters; th
 sequence layer 1 run at the end of the kernel track (orchestrator). Layer 1 seeds used so far: up to
 737, 3023 to 3034, 4040001, 4040201 to 4040207, 4040401 to 4040403, 4040501 to 4040512, 5050001, 5050003 and
 5050002, 5050401 to 5050462 (K5; sockets reached from 5050405), 5050463 to 5050466 (K6a),
-6262601 to 6262624 and 8484001 to 8484003 (K6b), 8484004 (K6c, 300 sequences), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
+6262601 to 6262624 and 8484001 to 8484003 (K6b), 8484004 (K6c, 300 sequences), 9191001 and
+9191002 (K6c third run, 200 each), and the checks' 7373001 and 7373003, 91001 to 91003, 8181801 to 8181803, 5150002 and 9393001 to 9393003. Layer 1 on the backend:
 0, 4040101 to 4040105, 4040111 to 4040116; on the caching backend: 0, 4040301 to 4040303, 4040311
 to 4040315, and the check's 7171002.
