@@ -6,7 +6,8 @@
 //! `adapter` and saves what they return, times first draws with and without `prepare`
 //! (`prepare_timings`, prepare.rs), checks timestamps (`timestamps`, timestamps.rs) and the formats
 //! held converted (`converted`, converted.rs) and the vertex formats WebGPU lacks
-//! (`vertex_formats`, vertices.rs), and web/suite.html runs the shared suite (suite.rs).
+//! (`vertex_formats`, vertices.rs), measures instance data fetched in the program (`pulled_costs`,
+//! pulled.rs), and web/suite.html runs the shared suite (suite.rs).
 
 #[path = "../../../wcontainers-graphics-test/src/scene.rs"]
 #[allow(dead_code)]
@@ -67,6 +68,12 @@ mod converted;
 
 #[cfg(target_arch = "wasm32")]
 mod vertices;
+
+#[cfg(target_arch = "wasm32")]
+mod renames;
+
+#[cfg(target_arch = "wasm32")]
+mod pulled;
 
 #[cfg(target_arch = "wasm32")]
 #[macro_use]
@@ -156,9 +163,9 @@ mod web {
     /// The formats held converted, checked on the browser's WebGPU: one line of the largest
     /// differences, or the failed check.
     #[wasm_bindgen(jspi)]
-    pub fn converted() -> Result<String, JsError> {
+    pub fn converted(seed: u64, cases: u32) -> Result<String, JsError> {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
-        super::converted::check(&mut b).map_err(js)
+        super::converted::check(&mut b, seed, cases).map_err(js)
     }
 
     /// The vertex formats WebGPU lacks, `n` seeded vertices each, read through shadow streams on
@@ -170,6 +177,37 @@ mod web {
         Ok(format!(
             "vertex formats: seed {seed}, {n} vertices per format, all as they mean"
         ))
+    }
+
+    /// Textures written with `Discard` behind recorded draws, renamed from the pool on the
+    /// browser's WebGPU; fails at the first wrong pixel or count.
+    #[wasm_bindgen(jspi)]
+    pub fn texture_renames() -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        super::renames::discarded_textures_are_renamed_from_the_pool(&mut b);
+        Ok(
+            "texture renames: four frames of four discarded writes, three renames a frame, \
+            from the pool after the first"
+                .into(),
+        )
+    }
+
+    /// Instance data fetched in the program against vertex buffers on the browser's WebGPU, at 4,
+    /// 8 and the device's most streams a draw, `frames` frames each: one line per route and count,
+    /// or the failed check.
+    #[wasm_bindgen(jspi)]
+    pub fn pulled_costs(frames: u32) -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        let most = super::pulled::most_streams(&b);
+        let mut streams = vec![4, 8.min(most), most];
+        streams.dedup();
+        let mut lines = Vec::new();
+        for n in streams {
+            for t in super::pulled::measure(&mut b, n, frames, now).map_err(js)? {
+                lines.push(t.line());
+            }
+        }
+        Ok(lines.join("\n"))
     }
 
     /// Draws the eight-viewport scene (`rounded`: its viewports moved to whole pixels) on the

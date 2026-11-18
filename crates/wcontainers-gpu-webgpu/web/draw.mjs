@@ -5,7 +5,8 @@
 // chrome-webgpu-<scene>.png into <out-dir>, or <out-dir>\<twist> for a twist other than none, and
 // the eight-viewport scene as chrome-webgpu-viewports.png and, moved to whole pixels,
 // chrome-webgpu-viewports-rounded.png, prints first-draw timings with and without prepare, and checks
-// timestamps, the formats held converted and the vertex formats read through shadows.
+// timestamps, the formats held converted, the vertex formats read through shadows and the cost of
+// instance data fetched in the program.
 // Fails unless WebGPU's adapter is a GPU (discrete or integrated, not a fallback).
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -81,9 +82,10 @@ try {
     console.log(`chrome timestamps failed: ${e.message}`);
     failed = true;
   }
-  // Formats held converted: copies exact, texels within their bounds of Direct3D's values.
+  // Formats held converted: copies exact, texels within their bounds of Direct3D's values (seed 1,
+  // 4 textures of 128 texels each).
   try {
-    console.log(`chrome ${await page.evaluate(() => window.converted())}`);
+    console.log(`chrome ${await page.evaluate(() => window.converted(1, 4))}`);
   } catch (e) {
     console.log(`chrome converted formats failed: ${e.message}`);
     failed = true;
@@ -93,6 +95,22 @@ try {
     console.log(`chrome ${await page.evaluate(() => window.vertexFormats(188, 64))}`);
   } catch (e) {
     console.log(`chrome vertex formats failed: ${e.message}`);
+    failed = true;
+  }
+  // Textures written with Discard behind recorded draws, renamed from the pool.
+  try {
+    console.log(`chrome ${await page.evaluate(() => window.textureRenames())}`);
+  } catch (e) {
+    console.log(`chrome texture renames failed: ${e.message}`);
+    failed = true;
+  }
+  // Instance data fetched in the program against vertex buffers (20 frames a route): the routes
+  // draw alike; their timings are printed.
+  try {
+    const lines = (await page.evaluate((n) => window.pulledCosts(n), 20)).split('\n');
+    for (const line of lines) console.log(`chrome instance data: ${line}`);
+  } catch (e) {
+    console.log(`chrome instance data failed: ${e.message}`);
     failed = true;
   }
 } finally {

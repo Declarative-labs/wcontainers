@@ -229,6 +229,13 @@ impl Vertices {
             self.shadows.retain(|k, _| k.0 != buffer);
         }
     }
+
+    /// Drops the plan and shadows of a destroyed vertex layout.
+    pub fn forget_layout(&mut self, layout: u64) {
+        if self.plans.remove(&layout).is_some() {
+            self.shadows.retain(|k, _| k.2 != layout);
+        }
+    }
 }
 
 /// The shadow bound in place of a stream: its slot, a number no other buffer has, and the buffer.

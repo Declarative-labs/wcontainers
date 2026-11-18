@@ -18,6 +18,7 @@ mod allowance;
 #[path = "../examples/scenes/viewports.rs"]
 mod viewports;
 
+use libtest_mimic::{Completion, Failed, Trial};
 use wcontainers_gpu::{
     Backend, BufferUsage, ColorAttachment, CullMode, DeviceStatus, DrawCall, DrawRange, Extent,
     Features, FillMode, Format, GpuError, LoadOp, Origin, PassDesc, RasterDesc, ReadSource,
@@ -25,6 +26,25 @@ use wcontainers_gpu::{
     Viewport,
 };
 use wcontainers_gpu_webgpu::WebGpu;
+
+fn main() {
+    let args = libtest_mimic::Arguments::from_args();
+    let trials = vec![
+        Trial::test("fractional_viewports_match_direct3d", || {
+            fractional_viewports_match_direct3d();
+            Ok(())
+        }),
+        Trial::ignorable_test(
+            "wireframe_fill_matches_direct3d",
+            wireframe_fill_matches_direct3d,
+        ),
+        Trial::test("point_fill_draws_the_corners", || {
+            point_fill_draws_the_corners();
+            Ok(())
+        }),
+    ];
+    libtest_mimic::run(&args, trials).exit();
+}
 
 /// Whether the device is wgpu's Vulkan, whose lines follow Vulkan's rasterisation rules, not
 /// Direct3D's.
@@ -44,7 +64,6 @@ fn device() -> WebGpu {
     b
 }
 
-#[test]
 fn fractional_viewports_match_direct3d() {
     let mut b = device();
     assert!(b.caps().features.contains(Features::FRACTIONAL_VIEWPORT));
@@ -134,8 +153,9 @@ struct VOut { @builtin(position) pos: vec4f, @location(0) color: vec4f }
 
 /// The rig's fill picture: four 64-pixel cells, wireframe without culling, culling back faces and
 /// front faces, then solid.
-#[test]
-fn wireframe_fill_matches_direct3d() {
+/// A known failure on wgpu's Vulkan, reported as ignored with its reason: Vulkan draws polygon
+/// edges by its own line rules. The solid cell is still held to Direct3D's picture there.
+fn wireframe_fill_matches_direct3d() -> Result<Completion, Failed> {
     let mut b = device();
     // wgpu fills polygons with lines on every native API; points only on some (not Direct3D 12).
     assert!(b.caps().has(Features::POLYGON_MODE));
@@ -177,24 +197,21 @@ fn wireframe_fill_matches_direct3d() {
     want.truncate(info.buffer_size());
     let (differ, largest) = allowance::beyond(&got, &want, 0);
     eprintln!("wireframe fill: {differ} pixels differ from Direct3D's, by up to {largest}");
-    if vulkan() {
-        // Known: Vulkan draws polygon edges by its own line rules (214 pixels differ on the RTX
-        // 3080); only the solid cell is held to Direct3D's picture there.
-        let solid = |p: &[u8]| -> Vec<u8> {
-            p.chunks(256 * 4)
-                .flat_map(|row| row[192 * 4..].to_vec())
-                .collect()
-        };
-        assert!(
-            allowance::within(&solid(&got), &solid(&want), "raster-fill.png"),
-            "the solid cell differs from Direct3D's"
-        );
-    } else {
-        assert!(
-            allowance::within(&got, &want, "raster-fill.png"),
-            "the wireframe fill differs from Direct3D's"
-        );
+    if allowance::within(&got, &want, "raster-fill.png") {
+        return Ok(Completion::Completed);
     }
+    let solid = |p: &[u8]| -> Vec<u8> {
+        p.chunks(256 * 4)
+            .flat_map(|row| row[192 * 4..].to_vec())
+            .collect()
+    };
+    if vulkan() && allowance::within(&solid(&got), &solid(&want), "raster-fill.png") {
+        return Ok(Completion::ignored_with(format!(
+            "known failure on Vulkan, whose line rules differ from Direct3D's: {differ} pixels \
+             of the wireframe cells differ, by up to {largest}"
+        )));
+    }
+    Err("the wireframe fill differs from Direct3D's".into())
 }
 
 /// `vertices` (position, colour) drawn as a triangle list once per raster block, each into its
@@ -305,7 +322,6 @@ fn cells(b: &mut WebGpu, fills: &[RasterDesc], vertices: &[[f32; 7]], h: u32) ->
 
 /// Point filling draws a point at each corner of a triangle: on a device declaring it, exactly
 /// the three pixels holding the corners are drawn.
-#[test]
 fn point_fill_draws_the_corners() {
     let mut b = device();
     if !b.caps().has(Features::POLYGON_MODE_POINT) {

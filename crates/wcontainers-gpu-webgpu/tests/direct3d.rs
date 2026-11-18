@@ -1183,20 +1183,32 @@ fn converted_formats_load_filter_and_draw_as_direct3d_does() {
         windows::core::s!("vs_5_0"),
     );
     let mut beyond = Vec::new();
+    let seed: u64 = std::env::var("WEBGPU_SEED").map_or(1, |s| s.parse().expect("a seed"));
+    let cases: u64 = std::env::var("WEBGPU_CASES").map_or(4, |s| s.parse().expect("a count"));
+    eprintln!("seed {seed}, {cases} textures per format");
     for (i, (format, dxgi)) in CONVERTED.into_iter().enumerate() {
-        let texels = converted::texels(format, 1 + i as u64);
-        let (d3d_loaded, d3d_filtered) = d3d_sampled(&gpu, &vs, dxgi, &texels);
-        let (_, view) =
-            converted::upload(&mut b, format, Some(&texels), TextureUsage::empty()).unwrap();
-        let (loaded, filtered) = converted::sampled(&mut b, &view).unwrap();
-        let rule = converted::largest(&d3d_loaded, &converted::expected(format, &texels));
-        let l = converted::largest(&loaded, &d3d_loaded);
-        let f = converted::largest(&filtered, &d3d_filtered);
+        let (mut l, mut f, mut rule, mut filter_rule) = (0f32, 0f32, 0f32, 0f32);
+        for c in 0..cases {
+            let texels = converted::texels(format, seed + c * CONVERTED.len() as u64 + i as u64);
+            let (d3d_loaded, d3d_filtered) = d3d_sampled(&gpu, &vs, dxgi, &texels);
+            let (_, view) =
+                converted::upload(&mut b, format, Some(&texels), TextureUsage::empty()).unwrap();
+            let (loaded, filtered) = converted::sampled(&mut b, &view).unwrap();
+            let want = converted::expected(format, &texels);
+            rule = rule.max(converted::largest(&d3d_loaded, &want));
+            filter_rule = filter_rule.max(converted::largest(
+                &d3d_filtered,
+                &converted::filtered(&want),
+            ));
+            l = l.max(converted::largest(&loaded, &d3d_loaded));
+            f = f.max(converted::largest(&filtered, &d3d_filtered));
+        }
         eprintln!(
-            "{format:?}: loaded {:.3} and filtered {:.3} 8-bit steps from Direct3D's; Direct3D's loads {:e} from v / (2^n - 1)",
+            "{format:?}: loaded {:.3} and filtered {:.3} 8-bit steps from Direct3D's; Direct3D's loads {:e} and filtered texels {:.3} steps from v / (2^n - 1)",
             l * 255.0,
             f * 255.0,
-            rule
+            rule,
+            filter_rule * 255.0
         );
         if l > 0.0 || f > 1.0 / 255.0 {
             beyond.push(format!("{format:?}: loaded {l:e}, filtered {f:e}"));

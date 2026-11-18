@@ -662,6 +662,71 @@ fn renamed_buffers_reuse_the_pools_storage() {
     assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 0);
 }
 
+/// A set of WebGPU's largest size has no spare slot of its own, so queries carried across splits
+/// go on in further pages: query 0 runs across three splits; query 1, begun on a further page,
+/// passes; query 2, which passed last frame in its own slot, is begun on a further page and draws
+/// nothing, so its own slot's old count must not reach the result.
+#[test]
+fn queries_carry_across_splits_in_a_set_of_the_largest_size() {
+    let mut b = device();
+    let p = draw::prepare(&mut b, scene::Scene::Triangle, draw::Twist::None).unwrap();
+    let t = draw::targets(&mut b, None).unwrap();
+    let queries = b.create_query_set(QueryKind::OcclusionAny, 4096).unwrap();
+    let results = buffer(&mut b, 24, BufferUsage::empty(), MapIntent::Rarely);
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: None,
+        empty: None,
+        occlusion: Some(&queries),
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &t.color_view,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Clear(scene::CLEAR.map(f32::to_bits)),
+        store: StoreOp::Store,
+    });
+    let vertices: Vec<u8> = bytemuck::cast_slice(&scene::TRIANGLE).to_vec();
+    b.begin_pass(&pass);
+    b.begin_query(2);
+    draw::draw(&mut b, &p);
+    b.end_query();
+    b.end_pass();
+    b.submit();
+    b.begin_pass(&pass);
+    b.begin_query(0);
+    for _ in 0..3 {
+        draw::draw(&mut b, &p);
+        b.write_buffer(&p.vertices, 0, &vertices, WriteMode::Ordered);
+    }
+    draw::draw(&mut b, &p);
+    b.end_query();
+    b.begin_query(1);
+    draw::draw(&mut b, &p);
+    b.end_query();
+    b.begin_query(2);
+    b.end_query();
+    b.end_pass();
+    b.resolve_queries(&queries, 0, 3, &results, 0).unwrap();
+    let rb = draw::read(&mut b, &t).unwrap();
+    let answers = read_buffer_back(&mut b, &results, 24);
+    b.submit();
+    let words: Vec<u64> = finish(&mut b, answers, 24)
+        .chunks(8)
+        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    let rgba = finish(&mut b, rb, (scene::WIDTH * scene::HEIGHT * 4) as usize);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    eprintln!("query results in a set of 4096: {words:?}");
+    assert!(words[0] != 0 && words[1] != 0 && words[2] == 0, "{words:?}");
+    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 3);
+    assert_eq!(b.slow_paths().count(SlowPath::QueriesSegmented), 3);
+    assert!(
+        allowance::within(&rgba, &reference("triangle.png"), "triangle.png"),
+        "the picture changed"
+    );
+}
+
 /// Ordered writes of a vertex buffer the open pass drew with split it while occlusion queries run:
 /// each query goes on in the next part and its result adds both parts. Query 0 passes before the
 /// split, query 1 only after it, query 2 draws nothing.
@@ -717,4 +782,55 @@ fn queries_carry_across_pass_splits() {
         allowance::within(&rgba, &reference("triangle.png"), "triangle.png"),
         "the picture changed"
     );
+}
+
+/// Ordered writes behind recorded work are staged in one ring, taken from its start again after
+/// each submit: two frames of writes, some not in whole words, make one ring, and every write
+/// lands in command order; a frame staging more than the ring holds makes one larger ring.
+#[test]
+fn ordered_writes_are_staged_in_one_ring() {
+    let mut b = device();
+    let size = 3 << 20;
+    let buf = buffer(&mut b, size, BufferUsage::empty(), MapIntent::Rarely);
+    let other = buffer(&mut b, 16, BufferUsage::empty(), MapIntent::Rarely);
+    let mut seen = Vec::new();
+    for frame in 0..2u8 {
+        for k in 0..4u8 {
+            // A copy reading `buf` is recorded first, so each write must be ordered behind it.
+            b.copy_buffer(&buf, 0, &other, 0, 16);
+            let bytes = vec![frame * 16 + k + 1; 5 + usize::from(k)];
+            b.write_buffer(&buf, u64::from(k) * 64 + 1, &bytes, WriteMode::Ordered);
+        }
+        let rb = read_buffer_back(&mut b, &buf, 256);
+        b.submit();
+        seen.push(finish(&mut b, rb, 256));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    for (frame, got) in seen.iter().enumerate() {
+        for k in 0..4usize {
+            let want = frame as u8 * 16 + k as u8 + 1;
+            let at = k * 64 + 1;
+            assert!(
+                got[at..at + 5 + k].iter().all(|&v| v == want),
+                "frame {frame} write {k}: {:?}",
+                &got[at - 1..at + 6 + k]
+            );
+        }
+    }
+    assert_eq!(b.counters().staged_writes, 8);
+    assert_eq!(b.counters().staging_rings, 1, "{:?}", b.counters());
+    // Two megabytes staged in one frame do not fit the first ring.
+    b.copy_buffer(&buf, 0, &other, 0, 16);
+    let big: Vec<u8> = (0..2u32 << 20).map(|i| (i % 251) as u8).collect();
+    b.write_buffer(&buf, 1 << 20, &big, WriteMode::Ordered);
+    let rb = b
+        .read_back(&ReadSource::Buffer {
+            buffer: &buf,
+            offset: 1 << 20,
+            size: 2 << 20,
+        })
+        .unwrap();
+    b.submit();
+    assert!(finish(&mut b, rb, 2 << 20) == big, "the large staged write");
+    assert_eq!(b.counters().staging_rings, 2, "{:?}", b.counters());
 }
