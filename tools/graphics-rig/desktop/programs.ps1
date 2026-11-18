@@ -97,9 +97,11 @@ foreach ($n in 2, 4, 5, 6, 7) {
 foreach ($e in $bgfxExamples) {
     $all["bgfx-$e"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d11'; ignore = '0,236,320,36' }
 }
-# Two of them on bgfx's Direct3D 12 renderer: the plain cubes and the render-target chain.
+# Two of them on bgfx's Direct3D 12 renderer: the plain cubes and the render-target chain. The
+# overlay's GPU time line, above the memory line, is left out too: it shows Direct3D 12 timestamps,
+# which the frame clock does not answer.
 foreach ($e in '01-cubes', '38-bloom') {
-    $all["bgfx-$e-d3d12"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d12'; api = 'd3d12'; ignore = '0,236,320,36' }
+    $all["bgfx-$e-d3d12"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d12'; api = 'd3d12'; ignore = '0,208,320,64' }
 }
 # Microsoft's DirectX Tool Kit samples, run in the root of their repository, where they find their
 # media (under Media).
@@ -304,6 +306,18 @@ function Run-Program([string]$name, [string]$dir) {
     # The forwarding library answers timestamp queries from the frame clock but still asks the
     # implementation, and says when it gave an error.
     $wrong += @(($stdout.Result + $stderr.Result) -split "`n" | Where-Object { $_ -match '^d3d11 forward: GetData of a timestamp query failed' } | ForEach-Object { $_.Trim() })
+    # A program whose calls are known from its source must have each of them in its census as is.
+    $expected = "tools\graphics-rig\census\$name.expected"
+    if ($ended -and (Test-Path $expected)) {
+        $counted = @(if (Test-Path $file) { Get-Content $file })
+        foreach ($line in @(Get-Content $expected | Where-Object { $_ -and $_ -notmatch '^#' })) {
+            if ($counted -cnotcontains $line) {
+                $method = ($line -split ' ')[0..1] -join ' '
+                $found = @($counted | Where-Object { $_ -clike "$method *" })
+                $wrong += "census has $(if ($found) { "'$($found[0])'" } else { "no $method" }) where the program makes '$line'"
+            }
+        }
+    }
     foreach ($library in $(if ($lines) { $names })) {
         $from = @($lines | Where-Object { $_ -like "$library from *" } | ForEach-Object { ($_ -split ' from ', 2)[1] })
         if (-not $from -or $from -contains 'not loaded') {

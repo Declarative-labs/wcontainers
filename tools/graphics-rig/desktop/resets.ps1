@@ -30,7 +30,7 @@ switch ($Action) {
         $held = Get-Content $hazardHeld
         Add-HazardLines "$hazardLogs\display-resets.log" @("$now cause recorded by ${Branch}: $cause", "  for: $($held -join ' / ')")
         Remove-Item $hazardHeld
-        foreach ($group in $hazardGroups) { & $hazardPueue -c $hazardConfig start --group $group | Out-Null }
+        Resume-Groups
         "recorded; the queue runs again. Still quarantined: $((Get-Quarantine).Count) (tools/graphics-rig/resets lift <name> lifts one)"
     }
     'suspect' {
