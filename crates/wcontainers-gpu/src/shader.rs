@@ -74,8 +74,8 @@ impl ShaderModule {
 pub enum Program<'a, B: crate::Backend> {
     /// A vertex shader and an optional fragment shader (depth-only passes have none). Every location
     /// the fragment shader reads, the vertex shader writes, with the same type, interpolation and
-    /// sampling (WebGPU's and GLSL ES's linking rule; a float's unstated ones are perspective at the
-    /// centre); it may write more. Shaders converted apart agree through
+    /// sampling (WebGPU's and GLSL ES's linking rule; unstated ones are WGSL's defaults: a float
+    /// perspective at the centre, a flat value from the first vertex); it may write more. Shaders converted apart agree through
     /// [`crate::VariantKey::output_interpolation`] and [`crate::VariantKey::linked`].
     Render {
         vertex: &'a B::Shader,

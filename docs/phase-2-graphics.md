@@ -164,7 +164,8 @@ Objects, each made from plain data and named by an associated type of the back e
 - `create_shader(&ShaderModule)`: a validated `naga::Module` with its entry point, stage and content key.
 - `create_program(&Program)`: vertex plus optional fragment shader, or one compute shader. Every
   location the fragment shader reads, the vertex shader writes, with the same type, interpolation and
-  sampling (WebGPU's and GLSL ES's linking rule); it may write more.
+  sampling (WebGPU's and GLSL ES's linking rule, unstated ones taken as WGSL's defaults: a float
+  perspective at the centre, a flat value from the first vertex); it may write more.
 - The state blocks: `create_blend`, `create_depth_stencil`, `create_raster`, `create_vertex_layout`.
 - `create_binding_set(&[BindingEntry])`: the resources a draw binds, as one block (4.5).
 - `create_query_set(kind, count)`: occlusion queries that say "any" (every back end), exact occlusion
