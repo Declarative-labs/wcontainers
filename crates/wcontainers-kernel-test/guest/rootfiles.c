@@ -1,6 +1,6 @@
 // The container's own files as programs meet them: epoll on regular files of the root, /tmp
 // and /dev/shm, a pipe write from anonymous memory running on into a mapped program's pages not
-// read yet, and directory change notices (dnotify).
+// read yet, directory change notices (dnotify), and what the root says it is (overlayfs).
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -10,6 +10,8 @@
 #include <sys/epoll.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/xattr.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -120,7 +122,74 @@ static void dnotify(const char *directory) {
     printf("%s: after close %d\n", directory, notices);
 }
 
+#ifndef AT_HANDLE_FID
+#define AT_HANDLE_FID 0x200
+#endif
+
+// The first line of a mount listing up to the layers' paths, which are the machine's own, from
+// the file system's part of mountinfo's (its numbers are the machine's too).
+static void first_mount(const char *listing) {
+    char line[4096] = "";
+    FILE *file = fopen(listing, "r");
+    fgets(line, sizeof line, file);
+    fclose(file);
+    char *paths = strstr(line, "lowerdir=");
+    char *last = strstr(line, ",nouserxattr");
+    if (paths) {
+        *paths = 0;
+    }
+    char *shown = strstr(line, " - ") ? strstr(line, " - ") : line;
+    printf("%s: %s... %s", listing, shown, last ? last : "(no nouserxattr)\n");
+}
+
+static void presents(void) {
+    struct statfs fs;
+    statfs("/", &fs);
+    printf("statfs / type %lx namelen %ld flags %lx bsize %ld fsid %s\n", (long)fs.f_type,
+           (long)fs.f_namelen, (long)fs.f_flags, (long)fs.f_bsize,
+           fs.f_fsid.__val[0] || fs.f_fsid.__val[1] ? "set" : "none");
+    first_mount("/proc/mounts");
+    first_mount("/proc/self/mountinfo");
+
+    int fd = open("/presents", O_CREAT | O_RDWR, 0644);
+    const char *names[] = {"foo.bar", "user.x", "trusted.x", "security.x", "system.x", "user.",
+                           "trusted.overlay.x"};
+    for (unsigned i = 0; i < sizeof names / sizeof *names; i++) {
+        char value[16];
+        errno = 0;
+        int set = fsetxattr(fd, names[i], "v", 1, 0);
+        int set_errno = errno;
+        errno = 0;
+        int got = fgetxattr(fd, names[i], value, sizeof value);
+        printf("xattr %s set %d %s get %d %s\n", names[i], set, strerror(set_errno), got,
+               strerror(errno));
+    }
+    struct {
+        struct file_handle header;
+        unsigned char bytes[128];
+    } handle = {.header.handle_bytes = 128};
+    int mount;
+    errno = 0;
+    int r = name_to_handle_at(AT_FDCWD, "/presents", &handle.header, &mount, 0);
+    printf("handle %d %s\n", r, strerror(errno));
+    handle.header.handle_bytes = 128;
+    r = name_to_handle_at(AT_FDCWD, "/bin/busybox", &handle.header, &mount, AT_HANDLE_FID);
+    printf("identifier %d bytes %u type %#x\n", r, handle.header.handle_bytes,
+           handle.header.handle_type);
+    errno = 0;
+    r = fcntl(fd, F_SETLEASE, F_WRLCK);
+    printf("write lease %d %s\n", r, strerror(errno));
+    fcntl(fd, F_SETLEASE, F_UNLCK);
+    close(fd);
+    errno = 0;
+    fd = open("/presents", O_RDONLY | O_DIRECT);
+    printf("direct open %s\n", fd >= 0 ? "yes" : strerror(errno));
+    close(fd);
+    unlink("/presents");
+}
+
 int main(void) {
+    presents();
     epoll_on("/tmp/epollfile");
     epoll_on("/dev/shm/epollfile");
     epoll_on("/root/epollfile");

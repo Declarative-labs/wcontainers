@@ -2896,6 +2896,13 @@ fn statfs_of(kernel: &mut Kernel, cx: &mut Context<'_>, node: &Node) -> Result<s
         out.f_ffree = st.ffree as i64;
         out.f_namelen = i64::from(st.namelen);
         out.f_flags = i64::from(inode.fs.flags | crate::linux_extra::ST_VALID);
+        // `ovl_statfs` gives the upper layer's id; here the made-up machine's device.
+        if inode.fs.kind == crate::fs::Kind::Overlay {
+            let (major, minor) = crate::fs::decode_device(inode.fs.device);
+            out.f_fsid = __kernel_fsid_t {
+                val: [(major << 8 | minor) as i32, 0],
+            };
+        }
         return Ok(out);
     }
     let inode = node.borrow();

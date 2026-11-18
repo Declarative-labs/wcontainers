@@ -229,6 +229,9 @@ pub(crate) enum Kind {
     Mqueue,
     /// A file system outside the kernel, reached with FUSE messages.
     Fuse,
+    /// The container's root on the backend, reached with FUSE messages and presented as the
+    /// reference's root is: overlayfs.
+    Overlay,
     /// Sockets, an inode each.
     Sockfs,
     /// Namespaces, as `/proc/<pid>/ns` opens them.
@@ -258,6 +261,7 @@ impl Kind {
             | Kind::Secretmem
             | Kind::Anon
             | Kind::Fuse
+            | Kind::Overlay
             | Kind::Sockfs
             | Kind::Nsfs
             | Kind::Sysfs => i64::MAX as u64,
@@ -277,6 +281,7 @@ impl Kind {
             Kind::Anon => ANON_INODE_FS_MAGIC.into(),
             Kind::Mqueue => crate::linux_extra::MQUEUE_MAGIC.into(),
             Kind::Fuse => FUSE_SUPER_MAGIC.into(),
+            Kind::Overlay => OVERLAYFS_SUPER_MAGIC.into(),
             Kind::Sockfs => SOCKFS_MAGIC.into(),
             Kind::Nsfs => NSFS_MAGIC.into(),
             Kind::Sysfs => SYSFS_MAGIC.into(),

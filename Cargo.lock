@@ -1873,6 +1873,7 @@ dependencies = [
 name = "wcontainers-kernel"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "fuse-abi",
  "object 0.41.0",
  "rangemap",

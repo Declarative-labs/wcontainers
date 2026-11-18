@@ -201,7 +201,7 @@ fn import_name(
 /// Whether an inode keeps attributes at all (Linux's `IOP_XATTR`): only tmpfs's and the
 /// backend's do.
 fn keeps_attributes(inode: &Inode) -> bool {
-    matches!(inode.fs.kind, Kind::Tmpfs | Kind::Fuse)
+    matches!(inode.fs.kind, Kind::Tmpfs | Kind::Fuse | Kind::Overlay)
 }
 
 /// Linux's `xattr_resolve_name` over tmpfs's handlers: a name must have a known prefix and something
@@ -217,7 +217,7 @@ fn resolve_name(inode: &Inode, name: &[u8]) -> Result<(), Errno> {
     if !keeps_attributes(inode) {
         return Err(Errno::EOPNOTSUPP);
     }
-    if inode.fs.kind == Kind::Fuse {
+    if matches!(inode.fs.kind, Kind::Fuse | Kind::Overlay) {
         return Ok(());
     }
     for known in [

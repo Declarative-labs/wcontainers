@@ -228,6 +228,21 @@ fn backend_mount(fs: FileSystem, path: &[u8]) -> Mount {
     }
 }
 
+/// The root on the backend, shown as Docker shows a container's overlayfs root; the layers' paths
+/// are the made-up machine's.
+fn overlay_root_mount(fs: FileSystem) -> Mount {
+    Mount {
+        fs,
+        root: "/",
+        point: b"/".to_vec(),
+        source: "overlay",
+        kind: "overlay",
+        options: "lowerdir=/var/lib/wcontainers/lower,upperdir=/var/lib/wcontainers/upper,\
+                  workdir=/var/lib/wcontainers/work,nouserxattr",
+        read_only_super: false,
+    }
+}
+
 /// The size Docker gives the tmpfs at `/dev` (runc's `size=65536k`) and at `/dev/shm` (its default
 /// `--shm-size` of 64 MiB).
 const DOCKER_TMPFS_BYTES: u64 = 64 << 20;
@@ -779,7 +794,8 @@ impl Kernel {
         } else {
             ST_NOSUID | ST_NODEV | ST_NOATIME
         };
-        let fs = self.files.numbers.file_system(Kind::Fuse, flags);
+        let kind = if is_root { Kind::Overlay } else { Kind::Fuse };
+        let fs = self.files.numbers.file_system(kind, flags);
         let client = crate::fs::backend::Client::new(fs);
         let root = client.root();
         if is_root {
@@ -973,8 +989,8 @@ impl Kernel {
             read_only_super: false,
         };
         let root_fs = fs_of(&self.files.root);
-        let root = if root_fs.kind == Kind::Fuse {
-            backend_mount(root_fs, b"/")
+        let root = if root_fs.kind == Kind::Overlay {
+            overlay_root_mount(root_fs)
         } else {
             mount(root_fs, "/", "tmpfs", "tmpfs", "")
         };

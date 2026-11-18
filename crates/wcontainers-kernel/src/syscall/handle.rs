@@ -58,6 +58,24 @@ pub(super) fn encode(
             let nodeid = crate::fs::backend::remote_number(inode);
             Ok((0x81, alloc::vec![(nodeid >> 32) as u32, nodeid as u32, 0]))
         }
+        // `ovl_encode_fh` without `nfs_export`: identifiers only, as `struct ovl_fh` (three bytes
+        // of padding, version 0, magic 0xfb, length 29, the upper layer's flag, FILEID_INO32_GEN,
+        // the layer's uuid, here none, and the layer's own handle: the inode number and
+        // generation 0).
+        Kind::Overlay if identifier => Ok((
+            0xf8,
+            alloc::vec![
+                0,
+                u32::from_le_bytes([0xfb, 29, 4, 1]),
+                0,
+                0,
+                0,
+                0,
+                ino[0],
+                0
+            ],
+        )),
+        Kind::Overlay => Err(Errno::EOPNOTSUPP),
         Kind::Proc
         | Kind::Devpts
         | Kind::Pipe
