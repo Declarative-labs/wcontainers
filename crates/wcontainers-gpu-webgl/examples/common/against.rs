@@ -23,6 +23,8 @@ pub enum Scene {
     Origin,
     Fraction,
     Shapes,
+    /// Gathers of a cube whose footprints cross each edge of each face.
+    CubeGathers,
     /// `generate_mips` of a texture of `format` holding `values`, from `bytes()`.
     Mips {
         format: Format,
@@ -91,7 +93,7 @@ fn r32float_filtered_in_the_program_without_filtering(
 }
 
 /// Every comparison, each a test natively and a page in Chrome.
-pub const COMPARISONS: [Comparison; 7] = [
+pub const COMPARISONS: [Comparison; 8] = [
     Comparison {
         name: "both_window_origins_equal_webgpu",
         reference: Reference::Full,
@@ -122,6 +124,15 @@ pub const COMPARISONS: [Comparison; 7] = [
         reference: Reference::Full,
         routes: BOTH_ORIGINS,
         scene: Scene::Shapes,
+        expect: nothing,
+    },
+    // GLSL ES 3.00 has no gathers: this back end samples each texel of the footprint by direction,
+    // which crosses into the next face as WebGPU's gathers do.
+    Comparison {
+        name: "cube_gathers_across_face_edges_equal_webgpu",
+        reference: Reference::Full,
+        routes: &[&[]],
+        scene: Scene::CubeGathers,
         expect: nothing,
     },
     // `r32float` filtered in the program where OES_texture_float_linear is switched off, against
@@ -192,6 +203,7 @@ pub fn draw<B: Backend>(b: &mut B, scene: Scene) -> Result<Parts, String> {
         Scene::Origin => origin(b),
         Scene::Fraction => fraction(b),
         Scene::Shapes => shapes(b),
+        Scene::CubeGathers => cube_gathers(b),
         Scene::Mips {
             format,
             values,
@@ -537,6 +549,116 @@ fn shapes<B: Backend>(b: &mut B) -> Parts {
     b.end_pass();
     vec![(
         "samples".to_string(),
+        kit::read(b, &t, 0, 0, size, 4, false),
+    )]
+}
+
+/// Pixel (x, face) gathers red from face `face` of a 4 by 4 cube at a footprint crossing edge x / 3
+/// of the face (left, right, top, bottom), at the edge's texel x % 3; corners are left out, as
+/// APIs leave them to the implementation.
+const CUBE_GATHERS: &str = "
+@group(0) @binding(16) var s: sampler;
+@group(0) @binding(32) var c: texture_cube<f32>;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    let x = u32(p.x);
+    let face = u32(p.y);
+    let along = (f32(x % 3u) + 0.75) / 4.0;
+    var st = vec2<f32>(0.05, along);
+    switch x / 3u {
+        case 1u: { st = vec2<f32>(0.95, along); }
+        case 2u: { st = vec2<f32>(along, 0.05); }
+        case 3u: { st = vec2<f32>(along, 0.95); }
+        default: {}
+    }
+    let q = st * 2.0 - 1.0;
+    var d = vec3<f32>(1.0, -q.y, -q.x);
+    switch face {
+        case 1u: { d = vec3<f32>(-1.0, -q.y, q.x); }
+        case 2u: { d = vec3<f32>(q.x, 1.0, q.y); }
+        case 3u: { d = vec3<f32>(q.x, -1.0, -q.y); }
+        case 4u: { d = vec3<f32>(q.x, -q.y, 1.0); }
+        case 5u: { d = vec3<f32>(-q.x, -q.y, -1.0); }
+        default: {}
+    }
+    return textureGather(0, c, s, d);
+}
+";
+
+fn cube_gathers<B: Backend>(b: &mut B) -> Parts {
+    let k = Kit::new(b);
+    let program = kit::program(b, CUBE_GATHERS, "vs", "fs");
+    let f = Format::Rgba8Unorm;
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST;
+    let cube = kit::texture(b, TextureDimension::D2, f, [4, 4, 6], 1, usage, true);
+    // Red tells every texel of every face apart.
+    let bytes: Vec<u8> = (0..96u8)
+        .flat_map(|i| [2 * i + 10, i, 255 - i, 255])
+        .collect();
+    b.write_texture(
+        &TextureRegion {
+            texture: &cube,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        },
+        Extent {
+            width: 4,
+            height: 4,
+            depth_or_layers: 6,
+        },
+        &bytes,
+        16,
+        4,
+        WriteMode::Ordered,
+    );
+    let view = kit::view(b, &cube, f, ViewDimension::Cube, 0, 1, 0, 6);
+    let sampler = b
+        .create_sampler(&SamplerDesc {
+            min: Filter::Nearest,
+            mag: Filter::Nearest,
+            mip: Filter::Nearest,
+            address: [AddressMode::Clamp; 3],
+            lod_range: [0f32.to_bits(), 0f32.to_bits()],
+            compare: None,
+            anisotropy: 1,
+            border: BorderColor::TransparentBlack,
+        })
+        .expect("create_sampler");
+    let set = b
+        .create_binding_set(&[
+            BindingEntry {
+                binding: 16,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Sampler(&sampler),
+            },
+            BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&view),
+            },
+        ])
+        .expect("create_binding_set");
+    let size = [12, 6, 1];
+    let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let t = kit::texture(b, TextureDimension::D2, f, size, 1, usage, false);
+    let v = kit::target(b, &t, f, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, 12.0, 6.0)];
+    b.begin_pass(&kit::pass(&v, [0; 4], None));
+    b.draw(&kit::call(
+        &k,
+        &program,
+        Some(&set),
+        &vp,
+        Topology::TriangleList,
+        3,
+    ));
+    b.end_pass();
+    vec![(
+        "gathers".to_string(),
         kit::read(b, &t, 0, 0, size, 4, false),
     )]
 }

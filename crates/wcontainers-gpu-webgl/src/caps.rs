@@ -69,7 +69,8 @@ pub fn caps(
     let anisotropic = ext.contains("EXT_texture_filter_anisotropic");
     let units_vertex = get(glow::MAX_VERTEX_TEXTURE_IMAGE_UNITS);
     let units_fragment = get(glow::MAX_TEXTURE_IMAGE_UNITS);
-    let blocks = get(glow::MAX_VERTEX_UNIFORM_BLOCKS).min(get(glow::MAX_FRAGMENT_UNIFORM_BLOCKS));
+    let blocks = get(glow::MAX_VERTEX_UNIFORM_BLOCKS).min(get(glow::MAX_FRAGMENT_UNIFORM_BLOCKS))
+        - platform.unusable_uniform_blocks();
     let targets = get(glow::MAX_DRAW_BUFFERS).min(get(glow::MAX_COLOR_ATTACHMENTS));
     let uniform_alignment = get(glow::UNIFORM_BUFFER_OFFSET_ALIGNMENT);
     let limits = Limits {

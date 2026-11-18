@@ -744,3 +744,56 @@ pub fn broken_rules_lose_the_device<H: Host>() {
         );
     }
 }
+
+/// A stage reading more uniform buffers than the limit is refused when it is made, with the rule,
+/// and one reading as many as the limit is made and draws (GL would refuse to link past it).
+pub fn stages_past_the_uniform_buffer_limit_are_refused<H: Host>() {
+    let mut b = H::make();
+    let limit = b.caps().limits.uniform_buffers_per_stage;
+    let wgsl = |n: u32| {
+        let mut s = String::from(
+            "@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+                return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+            }\n",
+        );
+        let mut sum = String::from("vec4<f32>(0.0)");
+        for i in 0..n {
+            s += &format!("@group(1) @binding({i}) var<uniform> u{i}: vec4<f32>;\n");
+            sum += &format!(" + u{i}");
+        }
+        s + &format!("@fragment fn fs() -> @location(0) vec4<f32> {{ return {sum}; }}\n")
+    };
+    let over = ShaderModule::from_wgsl(&wgsl(limit + 1), "fs", ShaderStage::Fragment)
+        .expect("the WGSL validates");
+    assert_eq!(
+        b.create_shader(&over).err(),
+        Some(GpuError::Invalid(
+            "a stage reads more uniform buffers than Limits::uniform_buffers_per_stage"
+        ))
+    );
+    let k = Kit::new(&mut b);
+    let p = kit::program(&mut b, &wgsl(limit), "vs", "fs");
+    let block = super::buffer(&mut b, BufferUsage::UNIFORM, &[0; 16]);
+    let entries: Vec<_> = (0..limit)
+        .map(|i| BindingEntry {
+            binding: i,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &block,
+                offset: 0,
+                size: 16,
+            }),
+        })
+        .collect();
+    let set = b.create_binding_set(&entries).expect("create_binding_set");
+    let (t, v) = rgba(&mut b, 8, 8);
+    let viewports = [kit::viewport(0.0, 0.0, 8.0, 8.0)];
+    let mut call = kit::call(&k, &p, None, &viewports, Topology::TriangleList, 3);
+    call.bindings = [None, Some(&set), None, None];
+    b.begin_pass(&kit::pass(&v, [0; 4], None));
+    b.draw(&call);
+    b.end_pass();
+    b.submit();
+    let _ = kit::read(&mut b, &t, 0, 0, [1, 1, 1], 4, false);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}

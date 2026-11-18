@@ -83,6 +83,9 @@ pub fn gl_format(format: Format) -> Option<GlFormat> {
         // Stored as RGBA: red and blue are swapped on the host on the way in and out.
         F::Bgra8Unorm => f(RGBA8, RGBA, UNSIGNED_BYTE, norm),
         F::Bgra8UnormSrgb => f(SRGB8_ALPHA8, RGBA, UNSIGNED_BYTE, norm),
+        // BGRX as BGRA with alpha one: written one by the host and by clears, never by draws.
+        F::Bgrx8Unorm => f(RGBA8, RGBA, UNSIGNED_BYTE, norm),
+        F::Bgrx8UnormSrgb => f(SRGB8_ALPHA8, RGBA, UNSIGNED_BYTE, norm),
         F::Rgba8Snorm => f(RGBA8_SNORM, RGBA, BYTE, snorm),
         F::Rgba8Uint => f(RGBA8UI, RGBA_INTEGER, UNSIGNED_BYTE, int),
         F::Rgba8Sint => f(RGBA8I, RGBA_INTEGER, BYTE, int),
@@ -137,7 +140,24 @@ pub fn float_bits(format: Format) -> bool {
 /// Whether the interface's bytes of `format` hold blue first, where GL stores red first
 /// ([`wcontainers_gpu::SlowPath::FormatConverted`] on the way in and out).
 pub fn swapped(format: Format) -> bool {
-    matches!(format, Format::Bgra8Unorm | Format::Bgra8UnormSrgb)
+    matches!(
+        format,
+        Format::Bgra8Unorm | Format::Bgra8UnormSrgb | Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb
+    )
+}
+
+/// Whether `format` has no alpha, which its RGBA storage holds as one: host writes and clears write
+/// one, draws leave it, and passes never discard it.
+pub fn alpha_one(format: Format) -> bool {
+    matches!(format, Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb)
+}
+
+/// A clear colour as a target of `format` keeps it.
+pub fn clear_value(format: Format, mut value: [u32; 4]) -> [u32; 4] {
+    if alpha_one(format) {
+        value[3] = 1f32.to_bits();
+    }
+    value
 }
 
 /// Swaps red and blue in each 4-byte texel of `texels`.

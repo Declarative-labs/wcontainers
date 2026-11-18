@@ -1034,7 +1034,8 @@ mod record {
     pub struct Traced<B: Backend> {
         inner: B,
         table: Table<B>,
-        file: std::fs::File,
+        /// None without `WEBGL_TRACE`: the calls run unrecorded.
+        file: Option<std::fs::File>,
         /// The calls since the last present, written whole at the next, so a program stopped
         /// mid-frame leaves whole frames.
         frame: Vec<u8>,
@@ -1054,13 +1055,17 @@ mod record {
 
     impl<B: Backend> Traced<B> {
         /// Records `inner`'s calls into the file `WEBGL_TRACE` names (the process's second device
-        /// into `<name>.1`, and so on).
+        /// into `<name>.1`, and so on); without it, records nothing, so a build that has the
+        /// feature only through another crate's runs as it would without.
         pub fn new(inner: B) -> Result<Self, String> {
-            let path = std::env::var("WEBGL_TRACE")
-                .map_err(|_| "a recording build needs WEBGL_TRACE, the stream file".to_string())?;
-            let n = DEVICES.fetch_add(1, Ordering::Relaxed);
-            let path = if n == 0 { path } else { format!("{path}.{n}") };
-            let file = std::fs::File::create(&path).map_err(|e| format!("{path}: {e}"))?;
+            let file = match std::env::var("WEBGL_TRACE") {
+                Ok(path) => {
+                    let n = DEVICES.fetch_add(1, Ordering::Relaxed);
+                    let path = if n == 0 { path } else { format!("{path}.{n}") };
+                    Some(std::fs::File::create(&path).map_err(|e| format!("{path}: {e}"))?)
+                }
+                Err(_) => None,
+            };
             Ok(Traced {
                 inner,
                 table: Table::default(),
@@ -1078,6 +1083,9 @@ mod record {
         }
 
         fn write(&mut self, call: &Call) {
+            if self.file.is_none() {
+                return;
+            }
             if let Err(e) = postcard::to_io(call, &mut self.frame) {
                 eprintln!("webgl trace: {} not written: {e}", call.name());
             }
@@ -1085,7 +1093,9 @@ mod record {
 
         /// Writes the calls held so far into the file.
         fn flush(&mut self) {
-            if let Err(e) = self.file.write_all(&self.frame) {
+            if let Some(file) = &mut self.file
+                && let Err(e) = file.write_all(&self.frame)
+            {
                 eprintln!("webgl trace: a frame not written: {e}");
             }
             self.frame.clear();

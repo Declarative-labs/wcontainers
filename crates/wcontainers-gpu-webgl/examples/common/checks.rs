@@ -1197,6 +1197,61 @@ pub fn signed_normalised_minimum_judged_by_whole_components<H: Host>() {
         b.destroy(Object::TextureView(v));
         b.destroy(Object::Texture(t));
     }
+    // Levels are judged apart: level 1 holds the minimum while level 0 is drawn into, and each
+    // reads back as it is, level 0 through its twin and level 1 as written.
+    let f = Format::Rgba8Snorm;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 2, usage, false);
+    fn level<B: Backend>(texture: &B::Texture, mip: u32) -> TextureRegion<'_, B> {
+        TextureRegion {
+            mip,
+            ..layer_at(texture, 0, 0, 0, false)
+        }
+    }
+    b.write_texture(
+        &level::<H::Backend>(&t, 1),
+        size(2, 2),
+        &[0x80; 16],
+        8,
+        2,
+        WriteMode::Ordered,
+    );
+    b.write_texture(
+        &level::<H::Backend>(&t, 0),
+        size(4, 4),
+        &[0x10; 64],
+        16,
+        4,
+        WriteMode::Ordered,
+    );
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    let mut pass = kit::pass(&v, clear, None);
+    pass.colors[0].as_mut().unwrap().load = LoadOp::Load;
+    b.begin_pass(&pass);
+    b.end_pass();
+    let u = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        Format::Rgba8Sint,
+        [4, 4, 1],
+        1,
+        usage,
+        false,
+    );
+    b.copy_texture(
+        &level::<H::Backend>(&t, 0),
+        &level::<H::Backend>(&u, 0),
+        size(4, 4),
+    );
+    let got = kit::read(&mut b, &u, 0, 0, [4, 4, 1], 4, false);
+    assert_eq!(
+        b.status(),
+        DeviceStatus::Ok,
+        "level 0 drawn beside a minimum"
+    );
+    assert_eq!(got, [0x10; 64], "level 0 drawn beside a minimum");
+    let got = kit::read(&mut b, &t, 1, 0, [2, 2, 1], 4, false);
+    assert_eq!(got, [0x80; 16], "level 1 holding the minimum");
+    assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
 /// 16-bit floats, which GL does not read back, read back as stored (NaN payloads, infinities and
@@ -1832,7 +1887,7 @@ pub fn gathers_equal_their_footprints<H: Host>() {
 /// every bit; else they take a counted route. The bits kept are checked by
 /// `copies_within_a_typeless_group`, on both routes (all.cmd runs it with `float_blits` off).
 pub fn copies_within_one_float_format_take_the_probed_route<
-    H: Host<Backend = wcontainers_gpu_webgl::WebGl>,
+    H: Host<Backend = wcontainers_gpu_webgl::Gl>,
 >() {
     use crate::kit;
     let mut b = H::make();
@@ -5911,6 +5966,235 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
     assert!(b.slow_paths().count(SlowPath::HostCopyReadBack) > before);
     assert_eq!(read_buffer(&mut b, &buf, 8), bytes, "r8uint in a buffer");
     assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// A full-screen triangle writing one colour of alpha 64 / 255 to targets 0 and 1.
+const QUARTER_ALPHA: &str = "
+const C = vec4<f32>(102.0, 51.0, 204.0, 64.0) / 255.0;
+@vertex fn vs(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32((v & 1u) << 2u) - 1.0, f32((v & 2u) << 1u) - 1.0, 0.0, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return C;
+}
+struct Targets {
+    @location(0) a: vec4<f32>,
+    @location(1) b: vec4<f32>,
+}
+@fragment fn fs_two() -> Targets {
+    return Targets(C, C);
+}
+";
+
+/// BGRX textures (Direct3D's `B8G8R8X8`) read their missing alpha as one through every route, the
+/// X byte read back as 255 as on WebGPU: written with other X bytes and read back now, later and
+/// through a buffer; loaded; drawn into with alpha 64 while blending by the destination's alpha
+/// (one); cleared with alpha 0; copied; and drawn in one pass with an RGBA target, which keeps the
+/// drawn alpha (per-target masks, OES_draw_buffers_indexed).
+pub fn bgrx_textures_hold_alpha_one<H: Host>() {
+    use crate::kit::{self, Kit};
+    use Format as F;
+    let mut b = H::make();
+    let k = Kit::new(&mut b);
+    let load = kit::program(&mut b, LOAD_CORNER, "vs", "fs");
+    let quarter = kit::program(&mut b, QUARTER_ALPHA, "vs", "fs");
+    macro_rules! region {
+        ($texture:expr) => {
+            TextureRegion {
+                texture: $texture,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            }
+        };
+    }
+    let extent = Extent {
+        width: 4,
+        height: 2,
+        depth_or_layers: 1,
+    };
+    // Texel i: blue 10 + i, green 100 + i, red 200 + i, X 7 i.
+    let bgrx: Vec<u8> = (0..8u8)
+        .flat_map(|i| [10 + i, 100 + i, 200 + i, 7 * i])
+        .collect();
+    let opaque: Vec<u8> = bgrx
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|t| [t[0], t[1], t[2], 255])
+        .collect();
+    let rgba8 = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+    let out = kit::texture(
+        &mut b,
+        TextureDimension::D2,
+        F::Rgba8Unorm,
+        [4, 2, 1],
+        1,
+        rgba8,
+        false,
+    );
+    let out_view = kit::target(&mut b, &out, F::Rgba8Unorm, 0, 0);
+    let vp = [kit::viewport(0.0, 0.0, 4.0, 2.0)];
+    let usage = TextureUsage::SAMPLE
+        | TextureUsage::RENDER
+        | TextureUsage::COPY_SRC
+        | TextureUsage::COPY_DST;
+    let by_dst_alpha = kit::blend(
+        &mut b,
+        Some((
+            BlendComponent {
+                src: BlendFactor::DstAlpha,
+                dst: BlendFactor::Zero,
+                op: BlendOp::Add,
+            },
+            BlendComponent {
+                src: BlendFactor::One,
+                dst: BlendFactor::Zero,
+                op: BlendOp::Add,
+            },
+        )),
+    );
+    for format in [F::Bgrx8Unorm, F::Bgrx8UnormSrgb] {
+        let want = FormatUse::SAMPLE
+            | FormatUse::FILTER
+            | FormatUse::RENDER
+            | FormatUse::BLEND
+            | FormatUse::COPY_OUT;
+        assert!(
+            b.caps().formats.get(format).contains(want),
+            "{format:?}: {want:?}"
+        );
+        let t = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [4, 2, 1],
+            1,
+            usage,
+            false,
+        );
+        b.write_texture(&region!(&t), extent, &bgrx, 16, 2, WriteMode::Ordered);
+        assert_eq!(kit::read(&mut b, &t, 0, 0, [4, 2, 1], 4, false), opaque);
+        let rb = b
+            .read_back(&ReadSource::Texture {
+                region: region!(&t),
+                extent,
+            })
+            .expect("read_back");
+        b.submit();
+        b.wait_read(&rb);
+        let mut later = vec![0; 32];
+        b.finish_read(rb, &mut later);
+        assert_eq!(later, opaque, "{format:?} later");
+        // Loaded: alpha one.
+        let view = kit::view(&mut b, &t, format, ViewDimension::D2, 0, 1, 0, 1);
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 32,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::Texture(&view),
+            }])
+            .expect("create_binding_set");
+        b.begin_pass(&kit::pass(&out_view, [0; 4], None));
+        b.draw(&kit::call(
+            &k,
+            &load,
+            Some(&set),
+            &vp,
+            Topology::TriangleList,
+            3,
+        ));
+        b.end_pass();
+        let got = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 4, false);
+        assert_eq!(got[3], 255, "{format:?} loaded: {got:?}");
+        // Drawn into with alpha 64, scaled by the destination's alpha: colour as drawn, alpha one.
+        let target = kit::target(&mut b, &t, format, 0, 0);
+        let mut pass = kit::pass(&target, [0; 4], None);
+        if let Some(c) = &mut pass.colors[0] {
+            c.load = LoadOp::Load;
+        }
+        b.begin_pass(&pass);
+        b.draw(&DrawCall {
+            blend: &by_dst_alpha,
+            ..kit::call(&k, &quarter, None, &vp, Topology::TriangleList, 3)
+        });
+        b.end_pass();
+        let got = kit::read(&mut b, &t, 0, 0, [4, 2, 1], 4, false);
+        let drawn: &[u8] = if format == F::Bgrx8Unorm {
+            &[204, 51, 102, 255]
+        } else {
+            // 102, 51 and 204 / 255 sRGB encoded.
+            &[231, 124, 170, 255]
+        };
+        for t in got.as_chunks::<4>().0 {
+            for (c, (g, w)) in t.iter().zip(drawn).enumerate() {
+                assert!(g.abs_diff(*w) <= 1, "{format:?} drawn: {t:?} ({c})");
+            }
+        }
+        // Copied into a second texture of the format and through a buffer.
+        let t2 = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            format,
+            [4, 2, 1],
+            1,
+            usage,
+            false,
+        );
+        b.copy_texture(&region!(&t), &region!(&t2), extent);
+        assert_eq!(kit::read(&mut b, &t2, 0, 0, [4, 2, 1], 4, false), got);
+        let buf = buffer(&mut b, BufferUsage::VERTEX, &[0; 32]);
+        let into = CopyBufferTexture {
+            buffer: &buf,
+            offset: 0,
+            row_pitch: 16,
+            rows_per_layer: 2,
+        };
+        b.write_buffer(&buf, 0, &bgrx, WriteMode::Ordered);
+        b.copy_buffer_to_texture(&into, &region!(&t2), extent);
+        assert_eq!(kit::read(&mut b, &t2, 0, 0, [4, 2, 1], 4, false), opaque);
+        b.copy_texture_to_buffer(&region!(&t), &into, extent);
+        assert_eq!(read_buffer(&mut b, &buf, 32), got, "{format:?} in a buffer");
+        // Cleared with alpha 0.
+        b.begin_pass(&kit::pass(&target, [0, 0, 1f32.to_bits(), 0], None));
+        b.end_pass();
+        let got = kit::read(&mut b, &t, 0, 0, [1, 1, 1], 4, false);
+        assert_eq!(got, [255, 0, 0, 255], "{format:?} cleared blue");
+        // With an RGBA target in one pass: its alpha drawn, the BGRX one left one.
+        if b.caps().has(Features::INDEPENDENT_BLEND) {
+            let two = kit::program(&mut b, QUARTER_ALPHA, "vs", "fs_two");
+            let colors = [&out_view, &target];
+            b.begin_pass(&PassDesc {
+                colors: core::array::from_fn(|i| {
+                    colors.get(i).map(|&view| ColorAttachment {
+                        view,
+                        depth_slice: 0,
+                        load: LoadOp::Clear([0; 4]),
+                        store: StoreOp::Store,
+                        resolve: None,
+                    })
+                }),
+                depth: None,
+                occlusion: None,
+                empty: None,
+            });
+            b.draw(&kit::call(&k, &two, None, &vp, Topology::TriangleList, 3));
+            b.end_pass();
+            let rgba = kit::read(&mut b, &out, 0, 0, [1, 1, 1], 4, false);
+            let bgrx = kit::read(&mut b, &t, 0, 0, [1, 1, 1], 4, false);
+            assert_eq!(rgba[3], 64, "{format:?}: the RGBA target {rgba:?}");
+            assert_eq!(bgrx[3], 255, "{format:?}: the BGRX target {bgrx:?}");
+            b.destroy(Object::Program(two));
+        }
+        assert_eq!(b.status(), DeviceStatus::Ok, "{format:?}");
+        b.destroy(Object::Buffer(buf));
+        b.destroy(Object::Texture(t2));
+        b.destroy(Object::BindingSet(set));
+        b.destroy(Object::TextureView(view));
+        b.destroy(Object::TextureView(target));
+        b.destroy(Object::Texture(t));
+    }
 }
 
 /// Every level of a texture stays as written while level 1 is sampled, level 2's first layer is
