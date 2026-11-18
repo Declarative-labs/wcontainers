@@ -2831,6 +2831,211 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                         },
                     );
                 }
+                // The lowest active lane: the only one whose exclusive sum of ones is zero.
+                Op::GroupNonUniformElect => {
+                    inst.expect(4)?;
+                    block.extend(emitter.finish(ctx.expressions));
+                    let result_type_id = self.next()?;
+                    let result_id = self.next()?;
+                    let exec_scope_id = self.next()?;
+                    let exec_scope_const = self.lookup_constant.lookup(exec_scope_id)?;
+                    resolve_constant(ctx.gctx(), &exec_scope_const.inner)
+                        .filter(|exec_scope| *exec_scope == spirv::Scope::Subgroup as u32)
+                        .ok_or(Error::InvalidBarrierScope(exec_scope_id))?;
+                    let u32_ty = ctx.module.types.insert(
+                        crate::Type {
+                            name: None,
+                            inner: crate::TypeInner::Scalar(crate::Scalar::U32),
+                        },
+                        span,
+                    );
+                    let one = ctx
+                        .expressions
+                        .append(crate::Expression::Literal(crate::Literal::U32(1)), span);
+                    let zero = ctx
+                        .expressions
+                        .append(crate::Expression::Literal(crate::Literal::U32(0)), span);
+                    let before = ctx.expressions.append(
+                        crate::Expression::SubgroupOperationResult { ty: u32_ty },
+                        span,
+                    );
+                    block.push(
+                        crate::Statement::SubgroupCollectiveOperation {
+                            result: before,
+                            op: crate::SubgroupOperation::Add,
+                            collective_op: crate::CollectiveOperation::ExclusiveScan,
+                            argument: one,
+                        },
+                        span,
+                    );
+                    emitter.start(ctx.expressions);
+                    let handle = ctx.expressions.append(
+                        crate::Expression::Binary {
+                            op: crate::BinaryOperator::Equal,
+                            left: before,
+                            right: zero,
+                        },
+                        span,
+                    );
+                    self.lookup_expression.insert(
+                        result_id,
+                        LookupExpression {
+                            handle,
+                            type_id: result_type_id,
+                            block_id,
+                        },
+                    );
+                }
+                // The lowest or highest lane set in a ballot: the first word with a bit set, from
+                // the low end or the high end, and that bit.
+                Op::GroupNonUniformBallotFindLSB | Op::GroupNonUniformBallotFindMSB => {
+                    inst.expect(5)?;
+                    block.extend(emitter.finish(ctx.expressions));
+                    let result_type_id = self.next()?;
+                    let result_id = self.next()?;
+                    let exec_scope_id = self.next()?;
+                    let value_id = self.next()?;
+                    let exec_scope_const = self.lookup_constant.lookup(exec_scope_id)?;
+                    resolve_constant(ctx.gctx(), &exec_scope_const.inner)
+                        .filter(|exec_scope| *exec_scope == spirv::Scope::Subgroup as u32)
+                        .ok_or(Error::InvalidBarrierScope(exec_scope_id))?;
+                    let low = inst.op == Op::GroupNonUniformBallotFindLSB;
+                    let mut literal = |v: u32| {
+                        ctx.expressions
+                            .append(crate::Expression::Literal(crate::Literal::U32(v)), span)
+                    };
+                    let zero = literal(0);
+                    let bases = [0, 32, 64, 96].map(&mut literal);
+                    let top = literal(31);
+                    let lookup = self.lookup_expression.lookup(value_id)?;
+                    emitter.start(ctx.expressions);
+                    let value = get_expr_handle!(value_id, lookup);
+                    let mut add = |e| ctx.expressions.append(e, span);
+                    let math = |fun, arg| crate::Expression::Math {
+                        fun,
+                        arg,
+                        arg1: None,
+                        arg2: None,
+                        arg3: None,
+                    };
+                    // The bit within each word, its lane, and whether the word has one.
+                    let lanes: Vec<_> = (0..4u32)
+                        .map(|index| {
+                            let word = add(crate::Expression::AccessIndex { base: value, index });
+                            let bit = if low {
+                                add(math(crate::MathFunction::CountTrailingZeros, word))
+                            } else {
+                                let lead = add(math(crate::MathFunction::CountLeadingZeros, word));
+                                add(crate::Expression::Binary {
+                                    op: crate::BinaryOperator::Subtract,
+                                    left: top,
+                                    right: lead,
+                                })
+                            };
+                            let lane = add(crate::Expression::Binary {
+                                op: crate::BinaryOperator::Add,
+                                left: bases[index as usize],
+                                right: bit,
+                            });
+                            let set = add(crate::Expression::Binary {
+                                op: crate::BinaryOperator::NotEqual,
+                                left: word,
+                                right: zero,
+                            });
+                            (lane, set)
+                        })
+                        .collect();
+                    let order: [usize; 4] = if low { [3, 2, 1, 0] } else { [0, 1, 2, 3] };
+                    let mut handle = lanes[order[0]].0;
+                    for &i in &order[1..] {
+                        handle = add(crate::Expression::Select {
+                            condition: lanes[i].1,
+                            accept: lanes[i].0,
+                            reject: handle,
+                        });
+                    }
+                    self.lookup_expression.insert(
+                        result_id,
+                        LookupExpression {
+                            handle,
+                            type_id: result_type_id,
+                            block_id,
+                        },
+                    );
+                }
+                // Whether a value is the same in every active lane: each lane's value equals the
+                // first lane's, in every lane.
+                Op::GroupNonUniformAllEqual => {
+                    inst.expect(5)?;
+                    block.extend(emitter.finish(ctx.expressions));
+                    let result_type_id = self.next()?;
+                    let result_id = self.next()?;
+                    let exec_scope_id = self.next()?;
+                    let value_id = self.next()?;
+                    let exec_scope_const = self.lookup_constant.lookup(exec_scope_id)?;
+                    resolve_constant(ctx.gctx(), &exec_scope_const.inner)
+                        .filter(|exec_scope| *exec_scope == spirv::Scope::Subgroup as u32)
+                        .ok_or(Error::InvalidBarrierScope(exec_scope_id))?;
+                    let lookup = self.lookup_expression.lookup(value_id)?;
+                    let value_type = self.lookup_type.lookup(lookup.type_id)?.handle;
+                    let result_type = self.lookup_type.lookup(result_type_id)?.handle;
+                    emitter.start(ctx.expressions);
+                    let value = get_expr_handle!(value_id, lookup);
+                    block.extend(emitter.finish(ctx.expressions));
+                    let first = ctx.expressions.append(
+                        crate::Expression::SubgroupOperationResult { ty: value_type },
+                        span,
+                    );
+                    block.push(
+                        crate::Statement::SubgroupGather {
+                            mode: crate::GatherMode::BroadcastFirst,
+                            argument: value,
+                            result: first,
+                        },
+                        span,
+                    );
+                    emitter.start(ctx.expressions);
+                    let mut same = ctx.expressions.append(
+                        crate::Expression::Binary {
+                            op: crate::BinaryOperator::Equal,
+                            left: value,
+                            right: first,
+                        },
+                        span,
+                    );
+                    if let crate::TypeInner::Vector { .. } = ctx.module.types[value_type].inner {
+                        same = ctx.expressions.append(
+                            crate::Expression::Relational {
+                                fun: crate::RelationalFunction::All,
+                                argument: same,
+                            },
+                            span,
+                        );
+                    }
+                    block.extend(emitter.finish(ctx.expressions));
+                    let result = ctx.expressions.append(
+                        crate::Expression::SubgroupOperationResult { ty: result_type },
+                        span,
+                    );
+                    block.push(
+                        crate::Statement::SubgroupCollectiveOperation {
+                            result,
+                            op: crate::SubgroupOperation::All,
+                            collective_op: crate::CollectiveOperation::Reduce,
+                            argument: same,
+                        },
+                        span,
+                    );
+                    emitter.start(ctx.expressions);
+                    self.lookup_expression.insert(
+                        result_id,
+                        LookupExpression {
+                            handle: result,
+                            type_id: result_type_id,
+                            block_id,
+                        },
+                    );
+                }
                 Op::GroupNonUniformAll
                 | Op::GroupNonUniformAny
                 | Op::GroupNonUniformIAdd
