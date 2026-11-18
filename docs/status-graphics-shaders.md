@@ -606,6 +606,7 @@ Next (in order):
   Storage textures in the corpora convert only with a format, so under the default key they are
   refused `StorageFormat` and not compiled in Chrome; give the corpus test the formats the rig's
   real programs bind, then compile them in Chrome.
+- Rerun the WebAssembly comparison (`wasm-run10.sh`) after run 17's lowering changes (not done).
 - Typed buffers (`TexelBufferRoute`), storage textures through a buffer (`texels_through_buffer`:
   read-write formats other than r32, texture atomics), storage packing; DXIL storage views (naga's
   SPIR-V reader: image buffers).
@@ -820,6 +821,15 @@ Run 17, 2026-11-17, counts only (the desktop shared with the other tracks, no ti
   stream output comparisons had one or two words 1 ulp apart (all `gs_cut`, the lerp).
 - After the `fma` change (`run17/draws1.log`): `draw` 3 tests pass; `variant_draw` passes;
   `filter_draw` seeds 1 to 8, 396 comparisons, 0 failed, 32 anisotropic known failures as before.
+- Chrome's compile of every written file after run 17's changes (`run17/chrome.log`, one GPU job):
+  every WGSL file compiles (corpus 143, games 418, games DXIL 289, rig 64, rig DXIL 49, own 50, own
+  DXIL 26); WebGL 2 refuses only what GLSL ES 3.00 lacks (bitfield operations, `textureGather`,
+  multisampled samplers): corpus 13, games 10, games DXIL 1, rig 2, rig DXIL 2, own 5, own DXIL 2.
+  Geometry, atomics and counters convert to WGSL only (`ok-wgsl glsl-write`: compute).
+- Corpus records after run 17 (laptop, `run17/linux-all3.log`): 56 storage textures now refused
+  `StorageFormat` (no format under the default key) where they were `StorageImage`; 10 geometry
+  shaders and 13 shaders with atomics or counters now convert; 2 refused `AtomicSignedness`; 3 game
+  geometry shaders now refused `RenderTargetArrayIndex`.
 - `tests/compute_draw.rs` (`run17/cd2.log`), seeds 1 to 4: atomics and counters 8 comparisons, 0
   words apart, counters equal (256, 256, 0; 0); storage textures 16 comparisons (4 formats), 0 words
   apart.
