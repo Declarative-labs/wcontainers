@@ -3,7 +3,7 @@
 use glow::HasContext;
 use naga::back::glsl;
 use std::rc::Rc;
-use wcontainers_gpu::{GpuError, ShaderModule, ShaderStage};
+use wcontainers_gpu::{Features, GpuError, ShaderModule, ShaderStage};
 
 /// A (set, binding) pair: where a program reads a resource.
 pub type Slot = (u32, u32);
@@ -27,6 +27,8 @@ pub struct ShaderObj {
     /// A vertex shader's location outputs in location order: GLSL name and bytes.
     pub outputs: Vec<(String, u32)>,
     pub immediates: Vec<Immediate>,
+    /// How many clip distances a vertex shader writes.
+    pub clip_distances: u8,
 }
 
 /// A vertex shader and an optional fragment shader.
@@ -300,6 +302,18 @@ pub fn compile(
         .iter()
         .map(|i| (i.access_path.clone(), i.offset, i.ty))
         .collect();
+    let clip_distances = results(module)
+        .find(|(b, _)| *b == naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances))
+        .map_or(0, |(_, n)| n);
+    let cull_distances = results(module)
+        .find(|(b, _)| *b == naga::Binding::BuiltIn(naga::BuiltIn::CullDistance))
+        .map_or(0, |(_, n)| n);
+    // WEBGL_clip_cull_distance guarantees eight of each and eight together, Direct3D's limit.
+    if clip_distances + cull_distances > 8 {
+        return Err(GpuError::Invalid(
+            "webgl: more than eight clip and cull distances",
+        ));
+    }
     let raw = start_compile(gl, module.stage, &source)?;
     Ok(ShaderObj {
         id,
@@ -310,6 +324,53 @@ pub fn compile(
         source,
         outputs,
         immediates,
+        clip_distances: clip_distances as u8,
+    })
+}
+
+/// The entry point's output bindings, each with its array length (1 for what is not an array).
+fn results(module: &ShaderModule) -> impl Iterator<Item = (naga::Binding, u32)> + '_ {
+    let m = &module.module;
+    let result = m
+        .entry_points
+        .iter()
+        .find(|e| e.name == module.entry_point)
+        .and_then(|e| e.function.result.as_ref());
+    let length = |ty: naga::Handle<naga::Type>| match m.types[ty].inner {
+        naga::TypeInner::Array {
+            size: naga::ArraySize::Constant(n),
+            ..
+        } => n.get(),
+        _ => 1,
+    };
+    result.into_iter().flat_map(move |r| {
+        let single = r.binding.clone().map(|b| (b, length(r.ty)));
+        let fields = match &m.types[r.ty].inner {
+            naga::TypeInner::Struct { members, .. } if r.binding.is_none() => &members[..],
+            _ => &[],
+        };
+        single.into_iter().chain(
+            fields
+                .iter()
+                .filter_map(move |f| Some((f.binding.clone()?, length(f.ty)))),
+        )
+    })
+}
+
+/// The features a shader's outputs need: clip and cull distances, point sizes, and a second
+/// fragment output for blending.
+pub fn needs(module: &ShaderModule) -> Features {
+    use naga::{Binding, BuiltIn};
+    results(module).fold(Features::empty(), |f, (b, _)| {
+        f | match b {
+            Binding::BuiltIn(BuiltIn::ClipDistances) => Features::CLIP_DISTANCE,
+            Binding::BuiltIn(BuiltIn::CullDistance) => Features::CULL_DISTANCE,
+            Binding::BuiltIn(BuiltIn::PointSize) => Features::POINT_SIZE,
+            Binding::Location {
+                blend_src: Some(1), ..
+            } => Features::DUAL_SOURCE_BLEND,
+            _ => Features::empty(),
+        }
     })
 }
 
@@ -761,6 +822,47 @@ pub fn convert_inputs(source: &str, convert: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A vertex program's clip distances are counted, and written as `gl_ClipDistance` under
+    /// WEBGL_clip_cull_distance's directive.
+    #[test]
+    fn clip_distances_are_written_and_counted() {
+        let wgsl = "
+            enable clip_distances;
+            struct Out {
+                @builtin(position) p: vec4<f32>,
+                @builtin(clip_distances) d: array<f32, 2>,
+            }
+            @vertex fn vs(@location(0) p: vec4<f32>) -> Out {
+                return Out(p, array<f32, 2>(p.x, p.y));
+            }";
+        let module = naga::front::wgsl::parse_str(wgsl).expect("parses");
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("validates");
+        let module = ShaderModule {
+            module,
+            info,
+            entry_point: "vs".into(),
+            stage: ShaderStage::Vertex,
+            key: [0; 32],
+        };
+        assert_eq!(needs(&module), Features::CLIP_DISTANCE);
+        let distances: Vec<_> = results(&module)
+            .filter(|(b, _)| *b == naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances))
+            .collect();
+        assert_eq!(distances.len(), 1);
+        assert_eq!(distances[0].1, 2);
+        let (glsl, _) = write_glsl(&module, false).expect("writes");
+        assert!(
+            glsl.contains("#extension GL_ANGLE_clip_cull_distance"),
+            "{glsl}"
+        );
+        assert!(glsl.contains("gl_ClipDistance = _tmp_return.d;"), "{glsl}");
+    }
 
     /// The attributes a layout converts are declared as GL reads them and turned into what the
     /// program reads at the start of `main`; others stay.

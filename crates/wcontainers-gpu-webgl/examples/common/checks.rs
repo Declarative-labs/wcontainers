@@ -4,6 +4,10 @@
 use wcontainers_gpu::*;
 use wcontainers_gpu_test::Host;
 
+#[path = "extensions.rs"]
+mod extensions;
+pub use extensions::*;
+
 /// Writes each point's vertex and instance numbers, and the elements its per-vertex and per-instance
 /// streams read, into the pixel at (vertex number mod 8, instance number mod 4) of an 8 by 4 target.
 const NUMBERS: &str = "
@@ -445,7 +449,7 @@ pub fn discard_then_no_overwrite_writes<H: Host>() {
 }
 
 /// Depth and stencil read back as stored (`DepthReadByDraw` on WebGL 2): a pass clears a 4 by 4 target
-/// to depth 0.25 and stencil 0x5a, then `clear_rects` sets the middle 2 by 2 to 0.75 and 0xc3. Depth
+/// to depth 0.25 and stencil 0x5a, then `clear_rects` sets the middle 2 by 2 to 1 and 0xc3. Depth
 /// in unorm formats within one step (GL lets the conversion round either way). Formats the back end
 /// cannot read back (no `COPY_OUT`) are left out: stencil needs WEBGL_stencil_texturing.
 pub fn depth_and_stencil_read_back<H: Host>() {
@@ -515,7 +519,7 @@ pub fn depth_and_stencil_read_back<H: Host>() {
             &v,
             format,
             ClearValue::DepthStencil {
-                depth: Some(0.75f32.to_bits()),
+                depth: Some(1f32.to_bits()),
                 stencil: stencil.then_some(0xc3),
             },
             &[ScissorRect {
@@ -555,7 +559,7 @@ pub fn depth_and_stencil_read_back<H: Host>() {
         };
         let depth = read(&mut b, false, bytes);
         for p in 0..16 {
-            let want = if inside(p) { 0.75f64 } else { 0.25 };
+            let want = if inside(p) { 1f64 } else { 0.25 };
             let raw = &depth[p * bytes..(p + 1) * bytes];
             let got = if bytes == 2 {
                 u64::from(u16::from_le_bytes(raw.try_into().unwrap()))
@@ -2926,10 +2930,7 @@ pub fn absent_features_are_refused<H: Host>() {
     let never = Features::COMPUTE
         | Features::VERTEX_STORAGE_READ
         | Features::FRAGMENT_STORAGE_WRITE
-        | Features::POLYGON_MODE
-        | Features::DEPTH_CLAMP
-        | Features::DUAL_SOURCE_BLEND
-        | Features::INDEPENDENT_BLEND
+        | Features::POLYGON_MODE_POINT
         | Features::LOGIC_OP
         | Features::WIDE_LINES
         | Features::SAMPLE_MASK
@@ -2939,8 +2940,6 @@ pub fn absent_features_are_refused<H: Host>() {
         | Features::BORDER_COLOR
         | Features::DEPTH_BOUNDS
         | Features::STENCIL_PER_FACE
-        | Features::MIRROR_ONCE
-        | Features::DEPTH_BIAS_CLAMP
         | Features::TEXEL_BUFFERS;
     assert!(
         !caps.features.intersects(never),
@@ -2949,6 +2948,14 @@ pub fn absent_features_are_refused<H: Host>() {
     );
     let absent = |r: Result<(), GpuError>, f: Features, what: &str| {
         assert_eq!(r, Err(GpuError::Absent(f)), "{what}");
+    };
+    // Made where the feature is declared, refused as absent where not.
+    let by_caps = |r: Result<(), GpuError>, f: Features, what: &str| {
+        if caps.has(f) {
+            r.unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        } else {
+            absent(r, f, what);
+        }
     };
     let solid = (
         BlendComponent {
@@ -2977,14 +2984,14 @@ pub fn absent_features_are_refused<H: Host>() {
     let mut d = blend_desc(Some(solid));
     d.same_for_all = false;
     d.targets[1].blend = None;
-    absent(
+    by_caps(
         b.create_blend(&d).map(drop),
         Features::INDEPENDENT_BLEND,
         "a blend per target",
     );
     let mut second = solid;
     second.0.dst = BlendFactor::OneMinusSrc1;
-    absent(
+    by_caps(
         b.create_blend(&blend_desc(Some(second))).map(drop),
         Features::DUAL_SOURCE_BLEND,
         "a second source",
@@ -3047,6 +3054,9 @@ pub fn absent_features_are_refused<H: Host>() {
         d.depth_bias = 2.0f32.to_bits();
         d.depth_bias_clamp = 0.5f32.to_bits();
     });
+    raster("points", Features::POLYGON_MODE_POINT, &|d| {
+        d.fill = FillMode::Point
+    });
     raster("a wide line", Features::WIDE_LINES, &|d| {
         d.line_width = 2.0f32.to_bits()
     });
@@ -3080,7 +3090,7 @@ pub fn absent_features_are_refused<H: Host>() {
     ] {
         let mut d = sampler_desc;
         d.address[1] = mode;
-        absent(b.create_sampler(&d).map(drop), f, "an address mode");
+        by_caps(b.create_sampler(&d).map(drop), f, "an address mode");
     }
     let mut d = sampler_desc;
     d.anisotropy = caps.limits.max_anisotropy;
@@ -3101,6 +3111,23 @@ pub fn absent_features_are_refused<H: Host>() {
         Features::COMPUTE,
         "a compute shader",
     );
+    for (wgsl, entry, stage, f) in [
+        (
+            extensions::CLIPPED,
+            "vs",
+            ShaderStage::Vertex,
+            Features::CLIP_DISTANCE,
+        ),
+        (
+            extensions::TWO,
+            "fs_second",
+            ShaderStage::Fragment,
+            Features::DUAL_SOURCE_BLEND,
+        ),
+    ] {
+        let m = extensions::module_all(wgsl, entry, stage);
+        by_caps(b.create_shader(&m).map(drop), f, entry);
+    }
     let buffer = buffer(
         &mut b,
         BufferUsage::UNIFORM | BufferUsage::VERTEX,

@@ -2,8 +2,9 @@
 rem Every check of the back end on the desktop, as one GPU job after build.cmd: the scenes on ANGLE and in
 rem Chrome's WebGL 2 with every extension and with EXT_clip_control and WEBGL_provoking_vertex switched
 rem off, and the shared suite in Chrome and on ANGLE with every extension, without EXT_clip_control, and
-rem without both (and without the block compression extensions, EXT_texture_norm16 and EXT_render_snorm; in Chrome also
-rem without WEBGL_stencil_texturing, which ANGLE natively lacks), and the drawings compared with the
+rem without both (and without the block compression extensions, EXT_texture_norm16, EXT_render_snorm and the
+rem extensions of blending, raster state, addressing and clip distances; in Chrome also without
+rem WEBGL_stencil_texturing, which ANGLE natively lacks), and the drawings compared with the
 rem WebGPU back end natively.
 rem all.cmd <out-dir>; run from the checkout root.
 setlocal
@@ -13,7 +14,7 @@ if not exist "%OUT%" mkdir "%OUT%"
 call crates\wcontainers-gpu-webgl\browser\run.cmd "%OUT%\with" || set FAIL=1
 call crates\wcontainers-gpu-webgl\browser\run.cmd "%OUT%\without" "EXT_clip_control WEBGL_provoking_vertex" || set FAIL=1
 cargo test -j 3 -p wcontainers-gpu-webgl --test suite -- --list --format terse > "%OUT%\suite-list.txt" || set FAIL=1
-set FORMATS=WEBGL_compressed_texture_s3tc WEBGL_compressed_texture_s3tc_srgb EXT_texture_compression_rgtc EXT_texture_compression_bptc EXT_texture_norm16 EXT_render_snorm
+set FORMATS=WEBGL_compressed_texture_s3tc WEBGL_compressed_texture_s3tc_srgb EXT_texture_compression_rgtc EXT_texture_compression_bptc EXT_texture_norm16 EXT_render_snorm OES_draw_buffers_indexed WEBGL_blend_func_extended WEBGL_polygon_mode EXT_depth_clamp EXT_polygon_offset_clamp EXT_texture_mirror_clamp_to_edge WEBGL_clip_cull_distance
 set SUITE=node crates\wcontainers-gpu-webgl\browser\suite.mjs "%CARGO_TARGET_DIR%\webgl-pkg"
 %SUITE% "%OUT%\suite-chrome.txt" "%OUT%\suite-list.txt" || set FAIL=1
 %SUITE% "%OUT%\suite-chrome-noclip.txt" "%OUT%\suite-list.txt" "EXT_clip_control" || set FAIL=1

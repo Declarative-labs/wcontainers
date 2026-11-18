@@ -38,7 +38,8 @@ fn fragment(array: bool, stencil: bool) -> String {
     let value = if stencil {
         "texelFetch(src, COORD, 0).r"
     } else {
-        "scale == 0u ? floatBitsToUint(d) : uint(d * float(scale) + 0.5)"
+        // A float cannot hold 2^24 - 0.5, so a depth of 1 would round past 24 bits; kept at scale.
+        "scale == 0u ? floatBitsToUint(d) : min(uint(d * float(scale) + 0.5), scale)"
     }
     .replace("COORD", coord);
     format!(
