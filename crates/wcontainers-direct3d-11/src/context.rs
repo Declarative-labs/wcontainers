@@ -4,22 +4,26 @@ use std::rc::Rc;
 
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, ClearValue, ColorAttachment,
-    ColorTarget, CountedDraw, DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange,
-    EmptyPass, Extent, Features, Filter, Format, FormatKind, FormatUse, HELPER_SET, HelperValue,
-    IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc,
-    PassTargets, Program, ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect,
-    ShaderStage, SlotKind, SlowPath, SourceStage, StageSet, StepMode, StoreOp, Target,
-    TextureUsage, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, Viewport as GpuViewport, WriteMode, helper_binding,
+    ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment, DispatchCall,
+    DispatchGroups, DrawCall, DrawRange, EmptyPass, Extent, Features, Filter, Format, FormatKind,
+    FormatUse, HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp,
+    MAX_BINDING_SETS, Object, Origin, PassDesc, PassTargets, Program, ReadSource, ReadState,
+    RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderStage, SlotKind, SlowPath, SourceStage,
+    StageSet, StepMode, StoreOp, Target, TextureUsage, Topology, VariantKey, VertexAttribute,
+    VertexBinding, VertexLayoutDesc, VertexStream, Viewport as GpuViewport, WriteMode,
+    helper_binding,
 };
 
 use crate::desc::{
     self, Box3, SubresourceData, TexDim, TextureDesc, Viewport, map, topology, usage,
 };
-use crate::device::{Device, ZERO_BYTES, gpu_buffer, integer_format, resolvable};
+use crate::device::{
+    Device, HelperBlocks, Linked, Variant, ZERO_BYTES, gpu_buffer, integer_format, resolvable,
+};
 use crate::error::{Error, Result, not_implemented};
 use crate::format;
 use crate::object::*;
+use crate::shader::{Helpers, StageVariant};
 
 /// The shader stages whose slots this context keeps: vertex (set 0), pixel (set 1) and compute
 /// (set 0 of its own programs).
@@ -682,9 +686,10 @@ impl<B: Backend> Device<B> {
     fn prepare_counted(
         &mut self,
         vs: &Rc<Shader<B>>,
+        vk: StageVariant,
         ps: Option<&Rc<Shader<B>>>,
     ) -> Result<(B::Program, bool)> {
-        let program = self.counting_program(vs, ps)?;
+        let program = self.counting_program(vs, vk, ps)?;
         let ds = &self
             .ctx
             .depth_stencil
@@ -754,18 +759,19 @@ impl<B: Backend> Device<B> {
     fn counting_program(
         &mut self,
         vs: &Rc<Shader<B>>,
+        vk: StageVariant,
         ps: Option<&Rc<Shader<B>>>,
     ) -> Result<B::Program> {
-        let key = (vs.gpu.id, ps.map_or(0, |p| p.gpu.id));
+        let key = (vs.gpu.id, vk, ps.map_or(0, |p| p.gpu.id));
         if let Some(p) = self.counting.get(&key) {
             return Ok(p.handle.clone());
         }
         // Made after the pair's own program, so the vertex shader converted for its interpolation
-        // is there.
-        self.program(vs, ps)?;
+        // and variant is there.
+        self.program(vs, vk, ps, StageVariant::default())?;
         let module = match ps {
             Some(p) => {
-                let mut c = crate::shader::convert(&p.bytecode, SourceStage::Pixel)?;
+                let mut c = crate::shader::convert(&p.bytecode, SourceStage::Pixel)?.0;
                 crate::counting::from_pixel_shader(&c.modules.pop().expect("one module"))?
             }
             None => crate::counting::without_pixel_shader()?,
@@ -775,7 +781,7 @@ impl<B: Backend> Device<B> {
         let vertex = self
             .interpolated
             .get(&key)
-            .map_or(&vs.gpu.handle, |s| &s.handle);
+            .map_or(&vs.gpu.handle, |s| &s.shader.handle);
         let program = self.backend.create_program(&Program::Render {
             vertex,
             fragment: Some(&fragment),
@@ -948,16 +954,10 @@ impl<B: Backend> Device<B> {
         if self.removed.is_some() {
             return Ok(());
         }
-        let reads_bases = self
-            .ctx
-            .vs
-            .as_ref()
-            .is_some_and(|vs| vs.reflection.helper_size > 0);
         let r = if self
             .backend
             .caps()
             .has(Features::INDIRECT | Features::INDIRECT_FIRST_INSTANCE)
-            && !reads_bases
         {
             self.try_draw(Range::Indirect { indexed, offset }, 0, 1, Some(args))
         } else {
@@ -972,8 +972,7 @@ impl<B: Backend> Device<B> {
 
     /// An indirect draw's arguments read back (`IndirectReadBack`), as the range, first instance and
     /// instance count of a direct draw: for back ends without indirect draws or without a first
-    /// instance in them, and for vertex programs reading the draw's bases, which the converter does
-    /// not yet take from the arguments (`DrawBaseFromArguments`).
+    /// instance in them.
     fn read_indirect(
         &mut self,
         args: &Buffer<B>,
@@ -1036,15 +1035,70 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    /// The program of a vertex and pixel shader pair, made at its first use.
+    /// The program of a vertex and pixel shader pair as the variants `vk` and `pk`, made at its
+    /// first use, and where its two stages read their helper constants.
     pub(crate) fn program(
         &mut self,
         vs: &Rc<Shader<B>>,
+        vk: StageVariant,
         ps: Option<&Rc<Shader<B>>>,
-    ) -> Result<B::Program> {
-        let key = (vs.gpu.id, ps.map_or(0, |p| p.gpu.id));
+        pk: StageVariant,
+    ) -> Result<(B::Program, [Rc<Helpers>; 2])> {
+        let key = (vs.gpu.id, vk, ps.map_or(0, |p| p.gpu.id), pk);
         if let Some(p) = self.programs.get(&key) {
-            return Ok(p.handle.clone());
+            return Ok((p.program.handle.clone(), p.helpers.clone()));
+        }
+        self.vertex_variant(vs, vk, ps)?;
+        if let Some(p) = ps
+            && pk != StageVariant::default()
+            && !self.variants.contains_key(&(p.gpu.id, pk))
+        {
+            let v =
+                self.convert_kept(&p.bytecode, SourceStage::Pixel, &pk.key(SourceStage::Pixel))?;
+            self.variants.insert((p.gpu.id, pk), v);
+        }
+        let (vertex, vh) = self
+            .interpolated
+            .get(&(key.0, vk, key.2))
+            .map_or((&vs.gpu.handle, &vs.helpers), |v| {
+                (&v.shader.handle, &v.helpers)
+            });
+        let (fragment, ph) = match ps {
+            None => (None, Rc::default()),
+            Some(p) => self
+                .variants
+                .get(&(p.gpu.id, pk))
+                .map_or((Some(&p.gpu.handle), p.helpers.clone()), |v| {
+                    (Some(&v.shader.handle), v.helpers.clone())
+                }),
+        };
+        let helpers = [vh.clone(), ph];
+        let program = self
+            .backend
+            .create_program(&Program::Render { vertex, fragment });
+        let program = self.gpu(program)?;
+        let id = self.id();
+        self.programs.insert(
+            key,
+            Linked {
+                program: Kept::new(program.clone(), id, Object::Program, &self.graveyard),
+                helpers: helpers.clone(),
+            },
+        );
+        Ok((program, helpers))
+    }
+
+    /// Converts `vs` again where the pixel shader interpolates its outputs other than by perspective
+    /// or the draw asks for a variant, kept in `interpolated`.
+    fn vertex_variant(
+        &mut self,
+        vs: &Rc<Shader<B>>,
+        vk: StageVariant,
+        ps: Option<&Rc<Shader<B>>>,
+    ) -> Result<()> {
+        let key = (vs.gpu.id, vk, ps.map_or(0, |p| p.gpu.id));
+        if self.interpolated.contains_key(&key) {
+            return Ok(());
         }
         // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
         // pixel shader alone chooses: the vertex shader is converted again to write its outputs so.
@@ -1056,35 +1110,55 @@ impl<B: Backend> Device<B> {
             .collect();
         interpolation.sort_by_key(|i| i.0);
         interpolation.dedup_by_key(|i| i.0);
-        if !interpolation.is_empty() && !self.interpolated.contains_key(&key) {
-            let variant = VariantKey {
-                output_interpolation: interpolation,
-                ..crate::shader::base_key(SourceStage::Vertex)
-            };
-            let mut converted =
-                crate::shader::convert_variant(&vs.bytecode, SourceStage::Vertex, &variant)?;
-            let module = converted.modules.pop().expect("one module");
-            let shader = self.backend.create_shader(&module);
-            let shader = self.gpu(shader)?;
-            let id = self.id();
-            self.interpolated
-                .insert(key, Kept::new(shader, id, Object::Shader, &self.graveyard));
+        if interpolation.is_empty() && vk == StageVariant::default() {
+            return Ok(());
         }
-        let vertex = self
-            .interpolated
-            .get(&key)
-            .map_or(&vs.gpu.handle, |s| &s.handle);
-        let program = self.backend.create_program(&Program::Render {
-            vertex,
-            fragment: ps.map(|p| &p.gpu.handle),
-        });
-        let program = self.gpu(program)?;
+        let variant = VariantKey {
+            output_interpolation: interpolation,
+            ..vk.key(SourceStage::Vertex)
+        };
+        let v = self.convert_kept(&vs.bytecode, SourceStage::Vertex, &variant)?;
+        self.interpolated.insert(key, v);
+        Ok(())
+    }
+
+    /// `bytecode` converted as `key` and handed to the back end.
+    fn convert_kept(
+        &mut self,
+        bytecode: &[u8],
+        stage: SourceStage,
+        key: &VariantKey,
+    ) -> Result<Variant<B>> {
+        let mut c = crate::shader::convert_variant(bytecode, stage, key)?;
+        let helpers = Rc::new(Helpers::of(&c));
+        let module = c.modules.pop().expect("one module");
+        let shader = self.backend.create_shader(&module);
+        let shader = self.gpu(shader)?;
         let id = self.id();
-        self.programs.insert(
-            key,
-            Kept::new(program.clone(), id, Object::Program, &self.graveyard),
-        );
-        Ok(program)
+        Ok(Variant {
+            shader: Kept::new(shader, id, Object::Shader, &self.graveyard),
+            helpers,
+        })
+    }
+
+    /// What a draw asks of `stage`'s program `s`: the sampler slots it reads through a biased
+    /// sampler, and the targets' `samples` where it reads them.
+    fn stage_variant(&self, stage: usize, s: &Shader<B>, samples: u8) -> StageVariant {
+        let mut lod_bias = 0;
+        if s.samplers != 0 {
+            for (i, b) in self.ctx.samplers[stage].iter().enumerate().take(16) {
+                if s.samplers & (1 << i) != 0
+                    && b.as_ref().is_some_and(|b| b.desc.mip_lod_bias != 0.0)
+                {
+                    lod_bias |= 1 << i;
+                }
+            }
+        }
+        StageVariant {
+            lod_bias,
+            samples: if s.reads_samples { samples } else { 0 },
+            ..StageVariant::default()
+        }
     }
 
     /// The strides of the bound vertex buffers in the slots the input layout reads, zero elsewhere.
@@ -1239,9 +1313,17 @@ impl<B: Backend> Device<B> {
         self.settle();
         self.grow_constants()?;
         self.update_set(COMPUTE)?;
-        let key = (cs.gpu.id, 0);
+        if self.stage_variant(COMPUTE, &cs, 1) != StageVariant::default() {
+            return not_implemented("a compute shader sampling through a biased sampler");
+        }
+        let key = (
+            cs.gpu.id,
+            StageVariant::default(),
+            0,
+            StageVariant::default(),
+        );
         let program = match self.programs.get(&key) {
-            Some(p) => p.handle.clone(),
+            Some(p) => p.program.handle.clone(),
             None => {
                 let p = self
                     .backend
@@ -1250,7 +1332,10 @@ impl<B: Backend> Device<B> {
                 let id = self.id();
                 self.programs.insert(
                     key,
-                    Kept::new(p.clone(), id, Object::Program, &self.graveyard),
+                    Linked {
+                        program: Kept::new(p.clone(), id, Object::Program, &self.graveyard),
+                        helpers: Default::default(),
+                    },
                 );
                 p
             }
@@ -1710,42 +1795,116 @@ impl<B: Backend> Device<B> {
         Ok(gpu)
     }
 
-    /// Writes the vertex program's helper constants, `[base vertex, first instance, block size,
-    /// offset of the bases]`, where they differ from the last written (`DrawBaseInHelpers`), and
-    /// keeps the set binding them.
-    fn write_draw_base(&mut self, key: [u32; 4]) -> Result<()> {
-        if self.draw_base.as_ref().is_some_and(|(k, _)| *k == key) {
+    /// Writes the helper constants of the draw's two program stages where they differ from the
+    /// last written, and keeps the set binding them (with an indirect draw's arguments, for a vertex
+    /// program that reads its bases from them).
+    fn write_helpers(
+        &mut self,
+        helpers: &[Rc<Helpers>; 2],
+        bases: [u32; 2],
+        args: Option<(&Rc<Buffer<B>>, u32, bool)>,
+    ) -> Result<()> {
+        const MAX: usize = 256;
+        let mut blocks = [[0u8; MAX]; 2];
+        for (i, (h, stage)) in helpers.iter().zip([VERTEX, PIXEL]).enumerate() {
+            if h.size as usize > MAX {
+                return not_implemented("a helper block larger than 256 bytes");
+            }
+            for slot in &h.values {
+                let words: [u32; 3] = match slot.value {
+                    HelperValue::DrawBase => [bases[0], bases[1], 0],
+                    HelperValue::DrawArguments => {
+                        let (_, offset, indexed) = args.expect("an indirect draw");
+                        [offset / 4, u32::from(indexed), 0]
+                    }
+                    HelperValue::LodBias { sampler } => {
+                        let bias = self.ctx.samplers[stage]
+                            .get(sampler as usize)
+                            .and_then(|s| s.as_ref())
+                            .map_or(0.0, |s| s.desc.mip_lod_bias);
+                        [bias.to_bits(), 0, 0]
+                    }
+                    _ => unreachable!("refused at conversion"),
+                };
+                let n = match slot.value {
+                    HelperValue::LodBias { .. } => 1,
+                    _ => 3,
+                };
+                for (k, w) in words[..n].iter().enumerate() {
+                    let at = slot.offset as usize + 4 * k;
+                    blocks[i][at..at + 4].copy_from_slice(&w.to_le_bytes());
+                }
+            }
+        }
+        let blocks = [
+            &blocks[0][..helpers[0].size as usize],
+            &blocks[1][..helpers[1].size as usize],
+        ];
+        let arguments = args.map_or(0, |(b, ..)| b.gpu.borrow().id);
+        if self.helper_blocks.as_ref().is_some_and(|h| {
+            h.arguments == arguments && h.blocks[0] == blocks[0] && h.blocks[1] == blocks[1]
+        }) {
             return Ok(());
         }
-        self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
-        let [base, first_instance, size, at] = key;
-        let mut block = [0u8; 256];
-        let at = at as usize;
-        if size as usize > block.len() || at + 12 > size as usize {
-            return not_implemented("a helper block laid out past the draw's bases");
+        if helpers[0]
+            .values
+            .iter()
+            .any(|h| h.value == HelperValue::DrawBase)
+        {
+            self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
         }
-        let block = &mut block[..size as usize];
-        // HelperValue::DrawBase: base vertex, first instance, draw number (always 0 here).
-        block[at..at + 4].copy_from_slice(&base.to_le_bytes());
-        block[at + 4..at + 8].copy_from_slice(&first_instance.to_le_bytes());
         let align = self.backend.caps().limits.min_uniform_offset_alignment;
-        let mut offsets = [0u64];
+        let mut offsets = [0u64; 2];
         let ring = self
             .backend
-            .write_buffer_ring(RingKind::Data, &[block], align, &mut offsets);
+            .write_buffer_ring(RingKind::Data, &blocks, align, &mut offsets);
         let ring = self.gpu(ring)?;
-        let set = self.backend.create_binding_set(&[BindingEntry {
-            binding: helper_binding(ShaderStage::Vertex),
-            stages: StageSet::VERTEX,
-            resource: BindingResource::UniformBuffer(BufferRange {
-                buffer: &ring,
-                offset: offsets[0],
-                size: u64::from(size),
-            }),
-        }]);
+        let args = args.map(|(b, ..)| (b.gpu.borrow(), b.size.get() & !3));
+        let mut entries = Vec::with_capacity(3);
+        for (i, stage) in [ShaderStage::Vertex, ShaderStage::Fragment]
+            .into_iter()
+            .enumerate()
+        {
+            if !blocks[i].is_empty() {
+                entries.push(BindingEntry {
+                    binding: helper_binding(stage),
+                    stages: if i == 0 {
+                        StageSet::VERTEX
+                    } else {
+                        StageSet::FRAGMENT
+                    },
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &ring,
+                        offset: offsets[i],
+                        size: blocks[i].len() as u64,
+                    }),
+                });
+            }
+        }
+        if let Some((b, size)) = &args {
+            entries.push(BindingEntry {
+                binding: DRAW_ARGUMENTS_BINDING,
+                stages: StageSet::VERTEX,
+                resource: BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: &b.handle,
+                        offset: 0,
+                        size: *size,
+                    },
+                    writable: false,
+                },
+            });
+        }
+        let set = self.backend.create_binding_set(&entries);
+        drop(entries);
+        drop(args);
         let set = self.gpu(set)?;
         let id = self.id();
-        self.draw_base = Some((key, Kept::new(set, id, Object::BindingSet, &self.graveyard)));
+        self.helper_blocks = Some(HelperBlocks {
+            blocks: blocks.map(<[u8]>::to_vec),
+            arguments,
+            set: Kept::new(set, id, Object::BindingSet, &self.graveyard),
+        });
         Ok(())
     }
 
@@ -1791,17 +1950,37 @@ impl<B: Backend> Device<B> {
         } else {
             None
         };
-        // The converter writes no program whose second output feeds the blend yet.
-        if self
-            .ctx
-            .blend
-            .as_ref()
-            .is_some_and(|b| b.desc.dual_source())
-        {
-            return not_implemented("dual-source blending");
-        }
         let ps = self.ctx.ps.clone();
-        let program = self.program(&vs, ps.as_ref())?;
+        let dual_source = ps.is_some()
+            && self
+                .ctx
+                .blend
+                .as_ref()
+                .is_some_and(|b| b.desc.dual_source());
+        if dual_source && !self.backend.caps().has(Features::DUAL_SOURCE_BLEND) {
+            return not_implemented("dual-source blending without the back end's");
+        }
+        let target_samples = samples.min(u32::from(u8::MAX)) as u8;
+        let indirect = matches!(range, Range::Indirect { .. });
+        let vk = StageVariant {
+            from_arguments: indirect && vs.helpers.size > 0,
+            ..self.stage_variant(VERTEX, &vs, target_samples)
+        };
+        let pk = ps
+            .as_ref()
+            .map_or(StageVariant::default(), |p| StageVariant {
+                dual_source,
+                ..self.stage_variant(PIXEL, p, target_samples)
+            });
+        if vk.lod_bias | pk.lod_bias != 0 {
+            self.backend.slow_paths().hit(SlowPath::LodBiasInShader);
+        }
+        if vk.from_arguments {
+            self.backend
+                .slow_paths()
+                .hit(SlowPath::DrawBaseFromArguments);
+        }
+        let (program, helpers) = self.program(&vs, vk, ps.as_ref(), pk)?;
         let vertex_layout = self.vertex_layout()?;
         // Direct3D reads zeros from a slot the layout reads that has no buffer: the zero buffer, at
         // stride zero.
@@ -1819,21 +1998,16 @@ impl<B: Backend> Device<B> {
         self.update_set(VERTEX)?;
         self.update_set(PIXEL)?;
         // SV_VertexID and SV_InstanceID leave out the draw's bases, which the common form's indices
-        // include: a vertex program reading them takes the bases from its helper constants.
-        let reads_bases = vs.reflection.helper_size > 0;
-        if reads_bases {
-            let base = match range {
-                Range::Vertices { start, .. } => start,
-                Range::Indexed { base, .. } => base as u32,
-                Range::Indirect { .. } => unreachable!("read back by draw_indirect"),
+        // include: a vertex program reading them takes the bases from its helper constants or from
+        // the indirect arguments; level-of-detail biases are helper constants too.
+        let reads_helpers = helpers[0].size > 0 || helpers[1].size > 0;
+        if reads_helpers {
+            let (base, arguments) = match range {
+                Range::Vertices { start, .. } => (start, None),
+                Range::Indexed { base, .. } => (base as u32, None),
+                Range::Indirect { indexed, offset } => (0, args.map(|b| (b, offset, indexed))),
             };
-            let at = vs
-                .reflection
-                .helpers
-                .iter()
-                .find(|h| h.value == HelperValue::DrawBase)
-                .map_or(0, |h| h.offset);
-            self.write_draw_base([base, first_instance, vs.reflection.helper_size, at])?;
+            self.write_helpers(&helpers, [base, first_instance], arguments)?;
         }
 
         let indexed = matches!(
@@ -1945,7 +2119,10 @@ impl<B: Backend> Device<B> {
         let counting = if self.queries.counted.is_empty() {
             None
         } else {
-            Some(self.prepare_counted(&vs, ps.as_ref())?)
+            if pk != StageVariant::default() {
+                return not_implemented("counting the samples of a pixel shader variant");
+            }
+            Some(self.prepare_counted(&vs, vk, ps.as_ref())?)
         };
         self.count_combination(&vs, ps.as_ref(), topology, samples);
         let alpha_to_coverage = self
@@ -2036,8 +2213,9 @@ impl<B: Backend> Device<B> {
                 let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
                 bindings[0] = ctx.sets[VERTEX].as_ref().map(|k| &k.handle);
                 bindings[1] = ctx.sets[PIXEL].as_ref().map(|k| &k.handle);
-                if reads_bases {
-                    bindings[HELPER_SET as usize] = self.draw_base.as_ref().map(|(_, k)| &k.handle);
+                if reads_helpers {
+                    bindings[HELPER_SET as usize] =
+                        self.helper_blocks.as_ref().map(|h| &h.set.handle);
                 }
                 let strip = matches!(topology, Topology::LineStrip | Topology::TriangleStrip);
                 let call = DrawCall {
