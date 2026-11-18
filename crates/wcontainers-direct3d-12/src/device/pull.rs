@@ -117,9 +117,6 @@ impl<B: Backend> Device<B> {
             .cloned()
             .collect();
         let layout = self.vertex_layout(&laid_out, &strides)?;
-        for why in pulled.iter().flatten() {
-            self.backend.slow_paths().hit(*why);
-        }
         let align = u64::from(
             self.backend
                 .caps()
@@ -252,12 +249,14 @@ impl<B: Backend> Device<B> {
 
     /// The binding set of a vertex program's helper block holding what it reads: the draw's
     /// bases (`DrawBaseInHelpers`), where its indirect arguments lie, with them bound
-    /// (`DrawBaseFromArguments`), and its pulled inputs' words.
+    /// (`DrawBaseFromArguments`), and its pulled inputs' words; for the back end's `stages` that
+    /// run it (the vertex stage, or compute for its form before a geometry stage).
     pub(super) fn helper_set(
         &mut self,
         helpers: &Helpers,
         bases: &Bases<'_, B>,
         pulled: &[(u32, VertexFormat, [u32; 4])],
+        stages: StageSet,
     ) -> Result<B::BindingSet, Error> {
         let size = helpers.size as usize;
         let mut block = vec![0u8; size];
@@ -310,7 +309,7 @@ impl<B: Backend> Device<B> {
             .write_buffer_ring(RingKind::Data, &[&block], align, &mut offset)?;
         let mut entries = vec![BindingEntry {
             binding: helper_binding(ShaderStage::Vertex),
-            stages: StageSet::VERTEX,
+            stages,
             resource: BindingResource::UniformBuffer(BufferRange {
                 buffer: &ring,
                 offset: offset[0],
@@ -320,7 +319,7 @@ impl<B: Backend> Device<B> {
         if let Some((args, size)) = arguments {
             entries.push(BindingEntry {
                 binding: DRAW_ARGUMENTS_BINDING,
-                stages: StageSet::VERTEX,
+                stages,
                 resource: BindingResource::StorageBuffer {
                     range: BufferRange {
                         buffer: args,
