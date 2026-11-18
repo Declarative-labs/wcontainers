@@ -29,6 +29,48 @@ branches into it at the start and end of every run, keeps the whole workspace bu
   "interface:" commit (b0df13af, covered below), which broke one owned unit test's struct literal
   (`ReflectedBinding` gained `stride`), fixed in 003c5ac2. Webgpu, direct3d-11 and rig had nothing
   new. End merges: direct3d-11 and shaders, no conflict (below, "End of run"). Pushed.
+- G1c, run 4 (2026-11-18): the eleven findings of G1c's third check settled, all in the plan's text
+  (below, "G1c's third check"). No branch had anything new at the start (fetched first); no code
+  changed this run.
+
+## G1c's third check, and how each finding was settled (run 4)
+
+Each claim about an outside project was checked again at its source before the fix (the check's
+downloads, scratch `graphics/check-g1c-3/dl`, and this run's, scratch `graphics/g1c4/dl`).
+- Blocking, wvk's version: 15.4 and 15.9 now say wvk reports Vulkan 1.3 by default without
+  `bufferDeviceAddress` (not a conformant 1.3) and 1.2 only under `WINK_VK_API_VERSION=1.2`
+  (`wvk_private.h` lines 38-39, `api_version()` in `wvk_physical_device.c`); the README's first line
+  still says 1.2. Also stated from the source: `VK_KHR_portability_subset` unless
+  `WINK_VK_NO_PORTABILITY`, and `timelineSemaphore = true`.
+- BC for Vulkan: `textureCompressionBC` is present on every adapter (natively, or `BlockDecoded`,
+  counted), so no adapter loses Vulkan for want of a compression family; ETC2 and ASTC where the
+  adapter has them.
+- Vertex bindings past WebGPU's 8: `VertexPulledInShader`, not `InstanceRateInShader`.
+- G11 and G12 made concrete (15.6's proofs and 15.8): where the guest programs run (the container on
+  the native host on the laptop; in Chrome at G13), how each host is proven on its own (cpal through
+  `snd-aloop`'s loopback; the AudioWorklet in an `OfflineAudioContext`; DOM events through the
+  DevTools protocol; the Gamepad mapping as a pure function on recorded events), the compositor
+  proven with Weston's demo clients (`weston-simple-shm`, `weston-eventdemo`), and what each needs
+  from the kernel track (ALSA devices with mapped pages; evdev; a Wayland socket with `SCM_RIGHTS`
+  and `memfd`s) and from the translator track. EGL and WSI Wayland surfaces are in G13's pass bar.
+- G8: a converted shader counts only if its outputs on seeded inputs equal those of the same NIR run
+  by llvmpipe or lavapipe (run by the recorder's interpreter, or by the WebGPU back end through the
+  queue for shaders past the interpreter's limits); the route is chosen by matching shaders.
+- GLX: 15.5 plans a GLX vendor library for glvnd of ours (from `glx.xml`, Apache-2.0, checked) and
+  the ICD's xlib and xcb surfaces, only if the owner takes Xwayland, tied to Wayland surfaces by
+  `xwayland_shell_v1` (checked: in wayland-protocols' staging set; smithay serves it in
+  `smithay::wayland::xwayland_shell`); absent otherwise. 15.6, G13 and 15.9 follow.
+- 15.7's dangling "Chrome 143 by 4.11": now cites the research (`webgl2-vs-webgpu`), which gives it.
+- 15.1's count: 15 variant flags (counted in `reflect.rs`).
+- Mesa on Windows: `install.rst` names MSVC (VS 2022 17.9 or later, SDK 20348 or later) and Clang
+  5.0 or later as known to work, not clang-cl; the Windows build now uses MSVC, the desktop's
+  version checked at G9's first step.
+- gex_wgpu's dates: it is still being worked on; the newest commit on any branch (2026-11-13,
+  `fr/tbo-align`, 4a3419242a) changes `gex_wgpu` itself.
+- Bytes between modules: 15.2 and section 10 now say the question already stands for the first
+  batch's shaders module and guest memory, settled by the same G9b measurement; 15.9 says the
+  back-end module trades the brief's "one ordinary call per operation" for an import call per
+  interface call that cannot be inlined, with the fallback.
 
 ## G1c's second check, and how each finding was settled (run 3)
 
@@ -226,10 +268,10 @@ pointers to a function's locals passed to another function.
 
 ## Next
 
-- G1c's independent check, third round.
+- G1c's independent check, fourth round.
 - G1d (plan 15.8) once the owner has answered plan 15.9 (now also: wvk, Vulkan's slow features
-  reported present, the copy into streams, the back end as its own module, OpenGL and Vulkan as two
-  modules).
+  reported present, the copy into streams, the back end as its own module and the import call per
+  interface call it costs, OpenGL and Vulkan as two modules, Xwayland with a GLX stand-in).
 - More suite tests beyond the pass bars: every format's clear and read back against real
   Direct3D's bytes, mip levels, layered and 3D targets, fans and loops on back ends that draw lines.
 
@@ -261,6 +303,8 @@ pointers to a function's locals passed to another function.
 
 ## Measurements
 
+- G1c run 4: no code changed and no branch merged, so no test was run; the owned crates' code is
+  that of run 3's end check (`g1c3/end-check.log`).
 - G1c run 3, on the Linux laptop (i7-8750H, 12 threads):
   - Owned crates' tests (scratch `g1c3/test1.log`, load 0.0 at the start and 10 at the end, another
     track building; and `g1c3/end-check.log` after the end merges, load 5.0 to 4.5): 234 pass
@@ -330,6 +374,8 @@ pointers to a function's locals passed to another function.
 
 ## Departures from the plan
 
+- G1c run 4: Mesa's Windows build uses MSVC, not clang-cl (Mesa's `install.rst` names MSVC and
+  Clang, not clang-cl).
 - G1c run 3: plan 15 makes OpenGL and Vulkan two WebAssembly modules, each holding Mesa's shared
   code (the brief's one module per API, at a size cost measured at G9b and G10), and adds G13 for
   the stand-ins in the container in Chrome, which need the translator and kernel; G9b and G10 run
@@ -368,6 +414,9 @@ pointers to a function's locals passed to another function.
 
 ## End of run
 
+- Run 4: no branch had anything new at the end (fetched after the work); nothing to merge. No build
+  folder was made on the laptop or the desktop this run; scratch `g1c4/dl` holds two downloaded
+  protocol and registry files.
 - Run 3: direct3d-11 (four commits, no owned file) and shaders (its status only) merged without
   conflict; the rest had nothing new. End check above (`g1c3/end-check.log`).
 - Run 2: no branch had anything new at the end (fetched after the work); nothing to merge. End
