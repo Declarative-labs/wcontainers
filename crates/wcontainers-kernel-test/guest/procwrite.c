@@ -247,5 +247,12 @@ int main(int argc, char **argv) {
     int zero = open("/dev/zero", O_RDONLY);
     R(sendfile(comm_out, zero, 0, 8));
     current();
+    // The kernel's log: there, but no container process may open it.
+    struct stat kmsg;
+    printf("kmsg stat %d mode %o size %ld\n", stat("/proc/kmsg", &kmsg), kmsg.st_mode, (long)kmsg.st_size);
+    errno = 0;
+    printf("kmsg open read %d %s\n", open("/proc/kmsg", O_RDONLY), strerror(errno));
+    errno = 0;
+    printf("kmsg open write %d %s\n", open("/proc/kmsg", O_WRONLY), strerror(errno));
     return 0;
 }

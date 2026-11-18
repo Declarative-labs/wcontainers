@@ -301,6 +301,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("config.gz", Global::File(0o444)),
     ("cpuinfo", Global::File(0o444)),
     ("filesystems", Global::File(0o444)),
+    ("kmsg", Global::File(0o400)),
     ("loadavg", Global::File(0o444)),
     ("meminfo", Global::File(0o444)),
     ("mounts", Global::Link("self/mounts")),
@@ -1437,6 +1438,13 @@ pub(crate) fn follow(
 /// process that need its memory (`__mem_open` finds none) or its mount namespace
 /// (`mounts_open_common`).
 pub(crate) fn open_check(processes: &BTreeMap<Pid, Process>, entry: &Entry) -> Result<(), Errno> {
+    // The kernel's log opens only with CAP_SYSLOG or CAP_SYS_ADMIN (`check_syslog_permissions`),
+    // which no container process can hold.
+    if let Entry::Global(index) = entry
+        && GLOBAL[*index].0 == "kmsg"
+    {
+        return Err(Errno::EPERM);
+    }
     let Entry::ProcessFile(task, file) = entry else {
         return Ok(());
     };
