@@ -7,14 +7,15 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) and R1 (the
 Direct3D reference library) are done and checked. R2 (keeping the owner's PC safe, and what the
-Direct3D 12 track waits for), first run, 2026-11-17: the three findings of R1's last check are
+Direct3D 12 track waits for), two runs on 2026-11-17: the three findings of R1's last check are
 fixed; the display driver resets are traced and the queue now protects the PC from them, failed
 logons are recorded as they happen, Chrome's wrapper comes back with every Chrome install, and
-every script keeps one SSH connection per branch (see "The owner's PC" below). Partly done: the
-forwarding library now also stands in for d3d12.dll (every Direct3D 12 scene passes through it) and
-counts a Direct3D 12 program's device, queue, factory and swap chain calls and saves its frames,
-but does not count its command lists yet; bgfx on Direct3D 12, Godot's Direct3D 12 census and
-Microsoft's Direct3D 12 samples are not among the programs yet (see Next). R1's parts:
+every script keeps one SSH connection per branch (see "The owner's PC" below). The forwarding
+library stands in for d3d12.dll as well as d3d11.dll: every Direct3D 12 scene passes through it,
+and it counts a Direct3D 12 program's device, queue, command list, factory and swap chain calls
+and saves its frames, so bgfx's Direct3D 12 renderer, Godot's Forward+ renderer on Direct3D 12
+and two of Microsoft's Direct3D 12 samples are compared frame by frame and have a census. R1's
+parts:
 - Jobs that present run on a hidden desktop ("wc-rig") in the session of the user logged in at the
   console (`gpu-job --desktop`, see How to run): windows and swap chains work there and nothing
   shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
@@ -34,13 +35,15 @@ Microsoft's Direct3D 12 samples are not among the programs yet (see Next). R1's 
   (wine-excluded.txt). Baselines on the RTX 3080 and WARP in tools/graphics-rig/wine-baseline. A
   test passes only if it has no failure and runs at least as many checks, and skips no more, than
   on real Direct3D.
-- Part 3, real programs: 21 (5 DirectX SDK tutorials, 5 DirectX Tool Kit samples from Microsoft's
-  Xbox-ATG-Samples, 6 bgfx examples that load no assets of their own, Chocolate Doom playing a Freedoom demo, Godot's 2D and 3D
-  platformer demos on Direct3D 11 through ANGLE and on Direct3D 12), each run for 120 frames; frames 10, 60 and 120 are compared with references recorded on
-  real Direct3D (kept on the desktop, their SHA-256 and allowances in the repository). Direct3D 11
-  programs run through the forwarding library, which takes the call census
-  (tools/graphics-rig/census) and gives them a clock that moves by frames, so programs animated
-  by the clock draw the same frames every run.
+- Part 3, real programs: 25 (5 DirectX SDK tutorials, 5 DirectX Tool Kit samples from Microsoft's
+  Xbox-ATG-Samples, 6 bgfx examples that load no assets of their own on Direct3D 11 and 2 of them
+  on Direct3D 12, 2 of Microsoft's Direct3D 12 samples (DirectX-Graphics-Samples), Chocolate Doom
+  playing a Freedoom demo, Godot's 2D and 3D platformer demos on Direct3D 11 through ANGLE and on
+  Direct3D 12), each run for 120 frames; frames 10, 60 and 120 are compared with references
+  recorded on real Direct3D (kept on the desktop, their SHA-256 and allowances in the
+  repository). Every program runs through the forwarding library as d3d11.dll or d3d12.dll,
+  which takes the call census (tools/graphics-rig/census) and gives it a clock that moves by
+  frames, so programs animated by the clock draw the same frames every run.
 
 The plan document, docs/phase-2-graphics.md, is on branch phase-2-graphics and not in this checkout;
 its sections 9 (feature levels: Direct3D 11 reports 11_0 on WebGPU and 10_0 on WebGL 2, Direct3D 12
@@ -293,19 +296,24 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   released builds at pinned SHA-256 hashes into C:\wc\downloads) into C:\wc\programs\src, builds
   them with the Build Tools' MSBuild and has Godot import its demo projects (headless, no drawing)
   (desktop/programs.ps1, which lists them). About 6 minutes from nothing, most of it bgfx. The
-  programs: sdk-tutorial02, 04 to 07; atg-simplebezierpc (tessellation), atg-simplecomputepc
+  programs (25): sdk-tutorial02, 04 to 07; atg-simplebezierpc (tessellation), atg-simplecomputepc
   (compute), atg-simpleinstancingpc, atg-simplelightingpc and atg-simplemsaa_pc (Microsoft's
   Xbox-ATG-Samples at ff629a6e, PC samples drawing with the DirectX Tool Kit of the same
   repository, built with this Visual Studio's toolset and SDK, run in the repository's root, where
   they find their media); bgfx-01-cubes, 24-nbody, 26-occlusion (occlusion queries),
   35-dynamic (dynamic buffers), 37-gpudrivenrendering (compute and indirect draws) and 38-bloom
   (render targets of a downsampling chain): the bgfx examples that load no meshes, textures or
-  fonts of their own (see Licences), fetched without those directories; chocolate-doom (Chocolate Doom 3.1.1, `-timedemo demo1` of Freedoom 0.13.0's
+  fonts of their own (see Licences), fetched without those directories, on Direct3D 11 (`--d3d11`),
+  and bgfx-01-cubes-d3d12 and bgfx-38-bloom-d3d12, the same two on bgfx's Direct3D 12 renderer;
+  d3d12-hello-triangle and d3d12-hello-constbuffers (D3D12HelloTriangle and D3D12HelloConstBuffers
+  of Microsoft's DirectX-Graphics-Samples at 68a2b1e9: a still triangle, and one a constant buffer
+  moves a fixed step each frame; their projects import the Agility SDK 1.618.3 and DXC 1.8.2505.32
+  NuGet packages, which programs.ps1 downloads from nuget.org at pinned SHA-256 and unpacks where
+  the projects look for them, without NuGet itself, which writes into the user's profile); chocolate-doom (Chocolate Doom 3.1.1, `-timedemo demo1` of Freedoom 0.13.0's
   freedoom1.wad, one game tic a frame, window, no mouse, sound or music, SDL_RENDER_DRIVER=direct3d11);
   godot-platformer-3d-d3d11 and godot-platformer-2d-d3d11 (Godot 4.7.2's compatibility renderer on
   ANGLE's Direct3D 11, `--fixed-fps 60`); godot-platformer-3d-d3d12 and godot-platformer-2d-d3d12
-  (Godot's Forward+ renderer on Direct3D 12, writing its own frames with `--write-movie` and quitting
-  after the last). Nobody plays the games: Doom replays its demo, Godot's demos stand idle.
+  (Godot's Forward+ renderer on Direct3D 12). Nobody plays the games: Doom replays its demo, Godot's demos stand idle.
   Godot falls back to another renderer when the one asked for fails (Direct3D 12 to Vulkan, then
   to OpenGL; ANGLE to native OpenGL), so each run first writes the project's override.cfg (read by
   Godot after project.godot) turning every fallback off: a failing Direct3D then fails the program
@@ -313,12 +321,13 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
 - `tools/graphics-rig/programs run [--census] [--record] [--capture <frames>] [--dll <name>=<path>]...
   [--runs <n>] [<program>...]`: one GPU job on the hidden desktop running each program (copied to
   C:\wc\out\<branch>\programs\<program>\bin, in its own working directory, started through
-  gt-launch) with the forwarding library as d3d11.dll, which saves the frames listed (default
-  10,60,120), ends the program at the last, and gives it a clock that moves only by frames and
-  sleeps (clock.rs, below). A replacement d3d11.dll given with --dll sits behind the forwarding one
-  (WC_D3D11); other --dll libraries go beside the program. A program fails unless some process of
+  gt-launch) with the forwarding library as the library of its API (d3d11.dll or d3d12.dll),
+  which takes the census, saves the frames listed (default 10,60,120), ends the program at the
+  last, and gives it a clock that moves only by frames and sleeps (clock.rs, below). A replacement
+  of that library given with --dll sits behind the forwarding one (WC_D3D11, WC_D3D12); other
+  --dll libraries (dxgi.dll, the other API's library) go beside the program. A program fails unless some process of
   it loaded the library of its API (d3d11.dll, d3d12.dll) and dxgi.dll, each library placed beside
-  it (the forwarding d3d11.dll, replacements) only from there, as gt-launch reports; and a Direct3D
+  it (the forwarding library, replacements) only from there, as gt-launch reports; and a Direct3D
   11 program fails when the implementation gave an error for a timestamp query (see the frame
   clock: the forwarding library asks the implementation until it answers, and an implementation
   that has not answered within 5 s fails the program too). A program whose frames are all unrepeatable says "no frame compared" instead of "every
@@ -345,10 +354,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   back. Frames and
   census go to the scratch directory (programs/<branch>/<program>, emptied first, as other tracks'
   checkouts run the same command at the same time); `--census` (real Direct3D only) also
-  copies each census into tools/graphics-rig/census/<program>.txt. Direct3D 12 programs run
-  without the forwarding library (it is Direct3D 11 only), so they have no census and no frame
-  clock (Godot's movie writer runs on fixed time anyway); they must exit with 0 after writing every
-  frame, and a replacement d3d12.dll or dxgi.dll given with --dll goes beside them. Every program
+  copies each census into tools/graphics-rig/census/<program>.txt. Every program
   gets APPDATA and LOCALAPPDATA in its output directory, so Godot's settings, logs and shader
   caches stay under C:\wc. The whole directory of each program's executable is copied (SDL and
   Godot's console wrapper load files beside it).
@@ -359,7 +365,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   GetTickCount64, GetSystemTimeAsFileTime, GetSystemTimePreciseAsFileTime and winmm's timeGetTime
   (if loaded then) are detoured to it with the retour crate, so every caller in the process sees it.
   A program that waits for the clock to pass a time without sleeping or presenting would wait
-  forever (the 120 s limit then fails it); none of the 16 does. While it runs, the forwarding
+  forever (the 120 s limit then fails it); none of the 25 does. While it runs, the forwarding
   library also answers Direct3D 11 timestamp and timestamp-disjoint queries at once from it (10
   MHz ticks, never disjoint), so GPU timings and query latency a program prints are fixed too; it
   still asks the implementation each time, again (flushing) until it answers, so a replacement's
@@ -371,21 +377,28 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   on the thread that reads the clock and their frames follow it exactly.
 - The forwarding library also stands in for d3d12.dll (copy it under that name): `scenes --api d3d12
   --dll d3d12.dll=%CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll` runs the Direct3D 12
-  scenes through it; with WC_OUT it counts a Direct3D 12 program's device, command queue, DXGI
-  factory and swap chain calls (not its command lists yet), saves the frames WC_CAPTURE lists (the
-  current back buffer copied on the queue the swap chain presents on, after the program's work) and
-  WC_D3D12 names a replacement behind it. `programs run` does not use it for Direct3D 12 programs yet
-  (Next).
+  scenes through it; with WC_OUT it counts a Direct3D 12 program's device, command queue, command
+  list, DXGI factory and swap chain calls, saves the frames WC_CAPTURE lists (the current back
+  buffer copied on the queue the swap chain presents on, after the program's work) and WC_D3D12
+  names a replacement behind it. Command lists: on each new device the library makes one list of
+  each kind (direct, bundle, compute, copy) and patches their tables (four distinct tables here)
+  before the program records any; lists executed on a queue whose table is not one of those are
+  counted as a number in census.txt ("command lists executed with a table not counted"), not
+  patched: in Microsoft's samples (on the Agility SDK) these are one list a frame of the runtime's
+  own, whose calls are not the program's. Hooking CreateCommandList instead crashed Godot (Measurements).
 - The census (crates/wcontainers-graphics-test-forward/src/census.rs), on when WC_OUT names a
   directory: the typed D3D11CreateDevice and D3D11CreateDeviceAndSwapChain exports patch the method
   tables of the device, swap chain and DXGI factory with counting thunks (names read from the
   SDK's C headers at build time) and hand the program a wrapper for each immediate and deferred
   context, whose methods count and jump through the context's own table at that moment (the
-  runtime rewrites entries of a context's table as it runs, which patching missed). census.txt:
+  runtime rewrites entries of a context's table as it runs, which patching missed); the typed
+  D3D12CreateDevice export patches the Direct3D 12 device, the DXGI factory class, and (through
+  the device's typed hooks) each command queue, command list and swap chain table. census.txt:
   "# frames", what was counted, any table entries the runtime changed after patching, then
-  "<table> <method> <calls>" and "d3d11.dll <export> <calls>". WC_CAPTURE: frames to save, before
-  their present, as frame-<n>.png (8-bit RGBA and BGRA back buffers; other formats are noted as not
-  saved); calls made while saving are taken back out; test presents are not frames.
+  "<table> <method> <calls>" and "<library>.dll <export> <calls>". WC_CAPTURE: frames to save,
+  before their present, as frame-<n>.png (8-bit RGBA and BGRA and 10-bit back buffers; other
+  formats are noted as not saved); calls made while saving are taken back out; test presents are
+  not frames.
 - `tools/graphics-rig/inventory`: prints the desktop's installed programs, root scheduled tasks,
   services, Graphics Tools state, PATHs and C:\wc, to compare with "The desktop" below. The listing
   taken before anything was installed is in the scratch directory
@@ -474,6 +487,14 @@ versions it finds and writes them to C:\wc\setup\versions.txt; on 2026-11-17 (R1
   and C:\wc\logs (jobs.log, display-resets.log, failed-logons.log, quarantine.txt, held.txt while
   held; a few KB). C:\wc\sshdiag (made by the orchestrator, not by this track) holds the wrapper's
   first build and notes.
+- Since R2's second run: Microsoft's DirectX-Graphics-Samples (D3D12HelloWorld only) in
+  C:\wc\programs\src\directx-graphics-samples (0.54 GB with the two samples' builds and the
+  unpacked NuGet packages, 0.28 GB of it), the two packages in C:\wc\downloads (34 MB and 48 MB;
+  downloads now 0.49 GB, C:\wc\programs 2.59 GB). A first build through MSBuild's NuGet restore
+  created C:\Users\tom\AppData\Roaming\NuGet\NuGet.Config (210 bytes; that folder did not exist
+  before) and C:\Users\tom\AppData\Local\NuGet\Migrations\1 (empty), at 22:47:05, the only
+  contents of both NuGet folders; both folders were deleted minutes later, with C:\wc\nuget, and programs.ps1 no longer runs NuGet. 438.3 GB
+  free on C: (other tracks build there too).
 
 - Since R1's second run: C:\wc\bin\gt-desktop.exe (0.2 MB, built from this checkout by
   `setup-desktop`) and the scheduled task wc-desktop (runs it as tom with an interactive logon,
@@ -1104,6 +1125,45 @@ exports of both d3d11.dll and d3d12.dll, copied under either name; see Loading a
   QueryInterface calls made to find the list's interfaces. So command lists are not counted yet,
   and census.txt says so.
 
+R2 second run (2026-11-17, from 22:40; desktop reachable throughout, owner at the console, other
+tracks' jobs beside ours; Mac load average 58 to 78):
+- Command lists counted without hooking CreateCommandList: the library makes a list of each kind
+  on each new device and patches their tables. Godot's 2D platformer on Direct3D 12 then ran its
+  120 frames with the census on (job 7 s), counting 46055 SetGraphicsRootDescriptorTable, 19636
+  DrawIndexedInstanced and the rest; no crash. Patching tables found at ExecuteCommandLists as
+  well was tried first: in D3D12HelloTriangle it found two more tables, and the census showed
+  ClearRenderTargetView 239, Close 476 and Reset 476 for 120 frames where the program does one
+  clear, one Reset and one Close a frame: those lists are the runtime's own. Counting only the
+  device's tables: ClearRenderTargetView 120, Reset 239, Close 240 and 238 lists "with a table
+  not counted". The one Reset and Close a frame beyond the program's own are not explained;
+  they are counted as the program's (Known issues).
+- Microsoft's samples: `programs build` fetched DirectX-Graphics-Samples (sparse, D3D12HelloWorld)
+  and built D3D12HelloTriangle and D3D12HelloConstBuffers with the Build Tools (MSBuild with
+  -restore first: it worked but wrote into the owner's profile, see Departures; then from the
+  packages unpacked by programs.ps1, rebuilt from nothing after deleting bin and obj). Both use
+  the Agility SDK's D3D12Core.dll from their D3D12 folder: the census shows ID3D12Device14 and
+  ID3D12GraphicsCommandList10, where the system runtime gives bgfx and Godot ID3D12Device8 and
+  ID3D12GraphicsCommandList6.
+- `programs run --record --census` of the six Direct3D 12 programs (bgfx-01-cubes-d3d12,
+  bgfx-38-bloom-d3d12, d3d12-hello-triangle, d3d12-hello-constbuffers, godot-platformer-2d-d3d12,
+  godot-platformer-3d-d3d12), 10 runs, each its own job (about 25 s a job, the last 61 s):
+  the two samples and both Godot games drew every frame identically in all 10 runs (0 tiles
+  changed); each bgfx example changed 62 to 64 of its 3600 tiles, all in the overlay's lines at
+  rows 13 to 16 (x 0 to 319): its "Submit CPU, GPU" line shows GPU time from Direct3D 12 timestamp
+  queries, which the frame clock does not fix (it answers only Direct3D 11's), and the GPU memory
+  line, left out already. Godot's Direct3D 12 frames are now the swap chain's 960x540 (the movie
+  writer's references had another size, so the old references failed until recorded again).
+- Then `programs run` of the six with the forwarding library as d3d12.dll: all pass (bgfx-01-cubes-d3d12
+  frame 60: 124 pixels beyond 8, all within their tiles' allowance).
+- Whole suite at 2a5c1b7 plus the census commits (scratch r2b/suite): fmt, clippy with warnings
+  denied and the 13 unit tests through `remote` and on the Mac; shellcheck of the 11 Mac scripts;
+  `scenes` 255 passed, 0 failed, 0 absent (15 s job); `scenes --api d3d12 --dll d3d12.dll=<the
+  forwarding library>` 116 passed (8 s job); `loop` passes (23 s job); `programs run` all 25 pass
+  (bgfx-24-nbody run but not compared, as before; 2 min 0 s job); `wine-tests run` 800 counted, 0
+  FAIL on the GPU (the quarantined dxgi test not run; job 9 min 59 s, after waiting 69 s behind
+  another track's hazard job) and `wine-tests run --warp` 801 counted, 0 FAIL (3 min 8 s);
+  `queue-check`: all six rules pass.
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -1245,8 +1305,12 @@ There is no plan document in this checkout; these depart from the task or brief 
   freely licensed data and a native 64-bit Direct3D 11 renderer was found. Chocolate Doom uses
   SDL 2's Direct3D 11 renderer, a native one. Chocolate Doom is GPL-2.0: it is downloaded as its
   released build and run for testing only, never part of the repository or any crate.
-- Direct3D 12 programs save their own frames (Godot's movie writer) rather than through a capture
-  hook, and have no call census: the forwarding library is Direct3D 11 only (Known issues).
+- Godot on Direct3D 12 now runs without its movie writer, saved by the forwarding library like
+  every other program, on its frame clock. Microsoft's Direct3D 12 samples' NuGet packages are
+  downloaded at pinned SHA-256 and unpacked by programs.ps1 instead of restored by nuget.exe or
+  MSBuild's restore: tried once, MSBuild's restore wrote NuGet.Config into the owner's
+  %APPDATA%\NuGet and a Migrations folder into %LOCALAPPDATA%\NuGet even with its own config file
+  given (both removed at once, as was everything it put in C:\wc\nuget).
 - Godot's renderer fallbacks are turned off by an override.cfg the rig writes into its copy of each
   demo project (C:\wc\programs\src\godot-demo-projects), not by changing the projects: it is
   Godot's own way to override project settings, and a fallback would draw through another API
@@ -1318,7 +1382,12 @@ There is no plan document in this checkout; these depart from the task or brief 
   only on the device, contexts, swap chains and factories: methods of resources, views, states and
   queries are not counted. Factory calls made before the program's first device are not counted.
   A program that gets a context other than through D3D11CreateDevice(AndSwapChain),
-  GetImmediateContext* or CreateDeferredContext* would not be counted on it.
+  GetImmediateContext* or CreateDeferredContext* would not be counted on it. On Direct3D 12 the
+  same holds for the device, queues and command lists: in Microsoft's samples (Agility SDK) the
+  queue's Wait, Signal and ExecuteCommandLists, the device's Evict and MakeResident, and one Reset
+  and Close of a command list a frame are calls of DXGI or the runtime, not of the program's
+  code. A Direct3D 12 device made other than through D3D12CreateDevice (the Agility SDK's
+  ID3D12DeviceFactory) would not be counted at all.
 - Godot's 3D platformer on Direct3D 12 differs from run to run in under 80 pixels by 1 (see
   Measurements), within the frame tolerance; its Direct3D 11 frames, Doom's and the 2D game's do
   not.
@@ -1334,24 +1403,18 @@ There is no plan document in this checkout; these depart from the task or brief 
   differs in a few more edge pixels than that would fail, and real Direct3D might too, rarely (20
   of 20 separate jobs passed, using at most 2). Cause not known (the frame clock gives it the same
   times on every run).
+- On Direct3D 12, bgfx's overlay line of GPU time differs from run to run (the frame clock answers
+  Direct3D 11's timestamp queries only; Direct3D 12's are resolved into buffers the program maps),
+  so those tiles (about 63 of 3600 with the memory line) are left out by the recording.
 - The bgfx examples' GPU memory readout (one line of their overlay) is not compared: it changed
   between runs of real Direct3D, and a replacement reports its own memory. Other readouts of the
   overlay (frame time, GPU time, latency) are fixed by the frame clock and are compared.
 - Godot's 3D game on ANGLE takes about 30 s, most of it compiling shaders, as each run starts with
   empty caches.
-- The frame clock covers Direct3D 11 programs only (it lives in the forwarding library). The
-  Direct3D 12 programs are Godot's, whose movie writer runs on fixed time; a Direct3D 12 program
-  animated by the real clock could not be compared yet.
-- No Microsoft Direct3D 12 sample (DirectX-Graphics-Samples, Xbox-ATG-Samples' PC12 samples) is
-  among the programs (the milestone asks for Direct3D 11 programs and their census; this would be
-  more): the rig has no way yet to save a Direct3D 12 program's frames, end it at a
-  frame or count its calls (the forwarding library is a d3d11.dll), and those samples neither save
-  frames nor stop by themselves. So the Direct3D 12 programs are Godot's two demos alone, which
-  save their own frames. Next step: a forwarding dxgi.dll (or d3d12.dll) with the same census,
-  capture and clock, then D3D12HelloWorld and the PC12 samples. Microsoft's Direct3D 11 samples
-  with the DirectX Tool Kit are in (five atg- programs); the Tool Kit's own sample repository
-  (walbourn/directxtk-samples) is not, as its samples play sound with no way to turn it off, which
-  would come out of the owner's speakers.
+- Microsoft's Direct3D 12 samples run are the two simplest of D3D12HelloWorld. The Xbox-ATG-Samples
+  PC12 samples and DirectX-Graphics-Samples' bigger ones are not in yet. The DirectX Tool Kit's own
+  sample repository (walbourn/directxtk-samples) is not used, as its samples play sound with no way
+  to turn it off, which would come out of the owner's speakers.
 - Absent is decided from the device's own answers, so a front that reports less than it could
   is not caught by the scenes (only shown, in the count of absent outputs and each line's reason);
   what a front must report is the plan's (section 9) to check. Requirements are declared per scene
@@ -1463,22 +1526,24 @@ testing only; it carries SDL2, SDL2_mixer and SDL2_net, zlib); Freedoom 0.13.0 (
 COPYING.adoc; its SHA-256 matches the project's signed checksum file); vkd3d 2.1 test sources
 (LGPL-2.1, testing only, in C:\wc\wine\vkd3d, never in the repository or a crate). No crate was
 added.
+In R2's second run (read at the source on 2026-11-17): microsoft/DirectX-Graphics-Samples at
+68a2b1e9 (MIT, its LICENSE file and GitHub's detection; only Samples/Desktop/D3D12HelloWorld
+fetched), and the two NuGet packages its projects import, downloaded at pinned hashes (the
+SHA-512 nuget.org lists was checked on the Mac before the SHA-256 was pinned):
+Microsoft.Direct3D.D3D12 1.618.3, the Agility SDK (its nuspec names LICENSE.txt, "Microsoft
+Software License Terms, Microsoft DirectX", and requires no acceptance), and
+Microsoft.Direct3D.DXC 1.8.2505.32 (its nuspec names LICENSE-LLVM.txt; the package also carries
+LICENSE-MS.txt and LICENCE-MIT.txt). Both only build and run the samples on the desktop, never in
+the repository or a crate. No crate was added; the forwarding crate's windows features are
+unchanged.
 pueue MIT OR Apache-2.0 (its Cargo.toml at v4.0.4), Git GPL-2.0, Node MIT, Rust MIT OR Apache-2.0, Visual Studio Build Tools and Windows SDK
 under Microsoft's licence terms, Chrome for Testing under Google's terms.
 
 ## Next
 
-R2 is not complete. In order:
-- Count Direct3D 12 command lists without the crash in Godot (see Measurements, Direct3D 12 through
-  the forwarding library); one route to try: patch the list's table from the queue's
-  ExecuteCommandLists instead of from CreateCommandList.
-- Then apply the saved change to programs.ps1 (scratch: graphics-rig/r2/programs-d3d12-forwarding.patch:
-  every program through the library as the library of its API, bgfx-01-cubes-d3d12 and
-  bgfx-38-bloom-d3d12, Godot without its movie writer), record their references over 10 runs and
-  their census (`programs run --record --census <programs>`).
-- Microsoft's Direct3D 12 samples: DirectX-Graphics-Samples (MIT) at 68a2b1e9, D3D12HelloWorld
-  (HelloTriangle, HelloTexture, ...). Their projects need the NuGet packages Microsoft.Direct3D.D3D12
-  1.618.3 (the Agility SDK, Microsoft's licence file, no acceptance required) and
-  Microsoft.Direct3D.DXC 1.8.2505.32 (LLVM licence), restored with nuget.exe (not installed yet;
-  record its size when added).
-- Open points left for later: the 19 Wine tests that need a display nobody uses (Known issues).
+R2 is done (second run) and waits for its independent check. Open points, for later:
+- The 19 Wine tests that need a display nobody uses (Known issues).
+- More Direct3D 12 programs: the bigger DirectX-Graphics-Samples (they load assets and some need
+  newer features) and Xbox-ATG-Samples' PC12 samples.
+- A Direct3D 12 device made through the Agility SDK's ID3D12DeviceFactory is not counted (no
+  program run does that yet).
