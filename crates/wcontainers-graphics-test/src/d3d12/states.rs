@@ -754,6 +754,13 @@ pub fn formats(gpu: &Gpu) -> Result<Vec<Output>> {
             has(D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET),
             has(D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE),
         )?;
+        if query.Support1.0 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET.0 == 0 {
+            outputs.push(Output::absent(
+                name,
+                format!("{name} as a render target (D3D12_FEATURE_FORMAT_SUPPORT)"),
+            ));
+            continue;
+        }
         let (texture, rtv) = gpu.target(SIZE, SIZE, format)?;
         im.begin(Some(&rtv), None, DXGI_FORMAT_UNKNOWN, SIZE, SIZE);
         im.targets = vec![format];
@@ -765,7 +772,7 @@ pub fn formats(gpu: &Gpu) -> Result<Vec<Output>> {
         im.draw(3, [0.0; 4])?;
         outputs.push(Output::picture(name, gpu.read(&texture, 0, RT)?));
     }
-    outputs.push(Output::text("support", support));
+    outputs.push(Output::caps("support", support));
 
     let srgb = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     let (texture, rtv) = gpu.target(SIZE, SIZE, srgb)?;
@@ -1014,10 +1021,13 @@ pub fn samplers_scene(gpu: &Gpu) -> Result<Vec<Output>> {
     };
     // Reduction filters come with the second tier of tiled resources.
     let reducing = options.TiledResourcesTier.0 >= D3D12_TILED_RESOURCES_TIER_2.0;
-    outputs.push(Output::text(
-        "reduction_support",
-        format!("minimum and maximum filtering {reducing}\n"),
-    ));
+    if !reducing {
+        outputs.push(Output::absent(
+            "reduction",
+            "minimum and maximum filtering (D3D12_FEATURE_D3D12_OPTIONS TiledResourcesTier 2)"
+                .to_owned(),
+        ));
+    }
     let reduction = (
         "reduction",
         dxil!("samplers.ps_sample"),

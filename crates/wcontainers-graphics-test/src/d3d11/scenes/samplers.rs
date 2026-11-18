@@ -103,23 +103,16 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         "filters",
         cells(gpu, dxbc!("samplers.ps_sample"), 4, 64, &filters, 0)?,
     ));
-    let mut options = D3D11_FEATURE_DATA_D3D11_OPTIONS1::default();
-    unsafe {
-        gpu.device.CheckFeatureSupport(
-            D3D11_FEATURE_D3D11_OPTIONS1,
-            (&mut options as *mut D3D11_FEATURE_DATA_D3D11_OPTIONS1).cast(),
-            size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS1>() as u32,
-        )?
-    };
-    let reducing = options.MinMaxFiltering.as_bool();
-    outputs.push(Output::text(
-        "reduction_support",
-        format!("minimum and maximum filtering {reducing}\n"),
-    ));
-    if reducing {
+    if gpu.options()?.1.MinMaxFiltering.as_bool() {
         outputs.push(Output::picture(
             "reduction",
             cells(gpu, dxbc!("samplers.ps_sample"), 4, 64, &reduction(), 0)?,
+        ));
+    } else {
+        outputs.push(Output::absent(
+            "reduction",
+            "minimum and maximum filtering (D3D11_FEATURE_D3D11_OPTIONS1 MinMaxFiltering)"
+                .to_owned(),
         ));
     }
 

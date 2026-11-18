@@ -54,6 +54,14 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     }
     outputs.push(Output::picture("slots", gpu.read(&target, 0, 0)?));
 
+    if !gpu.options()?.0.ConstantBufferOffsetting.as_bool() {
+        outputs.push(Output::absent(
+            "window",
+            "constant buffer offsets (D3D11_FEATURE_D3D11_OPTIONS ConstantBufferOffsetting)"
+                .to_owned(),
+        ));
+        return Ok(outputs);
+    }
     let big = gpu.immutable(bytemuck::cast_slice(&large), D3D11_BIND_CONSTANT_BUFFER)?;
     let context1: ID3D11DeviceContext1 = c.cast()?;
     let (target, rtv) = gpu.target(64, 64, DXGI_FORMAT_R8G8B8A8_UNORM)?;
