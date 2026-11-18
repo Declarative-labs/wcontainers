@@ -6,6 +6,7 @@ mod chosen;
 mod context;
 mod convert;
 pub mod counted;
+mod d3d10;
 mod device;
 mod dxgi;
 mod factory;

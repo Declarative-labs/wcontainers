@@ -3,6 +3,7 @@
 // under the library's lock.
 #![allow(non_snake_case, unused_variables, clippy::too_many_arguments)]
 
+use windows::Win32::Graphics::Direct3D10::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::*;
 
@@ -2614,6 +2615,74 @@ impl IDXGISurface_Impl for Buffer_Impl {
     }
 }
 
+impl ID3D10Buffer_Impl for Buffer_Impl {
+    fn Map(
+        &self,
+        maptype: D3D10_MAP,
+        mapflags: u32,
+        ppdata: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("ID3D10Buffer::Map"))
+    }
+    fn Unmap(&self) {
+        let _lock = lock();
+        missing_void("ID3D10Buffer::Unmap")
+    }
+    fn GetDesc(&self, pdesc: *mut D3D10_BUFFER_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10Resource_Impl for Buffer_Impl {
+    fn GetType(&self, rtype: *mut D3D10_RESOURCE_DIMENSION) {
+        let _lock = lock();
+        self.get_type10(rtype)
+    }
+    fn SetEvictionPriority(&self, evictionpriority: u32) {
+        let _lock = lock();
+        self.set_eviction_priority(evictionpriority)
+    }
+    fn GetEvictionPriority(&self) -> u32 {
+        let _lock = lock();
+        self.get_eviction_priority()
+    }
+}
+
+impl ID3D10DeviceChild_Impl for Buffer_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
 impl ID3D11Texture1D_Impl for Texture1D_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_TEXTURE1D_DESC) {
         let _lock = lock();
@@ -2793,6 +2862,75 @@ impl IDXGISurface_Impl for Texture1D_Impl {
     fn Unmap(&self) -> windows::core::Result<()> {
         let _lock = lock();
         Err(missing("IDXGISurface::Unmap"))
+    }
+}
+
+impl ID3D10Texture1D_Impl for Texture1D_Impl {
+    fn Map(
+        &self,
+        subresource: u32,
+        maptype: D3D10_MAP,
+        mapflags: u32,
+        ppdata: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("ID3D10Texture1D::Map"))
+    }
+    fn Unmap(&self, subresource: u32) {
+        let _lock = lock();
+        missing_void("ID3D10Texture1D::Unmap")
+    }
+    fn GetDesc(&self, pdesc: *mut D3D10_TEXTURE1D_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10Resource_Impl for Texture1D_Impl {
+    fn GetType(&self, rtype: *mut D3D10_RESOURCE_DIMENSION) {
+        let _lock = lock();
+        self.get_type10(rtype)
+    }
+    fn SetEvictionPriority(&self, evictionpriority: u32) {
+        let _lock = lock();
+        self.set_eviction_priority(evictionpriority)
+    }
+    fn GetEvictionPriority(&self) -> u32 {
+        let _lock = lock();
+        self.get_eviction_priority()
+    }
+}
+
+impl ID3D10DeviceChild_Impl for Texture1D_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
     }
 }
 
@@ -2978,6 +3116,74 @@ impl IDXGISurface_Impl for Texture2D_Impl {
     }
 }
 
+impl ID3D10Texture2D_Impl for Texture2D_Impl {
+    fn Map(
+        &self,
+        subresource: u32,
+        maptype: D3D10_MAP,
+        mapflags: u32,
+    ) -> windows::core::Result<D3D10_MAPPED_TEXTURE2D> {
+        let _lock = lock();
+        Err(missing("ID3D10Texture2D::Map"))
+    }
+    fn Unmap(&self, subresource: u32) {
+        let _lock = lock();
+        missing_void("ID3D10Texture2D::Unmap")
+    }
+    fn GetDesc(&self, pdesc: *mut D3D10_TEXTURE2D_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10Resource_Impl for Texture2D_Impl {
+    fn GetType(&self, rtype: *mut D3D10_RESOURCE_DIMENSION) {
+        let _lock = lock();
+        self.get_type10(rtype)
+    }
+    fn SetEvictionPriority(&self, evictionpriority: u32) {
+        let _lock = lock();
+        self.set_eviction_priority(evictionpriority)
+    }
+    fn GetEvictionPriority(&self) -> u32 {
+        let _lock = lock();
+        self.get_eviction_priority()
+    }
+}
+
+impl ID3D10DeviceChild_Impl for Texture2D_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
 impl ID3D11Texture3D_Impl for Texture3D_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_TEXTURE3D_DESC) {
         let _lock = lock();
@@ -3124,6 +3330,74 @@ impl IDXGIObject_Impl for Texture3D_Impl {
     }
 }
 
+impl ID3D10Texture3D_Impl for Texture3D_Impl {
+    fn Map(
+        &self,
+        subresource: u32,
+        maptype: D3D10_MAP,
+        mapflags: u32,
+    ) -> windows::core::Result<D3D10_MAPPED_TEXTURE3D> {
+        let _lock = lock();
+        Err(missing("ID3D10Texture3D::Map"))
+    }
+    fn Unmap(&self, subresource: u32) {
+        let _lock = lock();
+        missing_void("ID3D10Texture3D::Unmap")
+    }
+    fn GetDesc(&self, pdesc: *mut D3D10_TEXTURE3D_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10Resource_Impl for Texture3D_Impl {
+    fn GetType(&self, rtype: *mut D3D10_RESOURCE_DIMENSION) {
+        let _lock = lock();
+        self.get_type10(rtype)
+    }
+    fn SetEvictionPriority(&self, evictionpriority: u32) {
+        let _lock = lock();
+        self.set_eviction_priority(evictionpriority)
+    }
+    fn GetEvictionPriority(&self) -> u32 {
+        let _lock = lock();
+        self.get_eviction_priority()
+    }
+}
+
+impl ID3D10DeviceChild_Impl for Texture3D_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
 impl ID3D11RenderTargetView_Impl for RenderTargetView_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_RENDER_TARGET_VIEW_DESC) {
         let _lock = lock();
@@ -3142,6 +3416,53 @@ impl ID3D11DeviceChild_Impl for RenderTargetView_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D10RenderTargetView_Impl for RenderTargetView_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D10_RENDER_TARGET_VIEW_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10View_Impl for RenderTargetView_Impl {
+    fn GetResource(&self, ppresource: windows::core::OutRef<ID3D10Resource>) {
+        let _lock = lock();
+        self.get_resource10(ppresource)
+    }
+}
+
+impl ID3D10DeviceChild_Impl for RenderTargetView_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
     }
     fn GetPrivateData(
         &self,
@@ -3218,6 +3539,53 @@ impl ID3D11DeviceChild_Impl for DepthStencilView_Impl {
     }
 }
 
+impl ID3D10DepthStencilView_Impl for DepthStencilView_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D10_DEPTH_STENCIL_VIEW_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10View_Impl for DepthStencilView_Impl {
+    fn GetResource(&self, ppresource: windows::core::OutRef<ID3D10Resource>) {
+        let _lock = lock();
+        self.get_resource10(ppresource)
+    }
+}
+
+impl ID3D10DeviceChild_Impl for DepthStencilView_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
 impl ID3D11ShaderResourceView_Impl for ShaderResourceView_Impl {
     fn GetDesc(&self, pdesc: *mut D3D11_SHADER_RESOURCE_VIEW_DESC) {
         let _lock = lock();
@@ -3236,6 +3604,60 @@ impl ID3D11DeviceChild_Impl for ShaderResourceView_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D10ShaderResourceView1_Impl for ShaderResourceView_Impl {
+    fn GetDesc1(&self, pdesc: *mut D3D10_SHADER_RESOURCE_VIEW_DESC1) {
+        let _lock = lock();
+        self.get_desc110(pdesc)
+    }
+}
+
+impl ID3D10ShaderResourceView_Impl for ShaderResourceView_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D10_SHADER_RESOURCE_VIEW_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10View_Impl for ShaderResourceView_Impl {
+    fn GetResource(&self, ppresource: windows::core::OutRef<ID3D10Resource>) {
+        let _lock = lock();
+        self.get_resource10(ppresource)
+    }
+}
+
+impl ID3D10DeviceChild_Impl for ShaderResourceView_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
     }
     fn GetPrivateData(
         &self,
@@ -3352,6 +3774,46 @@ impl ID3D11DeviceChild_Impl for SamplerState_Impl {
     }
 }
 
+impl ID3D10SamplerState_Impl for SamplerState_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D10_SAMPLER_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10DeviceChild_Impl for SamplerState_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
 impl ID3D11BlendState1_Impl for BlendState_Impl {
     fn GetDesc1(&self, pdesc: *mut D3D11_BLEND_DESC1) {
         let _lock = lock();
@@ -3370,6 +3832,53 @@ impl ID3D11DeviceChild_Impl for BlendState_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D10BlendState1_Impl for BlendState_Impl {
+    fn GetDesc1(&self, pdesc: *mut D3D10_BLEND_DESC1) {
+        let _lock = lock();
+        self.get_desc110(pdesc)
+    }
+}
+
+impl ID3D10BlendState_Impl for BlendState_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D10_BLEND_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10DeviceChild_Impl for BlendState_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
     }
     fn GetPrivateData(
         &self,
@@ -3439,6 +3948,46 @@ impl ID3D11DeviceChild_Impl for DepthStencilState_Impl {
     }
 }
 
+impl ID3D10DepthStencilState_Impl for DepthStencilState_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D10_DEPTH_STENCIL_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10DeviceChild_Impl for DepthStencilState_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
 impl ID3D11RasterizerState1_Impl for RasterizerState_Impl {
     fn GetDesc1(&self, pdesc: *mut D3D11_RASTERIZER_DESC1) {
         let _lock = lock();
@@ -3457,6 +4006,46 @@ impl ID3D11DeviceChild_Impl for RasterizerState_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D10RasterizerState_Impl for RasterizerState_Impl {
+    fn GetDesc(&self, pdesc: *mut D3D10_RASTERIZER_DESC) {
+        let _lock = lock();
+        self.get_desc10(pdesc)
+    }
+}
+
+impl ID3D10DeviceChild_Impl for RasterizerState_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D10Device>) {
+        let _lock = lock();
+        self.child.get_device10(ppdevice)
     }
     fn GetPrivateData(
         &self,

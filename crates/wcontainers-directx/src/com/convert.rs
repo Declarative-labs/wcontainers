@@ -25,7 +25,12 @@ pub fn buffer_back(d: &BufferDesc) -> D3D11_BUFFER_DESC {
         BindFlags: d.bind_flags,
         CPUAccessFlags: d.cpu_access_flags,
         MiscFlags: d.misc_flags,
-        StructureByteStride: d.structure_byte_stride,
+        // Direct3D keeps the stride of structured buffers only.
+        StructureByteStride: if d.misc_flags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED.0 as u32 != 0 {
+            d.structure_byte_stride
+        } else {
+            0
+        },
     }
 }
 

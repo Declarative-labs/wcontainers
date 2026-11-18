@@ -547,9 +547,12 @@ impl<B: Backend> Device<B> {
 
     pub fn create_buffer(&mut self, d: &BufferDesc, init: Option<&[u8]>) -> Result<Rc<Buffer<B>>> {
         check_buffer(d, init.is_some())?;
-        if d.misc_flags & !(MISC_DRAWINDIRECT_ARGS | MISC_ALLOW_RAW_VIEWS | MISC_STRUCTURED) != 0 {
+        if d.misc_flags
+            & !(MISC_DRAWINDIRECT_ARGS | MISC_ALLOW_RAW_VIEWS | MISC_STRUCTURED | MISC_SHARED)
+            != 0
+        {
             return not_implemented(
-                "buffers with misc flags other than structured, raw and indirect",
+                "buffers with misc flags other than structured, raw, indirect and shared",
             );
         }
         self.live()?;
@@ -656,9 +659,12 @@ impl<B: Backend> Device<B> {
             ));
         }
         let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
-        if d.misc_flags & !(MISC_TEXTURECUBE | MISC_GENERATE_MIPS | MISC_RESOURCE_CLAMP) != 0 {
+        if d.misc_flags
+            & !(MISC_TEXTURECUBE | MISC_GENERATE_MIPS | MISC_RESOURCE_CLAMP | MISC_SHARED)
+            != 0
+        {
             return not_implemented(
-                "textures with misc flags other than a cube, mip generation and a level clamp",
+                "textures with misc flags other than a cube, mip generation, a level clamp and shared",
             );
         }
         let both = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
