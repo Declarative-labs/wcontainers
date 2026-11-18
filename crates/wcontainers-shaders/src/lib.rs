@@ -171,7 +171,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         constants_as_storage: _,
         constants_as_texture: _,
         pulled: _,
-        storage_formats,
+        storage_formats: _,
         texel_buffers,
         storage_packed,
         texels_through_buffer,
@@ -197,7 +197,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         return Err(ConvertError::Unsupported(name));
     }
     let asked = [
-        (!storage_formats.is_empty(), "StorageFormats"),
         (
             *texel_buffers != TexelBufferRoute::Native,
             "TexelBufferRoute",

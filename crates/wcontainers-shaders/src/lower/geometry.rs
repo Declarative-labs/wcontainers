@@ -209,12 +209,10 @@ impl Lowering<'_> {
                 b.store(at, value);
             }
         }
-        if strips {
-            let at = index_slot(&mut b, state, max);
-            b.store(at, vertex);
-            increment(&mut b, written);
-            increment(&mut b, strip);
-        }
+        let at = index_slot(&mut b, state, max);
+        b.store(at, vertex);
+        increment(&mut b, written);
+        increment(&mut b, strip);
         let one = b.u32(1);
         let next = b.add(n, one);
         let p = b.global(emitted);
@@ -460,9 +458,9 @@ impl Lowering<'_> {
 
         let main = self.functions[&self.main];
         b.call(main, Vec::new(), false);
-        // Point output is drawn without indices: unused slots get a vertex outside the clip volume.
-        // Strips are drawn with indices: unused index slots restart.
-        if strips {
+        // Unused index slots restart. Point output is drawn without indices (its slots serve stream
+        // output): unused vertices lie outside the clip volume.
+        {
             let written = b.global(state.written);
             let from = b.load(written);
             let to = b.u32(2 * max);
@@ -478,7 +476,8 @@ impl Lowering<'_> {
                 let restart = b.u32(u32::MAX);
                 b.store(p, restart);
             });
-        } else {
+        }
+        if !strips {
             let emitted = b.global(state.emitted);
             let from = b.load(emitted);
             let to = b.u32(max);
