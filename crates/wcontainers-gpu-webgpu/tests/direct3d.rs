@@ -3,7 +3,7 @@
 //! `rgba16unorm` values (both filtered in the program) against GenerateMips, and a multisampled
 //! `rgba8unorm` texture made with `reinterpret` resolved as `rgba8unorm-srgb` against
 //! ResolveSubresource with `R8G8B8A8_UNORM_SRGB`; BC textures loaded natively and decoded against
-//! Direct3D 11 and WARP loading the same blocks.
+//! Direct3D 11 and WARP loading the same blocks; timestamps around the same work as Direct3D 11's.
 //!
 //! Windows only: needs a GPU and Direct3D 11 (the rig's device and shaders, test-only); `WEBGPU_API`
 //! as in tests/scenes.rs.
@@ -17,6 +17,10 @@ mod scene;
 #[allow(dead_code)]
 #[path = "../examples/scenes/draw.rs"]
 mod draw;
+
+#[allow(dead_code)]
+#[path = "../examples/scenes/timestamps.rs"]
+mod timestamps;
 
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, ColorAttachment, DeviceStatus, DrawCall, DrawRange,
@@ -576,12 +580,16 @@ const BC_LOAD_WGSL: &str = "
 ";
 
 fn hlsl(entry: windows::core::PCSTR, target: windows::core::PCSTR) -> Vec<u8> {
+    hlsl_of(BC_LOAD_HLSL, entry, target)
+}
+
+fn hlsl_of(source: &str, entry: windows::core::PCSTR, target: windows::core::PCSTR) -> Vec<u8> {
     use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
     let mut code = None;
     unsafe {
         D3DCompile(
-            BC_LOAD_HLSL.as_ptr().cast(),
-            BC_LOAD_HLSL.len(),
+            source.as_ptr().cast(),
+            source.len(),
             windows::core::PCSTR::null(),
             None,
             None,
@@ -847,4 +855,180 @@ fn bc_textures_decoded_are_as_close_to_direct3d_as_warp() {
     assert_eq!(decoded.status(), DeviceStatus::Ok);
     assert!(decoded.slow_paths().count(SlowPath::BlockDecoded) > 0);
     assert!(beyond.is_empty(), "{beyond:#?}");
+}
+
+/// Milliseconds since the first call.
+fn now() -> f64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+        * 1000.0
+}
+
+/// tests/timestamps.rs's work in HLSL: the same loop, rounds and target.
+fn timestamp_hlsl() -> String {
+    format!(
+        r#"
+float4 vs(uint i : SV_VertexID) : SV_Position {{
+    float2 p = float2((i << 1) & 2, i & 2);
+    return float4(p * 2.0 - 1.0, 0.0, 1.0);
+}}
+float4 ps(float4 p : SV_Position) : SV_Target {{
+    float2 c = p.xy / {size}.0;
+    [loop] for (int i = 0; i < {rounds}; i++) {{
+        c = frac(c * 1.7 + c.yx * 0.3 + 0.1);
+    }}
+    return float4(c, 0.0, 1.0);
+}}
+"#,
+        size = timestamps::SIZE,
+        rounds = timestamps::ROUNDS
+    )
+}
+
+/// Direct3D 11's two stretches around the same work, in nanoseconds, its timestamps in order.
+fn d3d_stretches() -> (u64, u64) {
+    let gpu = direct3d();
+    let source = timestamp_hlsl();
+    let vs = hlsl_of(
+        &source,
+        windows::core::s!("vs"),
+        windows::core::s!("vs_5_0"),
+    );
+    let ps = hlsl_of(
+        &source,
+        windows::core::s!("ps"),
+        windows::core::s!("ps_5_0"),
+    );
+    gpu.program(&vs, &ps, &[]).unwrap();
+    // The covering triangle winds anticlockwise: no culling.
+    let raster = gpu.rasterizer(&solid()).unwrap();
+    unsafe { gpu.context.RSSetState(&raster) };
+    let (_target, rtv) = gpu
+        .target(
+            timestamps::SIZE,
+            timestamps::SIZE,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+        )
+        .unwrap();
+    let query = |kind| {
+        d3d11::made(|o| unsafe {
+            gpu.device.CreateQuery(
+                &D3D11_QUERY_DESC {
+                    Query: kind,
+                    MiscFlags: 0,
+                },
+                Some(o),
+            )
+        })
+        .unwrap()
+    };
+    let wait = |q: &ID3D11Query, data: *mut std::ffi::c_void, size: usize| loop {
+        // The wrapper takes S_FALSE (not ready) as success, so the call goes through the vtable.
+        let hr = unsafe {
+            (Interface::vtable(&gpu.context).GetData)(
+                Interface::as_raw(&gpu.context),
+                Interface::as_raw(q),
+                data,
+                size as u32,
+                0,
+            )
+        };
+        hr.ok().unwrap();
+        if hr.0 == 0 {
+            break;
+        }
+        std::thread::yield_now();
+    };
+    let stretch = |draws: u32| unsafe {
+        gpu.context
+            .OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+        gpu.viewport(timestamps::SIZE, timestamps::SIZE);
+        gpu.context.IASetPrimitiveTopology(
+            windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+        );
+        for _ in 0..draws {
+            gpu.context.Draw(3, 0);
+        }
+    };
+    stretch(1);
+    let disjoint = query(D3D11_QUERY_TIMESTAMP_DISJOINT);
+    let stamps: Vec<_> = (0..4).map(|_| query(D3D11_QUERY_TIMESTAMP)).collect();
+    unsafe { gpu.context.Begin(&disjoint) };
+    for (stamp, draws) in stamps
+        .iter()
+        .zip([timestamps::DRAWS, timestamps::DRAWS * 2, 0, 0])
+    {
+        unsafe { gpu.context.End(stamp) };
+        stretch(draws);
+    }
+    unsafe {
+        gpu.context.End(&disjoint);
+        gpu.context.Flush();
+    }
+    let mut info = D3D11_QUERY_DATA_TIMESTAMP_DISJOINT::default();
+    wait(
+        &disjoint,
+        (&mut info as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT).cast(),
+        std::mem::size_of_val(&info),
+    );
+    assert!(
+        !info.Disjoint.as_bool(),
+        "Direct3D's timestamps were disjoint"
+    );
+    let ticks: Vec<u64> = stamps
+        .iter()
+        .map(|q| {
+            let mut t = 0u64;
+            wait(q, (&mut t as *mut u64).cast(), 8);
+            t
+        })
+        .collect();
+    let ns: Vec<u64> = ticks
+        .iter()
+        .map(|t| (u128::from(*t) * 1_000_000_000 / u128::from(info.Frequency)) as u64)
+        .collect();
+    eprintln!(
+        "Direct3D 11: frequency {} Hz, timestamps {ns:?} ns",
+        info.Frequency
+    );
+    assert!(
+        ns[0] < ns[1] && ns[1] < ns[2] && ns[2] <= ns[3],
+        "Direct3D's own timestamps out of order: {ns:?}"
+    );
+    (ns[1] - ns[0], ns[2] - ns[1])
+}
+
+/// Our timestamps around the work are in order, and each stretch takes within a factor of two of
+/// what Direct3D 11's timestamps say the same work takes on the same GPU.
+#[test]
+fn timestamps_match_direct3d_in_order_and_scale() {
+    let ours = {
+        let mut b = device_without(wgpu::Features::empty());
+        let stamps = timestamps::measure(&mut b, now).unwrap_or_else(|e| panic!("{e}"));
+        eprintln!("ours: {}", stamps.line());
+        let n = stamps.ns;
+        assert!(
+            n[0] < n[1] && n[1] < n[2] && n[2] <= n[3],
+            "out of order: {n:?}"
+        );
+        stamps.stretches()
+    };
+    let theirs = d3d_stretches();
+    eprintln!(
+        "stretches: ours {:.3} ms and {:.3} ms, Direct3D 11's {:.3} ms and {:.3} ms",
+        ours.0 as f64 / 1e6,
+        ours.1 as f64 / 1e6,
+        theirs.0 as f64 / 1e6,
+        theirs.1 as f64 / 1e6
+    );
+    for (o, t) in [(ours.0, theirs.0), (ours.1, theirs.1)] {
+        let ratio = o as f64 / t as f64;
+        assert!(
+            (0.5..=2.0).contains(&ratio),
+            "a stretch took {ratio:.2} times Direct3D's time"
+        );
+    }
 }

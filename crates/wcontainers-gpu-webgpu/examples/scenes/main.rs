@@ -4,7 +4,7 @@
 //! Natively: `scenes <dx12|vulkan|metal> <out-dir> [none|blend-factor|depth-function]` writes
 //! `webgpu-<api>-<picture>.png`. Built for WebAssembly, web/scenes.html calls `draw_scene` and
 //! `adapter` and saves what they return, times first draws with and without `prepare`
-//! (`prepare_timings`, prepare.rs), and web/suite.html runs the shared suite (suite.rs).
+//! (`prepare_timings`, prepare.rs), checks timestamps (`timestamps`, timestamps.rs), and web/suite.html runs the shared suite (suite.rs).
 
 #[path = "../../../wcontainers-graphics-test/src/scene.rs"]
 #[allow(dead_code)]
@@ -56,6 +56,9 @@ mod viewports;
 
 #[cfg(target_arch = "wasm32")]
 mod prepare;
+
+#[cfg(target_arch = "wasm32")]
+mod timestamps;
 
 #[cfg(target_arch = "wasm32")]
 #[macro_use]
@@ -128,6 +131,18 @@ mod web {
             unprepared.line(false),
             prepared.line(true)
         ))
+    }
+
+    /// Timestamps around work and the GPU clock against `performance.now()` on the browser's
+    /// WebGPU: one line of what was measured, or the failed check and that line.
+    #[wasm_bindgen(jspi)]
+    pub fn timestamps() -> Result<String, JsError> {
+        let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
+        let stamps = super::timestamps::measure(&mut b, now).map_err(js)?;
+        stamps
+            .check()
+            .map_err(|e| js(format!("{e}; {}", stamps.line())))?;
+        Ok(stamps.line())
     }
 
     /// Draws the eight-viewport scene (`rounded`: its viewports moved to whole pixels) on the

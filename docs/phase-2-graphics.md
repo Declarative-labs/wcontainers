@@ -230,7 +230,9 @@ Recording:
   documentation sets no rule against one buffer; Direct3D 11's `CopySubresourceRegion` and Direct3D 12's
   `CopyTextureRegion` need different subresources); WebGPU forbids a buffer as both source and
   destination, so its back end copies through a temporary buffer (`CopyWithinBuffer`). WebGL 2 copies
-  within one buffer natively.
+  within one buffer natively. Likewise `copy_texture` may copy between non-overlapping regions of one
+  subresource (`vkCmdCopyImage`, `glCopyImageSubData`); WebGPU refuses one subresource as both, so its
+  back end copies through a buffer (`CopyWithinTexture`).
 - `submit() -> Fence`, `fence_done(&fence)`, `wait_fence(&fence)`.
 
 Bytes out:
