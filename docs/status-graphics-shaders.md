@@ -778,6 +778,10 @@ Run 21 (DXIL typed buffers and storage images, for Godot's Direct3D 12 shaders):
   rig's DXIL 2 more. Still refused, all named: atomics on images and typed buffers (naga's reader
   has no `OpImageTexelPointer`, "storage class %11": 5 games, 4 own, 1 rig), mixed view kinds in
   the corpus test (`TypedBufferFormatKind` 5 games), `RegisterSpace` 10, and the rest as before.
+- At the end of run 21 the build folders were deleted (laptop
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders`, 23 GB; desktop
+  `C:\wc\target\phase-2-graphics-shaders`), so the next run builds from clean; `out` and the logs
+  are kept.
 - Tests: `storage_textures_match_direct3d` (compute_draw) and `typed_buffers_draw_as_direct3d_does`
   (variant_draw) now also convert dxc's DXIL of the same HLSL and compare it with real Direct3D
   11's result for fxc's DXBC (results under Measurements).
