@@ -65,6 +65,15 @@ Test fixes (the whole suite as a gate):
 - The previous run's local probe (tests/zprobe.rs, excluded from git) failed in whole-suite runs
   for want of its variables; its tests are now ignored unless asked for.
 
+Whole-suite run at the final kernel (5671d96; scratch k6b2/suite.log; `--no-fail-fast`, 4 test
+threads, 45.5 minutes, load 56 at the start, up to 106, 101 at the end): 210 tests passed, 11
+ignored (the 6 known ones with their reasons and the 5 local probe tests), 1 failed: terminal
+`interactive_shell`, whose reference timed out after 20 s waiting for busybox sh's first prompt
+at load about 100 (guest/shpty.c's own limit). Ours was right; two reruns alone passed (load 86).
+The limit is now 120 s. The runtime tests passed under the default three seeds with saves:
+python 1799.4 s (system.py, the language modules and the system modules, none ignored), node
+147.2 s, java 141.5 s, go 7.0 s (each binary's time for all its tests and seeds).
+
 Layer 1, fresh seeds at the final kernel (5671d96; 7f26687 changed only this file), 20000
 sequences each: 6262609 (338.7 s) and 6262610 (338.9 s), side by side beside the whole suite,
 load 56 at the start and 48 at the end; 6262611 (362.4 s, load 54 at the start, 28 at the
@@ -2743,9 +2752,8 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K6b's next run, in this order:
-1. Read the whole-suite run and the layer 1 seeds this run started at 5671d96 if this file does
-   not record their end (scratch k6b2/suite.log, l1-6262609.log, l1-6262610.log, and
-   l1-6262611.log if it was started); the milestone needs three fresh seeds at the final kernel.
+1. Nothing of the K6b bar is left open but the items below; the whole suite and the three fresh
+   seeds ran at the final kernel (above).
 2. /sys: mount an empty read-only sysfs at /sys as Docker does, whose lookups are counted ("sys
    entry not built"), so section 15's /sys subset is counted where it can be seen; then the
    cgroup2 mount (cpu.max, memory.max "max") can be weighed against the gap list.
