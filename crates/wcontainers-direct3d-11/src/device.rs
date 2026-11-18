@@ -33,6 +33,9 @@ pub(crate) struct HelperBlocks<B: Backend> {
 
 /// A program's key: its vertex (or compute) shader's id and variant, and its pixel shader's id
 /// (0 for none) and variant.
+/// A compute helper block as written and its binding set.
+pub(crate) type ComputeHelpers<B> = (Vec<u8>, Kept<B, <B as Backend>::BindingSet>);
+
 pub(crate) type ProgramKey = (u64, StageVariant, u64, StageVariant);
 
 /// A linked program and where its two stages read their helper constants.
@@ -78,6 +81,13 @@ pub struct Device<B: Backend> {
     /// The helper constants as last written. The front is the only writer of the back end's data
     /// ring, so the blocks stay as written until the front's next write.
     pub(crate) helper_blocks: Option<HelperBlocks<B>>,
+    /// The compute program's helper block as last written and its binding set; the draws' blocks
+    /// and this share the ring, so writing one forgets the other.
+    pub(crate) compute_helpers: Option<ComputeHelpers<B>>,
+    /// The lists of bound typed views' formats draws met (`StageVariant::formats`, which numbers
+    /// them from one).
+    pub(crate) format_lists: Vec<Vec<Format>>,
+    pub(crate) format_ids: HashMap<Vec<Format>, u32>,
     /// Combinations drawn and built ahead.
     pub(crate) ahead: crate::ahead::Ahead<B>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
@@ -234,6 +244,9 @@ impl<B: Backend> Device<B> {
             tests_off: None,
             passes: Default::default(),
             helper_blocks: None,
+            compute_helpers: None,
+            format_lists: Vec::new(),
+            format_ids: HashMap::new(),
             ahead: crate::ahead::Ahead::new(),
             layouts: HashMap::new(),
             zeros: Zeros {
@@ -1163,7 +1176,7 @@ impl<B: Backend> Device<B> {
         const APPEND: u32 = 2;
         const COUNTER: u32 = 4;
         let raw = flags & RAW != 0;
-        let (offset, size) =
+        let (offset, size, texel) =
             self.buffer_span(buffer, bind::UNORDERED_ACCESS, format, first, count, raw)?;
         let structured = buffer.desc.misc_flags & MISC_STRUCTURED != 0;
         let counted = flags & (APPEND | COUNTER);
@@ -1197,6 +1210,7 @@ impl<B: Backend> Device<B> {
             offset,
             size,
             counter,
+            texel,
         })))
     }
 
@@ -1209,7 +1223,7 @@ impl<B: Backend> Device<B> {
         count: u32,
         raw: bool,
     ) -> Result<Rc<ShaderView<B>>> {
-        let (offset, size) =
+        let (offset, size, texel) =
             self.buffer_span(buffer, bind::SHADER_RESOURCE, format, first, count, raw)?;
         self.live()?;
         Ok(Rc::new(ShaderView::Buffer(BufferSpan {
@@ -1217,12 +1231,15 @@ impl<B: Backend> Device<B> {
             offset,
             size,
             counter: None,
+            texel,
         })))
     }
 
-    /// The bytes (offset, size) that `count` elements from `first` of a buffer view cover: raw
-    /// (32-bit words, format `R32_TYPELESS`) or structured (the buffer's stride, no format). `needs`
-    /// is the bind flag the view's kind needs.
+    /// The bytes (offset, size) a view of `count` elements from `first` of a buffer binds: raw
+    /// (32-bit words, format `R32_TYPELESS`), structured (the buffer's stride, no format) or typed
+    /// (a format). A typed view is bound from its first byte rounded down to the back end's storage
+    /// offset alignment, its format, first element's byte in that range and count beside. `needs` is
+    /// the bind flag the view's kind needs.
     fn buffer_span(
         &self,
         buffer: &Buffer<B>,
@@ -1231,7 +1248,7 @@ impl<B: Backend> Device<B> {
         first: u32,
         count: u32,
         raw: bool,
-    ) -> Result<(u64, u64)> {
+    ) -> Result<(u64, u64, Option<TexelPlace>)> {
         const R32_TYPELESS: u32 = 39;
         let d = &buffer.desc;
         if d.bind_flags & needs == 0 {
@@ -1239,18 +1256,29 @@ impl<B: Backend> Device<B> {
                 "the resource lacks the bind flag the view needs",
             ));
         }
-        let stride = if raw {
+        let (stride, typed) = if raw {
             if format != R32_TYPELESS || d.misc_flags & MISC_ALLOW_RAW_VIEWS == 0 {
                 return Err(Error::InvalidArg("a raw view of a buffer not made for one"));
             }
-            4
+            (4, None)
         } else if d.misc_flags & MISC_STRUCTURED != 0 {
             if format != format::UNKNOWN {
                 return Err(Error::InvalidArg("a structured view with a format"));
             }
-            d.structure_byte_stride
+            (d.structure_byte_stride, None)
         } else {
-            return not_implemented("typed buffer views (TypedBuffer)");
+            if format == format::UNKNOWN {
+                return Err(Error::InvalidArg("a typed buffer view without a format"));
+            }
+            let f = format::texture_format_of(format)?;
+            match f.block() {
+                (1, 1, bytes) if !f.is_depth_stencil() => (bytes, Some(f)),
+                _ => {
+                    return Err(Error::InvalidArg(
+                        "a buffer view of a block or depth format",
+                    ));
+                }
+            }
         };
         let (offset, size) = (
             u64::from(first) * u64::from(stride),
@@ -1264,14 +1292,25 @@ impl<B: Backend> Device<B> {
                 .caps()
                 .limits
                 .min_storage_offset_alignment
-                .max(1),
+                .max(4),
         );
+        if let Some(f) = typed {
+            if self.backend.caps().limits.storage_buffers_per_stage == 0 {
+                return not_implemented(
+                    "typed buffer views read through a texture (TexelBufferAsTexture)",
+                );
+            }
+            let start = offset / align * align;
+            let end = (offset + size).next_multiple_of(4);
+            let within = u32::try_from(offset - start).expect("below the alignment");
+            return Ok((start, end - start, Some((f, within, count))));
+        }
         if !offset.is_multiple_of(align) {
             return not_implemented(
                 "a buffer view at an offset the back end does not bind at (StorageOffset)",
             );
         }
-        Ok((offset, size))
+        Ok((offset, size, None))
     }
 
     pub fn create_sampler_state(&mut self, d: &SamplerDesc) -> Result<Rc<Sampler<B>>> {
@@ -1355,7 +1394,9 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_raster(&raster_block(d, self.backend.caps()));
+        let gpu = self
+            .backend
+            .create_raster(&raster_block(d, self.backend.caps()));
         let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Rasterizer {
@@ -1372,7 +1413,13 @@ impl<B: Backend> Device<B> {
         stage: wcontainers_gpu::SourceStage,
     ) -> Result<Rc<Shader<B>>> {
         shader::check_model(bytecode, self.level)?;
-        let (mut converted, reads_samples) = shader::convert(bytecode, stage)?;
+        let typed = shader::typed_views(bytecode)?;
+        if typed.iter().any(|t| t.buffer)
+            && self.backend.caps().limits.storage_buffers_per_stage == 0
+        {
+            return not_implemented("typed buffers read through a texture (TexelBufferAsTexture)");
+        }
+        let (mut converted, reads_samples) = shader::convert(bytecode, stage, &typed)?;
         let samplers = shader::sampler_slots(&converted);
         let textures = shader::texture_slots(&converted);
         let mirror_filtered = shader::mirror_filtered_slots(&converted);
@@ -1403,6 +1450,7 @@ impl<B: Backend> Device<B> {
             mirror_filtered,
             reads_samples,
             helpers,
+            typed,
         });
         if matches!(
             stage,
