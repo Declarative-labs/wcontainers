@@ -2076,10 +2076,10 @@ impl ID3D12GraphicsCommandList_Impl for List_Impl {
     }
     fn DiscardResource(
         &self,
-        _presource: windows_core::Ref<ID3D12Resource>,
-        _pregion: *const D3D12_DISCARD_REGION,
+        presource: windows_core::Ref<ID3D12Resource>,
+        pregion: *const D3D12_DISCARD_REGION,
     ) {
-        self.unsupported("DiscardResource");
+        List::DiscardResource(self, presource, pregion)
     }
     fn BeginQuery(
         &self,

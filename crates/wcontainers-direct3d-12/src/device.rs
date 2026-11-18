@@ -135,12 +135,35 @@ enum Storage<B: Backend> {
     },
     Texture {
         texture: B::Texture,
+        /// The texture as the program sees it; a multisampled array's layers are textures of one
+        /// layer each.
         desc: TextureDesc,
+        /// A multisampled array's layers after the first, each a texture of its own (the
+        /// interface's multisampled textures have one layer); empty otherwise.
+        layers: Vec<B::Texture>,
         /// Views made for passes and shaders, by what they view.
         views: Vec<(TextureViewDesc, B::TextureView)>,
         /// False for a swap chain's back buffer, whose texture the swap chain owns.
         owned: bool,
     },
+}
+
+impl<B: Backend> Storage<B> {
+    /// The back end's texture holding array layer `layer`, and the layer's index in it.
+    fn layer(&self, layer: u32) -> Option<(&B::Texture, u32)> {
+        match self {
+            Storage::Texture {
+                texture, layers, ..
+            } if layers.is_empty() => Some((texture, layer)),
+            Storage::Texture {
+                texture, layers, ..
+            } => match layer {
+                0 => Some((texture, 0)),
+                n => layers.get(n as usize - 1).map(|t| (t, 0)),
+            },
+            Storage::Buffer { .. } => None,
+        }
+    }
 }
 
 struct Resource<B: Backend> {
@@ -495,10 +518,6 @@ impl<B: Backend> Device<B> {
                 return Err(Error::Invalid("textures live in default or custom heaps"));
             }
             let (format, typeless) = desc.texture_format()?;
-            // The interface's multisampled textures have one layer (WebGPU's rule).
-            if desc.sample_count > 1 && desc.depth_or_array_size > 1 {
-                return Err(Error::NotImplemented("multisampled texture arrays"));
-            }
             let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
             if desc.flags & resource::FLAG_DENY_SHADER_RESOURCE == 0 {
                 usage |= TextureUsage::SAMPLE;
@@ -550,11 +569,35 @@ impl<B: Backend> Device<B> {
                 cube: false,
                 reinterpret: typeless,
             };
-            let texture = self.backend.create_texture(&tdesc)?;
+            // The interface's multisampled textures have one layer (WebGPU's rule): a
+            // multisampled array is a texture per layer.
+            let (texture, layers) = if tdesc.samples > 1 && tdesc.depth_or_layers > 1 {
+                let one = TextureDesc {
+                    depth_or_layers: 1,
+                    ..tdesc
+                };
+                let mut all = Vec::with_capacity(tdesc.depth_or_layers as usize);
+                for _ in 0..tdesc.depth_or_layers {
+                    match self.backend.create_texture(&one) {
+                        Ok(t) => all.push(t),
+                        Err(e) => {
+                            for t in all {
+                                self.backend.destroy(Object::Texture(t));
+                            }
+                            return Err(e.into());
+                        }
+                    }
+                }
+                let first = all.remove(0);
+                (first, all)
+            } else {
+                (self.backend.create_texture(&tdesc)?, Vec::new())
+            };
             (
                 Storage::Texture {
                     texture,
                     desc: tdesc,
+                    layers,
                     views: Vec::new(),
                     owned: true,
                 },
@@ -663,13 +706,14 @@ impl<B: Backend> Device<B> {
         origin: Origin,
         z: u32,
     ) -> Result<TextureRegion<'_, B>, Error> {
-        let (texture, desc) = self.texture(id)?;
+        let (_, desc) = self.texture(id)?;
         let mips = desc.mip_levels;
         let three_d = desc.dimension == TextureDimension::D3;
+        let (texture, layer) = self.texture_layer(id, if three_d { 0 } else { sub / mips })?;
         Ok(TextureRegion {
             texture,
             mip: sub % mips,
-            layer: if three_d { 0 } else { sub / mips },
+            layer,
             origin: Origin {
                 z: origin.z + z,
                 ..origin
@@ -806,6 +850,7 @@ impl<B: Backend> Device<B> {
             Storage::Buffer { buffer, .. } => self.backend.destroy(Object::Buffer(buffer)),
             Storage::Texture {
                 texture,
+                layers,
                 views,
                 owned,
                 ..
@@ -814,7 +859,9 @@ impl<B: Backend> Device<B> {
                     self.backend.destroy(Object::TextureView(v));
                 }
                 if owned {
-                    self.backend.destroy(Object::Texture(texture));
+                    for t in std::iter::once(texture).chain(layers) {
+                        self.backend.destroy(Object::Texture(t));
+                    }
                 }
             }
         }
@@ -1329,6 +1376,8 @@ impl<B: Backend> Device<B> {
                     | HelperValue::TextureComponents { .. }
                     | HelperValue::TexelLayout { .. }
                     | HelperValue::MinLod { .. }
+                    | HelperValue::Layer
+                    | HelperValue::Viewport
             )
         }) {
             return Err(Error::NotImplemented(
@@ -1956,7 +2005,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<(), Error> {
         let format = dxgi(format)?;
         let region = |d: &Self, id: ResourceId, index: u32| {
-            let (texture, desc) = d.texture(id)?;
+            let (_, desc) = d.texture(id)?;
             let r = &d.resources[id.0 as usize].desc;
             let (mips, layers) = (r.mips(), r.layers());
             if index >= mips * layers {
@@ -1964,14 +2013,8 @@ impl<B: Backend> Device<B> {
             }
             let mip = index % mips;
             let size = ((desc.width >> mip).max(1), (desc.height >> mip).max(1));
-            Ok((
-                texture.clone(),
-                desc.format,
-                desc.samples,
-                mip,
-                index / mips,
-                size,
-            ))
+            let (texture, layer) = d.texture_layer(id, index / mips)?;
+            Ok((texture.clone(), desc.format, desc.samples, mip, layer, size))
         };
         let (s, stored, samples, smip, slayer, ssize) = region(self, src, src_index)?;
         let (t, _, tsamples, tmip, tlayer, tsize) = region(self, dst, dst_index)?;
@@ -2016,6 +2059,14 @@ impl<B: Backend> Device<B> {
             }) => Ok((texture, desc)),
             _ => Err(Error::Invalid("not a texture")),
         }
+    }
+
+    /// The back end's texture holding layer `layer` of texture `id`, and the layer's index in it.
+    fn texture_layer(&self, id: ResourceId, layer: u32) -> Result<(&B::Texture, u32), Error> {
+        self.resources
+            .get(id.0 as usize)
+            .and_then(|r| r.storage.layer(layer))
+            .ok_or(Error::Invalid("a texture's layer"))
     }
 
     /// The back end's view for a render target or depth view, made once per resource and view.
@@ -2071,6 +2122,7 @@ impl<B: Backend> Device<B> {
             storage:
                 Storage::Texture {
                     texture,
+                    layers,
                     views,
                     desc: tdesc,
                     ..
@@ -2079,6 +2131,22 @@ impl<B: Backend> Device<B> {
         }) = self.resources.get_mut(resource.0 as usize)
         else {
             return Err(Error::Invalid("a texture view of no texture"));
+        };
+        // A multisampled array's layer is viewed in its own texture.
+        let (texture, at) = match desc.base_layer {
+            _ if layers.is_empty() => (&*texture, desc.base_layer),
+            _ if desc.layer_count != 1 => {
+                return Err(Error::NotImplemented(
+                    "a view of several layers of a multisampled texture array",
+                ));
+            }
+            0 => (&*texture, 0),
+            n => (
+                layers
+                    .get(n as usize - 1)
+                    .ok_or(Error::Invalid("a view past a texture's layers"))?,
+                0,
+            ),
         };
         let stored = tdesc.format;
         let mut desc = desc;
@@ -2096,7 +2164,13 @@ impl<B: Backend> Device<B> {
                 "a view reinterpreting a texture's bits without its twin",
             ));
         }
-        let view = self.backend.create_view(texture, &desc)?;
+        let view = self.backend.create_view(
+            texture,
+            &TextureViewDesc {
+                base_layer: at,
+                ..desc
+            },
+        )?;
         views.push((desc, view.clone()));
         Ok(view)
     }
@@ -2360,6 +2434,7 @@ fn adopt_buffers<B: Backend>(
             storage: Storage::Texture {
                 texture: texture.clone(),
                 desc: tdesc,
+                layers: Vec::new(),
                 views: Vec::new(),
                 owned: false,
             },
@@ -2571,12 +2646,33 @@ impl<B: Backend> Replay<B> {
         for (v, value) in clears {
             let (texture, desc) = d.texture(v.resource)?;
             let (texture, desc) = (texture.clone(), *desc);
+            let layers = v.first_layer..v.first_layer.saturating_add(v.layers.max(1));
+            if desc.samples > 1 && desc.depth_or_layers > 1 {
+                // A multisampled array's layers are textures of their own.
+                let one = TextureDesc {
+                    depth_or_layers: 1,
+                    ..desc
+                };
+                for layer in layers.start..layers.end.min(desc.depth_or_layers) {
+                    let (texture, _) = d.texture_layer(v.resource, layer)?;
+                    let texture = texture.clone();
+                    d.backend.clear_texture(
+                        &texture,
+                        &one,
+                        dxgi(v.format)?,
+                        v.mip..v.mip + 1,
+                        0..1,
+                        value,
+                    )?;
+                }
+                continue;
+            }
             d.backend.clear_texture(
                 &texture,
                 &desc,
                 dxgi(v.format)?,
                 v.mip..v.mip + 1,
-                v.first_layer..v.first_layer.saturating_add(v.layers.max(1)),
+                layers,
                 value,
             )?;
         }
@@ -3730,14 +3826,16 @@ impl<B: Backend> Replay<B> {
     fn pass_targets(&self, d: &mut Device<B>, pid: PipelineId) -> Result<PassTargets<B>, Error> {
         let mut target = |v: &TargetView| -> Result<Target<B>, Error> {
             let view = d.view(v)?;
-            let (texture, desc) = d.texture(v.resource)?;
+            let (_, desc) = d.texture(v.resource)?;
             let d3 = desc.dimension == TextureDimension::D3;
+            let (texture, layer) =
+                d.texture_layer(v.resource, if d3 { 0 } else { v.first_layer })?;
             Ok(Target {
                 view,
                 texture: texture.clone(),
                 format: dxgi(v.format)?,
                 mip: v.mip,
-                layer: if d3 { 0 } else { v.first_layer },
+                layer,
                 depth_slice: 0,
                 width: (desc.width >> v.mip).max(1),
                 height: (desc.height >> v.mip).max(1),
@@ -4084,12 +4182,12 @@ fn copy_texture<B: Backend>(
     let region = |d: &Device<B>, id: ResourceId, index: u32, origin: Origin| {
         let r = &d.resources[id.0 as usize];
         let (mips, layers) = (r.desc.mips(), r.desc.layers());
-        let (texture, _) = d.texture(id)?;
         let stencil = index / (mips * layers) == 1;
+        let (texture, layer) = d.texture_layer(id, index / mips % layers)?;
         Ok::<_, Error>((
             texture.clone(),
             index % mips,
-            index / mips % layers,
+            layer,
             origin,
             r.desc,
             stencil,
