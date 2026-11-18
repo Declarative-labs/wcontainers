@@ -109,6 +109,21 @@ select02 and prctl09 when run again (it failed them under load in the whole run)
 Still slower than 900 s: creat05, epoll_create03, fcntl12, inotify09. fork09 was lost to my
 removing its backend container by mistake (rerun in scratch k6c4/rd.tsv).
 
+LTP table at this run's end (not a whole comparison: the whole comparison at fb0bc97 with its
+237 differences rerun in part at this run's code; scratch k6c4/re.tsv at 0da1cfb7 with ltp-d,
+2 jobs, LTP_LIMIT 900, 13:36 to about 15:30, load 45 to 90; rf.tsv and the one-by-one reruns):
+- Matching: 4062 of 4226, as far as the reruns show (3989 in the whole comparison, plus 58 of
+  the 142 non-timeout differences in re.tsv, 7 controllers tests now that /proc/cgroups is
+  built (cpuacct_* broken and cgroup fail, as the reference), the 3 the reference passed when
+  run again, and 5 of the timeouts: dup03, dup06, dup205, fcntl36, munmap04).
+- Differing, 164: slower than the limit 90 (the whole comparison's 95 less those 5; creat05,
+  epoll_create03, fcntl12 and inotify09 ran out 900 s again, the rest not rerun); a part not
+  built or a section 15 cause 72 (the gap list below names each); new: msgstress01 in syscalls
+  and syscalls-ipc ran out 900 s (the reference 18 s; in the whole comparison it differed in
+  another way: to find); controllers:controllers passes where the reference skips;
+  swapping01 not yet rerun since /proc/swaps.
+- Excused with a gap: none final; the list below says which section 15 cause each would have.
+
 Written gap list (plan section 15 causes only; not yet final: the slower tests still need
 their verdicts shown under a longer limit, and the comparison is not yet whole at this code):
 - Tracing one process from another (missing in phase one): ptrace01, 02, 03, 05, 06, 11.
@@ -3499,11 +3514,8 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K6c, in this order:
-1. Read scratch k6c4/re.tsv (the 142 non-timeout differences of the whole comparison at
-   fb0bc97, rerun at 0da1cfb7 with ltp-d, 2 jobs, LTP_LIMIT 900; continue it with the same
-   command if it stopped: `ltp ours` skips tests a results file has) and k6c4/rf.tsv (the
-   controllers tests with /proc/cgroups), compare with ltp/reference-20260930.tsv, and update the
-   table and the gap list. fork09 is in k6c4/rd.tsv.
+1. Find why msgstress01 (syscalls and syscalls-ipc) now runs out 900 s (reference 18 s), and
+   why controllers:controllers passes where the reference skips; rerun swapping01 and fork09.
 2. Not section 15, to build, largest first: /proc/<pid>/mem (FOLL_FORCE: reads of PROT_NONE
    private pages, writes into read-only private mappings copy the page; 4 tests), the cgroup2
    mount at /sys/fs/cgroup (read only; files in scratch k6c3/cgroup-reference.txt) if the
