@@ -108,11 +108,19 @@ Progress (from the ledger):
   not the load.
 
 What is left of P2, in order:
-1. Let layer 3 run to 100,000 compared. Look at the ledger now and then; treat any failing chunk as a real
-   mismatch: replay it with the ledger's `replay=` command, shrink, find the cause, write a failing test,
-   fix, commit, stop the driver between chunks, restart it with the command above.
+1. Let layer 3 run to 100,000 compared (at 13:42 on 2026-11-18: 108 chunks passed, 47,289 compared). First
+   check the driver is alive (`pgrep -fl long-runs.sh`, the `bash .../long-runs.sh` line). Treat any failing
+   chunk as a real mismatch until shown otherwise: read its log (`logs/layer3-<k>-<commit>.log`, the line
+   `csmith <n> (case <i>): ...`), replay it with the ledger's `replay=` command, find the cause, write a
+   failing test, fix, commit, stop the driver right after a chunk ends, restart it with the command above
+   (with `WC_LONG_ACCEPT=c38b4ad WC_LONG_LIMIT=180`). A chunk with `cases=?` and no summary in its log was
+   killed (failure 6); `driver.log` now gives its exit status. A failed chunk is run again only when the
+   driver is restarted (it walks the chunks in order), so restart once after any failed chunk is fixed. When
+   the driver ends, check the total with the awk command above and that `grep -v result=pass` shows only
+   chunks that later passed; restart it if the total is short.
 2. After the last fix, the confirmation run on the final commit at 5 percent of each layer with base seed
-   200 (one command above), in a new directory.
+   200 (one command above), in a new directory. Its zig cache (`<dir>/zig-cache`) starts empty: warm it first
+   with one layer 3 run of 24 cases and one job, as in failure 4, so six cold builds do not race.
 3. The whole suite of the three crates on the final code once the driver has ended (not run at the end of
    this run: the driver holds the 6 jobs this machine allows; the crates' own unit tests, `exact` and
    `binaries` were run on the final code, and layers 1 and 2 of the long run cover the rest of the changes).
