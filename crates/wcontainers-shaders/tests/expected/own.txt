@@ -9,6 +9,7 @@ ds_tri.dxbc	ok-wgsl glsl-write
 gs_adjacent.dxbc	ok-wgsl glsl-write
 gs_cut.dxbc	ok-wgsl glsl-write
 gs_instances.dxbc	ok-wgsl glsl-write
+gs_layers.dxbc	unsupported RenderTargetArrayIndex
 gs_line_adjacent.dxbc	ok-wgsl glsl-write
 gs_lines.dxbc	ok-wgsl glsl-write
 gs_points.dxbc	ok-wgsl glsl-write
@@ -57,6 +58,7 @@ ps_ftoi.dxbc	ok
 ps_geometry.dxbc	ok
 ps_ids.dxbc	ok
 ps_integer.dxbc	ok-wgsl glsl-compile
+ps_layer.dxbc	ok
 ps_levels.dxbc	ok-wgsl glsl-write
 ps_local.dxbc	ok
 ps_loop.dxbc	ok
