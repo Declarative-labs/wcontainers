@@ -65,7 +65,11 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   first. Stopped 2026-11-18 01:27 with chunk 57 hung (failure 4 below) and restarted 01:29 on 7ec7920 (the
   run's own zig cache), same command. Stopped 04:32 after chunk 71 and restarted on 33afa1e (failure 5
   below), same command. Stopped 08:12 after chunk 85 and restarted on 9d54ef3 (failure 6 below), same
-  command; that run (driver pid 99959 at the time of writing) is the one going now. Use `WC_LONG_ACCEPT=c38b4ad
+  command. Stopped 14:58 after chunk 114 (chunk 115 had just started, no line) and restarted on 6b74146
+  (failure 7 below), same command; that run (driver pid 20716 at the time of writing) is the one going
+  now, chunk 113 first. To stop it right after a chunk ends: the scratch script
+  `.../p2/stop-after-chunk.sh` (waits up to 9 minutes for a ledger line, then stops the driver, its test
+  and containers). One look at the progress, waiting up to 9 minutes for a new line: `.../p2/look.sh`. Use `WC_LONG_ACCEPT=c38b4ad
   WC_LONG_LIMIT=180` on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
   `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
 - Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
