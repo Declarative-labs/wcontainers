@@ -900,6 +900,43 @@ fn texture_arrays_are_a_texture_per_element() {
     assert_eq!(text.matches("texture_2d<f32>;").count(), 4, "{text}");
 }
 
+/// A texture both compared against and read plainly (`ps_shadow`: compared samples, a sample, a
+/// sample at level 0, a load and a gather) is one depth texture by both routes, its plain reads
+/// widened to (depth, 0, 0, 1), with no other texture declared.
+#[test]
+fn textures_compared_and_read_plainly_are_depth_textures() {
+    let code = own_pair("ps_shadow");
+    for (route, c) in ["dxbc", "dxil"]
+        .into_iter()
+        .zip(both(&code, &VariantKey::default()))
+    {
+        let text = wgsl(&c);
+        assert_eq!(
+            text.matches("texture_depth_2d;").count(),
+            1,
+            "{route}: {text}"
+        );
+        assert!(!text.contains("texture_2d<"), "{route}: {text}");
+        assert!(text.contains("textureSampleCompare("), "{route}: {text}");
+        assert!(text.contains("textureLoad("), "{route}: {text}");
+        assert!(text.contains("textureGather("), "{route}: {text}");
+    }
+}
+
+/// Shader model 4.0 loads of a multisampled texture (`ps_msloop`: the sample picked in an unrolled
+/// loop, at `pos.xy`; `ps_msswap`: at `pos.yx`) read at the coordinates each names.
+#[test]
+fn shader_model_4_multisampled_loads_keep_their_coordinates() {
+    let code = |name: &str| read(&format!("tests/own/{name}.dxbc"));
+    let [straight, swapped] = ["ps_msloop", "ps_msswap"].map(|name| {
+        let c = convert(Source::Dxbc(&code(name)), &VariantKey::default(), None).unwrap();
+        let text = wgsl(&c);
+        eprintln!("{name}:\n{text}");
+        text
+    });
+    assert_ne!(straight, swapped);
+}
+
 /// A multisampled array texture is refused by name until the key gives its layer count; then each
 /// layer after the first is an added texture binding, and loads switch on the layer, by both routes.
 #[test]

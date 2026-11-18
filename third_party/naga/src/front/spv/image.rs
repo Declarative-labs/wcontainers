@@ -209,7 +209,10 @@ pub(super) fn patch_comparison_type(
     if !flags.contains(SamplingFlags::COMPARISON) {
         return true;
     }
-    if flags == SamplingFlags::all() {
+    // An image both compared against and sampled plainly becomes a depth image too; its plain
+    // reads then give one value where the module expects four, which the caller must widen.
+    let sampler = matches!(arena[var.ty].inner, crate::TypeInner::Sampler { .. });
+    if flags == SamplingFlags::all() && sampler {
         return false;
     }
 

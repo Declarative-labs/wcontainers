@@ -32,7 +32,7 @@ struct Dynamic {
 }
 
 /// The operands of an image expression other than its image, in a fixed order.
-fn operands(e: &mut Expression) -> Result<Vec<&mut Handle<Expression>>> {
+pub(super) fn operands(e: &mut Expression) -> Result<Vec<&mut Handle<Expression>>> {
     let mut out = Vec::new();
     match e {
         Expression::ImageSample {
@@ -86,7 +86,7 @@ fn image_of(e: &mut Expression) -> Option<&mut Handle<Expression>> {
 }
 
 /// Whether `e` of `f` is a value known before the program runs, which the helper copies.
-fn constant(f: &Function, e: Handle<Expression>) -> bool {
+pub(super) fn constant(f: &Function, e: Handle<Expression>) -> bool {
     match f.expressions[e] {
         Expression::Literal(_) | Expression::Constant(_) | Expression::ZeroValue(_) => true,
         Expression::Compose { ref components, .. } => components.iter().all(|&c| constant(f, c)),
@@ -96,7 +96,11 @@ fn constant(f: &Function, e: Handle<Expression>) -> bool {
 }
 
 /// Copies the constant `e` of `from` into `to`, emitting what is made at run time.
-fn copy_constant(from: &Function, to: &mut Function, e: Handle<Expression>) -> Handle<Expression> {
+pub(super) fn copy_constant(
+    from: &Function,
+    to: &mut Function,
+    e: Handle<Expression>,
+) -> Handle<Expression> {
     let made = match from.expressions[e] {
         Expression::Compose { ty, ref components } => Expression::Compose {
             ty,
