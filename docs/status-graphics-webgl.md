@@ -24,6 +24,9 @@ check were fixed in run 1 (list below). Done in this run:
   `ReinterpretCopy`), per-target blends where OES_draw_buffers_indexed is absent (this back end
   declares `INDEPENDENT_BLEND` where the extension is: Chrome and mozangle both have it), and
   `resinfo` through `TEXTURE_INFO` (served by the front since its run 19).
+- At the end the desktop's C:\wc\target\phase-2-graphics-webgl (12.9 GB, the debug, release,
+  WebAssembly and recording builds) and this checkout's own target (4.2 GB, from `cargo check`)
+  were deleted.
 - Not run in this run: the Direct3D 11 front's WebGL 2 scenes (run 1's count stands, 65 outputs
   passing; command under "Measurements, run G3b-1").
 
@@ -1300,6 +1303,12 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
     7 of 8, in Chrome 9 of 11 (the known two). BC reference 1 of 2 (the known decoded route).
     Unit tests 10 of 10. Clippy with warnings denied: native all targets, `record` (library and
     trace test), wasm32 (browser, draw-cost, replay with `trace`): clean.
+  - The last full run, at the pushed head (all.cmd, out C:\wc\out\webgl\g3b2-all2, scratch
+    g3b2/all2.log): Chrome 92 passed, 3 not run, 0 failed with every extension; 84 passed and 11
+    not run on the reduced route; 64 passed, 3 not run and 28 known failures (26 and the two new
+    tests, all from the suite's raster blocks) without EXT_clip_control, the same without it and
+    WEBGL_provoking_vertex. ANGLE 95 of 95, and 68 of 95 on both reduced routes (the 27 known).
+    Against WebGPU and the BC reference as above; unit tests 10 of 10; trace test 1 of 1.
   - The trace round trip (tests/trace.rs, seed none: one fixed scene): 1 of 1, equal texels on a
     new WebGL 2 back end and on the WebGPU back end (wgpu, Direct3D 12).
 - The frame-time measurement, 2026-11-18 09:58 desktop time, `gpu-job --alone --desktop`, CPU load
