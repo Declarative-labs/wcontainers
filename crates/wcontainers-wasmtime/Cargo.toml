@@ -22,6 +22,10 @@ gimli = { version = "0.34.0", default-features = false, features = ["read"] }
 rayon = "1.12.0"
 zerocopy.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The fork copy: the system's own exact copy of a range of pages.
+mach2 = "0.6.0"
+
 [build-dependencies]
 blake3 = "1"
 

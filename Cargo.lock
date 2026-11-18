@@ -1977,6 +1977,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "gimli 0.34.0",
+ "mach2",
  "object 0.41.0",
  "rayon",
  "rustix",

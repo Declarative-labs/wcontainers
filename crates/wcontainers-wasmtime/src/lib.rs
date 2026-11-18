@@ -363,6 +363,8 @@ struct Process<G: Guest> {
     permissions: Vec<Permissions>,
     /// The back end's write locks on each page, by reason bit.
     locks: Vec<u8>,
+    /// Pages that may hold anything but zeros: given access or written since last zeroed.
+    data: Pages,
     /// Ranges that show a block of shared pages, by start.
     shown: BTreeMap<u64, Shown>,
     /// Pages showing a block that the guest has written since their copies were last made.
@@ -377,6 +379,44 @@ struct Process<G: Guest> {
 
 /// Write lock: the page shows a block of shared pages.
 const LOCK_SHARED: u8 = 1;
+
+/// One bit per page.
+#[derive(Clone)]
+struct Pages(Vec<u64>);
+
+impl Pages {
+    fn new(pages: u64) -> Self {
+        Pages(vec![0; pages.div_ceil(64) as usize])
+    }
+
+    fn set(&mut self, pages: Range<u64>, on: bool) {
+        for page in pages {
+            let (word, bit) = ((page / 64) as usize, page % 64);
+            if on {
+                self.0[word] |= 1 << bit;
+            } else {
+                self.0[word] &= !(1 << bit);
+            }
+        }
+    }
+
+    /// The runs of pages that are set, in order.
+    fn runs(&self) -> Vec<Range<u64>> {
+        let mut runs: Vec<Range<u64>> = Vec::new();
+        for (index, &word) in self.0.iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                let page = index as u64 * 64 + u64::from(bits.trailing_zeros());
+                bits &= bits - 1;
+                match runs.last_mut() {
+                    Some(run) if run.end == page => run.end += 1,
+                    _ => runs.push(page..page + 1),
+                }
+            }
+        }
+        runs
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Shown {
@@ -393,6 +433,7 @@ struct Code {
 }
 
 /// A range the kernel announced as code.
+#[derive(Clone)]
 struct CodeRange {
     range: Range<u64>,
     starts: Vec<u64>,
@@ -404,6 +445,7 @@ struct CodeRange {
 }
 
 /// A compiled translation placed in a process's lookup tables.
+#[derive(Clone)]
 struct Load {
     compiled: Arc<Compiled>,
     load_address: u64,
@@ -897,6 +939,138 @@ where
                 )
                 .fill(0);
             }
+        }
+    }
+
+    /// A process with a new store and memories, all zeros, where every page allows nothing.
+    fn new_process(&self, id: MemoryId) -> Result<Process<G>, CpuError> {
+        let engine = self.compiler.engine.clone();
+        let mut store = Store::new(
+            &engine,
+            Data {
+                side: std::ptr::null_mut(),
+                answer: None,
+                memory: id,
+                thread: ThreadId(0),
+                block_at: 0,
+                state_base: std::ptr::null_mut(),
+                progress: 0,
+                reported: 0,
+                limit: None,
+                leaving: false,
+                rerun: None,
+                pending: None,
+                lock_fault: None,
+                // Each translation and thread is an instance and a table.
+                limits: StoreLimitsBuilder::new()
+                    .instances(usize::MAX)
+                    .tables(usize::MAX)
+                    .memories(usize::MAX)
+                    .build(),
+            },
+        );
+        store.limiter(|data| &mut data.limits);
+        let layout = self.layout;
+        let pages = layout.ceiling / 65536;
+        let memory = Memory::new(&mut store, MemoryType::new64(pages, Some(pages)))
+            .map_err(|_| CpuError::OutOfMemory)?;
+        let base = memory.data_ptr(&store);
+        let state = SharedMemory::new(
+            &engine,
+            MemoryType::shared(layout.state_pages, layout.state_pages),
+        )
+        .map_err(|_| CpuError::OutOfMemory)?;
+        let state_base = state.data().as_ptr() as *mut u8;
+        let hooks = hooks::<G>(&mut store);
+        let pages = layout.permission_pages as usize;
+        Ok(Process {
+            store: Some(store),
+            memory,
+            base,
+            state,
+            state_base,
+            hooks,
+            permissions: vec![Permissions::empty(); pages],
+            locks: vec![0; pages],
+            data: Pages::new(pages as u64),
+            shown: BTreeMap::new(),
+            written: BTreeSet::new(),
+            ranges: Vec::new(),
+            loads: Vec::new(),
+            next_slot: contract::EXACT_SLOT as u32 + 1,
+            free_blocks: Vec::new(),
+            next_block: 0,
+            dropped: false,
+        })
+    }
+
+    /// Makes `into`, a new process, a copy of `source` (of this back end or another of the same guest):
+    /// every page that may hold data copied exactly, the same pages' permissions, locks and blocks
+    /// shown, and, with `code`, the same translations at the same slots. Threads are not copied.
+    fn copy_from(&self, into: &mut Process<G>, source: &Process<G>, code: bool) {
+        debug_assert!(
+            source.written.is_empty(),
+            "the copies of shared pages are made first"
+        );
+        let host_page = memory::host_page();
+        let copy = |from: *mut u8, to: *mut u8, runs: &mut dyn Iterator<Item = Range<u64>>| {
+            let mut merged: Vec<Range<u64>> = Vec::new();
+            for run in runs {
+                let run = run.start / host_page * host_page..run.end.next_multiple_of(host_page);
+                match merged.last_mut() {
+                    Some(last) if last.end >= run.start => last.end = last.end.max(run.end),
+                    _ => merged.push(run),
+                }
+            }
+            for run in merged {
+                // SAFETY: whole host pages inside the two processes' own mappings, the new one still
+                // all zeros; no guest of either runs meanwhile.
+                unsafe {
+                    memory::copy_pages(
+                        from.add(run.start as usize),
+                        to.add(run.start as usize),
+                        (run.end - run.start) as usize,
+                    )
+                }
+            }
+        };
+        copy(
+            source.base,
+            into.base,
+            &mut source
+                .data
+                .runs()
+                .into_iter()
+                .map(|pages| pages.start * PAGE_SIZE..pages.end * PAGE_SIZE),
+        );
+        into.permissions.clone_from(&source.permissions);
+        into.locks.clone_from(&source.locks);
+        into.data.clone_from(&source.data);
+        into.shown.clone_from(&source.shown);
+        let layout = self.layout;
+        if code {
+            // The table is the same record's, and its slots are the source's, so both are copied.
+            let table = u64::from(layout.permissions_at)
+                ..u64::from(layout.permissions_at) + layout.permission_pages + 1;
+            let slots = source.ranges.iter().map(|code| {
+                let entry = |address: u64| u64::from(layout.slots_at) + 4 * (address / G::ALIGN);
+                entry(code.range.start)..entry(code.range.end.min(layout.ceiling))
+            });
+            let mut runs: Vec<Range<u64>> = std::iter::once(table).chain(slots).collect();
+            runs.sort_by_key(|run| run.start);
+            copy(source.state_base, into.state_base, &mut runs.into_iter());
+            into.ranges.clone_from(&source.ranges);
+            into.loads.clone_from(&source.loads);
+            into.next_slot = source.next_slot;
+        } else {
+            into.ranges = source
+                .ranges
+                .iter()
+                .map(|range| CodeRange {
+                    translated: false,
+                    ..range.clone()
+                })
+                .collect();
         }
     }
 
@@ -1705,9 +1879,40 @@ where
     }
 
     fn restored(&self) -> Self {
-        unimplemented!(
-            "bringing a saved container back on the WebAssembly back end is built with the fork copy (runtime plan J2)"
-        )
+        let compiler = Compiler::new(self.compiler.directory.clone());
+        let mut side = Self::new(compiler, self.look_ahead, self.optimise, self.offer);
+        side.last = self.last;
+        side.blocks.clone_from(&self.blocks);
+        side.counters.clone_from(&self.counters);
+        side.warned.clone_from(&self.warned);
+        side.translated.clone_from(&self.translated);
+        for (&id, source) in &self.processes {
+            let mut process = side
+                .new_process(id)
+                .expect("memory for a process brought back");
+            side.copy_from(&mut process, source, false);
+            process.free_blocks.clone_from(&source.free_blocks);
+            process.next_block = source.next_block;
+            side.processes.insert(id, process);
+            side.write_table(id, 0..side.layout.permission_pages);
+        }
+        let bytes = self.layout.thread_bytes as usize;
+        for (&id, thread) in &self.threads {
+            side.block_bytes(thread.memory, thread.block_at, bytes)
+                .copy_from_slice(self.block_bytes(thread.memory, thread.block_at, bytes));
+            side.threads.insert(
+                id,
+                Thread {
+                    memory: thread.memory,
+                    block_at: thread.block_at,
+                    instance: None,
+                    exact: HashMap::new(),
+                    held: thread.held,
+                    dropped: false,
+                },
+            );
+        }
+        side
     }
 }
 
@@ -1723,71 +1928,18 @@ where
 
     fn memory_new(&mut self) -> Result<MemoryId, CpuError> {
         let id = MemoryId(self.fresh());
-        let engine = self.compiler.engine.clone();
-        let mut store = Store::new(
-            &engine,
-            Data {
-                side: std::ptr::null_mut(),
-                answer: None,
-                memory: id,
-                thread: ThreadId(0),
-                block_at: 0,
-                state_base: std::ptr::null_mut(),
-                progress: 0,
-                reported: 0,
-                limit: None,
-                leaving: false,
-                rerun: None,
-                pending: None,
-                lock_fault: None,
-                // Each translation and thread is an instance and a table.
-                limits: StoreLimitsBuilder::new()
-                    .instances(usize::MAX)
-                    .tables(usize::MAX)
-                    .memories(usize::MAX)
-                    .build(),
-            },
-        );
-        store.limiter(|data| &mut data.limits);
-        let layout = self.layout;
-        let pages = layout.ceiling / 65536;
-        let memory = Memory::new(&mut store, MemoryType::new64(pages, Some(pages)))
-            .map_err(|_| CpuError::OutOfMemory)?;
-        let base = memory.data_ptr(&store);
-        let state = SharedMemory::new(
-            &engine,
-            MemoryType::shared(layout.state_pages, layout.state_pages),
-        )
-        .map_err(|_| CpuError::OutOfMemory)?;
-        let state_base = state.data().as_ptr() as *mut u8;
-        let hooks = hooks::<G>(&mut store);
-        let pages = layout.permission_pages as usize;
-        self.processes.insert(
-            id,
-            Process {
-                store: Some(store),
-                memory,
-                base,
-                state,
-                state_base,
-                hooks,
-                permissions: vec![Permissions::empty(); pages],
-                locks: vec![0; pages],
-                shown: BTreeMap::new(),
-                written: BTreeSet::new(),
-                ranges: Vec::new(),
-                loads: Vec::new(),
-                next_slot: contract::EXACT_SLOT as u32 + 1,
-                free_blocks: Vec::new(),
-                next_block: 0,
-                dropped: false,
-            },
-        );
+        let process = self.new_process(id)?;
+        self.processes.insert(id, process);
         Ok(id)
     }
 
-    fn memory_duplicate(&mut self, _source: MemoryId) -> Result<MemoryId, CpuError> {
-        Err(CpuError::NotSupported)
+    fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
+        self.flush(source);
+        let id = MemoryId(self.fresh());
+        let mut process = self.new_process(id)?;
+        self.copy_from(&mut process, self.process(source), true);
+        self.processes.insert(id, process);
+        Ok(id)
     }
 
     fn memory_drop(&mut self, memory: MemoryId) {
@@ -1814,6 +1966,9 @@ where
         self.check(address, from.len() as u64)?;
         self.flush(memory);
         self.copy_in(memory, address, from);
+        let pages = address / PAGE_SIZE..(address + from.len() as u64).div_ceil(PAGE_SIZE);
+        let process = self.processes.get_mut(&memory).expect("a memory");
+        process.data.set(pages, true);
         let end = address + from.len() as u64;
         let shown: Vec<(u64, Shown)> = self
             .process(memory)
@@ -1834,7 +1989,13 @@ where
         self.check(address, length)?;
         self.flush(memory);
         self.unshow(memory, address..address + length);
-        let host_page = rustix::param::page_size() as u64;
+        // Only pages zeroed whole are known to hold nothing.
+        let whole = address.div_ceil(PAGE_SIZE)..(address + length) / PAGE_SIZE;
+        if whole.start < whole.end {
+            let process = self.processes.get_mut(&memory).expect("a memory");
+            process.data.set(whole, false);
+        }
+        let host_page = memory::host_page();
         let (first, end) = (
             address.next_multiple_of(host_page),
             (address + length) / host_page * host_page,
@@ -1866,6 +2027,9 @@ where
         let pages = address / PAGE_SIZE..(address + length).div_ceil(PAGE_SIZE);
         let process = self.processes.get_mut(&memory).expect("a memory");
         process.permissions[pages.start as usize..pages.end as usize].fill(permissions);
+        if !permissions.is_empty() {
+            process.data.set(pages.clone(), true);
+        }
         self.write_table(memory, pages);
         Ok(())
     }
@@ -1967,6 +2131,7 @@ where
         for page in pages.clone() {
             process.locks[page as usize] |= LOCK_SHARED;
         }
+        process.data.set(pages.clone(), true);
         self.write_table(memory, pages);
         Ok(())
     }
