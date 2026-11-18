@@ -53,15 +53,17 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   text holds the name matches too, a watcher's included; never start a second driver beside it). What it is doing: `tail -3
   .../p2/long/driver.log`. Done so far: `cut -f1,2,4,6,7,10 .../p2/long/ledger.txt`.
 - Restart after a stop or a fix (from the checkout root, all committed):
-  `WC_LONG_DIR=/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/translator/p2/long WC_LONG_SEED=100 WC_LONG_ACCEPT=c38b4ad nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh >> .../p2/long/driver.log 2>&1 &`
+  `WC_LONG_DIR=/Users/thomaseaton/Documents/GitHub/pyro-parked/wcontainers-scratch/translator/p2/long WC_LONG_SEED=100 WC_LONG_ACCEPT=c38b4ad WC_LONG_LIMIT=180 nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh >> .../p2/long/driver.log 2>&1 &`
   It skips every chunk that passed on c38b4ad or later and runs the rest. To stop it: `pkill -f long-runs.sh`,
   then stop its `cargo test` and remove its containers (`docker ps -aq --filter name=wc-translator- | xargs
   docker rm -f`).
 - Restarted 2026-11-16 16:44 on 92b0866 (the square root fix below) with `WC_LONG_ACCEPT=c38b4ad`: layer 1
   chunks 1, 2 and 4 kept from c38b4ad, chunk 3 run again. Chunk 5 had started on c38b4ad and was stopped
   (no ledger line). Restarted again 2026-11-16 22:59 on 445e3cf (the layer 2 generator fix), same command;
-  it is that run (driver pid 87380 at the time of writing) that is going now. Use `WC_LONG_ACCEPT=c38b4ad`
-  on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
+  it was stopped 2026-11-17 20:34 after layer 3 chunk 55 was stopped at the limit (failure 3 below).
+  Restarted 21:21 on de8f4a2 with `WC_LONG_LIMIT=180` added (a chunk may take 3 hours); chunk 55 runs again
+  first. That run (driver pid 84798 at the time of writing) is the one going now. Use `WC_LONG_ACCEPT=c38b4ad
+  WC_LONG_LIMIT=180` on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
   `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
 - Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
   s+=c[2]} END {print s}' .../p2/long/ledger.txt`. Any chunk that did not pass: `grep -v result=pass
