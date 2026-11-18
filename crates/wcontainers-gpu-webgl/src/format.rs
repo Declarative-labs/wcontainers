@@ -124,6 +124,11 @@ pub fn gl_format(format: Format) -> Option<GlFormat> {
     }
 }
 
+/// Whether `format` is signed normalised, whose smallest value a draw reads as the one above it.
+pub fn signed_normalised(format: Format) -> bool {
+    gl_format(format).is_some_and(|g| g.class == Class::Norm { render: false })
+}
+
 /// Whether `format` holds 16-bit or 32-bit floats, whose NaN payloads and denormals a copy keeps.
 pub fn float_bits(format: Format) -> bool {
     gl_format(format).is_some_and(|g| matches!(g.class, Class::Half | Class::Single))
@@ -201,8 +206,10 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
         };
     // Depth and stencil read back by draws into a colour texture; stencil is sampled with
     // WEBGL_stencil_texturing or from a copy filled by draws.
-    // Formats GL cannot read back are read from the host copy.
-    if read_as(format, ext).is_some() || gl.class == Class::Depth || crate::host::kept(format) {
+    // Formats GL cannot read back are read from the host copy, which draws into signed normalised
+    // formats leave behind.
+    let held = crate::host::kept(format) && !(signed_normalised(format) && ext.render_snorm);
+    if read_as(format, ext).is_some() || gl.class == Class::Depth || held {
         uses |= FormatUse::COPY_OUT;
     }
     // The canvas's drawing buffer is RGBA8, which surfaces present into; BGRA8 is stored as RGBA8.

@@ -756,7 +756,9 @@ fn pattern(len: usize, seed: u32) -> Vec<u8> {
 /// Copies between formats of one typeless group keep every byte: a region of two layers of a 2D
 /// array texture written with every bit pattern is copied into a texture of the other format at
 /// another place, and read back (10-10-10-2 formats, which GL does not read back, by a program
-/// loading them). A pair whose formats the back end lacks is skipped, and says so.
+/// loading them). Signed normalised pairs hold the smallest value (-128, -32768) in every fifth
+/// component, which samples as the value above it. A pair whose formats the back end lacks is
+/// skipped, and says so.
 pub fn copies_within_a_typeless_group<H: Host>() {
     use crate::kit;
     let mut b = H::make();
@@ -799,6 +801,17 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::Rg32Uint, Format::Rg32Sint),
         (Format::Rg32Sint, Format::Rg32Float),
         (Format::Rgba8Sint, Format::Rgba8Uint),
+        (Format::R8Snorm, Format::R8Uint),
+        (Format::R8Uint, Format::R8Snorm),
+        (Format::Rg8Snorm, Format::Rg8Unorm),
+        (Format::Rg8Sint, Format::Rg8Snorm),
+        (Format::Rgba8Snorm, Format::Rgba8Uint),
+        (Format::Rgba8Unorm, Format::Rgba8Snorm),
+        (Format::R16Snorm, Format::R16Float),
+        (Format::R16Float, Format::R16Snorm),
+        (Format::Rg16Snorm, Format::Rg16Uint),
+        (Format::Rgba16Sint, Format::Rgba16Snorm),
+        (Format::Rgba16Snorm, Format::Rgba16Unorm),
         // Copies within one format, the commonest, keep every bit too.
         (Format::R16Float, Format::R16Float),
         (Format::Rg16Float, Format::Rg16Float),
@@ -813,6 +826,8 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::Rgba16Unorm, Format::Rgba16Unorm),
         (Format::Rg16Sint, Format::Rg16Sint),
         (Format::Rgba32Uint, Format::Rgba32Uint),
+        (Format::Rgba8Snorm, Format::Rgba8Snorm),
+        (Format::Rg16Snorm, Format::Rg16Snorm),
     ];
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for (i, (from, to)) in pairs.into_iter().enumerate() {
@@ -829,7 +844,13 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         };
         let src = make(&mut b, from);
         let dst = make(&mut b, to);
-        let bytes = typeless_bytes(from, 32, 0x9e37_79b9 ^ i as u32);
+        let mut bytes = typeless_bytes(from, 32, 0x9e37_79b9 ^ i as u32);
+        if let Some(w) = smallest_width(from).or(smallest_width(to)) {
+            for c in bytes.chunks_exact_mut(w).step_by(5) {
+                c.fill(0);
+                c[w - 1] = 0x80;
+            }
+        }
         let whole = Extent {
             width: 4,
             height: 4,
@@ -926,14 +947,127 @@ fn typeless_bytes(format: Format, texels: usize, seed: u32) -> Vec<u8> {
     bytes
 }
 
-/// The unsigned integer twin of a 16-bit float format, which GL does not read back.
+/// The integer twin of a format the back end may not read back: of 16-bit floats the unsigned one,
+/// of signed normalised formats the signed one.
 fn twin(format: Format) -> Option<Format> {
+    use Format as F;
+    Some(match format {
+        F::R16Float => F::R16Uint,
+        F::Rg16Float => F::Rg16Uint,
+        F::Rgba16Float => F::Rgba16Uint,
+        F::R8Snorm => F::R8Sint,
+        F::Rg8Snorm => F::Rg8Sint,
+        F::Rgba8Snorm => F::Rgba8Sint,
+        F::R16Snorm => F::R16Sint,
+        F::Rg16Snorm => F::Rg16Sint,
+        F::Rgba16Snorm => F::Rgba16Sint,
+        _ => return None,
+    })
+}
+
+/// Bytes per component of a signed normalised format, whose smallest value samples as the one
+/// above it.
+fn smallest_width(format: Format) -> Option<usize> {
+    use Format as F;
     match format {
-        Format::R16Float => Some(Format::R16Uint),
-        Format::Rg16Float => Some(Format::Rg16Uint),
-        Format::Rgba16Float => Some(Format::Rgba16Uint),
+        F::R8Snorm | F::Rg8Snorm | F::Rgba8Snorm => Some(1),
+        F::R16Snorm | F::Rg16Snorm | F::Rgba16Snorm => Some(2),
         _ => None,
     }
+}
+
+/// Signed normalised texels drawn into (with EXT_render_snorm) keep their bits through copies: a
+/// draw writes no smallest value, so a draw reading them back recovers them (on the GPU into a
+/// format that renders, or into the host copy, `HostCopyReadBack`); the smallest value written by
+/// the host after a draw is kept. Texels drawn over after such a write cannot be told from the
+/// value above, so copying their bits loses the device as not built.
+pub fn signed_normalised_texels_drawn_then_copied<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let f = Format::Rgba8Snorm;
+    if !b.caps().formats.get(f).contains(FormatUse::RENDER) {
+        println!("not drawn: {f:?} does not render here");
+        return;
+    }
+    let usage = TextureUsage::RENDER
+        | TextureUsage::SAMPLE
+        | TextureUsage::COPY_SRC
+        | TextureUsage::COPY_DST;
+    let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 1, usage, false);
+    let v = kit::target(&mut b, &t, f, 0, 0);
+    // -1, 64/127, -32/127 and 1: 0x81, 0x40, 0xe0 and 0x7f.
+    let clear = [-1.0f32, 64.0 / 127.0, -32.0 / 127.0, 1.0].map(f32::to_bits);
+    let drawn = [0x81u8, 0x40, 0xe0, 0x7f].repeat(16);
+    let whole = Extent {
+        width: 4,
+        height: 4,
+        depth_or_layers: 1,
+    };
+    let copied = |b: &mut H::Backend, to: Format| {
+        let u = kit::texture(b, TextureDimension::D2, to, [4, 4, 1], 1, usage, false);
+        b.copy_texture(
+            &layer_at(&t, 0, 0, 0, false),
+            &layer_at(&u, 0, 0, 0, false),
+            whole,
+        );
+        let got = kit::read(b, &u, 0, 0, [4, 4, 1], 4, false);
+        b.destroy(Object::Texture(u));
+        got
+    };
+    let count = |b: &mut H::Backend, path| b.slow_paths().count(path);
+    b.begin_pass(&kit::pass(&v, clear, None));
+    b.end_pass();
+    let gpu = count(&mut b, SlowPath::CopyThroughBuffer);
+    assert_eq!(
+        copied(&mut b, Format::Rgba8Uint),
+        drawn,
+        "drawn, then copied on the GPU"
+    );
+    assert!(count(&mut b, SlowPath::CopyThroughBuffer) > gpu);
+    // The smallest value written over the first texel after the draw.
+    let host = count(&mut b, SlowPath::HostCopyReadBack);
+    b.write_texture(
+        &layer_at(&t, 0, 0, 0, false),
+        Extent {
+            width: 1,
+            height: 1,
+            depth_or_layers: 1,
+        },
+        &[0x80, 0x80, 0x80, 0x80],
+        4,
+        1,
+        WriteMode::Ordered,
+    );
+    assert_eq!(count(&mut b, SlowPath::HostCopyReadBack), host + 1);
+    let mut want = drawn.clone();
+    want[..4].fill(0x80);
+    assert_eq!(
+        copied(&mut b, Format::Rgba8Sint),
+        want,
+        "the smallest value written after a draw"
+    );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    // Drawn over again: whether the first texel still holds -128 or a draw wrote -127 is lost.
+    let load = PassDesc {
+        colors: core::array::from_fn(|i| {
+            (i == 0).then_some(ColorAttachment {
+                view: &v,
+                depth_slice: 0,
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+                resolve: None,
+            })
+        }),
+        ..kit::pass(&v, clear, None)
+    };
+    b.begin_pass(&load);
+    b.end_pass();
+    copied(&mut b, Format::Rgba8Uint);
+    assert_ne!(
+        b.status(),
+        DeviceStatus::Ok,
+        "bits drawn over the smallest value"
+    );
 }
 
 /// Copies within one float format are blits, taking no slow path, where the probe found blits keep
@@ -1834,6 +1968,18 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
             before,
             "{format:?}: a range known to lack the value draws as it is"
         );
+        // The largest value made by a host write of its last byte only.
+        let top = 3 * width - 1;
+        let mut partial = indices.clone();
+        partial[top] = 0;
+        let ib = buffer(&mut b, BufferUsage::INDEX, &partial);
+        b.write_buffer(&ib, top as u64, &[0xff], WriteMode::Ordered);
+        draw(&mut b, &ib, 0);
+        assert_eq!(
+            covered(&mut b),
+            16,
+            "{format:?}: the largest value made by a write of its last byte"
+        );
         b.begin_pass(&kit::pass(&v, [0; 4], None));
         let source = IndexSource::Guest {
             indices: &indices[..3 * width],
@@ -2165,8 +2311,9 @@ const LOAD_CORNER_FLOAT: &str = "
 ";
 
 /// The signed normalised formats follow EXT_render_snorm: with it they render and blend, and a
-/// clear to -1, 0, 1 and 64 steps loads back as those values; with or without it they sample and
-/// filter, and never copy out (`readPixels` returns -128 as -127).
+/// clear to -1, 0, 1 and 64 steps loads back as those values. With or without it they sample and
+/// filter; without it they copy out from their host copy, with it not (`readPixels` returns -128
+/// as -127, and draws write texels the host copy lacks).
 pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
     use crate::kit::{self, Kit};
     use Format as F;
@@ -2200,11 +2347,12 @@ pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
         let uses = b.caps().formats.get(format);
         assert!(
             uses.contains(FormatUse::SAMPLE | FormatUse::FILTER)
-                && !uses.contains(FormatUse::COPY_OUT),
+                && uses.contains(FormatUse::COPY_OUT) != has,
             "{format:?}: {uses:?}"
         );
         if !has {
-            assert_eq!(uses, FormatUse::SAMPLE | FormatUse::FILTER, "{format:?}");
+            let held = FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
+            assert_eq!(uses, held, "{format:?}");
             continue;
         }
         assert!(
