@@ -97,9 +97,11 @@ foreach ($n in 2, 4, 5, 6, 7) {
 foreach ($e in $bgfxExamples) {
     $all["bgfx-$e"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d11'; ignore = '0,236,320,36' }
 }
-# Two of them on bgfx's Direct3D 12 renderer: the plain cubes and the render-target chain.
+# Two of them on bgfx's Direct3D 12 renderer: the plain cubes and the render-target chain. The
+# overlay's GPU time line, above the memory line, is left out too: it shows Direct3D 12 timestamps,
+# which the frame clock does not answer.
 foreach ($e in '01-cubes', '38-bloom') {
-    $all["bgfx-$e-d3d12"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d12'; api = 'd3d12'; ignore = '0,236,320,36' }
+    $all["bgfx-$e-d3d12"] = @{ exe = "$bgfxBin\example-${e}Release.exe"; cwd = 'bgfx\examples\runtime'; args = '--d3d12'; api = 'd3d12'; ignore = '0,208,320,64' }
 }
 # Microsoft's DirectX Tool Kit samples, run in the root of their repository, where they find their
 # media (under Media).
