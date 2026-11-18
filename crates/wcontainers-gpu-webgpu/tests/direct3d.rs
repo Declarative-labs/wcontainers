@@ -3,7 +3,8 @@
 //! `rgba16unorm` values (both filtered in the program) against GenerateMips, and a multisampled
 //! `rgba8unorm` texture made with `reinterpret` resolved as `rgba8unorm-srgb` against
 //! ResolveSubresource with `R8G8B8A8_UNORM_SRGB`; BC textures loaded natively and decoded against
-//! Direct3D 11 and WARP loading the same blocks.
+//! Direct3D 11 and WARP loading the same blocks; timestamps around the same work as Direct3D 11's;
+//! formats held converted loaded, filtered and (8-bit alpha) drawn into as Direct3D 11 does.
 //!
 //! Windows only: needs a GPU and Direct3D 11 (the rig's device and shaders, test-only); `WEBGPU_API`
 //! as in tests/scenes.rs.
@@ -17,6 +18,14 @@ mod scene;
 #[allow(dead_code)]
 #[path = "../examples/scenes/draw.rs"]
 mod draw;
+
+#[allow(dead_code)]
+#[path = "../examples/scenes/timestamps.rs"]
+mod timestamps;
+
+#[allow(dead_code)]
+#[path = "../examples/scenes/converted.rs"]
+mod converted;
 
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, ColorAttachment, DeviceStatus, DrawCall, DrawRange,
@@ -576,12 +585,16 @@ const BC_LOAD_WGSL: &str = "
 ";
 
 fn hlsl(entry: windows::core::PCSTR, target: windows::core::PCSTR) -> Vec<u8> {
+    hlsl_of(BC_LOAD_HLSL, entry, target)
+}
+
+fn hlsl_of(source: &str, entry: windows::core::PCSTR, target: windows::core::PCSTR) -> Vec<u8> {
     use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
     let mut code = None;
     unsafe {
         D3DCompile(
-            BC_LOAD_HLSL.as_ptr().cast(),
-            BC_LOAD_HLSL.len(),
+            source.as_ptr().cast(),
+            source.len(),
             windows::core::PCSTR::null(),
             None,
             None,
@@ -846,5 +859,392 @@ fn bc_textures_decoded_are_as_close_to_direct3d_as_warp() {
     assert_eq!(native.status(), DeviceStatus::Ok);
     assert_eq!(decoded.status(), DeviceStatus::Ok);
     assert!(decoded.slow_paths().count(SlowPath::BlockDecoded) > 0);
+    assert!(beyond.is_empty(), "{beyond:#?}");
+}
+
+/// Milliseconds since the first call.
+fn now() -> f64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+        * 1000.0
+}
+
+/// tests/timestamps.rs's work in HLSL: the same loop, rounds and target.
+fn timestamp_hlsl() -> String {
+    format!(
+        r#"
+float4 vs(uint i : SV_VertexID) : SV_Position {{
+    float2 p = float2((i << 1) & 2, i & 2);
+    return float4(p * 2.0 - 1.0, 0.0, 1.0);
+}}
+float4 ps(float4 p : SV_Position) : SV_Target {{
+    float2 c = p.xy / {size}.0;
+    [loop] for (int i = 0; i < {rounds}; i++) {{
+        c = frac(c * 1.7 + c.yx * 0.3 + 0.1);
+    }}
+    return float4(c, 0.0, 1.0);
+}}
+"#,
+        size = timestamps::SIZE,
+        rounds = timestamps::ROUNDS
+    )
+}
+
+/// Direct3D 11's two stretches around the same work, in nanoseconds, its timestamps in order.
+fn d3d_stretches() -> (u64, u64) {
+    let gpu = direct3d();
+    let source = timestamp_hlsl();
+    let vs = hlsl_of(
+        &source,
+        windows::core::s!("vs"),
+        windows::core::s!("vs_5_0"),
+    );
+    let ps = hlsl_of(
+        &source,
+        windows::core::s!("ps"),
+        windows::core::s!("ps_5_0"),
+    );
+    gpu.program(&vs, &ps, &[]).unwrap();
+    // The covering triangle winds anticlockwise: no culling.
+    let raster = gpu.rasterizer(&solid()).unwrap();
+    unsafe { gpu.context.RSSetState(&raster) };
+    let (_target, rtv) = gpu
+        .target(
+            timestamps::SIZE,
+            timestamps::SIZE,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+        )
+        .unwrap();
+    let query = |kind| {
+        d3d11::made(|o| unsafe {
+            gpu.device.CreateQuery(
+                &D3D11_QUERY_DESC {
+                    Query: kind,
+                    MiscFlags: 0,
+                },
+                Some(o),
+            )
+        })
+        .unwrap()
+    };
+    let wait = |q: &ID3D11Query, data: *mut std::ffi::c_void, size: usize| loop {
+        // The wrapper takes S_FALSE (not ready) as success, so the call goes through the vtable.
+        let hr = unsafe {
+            (Interface::vtable(&gpu.context).GetData)(
+                Interface::as_raw(&gpu.context),
+                Interface::as_raw(q),
+                data,
+                size as u32,
+                0,
+            )
+        };
+        hr.ok().unwrap();
+        if hr.0 == 0 {
+            break;
+        }
+        std::thread::yield_now();
+    };
+    let stretch = |draws: u32| unsafe {
+        gpu.context
+            .OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+        gpu.viewport(timestamps::SIZE, timestamps::SIZE);
+        gpu.context.IASetPrimitiveTopology(
+            windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+        );
+        for _ in 0..draws {
+            gpu.context.Draw(3, 0);
+        }
+    };
+    stretch(1);
+    let disjoint = query(D3D11_QUERY_TIMESTAMP_DISJOINT);
+    let stamps: Vec<_> = (0..4).map(|_| query(D3D11_QUERY_TIMESTAMP)).collect();
+    unsafe { gpu.context.Begin(&disjoint) };
+    for (stamp, draws) in stamps
+        .iter()
+        .zip([timestamps::DRAWS, timestamps::DRAWS * 2, 0, 0])
+    {
+        unsafe { gpu.context.End(stamp) };
+        stretch(draws);
+    }
+    unsafe {
+        gpu.context.End(&disjoint);
+        gpu.context.Flush();
+    }
+    let mut info = D3D11_QUERY_DATA_TIMESTAMP_DISJOINT::default();
+    wait(
+        &disjoint,
+        (&mut info as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT).cast(),
+        std::mem::size_of_val(&info),
+    );
+    assert!(
+        !info.Disjoint.as_bool(),
+        "Direct3D's timestamps were disjoint"
+    );
+    let ticks: Vec<u64> = stamps
+        .iter()
+        .map(|q| {
+            let mut t = 0u64;
+            wait(q, (&mut t as *mut u64).cast(), 8);
+            t
+        })
+        .collect();
+    let ns: Vec<u64> = ticks
+        .iter()
+        .map(|t| (u128::from(*t) * 1_000_000_000 / u128::from(info.Frequency)) as u64)
+        .collect();
+    eprintln!(
+        "Direct3D 11: frequency {} Hz, timestamps {ns:?} ns",
+        info.Frequency
+    );
+    assert!(
+        ns[0] < ns[1] && ns[1] < ns[2] && ns[2] <= ns[3],
+        "Direct3D's own timestamps out of order: {ns:?}"
+    );
+    (ns[1] - ns[0], ns[2] - ns[1])
+}
+
+/// Our timestamps around the work are in order, and each stretch takes within a factor of two of
+/// what Direct3D 11's timestamps say the same work takes on the same GPU.
+#[test]
+fn timestamps_match_direct3d_in_order_and_scale() {
+    let ours = {
+        let mut b = device_without(wgpu::Features::empty());
+        let stamps = timestamps::measure(&mut b, now).unwrap_or_else(|e| panic!("{e}"));
+        eprintln!("ours: {}", stamps.line());
+        let n = stamps.ns;
+        assert!(
+            n[0] < n[1] && n[1] < n[2] && n[2] <= n[3],
+            "out of order: {n:?}"
+        );
+        stamps.stretches()
+    };
+    let theirs = d3d_stretches();
+    eprintln!(
+        "stretches: ours {:.3} ms and {:.3} ms, Direct3D 11's {:.3} ms and {:.3} ms",
+        ours.0 as f64 / 1e6,
+        ours.1 as f64 / 1e6,
+        theirs.0 as f64 / 1e6,
+        theirs.1 as f64 / 1e6
+    );
+    for (o, t) in [(ours.0, theirs.0), (ours.1, theirs.1)] {
+        let ratio = o as f64 / t as f64;
+        assert!(
+            (0.5..=2.0).contains(&ratio),
+            "a stretch took {ratio:.2} times Direct3D's time"
+        );
+    }
+}
+
+/// examples/scenes/converted.rs's programs in Direct3D's language.
+const CONVERTED_HLSL: &str = "
+Texture2D<float4> t : register(t0);
+SamplerState s : register(s0);
+float4 vs(uint i : SV_VertexID) : SV_Position {
+    float2 p = float2((i << 1) & 2, i & 2);
+    return float4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+float4 ps(float4 p : SV_Position) : SV_Target {
+    float2 size;
+    t.GetDimensions(size.x, size.y);
+    if (p.x < size.x) return t.Load(int3(p.xy, 0));
+    return t.SampleLevel(s, (p.xy - float2(size.x, 0.0) - 0.25) / size, 0.0);
+}
+float4 alpha(float4 p : SV_Position) : SV_Target {
+    return float4(0.9, 0.6, 0.3, frac((p.x * 7.0 + p.y * 13.0) / 32.0));
+}
+";
+
+/// The converted formats with Direct3D's.
+const CONVERTED: [(Format, DXGI_FORMAT); 8] = [
+    (Format::A8Unorm, DXGI_FORMAT_A8_UNORM),
+    (Format::Bgrx8Unorm, DXGI_FORMAT_B8G8R8X8_UNORM),
+    (Format::Bgrx8UnormSrgb, DXGI_FORMAT_B8G8R8X8_UNORM_SRGB),
+    (Format::Rgbg8Unorm, DXGI_FORMAT_R8G8_B8G8_UNORM),
+    (Format::Grgb8Unorm, DXGI_FORMAT_G8R8_G8B8_UNORM),
+    (Format::B5g6r5Unorm, DXGI_FORMAT_B5G6R5_UNORM),
+    (Format::Bgr5a1Unorm, DXGI_FORMAT_B5G5R5A1_UNORM),
+    (Format::Bgra4Unorm, DXGI_FORMAT_B4G4R4A4_UNORM),
+];
+
+/// Direct3D 11's texels of `texels` in `format` loaded, then filtered, as converted.rs draws them.
+fn d3d_sampled(gpu: &Gpu, vs: &[u8], format: DXGI_FORMAT, texels: &[u8]) -> (Vec<f32>, Vec<f32>) {
+    let (w, h) = converted::SIZE;
+    let texel = texels.len() as u32 / (w * h);
+    let mut desc = tex2d(w, h, format, D3D11_BIND_SHADER_RESOURCE);
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    let texture = gpu
+        .texture2d(&desc, &[d3d11::data(texels, w * texel, 0)])
+        .unwrap();
+    let view = gpu.srv(&texture.cast().unwrap(), None).unwrap();
+    let sampler = gpu
+        .sampler(&D3D11_SAMPLER_DESC {
+            Filter: D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
+            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+            MaxAnisotropy: 1,
+            ComparisonFunc: D3D11_COMPARISON_NEVER,
+            ..Default::default()
+        })
+        .unwrap();
+    let (target, rtv) = gpu
+        .target(w * 2, h, DXGI_FORMAT_R32G32B32A32_FLOAT)
+        .unwrap();
+    gpu.begin(&rtv, None, w * 2, h);
+    let ps = hlsl_of(
+        CONVERTED_HLSL,
+        windows::core::s!("ps"),
+        windows::core::s!("ps_5_0"),
+    );
+    gpu.program(vs, &ps, &[]).unwrap();
+    unsafe {
+        gpu.context.RSSetState(&gpu.rasterizer(&solid()).unwrap());
+        gpu.context.IASetPrimitiveTopology(
+            windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+        );
+        gpu.context.PSSetShaderResources(0, Some(&[Some(view)]));
+        gpu.context.PSSetSamplers(0, Some(&[Some(sampler)]));
+        gpu.context.Draw(3, 0);
+    }
+    let floats = floats(&d3d_read(gpu, &target, 0, 16));
+    let (mut loaded, mut filtered) = (Vec::new(), Vec::new());
+    for row in floats.chunks_exact((w * 8) as usize) {
+        let (l, f) = row.split_at((w * 4) as usize);
+        loaded.extend_from_slice(l);
+        filtered.extend_from_slice(f);
+    }
+    (loaded, filtered)
+}
+
+/// Direct3D 11's target of `format` drawn as converted.rs's `drawn` draws it: its bytes.
+fn d3d_drawn(gpu: &Gpu, vs: &[u8], format: DXGI_FORMAT, texel: usize) -> Vec<u8> {
+    let (w, h) = converted::SIZE;
+    let (target, rtv) = gpu.target(w, h, format).unwrap();
+    let ps = hlsl_of(
+        CONVERTED_HLSL,
+        windows::core::s!("alpha"),
+        windows::core::s!("ps_5_0"),
+    );
+    gpu.program(vs, &ps, &[]).unwrap();
+    let mut blend = D3D11_BLEND_DESC::default();
+    blend.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+        BlendEnable: true.into(),
+        SrcBlend: D3D11_BLEND_SRC_ALPHA,
+        DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
+        BlendOp: D3D11_BLEND_OP_ADD,
+        SrcBlendAlpha: D3D11_BLEND_SRC_ALPHA,
+        DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
+        BlendOpAlpha: D3D11_BLEND_OP_ADD,
+        RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+    };
+    unsafe {
+        let c = &gpu.context;
+        c.ClearRenderTargetView(&rtv, &[0.5, 0.75, 1.0, converted::CLEAR_ALPHA]);
+        c.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+        gpu.viewport(w, h);
+        c.RSSetState(&gpu.rasterizer(&solid()).unwrap());
+        c.IASetPrimitiveTopology(
+            windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+        );
+        c.OMSetBlendState(&gpu.blend(&blend).unwrap(), None, u32::MAX);
+        c.Draw(3, 0);
+    }
+    d3d_read(gpu, &target, 0, texel)
+}
+
+/// Direct3D 11's bytes of an immutable texture of `format` made from `texels`, read back.
+fn d3d_kept(gpu: &Gpu, format: DXGI_FORMAT, texel: usize, texels: &[u8]) -> Vec<u8> {
+    let (w, h) = converted::SIZE;
+    let texture = gpu
+        .texture2d(
+            &tex2d(w, h, format, D3D11_BIND_SHADER_RESOURCE),
+            &[d3d11::data(texels, w * texel as u32, 0)],
+        )
+        .unwrap();
+    d3d_read(gpu, &texture, 0, texel)
+}
+
+/// Each converted format's seeded texels loaded and filtered by the back end, which holds them in
+/// an 8-bit RGBA format, against Direct3D 11 on the same GPU: loads equal, filtered texels within
+/// one 8-bit step; and 8-bit alpha and BGRX drawn with blending into a cleared target, byte for
+/// byte but for BGRX's X (unused bits, which the back end reads back as one and the RTX 3080's
+/// Direct3D keeps as written; printed). Prints each largest difference and how far Direct3D's own
+/// loads are from `v / (2^n - 1)`.
+#[test]
+fn converted_formats_load_filter_and_draw_as_direct3d_does() {
+    let mut b = device_without(wgpu::Features::empty());
+    let gpu = direct3d();
+    let vs = hlsl_of(
+        CONVERTED_HLSL,
+        windows::core::s!("vs"),
+        windows::core::s!("vs_5_0"),
+    );
+    let mut beyond = Vec::new();
+    for (i, (format, dxgi)) in CONVERTED.into_iter().enumerate() {
+        let texels = converted::texels(format, 1 + i as u64);
+        let (d3d_loaded, d3d_filtered) = d3d_sampled(&gpu, &vs, dxgi, &texels);
+        let (_, view) =
+            converted::upload(&mut b, format, Some(&texels), TextureUsage::empty()).unwrap();
+        let (loaded, filtered) = converted::sampled(&mut b, &view).unwrap();
+        let rule = converted::largest(&d3d_loaded, &converted::expected(format, &texels));
+        let l = converted::largest(&loaded, &d3d_loaded);
+        let f = converted::largest(&filtered, &d3d_filtered);
+        eprintln!(
+            "{format:?}: loaded {:.3} and filtered {:.3} 8-bit steps from Direct3D's; Direct3D's loads {:e} from v / (2^n - 1)",
+            l * 255.0,
+            f * 255.0,
+            rule
+        );
+        if l > 0.0 || f > 1.0 / 255.0 {
+            beyond.push(format!("{format:?}: loaded {l:e}, filtered {f:e}"));
+        }
+    }
+    for (format, dxgi, texel) in [
+        (Format::A8Unorm, DXGI_FORMAT_A8_UNORM, 1),
+        (Format::Bgrx8Unorm, DXGI_FORMAT_B8G8R8X8_UNORM, 4),
+        (Format::Bgrx8UnormSrgb, DXGI_FORMAT_B8G8R8X8_UNORM_SRGB, 4),
+    ] {
+        let ours = converted::drawn(&mut b, format).unwrap().0;
+        let theirs = d3d_drawn(&gpu, &vs, dxgi, texel);
+        let unused = |i: usize| texel == 4 && i % 4 == 3;
+        let differing = (0..ours.len())
+            .filter(|&i| !unused(i) && ours[i] != theirs[i])
+            .count();
+        let x_kept = (0..ours.len())
+            .filter(|&i| unused(i) && ours[i] == theirs[i])
+            .count();
+        eprintln!(
+            "{format:?} drawn: {differing} of {} bytes differ from Direct3D's, X equal in {x_kept}",
+            ours.len()
+        );
+        if differing > 0 {
+            beyond.push(format!("{format:?} drawn: {differing} bytes"));
+        }
+    }
+    // What Direct3D reads back of BGRX's X byte written from the host (the back end reads one).
+    let texels = converted::texels(Format::Bgrx8Unorm, 9);
+    let kept = d3d_kept(&gpu, DXGI_FORMAT_B8G8R8X8_UNORM, 4, &texels);
+    let as_written = kept
+        .iter()
+        .zip(&texels)
+        .skip(3)
+        .step_by(4)
+        .filter(|(a, b)| a == b)
+        .count();
+    let one = kept
+        .iter()
+        .skip(3)
+        .step_by(4)
+        .filter(|&&x| x == 255)
+        .count();
+    eprintln!(
+        "Direct3D's BGRX read back: X as written in {as_written}, 255 in {one}, of {}",
+        texels.len() / 4
+    );
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert!(b.slow_paths().count(SlowPath::FormatConverted) > 0);
     assert!(beyond.is_empty(), "{beyond:#?}");
 }

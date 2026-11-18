@@ -661,3 +661,60 @@ fn renamed_buffers_reuse_the_pools_storage() {
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 0);
 }
+
+/// Ordered writes of a vertex buffer the open pass drew with split it while occlusion queries run:
+/// each query goes on in the next part and its result adds both parts. Query 0 passes before the
+/// split, query 1 only after it, query 2 draws nothing.
+#[test]
+fn queries_carry_across_pass_splits() {
+    let mut b = device();
+    let p = draw::prepare(&mut b, scene::Scene::Triangle, draw::Twist::None).unwrap();
+    let t = draw::targets(&mut b, None).unwrap();
+    let queries = b.create_query_set(QueryKind::OcclusionAny, 3).unwrap();
+    let results = buffer(&mut b, 24, BufferUsage::empty(), MapIntent::Rarely);
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: None,
+        empty: None,
+        occlusion: Some(&queries),
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &t.color_view,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Clear(scene::CLEAR.map(f32::to_bits)),
+        store: StoreOp::Store,
+    });
+    let vertices: Vec<u8> = bytemuck::cast_slice(&scene::TRIANGLE).to_vec();
+    b.begin_pass(&pass);
+    b.begin_query(0);
+    draw::draw(&mut b, &p);
+    b.write_buffer(&p.vertices, 0, &vertices, WriteMode::Ordered);
+    b.end_query();
+    b.begin_query(1);
+    b.write_buffer(&p.vertices, 0, &vertices, WriteMode::Ordered);
+    draw::draw(&mut b, &p);
+    b.end_query();
+    b.begin_query(2);
+    b.write_buffer(&p.vertices, 0, &vertices, WriteMode::Ordered);
+    b.end_query();
+    b.end_pass();
+    b.resolve_queries(&queries, 0, 3, &results, 0).unwrap();
+    let rb = draw::read(&mut b, &t).unwrap();
+    let answers = read_buffer_back(&mut b, &results, 24);
+    b.submit();
+    let words: Vec<u64> = finish(&mut b, answers, 24)
+        .chunks(8)
+        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    let rgba = finish(&mut b, rb, (scene::WIDTH * scene::HEIGHT * 4) as usize);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    eprintln!("query results: {words:?}");
+    assert!(words[0] != 0 && words[1] != 0 && words[2] == 0, "{words:?}");
+    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 3);
+    assert_eq!(b.slow_paths().count(SlowPath::QueriesSegmented), 3);
+    assert!(
+        allowance::within(&rgba, &reference("triangle.png"), "triangle.png"),
+        "the picture changed"
+    );
+}

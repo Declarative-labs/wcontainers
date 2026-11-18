@@ -4,7 +4,8 @@
 // <pkg-dir> is wasm-bindgen's output for the scenes example. For each twist (default none) writes
 // chrome-webgpu-<scene>.png into <out-dir>, or <out-dir>\<twist> for a twist other than none, and
 // the eight-viewport scene as chrome-webgpu-viewports.png and, moved to whole pixels,
-// chrome-webgpu-viewports-rounded.png, and prints first-draw timings with and without prepare.
+// chrome-webgpu-viewports-rounded.png, prints first-draw timings with and without prepare, and checks
+// timestamps, the formats held converted and the vertex formats read through shadows.
 // Fails unless WebGPU's adapter is a GPU (discrete or integrated, not a fallback).
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -71,6 +72,27 @@ try {
     }
   } catch (e) {
     console.log(`prepare timings failed: ${e.message}`);
+    failed = true;
+  }
+  // Timestamps: ordered, scaled with the work, at the page clock's rate.
+  try {
+    console.log(`chrome timestamps: ${await page.evaluate(() => window.timestamps())}`);
+  } catch (e) {
+    console.log(`chrome timestamps failed: ${e.message}`);
+    failed = true;
+  }
+  // Formats held converted: copies exact, texels within their bounds of Direct3D's values.
+  try {
+    console.log(`chrome ${await page.evaluate(() => window.converted())}`);
+  } catch (e) {
+    console.log(`chrome converted formats failed: ${e.message}`);
+    failed = true;
+  }
+  // Vertex formats WebGPU lacks, read through shadow streams (seed 188, 64 vertices each).
+  try {
+    console.log(`chrome ${await page.evaluate(() => window.vertexFormats(188, 64))}`);
+  } catch (e) {
+    console.log(`chrome vertex formats failed: ${e.message}`);
     failed = true;
   }
 } finally {

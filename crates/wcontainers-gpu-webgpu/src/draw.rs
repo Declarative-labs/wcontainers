@@ -289,14 +289,15 @@ struct DepthRaw {
 pub struct Pass {
     pub rp: wgpu::RenderPass<'static>,
     pub occlusion: bool,
-    pub query_running: bool,
+    /// The interface index of the running occlusion query.
+    pub query_running: Option<u32>,
     targets: TargetLayout,
     own_target: bool,
     width: u32,
     height: u32,
     colors: Vec<Option<ColorRaw>>,
     depth: Option<DepthRaw>,
-    occlusion_set: Option<wgpu::QuerySet>,
+    pub occlusion_set: Option<crate::QuerySet>,
     last: Last,
     /// The textures it draws or resolves into, which a write may not rename while it is open.
     pub attached: Vec<crate::Texture>,
@@ -726,10 +727,15 @@ impl WebGpu {
                         alpha: blend_component(a),
                     }),
                 };
+                // Converted formats keep the channels they lack as they read.
+                let mut write_mask = convert::color_writes(t.writes);
+                if let Some(kept) = crate::packed::drawn(f) {
+                    write_mask &= kept;
+                }
                 targets.push(Some(wgpu::ColorTargetState {
                     format: convert::texture_format(f).unwrap_or(wgpu::TextureFormat::R8Unorm),
                     blend,
-                    write_mask: convert::color_writes(t.writes),
+                    write_mask,
                 }));
             }
         }
@@ -803,7 +809,7 @@ impl WebGpu {
                     front_face: convert::front_face(raster.front),
                     cull_mode: convert::cull(raster.cull),
                     unclipped_depth: !raster.depth_clip,
-                    polygon_mode: wgpu::PolygonMode::Fill,
+                    polygon_mode: convert::fill(raster.fill),
                     conservative: false,
                 },
                 depth_stencil,
@@ -876,10 +882,12 @@ impl WebGpu {
                             by_draw.push((i, bits));
                             None
                         } else {
-                            Some(color_value(bits, kind))
+                            Some(crate::packed::clear(v.format, color_value(bits, kind)))
                         }
                     }
-                    LoadOp::DontCare => Some(wgpu::Color::TRANSPARENT),
+                    LoadOp::DontCare => {
+                        Some(crate::packed::clear(v.format, wgpu::Color::TRANSPARENT))
+                    }
                 },
             }));
         }
@@ -953,12 +961,12 @@ impl WebGpu {
                 clear: Some(wgpu::Color::TRANSPARENT),
             }));
         }
-        let occlusion_set = pass.occlusion.map(|q| q.0.raw.clone());
+        let occlusion_set = pass.occlusion.cloned();
         let mut rp = open(
             self.encoder(),
             &colors,
             &depth,
-            occlusion_set.as_ref(),
+            occlusion_set.as_ref().map(|q| &q.0.raw),
             false,
         );
         for (i, bits) in by_draw {
@@ -967,7 +975,7 @@ impl WebGpu {
         self.pass = Some(Pass {
             rp,
             occlusion: occlusion_set.is_some(),
-            query_running: false,
+            query_running: None,
             targets,
             own_target,
             width,
@@ -987,11 +995,27 @@ impl WebGpu {
             between(self);
             return;
         };
-        if pass.query_running {
-            self.fail("splitting a pass with a running query is not built yet");
-            self.pass = Some(pass);
-            return;
-        }
+        // A running query carries over: it ends here and goes on in a slot of its own in the
+        // next part, whose count resolving adds (`QueriesSegmented`).
+        let carried = match (pass.query_running, &pass.occlusion_set) {
+            (Some(index), Some(set)) => {
+                let Some(slot) = set.0.free.borrow_mut().pop() else {
+                    self.fail("a pass split more often than its query set has spare slots");
+                    self.pass = Some(pass);
+                    return;
+                };
+                pass.rp.end_occlusion_query();
+                set.0
+                    .segments
+                    .borrow_mut()
+                    .entry(index)
+                    .or_default()
+                    .push(slot);
+                self.slow.hit(SlowPath::QueriesSegmented);
+                Some(slot)
+            }
+            _ => None,
+        };
         self.slow.hit(why);
         drop(pass.rp);
         between(self);
@@ -1000,9 +1024,12 @@ impl WebGpu {
             encoder,
             &pass.colors,
             &pass.depth,
-            pass.occlusion_set.as_ref(),
+            pass.occlusion_set.as_ref().map(|q| &q.0.raw),
             true,
         );
+        if let Some(slot) = carried {
+            pass.rp.begin_occlusion_query(slot);
+        }
         pass.last = Last::default();
         self.pass = Some(pass);
     }
@@ -1367,7 +1394,12 @@ impl WebGpu {
             self.fail("resolve inside a pass");
             return;
         }
-        // Both views in the resolve format, so an sRGB twin averages in linear light.
+        // Both views in the resolve format, so an sRGB twin averages in linear light. Chrome
+        // (Dawn on Direct3D 12) averages the stored values whatever the views' format, so in the
+        // browser a resolve in the other twin is a draw averaging the samples read through it.
+        let stored = src.texture.0.held;
+        let format = crate::packed::held(format).unwrap_or(format);
+        let by_draw = cfg!(target_arch = "wasm32") && format != stored;
         let Some(format) = convert::texture_format(format) else {
             self.fail("resolve in a format this back end does not hold");
             return;
@@ -1384,6 +1416,20 @@ impl WebGpu {
                 ..Default::default()
             })
         };
+        if by_draw {
+            if !src
+                .texture
+                .0
+                .raw()
+                .usage()
+                .contains(wgpu::TextureUsages::TEXTURE_BINDING)
+            {
+                self.fail("a resolve in the other sRGB twin of a texture that cannot be sampled");
+                return;
+            }
+            let (s, d) = (view(src), view(dst));
+            return self.resolve_by_draw(&s, &d, format);
+        }
         let colors = [Some(ColorRaw {
             view: view(src),
             resolve: Some(view(dst)),

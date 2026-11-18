@@ -280,7 +280,7 @@ impl WebGpu {
     }
 
     /// Reads a region back and waits for it: the bytes of a texture the host keeps no copy of.
-    fn read_now(&mut self, src: &ReadSource<'_, Self>, len: usize) -> Option<Vec<u8>> {
+    pub(crate) fn read_now(&mut self, src: &ReadSource<'_, Self>, len: usize) -> Option<Vec<u8>> {
         self.slow.hit(SlowPath::HostCopyReadBack);
         let rb = match self.read_back_impl(src) {
             Ok(rb) => rb,
@@ -331,7 +331,7 @@ impl WebGpu {
         if d.blocks.is_some() {
             self.write_blocks(dst, into, &packed, pitch, rows, mode);
         } else {
-            self.write_texels(dst, into, &packed, pitch, rows, mode);
+            self.write_texture_impl(dst, into, &packed, pitch, rows, mode);
         }
     }
 

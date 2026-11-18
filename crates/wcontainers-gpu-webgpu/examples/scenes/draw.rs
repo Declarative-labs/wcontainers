@@ -75,6 +75,7 @@ pub async fn device(backends: wgpu::Backends) -> Result<(WebGpu, String)> {
 pub fn instance(backends: wgpu::Backends) -> wgpu::Instance {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = backends;
+    desc.flags |= WebGpu::INSTANCE_FLAGS;
     wgpu::Instance::new(desc)
 }
 

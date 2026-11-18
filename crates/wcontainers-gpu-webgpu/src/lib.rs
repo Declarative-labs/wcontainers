@@ -13,6 +13,7 @@ mod edge;
 mod fill;
 mod layout;
 mod memory;
+mod packed;
 mod probe;
 mod vertex;
 mod wait;
@@ -75,6 +76,8 @@ pub struct WebGpu {
     texture_pool: memory::Pool<wgpu::Texture>,
     arena: Option<memory::Arena>,
     edge: Option<edge::EdgeProgram>,
+    /// The program adding the counts of queries carried across pass splits.
+    query_sum: Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
     vertices: vertex::Vertices,
     fills: fill::Fills,
     depth24: Depth24,
@@ -171,7 +174,8 @@ impl BufferObj {
 #[derive(Debug)]
 struct TextureObj {
     desc: TextureDesc,
-    /// The format the GPU texture holds: `desc.format`, or a BC format's decoded one.
+    /// The format the GPU texture holds: `desc.format`, a BC format's decoded one, or a converted
+    /// format's wider one.
     held: Format,
     /// A decoded BC texture's blocks (`BlockDecoded`), per level and layer.
     blocks: Option<RefCell<Vec<Vec<u8>>>>,
@@ -312,7 +316,20 @@ impl ProgramObj {
 struct QuerySetObj {
     kind: QueryKind,
     count: u32,
+    /// `count` queries, then the spare slots occlusion queries carried across a split go on in.
     raw: wgpu::QuerySet,
+    /// The spare slots each query carried on in since it was last begun.
+    segments: RefCell<HashMap<u32, Vec<u32>>>,
+    free: RefCell<Vec<u32>>,
+}
+
+impl QuerySetObj {
+    /// Gives back the spare slots of query `index`, begun again.
+    fn forget_segments(&self, index: u32) {
+        if let Some(slots) = self.segments.borrow_mut().remove(&index) {
+            self.free.borrow_mut().extend(slots);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -323,6 +340,8 @@ struct ReadbackObj {
     state: Arc<AtomicU8>,
     /// The serial of the encoder holding its copy.
     serial: u64,
+    /// The converted format the copied `rgba8unorm` rows are packed into when finished.
+    packed: Option<Format>,
     /// Bytes to skip at the start, bytes per packed row, bytes per copied row, and rows.
     skip: u64,
     row: u64,
@@ -372,6 +391,11 @@ pub struct Fence {
 }
 
 impl WebGpu {
+    /// Flags the host adds to its wgpu instance: timestamps resolved in nanoseconds natively, which
+    /// `TIMESTAMPS` needs where the GPU's clock ticks in other units.
+    pub const INSTANCE_FLAGS: wgpu::InstanceFlags =
+        wgpu::InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION;
+
     /// The features this back end uses where the adapter has them, and the adapter's highest limits:
     /// what to make its device with.
     pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
@@ -387,7 +411,10 @@ impl WebGpu {
             | wgpu::Features::DEPTH32FLOAT_STENCIL8
             | wgpu::Features::RG11B10UFLOAT_RENDERABLE
             | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+            | wgpu::Features::TIMESTAMP_QUERY
+            | wgpu::Features::POLYGON_MODE_LINE
+            | wgpu::Features::POLYGON_MODE_POINT;
         wgpu::DeviceDescriptor {
             label: None,
             required_features: adapter.features() & wanted,
@@ -424,6 +451,13 @@ impl WebGpu {
         if let Depth24::Unorm(_) = depth24 {
             caps.features |= Features::DEPTH24_UNORM;
         }
+        // Timestamps resolve in nanoseconds only where the clock ticks in them or wgpu converts
+        // them (an instance made with `AUTOMATIC_TIMESTAMP_NORMALIZATION`; always in browsers).
+        if device.features().contains(wgpu::Features::TIMESTAMP_QUERY)
+            && queue.get_timestamp_period() == 1.0
+        {
+            caps.features |= Features::TIMESTAMPS;
+        }
         // wgpu's Direct3D 12 clears colour targets through 32-bit floats.
         let float_clears = adapter.get_info().backend == wgpu::Backend::Dx12;
         WebGpu {
@@ -448,6 +482,7 @@ impl WebGpu {
             texture_pool: Default::default(),
             arena: None,
             edge: None,
+            query_sum: None,
             vertices: Default::default(),
             fills: Default::default(),
             float_clears,
@@ -579,6 +614,11 @@ fn caps(
             Features::INDIRECT_FIRST_INSTANCE,
         ),
         (wgpu::Features::SHADER_F16, Features::SHADER_F16),
+        (wgpu::Features::POLYGON_MODE_LINE, Features::POLYGON_MODE),
+        (
+            wgpu::Features::POLYGON_MODE_POINT,
+            Features::POLYGON_MODE_POINT,
+        ),
         (
             wgpu::Features::TEXTURE_COMPRESSION_BC,
             Features::BLOCK_COMPRESSION,
@@ -607,6 +647,7 @@ fn caps(
         // read back as its decoded format is, nothing else.
         let decoded =
             blocks::decoded(format).filter(|_| !f.contains(wgpu::Features::TEXTURE_COMPRESSION_BC));
+        let converted = packed::held(format);
         let Some(raw) = convert::texture_format(decoded.unwrap_or(format)) else {
             continue;
         };
@@ -685,6 +726,23 @@ fn caps(
             formats.uses[i] = uses;
             formats.samples[i] = 1;
             continue;
+        }
+        // Converted formats (`FormatConverted`): some are drawn into with only their own channels
+        // written, the rest only sampled (packed.rs).
+        if converted.is_some() {
+            let drawn = packed::drawn(format).is_some();
+            let mut kept = FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
+            *allowed &= wgpu::TextureUsages::TEXTURE_BINDING | copies;
+            if drawn {
+                kept |= FormatUse::RENDER | FormatUse::BLEND | FormatUse::RESOLVE;
+                *allowed |= u & wgpu::TextureUsages::RENDER_ATTACHMENT;
+            }
+            uses &= kept;
+            if !drawn {
+                formats.uses[i] = uses;
+                formats.samples[i] = 1;
+                continue;
+            }
         }
         formats.uses[i] = uses;
         let mut samples = 1u8;
@@ -941,6 +999,7 @@ impl Backend for WebGpu {
             .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
         let held = blocks::decoded(desc.format)
             .filter(|_| decode)
+            .or(packed::held(desc.format))
             .unwrap_or(desc.format);
         let format = convert::texture_format(held)
             .filter(|_| !self.caps.formats.get(desc.format).is_empty())
@@ -967,6 +1026,14 @@ impl Backend for WebGpu {
         // format allows it.
         let copies = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
         let allowed = self.usages[desc.format.index()];
+        if packed::held(desc.format).is_some() {
+            if !allowed.contains(usage) {
+                return Err(GpuError::Invalid(
+                    "a use of a converted format this back end does not declare",
+                ));
+            }
+            self.slow.hit(wcontainers_gpu::SlowPath::FormatConverted);
+        }
         usage |= copies & allowed;
         // Depth and stencil copies and read backs WebGPU has no copy for are draws: from a bound
         // source into an attachment.
@@ -979,6 +1046,10 @@ impl Backend for WebGpu {
             usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
         }
         let srgb_twin = convert::srgb_twin(format);
+        // In the browser a resolve in the other twin is drawn from the samples (`ResolveByDraw`).
+        if cfg!(target_arch = "wasm32") && desc.samples > 1 && srgb_twin.is_some() {
+            usage |= allowed & wgpu::TextureUsages::TEXTURE_BINDING;
+        }
         let raw = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -999,7 +1070,8 @@ impl Backend for WebGpu {
         Ok(Texture(Rc::new(TextureObj {
             desc: *desc,
             held,
-            blocks: (held != desc.format).then(|| RefCell::new(blocks::zeroed(desc))),
+            blocks: (held != desc.format && packed::held(desc.format).is_none())
+                .then(|| RefCell::new(blocks::zeroed(desc))),
             raw: RefCell::new(raw),
             generation: Cell::new(0),
             used_in: Cell::new(0),
@@ -1169,8 +1241,16 @@ impl Backend for WebGpu {
     }
 
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Raster, GpuError> {
+        let has = |f| self.caps.has(f);
         let absent = [
-            (desc.fill != FillMode::Solid, Features::POLYGON_MODE),
+            (
+                desc.fill == FillMode::Line && !has(Features::POLYGON_MODE),
+                Features::POLYGON_MODE,
+            ),
+            (
+                desc.fill == FillMode::Point && !has(Features::POLYGON_MODE_POINT),
+                Features::POLYGON_MODE_POINT,
+            ),
             (
                 desc.provoking == ProvokingVertex::Last,
                 Features::PROVOKING_VERTEX_LAST,
@@ -1240,14 +1320,31 @@ impl Backend for WebGpu {
         let ty = match kind {
             QueryKind::OcclusionAny => wgpu::QueryType::Occlusion,
             QueryKind::Occlusion => return Err(GpuError::Absent(Features::OCCLUSION_COUNT)),
+            QueryKind::Timestamp if self.caps.has(Features::TIMESTAMPS) => {
+                wgpu::QueryType::Timestamp
+            }
             QueryKind::Timestamp => return Err(GpuError::Absent(Features::TIMESTAMPS)),
+        };
+        // Occlusion sets get as many spare slots again, within WebGPU's 4096 queries a set.
+        let total = match kind {
+            QueryKind::OcclusionAny => count
+                .saturating_mul(2)
+                .min(wgpu::QUERY_SET_MAX_QUERIES)
+                .max(count),
+            _ => count,
         };
         let raw = self.device.create_query_set(&wgpu::QuerySetDescriptor {
             label: None,
             ty,
-            count,
+            count: total,
         });
-        Ok(QuerySet(Rc::new(QuerySetObj { kind, count, raw })))
+        Ok(QuerySet(Rc::new(QuerySetObj {
+            kind,
+            count,
+            raw,
+            segments: Default::default(),
+            free: RefCell::new((count..total).rev().collect()),
+        })))
     }
 
     fn destroy(&mut self, object: Object<Self>) {
@@ -1324,9 +1421,12 @@ impl Backend for WebGpu {
 
     fn begin_query(&mut self, index: u32) {
         match &mut self.pass {
-            Some(p) if p.occlusion && !p.query_running => {
+            Some(p) if p.occlusion && p.query_running.is_none() => {
+                if let Some(set) = &p.occlusion_set {
+                    set.0.forget_segments(index);
+                }
                 p.rp.begin_occlusion_query(index);
-                p.query_running = true;
+                p.query_running = Some(index);
             }
             _ => self.fail("begin_query outside a pass with an occlusion set, or nested"),
         }
@@ -1334,9 +1434,9 @@ impl Backend for WebGpu {
 
     fn end_query(&mut self) {
         match &mut self.pass {
-            Some(p) if p.query_running => {
+            Some(p) if p.query_running.is_some() => {
                 p.rp.end_occlusion_query();
-                p.query_running = false;
+                p.query_running = None;
             }
             _ => self.fail("end_query without a running query"),
         }
@@ -1677,6 +1777,39 @@ impl Backend for WebGpu {
 
     fn dispatch(&mut self, call: &wcontainers_gpu::DispatchCall<'_, Self>) -> Result<(), GpuError> {
         self.dispatch_impl(call)
+    }
+
+    fn write_timestamp(&mut self, set: &QuerySet, index: u32) -> Result<(), GpuError> {
+        if !self.caps.has(Features::TIMESTAMPS) {
+            return Err(GpuError::Absent(Features::TIMESTAMPS));
+        }
+        if set.0.kind != QueryKind::Timestamp || index >= set.0.count {
+            return Err(GpuError::Invalid("a timestamp outside a timestamp set"));
+        }
+        if self.pass.is_some() {
+            return Err(GpuError::Invalid("timestamps are written outside a pass"));
+        }
+        // WebGPU writes timestamps where passes begin and end: an empty compute pass carries it,
+        // written once the work recorded before it is done.
+        let raw = set.0.raw.clone();
+        self.encoder()
+            .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+                    query_set: &raw,
+                    beginning_of_pass_write_index: Some(index),
+                    end_of_pass_write_index: None,
+                }),
+            });
+        Ok(())
+    }
+
+    fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
+        if !self.caps.has(Features::TIMESTAMPS) {
+            return Err(GpuError::Absent(Features::TIMESTAMPS));
+        }
+        // WebGPU reports no clock changes.
+        Ok(false)
     }
 }
 

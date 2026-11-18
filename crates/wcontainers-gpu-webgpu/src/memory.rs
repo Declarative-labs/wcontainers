@@ -14,7 +14,7 @@ use wcontainers_gpu::{
 use crate::fill::{AspectRead, DepthSource};
 use crate::{
     Buffer, BufferObj, MAP_PENDING, MAP_READY, QuerySet, Readback, ReadbackObj, Stream, Texture,
-    TextureObj, WebGpu, convert, row_bytes,
+    TextureObj, WebGpu, convert, packed, row_bytes,
 };
 
 /// The most bytes of pattern a non-zero clear uploads.
@@ -243,10 +243,29 @@ fn texel_copy<'a>(
     }
 }
 
-fn extent3d(e: Extent) -> wgpu::Extent3d {
+/// Adds 64-bit counts of spare query slots into resolved results, pair by pair.
+const QUERY_SUM_WGSL: &str = "
+@group(0) @binding(0) var<storage, read_write> sums: array<vec2<u32>>;
+@group(0) @binding(1) var<storage, read> spare: array<vec2<u32>>;
+@group(0) @binding(2) var<storage, read> pairs: array<vec2<u32>>;
+@compute @workgroup_size(1) fn add() {
+    for (var k = 0u; k < arrayLength(&pairs); k++) {
+        let p = pairs[k];
+        let a = sums[p.x];
+        let b = spare[p.y];
+        let low = a.x + b.x;
+        sums[p.x] = vec2(low, a.y + b.y + select(0u, 1u, low < a.x));
+    }
+}
+";
+
+/// WebGPU's size of a copy of `e` texels of `format`: whole blocks, as a level smaller than a block
+/// still holds one.
+fn extent3d(e: Extent, format: Format) -> wgpu::Extent3d {
+    let (bw, bh, _) = format.block();
     wgpu::Extent3d {
-        width: e.width,
-        height: e.height,
+        width: e.width.next_multiple_of(bw),
+        height: e.height.next_multiple_of(bh),
         depth_or_array_layers: e.depth_or_layers,
     }
 }
@@ -493,8 +512,11 @@ impl WebGpu {
         rows_per_layer: u32,
         mode: WriteMode,
     ) {
-        if region.texture.0.blocks.is_some() {
+        let t = &region.texture.0;
+        if t.blocks.is_some() {
             self.write_blocks(region, extent, data, row_pitch, rows_per_layer, mode);
+        } else if t.held != t.desc.format {
+            self.write_packed(region, extent, data, row_pitch, rows_per_layer, mode);
         } else {
             self.write_texels(region, extent, data, row_pitch, rows_per_layer, mode);
         }
@@ -575,6 +597,32 @@ impl WebGpu {
             region.stencil,
         );
         if renamed || !self.pending(t.used_in.get()) || mode == WriteMode::NoOverwrite {
+            let format = region_format(t, region);
+            let (row, rows) = row_bytes(format, extent.width, extent.height);
+            // wgpu's Direct3D 12 loses every layer after the first when layers are further apart
+            // than their rows: such layers are packed together first.
+            let packed;
+            let (data, rows_per_layer) = if extent.depth_or_layers > 1
+                && u64::from(rows_per_layer) > rows
+            {
+                self.slow.hit(SlowPath::RowsRepacked);
+                let layer = u64::from(row_pitch) * u64::from(rows_per_layer);
+                let tight = u64::from(row_pitch) * (rows - 1) + row;
+                let mut out = Vec::new();
+                for l in 0..u64::from(extent.depth_or_layers) {
+                    let Some(src) = data.get((l * layer) as usize..(l * layer + tight) as usize)
+                    else {
+                        self.fail("write_texture with fewer bytes than its extent");
+                        return;
+                    };
+                    out.extend_from_slice(src);
+                    out.resize((u64::from(row_pitch) * rows * (l + 1)) as usize, 0);
+                }
+                packed = out;
+                (&packed[..], rows as u32)
+            } else {
+                (data, rows_per_layer)
+            };
             self.queue.write_texture(
                 copy,
                 data,
@@ -583,12 +631,13 @@ impl WebGpu {
                     bytes_per_row: Some(row_pitch),
                     rows_per_image: Some(rows_per_layer),
                 },
-                extent3d(extent),
+                extent3d(extent, format),
             );
             return;
         }
         // Recorded commands use the texture: the write goes through a staging copy in command order.
-        let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
+        let format = region_format(t, region);
+        let (row, rows) = row_bytes(format, extent.width, extent.height);
         let pitch = row.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
         let layers = u64::from(extent.depth_or_layers);
         let mut packed = vec![0u8; (pitch * rows * layers) as usize];
@@ -619,7 +668,7 @@ impl WebGpu {
                     },
                 },
                 texel_copy(&tex.0.raw(), &tex.0, mip, layer, origin, stencil),
-                extent3d(extent),
+                extent3d(extent, format),
             );
         });
     }
@@ -682,6 +731,11 @@ impl WebGpu {
             return;
         }
         let (s, d) = (&src.texture.0, &dst.texture.0);
+        let converted = |t: &crate::TextureObj| packed::held(t.desc.format).is_some();
+        if s.desc.format != d.desc.format && (converted(s) || converted(d)) {
+            self.copy_packed(src, dst, extent);
+            return;
+        }
         s.used_in.set(self.serial);
         d.used_in.set(self.serial);
         let (sf, df) = (s.held, d.held);
@@ -693,6 +747,16 @@ impl WebGpu {
             r.origin.x == 0 && r.origin.y == 0 && extent.width == w && extent.height == h
         };
         let whole = covers(d, dst) && covers(s, src);
+        // WebGPU refuses one subresource as both source and destination.
+        let within = src.texture == dst.texture
+            && src.mip == dst.mip
+            && (s.desc.dimension == TextureDimension::D3
+                || (src.layer < dst.layer + extent.depth_or_layers
+                    && dst.layer < src.layer + extent.depth_or_layers));
+        if within && df.is_depth_stencil() {
+            self.fail("a copy within one subresource of depth or stencil");
+            return;
+        }
         // A combined format is copied with both aspects.
         let combined =
             sf.kind() == FormatKind::DepthStencil || df.kind() == FormatKind::DepthStencil;
@@ -732,17 +796,22 @@ impl WebGpu {
             from.aspect = wgpu::TextureAspect::All;
             to.aspect = wgpu::TextureAspect::All;
         }
-        if sf.linear() == df.linear() {
+        if sf.linear() == df.linear() && !within {
             self.encoder
                 .get_or_insert_with(|| {
                     self.device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor::default())
                 })
-                .copy_texture_to_texture(from, to, extent3d(extent));
+                .copy_texture_to_texture(from, to, extent3d(extent, sf));
         } else if sf.block().2 == df.block().2 && !df.is_depth_stencil() {
-            // Typeless twins, or a block-compressed format and an uncompressed one whose texels are
-            // its blocks: the destination's extent covers the same blocks.
-            self.slow.hit(SlowPath::CopyThroughBuffer);
+            // Regions of one subresource, typeless twins, or a block-compressed format and an
+            // uncompressed one whose texels are its blocks: the destination's extent covers the
+            // same blocks.
+            self.slow.hit(if within {
+                SlowPath::CopyWithinTexture
+            } else {
+                SlowPath::CopyThroughBuffer
+            });
             let ((sbw, sbh, _), (dbw, dbh, _)) = (sf.block(), df.block());
             let into = Extent {
                 width: extent.width.div_ceil(sbw) * dbw,
@@ -770,8 +839,8 @@ impl WebGpu {
                 buffer: &temp,
                 layout,
             };
-            e.copy_texture_to_buffer(from, info, extent3d(extent));
-            e.copy_buffer_to_texture(info, to, extent3d(into));
+            e.copy_texture_to_buffer(from, info, extent3d(extent, sf));
+            e.copy_buffer_to_texture(info, to, extent3d(into, df));
         } else {
             self.fail("a copy between formats of different block sizes");
         }
@@ -955,6 +1024,10 @@ impl WebGpu {
             self.copy_buffer_blocks(buffer, region, extent, to_texture);
             return;
         }
+        if packed::held(region.texture.0.desc.format).is_some() {
+            self.copy_buffer_packed(buffer, region, extent, to_texture);
+            return;
+        }
         let t = &region.texture.0;
         let at_origin = |texture| TextureRegion {
             texture,
@@ -1028,6 +1101,7 @@ impl WebGpu {
         let raw = buffer.buffer.0.raw.borrow().clone();
         let offset = buffer.buffer.0.base.get() + buffer.offset;
         let tex = region.texture.clone();
+        let format = region_format(t, region);
         let (mip, layer, origin, stencil) =
             (region.mip, region.layer, region.origin, region.stencil);
         let copy = |w: &mut WebGpu, staged: &wgpu::Buffer, offset: u64, pitch: u64, rows: u64| {
@@ -1043,10 +1117,10 @@ impl WebGpu {
             let to = texel_copy(&tex_raw, &tex.0, mip, layer, origin, stencil);
             if to_texture {
                 w.encoder()
-                    .copy_buffer_to_texture(info, to, extent3d(extent));
+                    .copy_buffer_to_texture(info, to, extent3d(extent, format));
             } else {
                 w.encoder()
-                    .copy_texture_to_buffer(to, info, extent3d(extent));
+                    .copy_texture_to_buffer(to, info, extent3d(extent, format));
             }
         };
         let pitch = u64::from(buffer.row_pitch);
@@ -1153,6 +1227,7 @@ impl WebGpu {
     fn readback(
         &mut self,
         buffer: wgpu::Buffer,
+        packed: Option<Format>,
         skip: u64,
         row: u64,
         pitch: u64,
@@ -1161,6 +1236,7 @@ impl WebGpu {
         let rb = Readback(Rc::new(ReadbackObj {
             buffer: Some(buffer),
             host: Vec::new(),
+            packed,
             state: Arc::new(AtomicU8::new(MAP_PENDING)),
             serial: self.serial,
             skip,
@@ -1178,6 +1254,7 @@ impl WebGpu {
         Readback(Rc::new(ReadbackObj {
             buffer: None,
             host: bytes,
+            packed: None,
             state: Arc::new(AtomicU8::new(MAP_READY)),
             serial: self.serial,
             skip: 0,
@@ -1212,7 +1289,7 @@ impl WebGpu {
                     0,
                     end - start,
                 );
-                Ok(self.readback(target, offset - start, *size, *size, 1))
+                Ok(self.readback(target, None, offset - start, *size, *size, 1))
             }
             ReadSource::Texture { region, extent } => {
                 if region.texture.0.blocks.is_some() {
@@ -1240,6 +1317,15 @@ impl WebGpu {
                 };
                 let t = &region.texture.0;
                 t.used_in.set(self.serial);
+                let packed = packed::held(t.desc.format).map(|_| t.desc.format);
+                if let Some(f) = packed {
+                    if !region.origin.x.is_multiple_of(f.block().0) {
+                        return Err(GpuError::Invalid(
+                            "a read back of a two-pixel format starting inside a pair",
+                        ));
+                    }
+                    self.slow.hit(SlowPath::FormatConverted);
+                }
                 let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
                 let pitch = row.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
                 let layers = u64::from(extent.depth_or_layers);
@@ -1263,9 +1349,10 @@ impl WebGpu {
                             rows_per_image: Some(rows as u32),
                         },
                     },
-                    extent3d(*extent),
+                    extent3d(*extent, region_format(t, region)),
                 );
-                Ok(self.readback(target, 0, row, pitch, rows * layers))
+                let rb = self.readback(target, packed, 0, row, pitch, rows * layers);
+                Ok(rb)
             }
         }
     }
@@ -1280,19 +1367,105 @@ impl WebGpu {
         if self.pass.is_some() {
             return Err(GpuError::Invalid("query results are taken outside a pass"));
         }
-        if set.0.kind != QueryKind::OcclusionAny || first + count > set.0.count {
+        if set.0.kind == QueryKind::Occlusion
+            || first.checked_add(count).is_none_or(|end| end > set.0.count)
+        {
             return Err(GpuError::Invalid("queries outside the set"));
         }
+        // Queries carried across pass splits: (result, spare slot) pairs to add.
+        let pairs: Vec<u32> = set
+            .0
+            .segments
+            .borrow()
+            .iter()
+            .filter(|(i, _)| (first..first + count).contains(*i))
+            .flat_map(|(i, slots)| slots.iter().flat_map(move |s| [i - first, s - set.0.count]))
+            .collect();
+        let usage = wgpu::BufferUsages::QUERY_RESOLVE
+            | wgpu::BufferUsages::COPY_SRC
+            | if pairs.is_empty() {
+                wgpu::BufferUsages::empty()
+            } else {
+                wgpu::BufferUsages::STORAGE
+            };
         let resolve = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: u64::from(count.max(1)) * 8,
-            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            usage,
             mapped_at_creation: false,
         });
         let raw = set.0.raw.clone();
         self.encoder()
             .resolve_query_set(&raw, first..first + count, &resolve, 0);
+        if !pairs.is_empty() {
+            self.add_segments(&raw, set.0.count, &resolve, &pairs);
+        }
         Ok(resolve)
+    }
+
+    /// Adds the counts of the spare slots `pairs` names (result, slot past `count`) into the
+    /// resolved results.
+    fn add_segments(
+        &mut self,
+        raw: &wgpu::QuerySet,
+        count: u32,
+        sums: &wgpu::Buffer,
+        pairs: &[u32],
+    ) {
+        let spare_count = raw.count() - count;
+        let spare = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(spare_count) * 8,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let bytes: Vec<u8> = pairs.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let list = self.staging(&bytes);
+        let (pipeline, layout) = self.query_sum.get_or_insert_with(|| {
+            let module = self
+                .device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: None,
+                    source: wgpu::ShaderSource::Wgsl(QUERY_SUM_WGSL.into()),
+                });
+            let pipeline = self
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: None,
+                    layout: None,
+                    module: &module,
+                    entry_point: Some("add"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+            let layout = pipeline.get_bind_group_layout(0);
+            (pipeline, layout)
+        });
+        let (pipeline, layout) = (pipeline.clone(), layout.clone());
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: sums.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: spare.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: list.as_entire_binding(),
+                },
+            ],
+        });
+        let e = self.encoder();
+        e.resolve_query_set(raw, count..raw.count(), &spare, 0);
+        let mut cp = e.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+        cp.set_pipeline(&pipeline);
+        cp.set_bind_group(0, &group, &[]);
+        cp.dispatch_workgroups(1, 1, 1);
     }
 
     pub(crate) fn read_queries_impl(
@@ -1306,7 +1479,7 @@ impl WebGpu {
         let target = self.map_target(size);
         self.encoder()
             .copy_buffer_to_buffer(&resolve, 0, &target, 0, size);
-        Ok(self.readback(target, 0, size, size, 1))
+        Ok(self.readback(target, None, 0, size, size, 1))
     }
 
     pub(crate) fn resolve_queries_impl(
@@ -1317,13 +1490,19 @@ impl WebGpu {
         dst: &Buffer,
         dst_offset: u64,
     ) -> Result<(), GpuError> {
-        dst.0.wrote();
         if !dst_offset.is_multiple_of(8) {
             return Err(GpuError::Invalid(
                 "query results go to multiples of 8 bytes",
             ));
         }
+        if dst_offset
+            .checked_add(u64::from(count) * 8)
+            .is_none_or(|end| end > dst.0.desc.size)
+        {
+            return Err(GpuError::Invalid("query results past the buffer's end"));
+        }
         let resolve = self.resolved(set, first, count)?;
+        dst.0.wrote();
         dst.0.used_in.set(self.serial);
         let raw = dst.0.raw.borrow().clone();
         let at = dst.0.base.get() + dst_offset;
@@ -1338,11 +1517,15 @@ impl WebGpu {
             self.fail("finish_read of a read back that is not ready or failed");
             return;
         }
-        if (dst.len() as u64) < o.row * o.rows {
+        // A converted texture's rows arrive in its held format and are packed into its blocks.
+        let out_row = o
+            .packed
+            .map_or(o.row, |f| packed::packed_bytes(f, o.row / 4));
+        if (dst.len() as u64) < out_row * o.rows {
             self.fail(&format!(
                 "finish_read into {} bytes, fewer than the read back's {}",
                 dst.len(),
-                o.row * o.rows
+                out_row * o.rows
             ));
             return;
         }
@@ -1355,10 +1538,19 @@ impl WebGpu {
                 self.fail("a ready read back could not be mapped");
                 return;
             };
+            let mut texels = Vec::new();
             for r in 0..o.rows {
                 let from = (o.skip + r * o.pitch) as usize;
-                let to = (r * o.row) as usize;
-                dst[to..to + o.row as usize].copy_from_slice(&data[from..from + o.row as usize]);
+                let to = (r * out_row) as usize;
+                let row = &data[from..from + o.row as usize];
+                match o.packed {
+                    Some(format) => {
+                        texels.clear();
+                        packed::pack(format, row, &mut texels);
+                        dst[to..to + texels.len()].copy_from_slice(&texels);
+                    }
+                    None => dst[to..to + row.len()].copy_from_slice(row),
+                }
             }
         }
         buffer.unmap();

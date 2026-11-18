@@ -231,6 +231,9 @@ pub enum SlowPath {
     /// A resolve asked in the sRGB twin of the stored format averaged in the stored format, because the
     /// back end cannot read its multisampled samples another way (a listed loss).
     ResolveInStoredFormat,
+    /// A resolve made by a draw loading and averaging every sample, where the API's own resolve does
+    /// not average in the format named (Chrome's WebGPU averages the stored values of an sRGB twin).
+    ResolveByDraw,
     /// A buffer range filled with a non-zero pattern by copies from a block of the pattern, where the
     /// API clears buffers only to zero.
     PatternClearCopied,
@@ -249,11 +252,14 @@ pub enum SlowPath {
     /// A captured draw the API's transform feedback cannot take (strips, fans, loops, indices) captured
     /// as points in list order, one draw per run of consecutive vertices, with indices read back first.
     CaptureExpanded,
+    /// A copy between regions of one subresource (as Vulkan and OpenGL allow) made through a
+    /// temporary buffer, where the API copies only between different subresources.
+    CopyWithinTexture,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 99] = [
+    pub const ALL: [SlowPath; 101] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -347,12 +353,14 @@ impl SlowPath {
         SlowPath::PrimitiveIdAsGeometry,
         SlowPath::RowsRepacked,
         SlowPath::ResolveInStoredFormat,
+        SlowPath::ResolveByDraw,
         SlowPath::PatternClearCopied,
         SlowPath::ConstantBufferGrown,
         SlowPath::IntegerClearByDraw,
         SlowPath::StencilWrittenByDraw,
         SlowPath::PresentConverted,
         SlowPath::CaptureExpanded,
+        SlowPath::CopyWithinTexture,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -463,12 +471,14 @@ impl SlowPath {
             SlowPath::PrimitiveIdAsGeometry => "primitive index made by the stage helper",
             SlowPath::RowsRepacked => "copy rows repacked to the api's pitch",
             SlowPath::ResolveInStoredFormat => "resolve averaged in the stored format",
+            SlowPath::ResolveByDraw => "resolve averaged by a draw",
             SlowPath::PatternClearCopied => "buffer filled with a pattern by copies",
             SlowPath::ConstantBufferGrown => "constant buffer grown to its shader's size",
             SlowPath::IntegerClearByDraw => "integer colour clear made by a draw",
             SlowPath::StencilWrittenByDraw => "stencil written by a draw per bit",
             SlowPath::PresentConverted => "surface format converted by a draw at present",
             SlowPath::CaptureExpanded => "captured draw expanded into points in list order",
+            SlowPath::CopyWithinTexture => "copy within one subresource made through a buffer",
         }
     }
 }

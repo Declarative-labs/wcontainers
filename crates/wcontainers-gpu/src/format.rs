@@ -159,6 +159,28 @@ impl Format {
         }
     }
 
+    /// The components a view of this format reads from its texels, a bit each from red; the others
+    /// read their defaults, zero and one for alpha. Depth and stencil read as red. The measure of
+    /// [`crate::HelperValue::TextureComponents`].
+    pub fn components(self) -> u32 {
+        use Format::*;
+        match self {
+            R8Unorm | R8Snorm | R8Uint | R8Sint | R16Unorm | R16Snorm | R16Uint | R16Sint
+            | R16Float | R32Uint | R32Sint | R32Float | Bc4RUnorm | Bc4RSnorm | Stencil8
+            | Depth16Unorm | Depth24Plus | Depth24PlusStencil8 | Depth32Float
+            | Depth32FloatStencil8 => 0b0001,
+            Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint | Rg16Unorm | Rg16Snorm | Rg16Uint
+            | Rg16Sint | Rg16Float | Rg32Uint | Rg32Sint | Rg32Float | Bc5RgUnorm | Bc5RgSnorm => {
+                0b0011
+            }
+            Bgrx8Unorm | Bgrx8UnormSrgb | Rg11b10Float | Rgb9e5Float | B5g6r5Unorm | Rgbg8Unorm
+            | Grgb8Unorm | Rgb32Uint | Rgb32Sint | Rgb32Float | Bc6hRgbUfloat | Bc6hRgbFloat
+            | Etc2Rgb8Unorm | Etc2Rgb8UnormSrgb => 0b0111,
+            A8Unorm => 0b1000,
+            _ => 0b1111,
+        }
+    }
+
     /// Whether this format holds depth, stencil or both.
     pub fn is_depth_stencil(self) -> bool {
         matches!(
@@ -221,4 +243,59 @@ pub fn color_target_bytes(formats: impl IntoIterator<Item = Format>) -> Option<u
         let (cost, align) = f.target_bytes()?;
         Some(at.next_multiple_of(align) + cost)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::{format, vec::Vec};
+    use serde::Deserialize;
+
+    /// Every format, by its number.
+    fn all() -> Vec<Format> {
+        (0..)
+            .map_while(|n| {
+                Format::deserialize(
+                    serde::de::value::U32Deserializer::<serde::de::value::Error>::new(n),
+                )
+                .ok()
+            })
+            .collect()
+    }
+
+    /// A format's name lists the channels its texels hold, as DXGI's and WebGPU's names do
+    /// (`x` padding, `e` a shared exponent; ASTC blocks hold all four); `components` names the same.
+    #[test]
+    fn components_are_the_channels_a_format_names() {
+        let formats = all();
+        assert_eq!(formats.last(), Some(&Format::Astc4x4UnormSrgb));
+        for f in formats {
+            let name = format!("{f:?}");
+            let expected = if f.is_depth_stencil() {
+                0b0001
+            } else if name.starts_with("Astc") {
+                0b1111
+            } else {
+                let rest = ["Bc1", "Bc2", "Bc3", "Bc4", "Bc5", "Bc6h", "Bc7", "Etc2"]
+                    .iter()
+                    .find_map(|p| name.strip_prefix(p))
+                    .unwrap_or(&name);
+                let end = rest[1..]
+                    .find(|c: char| c.is_ascii_uppercase())
+                    .map_or(rest.len(), |i| i + 1);
+                rest[..end]
+                    .to_ascii_lowercase()
+                    .chars()
+                    .map(|c| match c {
+                        'r' => 0b0001,
+                        'g' => 0b0010,
+                        'b' => 0b0100,
+                        'a' => 0b1000,
+                        _ => 0,
+                    })
+                    .fold(0, |m, b| m | b)
+            };
+            assert_eq!(f.components(), expected, "{f:?}");
+        }
+    }
 }

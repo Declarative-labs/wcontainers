@@ -273,9 +273,9 @@ pub enum HelperValue {
     LodBias { sampler: u32 },
     /// A sampler's border color (four f32, or four u32 for integer textures).
     BorderColor { sampler: u32 },
-    /// The components the bound view's format has, a bit each from red (u32), for programs that apply
-    /// the border in the program: a border colour is read as a texel of the view's format, so a
-    /// component the format lacks reads its default (zero, one for alpha).
+    /// The components the bound view's format has ([`crate::Format::components`], u32), for
+    /// programs that apply the border in the program: a border colour is read as a texel of the
+    /// view's format, so a component the format lacks reads its default (zero, one for alpha).
     TextureComponents { texture: u32 },
     /// A sampler's state, for programs that filter or address in the program: min, mag and mip filter
     /// and the three address modes as u32 codes (the order of [`crate::Filter`]'s and
@@ -576,6 +576,20 @@ mod tests {
         assert_eq!(SlotKind::Texture.binding(128), None);
         assert_eq!(SlotKind::Storage.binding(63), Some(223));
         assert_eq!(SlotKind::Counter.binding(0), Some(224));
+    }
+
+    #[test]
+    fn sampler_state_codes_keep_their_numbers() {
+        use crate::{AddressMode, Filter};
+        assert_eq!([Filter::Nearest, Filter::Linear].map(|f| f as u32), [0, 1]);
+        let modes = [
+            AddressMode::Repeat,
+            AddressMode::Mirror,
+            AddressMode::Clamp,
+            AddressMode::Border,
+            AddressMode::MirrorOnce,
+        ];
+        assert_eq!(modes.map(|m| m as u32), [0, 1, 2, 3, 4]);
     }
 
     #[test]
