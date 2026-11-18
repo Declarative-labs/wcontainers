@@ -121,7 +121,10 @@ pub enum Removal {
 /// A back-end error in the front's terms, where it does not remove a device.
 fn gpu_error(e: GpuError) -> Error {
     match e {
-        GpuError::Absent(_) => Error::NotImplemented("a feature the back end lacks"),
+        GpuError::Absent(f) => {
+            eprintln!("wcontainers direct3d 11: not implemented: the back end lacks {f:?}");
+            Error::NotImplemented("a feature the back end lacks")
+        }
         GpuError::OutOfMemory => Error::OutOfMemory,
         GpuError::DeviceLost => Error::DeviceRemoved,
         GpuError::Invalid(_) => Error::DeviceRemoved,
