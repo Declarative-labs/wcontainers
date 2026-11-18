@@ -1,6 +1,6 @@
 # wcontainers: the runtime (joining the kernel to the translator)
 
-Status: plan, 2026-11-17; J1 built (2026-11-18); J2 next.
+Status: plan, 2026-11-17; J1 built (2026-11-18); J2 being built.
 
 Words used here:
 - **kernel**: crates/wcontainers-kernel, driven from outside through `wcontainers-abi`.
@@ -437,27 +437,33 @@ in use, and moves up when it crosses it, by the same move as above. That is buil
 wider form exists. Until then the back end has one ceiling for all its processes, and `Cpu::address_space`
 stays one value, since a ceiling per process has no use before the move.
 
-**Fork.** `memory_duplicate` makes the child's store, guest memory and state memory, then:
-- copies every run of private pages that may hold data, exactly, whatever the host has done with the pages.
-  "May hold data" is a bit of the back end's per-page record: set when a page is given any access or written
-  through `Cpu::write`, cleared when `Cpu::zero` covers it, so a page made inaccessible after it was written
-  is still copied. Pages that show a block of shared pages are skipped (the child maps the same blocks,
-  below, and gets their copies from the blocks); that includes every page of a file mapping the kernel has
-  not yet given a private copy, the ELF images loaded at exec among them (kernel loader.rs:814-834,
-  shared.rs:1-4). What is copied is the anonymous pages and the pages a private file mapping has made its
-  own. The copy is one operation with one body per host operating system:
+**Fork.** `memory_duplicate` first makes the copies of the parent's written shared pages (as before any
+exit), then makes the child's store, guest memory and state memory, and:
+- copies every run of pages that may hold data, exactly, whatever the host has done with the pages, each
+  run widened to whole host pages (16 KiB on this Mac; the pages added are the parent's too, so the copy
+  stays exact). "May hold data" is a bit of the back end's per-page record: set when a page is given any
+  access, written through `Cpu::write` or shown a block, cleared when `Cpu::zero` covers the whole page, so a
+  page made inaccessible after it was written is still copied. Pages that show a block of shared pages are
+  copied with the rest: once the written pages' copies are made they hold the block's bytes, and the host's
+  copy of them costs less than copying the block in (it shares the pages). The copy is one operation with one
+  body per host operating system (memory.rs `copy_pages`):
   - macOS: `mach_vm_copy` of each range, which copies exactly by construction (the system shares the pages
     and copies each on its first write in either process), so a page that is compressed or paged out is
     copied like any other;
   - Linux: the pages `/proc/self/pagemap` shows present or swapped (bits 63 and 62), copied with `memcpy`; a
-    page that is neither has never been written, or was given back, and reads as zero in both. Measured at J2.
+    page that is neither has never been written, or was given back, and reads as zero in both;
+  - any other host: `memcpy` of the whole range.
   Residency (`mincore`) is not used: it reports a compressed or swapped page as not resident, which would
   give the child zeros;
-- maps the same blocks at the same places, copying their bytes in;
-- writes the child's permission table from the back end's record, and rebuilds its array of slots from the
-  process's code modules and their piece lists at the same slot bases; neither is copied;
-- leaves instances to the child's first run, which instantiates the process's code modules at the same slot
-  bases.
+- takes the parent's per-page record (permissions, write locks, may hold data) and blocks shown, so the
+  child shows the same blocks at the same places;
+- copies the parent's permission table and the entries of its array of slots for every range of code, by
+  the same page copy: the child's record and translations are the parent's, so their bytes are too, and
+  copying shares pages where rewriting them would touch every one;
+- takes the parent's code modules and piece lists at the same slot bases, and leaves instances to the
+  child's first run, which instantiates them.
+`restored()` is the same copy into a new back end, without the code: every range is to be translated again
+at first use, the table is written from the record, and each thread's block is copied.
 Measured on macOS (section 18): a new 4 GiB memory 6.3 to 15.6 µs. `mach_vm_copy` of busybox sh's ranges
 (11 MB mapped, 1.7 MB written: both images, heap and stack, more than the reference's 892 kB resident) 19.1 µs,
 against 115.6 µs to `memcpy` the written bytes; a python-sized process (24 MB mapped, 8.6 MB written) 198 µs
@@ -472,8 +478,8 @@ fork, as for a shell's child, which writes a few pages before exec, and a parent
 that forks and then rewrites most of its memory would pay more than a full copy. The reason for
 `mach_vm_copy` is exactness first (a compressed or paged-out page is copied like any other, with no
 residency question), and its speed in the common fork-then-exec case second. J2 and J7 measure both sides
-on real programs, and a program that loses by it is a measured case for copying eagerly, not a setting. The array of slots holds one entry per piece: 5,344 for busybox and musl at full
-(3,520 and 1,824, translator status M5), so rebuilding it is expected to take microseconds (not measured).
+on real programs, and a program that loses by it is a measured case for copying eagerly, not a setting. The array's entries for busybox's and musl's code
+(0xd2000 and 0xa2000 bytes of address, as many bytes of entries) are copied by the same page copy.
 The kernel's own share of fork, exit and wait is 2.42 to 2.65 µs. Instantiating code modules for the child's
 thread costs 0.43 to 0.60 ms for busybox and 0.27 to 0.42 ms for musl; wasmtime's pooling allocator made no
 difference. So a shell's fork is expected to cost about 0.75 ms, almost all of it instantiation (an
@@ -925,14 +931,18 @@ Each bar is checkable by running the named command on this Mac with Docker.
 - **J2, processes, and the rest of the boundary.** First, each as its own commit:
   - the stand-in counts the guest's own transfers, and the loop counts the kernel's changes of pc
     (section 9), together, since both change the stand-in's unit. Checked: the crate's verdicts without
-    the feature are unchanged, by the same `diff` as J1's step 1;
+    the feature are unchanged, by the same `diff` as J1's step 1. Not built until the owner rules on the
+    unit (the brief: the count's definition is not ruled; stop checks stand in for it, warned, and no
+    test compares progress between the back ends until it is);
   - the cache's disk level for the tests' directory. The bars' none and bounded runs span many test
     binaries, and busybox at none compiles in 8.45 s (section 18), so it should compile once per build;
   - the kernel's clock method in the clock hook, if the kernel track has landed it.
   Then fork with the exact copy of section 8 (macOS `mach_vm_copy`, Linux `pagemap`), signals and frames,
   job control and terminals. Linux is checked for host-supplied memory, shared blocks and the fork copy,
   including a page the system has swapped out (`MADV_PAGEOUT`) being seen by the child. A test translates
-  and compiles new code in a save's copy and finishes (section 11).
+  and compiles new code in a save's copy and finishes (section 11): the back end's own, in a fork copy of
+  its test process with rayon's global pool started, since the kernel tests' copies find their
+  translations in the cache's directory.
   Bar: with `--features runtime`, the tests `shell`, `script`, `scriptline`, `processes`, `zombie`,
   `orphans`, `procsignals`, `sigframe`, `faults`, `align`, `memory`, `mapflags`, `privatemap`, `sharedmap`,
   `memfd`, `sysvshm`, `loader`, `loaderrors`, `terminal`, `write` and `unknown` all pass as they do with the
@@ -1085,7 +1095,6 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
 - A system call and a fork end to end through the runtime (J2).
 - Where instantiation time goes, and fork with it brought down (J7).
 - Host-supplied memory, shared blocks and the `pagemap` fork copy on Linux (J2).
-- Rebuilding a fork child's array of slots from the piece lists (J2).
 - A lookup in a 64 bit array of slots and permission table, the wider form of section 8 (the translator
   and x86 tracks).
 - How many processes one runtime holds at a given ceiling in the wider form, and the cost of moving a
