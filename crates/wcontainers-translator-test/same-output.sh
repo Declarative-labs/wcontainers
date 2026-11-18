@@ -6,7 +6,8 @@
 #
 # From the repository root:
 #   WC_OUTPUT_ROOT=<directory> nix develop -c crates/wcontainers-translator-test/same-output.sh <commit> [sets]
-# Sets, comma separated (default all): bench busybox musl rg git python java go node bun. Node and Bun take
+# Sets, comma separated (default all): bench busybox musl rg git python java go node bun (bench and musl for each
+# of the four probe answers, the rest for this machine's). Node and Bun take
 # many GB and minutes each; run them alone. The real binaries come from this checkout's target/binaries.
 # Both sides run this tree's tests/output.rs, so they write the same list; for an earlier commit from before
 # the guest CPU interface its few calls are spelled the old way.
