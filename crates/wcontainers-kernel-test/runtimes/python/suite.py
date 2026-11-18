@@ -2,11 +2,19 @@
 # image leaves the `test` package out) and prints each test's outcome, without times or messages.
 import io
 import os
+import re
 import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 os.chdir("/tmp")
+
+from test import support
+
+# The suite's warnings name process numbers, which in the reference start after those runc's
+# own threads took in the container; the numbers are left out of the comparison.
+warn = support.print_warning
+support.print_warning = lambda message: warn(re.sub(r"\d+", "N", message))
 
 
 class Outcomes(unittest.TestResult):
