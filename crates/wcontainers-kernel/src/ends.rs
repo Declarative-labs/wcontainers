@@ -45,7 +45,8 @@ impl Standard {
 
 /// The kernel's side of one end.
 struct Held {
-    /// None for an end named at a start that failed, closed at once.
+    /// None until the start that named it has made the first process's descriptors (and for
+    /// good if that start failed).
     file: Option<FileRef>,
     /// Bytes the kernel may still send.
     credit: u64,
@@ -71,23 +72,30 @@ impl Ends {
         }
     }
 
-    pub fn add(&mut self, end: End, file: Option<FileRef>) {
-        if let Some(file) = &file {
-            self.watched.push(match tty::end(file) {
-                Some((pty, ..)) => tty::channel(&pty),
-                None => pipe::channel(&file.borrow().node),
-            });
-        }
-        self.moved = true;
+    /// Names an end whose file comes later; credit given on it before then is kept.
+    pub fn name(&mut self, end: End) {
         let held = Held {
-            closed: file.is_none(),
-            file,
+            file: None,
             credit: 0,
+            closed: false,
         };
         assert!(
             self.held.insert(end, held).is_none(),
             "an end is named once"
         );
+    }
+
+    /// Gives a named end the kernel's side of it.
+    pub fn attach(&mut self, end: End, file: FileRef) {
+        self.watched.push(match tty::end(&file) {
+            Some((pty, ..)) => tty::channel(&pty),
+            None => pipe::channel(&file.borrow().node),
+        });
+        self.moved = true;
+        // An end the outside has closed already is let go of with the file.
+        if let Some(held) = self.held.get_mut(&end) {
+            held.file = Some(file);
+        }
     }
 
     /// The end that reads a pipe, if one does and has not closed.
@@ -263,11 +271,13 @@ impl Kernel {
         moved
     }
 
-    /// The ends named at a start that failed: the kernel closes them at once.
+    /// The ends named at a start that failed: the kernel closes those the outside has not.
     pub(crate) fn close_unmade(&mut self, cx: &mut Context<'_>, standard: &Standard) {
         for end in standard.ends() {
-            self.ends.add(end, None);
-            cx.host.stream_close(end);
+            if let Some(held) = self.ends.held.get_mut(&end) {
+                held.closed = true;
+                cx.host.stream_close(end);
+            }
         }
     }
 }

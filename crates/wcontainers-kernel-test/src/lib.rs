@@ -245,6 +245,17 @@ pub fn assert_same_streams(
     command: &[&str],
     outside: &streams::Outside,
 ) -> Vec<driver::Run> {
+    assert_same_streams_on(out, program, command, outside, None)
+}
+
+/// As [`assert_same_streams`], with the file backend mounted at `backend` (`/` for the root).
+pub fn assert_same_streams_on(
+    out: &Path,
+    program: Option<&str>,
+    command: &[&str],
+    outside: &streams::Outside,
+    backend: Option<&str>,
+) -> Vec<driver::Run> {
     let mut all: Vec<String> = command.iter().map(|part| part.to_string()).collect();
     let directory = match program {
         Some(name) => {
@@ -276,7 +287,7 @@ pub fn assert_same_streams(
         arguments: &all,
         environment: &environment,
         working_directory: "/",
-        backend: None,
+        backend,
         cached: false,
         published: &[],
         address_space: standin::SPACE_32_BIT,

@@ -88,6 +88,20 @@ fn a_pipeline_reads_all_of_its_input() {
 }
 
 #[test]
+fn input_reaches_a_container_still_starting_on_the_backend() {
+    // With the root on the backend the start waits for its answers; the outside's credit and
+    // input come meanwhile.
+    let outside = input(send_all(text(8, 20_000)));
+    wcontainers_kernel_test::assert_same_streams_on(
+        &out(),
+        None,
+        &["sh", "-c", "wc -l; echo done >&2"],
+        &outside,
+        Some("/"),
+    );
+}
+
+#[test]
 fn end_of_input_is_end_of_file() {
     let outside = input(send_all(text(2, 3000)));
     let runs = assert_same_streams(&out(), Some("stdin"), &["all", "100", "0"], &outside);

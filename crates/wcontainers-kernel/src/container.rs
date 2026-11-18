@@ -426,6 +426,9 @@ impl Kernel {
         cx.host.random(&mut self.files.generation_key);
         self.machine.memory_bytes = cx.cpu.address_space().end;
         self.hostname = start.hostname.to_vec();
+        for end in start.standard.ends() {
+            self.ends.name(end);
+        }
         if let Some(path) = start.backend {
             self.mount_backend(path);
         }
@@ -692,7 +695,7 @@ impl Kernel {
                     ws_ypixel: 0,
                 };
                 let (master, slave) = crate::syscall::tty::start_terminal(self, cx, pid, size)?;
-                self.ends.add(end, Some(master));
+                self.ends.attach(end, master);
                 descriptors.extend([slave.clone(), slave.clone(), slave]);
             }
         }
@@ -734,7 +737,7 @@ impl Kernel {
         let held = OpenFile::new(pipe.clone(), other, Vec::new(), 0);
         crate::syscall::pipe::attach(&pipe, &guest);
         crate::syscall::pipe::attach(&pipe, &held);
-        self.ends.add(end, Some(held));
+        self.ends.attach(end, held);
         guest
     }
 
