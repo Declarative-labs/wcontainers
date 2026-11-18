@@ -97,6 +97,7 @@ fn compare(
 fn variants_draw_as_the_native_feature_does() {
     let mut gpu = webgpu();
     let mut gl = webgl();
+    let mut vulkan = webgpu_on(wgpu::Backends::VULKAN);
     let d3d = wcontainers_graphics_test::d3d11::create(
         wcontainers_graphics_test::Driver::Hardware,
         false,
@@ -517,6 +518,46 @@ fn variants_draw_as_the_native_feature_does() {
                     ));
                 }
             }
+        }
+
+        // Clip distances natively (WebGPU's clip_distances, on wgpu's Vulkan path: its Direct3D 12
+        // path has none), against real Direct3D 11; the planes must change Direct3D's picture.
+        {
+            let code = [
+                bytecode(&format!("vs_clip.{route}")),
+                bytecode(&format!("ps_textured.{route}")),
+            ];
+            let native = grid_draw(&code, dxil, &grid);
+            let tint = [1.0, 0.75, 0.5, 1.5];
+            let (reference, _) = direct3d_11(
+                &d3d,
+                "vs_clip",
+                "ps_textured",
+                Format::Rgba8Unorm,
+                tint,
+                true,
+                &Reference::default(),
+            );
+            let (unclipped, _) = direct3d_11(
+                &d3d,
+                "vs_transform",
+                "ps_textured",
+                Format::Rgba8Unorm,
+                tint,
+                true,
+                &Reference::default(),
+            );
+            let (changed, _) = differ(&unclipped, &reference, Format::Rgba8Unorm);
+            eprintln!("clip distances {route}: they change {changed} of Direct3D's texels");
+            assert!(changed > 0);
+            let texels = ours(&mut vulkan, &native, ProvokingVertex::First);
+            results.push(compare(
+                format!("clip distances {route} webgpu-native (vulkan) against direct3d 11"),
+                &reference,
+                &texels,
+                Format::Rgba8Unorm,
+                (0, 0),
+            ));
         }
 
         // The counting variant: blended One plus One into an rgba8unorm target (the grid's triangles do

@@ -63,3 +63,21 @@ float4 ps_minlod(VsOut i) : SV_Target0 {
 float4 ps_mingather(VsOut i) : SV_Target0 {
     return albedo.GatherGreen(linear_clamp, i.uv);
 }
+
+struct ClipOut {
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+    nointerpolation uint id : TEXCOORD1;
+    float2 clip : SV_ClipDistance0;
+};
+
+// vs_transform with two clip distances, a diagonal across the grid and a line below its middle, both
+// cutting through triangles.
+ClipOut vs_clip(float3 position : POSITION, float2 uv : TEXCOORD0, uint id : SV_VertexID) {
+    ClipOut o;
+    o.position = mul(float4(position, 1.0), world_view_projection);
+    o.uv = uv;
+    o.id = id;
+    o.clip = float2(position.x + position.y * 0.5 + 0.1, position.y + 0.3);
+    return o;
+}

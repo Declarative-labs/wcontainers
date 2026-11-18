@@ -19,6 +19,7 @@ ps_special.dxil	ok
 ps_table.dxil	unsupported NonFiniteConstant
 ps_textured.dxil	ok
 vs_carry.dxil	ok
+vs_clip.dxil	ok-wgsl glsl-compile
 vs_ids.dxil	ok
 vs_pack.dxil	unsupported PackedStageValues
 vs_transform.dxil	ok

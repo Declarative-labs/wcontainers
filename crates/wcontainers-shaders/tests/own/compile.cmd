@@ -46,4 +46,6 @@ for %%e in (ps_dual ps_levels ps_samples ps_ids ps_minlod ps_mingather) do (
 )
 "%FXC%" /nologo /T vs_5_0 /E vs_ids /Fo vs_ids.dxbc variants.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_ids -Gis -Fo vs_ids.dxil variants.hlsl || exit /b 1
+"%FXC%" /nologo /T vs_5_0 /E vs_clip /Fo vs_clip.dxbc variants.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_clip -Gis -Fo vs_clip.dxil variants.hlsl || exit /b 1
 echo %FXC% %DXC%

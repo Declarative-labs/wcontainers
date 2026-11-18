@@ -1030,14 +1030,20 @@ pub fn differ(a: &[u8], b: &[u8], format: Format) -> (usize, u64) {
 }
 
 pub fn webgpu() -> wcontainers_gpu_webgpu::WebGpu {
+    webgpu_on(wgpu::Backends::DX12)
+}
+
+/// The WebGPU back end on wgpu's `backends`: Vulkan for what wgpu's Direct3D 12 path lacks (clip
+/// distances), as Chrome's WebGPU has it on Direct3D 12.
+pub fn webgpu_on(backends: wgpu::Backends) -> wcontainers_gpu_webgpu::WebGpu {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    desc.backends = wgpu::Backends::DX12;
+    desc.backends = backends;
     let instance = wgpu::Instance::new(desc);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         ..Default::default()
     }))
-    .expect("a Direct3D 12 adapter");
+    .expect("an adapter");
     let info = adapter.get_info();
     assert_ne!(info.device_type, wgpu::DeviceType::Cpu, "{}", info.name);
     eprintln!("webgpu: {} ({:?})", info.name, info.backend);

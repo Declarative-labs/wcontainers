@@ -27,6 +27,7 @@ ps_table.dxbc	ok
 ps_textured.dxbc	ok
 ps_window.dxbc	ok
 vs_carry.dxbc	ok
+vs_clip.dxbc	ok-wgsl glsl-compile
 vs_fullscreen.dxbc	ok-wgsl glsl-compile
 vs_ids.dxbc	ok
 vs_pack.dxbc	ok
