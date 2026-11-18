@@ -721,8 +721,9 @@ methods as exports, `Cpu` and `Host` as imports) is asked of the kernel track.
   Unicorn or any test crate.
 - `wcontainers-wasmtime` (MIT OR Apache-2.0, shipped): `CpuSide<G>`, the WebAssembly back end, and its
   cache. Depends on the runtime crate, the translator, the guest interface and the ARM64 guest, wasmtime,
-  rustix, blake3, object (0.41, the kernel's version, so one build holds one), gimli (0.34, the translator
-  test crate's version) for the unwind tables, rayon (1.12, the translator's) for the back end's own pool
+  rustix, blake3, object (0.41, the kernel's version; wasmtime 50 brings its own object 0.40 and gimli
+  0.33, so a build holds two versions of each), gimli (0.34, the translator test crate's version) for the
+  unwind tables, rayon (1.12, the translator's) for the back end's own pool
   (section 11) and, on macOS, mach2. The split keeps wasmtime out of every build that does not run WebAssembly
   (the kernel tests on the stand-in, a later native back end).
 - No new test crate. The kernel test crate's driver calls `drive`; its stand-in implements `Execution`; its
@@ -779,7 +780,7 @@ let status = container.run()?;    // to the end; or `container.step()` from the 
   (1.x), `process.args`, `process.env`, `process.cwd`, `hostname`, `root.path`, `annotations` (data, no
   behaviour), `linux.namespaces` entries without a `path` (every container has its own of each kind by
   construction), and `process.user`, `process.capabilities`, `process.rlimits`, `process.noNewPrivileges`,
-  `process.umask`, `linux.sysctl` (the kernel's own), the default `mounts` (proc, tmpfs, devpts, mqueue,
+  `process.user.umask`, `linux.sysctl` (the kernel's own), the default `mounts` (proc, tmpfs, devpts, mqueue,
   sysfs) and `linux.seccomp` as far as the kernel's `Start` takes them, which J3 settles with the kernel
   track (today `Start` takes the program, arguments, environment, working directory, host name, groups and
   the backend, kernel container.rs:52-64). Refused, and what supporting each would take:
