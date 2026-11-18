@@ -45,3 +45,10 @@ fn busy_programs_match_reference() {
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     wcontainers_kernel_test::assert_same_output(&out, "textbusy", &[]);
 }
+
+/// kill and rt_sigqueueinfo given another thread's number signal its process.
+#[test]
+fn signals_to_a_threads_number_match_reference() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    wcontainers_kernel_test::assert_same_output(&out, "killthread", &[]);
+}

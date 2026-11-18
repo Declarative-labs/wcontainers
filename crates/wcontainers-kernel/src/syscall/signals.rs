@@ -66,9 +66,7 @@ pub(super) fn kill(
     let (pid, signal) = (pid as i32, signal as u32);
     let info = kill_info(kernel, tid, signal);
     if pid > 0 {
-        if !kernel.processes.contains_key(&pid) {
-            return Err(Errno::ESRCH);
-        }
+        let pid = process_of_task(kernel, pid)?;
         return signal_process(kernel, cx, tid, pid, signal, info).map(|()| 0);
     }
     if pid == i32::MIN {
@@ -303,10 +301,24 @@ pub(super) fn rt_sigqueueinfo(
 ) -> Result<u64, Errno> {
     let (pid, signal) = (pid as i32, signal as u32);
     let info = queued_info(kernel, cx, tid, pid, signal, info)?;
-    if pid <= 0 || !kernel.processes.contains_key(&pid) {
+    if pid <= 0 {
         return Err(Errno::ESRCH);
     }
+    let pid = process_of_task(kernel, pid)?;
     signal_process(kernel, cx, tid, pid, signal, info).map(|()| 0)
+}
+
+/// The process of the task numbered `id` (`kill_pid_info` finds any thread, and signals its
+/// process): a process, a zombie among them, or one of its threads.
+fn process_of_task(kernel: &Kernel, id: Pid) -> Result<Pid, Errno> {
+    if kernel.processes.contains_key(&id) {
+        return Ok(id);
+    }
+    kernel
+        .threads
+        .get(&id)
+        .map(|thread| thread.process)
+        .ok_or(Errno::ESRCH)
 }
 
 pub(super) fn rt_tgsigqueueinfo(
