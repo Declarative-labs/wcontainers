@@ -78,6 +78,8 @@ pub(crate) enum Entry {
     FdInfo(Task, i32),
     /// A process's `ns` directory, and the namespace links in it.
     Namespaces(Task),
+    /// A process's `attr` directory, whose files are security modules' (none here).
+    Attrs(Task),
     Namespace(Task, Namespace),
     /// A process's `net` directory (its network's), and the files in it.
     Net(Task),
@@ -134,6 +136,30 @@ pub(crate) enum ProcessFile {
     Mountinfo,
     Limits,
     Cgroup,
+    /// The files of `attr` (`attr_dir_stuff`), which no security module answers.
+    AttrCurrent,
+    AttrPrev,
+    AttrExec,
+    AttrFscreate,
+    AttrKeycreate,
+    AttrSockcreate,
+}
+
+/// The files of a process's `attr` directory, in Linux's order.
+const ATTR_FILES: &[(&[u8], ProcessFile)] = &[
+    (b"current", ProcessFile::AttrCurrent),
+    (b"prev", ProcessFile::AttrPrev),
+    (b"exec", ProcessFile::AttrExec),
+    (b"fscreate", ProcessFile::AttrFscreate),
+    (b"keycreate", ProcessFile::AttrKeycreate),
+    (b"sockcreate", ProcessFile::AttrSockcreate),
+];
+
+impl ProcessFile {
+    /// Whether it is a file of `attr`.
+    pub fn is_attr(self) -> bool {
+        ATTR_FILES.iter().any(|(_, file)| *file == self)
+    }
 }
 
 /// The files of `/proc/net` built here.
@@ -610,6 +636,8 @@ pub(crate) enum Writing {
     Io,
     /// `mem_write`: into the process's memory.
     Memory,
+    /// `proc_pid_attr_write`: a process's own security attributes, which no module takes.
+    Attr,
     /// The file has no write (`FMODE_CAN_WRITE` unset): `EINVAL`.
     None,
 }
@@ -649,6 +677,7 @@ impl Entry {
             Entry::FdInfos(task) => Some(format!("{}/fdinfo", task.path())),
             Entry::Net(task) => Some(format!("{}/net", task.path())),
             Entry::Namespaces(task) => Some(format!("{}/ns", task.path())),
+            Entry::Attrs(task) => Some(format!("{}/attr", task.path())),
             Entry::Tasks(pid) => Some(format!("/{pid}/task")),
             Entry::Global(index) => Some(format!("/{}", GLOBAL[index].0)),
             _ => None,
@@ -668,6 +697,7 @@ impl Entry {
             | Entry::FdInfo(task, _)
             | Entry::Net(task)
             | Entry::NetFile(task, _)
+            | Entry::Attrs(task)
             | Entry::Namespaces(task)
             | Entry::Namespace(task, _) => Some(task.pid),
             Entry::Tasks(pid) => Some(pid),
@@ -702,6 +732,8 @@ impl Entry {
                 ProcessFile::Cmdline | ProcessFile::Environ | ProcessFile::Auxv,
             ) => Style::Memory,
             Entry::ProcessFile(_, ProcessFile::Mem) => Style::Address,
+            // `proc_pid_attr_operations`: a read of its own, seeking as `generic_file_llseek`.
+            Entry::ProcessFile(_, file) if file.is_attr() => Style::Memory,
             Entry::Global(index) if GLOBAL[*index].0.starts_with("sys/") => Style::Sysctl,
             _ => Style::Sequence,
         }
@@ -716,6 +748,7 @@ impl Entry {
             Entry::ProcessFile(_, ProcessFile::OomAdj) => Writing::OomScoreAdj(true),
             Entry::ProcessFile(_, ProcessFile::TimerslackNs) => Writing::TimerslackNs,
             Entry::ProcessFile(_, ProcessFile::Mem) => Writing::Memory,
+            Entry::ProcessFile(_, file) if file.is_attr() => Writing::Attr,
             Entry::Global(_) if self.style() == Style::Sysctl => Writing::Sysctl,
             // `proc_reg_write` with no `proc_write` of the entry's own.
             Entry::Global(_) | Entry::NetFile(..) => Writing::Io,
@@ -742,6 +775,9 @@ impl Entry {
             }
             Entry::Fds(_) => S_IFDIR | 0o500,
             Entry::Namespaces(_) => S_IFDIR | 0o511,
+            Entry::Attrs(_) => S_IFDIR | 0o555,
+            Entry::ProcessFile(_, ProcessFile::AttrPrev) => S_IFREG | 0o444,
+            Entry::ProcessFile(_, file) if file.is_attr() => S_IFREG | 0o666,
             Entry::FdInfo(..) => S_IFREG | 0o444,
             Entry::Net(_) => S_IFDIR | 0o555,
             Entry::NetFile(..) => S_IFREG | 0o444,
@@ -789,6 +825,7 @@ impl Entry {
             Entry::Fd(t, fd) => task(t, 0x1000 + *fd as u64 % 0xf000),
             Entry::FdInfos(t) => task(t, 5),
             Entry::Namespaces(t) => task(t, 6),
+            Entry::Attrs(t) => task(t, 7),
             Entry::Namespace(t, namespace) => task(t, 96 + *namespace as u64),
             Entry::FdInfo(t, fd) => task(t, 0x1000 + *fd as u64 % 0xf000) | 1 << 46,
         }
@@ -804,6 +841,7 @@ impl Entry {
             | Entry::FdInfos(task)
             | Entry::FdInfo(task, _)
             | Entry::Namespaces(task)
+            | Entry::Attrs(task)
             | Entry::Namespace(task, _) => task.tid,
             Entry::Tasks(pid) => pid,
             // The network's entries belong to its owner, root.
@@ -1262,6 +1300,7 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
             add(b"fdinfo", Entry::FdInfos(task));
             add(b"net", Entry::Net(task));
             add(b"ns", Entry::Namespaces(task));
+            add(b"attr", Entry::Attrs(task));
             if !task.own {
                 add(b"task", Entry::Tasks(task.pid));
             }
@@ -1292,6 +1331,15 @@ pub(crate) fn list(view: &View<'_>, entry: &Entry) -> Vec<(Vec<u8>, Entry, u64)>
                     };
                     out.push((format!("{fd}").into_bytes(), child, fd as u64 + 2));
                 }
+            }
+        }
+        Entry::Attrs(task) => {
+            for (index, (name, file)) in ATTR_FILES.iter().enumerate() {
+                out.push((
+                    name.to_vec(),
+                    Entry::ProcessFile(*task, *file),
+                    index as u64 + 2,
+                ));
             }
         }
         // `proc_ns_dir_readdir`: every link, whether or not the process still has its namespaces.
@@ -1869,6 +1917,13 @@ fn process_file(
         ProcessFile::Auxv => return Ok(stack.auxiliary.clone()),
         // Read and written in place (`crate::syscall::memory::proc_mem`), never made.
         ProcessFile::Mem => return Ok(Vec::new()),
+        // `security_getprocattr` with no security module.
+        ProcessFile::AttrCurrent
+        | ProcessFile::AttrPrev
+        | ProcessFile::AttrExec
+        | ProcessFile::AttrFscreate
+        | ProcessFile::AttrKeycreate
+        | ProcessFile::AttrSockcreate => return Err(Errno::EINVAL),
         ProcessFile::Comm => {
             let mut bytes = shown.name.clone();
             bytes.push(b'\n');

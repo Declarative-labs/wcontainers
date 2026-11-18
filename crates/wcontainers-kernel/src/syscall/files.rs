@@ -638,6 +638,24 @@ pub(super) fn open(
                     .get(&task.pid)
                     .map(|process| process.memory);
             }
+            // `proc_pid_attr_open`: always opens, holding the process's memory only for an opener
+            // that may read it (PTRACE_MODE_READ with its file system ids).
+            if let proc::Entry::ProcessFile(task, file) = entry
+                && file.is_attr()
+                && proc::ptrace_may_read_as(
+                    &kernel.processes,
+                    &kernel.threads,
+                    tid,
+                    task.pid,
+                    false,
+                )
+            {
+                memory = kernel
+                    .processes
+                    .get(&task.pid)
+                    .filter(|process| process.ended.is_none())
+                    .map(|process| process.memory);
+            }
             if let proc::Entry::FdInfos(task) | proc::Entry::FdInfo(task, _) = entry
                 && !kernel.ptrace_may_read(tid, task.pid)
             {

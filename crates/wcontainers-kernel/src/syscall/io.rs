@@ -1402,6 +1402,11 @@ fn write_at_unwatched(
     if entry.is_some_and(|entry| entry.style() == Style::Address) {
         return super::memory::proc_mem(kernel, cx, tid, file, buffer, count, at, true);
     }
+    if let Some(crate::fs::proc::Entry::ProcessFile(task, attr)) = entry
+        && attr.is_attr()
+    {
+        return write_attr(kernel, cx, tid, file, task, buffer, count, at);
+    }
     if let Some(entry) = entry {
         return write_proc(kernel, cx, tid, entry, buffer, count);
     }
@@ -1428,6 +1433,36 @@ fn write_at_unwatched(
     write_bytes(kernel, cx, tid, file, &[], 0, at, append).map(|_| count)
 }
 
+/// `proc_pid_attr_write`: only through a file its writer's process opened, by the thread whose
+/// file it is, with its own credentials, from the start; no security module takes the bytes.
+#[allow(clippy::too_many_arguments, reason = "a write's own arguments")]
+fn write_attr(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    task: crate::fs::proc::Task,
+    buffer: u64,
+    count: u64,
+    at: Option<u64>,
+) -> Result<u64, Errno> {
+    let own = kernel.process_of(tid).memory;
+    if file.borrow().memory != Some(own) {
+        return Err(Errno::EPERM);
+    }
+    if !kernel.threads.contains_key(&task.tid) {
+        return Err(Errno::ESRCH);
+    }
+    if task.tid != tid {
+        return Err(Errno::EACCES);
+    }
+    if at.unwrap_or(file.borrow().offset) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    guest(kernel, cx, tid).read(buffer, count.min(PAGE_SIZE))?;
+    Err(Errno::EINVAL)
+}
+
 /// A write to a file of `/proc`, which takes no position and moves none.
 fn write_proc(
     kernel: &mut Kernel,
@@ -1439,7 +1474,7 @@ fn write_proc(
 ) -> Result<u64, Errno> {
     match entry.writing() {
         // Taken in place before (`write_at_unwatched`).
-        Writing::Memory => Err(Errno::EINVAL),
+        Writing::Memory | Writing::Attr => Err(Errno::EINVAL),
         // `comm_write`: the first 15 bytes name the file's thread, up to a zero, and the whole count
         // is taken; only threads of the same process may name it.
         Writing::Comm => {
