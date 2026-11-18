@@ -82,8 +82,9 @@ pub fn caps(
         min_uniform_offset_alignment: uniform_alignment,
         min_storage_offset_alignment: uniform_alignment,
         buffer_copy_alignment: 1,
-        // Immediates as plain uniforms are not built yet.
-        immediate_bytes: 0,
+        // Immediates are plain uniforms: Direct3D 12's largest root signature (64 words) fits in 16
+        // of the 224 uniform vectors WebGL 2 gives a stage at least.
+        immediate_bytes: 256,
         compute_workgroup_storage: 0,
         compute_invocations: 0,
         compute_size: [0; 3],
