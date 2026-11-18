@@ -6,10 +6,10 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 ## Where things stand
 
 G2 passed its independent check. G2b (what the fronts need from this back end): runs 1 to 4 are
-"Run 11" to "Run 14" below. G2b's independent check found nine problems; run 13 fixed them (list
+"Run 11" to "Run 15" below. G2b's independent check found nine problems; run 13 fixed them (list
 in "Run 13"). Run 14 measured instance data at more streams and made binding sets made again each
-frame find their bind groups. Every request found is built and tested or refused by name (list
-below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
+frame find their bind groups. Run 15 moved copies of converted formats onto the GPU. Every
+request found is built and tested or refused by name (list below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
 graphics branch), and where each stands:
@@ -39,7 +39,7 @@ graphics branch), and where each stands:
 - Formats WebGPU lacks (`FormatConverted`; both Direct3D fronts ask for `A8_UNORM`, `B5G6R5`,
   `B5G5R5A1`, `B4G4R4A4`, the Direct3D 11 front also for `B8G8R8X8`, the Direct3D 12 front for
   the two-pixel formats): built (run 12, src/packed.rs). Held in an 8-bit RGBA format, widened on
-  the host at writes and packed again at read backs and copies out. `A8Unorm`, `Bgrx8Unorm` and
+  the host at writes and packed again at read backs; copies widen and pack on the GPU (run 15). `A8Unorm`, `Bgrx8Unorm` and
   `Bgrx8UnormSrgb` are sampled, filtered, drawn into, blended and resolved (only their own
   channels written); `B5g6r5Unorm`, `Bgr5a1Unorm`, `Bgra4Unorm`, `Rgbg8Unorm` and `Grgb8Unorm`
   are sampled, filtered and copied, and declared without `RENDER` (a draw would keep 8 bits a
@@ -63,6 +63,34 @@ graphics branch), and where each stands:
 - Freeing the back end's tables when a program or block is destroyed (Direct3D 12: "its own tables
   keep their entries"): built (run 13). tests/scenes.rs
   `destroyed_programs_and_blocks_free_their_pipelines`.
+
+Run 15 = G2b run 5, 2026-11-17:
+- Merged origin/phase-2-graphics-direct3d-12, -shaders and -rig (no conflicts; the shared line,
+  -webgl and -direct3d-11 had nothing new). They changed nothing in the interface, this crate,
+  the suite crate or the lock file. Read what is new in the Direct3D 12 and shaders status files:
+  nothing new is asked of this back end. The Direct3D 12 front lists "naga's validation lacking
+  `STORAGE_TEXTURE_16BIT_NORM_FORMATS` where the WebGPU back end reports those formats as stored
+  into" under the converter (G6): checked here, the back end declares storage for 16-bit
+  normalised formats only on a device with wgpu's `TEXTURE_FORMAT_16BIT_NORM`, and its own
+  validator (`wgpu_naga_bridge::create_validator` with the device's features) then has that
+  capability, so the gap is the converter's validation, not this back end's.
+- Copies of converted formats run on the GPU (were: read back, waited for, and written again
+  through the host, `HostCopyReadBack`, a pause for every Direct3D 12 upload of such a texture).
+  A copy goes through a texture of the format's raw blocks (`r8uint`, `r16uint` or `r32uint`, one
+  texel a block, `packed::raw`): from a buffer, the bytes are copied into it and a draw a slice
+  widens them into the texture; into a buffer, a draw packs the texels into it and it is copied
+  out; between a converted format and another of equal blocks, packed into it or copied from the
+  other, then widened from it or copied into the other. The draws' programs
+  (`packed::program`) do in WGSL what `widen` and `pack` do on the host (bits repeated; nearest
+  value of the bits), sRGB BGRX through its linear twin, 3D textures slice by slice. Converted
+  textures are made with render and binding usage for this. Counted as `FormatConverted`.
+- Tests that fail without it: examples/scenes/converted.rs `copies` now fails if a copy with a
+  buffer or between textures counts `HostCopyReadBack`, copies into and back from a texture of
+  another format of equal blocks (`R8Uint`, `R16Uint`, `R32Uint`, the other two-pixel format),
+  and `volume_copies` copies through buffers into and out of slices 1 and 2 of a 3D texture of
+  three (slice 0 and the buffer outside them untouched). Run natively by tests/converted.rs and
+  tests/direct3d.rs, in Chrome by web/check. The unit test `copy_programs_are_valid` parses and
+  validates every program with naga.
 
 Run 14 = G2b run 4, 2026-11-17:
 - Merged origin/phase-2-graphics-webgl, -shaders and -direct3d-11 (no conflicts; the shared line,
@@ -1120,8 +1148,7 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   more than 2^22 workgroups.
 - Drawing into the 16-bit packed formats: declared without `RENDER` (8-bit storage would keep
   more of a draw than Direct3D's 4, 5 or 6 bits; exact would need the program to round its output
-  and could not round a blend). Copies between a buffer and a converted texture pause the device
-  thread while the bytes cross the host (a compute program packing on the GPU would not).
+  and could not round a blend).
 - `OCCLUSION_COUNT`: absent for good (WebGPU's occlusion result is zero or not).
 - Natively the staging ring's bytes are copied twice (into wgpu's own staging memory, then by
   the GPU into the ring): wgpu 30 offers no mapped ring that needs no wait.
@@ -1131,10 +1158,10 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Next (G2b)
 
-1. The independent check of G2b (again, after run 13's fixes and run 14).
-2. Copies between a buffer and a converted texture on the GPU; why the timestamp workload takes 1.3 and 1.5 times
-   Direct3D 11's time through wgpu natively (expected, not measured: naga's loop bounding and
-   bounds checks; Chrome's Dawn takes Direct3D's time).
+1. The independent check of G2b (again, after runs 13 to 15).
+2. Why the timestamp workload takes 1.3 and 1.5 times Direct3D 11's time through wgpu natively
+   (expected, not measured: naga's loop bounding and bounds checks; Chrome's Dawn takes
+   Direct3D's time).
 3. Read the fronts' status files again after merging.
 
 ## Departures from the plan
