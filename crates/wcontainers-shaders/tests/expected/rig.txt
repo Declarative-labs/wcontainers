@@ -6,14 +6,14 @@ common.ps_color_9_1.dxbc	ok
 common.vs_color.dxbc	ok
 common.vs_color_9_1.dxbc	ok
 common.vs_full.dxbc	ok
-compute.cs_append.dxbc	unsupported StorageCounter
-compute.cs_atomic.dxbc	unsupported Atomics
-compute.cs_consume.dxbc	unsupported StorageCounter
-compute.cs_counter.dxbc	unsupported StorageCounter
+compute.cs_append.dxbc	ok-wgsl glsl-write
+compute.cs_atomic.dxbc	ok-wgsl glsl-write
+compute.cs_consume.dxbc	ok-wgsl glsl-write
+compute.cs_counter.dxbc	ok-wgsl glsl-write
 compute.cs_shared.dxbc	ok-wgsl glsl-write
 compute.cs_structured.dxbc	ok-wgsl glsl-write
-compute.cs_texture.dxbc	unsupported StorageImage
-compute.ps_overlap.dxbc	unsupported StorageImage
+compute.cs_texture.dxbc	unsupported StorageFormat
+compute.ps_overlap.dxbc	unsupported StorageFormat
 constants.ps_slots.dxbc	ok
 constants.ps_window.dxbc	ok
 depth.ps_depth.dxbc	ok
