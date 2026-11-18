@@ -116,6 +116,7 @@ pub fn draws(gpu: &Gpu) -> Result<Vec<Output>> {
         (positions?, offsets?, colors?, i16?, i32?, args?);
 
     let (target, rtv) = gpu.target(SIZE, SIZE, RGBA)?;
+    let (indirect, indirect_rtv) = gpu.target(SIZE, SIZE, RGBA)?;
     gpu.begin(&rtv, SIZE, SIZE);
     let (start, base) = (draws11::LIST_START, draws11::INDEXED_BASE);
     unsafe {
@@ -147,12 +148,15 @@ pub fn draws(gpu: &Gpu) -> Result<Vec<Output>> {
         list.IASetIndexBuffer(Some(&index_view(&i32, 0, i32_size, DXGI_FORMAT_R32_UINT)));
         at(5);
         list.DrawIndexedInstanced(6, 4, 2, base, 2);
+        // The indirect draws in a picture of their own, as in Direct3D 11.
+        gpu.begin(&indirect_rtv, SIZE, SIZE);
         at(6);
         list.ExecuteIndirect(&draw, 1, &args, 0, None, 0);
         list.IASetIndexBuffer(Some(&index_view(&i32, 4, i32_size, DXGI_FORMAT_R32_UINT)));
         at(7);
         // Starts at index 2 of the view 4 bytes in: index 3 of the whole buffer.
         list.ExecuteIndirect(&draw_indexed, 1, &args, 16, None, 0);
+        list.OMSetRenderTargets(1, Some(&gpu.cpu(&rtv, 0)), false, None);
         at(8);
         list.IASetVertexBuffers(
             0,
@@ -161,7 +165,10 @@ pub fn draws(gpu: &Gpu) -> Result<Vec<Output>> {
         list.DrawInstanced(6, 2, 0, 1);
     }
     let picture = gpu.read(&target, 0, RT)?;
-    Ok(vec![Output::picture("", picture)])
+    Ok(vec![
+        Output::picture("", picture),
+        Output::picture("indirect", gpu.read(&indirect, 0, RT)?),
+    ])
 }
 
 /// A root signature of one table of `count` constant buffer views from b0.

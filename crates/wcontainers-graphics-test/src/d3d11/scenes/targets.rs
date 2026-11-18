@@ -1,8 +1,9 @@
 //! Four render targets at once (8-bit, half float, 10-bit and 32-bit integer), each cleared to its
-//! own value and blended its own way: alpha blending, adding, the minimum, and no blending with
-//! only red written.
+//! own value, written without blending (from feature level 10_0), then again each blended its own
+//! way (from 10_1): alpha blending, adding, the minimum, and no blending with only red written.
 
 use anyhow::Result;
+use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_10_1;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
@@ -28,6 +29,12 @@ pub const FORMATS: [(DXGI_FORMAT, [f32; 4], &str); 4] = [
     ),
     (DXGI_FORMAT_R32_UINT, [12345.0, 0.0, 0.0, 0.0], "r32ui"),
 ];
+
+/// Makes a part's blend description.
+pub type Blend = fn() -> D3D11_BLEND_DESC;
+
+/// The parts: their outputs' prefix, their blending, and whether it is set per target (10_1).
+pub const PARTS: [(&str, Blend, bool); 2] = [("plain_", no_blend, false), ("", blend, true)];
 
 /// Each target's blending: alpha blending, adding, the minimum, and only red written.
 pub fn blend() -> D3D11_BLEND_DESC {
@@ -77,26 +84,37 @@ pub fn triangles() -> Vec<Colored> {
 
 pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     let c = &gpu.context;
-    let mut textures = Vec::new();
-    let mut views = Vec::new();
-    for (format, clear, _) in &FORMATS {
-        let (texture, rtv) = gpu.target(SIZE, SIZE, *format)?;
-        unsafe { c.ClearRenderTargetView(&rtv, clear) };
-        textures.push(texture);
-        views.push(Some(rtv));
+    let mut outputs = Vec::new();
+    for (prefix, blend, per_target) in PARTS {
+        if per_target && let Some(why) = gpu.lacks_level(D3D_FEATURE_LEVEL_10_1) {
+            for (_, _, name) in &FORMATS {
+                outputs.push(Output::absent(&format!("{prefix}{name}"), why.clone()));
+            }
+            continue;
+        }
+        let mut textures = Vec::new();
+        let mut views = Vec::new();
+        for (format, clear, _) in &FORMATS {
+            let (texture, rtv) = gpu.target(SIZE, SIZE, *format)?;
+            unsafe { c.ClearRenderTargetView(&rtv, clear) };
+            textures.push(texture);
+            views.push(Some(rtv));
+        }
+        colored_program(gpu)?;
+        unsafe {
+            c.OMSetRenderTargets(Some(&views), None);
+            c.OMSetBlendState(&gpu.blend(&blend())?, None, u32::MAX);
+            c.RSSetState(&gpu.rasterizer(&solid())?);
+            c.PSSetShader(&gpu.ps(dxbc!("targets.ps"))?, None);
+        }
+        gpu.viewport(SIZE, SIZE);
+        draw_colored(gpu, &triangles())?;
+        for ((_, _, name), texture) in FORMATS.iter().zip(&textures) {
+            outputs.push(Output::picture(
+                &format!("{prefix}{name}"),
+                gpu.read(texture, 0, 0)?,
+            ));
+        }
     }
-    colored_program(gpu)?;
-    unsafe {
-        c.OMSetRenderTargets(Some(&views), None);
-        c.OMSetBlendState(&gpu.blend(&blend())?, None, u32::MAX);
-        c.RSSetState(&gpu.rasterizer(&solid())?);
-        c.PSSetShader(&gpu.ps(dxbc!("targets.ps"))?, None);
-    }
-    gpu.viewport(SIZE, SIZE);
-    draw_colored(gpu, &triangles())?;
-    FORMATS
-        .iter()
-        .zip(&textures)
-        .map(|((_, _, name), texture)| Ok(Output::picture(name, gpu.read(texture, 0, 0)?)))
-        .collect()
+    Ok(outputs)
 }

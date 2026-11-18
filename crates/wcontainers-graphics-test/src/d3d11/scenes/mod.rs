@@ -45,21 +45,21 @@ pub type Scene = fn(&Gpu) -> Result<Vec<Output>>;
 
 /// Every scene with the lowest feature level it draws at, below which it is absent: 10_0 where its
 /// shaders are shader model 4.0 (parts needing more say so themselves); 10_1 for standard sample
-/// patterns (msaa) and blending set per target (targets); 11_0 for indirect draws, compute shaders,
-/// tessellation and the device scene's answers about 11_0 devices; 9_1 for the levels scene, which
+/// patterns (msaa); 11_0 for compute shaders, tessellation and the device scene's answers about
+/// 11_0 devices; 9_1 for the levels scene, which
 /// makes its own devices.
 pub const SCENES: &[(&str, D3D_FEATURE_LEVEL, Scene)] = &[
     ("triangle", D3D_FEATURE_LEVEL_10_0, basic::triangle),
     ("quads", D3D_FEATURE_LEVEL_10_0, basic::quads),
     ("instanced", D3D_FEATURE_LEVEL_10_0, basic::instanced),
     ("topology", D3D_FEATURE_LEVEL_10_0, topology::run),
-    ("draws", D3D_FEATURE_LEVEL_11_0, draws::run),
+    ("draws", D3D_FEATURE_LEVEL_10_0, draws::run),
     ("blend", D3D_FEATURE_LEVEL_10_0, blend::run),
     ("depth", D3D_FEATURE_LEVEL_10_0, depth::run),
     ("stencil", D3D_FEATURE_LEVEL_10_0, stencil::run),
     ("raster", D3D_FEATURE_LEVEL_10_0, raster::run),
     ("msaa", D3D_FEATURE_LEVEL_10_1, msaa::run),
-    ("targets", D3D_FEATURE_LEVEL_10_1, targets::run),
+    ("targets", D3D_FEATURE_LEVEL_10_0, targets::run),
     ("formats", D3D_FEATURE_LEVEL_10_0, formats::run),
     ("textures", D3D_FEATURE_LEVEL_10_0, textures::run),
     ("samplers", D3D_FEATURE_LEVEL_10_0, samplers::run),

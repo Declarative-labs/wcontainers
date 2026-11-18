@@ -35,6 +35,21 @@ pub const BC: [(DXGI_FORMAT, usize); 16] = [
     (DXGI_FORMAT_BC6H_UF16, 16),
 ];
 
+/// The parts the block-compressed formats are drawn in: BC1 to BC5 from feature level 10_0, BC6H
+/// and BC7 from 11_0 (true).
+pub const BC_PARTS: [(&str, bool); 2] = [("bc", false), ("bc67", true)];
+
+/// Whether a block-compressed format is BC6H or BC7, which need feature level 11_0.
+pub fn bc67(format: DXGI_FORMAT) -> bool {
+    matches!(
+        format,
+        DXGI_FORMAT_BC6H_UF16
+            | DXGI_FORMAT_BC6H_SF16
+            | DXGI_FORMAT_BC7_UNORM
+            | DXGI_FORMAT_BC7_UNORM_SRGB
+    )
+}
+
 /// The random blocks of each block-compressed format, in the order of `BC`.
 pub fn bc_blocks() -> Vec<Vec<u8>> {
     let mut random = seeded(11);
@@ -236,26 +251,33 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         show(gpu, dxbc!("textures.ps_mips"), &view, rgba, SIZE, SIZE * 2)?,
     ));
 
-    // Block-compressed: 32 by 32 texels of random blocks per format, read exactly (BC6H and BC7
-    // from 11_0).
-    if let Some(why) = gpu.lacks_level(D3D_FEATURE_LEVEL_11_0) {
-        outputs.push(Output::absent("bc", why));
-        return Ok(outputs);
-    }
-    let (target, rtv) = gpu.target(128, 128, DXGI_FORMAT_R32G32B32A32_FLOAT)?;
-    gpu.begin(&rtv, None, 128, 128);
-    gpu.program(dxbc!("common.vs_full"), dxbc!("textures.ps_load"), &[])?;
-    for (i, ((format, block), blocks)) in BC.into_iter().zip(bc_blocks()).enumerate() {
-        let mut desc = tex2d(32, 32, format, D3D11_BIND_SHADER_RESOURCE);
-        desc.Usage = D3D11_USAGE_IMMUTABLE;
-        let texture = gpu.texture2d(&desc, &[data(&blocks, 8 * block as u32, 0)])?;
-        let view = gpu.srv(&texture.cast()?, None)?;
-        unsafe {
-            c.RSSetViewports(Some(&[cell(i as u32, 4, 32.0)]));
-            c.PSSetShaderResources(0, Some(&[Some(view)]));
-            c.Draw(3, 0);
+    // Block-compressed: 32 by 32 texels of random blocks per format, read exactly, in the parts
+    // of `BC_PARTS`.
+    let all = bc_blocks();
+    for (part, newer) in BC_PARTS {
+        if newer && let Some(why) = gpu.lacks_level(D3D_FEATURE_LEVEL_11_0) {
+            outputs.push(Output::absent(part, why));
+            continue;
         }
+        let (target, rtv) = gpu.target(128, 128, DXGI_FORMAT_R32G32B32A32_FLOAT)?;
+        gpu.begin(&rtv, None, 128, 128);
+        gpu.program(dxbc!("common.vs_full"), dxbc!("textures.ps_load"), &[])?;
+        let formats = BC
+            .into_iter()
+            .zip(&all)
+            .filter(|((f, _), _)| bc67(*f) == newer);
+        for (i, ((format, block), blocks)) in formats.enumerate() {
+            let mut desc = tex2d(32, 32, format, D3D11_BIND_SHADER_RESOURCE);
+            desc.Usage = D3D11_USAGE_IMMUTABLE;
+            let texture = gpu.texture2d(&desc, &[data(blocks, 8 * block as u32, 0)])?;
+            let view = gpu.srv(&texture.cast()?, None)?;
+            unsafe {
+                c.RSSetViewports(Some(&[cell(i as u32, 4, 32.0)]));
+                c.PSSetShaderResources(0, Some(&[Some(view)]));
+                c.Draw(3, 0);
+            }
+        }
+        outputs.push(Output::picture(part, gpu.read(&target, 0, 0)?));
     }
-    outputs.push(Output::picture("bc", gpu.read(&target, 0, 0)?));
     Ok(outputs)
 }
