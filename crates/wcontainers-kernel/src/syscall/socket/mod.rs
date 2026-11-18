@@ -2823,20 +2823,12 @@ fn read_header(
 /// credentials.
 fn read_control(
     kernel: &mut Kernel,
-    cx: &mut Context<'_>,
     tid: Tid,
-    header: &Header,
+    control: &[u8],
     local: bool,
 ) -> Result<(Vec<FileRef>, Option<Cred>), Errno> {
     let mut files = Vec::new();
     let mut cred = None;
-    if header.control_length == 0 {
-        return Ok((files, cred));
-    }
-    if header.control_length > i32::MAX as u64 {
-        return Err(Errno::ENOBUFS);
-    }
-    let control = guest(kernel, cx, tid).read(header.control, header.control_length)?;
     let mut at = 0usize;
     while at + CMSG_HEADER as usize <= control.len() {
         let length = u64::from_le_bytes(control[at..at + 8].try_into().expect("8 bytes"));
@@ -2916,17 +2908,20 @@ pub(super) fn sendmsg(
     if header.control_length > i32::MAX as u64 {
         return Err(Errno::ENOBUFS);
     }
-    // `unix_seqpacket_sendmsg` wants a connection before it reads the control messages.
-    if socket.borrow().local()
-        && socket.borrow().kind == SOCK_SEQPACKET
-        && socket.borrow().state != State::Connected
-    {
-        return Err(Errno::ENOTCONN);
+    let control = guest(kernel, cx, tid).read(header.control, header.control_length)?;
+    // `unix_seqpacket_sendmsg` takes a pending error, then wants a connection, before
+    // `unix_dgram_sendmsg` reads the control messages.
+    if socket.borrow().local() && socket.borrow().kind == SOCK_SEQPACKET {
+        let error = core::mem::take(&mut socket.borrow_mut().error);
+        if error != 0 {
+            return Err(Errno(error as u32));
+        }
+        if socket.borrow().state != State::Connected {
+            return Err(Errno::ENOTCONN);
+        }
     }
-    // `netlink_sendmsg` refuses urgent and empty messages before it reads the control messages
-    // `____sys_sendmsg` took in.
+    // `netlink_sendmsg` refuses urgent and empty messages before it reads the control messages.
     if socket.borrow().netlink.is_some() {
-        guest(kernel, cx, tid).read(header.control, header.control_length)?;
         if flags as u32 & MSG_OOB != 0 {
             return Err(Errno::EOPNOTSUPP);
         }
@@ -2935,15 +2930,14 @@ pub(super) fn sendmsg(
         }
     }
     let (files, cred, control) = if socket.borrow().inet.is_some() {
-        let bytes = guest(kernel, cx, tid).read(header.control, header.control_length)?;
         (
             Vec::new(),
             None,
-            Some(bytes).filter(|bytes| !bytes.is_empty()),
+            Some(control).filter(|bytes| !bytes.is_empty()),
         )
     } else {
         let local = socket.borrow().local();
-        let (files, cred) = read_control(kernel, cx, tid, &header, local)?;
+        let (files, cred) = read_control(kernel, tid, &control, local)?;
         (files, cred, None)
     };
     let message = Outgoing {
@@ -3461,6 +3455,8 @@ pub(super) fn setsockopt(
             };
         }
         SO_INQ => return Err(Errno::ENOPROTOOPT),
+        // Netlink's operations have no `set_peek_off`.
+        SO_PEEK_OFF if own.netlink.is_some() => return Err(Errno::EOPNOTSUPP),
         SO_PEEK_OFF => {
             let offset = int()?;
             own.peek_offset = (offset >= 0).then_some(offset as u64);
@@ -3871,6 +3867,7 @@ pub(super) fn getsockopt(
             SO_PASSPIDFD => int(i32::from(own.pass_pidfd)),
             SO_PASSRIGHTS => int(i32::from(own.pass_rights)),
             SO_INQ => return Err(Errno::ENOPROTOOPT),
+            SO_PEEK_OFF if own.netlink.is_some() => return Err(Errno::EOPNOTSUPP),
             SO_PEEK_OFF => int(own.peek_offset.map_or(-1, |offset| offset as i32)),
             SO_SNDLOWAT => int(1),
             SO_RCVLOWAT => own
