@@ -91,6 +91,9 @@ pub const DRAW_ARGUMENTS_BINDING: u32 = 11;
 pub const DOMAIN_PATCHES_BINDING: u32 = 13;
 /// The binding in [`HELPER_SET`] of the tessellator's points a domain program reads, likewise.
 pub const DOMAIN_POINTS_BINDING: u32 = 14;
+/// The binding in [`HELPER_SET`] of a storage buffer a front's own counting program adds to, such as
+/// one counting pixel shader invocations for a pipeline statistics query.
+pub const COUNTER_BINDING: u32 = 15;
 /// The width in texels of the texture a constant buffer is read through
 /// ([`AddedBinding::ConstantsAsTexture`]): the buffer's 16-byte row r is texel (r % width, r / width).
 pub const CONSTANTS_TEXTURE_WIDTH: u32 = 256;

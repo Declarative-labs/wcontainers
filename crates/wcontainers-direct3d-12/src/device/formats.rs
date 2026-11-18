@@ -14,7 +14,7 @@
 //! converted again, at the first draw or dispatch binding them, and kept per pipeline.
 
 use super::*;
-use crate::dxbc::{Kind, typed_views};
+use crate::dxbc::{Kind, TypedView};
 use pull::Helpers;
 use wcontainers_gpu::Filter;
 
@@ -55,11 +55,18 @@ pub(super) struct Formats<B: Backend> {
     variants: Vec<Variant<B>>,
 }
 
+/// The typed views a DXBC or DXIL shader declares; none where its declarations cannot be read.
+fn typed_views(code: &[u8]) -> Vec<TypedView> {
+    crate::dxbc::typed_views(code)
+        .or_else(|| crate::dxil::typed_views(code))
+        .unwrap_or_default()
+}
+
 /// The key fields a shader's typed views are first converted with: their formats by slot, and
-/// `route` where it declares typed buffers. Default for DXIL and for shaders declaring none.
+/// `route` where it declares typed buffers. Default for shaders declaring none.
 pub(super) fn typed_key(code: &[u8], route: TexelBufferRoute) -> VariantKey {
     let mut key = VariantKey::default();
-    for v in typed_views(code).unwrap_or_default() {
+    for v in typed_views(code) {
         let format = match v.kind {
             Kind::Float => Format::R32Float,
             Kind::Uint => Format::R32Uint,
@@ -81,7 +88,6 @@ pub(super) fn typed_key(code: &[u8], route: TexelBufferRoute) -> VariantKey {
 /// The registers of a shader's typed unordered access views of textures, one bit each.
 pub(super) fn typed_texture_slots(code: &[u8]) -> u64 {
     typed_views(code)
-        .unwrap_or_default()
         .iter()
         .filter(|v| v.storage && !v.buffer && v.register < 64)
         .fold(0, |m, v| m | (1 << v.register))

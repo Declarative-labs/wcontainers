@@ -103,8 +103,8 @@ fn typed_view(instruction: &[u32]) -> Option<(u32, Kind)> {
     Some((register, kind))
 }
 
-/// The program chunk (`SHEX` or `SHDR`) of a DXBC container as words.
-fn program(code: &[u8]) -> Option<Vec<u32>> {
+/// The bytes of a container's first chunk named `fourcc`.
+pub(crate) fn chunk(code: &[u8], fourcc: [u8; 4]) -> Option<&[u8]> {
     let word = |at: usize| -> Option<usize> {
         Some(u32::from_le_bytes(code.get(at..at + 4)?.try_into().ok()?) as usize)
     };
@@ -113,21 +113,25 @@ fn program(code: &[u8]) -> Option<Vec<u32>> {
     }
     for i in 0..word(28)? {
         let start = word(32 + i * 4)?;
-        let fourcc = code.get(start..start + 4)?;
-        if fourcc == b"SHEX" || fourcc == b"SHDR" {
+        if code.get(start..start + 4)? == fourcc {
             let size = word(start + 4)?;
-            let bytes = code.get(start + 8..start + 8 + size)?;
-            return Some(
-                bytes
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|w| u32::from_le_bytes(*w))
-                    .collect(),
-            );
+            return code.get(start + 8..start + 8 + size);
         }
     }
     None
+}
+
+/// The program chunk (`SHEX` or `SHDR`) of a DXBC container as words.
+fn program(code: &[u8]) -> Option<Vec<u32>> {
+    let bytes = chunk(code, *b"SHEX").or_else(|| chunk(code, *b"SHDR"))?;
+    Some(
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|w| u32::from_le_bytes(*w))
+            .collect(),
+    )
 }
 
 #[cfg(test)]

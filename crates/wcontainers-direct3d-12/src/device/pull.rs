@@ -5,7 +5,7 @@
 
 use wcontainers_gpu::{
     AddedBinding, BindingEntry, BindingResource, BufferRange, CLAMPED_SAMPLER_BINDING,
-    DRAW_ARGUMENTS_BINDING, HelperSlot, RingKind, VertexFormat, helper_binding,
+    COUNTER_BINDING, DRAW_ARGUMENTS_BINDING, HelperSlot, RingKind, VertexFormat, helper_binding,
 };
 
 use super::*;
@@ -263,7 +263,8 @@ impl<B: Backend> Device<B> {
     /// bases (`DrawBaseInHelpers`), where its indirect arguments lie, with them bound
     /// (`DrawBaseFromArguments`), its pulled inputs' words and what its bindings give; for the
     /// back end's `stages` that run it (the vertex stage, or compute for its form before a
-    /// geometry stage). `pixel` adds the pixel stage's block.
+    /// geometry stage). `pixel` adds the pixel stage's block, `counter` the pixel counter
+    /// (`COUNTER_BINDING`).
     pub(super) fn helper_set(
         &mut self,
         helpers: &Helpers,
@@ -271,6 +272,7 @@ impl<B: Backend> Device<B> {
         pulled: &[(u32, VertexFormat, [u32; 4])],
         stages: StageSet,
         pixel: Option<&Helpers>,
+        counter: Option<&B::Buffer>,
     ) -> Result<B::BindingSet, Error> {
         let mut blocks = Vec::with_capacity(2);
         let mut arguments = None;
@@ -320,7 +322,8 @@ impl<B: Backend> Device<B> {
             ));
             merged = self.merged_samplers(p, bind::PIXEL, StageSet::FRAGMENT)?;
         }
-        self.helper_blocks(&blocks, arguments.as_ref().map(|(b, s)| (b, *s)), &merged)
+        let arguments = arguments.as_ref().map(|(b, s)| (b, *s));
+        self.helper_blocks(&blocks, arguments, &merged, counter)
     }
 
     /// A clamped program's merged samplers (binding, the back end's stages, sampler): each pair
@@ -384,6 +387,7 @@ impl<B: Backend> Device<B> {
         blocks: &[(u32, StageSet, Vec<u8>)],
         arguments: Option<(&B::Buffer, u64)>,
         samplers: &[(u32, StageSet, B::Sampler)],
+        counter: Option<&B::Buffer>,
     ) -> Result<B::BindingSet, Error> {
         let align = self.backend.caps().limits.min_uniform_offset_alignment;
         let mut offsets = vec![0; blocks.len()];
@@ -420,6 +424,20 @@ impl<B: Backend> Device<B> {
                         size,
                     },
                     writable: false,
+                },
+            });
+        }
+        if let Some(counter) = counter {
+            entries.push(BindingEntry {
+                binding: COUNTER_BINDING,
+                stages: StageSet::FRAGMENT,
+                resource: BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: counter,
+                        offset: 0,
+                        size: 8,
+                    },
+                    writable: true,
                 },
             });
         }
