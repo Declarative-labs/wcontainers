@@ -306,15 +306,23 @@ function Run-Program([string]$name, [string]$dir) {
     # The forwarding library answers timestamp queries from the frame clock but still asks the
     # implementation, and says when it gave an error.
     $wrong += @(($stdout.Result + $stderr.Result) -split "`n" | Where-Object { $_ -match '^d3d11 forward: GetData of a timestamp query failed' } | ForEach-Object { $_.Trim() })
-    # A program whose calls are known from its source must have each of them in its census as is.
+    # A program whose calls are known from its source must make each of them as often as that: its
+    # census's count less the calls the graphics libraries made themselves (census.txt says which).
     $expected = "tools\graphics-rig\census\$name.expected"
     if ($ended -and (Test-Path $expected)) {
-        $counted = @(if (Test-Path $file) { Get-Content $file })
+        $counted = @{}
+        $lines = @(if (Test-Path $file) { Get-Content $file })
+        foreach ($line in $lines) { if ($line -match '^(\S+ \S+) (\d+)$') { $counted[$Matches[1]] = [long]$Matches[2] } }
+        $byLibraries = @{}
+        foreach ($line in $lines -match '^# of the counts below, made by the graphics libraries, not the program: ') {
+            foreach ($item in ($line -split ': ', 2)[1] -split ', ') { if ($item -match '^(\S+ \S+) (\d+)$') { $byLibraries[$Matches[1]] = [long]$Matches[2] } }
+        }
         foreach ($line in @(Get-Content $expected | Where-Object { $_ -and $_ -notmatch '^#' })) {
-            if ($counted -cnotcontains $line) {
-                $method = ($line -split ' ')[0..1] -join ' '
-                $found = @($counted | Where-Object { $_ -clike "$method *" })
-                $wrong += "census has $(if ($found) { "'$($found[0])'" } else { "no $method" }) where the program makes '$line'"
+            $method, $want = $line -split ' (?=\d+$)'
+            if (-not $counted.ContainsKey($method)) { $wrong += "census has no $method where the program makes $want"; continue }
+            $own = $counted[$method] - [long]$byLibraries[$method]
+            if ($own -ne [long]$want) {
+                $wrong += "census has $method $own from the program ($($counted[$method]) less $([long]$byLibraries[$method]) from the graphics libraries) where it makes $want"
             }
         }
     }

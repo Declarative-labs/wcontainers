@@ -1,7 +1,9 @@
 # Runs on the GPU desktop for `remote`: brings the branch's checkout to the sent commit and runs the
 # command in it, with cargo's build directory outside the checkout. A command may reach the GPU, so
 # it is watched as a queued job is (C:\wc\rig\hazard.ps1): it is refused while quarantined or while
-# the queue is held, and a display driver reset while it runs fails it, holds the queue and
+# the queue is held, it shares the GPU slot from when it loads hazard.ps1 until it ends (it waits
+# while a job of a kind that may reset the display driver runs, and such a job waits for it), it is
+# in the job history, and a display driver reset while it runs fails it, holds the queue and
 # quarantines it.
 param(
     [Parameter(Mandatory)][string]$Name,
@@ -60,13 +62,17 @@ Run git 'clean -q -fd' $checkout
 # change the build directory, so only that build writes it back.
 Remove-Item -ErrorAction SilentlyContinue "C:\wc\target\$Name\built-tree"
 
-$suspects = (Get-Quarantine).Count
+$narrowed = "C:\wc\locks\$Name.narrowed"
+$env:WC_NARROWED = $narrowed
 $started = Get-Date
+$tree = (& git -C $checkout rev-parse 'HEAD^{tree}' | Out-String).Trim()
+Add-HazardLines "$hazardLogs\jobs.log" @(('{0:yyyy-MM-dd HH:mm:ss.fff} start {1} {2} remote: {3}' -f $started, $Name, $tree, $text))
 $code = Run cmd.exe "/d /s /c `"$text`"" $checkout -Passthru
 $lock.Close()
 $ended = Get-Date
 $seen = "{0:yyyy-MM-dd HH:mm:ss} to {1:HH:mm:ss} remote command of ${Name}: {2}" -f $started, $ended, $text
-$resets = Watch-Resets $started $ended $seen $text $suspects
+$resets = Watch-Resets $started $ended $seen $text $narrowed
+Add-HazardLines "$hazardLogs\jobs.log" @(('{0:yyyy-MM-dd HH:mm:ss.fff} end {1} {2} remote exit {3}{4}' -f $ended, $Name, $tree, $code, $(if ($resets) { ', display driver reset' } else { '' })))
 if ($resets) {
     [Console]::Error.WriteLine('remote: FAIL, the display driver was reset or logged errors while this command ran (by it or a GPU job):')
     $resets | ForEach-Object { [Console]::Error.WriteLine("remote:   $_") }

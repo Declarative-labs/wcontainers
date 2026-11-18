@@ -1,7 +1,7 @@
-# Calls D3D12HelloConstBuffers.cpp (DirectX-Graphics-Samples 68a2b1e9) makes in its 120 frames,
-# lines 363 to 391 once a frame; each line must be in its census.txt as it is. Reset and Close also
-# hold the 119 of DXGI's own command list (the census's "made by Windows' own libraries" line), and
-# Close the program's first, at line 230.
+# Calls D3D12HelloConstBuffers.cpp (DirectX-Graphics-Samples 68a2b1e9) makes in its 120 frames, lines
+# 363 to 391 once a frame, and Close once more at line 230: each count is checked against its
+# census.txt less the calls the graphics libraries made themselves (DXGI's own command list at each
+# present; the census's "made by the graphics libraries" line).
 command-list SetGraphicsRootSignature 120
 command-list SetDescriptorHeaps 120
 command-list SetGraphicsRootDescriptorTable 120
@@ -13,6 +13,6 @@ command-list ClearRenderTargetView 120
 command-list IASetPrimitiveTopology 120
 command-list IASetVertexBuffers 120
 command-list DrawInstanced 120
-command-list Reset 239
-command-list Close 240
+command-list Reset 120
+command-list Close 121
 swap-chain Present 120
