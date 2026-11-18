@@ -8,7 +8,8 @@
 //! another. Texts must match exactly. Capability answers (`.caps`) may report less than the GPU, line
 //! by line, but never more: a less capable implementation's part is then absent, not failed, as
 //! is a part the scene left out with a note (`.absent`) saying what the device lacks. A real program's frames have no WARP picture; their allowance
-//! comes from repeated runs on the GPU instead (`Allowance::from_repeats`); a program one of whose
+//! comes from repeated runs on the GPU instead (`Allowance::from_repeats`), which also give the
+//! stray pixels real Direct3D draws differently in places that move from run to run; a program one of whose
 //! frames had more than a twentieth of its tiles changed from run to run has all its frames
 //! recorded as unrepeatable, and they are not compared.
 
@@ -30,6 +31,8 @@ pub struct Allowance {
     pub pixels: u64,
     /// Pixels allowed beyond the tolerance in each tile that allows any, by tile index.
     pub tiles: BTreeMap<usize, u32>,
+    /// Pixels allowed beyond the tolerance and beyond their tiles' allowances, anywhere.
+    pub stray: u64,
 }
 
 impl Allowance {
@@ -53,6 +56,7 @@ impl Allowance {
                 tolerance,
                 pixels: beyond.differing,
                 tiles,
+                stray: 0,
             },
             exact,
         ))
@@ -62,7 +66,9 @@ impl Allowance {
     /// tolerance is the cap, and a tile where any other run differs from the first beyond it is not
     /// compared (the program draws it differently each time), nor one that meets a rectangle
     /// (x, y, width, height) in `ignored`, where the program shows what each implementation
-    /// answers differently (a GPU memory readout).
+    /// answers differently (a GPU memory readout). Stray pixels: the most beyond the tolerance any
+    /// other run had, since the few pixels real Direct3D draws differently (edges of dense meshes
+    /// under multisampling) can fall in other tiles on every run.
     pub fn from_repeats(
         first: &image::DynamicImage,
         others: &[image::DynamicImage],
@@ -71,11 +77,13 @@ impl Allowance {
         let tolerance = cap(compare::Depth::of(first)?);
         let columns = Difference::tile_columns(first.width()) as usize;
         let mut changed = vec![false; compare::compare(first, first, 0.0)?.tiles.len()];
+        let mut stray = 0;
         for other in others {
             let d = compare::compare(first, other, tolerance)?;
             for (c, n) in changed.iter_mut().zip(&d.tiles) {
                 *c |= *n > 0;
             }
+            stray = stray.max(d.differing);
         }
         let mut tiles = BTreeMap::new();
         for (i, changed) in changed.into_iter().enumerate() {
@@ -92,6 +100,7 @@ impl Allowance {
             tolerance,
             pixels: tiles.values().map(|&n| u64::from(n)).sum(),
             tiles,
+            stray,
         })
     }
 }
@@ -112,6 +121,9 @@ pub fn tolerance_line(file: &str, allowance: &Allowance, warp: &Difference) -> S
         "{file} {} {} warp {} {}",
         allowance.tolerance, allowance.pixels, warp.differing, warp.largest
     );
+    if allowance.stray > 0 {
+        write!(line, " stray {}", allowance.stray).unwrap();
+    }
     if !allowance.tiles.is_empty() {
         line.push_str(" tiles ");
         let tiles: Vec<String> = allowance
@@ -167,6 +179,13 @@ pub fn read_tolerances(path: &Path) -> anyhow::Result<BTreeMap<String, Option<Al
         let [file, tolerance, pixels, ..] = words[..] else {
             anyhow::bail!("bad line in {}: {line}", path.display());
         };
+        let stray = match words.iter().position(|w| *w == "stray") {
+            Some(at) => words
+                .get(at + 1)
+                .with_context(|| format!("no count after `stray` in {line}"))?
+                .parse()?,
+            None => 0,
+        };
         let mut tiles = BTreeMap::new();
         if let Some(at) = words.iter().position(|w| *w == "tiles") {
             for tile in words
@@ -186,6 +205,7 @@ pub fn read_tolerances(path: &Path) -> anyhow::Result<BTreeMap<String, Option<Al
                 tolerance: tolerance.parse()?,
                 pixels: pixels.parse()?,
                 tiles,
+                stray,
             }),
         );
     }
@@ -325,7 +345,20 @@ fn check_picture(
         write!(detail, ", first at {x},{y}")?;
     }
     let over = tiles_over(&d, allowance);
-    if let Some(&(i, n, allowed)) = over.iter().max_by_key(|(_, n, allowed)| n - allowed) {
+    let excess: u64 = over
+        .iter()
+        .map(|(_, n, allowed)| u64::from(n - allowed))
+        .sum();
+    if allowance.stray > 0 {
+        write!(
+            detail,
+            "; {excess} beyond their tiles' allowance (stray allowed {})",
+            allowance.stray
+        )?;
+    }
+    if excess > allowance.stray
+        && let Some(&(i, n, allowed)) = over.iter().max_by_key(|(_, n, allowed)| n - allowed)
+    {
         let columns = Difference::tile_columns(reference.width()) as usize;
         write!(
             detail,
@@ -335,7 +368,7 @@ fn check_picture(
             i / columns * TILE as usize
         )?;
     }
-    Ok((over.is_empty(), detail))
+    Ok((excess <= allowance.stray, detail))
 }
 
 /// The tiles where `d` has more pixels beyond the tolerance than the allowance: index, count, allowed.
@@ -462,6 +495,7 @@ mod tests {
                 tolerance: 8.0,
                 pixels: 1,
                 tiles: BTreeMap::from([(0, 1)]),
+                stray: 0,
             }
         );
     }
@@ -478,6 +512,7 @@ mod tests {
         assert_eq!(allowance.tolerance, 8.0);
         assert_eq!(allowance.tiles, BTreeMap::from([(2, 8 * 16)]));
         assert_eq!(allowance.pixels, 128);
+        assert_eq!(allowance.stray, 1);
         let allowance =
             Allowance::from_repeats(&first, &[DynamicImage::from(second)], &[[15, 0, 2, 1]])
                 .unwrap();
@@ -503,6 +538,57 @@ mod tests {
         ours.put_pixel(21, 3, Rgba([0, 100, 100, 255]));
         let d = compare::compare(&gpu, &DynamicImage::from(ours), allowance.tolerance).unwrap();
         assert_eq!(tiles_over(&d, &allowance), vec![(1, 2, 0)]);
+    }
+
+    #[test]
+    fn stray_pixels_anywhere() {
+        let root = Path::new(env!("OUT_DIR")).join("stray_pixels_anywhere");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let reference = RgbaImage::from_pixel(48, 16, Rgba([100, 100, 100, 255]));
+        reference.save(root.join("reference.png")).unwrap();
+        let allowance = Allowance {
+            tolerance: 8.0,
+            pixels: 256,
+            tiles: BTreeMap::from([(0, 256)]),
+            stray: 2,
+        };
+        let line = tolerance_line(
+            "a.png",
+            &allowance,
+            &compare::compare(
+                &DynamicImage::from(reference.clone()),
+                &DynamicImage::from(reference.clone()),
+                0.0,
+            )
+            .unwrap(),
+        );
+        assert_eq!(line, "a.png 8 256 warp 0 0 stray 2 tiles 0:256\n");
+        let path = root.join(TOLERANCES);
+        std::fs::write(&path, &line).unwrap();
+        assert_eq!(
+            read_tolerances(&path).unwrap()["a.png"],
+            Some(allowance.clone())
+        );
+        // Anything in the allowed tile, and two stray pixels in two other tiles, pass; a third fails.
+        let mut ours = reference.clone();
+        for (x, y) in [(0, 0), (1, 1), (2, 2), (20, 3), (40, 5)] {
+            ours.put_pixel(x, y, Rgba([0, 100, 100, 255]));
+        }
+        ours.save(root.join("ours.png")).unwrap();
+        let check = || {
+            check_picture(
+                &root.join("reference.png"),
+                &root.join("ours.png"),
+                &allowance,
+            )
+            .unwrap()
+            .0
+        };
+        assert!(check());
+        ours.put_pixel(41, 5, Rgba([0, 100, 100, 255]));
+        ours.save(root.join("ours.png")).unwrap();
+        assert!(!check());
     }
 
     #[test]

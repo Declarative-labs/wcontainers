@@ -27,10 +27,11 @@ param(
     [string]$Launch,
     # Where each program's reference frames are kept: <References>\<program>.
     [string]$References = 'C:\wc\programs\reference',
-    # Runs each program three times on real Direct3D and keeps the first run's frames as its
+    # Runs each program -Runs times on real Direct3D and keeps the first run's frames as its
     # references, with the allowances the others give; writes <Out>\references\<program> (the
     # allowances and the frames' SHA-256) for the repository.
-    [switch]$Record
+    [switch]$Record,
+    [ValidateRange(2, 100)][int]$Runs = 10
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -46,7 +47,10 @@ $sources = [ordered]@{
     'directx-sdk-samples' = @{ url = 'https://github.com/microsoft/DirectX-SDK-Samples.git'; commit = '07e3eaa10e7dd026ec9d95fe326db2d5c4227e1b'; sparse = @('C++/Direct3D11/Tutorials') }
     'bx' = @{ url = 'https://github.com/bkaradzic/bx.git'; commit = '365db1e26b5fdfec2a7497c2f0694c22be08bfbf' }
     'bimg' = @{ url = 'https://github.com/bkaradzic/bimg.git'; commit = 'f091e14e7540c85fd46951342034cfa59ff2693b' }
-    'bgfx' = @{ url = 'https://github.com/bkaradzic/bgfx.git'; commit = '3aab3201a949be0d25e20e5fc2afbb2bee80b906' }
+    # Without the examples' meshes, textures, fonts, images and texts: bgfx's licence (docs\license.rst)
+    # lists several of them with no licence of their own. The examples run draw only bgfx's own
+    # shaders and the fonts its overlay embeds (Roboto, Roboto Mono, Kenney, Font Awesome, Codicons).
+    'bgfx' = @{ url = 'https://github.com/bkaradzic/bgfx.git'; commit = '3aab3201a949be0d25e20e5fc2afbb2bee80b906'; exclude = @('/examples/assets/', '/examples/runtime/meshes/', '/examples/runtime/textures/', '/examples/runtime/font/', '/examples/runtime/images/', '/examples/runtime/text/') }
     # MIT (one licence for the samples, their kits and media): Microsoft's DirectX Tool Kit samples.
     'xbox-atg-samples' = @{ url = 'https://github.com/microsoft/Xbox-ATG-Samples.git'; commit = 'ff629a6e4876e38fe8761ead116a0e53f634ca67'; sparse = @('PCSamples/IntroGraphics/SimpleBezierPC', 'PCSamples/IntroGraphics/SimpleComputePC', 'PCSamples/IntroGraphics/SimpleInstancingPC', 'PCSamples/IntroGraphics/SimpleLightingPC', 'PCSamples/IntroGraphics/SimpleMSAA_PC', 'Kits/DirectXTK', 'Kits/ATGTK', 'Media/Fonts', 'Media/Textures', 'Media/Meshes/AliasSampleCityBlock') }
     # MIT.
@@ -61,7 +65,8 @@ $downloads = [ordered]@{
 }
 $tutorials = 'directx-sdk-samples\C++\Direct3D11\Tutorials'
 $bgfxBin = 'bgfx\.build\win64_vs2022\bin'
-$bgfxExamples = @('01-cubes', '06-bump', '09-hdr', '16-shadowmaps', '21-deferred', '24-nbody')
+# Examples that load no meshes, textures or fonts of their own.
+$bgfxExamples = @('01-cubes', '24-nbody', '26-occlusion', '35-dynamic', '37-gpudrivenrendering', '38-bloom')
 $atgSamples = @('SimpleBezierPC', 'SimpleComputePC', 'SimpleInstancingPC', 'SimpleLightingPC', 'SimpleMSAA_PC')
 $atg = 'xbox-atg-samples\PCSamples\IntroGraphics'
 $godot = 'godot\Godot_v4.7.2-stable_win64_console.exe'
@@ -121,11 +126,15 @@ function Fetch([string]$name) {
     if (-not (Test-Path "$dir\.git")) {
         git init -q $dir
         git -C $dir remote add origin $source.url
+        # Files outside the checkout are never downloaded.
+        git -C $dir config remote.origin.promisor true
+        git -C $dir config remote.origin.partialclonefilter blob:none
         if ($source.sparse) { git -C $dir sparse-checkout set @($source.sparse) }
+        if ($source.exclude) { git -C $dir sparse-checkout set --no-cone '/*' @($source.exclude | ForEach-Object { "!$_" }) }
     }
     # Through cmd, as Windows PowerShell stops on a native command's error output.
     if ((cmd.exe /d /c "git -C `"$dir`" rev-parse HEAD 2>nul") -ne $source.commit) {
-        git -C $dir fetch -q --depth 1 origin $source.commit
+        git -C $dir fetch -q --depth 1 --filter=blob:none origin $source.commit
         if ($LASTEXITCODE) { throw "fetching $name failed" }
         git -C $dir checkout -q --detach FETCH_HEAD
         if ($LASTEXITCODE) { throw "checking out $name failed" }
@@ -256,6 +265,7 @@ function Run-Program([string]$name, [string]$dir) {
     if (-not $ended) { & taskkill.exe /T /F /PID $process.Id 2>&1 | Out-Null; $process.WaitForExit() }
     $seconds = [math]::Round($clock.Elapsed.TotalSeconds, 1)
     [IO.File]::WriteAllText("$dir\output.log", $stdout.Result + $stderr.Result)
+    cmd.exe /d /c "rd /s /q `"\\?\$bin`""
     if ($d3d12) {
         # The program's own frames, numbered from 0, renamed as the forwarding library names them.
         $movie = @(Get-ChildItem "$dir\movie\frame*.png" -ErrorAction SilentlyContinue | Sort-Object Name)
@@ -315,15 +325,17 @@ if ($Record -and $Dlls) { throw 'references are recorded on real Direct3D only' 
 $frameList = @($Capture.Split(',') | ForEach-Object { [int]$_ })
 $last = $frameList[-1]
 $failed = 0
+# Only this run's outputs are kept, without the copies of the programs, so the Mac copies no more.
+if (Test-Path $Out) { cmd.exe /d /c "rd /s /q `"\\?\$Out`"" }
 foreach ($name in $chosen) {
     $dir = "$Out\$name"
     $reference = "$References\$name"
     $listing = "tools\graphics-rig\program-references\$name\frames.sha256"
     if ($Record) {
-        # Three runs: the first is kept, the others show what the program draws differently each time.
-        $runs = @($dir, "$dir-again", "$dir-third")
+        # The first run is kept, the others show what the program draws differently each time.
+        $dirs = @($dir) + @(2..$Runs | ForEach-Object { "$dir-run$_" })
         $ran = $true
-        foreach ($run in $runs) {
+        foreach ($run in $dirs) {
             $result = @(Run-Program $name $run)
             $result[0..($result.Count - 2)]
             if (-not $result[-1]) { $ran = $false }
@@ -332,8 +344,9 @@ foreach ($name in $chosen) {
         if (Test-Path $reference) { Remove-Item -Recurse -Force $reference }
         if (Test-Path "$Out\references\$name") { Remove-Item -Recurse -Force "$Out\references\$name" }
         $ignore = @(if ($all[$name].ignore) { '--ignore', $all[$name].ignore })
-        & $Check frames --record @ignore $reference @runs | ForEach-Object { "${name} $_" }
+        & $Check frames --record @ignore $reference @dirs | ForEach-Object { "${name} $_" }
         if ($LASTEXITCODE) { "${name}: FAIL, recording its references failed"; $failed++; continue }
+        foreach ($d in $dirs[1..($dirs.Count - 1)]) { cmd.exe /d /c "rd /s /q `"\\?\$d`"" }
         New-Item -ItemType Directory -Force "$Out\references\$name" | Out-Null
         Copy-Item "$reference\tolerances.txt" "$Out\references\$name\"
         Set-Content "$Out\references\$name\frames.sha256" (Reference-Hashes $reference)

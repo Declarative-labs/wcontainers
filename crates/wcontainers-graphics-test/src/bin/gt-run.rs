@@ -380,10 +380,22 @@ fn frames(args: &[String]) -> Result<bool> {
                     .collect::<Result<Vec<_>>>()?;
                 let allowance = Allowance::from_repeats(&first, &others, &ignored)?;
                 let none = compare::compare(&first, &first, 0.0)?;
+                // How many tiles the runs so far had changed, after each run: whether more runs
+                // would still find more.
+                let growth = (1..=others.len())
+                    .map(|k| {
+                        Ok(Allowance::from_repeats(&first, &others[..k], &ignored)?
+                            .tiles
+                            .len()
+                            .to_string())
+                    })
+                    .collect::<Result<Vec<_>>>()?;
                 println!(
-                    "{name}: {} of {} tiles drew differently from run to run",
+                    "{name}: {} of {} tiles drew differently from run to run (after each run: {}), at most {} pixels in one run",
                     allowance.tiles.len(),
-                    none.tiles.len()
+                    none.tiles.len(),
+                    growth.join(" "),
+                    allowance.stray
                 );
                 let unrepeatable = check::unrepeatable(&allowance, none.tiles.len());
                 frames.push((name, allowance, none, unrepeatable));
