@@ -2048,12 +2048,16 @@ against the same Rust from the start; back ends never read them.
   constants (`HELPER_SET`). Geometry, hull and domain shaders run through the stage helper, which binds
   them the same way in its own programs. These are the only sets: the front makes one set per stage
   whose slots changed, never one per kind of slot.
-- Sets, Direct3D 12 (slots shared across stages by the root signature): set 0 ranges visible to the
-  vertex stage only, set 1 to the pixel stage only, set 2 to all stages, set 3 helpers. Within a set the
-  ranges are numbered in root-signature order inside their kind's range; register spaces are kept in
-  `ReflectedBinding::space`. The numbering depends on the root signature, so its hash is
-  `VariantKey::layout`. Unbounded ranges (bindless) need `RESOURCE_TABLES`; without it the range takes
-  the slots left in its kind, and a program needing more is refused (`BindingsBeyondLimit`).
+- Sets, Direct3D 12: the stage sets as for Direct3D 11. Within a set, each kind's slots are the
+  program's own resources of that kind in (register space, register) order, from the kind's first
+  binding, so any space and register fits while a program uses no more resources of a kind than its
+  range holds (`BindingsBeyondLimit` past it); kinds follow Direct3D's register classes (shader resource
+  views are textures, unordered access views storage). The numbering is the program's alone (the root
+  signature, `VariantKey::layout`, enters the key only for root constants read as immediates); the
+  front finds each binding's descriptor in the bound root signature
+  by its `ReflectedBinding::space` and `register`. A binding's slot (`ReflectedBinding::slot`, its place
+  in its kind's range) is what `VariantKey`'s per-slot fields and the sampled pairs name; under Direct3D
+  11's numbering it is the register. Unbounded ranges (bindless) need `RESOURCE_TABLES`.
 - Bindings a variant adds, for every API: pulled vertex streams, constant buffers read as storage or
   through a texture, and (Direct3D 12) root constants spilled past `immediate_bytes` as one uniform
   buffer (`ImmediatesSpilled`). Each lives in the set of the one stage that reads it (set 0 for vertex
