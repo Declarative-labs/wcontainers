@@ -1,10 +1,49 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 17 of G4 as a whole (2026-11-17 and
-18; runs 13 to 17 are the orchestrator's second series on G4).
+Runs so far: six on G4a, the first slice; then runs 1 to 18 of G4 as a whole (2026-11-17 and
+18; runs 13 to 18 are the orchestrator's second series on G4).
 
 ## Where things stand
+
+G4 run 18 (2026-11-18, about 04:55 to 07:00 Pacific). Merged origin/phase-2-graphics-shaders and
+-direct3d-12 cleanly (the others had nothing new); the merged tree linted clean on the desktop.
+- NV12 (plan 4.12; Departures): the texture is its luma plane, with the half-size chroma plane
+  as a texture of its own (`Texture::chroma`); views name a plane by their format (`R8_*` the
+  luma, `R8G8_*` the chroma; the default and NV12's own format are invalid); initial data,
+  `UpdateSubresource`, `CopySubresourceRegion`, `CopyResource`, staging maps and dynamic maps
+  join the planes as Direct3D lays them out (chroma rows after luma rows at one pitch, the map's
+  slice pitch covering both); boxes and places at an odd texel are dropped, as Direct3D drops
+  them; odd sizes are invalid. New example `own_nv12` (tests/programs.rs
+  `nv12_planes_view_write_copy_and_map_as_direct3d_does`): identical to real Direct3D line by
+  line. New front test `nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows`.
+- `own_cases` (new example; shaders compiled by d3dcompiler_47.dll, Departures), one listed
+  case per argument, each a test in programs.rs against real Direct3D: texture atomics (add,
+  min, max, or, xor on `R32_UINT`/`R32_SINT`), typed storage stores (`R11G11B10_FLOAT`,
+  `R16G16_UNORM`, `R16G16B16A16_FLOAT`), a pixel shader's storage view read by the next draw on
+  the same targets, an `R32_FLOAT` depth and a colour texture through one linear sampler
+  (`FilterInShader`; compared within one unit), a copy between multisampled textures (each
+  sample loaded), and stream output also drawn: all identical to real Direct3D. A depth buffer
+  larger than its target and `[earlydepthstencil]` with storage writes are known failures
+  (Known failures).
+- Three wrong answers found by those cases and fixed: `OMSetRenderTargets` now unbinds the pixel
+  stage's unordered access views, as `OMSetRenderTargetsAndUnorderedAccessViews` binding none
+  (real Direct3D read the storage view back through a shader view after it; ours had kept it
+  bound and read zeros); a draw reading as a shader resource what an earlier draw of the open
+  pass wrote as storage (or the reverse) ends the pass first (`UsageScopeSplit`; WebGPU had
+  removed the device); and a pixel shader forcing early depth-stencil tests with storage writes
+  is refused at the draw by name, where it had drawn with late tests (a wrong count).
+- A depth buffer larger than its colour targets (Direct3D allows it; WebGPU had removed the
+  device): such a pass is begun through the pass tracker, which fits the targets to the depth
+  buffer (`AttachmentsFitted`, plan 4.7), and its draws use a twin of the raster block with the
+  scissor test on, cut to the area every attachment covers. own_cases deep now matches real
+  Direct3D (the depth outside the target untouched). Occlusion queries over such a pass are
+  refused by name; geometry and tessellation draws do not cut their scissors yet.
+- A staging texture the CPU reads, of a format the back end cannot read back, is refused at
+  creation (`E_NOTIMPL`), where the read back had removed the device (the WebGL 2 build's
+  targets and mips scenes).
+- At the end: lint of both builds clean, front 44 + cache 1 + unit 3, library com 15 and
+  programs 23 passing with 1 ignored (the early tests case), at 53a45b6 (logs/g4s6i-*).
 
 G4 run 17 (2026-11-18, about 03:45 to 05:30 Pacific). Merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-12, -shaders and -rig cleanly; the merged tree linted with warnings denied and
@@ -163,28 +202,27 @@ resources, views and states; since runs 8 to 14 levels 9_1 to 9_3, multisampled 
 deferred contexts and command lists, compute shaders (shader model 4 at 10_x since run 15),
 unordered access views, structured, raw and typed buffers, atomics and view counters, geometry
 shaders and stream output (through the shaders crate's stage helper); since run 15 the cache;
-since run 17 hull and domain shaders, `GetDC` and target views of buffers.
+since run 17 hull and domain shaders, `GetDC` and target views of buffers; since run 18 NV12
+and depth buffers larger than their targets.
 
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
-- d3d11: not passing. G4 run 17 (2026-11-18, our library copied in as d3d11.dll, RTX 3080
-  through the queue's hazard group, not alone, through scratch rigfix/wine.sh, refreshed from
-  the rig's new runner with the same one-line fix): full file at d4431a5's tree: 127 of the 166
-  the rig counts (39 fail; logs/g4s5f-wine.log; none lost). New since run 16: test_clear_state,
-  test_create_rendertarget_view, test_dxgi_resources, test_format_compatibility, test_getdc,
-  test_stream_output_vs, test_tgsm, test_uav_load, test_vertex_id. (At the run's first full
-  file, before the last three changes: 124, logs/g4s5d-wine.log.)
-- Earlier runs of the file (G4 runs 1 to 16: 11, 56, 73, 68, 72, 74, 78, 79, 82, 88, 90, 104,
-  113, 114 and 118 passing) and their gap lists are in this file's git history.
+- d3d11: not passing. G4 run 18 (2026-11-18, our library copied in as d3d11.dll, RTX 3080
+  through the queue's hazard group, not alone, through scratch rigfix/wine.sh): full file at
+  f5eed62's tree: 128 of the 166 the rig counts (38 fail; logs/g4s6g-wine.log; none lost). New
+  since run 17: test_nv12.
+- Earlier runs of the file (G4 runs 1 to 17: 11, 56, 73, 68, 72, 74, 78, 79, 82, 88, 90, 104,
+  113, 114, 118 and 127 passing) and their gap lists are in this file's git history.
 - d3d10core: not run (needs a d3d10core.dll of ours and `ID3D10Device`). dxgi: the rig has no
   baseline of real Direct3D's verdicts for it.
 
-The gap list, G4 run 17 (the 39 failing tests of the full file at d4431a5; the first named
-refusal, skip or failed check of each, logs/g4s5f-wine-gaps.txt, read against Wine's d3d11.c in
+The gap list, G4 run 18 (the 38 failing tests of the full file at f5eed62, unchanged from run 17
+but for test_nv12, which passes; the first named
+refusal, skip or failed check of each, logs/g4s6g-wine-gaps.txt, read against Wine's d3d11.c in
 scratch winesrc/). A test is in part A only where the first thing it fails on is a feature
 absent on this stack; everything else is work, in part B, with whose it is. Nothing is excluded
-for convenience: each of the 39 failing tests is in exactly one place.
+for convenience: each of the 38 failing tests is in exactly one place.
 A. Absent on this stack (gaps), 18 tests:
 - Logic operations (WebGPU has none, so 11_1 is not offered; Wine's helper then asks for WARP,
   which this library does not provide): test_create_shader, test_state_refcounting,
@@ -199,7 +237,7 @@ A. Absent on this stack (gaps), 18 tests:
   test_texture3d_interfaces (their keyed-mutex entries).
 - The 10_0/10_1 rasteriser's corner rule for a negative viewport origin (WebGPU rasterises as
   11_0): test_negative_viewports at levels 10_x.
-B. Work, named (not gaps), 21 tests:
+B. Work, named (not gaps), 20 tests:
 - Shaders track: `GeometryStreams` (test_so_statistics_query), `GeometryWithoutPosition`
   (test_stream_output_components), stream output after a domain shader (test_quad_tessellation;
   this front's hull and domain route is built, run 17), `RenderTargetArrayIndex` and
@@ -207,7 +245,8 @@ B. Work, named (not gaps), 21 tests:
   test_multiple_viewports), test_vs_input_relative_addressing's vertex shader (an invalid
   module), `DynamicOffset` (test_gather, test_gather_c), `AtomicSignedness`
   (test_atomic_instructions), `CullDistance` (test_combined_clip_and_cull_distances), early
-  tests in the program with storage writes (`EarlyTestsInShader`: test_early_depth_stencil),
+  tests in the program with storage writes (`EarlyTestsInShader`: test_early_depth_stencil, which
+  the front refuses by name since run 18, where it had drawn with late tests),
   constants read past the declared array (test_cb_relative_addressing), clip distances in the
   program (test_clip_distance).
 - WebGPU back end: a view swizzle for stencil views (test_depth_stencil_sampling,
@@ -219,53 +258,47 @@ B. Work, named (not gaps), 21 tests:
 - Infrastructure crate: every buffer of a sequential swap chain (test_swapchain_flip, line
   16228); a swap chain on the desktop window (test_desktop_window: wgpu's surface refuses it at
   `Surface::configure`, the device is lost at line 32666).
-- This front: NV12 (test_nv12 skips "NV12 textures are not supported"; plan 4.12's route);
-  `ID3D10Device` on the device (test_device_context_state, line 7487's
-  `check_interface(device, &IID_ID3D10Device, ...)`).
+- This front: `ID3D10Device` on the device after `CreateDeviceContextState`
+  (test_device_context_state, line 7487's `check_interface(device, &IID_ID3D10Device, ...)`).
 Wine's d3d10core file is not run (it needs a d3d10core.dll of ours and `ID3D10Device`).
 
 ## Known failures
 
-- `depth_with_stencil_copies_as_direct3d_does` (programs.rs, ignored with its reason): the example
-  `own_depth_copy` clears an `R24G8_TYPELESS` depth-stencil texture, copies it by `CopyResource` and
-  `CopySubresourceRegion`, and loads the copy's depth. Real Direct3D: no removal, depth 0.25 read
-  back. Ours: removed (0x887A0020) with "Copy source aspects must refer to all aspects of the source
-  texture format": the WebGPU back end (crates/wcontainers-gpu-webgpu, memory.rs `copy_texture_impl`,
-  through `convert::aspect`) still copies the depth aspect alone. It passes once that back end
-  follows interface change c8a7be9 (a copy between textures of a combined format names no aspect).
+- `early_depth_tests_with_storage_writes_as_direct3d_does` (programs.rs, `own_cases early`,
+  ignored with its reason): `[earlydepthstencil]` with an `InterlockedAdd` per pixel, depth
+  writes off and on. Before run 18 the front drew it with late tests (3 counts where Direct3D
+  gives 2, a wrong answer); it now refuses such draws by name ("early depth-stencil tests before
+  a pixel shader's storage writes"), as the shaders crate does not serve `EarlyTestsInShader`.
 
 ## What comes next
 
-After G4 run 17, in order (the branch is pushed; everything on it built and passed on the desktop):
-0. Wine's d3d11 file: this front's named work left is NV12 (plan 4.12: an `r8unorm` plane and a
-   half-size `rg8unorm` plane, views naming one by their format, maps, `UpdateSubresource` and
-   copies splitting and joining them at even boxes only; test_nv12 shows every rule) and YUY2
-   (a half-width `rgba8unorm` texture), both also a listed case; then `ID3D10Device` on the
-   device (test_device_context_state checks it, and Wine's d3d10core file needs it with a
-   d3d10core.dll of ours). Then the shaders track's and the back ends' items as they land
-   (merge, rerun the file).
-1. Real programs: bgfx waits on `MultisampledArrayTexture` (shaders track); atg-simplebezierpc
+After G4 run 18, in order (the branch is pushed; everything on it built and passed on the desktop):
+0. Wine's d3d11 file: this front's named work left is `ID3D10Device` on the device with
+   `CreateDeviceContextState` and `SwapDeviceContextState` (test_device_context_state; Wine's
+   d3d10core file needs the same device behind a d3d10_1.dll of ours). Then the shaders track's
+   and the back ends' items as they land (merge, rerun the file).
+1. YUY2 (a listed case with NV12): a half-width `rgba8unorm` texture whose views are
+   `R8G8B8A8_UNORM`/`_UINT`, boxes in pixels halved; not started (no Wine test uses it).
+2. Real programs: bgfx waits on `MultisampledArrayTexture` (shaders track); atg-simplebezierpc
    and the rig's tessellation scene on the tessellator compiling under FXC (shaders track);
    atg-simplecomputepc on the division's precision (Asked); atg-simplemsaa_pc frame 10 is 4
    pixels in 2 tiles past the rig's allowance (edges; not read further).
-2. Building ahead: record the draws through a geometry or tessellation stage and the stage
-   helper's dispatches too (Godot's 10 remaining first-draw builds), and find the one pipeline
-   per program still built at its first draw on a warm start. Count Godot 3D's hits.
-3. The listed cases still without a test against real Direct3D (texture atomics,
-   earlydepthstencil with storage writes, a depth buffer larger than its target, rasterised
-   stream output, typed storage views, NV12 and YUY2, a copy between multisampled textures,
-   antialiased lines, UsageScopeSplit, FilterInShader on depth). Texture atomics and rasterised
-   stream output can be written as `own_` programs now, as `own_packed` was.
-4. Wireframe without the back end's polygon mode (the raster scene on WebGPU): no slow path is
+3. Building ahead: record the draws through a geometry or tessellation stage and the stage
+   helper's dispatches too (Godot's remaining first-draw builds), and find the one pipeline per
+   program still built at its first draw on a warm start (it is never recorded: a pipeline the
+   front does not draw through its own draw path, perhaps the present's; not read yet).
+4. Listed cases still without a passing test against real Direct3D: alpha-antialiased lines
+   (shaders track's `LINE_COVERAGE`, Asked), `[earlydepthstencil]` with storage writes
+   (`EARLY_TESTS`, Asked; own_cases early), YUY2.
+5. Move the context fully onto the pass tracker (it begins only fitted passes since run 18; the
+   usage-scope split is the front's own), so fitting, splits and occlusion share one route;
+   geometry and tessellation draws do not cut their scissors to a fitted area yet, and
+   occlusion queries over a fitted pass are refused.
+6. Wireframe without the back end's polygon mode (the raster scene on WebGPU): no slow path is
    planned; read section 4 first (culling must still apply to the triangles).
-5. The WebGL 2 cases (34 of the rig's outputs match through the WebGL 2 build at run 13): texture
-   views (the back end's `TEXTURE_VIEWS`: the views scene), polygon mode, the constants and
-   samplers scenes (device lost in the back end, not read yet), typed buffers
-   (`TexelBufferAsTexture`). Not rerun at runs 14 to 17.
-6. Wine's d3d10core file needs a d3d10core.dll of ours and `ID3D10Device`; not started.
-7. Move the context fully onto the pass tracker (fitted attachments, `UsageScopeSplit`); compute
-   shaders sampling a clamped texture or through a biased sampler (refused by name); track which
-   copy of a twin is current instead of copying at every draw (measure first).
+7. The WebGL 2 cases: see Measurements for run 18's scenes through the WebGL 2 build.
+8. Compute shaders sampling a clamped texture or through a biased sampler (refused by name);
+   track which copy of a twin is current instead of copying at every draw (measure first).
 
 ## How to run
 
@@ -408,6 +441,12 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Tests
 
+At G4 run 18: front.rs 44 (new: the NV12 test), tests/cache.rs 1, unit 3, com.rs 15,
+programs.rs 24 (new: `own_nv12` and eight `own_cases` tests; one, the early tests case,
+ignored as a known failure); all others passing on the desktop, lint of both builds clean with
+warnings denied (logs/g4s6i-*). `depth_with_stencil_copies_as_direct3d_does` passes (it is no longer a known
+failure; the WebGPU back end copies both aspects).
+
 At G4 run 17: front.rs 43 (new: the tessellation and buffer target view tests), tests/cache.rs
 1, unit 3, com.rs 15 (two tests renamed: the hull and domain stages are served), programs.rs
 15 (`own_refused` asks for a keyed-mutex texture where it asked for a hull shader); all
@@ -489,6 +528,21 @@ clean with warnings denied. The library tests run without `WC_GPU_CACHE`, so wit
   clean.
 
 ## Departures from the plan
+
+- Run 18: NV12 (plan 4.12) is two textures: the luma plane `r8unorm` (the texture itself) and
+  the chroma plane `rg8unorm` at half size (`Texture::chroma`, a front texture of
+  `R8G8_TYPELESS`). Views of `R8_UNORM` and `R8_UINT` name the luma, `R8G8_UNORM` and
+  `R8G8_UINT` the chroma; the `_UINT` views go through their group's twin (`ReinterpretCopy`),
+  as any typeless texture's do, since WebGPU's views reinterpret only sRGB. More than one level
+  and misc flags other than shared answer `E_NOTIMPL` (what Direct3D answers is not checked).
+  `CheckFormatSupport` answers the uses both planes' formats have (2D textures, loads,
+  sampling, targets, CPU locking) and none of the video uses.
+- Run 18: passes whose depth buffer is larger than their colour targets are begun through the
+  pass tracker (plan 4.7's route) while the front's other passes are still its own (the plan
+  has every pass go through the tracker; moving the rest is What comes next 5).
+- Run 18: the examples compile their shaders with the system's d3dcompiler_47.dll at run time
+  (`own_cases`), so one program can hold many small cases; both runs of a comparison take the
+  same bytecode.
 
 - Run 17: an 8- or 16-bit integer vertex element the vertex shader's input signature reads with
   the other signedness (Godot's 3D renderer through ANGLE: `R16G16B16A16_UINT` bones read as
@@ -695,6 +749,38 @@ None in G4 runs 3 to 12.
 
 ## Measurements
 
+- 2026-11-18, G4 run 18, the desktop (i9-9900K, RTX 3080) through the queue's hazard group, not
+  alone (other tracks' hazard jobs one at a time beside ours; Mac load average 77 at the run's start, 47.05 at its end), at
+  f5eed62's tree: Wine's d3d11 file 128 of 166, the run 152.1 s (logs/g4s6g-wine.log). Real
+  programs through the whole library, 120 frames each (logs/g4s6g-programs.log): the ten as at
+  run 17 match every compared frame (sdk-tutorial02, 04 to 07, chocolate-doom,
+  atg-simplelightingpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11,
+  godot-platformer-3d-d3d11); atg-simplecomputepc and atg-simplemsaa_pc differ as before;
+  atg-simplebezierpc stops (the tessellator under FXC) and bgfx's six at
+  `MultisampledArrayTexture`, as before. The rig's Direct3D 11 scenes through the whole
+  library: 120 pass, 19 fail, 4 absent, as at run 17 (logs/g4s6g-scenes.log).
+- Rerun at 53a45b6 (the fitted passes and the staging refusal; same machine and queue, 06:20 to
+  06:30 desktop time): Wine's d3d11 file 128 of 166 with the same 38 failing (151.3 s,
+  logs/g4s6j-wine.log); the same programs match and fail; scenes 120, 19, 4; the WebGL 2 build
+  43, 84, 21, with targets and mips now refused (`E_NOTIMPL`) where the device had been removed.
+- Same run, the WebGL 2 cases (the library built on the WebGL 2 back end over ANGLE, the rig's
+  Direct3D 11 scenes; logs/g4s6g-webgl.log): 43 outputs match (34 at run 13), 84 fail, 21
+  absent (they need 10_1 or 11_0; the build offers 10_0). Matching: blend 4, copies 5,
+  deferred, depth 9, draws, dynamic, instanced, levels 2, quads, queries 2, stencil 2,
+  swapchain 5, textures 7, topology, triangle. Stopping: targets and mips ("webgl: the format
+  cannot be read back here": a staging texture of a format the back end cannot read back;
+  since this run such a staging texture is refused at creation, `E_NOTIMPL`), samplers (the
+  back end lacks `TEXTURE_LEVEL_QUERY`, refused by name), constants (device lost in the back
+  end, not read), formats (`E_FAIL` from `CheckFormatSupport`), views, raster, geometry and
+  streamout (`E_NOTIMPL`: texture views, polygon mode, no geometry stage at 10_0 on WebGL 2).
+- Same run, building-ahead hits on Godot's 3D platformer (scratch run-warm.sh, one cache
+  directory, empty at the first run; logs/g4s6g-warm.log): first run 66 pipelines built at
+  their first draw; second run 61 recorded combinations built at its start, all 61 drawn, and
+  26 still built at their first draw (the draws not recorded: through the geometry stage's
+  helper and others not read one by one). Built ahead from shaders' arrival: 124 prepared, none
+  drawn in either run. Frames identical to real Direct3D's in both runs (42.6 s and 41.5 s
+  wall time, single runs).
+
 - 2026-11-18, G4 run 17, the desktop (i9-9900K, RTX 3080) through the queue's hazard group, not
   alone (other tracks' hazard jobs one at a time beside ours; Mac load average 54 to 71): Wine's
   d3d11 file 127 of 166, the test job 2 min 35 s (04:46:59 to 04:49:34 desktop time; 124 of
@@ -880,6 +966,12 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 
 ## Asked of other tracks
 
+- Shaders track (G4 run 18): `VariantFlags::LINE_COVERAGE` (`AntialiasedLinesAsQuads`, plan
+  4.12) for alpha-antialiased lines, a listed case; the front refuses such line draws until the
+  variant and the stage helper's line rectangles exist. `EARLY_TESTS` (`EarlyTestsInShader`),
+  which the front now refuses by name at the draw (own_cases early, Wine's
+  test_early_depth_stencil).
+
 - Shaders track (G4 run 17): the tessellator program fails FXC on wgpu's Direct3D 12 path
   ("internal error: argument pulled into unrelated predicate", in your Next list): this front
   draws hull and domain shaders through `Stages::tessellated` since run 17 and the rig's
@@ -985,6 +1077,10 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
   dxgi.dll only), so the forwarder placement can be checked by the scenes command.
 
 ## Licences
+
+G4 run 18 added the windows crate's `Win32_Graphics_Direct3D_Fxc` feature to the library's
+dev-dependency (same crate, MIT OR Apache-2.0; `D3DCompile` for the examples). Installed nothing
+on the desktop.
 
 G4 run 17 added the windows crate's `Wdk_Graphics_Direct3D` feature (same crate, MIT OR
 Apache-2.0; `D3DKMTCreateDCFromMemory` for `GetDC`). Installed nothing on the desktop.
