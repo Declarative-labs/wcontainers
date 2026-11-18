@@ -1357,7 +1357,11 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                          CPU part\t: 0x000\nCPU revision\t: 0\n\n"
                     );
                 }
-                "filesystems" => out.push_str("nodev\ttmpfs\nnodev\tproc\nnodev\tpipefs\n"),
+                // The registered file systems that are built, in Linux's order of registration.
+                "filesystems" => out.push_str(
+                    "nodev\tsysfs\nnodev\ttmpfs\nnodev\tproc\nnodev\tsockfs\nnodev\tpipefs\n\
+                     nodev\tdevpts\nnodev\tfuse\nnodev\tmqueue\n",
+                ),
                 "loadavg" => {
                     let _ = writeln!(
                         out,

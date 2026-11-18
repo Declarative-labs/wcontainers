@@ -1,5 +1,6 @@
 // /proc/self/mountinfo and /proc/self/mounts: each line checked against the mounted file system
-// itself, and the mounts every default container has, shown without their numbers.
+// itself, the mounts every default container has, shown without their numbers, and the file
+// systems /proc/filesystems lists for them.
 
 #define _GNU_SOURCE
 #include <fcntl.h>
@@ -143,5 +144,26 @@ int main(void) {
     int fd = open("/proc/self/mountinfo", O_RDONLY);
     struct pollfd p = {fd, POLLIN | POLLPRI | POLLERR};
     printf("poll %d revents %x\n", poll(&p, 1, 0), p.revents);
+
+    // /proc/filesystems lists, in its order, the file system of each standard mount (the root's
+    // is the image's) and those of sockets and pipes.
+    FILE *systems = fopen("/proc/filesystems", "r");
+    while (fgets(line, sizeof line, systems)) {
+        char flag[16], name[64];
+        if (sscanf(line, "%15s %63s", flag, name) != 2) {
+            sscanf(line, "%63s", name);
+            flag[0] = 0;
+        }
+        int listed = strcmp(name, "sockfs") == 0 || strcmp(name, "pipefs") == 0;
+        for (size_t s = 1; s < sizeof shown / sizeof shown[0]; s++) {
+            for (int i = 0; i < count; i++) {
+                listed |= strcmp(mounts[i].point, shown[s]) == 0 && strcmp(mounts[i].kind, name) == 0;
+            }
+        }
+        if (listed) {
+            printf("file system %s %s\n", flag, name);
+        }
+    }
+    fclose(systems);
     return 0;
 }
