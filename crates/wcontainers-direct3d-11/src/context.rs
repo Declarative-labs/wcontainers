@@ -8,11 +8,11 @@ use wcontainers_gpu::{
     ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment, DispatchCall,
     DispatchGroups, DrawCall, DrawRange, EmptyPass, Extent, Features, Filter, Format, FormatKind,
     FormatUse, HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp,
-    MAX_BINDING_SETS, Object, Origin, PassDesc, PassTargets, Program, ReadSource, ReadState,
-    RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage, SlotKind,
-    SlowPath, SourceStage, StageSet, StepMode, StoreOp, Target, TextureRegion, TextureUsage,
-    Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream,
-    Viewport as GpuViewport, WriteMode, helper_binding,
+    MAX_BINDING_SETS, Object, Origin, PassDesc, PassOps, PassTargets, Program, ReadSource,
+    ReadState, RingKind, SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage,
+    SlotKind, SlowPath, SourceStage, StageSet, StepMode, StoreOp, Target, TextureRegion,
+    TextureUsage, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, Viewport as GpuViewport, WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -28,17 +28,22 @@ use crate::object::*;
 use crate::shader::{Helpers, StageVariant};
 
 mod geometry;
+mod tessellation;
 mod through;
 pub(crate) use geometry::StageRun;
+pub(crate) use tessellation::TessRun;
 use through::Through;
 
 /// The shader stages whose slots this context keeps: vertex (set 0), pixel (set 1), compute (set 0
-/// of its own programs) and geometry (set 0 of the stage helper's compute programs).
+/// of its own programs), geometry and hull (set 0 of the stage helper's compute programs) and domain
+/// (set 0 of the program drawing the tessellated points).
 pub const VERTEX: usize = 0;
 pub const PIXEL: usize = 1;
 pub const COMPUTE: usize = 2;
 pub const GEOMETRY: usize = 3;
-const STAGES: usize = 4;
+pub const HULL: usize = 4;
+pub const DOMAIN: usize = 5;
+const STAGES: usize = 6;
 
 /// Unordered access slots of the pixel and compute stages at feature level 11_0.
 pub const UAV_SLOTS: usize = 8;
@@ -87,6 +92,8 @@ pub struct ContextState<B: Backend> {
     gs: Option<Rc<Geometry<B>>>,
     /// The geometry shader's stage, whose slots the geometry set binds.
     gs_stage: Option<Rc<Shader<B>>>,
+    hs: Option<Rc<Shader<B>>>,
+    ds: Option<Rc<Shader<B>>>,
     /// The stream output targets.
     so_targets: [Option<Rc<Buffer<B>>>; 4],
     /// The vertex stage's set is made for the stage helper's compute programs.
@@ -125,6 +132,14 @@ pub struct ContextState<B: Backend> {
     /// The input layout whose pulled streams the vertex stage's set binds (its id; zero for none).
     pulled_set: u64,
     pass_open: bool,
+    /// The resources the open pass's draws wrote as storage and read as shader resources, by
+    /// address and sorted: a draw using one the other way ends the pass (`UsageScopeSplit`).
+    pass_written: Vec<usize>,
+    pass_read: Vec<usize>,
+    /// The open pass was begun by the pass tracker, which fitted its targets to a larger depth
+    /// buffer (`AttachmentsFitted`): the area every attachment covers, the draws' scissors cut
+    /// to it.
+    fitted: Option<ScissorRect>,
     /// The size of the open pass when it has no attachments.
     empty_pass: Option<EmptyPass>,
     clears: Vec<PendingClear<B>>,
@@ -147,6 +162,8 @@ impl<B: Backend> ContextState<B> {
             cs: None,
             gs: None,
             gs_stage: None,
+            hs: None,
+            ds: None,
             so_targets: Default::default(),
             vertex_compute: false,
             through: Default::default(),
@@ -159,12 +176,10 @@ impl<B: Backend> ContextState<B> {
             constant_ranges: std::array::from_fn(|_| vec![None; 14]),
             resources: std::array::from_fn(|_| vec![None; 128]),
             samplers: std::array::from_fn(|_| vec![None; 16]),
-            uavs: [
-                Vec::new(),
-                vec![None; UAV_SLOTS],
-                vec![None; UAV_SLOTS],
-                Vec::new(),
-            ],
+            uavs: std::array::from_fn(|stage| match stage {
+                PIXEL | COMPUTE => vec![None; UAV_SLOTS],
+                _ => Vec::new(),
+            }),
             targets: vec![None; 8],
             depth: None,
             blend: None,
@@ -175,11 +190,14 @@ impl<B: Backend> ContextState<B> {
             raster: None,
             viewports: Vec::new(),
             scissors: Vec::new(),
-            sets: [None, None, None, None],
+            sets: Default::default(),
             sets_dirty: [true; STAGES],
             windows: Default::default(),
             pulled_set: 0,
             pass_open: false,
+            pass_written: Vec::new(),
+            pass_read: Vec::new(),
+            fitted: None,
             empty_pass: None,
             clears: Vec::new(),
             mapped: Vec::new(),
@@ -326,6 +344,22 @@ fn copy_formats(a: u32, b: u32, level: u32) -> Result<()> {
     }
 }
 
+/// Whether a box and a place in an NV12 texture fall on whole chroma pairs.
+fn even(b: &Box3, at: [u32; 3]) -> bool {
+    [b.left, b.top, b.right, b.bottom, at[0], at[1]]
+        .iter()
+        .all(|v| v.is_multiple_of(2))
+}
+
+/// The extent of NV12's chroma plane under an extent of its luma.
+fn half(e: Extent) -> Extent {
+    Extent {
+        width: e.width / 2,
+        height: e.height / 2,
+        ..e
+    }
+}
+
 /// The back end's object a draw binds for an empty slot.
 enum Zero<B: Backend> {
     /// A buffer of zeros, bound for this many bytes.
@@ -415,6 +449,20 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    pub fn hs_set_shader(&mut self, shader: Option<Rc<Shader<B>>>) {
+        if !same(&self.ctx.hs, &shader) {
+            self.ctx.hs = shader;
+            self.ctx.sets_dirty[HULL] = true;
+        }
+    }
+
+    pub fn ds_set_shader(&mut self, shader: Option<Rc<Shader<B>>>) {
+        if !same(&self.ctx.ds, &shader) {
+            self.ctx.ds = shader;
+            self.ctx.sets_dirty[DOMAIN] = true;
+        }
+    }
+
     pub fn gs_set_shader(&mut self, shader: Option<Rc<Geometry<B>>>) {
         if !same(&self.ctx.gs, &shader) {
             self.ctx.gs_stage = shader
@@ -472,7 +520,7 @@ impl<B: Backend> Device<B> {
             if stage == COMPUTE {
                 self.unbind_written(&[COMPUTE]);
             } else {
-                self.unbind_written(&[VERTEX, PIXEL, COMPUTE, GEOMETRY]);
+                self.unbind_written(&[VERTEX, PIXEL, COMPUTE, GEOMETRY, HULL, DOMAIN]);
             }
         }
         for (i, v) in views.iter().enumerate() {
@@ -664,7 +712,7 @@ impl<B: Backend> Device<B> {
             self.ctx.targets = new;
             self.ctx.depth = depth;
             // Binding a subresource as a target unbinds its shader resource views, as in Direct3D.
-            self.unbind_written(&[VERTEX, PIXEL, COMPUTE, GEOMETRY]);
+            self.unbind_written(&[VERTEX, PIXEL, COMPUTE, GEOMETRY, HULL, DOMAIN]);
         }
         Ok(())
     }
@@ -784,12 +832,17 @@ impl<B: Backend> Device<B> {
     pub(crate) fn end_pass(&mut self) {
         if self.ctx.pass_open {
             self.close_stretch(false);
-            self.backend.end_pass();
+            if self.ctx.fitted.take().is_some() {
+                let r = self.passes.end(&mut self.backend);
+                let _ = self.gpu(r);
+            } else {
+                self.backend.end_pass();
+            }
             self.ctx.pass_open = false;
             self.queries.pass_set = None;
             // Targets drawn on twins of their textures: what the pass drew copied out.
             for t in self.ctx.targets.clone().iter().flatten() {
-                if t.twin.is_some() {
+                if t.copied() {
                     self.copy_twin(t, false);
                 }
             }
@@ -1168,10 +1221,68 @@ impl<B: Backend> Device<B> {
             {
                 let _ = self.gpu::<()>(Err(e));
             }
-            if v.twin.is_some() {
+            if v.copied() {
                 self.copy_twin(v, false);
             }
         }
+    }
+
+    /// Before a draw: ends the open pass where the draw reads as a shader resource what an earlier
+    /// draw of the pass wrote as storage, or writes as storage what one read, which WebGPU's usage
+    /// scope forbids within a pass (`UsageScopeSplit`); then adds the draw's uses to the pass's.
+    fn split_scope(&mut self) {
+        let address = |v: &ShaderView<B>| match v {
+            ShaderView::Texture(v) => Rc::as_ptr(&v.texture) as usize,
+            ShaderView::Buffer(b) => Rc::as_ptr(&b.buffer) as usize,
+        };
+        let written: Vec<usize> = self.ctx.uavs[PIXEL]
+            .iter()
+            .flatten()
+            .map(|v| address(v))
+            .collect();
+        let read: Vec<usize> = [VERTEX, PIXEL]
+            .iter()
+            .flat_map(|&s| self.ctx.resources[s].iter().flatten())
+            .map(|v| address(v))
+            .collect();
+        let meets =
+            |a: &[usize], sorted: &[usize]| a.iter().any(|x| sorted.binary_search(x).is_ok());
+        if self.ctx.pass_open
+            && (meets(&written, &self.ctx.pass_read) || meets(&read, &self.ctx.pass_written))
+        {
+            self.backend.slow_paths().hit(SlowPath::UsageScopeSplit);
+            self.end_pass();
+        }
+        if !self.ctx.pass_open {
+            self.ctx.pass_written.clear();
+            self.ctx.pass_read.clear();
+        }
+        for (list, new) in [
+            (&mut self.ctx.pass_written, written),
+            (&mut self.ctx.pass_read, read),
+        ] {
+            for x in new {
+                if let Err(at) = list.binary_search(&x) {
+                    list.insert(at, x);
+                }
+            }
+        }
+    }
+
+    /// Whether the bound depth-stencil view is larger than the colour targets, so their pass is
+    /// fitted (`AttachmentsFitted`).
+    fn fitted_targets(&self) -> bool {
+        let size = |v: &Rc<View<B>>| {
+            let e = v.texture.mip_extent(v.desc.first_mip);
+            (e.width, e.height)
+        };
+        self.ctx.depth.as_ref().is_some_and(|d| {
+            self.ctx
+                .targets
+                .iter()
+                .flatten()
+                .any(|t| size(t) != size(d))
+        })
     }
 
     /// Opens a pass on the bound targets, taking pending clears of them as its loads.
@@ -1198,10 +1309,55 @@ impl<B: Backend> Device<B> {
         let depth = self.ctx.depth.clone();
         // Targets on twins of their textures start from the texture's texels.
         for t in targets.iter().flatten() {
-            if t.twin.is_some() && clear_of(t).is_none() {
+            if t.copied() && clear_of(t).is_none() {
                 self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
                 self.copy_twin(t, true);
             }
+        }
+        // A depth buffer larger than the colour targets, which Direct3D allows: the pass tracker
+        // begins the pass, fitting the targets to it (`AttachmentsFitted`).
+        if self.fitted_targets() {
+            let mut ops = PassOps::LOAD_STORE;
+            for (i, t) in targets.iter().enumerate() {
+                if let Some(ClearValue::Color(bits)) = t.as_ref().and_then(clear_of) {
+                    ops.colors[i].0 = LoadOp::Clear(bits);
+                }
+            }
+            if let Some(ClearValue::DepthStencil {
+                depth: d,
+                stencil: s,
+            }) = depth.as_ref().and_then(clear_of)
+            {
+                ops.depth.load = d.map_or(LoadOp::Load, LoadOp::Clear);
+                ops.stencil.load = s.map_or(LoadOp::Load, LoadOp::Clear);
+            }
+            let flags = depth.as_ref().map_or(0, |v| v.desc.read_only);
+            ops.depth.read_only =
+                flags & DSV_READ_ONLY_DEPTH != 0 && ops.depth.load == LoadOp::Load;
+            ops.stencil.read_only =
+                flags & DSV_READ_ONLY_STENCIL != 0 && ops.stencil.load == LoadOp::Load;
+            let occlusion = self.pass_occlusion();
+            if !matches!(occlusion, Ok(None)) {
+                if let Err(e) = occlusion.and_then(|_| {
+                    not_implemented::<()>(
+                        "occlusion queries over a depth buffer larger than its targets",
+                    )
+                }) {
+                    self.lose(e);
+                }
+                return;
+            }
+            let pass_targets = self.pass_targets();
+            let r = self
+                .passes
+                .begin(&mut self.backend, pass_targets, ops)
+                .and_then(|()| self.passes.before_draw(&mut self.backend, &[]));
+            if let Ok(area) = self.gpu(r) {
+                self.ctx.fitted = area;
+                self.ctx.pass_open = true;
+                self.ctx.empty_pass = None;
+            }
+            return;
         }
         let colors = std::array::from_fn(|i| {
             targets[i].as_ref().map(|v| ColorAttachment {
@@ -1818,7 +1974,7 @@ impl<B: Backend> Device<B> {
     /// is made again.
     fn grow_constants(&mut self) -> Result<()> {
         let mut small = Vec::new();
-        for stage in [VERTEX, PIXEL, COMPUTE] {
+        for stage in 0..STAGES {
             let shader = self.stage_shader(stage);
             let Some(shader) = shader.as_ref().filter(|_| self.ctx.sets_dirty[stage]) else {
                 continue;
@@ -1915,7 +2071,7 @@ impl<B: Backend> Device<B> {
     /// Copies again the constant buffer windows bound shorter than their blocks whose buffers were
     /// written since.
     fn refresh_windows(&mut self) -> Result<()> {
-        for stage in [VERTEX, PIXEL, COMPUTE] {
+        for stage in 0..STAGES {
             if self.ctx.windows[stage].is_empty() {
                 continue;
             }
@@ -1933,6 +2089,8 @@ impl<B: Backend> Device<B> {
             VERTEX => &self.ctx.vs,
             PIXEL => &self.ctx.ps,
             GEOMETRY => &self.ctx.gs_stage,
+            HULL => &self.ctx.hs,
+            DOMAIN => &self.ctx.ds,
             _ => &self.ctx.cs,
         }
     }
@@ -2239,6 +2397,7 @@ impl<B: Backend> Device<B> {
         };
         let stages = match stage {
             VERTEX if !self.ctx.vertex_compute => StageSet::VERTEX,
+            DOMAIN => StageSet::VERTEX,
             PIXEL => StageSet::FRAGMENT,
             _ => StageSet::COMPUTE,
         };
@@ -2613,17 +2772,13 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// The bound raster block made with sample mask `mask`, kept on its rasterizer state from its
-    /// first use.
-    /// The bound raster block made with `mask` and, where the pixel program adds the depth bias,
-    /// without it; kept on the state from its first draw.
-    fn raster_twin(&mut self, mask: u32, unbiased: bool) -> Result<B::Raster> {
+    /// The bound raster block made as `key` says; kept on the state from its first draw.
+    fn raster_twin(&mut self, key: RasterKey) -> Result<B::Raster> {
         let r = self
             .ctx
             .raster
             .clone()
             .unwrap_or_else(|| self.defaults.raster.clone());
-        let key = (mask, unbiased);
         if let Some((_, k)) = r.masked.borrow().iter().find(|(m, _)| *m == key) {
             return Ok(k.handle.clone());
         }
@@ -2675,7 +2830,7 @@ impl<B: Backend> Device<B> {
     }
 
     /// The raster block a draw uses: the bound state's, or its twin of `masked`'s sample mask and bias.
-    pub(crate) fn raster_desc(&self, masked: Option<(u32, bool)>) -> wcontainers_gpu::RasterDesc {
+    pub(crate) fn raster_desc(&self, masked: Option<RasterKey>) -> wcontainers_gpu::RasterDesc {
         let r = self.ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
         match masked {
             Some(key) => twin_block(&r.desc, self.backend.caps(), key),
@@ -3025,10 +3180,22 @@ impl<B: Backend> Device<B> {
             return not_implemented("a sample mask without the back end's (SampleMaskInShader)");
         }
         let depth_bias = self.bias_step()?.is_some();
-        let masked_key =
-            (masks || depth_bias).then_some((if masks { mask } else { u32::MAX }, depth_bias));
+        // A fitted pass draws with the scissor test on, cut to the area every attachment covers.
+        let scissored = self.fitted_targets()
+            && !self
+                .ctx
+                .raster
+                .as_ref()
+                .unwrap_or(&self.defaults.raster)
+                .desc
+                .scissor;
+        let masked_key = (masks || depth_bias || scissored).then_some((
+            if masks { mask } else { u32::MAX },
+            depth_bias,
+            scissored,
+        ));
         let masked = match masked_key {
-            Some((mask, unbiased)) => Some(self.raster_twin(mask, unbiased)?),
+            Some(key) => Some(self.raster_twin(key)?),
             None => None,
         };
         let ps = self.ctx.ps.clone();
@@ -3122,9 +3289,9 @@ impl<B: Backend> Device<B> {
                 .hit(SlowPath::DrawBaseFromArguments);
         }
         if vk.pulled != 0 {
-            self.backend
-                .slow_paths()
-                .hit(SlowPath::InstanceRateInShader);
+            for path in self.ctx.layout.iter().flat_map(|l| &l.pulled_paths) {
+                self.backend.slow_paths().hit(*path);
+            }
         }
         if vs
             .typed
@@ -3135,6 +3302,18 @@ impl<B: Backend> Device<B> {
             self.backend
                 .slow_paths()
                 .hit(SlowPath::TexelBufferAsStorage);
+        }
+        if self.ctx.hs.is_some() || self.ctx.ds.is_some() {
+            return self.draw_tessellated(
+                &vs,
+                vk,
+                ps.as_ref(),
+                pk,
+                masked.as_ref(),
+                range,
+                first_instance,
+                instances,
+            );
         }
         if let Some(gs) = self.ctx.gs.clone() {
             let drawn = self.draw_staged(
@@ -3279,6 +3458,31 @@ impl<B: Backend> Device<B> {
         {
             return not_implemented("lines drawn by the quadrilateral or alpha-antialiased rule");
         }
+        // A pixel shader forcing early depth-stencil tests writes storage only for fragments that
+        // pass them; the back ends test after the shader (`EarlyTestsInShader` is not served).
+        let early = ps.as_ref().is_some_and(|ps| {
+            matches!(
+                ps.reflection.extras,
+                wcontainers_gpu::StageExtras::Pixel {
+                    early_tests: true,
+                    side_effects: true,
+                    ..
+                }
+            )
+        });
+        if early && self.ctx.depth.is_some() {
+            let ds = &self
+                .ctx
+                .depth_stencil
+                .as_ref()
+                .unwrap_or(&self.defaults.depth_stencil)
+                .desc;
+            if ds.depth_enable || ds.stencil_enable {
+                return not_implemented(
+                    "early depth-stencil tests before a pixel shader's storage writes",
+                );
+            }
+        }
         // The back ends bias triangles only.
         if (raster.depth_bias != 0 || raster.slope_scaled_depth_bias != 0.0)
             && !matches!(topology, Topology::TriangleList | Topology::TriangleStrip)
@@ -3400,6 +3604,15 @@ impl<B: Backend> Device<B> {
                     Some(rect) => std::slice::from_ref(rect),
                     None => &no_rect,
                 };
+                // A fitted pass draws only where every attachment is.
+                let mut cut = Vec::new();
+                let scissors: &[ScissorRect] = match ctx.fitted {
+                    Some(area) => {
+                        wcontainers_gpu::cut_scissors(scissors, area, &mut cut);
+                        &cut
+                    }
+                    None => scissors,
+                };
                 let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = [None; MAX_BINDING_SETS];
                 bindings[0] = ctx.sets[VERTEX].as_ref().map(|k| &k.handle);
                 bindings[1] = ctx.sets[PIXEL].as_ref().map(|k| &k.handle);
@@ -3462,6 +3675,7 @@ impl<B: Backend> Device<B> {
         }
         let twin_writes = self.twins_in(&[VERTEX, PIXEL], PIXEL);
         let through = self.through_in(PIXEL);
+        self.split_scope();
         self.open_pass();
         if !self.open_stretch() {
             // The pass's occlusion set has no slot left: the draw opens the next pass on another.
@@ -3616,6 +3830,11 @@ impl<B: Backend> Device<B> {
                 {
                     return Ok(());
                 }
+                // NV12 copies whole chroma pairs; Direct3D drops a box or place at an odd texel.
+                let planes = d.chroma.as_ref().zip(s.chroma.as_ref());
+                if planes.is_some() && !even(&b, at) {
+                    return Ok(());
+                }
                 self.settle();
                 let (x, y, z) = (b.left, b.top, b.front);
                 self.backend.copy_texture(
@@ -3631,6 +3850,29 @@ impl<B: Backend> Device<B> {
                     ),
                     extent,
                 );
+                if let Some((dc, sc)) = planes {
+                    self.backend.copy_texture(
+                        &sc.region(
+                            src_mip,
+                            src_layer,
+                            Origin {
+                                x: x / 2,
+                                y: y / 2,
+                                z,
+                            },
+                        ),
+                        &dc.region(
+                            dst_mip,
+                            dst_layer,
+                            Origin {
+                                x: at[0] / 2,
+                                y: at[1] / 2,
+                                z: at[2],
+                            },
+                        ),
+                        half(extent),
+                    );
+                }
                 self.texture_written(d, dst_sub)
             }
             _ => Err(Error::InvalidArg("a copy between a buffer and a texture")),
@@ -3762,26 +4004,45 @@ impl<B: Backend> Device<B> {
                 {
                     return Ok(());
                 }
+                // NV12 is written by whole chroma pairs, as copies are.
+                if t.chroma.is_some() && !even(&b, [b.left, b.top, b.front]) {
+                    return Ok(());
+                }
                 self.settle();
                 let origin = Origin {
                     x: b.left,
                     y: b.top,
                     z: b.front,
                 };
-                self.write_texels(
-                    t.format,
-                    &t.region(mip, layer, origin),
-                    Extent {
-                        width: b.right - b.left,
-                        height: b.bottom - b.top,
-                        depth_or_layers: b.back - b.front,
-                    },
-                    &SubresourceData {
-                        bytes,
-                        row_pitch,
-                        slice_pitch,
-                    },
-                );
+                let extent = Extent {
+                    width: b.right - b.left,
+                    height: b.bottom - b.top,
+                    depth_or_layers: b.back - b.front,
+                };
+                let data = SubresourceData {
+                    bytes,
+                    row_pitch,
+                    slice_pitch,
+                };
+                self.write_texels(t.format, &t.region(mip, layer, origin), extent, &data);
+                if let Some(chroma) = &t.chroma {
+                    // The chroma rows follow the luma's at the same pitch.
+                    let at = (row_pitch * extent.height) as usize;
+                    let origin = Origin {
+                        x: origin.x / 2,
+                        y: origin.y / 2,
+                        z: origin.z,
+                    };
+                    self.write_texels(
+                        chroma.format,
+                        &chroma.region(mip, layer, origin),
+                        half(extent),
+                        &SubresourceData {
+                            bytes: &bytes[at..],
+                            ..data
+                        },
+                    );
+                }
                 Ok(())
             }
         }
@@ -3866,17 +4127,16 @@ impl<B: Backend> Device<B> {
                 };
                 let (row, rows, _) = t.packed(region.mip);
                 let src = ReadSource::Texture { region, extent };
-                let stencil = t.stencil_region(sub);
+                let second = t.second_region(sub);
                 let mut shadow = t.shadow.borrow_mut();
                 let mut staged = t.staged.borrow_mut();
                 let s = sub as usize;
                 // A dynamic texture's shadow is the program's to fill; nothing is read back.
                 if d.usage == usage::STAGING {
-                    let stencil =
-                        stencil.map(|(region, extent)| ReadSource::Texture { region, extent });
-                    let texel = t.format.block().2 as usize;
-                    let stencil = stencil.as_ref().map(|s| (s, texel));
-                    self.refresh(&mut staged[s], &src, stencil, &mut shadow[s], reads, wait)?;
+                    let second = second
+                        .map(|(region, extent, how)| (ReadSource::Texture { region, extent }, how));
+                    let second = second.as_ref().map(|(s, how)| (s, *how));
+                    self.refresh(&mut staged[s], &src, second, &mut shadow[s], reads, wait)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(t) as usize, sub, kind));
                 Ok(Mapped {
@@ -3920,8 +4180,8 @@ impl<B: Backend> Device<B> {
                 .backend
                 .read_back(&ReadSource::Texture { region, extent });
             let r = self.gpu(r)?;
-            let stencil = match t.stencil_region(sub) {
-                Some((region, extent)) => {
+            let second = match t.second_region(sub) {
+                Some((region, extent, _)) => {
                     let s = self
                         .backend
                         .read_back(&ReadSource::Texture { region, extent });
@@ -3929,7 +4189,7 @@ impl<B: Backend> Device<B> {
                 }
                 None => None,
             };
-            Staged::Reading(r, stencil)
+            Staged::Reading(r, second)
         } else {
             Staged::Written
         };
@@ -3938,15 +4198,15 @@ impl<B: Backend> Device<B> {
     }
 
     /// Brings a staging subresource's shadow up to the GPU's bytes before a map hands it out: the
-    /// read back started at the copy, or one started now from `src` (and from `stencil`, the stencil
-    /// aspect of a format with depth and stencil, with the bytes of the shadow's texels); a write-only map that needs it is
+    /// read back started at the copy, or one started now from `src` (and from `second`, the
+    /// stencil aspect or NV12's chroma plane, see [`Second`]); a write-only map that needs it is
     /// `StagingRefreshed`. Without `wait`, a read back not yet done answers `StillDrawing` (after
     /// submitting, so it gets done).
     fn refresh(
         &mut self,
         staged: &mut Staged<B>,
         src: &ReadSource<'_, B>,
-        stencil: Option<(&ReadSource<'_, B>, usize)>,
+        second: Option<(&ReadSource<'_, B>, Second)>,
         shadow: &mut [u8],
         reads: bool,
         wait: bool,
@@ -3957,7 +4217,7 @@ impl<B: Backend> Device<B> {
                 self.settle();
                 let r = self.backend.read_back(src);
                 let r = self.gpu(r)?;
-                let s = match stencil {
+                let s = match second {
                     Some((src, _)) => {
                         let s = self.backend.read_back(src);
                         Some(self.gpu(s)?)
@@ -3987,13 +4247,22 @@ impl<B: Backend> Device<B> {
         if !reads {
             self.backend.slow_paths().hit(SlowPath::StagingRefreshed);
         }
-        match stencil_rb {
-            None => self.backend.finish_read(rb, shadow),
-            Some(s) => {
+        match (stencil_rb, second.map(|s| s.1)) {
+            (None, _) => self.backend.finish_read(rb, shadow),
+            (Some(s), Some(Second::Chroma)) => {
+                // The luma's rows, then the chroma's (as many bytes a row, half the rows).
+                let (luma, chroma) = shadow.split_at_mut(shadow.len() / 3 * 2);
+                self.backend.finish_read(rb, luma);
+                self.backend.finish_read(s, chroma);
+            }
+            (Some(s), how) => {
                 // Direct3D's layouts: D24_UNORM_S8_UINT is depth in the low 24 bits of a word and
                 // stencil in its high byte; D32_FLOAT_S8X24_UINT is the float, the stencil byte and
                 // three unused bytes. The back end gives depth in four bytes and stencil in one.
-                let texel = stencil.map_or(4, |s| s.1);
+                let texel = match how {
+                    Some(Second::Stencil(texel)) => texel,
+                    _ => 4,
+                };
                 let n = shadow.len() / texel;
                 let mut depth = vec![0u8; n * 4];
                 let mut stencil = vec![0u8; n];
@@ -4050,20 +4319,44 @@ impl<B: Backend> Device<B> {
                 let (row, rows, _) = t.packed(region.mip);
                 self.end_pass();
                 let shadow = &t.shadow.borrow()[sub as usize];
-                let Some((stencil, _)) = t.stencil_region(sub) else {
-                    self.backend.write_texture(
-                        &region,
-                        extent,
-                        shadow,
-                        row,
-                        rows,
-                        WriteMode::Ordered,
-                    );
-                    return;
+                let (stencil, texel) = match t.second_region(sub) {
+                    None => {
+                        self.backend.write_texture(
+                            &region,
+                            extent,
+                            shadow,
+                            row,
+                            rows,
+                            WriteMode::Ordered,
+                        );
+                        return;
+                    }
+                    Some((chroma, half, Second::Chroma)) => {
+                        // The luma's rows, then the chroma's at as many bytes a row.
+                        let luma = (row * extent.height) as usize;
+                        let (a, b) = shadow.split_at(luma);
+                        self.backend.write_texture(
+                            &region,
+                            extent,
+                            a,
+                            row,
+                            extent.height,
+                            WriteMode::Ordered,
+                        );
+                        self.backend.write_texture(
+                            &chroma,
+                            half,
+                            b,
+                            row,
+                            half.height,
+                            WriteMode::Ordered,
+                        );
+                        return;
+                    }
+                    Some((stencil, _, Second::Stencil(texel))) => (stencil, texel as u32),
                 };
                 // Each aspect of a format with depth and stencil apart, from Direct3D's layout
                 // (see `refresh`): depth in four bytes per texel, stencil in one.
-                let texel = t.format.block().2;
                 let (depth, stencils) = split_depth_stencil(texel, shadow);
                 let texels = row / texel;
                 self.backend.write_texture(
@@ -4256,15 +4549,20 @@ pub(crate) fn layout_desc(
 
 /// The raster block of `desc` with sample mask `key.0`, and without its depth bias where `key.1`
 /// (the pixel program adds it).
+/// A raster block's twin: its sample mask, without the depth bias (the pixel program adds it),
+/// and with the scissor test on (a fitted pass).
+pub(crate) type RasterKey = (u32, bool, bool);
+
 fn twin_block(
     desc: &crate::desc::RasterizerDesc,
     caps: &wcontainers_gpu::Caps,
-    key: (u32, bool),
+    key: RasterKey,
 ) -> wcontainers_gpu::RasterDesc {
     let mut block = wcontainers_gpu::RasterDesc {
         sample_mask: key.0,
         ..crate::device::raster_block(desc, caps)
     };
+    block.scissor |= key.2;
     if key.1 {
         block.depth_bias = 0;
         block.depth_bias_slope = 0;

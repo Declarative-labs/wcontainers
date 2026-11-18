@@ -8,6 +8,34 @@ use crate::error::{Error, Result, not_implemented};
 pub const UNKNOWN: u32 = 0;
 pub const R16_UINT: u32 = 57;
 pub const R32_UINT: u32 = 42;
+/// `DXGI_FORMAT_NV12`: a plane of 8-bit luma, then a plane of interleaved chroma pairs at half
+/// the width and height, held as two textures (`Texture::chroma`).
+pub const NV12: u32 = 103;
+/// `DXGI_FORMAT_R8G8_TYPELESS`, the group NV12's chroma plane is viewed through.
+pub const R8G8_TYPELESS: u32 = 48;
+/// `DXGI_FORMAT_R8_TYPELESS`, the group NV12's luma plane is viewed through.
+pub const R8_TYPELESS: u32 = 60;
+
+/// The plane of an NV12 texture a view of DXGI format `view` names (0 luma, 1 chroma), or none
+/// for a format no view of NV12 takes.
+pub fn nv12_plane(view: u32) -> Option<usize> {
+    match view {
+        61 | 62 => Some(0),
+        49 | 50 => Some(1),
+        _ => None,
+    }
+}
+
+/// Bytes of a row and rows of a subresource of DXGI format `dxgi` stored as `format`, as the
+/// program lays it out: NV12's chroma rows follow its luma rows at the same pitch.
+pub fn subresource_rows(dxgi: u32, format: Format, width: u32, height: u32) -> (u32, u32) {
+    let (row, rows) = row_bytes(format, width, height);
+    if dxgi == NV12 {
+        (row, rows + rows / 2)
+    } else {
+        (row, rows)
+    }
+}
 
 /// The interface format of a DXGI format a texture or view names: `InvalidArg` for a number that is
 /// no DXGI format, `NotImplemented` for a DXGI format this front does not serve (typeless formats,
@@ -57,6 +85,8 @@ pub fn storage_format(dxgi: u32, depth_bound: bool) -> Result<Format> {
         (92, _) => Bgrx8Unorm,
         (94, _) => Bc6hRgbUfloat,
         (97, _) => Bc7RgbaUnorm,
+        // The luma plane; the chroma plane is a texture of its own.
+        (NV12, _) => R8Unorm,
         _ => return texture_format_of(dxgi),
     };
     Ok(typeless)
@@ -355,6 +385,18 @@ pub fn vertex_format_read_as(format: VertexFormat, scalar: ScalarKind) -> Vertex
         ScalarKind::Float => [Float32x1, Float32x2, Float32x3, Float32x4],
     };
     formats[count]
+}
+
+/// The scalar type a vertex format is read as.
+pub fn vertex_scalar(f: VertexFormat) -> ScalarKind {
+    use VertexFormat::*;
+    match f {
+        Uint8x1 | Uint8x2 | Uint8x3 | Uint8x4 | Uint16x1 | Uint16x2 | Uint16x3 | Uint16x4
+        | Uint32x1 | Uint32x2 | Uint32x3 | Uint32x4 => ScalarKind::Uint,
+        Sint8x1 | Sint8x2 | Sint8x3 | Sint8x4 | Sint16x1 | Sint16x2 | Sint16x3 | Sint16x4
+        | Sint32x1 | Sint32x2 | Sint32x3 | Sint32x4 => ScalarKind::Sint,
+        _ => ScalarKind::Float,
+    }
 }
 
 /// Bytes one element of a vertex format takes.

@@ -135,6 +135,18 @@ pub struct Texture<B: Backend> {
     pub chain: bool,
     /// The minimum level-of-detail clamp `SetResourceMinLOD` gives, in the texture's levels.
     pub min_lod: Cell<f32>,
+    /// NV12's chroma plane (this texture holds its luma): half the width and height, two
+    /// channels, viewed through `R8G8_*`.
+    pub chroma: Option<Rc<Texture<B>>>,
+}
+
+/// What a texture's second read back or write holds besides the first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Second {
+    /// The stencil of a format with depth and stencil, whose texels have this many bytes.
+    Stencil(usize),
+    /// NV12's chroma plane, whose rows follow the luma's.
+    Chroma,
 }
 
 impl<B: Backend> Texture<B> {
@@ -173,21 +185,31 @@ impl<B: Backend> Texture<B> {
         ))
     }
 
-    /// The stencil aspect of subresource `sub` whole, for a format with depth and stencil, whose
-    /// aspects the back end reads and writes apart.
-    pub fn stencil_region(&self, sub: u32) -> Option<(TextureRegion<'_, B>, Extent)> {
+    /// What of subresource `sub` the back end reads and writes apart from [`Self::whole`]: the
+    /// stencil aspect of a format with depth and stencil, or NV12's chroma plane.
+    pub fn second_region(&self, sub: u32) -> Option<(TextureRegion<'_, B>, Extent, Second)> {
+        if let Some(chroma) = &self.chroma {
+            let (region, extent) = chroma.whole(sub)?;
+            return Some((region, extent, Second::Chroma));
+        }
         if self.format.kind() != FormatKind::DepthStencil {
             return None;
         }
         let (mut region, extent) = self.whole(sub)?;
         region.stencil = true;
-        Some((region, extent))
+        Some((
+            region,
+            extent,
+            Second::Stencil(self.format.block().2 as usize),
+        ))
     }
 
-    /// Bytes of a row, rows of a slice, and slices of mip `mip`, tightly packed.
+    /// Bytes of a row, rows of a slice, and slices of mip `mip`, tightly packed as the program
+    /// sees them (NV12's chroma rows after its luma rows).
     pub fn packed(&self, mip: u32) -> (u32, u32, u32) {
         let e = self.mip_extent(mip);
-        let (row, rows) = crate::format::row_bytes(self.format, e.width, e.height);
+        let (row, rows) =
+            crate::format::subresource_rows(self.desc.format, self.format, e.width, e.height);
         (row, rows, e.depth_or_layers)
     }
 }
@@ -221,9 +243,18 @@ pub struct View<B: Backend> {
     /// The twin holds only the view's slices of its 3D level, as the twin's one level from its
     /// first slice (a storage view of some slices, which no back end's view sees).
     pub window: bool,
+    /// A target view of a buffer: the buffer and the byte its first element is at, whose
+    /// elements the view's one-row texture holds, copied in at a pass's start and out at its end
+    /// (`ReinterpretCopy`).
+    pub buffer: Option<(Rc<Buffer<B>>, u64)>,
 }
 
 impl<B: Backend> View<B> {
+    /// Whether what is drawn into the view is copied out of the texture the pass draws into.
+    pub fn copied(&self) -> bool {
+        self.twin.is_some() || self.buffer.is_some()
+    }
+
     /// Whether the two views share a subresource.
     pub fn overlaps(&self, other: &View<B>) -> bool {
         fn meet(a: u32, n: u32, b: u32, m: u32) -> bool {
@@ -314,8 +345,8 @@ pub struct DepthStencil<B: Backend> {
 /// A sampler made with its minimum level raised, by that minimum's bits.
 pub type ClampedSampler<B> = (u32, Kept<B, <B as Backend>::Sampler>);
 
-/// A raster block made with one sample mask.
-pub type MaskedRaster<B> = ((u32, bool), Kept<B, <B as Backend>::Raster>);
+/// A raster block made as one twin key (`context::RasterKey`).
+pub type MaskedRaster<B> = ((u32, bool, bool), Kept<B, <B as Backend>::Raster>);
 
 pub struct Rasterizer<B: Backend> {
     pub desc: RasterizerDesc,
@@ -339,9 +370,12 @@ pub struct InputLayout {
     pub id: u64,
     /// The elements the back end fetches.
     pub elements: Vec<LayoutElement>,
-    /// The elements of slots stepping by instances at a rate the back end cannot step by, which
-    /// the vertex program fetches (`InstanceRateInShader`).
+    /// The elements the vertex program fetches: of slots stepping by instances at a rate the back
+    /// end cannot step by, and of 8- and 16-bit integers the shader reads with the other
+    /// signedness, whose bits the back end's formats would not keep.
     pub pulled: Vec<LayoutElement>,
+    /// The slow paths a draw fetching `pulled` takes.
+    pub pulled_paths: Vec<wcontainers_gpu::SlowPath>,
     /// Every element, as the vertex stage fetches them behind a geometry shader or stream output.
     pub all: Vec<LayoutElement>,
     /// Per input slot: none (per vertex) or the instance step rate.

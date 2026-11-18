@@ -9,8 +9,8 @@ use wcontainers_gpu::{
     BufferDesc as GpuBuffer, BufferUsage, Caps, ColorWrites, CompareFn, CullMode,
     DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, Features, FillMode, Filter, Format,
     FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object,
-    Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, SlowPath,
-    StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension, TextureRegion,
+    Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, ScalarKind,
+    SlowPath, StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension, TextureRegion,
     TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
 };
 
@@ -103,6 +103,9 @@ pub struct Device<B: Backend> {
     /// The stage helpers of geometry shaders and stream output, by the vertex shader's, input
     /// layout's, geometry shader object's and pixel shader's ids.
     pub(crate) staged: HashMap<(u64, u64, u64, u64), crate::context::StageRun<B>>,
+    /// The stage helper of each vertex shader, input layout, hull, domain and pixel shader drawn
+    /// together.
+    pub(crate) tessellated: HashMap<(u64, u64, u64, u64, u64), crate::context::TessRun<B>>,
     /// The stage helper's filled sizes and primitive counts of a streaming draw.
     pub(crate) stream_filled: Option<Kept<B, B::Buffer>>,
     /// What the program's start built from the cache's record.
@@ -271,6 +274,7 @@ impl<B: Backend> Device<B> {
                 sampler: None,
             },
             staged: HashMap::new(),
+            tessellated: HashMap::new(),
             stream_filled: None,
             warm,
             removed: None,
@@ -297,6 +301,26 @@ impl<B: Backend> Device<B> {
             let stored = format::storage_format(dxgi, false).ok();
             if stored.is_some_and(|f| !self.backend.caps().formats.get(f).is_empty()) {
                 bits |= TEXTURE2D | TEXTURECUBE | MIP;
+            }
+            return bits;
+        }
+        if dxgi == format::NV12 {
+            // 2D textures of one level, through views of each plane's format.
+            let formats = &self.backend.caps().formats;
+            let uses = formats.get(Format::R8Unorm) & formats.get(Format::Rg8Unorm);
+            if uses.is_empty() {
+                return bits;
+            }
+            bits |= TEXTURE2D;
+            for (has, bit) in [
+                (FormatUse::SAMPLE, SHADER_LOAD),
+                (FormatUse::FILTER, SHADER_SAMPLE),
+                (FormatUse::RENDER, RENDER_TARGET),
+                (FormatUse::COPY_OUT, CPU_LOCKABLE),
+            ] {
+                if uses.contains(has) {
+                    bits |= bit;
+                }
             }
             return bits;
         }
@@ -716,6 +740,21 @@ impl<B: Backend> Device<B> {
         if mips > full {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
+        if d.format == format::NV12 {
+            if d.dimension != TexDim::D2
+                || !d.width.is_multiple_of(2)
+                || !d.height.is_multiple_of(2)
+                || d.sample_count > 1
+                || d.bind_flags & bind::DEPTH_STENCIL != 0
+            {
+                return Err(Error::InvalidArg(
+                    "an NV12 texture is 2D, of one sample and of even width and height",
+                ));
+            }
+            if mips != 1 || d.misc_flags & !MISC_SHARED != 0 {
+                return not_implemented("NV12 textures of more than one level or with misc flags");
+            }
+        }
         let drawn = bind::RENDER_TARGET | bind::UNORDERED_ACCESS;
         if d.bind_flags & drawn != 0
             && (d.bind_flags & bind::DEPTH_STENCIL != 0
@@ -763,12 +802,29 @@ impl<B: Backend> Device<B> {
             ));
         }
         if d.misc_flags
-            & !(MISC_TEXTURECUBE | MISC_GENERATE_MIPS | MISC_RESOURCE_CLAMP | MISC_SHARED)
+            & !(MISC_TEXTURECUBE
+                | MISC_GENERATE_MIPS
+                | MISC_RESOURCE_CLAMP
+                | MISC_SHARED
+                | MISC_GDI_COMPATIBLE)
             != 0
         {
             return not_implemented(
-                "textures with misc flags other than a cube, mip generation, a level clamp and shared",
+                "textures with misc flags other than a cube, mip generation, a level clamp, shared \
+                 and GDI-compatible",
             );
+        }
+        // GDI draws into B8G8R8A8 render targets of one sample and default usage.
+        if d.misc_flags & MISC_GDI_COMPATIBLE != 0
+            && (!matches!(d.format, 87 | 90 | 91)
+                || d.bind_flags & bind::RENDER_TARGET == 0
+                || d.usage != usage::DEFAULT
+                || d.sample_count != 1
+                || d.dimension != TexDim::D2)
+        {
+            return Err(Error::InvalidArg(
+                "a GDI-compatible texture is a B8G8R8A8 2D render target of one sample",
+            ));
         }
         let both = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
         if d.misc_flags & MISC_GENERATE_MIPS != 0 && d.bind_flags & both != both {
@@ -828,6 +884,10 @@ impl<B: Backend> Device<B> {
             {
                 needs |= n;
             }
+        }
+        // A staging texture the CPU reads is read back from the GPU.
+        if d.usage == usage::STAGING && d.cpu_access_flags & cpu::READ != 0 {
+            needs |= FormatUse::COPY_OUT;
         }
         if d.bind_flags & bind::UNORDERED_ACCESS != 0 && self.feature_level() < 0xb000 {
             return Err(Error::InvalidArg(
@@ -896,6 +956,23 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
+        // NV12's chroma plane: a texture of its own the program sees only through views and
+        // through the joined rows of maps, copies and writes.
+        let chroma = if d.format == crate::format::NV12 {
+            let plane = TextureDesc {
+                format: crate::format::R8G8_TYPELESS,
+                width: d.width / 2,
+                height: d.height / 2,
+                mip_levels: 1,
+                usage: usage::DEFAULT,
+                cpu_access_flags: 0,
+                misc_flags: 0,
+                ..*d
+            };
+            Some(self.create_texture(&plane, &[])?)
+        } else {
+            None
+        };
         let (dimension, depth_or_layers) = match d.dimension {
             TexDim::D3 => (TextureDimension::D3, d.depth),
             TexDim::D1 | TexDim::D2 => (TextureDimension::D2, d.array_size),
@@ -928,12 +1005,23 @@ impl<B: Backend> Device<B> {
             shadow: RefCell::new(Vec::new()),
             chain: false,
             min_lod: Cell::new(0.0),
+            chroma,
         };
         for (i, data) in init.iter().take(subresources).enumerate() {
             let (region, extent) = texture
                 .whole(i as u32)
                 .expect("a subresource of the texture");
             self.write_texels(format, &region, extent, data);
+            if let Some(chroma) = &texture.chroma {
+                let (region, extent) = chroma.whole(i as u32).expect("the luma's subresource");
+                // The chroma rows follow the luma's at the same pitch.
+                let at = (data.row_pitch * texture.desc.height) as usize;
+                let data = SubresourceData {
+                    bytes: &data.bytes[at..],
+                    ..*data
+                };
+                self.write_texels(chroma.format, &region, extent, &data);
+            }
         }
         if matches!(d.usage, usage::STAGING | usage::DYNAMIC) {
             let shadow = (0..subresources)
@@ -1049,6 +1137,19 @@ impl<B: Backend> Device<B> {
         desc: Option<&ViewDesc>,
         kind: u32,
     ) -> Result<Rc<View<B>>> {
+        if let Some(chroma) = &texture.chroma {
+            // A view of NV12 names one plane by its format; the luma plane is viewed as the
+            // members of R8's group, the chroma plane (a texture of R8G8's) as its own.
+            match format::nv12_plane(desc.map_or(format::UNKNOWN, |d| d.format)) {
+                Some(1) => return self.create_view(chroma, desc, kind),
+                Some(_) => {}
+                None => {
+                    return Err(Error::InvalidArg(
+                        "a view of an NV12 texture names one plane's format",
+                    ));
+                }
+            }
+        }
         let t = &texture.desc;
         if t.bind_flags & kind == 0 {
             return Err(Error::InvalidArg(
@@ -1156,6 +1257,9 @@ impl<B: Backend> Device<B> {
         let (format, stencil) = match format::srgb_twin(t.format) {
             Some(twin) if texture.chain && kind == bind::RENDER_TARGET && v.format == twin => {
                 (format::texture_format_of(twin)?, false)
+            }
+            _ if texture.chroma.is_some() => {
+                format::view_format(v.format, format::R8_TYPELESS, texture.format)?
             }
             _ => format::view_format(v.format, t.format, texture.format)?,
         };
@@ -1268,7 +1372,54 @@ impl<B: Backend> Device<B> {
             gpu: Kept::new(gpu, id, Object::TextureView, &self.graveyard),
             twin,
             window,
+            buffer: None,
         }))
+    }
+
+    /// A render target view of `count` elements of `buffer` from element `first`: a view of a
+    /// one-row texture of the elements, copied from and into the buffer around each pass drawing
+    /// into it (`View::buffer`).
+    pub fn create_buffer_target_view(
+        &mut self,
+        buffer: &Rc<Buffer<B>>,
+        format: u32,
+        first: u32,
+        count: u32,
+    ) -> Result<Rc<View<B>>> {
+        let gpu_format = format::texture_format_of(format)
+            .map_err(|_| Error::InvalidArg("a format a buffer's target view cannot have"))?;
+        let (block_width, block_height, bytes) = gpu_format.block();
+        let end = (u64::from(first) + u64::from(count)) * u64::from(bytes);
+        if buffer.desc.bind_flags & bind::RENDER_TARGET == 0
+            || format::is_typeless(format)
+            || (block_width, block_height) != (1, 1)
+            || count == 0
+            || end > u64::from(buffer.desc.byte_width)
+        {
+            return Err(Error::InvalidArg("a target view of a buffer"));
+        }
+        let elements = self.create_texture(
+            &TextureDesc {
+                dimension: TexDim::D2,
+                width: count,
+                height: 1,
+                depth: 1,
+                mip_levels: 1,
+                array_size: 1,
+                format,
+                sample_count: 1,
+                sample_quality: 0,
+                usage: usage::DEFAULT,
+                bind_flags: bind::RENDER_TARGET,
+                cpu_access_flags: 0,
+                misc_flags: 0,
+            },
+            &[],
+        )?;
+        let view = self.create_view(&elements, None, bind::RENDER_TARGET)?;
+        let mut view = Rc::into_inner(view).expect("a view only made here");
+        view.buffer = Some((buffer.clone(), u64::from(first) * u64::from(bytes)));
+        Ok(Rc::new(view))
     }
 
     /// An unordered access view of one level of a texture.
@@ -1674,6 +1825,7 @@ impl<B: Backend> Device<B> {
         let mut instance_steps = [None; 32];
         let mut resolved = Vec::new();
         let mut pulled = Vec::new();
+        let mut pulled_paths = Vec::new();
         let steps_natively = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
         for e in elements {
             if e.slot >= 32 {
@@ -1716,8 +1868,29 @@ impl<B: Backend> Device<B> {
                     format: vf,
                 };
                 // Rates other than one where the back end steps by one only are fetched in the
-                // vertex program.
-                if step.is_some_and(|r| r != 1) && !steps_natively {
+                // vertex program, and so are small integers read with the other signedness, whose
+                // bits Direct3D hands over and WebGPU's formats would extend by their own.
+                let scalar = format::vertex_scalar(vf);
+                let read = match input.component {
+                    1 => ScalarKind::Uint,
+                    2 => ScalarKind::Sint,
+                    _ => ScalarKind::Float,
+                };
+                let resigned = scalar != ScalarKind::Float
+                    && read != ScalarKind::Float
+                    && scalar != read
+                    && format::vertex_format_read_as(vf, read) == vf;
+                let path = if step.is_some_and(|r| r != 1) && !steps_natively {
+                    Some(SlowPath::InstanceRateInShader)
+                } else if resigned {
+                    Some(SlowPath::VertexFormatConverted)
+                } else {
+                    None
+                };
+                if let Some(path) = path {
+                    if !pulled_paths.contains(&path) {
+                        pulled_paths.push(path);
+                    }
                     pulled.push(element);
                 } else {
                     resolved.push(element);
@@ -1741,6 +1914,7 @@ impl<B: Backend> Device<B> {
             id,
             elements: resolved,
             pulled,
+            pulled_paths,
             all,
             instance_steps,
         }))

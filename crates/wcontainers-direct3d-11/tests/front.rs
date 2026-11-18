@@ -7,7 +7,9 @@ use std::rc::Rc;
 use wcontainers_direct3d_11::desc::*;
 use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, View};
 use wcontainers_direct3d_11::record::Recorder;
-use wcontainers_direct3d_11::{Device, Error, GEOMETRY, PIXEL, Removal, VERTEX, shader};
+use wcontainers_direct3d_11::{
+    DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, shader,
+};
 use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
 
 type Dev = Device<Recorder>;
@@ -236,6 +238,163 @@ fn triangle_scene() {
             && find(&log, "end_pass") < find(&log, "copy_texture")
     );
     assert!(find(&log, "copy_texture") < find(&log, "read_back"));
+}
+
+#[test]
+fn nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows() {
+    const NV12: u32 = 103;
+    let mut dev = device();
+    let bind = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
+    for (w, h) in [(7, 4), (8, 3)] {
+        assert!(matches!(
+            dev.create_texture(&tex2d(w, h, NV12, bind), &[]),
+            Err(Error::InvalidArg(_))
+        ));
+    }
+    let (w, h) = (8u32, 4u32);
+    let bytes: Vec<u8> = (0..w * h * 3 / 2).map(|i| (i * 7 + 1) as u8).collect();
+    let init = [SubresourceData {
+        bytes: &bytes,
+        row_pitch: w,
+        slice_pitch: 0,
+    }];
+    let texture = dev.create_texture(&tex2d(w, h, NV12, bind), &init).unwrap();
+    let view = |format| ViewDesc {
+        format,
+        dimension: ViewDim::Texture2D,
+        first_mip: 0,
+        mip_count: 1,
+        first_layer: 0,
+        layer_count: 1,
+        read_only: 0,
+    };
+    // Views name one plane by its format; the default and NV12's own are invalid.
+    for desc in [None, Some(view(NV12)), Some(view(63))] {
+        assert!(matches!(
+            dev.create_view(&texture, desc.as_ref(), bind::SHADER_RESOURCE),
+            Err(Error::InvalidArg(_))
+        ));
+    }
+    let luma = dev
+        .create_view(&texture, Some(&view(61)), bind::SHADER_RESOURCE)
+        .unwrap();
+    assert!(Rc::ptr_eq(&luma.texture, &texture));
+    let chroma = dev
+        .create_view(&texture, Some(&view(49)), bind::RENDER_TARGET)
+        .unwrap();
+    let plane = texture.chroma.as_ref().unwrap();
+    assert!(Rc::ptr_eq(&chroma.texture, plane));
+    assert_eq!((plane.desc.width, plane.desc.height), (w / 2, h / 2));
+
+    let mut staging_desc = tex2d(w, h, NV12, 0);
+    staging_desc.usage = usage::STAGING;
+    staging_desc.cpu_access_flags = cpu::READ;
+    let staging = Resource::Texture(dev.create_texture(&staging_desc, &[]).unwrap());
+    let nv12 = Resource::Texture(texture.clone());
+    let read = |dev: &mut Dev| {
+        dev.copy_resource(&staging, &nv12).unwrap();
+        let mapped = dev.map(&staging, 0, map::READ, 0).unwrap();
+        assert_eq!(mapped.row_pitch, w);
+        assert_eq!(mapped.depth_pitch, w * h * 3 / 2);
+        let got = unsafe { std::slice::from_raw_parts(mapped.data, bytes.len()) }.to_vec();
+        dev.unmap(&staging, 0);
+        got
+    };
+    assert_eq!(read(&mut dev), bytes);
+    // An odd box writes nothing; an even one writes its luma and the chroma under it.
+    let source = [0xa0u8; 4 * 2 * 3 / 2];
+    let odd = Box3 {
+        left: 1,
+        top: 2,
+        front: 0,
+        right: 5,
+        bottom: 4,
+        back: 1,
+    };
+    dev.update_subresource(&nv12, 0, Some(&odd), &source, 4, 0)
+        .unwrap();
+    assert_eq!(read(&mut dev), bytes);
+    let even = Box3 {
+        left: 2,
+        right: 6,
+        ..odd
+    };
+    dev.update_subresource(&nv12, 0, Some(&even), &source, 4, 0)
+        .unwrap();
+    let mut want = bytes.clone();
+    for y in 2..4 {
+        want[(y * w + 2) as usize..(y * w + 6) as usize].fill(0xa0);
+    }
+    // Chroma row 1 (under luma rows 2 and 3), pairs 1 and 2.
+    let at = (w * h + w + 2) as usize;
+    want[at..at + 4].fill(0xa0);
+    assert_eq!(read(&mut dev), want);
+    assert!(dev.removed.is_none());
+}
+
+#[test]
+fn a_target_view_of_a_buffer_draws_into_a_row_of_its_elements_copied_into_the_buffer() {
+    let mut dev = device();
+    let buffer = dev
+        .create_buffer(
+            &BufferDesc {
+                byte_width: 1024,
+                usage: usage::DEFAULT,
+                bind_flags: bind::RENDER_TARGET,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    // Past the buffer's end, of a typeless format, and of a buffer not bound as a target.
+    for (format, first, count) in [(RGBA32F, 1, 64), (1, 0, 64), (RGBA32F, 0, 0)] {
+        assert!(matches!(
+            dev.create_buffer_target_view(&buffer, format, first, count),
+            Err(Error::InvalidArg(_))
+        ));
+    }
+    let vertices = immutable(&mut dev, &[0; 60], bind::VERTEX_BUFFER);
+    assert!(matches!(
+        dev.create_buffer_target_view(&vertices, RGBA32F, 0, 4),
+        Err(Error::InvalidArg(_))
+    ));
+    let rtv = dev
+        .create_buffer_target_view(&buffer, RGBA32F, 16, 48)
+        .unwrap();
+    let start = dev.backend.log.len();
+    begin(&mut dev, &rtv, None, 48.0);
+    program(
+        &mut dev,
+        "triangle.vs",
+        "triangle.ps",
+        &[element("POSITION", RG32F, 0), element("COLOR", RGB32F, 8)],
+    );
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 20, 0))])
+        .unwrap();
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    dev.draw(3, 0);
+    dev.flush();
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, start);
+    // Cleared, so nothing is copied in; what the pass drew is copied out from element 16's byte.
+    assert!(
+        !log.iter().any(|l| l.starts_with("copy_buffer_to_texture")),
+        "{log:#?}"
+    );
+    let out = find(&log, "copy_texture_to_buffer");
+    assert!(find(&log, "draw ") < out, "{log:#?}");
+    assert!(log[out].ends_with("48x1"), "{}", log[out]);
+    // Drawn again without a clear, the elements are copied in first.
+    let start = dev.backend.log.len();
+    dev.om_set_render_targets(&[None], None).unwrap();
+    dev.om_set_render_targets(&[Some(rtv)], None).unwrap();
+    dev.draw(3, 0);
+    dev.flush();
+    let log = log_from(&dev, start);
+    assert!(
+        find(&log, "copy_buffer_to_texture") < find(&log, "draw "),
+        "{log:#?}"
+    );
 }
 
 #[test]
@@ -2306,6 +2465,93 @@ fn a_geometry_shader_runs_as_compute_before_the_draw_of_its_output() {
     let log = log_from(&dev, from);
     assert!(!log.iter().any(|l| l.starts_with("dispatch ")));
     assert!(log[find(&log, "draw ")].contains("PointList"));
+}
+
+#[test]
+fn hull_and_domain_shaders_run_as_compute_before_the_domain_programs_draw() {
+    let mut dev = device();
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(&mut dev, &rtv, None, 16.0);
+    let vsb = corpus("tessellation.vs");
+    let vs = dev.create_shader(&vsb, SourceStage::Vertex).unwrap();
+    let ps = dev
+        .create_shader(&corpus("tessellation.ps"), SourceStage::Pixel)
+        .unwrap();
+    // A hull shader's bytecode made as a domain shader is refused.
+    assert!(matches!(
+        dev.create_shader(&corpus("tessellation.hs_tri"), SourceStage::Domain),
+        Err(Error::InvalidArg(_))
+    ));
+    let hs = dev
+        .create_shader(&corpus("tessellation.hs_tri"), SourceStage::Hull)
+        .unwrap();
+    let ds = dev
+        .create_shader(&corpus("tessellation.ds_tri"), SourceStage::Domain)
+        .unwrap();
+    let mut colour = element("COLOR", RGBA32F, 12);
+    colour.semantic_index = 0;
+    let layout = dev
+        .create_input_layout(&[element("POSITION", RGB32F, 0), colour], &vsb)
+        .unwrap();
+    let vertices = immutable(&mut dev, &[0u8; 28 * 3], bind::VERTEX_BUFFER);
+    let constants = immutable(&mut dev, &[0u8; 32], bind::CONSTANT_BUFFER);
+    dev.vs_set_shader(Some(vs));
+    dev.ps_set_shader(Some(ps));
+    dev.ia_set_input_layout(Some(layout));
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 28, 0))])
+        .unwrap();
+    for stage in [HULL, DOMAIN] {
+        dev.set_constant_buffers(stage, 0, &[Some(constants.clone())])
+            .unwrap();
+    }
+    dev.hs_set_shader(Some(hs));
+    // Without a domain shader, or from a topology other than patches, Direct3D draws nothing.
+    dev.ia_set_primitive_topology(topology::PATCHLIST_1 + 2);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    dev.ds_set_shader(Some(ds));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(
+        !log.iter()
+            .any(|l| l.starts_with("dispatch ") || l.starts_with("draw ")),
+        "{log:#?}"
+    );
+    dev.ia_set_primitive_topology(topology::PATCHLIST_1 + 2);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none(), "{:?}", dev.removed);
+    let log = log_from(&dev, from);
+    // The vertex stage's dispatch, then the hull stage's and the tessellator's, then the domain
+    // program's indirect draw.
+    let vertex = find(&log, "dispatch ");
+    let draw = find(&log, "draw ");
+    assert!(
+        log[vertex + 1..draw]
+            .iter()
+            .any(|l| l.starts_with("dispatch ")),
+        "{log:#?}"
+    );
+    assert!(log[draw].contains("IndexedIndirect"), "{}", log[draw]);
+    assert_eq!(
+        dev.backend
+            .slow_paths()
+            .count(SlowPath::TessellationAsCompute),
+        1
+    );
+    // Without the hull and domain shaders a triangle list is drawn as usual.
+    dev.hs_set_shader(None);
+    dev.ds_set_shader(None);
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(!log.iter().any(|l| l.starts_with("dispatch ")));
+    assert!(log[find(&log, "draw ")].contains("TriangleList"));
 }
 
 #[test]
