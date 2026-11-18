@@ -374,7 +374,7 @@ const CREATE_DEBUG: u32 = 0x2;
 /// `D3D_DRIVER_TYPE_UNKNOWN`, `_HARDWARE` and `_SOFTWARE`.
 const DRIVER_UNKNOWN: i32 = 0;
 const DRIVER_HARDWARE: i32 = 1;
-const DRIVER_SOFTWARE: i32 = 5;
+const DRIVER_SOFTWARE: i32 = 4;
 /// The only version `D3D11CreateDevice` takes.
 const D3D11_SDK_VERSION: u32 = 7;
 

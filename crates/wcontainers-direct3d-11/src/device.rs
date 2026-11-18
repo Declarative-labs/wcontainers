@@ -139,7 +139,25 @@ pub(crate) struct Defaults<B: Backend> {
 }
 
 /// The feature levels offered when a program asks for none, highest first (`D3D11CreateDevice`).
-const DEFAULT_LEVELS: [u32; 4] = [level::L11_0, level::L10_1, level::L10_0, 0x9300];
+const DEFAULT_LEVELS: [u32; 6] = [
+    level::L11_0,
+    level::L10_1,
+    level::L10_0,
+    level::L9_3,
+    level::L9_2,
+    level::L9_1,
+];
+
+/// Direct3D's largest textures at feature level `level`: the extent of 1D and 2D textures, of a
+/// cube's faces and of 3D textures, and the layers of an array (9_x has no arrays).
+fn level_texture_limits(level: u32) -> [u32; 4] {
+    match level {
+        level::L9_1 | level::L9_2 => [2048, 512, 256, 1],
+        level::L9_3 => [4096, 4096, 256, 1],
+        level::L10_0 | level::L10_1 => [8192, 8192, 2048, 512],
+        _ => [16384, 16384, 2048, 2048],
+    }
+}
 
 /// The highest feature level `backend` serves (plan section 9): 11_0 with compute, 10_0 without.
 pub fn top_level(caps: &wcontainers_gpu::Caps) -> u32 {
@@ -161,7 +179,7 @@ impl<B: Backend> Device<B> {
         };
         let level = *asked
             .iter()
-            .find(|&&l| l <= top && l >= level::L10_0)
+            .find(|&&l| l <= top && l >= level::L9_1)
             .ok_or(Error::Unsupported)?;
         let graveyard = Rc::new(RefCell::new(Graveyard {
             objects: Vec::new(),
@@ -611,9 +629,18 @@ impl<B: Backend> Device<B> {
         if d.width == 0 || d.height == 0 || d.depth == 0 || d.array_size == 0 {
             return Err(Error::InvalidArg("a texture needs a size"));
         }
+        let [extent, cube_extent, volume, level_layers] = level_texture_limits(self.level);
+        let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
         let (most, layers) = match d.dimension {
-            TexDim::D3 => (limits.max_texture_3d, 1),
-            _ => (limits.max_texture_2d, limits.max_texture_layers),
+            TexDim::D3 => (limits.max_texture_3d.min(volume), 1),
+            _ if cube => (
+                limits.max_texture_cube.min(cube_extent),
+                limits.max_texture_layers.min(level_layers.max(6)),
+            ),
+            _ => (
+                limits.max_texture_2d.min(extent),
+                limits.max_texture_layers.min(level_layers),
+            ),
         };
         if d.width > most || d.height > most || d.depth > most || d.array_size > layers {
             return Err(Error::InvalidArg(
@@ -660,7 +687,6 @@ impl<B: Backend> Device<B> {
                 "a multisampled texture is 2D, of one level and default usage",
             ));
         }
-        let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
         if d.misc_flags
             & !(MISC_TEXTURECUBE | MISC_GENERATE_MIPS | MISC_RESOURCE_CLAMP | MISC_SHARED)
             != 0
@@ -1338,6 +1364,7 @@ impl<B: Backend> Device<B> {
         bytecode: &[u8],
         stage: wcontainers_gpu::SourceStage,
     ) -> Result<Rc<Shader<B>>> {
+        shader::check_model(bytecode, self.level)?;
         let (mut converted, reads_samples) = shader::convert(bytecode, stage)?;
         let samplers = shader::sampler_slots(&converted);
         let textures = shader::texture_slots(&converted);

@@ -13,32 +13,76 @@ use crate::error::{Error, Result, not_implemented};
 /// `SHEX` chunk; an error if the bytes are not such a container.
 pub fn stage(bytecode: &[u8]) -> Result<SourceStage> {
     let bad = Error::InvalidArg("not DXBC bytecode");
-    let word = |at: usize| -> Result<u32> {
-        bytecode
-            .get(at..)
-            .and_then(|b| b.get(..4))
-            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
-            .ok_or(bad)
-    };
-    if bytecode.len() < 32 || &bytecode[..4] != b"DXBC" || word(24)? as usize > bytecode.len() {
-        return Err(bad);
+    let (_, at) = chunks(bytecode)?
+        .into_iter()
+        .find(|(tag, _)| tag == b"SHDR" || tag == b"SHEX")
+        .ok_or(bad)?;
+    match word(bytecode, at + 8)? >> 16 {
+        0 => Ok(SourceStage::Pixel),
+        1 => Ok(SourceStage::Vertex),
+        2 => Ok(SourceStage::Geometry),
+        3 => Ok(SourceStage::Hull),
+        4 => Ok(SourceStage::Domain),
+        5 => Ok(SourceStage::Compute),
+        _ => Err(bad),
     }
-    for i in 0..word(28)? as usize {
-        let at = word(32 + 4 * i)? as usize;
-        let tag = bytecode.get(at..).and_then(|b| b.get(..4)).ok_or(bad)?;
-        if tag == b"SHDR" || tag == b"SHEX" {
-            return match word(at + 8)? >> 16 {
-                0 => Ok(SourceStage::Pixel),
-                1 => Ok(SourceStage::Vertex),
-                2 => Ok(SourceStage::Geometry),
-                3 => Ok(SourceStage::Hull),
-                4 => Ok(SourceStage::Domain),
-                5 => Ok(SourceStage::Compute),
-                _ => Err(bad),
-            };
+}
+
+/// Whether the device's feature level takes a shader of this DXBC container's model: 9_x takes
+/// 4_0 programs carrying their Direct3D 9 form (`Aon9`), 10_0 takes 4_0, 10_1 4_1, 11_x 5_0.
+pub fn check_model(bytecode: &[u8], level: u32) -> Result<()> {
+    let mut version = None;
+    let mut aon9 = false;
+    for (tag, at) in chunks(bytecode)? {
+        match &tag {
+            b"SHDR" | b"SHEX" => version = Some(word(bytecode, at + 8)? & 0xff),
+            b"Aon9" => aon9 = true,
+            _ => {}
         }
     }
-    Err(bad)
+    let version = version.ok_or(Error::InvalidArg("not DXBC bytecode"))?;
+    let (major, minor) = (version >> 4 & 0xf, version & 0xf);
+    let taken = match level {
+        crate::desc::level::L9_1..=crate::desc::level::L9_3 => (major, minor) == (4, 0) && aon9,
+        crate::desc::level::L10_0 => (major, minor) == (4, 0),
+        crate::desc::level::L10_1 => major == 4,
+        _ => major <= 5,
+    };
+    if taken {
+        Ok(())
+    } else {
+        Err(Error::InvalidArg(
+            "a shader model the device's feature level does not take",
+        ))
+    }
+}
+
+/// The word at byte `at` of `bytecode`.
+fn word(bytecode: &[u8], at: usize) -> Result<u32> {
+    bytecode
+        .get(at..)
+        .and_then(|b| b.get(..4))
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .ok_or(Error::InvalidArg("not DXBC bytecode"))
+}
+
+/// The tags of a DXBC container's chunks and where each starts.
+fn chunks(bytecode: &[u8]) -> Result<Vec<([u8; 4], usize)>> {
+    if bytecode.len() < 32
+        || &bytecode[..4] != b"DXBC"
+        || word(bytecode, 24)? as usize > bytecode.len()
+    {
+        return Err(Error::InvalidArg("not DXBC bytecode"));
+    }
+    (0..word(bytecode, 28)? as usize)
+        .map(|i| {
+            let at = word(bytecode, 32 + 4 * i)? as usize;
+            let tag = bytecode
+                .get(at..at.saturating_add(4))
+                .ok_or(Error::InvalidArg("not DXBC bytecode"))?;
+            Ok((tag.try_into().unwrap(), at))
+        })
+        .collect()
 }
 
 /// One element of a DXBC container's input signature.

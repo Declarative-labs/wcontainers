@@ -958,7 +958,7 @@ impl Device_Impl {
                 let top = self.front.borrow().feature_level();
                 l.iter()
                     .copied()
-                    .find(|l| (0xa000..=top).contains(&(l.0 as u32)))
+                    .find(|l| (0x9100..=top).contains(&(l.0 as u32)))
             });
         let Some(level) = level else {
             if let Some(c) = chosen {

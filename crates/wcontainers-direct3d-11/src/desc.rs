@@ -64,6 +64,9 @@ pub mod support {
 }
 
 pub mod level {
+    pub const L9_1: u32 = 0x9100;
+    pub const L9_2: u32 = 0x9200;
+    pub const L9_3: u32 = 0x9300;
     pub const L10_0: u32 = 0xa000;
     pub const L10_1: u32 = 0xa100;
     pub const L11_0: u32 = 0xb000;
