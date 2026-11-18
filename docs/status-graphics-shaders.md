@@ -1242,8 +1242,26 @@ let reflection = &converted.reflection;
 ## Measurements
 
 Run 25, 2026-11-18, counts only (laptop load 1 to 4; desktop shared through the queue), logs in
-scratch `graphics-shaders/run25`: see Run 25 above for the drawn results; the full runs are at the
-end of this list when done.
+scratch `graphics-shaders/run25`:
+- Laptop: `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; `cargo test -p wcontainers-shaders -p wcontainers-gpu -- --include-ignored --skip mutated`
+  with the corpus, the games (Godot's added) and glslang: every test passes (corpus test 9 of 9,
+  208 s; full.log).
+- Desktop: `cargo clippy -p wcontainers-shaders --all-targets -- -D warnings` clean, and `cargo
+  check -p wcontainers-direct3d-11 -p wcontainers-direct3d-12 --all-targets` builds (fronts.log).
+  `compute_draw` 4 of 4, `draw` 3 of 3, `variant_draw` 3 of 3 at seeds 1 to 4 (gpu2.log, after the
+  raw buffer change): every comparison within its allowance, as in run 24; DXIL builds new to the
+  drawn tests: `cs_texels` 0 elements apart in 4 seeds, `ps_table` 0 of 4096 texels on both back ends.
+- Chrome 157.0.8103.78 on the RTX 3080 (chrome.log): every WGSL file compiles (corpus 181, games
+  516, games DXIL 406 with Godot's 58, own 89, own DXIL 33, rig 76, rig DXIL 53); the GLSL ES
+  failures are the known classes only (bitfield operations, `textureGather`, multisampled samplers:
+  corpus 13, games 10, games DXIL 1, own 5, own DXIL 2, rig 2, rig DXIL 2).
+- WebAssembly (laptop, `wasm-run10.sh`, wasm.log): the corpus test under wasmtime 9 of 9 (331 s),
+  every verdict as native; written files equal to the native ones except corpus 2 and games 3, the
+  counts of the known gap of run 24 (files not listed again by name).
+- At the end of run 25 the build folders were deleted (laptop
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders`, 7.1 GB; desktop
+  `C:\wc\target\phase-2-graphics-shaders`, 6.1 GB); `out` and the logs are kept.
 
 Run 24, 2026-11-18, counts only (laptop load 2 to 9; desktop shared through the queue), logs in
 scratch `graphics-shaders/run24`:
