@@ -176,14 +176,15 @@ pub fn results_ring(b: &mut WebGpu, frames: u32) -> Result<String, String> {
             ));
         }
     }
-    let made = b.counters().query_rings - rings;
-    if b.status() != DeviceStatus::Ok || made > 1 {
+    let (made, all) = (b.counters().query_rings - rings, b.counters().query_rings);
+    if b.status() != DeviceStatus::Ok || made > 1 || all != 1 {
         return Err(format!(
-            "{frames} frames of results made {made} query rings; {:?}",
+            "{frames} frames of results made {made} query rings, {all} on the device; {:?}",
             b.status()
         ));
     }
     Ok(format!(
-        "query results: {frames} frames resolved and read as drawn, from {made} query ring"
+        "query results: {frames} frames resolved and read as drawn; {made} query rings made in \
+         them, 1 on the device"
     ))
 }

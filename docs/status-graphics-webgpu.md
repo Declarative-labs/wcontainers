@@ -749,7 +749,7 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
 All from the checkout root on the Mac; nothing is built or run on the Mac but formatting and
 `cargo check -j 2`.
 - Tests on the RTX 3080 (tests/bindings.rs, blocks.rs, converted.rs, copies.rs, depth.rs,
-  direct3d.rs (Windows only), fitted.rs, prepare.rs, pulled.rs, raster.rs, scenes.rs, surface.rs
+  direct3d.rs (Windows only), fitted.rs, prepare.rs, pulled.rs, queries.rs, raster.rs, scenes.rs, surface.rs
   (Windows only), timestamps.rs, vertices.rs, writes.rs and suite.rs, the shared suite; they need a
   GPU, and the suite's present test and surface.rs a desktop, so
   `--desktop`; `WEBGPU_API=dx12|vulkan|metal` picks wgpu's API, default the platform's, Vulkan on
@@ -809,7 +809,8 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   Chrome (failing if the prepared draws built anything), checks timestamps, the converted formats
   (examples/scenes/converted.rs, seed 1, 4 textures each), the vertex formats read through shadows
   (examples/scenes/vertices.rs, seed 188, 64 vertices each) and texture renaming
-  (examples/scenes/renames.rs) in Chrome, prints the instance data routes' timings in Chrome
+  (examples/scenes/renames.rs) and query sets past 4096 and the query ring
+  (examples/scenes/queries.rs) in Chrome, prints the instance data routes' timings in Chrome
   (examples/scenes/pulled.rs, failing if their pictures differ), then runs the shared suite
   in Chrome, one page per test (suite-chrome.txt). Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
