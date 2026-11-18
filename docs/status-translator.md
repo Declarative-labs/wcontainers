@@ -95,6 +95,13 @@ Progress (from the ledger):
   took 573 to 2,639 s (median 709 s), load 14 to 80. From 05:33 to 11:05 it passed 18 chunks, about 18
   minutes a chunk with the gaps between chunks; at that pace the rest (about 199 chunks) is about 60 hours
   (an extrapolation).
+- Layer 3 at 2026-11-18 10:25: 92 chunks passed, 40,326 compared, 460 also in Chrome (5 a chunk), 0
+  mismatches of the translator; by commit: 445e3cf 54 chunks, de8f4a2 2, 7ec7920 14, 33afa1e 14, 9d54ef3 8.
+  Five non-pass lines in the whole ledger, each run again and passed (layer 1 chunk 3, layer 2 chunk 22,
+  layer 3 chunks 55, 70 and 84; layer 3 chunk 57 hung and has no line, failures 3 to 6). Load at chunk
+  starts 7 to 104. From 2026-11-17 05:33 to 2026-11-18 10:25 (about 29 hours, with about 5 hours lost to
+  the stopped, hung and killed chunks) layer 3 went from 12 to 92 chunks; at about 16 minutes a chunk the
+  remaining about 136 chunks are expected to take about 36 hours (an extrapolation).
 - 46 to 82 of each chunk's 500 programs (9 to 16 percent) do not end on Linux within the reference's 20 s
   alarm and are not compared (counted in `sample`). Across chunks 1 to 30 the count does not follow the load
   at the chunk's start (47 at load 65, 82 at load 13), so it is Csmith's programs that loop or run long,
