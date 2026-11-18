@@ -18,6 +18,7 @@ use wcontainers_gpu::{
 use crate::ConvertError;
 
 mod constants;
+mod early;
 mod filter;
 mod layers;
 pub(crate) mod offset;
@@ -34,6 +35,9 @@ pub(crate) fn apply(
     variant: &VariantKey,
     reflection: &mut Reflection,
 ) -> Result<()> {
+    if variant.flags.contains(VariantFlags::STORAGE_OFFSET) {
+        offset::storage_offsets(module, stage, reflection)?;
+    }
     if !variant.swizzled.is_empty() {
         let mut outlined = Outlined::default();
         swizzle::swizzled(module, &variant.swizzled, reflection, &mut outlined)?;
@@ -125,7 +129,8 @@ pub(crate) fn apply(
             let distances =
                 flags.contains(VariantFlags::CLIP_DISTANCE) && variant.linked.clip_distances > 0;
             let clamp = flags.contains(VariantFlags::DEPTH_CLAMP);
-            if counting || mask || dual || bias || distances || clamp {
+            let early = flags.contains(VariantFlags::EARLY_TESTS);
+            if counting || mask || dual || bias || distances || clamp || early {
                 let bias = bias.then(|| {
                     let vec4 = vector(module, 4, Scalar::F32);
                     helper(module, reflection, stage, HelperValue::DepthBias, vec4, 16)
@@ -170,6 +175,16 @@ pub(crate) fn apply(
                     if let StageExtras::Pixel { discards, .. } = &mut reflection.extras {
                         *discards = true;
                     }
+                }
+                if early {
+                    early::early_tests(
+                        module,
+                        &mut w,
+                        reflection,
+                        variant.samples,
+                        per_sample,
+                        bias,
+                    )?;
                 }
                 if dual {
                     dual_source(&mut w)?;
@@ -1377,17 +1392,26 @@ fn draw_arguments(
         binding: None,
         offset,
     };
+    // The bases' three members (offsets 0, 4 and 8) become the arguments' place; later members stay.
+    let TypeInner::Struct { members, span } =
+        &module.types[module.global_variables[helpers].ty].inner
+    else {
+        return Err(ConvertError::Malformed("helper block not a struct".into()));
+    };
+    let mut members = members.clone();
+    let span = *span;
+    members.splice(
+        ..3,
+        [
+            member("arguments_offset", 0),
+            member("indexed", 4),
+            member("draw", 8),
+        ],
+    );
     let ty = module.types.insert(
         Type {
             name: Some("Helpers".into()),
-            inner: TypeInner::Struct {
-                members: alloc::vec![
-                    member("arguments_offset", 0),
-                    member("indexed", 4),
-                    member("draw", 8),
-                ],
-                span: 16,
-            },
+            inner: TypeInner::Struct { members, span },
         },
         Span::UNDEFINED,
     );
