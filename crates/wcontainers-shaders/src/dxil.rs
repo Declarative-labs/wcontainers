@@ -2,6 +2,7 @@
 //! given the binding rule of plan section 6.4 and stripped of what WGSL cannot express.
 
 mod arrays;
+mod depth;
 mod images;
 mod nonfinite;
 
@@ -220,6 +221,7 @@ pub(crate) fn lower(
         .map_err(|e| ConvertError::Reader(format!("{e}")))?;
     nonfinite::calls(&mut module)?;
     arrays::split(&mut module, &mut resources)?;
+    depth::widen(&mut module)?;
     let mut atomics = images::texel_atomics(&mut module)?;
     // WebGPU's storage buffers are read-only or read-write; one the program only writes is the latter.
     for (_, v) in module.global_variables.iter_mut() {

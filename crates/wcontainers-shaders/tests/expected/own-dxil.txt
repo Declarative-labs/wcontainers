@@ -41,6 +41,7 @@ ps_primid.dxil	ok-wgsl glsl-compile
 ps_pull.dxil	ok
 ps_rows.dxil	ok
 ps_samples.dxil	unsupported SampleCount
+ps_shadow.dxil	ok-wgsl glsl-write
 ps_signed.dxil	ok
 ps_spaces.dxil	ok
 ps_special.dxil	ok
