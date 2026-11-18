@@ -129,7 +129,178 @@ pub fn write_glsl(
         }
         out = flipped;
     }
-    Ok((out, reflection))
+    Ok((gathers_by_samples(bit_functions(out)), reflection))
+}
+
+/// GLSL ES 3.10's bit functions as naga writes them, defined for GLSL ES 3.00, which lacks them
+/// (and so leaves their names free): for `int` and `uint` and their vectors, with offsets and
+/// counts already cut to the width. Added after the header where the source calls any of them.
+fn bit_functions(source: String) -> String {
+    const NAMES: [&str; 6] = [
+        "bitfieldExtract(",
+        "bitfieldInsert(",
+        "bitCount(",
+        "bitfieldReverse(",
+        "findLSB(",
+        "findMSB(",
+    ];
+    if !NAMES.iter().any(|n| source.contains(n)) {
+        return source;
+    }
+    let mut f = String::from(
+        "highp uint _wc_ones(int n) { return n >= 32 ? 0xffffffffu : (1u << uint(n)) - 1u; }
+         highp uint bitfieldExtract(highp uint v, int o, int n) { return n == 0 ? 0u : (v >> uint(o)) & _wc_ones(n); }
+         highp int bitfieldExtract(highp int v, int o, int n) { return n == 0 ? 0 : (v << (32 - o - n)) >> (32 - n); }
+         highp uint bitfieldInsert(highp uint b, highp uint i, int o, int n) { highp uint m = n == 0 ? 0u : _wc_ones(n) << uint(o); return (b & ~m) | ((i << uint(min(o, 31))) & m); }
+         highp int bitfieldInsert(highp int b, highp int i, int o, int n) { return int(bitfieldInsert(uint(b), uint(i), o, n)); }
+         highp int bitCount(highp uint v) { v = v - ((v >> 1u) & 0x55555555u); v = (v & 0x33333333u) + ((v >> 2u) & 0x33333333u); return int((((v + (v >> 4u)) & 0x0f0f0f0fu) * 0x01010101u) >> 24u); }
+         highp int bitCount(highp int v) { return bitCount(uint(v)); }
+         highp uint bitfieldReverse(highp uint v) { v = ((v >> 1u) & 0x55555555u) | ((v & 0x55555555u) << 1u); v = ((v >> 2u) & 0x33333333u) | ((v & 0x33333333u) << 2u); v = ((v >> 4u) & 0x0f0f0f0fu) | ((v & 0x0f0f0f0fu) << 4u); v = ((v >> 8u) & 0x00ff00ffu) | ((v & 0x00ff00ffu) << 8u); return (v >> 16u) | (v << 16u); }
+         highp int bitfieldReverse(highp int v) { return int(bitfieldReverse(uint(v))); }
+         highp int findLSB(highp uint v) { return v == 0u ? -1 : bitCount((v & (0u - v)) - 1u); }
+         highp int findLSB(highp int v) { return findLSB(uint(v)); }
+         highp int findMSB(highp uint v) { v |= v >> 1u; v |= v >> 2u; v |= v >> 4u; v |= v >> 8u; v |= v >> 16u; return bitCount(v) - 1; }
+         highp int findMSB(highp int v) { return findMSB(uint(v < 0 ? ~v : v)); }
+",
+    );
+    // Vectors, component by component.
+    for n in 2..=4 {
+        let c = ["x", "y", "z", "w"][..n].to_vec();
+        let each = |call: &dyn Fn(&str) -> String| {
+            c.iter().map(|c| call(c)).collect::<Vec<_>>().join(", ")
+        };
+        for v in ["ivec", "uvec"] {
+            let t = format!("{v}{n}");
+            f.push_str(&format!(
+                "highp {t} bitfieldExtract(highp {t} v, int o, int n) {{ return {t}({}); }}
+",
+                each(&|c| format!("bitfieldExtract(v.{c}, o, n)"))
+            ));
+            f.push_str(&format!(
+                "highp {t} bitfieldInsert(highp {t} b, highp {t} i, int o, int n) {{ return {t}({}); }}
+",
+                each(&|c| format!("bitfieldInsert(b.{c}, i.{c}, o, n)"))
+            ));
+            f.push_str(&format!(
+                "highp {t} bitfieldReverse(highp {t} v) {{ return {t}({}); }}
+",
+                each(&|c| format!("bitfieldReverse(v.{c})"))
+            ));
+            for name in ["bitCount", "findLSB", "findMSB"] {
+                f.push_str(&format!(
+                    "highp ivec{n} {name}(highp {t} v) {{ return ivec{n}({}); }}
+",
+                    each(&|c| format!("{name}(v.{c})"))
+                ));
+            }
+        }
+    }
+    after_header(&source, &f)
+}
+
+/// `source` with `text` added after the version, extensions and default precisions, which come
+/// first.
+fn after_header(source: &str, text: &str) -> String {
+    let mut out = String::with_capacity(source.len() + text.len());
+    let mut added = false;
+    for line in source.lines() {
+        let header = line.starts_with('#') || line.starts_with("precision ") || line.is_empty();
+        if !added && !header {
+            out.push_str(text);
+            added = true;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// GLSL ES 3.10's `textureGather` and `textureGatherOffset`, which GLSL ES 3.00 lacks, as four
+/// samples at the centres of the texels of the gather's footprint, in its order, at level 0: each
+/// call is rewritten to a helper also given `textureSize(texture, 0)`, which the back end answers
+/// from the bound view. At a texel's centre a sample through the bound sampler is that texel's
+/// value (or comparison) whatever its filter, and its address mode places footprints past an edge
+/// as gathers do; cube footprints are sampled by direction, so they cross faces as seamless
+/// sampling does.
+fn gathers_by_samples(source: String) -> String {
+    const GATHER: &str = "textureGather";
+    if !source.contains(GATHER) {
+        return source;
+    }
+    let mut out = String::with_capacity(source.len() + 64);
+    let mut rest = &source[..];
+    while let Some(at) = rest.find(GATHER) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + GATHER.len()..];
+        let (helper, args) = if let Some(a) = after.strip_prefix("Offset(") {
+            ("_wc_gather_offset", a)
+        } else if let Some(a) = after.strip_prefix('(') {
+            ("_wc_gather", a)
+        } else {
+            out.push_str(GATHER);
+            rest = after;
+            continue;
+        };
+        let end = args.find(',').unwrap_or(0);
+        let name = args[..end].trim();
+        out.push_str(&format!("{helper}({name}, textureSize({name}, 0)"));
+        rest = &args[end..];
+    }
+    out.push_str(rest);
+    let mut f = String::new();
+    for g in ["", "i", "u"] {
+        f.push_str(&format!(
+            "highp {g}vec4 _wc_gather_offset(highp {g}sampler2D s, ivec2 n, highp vec2 p, ivec2 o, int c) {{\n\
+             highp vec2 size = vec2(n); highp vec2 b = floor(p * size - 0.5) + vec2(o);\n\
+             highp vec2 l = (b + 0.5) / size; highp vec2 h = (b + 1.5) / size;\n\
+             return {g}vec4(textureLod(s, vec2(l.x, h.y), 0.0)[c], textureLod(s, h, 0.0)[c], \
+             textureLod(s, vec2(h.x, l.y), 0.0)[c], textureLod(s, l, 0.0)[c]); }}\n\
+             highp {g}vec4 _wc_gather(highp {g}sampler2D s, ivec2 n, highp vec2 p, int c) {{ \
+             return _wc_gather_offset(s, n, p, ivec2(0), c); }}\n\
+             highp {g}vec4 _wc_gather_offset(highp {g}sampler2DArray s, ivec3 n, highp vec3 p, ivec2 o, int c) {{\n\
+             highp vec2 size = vec2(n.xy); highp vec2 b = floor(p.xy * size - 0.5) + vec2(o);\n\
+             highp vec2 l = (b + 0.5) / size; highp vec2 h = (b + 1.5) / size;\n\
+             return {g}vec4(textureLod(s, vec3(l.x, h.y, p.z), 0.0)[c], textureLod(s, vec3(h, p.z), 0.0)[c], \
+             textureLod(s, vec3(h.x, l.y, p.z), 0.0)[c], textureLod(s, vec3(l, p.z), 0.0)[c]); }}\n\
+             highp {g}vec4 _wc_gather(highp {g}sampler2DArray s, ivec3 n, highp vec3 p, int c) {{ \
+             return _wc_gather_offset(s, n, p, ivec2(0), c); }}\n\
+             highp {g}vec4 _wc_gather(highp {g}samplerCube s, ivec2 n, highp vec3 d, int c) {{\n\
+             highp vec3 m; highp vec3 u; highp vec3 v; _wc_face(d, m, u, v);\n\
+             highp vec2 size = vec2(n); highp vec2 b = floor(_wc_face_st(d, m, u, v) * size - 0.5);\n\
+             highp vec2 l = (b + 0.5) / size * 2.0 - 1.0; highp vec2 h = (b + 1.5) / size * 2.0 - 1.0;\n\
+             return {g}vec4(textureLod(s, m + l.x * u + h.y * v, 0.0)[c], textureLod(s, m + h.x * u + h.y * v, 0.0)[c], \
+             textureLod(s, m + h.x * u + l.y * v, 0.0)[c], textureLod(s, m + l.x * u + l.y * v, 0.0)[c]); }}\n"
+        ));
+    }
+    let face = "void _wc_face(highp vec3 d, out highp vec3 m, out highp vec3 u, out highp vec3 v) {\n\
+        highp vec3 a = abs(d);\n\
+        if (a.x >= a.y && a.x >= a.z) { m = vec3(sign(d.x), 0.0, 0.0); u = vec3(0.0, 0.0, -sign(d.x)); v = vec3(0.0, -1.0, 0.0); }\n\
+        else if (a.y >= a.z) { m = vec3(0.0, sign(d.y), 0.0); u = vec3(1.0, 0.0, 0.0); v = vec3(0.0, 0.0, sign(d.y)); }\n\
+        else { m = vec3(0.0, 0.0, sign(d.z)); u = vec3(sign(d.z), 0.0, 0.0); v = vec3(0.0, -1.0, 0.0); } }\n\
+        highp vec2 _wc_face_st(highp vec3 d, highp vec3 m, highp vec3 u, highp vec3 v) {\n\
+        return (vec2(dot(d, u), dot(d, v)) / dot(d, m) + 1.0) * 0.5; }\n";
+    // Comparisons; GLSL ES 3.00 has `textureLod` only for 2D shadow samplers.
+    let shadow = "highp vec4 _wc_gather_offset(highp sampler2DShadow s, ivec2 n, highp vec2 p, highp float r, ivec2 o) {\n\
+        highp vec2 size = vec2(n); highp vec2 b = floor(p * size - 0.5) + vec2(o);\n\
+        highp vec2 l = (b + 0.5) / size; highp vec2 h = (b + 1.5) / size;\n\
+        return vec4(textureLod(s, vec3(l.x, h.y, r), 0.0), textureLod(s, vec3(h, r), 0.0), \
+        textureLod(s, vec3(h.x, l.y, r), 0.0), textureLod(s, vec3(l, r), 0.0)); }\n\
+        highp vec4 _wc_gather(highp sampler2DShadow s, ivec2 n, highp vec2 p, highp float r) { \
+        return _wc_gather_offset(s, n, p, r, ivec2(0)); }\n\
+        highp vec4 _wc_gather_offset(highp sampler2DArrayShadow s, ivec3 n, highp vec3 p, highp float r, ivec2 o) {\n\
+        highp vec2 size = vec2(n.xy); highp vec2 b = floor(p.xy * size - 0.5) + vec2(o);\n\
+        highp vec2 l = (b + 0.5) / size; highp vec2 h = (b + 1.5) / size; highp vec2 z = vec2(0.0);\n\
+        return vec4(textureGrad(s, vec4(l.x, h.y, p.z, r), z, z), textureGrad(s, vec4(h, p.z, r), z, z), \
+        textureGrad(s, vec4(h.x, l.y, p.z, r), z, z), textureGrad(s, vec4(l, p.z, r), z, z)); }\n\
+        highp vec4 _wc_gather(highp sampler2DArrayShadow s, ivec3 n, highp vec3 p, highp float r) { \
+        return _wc_gather_offset(s, n, p, r, ivec2(0)); }\n\
+        highp vec4 _wc_gather(highp samplerCubeShadow s, ivec2 n, highp vec3 d, highp float r) {\n\
+        highp vec3 m; highp vec3 u; highp vec3 v; _wc_face(d, m, u, v); highp vec3 z = vec3(0.0);\n\
+        highp vec2 size = vec2(n); highp vec2 b = floor(_wc_face_st(d, m, u, v) * size - 0.5);\n\
+        highp vec2 l = (b + 0.5) / size * 2.0 - 1.0; highp vec2 h = (b + 1.5) / size * 2.0 - 1.0;\n\
+        return vec4(textureGrad(s, vec4(m + l.x * u + h.y * v, r), z, z), textureGrad(s, vec4(m + h.x * u + h.y * v, r), z, z), \
+        textureGrad(s, vec4(m + h.x * u + l.y * v, r), z, z), textureGrad(s, vec4(m + l.x * u + l.y * v, r), z, z)); }\n";
+    after_header(&out, &format!("{face}{f}{shadow}"))
 }
 
 /// A module rewritten by [`split_samplers`], and each copy's slot with the slot it stands for.

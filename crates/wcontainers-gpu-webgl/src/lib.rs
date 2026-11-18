@@ -2077,13 +2077,6 @@ impl WebGl {
                 src.texture.desc.format, dst.texture.desc.format
             ));
         }
-        let half = matches!(
-            src.texture.desc.format,
-            Format::R16Float | Format::Rg16Float | Format::Rgba16Float
-        );
-        if half && src.texture.host.is_none() {
-            return self.copy_half_by_host(src, dst, extent);
-        }
         let (cols, rows) = (extent.width.div_ceil(sbw), extent.height.div_ceil(sbh));
         let mut packed = vec![0; (cols * rows * bytes * extent.depth_or_layers) as usize];
         if src.texture.host.is_none() {
@@ -2169,52 +2162,6 @@ impl WebGl {
         }
         t.drawn.set(false);
         Ok(())
-    }
-
-    /// A copy into a 16-bit float texture, whose bits no draw writes (a draw writes 32-bit floats,
-    /// which lose NaN payloads on the way): the source read back and written by the host
-    /// ([`SlowPath::HostCopyReadBack`]); a 16-bit float source, which GL does not read back, through
-    /// its bits drawn into a texture of its unsigned integer twin first.
-    fn copy_half_by_host(
-        &mut self,
-        src: &TextureRegion<'_, Self>,
-        dst: &TextureRegion<'_, Self>,
-        extent: Extent,
-    ) {
-        let twin = match src.texture.desc.format {
-            Format::R16Float => Format::R16Uint,
-            Format::Rg16Float => Format::Rg16Uint,
-            Format::Rgba16Float => Format::Rgba16Uint,
-            _ => return self.copy_host_kept(src, dst, extent),
-        };
-        let Ok(held) = self.create_texture(&TextureDesc {
-            dimension: TextureDimension::D2,
-            format: twin,
-            width: extent.width,
-            height: extent.height,
-            depth_or_layers: extent.depth_or_layers,
-            mip_levels: 1,
-            samples: 1,
-            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
-            cube: false,
-            reinterpret: false,
-        }) else {
-            return self.fail(LossReason::OutOfMemory);
-        };
-        let at = TextureRegion {
-            texture: &held,
-            mip: 0,
-            layer: 0,
-            origin: Origin::default(),
-            stencil: false,
-        };
-        if self.copy_by_draw(src, &at, extent) {
-            self.slow.hit(SlowPath::CopyThroughBuffer);
-            self.copy_host_kept(&at, dst, extent);
-        } else {
-            self.unbuilt("copies of these formats");
-        }
-        self.destroy(Object::Texture(held));
     }
 
     /// Uploads a region of a block-compressed texture from its host copy: as blocks natively, else
@@ -2382,17 +2329,27 @@ impl WebGl {
         }
     }
 
-    /// Reads one region of a colour texture into `dst`, rows tightly packed, now.
-    /// Calls `read` on a region whose depth was drawn into a colour texture, when the region is depth
-    /// (None otherwise), then lets the colour texture go.
-    fn through_depth<R>(
+    /// Calls `read` on a region of a texture GL cannot read, drawn into a colour texture it can:
+    /// depth as colour ([`SlowPath::DepthReadByDraw`]), 16-bit floats as the bits of their unsigned
+    /// integer twin ([`SlowPath::CopyThroughBuffer`]); None for other textures. Then lets the
+    /// colour texture go.
+    fn through_draw<R>(
         &mut self,
         region: &TextureRegion<'_, Self>,
         extent: Extent,
         read: impl FnOnce(&mut Self, &TextureRegion<'_, Self>) -> Result<R, GpuError>,
     ) -> Option<Result<R, GpuError>> {
-        depth::stored(region.texture.desc.format)?;
-        Some(self.depth_by_draw(region, extent).and_then(|scratch| {
+        let format = region.texture.desc.format;
+        let scratch = if depth::stored(format).is_some() {
+            self.depth_by_draw(region, extent)
+        } else if let Some(twin) = format::half_twin(format)
+            && region.texture.host.is_none()
+        {
+            self.bits_by_draw(region, extent, twin)
+        } else {
+            return None;
+        };
+        Some(scratch.and_then(|scratch| {
             let colour = TextureRegion {
                 texture: &scratch,
                 mip: 0,
@@ -2406,6 +2363,41 @@ impl WebGl {
         }))
     }
 
+    /// A region's bits drawn into a new 2D texture of `twin`, an integer format of the same bits.
+    fn bits_by_draw(
+        &mut self,
+        region: &TextureRegion<'_, Self>,
+        extent: Extent,
+        twin: Format,
+    ) -> Result<Texture, GpuError> {
+        let held = self.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: twin,
+            width: extent.width,
+            height: extent.height,
+            depth_or_layers: extent.depth_or_layers,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+            cube: false,
+            reinterpret: false,
+        })?;
+        let at = TextureRegion {
+            texture: &held,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        if !self.copy_by_draw(region, &at, extent) {
+            self.destroy(Object::Texture(held));
+            return Err(self.unbuilt("reading back this format"));
+        }
+        self.slow.hit(SlowPath::CopyThroughBuffer);
+        Ok(held)
+    }
+
+    /// Reads one region of a colour texture into `dst`, rows tightly packed, now.
     fn read_texture_now(
         &mut self,
         region: &TextureRegion<'_, Self>,
@@ -2419,7 +2411,7 @@ impl WebGl {
             h.read(&region.texture.desc, region.mip, corner, size, dst);
             return Ok(());
         }
-        if let Some(r) = self.through_depth(region, extent, |b, colour| {
+        if let Some(r) = self.through_draw(region, extent, |b, colour| {
             b.read_texture_now(colour, extent, dst)
         }) {
             return r;
@@ -3251,10 +3243,12 @@ impl Backend for WebGl {
     }
 
     fn slow_paths(&mut self) -> &mut SlowPaths {
+        self.platform.current();
         &mut self.slow
     }
 
     fn status(&mut self) -> DeviceStatus {
+        self.platform.current();
         match self.lost {
             Some(reason) => DeviceStatus::Lost(reason),
             None => DeviceStatus::Ok,
@@ -3262,10 +3256,12 @@ impl Backend for WebGl {
     }
 
     fn helpers(&mut self) -> &mut Helpers<Self> {
+        self.platform.current();
         &mut self.helpers
     }
 
     fn create_buffer(&mut self, desc: &BufferDesc) -> Result<Buffer, GpuError> {
+        self.platform.current();
         let size = i32::try_from(desc.size).map_err(|_| GpuError::OutOfMemory)?;
         let usage = match desc.intent {
             MapIntent::Rarely => glow::STATIC_DRAW,
@@ -3306,6 +3302,7 @@ impl Backend for WebGl {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture, GpuError> {
+        self.platform.current();
         if self.caps.formats.get(desc.format) == FormatUse::empty() {
             return Err(GpuError::Invalid(
                 "webgl: the format has no capabilities here",
@@ -3399,6 +3396,7 @@ impl Backend for WebGl {
         texture: &Texture,
         desc: &TextureViewDesc,
     ) -> Result<TextureView, GpuError> {
+        self.platform.current();
         let t = &texture.desc;
         let three_d = t.dimension == TextureDimension::D3;
         let to_draw = desc.mip_count == 1 && (desc.layer_count == 1 || three_d);
@@ -3442,6 +3440,7 @@ impl Backend for WebGl {
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Sampler, GpuError> {
+        self.platform.current();
         let address = |a| match a {
             AddressMode::Repeat => Ok(glow::REPEAT),
             AddressMode::Mirror => Ok(glow::MIRRORED_REPEAT),
@@ -3507,6 +3506,7 @@ impl Backend for WebGl {
     }
 
     fn create_shader(&mut self, module: &ShaderModule) -> Result<Shader, GpuError> {
+        self.platform.current();
         if module.stage == ShaderStage::Compute {
             return Err(GpuError::Absent(Features::COMPUTE));
         }
@@ -3520,6 +3520,7 @@ impl Backend for WebGl {
     }
 
     fn create_program(&mut self, program: &Program<'_, Self>) -> Result<GlProgram, GpuError> {
+        self.platform.current();
         let Program::Render { vertex, fragment } = program else {
             return Err(GpuError::Absent(Features::COMPUTE));
         };
@@ -3542,6 +3543,7 @@ impl Backend for WebGl {
     }
 
     fn create_blend(&mut self, desc: &BlendDesc) -> Result<Block<state::GlBlend>, GpuError> {
+        self.platform.current();
         if desc.logic_op.is_some() {
             return Err(GpuError::Absent(Features::LOGIC_OP));
         }
@@ -3585,6 +3587,7 @@ impl Backend for WebGl {
         &mut self,
         desc: &DepthStencilDesc,
     ) -> Result<Block<state::GlDepthStencil>, GpuError> {
+        self.platform.current();
         if desc.depth_bounds.is_some() {
             return Err(GpuError::Absent(Features::DEPTH_BOUNDS));
         }
@@ -3600,6 +3603,7 @@ impl Backend for WebGl {
     }
 
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Block<state::GlRaster>, GpuError> {
+        self.platform.current();
         let has = |f| self.caps.has(f);
         let absent = [
             (
@@ -3645,6 +3649,7 @@ impl Backend for WebGl {
         &mut self,
         desc: &VertexLayoutDesc,
     ) -> Result<Block<state::GlLayout>, GpuError> {
+        self.platform.current();
         if desc
             .streams
             .iter()
@@ -3686,6 +3691,7 @@ impl Backend for WebGl {
         &mut self,
         entries: &[BindingEntry<'_, Self>],
     ) -> Result<BindingSet, GpuError> {
+        self.platform.current();
         let mut bound = Vec::with_capacity(entries.len());
         for e in entries {
             let r = match &e.resource {
@@ -3735,6 +3741,7 @@ impl Backend for WebGl {
     }
 
     fn create_query_set(&mut self, kind: QueryKind, count: u32) -> Result<QuerySet, GpuError> {
+        self.platform.current();
         match kind {
             QueryKind::OcclusionAny => {}
             // GL ES answers only whether any sample passed.
@@ -3751,6 +3758,7 @@ impl Backend for WebGl {
     }
 
     fn destroy(&mut self, object: Object<Self>) {
+        self.platform.current();
         if let Object::Surface(surface) = &object {
             if self.surface.as_ref().is_some_and(|s| s.id == surface.id) {
                 if let Some((t, v)) = self.surface.take().and_then(|s| s.frame) {
@@ -3855,6 +3863,7 @@ impl Backend for WebGl {
     }
 
     fn write_buffer(&mut self, buffer: &Buffer, offset: u64, data: &[u8], mode: WriteMode) {
+        self.platform.current();
         if offset + data.len() as u64 > buffer.size {
             self.fail(LossReason::Error);
             return;
@@ -3885,10 +3894,24 @@ impl Backend for WebGl {
         rows_per_layer: u32,
         _mode: WriteMode,
     ) {
+        self.platform.current();
         self.fresh(region.texture);
         self.written(region.texture);
         let t = region.texture;
-        if format::signed_normalised(t.desc.format) && host::holds_minimum(t.desc.format, data) {
+        let (corner, size) = (
+            Self::corner(region),
+            [extent.width, extent.height, extent.depth_or_layers],
+        );
+        let (pitch, per_layer) = (row_pitch as usize, rows_per_layer as usize);
+        let snorm = format::signed_normalised(t.desc.format);
+        if snorm && host::covers_texture(&t.desc, region.mip, corner, size) {
+            // Every texel is the host's again.
+            t.drawn.set(false);
+            t.minimum.set(false);
+        }
+        let wrote_minimum = snorm
+            && host::write_holds_minimum(&t.desc, region.mip, corner, size, data, pitch, per_layer);
+        if wrote_minimum {
             // Texels drawn since are read back while a draw still reads them exactly.
             if !t.minimum.get() {
                 let _ = self.host_current(t);
@@ -3896,15 +3919,11 @@ impl Backend for WebGl {
             t.minimum.set(true);
         }
         if let Some(h) = &region.texture.host {
-            h.write(
-                &region.texture.desc,
-                region.mip,
-                Self::corner(region),
-                [extent.width, extent.height, extent.depth_or_layers],
-                data,
-                row_pitch as usize,
-                rows_per_layer as usize,
-            );
+            h.write(&t.desc, region.mip, corner, size, data, pitch, per_layer);
+            if t.minimum.get() && !wrote_minimum && !t.drawn.get() {
+                // The host copy holds every texel; this write may have replaced the last minimum.
+                t.minimum.set(h.holds_minimum(t.desc.format));
+            }
             if host::compressed(region.texture.desc.format).is_some() {
                 return self.upload_blocks(region, extent);
             }
@@ -3947,6 +3966,7 @@ impl Backend for WebGl {
     }
 
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
+        self.platform.current();
         if let Some(empty) = pass.empty {
             return self.begin_empty_pass(empty, pass.occlusion.cloned());
         }
@@ -3979,10 +3999,22 @@ impl Backend for WebGl {
                 self.written(&v.texture);
             }
         }
-        for v in views.iter().flatten() {
-            if v.texture.host.is_some() {
-                v.texture.drawn.set(true);
+        for (i, v) in views.iter().enumerate() {
+            let Some(v) = v else { continue };
+            if v.texture.host.is_none() {
+                continue;
             }
+            // A pass replacing every texel of a texture of one subresource leaves no minimum.
+            let d = v.texture.desc;
+            let replaced = pass
+                .colors
+                .get(i)
+                .and_then(Option::as_ref)
+                .is_some_and(|c| !matches!(c.load, LoadOp::Load));
+            if replaced && d.mip_levels == 1 && d.depth_or_layers == 1 {
+                v.texture.minimum.set(false);
+            }
+            v.texture.drawn.set(true);
         }
         let fb = self.framebuffer(key, &views);
         let gl = &self.gl;
@@ -4095,6 +4127,7 @@ impl Backend for WebGl {
     }
 
     fn end_pass(&mut self) {
+        self.platform.current();
         if self.pass.as_ref().is_some_and(|p| p.counting) {
             self.invalid("a pass ended with its occlusion query running".into());
         }
@@ -4127,6 +4160,7 @@ impl Backend for WebGl {
     }
 
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
+        self.platform.current();
         if !call.restart
             && let (Some(index), DrawRange::Indexed { first, count, .. }) =
                 (&call.index, &call.range)
@@ -4142,6 +4176,7 @@ impl Backend for WebGl {
     }
 
     fn begin_query(&mut self, index: u32) {
+        self.platform.current();
         let Some(pass) = &self.pass else {
             return self.invalid("begin_query outside a pass".into());
         };
@@ -4160,6 +4195,7 @@ impl Backend for WebGl {
     }
 
     fn end_query(&mut self) {
+        self.platform.current();
         match &mut self.pass {
             Some(p) if p.counting => p.counting = false,
             _ => return self.invalid("end_query with no query running".into()),
@@ -4176,6 +4212,7 @@ impl Backend for WebGl {
         dst_offset: u64,
         size: u64,
     ) {
+        self.platform.current();
         // Both sides are made whole first, so afterwards at most the side no copy reached is stale.
         self.refresh(src, None);
         self.refresh(dst, None);
@@ -4240,6 +4277,7 @@ impl Backend for WebGl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
+        self.platform.current();
         // Signed normalised texels drawn since their host copy was whole are drawn on the GPU where
         // they hold no smallest value.
         let by_draw = src.texture.drawn.get() && !src.texture.minimum.get();
@@ -4292,7 +4330,7 @@ impl Backend for WebGl {
             } else if half {
                 // A draw writes half floats from 32-bit ones, which lose NaN payloads; the host
                 // writes the bits.
-                self.copy_half_by_host(src, dst, extent);
+                self.copy_host_kept(src, dst, extent);
             } else if self.copy_by_draw(src, dst, extent) {
                 self.slow.hit(SlowPath::CopyThroughBuffer);
             } else if float || src.texture.host.is_some() {
@@ -4358,6 +4396,7 @@ impl Backend for WebGl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
+        self.platform.current();
         let data = src
             .buffer
             .data
@@ -4410,8 +4449,9 @@ impl Backend for WebGl {
         dst: &CopyBufferTexture<'_, Self>,
         extent: Extent,
     ) {
+        self.platform.current();
         if self
-            .through_depth(src, extent, |b, colour| {
+            .through_draw(src, extent, |b, colour| {
                 b.copy_texture_to_buffer(colour, dst, extent);
                 Ok(())
             })
@@ -4498,6 +4538,7 @@ impl Backend for WebGl {
     /// WebGL 2 has no buffer clear: one block of the pattern is written from the host into every GL
     /// buffer of `buffer`, then doubled by copies within each ([`SlowPath::PatternClearCopied`]).
     fn clear_buffer(&mut self, buffer: &Buffer, offset: u64, size: u64, pattern: &[u8]) {
+        self.platform.current();
         if size == 0 {
             return;
         }
@@ -4558,6 +4599,7 @@ impl Backend for WebGl {
         dst: &TextureRegion<'_, Self>,
         format: Format,
     ) {
+        self.platform.current();
         let (s, d) = (src.texture, dst.texture);
         if s.desc.samples == 1 || d.desc.samples != 1 {
             return self.invalid("a resolve from one sample or into several".into());
@@ -4580,6 +4622,7 @@ impl Backend for WebGl {
     }
 
     fn submit(&mut self) -> Fence {
+        self.platform.current();
         let gl = &self.gl;
         // SAFETY: plain GL calls.
         let sync = unsafe {
@@ -4603,6 +4646,7 @@ impl Backend for WebGl {
     }
 
     fn fence_done(&mut self, fence: &Fence) -> bool {
+        self.platform.current();
         if !fence.done.get() {
             // SAFETY: a plain query of a live sync object.
             let status = unsafe { self.gl.get_sync_status(fence.sync) };
@@ -4612,6 +4656,7 @@ impl Backend for WebGl {
     }
 
     fn wait_fence(&mut self, fence: &Fence) {
+        self.platform.current();
         if fence.done.get() {
             return;
         }
@@ -4631,8 +4676,9 @@ impl Backend for WebGl {
     }
 
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Readback, GpuError> {
+        self.platform.current();
         if let ReadSource::Texture { region, extent } = src
-            && let Some(r) = self.through_depth(region, *extent, |b, colour| {
+            && let Some(r) = self.through_draw(region, *extent, |b, colour| {
                 b.read_back(&ReadSource::Texture {
                     region: TextureRegion { ..*colour },
                     extent: *extent,
@@ -4773,6 +4819,7 @@ impl Backend for WebGl {
         first: u32,
         count: u32,
     ) -> Result<Readback, GpuError> {
+        self.platform.current();
         let slots = set.slots.borrow();
         let queries = slots
             .get(first as usize..(first + count) as usize)
@@ -4795,6 +4842,7 @@ impl Backend for WebGl {
     /// Ready once the copy's sync object is signalled; a read back made without one is ready at once and
     /// reads nothing, the device having been lost when it was made.
     fn read_state(&mut self, readback: &Readback) -> ReadState {
+        self.platform.current();
         let r = readback.borrow();
         if r.pbo.is_none() {
             return if self.queries_available(&r.queries) {
@@ -4815,6 +4863,7 @@ impl Backend for WebGl {
     }
 
     fn wait_read(&mut self, readback: &Readback) {
+        self.platform.current();
         if readback.borrow().pbo.is_none() {
             // WebGL makes results available only between tasks, so the device thread gives way
             // until they are (natively they arrive while it spins).
@@ -4837,6 +4886,7 @@ impl Backend for WebGl {
     }
 
     fn finish_read(&mut self, readback: Readback, dst: &mut [u8]) {
+        self.platform.current();
         if let Some(kept) = readback.borrow_mut().host.take() {
             let n = kept.len().min(dst.len());
             dst[..n].copy_from_slice(&kept[..n]);
@@ -4896,6 +4946,7 @@ impl Backend for WebGl {
     /// host names; so a back end has one surface at a time. Natively the surface is an EGL window
     /// surface on a window the host named with `add_window`.
     fn create_surface(&mut self, window: u32) -> Result<Surface, GpuError> {
+        self.platform.current();
         if self.surface.is_some() {
             return Err(GpuError::Invalid(
                 "webgl: a back end has one surface, its context's canvas",
@@ -4920,6 +4971,7 @@ impl Backend for WebGl {
         height: u32,
         vsync: bool,
     ) -> Result<(), GpuError> {
+        self.platform.current();
         if self.surface.as_ref().map(|s| s.id) != Some(surface.id) {
             return Err(GpuError::Invalid("webgl: the surface was destroyed"));
         }
@@ -4969,6 +5021,7 @@ impl Backend for WebGl {
     }
 
     fn current_texture(&mut self, surface: &Surface) -> Result<TextureView, GpuError> {
+        self.platform.current();
         match &self.surface {
             Some(s) if s.id == surface.id => match &s.frame {
                 Some((_, view)) => Ok(view.clone()),
@@ -4983,6 +5036,7 @@ impl Backend for WebGl {
     /// size where the host's window has another; the browser shows it when the device thread returns
     /// to its event loop.
     fn present(&mut self, surface: &Surface) -> Result<(), GpuError> {
+        self.platform.current();
         if let Some(reason) = self.lost {
             return Err(match reason {
                 LossReason::OutOfMemory => GpuError::OutOfMemory,
@@ -5031,6 +5085,7 @@ impl Backend for WebGl {
         src: &ReadSource<'_, Self>,
         dst: &mut [u8],
     ) -> Result<(), GpuError> {
+        self.platform.current();
         match src {
             ReadSource::Texture { region, extent } => self.read_texture_now(region, *extent, dst),
             ReadSource::Buffer {
@@ -5063,6 +5118,7 @@ impl Backend for WebGl {
         value: ClearValue,
         rects: &[ScissorRect],
     ) -> Result<(), GpuError> {
+        self.platform.current();
         if rects.is_empty() {
             return Ok(());
         }
@@ -5161,6 +5217,7 @@ impl Backend for WebGl {
         mips: Range<u32>,
         layers: Range<u32>,
     ) -> Result<(), GpuError> {
+        self.platform.current();
         let levels = mips.start.max(1)..mips.end.min(desc.mip_levels);
         let every_layer = layers.start == 0 && layers.end >= desc.depth_or_layers;
         let native = FormatUse::RENDER | FormatUse::FILTER;
@@ -5207,6 +5264,7 @@ impl Backend for WebGl {
         first_instance: u32,
         instances: u32,
     ) -> Result<(), GpuError> {
+        self.platform.current();
         let topology = match kind {
             FanOrLoop::TriangleFan => Topology::TriangleFan,
             FanOrLoop::LineLoop => Topology::LineLoop,
@@ -5300,6 +5358,7 @@ impl Backend for WebGl {
         targets: CaptureTargets<'_, Self>,
         rasterize: bool,
     ) -> Result<(), GpuError> {
+        self.platform.current();
         if self.lost.is_some() {
             return Err(GpuError::DeviceLost);
         }
@@ -5553,6 +5612,7 @@ impl Backend for WebGl {
 
     /// `queryCounterEXT` with `TIMESTAMP_EXT`, which GL writes between any two commands.
     fn write_timestamp(&mut self, set: &QuerySet, index: u32) -> Result<(), GpuError> {
+        self.platform.current();
         if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }
@@ -5569,6 +5629,7 @@ impl Backend for WebGl {
 
     /// `GPU_DISJOINT_EXT`, which reading clears.
     fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
+        self.platform.current();
         if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }

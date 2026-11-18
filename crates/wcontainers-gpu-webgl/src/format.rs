@@ -169,6 +169,17 @@ impl FormatExtensions {
     }
 }
 
+/// The unsigned integer twin of a 16-bit float format, whose bits a draw copies into it so they can
+/// be read back.
+pub fn half_twin(format: Format) -> Option<Format> {
+    Some(match format {
+        Format::R16Float => Format::R16Uint,
+        Format::Rg16Float => Format::Rg16Uint,
+        Format::Rgba16Float => Format::Rgba16Uint,
+        _ => return None,
+    })
+}
+
 /// What `format` can be used for on a context with `ext`.
 pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     // Block-compressed formats are sampled natively or decoded, and read back from the host copy.
@@ -209,7 +220,9 @@ pub fn uses(format: Format, ext: FormatExtensions) -> FormatUse {
     // Formats GL cannot read back are read from the host copy, which draws into signed normalised
     // formats leave behind.
     let held = crate::host::kept(format) && !(signed_normalised(format) && ext.render_snorm);
-    if read_as(format, ext).is_some() || gl.class == Class::Depth || held {
+    // 16-bit floats read back through the bits of their integer twin, drawn into it.
+    let twin = half_twin(format).is_some();
+    if read_as(format, ext).is_some() || gl.class == Class::Depth || held || twin {
         uses |= FormatUse::COPY_OUT;
     }
     // The canvas's drawing buffer is RGBA8, which surfaces present into; BGRA8 is stored as RGBA8.

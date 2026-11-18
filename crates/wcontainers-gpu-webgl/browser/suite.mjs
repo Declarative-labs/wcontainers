@@ -32,7 +32,7 @@ try {
     await page.close();
     const absent = verdict.ok && verdict.message;
     const line = !verdict.ok ? `${test}: FAILED ${verdict.message.replace(/\s+/g, ' ')}`
-      : absent ? `${test}: not run, ${verdict.message}` : `${test}: ok`;
+      : absent ? `${test}: not run: ${verdict.message}` : `${test}: ok`;
     if (absent) notRun++;
     else if (verdict.ok) passed++;
     console.log(line);
@@ -43,7 +43,7 @@ try {
   server.close();
 }
 const failed = tests.length - passed - notRun;
-const summary = `suite in chrome${off ? ` without ${off}` : ''}: ${passed} passed; ${notRun} not run, their feature absent; ${failed} failed`;
+const summary = `suite in chrome${off ? ` without ${off}` : ''}: ${passed} passed; ${notRun} not run (a feature or format use absent); ${failed} failed`;
 console.log(summary);
 await writeFile(out, `${lines.join('\n')}\n${summary}\n`);
 process.exitCode = failed === 0 ? 0 : 1;

@@ -155,16 +155,16 @@ wcontainers_gpu_test::suite!(Angle);
 mod checks;
 
 /// Runs a check of checks.rs with the patterns' seed from `WEBGL_SEED` (default 0) and as many
-/// seeds from it as `WEBGL_CASES` says (default 1). A check whose feature is absent passes having
-/// run only the refusal, and prints "not run, feature absent:" with its name (libtest cannot skip
-/// at run time; all.cmd lists these lines).
+/// seeds from it as `WEBGL_CASES` says (default 1). A check with a route that ran nothing (its
+/// feature absent, or its format without the use) passes, and prints "not run:" with its name and
+/// why (libtest cannot skip at run time; all.cmd lists these lines).
 fn sampled(check: fn()) {
     let var = |name, default| std::env::var(name).map_or(default, |v| v.parse().expect(name));
     checks::seeded(check, var("WEBGL_SEED", 0), var("WEBGL_CASES", 1));
-    let absent = checks::take_not_run();
-    if !absent.is_empty() {
+    let why = checks::take_not_run();
+    if !why.is_empty() {
         let name = std::thread::current().name().unwrap_or("?").to_string();
-        println!("not run, feature absent: {name}: {absent:?}");
+        println!("not run: {name}: {why}");
     }
 }
 #[path = "../examples/common/kit.rs"]
@@ -263,6 +263,31 @@ fn fractional_depth_bias() {
 #[test]
 fn signed_normalised_texels_drawn_then_copied() {
     sampled(checks::signed_normalised_texels_drawn_then_copied::<Angle>);
+}
+
+#[test]
+fn signed_normalised_minimum_judged_by_whole_components() {
+    sampled(checks::signed_normalised_minimum_judged_by_whole_components::<Angle>);
+}
+
+#[test]
+fn half_floats_read_back_as_stored() {
+    sampled(checks::half_floats_read_back_as_stored::<Angle>);
+}
+
+#[test]
+fn two_devices_on_one_thread_keep_their_own_objects() {
+    sampled(checks::two_devices_on_one_thread_keep_their_own_objects::<Angle>);
+}
+
+#[test]
+fn bit_operations_equal_their_definition() {
+    sampled(checks::bit_operations_equal_their_definition::<Angle>);
+}
+
+#[test]
+fn gathers_equal_their_footprints() {
+    sampled(checks::gathers_equal_their_footprints::<Angle>);
 }
 
 #[test]
