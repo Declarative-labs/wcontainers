@@ -3,7 +3,7 @@
 //! (buffers written by a copy, a storage view and the CPU; identical textures at one offset), copy
 //! and compute queues waiting on each other and on a late CPU signal, binary occlusion resolved,
 //! read back and used by `SetPredication`, `ExecuteIndirect`, pipeline and stream output
-//! statistics, and geometry shaders.
+//! statistics, geometry shaders, and timestamps.
 
 use std::cell::Cell;
 use std::fmt::Write;
@@ -67,6 +67,7 @@ pub const CASES: &[&str] = &[
     "render-pass",
     "custom-heap",
     "geometry",
+    "timestamps",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -97,6 +98,7 @@ pub fn run(name: &str) -> Result<String> {
             "render-pass" => render_pass(&c),
             "custom-heap" => custom_heap(&c),
             "geometry" => geometry(&c),
+            "timestamps" => timestamps(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -2401,5 +2403,107 @@ unsafe fn geometry(c: &Ctx) -> Result<String> {
         // Each pixel in place, then how many of each colour.
         let pixels = c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
         Ok(format!("{} {}", words(&pixels), colours(&pixels)))
+    }
+}
+
+/// Timestamps around a dispatch on the direct queue and around a copy on a copy queue (a copy
+/// queue timestamp heap), each queue's frequency, and two clock calibrations 20 ms apart taken
+/// before and after the work: the timestamps lie between the calibrations' GPU values, and the
+/// GPU and CPU clocks advance alike between them. Values differ between runs, so only these
+/// relations are printed.
+unsafe fn timestamps(c: &Ctx) -> Result<String> {
+    unsafe {
+        let copy = Ctx::make_queue(&c.device, D3D12_COMMAND_LIST_TYPE_COPY)?;
+        let heap = |kind| -> Result<ID3D12QueryHeap> {
+            let mut h = None;
+            c.device.CreateQueryHeap(
+                &D3D12_QUERY_HEAP_DESC {
+                    Type: kind,
+                    Count: 2,
+                    NodeMask: 0,
+                },
+                &mut h,
+            )?;
+            Ok(h.unwrap())
+        };
+        let (direct_heap, copy_heap) = (
+            heap(D3D12_QUERY_HEAP_TYPE_TIMESTAMP)?,
+            heap(D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP)?,
+        );
+        let readback = |size| {
+            c.committed(
+                D3D12_HEAP_TYPE_READBACK,
+                &buffer_desc(size, D3D12_RESOURCE_FLAG_NONE),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+            )
+        };
+        let (direct_out, copy_out) = (readback(16)?, readback(16)?);
+        let frequency = c.queue.GetTimestampFrequency()?;
+        let copy_frequency = copy.GetTimestampFrequency()?;
+        let (mut gpu0, mut cpu0, mut gpu1, mut cpu1) = (0, 0, 0, 0);
+        c.queue.GetClockCalibration(&mut gpu0, &mut cpu0)?;
+
+        let source = c.upload(&vec![7; 4096])?;
+        let target = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &buffer_desc(4096, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+            D3D12_RESOURCE_STATE_COMMON,
+        )?;
+        let (root, pso) = c.compute_pso()?;
+        let (_a1, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        list.EndQuery(&direct_heap, D3D12_QUERY_TYPE_TIMESTAMP, 0);
+        list.SetComputeRootSignature(&root);
+        list.SetPipelineState(&pso);
+        list.SetComputeRootShaderResourceView(0, source.GetGPUVirtualAddress());
+        list.SetComputeRootUnorderedAccessView(1, target.GetGPUVirtualAddress());
+        list.Dispatch(1, 1, 1);
+        list.EndQuery(&direct_heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+        list.ResolveQueryData(
+            &direct_heap,
+            D3D12_QUERY_TYPE_TIMESTAMP,
+            0,
+            2,
+            &direct_out,
+            0,
+        );
+        c.run(&list)?;
+
+        let fence: ID3D12Fence = c.device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
+        let (_a2, copying) = c.list(D3D12_COMMAND_LIST_TYPE_COPY)?;
+        copying.EndQuery(&copy_heap, D3D12_QUERY_TYPE_TIMESTAMP, 0);
+        copying.CopyBufferRegion(&target, 0, &source, 0, 4096);
+        copying.EndQuery(&copy_heap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+        copying.ResolveQueryData(&copy_heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, &copy_out, 0);
+        copying.Close()?;
+        copy.ExecuteCommandLists(&[Some(copying.cast()?)]);
+        copy.Signal(&fence, 1)?;
+        fence.SetEventOnCompletion(1, c.event)?;
+        WaitForSingleObject(c.event, INFINITE);
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        c.queue.GetClockCalibration(&mut gpu1, &mut cpu1)?;
+        let mut qpc = 0;
+        windows::Win32::System::Performance::QueryPerformanceFrequency(&mut qpc)?;
+        let read = |r: &ID3D12Resource| -> Result<[u64; 2]> {
+            let b = mapped(r, 16)?;
+            Ok([
+                u64::from_le_bytes(b[..8].try_into().unwrap()),
+                u64::from_le_bytes(b[8..].try_into().unwrap()),
+            ])
+        };
+        let (d, k) = (read(&direct_out)?, read(&copy_out)?);
+        let gpu_seconds = (gpu1 - gpu0) as f64 / frequency as f64;
+        let cpu_seconds = (cpu1 - cpu0) as f64 / qpc as f64;
+        let ratio = gpu_seconds / cpu_seconds;
+        Ok(format!(
+            "frequency set {} copy frequency equal {} direct in order {} copy in order {} \
+             within calibrations {} clocks agree {}",
+            frequency > 0,
+            copy_frequency == frequency,
+            d[0] <= d[1],
+            k[0] <= k[1],
+            gpu0 <= d[0] && d[1] <= gpu1 && gpu0 <= k[0] && k[1] <= gpu1,
+            (0.9..1.1).contains(&ratio),
+        ))
     }
 }
