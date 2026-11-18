@@ -12,6 +12,9 @@ mod scene;
 #[path = "../examples/scenes/draw.rs"]
 mod draw;
 
+#[path = "../examples/scenes/depth16.rs"]
+mod depth16;
+
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
     CopyBufferTexture, DepthAttachment, DeviceStatus, DrawCall, DrawRange, Extent, Format,
@@ -884,6 +887,14 @@ fn sixteen_bit_group_copies_into_depth_keep_the_bits() {
         assert_eq!(read(b, &d, 2), bytes, "{source:?} into depth16unorm");
         assert_eq!(b.status(), DeviceStatus::Ok, "{source:?}");
     }
+}
+
+/// Every colour format of Direct3D's `R16_TYPELESS` group copied into `depth16unorm` and back, whole
+/// and in part, keeps the bits (examples/scenes/depth16.rs; also run in Chrome by web/check).
+#[test]
+fn sixteen_bit_group_copies_with_depth_both_ways_keep_the_bits() {
+    let mut b = device();
+    eprintln!("{}", depth16::group_copies(&mut b).unwrap());
 }
 
 /// Query results resolved past the buffer's end are refused with a reason, the device kept.
