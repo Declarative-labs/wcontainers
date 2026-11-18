@@ -11,7 +11,7 @@ use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -130,7 +130,9 @@ impl<G: Guest> Compiler<G> {
         let thread_module = pool
             .install(|| Module::new(&engine, wcontainers_translator::thread_module::<G>()))
             .expect("the thread module");
-        let probe = Module::new(&engine, G::probe_module()).expect("the probe module");
+        let probe = pool
+            .install(|| Module::new(&engine, G::probe_module()))
+            .expect("the probe module");
         let mut store = Store::new(&engine, ());
         let probe = Instance::new(&mut store, &probe, &[]).expect("the probe instance");
         let probe = probe
@@ -210,7 +212,10 @@ impl<G: Guest> Compiler<G> {
             bytes.extend((serialised.len() as u64).to_le_bytes());
             bytes.extend(serialised);
         }
-        let partial = file.with_extension(format!("partial-{}", std::process::id()));
+        // A name no other writer uses, in this process or another sharing the directory.
+        static WRITES: AtomicU64 = AtomicU64::new(0);
+        let write = WRITES.fetch_add(1, Ordering::Relaxed);
+        let partial = file.with_extension(format!("partial-{}-{write}", std::process::id()));
         let written = std::fs::create_dir_all(file.parent().expect("a directory"))
             .and_then(|()| std::fs::write(&partial, &bytes))
             .and_then(|()| std::fs::rename(&partial, file));
@@ -918,6 +923,16 @@ where
         }
         self.threads.get_mut(&thread).expect("a thread").instance = Some(made.clone());
         made
+    }
+
+    /// Writes the registers the kernel set while the thread was running into its block.
+    fn write_held(&mut self, thread: ThreadId) {
+        if let Some(record) = self.threads.get_mut(&thread)
+            && let Some(held) = record.held.take()
+        {
+            let record = &self.threads[&thread];
+            self.write_block(record, &held);
+        }
     }
 
     /// Sets a thread up to carry on as `resume` says.
@@ -1792,6 +1807,8 @@ where
         let mut fresh = Some(turn);
         loop {
             self.send_warnings(answer);
+            // Registers the kernel set in answer to an exit handed on after the thread left.
+            self.write_held(thread);
             self.start_from(thread, resume);
             let instance = self.thread_instance(thread, &mut store);
             let block_at = self.threads[&thread].block_at;
@@ -1825,12 +1842,7 @@ where
                     _ => panic!("the engine stopped the guest: {error:?}"),
                 }
             }
-            if let Some(record) = self.threads.get(&thread)
-                && let Some(held) = record.held
-            {
-                self.write_block(record, &held);
-                self.threads.get_mut(&thread).expect("a thread").held = None;
-            }
+            self.write_held(thread);
             let gone = self.process(memory).dropped || self.threads[&thread].dropped;
             if gone {
                 break;
@@ -1861,6 +1873,7 @@ where
             }
         }
         self.send_warnings(answer);
+        self.write_held(thread);
         self.running = None;
         let process = self.processes.get_mut(&memory).expect("a memory");
         if process.dropped {
