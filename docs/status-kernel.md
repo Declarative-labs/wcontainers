@@ -4,6 +4,10 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6c, fifth run: remap_file_pages, /proc/<pid>/mem, /proc/<pid>/attr, per-user pipe pages and
+the backend's FOPEN_NOFLUSH are built; a whole LTP comparison runs at b37c8a43. K6c is not
+complete. See "K6c, fifth run".
+
 K6c, fourth run: the stand-in's exclusive monitor is cleared at every turn, a bss-only segment
 is mapped, PI futex deadlocks answer EDEADLK, process_vm_readv and writev reach other
 processes, CPU time is split into user and system time, and several /proc and /sys entries are
@@ -52,6 +56,43 @@ See "K6b, second run" just below; "K6b, first run" holds what the runtimes run a
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6c, fifth run
+
+Built, each tested against the reference:
+- remap_file_pages as Linux emulates it (`SYSCALL_DEFINE5(remap_file_pages)`): the shared file
+  mapping at the start mapped again over the range from another file page, filled at once unless
+  MAP_NONBLOCK, with Linux's refusals. sharedmap `remapped_file_pages_match_reference` (a tmpfs file,
+  a /dev/shm file locked, shared anonymous memory, and the refusals). Layer 1 now calls it.
+  remap_file_pages01 and 02 now pass (rerun, scratch k6c5/b.tsv).
+- /proc/<pid>/mem: reads and writes at the position through `access_remote_vm` with FOLL_FORCE
+  (PROC_MEM_ALWAYS_FORCE in the reference's configuration): pages with no access are read and
+  written, a read-only private mapping takes its own copy, a read-only shared one is refused, a
+  write into code tells the CPU side (`code_changed`); `mem_lseek`, unsigned positions, EIO when
+  nothing moves, EFAULT on the caller's side, PTRACE_MODE_ATTACH at the open, ESRCH for an ended
+  process, nothing once the memory is gone (ended or another program run). procaccess
+  `proc_mem_matches_reference` (also patches a function and calls it).
+- Each user's pipe pages (`pipe_bufs`): past pipe-user-pages-soft (16384) a new pipe gets 2 pages
+  and none may grow (EPERM) unless CAP_SYS_RESOURCE or CAP_SYS_ADMIN, which Docker's root lacks;
+  F_SETPIPE_SZ moves the count; the sysctls pipe-user-pages-soft and -hard. userlimits
+  `pipe_pages_per_user_match_reference` (as uid 54321, since the reference counts a user's pipes
+  across the whole machine). `Charge` now carries an amount.
+- /proc/<pid>/attr with no security module, as the reference: six files, reads EINVAL, writes
+  EPERM through another process's file, EACCES from another thread, EINVAL past the start or
+  after the bytes are read. procaccess `proc_attr_matches_reference`.
+- /proc/sys/kernel/sched_autogroup_enabled (1, read-only in a container; autogroup01).
+- Backend FLUSH: a file opened with FOPEN_NOFLUSH sends none (no writeback cache here), and an
+  ENOSYS answer is remembered (`fc->no_flush`). Not reached by a test: the test server answers
+  FLUSH and never sets FOPEN_NOFLUSH. The backend tests passed (18).
+
+Found: msgstress01 forks 2000 processes that each loop msgsnd or msgrcv with IPC_NOWAIT and
+usleep(10) 100000 times or until the test's 180 s (guest time) run out; on the stand-in a guest
+second is many real seconds, so it is slow, not wrong (rerun with LTP_LIMIT 3600: scratch
+k6c5/a.tsv). Its "Available messages slots" is 15578 on ours (half the free process numbers) where
+the reference has 32000 (msgmni). controllers:controllers passes on ours because `mount` shows no
+cgroup2 file system (the reference's skips when it finds Docker's cgroup2 at /sys/fs/cgroup);
+fork09 opens files up to the descriptor limit (1048576) on the backend root before forking:
+slower file access.
 
 ## K6c, fourth run
 
@@ -1825,7 +1866,7 @@ permissions follow the table's bits with no power over them (`proc_sys_permissio
 
 ## System calls
 
-Done (256, counted from the dispatch table at the end of K6c's third run): accept, accept4,
+Done (257, counted from the dispatch table at K6c's fifth run): accept, accept4,
 adjtimex, bind, brk, cachestat, capget, capset, chdir, chroot, clock_adjtime, clock_getres,
 clock_gettime, clock_nanosleep, clone, close, close_range, connect, copy_file_range, dup, dup3,
 epoll_create1, epoll_ctl, epoll_pwait, epoll_pwait2, eventfd2, execve, execveat, exit, exit_group,
@@ -1844,7 +1885,7 @@ munlockall, munmap, name_to_handle_at, nanosleep, newfstatat, openat, openat2, p
 pidfd_open, pidfd_send_signal, pipe2, pkey_alloc, pkey_free, pkey_mprotect, ppoll, prctl, pread64,
 preadv, preadv2, prlimit64, process_mrelease, process_vm_readv, process_vm_writev, pselect6,
 pwrite64, pwritev, pwritev2, read, readahead, readlinkat, readv, recvfrom, recvmmsg, recvmsg,
-removexattr, renameat, renameat2, restart_syscall, rseq, rt_sigaction, rt_sigpending,
+remap_file_pages, removexattr, renameat, renameat2, restart_syscall, rseq, rt_sigaction, rt_sigpending,
 rt_sigprocmask, rt_sigqueueinfo, rt_sigreturn, rt_sigsuspend, rt_sigtimedwait, rt_tgsigqueueinfo,
 sched_get_priority_max, sched_get_priority_min, sched_getaffinity, sched_getattr, sched_getparam,
 sched_getscheduler, sched_rr_get_interval, sched_setaffinity, sched_setattr, sched_setparam,
@@ -1879,11 +1920,10 @@ Partial (inside the list above), each with its reason:
   NO_SYMLINKS, BENEATH, IN_ROOT) are not built: counted "system call not implemented", ENOSYS, as a
   kernel before openat2 answers the whole call (Linux has had them as long as openat2); they need the
   path walk to refuse mount crossings, links and escapes, before K6's bar. RESOLVE_CACHED taken.
-- getrusage, times, CPU-time clocks: CPU time is time not parked since the container started, all of
-  it user time, never sampled at ticks as Linux's user and system times are (so a young process's
-  profiling and user clocks are not 0 here as they may be there); with several threads (K3) a thread waiting for its turn would count. ru_maxrss is the
-  mapped size, counted "page residency not tracked"; the other fields are 0 (no faults, switches or
-  I/O are counted yet).
+- getrusage, times, CPU-time clocks: CPU time is time not parked since the container started,
+  split into user time and the kernel's time from a return until it settles (K6c's fourth run),
+  never sampled at ticks as Linux's are. ru_maxrss is the mapped size, counted "page residency not
+  tracked"; the other fields are 0 (no faults, switches or I/O are counted yet).
 - fallocate: plain and keep-size allocation and punching holes (what tmpfs has); others EOPNOTSUPP.
 - prctl: built: SET/GET_NAME, GET/SET_DUMPABLE, GET/SET_KEEPCAPS, CAPBSET_READ, CAPBSET_DROP,
   GET/SET_NO_NEW_PRIVS, GET/SET_SECCOMP, CAP_AMBIENT (eleventh run: is-set, raise, lower, clear, with
@@ -1934,12 +1974,15 @@ Partial (inside the list above), each with its reason:
 - seccomp: no listener (counted, EINVAL as a kernel without listeners). TRAP sends SIGSYS with the
   call, its address and the filter's data.
 - rseq: the time slice extension flag is counted and refused with EINVAL; the reference takes it.
-- process_vm_readv, process_vm_writev: only the caller's own process; another process's memory needs
-  `ptrace_may_access`, counted "call on another process not built", ENOSYS.
+- remap_file_pages: built as Linux emulates it (a shared file mapping mapped again over the range
+  from another file page); Linux's one-time deprecation warning is not printed.
 - clone: namespaces are refused by Docker's profile as in the reference.
 - futex: NUMA futexes (FUTEX2_NUMA, FUTEX2_MPOL) are counted "call flag not built", EINVAL.
 - process_mrelease never frees anything: there is no dying process to free.
 - pipe2: O_NOTIFICATION_PIPE counted "call flag not built", EINVAL (watch queues not built).
+  Pipes' pages count against their maker's real user (pipe-user-pages-soft, K6c's fifth run); a
+  named pipe's buffer is made with its inode and kept, so its pages are not counted (Linux makes it
+  at the first open and frees it at the last close).
 - cachestat, stat's blocks: pages a mapped file's faults bring in are not known (counted).
 - shmget: SHM_HUGETLB counted "call flag not built", ENOMEM (the reference, with no huge pages
   reserved, answers ENOMEM). shmctl SHM_INFO's resident pages are those the kernel wrote (counted "page
@@ -1969,11 +2012,10 @@ accept, accept4, connect, getsockname, getpeername, sendto, recvfrom, sendmsg, r
 recvmmsg, shutdown, setsockopt, getsockopt. Socket families: local (AF_UNIX), IPv4 and IPv6 (TCP
 and UDP), netlink (NETLINK_ROUTE); others counted "socket family not built".
 
-Missing (6, each counted "system call not implemented" and ENOSYS), with what each needs:
+Missing (5, each counted "system call not implemented" and ENOSYS), with what each needs:
 - Processes: ptrace (tracing is out of phase one, section 15).
 - fanotify_mark (fanotify_init is refused by Docker's profile, so no group can exist; see Next).
-- remap_file_pages (deprecated in Linux, emulated there with mmap over a shared mapping), and
-  landlock_create_ruleset, landlock_add_rule and landlock_restrict_self (Landlock's rules applied in
+- landlock_create_ruleset, landlock_add_rule and landlock_restrict_self (Landlock's rules applied in
   the path walk).
 
 ## Known gaps (with reasons)
