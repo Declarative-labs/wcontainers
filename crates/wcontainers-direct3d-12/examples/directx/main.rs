@@ -44,8 +44,10 @@ use wcontainers_gpu::Backend;
 use windows::Win32::Foundation::{E_INVALIDARG, E_NOINTERFACE, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::Graphics::Direct3D::ID3DBlob;
 use windows::Win32::Graphics::Direct3D12::*;
-use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_UNSUPPORTED, IDXGIFactory4};
-use windows::core::{GUID, HRESULT, Interface};
+use windows::Win32::Graphics::Dxgi::{
+    DXGI_ERROR_UNSUPPORTED, IDXGIAdapter, IDXGIFactory1, IDXGIFactory4,
+};
+use windows::core::{GUID, HRESULT, IUnknown, Interface};
 
 use objects::{Blob, Device, Factory};
 
@@ -131,6 +133,28 @@ pub unsafe extern "system" fn wc_CreateDXGIFactory(
     unsafe { wc_CreateDXGIFactory2(0, riid, out) }
 }
 
+/// The first adapter of the DXGI this process loads (ours where it lies beside the program, else
+/// the system's), as `D3D12CreateDevice` with no adapter takes.
+fn first_adapter() -> Option<IDXGIAdapter> {
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    type F = unsafe extern "system" fn(*const GUID, *mut *mut c_void) -> HRESULT;
+    // SAFETY: a name ended by a zero; the module stays loaded for the process.
+    let module = unsafe { LoadLibraryW(windows::core::w!("dxgi.dll")) }.ok()?;
+    // SAFETY: a name ended by a zero.
+    let create = unsafe { GetProcAddress(module, windows::core::s!("CreateDXGIFactory1")) }?;
+    // SAFETY: the export of this name has this signature.
+    let create: F = unsafe { std::mem::transmute_copy(&create) };
+    let mut factory = std::ptr::null_mut();
+    // SAFETY: an interface identifier and an out pointer, as the API defines them.
+    unsafe { create(&IDXGIFactory1::IID, &mut factory) }
+        .ok()
+        .ok()?;
+    // SAFETY: the factory the call made, whose reference this takes.
+    let factory = unsafe { IDXGIFactory1::from_raw(factory) };
+    // SAFETY: a call on a live factory.
+    unsafe { factory.EnumAdapters(0) }.ok()
+}
+
 /// # Safety
 /// The pointers are the caller's, as the API defines them.
 #[unsafe(no_mangle)]
@@ -163,7 +187,16 @@ pub unsafe extern "system" fn wc_D3D12CreateDevice(
     }
     // One device per adapter: while it lives, it is handed out again.
     let device = base::live_device().unwrap_or_else(|| {
-        let device: ID3D12Device8 = abi::fixed(Device::default().into());
+        // The device belongs to the adapter it is made on, the system's included: its LUID is
+        // that adapter's, with none given the first one the process's DXGI lists.
+        // SAFETY: the caller's adapter, if any, is a live COM object.
+        let given = unsafe { IUnknown::from_raw_borrowed(&adapter) }
+            .and_then(|a| a.cast::<IDXGIAdapter>().ok());
+        let luid = given
+            .or_else(first_adapter)
+            .and_then(|a| unsafe { a.GetDesc() }.ok())
+            .map_or_else(objects::adapter_luid, |d| d.AdapterLuid);
+        let device: ID3D12Device8 = abi::fixed(Device::on(luid).into());
         let device: ID3D12Device = device.cast().unwrap();
         base::set_live_device(&device);
         device

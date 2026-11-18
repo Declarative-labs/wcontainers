@@ -17,6 +17,7 @@ use wcontainers_gpu::{
 
 use crate::ConvertError;
 
+mod constants;
 mod pull;
 
 type Result<T> = core::result::Result<T, ConvertError>;
@@ -30,6 +31,12 @@ pub(crate) fn apply(
 ) -> Result<()> {
     constants_as_storage(module, variant.constants_as_storage, reflection)?;
     let mut outlined = Outlined::default();
+    constants::constants_as_texture(
+        module,
+        variant.constants_as_texture,
+        reflection,
+        &mut outlined,
+    )?;
     if variant.draw_base == DrawBaseSource::Arguments {
         draw_arguments(module, reflection, &mut outlined)?;
     }
@@ -58,6 +65,10 @@ pub(crate) fn apply(
         texture_info(module, stage, reflection, &mut outlined)?;
     }
     outlined.finish(module);
+    if variant.constants_as_texture != 0 {
+        // Drops the pointers into the buffers' old variables, and the variables.
+        naga::compact::compact(module, naga::compact::KeepUnused::No);
+    }
     let flags = variant.flags;
     match stage {
         ShaderStage::Vertex => {

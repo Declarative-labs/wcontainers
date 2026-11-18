@@ -86,6 +86,9 @@ pub const CLAMPED_SAMPLER_BINDING: u32 = 16;
 /// The binding in [`HELPER_SET`] of an indirect draw's argument buffer, bound read-only so the program
 /// reads the draw's bases from it ([`DrawBaseSource::Arguments`]).
 pub const DRAW_ARGUMENTS_BINDING: u32 = 11;
+/// The width in texels of the texture a constant buffer is read through
+/// ([`AddedBinding::ConstantsAsTexture`]): the buffer's 16-byte row r is texel (r % width, r / width).
+pub const CONSTANTS_TEXTURE_WIDTH: u32 = 256;
 
 /// The API stage a shader was written for. Geometry, hull and domain shaders become compute and vertex
 /// programs in the shaders crate's stage helper; the others become one program stage each.
@@ -131,7 +134,8 @@ pub enum AddedBinding {
     /// The constant buffer in the stage's slot n (Direct3D 12: the root signature's constant buffer
     /// range n), read as a read-only storage buffer.
     ConstantsAsStorage(u32),
-    /// The same, read through a texture.
+    /// The same, read through a 2D RGBA32 unsigned integer texture the front copies the buffer into,
+    /// one 16-byte row per texel laid out as [`CONSTANTS_TEXTURE_WIDTH`] says.
     ConstantsAsTexture(u32),
     /// Root constants past the back end's immediate bytes, as a uniform buffer (Direct3D 12).
     SpilledImmediates,

@@ -2,7 +2,8 @@
 //! with real Direct3D 12 and through ours and compared line by line: placed resources that alias
 //! (buffers written by a copy, a storage view and the CPU; identical textures at one offset), copy
 //! and compute queues waiting on each other and on a late CPU signal, binary occlusion resolved,
-//! read back and used by `SetPredication`, and `ExecuteIndirect`.
+//! read back and used by `SetPredication`, `ExecuteIndirect`, and pipeline and stream output
+//! statistics.
 
 use std::cell::Cell;
 use std::fmt::Write;
@@ -47,6 +48,11 @@ pub const CASES: &[&str] = &[
     "indirect-vertex-id",
     "predicated-resolve",
     "occlusion-count",
+    "statistics",
+    "vertex-past-end",
+    "vertex-pulled",
+    "restart",
+    "render-pass",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -70,6 +76,11 @@ pub fn run(name: &str) -> Result<String> {
             "indirect-vertex-id" => indirect_vertex_id(&c),
             "predicated-resolve" => predicated_resolve(&c),
             "occlusion-count" => occlusion_count(&c),
+            "statistics" => statistics(&c),
+            "vertex-past-end" => vertex_past_end(&c),
+            "vertex-pulled" => vertex_pulled(&c),
+            "restart" => restart(&c),
+            "render-pass" => render_pass(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -445,10 +456,6 @@ impl Ctx {
         draws: bool,
     ) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
         unsafe {
-            let root = self.root(
-                &[],
-                D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
-            )?;
             let layout = [
                 D3D12_INPUT_ELEMENT_DESC {
                     SemanticName: s!("POSITION"),
@@ -472,6 +479,57 @@ impl Ctx {
                     ..Default::default()
                 },
             ];
+            self.pso(draws, &layout[..if draws { 3 } else { 2 }])
+        }
+    }
+
+    /// The triangle program, or with `draws` the draws program, reading the input `layout`.
+    unsafe fn pso(
+        &self,
+        draws: bool,
+        layout: &[D3D12_INPUT_ELEMENT_DESC],
+    ) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+        unsafe { self.pso_samples(draws, layout, 1) }
+    }
+
+    /// The same, drawing into targets of `samples` samples.
+    unsafe fn pso_samples(
+        &self,
+        draws: bool,
+        layout: &[D3D12_INPUT_ELEMENT_DESC],
+        samples: u32,
+    ) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+        unsafe {
+            self.pso_full(
+                draws,
+                layout,
+                samples,
+                D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+            )
+        }
+    }
+
+    /// The triangle program with the strip cut value `cut`.
+    unsafe fn pso_cut(
+        &self,
+        layout: &[D3D12_INPUT_ELEMENT_DESC],
+        cut: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE,
+    ) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+        unsafe { self.pso_full(false, layout, 1, cut) }
+    }
+
+    unsafe fn pso_full(
+        &self,
+        draws: bool,
+        layout: &[D3D12_INPUT_ELEMENT_DESC],
+        samples: u32,
+        cut: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE,
+    ) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+        unsafe {
+            let root = self.root(
+                &[],
+                D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+            )?;
             let (vs, ps) = if draws {
                 (DRAWS_VS, DRAWS_PS)
             } else {
@@ -499,12 +557,13 @@ impl Ctx {
                 },
                 InputLayout: D3D12_INPUT_LAYOUT_DESC {
                     pInputElementDescs: layout.as_ptr(),
-                    NumElements: if draws { 3 } else { 2 },
+                    NumElements: layout.len() as u32,
                 },
                 PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+                IBStripCutValue: cut,
                 NumRenderTargets: 1,
                 SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
+                    Count: samples,
                     Quality: 0,
                 },
                 ..Default::default()
@@ -1035,6 +1094,564 @@ unsafe fn occlusion_count(c: &Ctx) -> Result<String> {
     }
 }
 
+/// Pipeline statistics queries around nothing, around direct draws, an indexed draw and a dispatch
+/// (with a counted occlusion query inside), and around an indirect draw and a skipped predicated
+/// one; a stream output statistics query. Counts Direct3D leaves to the implementation are printed
+/// as bounds: vertex shader invocations at most the vertices read, primitives out of the clipper
+/// above zero, pixel shader invocations at least the samples the occlusion query counted.
+unsafe fn statistics(c: &Ctx) -> Result<String> {
+    unsafe {
+        let (root, pso) = c.triangle_pso(false)?;
+        let (compute_root, compute) = c.compute_pso()?;
+        let vertices = c.upload(&triangles())?;
+        let indices = c.upload(&u32s(&[0, 1, 2, 3, 4, 5]))?;
+        let input = c.upload(&items())?;
+        let output = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &buffer_desc(1024, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+            D3D12_RESOURCE_STATE_COMMON,
+        )?;
+        let (draws, draw_args) = arguments(
+            c,
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
+            16,
+            &u32s(&[3, 2, 3, 0]),
+        )?;
+        let heap = |kind, count| -> Result<ID3D12QueryHeap> {
+            let mut q = None;
+            c.device.CreateQueryHeap(
+                &D3D12_QUERY_HEAP_DESC {
+                    Type: kind,
+                    Count: count,
+                    NodeMask: 0,
+                },
+                &mut q,
+            )?;
+            Ok(q.unwrap())
+        };
+        let stats = heap(D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, 3)?;
+        let occlusion = heap(D3D12_QUERY_HEAP_TYPE_OCCLUSION, 1)?;
+        let streams = heap(D3D12_QUERY_HEAP_TYPE_SO_STATISTICS, 2)?;
+        let size = 3 * 88 + 8 + 16;
+        let readback = c.committed(
+            D3D12_HEAP_TYPE_READBACK,
+            &buffer_desc(size, D3D12_RESOURCE_FLAG_NONE),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let zero = filled(c, &[0; 8])?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (_target, _heap, _rtv) = c.target(&list)?;
+        let kind = D3D12_QUERY_TYPE_PIPELINE_STATISTICS;
+        list.BeginQuery(&stats, kind, 0);
+        list.EndQuery(&stats, kind, 0);
+        list.BeginQuery(&streams, D3D12_QUERY_TYPE_SO_STATISTICS_STREAM1, 1);
+        list.BeginQuery(&stats, kind, 1);
+        list.SetPipelineState(&pso);
+        list.SetGraphicsRootSignature(&root);
+        vertex_buffer(&list, &vertices);
+        list.BeginQuery(&occlusion, D3D12_QUERY_TYPE_OCCLUSION, 0);
+        list.DrawInstanced(3, 1, 0, 0);
+        list.DrawInstanced(3, 2, 3, 0);
+        list.IASetIndexBuffer(Some(&D3D12_INDEX_BUFFER_VIEW {
+            BufferLocation: indices.GetGPUVirtualAddress(),
+            SizeInBytes: 24,
+            Format: DXGI_FORMAT_R32_UINT,
+        }));
+        list.DrawIndexedInstanced(5, 1, 1, 3, 0);
+        list.EndQuery(&occlusion, D3D12_QUERY_TYPE_OCCLUSION, 0);
+        list.SetComputeRootSignature(&compute_root);
+        list.SetPipelineState(&compute);
+        list.SetComputeRootShaderResourceView(0, input.GetGPUVirtualAddress());
+        list.SetComputeRootUnorderedAccessView(1, output.GetGPUVirtualAddress());
+        list.Dispatch(1, 1, 1);
+        list.EndQuery(&stats, kind, 1);
+        list.BeginQuery(&stats, kind, 2);
+        list.SetPipelineState(&pso);
+        list.SetGraphicsRootSignature(&root);
+        list.ExecuteIndirect(&draws, 1, &draw_args, 0, None, 0);
+        list.SetPredication(&zero, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+        list.DrawInstanced(3, 1, 0, 0);
+        list.SetPredication(None, 0, D3D12_PREDICATION_OP_EQUAL_ZERO);
+        list.EndQuery(&stats, kind, 2);
+        list.EndQuery(&streams, D3D12_QUERY_TYPE_SO_STATISTICS_STREAM1, 1);
+        list.ResolveQueryData(&stats, kind, 0, 3, &readback, 0);
+        list.ResolveQueryData(
+            &occlusion,
+            D3D12_QUERY_TYPE_OCCLUSION,
+            0,
+            1,
+            &readback,
+            3 * 88,
+        );
+        list.ResolveQueryData(
+            &streams,
+            D3D12_QUERY_TYPE_SO_STATISTICS_STREAM1,
+            1,
+            1,
+            &readback,
+            3 * 88 + 8,
+        );
+        c.run(&list)?;
+        let bytes = mapped(&readback, size as usize)?;
+        let u64s: Vec<u64> = bytes
+            .chunks(8)
+            .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        let samples = u64s[33];
+        let mut out = format!("occlusion {samples}");
+        for (i, q) in u64s[..33].chunks(11).enumerate() {
+            let s = D3D12_QUERY_DATA_PIPELINE_STATISTICS {
+                IAVertices: q[0],
+                IAPrimitives: q[1],
+                VSInvocations: q[2],
+                GSInvocations: q[3],
+                GSPrimitives: q[4],
+                CInvocations: q[5],
+                CPrimitives: q[6],
+                PSInvocations: q[7],
+                HSInvocations: q[8],
+                DSInvocations: q[9],
+                CSInvocations: q[10],
+            };
+            write!(
+                out,
+                " | ia {} {} vs<=ia {} gs {} c {} c>0 {} ps {} hs {} ds {} cs {}",
+                s.IAVertices,
+                s.IAPrimitives,
+                s.VSInvocations <= s.IAVertices,
+                s.GSPrimitives,
+                s.CInvocations,
+                s.CPrimitives > 0,
+                // At least the occlusion query's samples where it ran; some where anything drew.
+                (i != 1 || s.PSInvocations >= samples)
+                    && (s.PSInvocations == 0) == (s.IAPrimitives == 0),
+                s.HSInvocations,
+                s.DSInvocations,
+                s.CSInvocations,
+            )
+            .unwrap();
+        }
+        write!(out, " | streams {:?}", &u64s[34..36]).unwrap();
+        Ok(out)
+    }
+}
+
+/// Direct draws reading past the end of a vertex buffer view, which reads zeros: a strip whose
+/// last vertex lies past it, and instances past a per-instance view's end.
+unsafe fn vertex_past_end(c: &Ctx) -> Result<String> {
+    unsafe {
+        let (root, pso) = c.triangle_pso(false)?;
+        let (instanced_root, instanced) = c.triangle_pso(true)?;
+        let vertices = c.upload(&triangles())?;
+        let offsets = c.upload(&[0.25f32, 0.25, 0.5, 0.5].map(f32::to_le_bytes).concat())?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (target, _heap, _rtv) = c.target(&list)?;
+        list.SetPipelineState(&pso);
+        list.SetGraphicsRootSignature(&root);
+        let view = |size| D3D12_VERTEX_BUFFER_VIEW {
+            BufferLocation: vertices.GetGPUVirtualAddress(),
+            SizeInBytes: size,
+            StrideInBytes: 20,
+        };
+        // Four vertices of five: the strip's third triangle ends at a zero vertex.
+        list.IASetVertexBuffers(0, Some(&[view(80)]));
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        let half = SIZE / 2;
+        viewport(&list, 0, 0, half);
+        list.DrawInstanced(5, 1, 0, 0);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        // Two instances of one offset each, of which the view holds one.
+        list.SetPipelineState(&instanced);
+        list.SetGraphicsRootSignature(&instanced_root);
+        list.IASetVertexBuffers(
+            0,
+            Some(&[
+                view(240),
+                D3D12_VERTEX_BUFFER_VIEW {
+                    BufferLocation: offsets.GetGPUVirtualAddress(),
+                    SizeInBytes: 8,
+                    StrideInBytes: 8,
+                },
+            ]),
+        );
+        viewport(&list, half, half, half);
+        list.DrawInstanced(3, 2, 3, 0);
+        c.run(&list)?;
+        Ok(colours(
+            &c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?,
+        ))
+    }
+}
+
+/// One input element: semantic, format, slot, offset, and per-instance step rate (None: per
+/// vertex).
+fn element(
+    semantic: windows::core::PCSTR,
+    format: DXGI_FORMAT,
+    slot: u32,
+    offset: u32,
+    rate: Option<u32>,
+) -> D3D12_INPUT_ELEMENT_DESC {
+    D3D12_INPUT_ELEMENT_DESC {
+        SemanticName: semantic,
+        Format: format,
+        InputSlot: slot,
+        AlignedByteOffset: offset,
+        InputSlotClass: match rate {
+            Some(_) => D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA,
+            None => D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+        },
+        InstanceDataStepRate: rate.unwrap_or(0),
+        ..Default::default()
+    }
+}
+
+/// Vertex streams WebGPU cannot fetch as laid out: a stride of 6 with an element at offset 2,
+/// per-instance offsets stepping every 2 instances from instance 1, a per-instance stream of
+/// stride 1, and a stride of 2 in an `ExecuteIndirect` draw of a program reading
+/// `SV_VertexID` from start vertex 1 and start instance 1.
+unsafe fn vertex_pulled(c: &Ctx) -> Result<String> {
+    unsafe {
+        let vb = |b: &ID3D12Resource, size, stride| D3D12_VERTEX_BUFFER_VIEW {
+            BufferLocation: b.GetGPUVirtualAddress(),
+            SizeInBytes: size,
+            StrideInBytes: stride,
+        };
+        let layouts = [
+            (
+                false,
+                vec![
+                    element(s!("POSITION"), DXGI_FORMAT_R8G8_SNORM, 0, 0, None),
+                    element(s!("COLOR"), DXGI_FORMAT_R8G8B8A8_UNORM, 0, 2, None),
+                ],
+            ),
+            (
+                true,
+                vec![
+                    element(s!("POSITION"), DXGI_FORMAT_R32G32_FLOAT, 0, 0, None),
+                    element(s!("COLOR"), DXGI_FORMAT_R32G32B32_FLOAT, 0, 8, None),
+                    element(s!("OFFSET"), DXGI_FORMAT_R32G32_FLOAT, 1, 0, Some(2)),
+                ],
+            ),
+            (
+                true,
+                vec![
+                    element(s!("POSITION"), DXGI_FORMAT_R32G32_FLOAT, 0, 0, None),
+                    element(s!("COLOR"), DXGI_FORMAT_R8_UNORM, 1, 0, Some(1)),
+                    element(s!("OFFSET"), DXGI_FORMAT_R32G32_FLOAT, 2, 0, Some(1)),
+                ],
+            ),
+            (
+                true,
+                vec![
+                    element(s!("POSITION"), DXGI_FORMAT_R8G8_SNORM, 0, 0, None),
+                    element(s!("COLOR"), DXGI_FORMAT_R8G8B8A8_UNORM, 1, 0, Some(1)),
+                    element(s!("OFFSET"), DXGI_FORMAT_R32G32_FLOAT, 2, 0, Some(1)),
+                ],
+            ),
+            (
+                false,
+                vec![
+                    element(s!("POSITION"), DXGI_FORMAT_R8G8_SNORM, 0, 0, None),
+                    element(s!("COLOR"), DXGI_FORMAT_R8G8_UNORM, 0, 2, None),
+                ],
+            ),
+        ];
+        let mut line = String::new();
+        let psos: Vec<_> = layouts
+            .iter()
+            .map(|(draws, layout)| match c.pso(*draws, layout) {
+                Ok(p) => {
+                    line.push_str("made ");
+                    Some(p)
+                }
+                Err(e) => {
+                    let _ = write!(line, "refused {:#x} ", e.code().0);
+                    None
+                }
+            })
+            .collect();
+        // Three vertices of position and colour, six bytes each.
+        let packed_vertices = c.upload(&[
+            0x81, 0x81, 255, 0, 0, 255, //
+            0, 0x7f, 0, 255, 0, 255, //
+            0x7f, 0x81, 0, 0, 255, 255,
+        ])?;
+        let vertices = c.upload(&triangles())?;
+        let offsets = c.upload(
+            &[0.0f32, 0.0, 0.0, 0.0, 0.0, 0.4, -0.4, 0.0]
+                .map(f32::to_le_bytes)
+                .concat(),
+        )?;
+        let shades = c.upload(&[0x20, 0x40, 0x80, 0xff])?;
+        let positions = c.upload(&[0, 0, 0x81, 0x81, 0, 0x7f, 0x7f, 0x81])?;
+        let colors = c.upload(&[0, 0, 0, 0, 255, 128, 0, 255])?;
+        let (signature, args) = arguments(
+            c,
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
+            16,
+            &u32s(&[3, 1, 1, 1]),
+        )?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (target, _heap, _rtv) = c.target(&list)?;
+        let half = SIZE / 2;
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        let set = |i: usize| match &psos[i] {
+            Some((root, pso)) => {
+                list.SetPipelineState(pso);
+                list.SetGraphicsRootSignature(root);
+                true
+            }
+            None => false,
+        };
+        // Stride 6 with an element at offset 2: four bytes, then (if refused) two.
+        for (i, x) in [(0, 0), (4, half / 2)] {
+            if set(i) {
+                list.IASetVertexBuffers(0, Some(&[vb(&packed_vertices, 18, 6)]));
+                viewport(&list, x, 0, half / 2);
+                list.DrawInstanced(3, 1, 0, 0);
+            }
+        }
+        if set(1) {
+            list.IASetVertexBuffers(0, Some(&[vb(&vertices, 240, 20), vb(&offsets, 32, 8)]));
+            viewport(&list, half, half, half);
+            list.DrawInstanced(3, 4, 3, 1);
+        }
+        if set(2) {
+            list.IASetVertexBuffers(
+                0,
+                Some(&[
+                    vb(&vertices, 240, 20),
+                    vb(&shades, 4, 1),
+                    vb(&offsets, 32, 8),
+                ]),
+            );
+            viewport(&list, half, 0, half);
+            list.DrawInstanced(3, 2, 6, 2);
+        }
+        if set(3) {
+            list.IASetVertexBuffers(
+                0,
+                Some(&[vb(&positions, 8, 2), vb(&colors, 8, 4), vb(&offsets, 32, 8)]),
+            );
+            viewport(&list, 0, half, half);
+            list.ExecuteIndirect(&signature, 1, &args, 0, None, 0);
+        }
+        c.run(&list)?;
+        line.push_str(&colours(
+            &c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?,
+        ));
+        Ok(line)
+    }
+}
+
+/// Triangle strips of 16-bit and 32-bit indices holding 0xffff, drawn with each strip cut value:
+/// directly, and the 16-bit ones also through `ExecuteIndirect`.
+unsafe fn restart(c: &Ctx) -> Result<String> {
+    unsafe {
+        let layout = [
+            element(s!("POSITION"), DXGI_FORMAT_R32G32_FLOAT, 0, 0, None),
+            element(s!("COLOR"), DXGI_FORMAT_R32G32B32_FLOAT, 0, 8, None),
+        ];
+        // A quad's corners, with its last at element 0xffff; the rest zero.
+        let mut bytes = vec![0u8; 0x10000 * 20];
+        let corner = |x: f32, y: f32| [x, y, 1.0, 0.5, 0.0].map(f32::to_le_bytes).concat();
+        for (i, (x, y)) in [
+            (0, (-0.9, -0.9)),
+            (1, (-0.9, 0.9)),
+            (2, (0.9, -0.9)),
+            (0xffff, (0.9, 0.9)),
+        ] {
+            bytes[i * 20..i * 20 + 20].copy_from_slice(&corner(x, y));
+        }
+        let vertices = c.upload(&bytes)?;
+        let indices16 = c.upload(&[0u16, 1, 2, 0xffff, 1, 2].map(u16::to_le_bytes).concat())?;
+        let indices32 = c.upload(&u32s(&[0, 1, 2, 0xffff, 1, 2]))?;
+        let (signature, args) = arguments(
+            c,
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED,
+            20,
+            &u32s(&[4, 1, 0, 0, 0]),
+        )?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let (target, _heap, _rtv) = c.target(&list)?;
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        list.IASetVertexBuffers(
+            0,
+            Some(&[D3D12_VERTEX_BUFFER_VIEW {
+                BufferLocation: vertices.GetGPUVirtualAddress(),
+                SizeInBytes: bytes.len() as u32,
+                StrideInBytes: 20,
+            }]),
+        );
+        let quarter = SIZE / 4;
+        let cuts = [
+            D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+            D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF,
+            D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF,
+        ];
+        let mut psos = Vec::new();
+        for (row, cut) in cuts.into_iter().enumerate() {
+            let (root, pso) = c.pso_cut(&layout, cut)?;
+            list.SetPipelineState(&pso);
+            list.SetGraphicsRootSignature(&root);
+            for (column, (buffer, format)) in [
+                (&indices16, DXGI_FORMAT_R16_UINT),
+                (&indices32, DXGI_FORMAT_R32_UINT),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                list.IASetIndexBuffer(Some(&D3D12_INDEX_BUFFER_VIEW {
+                    BufferLocation: buffer.GetGPUVirtualAddress(),
+                    SizeInBytes: 24,
+                    Format: format,
+                }));
+                viewport(
+                    &list,
+                    column as u32 * quarter,
+                    row as u32 * quarter,
+                    quarter,
+                );
+                list.DrawIndexedInstanced(6, 1, 0, 0, 0);
+            }
+            list.IASetIndexBuffer(Some(&D3D12_INDEX_BUFFER_VIEW {
+                BufferLocation: indices16.GetGPUVirtualAddress(),
+                SizeInBytes: 12,
+                Format: DXGI_FORMAT_R16_UINT,
+            }));
+            viewport(&list, 2 * quarter, row as u32 * quarter, quarter);
+            list.ExecuteIndirect(&signature, 1, &args, 0, None, 0);
+            psos.push((root, pso));
+        }
+        c.run(&list)?;
+        Ok(colours(
+            &c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?,
+        ))
+    }
+}
+
+/// Render passes (`ID3D12GraphicsCommandList4`): one clearing the target and drawing, one keeping
+/// it and drawing, and one clearing a 4-sample target, drawing and resolving it into a second
+/// target at its end.
+unsafe fn render_pass(c: &Ctx) -> Result<String> {
+    unsafe {
+        let layout = [
+            element(s!("POSITION"), DXGI_FORMAT_R32G32_FLOAT, 0, 0, None),
+            element(s!("COLOR"), DXGI_FORMAT_R32G32B32_FLOAT, 0, 8, None),
+        ];
+        let (root, pso) = c.pso(false, &layout)?;
+        let (ms_root, ms_pso) = c.pso_samples(false, &layout, 4)?;
+        let vertices = c.upload(&triangles())?;
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        let list4: ID3D12GraphicsCommandList4 = list.cast()?;
+        let (target, _heap, rtv) = c.target(&list)?;
+        let mut ms_desc = target_desc();
+        ms_desc.SampleDesc.Count = 4;
+        let ms = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &ms_desc,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+        )?;
+        let resolved = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &target_desc(),
+            D3D12_RESOURCE_STATE_RESOLVE_DEST,
+        )?;
+        let heap: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                NumDescriptors: 1,
+                ..Default::default()
+            })?;
+        let ms_rtv = heap.GetCPUDescriptorHandleForHeapStart();
+        c.device.CreateRenderTargetView(&ms, None, ms_rtv);
+        let clear = |color: [f32; 4]| D3D12_RENDER_PASS_BEGINNING_ACCESS {
+            Type: D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR,
+            Anonymous: D3D12_RENDER_PASS_BEGINNING_ACCESS_0 {
+                Clear: D3D12_RENDER_PASS_BEGINNING_ACCESS_CLEAR_PARAMETERS {
+                    ClearValue: D3D12_CLEAR_VALUE {
+                        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                        Anonymous: D3D12_CLEAR_VALUE_0 { Color: color },
+                    },
+                },
+            },
+        };
+        let keep = D3D12_RENDER_PASS_BEGINNING_ACCESS {
+            Type: D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE,
+            ..Default::default()
+        };
+        let kept = || D3D12_RENDER_PASS_ENDING_ACCESS {
+            Type: D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE,
+            ..Default::default()
+        };
+        let pass = |view, begin, end| D3D12_RENDER_PASS_RENDER_TARGET_DESC {
+            cpuDescriptor: view,
+            BeginningAccess: begin,
+            EndingAccess: end,
+        };
+        let half = SIZE / 2;
+        list.SetPipelineState(&pso);
+        list.SetGraphicsRootSignature(&root);
+        vertex_buffer(&list, &vertices);
+        list4.BeginRenderPass(
+            Some(&[pass(rtv, clear([0.2, 0.4, 0.6, 1.0]), kept())]),
+            None,
+            D3D12_RENDER_PASS_FLAG_NONE,
+        );
+        viewport(&list, 0, 0, half);
+        list.DrawInstanced(3, 1, 3, 0);
+        list4.EndRenderPass();
+        list4.BeginRenderPass(
+            Some(&[pass(rtv, keep, kept())]),
+            None,
+            D3D12_RENDER_PASS_FLAG_NONE,
+        );
+        viewport(&list, half, half, half);
+        list.DrawInstanced(3, 1, 6, 0);
+        list4.EndRenderPass();
+        let whole = D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS {
+            SrcRect: RECT {
+                left: 0,
+                top: 0,
+                right: SIZE as i32,
+                bottom: SIZE as i32,
+            },
+            ..Default::default()
+        };
+        let resolve = D3D12_RENDER_PASS_ENDING_ACCESS {
+            Type: D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_RESOLVE,
+            Anonymous: D3D12_RENDER_PASS_ENDING_ACCESS_0 {
+                Resolve: ManuallyDrop::new(D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_PARAMETERS {
+                    pSrcResource: transmute_copy(&ms),
+                    pDstResource: transmute_copy(&resolved),
+                    SubresourceCount: 1,
+                    pSubresourceParameters: &whole,
+                    Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    ResolveMode: D3D12_RESOLVE_MODE_AVERAGE,
+                    PreserveResolveSource: false.into(),
+                }),
+            },
+        };
+        list.SetPipelineState(&ms_pso);
+        list.SetGraphicsRootSignature(&ms_root);
+        list4.BeginRenderPass(
+            Some(&[pass(ms_rtv, clear([0.0, 0.0, 0.0, 1.0]), resolve)]),
+            None,
+            D3D12_RENDER_PASS_FLAG_NONE,
+        );
+        viewport(&list, 0, 0, SIZE);
+        list.DrawInstanced(3, 1, 0, 0);
+        list4.EndRenderPass();
+        c.run(&list)?;
+        Ok(format!(
+            "{} | {}",
+            colours(&c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?),
+            colours(&c.pixels(&resolved, D3D12_RESOURCE_STATE_RESOLVE_DEST)?)
+        ))
+    }
+}
+
 /// A command signature of one argument, and a default buffer holding `bytes` for its arguments.
 unsafe fn arguments(
     c: &Ctx,
@@ -1249,18 +1866,26 @@ unsafe fn indirect_vertex_buffer(c: &Ctx) -> Result<String> {
 }
 
 /// Indexed indirect draws of a vertex shader shading by `SV_VertexID`, from base vertex 0 and from
-/// base vertex 3: Direct3D's vertex IDs are the indices, without the base vertex.
+/// base vertex 3 (also through a count buffer): Direct3D's vertex IDs are the indices, without the
+/// base vertex; and a draw from first vertex 3 and first instance 1, whose IDs leave both out.
 unsafe fn indirect_vertex_id(c: &Ctx) -> Result<String> {
     unsafe {
         let (root, pso) = c.triangle_pso(true)?;
         let vertices = c.upload(&triangles())?;
-        let offsets = c.upload(&[0; 8])?;
+        let offsets = c.upload(&[0; 16])?;
         let indices = c.upload(&u32s(&[0, 1, 2]))?;
+        let (plain, plain_args) = arguments(
+            c,
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
+            16,
+            &u32s(&[3, 1, 3, 1]),
+        )?;
+        let counts = filled(c, &u32s(&[2]))?;
         let (draws, args) = arguments(
             c,
             D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED,
             20,
-            &u32s(&[3, 1, 0, 0, 0, 3, 1, 0, 3, 0]),
+            &u32s(&[3, 1, 0, 0, 0, 3, 1, 0, 3, 0, 3, 1, 0, 6, 0]),
         )?;
         let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
         let (target, _heap, _rtv) = c.target(&list)?;
@@ -1271,7 +1896,7 @@ unsafe fn indirect_vertex_id(c: &Ctx) -> Result<String> {
             1,
             Some(&[D3D12_VERTEX_BUFFER_VIEW {
                 BufferLocation: offsets.GetGPUVirtualAddress(),
-                SizeInBytes: 8,
+                SizeInBytes: 16,
                 StrideInBytes: 8,
             }]),
         );
@@ -1285,6 +1910,10 @@ unsafe fn indirect_vertex_id(c: &Ctx) -> Result<String> {
         list.ExecuteIndirect(&draws, 1, &args, 0, None, 0);
         viewport(&list, half, half, half);
         list.ExecuteIndirect(&draws, 1, &args, 20, None, 0);
+        viewport(&list, half, 0, half);
+        list.ExecuteIndirect(&plain, 1, &plain_args, 0, None, 0);
+        viewport(&list, 0, half, half);
+        list.ExecuteIndirect(&draws, 3, &args, 0, &counts, 0);
         c.run(&list)?;
         Ok(colours(
             &c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?,

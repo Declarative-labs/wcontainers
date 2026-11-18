@@ -5,13 +5,13 @@
 
 use std::path::Path;
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc, BufferRange,
-    BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange,
-    Extent, FillMode, Filter, Format, FrontFace, Interpolation, MapIntent, Origin, PassDesc,
-    Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc, SlotKind,
-    StageSet, StepMode, StoreOp, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding, VertexFormat,
-    VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,
+    AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc,
+    BufferRange, BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall,
+    DrawRange, Extent, FillMode, Filter, Format, FrontFace, Interpolation, MapIntent, Origin,
+    PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc,
+    SlotKind, StageSet, StepMode, StoreOp, TextureDesc, TextureDimension, TextureRegion,
+    TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding,
+    VertexFormat, VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};
@@ -594,6 +594,63 @@ fn buffer_size(bases: &Option<Bases>) -> u64 {
     bases.map_or(0, |d| d.arguments().len() as u64)
 }
 
+/// A constant buffer's bytes in the texture `AddedBinding::ConstantsAsTexture` reads: one 16-byte row
+/// per RGBA32 unsigned texel, `CONSTANTS_TEXTURE_WIDTH` rows to a texture row.
+pub fn constants_texture<B: Backend>(b: &mut B, bytes: &[u8]) -> (B::Texture, B::TextureView) {
+    let width = wcontainers_gpu::CONSTANTS_TEXTURE_WIDTH;
+    let rows = bytes.len().div_ceil(16) as u32;
+    let (w, h) = (rows.min(width), rows.div_ceil(width));
+    let mut texels = bytes.to_vec();
+    texels.resize((w * h * 16) as usize, 0);
+    let t = b
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba32Uint,
+            width: w,
+            height: h,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    b.write_texture(
+        &TextureRegion {
+            texture: &t,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        },
+        Extent {
+            width: w,
+            height: h,
+            depth_or_layers: 1,
+        },
+        &texels,
+        w * 16,
+        h,
+        WriteMode::Ordered,
+    );
+    let v = b
+        .create_view(
+            &t,
+            &TextureViewDesc {
+                format: Format::Rgba32Uint,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        )
+        .unwrap();
+    (t, v)
+}
+
 /// Draws through a back end with the converted shaders, binding by their reflection (every slot is
 /// register 0: the constants, the texture of [`texels`] and a linear clamping sampler); returns the
 /// target's texels. `provoking` is the back end's own (it only decides `ps_integer`'s value).
@@ -670,6 +727,14 @@ pub fn ours<B: Backend + 'static>(
     };
     let sampler = sampler_from(b, 0.0);
     let merged = setup.min_lod.map(|clamp| sampler_from(b, clamp));
+    // The constants as a front copies them for programs that read them through a texture.
+    let through_texture = vs
+        .reflection
+        .bindings
+        .iter()
+        .chain(&ps.reflection.bindings)
+        .any(|r| matches!(r.added, Some(AddedBinding::ConstantsAsTexture(_))));
+    let constants_texture = through_texture.then(|| constants_texture(b, &draw.constants));
 
     // Each stage's slots, from its reflection: vertex slots in set 0, pixel slots in set 1.
     let mut sets: [Vec<BindingEntry<'_, B>>; 2] = [Vec::new(), Vec::new()];
@@ -680,6 +745,11 @@ pub fn ours<B: Backend + 'static>(
         for r in &reflection.bindings {
             assert_eq!(r.register, 0, "{r:?}");
             let resource = match r.kind {
+                SlotKind::Texture
+                    if matches!(r.added, Some(AddedBinding::ConstantsAsTexture(_))) =>
+                {
+                    BindingResource::Texture(&constants_texture.as_ref().unwrap().1)
+                }
                 SlotKind::Uniform => BindingResource::UniformBuffer(BufferRange {
                     buffer: &constants,
                     offset: 0,
