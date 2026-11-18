@@ -90,6 +90,8 @@ pub struct WebGpu {
     /// the bytes between their rows (wgpu's Direct3D 12 copies them through a buffer of its own
     /// and then copies that whole, gaps included, where the driver lacks unrestricted pitches).
     padded_reads: bool,
+    /// Frames presented, for [`FRAME_REPORT`].
+    presented: u64,
     /// Changed whenever a buffer a binding set names moves so that a bind group made with it may no
     /// longer be right; draws rebind nothing while it stays the same.
     bind_epoch: u64,
@@ -491,6 +493,11 @@ pub struct Fence {
     index: wgpu::SubmissionIndex,
 }
 
+/// The start of the line the back end prints on standard error at each power of two frames
+/// presented: the frames, then every counter ([`Counters`]) and every slow path taken, each as
+/// `name=count`, so any program's log gives what a frame costs between two reports.
+pub const FRAME_REPORT: &str = "webgpu: frames=";
+
 impl WebGpu {
     /// Flags the host adds to its wgpu instance: timestamps resolved in nanoseconds natively, which
     /// `TIMESTAMPS` needs where the GPU's clock ticks in other units.
@@ -594,6 +601,7 @@ impl WebGpu {
             fills: Default::default(),
             float_clears,
             padded_reads,
+            presented: 0,
             bind_epoch: 0,
             windows: HashMap::new(),
             counters: Counters::default(),
@@ -616,6 +624,28 @@ impl WebGpu {
     /// What the caches have made so far.
     pub fn counters(&self) -> &Counters {
         &self.counters
+    }
+
+    /// The line printed at each power of two frames presented ([`FRAME_REPORT`]).
+    pub fn frame_report(&self) -> String {
+        let counters = format!("{:?}", self.counters);
+        let fields = counters
+            .split_once('{')
+            .and_then(|(_, rest)| rest.rsplit_once('}'))
+            .map_or("", |(fields, _)| fields);
+        let mut line = format!("{FRAME_REPORT}{}", self.presented);
+        for field in fields.split(',') {
+            if let Some((name, count)) = field.split_once(':') {
+                line += &format!(" {}={}", name.trim(), count.trim());
+            }
+        }
+        for path in wcontainers_gpu::SlowPath::ALL {
+            let count = self.slow.count(path);
+            if count > 0 {
+                line += &format!(" {path:?}={count}");
+            }
+        }
+        line
     }
 
     /// How many pipelines (render and compute) and program layouts the caches hold now.
@@ -1545,6 +1575,7 @@ impl Backend for WebGpu {
     }
 
     fn write_buffer(&mut self, buffer: &Buffer, offset: u64, data: &[u8], mode: WriteMode) {
+        self.counters.buffer_bytes += data.len() as u64;
         self.write_buffer_impl(buffer, offset, data, mode);
     }
 
@@ -1557,6 +1588,7 @@ impl Backend for WebGpu {
         rows_per_layer: u32,
         mode: WriteMode,
     ) {
+        self.counters.texture_bytes += data.len() as u64;
         self.write_texture_impl(region, extent, data, row_pitch, rows_per_layer, mode);
     }
 
@@ -1950,6 +1982,10 @@ impl Backend for WebGpu {
         self.submit();
         if let Frame::Shown(texture) = frame {
             self.queue.present(texture);
+        }
+        self.presented += 1;
+        if self.presented.is_power_of_two() {
+            eprintln!("{}", self.frame_report());
         }
         Ok(())
     }

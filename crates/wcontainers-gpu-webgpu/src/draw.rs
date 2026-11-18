@@ -39,6 +39,10 @@ pub struct Counters {
     pub slices: u64,
     /// Writes ordered through a staging buffer and a copy.
     pub staged_writes: u64,
+    /// Bytes the device was asked to write into buffers (`write_buffer`, every route).
+    pub buffer_bytes: u64,
+    /// Bytes the device was asked to write into textures (`write_texture`, as given).
+    pub texture_bytes: u64,
     /// Staging rings made (the first, and each larger one a submit's staged bytes needed).
     pub staging_rings: u64,
     /// Query rings made, which resolved query results are taken from as staged bytes are from

@@ -834,3 +834,72 @@ fn ordered_writes_are_staged_in_one_ring() {
     assert!(finish(&mut b, rb, 2 << 20) == big, "the large staged write");
     assert_eq!(b.counters().staging_rings, 2, "{:?}", b.counters());
 }
+
+/// The bytes written into buffers and textures are counted, and the frame report names every
+/// counter as `name=count`.
+#[test]
+fn written_bytes_are_counted_and_reported() {
+    use wcontainers_gpu::{TextureDesc, TextureDimension};
+    const BUFFER_BYTES: usize = 64;
+    const SIDE: u32 = 4;
+    let mut b = device();
+    let buffer = b
+        .create_buffer(&BufferDesc {
+            size: BUFFER_BYTES as u64,
+            usage: BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .unwrap();
+    let texture = b
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: SIDE,
+            height: SIDE,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let before = *b.counters();
+    b.write_buffer(&buffer, 0, &[1; BUFFER_BYTES], WriteMode::Discard);
+    b.write_buffer(&buffer, 0, &[2; BUFFER_BYTES / 2], WriteMode::Ordered);
+    let texel = Format::Rgba8Unorm.block().2;
+    let texels = vec![3; (SIDE * SIDE * texel) as usize];
+    b.write_texture(
+        &TextureRegion {
+            texture: &texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        },
+        Extent {
+            width: SIDE,
+            height: SIDE,
+            depth_or_layers: 1,
+        },
+        &texels,
+        SIDE * texel,
+        SIDE,
+        WriteMode::Discard,
+    );
+    b.submit();
+    let after = *b.counters();
+    assert_eq!(
+        after.buffer_bytes - before.buffer_bytes,
+        (BUFFER_BYTES + BUFFER_BYTES / 2) as u64
+    );
+    assert_eq!(
+        after.texture_bytes - before.texture_bytes,
+        texels.len() as u64
+    );
+    let report = b.frame_report();
+    assert!(report.starts_with(wcontainers_gpu_webgpu::FRAME_REPORT));
+    assert!(report.contains(&format!(" buffer_bytes={}", after.buffer_bytes)));
+    assert!(report.contains(&format!(" texture_bytes={}", after.texture_bytes)));
+    assert!(report.contains(&format!(" pipelines={}", after.pipelines)));
+}

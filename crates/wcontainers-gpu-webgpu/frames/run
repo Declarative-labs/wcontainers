@@ -67,6 +67,6 @@ for program in "${programs[@]}"; do
         rig_ssh "C:\\wc\\tools\\samply-0.13.1\\samply.exe import --save-only -o $out.json $out.etl && del $out.etl"
     done
     E="C:\\wc\\target\\$name\\release"
-    rig_ssh "$E\\examples\\frames.exe $process $O\\$tag-$short.json $short $O\\$tag-$long.json $long $E $E\\examples" || code=$?
+    rig_ssh "$E\\examples\\frames.exe --log $O\\$tag-$long\\$program\\output.log $process $O\\$tag-$short.json $short $O\\$tag-$long.json $long $E $E\\examples" || code=$?
 done
 exit $code
