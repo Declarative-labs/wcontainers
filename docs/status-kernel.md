@@ -193,6 +193,21 @@ LTP comparison (layer 3), table at the end of this run:
 - Excused with a gap: none final yet; the draft list below stands, with the section 15 causes
   named above.
 
+Rerun of the whole comparison's 237 differences at adc5628c's code (scratch k6c3/redo-b.tsv,
+started 12:26 detached, 3 jobs, LTP_LIMIT 300, load 38 to 66; it goes on, the timeouts last):
+at 151 of 237, 41 now match: AF_ALG 10 (af_alg01 to 06 and 08, cve-2017-17805, 17806,
+2026-31431), core dumps (abort01, kill11, waitpid01), cve-2018-9568 and connect02, inotify06,
+cve-2017-8890 and accept02, cve-2018-11508 and adjtimex01 to 03, cve-2018-12896 and
+timer_settime03, ftest02, ftest06, proc01, creat07, eventfd06, execve04, get_robust_list01,
+mlock203, mmap14, munlockall01, rt_sigqueueinfo01, sched_setparam05, sendfile09 and 09_64,
+sockioctl01, statx01, and math float_iperb (which passed this time: the heap corruption is
+intermittent; float_power and float_trigo ran out the 300 s). Found by it: cve-2026-43499 now
+passes PR_SET_MM_MAP and breaks on FUTEX_CMP_REQUEUE_PI not answering EDEADLK (a priority
+inheritance chain the futex code does not detect); waitid10 read /proc/sys/kernel/core_pattern
+(built at 85ed4778 with core_uses_pid, core_pipe_limit, core_sort_vma and
+core_file_note_size_limit, the last capping NT_FILE; core_modes is left out: it would say "file"
+only); af_alg07 and cve-2019-8912 need two CPUs (section 15).
+
 Whole suite at adc5628c (the last code commit of this run): 234 passed, 0 failed, 11 ignored
 (their known reasons), 10:09 to 12:46 beside the whole LTP run, load 25 to 90 (scratch
 k6c3/suite.log). Layer 1 at adc5628c: seeds 9191003, 9191004 and 9191005, each 300 sequences
@@ -3375,7 +3390,10 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K6c, in this order:
-1. Run the 237 tests that differ in the whole comparison at fb0bc97 again at the newest commit
+1. Read the rerun of the 237 differences (scratch k6c3/redo-b.tsv; continue it with the same
+   command if it stopped: `ltp ours` skips tests a results file has) and compare it. Before that
+   was started the plan was:
+   Run the 237 tests that differ in the whole comparison at fb0bc97 again at the newest commit
    (`grep` their ids from scratch k6c3/compare-5.txt, or `ltp compare` the committed
    ltp/ours-20260930-fb0bc97.tsv with the reference) into a second file, LTP_LIMIT 300, and
    compare; then the timeouts with a long limit (item 5).
