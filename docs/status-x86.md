@@ -37,8 +37,10 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   the description section format 4 (ARM64's output the same apart from it, shown), built `wcontainers-x86`
   (decoder, block, base integer instructions, the SSE2 integer moves and logic a C library's start needs,
   lazy flags, calls and returns, syscall, the 128-by-64 division, the claim table) and x86's layer 1, which
-  passes every form at 1,000 cases a form against the i7-8750H; hello world prints in wasmtime. Not complete:
-  see "X3: what comes next".
+  passes every form at 1,000 cases a form against the i7-8750H; hello world prints in wasmtime. Run 2 (the
+  same day) built the length table from a sweep of every map on the reference, ran the kernel-only forms in
+  layer 1, ran x86 in Chrome, and measured the decoder's share of the browser build and the long division
+  (see "X3, run 2"). Not complete: see "X3: what comes next".
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -53,23 +55,69 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 
 ## X3: what comes next
 
-1. Layer 1's cases in no form fail on VEX and EVEX encodings the reference CPU counts differently from
-   `vex_length` (known failure, `bytes_in_no_form_stop_as_on_the_cpu_x86_64`; seeds 1 to 6 each fail on
-   one, for example `41 f2 4b 64 47 48 46 44 4d 62 b1 b0 ce 25 71 4d`, which the CPU runs as 15 bytes or
-   fewer, and `47 65 65 67 40 f0 4d 49 65 c5 b5 83 f0`, which it counts past 15). Build plan 5.2's sweep of
-   the VEX and EVEX maps (and the legacy maps' opcodes iced calls invalid) on the reference, keep its script
-   and output beside the crate's tests, a table from it and a test checking the table against the output;
-   then run 10,000 cases in no form.
-2. Chrome: the browser crate for x86 (its feature), x86's layer 1 sample in Chrome, hello world in Chrome,
-   and the browser runner's stand-in answering `arch_prctl` as the wasmtime one now does
-   (`GuestTest::stand_in_call`).
-3. Measure what the decoder adds to the browser build, and the long division's cost against native (plan 9).
-4. The designed-answers (hand-made) cases of x86: `int 0x80` and `sysenter` (general protection, counted),
-   the kernel-only group's faults decided against the reference, and the plan 7.4 exclusions.
-5. Plan 7.3's recorded reference results and layer 1 batching (still proposed, not ruled).
-6. For X4: the shared layer 2 model's operations are ARM64's; x86's `assemble`, `smoke`, `checks` panic
+1. Read the result of the last proof runs of run 2 below (layer 1 at seed 2, 1,000 a form; the suite) if
+   they are marked as not finished there.
+2. Plan 7.3's recorded reference results and layer 1 batching (still proposed, not ruled).
+3. For X4: the shared layer 2 model's operations are ARM64's; x86's `assemble`, `smoke`, `checks` panic
    with the milestone that builds them. A cached FS base at full look-ahead must be reloaded after a system
    call (the stand-in's `arch_prctl` writes it in the block).
+4. For X5: `xsetbv` is in the AVX setting's group and has no meaning yet (with the setting on it would give
+   illegal instruction, where a CPU with XSAVE gives general protection). The never-claimed list in layer 1
+   (100 cases a form) and the designed answers of the VMX forms (illegal instruction, excluded from layer 1
+   as plan 7.4 says) come with X5. Prefixes a CPU without a feature ignores, so that the bytes run as an older
+   instruction (`F3 0F 09`, `wbnoinvd`, is `wbinvd` and general protection on the reference), are X5's
+   never-claimed list to find.
+
+## X3, run 2 (2026-11-18)
+
+What was done:
+- The length of every encoding iced calls invalid, cannot finish, or decodes as a never-claimed `Code` now
+  comes from a table (`decode.rs`, `ONE_BYTE` and `TWO_BYTE`, plus the rules for the 0F38 and 0F3A maps, VEX
+  and EVEX map fields, and 66, 67 and REX.W). The table comes from a sweep on the i7-8750H made by
+  `x86-lengths` in the test crate: 300 lines (escape and filler) of 256 opcodes, 76,100 lengths, kept as
+  `crates/wcontainers-x86/tests/lengths.txt`. It was run twice: the second run added XOP's `8F` and the 3DNow
+  suffixes, and its 294 shared lines were the same as the first run's. `tests/lengths.rs` checks every recorded
+  length against `decode`, and checks the table against iced's lengths of valid instructions where the
+  sweep cannot measure (an instruction that faults however short it is). What the sweep found is in plan 5.2.
+  The old rule (decode again without the repeat prefix or 66, and VEX by its fields) was wrong for many
+  invalid opcodes: `06` was counted as 2 bytes where the CPU counts 1, and 0F3A as no immediate. A
+  never-claimed instruction of another maker is counted by Intel's map: 3DNow's `0F 0F` with nothing after,
+  XOP's `8F` as a ModRM, SSE4a's `66 0F 78` with no immediates.
+- `decode` no longer returns `None` when iced runs out of bytes on an encoding the CPU counts as shorter
+  (`4A D6`: iced wants more after `D6`, the CPU counts 2 bytes). This made layer 1's no-form cases panic in
+  the translator once the table was in.
+- Kernel-only `Code`s are layer 1 forms (49 of them; their cases got `dx`, control and debug registers,
+  `ins`, `outs` and `out imm8, al`). Layer 1 decided their faults: all general protection but `rsm`, which is
+  illegal instruction (#UD outside system management mode). A kernel-only `Code` whose features the CPU we
+  present does not have (VMX, SVM, SMAP, SGX, XSAVES, INVPCID, CET and the rest) is now in the never-claimed
+  group, which gives illegal instruction as on a CPU without the feature. Only `MSR`, `RDPMC` and `SMM`
+  (`KERNEL_FEATURES`) join the default list for kernel-only instructions.
+- The stand-in's thread-pointer call is now data (`StandIn::set_base`: the number, each code's block offset,
+  the limit). The wasmtime and Chrome stand-ins both read it. `GuestTest::stand_in_call` is gone.
+- Chrome: `sample_matches_the_cpu_in_chrome_x86_64` passes (654 forms, 1 a form, seed 1), and so does
+  `hello_matches_linux_in_chrome_at_none_x86_64` (-O0, -O1 and -Os blobs; -O2 and -O3 build the same bytes
+  as -O1).
+- `programs/x86_64/syscall.h` and `divide.c`, and `measure_long_division_x86_64` (ignored, not a check).
+
+Measured (plan 5.2 and 12 say so too):
+- Long division, best of 5 (`x3/run2/divide.log`): 50 million `div r64` with a high half: native 21.27 ns a
+  division on the i7-8750H (load 0.16 before, 1.26 after), 47.75 ns at look-ahead none in wasmtime on the
+  Mac (load about 38). With a zero high half: native 6.60 ns, ours 34.35 ns. The long path's own cost: native
+  14.66 ns, ours 13.39 ns, so about the CPU's own. The two sides ran on different machines.
+- The decoder in the browser build, from the link map of the release x86 build (`--Map`, at 5450cf9 with the
+  table; `x3/run2/x86-browser.map`, `scripts/mapsize.py`): the build is 872,638 bytes with every custom
+  section stripped (265,961 gzip -9, 203,533 brotli -q 11), or 1,136,812 with `wasm-tools strip`, which keeps
+  the name section (299,537 and 229,131). iced-x86's own functions and statics in it are 156,416 bytes
+  (115,635 of code, 40,781 of data), 36,056 gzip and 27,565 brotli compressed alone. Mac load 22.9.
+
+Proof of run 2 (the Mac, Apple M5; the i7-8750H's load given with each):
+- Kernel-only forms, 49 forms, 1,000 cases a form, seed 1, 4 at once (`x3/run2/kernel-l1-1000.log`): passed.
+- Cases in no form, seeds 1 to 6 at 64 cases each (`x3/run2/noform-*.log`): all passed. All six had failed
+  in run 1, and failed again on the panic above before it was fixed.
+- PENDING_NOFORM
+- PENDING_LAYER1
+- The x86 crate's tests: tables 4, lengths 2 (76,100 lengths), all passed.
+- PENDING_SUITE
 
 ## X3, run 1 (2026-11-18)
 
@@ -1328,7 +1376,13 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   WC_LAYER1_JOBS=6 nix develop -c cargo test -p wcontainers-translator-test --test layer1
   every_form_matches_the_cpu_x86_64` (`WC_LAYER1_FORMS`, `WC_LAYER1_SEED` as for ARM64); cases in no form,
   `bytes_in_no_form_stop_as_on_the_cpu_x86_64`; hello world, `--test programs hello_matches_linux_at_none_x86_64`;
-  the crate's own tests, `nix develop -c cargo test -p wcontainers-x86`. The scratch tools of run 1 (shift
+  the crate's own tests, `nix develop -c cargo test -p wcontainers-x86`. In Chrome: `--test layer1
+  sample_matches_the_cpu_in_chrome_x86_64` and `--test browser hello_matches_linux_in_chrome_at_none_x86_64`.
+  The length sweep (about 25 minutes, 6 connections): `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c
+  cargo run -p wcontainers-translator-test --bin x86-lengths -- <output> [connections]`, then copy the output
+  over `crates/wcontainers-x86/tests/lengths.txt`. The long division: `--test benchmarks
+  measure_long_division_x86_64 -- --ignored --nocapture` (`WC_BENCH_RUNS`, default 3), only while the x86
+  machine's load is below 2. The scratch tools of run 1 (shift
   sweeps, a hello debugger, a module dump) are in scratch `x3/run1/scratch_*.rs`: copy one into the test
   crate's `tests/` to run it.
 
@@ -1444,6 +1498,8 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   cases scripts' outputs before run 8 are kept only in the Mac's scratch `reference-proof/`. The
   independent checks' files are in `~/wcontainers-x86/check` and `check2` to `check9`. Installed in runs
   2 to 10: nothing.
+- Added in X3 run 2: `~/wcontainers-x86/proof/len.sh` (a length probe over the old `stepper4`, for quick
+  looks; the table's sweep uses the harness's runner instead).
 - Added in X2: `~/wcontainers-x86/reference/<hash>`, the reference runner the harness uploads (one file per
   build of it).
 - Not always idle: another track's atomic-cost measurement (`~/ordering-cost`, wasmtime) runs there at
@@ -1451,6 +1507,12 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   timing there.
 
 ## Cases actually run
+
+- X3 run 2: the length sweep twice (294 and 300 lines of 256 probes, each probe 4 or 5 runs on the
+  reference, about 380,000 runs); the kernel-only forms at 50 cases (twice, while fixing) and at 1,000
+  (seed 1); cases in no form at 64 for seeds 1 to 6 (twice), and 10,000 at seed 1; layer 1 in Chrome at 1 a
+  form (seed 1); hello world in Chrome once; the long division measurement once at best of 1 and once at
+  best of 5; layer 1 at 1,000 cases a form, seed 2; the suite.
 
 - X0: 22 single-instruction cases on the reference CPU in run 1, 6 more in run 2, 21 more in run 3
   (hand-written, no seed); in run 3 also every one of the 2^32 inputs of `rcpss` and of `rsqrtss`, three
@@ -1565,8 +1627,16 @@ X3 (each also written into the plan's text where the plan is wrong):
 - Plan 5.4's canonical rule was wrong for the kernel's half: an access there is canonical and a page fault on
   the reference. Plan 5.2's length rule ran only for 15-byte `INVALID`s; it now runs for every `INVALID`.
   `Index::BitOffset` gained the operand's own index (plan 3.2).
-- `GuestTest` gains `stand_in_call` (the stand-in's CPU-own system calls: x86's `arch_prctl`), and
-  `Target` its runner's remote directory.
+- `GuestTest`'s `StandIn` gains `set_base` (the system call that sets a thread pointer in the block: x86's
+  `arch_prctl`), read by the wasmtime and the Chrome stand-ins alike, and `Target` its runner's remote
+  directory.
+- Plan 5.2's length rules were replaced by a table from a sweep of every map on the reference (run 2). The
+  table also counts never-claimed `Code`s (iced's lengths for AMD's 3DNow, XOP and SSE4a are not what the
+  Intel reference counts). The sweep is a program of the test crate (`x86-lengths`), not a script: it goes
+  through the harness's reference transport. Its output sits beside the x86 crate's tests.
+- Kernel-only `Code`s of features not presented are never claimed, not "kernel only" (plan section 2).
+  Plan 5.2 said every kernel-only `Code` was "kernel only" whatever its feature, which would have given
+  general protection for VMX, SMAP or CET instructions, which a CPU without those features does not have.
 - `told()`, `assemble`, `smoke`, `checks` and `changes` of x86's `GuestTest` panic naming the milestone that
   builds them; no x86 test calls them yet.
 - The iced memory sizes and register numbers the meanings need are a small map in the crate (iced has them

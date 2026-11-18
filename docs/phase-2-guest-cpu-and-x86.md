@@ -1657,9 +1657,11 @@ Tests (section 7 gives the detail):
     then the signs (the remainder takes the dividend's sign). About 60 WebAssembly operations (expected).
   - Not a slow path, so no counter: it is the instruction's whole meaning in WebAssembly arithmetic, with
     no hook and no software state, like phase one's guards around ARM64 division and like x86's own flag
-    work; the CPU's own 64-bit `div` is a long instruction too. Its cost against native is measured at X3
-    on a program that divides 128-bit values (section 12), and reported to the owner if it is far above
-    the native cost.
+    work; the CPU's own 64-bit `div` is a long instruction too. Measured at X3 (`measure_long_division_x86_64`,
+    `programs/x86_64/divide.c`: 50 million `div r64` in a loop, with a high half and with none, best of 5):
+    the long path adds 13.4 ns a division over the fast path at look-ahead none in wasmtime on the Apple M5
+    (load about 38), and the CPU's own `div` with a high half takes 14.7 ns more than with none on the
+    i7-8750H (load 0.2 to 1.3): the long path costs about what the CPU's own does.
 - `mov ss` and `pop ss`: `pop ss` does not exist in 64-bit mode (iced decodes it as `INVALID`); `mov ss`
   with a selector Linux allows changes nothing a user program sees, except that a trap flag the program
   set stops after the instruction after it, as on the CPU: its meaning writes 1 to the `StepHeld` control
@@ -3032,8 +3034,7 @@ apply unchanged.
 - The cost of lazy flags with PF and AF on demand, and of partial flag setters, on real programs.
 - The cost of the canonical-address check on every `ret` and every jump or call through a register or
   memory (four operations each, section 3.4).
-- The cost of the 128-by-64 long division against the CPU's own `div r64` (section 5.2), and of the
-  approximate reciprocals' formula (about 30 vector operations for four lanes, section 5.8).
+- The cost of the approximate reciprocals' formula (about 30 vector operations for four lanes, section 5.8).
 - The size of `astro-float` in the real x86 browser build (40,947 bytes brotli in a scratch cdylib, section 5.8).
 - How often programs translate code from a live stack frame, and how often parallel threads must be
   stopped to protect code (section 5.7).
