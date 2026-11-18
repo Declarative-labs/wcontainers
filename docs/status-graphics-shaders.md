@@ -1402,6 +1402,8 @@ scratch `graphics-shaders/run28`:
 - Recompiling every own shader on the desktop (`compile.cmd`) gave the committed bytes; only
   `ps_wave.dxil` is new.
 - Not rerun this run: the WebAssembly comparison and Chrome's compile of the written files.
+- At the end of run 28 the laptop's `~/wcontainers-graphics/target/phase-2-graphics-shaders` (5.7 GB)
+  and the desktop's `C:\wc\target\phase-2-graphics-shaders` were deleted.
 
 Run 27, 2026-11-18, counts only (laptop load about 1; desktop shared through the queue), logs in
 scratch `graphics-shaders/run27`:
