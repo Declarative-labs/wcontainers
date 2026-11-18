@@ -237,6 +237,8 @@ pub(super) fn do_mmap(
     let mut zero_device = None;
     // A mapping of a backend file: the open file its bytes are read through.
     let mut backend = None;
+    // A mapping of a socket: whether it is TCP's, whose `mmap` is asked after the limits.
+    let mut socket_tcp = None;
     let file = match file {
         None => None,
         Some(file) => {
@@ -288,19 +290,10 @@ pub(super) fn do_mmap(
             if grows_down {
                 return Err(Errno::EINVAL);
             }
-            // `tcp_mmap`: a TCP socket maps for reading only, and never later for more; its pages
-            // come only from TCP_ZEROCOPY_RECEIVE (not built), so touching one is SIGBUS. Every
-            // other protocol has `sock_no_mmap`.
             if socket {
-                let tcp =
-                    matches!(&inode.content, Content::Socket(socket) if socket.borrow().tcp());
-                if !tcp {
-                    return Err(Errno::ENODEV);
-                }
-                if permissions.intersects(Permissions::WRITE | Permissions::EXECUTE) {
-                    return Err(Errno::EPERM);
-                }
-                allowed.remove(Permissions::WRITE | Permissions::EXECUTE);
+                socket_tcp = Some(
+                    matches!(&inode.content, Content::Socket(socket) if socket.borrow().tcp()),
+                );
             }
             // A sealed file is not written through a mapping, then or later (`memfd_check_seals_mmap`).
             if let Content::Regular(regular) = &inode.content
@@ -408,6 +401,19 @@ pub(super) fn do_mmap(
         replaced,
     ) {
         return Err(Errno::ENOMEM);
+    }
+    // `tcp_mmap`: a TCP socket maps for reading only, and never later for more; its pages come
+    // only from TCP_ZEROCOPY_RECEIVE (not built), so touching one is SIGBUS. Every other protocol
+    // has `sock_no_mmap`.
+    match socket_tcp {
+        Some(false) => return Err(Errno::ENODEV),
+        Some(true) if permissions.intersects(Permissions::WRITE | Permissions::EXECUTE) => {
+            return Err(Errno::EPERM);
+        }
+        Some(true) => mapping
+            .allowed
+            .remove(Permissions::WRITE | Permissions::EXECUTE),
+        None => {}
     }
     // A secret memory file is mapped only shared, and locked, within the limit on locked memory
     // (`secretmem_mmap`).
