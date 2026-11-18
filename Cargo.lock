@@ -1922,7 +1922,16 @@ dependencies = [
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-kernel",
+ "wcontainers-runtime",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-runtime"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-kernel",
 ]
 
 [[package]]
@@ -1956,6 +1965,25 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-guest-cpu",
+ "wcontainers-translator",
+ "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-wasmtime"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "gimli 0.34.0",
+ "object 0.41.0",
+ "rayon",
+ "rustix",
+ "wasm-encoder 0.263.0",
+ "wasmtime",
+ "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-guest-cpu",
+ "wcontainers-runtime",
  "wcontainers-translator",
  "zerocopy",
 ]
