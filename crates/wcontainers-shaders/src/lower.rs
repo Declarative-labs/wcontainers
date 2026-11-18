@@ -23,7 +23,7 @@ use naga::{
 use naga::{FastHashMap as HashMap, FastHashSet as HashSet};
 use wcontainers_gpu::{
     DrawBaseSource, HelperSlot, HelperValue, Interpolation, ReflectedBinding, Reflection,
-    ScalarKind as ValueKind, ShaderStage, SlotKind, SourceStage, StageExtras, StageValue,
+    ScalarKind as ValueKind, ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras, StageValue,
     SystemValue, TexelBufferRoute, VariantKey, helper_binding,
 };
 
@@ -246,6 +246,7 @@ impl<'a> Lowering<'a> {
                 helper_size: 0,
                 sampled_pairs: Vec::new(),
                 extras: StageExtras::None,
+                slow_paths: Vec::new(),
             },
             resources: HashMap::default(),
             io: Vec::new(),
@@ -327,13 +328,13 @@ impl<'a> Lowering<'a> {
     }
 
     /// The IR type of declaration `dcl`, its scalar the one its atomic operations take: signed where
-    /// they take signed minimums or maximums, unsigned where unsigned ones. Both cannot be declared.
+    /// they take signed minimums or maximums, unsigned where unsigned ones or both (the signed ones
+    /// then made by a compare-exchange loop).
     fn declared_ty(&self, dcl: u32) -> Result<Ty> {
         let mut t = self.ir.op(dcl)?.ty.clone();
         let scalar = match self.atomic.get(&dcl) {
-            Some(3) => return Err(unsupported("AtomicSignedness")),
             Some(1) => scalar::I32,
-            Some(2) => scalar::U32,
+            Some(2 | 3) => scalar::U32,
             _ => return Ok(t),
         };
         if let [member] = &mut t.members[..] {
@@ -3148,7 +3149,12 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             6..=9 => {
                 let signed = what <= 7;
                 if signed != (s == Scalar::I32) {
-                    return Err(unsupported("AtomicSignedness"));
+                    if typed.is_some() {
+                        return Err(unsupported("AtomicSignedness"));
+                    }
+                    let value = operand(self, b, 0)?;
+                    let v = self.exchange_loop(b, pointer, s, value, what % 2 == 0)?;
+                    return Ok(want.is_some().then(|| self.retyped(b, v, s, want)));
                 }
                 let fun = if what % 2 == 0 { A::Min } else { A::Max };
                 (fun, operand(self, b, 0)?)
@@ -3223,6 +3229,121 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             v = self.bin(b, BinaryOperator::Subtract, v, one);
         }
         Ok(Some(self.retyped(b, v, s, want)))
+    }
+
+    /// An atomic minimum (or maximum) of `value` into `pointer` in the other signedness than the
+    /// memory's scalar `s`, by a compare-exchange loop; gives the old value.
+    fn exchange_loop(
+        &mut self,
+        b: &mut Block,
+        pointer: Handle<Expression>,
+        s: Scalar,
+        value: Handle<Expression>,
+        min: bool,
+    ) -> Result<Handle<Expression>> {
+        if !self
+            .l
+            .reflection
+            .slow_paths
+            .contains(&SlowPath::AtomicExchangeLoop)
+        {
+            self.l
+                .reflection
+                .slow_paths
+                .push(SlowPath::AtomicExchangeLoop);
+        }
+        let other = match s {
+            Scalar::I32 => Scalar::U32,
+            _ => Scalar::I32,
+        };
+        let ty = self.l.scalar_ty(s);
+        let old = self.f.local_variables.append(
+            LocalVariable {
+                name: None,
+                ty,
+                init: None,
+            },
+            Span::UNDEFINED,
+        );
+        let operand = self.e.bitcast(&mut self.f, b, value, s, other);
+        self.e.flush(&self.f, b);
+        let mut body = Block::new();
+        let current = self.add(&mut body, Expression::Load { pointer });
+        let a = self.e.bitcast(&mut self.f, &mut body, current, s, other);
+        let fun = if min {
+            MathFunction::Min
+        } else {
+            MathFunction::Max
+        };
+        let m = self.add(
+            &mut body,
+            Expression::Math {
+                fun,
+                arg: a,
+                arg1: Some(operand),
+                arg2: None,
+                arg3: None,
+            },
+        );
+        let new = self.e.bitcast(&mut self.f, &mut body, m, other, s);
+        let result_ty = self
+            .l
+            .module
+            .generate_predeclared_type(naga::PredeclaredType::AtomicCompareExchangeWeakResult(s));
+        let result = self.add(
+            &mut body,
+            Expression::AtomicResult {
+                ty: result_ty,
+                comparison: true,
+            },
+        );
+        self.stmt(
+            &mut body,
+            Statement::Atomic {
+                pointer,
+                fun: naga::AtomicFunction::Exchange {
+                    compare: Some(current),
+                },
+                value: new,
+                result: Some(result),
+            },
+        );
+        let var = self.add(&mut body, Expression::LocalVariable(old));
+        self.stmt(
+            &mut body,
+            Statement::Store {
+                pointer: var,
+                value: current,
+            },
+        );
+        let exchanged = self.add(
+            &mut body,
+            Expression::AccessIndex {
+                base: result,
+                index: 1,
+            },
+        );
+        self.e.flush(&self.f, &mut body);
+        let mut accept = Block::new();
+        accept.push(Statement::Break, Span::UNDEFINED);
+        body.push(
+            Statement::If {
+                condition: exchanged,
+                accept,
+                reject: Block::new(),
+            },
+            Span::UNDEFINED,
+        );
+        self.stmt(
+            b,
+            Statement::Loop {
+                body,
+                continuing: Block::new(),
+                break_if: None,
+            },
+        );
+        let var = self.add(b, Expression::LocalVariable(old));
+        Ok(self.add(b, Expression::Load { pointer: var }))
     }
 
     /// `v` of scalar `from` as the result type's scalar.

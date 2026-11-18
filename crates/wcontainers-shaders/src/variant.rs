@@ -21,6 +21,7 @@ mod constants;
 mod filter;
 mod layers;
 pub(crate) mod pull;
+mod swizzle;
 pub(crate) mod texel;
 
 type Result<T> = core::result::Result<T, ConvertError>;
@@ -32,6 +33,11 @@ pub(crate) fn apply(
     variant: &VariantKey,
     reflection: &mut Reflection,
 ) -> Result<()> {
+    if !variant.swizzled.is_empty() {
+        let mut outlined = Outlined::default();
+        swizzle::swizzled(module, &variant.swizzled, reflection, &mut outlined)?;
+        outlined.finish(module);
+    }
     constants_as_storage(module, variant.constants_as_storage, reflection)?;
     let mut outlined = Outlined::default();
     constants::constants_as_texture(

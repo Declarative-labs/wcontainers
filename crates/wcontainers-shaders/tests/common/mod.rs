@@ -634,6 +634,24 @@ pub struct Setup {
     /// Layers of a multisampled array texture bound at texture slot 0 ([`multisampled_layers`]), a
     /// texture per layer as `VariantKey::texture_layers` binds them; none where 0.
     pub layers: u32,
+    /// A component mapping applied to the sampled texture's texels as they are uploaded: what a view
+    /// with that mapping reads, for comparing `VariantKey::swizzled` against.
+    pub texel_map: Option<[wcontainers_gpu::ViewComponent; 4]>,
+}
+
+/// `texels` (Rgba8Unorm) with each texel's components mapped by `map`.
+pub fn mapped(texels: &[u8], map: [wcontainers_gpu::ViewComponent; 4]) -> Vec<u8> {
+    use wcontainers_gpu::ViewComponent as C;
+    texels
+        .chunks(4)
+        .flat_map(|t| {
+            map.map(|c| match c {
+                C::Zero => 0,
+                C::One => 255,
+                c => t[c as usize],
+            })
+        })
+        .collect()
 }
 
 impl Setup {
@@ -655,6 +673,7 @@ impl Setup {
             address: [wcontainers_gpu::AddressMode::Clamp; 3],
             texel_buffers: Vec::new(),
             layers: 0,
+            texel_map: None,
         }
     }
 }
@@ -956,7 +975,10 @@ pub fn ours<B: Backend + 'static>(
                 height: size,
                 depth_or_layers: 1,
             },
-            &level_texels(level),
+            &match setup.texel_map {
+                Some(map) => mapped(&level_texels(level), map),
+                None => level_texels(level),
+            },
             size * 4,
             size,
             WriteMode::Ordered,

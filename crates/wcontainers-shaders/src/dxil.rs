@@ -271,7 +271,13 @@ pub(crate) fn lower(
         helper_size: 0,
         sampled_pairs: Vec::new(),
         extras,
+        slow_paths: Vec::new(),
     };
+    if atomic_signedness_differs(&spirv) {
+        reflection
+            .slow_paths
+            .push(wcontainers_gpu::SlowPath::AtomicExchangeLoop);
+    }
     let ep = &module.entry_points[0].function;
     let inputs = signature(dxil, b"ISG1");
     for a in &ep.arguments {
@@ -1275,4 +1281,53 @@ fn bindings(
         slots.push((handle, slot));
     }
     Ok(slots)
+}
+
+/// Whether an atomic minimum or maximum in `spirv` is of the other signedness than the integers it
+/// works on, which naga's reader makes a compare-exchange loop.
+fn atomic_signedness_differs(spirv: &[u32]) -> bool {
+    use std::collections::HashMap;
+    const TYPE_INT: u32 = 21;
+    const TYPE_POINTER: u32 = 32;
+    // OpAtomicSMin, OpAtomicSMax; OpAtomicUMin, OpAtomicUMax.
+    const SIGNED: [u32; 2] = [236, 238];
+    const UNSIGNED: [u32; 2] = [237, 239];
+    // The instructions giving pointers: variables, access chains, texel pointers, parameters.
+    const POINTERS: [u32; 6] = [59, 65, 66, 67, 60, 55];
+    // Signedness of integer types, pointee of pointer types, type of each result.
+    let mut signed = HashMap::new();
+    let mut pointee = HashMap::new();
+    let mut types = HashMap::new();
+    let mut atomics = Vec::new();
+    let mut at = 5;
+    while at < spirv.len() {
+        let (count, op) = ((spirv[at] >> 16) as usize, spirv[at] & 0xffff);
+        if count == 0 || at + count > spirv.len() {
+            return false;
+        }
+        let w = &spirv[at + 1..at + count];
+        match op {
+            TYPE_INT if w.len() >= 3 => {
+                signed.insert(w[0], w[2] != 0);
+            }
+            TYPE_POINTER if w.len() >= 3 => {
+                pointee.insert(w[0], w[2]);
+            }
+            _ if (SIGNED.contains(&op) || UNSIGNED.contains(&op)) && w.len() >= 3 => {
+                atomics.push((SIGNED.contains(&op), w[2]));
+            }
+            _ => {}
+        }
+        if POINTERS.contains(&op) && w.len() >= 2 {
+            types.insert(w[1], w[0]);
+        }
+        at += count;
+    }
+    atomics.iter().any(|&(op_signed, pointer)| {
+        types
+            .get(&pointer)
+            .and_then(|t| pointee.get(t))
+            .and_then(|p| signed.get(p))
+            .is_some_and(|&memory_signed| memory_signed != op_signed)
+    })
 }

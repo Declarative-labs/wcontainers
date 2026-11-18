@@ -202,6 +202,37 @@ fn variants_draw_as_the_native_feature_does() {
             }
         }
 
+        // A view's component mapping: the plain program reading texels uploaded already mapped, as a
+        // view with the mapping reads them, and the variant applying it to the texels as they are.
+        {
+            use wcontainers_gpu::ViewComponent as C;
+            let map = [C::B, C::One, C::Zero, C::R];
+            let mut native = plain.clone();
+            native.setup.texel_map = Some(map);
+            let mut variant = plain.clone();
+            variant.setup.ps_key.swizzled = vec![(0, map)];
+            for (back_end, reference, texels) in [
+                (
+                    "webgpu",
+                    ours(&mut gpu, &native, ProvokingVertex::First),
+                    ours(&mut gpu, &variant, ProvokingVertex::First),
+                ),
+                (
+                    "webgl",
+                    ours(&mut gl, &native, ProvokingVertex::Last),
+                    ours(&mut gl, &variant, ProvokingVertex::Last),
+                ),
+            ] {
+                results.push(compare(
+                    format!("swizzled {route} {back_end}"),
+                    &reference,
+                    &texels,
+                    Format::Rgba8Unorm,
+                    (0, 0),
+                ));
+            }
+        }
+
         // A swapped depth range (near 1, far 0, as Vulkan and OpenGL allow and WebGPU does not), on
         // WebGPU as (0, 1) with the program flipping z. Neither Direct3D 11 nor ANGLE here draws a
         // swapped range as those APIs define it (window depth near + (far - near) z), so the reference

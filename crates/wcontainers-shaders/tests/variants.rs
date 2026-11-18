@@ -869,3 +869,43 @@ fn multisampled_array_layers_are_a_texture_each() {
         assert!(text.contains("switch"), "{route}: {text}");
     }
 }
+
+/// A view's component mapping: reads of the slot are composed from the mapping, by both routes; a
+/// gather of a component gathers the one it maps to, or is the constant it maps to.
+#[test]
+fn swizzled_slots_compose_what_they_read() {
+    use wcontainers_gpu::ViewComponent as C;
+    for (name, map) in [
+        ("ps_textured", [C::B, C::One, C::Zero, C::R]),
+        ("ps_mingather", [C::G, C::R, C::Zero, C::A]),
+        ("ps_mingather", [C::One, C::One, C::One, C::One]),
+    ] {
+        let code = own_pair(name);
+        let key = VariantKey {
+            swizzled: vec![(0, map)],
+            ..VariantKey::default()
+        };
+        let plain = both(&code, &VariantKey::default());
+        for (c, plain) in both(&code, &key).iter().zip(&plain) {
+            assert_ne!(wgsl(c), wgsl(plain), "{name} {map:?}");
+        }
+    }
+}
+
+/// Atomic minimums and maximums of the other signedness than their memory's other operations are
+/// compare-exchange loops, reported as the program's own slow path, by both routes.
+#[test]
+fn atomics_of_the_other_signedness_are_exchange_loops() {
+    for c in both(&own_pair("cs_atomics"), &VariantKey::default()) {
+        assert_eq!(
+            c.reflection.slow_paths,
+            [wcontainers_gpu::SlowPath::AtomicExchangeLoop]
+        );
+        assert!(wgsl(&c).contains("atomicCompareExchangeWeak"));
+    }
+    for name in ["ps_textured", "cs_shared"] {
+        for c in both(&own_pair(name), &VariantKey::default()) {
+            assert!(c.reflection.slow_paths.is_empty(), "{name}");
+        }
+    }
+}

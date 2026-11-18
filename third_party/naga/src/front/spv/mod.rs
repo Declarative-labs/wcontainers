@@ -1471,7 +1471,7 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     }
                     // A runtime sized array is not a composite type
                     crate::ArraySize::Dynamic => {
-                        return Err(Error::InvalidAccessType(root_type_id))
+                        return Err(Error::InvalidAccessType(root_type_id));
                     }
                 };
 
@@ -1584,15 +1584,132 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
 
         let (p_lexp_handle, p_base_ty_handle) =
             self.get_exp_and_base_ty_handles(pointer_id, ctx, emitter, block, body_idx)?;
-        // Memory cannot be reinterpreted in place: a signed minimum or maximum needs signed memory.
-        if let Some(kind) = op_signedness(inst.op) {
-            if ctx.module.types[p_base_ty_handle].inner.scalar_kind() != Some(kind) {
-                return Err(Error::UnsupportedSignedness(inst.op));
-            }
-        }
-
         log::trace!("\t\t\tlooking up value expr {value_id:?}");
         let v_lexp_handle = self.lookup_expression.lookup(value_id)?.handle;
+
+        // Memory cannot be reinterpreted in place: a minimum or maximum of the other signedness is a
+        // compare-exchange loop.
+        if let Some(kind) = op_signedness(inst.op) {
+            let memory = match ctx.module.types[p_base_ty_handle].inner {
+                crate::TypeInner::Scalar(scalar) => scalar,
+                _ => return Err(Error::UnsupportedSignedness(inst.op)),
+            };
+            if memory.kind != kind {
+                let fun = match atomic_function {
+                    crate::AtomicFunction::Min => crate::MathFunction::Min,
+                    crate::AtomicFunction::Max => crate::MathFunction::Max,
+                    _ => return Err(Error::UnsupportedSignedness(inst.op)),
+                };
+                block.extend(emitter.finish(ctx.expressions));
+                let local = ctx.local_arena.append(
+                    crate::LocalVariable {
+                        name: None,
+                        ty: p_base_ty_handle,
+                        init: None,
+                    },
+                    span,
+                );
+                let old = ctx
+                    .expressions
+                    .append(crate::Expression::LocalVariable(local), span);
+                let mut body = crate::Block::new();
+                emitter.start(ctx.expressions);
+                let mut add = |e| ctx.expressions.append(e, span);
+                let current = add(crate::Expression::Load {
+                    pointer: p_lexp_handle,
+                });
+                let a = add(crate::Expression::As {
+                    expr: current,
+                    kind,
+                    convert: None,
+                });
+                let v = add(crate::Expression::As {
+                    expr: v_lexp_handle,
+                    kind,
+                    convert: None,
+                });
+                let m = add(crate::Expression::Math {
+                    fun,
+                    arg: a,
+                    arg1: Some(v),
+                    arg2: None,
+                    arg3: None,
+                });
+                let new = add(crate::Expression::As {
+                    expr: m,
+                    kind: memory.kind,
+                    convert: None,
+                });
+                body.extend(emitter.finish(ctx.expressions));
+                let result_ty = ctx.module.generate_predeclared_type(
+                    crate::PredeclaredType::AtomicCompareExchangeWeakResult(memory),
+                );
+                let result = ctx.expressions.append(
+                    crate::Expression::AtomicResult {
+                        ty: result_ty,
+                        comparison: true,
+                    },
+                    span,
+                );
+                body.push(
+                    crate::Statement::Atomic {
+                        pointer: p_lexp_handle,
+                        fun: crate::AtomicFunction::Exchange {
+                            compare: Some(current),
+                        },
+                        value: new,
+                        result: Some(result),
+                    },
+                    span,
+                );
+                body.push(
+                    crate::Statement::Store {
+                        pointer: old,
+                        value: current,
+                    },
+                    span,
+                );
+                emitter.start(ctx.expressions);
+                let exchanged = ctx.expressions.append(
+                    crate::Expression::AccessIndex {
+                        base: result,
+                        index: 1,
+                    },
+                    span,
+                );
+                body.extend(emitter.finish(ctx.expressions));
+                body.push(
+                    crate::Statement::If {
+                        condition: exchanged,
+                        accept: crate::Block::from_vec(alloc::vec![crate::Statement::Break]),
+                        reject: crate::Block::new(),
+                    },
+                    span,
+                );
+                block.push(
+                    crate::Statement::Loop {
+                        body,
+                        continuing: crate::Block::new(),
+                        break_if: None,
+                    },
+                    span,
+                );
+                emitter.start(ctx.expressions);
+                let handle = ctx
+                    .expressions
+                    .append(crate::Expression::Load { pointer: old }, span);
+                self.lookup_expression.insert(
+                    result_id,
+                    LookupExpression {
+                        handle,
+                        type_id: result_type_id,
+                        block_id,
+                    },
+                );
+                self.record_atomic_access(ctx, p_lexp_handle)?;
+                return Ok(());
+            }
+        }
 
         block.extend(emitter.finish(ctx.expressions));
         // Create an expression for our result
@@ -3330,10 +3447,10 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                         self.upgrade_atomics.insert_field(ty, index);
                         Ok(members[index].ty)
                     }
-                    crate::TypeInner::Array { base, .. } => {
-                        Ok(base)
-                    }
-                    _ => unreachable!("Atomic operations on AccessIndex expressions only work for structs and arrays"),
+                    crate::TypeInner::Array { base, .. } => Ok(base),
+                    _ => unreachable!(
+                        "Atomic operations on AccessIndex expressions only work for structs and arrays"
+                    ),
                 }
             }
             crate::Expression::GlobalVariable(h) => {
