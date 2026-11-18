@@ -53,6 +53,8 @@ pub(super) struct QueryHeap<B: Backend> {
     set: B::QuerySet,
     kind: u32,
     count: u32,
+    /// An occlusion heap's exact counts, written as each counted query ends.
+    counts: Option<B::Buffer>,
 }
 
 /// The predicate set by `SetPredication` while a list replays.
@@ -134,14 +136,28 @@ impl<B: Backend> Device<B> {
                 ));
             }
         };
-        Ok(QueryHeapId(
-            self.query_heaps.insert(QueryHeap { set, kind, count }) as u32,
-        ))
+        let counts = match kind {
+            HEAP_OCCLUSION => Some(self.backend.create_buffer(&BufferDesc {
+                size: u64::from(count.max(1)) * 8,
+                usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                intent: MapIntent::Rarely,
+            })?),
+            _ => None,
+        };
+        Ok(QueryHeapId(self.query_heaps.insert(QueryHeap {
+            set,
+            kind,
+            count,
+            counts,
+        }) as u32))
     }
 
     pub fn destroy_query_heap(&mut self, id: QueryHeapId) {
         if let Some(h) = self.query_heaps.try_remove(id.0 as usize) {
             self.backend.destroy(Object::QuerySet(h.set));
+            if let Some(c) = h.counts {
+                self.backend.destroy(Object::Buffer(c));
+            }
         }
     }
 
@@ -246,17 +262,29 @@ impl<B: Backend> Device<B> {
             return Err(Error::Invalid("resolving queries past the heap's end"));
         }
         match (h.kind, kind) {
-            (HEAP_OCCLUSION, QUERY_BINARY_OCCLUSION) | (HEAP_TIMESTAMP, QUERY_TIMESTAMP) => {}
-            (HEAP_OCCLUSION, QUERY_OCCLUSION) => {
-                return Err(Error::NotImplemented("counted occlusion queries"));
-            }
+            (HEAP_OCCLUSION, QUERY_BINARY_OCCLUSION | QUERY_OCCLUSION)
+            | (HEAP_TIMESTAMP, QUERY_TIMESTAMP) => {}
             _ => return Err(Error::Invalid("a query type its heap does not hold")),
         }
         if count == 0 {
             return Ok(());
         }
-        let set = h.set.clone();
         let size = u64::from(count) * 8;
+        if kind == QUERY_OCCLUSION {
+            let counts = h
+                .counts
+                .clone()
+                .ok_or(Error::Invalid("an occlusion heap"))?;
+            let (target, heap_type) = self.buffer(dst)?;
+            let target = target.clone();
+            self.backend
+                .copy_buffer(&counts, u64::from(first) * 8, &target, dst_offset, size);
+            if heap_type == HeapType::Readback {
+                self.read_into(dst, dst_offset, size)?;
+            }
+            return Ok(());
+        }
+        let set = h.set.clone();
         let scratch = self.scratch(
             size,
             BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
@@ -280,6 +308,33 @@ impl<B: Backend> Device<B> {
             self.read_into(dst, dst_offset, size)?;
         }
         Ok(())
+    }
+
+    /// Writes the exact count of the counted occlusion query `index` of `heap`, in order with the
+    /// work recorded around it.
+    pub(super) fn write_count(
+        &mut self,
+        heap: QueryHeapId,
+        index: u32,
+        count: u64,
+    ) -> Result<(), Error> {
+        match self.query_heaps.get(heap.0 as usize) {
+            Some(QueryHeap {
+                counts: Some(c),
+                count: n,
+                ..
+            }) if index < *n => {
+                let c = c.clone();
+                self.backend.write_buffer(
+                    &c,
+                    u64::from(index) * 8,
+                    &count.to_le_bytes(),
+                    WriteMode::Ordered,
+                );
+                Ok(())
+            }
+            _ => Err(Error::Invalid("a counted query of no occlusion heap")),
+        }
     }
 
     /// The query set of an occlusion heap, for a pass to count in.

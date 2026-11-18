@@ -191,38 +191,62 @@ pub struct Verdict {
 }
 
 /// Checks every reference in `reference` (except the tolerance file) against the file of the same
-/// name in `run`.
-pub fn check_dir(reference: &Path, run: &Path) -> anyhow::Result<Vec<Verdict>> {
+/// name in `run`, and fails each output in `run` (a file `is_output` accepts) that has no reference.
+pub fn check_dir(
+    reference: &Path,
+    run: &Path,
+    is_output: impl Fn(&str) -> bool,
+) -> anyhow::Result<Vec<Verdict>> {
     let allowances = read_tolerances(&reference.join(TOLERANCES))?;
-    let mut files: Vec<String> = std::fs::read_dir(reference)
-        .with_context(|| format!("reading {}", reference.display()))?
-        .map(|e| Ok(e?.file_name().to_string_lossy().into_owned()))
-        .collect::<anyhow::Result<_>>()?;
+    let names = |dir: &Path| -> anyhow::Result<Vec<String>> {
+        std::fs::read_dir(dir)
+            .with_context(|| format!("reading {}", dir.display()))?
+            .map(|e| Ok(e?.file_name().to_string_lossy().into_owned()))
+            .collect()
+    };
+    let mut files = names(reference)?;
     files.retain(|f| f != TOLERANCES);
     files.sort();
     let mut verdicts = Vec::new();
-    for file in files {
-        let ours = run.join(&file);
+    for file in &files {
+        let ours = run.join(file);
         let (pass, detail) = if !ours.exists() {
             (false, "missing".to_owned())
         } else if file.ends_with(".txt") {
-            check_text(&reference.join(&file), &ours)?
+            check_text(&reference.join(file), &ours)?
         } else {
             match allowances
-                .get(&file)
+                .get(file)
                 .with_context(|| format!("{file} has no line in {TOLERANCES}"))?
             {
                 None => (
                     true,
                     "not compared: drew differently on each run of real Direct3D".to_owned(),
                 ),
-                Some(allowance) => match check_picture(&reference.join(&file), &ours, allowance) {
+                Some(allowance) => match check_picture(&reference.join(file), &ours, allowance) {
                     Ok(verdict) => verdict,
                     Err(e) => (false, format!("{e:#}")),
                 },
             }
         };
-        verdicts.push(Verdict { file, pass, detail });
+        verdicts.push(Verdict {
+            file: file.clone(),
+            pass,
+            detail,
+        });
+    }
+    let mut extra = names(run)?;
+    extra.retain(|f| is_output(f) && !files.contains(f));
+    extra.sort();
+    for file in extra {
+        verdicts.push(Verdict {
+            file,
+            pass: false,
+            detail: format!(
+                "written, but {} has no reference of it",
+                reference.display()
+            ),
+        });
     }
     Ok(verdicts)
 }
@@ -235,7 +259,7 @@ fn check_picture(
     let reference = crate::load(reference)?;
     let d = compare::compare(&reference, &crate::load(ours)?, allowance.tolerance)?;
     let mut detail = format!(
-        "{} of {} pixels beyond {} (WARP {}), largest difference {}",
+        "{} of {} pixels beyond {} (allowed {}), largest difference {}",
         d.differing, d.pixels, allowance.tolerance, allowance.pixels, d.largest
     );
     if let Some((x, y)) = d.first {
@@ -246,7 +270,7 @@ fn check_picture(
         let columns = Difference::tile_columns(reference.width()) as usize;
         write!(
             detail,
-            "; {} tiles of {TILE} by {TILE} beyond WARP's count, the worst at {},{}: {n} pixels, WARP {allowed}",
+            "; {} tiles of {TILE} by {TILE} beyond their allowance, the worst at {},{}: {n} pixels, allowed {allowed}",
             over.len(),
             i % columns * TILE as usize,
             i / columns * TILE as usize
@@ -351,5 +375,22 @@ mod tests {
         ours.put_pixel(21, 3, Rgba([0, 100, 100, 255]));
         let d = compare::compare(&gpu, &DynamicImage::from(ours), allowance.tolerance).unwrap();
         assert_eq!(tiles_over(&d, &allowance), vec![(1, 2, 0)]);
+    }
+
+    #[test]
+    fn outputs_without_reference_fail() {
+        let root = Path::new(env!("OUT_DIR")).join("outputs_without_reference_fail");
+        let (reference, run) = (root.join("reference"), root.join("run"));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in [&reference, &run] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("a-text.txt"), "same\n").unwrap();
+        }
+        std::fs::write(reference.join(TOLERANCES), "a-text.txt exact warp same\n").unwrap();
+        std::fs::write(run.join("a-new.txt"), "unseen\n").unwrap();
+        std::fs::write(run.join("a.log"), "not an output\n").unwrap();
+        let verdicts = check_dir(&reference, &run, |f| f.ends_with(".txt")).unwrap();
+        let seen: Vec<(&str, bool)> = verdicts.iter().map(|v| (&*v.file, v.pass)).collect();
+        assert_eq!(seen, [("a-text.txt", true), ("a-new.txt", false)]);
     }
 }

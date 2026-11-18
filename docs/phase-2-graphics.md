@@ -1021,8 +1021,9 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   16); WebGPU's adapters give 8 vertex buffers and 16 to 30 attributes. Streams and attributes beyond the
   back end's limits are fetched by the vertex program from read-only storage buffers by vertex and
   instance index, with the format decoded in the program and bounds checked, so reads past the end give
-  zero as Direct3D says (`VertexPulledInShader`, `VariantKey::pulled`, offset and stride in the helper
-  constants). Exact. WebGL 2 binds a buffer per attribute and GLES 3.0 guarantees 16 attributes, which
+  zero as Direct3D says (`VertexPulledInShader`, `VariantKey::pulled`; each pulled input has its own
+  storage binding and its offset, stride and step in the helper constants, so the program does not
+  depend on how the inputs share streams). Exact. WebGL 2 binds a buffer per attribute and GLES 3.0 guarantees 16 attributes, which
   is 10_0's number, so it never needs this.
 - **Constant buffer slots and sizes.** Direct3D has 14 constant buffers per stage of up to 65536 bytes;
   the helper constants take one more uniform binding. WebGPU gives 12 uniform buffers per stage by
@@ -1131,6 +1132,10 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
     not biased by the fixed function) and clamped to the viewport's depth range
     (`HelperValue::DepthRange`). `DepthClampInShader`. Exact; writing depth turns off early depth tests
     for those draws only.
+  - The vertex and pixel programs of these two variants are converted apart, so both keys carry
+    `VariantKey::linked`: the first location past every location either program's reflection lists,
+    and the vertex program's clip distance count. The added values are four-component values from that
+    location, the distances first, then the unclamped z.
   - The primitive index in pixel shaders: the stage helper's route again, as for a geometry shader
     that passes the primitive's number on, with the pixel shader made as `PRIMITIVE_ID_FROM_STAGE`
     (it reads the number from a flat value the helper's draw passes) (`PrimitiveIdAsGeometry`). Exact,

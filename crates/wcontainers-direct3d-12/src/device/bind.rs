@@ -5,7 +5,7 @@
 
 use wcontainers_gpu::{
     BindingEntry, BindingResource, BufferRange, MAX_BINDING_SETS, ReflectedBinding, RingKind,
-    SlotKind,
+    SlotKind, helper_binding,
 };
 
 use super::*;
@@ -254,6 +254,40 @@ enum Held<B: Backend> {
 impl<B: Backend> Device<B> {
     /// The binding sets of a draw with pipeline `pid` and root arguments `state`. Upload buffers a
     /// binding reads are written to the GPU first.
+    /// The binding set of a vertex program's helper block holding the draw's bases (base vertex,
+    /// first instance, draw number 0) at `at` in a block of `size` bytes (`DrawBaseInHelpers`).
+    pub(super) fn draw_base_set(
+        &mut self,
+        bases: [u32; 2],
+        size: u32,
+        at: u32,
+    ) -> Result<B::BindingSet, Error> {
+        self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
+        let (size, at) = (size as usize, at as usize);
+        if at + 12 > size {
+            return Err(Error::NotImplemented(
+                "a helper block laid out past the draw's bases",
+            ));
+        }
+        let mut block = vec![0u8; size];
+        block[at..at + 4].copy_from_slice(&bases[0].to_le_bytes());
+        block[at + 4..at + 8].copy_from_slice(&bases[1].to_le_bytes());
+        let align = self.backend.caps().limits.min_uniform_offset_alignment;
+        let mut offset = [0];
+        let ring = self
+            .backend
+            .write_buffer_ring(RingKind::Data, &[&block], align, &mut offset)?;
+        Ok(self.backend.create_binding_set(&[BindingEntry {
+            binding: helper_binding(ShaderStage::Vertex),
+            stages: StageSet::VERTEX,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &ring,
+                offset: offset[0],
+                size: size as u64,
+            }),
+        }])?)
+    }
+
     pub(super) fn binding_sets(
         &mut self,
         state: &RootState,

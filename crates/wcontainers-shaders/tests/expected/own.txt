@@ -13,9 +13,11 @@ ps_local.dxbc	ok
 ps_loop.dxbc	ok
 ps_mingather.dxbc	ok-wgsl glsl-compile
 ps_minlod.dxbc	ok
+ps_mirror.dxbc	ok
 ps_negate.dxbc	ok
 ps_offset.dxbc	ok
 ps_pack.dxbc	ok
+ps_pull.dxbc	ok
 ps_rows.dxbc	ok
 ps_samples.dxbc	unsupported SampleCount
 ps_shade.dxbc	ok-wgsl glsl-write
@@ -28,8 +30,10 @@ ps_textured.dxbc	ok
 ps_window.dxbc	ok
 vs_carry.dxbc	ok
 vs_clip.dxbc	ok-wgsl glsl-compile
+vs_deep.dxbc	ok
 vs_fullscreen.dxbc	ok-wgsl glsl-compile
 vs_ids.dxbc	ok
 vs_pack.dxbc	ok
+vs_pull.dxbc	ok
 vs_shade.dxbc	ok
 vs_transform.dxbc	ok

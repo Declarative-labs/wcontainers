@@ -1,5 +1,5 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl and variants.hlsl with
-@rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's and variants.hlsl's also
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl and pull.hlsl with
+@rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's and pull.hlsl's also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
 setlocal
@@ -40,7 +40,7 @@ for %%e in (ps_ftoi ps_table ps_deriv ps_coarse) do (
 "%DXC%" -nologo -T vs_6_0 -E vs_carry -Gis -Fo vs_carry.dxil values.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_negate /Fo ps_negate.dxbc negate.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_negate -Gis -Fo ps_negate.dxil negate.hlsl || exit /b 1
-for %%e in (ps_dual ps_levels ps_samples ps_ids ps_minlod ps_mingather) do (
+for %%e in (ps_dual ps_levels ps_samples ps_ids ps_minlod ps_mingather ps_mirror) do (
   "%FXC%" /nologo /T ps_5_0 /E %%e /Fo %%e.dxbc variants.hlsl || exit /b 1
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil variants.hlsl || exit /b 1
 )
@@ -48,4 +48,10 @@ for %%e in (ps_dual ps_levels ps_samples ps_ids ps_minlod ps_mingather) do (
 "%DXC%" -nologo -T vs_6_0 -E vs_ids -Gis -Fo vs_ids.dxil variants.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_clip /Fo vs_clip.dxbc variants.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_clip -Gis -Fo vs_clip.dxil variants.hlsl || exit /b 1
+"%FXC%" /nologo /T vs_5_0 /E vs_deep /Fo vs_deep.dxbc variants.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_deep -Gis -Fo vs_deep.dxil variants.hlsl || exit /b 1
+"%FXC%" /nologo /T vs_5_0 /E vs_pull /Fo vs_pull.dxbc pull.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_pull -Gis -Fo vs_pull.dxil pull.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_pull /Fo ps_pull.dxbc pull.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_pull -Gis -Fo ps_pull.dxil pull.hlsl || exit /b 1
 echo %FXC% %DXC%

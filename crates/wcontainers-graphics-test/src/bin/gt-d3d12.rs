@@ -26,7 +26,9 @@ fn main() -> anyhow::Result<()> {
         } else {
             args.iter().map(String::as_str).collect()
         };
-        let gpu = d3d12::create(driver, debug)?;
+        // A device that could not be made still says where its libraries came from.
+        let gpu = d3d12::create(driver, debug)
+            .inspect_err(|_| println!("{}", wcontainers_graphics_test::library_paths()))?;
         println!("adapter {}", gpu.adapter);
         println!("{}", wcontainers_graphics_test::library_paths());
         for name in names {

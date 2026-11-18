@@ -130,11 +130,11 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         flags,
         filter_in_shader,
         border_in_shader,
-        mirror_once_in_shader,
+        mirror_once_in_shader: _,
         lod_bias: _,
         constants_as_storage: _,
         constants_as_texture,
-        pulled,
+        pulled: _,
         storage_formats,
         texel_buffers,
         storage_packed,
@@ -144,6 +144,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         min_lod_clamped: _,
         draw_base: _,
         output_interpolation: _,
+        linked: _,
         samples: _,
         layout,
     } = variant;
@@ -151,8 +152,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         (VariantFlags::PROVOKING_LAST, "ProvokingRewrite"),
         (VariantFlags::EARLY_TESTS, "EarlyTestsInShader"),
         (VariantFlags::LINE_COVERAGE, "AntialiasedLinesAsQuads"),
-        (VariantFlags::CLIP_DISTANCE, "ClipDistanceInShader"),
-        (VariantFlags::DEPTH_CLAMP, "DepthClampInShader"),
         (
             VariantFlags::PRIMITIVE_ID_FROM_STAGE,
             "PrimitiveIdAsGeometry",
@@ -164,9 +163,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     let asked = [
         (*filter_in_shader != 0, "FilterInShader"),
         (*border_in_shader != 0, "BorderInShader"),
-        (*mirror_once_in_shader != 0, "MirrorOnceInShader"),
         (*constants_as_texture != 0, "ConstantsAsTexture"),
-        (!pulled.is_empty(), "VertexPulledInShader"),
         (!storage_formats.is_empty(), "StorageFormats"),
         (
             *texel_buffers != TexelBufferRoute::Native,

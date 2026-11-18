@@ -123,7 +123,10 @@ pub struct ReflectedBinding {
 /// the stages of one draw, converted apart, never collide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum AddedBinding {
-    /// Vertex stream n, fetched in the program (a read-only storage buffer).
+    /// The vertex stream feeding the program's input at location n, fetched in the program (a
+    /// read-only storage buffer of u32 words, bound from the stream's offset rounded down to the
+    /// storage offset alignment). Each pulled input has its own, so a stream feeding two inputs is
+    /// bound twice.
     PulledStream(u32),
     /// The constant buffer in the stage's slot n (Direct3D 12: the root signature's constant buffer
     /// range n), read as a read-only storage buffer.
@@ -263,7 +266,8 @@ pub enum HelperValue {
     /// A sampler's border color (four f32, or four u32 for integer textures).
     BorderColor { sampler: u32 },
     /// A sampler's state, for programs that filter or address in the program: min, mag and mip filter
-    /// and the three address modes as u32 codes, anisotropy (u32), then the level range (two f32).
+    /// and the three address modes as u32 codes (the order of [`crate::Filter`]'s and
+    /// [`crate::AddressMode`]'s variants, from zero), anisotropy (u32), then the level range (two f32).
     SamplerState { sampler: u32 },
     /// The bound view's mip level count (u32), in programs made with [`VariantFlags::TEXTURE_INFO`].
     TextureLevels { texture: u32 },
@@ -273,9 +277,14 @@ pub enum HelperValue {
     /// Depth bias added in the program: constant units, slope scale, clamp, and the depth format's
     /// smallest step (four f32).
     DepthBias,
-    /// A vertex stream fetched in the program: byte offset of the first element, stride, and instance
-    /// step rate (zero for per-vertex), three u32.
-    PulledStream { stream: u32 },
+    /// How the program fetches its input at location `input` ([`VariantKey::pulled`]), four u32: the
+    /// byte offset of the input's first element in its binding (the stream's offset remainder plus the
+    /// attribute's offset), the stride, a divisor and a bias. The element read is the vertex index
+    /// when the divisor is zero, otherwise (instance index + bias) / divisor, the instance index
+    /// counting from zero as the common form's does from the first instance: a step rate n takes
+    /// divisor n and bias (n - 1) times the first instance, and a step rate of zero takes divisor one,
+    /// bias zero, stride zero and the first instance's element in the offset.
+    PulledStream { input: u32 },
     /// The sample mask the program writes (u32).
     SampleMask,
     /// Where a packed storage slot's range starts in the packed buffer, in bytes (u32).
@@ -372,15 +381,17 @@ bitflags! {
         /// The pixel shader's target 0 alpha multiplied by the line coverage the stage helper's
         /// rectangle passes in ([`crate::SlowPath::AntialiasedLinesAsQuads`]).
         const LINE_COVERAGE = 1 << 10;
-        /// Clip distances made ordinary perspective-correct values between the stages, and the
-        /// fragment stage discards where one is negative, or on multisampled targets clears the samples
-        /// where one is, from each distance times the fragment position's w (affine on the screen; no
-        /// `noperspective`, which GLSL ES 3.00 lacks) ([`crate::SlowPath::ClipDistanceInShader`]).
+        /// Clip distances made ordinary perspective-correct values between the stages (at
+        /// [`VariantKey::linked`]), and the fragment stage discards where one is negative, or on
+        /// multisampled targets ([`VariantKey::samples`]) clears the samples where one is, from each
+        /// distance times the fragment position's w (affine on the screen; no `noperspective`, which
+        /// GLSL ES 3.00 lacks) ([`crate::SlowPath::ClipDistanceInShader`]).
         const CLIP_DISTANCE = 1 << 11;
         /// Depth clamped instead of clipped: the last vertex stage keeps clip z inside the clip volume
-        /// and passes the unclamped z as a perspective-correct value, and the fragment stage writes it
-        /// times the fragment position's w (z over w) as the depth, biased as the raster block
-        /// says and clamped to [`HelperValue::DepthRange`] ([`crate::SlowPath::DepthClampInShader`]).
+        /// and passes the unclamped z as a perspective-correct value (at [`VariantKey::linked`]), and
+        /// the fragment stage writes it times the fragment position's w (z over w) as the depth,
+        /// biased as the raster block says (with [`VariantFlags::DEPTH_BIAS`]) and clamped to
+        /// [`HelperValue::DepthRange`] ([`crate::SlowPath::DepthClampInShader`]).
         const DEPTH_CLAMP = 1 << 12;
         /// The pixel shader reads its primitive index from a flat value the stage helper's draw passes,
         /// not from the built-in ([`crate::SlowPath::PrimitiveIdAsGeometry`]).
@@ -437,6 +448,19 @@ pub struct TargetInShader {
     pub combine: bool,
 }
 
+/// The values a vertex program adds for its pixel program, which is converted apart: four-component
+/// f32 values from `location` holding the vertex program's `clip_distances` clip distances (with
+/// [`VariantFlags::CLIP_DISTANCE`], zero without), then its unclamped clip z (with
+/// [`VariantFlags::DEPTH_CLAMP`]). `location` is one past every location either program's reflection
+/// lists.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct LinkedValues {
+    pub location: u32,
+    pub clip_distances: u8,
+}
+
 /// Which variant of a converted shader a front asks for. It is part of the converted shader's cache key.
 /// Each per-slot field has a bit per API slot of that kind.
 ///
@@ -491,6 +515,9 @@ pub struct VariantKey {
     /// `Perspective`: the program writes each so, since WebGPU and GLSL ES require the two stages to
     /// agree. The front takes it from the pixel program's [`Reflection::inputs`].
     pub output_interpolation: Vec<(u32, Interpolation)>,
+    /// Where the values [`VariantFlags::CLIP_DISTANCE`] and [`VariantFlags::DEPTH_CLAMP`] add pass
+    /// from the vertex to the pixel program. The front sets the same value in both programs' keys.
+    pub linked: LinkedValues,
     /// The sample count of the targets, where the program depends on it.
     pub samples: u8,
     /// A hash of the binding layout that numbers the slots, for APIs whose layout the program does not
