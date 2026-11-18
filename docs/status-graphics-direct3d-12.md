@@ -584,6 +584,23 @@ ignored rectangle 0,208,320,64, as run 21):
   Not compared: real Direct3D 12 itself draws it differently on every run (80, 292 and 667 of
   3600 tiles changed between the two real runs at frames 10, 60 and 120, up to 35557 pixels
   outside the ignored tiles), so the rig's rule compares no frame.
+- Microsoft's samples through the rig (`programs run`, run22/programs2.log, job 01:07 to
+  01:07:42): d3d12-hello-triangle and d3d12-hello-constbuffers (D3D12HelloTriangle and
+  D3D12HelloConstBuffers, with the Agility SDK's D3D12Core.dll beside them, which ours does not
+  load) run their 120 frames through ours (2.7 s each) and frames 10, 60 and 120 of both equal
+  real Direct3D 12's references: 0 pixels beyond 8, largest difference 0. Command: `E='%CARGO_TARGET_DIR%\debug\examples';
+  tools/graphics-rig/programs run --dll "d3d12.dll=$E\d3d12.dll" --dll
+  "wcontainers_d3d12.dll=$E\wcontainers_d3d12.dll" --dll "dxgi.dll=$E\dxgi.dll" <programs>`
+  (scratch bin/programs22.sh). The replacement d3d12.dll must be the forwarder, not
+  wcontainers_d3d12.dll itself: two copies of the library under two names are two instances,
+  and every program then failed (run22/programs1.log).
+- The same run: bgfx-01-cubes-d3d12 and bgfx-38-bloom-d3d12 ran their 120 frames (2.8 and 2.9
+  s) but were not compared: the rig's references on the desktop are not the ones its
+  frames.sha256 names (the rig's to record again). godot-platformer-2d-d3d12 now fast-fails
+  (0xc0000409) 1.4 s after start, before Godot prints its renderer line, with our dxgi.dll and
+  with the system's (run22/godot2.log); run 20 ran 120 frames with ours as d3d12.dll and no
+  forwarding library in front. A Rust panic in either library (panic=abort shows as
+  0xc0000409) is the first thing to look for (Next).
 - 37-gpudrivenrendering: stops at its first compute pipeline (naga's SPIR-V reader:
   "unsupported storage class %11", atomics on typed buffers or images, `OpImageTexelPointer`,
   G6's next item); bgfx then ends itself (exit 3).
@@ -755,7 +772,10 @@ Not absent features, so not yet allowed on the list (others' work, then this fro
 1. At the start of each run merge the shared line, webgpu, shaders and rig. Check whether the
    rig fixed its comparison (`tools/graphics-rig/desktop/wine-run.ps1`, "How to run"); until it
    does, apply the one-line patch uncommitted for the run and never commit that file.
-2. hlsl sm6-uav-rwtexture (shader runner, "Shader runner" run 22): its first draw writes
+2. Godot's 2D platformer behind the rig's forwarding library fast-fails at start ("Real
+   program", run 22): find the panic or crash (the library's own messages, or a run with
+   `RUST_BACKTRACE`), then compare its frames.
+2b. hlsl sm6-uav-rwtexture (shader runner, "Shader runner" run 22): its first draw writes
    nothing and nothing is refused. Run that one file (`wine-tests run ... vkd3d-shader_runner`
    names files as the test file list does) and find where the write is lost; a read and
    written view of `R32G32B32A32_FLOAT` must go through a buffer or be refused by name.
