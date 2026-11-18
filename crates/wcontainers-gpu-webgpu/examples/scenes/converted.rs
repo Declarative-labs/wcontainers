@@ -397,8 +397,9 @@ pub fn kept(format: Format, texels: &[u8]) -> Vec<u8> {
 
 /// Writes, read backs and copies of `texels` in `format`: read back whole; copied out into a
 /// buffer at a padded pitch whose padding stays; copied from that buffer into part of another
-/// texture; copied between textures; none waiting for the host; then [`volume_copies`]. Every
-/// byte must come back (BGRX's X as one).
+/// texture; copied between textures of the format, and into one of another format of equal blocks
+/// and back; none waiting for the host; then [`volume_copies`]. Every byte must come back (BGRX's
+/// X as one).
 pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
     let texels = &kept(format, written)[..];
     let waits = b.slow_paths().count(SlowPath::HostCopyReadBack);
@@ -473,9 +474,25 @@ pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
     b.copy_texture(&at(&t, 2, 1), &at(&v, 0, 0), part);
     let got = read(b, &at(&v, 0, 0), part, want.len());
     ensure!(got == want, "{format:?}: copied between textures");
+    // Into a texture of another format of equal blocks and back, the bytes kept.
+    let other = match format.block() {
+        (1, 1, 1) => Format::R8Uint,
+        (1, 1, 2) => Format::R16Uint,
+        (1, 1, 4) => Format::R32Uint,
+        _ if format == Format::Rgbg8Unorm => Format::Grgb8Unorm,
+        _ => Format::Rgbg8Unorm,
+    };
+    let (o, _) = upload(b, other, Some(&vec![0; len]), TextureUsage::empty())?;
+    b.copy_texture(&at(&t, 2, 1), &at(&o, 0, 0), part);
+    let got = read(b, &at(&o, 0, 0), part, want.len());
+    ensure!(got == want, "{format:?}: copied into {other:?}");
+    let (back, _) = upload(b, format, Some(&vec![0; len]), TextureUsage::empty())?;
+    b.copy_texture(&at(&o, 0, 0), &at(&back, 4, 2), part);
+    let got = read(b, &at(&back, 4, 2), part, want.len());
+    ensure!(got == want, "{format:?}: copied from {other:?}");
     ensure!(
         b.slow_paths().count(SlowPath::HostCopyReadBack) == waits,
-        "{format:?}: copies with a buffer or between textures of the format waited for the host"
+        "{format:?}: copies with a buffer or between textures waited for the host"
     );
     volume_copies(b, format, texels)?;
     Ok(())

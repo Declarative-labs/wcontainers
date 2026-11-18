@@ -8,11 +8,11 @@
 //! texture widen and pack the same way on the GPU, by a draw.
 
 use wcontainers_gpu::{
-    Backend, CopyBufferTexture, Extent, Format, Origin, ReadSource, SlowPath, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, WriteMode,
+    Backend, CopyBufferTexture, Extent, Format, Origin, SlowPath, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, WriteMode,
 };
 
-use crate::WebGpu;
+use crate::{Texture, WebGpu};
 
 /// The format a texture of `format` is held in, where the back end converts it.
 pub(crate) fn held(format: Format) -> Option<Format> {
@@ -266,17 +266,6 @@ pub(crate) fn packed_bytes(format: Format, texels: u64) -> u64 {
     texels.div_ceil(u64::from(bw)) * u64::from(bytes)
 }
 
-/// The same region of the same texture, borrowed again.
-fn again<'a>(r: &TextureRegion<'a, WebGpu>) -> TextureRegion<'a, WebGpu> {
-    TextureRegion {
-        texture: r.texture,
-        mip: r.mip,
-        layer: r.layer,
-        origin: r.origin,
-        stencil: r.stencil,
-    }
-}
-
 impl WebGpu {
     /// A write into a converted texture: its texels widened on the host.
     pub(crate) fn write_packed(
@@ -320,6 +309,75 @@ impl WebGpu {
         );
     }
 
+    /// The first slice of `region` of a converted texture, after checking that the region lies
+    /// inside its level and starts on a block.
+    fn first_slice(&mut self, region: &TextureRegion<'_, Self>, extent: Extent) -> Option<u32> {
+        let t = &region.texture.0;
+        if !region.origin.x.is_multiple_of(t.desc.format.block().0) {
+            self.fail("a region of a two-pixel format starting inside a pair");
+            return None;
+        }
+        let size = |n: u32| (n >> region.mip).max(1);
+        let (first, slices) = if t.desc.dimension == TextureDimension::D3 {
+            (region.origin.z, size(t.desc.depth_or_layers))
+        } else {
+            (region.layer, t.desc.depth_or_layers)
+        };
+        if region.origin.x + extent.width > size(t.desc.width)
+            || region.origin.y + extent.height > size(t.desc.height)
+            || first + extent.depth_or_layers > slices
+        {
+            self.fail("a copy reaching past a converted texture's level");
+            return None;
+        }
+        Some(first)
+    }
+
+    /// A texture for the raw blocks of `extent` texels of `format`, one layer a slice.
+    fn raw_blocks(&mut self, format: Format, extent: Extent) -> Option<Texture> {
+        let Ok(staged) = self.create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: raw(format),
+            width: extent.width.div_ceil(format.block().0),
+            height: extent.height,
+            depth_or_layers: extent.depth_or_layers,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::COPY_SRC
+                | TextureUsage::COPY_DST
+                | TextureUsage::SAMPLE
+                | TextureUsage::RENDER,
+            cube: false,
+            reinterpret: false,
+        }) else {
+            self.fail("the texture a converted copy goes through could not be made");
+            return None;
+        };
+        self.slow.hit(SlowPath::FormatConverted);
+        Some(staged)
+    }
+
+    /// Widens the raw blocks in `staged` into `region` of a converted texture (`into`), or packs
+    /// the region's texels into them.
+    fn convert_region(
+        &mut self,
+        region: &TextureRegion<'_, Self>,
+        first: u32,
+        staged: &Texture,
+        extent: Extent,
+        into: bool,
+    ) {
+        let t = &region.texture.0;
+        t.used_in.set(self.serial);
+        let held = (
+            &t.raw(),
+            region.mip,
+            first,
+            [region.origin.x, region.origin.y],
+        );
+        self.convert_by_draw(t.desc.format, into, held, &staged.0.raw(), extent);
+    }
+
     /// A copy between a buffer and a converted texture, on the GPU: the buffer's bytes copied into
     /// a texture of their own ([`raw`]) and widened into the texture by a draw, or the texture's
     /// texels packed into one by a draw and copied out.
@@ -330,78 +388,34 @@ impl WebGpu {
         extent: Extent,
         to_texture: bool,
     ) {
-        let t = &region.texture.0;
-        let format = t.desc.format;
-        let (bw, _, _) = format.block();
-        if !region.origin.x.is_multiple_of(bw) {
-            return self.fail("a region of a two-pixel format starting inside a pair");
-        }
         if extent.width == 0 || extent.height == 0 || extent.depth_or_layers == 0 {
             return;
         }
-        let three_d = t.desc.dimension == TextureDimension::D3;
-        let size = |n: u32| (n >> region.mip).max(1);
-        let (first, slices) = if three_d {
-            (region.origin.z, size(t.desc.depth_or_layers))
-        } else {
-            (region.layer, t.desc.depth_or_layers)
+        let format = region.texture.0.desc.format;
+        let Some(first) = self.first_slice(region, extent) else {
+            return;
         };
-        if region.origin.x + extent.width > size(t.desc.width)
-            || region.origin.y + extent.height > size(t.desc.height)
-            || first + extent.depth_or_layers > slices
-        {
-            return self.fail("a copy reaching past a converted texture's level");
-        }
+        let Some(staged) = self.raw_blocks(format, extent) else {
+            return;
+        };
         let blocks = Extent {
-            width: extent.width.div_ceil(bw),
+            width: extent.width.div_ceil(format.block().0),
             ..extent
         };
-        let usage = if to_texture {
-            TextureUsage::COPY_DST | TextureUsage::SAMPLE
-        } else {
-            TextureUsage::COPY_SRC | TextureUsage::RENDER
-        };
-        let Ok(staged) = self.create_texture(&TextureDesc {
-            dimension: TextureDimension::D2,
-            format: raw(format),
-            width: blocks.width,
-            height: blocks.height,
-            depth_or_layers: blocks.depth_or_layers,
-            mip_levels: 1,
-            samples: 1,
-            usage,
-            cube: false,
-            reinterpret: false,
-        }) else {
-            return self.fail("the texture a converted copy goes through could not be made");
-        };
-        let at_origin = TextureRegion {
-            texture: &staged,
-            mip: 0,
-            layer: 0,
-            origin: Origin::default(),
-            stencil: false,
-        };
-        self.slow.hit(SlowPath::FormatConverted);
-        let held = (
-            &t.raw(),
-            region.mip,
-            first,
-            [region.origin.x, region.origin.y],
-        );
+        let at = at_origin(&staged);
         if to_texture {
-            self.copy_buffer_texture(buffer, &at_origin, blocks, true);
-            t.used_in.set(self.serial);
-            self.convert_by_draw(format, true, held, &staged.0.raw(), extent);
+            self.copy_buffer_texture(buffer, &at, blocks, true);
+            self.convert_region(region, first, &staged, extent, true);
         } else {
-            t.used_in.set(self.serial);
-            self.convert_by_draw(format, false, held, &staged.0.raw(), extent);
-            self.copy_buffer_texture(buffer, &at_origin, blocks, false);
+            self.convert_region(region, first, &staged, extent, false);
+            self.copy_buffer_texture(buffer, &at, blocks, false);
         }
     }
 
-    /// A copy between textures of different formats of which one is converted: the source's
-    /// texels read back in its own format and written into the destination as its texels.
+    /// A copy between textures of different formats of equal blocks of which one is converted, on
+    /// the GPU: through a texture of the raw blocks, packed into it from a converted source or
+    /// copied from another, and widened from it into a converted destination or copied into
+    /// another.
     pub(crate) fn copy_packed(
         &mut self,
         src: &TextureRegion<'_, Self>,
@@ -412,23 +426,49 @@ impl WebGpu {
         if sf.block() != df.block() {
             return self.fail("a copy between a converted format and one of another texel size");
         }
-        let pitch = packed_bytes(sf, u64::from(extent.width)) as u32;
-        let len = pitch as usize * extent.height as usize * extent.depth_or_layers as usize;
-        let source = ReadSource::Texture {
-            region: again(src),
-            extent,
-        };
-        let Some(texels) = self.read_now(&source, len) else {
+        if extent.width == 0 || extent.height == 0 || extent.depth_or_layers == 0 {
+            return;
+        }
+        let (from, to) = (held(sf).is_some(), held(df).is_some());
+        let Some(src_first) = (if from {
+            self.first_slice(src, extent)
+        } else {
+            Some(0)
+        }) else {
             return;
         };
-        self.write_texture_impl(
-            dst,
-            extent,
-            &texels,
-            pitch,
-            extent.height,
-            WriteMode::Ordered,
-        );
+        let Some(dst_first) = (if to {
+            self.first_slice(dst, extent)
+        } else {
+            Some(0)
+        }) else {
+            return;
+        };
+        let Some(staged) = self.raw_blocks(sf, extent) else {
+            return;
+        };
+        let at = at_origin(&staged);
+        if from {
+            self.convert_region(src, src_first, &staged, extent, false);
+        } else {
+            self.copy_texture_impl(src, &at, extent);
+        }
+        if to {
+            self.convert_region(dst, dst_first, &staged, extent, true);
+        } else {
+            self.copy_texture_impl(&at, dst, extent);
+        }
+    }
+}
+
+/// The whole of a texture's first level and layer, as a copy names it.
+fn at_origin(texture: &Texture) -> TextureRegion<'_, WebGpu> {
+    TextureRegion {
+        texture,
+        mip: 0,
+        layer: 0,
+        origin: Origin::default(),
+        stencil: false,
     }
 }
 
