@@ -1887,6 +1887,57 @@ pub(crate) struct Source<'a> {
     pub aio_in_use: u64,
 }
 
+/// What `/proc/<pid>/maps` shows of a mapping besides its range and permissions (`show_map_vma`).
+pub(crate) struct MapLine {
+    pub offset: u64,
+    pub device: u64,
+    pub ino: u64,
+    /// The file's path (with " (deleted)" once removed), or the kernel's name for it, or none.
+    pub name: String,
+}
+
+pub(crate) fn map_line(mapping: &crate::memory::Mapping) -> MapLine {
+    let (offset, device, ino, name) = match &mapping.backing {
+        Backing::File {
+            node, path, offset, ..
+        } => {
+            let inode = node.borrow();
+            let deleted = if inode.shown_deleted() {
+                " (deleted)"
+            } else {
+                ""
+            };
+            (
+                *offset,
+                inode.fs.device,
+                inode.ino,
+                alloc::format!("{}{deleted}", String::from_utf8_lossy(path)),
+            )
+        }
+        Backing::Zero {
+            device,
+            ino,
+            offset,
+            name,
+        } => (
+            *offset,
+            *device,
+            *ino,
+            String::from_utf8_lossy(name).into_owned(),
+        ),
+        Backing::Heap => (0, 0, 0, String::from("[heap]")),
+        Backing::Stack => (0, 0, 0, String::from("[stack]")),
+        Backing::Special(name) => (0, 0, 0, String::from(*name)),
+        Backing::Anonymous | Backing::Droppable => (0, 0, 0, String::new()),
+    };
+    MapLine {
+        offset,
+        device,
+        ino,
+        name,
+    }
+}
+
 /// A file of a process's or thread's directory, which shows thread `tid` of `process`.
 fn process_file(
     source: &mut Source<'_>,
@@ -1974,39 +2025,12 @@ fn process_file(
                         '-'
                     }
                 };
-                let (offset, device, ino, path) = match &mapping.backing {
-                    Backing::File {
-                        node, path, offset, ..
-                    } => {
-                        let inode = node.borrow();
-                        let deleted = if inode.shown_deleted() {
-                            " (deleted)"
-                        } else {
-                            ""
-                        };
-                        (
-                            *offset,
-                            inode.fs.device,
-                            inode.ino,
-                            alloc::format!("{}{deleted}", String::from_utf8_lossy(path)),
-                        )
-                    }
-                    Backing::Zero {
-                        device,
-                        ino,
-                        offset,
-                        name,
-                    } => (
-                        *offset,
-                        *device,
-                        *ino,
-                        String::from_utf8_lossy(name).into_owned(),
-                    ),
-                    Backing::Heap => (0, 0, 0, String::from("[heap]")),
-                    Backing::Stack => (0, 0, 0, String::from("[stack]")),
-                    Backing::Special(name) => (0, 0, 0, String::from(*name)),
-                    Backing::Anonymous | Backing::Droppable => (0, 0, 0, String::new()),
-                };
+                let MapLine {
+                    offset,
+                    device,
+                    ino,
+                    name: path,
+                } = map_line(mapping);
                 let (major, minor) = super::decode_device(device);
                 let line = format!(
                     "{:08x}-{:08x} {}{}{}{} {:08x} {major:02x}:{minor:02x} {}",

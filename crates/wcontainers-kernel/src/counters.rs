@@ -54,7 +54,7 @@ pub mod reason {
     pub const SYS_ENTRY_NOT_BUILT: &str = "sys entry not built";
     /// A `/proc` file was made whose fields this kernel does not track all of (those show 0 or are
     /// left out). Detail: which file (0 `stat`, 1 `statm`, 2 `status`, 3 `mounts`, 4 `meminfo`,
-    /// 5 `oom_score`, 6 a core file's notes).
+    /// 5 `oom_score`, 6 a core file's notes, 7 a `PROCMAP_QUERY` build id, answered as none).
     pub const PROC_FIELDS_NOT_TRACKED: &str = "proc fields not tracked";
     /// A memory fault's syndrome in a handler's frame: whether the page was present and at which
     /// level a table was missing are Linux's page tables' own, so a level 3 fault of a page present

@@ -44,3 +44,15 @@ fn proc_attr_matches_reference() {
     );
     assert_eq!(ours.outcome, theirs);
 }
+
+#[test]
+fn procmap_query_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let program = guest::build("procmapquery", &[], &out);
+    let (ours, theirs) = run_both(&program, &[]);
+    assert_eq!(
+        String::from_utf8_lossy(&ours.outcome.stdout),
+        String::from_utf8_lossy(&theirs.stdout)
+    );
+    assert_eq!(ours.outcome, theirs);
+}

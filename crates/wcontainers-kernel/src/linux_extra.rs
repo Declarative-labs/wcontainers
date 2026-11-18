@@ -244,6 +244,14 @@ pub(crate) const FS_IOC_RESVSP64: u32 = ioc(IOC_WRITE, b'X', 42, SPACE_RESV_SIZE
 pub(crate) const FS_IOC_UNRESVSP64: u32 = ioc(IOC_WRITE, b'X', 43, SPACE_RESV_SIZE);
 pub(crate) const FS_IOC_ZERO_RANGE: u32 = ioc(IOC_WRITE, b'X', 57, SPACE_RESV_SIZE);
 
+/// `PROCMAP_QUERY` (`linux/fs.h`), the maps file's query for one mapping.
+pub(crate) const PROCMAP_QUERY: u32 = ioc(
+    IOC_READ | IOC_WRITE,
+    crate::linux::general::PROCFS_IOCTL_MAGIC,
+    17,
+    core::mem::size_of::<crate::linux::general::procmap_query>(),
+);
+
 /// `linux/fs.h`'s file system identity requests, which linux-raw-sys's ioctl list lacks.
 pub(crate) const FS_IOC_GETFSUUID: u32 = ioc(
     IOC_READ,

@@ -365,6 +365,152 @@ fn preallocate(
 }
 
 /// A file's own requests, after the common ones passed (`vfs_ioctl`).
+/// `do_procmap_query`: the mapping at (or, asked, after) an address of the memory the maps file
+/// was opened on, with the permissions asked for, as `/proc/<pid>/maps` shows it, its name and
+/// build id copied where asked. A build id is not read (counted), so none is given.
+fn procmap_query(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &FileRef,
+    argument: u64,
+) -> Result<u64, Errno> {
+    use crate::linux::general::procmap_query_flags::*;
+    use crate::memory::Backing;
+    use wcontainers_abi::Permissions;
+    let size: u64 = guest(kernel, cx, tid).read_value(argument)?;
+    if size > wcontainers_abi::PAGE_SIZE {
+        return Err(Errno::E2BIG);
+    }
+    // At least `size`, `query_flags` and `query_addr`.
+    if size < 24 {
+        return Err(Errno::EINVAL);
+    }
+    // `copy_struct_from_user`: bytes past the structure must be zero.
+    const LENGTH: u64 = 104;
+    let bytes = guest(kernel, cx, tid).read(argument, size)?;
+    if bytes.iter().skip(LENGTH as usize).any(|byte| *byte != 0) {
+        return Err(Errno::E2BIG);
+    }
+    let mut query = [0u8; LENGTH as usize];
+    let known = (size.min(LENGTH)) as usize;
+    query[..known].copy_from_slice(&bytes[..known]);
+    let word = |at: usize| u64::from_le_bytes(query[at..at + 8].try_into().expect("8 bytes"));
+    let half = |at: usize| u32::from_le_bytes(query[at..at + 4].try_into().expect("4 bytes"));
+    let (flags, address) = (word(8), word(16));
+    let (name_size, build_id_size) = (half(80), half(84));
+    let (name_address, build_id_address) = (word(88), word(96));
+    let valid = PROCMAP_QUERY_VMA_READABLE as u64
+        | PROCMAP_QUERY_VMA_WRITABLE as u64
+        | PROCMAP_QUERY_VMA_EXECUTABLE as u64
+        | PROCMAP_QUERY_VMA_SHARED as u64
+        | PROCMAP_QUERY_COVERING_OR_NEXT_VMA as u64
+        | PROCMAP_QUERY_FILE_BACKED_VMA as u64;
+    if flags & !valid != 0
+        || (name_size != 0) != (name_address != 0)
+        || (build_id_size != 0) != (build_id_address != 0)
+    {
+        return Err(Errno::EINVAL);
+    }
+    let (pid, memory) = {
+        let file = file.borrow();
+        let Content::Proc(crate::fs::proc::Entry::ProcessFile(task, _)) =
+            file.node.borrow().content
+        else {
+            return Err(Errno::ENOTTY);
+        };
+        (task.pid, file.memory)
+    };
+    let process = kernel
+        .processes
+        .get(&pid)
+        .filter(|process| process.ended.is_none() && Some(process.memory) == memory)
+        .ok_or(Errno::ESRCH)?;
+    let next = flags & PROCMAP_QUERY_COVERING_OR_NEXT_VMA as u64 != 0;
+    let mut wanted = Permissions::empty();
+    for (flag, permission) in [
+        (PROCMAP_QUERY_VMA_READABLE, Permissions::READ),
+        (PROCMAP_QUERY_VMA_WRITABLE, Permissions::WRITE),
+        (PROCMAP_QUERY_VMA_EXECUTABLE, Permissions::EXECUTE),
+    ] {
+        if flags & flag as u64 != 0 {
+            wanted |= permission;
+        }
+    }
+    let file_backed = |mapping: &crate::memory::Mapping| {
+        matches!(mapping.backing, Backing::File { .. } | Backing::Zero { .. })
+    };
+    let map = process.map.borrow();
+    let mut at = address;
+    let mapping = loop {
+        let Some(mapping) = map.next_after(at) else {
+            return Err(Errno::ENOENT);
+        };
+        let matches = (flags & PROCMAP_QUERY_FILE_BACKED_VMA as u64 == 0 || file_backed(mapping))
+            && mapping.permissions.contains(wanted)
+            && (flags & PROCMAP_QUERY_VMA_SHARED as u64 == 0 || mapping.shared);
+        if matches && (next || mapping.start <= address) {
+            break mapping.clone();
+        }
+        if !next {
+            return Err(Errno::ENOENT);
+        }
+        at = mapping.end;
+    };
+    drop(map);
+    let line = crate::fs::proc::map_line(&mapping);
+    let mut vma_flags = 0;
+    for (permission, flag) in [
+        (Permissions::READ, PROCMAP_QUERY_VMA_READABLE),
+        (Permissions::WRITE, PROCMAP_QUERY_VMA_WRITABLE),
+        (Permissions::EXECUTE, PROCMAP_QUERY_VMA_EXECUTABLE),
+    ] {
+        if mapping.permissions.contains(permission) {
+            vma_flags |= flag as u64;
+        }
+    }
+    if mapping.shared {
+        vma_flags |= PROCMAP_QUERY_VMA_SHARED as u64;
+    }
+    let (major, minor) = crate::fs::decode_device(line.device);
+    let mut name = None;
+    let mut name_size = name_size;
+    if name_size != 0 {
+        if !line.name.is_empty() {
+            let mut bytes = line.name.clone().into_bytes();
+            bytes.push(0);
+            if bytes.len() > (name_size as usize).min(PATH_MAX as usize) {
+                return Err(Errno::ENAMETOOLONG);
+            }
+            name_size = bytes.len() as u32;
+            name = Some(bytes);
+        } else {
+            name_size = 0;
+        }
+    }
+    if build_id_size != 0 && file_backed(&mapping) {
+        kernel
+            .counters
+            .count(cx.host, crate::counters::reason::PROC_FIELDS_NOT_TRACKED, 7);
+    }
+    if let Some(bytes) = &name {
+        guest(kernel, cx, tid).write(name_address, bytes)?;
+    }
+    let mut out = query;
+    out[24..32].copy_from_slice(&mapping.start.to_le_bytes());
+    out[32..40].copy_from_slice(&mapping.end.to_le_bytes());
+    out[40..48].copy_from_slice(&vma_flags.to_le_bytes());
+    out[48..56].copy_from_slice(&wcontainers_abi::PAGE_SIZE.to_le_bytes());
+    out[56..64].copy_from_slice(&line.offset.to_le_bytes());
+    out[64..72].copy_from_slice(&line.ino.to_le_bytes());
+    out[72..76].copy_from_slice(&major.to_le_bytes());
+    out[76..80].copy_from_slice(&minor.to_le_bytes());
+    out[80..84].copy_from_slice(&name_size.to_le_bytes());
+    out[84..88].copy_from_slice(&0u32.to_le_bytes());
+    guest(kernel, cx, tid).write(argument, &out[..known])?;
+    Ok(0)
+}
+
 fn own(
     kernel: &mut Kernel,
     cx: &mut Context<'_>,
@@ -396,6 +542,19 @@ fn own(
             crate::linux::ioctl::TFD_IOC_SET_TICKS => {
                 super::timer::set_ticks(kernel, cx, tid, file, argument)
             }
+            _ => Err(Errno::ENOTTY),
+        };
+    }
+    let maps = matches!(
+        file.borrow().node.borrow().content,
+        Content::Proc(crate::fs::proc::Entry::ProcessFile(
+            _,
+            crate::fs::proc::ProcessFile::Maps
+        ))
+    );
+    if maps {
+        return match request {
+            crate::linux_extra::PROCMAP_QUERY => procmap_query(kernel, cx, tid, file, argument),
             _ => Err(Errno::ENOTTY),
         };
     }
