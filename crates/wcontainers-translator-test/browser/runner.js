@@ -394,7 +394,8 @@ function run({
   function pieceOffsets(module) {
     const [section] = WebAssembly.Module.customSections(module, contract.descriptionSection);
     const bytes = new Uint8Array(section);
-    let at = 3;
+    // After the format and the guest: the offer, the look-ahead and what it is optimised for, its N.
+    let at = 2;
     const leb = () => {
       let value = 0n;
       let shift = 0n;
@@ -405,6 +406,8 @@ function run({
         if (byte < 0x80) return value;
       }
     };
+    leb();
+    at += 2;
     leb();
     at += 32;
     const count = Number(leb());

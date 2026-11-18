@@ -166,7 +166,8 @@ pub const STACK_BUDGET: i64 = 128 * 1024;
 /// Tuning number: a slow path warns once per address (or number), when its count there reaches this.
 pub const WARNING_THRESHOLD: u64 = 1;
 
-/// Name of the custom section describing a code module: format version (one byte, 3), look-ahead (one byte,
+/// Name of the custom section describing a code module: format version (one byte, 4), the guest (one byte,
+/// `GuestId`), the offer (`Guest::offer_key`, unsigned LEB128), look-ahead (one byte,
 /// 0 for none, 1 for full, 2 for bounded), what it is optimised for (one byte, 0 for speed, 1 for size), the
 /// look-ahead's N (unsigned LEB128, 0 unless bounded), the blob's BLAKE3 hash (32 bytes), then the number of
 /// pieces and each piece's offset in the blob in slot order, as unsigned LEB128.

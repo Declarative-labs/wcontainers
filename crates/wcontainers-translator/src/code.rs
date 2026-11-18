@@ -379,7 +379,7 @@ fn translate_within<G: Guest>(
             }
             let first = none_emit(&blob_code, &found, 0..found.len());
             let how = (look_ahead, optimise);
-            modules::<G>(blob, how, &entries, first, module_bytes, |group| {
+            modules::<G>(blob, how, offer, &entries, first, module_bytes, |group| {
                 none_emit(&blob_code, &found, group)
             })
         }
@@ -406,7 +406,7 @@ fn translate_within<G: Guest>(
                     }
                     let emit = |group| planned.emit(group);
                     let how = (look_ahead, optimise);
-                    break modules::<G>(blob, how, &entries, first, module_bytes, emit);
+                    break modules::<G>(blob, how, offer, &entries, first, module_bytes, emit);
                 }
                 for i in over {
                     starts.extend(planned.halves(i));
@@ -426,6 +426,7 @@ fn translate_within<G: Guest>(
 fn modules<G: Guest>(
     blob: &[u8],
     how: (LookAhead, Optimise),
+    offer: G::Offer,
     entries: &[u64],
     first: Vec<Unit>,
     module_bytes: usize,
@@ -450,12 +451,12 @@ fn modules<G: Guest>(
         }
     }
     if groups.len() <= 1 {
-        return vec![module::<G>(blob, how, entries, first)];
+        return vec![module::<G>(blob, how, offer, entries, first)];
     }
     drop(first);
     groups
         .into_iter()
-        .map(|group| module::<G>(blob, how, &entries[group.clone()], emit(group)))
+        .map(|group| module::<G>(blob, how, offer, &entries[group.clone()], emit(group)))
         .collect()
 }
 
@@ -463,6 +464,7 @@ fn modules<G: Guest>(
 fn module<G: Guest>(
     blob: &[u8],
     how: (LookAhead, Optimise),
+    offer: G::Offer,
     entries: &[u64],
     units: Vec<Unit>,
 ) -> CodeModule {
@@ -508,7 +510,7 @@ fn module<G: Guest>(
     module.section(&own_globals());
     module.section(&elements::<G>(entries.len() as u32));
     module.section(&code_section);
-    module.section(&description(blob, how, entries.iter()));
+    module.section(&description::<G>(blob, how, offer, entries.iter()));
     CodeModule {
         wasm: module.finish(),
         sites,
@@ -1239,9 +1241,10 @@ pub(crate) fn elements<G: Guest>(pieces: u32) -> ElementSection {
     elements
 }
 
-pub(crate) fn description<'a>(
+pub(crate) fn description<'a, G: Guest>(
     blob: &[u8],
     (look_ahead, optimise): (LookAhead, Optimise),
+    offer: G::Offer,
     pieces: impl ExactSizeIterator<Item = &'a u64>,
 ) -> CustomSection<'static> {
     let (kind, bound) = match look_ahead {
@@ -1249,7 +1252,9 @@ pub(crate) fn description<'a>(
         LookAhead::Full => (1, 0),
         LookAhead::Bounded(n) => (2, n),
     };
-    let mut data = vec![3, kind, optimise as u8];
+    let mut data = vec![4, G::ID as u8];
+    u64::from(G::offer_key(offer)).encode(&mut data);
+    data.extend([kind, optimise as u8]);
     bound.encode(&mut data);
     data.extend_from_slice(blake3::hash(blob).as_bytes());
     (pieces.len() as u64).encode(&mut data);
