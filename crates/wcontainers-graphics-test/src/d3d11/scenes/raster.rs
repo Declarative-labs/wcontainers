@@ -67,7 +67,7 @@ pub fn scissor(i: i32) -> RECT {
         left: left + 13,
         top: 9,
         right: left + 47,
-        bottom: 51,
+        bottom: 40,
     }
 }
 

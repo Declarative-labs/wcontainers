@@ -3,7 +3,8 @@
 # submitted together run together; with twice as many jobs as slots submitted together, exactly as
 # many as there are slots run at once; with every slot taken, a later job of higher priority starts
 # before an earlier one of lower priority; an --alone job starts only when no other job runs, and
-# jobs submitted while it runs wait for it. Sends the working tree first, which the jobs check.
+# jobs submitted while it runs wait for it; two jobs not marked --reference (the group hazard)
+# submitted together run one after the other. Sends the working tree first, which the jobs check.
 # Prints each rule's result; exits 1 if one fails. About 45 s.
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -14,10 +15,11 @@ dir=$(mktemp -d "$(git rev-parse --absolute-git-dir)/queue-check.XXXXXX")
 trap 'rm -rf "$dir"' EXIT
 failed=0
 
-job() { # name, then gpu-job's arguments
-    local name=$1
+job() { # name, then gpu-job's arguments; a reference job unless the name starts with hazard
+    local name=$1 kind=(--reference)
     shift
-    "$here/gpu-job" "$@" >"$dir/$name.out" 2>"$dir/$name.err" &
+    [[ $name != hazard* ]] || kind=()
+    "$here/gpu-job" ${kind[@]+"${kind[@]}"} "$@" >"$dir/$name.out" 2>"$dir/$name.err" &
 }
 seconds() { # name start|end: the desktop's clock time of the job's start or end, in seconds
     local field=2
@@ -71,5 +73,10 @@ check "an alone job's command started after the running jobs ended" 'alone0 >= b
     -v alone0="$alone_from" -v b1="$(seconds before1 end)" -v c1="$(seconds before2 end)"
 check "a job submitted during an alone job started after it ended" 'after0 >= alone1' \
     -v after0="$(seconds after start)" -v alone1="$(seconds alone end)"
+job hazard1 -- "$(sleeper 3)"
+job hazard2 -- "$(sleeper 3)"
+wait
+check "two hazard jobs submitted together ran one after the other" 'g1 > 0 && h1 > 0 && (h0 >= g1 || g0 >= h1)' \
+    -v g0="$(seconds hazard1 start)" -v g1="$(seconds hazard1 end)" -v h0="$(seconds hazard2 start)" -v h1="$(seconds hazard2 end)"
 for f in "$dir"/*.err; do echo "$(basename "$f" .err): $(grep 'gpu-job: task .* queued' "$f" | sed 's/^gpu-job: //')"; done
 exit $failed

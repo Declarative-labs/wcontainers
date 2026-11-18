@@ -23,4 +23,3 @@ dxgi test_swapchain_present: SetFullscreenState
 dxgi test_swapchain_window_messages: SetFullscreenState, swap chains with Windowed = FALSE
 dxgi test_swapchain_window_styles: SetFullscreenState
 dxgi test_window_association: SetFullscreenState
-dxgi test_swapchain_backbuffer_index: its Direct3D 12 part hangs the RTX 3080 (device removed, 0x887A0005) and the display driver resets
