@@ -1,6 +1,6 @@
 # wcontainers: the runtime (joining the kernel to the translator)
 
-Status: proposed plan, 2026-11-17. Nothing is built yet.
+Status: plan, 2026-11-17; J1 is being built.
 
 Words used here:
 - **kernel**: crates/wcontainers-kernel, driven from outside through `wcontainers-abi`.
@@ -108,7 +108,7 @@ it; the runtime builds it.
 
 | Item | Kernel side | Translator side today | Verdict |
 |---|---|---|---|
-| Saved register block (kernel plan 4, line 94) | `RegisterBlock` abi/registers.rs:11; stop flag `STOP_FLAG_OFFSET` :57; `THREAD_BLOCK_SIZE` 816 :60 | `Personality::Block` gcpu/lib.rs:24-38; thread block import contract.rs:59-61; `thread_state_size` contract.rs:122 (block + `PRIVATE_BYTES`, 32 on ARM64, arm64/lib.rs:65) | Fits with a named change: the 32 private bytes (float tracking, exclusive monitor, arm64/lib.rs:78-84) are the back end's and never travel: the monitor is cleared at every exit handed to the kernel, and float tracking starts as "tracked" whenever a thread is made from a block (section 9), so a thread's state is its block |
+| Saved register block (kernel plan 4, line 94) | `RegisterBlock` abi/registers.rs:11; stop flag `STOP_FLAG_OFFSET` :57; `THREAD_BLOCK_SIZE` 816 :60 | `Personality::Block` gcpu/lib.rs:24-38; thread block import contract.rs:59-61; `thread_state_size` contract.rs:122 (block + `PRIVATE_BYTES`, 32 on ARM64, arm64/lib.rs:65) | Fits with a named change: the 32 private bytes (float tracking, exclusive monitor, arm64/lib.rs:78-84) are the back end's and never travel: they are zeroed whenever a thread starts from its block (section 9), so a thread's state is its block |
 | Run a thread (kernel plan 4, line 97); the conversation abi/lib.rs:7-14 | `Next::Run` abi/exit.rs:62-68 | `run` export contract.rs:90-92, bottom loop in `thread_module` thread.rs:49; hooks contract.rs:94-114, bodies runner.rs:834-1076 | Fits with a named change: the loop of section 5 hands exits to the kernel from inside the system call and stop hooks and leaves `run` only when the thread cannot carry on in place |
 | Exit: system call | `Exit::Syscall` abi/exit.rs:26 | `HOOK_SYSCALL` contract.rs:94-97; runner.rs:837-865 | Fits with a named change: when the thread leaves from this hook, the hook returns the call's first argument, so x0 in the block is what it was at the call (section 6) |
 | Exit: stop flag | `Exit::Stop` abi/exit.rs:28 | `HOOK_STOP` contract.rs:98-100; clears the flag runner.rs:867-892 | Fits as is |
@@ -131,11 +131,11 @@ it; the runtime builds it.
 | Read and set registers | `Cpu::registers`, `Cpu::set_registers` abi/cpu.rs:95-97 | the block in the state memory, runner.rs:572 and :553, `snapshot` :689 | Fits as is for reading; setting as the "from new registers" row says |
 | "Code is here" (kernel plan 4, line 107) | `Cpu::code_changed` abi/cpu.rs:64; sent at exec loader.rs:871, for the vDSO loader.rs:723, for executable mappings memory.rs:718, when code stops being runnable memory.rs:471, :495, :516, shared.rs:408 | `ic ivau` drops the pieces of a 64 byte line, runner.rs:1032-1041 and :1113-1119; missing pieces are translated from the bytes now in memory, `load_code` runner.rs:924-1008 | Fits with a named change: the notice drops the range's pieces and keeps its starts; translation happens at first use (section 7) |
 | Page permissions (kernel plan 4, line 112) | `Cpu::set_permissions` abi/cpu.rs:52; `Permissions` with `EXECUTE` abi/memory.rs:14 | one byte per page with the next page's bits, contract.rs:62-67 and :126-145; the runner keeps the full permissions, `EXECUTE` included, and rewrites the byte before the range, runner.rs:647-663 | Fits with a named change: the runner's method moves into the back end, per process, and writes each byte as the kernel's permissions less the back end's write locks (section 8) |
-| Shared pages (kernel plan 4, line 115) | `shared_new`, `shared_map`, `shared_unmap`, `shared_read`, `shared_write`, `shared_drop` abi/cpu.rs:66-89 | none | Missing: blocks are shared memory objects mapped into the process memories (section 8; measured to work in wasmtime) |
+| Shared pages (kernel plan 4, line 115) | `shared_new`, `shared_map`, `shared_unmap`, `shared_read`, `shared_write`, `shared_drop` abi/cpu.rs:66-89; every file mapping is shown through a block, the ELF segments loaded at exec included (loader.rs:614, :814-834; shared.rs:1-40) | none | Missing: the kernel plan's copying method with the "shared pages" write lock, since this Mac's pages are 16 KiB and the guest's 4 KiB (section 8) |
 | Stop flag (kernel plan 4, line 118) | abi/registers.rs:54-57 | the stop check and `HOOK_STOP` contract.rs:98-100; `raise_stop_flag` runner.rs:533 and :825 | Fits as is |
 | Machine description (kernel plan 10) | `HWCAP`, `HWCAP2` abi/machine.rs:20-24, reported at loader.rs:619 and :941 | `OFFERED_FEATURES` arm64/forms.rs:6-8, which match them; `CTR_EL0` arm64/decode_forms.rs:200-203 | Fits as is for ARM64 (the guest's offer is `()`); X10 brings x86's |
-| Clocks | `Host::monotonic_nanoseconds`, `realtime_nanoseconds` abi/host.rs:95-97 | ARM64's `clock` hook (counter reads) arm64/guest.rs:435-440, answered from the runner's own start, runner.rs:1025-1030 | Fits with a named change: the clock hook first tells the outside the progress since the last exit (`ran`), then answers from the kernel's monotonic clock (`Context::monotonic`, lib.rs:74, crate-private: `Host::monotonic_nanoseconds` plus an offset that is 0 until a `restore`, lib.rs:230 and :410), which the kernel is asked to make public as one method; until then the hook answers `Host::monotonic_nanoseconds` itself, equal to the kernel's clock in every run with no restore, and counted and warned as "counter read without the kernel's offset" after a restore (section 16, J1); so a counter read is a host answer like any other, moves with the work done in a counted turn, and agrees with `clock_gettime`, also across a restore |
-| Randomness | `Host::random` abi/host.rs:99 | none (ARM64's `RNDR` is not offered and is an illegal instruction, arm64/decode_forms.rs:251-252) | Missing: the outside's, from the operating system |
+| Clocks | `Host::monotonic_nanoseconds`, `realtime_nanoseconds` abi/host.rs:95-97 | ARM64's `clock` hook (counter reads) arm64/guest.rs:434-441, answered from the runner's own start, runner.rs:1025-1030 | Fits with a named change: the clock hook first tells the outside the progress since the last exit (`ran`), then answers from the kernel's monotonic clock (`Context::monotonic`, lib.rs:74, crate-private: `Host::monotonic_nanoseconds` plus an offset that is 0 until a `restore`, lib.rs:230 and :410), which the kernel is asked to make public as one method; until then the hook answers `Host::monotonic_nanoseconds` itself, equal to the kernel's clock in every run with no restore, and counted and warned as "counter read without the kernel's offset" after a restore (section 16, J1); so a counter read is a host answer like any other, moves with the work done in a counted turn, and agrees with `clock_gettime`, also across a restore |
+| Randomness | `Host::random` abi/host.rs:99 | none (ARM64's `RNDR` is not offered and is an illegal instruction, arm64/decode_forms.rs:253) | Missing: the outside's, from the operating system |
 | Warnings and counters | `Host::warn` abi/host.rs:101; `Kernel::counters` kernel lib.rs:473 | `HOOK_WARN` contract.rs:110-111; `slow_path` runner.rs:796-815; `Reason` gcpu | Fits with a named change: the back end counts its own slow paths (the translator's reasons and the runtime's) and warns through the outside, kept apart from the kernel's (section 5) |
 | Output | `Host::output` abi/host.rs:109 | none: the runner's stand-in answers `write` and `writev` itself, runner.rs:1396-1445 | Missing: the outside passes the kernel's output to the user |
 | File backend | `Host::backend_send` abi/host.rs:105, `Event::BackendReply` :61 | none | Missing: the outside's (J5) |
@@ -165,14 +165,20 @@ the test outside (section 15). There is no second loop.
   `CpuSide<G>` it is `Infallible`, since everything the guest does becomes an exit and a module wasmtime
   refuses is a translator fault that panics with the module's key. Slow paths go to `answer.warn`.
   Implemented by `CpuSide<G>` (WebAssembly) and, in the kernel test crate, by the stand-in, whose `run` loops
-  over Unicorn's turns the same way.
-- `Outside`: the kernel's `Host` plus five methods the loop calls: `turn(slice)` gives how the next turn
+  over Unicorn's turns the same way. One more method, `restored(&self) -> Self`, gives a new back end of
+  the same kind holding the same memories, blocks of shared pages and thread blocks, with nothing
+  translated or cached and nothing of the host's threads assumed (it is called in a copy of the process
+  made at a save, section 11). It is on `Execution` because the outside that makes a save is generic over
+  the back end and must not know which one it has.
+- `Outside`: the kernel's `Host` plus six methods the loop calls: `turn(slice)` gives how the next turn
   ends; `ran(progress)` is told how far the thread got; `arrived(kernel, cpu)` hands the kernel what arrived
   since the last exit (events, signals) and says whether something needs the thread out of `run` first;
-  `stopped(kernel, cpu) -> ControlFlow<Self::End>` does that something once no thread is in `run` (a save,
-  section 11) and may end the run with its own result; `idle(kernel, cpu, until)` waits for an event or the
-  time. Implemented by the shipped outside (J3), by the test outside (J1), and by any user who brings their
-  own: the outside is a type the user supplies, never built into the loop.
+  `stopped(kernel, cpu: &mut E) -> ControlFlow<Self::End>` does that something once no thread is in `run`
+  (a save, section 11, which replaces the back end with `cpu.restored()` in the copy) and may end the run
+  with its own result; `idle(kernel, cpu, until)` waits for an event or the time; `cpu_warning(warning)`
+  is told each slow path of the back end, kept apart from the kernel's `Host::warn`. Implemented by the
+  shipped outside (J3), by the test outside (J1), and by any user who brings their own: the outside is a
+  type the user supplies, never built into the loop.
 
 **The loop** is one step, `step(kernel, cpu, outside) -> Result<Step<O::End>, E::Failure>`, called again and
 again:
@@ -264,14 +270,19 @@ can (call targets, built addresses). The starts are:
   kernel. Reading uses the `object` crate's ELF types for the headers, dynamic table, symbols and
   relocations, and `gimli` for the unwind table (`EhFrameHdr` and `EhFrame`), as M5 does
   (binaries.rs:342-357 at 84e9a937).
-`RELR` is where the starts of Alpine's programs are: every binary of the translator's list except python
-keeps all its relative relocations there (measured, section 18: busybox 1074 `RELR` places, 1046 into code,
-and no relative `RELA`; musl 80 and 45). A word in data is read either as it is (not yet relocated: musl's
-own words when its entry first runs, since it relocates itself) or less the image's load offset (relocated:
-busybox's words when its entry first runs, after musl has relocated them); each reading that falls in the
-code is a start. A word the program has changed by then gives a different start or none. That is never
-wrong: a start only says where translation begins, an extra start costs translation time, and a missing one
-a piece made at run time. The starts are part of the cache key, so the same bytes with the same starts give
+Both relocation forms occur in the translator's list, so both are read (measured, section 18): busybox,
+musl, git and rg keep all their relative relocations in `RELR` (busybox 1074 places, 1046 into code); python,
+java's libjvm (118,737, 112,799 into code) and node (96,357, 91,968) keep them all in `RELA`; bun has
+neither. A `RELA` start is the entry's addend, which is in the relocation table and does not depend on where
+the image sits. A `RELR` start is read from the word at the place, which is either not yet relocated (musl's
+own words when its entry first runs, since it relocates itself) or relocated (busybox's words when its
+entry first runs, after musl has relocated them). The image is read one way for all its words: relocated
+when more of its `RELR` words, less the load offset, fall inside the image's own span than do as they are,
+otherwise as they are (an image at load offset 0 reads the same both ways). So every word gives one start
+or none, and a library placed at different addresses gets the same starts unless its words are split
+nearly evenly, which no image of the list is (to be counted at J1). A word the program has changed by then
+gives a different start or none. That is never wrong: a start only says where translation begins, an
+extra start costs translation time, and a missing one a piece made at run time. The starts are part of the cache key, so the same bytes with the same starts give
 the same entry. Two things differ from the translator's runner: the static symbol table (`.symtab`) is not in
 memory, and the address first reached is not a start, so that programs that first reach a library at
 different places share its entry. The runner's measured counts (translator status, M5) are therefore the
@@ -311,8 +322,11 @@ already does, decided by that measurement.
   a higher address ceiling (section 8). The ceiling itself is not in the key: the code reads the array's
   cover and the permission pages from imported globals (contract.rs `SLOTS_COVER`, `PERMISSION_PAGES`), so
   one entry serves every ceiling of the same form,
-- the translator's build identity: a hash of the translator's and the guest crate's sources made at build
-  time, so any change to them changes the key without manual version numbers,
+- the translator's build identity: a hash made at build time of the sources of every crate the emitted
+  code depends on: the translator, the guest interface (`wcontainers-guest-cpu`: `Personality`, `Guest`),
+  the guest crate, and `wcontainers-abi` (the register block, `STOP_FLAG_OFFSET`, `THREAD_BLOCK_SIZE`), and
+  their locked versions of wasm-encoder, so any change to them changes the key without manual version
+  numbers (built with the disk level, J2: the in-memory level lives inside one build),
 - wasmtime's own compatibility check, which `Module::deserialize` makes.
 Output never holds an absolute address (translator plan 4), so one entry serves every process that maps
 the same bytes at any address. Two levels: compiled modules kept in memory for the runtime's life, shared
@@ -336,15 +350,27 @@ with the process (exec makes a new one). The engine and compiled modules are sha
 **Host-supplied guest memory.** Each guest memory is a mapping the runtime makes and hands to wasmtime
 (`Config::with_host_memory`), with `memory_may_move(false)`. Because the runtime owns the mapping:
 - the kernel reads and writes any process's memory by pointer, also while a thread is inside a hook;
-- a block of shared pages is mapped into it at the same place in every process that maps it;
 - fork copies it with the host's own exact copy (below), which on macOS copies each page on its first
   write.
 Measured on this Mac in wasmtime 50: a 1 MiB block of shared pages mapped into two host-supplied guest
 memories at different addresses; 1000 of 1000 stores through one memory were seen by loads through the
-other; mapping the block took 0.6 µs. This settles the kernel plan's open question of section 17 ("sharing
-pages through host-supplied memory in wasmtime") for macOS; Linux is checked at J2. Mappings use `rustix`
-(an anonymous shared memory object for each block: `memfd_create` on Linux, `shm_open` on macOS); the
-macOS copy uses `mach2`.
+other; mapping the block took 0.6 µs. That measurement mapped at 256 MiB boundaries and hid what decides
+the method: this Mac's pages are 16 KiB (`sysctl hw.pagesize`: 16384) and the guest's 4 KiB, and the kernel
+maps and unmaps blocks at 4 KiB boundaries (a private file mapping ends its sharing one written page at a
+time). A host mapping cannot show a block at 4 KiB granularity on a 16 KiB host. So blocks of shared pages
+use the kernel plan's copying method (its section 7), the one that also serves browsers, on every host:
+- a block's bytes are the back end's own; each memory that maps it holds a copy at the mapped place;
+- every page that shows a block carries the "shared pages" write lock (the lock layer below), so the
+  guest's first write to it faults to the back end, which marks the page written in that memory, lifts the
+  lock and carries the thread on from its block (counted "first write to a shared page");
+- before the kernel sees anything (at every exit handed to it, and when the thread leaves `run`) the
+  written pages are copied into the block and into every other memory that maps them, and locked again.
+  With one guest thread running at a time this is exact: no other memory runs and the kernel reads nothing
+  until the copies are made;
+- `Cpu::write` into a page that shows a block, and `shared_write`, write the block and every memory that
+  maps it; `shared_unmap` and `Cpu::zero` end the sharing there, the memory keeping its copy or the zeros.
+A real shared mapping (rustix, `memfd_create` or `shm_open`) is a later speed path only on hosts whose
+pages are 4 KiB, decided by measuring a program that writes shared memory heavily; it is not built.
 
 **Address space, memory size and ceilings.** Three sizes, kept apart:
 - *The container's address-space size* is large, as on real Linux: the guest's own Linux user size (ARM64
@@ -352,8 +378,7 @@ macOS copy uses `mach2`.
   2^47). It is the kernel's, held in its state, saved with it, the same on every machine and every back end,
   and never read from where the container runs. The memory size the guest is told (today
   `machine.memory_bytes`, container.rs:398) is the container's too, held by the kernel; the runtime gives it
-  in `Start`, one value for every container (proposed 4 GiB; whether a user may set it is the owner's,
-  section 20).
+  in `Start`, from the container's `Machine` (section 14; proposed default 4 GiB).
 - *An address ceiling* belongs to a way of running a process: the back end and the form of its output. A
   process can run there only while its highest address in use is under that ceiling. Nothing in the runtime
   assumes one ceiling: the WebAssembly back end computes its own from the output's memory widths and
@@ -411,8 +436,11 @@ stays one value, since a ceiling per process has no use before the move.
 - copies every run of private pages that may hold data, exactly, whatever the host has done with the pages.
   "May hold data" is a bit of the back end's per-page record: set when a page is given any access or written
   through `Cpu::write`, cleared when `Cpu::zero` covers it, so a page made inaccessible after it was written
-  is still copied. Blocks of shared pages are skipped. Guest memory holds everything the kernel loaded, code included, not only what Linux counts as
-  anonymous. The copy is one operation with one body per host operating system:
+  is still copied. Pages that show a block of shared pages are skipped (the child maps the same blocks,
+  below, and gets their copies from the blocks); that includes every page of a file mapping the kernel has
+  not yet given a private copy, the ELF images loaded at exec among them (kernel loader.rs:814-834,
+  shared.rs:1-4). What is copied is the anonymous pages and the pages a private file mapping has made its
+  own. The copy is one operation with one body per host operating system:
   - macOS: `mach_vm_copy` of each range, which copies exactly by construction (the system shares the pages
     and copies each on its first write in either process), so a page that is compressed or paged out is
     copied like any other;
@@ -420,7 +448,7 @@ stays one value, since a ceiling per process has no use before the move.
     page that is neither has never been written, or was given back, and reads as zero in both. Measured at J2.
   Residency (`mincore`) is not used: it reports a compressed or swapped page as not resident, which would
   give the child zeros;
-- maps the same blocks at the same places;
+- maps the same blocks at the same places, copying their bytes in;
 - writes the child's permission table from the back end's record, and rebuilds its array of slots from the
   process's code modules and their piece lists at the same slot bases; neither is copied;
 - leaves instances to the child's first run, which instantiates the process's code modules at the same slot
@@ -453,8 +481,7 @@ kernel last set them (execute included) and writes the table bytes from them, as
 (runner.rs:647-663). Reading and writing through `Cpu` ignores permissions (abi/cpu.rs:31-32). One layer
 sits on top, written by the back end alone: each page may carry write locks, each with its reason
 (translated code written without an announcement, x86 plan 5.7, which ARM64 does not need; tracking written
-pages; copying a page aside before its first write, section 12; shared pages on a host that cannot share,
-section 17). The table byte is always the kernel's permissions less write wherever a lock stands, made by one
+pages; copying a page aside before its first write, section 12; shared pages, above). The table byte is always the kernel's permissions less write wherever a lock stands, made by one
 function from the record; no lock has its own override. A write that faults on a locked page goes to the
 back end, which settles every lock on the page by its reason, and then either lets the write go on (the
 kernel's permissions allow it) or hands the kernel its `Exit::MemoryFault` (they do not); the kernel never
@@ -475,15 +502,20 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
   ends; it is not the unit. The unit is the owner's ruling, not yet made; until then it is a placeholder,
   the proposal of the owner's requirements map: every executed transfer whose target is at or below the
   transferring instruction (taken branches and calls, and indirect branches and returns compared at run
-  time), plus one at every change of pc the kernel makes (a signal delivered, `rt_sigreturn`, exec). Between
-  two counted events the pc only rises, so (count, pc) names a point. The count is thread state, kept with
-  the block (the map proposes a `progress` word and a `limit` word after the register block, in its padding),
-  so fork, saves and moving a thread carry it. Who counts:
-  - the kernel's changes of pc, on every back end, by the loop: one at each `Resume::FromRegisters` it
-    applies to a thread that has run before, except the first run of each thread after `Kernel::restore`
-    (a restore puts back a point, it does not move it). The loop is the one place that sees every resume,
-    so every back end gets the same count for it. That a delivered signal, `rt_sigreturn` and exec all come
-    as `FromRegisters` is the abi's promise (abi/exit.rs:47-55);
+  time), plus one at every change of pc the kernel makes to a running thread (a signal delivered,
+  `rt_sigreturn`). Between two counted events the pc only rises, so (count, pc) names a point. The count is
+  thread state, kept with the block (the map proposes a `progress` word and a `limit` word after the
+  register block, in its padding), so saves and moving a thread carry it. Exec is not counted and the
+  count does not survive it: the kernel drops the thread and makes a new one for the new program
+  (container.rs:718-728), whose block, count included, starts at zero (abi cpu.rs:91), so points of the new
+  program are counted from its first instruction, the same on every back end. A fork child's thread is new
+  too and starts from zero. Who counts:
+  - the kernel's changes of pc, on every back end, by the loop, from J2: one at each
+    `Resume::FromRegisters` it applies to a thread that has run before, except the first run of each thread
+    after `Kernel::restore` (a restore puts back a point, it does not move it). The loop is the one place
+    that sees every resume, so every back end gets the same count for it. That a delivered signal and
+    `rt_sigreturn` come as `FromRegisters` is the abi's promise (abi/exit.rs:47-55); a new thread (exec, a
+    fork child, `clone`) has not run before, so its first `FromRegisters` is not counted;
   - the guest's own transfers on the stand-in, from J2: Unicorn's block hook gives each block's address and
     size (standin.rs:138-140). The last instruction of a block is at start + size - 4. A block is a counted
     transfer when its start is at or below the address of the last instruction of the block before it in the
@@ -531,11 +563,14 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
   beyond the memory, which the engine stops and which becomes `Exit::MemoryFaultWithoutRegisters` (on the
   written list of differences, kernel plan 15).
 - **The private words** of a thread (ARM64: whether float flags are tracked, and the exclusive monitor) are
-  the back end's and are not guest state. The monitor is cleared at every exit handed to the kernel: a
-  store-exclusive may always fail and programs retry it, so clearing is correct at any point, as when Linux
-  moves a thread between processors. Float tracking is a speed hint, and "tracked" is always correct, so it
-  starts as "tracked" whenever a thread is made from a block (a new thread, a fork child, a restore, a thread
-  from another back end). So fork, saves and moving a thread take the block and nothing else.
+  the back end's and are not guest state. The back end zeroes them whenever a thread starts from its block
+  (`Resume::FromRegisters`: a new thread, a fork child, a signal handler, a restore, a thread from another
+  back end), which is the state the contract gives a new thread (contract.rs:120-121), and keeps them while
+  the thread carries on. Zeroing is generic over the guest: the back end never names ARM64's words. For
+  ARM64 it clears the exclusive monitor (a store-exclusive may always fail and programs retry it, so
+  clearing is correct at any point, as when Linux moves a thread between processors) and sets float
+  tracking to "not yet written", which is the state of every new thread. So fork, saves and moving a thread
+  take the block and nothing else.
 
 ## 10. System calls
 
@@ -625,14 +660,14 @@ built in this track's milestones unless named; each has its place, and nothing h
   one of these places today:
   - the clocks: `Host::monotonic_nanoseconds`, `Host::realtime_nanoseconds` (the outside);
   - randomness: `Host::random` (the outside); `AT_RANDOM`, `getrandom` and `/dev/urandom` all come from it;
-  - timer instructions: ARM64's counter reads go to the guest's `clock` hook (arm64/guest.rs:435-440), which the
+  - timer instructions: ARM64's counter reads go to the guest's `clock` hook (arm64/guest.rs:434-441), which the
     back end answers from the kernel's clock, so through `Host::monotonic_nanoseconds`, a logged answer; x86's
     `rdtsc` comes the same way when x86 lands;
   - the address-space size and memory size: the container's, held by the kernel (section 8), never the
     host's. The ceiling of where a process runs is the host's: placement never depends on it, but a request
     that crosses it fails, so a crossing is a host answer, logged like a `CpuError`;
   - random number instructions: ARM64's `RNDR` is not offered and is an illegal instruction
-    (arm64/decode_forms.rs:251-252), so it is repeatable as it is;
+    (arm64/decode_forms.rs:253), so it is repeatable as it is;
   - where turns end and where events land: the stop flag's timing in free turns (the outside's timer and
     event threads), and which exit an event is handed in after (`Outside::arrived`);
   - the host's answers: `backend_send` and the network calls' results, `Event::BackendReply`, the network
@@ -689,36 +724,80 @@ methods as exports, `Cpu` and `Host` as imports) is asked of the kernel track.
   it is made in J1 and J2 on this branch as its own commits and named in the status file, because the kernel
   track also works in that crate.
 
-**User surface (proposal; names are the owner's).** A library first; a command line program only if the
-owner wants one.
+**User surface (the owner's rulings of 2026-11-17).** The library is the product; a command line program is
+a thin demonstration that only calls the library, built after the library surface works (J3, last). Names
+approved by the owner: the crates `wcontainers-runtime` and `wcontainers-wasmtime`, the types `Runtime`,
+`RuntimeSettings` and `Image`. `ContainerSettings` is withdrawn: it hand-rolled what the Open Container
+Initiative (OCI) standardises and mixed what to run with how it runs. The surface takes three separate
+things, so that a change to how we run can change speed and never behaviour:
 
 ```rust
 let runtime = Runtime::<CpuSide<Arm64>>::new(RuntimeSettings {
-    cache: Some(path), // where compiled translations are kept between runs; None keeps them in memory
+    cache: Some(path),     // where compiled translations are kept between runs; None keeps them in memory
 })?;
-let mut container = runtime.container(&ContainerSettings {
-    image: Image::Tar(path),           // a `docker export` or image layer tar, unpacked into the kernel
-    command: vec!["sh".into(), "-c".into(), "echo hi".into()],
-    environment: vec!["PATH=/usr/bin:/bin".into()],
-    working_directory: "/".into(),
-    hostname: "container".into(),
-    look_ahead: LookAhead::Full,       // the translator's dials
-    optimise: Optimise::Speed,
-}, System::new(output))?;              // the outside: the shipped one, or the user's own `Outside`
-let status = container.run()?;         // to the end; or `container.step()` from the user's own event loop
+// What to run: the OCI runtime configuration (`config.json`), as the oci-spec crate's type.
+let spec: oci_spec::runtime::Spec = /* read from a bundle, or made from an image, below */;
+let mut container = runtime.container(
+    &spec,
+    Image::Tar(path),      // the root's files: a `docker export` or layer tar; `spec.root.path` names it in a bundle
+    &Tuning { look_ahead: LookAhead::Full, optimise: Optimise::Speed },   // how we run it (name suggested)
+    &Machine { address_space: 1 << 48, memory: 4 << 30, arm64: () },     // what machine it sees (name suggested)
+    System::new(output),   // the outside: the shipped one, or the user's own `Outside`
+)?;                        // fails naming the first field it cannot honour
+let status = container.run()?;    // to the end; or `container.step()` from the user's own event loop
 ```
 
-The container's settings are what `docker run` gives the kernel today (`Start`, kernel container.rs:52-64)
-plus the translator's two dials, and nothing else. The address-space size is the kernel's, and the memory
-size the guest is told is one value the runtime gives in `Start` (section 8); whether a user may set it is
-the owner's (section 20). The outside is a parameter: `System` (the shipped outside,
-J3) takes byte streams for standard output and error, and a user such as the owner's other project passes
-its own type implementing `Outside`. Standard input is not in the surface yet: the kernel gives the first
-process /dev/null as descriptor 0, the abi has only output streams, and terminal input events are counted
-as unexpected, so what the abi needs for input is settled with the kernel track before J3 fixes the
-surface. Mounting a host directory through the file backend, published ports and a terminal come with the
-milestones that build them (J5), each as one more field. Tar images are read with the `tar` crate (already
-used by the kernel test crate).
+- **What to run** is `oci_spec::runtime::Spec` (the `oci-spec` crate, Apache-2.0; the brief names 0.10.0 of
+  2026-10-08, to be confirmed when it is added at J3). No type of ours repeats any of it.
+- **An OCI image** becomes that configuration by the image specification's own conversion
+  (image-spec `conversion.md`: Entrypoint and Cmd to `process.args`, Env to `process.env`, WorkingDir to
+  `process.cwd`, User to `process.user`, and the rest as that document says), using `oci-spec`'s image
+  types, and its layers are unpacked in order with whiteouts by established crates (`tar`, and `flate2` or
+  `zstd` for compressed layers, chosen when added). A plain tar of files stays the simple case of a root.
+  Whether images are read in the OCI image format as well as a plain tar is still open with the owner;
+  until he rules, J3 builds the plain tar and the conversion's mapping is written here so that adding the
+  format is only reading it.
+- **How we run it** (suggested name `Tuning`): the translator's look-ahead and speed-or-size setting,
+  and nothing else. It is part of every cache key and changes no behaviour.
+- **What machine the container appears to run on** (suggested name `Machine`), separate because the guest
+  can see it and it must be the same wherever the container runs: the container's address-space size and
+  the memory size it is told (section 8), and the CPU feature claim, typed per guest architecture through
+  the guest interface's `Guest::Offer`, one field for each architecture the build supports (`arm64:
+  <Arm64 as Guest>::Offer`, which is `()` today; x86-64's field, holding whether AVX is claimed, is added
+  with that guest). The architecture itself comes from the image.
+- **Every field of the configuration is honoured or refused by name.** A field we cannot honour makes
+  `container` fail with an error naming it; nothing is silently ignored. Honoured from J3: `ociVersion`
+  (1.x), `process.args`, `process.env`, `process.cwd`, `hostname`, `root.path`, `annotations` (data, no
+  behaviour), `linux.namespaces` entries without a `path` (every container has its own of each kind by
+  construction), and `process.user`, `process.capabilities`, `process.rlimits`, `process.noNewPrivileges`,
+  `process.umask`, `linux.sysctl` (the kernel's own), the default `mounts` (proc, tmpfs, devpts, mqueue,
+  sysfs) and `linux.seccomp` as far as the kernel's `Start` takes them, which J3 settles with the kernel
+  track (today `Start` takes the program, arguments, environment, working directory, host name, groups and
+  the backend, kernel container.rs:52-64). Refused, and what supporting each would take:
+  - `hooks` (they run host programs): the shipped outside running them at the lifecycle points the runtime
+    specification names; possible, not built;
+  - `linux.resources` and `linux.cgroupsPath` (cgroups): the kernel accounting CPU, memory, pids and I/O per
+    group and enforcing limits (asked of the kernel track);
+  - `linux.namespaces` entries with a `path` (joining another container's): several containers in one
+    kernel;
+  - `linux.uidMappings`, `linux.gidMappings` other than identity: user namespaces in the kernel;
+  - `linux.devices` beyond the default set: device nodes in the kernel for each, with the outside behind them;
+  - `mounts` of other types and bind mounts of host directories: the file backend (J5) for binds, the
+    kernel for other file system types;
+  - `root.readonly`, `linux.maskedPaths`, `linux.readonlyPaths`, `linux.rootfsPropagation`: read-only and
+    masking mounts in the kernel;
+  - `process.terminal` and `process.consoleSize`: the terminal surface (J5), with standard input settled
+    with the kernel track;
+  - `process.apparmorProfile`, `process.selinuxLabel`, `linux.mountLabel`: a security module in the kernel;
+  - `process.oomScoreAdj`, `process.ioPriority`, `process.scheduler`, `process.execCPUAffinity`,
+    `linux.personality`, `linux.intelRdt`, `linux.memoryPolicy`, `linux.timeOffsets`, `linux.netDevices`,
+    `domainname`: each the kernel taking the value at `Start` (most are values the kernel already keeps);
+  - the `solaris`, `windows`, `vm` and `zos` sections: another kind of host.
+- **The outside** is a parameter: `System` (the shipped outside, J3) takes byte streams for standard output
+  and error, and a user such as the owner's other project passes its own type implementing `Outside`.
+  Standard input is not in the surface yet: the kernel gives the first process /dev/null as descriptor 0,
+  the abi has only output streams, and terminal input events are counted as unexpected, so what the abi
+  needs for input is settled with the kernel track before J3 fixes the surface.
 
 ## 15. Testing
 
@@ -737,9 +816,10 @@ used by the kernel test crate).
   knob for the count).
 - **At every look-ahead.** The kernel test crate's look-ahead comes from the environment, as its seeds do
   (`SCHEDULE_SEED`, lib.rs:150-161): `LOOK_AHEAD` is `full` (also when unset), `none` or `bounded`. At
-  `bounded` each translation's N is drawn from 1 to 64 by a generator seeded from the test's seed and the
-  range's start, as the translator plan's "bounded with random N" (phase-1-translator.md line 456), and the
-  seed is printed with any failure, so the run repeats. Which look-aheads each bar runs is named in the
+  `bounded` the container's N is drawn from 1 to 64 from the run's seed, as the translator plan's "bounded
+  with random N" (phase-1-translator.md line 456), and printed, so the run repeats. One N per container,
+  not per range: the look-ahead is a setting of the container, and drawing it per range would be a test's
+  behaviour inside the shipped back end. Which look-aheads each bar runs is named in the
   milestone (section 16): J1 full, with hello also at none and bounded; J2 to J5 full, none and bounded;
   J5's Linux Test Project full only; J6 full and bounded, not none (section 7: libpython at none measured 113.9 s to compile and 16.9 GB); J7
   full; J8 full and bounded. Bounded runs with the default seed unless the bar names more. Injections (the stop flag, a signal, a thread switch, save and
@@ -771,8 +851,13 @@ Each bar is checkable by running the named command on this Mac with Docker.
 
 - **J1, first light: a static hello, then busybox's single programs.** Only what those two need.
   - Merge 84e9a937 (section 3).
-  - `wcontainers-runtime`: `step`, `drive`, `Execution` (with `Failure`), `Outside` (with `End`), `Answer`,
-    `Turn`, `Step` (section 5), and the loop's count of the kernel's changes of pc (section 9).
+  - `wcontainers-runtime`: `step`, `drive`, `Execution` (with `Failure` and `restored`), `Outside` (with
+    `End`), `Answer`, `Turn`, `Step` (section 5). The loop's count of the kernel's changes of pc comes in
+    J2 with the stand-in's own count: in J1 the stand-in's unit stays its instructions, so that its results
+    are unchanged, and progress has two meanings (instructions on the stand-in, stop checks on the
+    WebAssembly back end), accepted by the orchestrator until the owner rules on the count. No test
+    compares progress between the two back ends or between look-aheads until the translator emits the
+    guest-defined count.
   - `wcontainers-wasmtime`, the parts hello and busybox reach:
     - host-supplied guest memories, and per-process stores and state memories laid out from `G::ALIGN`, with
       the ceiling of section 8, which `address_space` answers;
@@ -787,10 +872,17 @@ Each bar is checkable by running the named command on this Mac with Docker.
       with its warning, section 9);
     - the clock hook through `ran`. It answers `Host::monotonic_nanoseconds` until the kernel's clock method
       lands (section 4); no J1 test restores;
-    - traps and faults as exits, the monitor cleared at every exit, and the engine with Unix signal traps.
-    `memory_duplicate` and the six shared block calls answer `CpuError::NotSupported`, which the kernel
-    turns into `ENOSYS` and counts (kernel lib.rs:62-70). No command in this bar forks or maps shared pages
-    (tests/busybox.rs). `Failure` is `Infallible`.
+    - traps and faults as exits, the private words zeroed at every `FromRegisters` (section 9), and the
+      engine with Unix signal traps;
+    - the six shared block calls (section 8). The kernel shows every file mapping through a block of
+      shared pages, the ELF segments it loads at exec included (kernel loader.rs:814-834 and :614,
+      shared.rs:1-40 and :322-325), so the static hello already needs `shared_new`, `shared_write` and
+      `shared_map`: with `shared_new` alone answering `NotSupported` the stand-in fails hello (check 4 of
+      J0, check-j0-run4/noshared.log).
+    `memory_duplicate` answers `CpuError::NotSupported`, which the kernel turns into `ENOSYS` and counts
+    (kernel lib.rs:62-70); no command in this bar forks (tests/busybox.rs). `restored()` (section 5) is
+    not built for this back end until J2, where it is the fork copy's body; no J1 test saves. `Failure` is
+    `Infallible`.
   - The kernel test crate, as its own commits, in this order:
     1. The stand-in implements `Execution` (`Failure` = `Unsupported`), and `TestHost` implements `Outside`
        with the driver's per-turn work. Its `stopped` makes the save by copying the process and answers
@@ -820,9 +912,9 @@ Each bar is checkable by running the named command on this Mac with Docker.
     needed translated at run time; how many starts each range got from each source; what counting at every
     stop check costs hello and busybox against full speed.
 - **J2, processes, and the rest of the boundary.** First, each as its own commit:
-  - the stand-in counts the guest's own transfers (section 9). Checked: the crate's verdicts without the
-    feature are unchanged, by the same `diff` as J1's step 1;
-  - the shared block calls (section 8);
+  - the stand-in counts the guest's own transfers, and the loop counts the kernel's changes of pc
+    (section 9), together, since both change the stand-in's unit. Checked: the crate's verdicts without
+    the feature are unchanged, by the same `diff` as J1's step 1;
   - the cache's disk level for the tests' directory. The bars' none and bounded runs span many test
     binaries, and busybox at none compiles in 8.45 s (section 18), so it should compile once per build;
   - the kernel's clock method in the clock hook, if the kernel track has landed it.
@@ -836,12 +928,15 @@ Each bar is checkable by running the named command on this Mac with Docker.
   stand-in, at full, none and bounded look-ahead. Layer 1 with `CpuSide` passes 10,000 seeded sequences, and
   the one-million run is one command. System call and fork cost measured (section 15), with both sides of the
   fork copy (the copy, and the first writes after it).
-- **J3, the user surface.** The library surface of section 14, as the owner decided it, with images from a
-  tar, the on-disk cache, the shipped outside (free turns with its timer thread, output streams, and standard input as settled with the kernel track
-  before J3, section 14).
+- **J3, the user surface.** The library surface of section 14 as the owner ruled it: `oci_spec::runtime::Spec`
+  with every field honoured or refused by name, `Tuning` and `Machine` apart from it, images from a tar (and
+  the OCI image format if the owner rules for it), the on-disk cache, the shipped outside (free turns with
+  its timer thread, output streams, and standard input as settled with the kernel track before J3, section
+  14). Last, once the library bar passes, the command line program: thin, calling only the library, with
+  nothing the library lacks (its name is the owner's; suggested `wcontainers`).
   Bar: a test runs `sh -c` with a pipeline in `alpine:3.22` (exported with Docker) through the public surface
-  and matches the reference; a second run of the same container in a new process starts from the disk cache
-  (measured).
+  and matches the reference; a configuration with a refused field fails naming that field; a second run of
+  the same container in a new process starts from the disk cache (measured).
 - **J4, threads and turns.** Starts once the translator emits the guest-defined count (section 9), so seeded
   thread switches land at the same guest points at every look-ahead. Many threads per process, futexes,
   timers, outside events raising the flag in free turns. Bar: `threads`, `turns`, `timers`, `deadlines`,
@@ -929,7 +1024,9 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
 - Relocations of the translator's M5 binaries (scratch check-j0-run2/relr.py, reading each file's dynamic
   table; relr.log): busybox no relative `RELA`, 1074 `RELR` places (1046 into code); musl none and 80 (45);
   python 12,063 relative `RELA` (10,353 into code) and no `RELR`; git none and 4253 (3858); rg none and 14,146
-  (13,198).
+  (13,198). The other four of the list, from J0's fourth check (check-j0-run4/relr-run4.log): java's libjvm
+  118,737 relative `RELA` (112,799 into code), no `RELR`; node (node:22-alpine) 96,357 (91,968), no `RELR`;
+  bun neither; go not read.
 - Whole binaries at look-ahead none from M5's starts, and reading those starts from the file (`Binary::read`,
   median of 7), speed setting, wasmtime compiling on all cores (test g of the scratch runtime_measure.rs;
   load 27.1 to 26.2 over the 1 minute figure; measure-none.log; peak memory is the process's largest resident
@@ -937,7 +1034,8 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
   (19,505,404 bytes), compiled in 8.45 s, peak 3,120 MB; musl 0.08 ms, 0.08 s, 85,954 pieces (12,668,018
   bytes), 5.09 s, peak still 3,120 MB then 3,485 MB; libpython 1.37 ms, 0.71 s, 703,235 pieces (106,375,194
   bytes), 113.92 s, peak 16,918 MB.
-- System call through the translator's runner, at full look-ahead (same log and load): answered in the hook
+- System call through the translator's runner, at full look-ahead (load 39.78, 33.56, 28.45;
+  measure-translator.log lines 150-171): answered in the hook
   10.5 ns (median of 7 alternating pairs, 1,000,000 calls each; min 9.4 ns); leaving `run` and back 300.8 ns
   (median of 5, 100,000 calls each; min 285.7 ns).
 - The kernel's own share with the layer 1 buffer CPU (static hello as the started program; load 64.8, 45.7,
@@ -991,12 +1089,11 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
 
 ## 20. Decisions for the owner
 
-- **Names**: suggested `wcontainers-runtime` and `wcontainers-wasmtime` for the crates, `Runtime`,
-  `RuntimeSettings`, `ContainerSettings` and `Image` for the surface; all yours to choose.
-- **The user surface**: the library surface of section 14 (a tar image, the command and its environment, the
-  translator's two dials, a cache directory, byte streams for standard output and error, and standard input as settled with the
-  kernel track before J3), and whether a command line
-  program is wanted.
+- **Names**: approved for the crates and `Runtime`, `RuntimeSettings`, `Image`. Yours to choose: the name of
+  how we run (suggested `Tuning`), of what machine the container sees (suggested `Machine`), and of the
+  command line program (suggested `wcontainers`).
+- **The user surface**: ruled (section 14). Still open with you: whether images are read in the OCI image
+  format as well as a plain tar.
 - **Address ceilings** (section 8), the owner's direction taken as written there: the container's
   address-space size is the guest's Linux size (2^48 for ARM64), not the 4 GiB of the kernel plan's written
   list of differences; the proposed tiers (4 GiB, 16 GiB, the container's size) and the placement rule are
