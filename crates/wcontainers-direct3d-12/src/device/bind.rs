@@ -14,7 +14,10 @@ use crate::root::{RootParameterKind, RootSignatureDesc};
 /// One binding of one stage's program.
 #[derive(Clone, Debug)]
 pub(super) struct StageBinding {
+    /// The back end's stages that run the program.
     stages: StageSet,
+    /// The API stage: the `D3D12_SHADER_VISIBILITY` naming it, 0 for compute.
+    visibility: u32,
     binding: ReflectedBinding,
     /// Uniform blocks: the size the program declares.
     declared: u64,
@@ -48,12 +51,29 @@ enum Form {
     Image { writable: bool },
 }
 
-/// The bindings of a converted stage, with the sizes its uniform blocks declare.
-pub(super) fn stage_bindings(c: &Converted, stages: StageSet) -> Vec<StageBinding> {
+/// `D3D12_SHADER_VISIBILITY` of each graphics stage.
+pub(super) const VERTEX: u32 = 1;
+pub(super) const GEOMETRY: u32 = 4;
+pub(super) const PIXEL: u32 = 5;
+
+/// The bindings of a converted stage of the API's `visibility` (0 for compute), run by the back
+/// end's `stages`, with the sizes its uniform blocks declare. Bindings the conversion added for
+/// pulled vertex streams are left out: the draw binds them.
+pub(super) fn stage_bindings(
+    c: &Converted,
+    visibility: u32,
+    stages: StageSet,
+) -> Vec<StageBinding> {
     let module = &c.modules[0].module;
     c.reflection
         .bindings
         .iter()
+        .filter(|b| {
+            !matches!(
+                b.added,
+                Some(wcontainers_gpu::AddedBinding::PulledStream(_))
+            )
+        })
         .map(|b| {
             let global = module.global_variables.iter().find(|(_, v)| {
                 v.binding
@@ -96,6 +116,7 @@ pub(super) fn stage_bindings(c: &Converted, stages: StageSet) -> Vec<StageBindin
             }
             StageBinding {
                 stages,
+                visibility,
                 binding: b.clone(),
                 declared,
                 form,
@@ -116,15 +137,9 @@ enum Source {
     Static(usize),
 }
 
-/// `D3D12_SHADER_VISIBILITY` covers the stages.
-fn visible(visibility: u32, stages: StageSet) -> bool {
-    match visibility {
-        0 => true,
-        _ if stages == StageSet::COMPUTE => false,
-        1 => stages == StageSet::VERTEX,
-        5 => stages == StageSet::FRAGMENT,
-        _ => false,
-    }
+/// A root parameter's `D3D12_SHADER_VISIBILITY` covers the binding's stage.
+fn visible(visibility: u32, b: &StageBinding) -> bool {
+    visibility == 0 || visibility == b.visibility
 }
 
 /// The root signature's place for binding `b`.
@@ -138,7 +153,7 @@ fn locate(root: &RootSignatureDesc, b: &StageBinding) -> Option<Source> {
         SlotKind::Counter => return None,
     };
     for (i, p) in root.parameters.iter().enumerate() {
-        if !visible(p.visibility, b.stages) {
+        if !visible(p.visibility, b) {
             continue;
         }
         match &p.kind {
@@ -182,9 +197,7 @@ fn locate(root: &RootSignatureDesc, b: &StageBinding) -> Option<Source> {
         return root
             .samplers
             .iter()
-            .position(|s| {
-                (s.register(), s.space()) == (r.register, r.space) && visible(s.0[12], b.stages)
-            })
+            .position(|s| (s.register(), s.space()) == (r.register, r.space) && visible(s.0[12], b))
             .map(Source::Static);
     }
     None
@@ -251,25 +264,37 @@ enum Held<B: Backend> {
 }
 
 impl<B: Backend> Device<B> {
-    /// The binding sets of a draw with pipeline `pid` and root arguments `state`, with `extra`
-    /// read-only storage buffers (binding, buffer, offset, size) added to the vertex program's
-    /// set.
+    /// The binding sets of a draw or dispatch with pipeline `pid` and root arguments `state`:
+    /// of the API stage `only` (a `D3D12_SHADER_VISIBILITY`), or of every stage. `extra` are
+    /// read-only storage buffers (binding, buffer, offset, size) of the pulled vertex streams,
+    /// added to set 0 for the back end's stages `extra_stages`.
     pub(super) fn binding_sets(
         &mut self,
         state: &RootState,
         pid: PipelineId,
+        only: Option<u32>,
         extra: &[(u32, &B::Buffer, u64, u64)],
+        extra_stages: StageSet,
     ) -> Result<[Option<B::BindingSet>; MAX_BINDING_SETS], Error> {
         let mut sets: [Option<B::BindingSet>; MAX_BINDING_SETS] = Default::default();
-        let bindings = std::mem::take(&mut self.pipelines[pid.0 as usize].bindings);
+        let mut bindings = std::mem::take(&mut self.pipelines[pid.0 as usize].bindings);
+        let mut others = Vec::new();
+        if let Some(v) = only {
+            (bindings, others) = bindings.into_iter().partition(|b| b.visibility == v);
+        }
+        let restore = |d: &mut Self, mut bindings: Vec<StageBinding>, others: Vec<StageBinding>| {
+            bindings.extend(others);
+            d.pipelines[pid.0 as usize].bindings = bindings;
+        };
         if bindings.is_empty() && extra.is_empty() {
+            restore(self, bindings, others);
             return Ok(sets);
         }
         let result = self.resolve(state, &bindings);
         let held = match result {
             Ok(held) => held,
             Err(e) => {
-                self.pipelines[pid.0 as usize].bindings = bindings;
+                restore(self, bindings, others);
                 return Err(e);
             }
         };
@@ -315,7 +340,7 @@ impl<B: Backend> Device<B> {
                     .chain(extra.iter().filter(|_| set == 0).map(
                         |&(binding, buffer, offset, size)| BindingEntry {
                             binding,
-                            stages: StageSet::VERTEX,
+                            stages: extra_stages,
                             resource: BindingResource::StorageBuffer {
                                 range: BufferRange {
                                     buffer,
@@ -332,14 +357,38 @@ impl<B: Backend> Device<B> {
                     Ok(s) => *slot = Some(s),
                     Err(e) => {
                         drop(entries);
-                        self.pipelines[pid.0 as usize].bindings = bindings;
+                        restore(self, bindings, others);
                         return Err(e.into());
                     }
                 }
             }
         }
-        self.pipelines[pid.0 as usize].bindings = bindings;
+        restore(self, bindings, others);
         Ok(sets)
+    }
+
+    /// Whether the root arguments the bindings of pipeline `pid` read are all set. Direct3D 12
+    /// leaves a draw or dispatch reading one not set since its root signature was set undefined;
+    /// the replay skips it, with a warning.
+    pub(super) fn arguments_set(&mut self, state: &RootState, pid: PipelineId) -> bool {
+        let Some(root) = state.root.and_then(|r| self.roots.get(r.0 as usize)) else {
+            return true;
+        };
+        let set = self.pipelines[pid.0 as usize]
+            .bindings
+            .iter()
+            .all(|b| match locate(root, b) {
+                Some(Source::Descriptor(i) | Source::Table(i, _)) => state.arguments[i].is_some(),
+                _ => true,
+            });
+        if !set {
+            self.messages.push(
+                "warning: a draw or dispatch reading a root argument unset since its root \
+                 signature was set was skipped"
+                    .into(),
+            );
+        }
+        set
     }
 
     /// Each binding's resource, by its index in `bindings`.
