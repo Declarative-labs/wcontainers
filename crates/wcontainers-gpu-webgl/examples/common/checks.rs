@@ -928,6 +928,25 @@ fn typeless_bytes(format: Format, texels: usize, seed: u32) -> Vec<u8> {
                 at.copy_from_slice(&h.to_le_bytes());
             }
         }
+        Format::Rg11b10Float => {
+            // Infinities, NaNs with payloads, the smallest and largest denormals, the largest value.
+            let w = |r: u32, g: u32, b: u32| r | g << 11 | b << 22;
+            let special = [
+                w(0x7c0, 0x7c1, 0x001),
+                w(0x03f, 0x7bf, 0x3e0),
+                w(0x7e5, 0x000, 0x3e3),
+                w(0x040, 0x001, 0x3df),
+            ];
+            for (at, s) in bytes
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .step_by(3)
+                .zip(special.iter().cycle())
+            {
+                at.copy_from_slice(&s.to_le_bytes());
+            }
+        }
         Format::R32Float | Format::Rg32Float | Format::Rgba32Float | Format::Rgb32Float => {
             let special: [u32; 8] = [
                 0x7f80_0001,
@@ -1254,16 +1273,23 @@ pub fn signed_normalised_minimum_judged_by_whole_components<H: Host>() {
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
-/// 16-bit floats, which GL does not read back, read back as stored (NaN payloads, infinities and
-/// denormals included) through their bits drawn into the unsigned integer twin
+/// 16-bit floats and R11G11B10, which GL does not read back, read back as stored (NaN payloads,
+/// infinities and denormals included) through their bits drawn into the unsigned integer twin
 /// (`CopyThroughBuffer`): now, later, and into a buffer, from a region of a layer of a level.
+/// B5G6R5, which GL reads back as bytes, the same way (packed again on the host).
 pub fn half_floats_read_back_as_stored<H: Host>() {
     use crate::kit;
     let mut b = H::make();
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
-    for (n, format) in [Format::R16Float, Format::Rg16Float, Format::Rgba16Float]
-        .into_iter()
-        .enumerate()
+    for (n, format) in [
+        Format::R16Float,
+        Format::Rg16Float,
+        Format::Rgba16Float,
+        Format::Rg11b10Float,
+        Format::B5g6r5Unorm,
+    ]
+    .into_iter()
+    .enumerate()
     {
         assert!(
             b.caps().formats.get(format).contains(FormatUse::COPY_OUT),
@@ -1347,7 +1373,9 @@ pub fn half_floats_read_back_as_stored<H: Host>() {
             want,
             "{format:?} copied into a buffer"
         );
-        assert!(b.slow_paths().count(SlowPath::CopyThroughBuffer) >= drawn + 3);
+        if format != Format::B5g6r5Unorm {
+            assert!(b.slow_paths().count(SlowPath::CopyThroughBuffer) >= drawn + 3);
+        }
         assert_eq!(b.status(), DeviceStatus::Ok);
         b.destroy(Object::Buffer(out));
         b.destroy(Object::Texture(t));

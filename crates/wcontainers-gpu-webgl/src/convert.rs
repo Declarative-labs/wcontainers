@@ -12,6 +12,8 @@ enum Kind {
     Unorm,
     Snorm,
     Half,
+    /// R11G11B10's unsigned floats: 6, 6 and 5 bits of mantissa, packed into one 32-bit word.
+    SmallFloat,
     Single,
     Uint,
     Sint,
@@ -40,6 +42,7 @@ fn bits(format: Format) -> Option<(Kind, [u32; 4])> {
         F::R32Float | F::Rg32Float | F::Rgba32Float => n(Single, 32),
         F::Rgb10a2Unorm => Some((Unorm, [10, 10, 10, 2])),
         F::Rgb10a2Uint => Some((Uint, [10, 10, 10, 2])),
+        F::Rg11b10Float => Some((SmallFloat, [11, 11, 10, 0])),
         F::Depth16Unorm => n(Depth(16), 16),
         // A buffer's 24-bit depth is a 32-bit word.
         F::Depth24Plus | F::Depth24PlusStencil8 => n(Depth(24), 32),
@@ -77,7 +80,9 @@ pub fn depth_unit(format: Format) -> Option<[f32; 2]> {
 pub fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
     let (from, wf) = bits(src)?;
     let (to, wt) = bits(dst)?;
-    if wf != wt || to == Kind::Snorm {
+    // R11G11B10 goes only into its 32-bit twin, as one word.
+    let packed = from == Kind::SmallFloat && dst == Format::R32Uint;
+    if (wf != wt && !packed) || to == Kind::Snorm || to == Kind::SmallFloat {
         return None;
     }
     let max = uvec(wf, |w| (1u64 << w) - 1);
@@ -109,6 +114,9 @@ pub fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
             half("w")
         ),
         Kind::Single => "floatBitsToUint(v)".into(),
+        Kind::SmallFloat => "uvec4(small_bits(v.x, 6u) | small_bits(v.y, 6u) << 11u \
+                             | small_bits(v.z, 5u) << 22u, 0u, 0u, 0u)"
+            .into(),
         Kind::Uint => "v".into(),
         Kind::Sint => format!("uvec4(v) & {max}"),
         Kind::Snorm => format!(
@@ -142,7 +150,7 @@ pub fn program(src: Format, dst: Format, sampler: &str) -> Option<String> {
         Kind::Single => ("vec4", "uintBitsToFloat(r)".into()),
         Kind::Uint => ("uvec4", "r".into()),
         Kind::Sint => ("ivec4", format!("ivec4(r << {shift}) >> ivec4({shift})")),
-        Kind::Snorm => unreachable!("refused above"),
+        Kind::Snorm | Kind::SmallFloat => unreachable!("refused above"),
     };
     Some(format!(
         "#version 300 es
@@ -161,6 +169,16 @@ uint half_bits(float f) {{
     if (e > 112u) return sign | ((e - 112u) << 10u) | (m >> 13u);
     if (e < 103u) return sign;
     return sign | ((m | 0x800000u) >> (126u - e));
+}}
+// The bits of an unsigned float of `mb` mantissa bits and a 5-bit exponent sampled as `f`.
+uint small_bits(float f, uint mb) {{
+    uint u = floatBitsToUint(f);
+    uint e = (u >> 23u) & 0xffu;
+    uint m = u & 0x7fffffu;
+    if (e == 0xffu) return (0x1fu << mb) | (m >> (23u - mb));
+    if (e > 112u) return ((e - 112u) << mb) | (m >> (23u - mb));
+    if (e < 113u - mb) return 0u;
+    return (m | 0x800000u) >> (136u - mb - e);
 }}
 {towards}
 void main() {{

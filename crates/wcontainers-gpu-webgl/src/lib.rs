@@ -1669,6 +1669,7 @@ impl Gl {
             comp_kept: kept,
             n: 1,
             swap: false,
+            rgb565: false,
         });
         let at = [region.origin.x as i32, region.origin.y as i32];
         for i in 0..extent.depth_or_layers {
@@ -2369,8 +2370,8 @@ impl Gl {
     }
 
     /// Calls `read` on a region of a texture GL cannot read, drawn into a colour texture it can:
-    /// depth as colour ([`SlowPath::DepthReadByDraw`]), 16-bit floats as the bits of their unsigned
-    /// integer twin ([`SlowPath::CopyThroughBuffer`]); None for other textures. Then lets the
+    /// depth as colour ([`SlowPath::DepthReadByDraw`]), 16-bit and packed floats as the bits of
+    /// their unsigned integer twin ([`SlowPath::CopyThroughBuffer`]); None for other textures. Then lets the
     /// colour texture go.
     fn through_draw<R>(
         &mut self,
@@ -2381,7 +2382,7 @@ impl Gl {
         let format = region.texture.desc.format;
         let scratch = if depth::stored(format).is_some() {
             self.depth_by_draw(region, extent)
-        } else if let Some(twin) = format::half_twin(format)
+        } else if let Some(twin) = format::bits_twin(format)
             && region.texture.host.is_none()
         {
             self.bits_by_draw(region, extent, twin)
