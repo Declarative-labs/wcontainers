@@ -1297,7 +1297,7 @@ fn constants_as_storage(
         .max()
         .unwrap_or(SlotKind::Storage.first_binding());
     for b in &mut reflection.bindings {
-        if b.kind != SlotKind::Uniform || b.added.is_some() || slots & (1 << b.register) == 0 {
+        if b.kind != SlotKind::Uniform || b.added.is_some() || slots & (1 << b.slot()) == 0 {
             continue;
         }
         if next >= SlotKind::Storage.first_binding() + SlotKind::Storage.slots() {
@@ -1321,9 +1321,9 @@ fn constants_as_storage(
             group: b.set,
             binding: next,
         });
+        b.added = Some(AddedBinding::ConstantsAsStorage(b.slot()));
         b.kind = SlotKind::Storage;
         b.binding = next;
-        b.added = Some(AddedBinding::ConstantsAsStorage(b.register));
         next += 1;
     }
     Ok(())
@@ -1654,8 +1654,9 @@ fn copy_constant(
     into.expressions.append(copied, Span::UNDEFINED)
 }
 
-/// The API register of the resource bound to global `g`, if it is of `kind`.
-fn register_of(
+/// The slot of the resource bound to global `g` ([`wcontainers_gpu::ReflectedBinding::slot`]), if
+/// it is of `kind`.
+fn slot_of(
     module: &Module,
     reflection: &Reflection,
     g: Handle<GlobalVariable>,
@@ -1668,7 +1669,7 @@ fn register_of(
         .find(|b| {
             b.kind == kind && b.added.is_none() && b.set == rb.group && b.binding == rb.binding
         })
-        .map(|b| b.register)
+        .map(|b| b.slot())
 }
 
 /// Samplings the variant changes, each replaced by one callee that applies every change it asks for.
@@ -1714,11 +1715,11 @@ fn samples(
                 continue;
             };
             let g = global_of(f, sampler).ok_or(ConvertError::Unsupported("SamplerArgument"))?;
-            let Some(s) = register_of(module, reflection, g, SlotKind::Sampler) else {
+            let Some(s) = slot_of(module, reflection, g, SlotKind::Sampler) else {
                 continue;
             };
             let t = global_of(f, image).ok_or(ConvertError::Unsupported("TextureArgument"))?;
-            let texture = register_of(module, reflection, t, SlotKind::Texture);
+            let texture = slot_of(module, reflection, t, SlotKind::Texture);
             let clamped = texture
                 .filter(|&r| r < 128 && variant.min_lod_clamped & (1 << r) != 0)
                 .map(|r| (r, module.global_variables[g].ty));
@@ -2235,7 +2236,7 @@ fn loads(
                 continue;
             };
             let g = global_of(f, image).ok_or(ConvertError::Unsupported("TextureArgument"))?;
-            let Some(r) = register_of(module, reflection, g, SlotKind::Texture) else {
+            let Some(r) = slot_of(module, reflection, g, SlotKind::Texture) else {
                 continue;
             };
             if r < 128 && variant.min_lod_clamped & (1 << r) != 0 {
@@ -2346,7 +2347,7 @@ fn texture_info(
                 _ => continue,
             };
             let g = global_of(f, image).ok_or(ConvertError::Unsupported("TextureArgument"))?;
-            let r = register_of(module, reflection, g, SlotKind::Texture)
+            let r = slot_of(module, reflection, g, SlotKind::Texture)
                 .ok_or(ConvertError::Unsupported("TextureInfoOfStorage"))?;
             sites.push((owner, h, r, samples));
         }

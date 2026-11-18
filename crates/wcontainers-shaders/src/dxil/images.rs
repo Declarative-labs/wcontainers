@@ -24,19 +24,34 @@ type Result<T> = core::result::Result<T, ConvertError>;
 /// A typed buffer or a storage image without a format, as dxil-spirv declared it.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Declared {
-    space: u32,
-    register: u32,
+    /// Its descriptor set and binding in dxil-spirv's SPIR-V (its class and index, `cpp/dxil.cpp`).
+    set: u32,
+    binding: u32,
     /// A view a program writes (`RWBuffer`, `RWTexture*`), not a read-only one.
     storage: bool,
     /// A typed buffer, not a storage image.
     buffer: bool,
 }
 
+impl Declared {
+    /// Its slot once numbered (`bindings`): the binding's place in its kind's range.
+    fn slot(&self, module: &Module, var: Handle<GlobalVariable>) -> u32 {
+        let kind = match self.storage {
+            true => wcontainers_gpu::SlotKind::Storage,
+            false => wcontainers_gpu::SlotKind::Texture,
+        };
+        let binding = module.global_variables[var]
+            .binding
+            .map_or(0, |b| b.binding);
+        binding.wrapping_sub(kind.first_binding())
+    }
+}
+
 /// Finds the typed buffers and formatless storage images the SPIR-V declares, and rewrites their image
 /// types in place into ones naga's reader takes.
 pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
     let mut sets = BTreeMap::new();
-    let mut registers = BTreeMap::new();
+    let mut bindings = BTreeMap::new();
     let mut kinds = BTreeMap::new();
     let mut images = BTreeMap::new();
     // A pointer's or array's element type.
@@ -53,7 +68,7 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
                 if w[2] == Decoration::DescriptorSet as u32 {
                     sets.insert(w[1], w[3]);
                 } else if w[2] == Decoration::Binding as u32 {
-                    registers.insert(w[1], w[3]);
+                    bindings.insert(w[1], w[3]);
                 }
             }
             Some(Op::TypeInt) if count >= 4 => {
@@ -95,13 +110,13 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
                 None => break,
             }
         }
-        let (Some(&i), Some(&register)) = (images.get(&element), registers.get(&id)) else {
+        let (Some(&i), Some(&binding)) = (images.get(&element), bindings.get(&id)) else {
             continue;
         };
         if buffer(words, i) || formatless(words, i) {
             declared.push(Declared {
-                space: sets.get(&id).copied().unwrap_or(0),
-                register,
+                set: sets.get(&id).copied().unwrap_or(0),
+                binding,
                 storage: words[i + 7] == 2,
                 buffer: buffer(words, i),
             });
@@ -124,8 +139,8 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
     declared
 }
 
-/// Each declared image's global variable, matched by space, register and kind while the bindings
-/// are still dxil-spirv's.
+/// Each declared image's global variable, matched by set, binding and kind while the bindings are
+/// still dxil-spirv's.
 pub(super) fn globals(
     module: &Module,
     declared: &[Declared],
@@ -139,7 +154,7 @@ pub(super) fn globals(
         let storage = matches!(class, ImageClass::Storage { .. });
         if let Some(d) = declared
             .iter()
-            .find(|d| (d.space, d.register, d.storage) == (b.group, b.binding, storage))
+            .find(|d| (d.set, d.binding, d.storage) == (b.group, b.binding, storage))
         {
             found.push((h, *d));
         }
@@ -262,10 +277,11 @@ fn storage_image(
         return Err(ConvertError::Malformed("a storage image's type".into()));
     };
     let declared = texel_kind(&module.types[module.global_variables[var].ty].inner);
+    let slot = d.slot(module, var);
     let format = variant
         .storage_formats
         .iter()
-        .find(|(slot, _)| *slot == d.register)
+        .find(|(s, _)| *s == slot)
         .ok_or(ConvertError::Unsupported("StorageFormat"))?
         .1;
     let format = storage_format(format).ok_or(ConvertError::Unsupported("StorageFormatAbsent"))?;
@@ -334,9 +350,10 @@ fn typed_buffer(
     } else {
         &variant.texel_formats
     };
+    let slot = d.slot(module, var);
     let format = formats
         .iter()
-        .find(|(slot, _)| *slot == d.register)
+        .find(|(s, _)| *s == slot)
         .ok_or(ConvertError::Unsupported("TypedBufferFormat"))?
         .1;
     let declared = texel_kind(&module.types[module.global_variables[var].ty].inner)

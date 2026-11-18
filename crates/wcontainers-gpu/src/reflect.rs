@@ -132,6 +132,14 @@ pub struct ReflectedBinding {
     pub added: Option<AddedBinding>,
 }
 
+impl ReflectedBinding {
+    /// The binding's place in its kind's range, which per-slot fields of [`VariantKey`] and
+    /// [`Reflection::sampled_pairs`] name: the register under Direct3D 10 and 11's numbering.
+    pub const fn slot(&self) -> u32 {
+        self.binding - self.kind.first_binding()
+    }
+}
+
 /// A binding a variant adds to a program. It lives in the set of the one stage that reads it (set 0 for
 /// vertex and compute programs, set 1 for fragment programs; plan section 6.4), numbered in its kind's
 /// range from the first binding past the highest one of that kind the stage's program already uses, so
@@ -143,8 +151,8 @@ pub enum AddedBinding {
     /// storage offset alignment). Each pulled input has its own, so a stream feeding two inputs is
     /// bound twice.
     PulledStream(u32),
-    /// The constant buffer in the stage's slot n (Direct3D 12: the root signature's constant buffer
-    /// range n), read as a read-only storage buffer.
+    /// The constant buffer in the stage's slot n ([`ReflectedBinding::slot`]), read as a read-only
+    /// storage buffer.
     ConstantsAsStorage(u32),
     /// The same, read through a 2D RGBA32 unsigned integer texture the front copies the buffer into,
     /// one 16-byte row per texel laid out as [`CONSTANTS_TEXTURE_WIDTH`] says.
@@ -370,7 +378,8 @@ pub struct Reflection {
     /// helper fills the blocks of the programs it makes from geometry, hull and domain shaders itself.
     pub helpers: Vec<HelperSlot>,
     pub helper_size: u32,
-    /// The (texture slot, sampler slot) pairs the shader samples with, in a fixed order.
+    /// The (texture slot, sampler slot) pairs the shader samples with, in a fixed order
+    /// ([`ReflectedBinding::slot`]).
     pub sampled_pairs: Vec<(u32, u32)>,
     pub extras: StageExtras,
 }
@@ -499,7 +508,7 @@ pub struct LinkedValues {
 }
 
 /// Which variant of a converted shader a front asks for. It is part of the converted shader's cache key.
-/// Each per-slot field has a bit per API slot of that kind.
+/// Each per-slot field has a bit (or an entry) per slot of that kind ([`ReflectedBinding::slot`]).
 ///
 /// Every rewrite that depends on what is bound or on the back end's abilities is a field here, and the
 /// conversion reads nothing else: a converted shader is a function of its source bytes, the converter's

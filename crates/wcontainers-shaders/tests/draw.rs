@@ -39,7 +39,17 @@ struct Case {
     dxil: bool,
 }
 
-const CASES: [Case; 22] = [
+const CASES: [Case; 23] = [
+    Case {
+        vs: "vs_transform",
+        ps: "ps_twospaces",
+        format: Format::Rgba8Unorm,
+        tint: [1.0, 0.75, 0.5, 1.0],
+        grid: true,
+        not_on_webgl: [None, None],
+        known_on_webgl: None,
+        dxil: true,
+    },
     Case {
         vs: "vs_transform",
         ps: "ps_textured",
@@ -284,8 +294,8 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Vec<u8> {
 }
 
 /// Draws a case's DXIL build with real Direct3D 12, bound as Direct3D 11 binds the DXBC build: the
-/// constants at b0 for both stages, the texture at t0 and a linear clamping sampler at s0. Returns
-/// the target's texels, rows tightly packed.
+/// constants at b0 for both stages, the texture at t0 (in register spaces 0 and 1) and a linear
+/// clamping sampler at s0. Returns the target's texels, rows tightly packed.
 fn direct3d_12(gpu: &wcontainers_graphics_test::d3d12::Gpu, case: &Case) -> Vec<u8> {
     use wcontainers_graphics_test::d3d12::{
         area, buffer_desc, bytecode as code, element, footprint_location, tex2d_desc,
@@ -296,12 +306,13 @@ fn direct3d_12(gpu: &wcontainers_graphics_test::d3d12::Gpu, case: &Case) -> Vec<
         bytecode(&format!("{}.dxil", case.vs)),
         bytecode(&format!("{}.dxil", case.ps)),
     );
-    let table = [D3D12_DESCRIPTOR_RANGE {
+    let table = [0, 1].map(|space| D3D12_DESCRIPTOR_RANGE {
         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
         NumDescriptors: 1,
-        OffsetInDescriptorsFromTableStart: 0,
+        RegisterSpace: space,
+        OffsetInDescriptorsFromTableStart: space,
         ..Default::default()
-    }];
+    });
     let parameters = [
         D3D12_ROOT_PARAMETER {
             ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
@@ -314,7 +325,7 @@ fn direct3d_12(gpu: &wcontainers_graphics_test::d3d12::Gpu, case: &Case) -> Vec<
             ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
             Anonymous: D3D12_ROOT_PARAMETER_0 {
                 DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
-                    NumDescriptorRanges: 1,
+                    NumDescriptorRanges: table.len() as u32,
                     pDescriptorRanges: table.as_ptr(),
                 },
             },
@@ -409,12 +420,14 @@ fn direct3d_12(gpu: &wcontainers_graphics_test::d3d12::Gpu, case: &Case) -> Vec<
     gpu.fill_texture(&texture, &texels(), TEXTURE_SIZE * 4)
         .unwrap();
     let views = gpu
-        .descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true)
+        .descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2, true)
         .unwrap();
-    unsafe {
-        gpu.device
-            .CreateShaderResourceView(&texture, None, gpu.cpu(&views, 0))
-    };
+    for i in 0..2 {
+        unsafe {
+            gpu.device
+                .CreateShaderResourceView(&texture, None, gpu.cpu(&views, i))
+        };
+    }
     let target = gpu
         .committed(
             D3D12_HEAP_TYPE_DEFAULT,

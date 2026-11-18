@@ -50,7 +50,7 @@ pub(super) fn constants_as_texture(
     // stay valid until compaction drops them), and its texture.
     let mut moved = Vec::new();
     for b in &mut reflection.bindings {
-        if b.kind != SlotKind::Uniform || b.added.is_some() || slots & (1 << b.register) == 0 {
+        if b.kind != SlotKind::Uniform || b.added.is_some() || slots & (1 << b.slot()) == 0 {
             continue;
         }
         if next >= SlotKind::Texture.first_binding() + SlotKind::Texture.slots() {
@@ -84,9 +84,9 @@ pub(super) fn constants_as_texture(
             Span::UNDEFINED,
         );
         moved.push((g, texture));
+        b.added = Some(AddedBinding::ConstantsAsTexture(b.slot()));
         b.kind = SlotKind::Texture;
         b.binding = next;
-        b.added = Some(AddedBinding::ConstantsAsTexture(b.register));
         next += 1;
     }
 
