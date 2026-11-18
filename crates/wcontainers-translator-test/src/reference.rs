@@ -3,6 +3,7 @@
 //! otherwise. Both carry the same records over the runner's stdin and stdout (the wire of `layout.rs`).
 
 use crate::layout::*;
+use sha2::Digest;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -95,7 +96,7 @@ pub fn build(target: &Target) -> (PathBuf, String) {
     )
     .unwrap();
     let bytes = std::fs::read(&copy).unwrap();
-    let hash = blake3::hash(&bytes).to_hex()[..32].to_string();
+    let hash = format!("{:x}", sha2::Sha256::digest(&bytes));
     built.push((target.rust_target, own.clone(), hash.clone()));
     (own, hash)
 }
@@ -135,14 +136,18 @@ fn ssh(host: &str) -> Command {
     command
 }
 
-/// Put the runner on the SSH host under its hash unless it is there already; returns its path there. Each
-/// upload writes a file of its own (named by the remote shell's process id) and renames it into place, so
-/// runs that upload at once never write into a runner another has started.
+/// Put the runner on the SSH host under its SHA-256 unless a file with that content is there already;
+/// returns its path there. Each upload writes a file of its own (named by the remote shell's process id),
+/// checks its content and renames it into place, so runs that upload at once never write into a runner
+/// another has started, and a damaged file is replaced rather than run.
 fn upload(host: &str, local: &std::path::Path, hash: &str) -> Result<String, String> {
     let remote = format!("{REMOTE_DIRECTORY}/{hash}");
     let part = format!("{remote}.part.$$");
+    let has = |file: &str| format!("echo \"{hash}  {file}\" | sha256sum --check --status");
     let script = format!(
-        "mkdir -p {REMOTE_DIRECTORY} && {{ test -x {remote} || {{ cat > {part} && chmod +x {part} && mv {part} {remote}; }}; }}"
+        "mkdir -p {REMOTE_DIRECTORY} && {{ {{ test -x {remote} && {}; }} || {{ cat > {part} && {} && chmod +x {part} && mv {part} {remote}; }} || {{ rm -f {part}; exit 1; }}; }}",
+        has(&remote),
+        has(&part)
     );
     let file = std::fs::File::open(local.join("wcontainers-reference")).unwrap();
     let output = ssh(host)

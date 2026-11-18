@@ -29,7 +29,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   (the same day) moved ARM64's own program sources into `programs/arm64` and wrote the last ARM64-pinned
   test files (`programs.rs`, `benchmarks.rs`, `output.rs`, `binaries.rs`, `machine-code`) once over `G`
   (see "X2, run 4"). Run 5 (the same day) fixed what the independent check of X2 found (see "X2, run 5").
-  Run 6 (2026-11-18) fixed what the second check of X2 found (see "X2, run 6").
+  Run 6 (2026-11-18) fixed what the second check of X2 found (see "X2, run 6"). Run 7 (the same day) fixed
+  what the third check found (see "X2, run 7").
   Not built, proposed for X3: the recorded reference results and layer 1 batching of plan 7.3.
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
@@ -45,14 +46,64 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 
 ## X2: what comes next
 
-1. The third independent check of X2.
+1. The fourth independent check of X2.
 2. Plan 7.3's recorded reference results and layer 1 batching, proposed for X3 (see "Departures"); build them
    at X2 only if the orchestrator rules so. The plan's text now says they are not built.
 3. For X3: `presented`, `REFERENCE_HAS` and layer 1's rule for an `Err` case (plan 7.2 "As built"). For X4:
    the shared layer 2 model's operations are ARM64's (ccmp's nzcv immediate, ranges ARM64 encodes in one
    instruction), so x86's `assemble` expands them; the X2 check noted it.
+4. For X3: the x86 runner reports the signal frame's RF (bit 16) in rflags at every fault stop (seen on the
+   i7-8750H: `rep stosb` into a read-only page, rflags 0x10202; trap stops give 0x202). Plan section 2 says RF
+   and IF are masked out of the comparison; x86's `reconcile` must do it, or every faulting case differs.
 
-## X2, run 6 (2026-11-18)
+## X2, run 7 (2026-11-18)
+
+The third independent check of X2 found two blocking problems and five smaller ones. What was done:
+- Blocking, an ARM64 fact in layer 1's generic no-form test: besides comparing with the reference, it required
+  every translated no-form stop to be `Stop::Illegal`, which x86's prefix runs past 15 bytes (general
+  protection on the CPU) would fail. The test now only compares, and is renamed
+  `bytes_in_no_form_stop_as_on_the_cpu` (`_arm64`). For ARM64 nothing is lost: the reference stops with SIGILL,
+  so the comparison already demands `Illegal`. Plan 7.2 "As built" says so.
+- Blocking, run 6's claim that a wider read found no CPU facts left was wrong (as run 4's was): it missed the
+  test above and smoke's 1024 slots. Run 7's read (below) found two more.
+- `tests/smoke.rs`: the slots of its one executable page are `PAGE / G::ALIGN` (was a fixed 1024, 4096 / 4).
+- `src/changes.rs` (found in this run's read): the frames the changes test leaves alone started at the stack
+  pointer's page, which on x86 misses the 128-byte red zone a leaf function uses below rsp. They now start at
+  `sp - G::RED_ZONE`, as the translator's frame checks do, and the "page below sp's" pointer is the page below
+  the frames. ARM64's `RED_ZONE` is 0, so its cases are unchanged. Plan 7.2 says so.
+- `src/runner.rs` (found in this run's read): `code_at`, the bytes given to `G::memory_fault`, took a fixed 16;
+  it now takes `G::MAX_LENGTH`.
+- The x86 runner's RF in rflags: noted for X3 under "what comes next" (no x86 `GuestTest` compares yet).
+- ARM64's `AUXILIARY` doc comment names the bits 0x183 holds: fp, asimd, crc32, atomics.
+- The SSH reference's runner is now kept under its SHA-256 and its content is checked on the machine with
+  `sha256sum` before it is used, and each upload is checked before it is renamed into place; a damaged or
+  wrong file is replaced, and a failed upload removes its part file. `sha2` 0.10.9 is added (it was already in
+  the lock); `blake3` stays for the lists compared between commits. Plan 7.2 and 7.3 say so.
+- Plan 7.3's recorded results and layer 1 batching: still proposed for X3 and not ruled on (see "Departures").
+- The check's `ldaxr` at DATA + 1 is by design (ARM64 presents a CPU without FEAT_LSE2), nothing to do.
+
+This run's read for CPU facts outside the per-CPU part, and its limits: grep of `src/` (outside `src/guest/`),
+`tests/` (outside the `_arm64` wrappers and ARM64's own `decoding.rs`, `valid.rs`, `test_guest.rs`) and
+`browser/` for fixed 4s, 16s, 0x1000 and 4096, `Stop::`, `Exit::` and `Fault::` kinds, fixed field indices,
+register names, HWCAP and ARM64 names; then reading each hit, `src/layer1.rs` whole and the stack and fault
+parts of `src/changes.rs` and `src/runner.rs`. Left as they are: 4096 as Linux's page size, the exit status
+of each signal (same numbers on both), the 16-byte stack alignment at entry and the 16-byte `CodeBytes`
+buffer (the longest instruction of every guest fits), `smoke`'s test that features not offered stop with
+illegal instruction (the brief says so for x86 too). Not read line by line: `src/layer2.rs` (its model is
+ARM64's by a recorded departure), `src/binaries.rs`, `src/programs.rs`, `src/browser.rs` and
+`browser/runner.js` beyond the grep. So this is not a proof that none is left; X3's x86 `GuestTest` is what
+will show the rest.
+
+Proof of run 7 (the Mac, Apple M5):
+- origin/phase-1-translator: nothing new at the start (2026-11-18 01:20).
+- After the changes (`x2/run7/affected.log`, 01:24 to 01:31, Mac load 13.9 to 79.7): changes 3 passed; layer 1 5
+  passed (1215 forms, 64 cases each, seed 1, 0 failing; 64 no-form cases; 105 hand-made cases; the Chrome
+  sample); smoke 6 passed.
+- The SSH transport on the i7-8750H (`x2/run7/reference2.log`, Mac load 26.7, x86 load 5.5 to 6.8 from another
+  track's builds): 4 passed. The first try (`reference.log`) failed all four: the content check quoted the
+  part file's name in single quotes, so `$$` did not expand; fixed before the second. Then the kept runner was
+  damaged on purpose (one byte appended, still executable, 864113 bytes); the next run replaced it (864112
+  bytes, its SHA-256 again the name), passed, and left no part file.
 
 The second independent check of X2 found two blocking problems and four smaller ones (and a measurement).
 What was done about each:
@@ -62,7 +113,8 @@ What was done about each:
   for others (grep of `src/`, `tests/`, `browser/runner.js` and the scripts for 4-byte steps, ARM64 names,
   register numbers and HWCAP): the 4s left are i32 slot and flag words of the lookup array and the state
   memory, the eh_frame entry's length word and `gap / 4`, none a CPU fact; `elfconv.sh` is ARM64's own
-  comparison tool (elfconv converts only ARM64).
+  comparison tool (elfconv converts only ARM64). (Wrong: the third check found layer 1's no-form test
+  demanding illegal instruction and smoke's 1024 slots; run 7 found two more. See "X2, run 7".)
 - Blocking, the x86 runner ignored a failed `arch_prctl` and answered the case as run. Now `Machine::enter`
   returns `Result<(), &'static str>`; x86 sets FS and GS first, before anything else changes, and on a
   refusal puts FS back and changes nothing. The case is answered with a new status, `RESULT_REFUSED` (2) and
@@ -1198,7 +1250,10 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
 
 - iced-x86 1.22.0: MIT. Since X2 a dependency of the reference runner when built for x86-64 (decoder and
   `instr_info`, to tell rep string instructions and gathers); X3 adds it to the x86 crate.
-- `blake3` is since X2 a normal dependency of the test crate (the reference runner's content hash).
+- `blake3` is since X2 a normal dependency of the test crate (the hashes in the lists compared between
+  commits; it was also the reference runner's content hash until X2 run 7).
+- `sha2` 0.10.9 (MIT OR Apache-2.0): since X2 run 7 a normal dependency of the test crate (the reference
+  runner's SHA-256, checked on the SSH machine by `sha256sum`); it was already in the lock.
 - `wasmparser` 0.263 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) is since X2 run 4 a normal
   dependency of the test crate (was a dev-dependency): `machine-code` reads a module's lookup table with it.
 - The toolchain gains the `x86_64-unknown-linux-musl` target (for the reference runner).
@@ -1351,6 +1406,8 @@ X2 (each also written into the plan's text in the same commit):
   `blobs_are_told_the_hwcap_of_the_abi_arm64`.
 - `machine-code` numbers a piece's function by the module's lookup table, not 8 + its position (stale since
   phase one: the pieces start after the translator's own functions and the guest's hooks).
+- The SSH reference keeps its runner under its SHA-256 (the plan said "content hash"), so the machine can check
+  the content with `sha256sum` rather than trust the name (X2 run 7).
 - The browser page reads the pc by `pcOffset` and nothing else of the register block (it read x0 to x30 and
   sp, unused); `syscall` offsets, `codeChanges` and `traps` of plan 7.2's contract are not added, since the
   page gets the call's number and arguments from the hook and traps by `trapKinds` already.

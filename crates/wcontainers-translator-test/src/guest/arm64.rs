@@ -281,7 +281,7 @@ impl GuestTest for Arm64 {
         1
     }
 
-    /// HWCAP: fp, asimd, cpuid and atomics.
+    /// HWCAP: fp, asimd, crc32 and atomics.
     const AUXILIARY: &'static [(u64, u64)] = &[
         (crate::layout::AT_HWCAP, 0x183),
         (crate::layout::AT_HWCAP2, 0),

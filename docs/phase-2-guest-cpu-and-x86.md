@@ -2483,7 +2483,10 @@ As built at X2 (`src/guest/mod.rs`), where building it showed a signature must c
   translated one must equal. A mask could not say "equal to the case's starting value" (ARM64's FPSR rule)
   or "the reference's stored bytes do not count" (a store that faults).
 - `track(thread)` sets the tracking beside the fields; `PC_FIELD`, `SP_FIELD` and `GENERAL_FIELDS` name
-  the fields the harness reads (the changes test's pointers and frames).
+  the fields the harness reads (the changes test's pointers and frames; its frames start `RED_ZONE` below
+  the stack pointer, as the translator's frame checks do).
+- Layer 1's no-form cases are compared with the reference and nothing more: what stop they give is the
+  CPU's (ARM64 illegal instruction; x86 also general protection past 15 bytes).
 - `breakpoint_code` takes the abi's 16-bit breakpoint detail.
 - Layer 2's model is shared (`src/layer2.rs`) and its operations and ranges are those ARM64 encodes in one
   instruction; another CPU's `assemble` gives each its nearest form. In place of `MODEL_REGISTERS` the guest
@@ -2627,7 +2630,8 @@ names group above, and lets X2 prove the x86 transport before X3 makes an x86 `G
 over its stdin and stdout. When the host's CPU is the guest's (`std::env::consts::ARCH` against
 `RUST_TARGET`), the child is `docker run -i --platform G::DOCKER_PLATFORM`, as today; otherwise it is
 `ssh` with `ControlMaster` to the host in `G::REFERENCE_HOST`, after uploading the runner to
-`~/wcontainers-x86/reference/<content hash>` when it is not there, tried five times ten seconds apart before
+`~/wcontainers-x86/reference/<SHA-256>` when no file with that content is there (`sha256sum` checks the kept
+file, and each upload before it is renamed into place), tried five times ten seconds apart before
 the run fails. A connection lost later (a request written or its result read when the child has ended) is
 the transport's failure, not the guest's: the runner is started again the same way and the request sent
 again, at most five times for one request (each request stands alone). Both runners are static executables
@@ -2659,8 +2663,8 @@ so; it is never skipped silently.
 ### 7.3 The x86 reference runner and how it is reached
 
 - **The runner** is a static Rust program built on the Mac for `x86_64-unknown-linux-musl` with rust-lld
-  (the toolchain file gains the target), uploaded to `~/wcontainers-x86/reference/<content hash>` when
-  that file is not already there. It needs nothing installed on the machine.
+  (the toolchain file gains the target), uploaded to `~/wcontainers-x86/reference/<SHA-256>` when no file
+  with that content is there. It needs nothing installed on the machine beyond coreutils' `sha256sum`.
 - **Transport**: one SSH connection kept open for a whole run (`ControlMaster`), the host named by
   `WC_REFERENCE_X86_64` (`tom@192.168.2.240` today). Cases and blobs go through stdin as length-prefixed
   binary records; results come back on stdout the same way, each with its own status, so ssh's own exit

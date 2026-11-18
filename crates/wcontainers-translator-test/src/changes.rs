@@ -105,10 +105,11 @@ fn memory<G: GuestTest>(paused: &mut Paused<'_, '_, G>, universe: &[Range<u64>])
     hasher.finish()
 }
 
-/// The pages of running functions' frames: from the stack pointer's page to the top of the stack. The plan
-/// lets a frame's check hold until the next function entry, so changes leave these alone.
+/// The pages of running functions' frames: from the page of the red zone's foot below the stack pointer to
+/// the top of the stack. The plan lets a frame's check hold until the next function entry, so changes leave
+/// these alone.
 fn frames<G: GuestTest>(state: &State) -> Range<u64> {
-    sp::<G>(state) / PAGE_SIZE..STACK_TOP / PAGE_SIZE
+    sp::<G>(state).saturating_sub(G::RED_ZONE) / PAGE_SIZE..STACK_TOP / PAGE_SIZE
 }
 
 fn sp<G: GuestTest>(state: &State) -> u64 {
@@ -133,11 +134,11 @@ fn choose<G: GuestTest>(
     ];
     let frames = frames::<G>(state);
     let within = |page: &u64| universe.iter().any(|pages| pages.contains(page));
-    // Registers that point where a change may touch, as a base does, and the page below sp's.
+    // Registers that point where a change may touch, as a base does, and the page below the frames.
     let pointers: Vec<u64> = state.0[G::GENERAL_FIELDS]
         .iter()
         .map(|&value| value as u64 / PAGE_SIZE)
-        .chain([(sp::<G>(state) / PAGE_SIZE).wrapping_sub(1)])
+        .chain([frames.start.wrapping_sub(1)])
         .filter(|page| within(page) && !frames.contains(page))
         .collect();
     let mut pages = Vec::new();

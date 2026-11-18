@@ -21,8 +21,11 @@ object = { version = "0.40.0", default-features = false, features = ["read_core"
 gimli = { version = "0.34.0", default-features = false, features = ["read", "std"] }
 zerocopy.workspace = true
 rayon = "1.12.0"
-# The reference runner's content hash, under which it is kept on an SSH reference.
+# Hashes of translated output and of drawn cases in the lists compared between commits.
 blake3 = "1"
+# The reference runner's content hash, under which it is kept on an SSH reference and checked there by
+# `sha256sum`.
+sha2 = "0.10.9"
 # Reads a translated module's lookup table, to number its pieces' functions (src/bin/machine-code.rs).
 wasmparser = "0.263.0"
 rustc-hash = "2.1.3"

@@ -8,14 +8,13 @@ use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::runner::{Machine, Stopped, Syscalls, fields};
 
 const LOAD: u64 = 0x10000;
+/// The one executable page the programs run in.
+const PAGE: u64 = 0x1000;
 
 /// Load `code` at `LOAD` at `look_ahead`, every register 0 but the pc.
 fn ready<G: GuestTest>(code: &[u8], look_ahead: LookAhead) -> Machine<G> {
-    let mut machine = Machine::<G>::new(1 << 20, LOAD, 1024, Syscalls::StandIn);
-    machine.set_permissions(
-        LOAD..LOAD + 0x1000,
-        Permissions::READ | Permissions::EXECUTE,
-    );
+    let mut machine = Machine::<G>::new(1 << 20, LOAD, (PAGE / G::ALIGN) as u32, Syscalls::StandIn);
+    machine.set_permissions(LOAD..LOAD + PAGE, Permissions::READ | Permissions::EXECUTE);
     machine.load(code, 0..code.len() as u64, LOAD, &[0], look_ahead);
     machine.set_registers(&G::initial_block(LOAD, 0));
     machine

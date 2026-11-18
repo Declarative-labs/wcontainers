@@ -846,7 +846,7 @@ fn code_at<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, pc: u64) -> Vec<u8> {
     let memory = caller.data().memory.unwrap();
     let data = memory.data(&*caller);
     let at = (pc as usize).min(data.len());
-    data[at..(at + 16).min(data.len())].to_vec()
+    data[at..(at + G::MAX_LENGTH as usize).min(data.len())].to_vec()
 }
 
 /// Count a slow path taken at an address (or for a number) and the time it took; warn once per address

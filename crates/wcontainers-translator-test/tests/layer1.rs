@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use wcontainers_arm64::Arm64;
-use wcontainers_translator_test::guest::{Case, GuestTest, Stop};
+use wcontainers_translator_test::guest::{Case, GuestTest};
 use wcontainers_translator_test::jobs::at_once;
 use wcontainers_translator_test::layer1::{
     compare, compare_outcome, translated, translated_in_chrome,
@@ -151,9 +151,9 @@ fn hand_cases_do_what_they_must<G: GuestTest>() {
     eprintln!("layer 1: {} hand-made cases", all.len());
 }
 
-/// Bytes in no form of the guest's, for any feature, are illegal on the CPU and in ours. Random cases,
+/// Bytes in no form of the guest's, for any feature, stop ours as they stop the CPU. Random cases,
 /// `WC_LAYER1_CASES` of them (default 64), seeded from `WC_LAYER1_SEED`.
-fn bytes_in_no_form_are_illegal_as_on_the_cpu<G: GuestTest>() {
+fn bytes_in_no_form_stop_as_on_the_cpu<G: GuestTest>() {
     let count = setting("WC_LAYER1_CASES", 64) as u32;
     let seed = setting("WC_LAYER1_SEED", 1);
     let mut key = [0u8; 32];
@@ -165,15 +165,7 @@ fn bytes_in_no_form_are_illegal_as_on_the_cpu<G: GuestTest>() {
         TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key));
     let reference = RefCell::new(Reference::start(&G::REFERENCE));
     let result = runner.run(&G::no_form(seed), |case| {
-        compare::<G>(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)?;
-        let stop = translated::<G>(&case).stop;
-        if stop != Stop::Illegal {
-            return Err(TestCaseError::fail(format!(
-                "{:02x?}: {stop:?}, not illegal",
-                case.code.code()
-            )));
-        }
-        Ok(())
+        compare::<G>(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)
     });
     eprintln!("layer 1: {count} cases in no form, seed {seed}");
     result.unwrap();
@@ -208,6 +200,6 @@ fn hand_cases_do_what_they_must_arm64() {
 }
 
 #[test]
-fn bytes_in_no_form_are_illegal_as_on_the_cpu_arm64() {
-    bytes_in_no_form_are_illegal_as_on_the_cpu::<Arm64>();
+fn bytes_in_no_form_stop_as_on_the_cpu_arm64() {
+    bytes_in_no_form_stop_as_on_the_cpu::<Arm64>();
 }
