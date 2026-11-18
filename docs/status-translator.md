@@ -64,7 +64,8 @@ The run (started 2026-11-16 15:57, commit c38b4ad, base seed 100, all three laye
   Restarted 21:21 on de8f4a2 with `WC_LONG_LIMIT=180` added (a chunk may take 3 hours); chunk 55 runs again
   first. Stopped 2026-11-18 01:27 with chunk 57 hung (failure 4 below) and restarted 01:29 on 7ec7920 (the
   run's own zig cache), same command. Stopped 04:32 after chunk 71 and restarted on 33afa1e (failure 5
-  below), same command; that run (driver pid 85560 at the time of writing) is the one going now. Use `WC_LONG_ACCEPT=c38b4ad
+  below), same command. Stopped 08:12 after chunk 85 and restarted on 9d54ef3 (failure 6 below), same
+  command; that run (driver pid 99959 at the time of writing) is the one going now. Use `WC_LONG_ACCEPT=c38b4ad
   WC_LONG_LIMIT=180` on any later restart too. Each restart appends to `driver.log`; the code it runs is the copy in
   `trees/<commit>`, so commits in the checkout do not reach it until it is restarted.
 - Layer 3's progress in programs compared: `awk -F'\t' '$1=="layer=3" && $10=="result=pass" {split($4,c,"=");
@@ -181,7 +182,15 @@ Failures found by the run, each with its cause and fix:
    wrote the same; the blob is then compared with the translator as every other case. The guard still
    fails a case whose blob and executable end differently. The case replayed on 33afa1e with
    `WC_LAYER3_FROM=34780 WC_LAYER3_CASES=1`: compared, also in Chrome, passes. The driver was stopped after
-   chunk 71 and restarted 04:32 on 33afa1e, same command; chunk 70 runs again.
+   chunk 71 and restarted 04:32 on 33afa1e, same command; chunk 70 runs again. Chunk 70 passed on 33afa1e, 461
+   compared (the case above among them), 670 s, load 32 to 104.
+6. Layer 3 chunk 84 (cases 41500 to 41999, 33afa1e): recorded as failed after 814 s with no result. Its log
+   stops in the middle of the run with no panic, no test summary and no message from cargo, which cargo
+   prints whenever the test process ends by a signal or an error; there is no crash report and nothing in the
+   system log. So cargo itself, or the `timeout` above it, was killed from outside this run at 08:00 (this
+   half killed nothing then); by whom is not known. Not a mismatch. The driver now writes each chunk's exit
+   status to `driver.log` (9d54ef3), so a kill shows as such next time. Stopped after chunk 85 and restarted
+   08:12 on 9d54ef3, same command; chunk 84 runs again first.
 
 ## P1: close-out of M5 and the long-run driver
 
