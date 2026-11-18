@@ -358,6 +358,33 @@ fn main() -> windows::core::Result<()> {
         mapped.RowPitch,
         mapped.DepthPitch
     );
+
+    // A bound sampler the program releases once more than it holds (Wine's
+    // test_sample_attached_rtv does): what each release answers.
+    let desc = D3D11_SAMPLER_DESC {
+        Filter: D3D11_FILTER_MIN_MAG_MIP_POINT,
+        AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+        AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+        AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+        MaxLOD: 0.0,
+        BorderColor: [0.25; 4],
+        ..Default::default()
+    };
+    let mut sampler = None;
+    unsafe { device.CreateSamplerState(&desc, Some(&mut sampler))? };
+    let sampler = std::mem::ManuallyDrop::new(sampler.unwrap());
+    unsafe { c.PSSetSamplers(0, Some(&[Some((*sampler).clone())])) };
+    let raw = sampler.as_raw();
+    let release = unsafe { (Interface::vtable(&*sampler).base__.base__.Release)(raw) };
+    let over = unsafe { (Interface::vtable(&*sampler).base__.base__.Release)(raw) };
+    let mut got = [None];
+    unsafe { c.PSGetSamplers(0, Some(&mut got)) };
+    println!(
+        "over-released bound sampler: releases answer {release} {over:x}, still bound {}",
+        got[0].as_ref().map(|s| s.as_raw()) == Some(raw)
+    );
+    std::mem::forget(got);
+    unsafe { c.ClearState() };
     Ok(())
 }
 

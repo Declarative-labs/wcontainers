@@ -2761,3 +2761,91 @@ fn a_view_reinterpreting_typeless_bits_reads_a_twin_copied_before_each_draw() {
     assert_eq!(dev.backend.slow_paths().count(SlowPath::ReinterpretCopy), 2);
     assert!(dev.removed.is_none());
 }
+
+#[test]
+fn targets_blended_differently_without_the_back_ends_draw_once_per_group_from_saved_depth() {
+    let mut dev = device();
+    dev.backend.caps.features -= wcontainers_gpu::Features::INDEPENDENT_BLEND;
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(&mut dev, "common.vs_color", "targets.ps", &elements, 28);
+    let mut views = Vec::new();
+    for _ in 0..3 {
+        let t = dev
+            .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+            .unwrap();
+        views.push(Some(
+            dev.create_view(&t, None, bind::RENDER_TARGET).unwrap(),
+        ));
+    }
+    let depth = dev
+        .create_texture(&tex2d(16, 16, D32F, bind::DEPTH_STENCIL), &[])
+        .unwrap();
+    let dsv = dev.create_view(&depth, None, bind::DEPTH_STENCIL).unwrap();
+    dev.om_set_render_targets(&views, Some(dsv)).unwrap();
+    let ds = dev
+        .create_depth_stencil_state(&DepthStencilDesc {
+            depth_enable: true,
+            depth_write: true,
+            depth_func: 2,
+            ..DepthStencilDesc::default_state()
+        })
+        .unwrap();
+    dev.om_set_depth_stencil_state(Some(ds), 0);
+    // Targets 0 and 2 blend alike, target 1 adds; target 3 is unbound.
+    let mut blend = BlendDesc::default_state();
+    blend.independent = true;
+    for t in [0, 2] {
+        blend.targets[t].enable = true;
+        blend.targets[t].src = 5;
+        blend.targets[t].dst = 6;
+    }
+    blend.targets[1].enable = true;
+    blend.targets[1].dst = 2;
+    let from = dev.backend.log.len();
+    let blend = dev.create_blend_state(&blend).unwrap();
+    let log = log_from(&dev, from);
+    assert!(
+        log.iter()
+            .all(|l| !l.starts_with("create_blend") || l.ends_with("same true")),
+        "{log:#?}"
+    );
+    dev.om_set_blend_state(Some(blend), None, u32::MAX);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    // The runs' passes (the earlier target's pending clear runs as a pass of its own).
+    let run = |l: &String| l.starts_with("begin_pass") && l.contains(" depth view ");
+    let passes: Vec<_> = log.iter().filter(|l| run(l)).collect();
+    let draws = log.iter().filter(|l| l.starts_with("draw ")).count();
+    assert_eq!((passes.len(), draws), (2, 2), "{log:#?}");
+    // Each run draws only its group's targets.
+    assert!(
+        passes[0].contains(" color 0 ") && passes[0].contains(" color 2 "),
+        "{passes:#?}"
+    );
+    assert!(!passes[0].contains(" color 1 "), "{passes:#?}");
+    assert!(
+        passes[1].contains(" color 1 ") && !passes[1].contains(" color 0 "),
+        "{passes:#?}"
+    );
+    // Depth saved before the first run and put back before the second.
+    let copies: Vec<_> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with("copy_texture "))
+        .map(|(i, _)| i)
+        .collect();
+    let begins: Vec<_> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| run(l))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(copies.len(), 2, "{log:#?}");
+    assert!(copies[0] < begins[0] && begins[0] < copies[1] && copies[1] < begins[1]);
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::TargetsSplit), 1);
+}

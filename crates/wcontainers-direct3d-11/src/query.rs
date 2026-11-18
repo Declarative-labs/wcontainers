@@ -88,6 +88,14 @@ fn of_stream_zero(kind: u32) -> bool {
 }
 
 impl<B: Backend> Queries<B> {
+    /// Whether any query counting draws runs.
+    pub(crate) fn running_any(&self) -> bool {
+        !(self.running.is_empty()
+            && self.counted.is_empty()
+            && self.statistics.is_empty()
+            && self.streams.is_empty())
+    }
+
     /// Whether a stream output query of stream 0 runs.
     pub(crate) fn streams_running(&self) -> bool {
         !self.streams.is_empty()
