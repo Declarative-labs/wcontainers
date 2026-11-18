@@ -9,14 +9,16 @@ use std::sync::Arc;
 use slab::Slab;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
-    AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, CopyBufferTexture,
-    DepthAttachment, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent, Features, Format,
-    FormatKind, FormatUse, GpuError, IndexBinding, IndexFormat, Interpolation, LoadOp,
-    MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object, Origin, PassDesc, PrepareDesc,
-    Program, ReadSource, ReadState, SamplerDesc, ScissorRect, ShaderStage, SlowPath, StageSet,
-    StepMode, StoreOp, TargetLayout, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, ViewDimension, Viewport, WriteMode,
+    AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
+    CopyBufferTexture, CountedDraw, DepthAttachment, DispatchCall, DispatchGroups, DrawBaseSource,
+    DrawCall, DrawRange, EmptyPass, Extent, Features, Format, FormatKind, FormatUse, GpuError,
+    HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_COLOR_TARGETS,
+    MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter, Origin, PassDesc, PassTargets,
+    PassTracker, PrepareDesc, Program, ReadSource, ReadState, SamplerDesc, ScissorRect,
+    ShaderModule, ShaderStage, SlowPath, StageSet, StepMode, StoreOp, Target, TargetLayout,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
+    VariantFlags, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream,
+    ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source};
 
@@ -189,6 +191,17 @@ struct Render<B: Backend> {
     strip_cut: u32,
     /// The vertex shader reads `SV_VertexID` or `SV_InstanceID`, which leave out the draw's bases.
     reads_bases: bool,
+    /// The vertex program's helper block: its size and where `HelperValue::DrawBase` sits in it.
+    base_block: (u32, u32),
+    /// For counted occlusion queries: the vertex program, the pixel shader's bytecode, and the
+    /// counting program made from them at the first counted draw.
+    vertex: ShaderModule,
+    pixel: Vec<u8>,
+    counting: Option<B::Program>,
+    writes_depth_stencil: bool,
+    alpha_to_coverage: bool,
+    /// Every per-instance element steps by one instance.
+    instances_step_by_one: bool,
 }
 
 /// `D3D12_GRAPHICS_PIPELINE_STATE_DESC`, the parts this front reads.
@@ -249,6 +262,9 @@ type Waiter = (Vec<(FenceId, u64)>, bool, u64);
 /// The device: every object and the replay of command lists, on one back end owned by one thread.
 pub struct Device<B: Backend> {
     backend: B,
+    /// The bound targets as the occlusion counter reads them, and the counter.
+    passes: PassTracker<B>,
+    counter: OcclusionCounter<B>,
     resources: Slab<Resource<B>>,
     pipelines: Slab<Pipeline<B>>,
     roots: Slab<Arc<RootSignatureDesc>>,
@@ -316,6 +332,8 @@ impl<B: Backend> Device<B> {
             touched: Vec::new(),
             stamp: 0,
             programs: query::Programs::default(),
+            passes: PassTracker::default(),
+            counter: OcclusionCounter::default(),
             nulls: null::Nulls::default(),
             messages: Vec::new(),
             removed: None,
@@ -808,6 +826,9 @@ impl<B: Backend> Device<B> {
             ShaderStage::Vertex,
             VariantKey {
                 output_interpolation: interpolation,
+                // `SV_VertexID` and `SV_InstanceID` leave out the draw's bases, which the program
+                // then reads from its helper block.
+                draw_base: DrawBaseSource::Helpers,
                 ..VariantKey::default()
             },
         )?;
@@ -837,15 +858,18 @@ impl<B: Backend> Device<B> {
                     .map(|i| (e, i.location))
             })
             .collect();
-        let reads_bases = reads.iter().any(|i| {
-            matches!(
-                i.system,
-                Some(
-                    wcontainers_gpu::SystemValue::VertexId
-                        | wcontainers_gpu::SystemValue::InstanceId
-                )
-            )
-        });
+        let reads_bases = vs.reflection.helper_size != 0;
+        let base_block = (
+            vs.reflection.helper_size,
+            vs.reflection
+                .helpers
+                .iter()
+                .find(|h| h.value == HelperValue::DrawBase)
+                .map_or(0, |h| h.offset),
+        );
+        let instances_step_by_one = inputs
+            .iter()
+            .all(|(e, _)| !e.per_instance || e.step_rate == 1);
         let mut colors = [None; MAX_COLOR_TARGETS];
         // A slot of format UNKNOWN has no target: its writes are dropped.
         for (slot, f) in colors.iter_mut().zip(&desc.rtv_formats) {
@@ -926,6 +950,16 @@ impl<B: Backend> Device<B> {
             targets,
             strip_cut: desc.strip_cut,
             reads_bases,
+            base_block,
+            vertex: vs.modules[0].clone(),
+            pixel: desc.ps.to_vec(),
+            counting: None,
+            writes_depth_stencil: desc.dsv_format != 0
+                && (desc.depth_stencil.depth_enable && desc.depth_stencil.depth_write_all
+                    || desc.depth_stencil.stencil_enable
+                        && desc.depth_stencil.stencil_write_mask != 0),
+            alpha_to_coverage: desc.blend.alpha_to_coverage,
+            instances_step_by_one,
         };
         let packed = packed_strides(&render.inputs);
         let layout = self.vertex_layout(&render.inputs, &packed)?;
@@ -1023,16 +1057,71 @@ impl<B: Backend> Device<B> {
         if converted.modules.len() != 1 || converted.modules[0].stage != stage {
             return Err(Error::Invalid("a shader of another stage"));
         }
-        if converted.reflection.helper_size != 0 {
-            return Err(Error::NotImplemented("shaders reading helper constants"));
+        if converted
+            .reflection
+            .helpers
+            .iter()
+            .any(|h| h.value != HelperValue::DrawBase)
+        {
+            return Err(Error::NotImplemented(
+                "shaders reading helper constants other than the draw's bases",
+            ));
         }
         Ok(converted)
+    }
+
+    /// A pipeline's counting program (its pixel shader writing 1.0 to target 0 and nothing
+    /// else, `VariantFlags::COUNTING`), made at its first counted draw.
+    fn counting_program(&mut self, pid: PipelineId) -> Result<B::Program, Error> {
+        let render = self.pipelines[pid.0 as usize]
+            .render
+            .as_ref()
+            .ok_or(Error::Invalid("drawing with a compute pipeline state"))?;
+        if let Some(p) = &render.counting {
+            return Ok(p.clone());
+        }
+        let (vertex, pixel) = (render.vertex.clone(), render.pixel.clone());
+        let fragment = if pixel.is_empty() {
+            ShaderModule::from_wgsl(
+                "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }",
+                "main",
+                ShaderStage::Fragment,
+            )?
+        } else {
+            let key = VariantKey {
+                flags: VariantFlags::COUNTING,
+                ..VariantKey::default()
+            };
+            self.convert(&pixel, ShaderStage::Fragment, key)?
+                .modules
+                .swap_remove(0)
+        };
+        let vertex = self.backend.create_shader(&vertex)?;
+        let fragment = match self.backend.create_shader(&fragment) {
+            Ok(f) => f,
+            Err(e) => {
+                self.backend.destroy(Object::Shader(vertex));
+                return Err(e.into());
+            }
+        };
+        let program = self.backend.create_program(&Program::Render {
+            vertex: &vertex,
+            fragment: Some(&fragment),
+        });
+        self.backend.destroy(Object::Shader(vertex));
+        self.backend.destroy(Object::Shader(fragment));
+        let program = program?;
+        self.render_mut(pid).counting = Some(program.clone());
+        Ok(program)
     }
 
     pub fn destroy_pipeline(&mut self, id: PipelineId) {
         if let Some(p) = self.pipelines.try_remove(id.0 as usize) {
             self.backend.destroy(Object::Program(p.program));
             if let Some(r) = p.render {
+                if let Some(c) = r.counting {
+                    self.backend.destroy(Object::Program(c));
+                }
                 self.backend.destroy(Object::Blend(r.blend));
                 self.backend.destroy(Object::DepthStencil(r.depth_stencil));
                 if let Some(d) = r.depth_stencil_bound {
@@ -1964,6 +2053,12 @@ struct Replay<B: Backend> {
     query: Option<(QueryHeapId, u32, QueryState)>,
     /// The heap whose query set the open pass counts in.
     pass_heap: Option<QueryHeapId>,
+    /// The counted occlusion query begun and not ended: heap and index.
+    counted: Option<(QueryHeapId, u32)>,
+    /// The pass tracker holds the bound targets, for the occlusion counter.
+    counted_targets: bool,
+    /// The occlusion counter has the depth-stencil target as the kept draws began from it.
+    counted_copy: bool,
     predicate: Option<query::Predicate<B>>,
 }
 
@@ -2002,11 +2097,16 @@ impl<B: Backend> Replay<B> {
             clears: Vec::new(),
             query: None,
             pass_heap: None,
+            counted: None,
+            counted_targets: false,
+            counted_copy: false,
             predicate: None,
         }
     }
 
-    fn end_pass(&mut self, d: &mut Device<B>) {
+    /// Ends the open pass; while a counted occlusion query runs, the occlusion counter then counts
+    /// the draws it kept, before anything changes what they read or drew on.
+    fn end_pass(&mut self, d: &mut Device<B>) -> Result<(), Error> {
         if self.pass_open {
             if let Some((_, _, state @ QueryState::Running)) = &mut self.query {
                 d.backend.end_query();
@@ -2017,11 +2117,17 @@ impl<B: Backend> Replay<B> {
             self.empty_pass = false;
             self.pass_heap = None;
         }
+        if self.counted.is_some() {
+            d.counter.flush(&mut d.backend, &mut d.passes)?;
+            self.counted_targets = false;
+            self.counted_copy = false;
+        }
+        Ok(())
     }
 
     /// Ends any pass and does the clears still waiting, so copies see them.
     fn settle(&mut self, d: &mut Device<B>) -> Result<(), Error> {
-        self.end_pass(d);
+        self.end_pass(d)?;
         let clears = std::mem::take(&mut self.clears);
         Self::clear_now(d, clears)
     }
@@ -2060,7 +2166,12 @@ impl<B: Backend> Replay<B> {
         if let Some(p) = self.predicate.take() {
             d.drop_predicate(p);
         }
-        self.settle(d)
+        self.settle(d)?;
+        // A counted query a list leaves running counts nothing more.
+        if self.counted.take().is_some() {
+            d.counter.end(&mut d.backend, &mut d.passes)?;
+        }
+        Ok(())
     }
 
     /// Whether a predicate skips a clear, copy or resolve, which have no indirect form.
@@ -2068,7 +2179,7 @@ impl<B: Backend> Replay<B> {
         if self.predicate.is_none() {
             return Ok(false);
         }
-        self.end_pass(d);
+        self.end_pass(d)?;
         d.skips(self.predicate.as_mut().expect("a predicate"))
     }
 
@@ -2176,7 +2287,7 @@ impl<B: Backend> Replay<B> {
             Command::Viewports(v) => {
                 // A pass with no targets is as large as the viewports it began with.
                 if self.empty_pass {
-                    self.end_pass(d);
+                    self.end_pass(d)?;
                 }
                 let fractional = d.backend.caps().has(Features::FRACTIONAL_VIEWPORT);
                 self.viewports = v
@@ -2189,7 +2300,7 @@ impl<B: Backend> Replay<B> {
             Command::StencilRef(r) => self.stencil_reference = *r as u8,
             Command::Targets { colors, depth } => {
                 if *colors != self.colors || *depth != self.depth {
-                    self.end_pass(d);
+                    self.end_pass(d)?;
                     self.colors.clone_from(colors);
                     self.depth = *depth;
                 }
@@ -2210,7 +2321,7 @@ impl<B: Backend> Replay<B> {
                 let value = clear_bits(dxgi(v.format)?, *color);
                 if rects.is_empty() {
                     // A later whole clear of the view replaces one still waiting.
-                    self.end_pass(d);
+                    self.end_pass(d)?;
                     self.clears.retain(|(k, _)| k != v);
                     self.clears.push((*v, ClearValue::Color(value)));
                 } else {
@@ -2244,7 +2355,7 @@ impl<B: Backend> Replay<B> {
                 let stencil = stencil.filter(|_| has_stencil);
                 if rects.is_empty() {
                     // A whole clear joins one still waiting for the view: the newer aspects win.
-                    self.end_pass(d);
+                    self.end_pass(d)?;
                     let (mut old_depth, mut old_stencil) = (None, None);
                     if let Some(i) = self.clears.iter().position(|(k, _)| k == v)
                         && let (_, ClearValue::DepthStencil { depth, stencil }) =
@@ -2468,23 +2579,26 @@ impl<B: Backend> Replay<B> {
         kind: u32,
         index: u32,
     ) -> Result<(), Error> {
-        match kind {
-            query::QUERY_BINARY_OCCLUSION => {}
-            query::QUERY_OCCLUSION => {
-                return Err(Error::NotImplemented("counted occlusion queries"));
-            }
-            _ => return Err(Error::Invalid("BeginQuery of this query type")),
+        if !matches!(kind, query::QUERY_BINARY_OCCLUSION | query::QUERY_OCCLUSION) {
+            return Err(Error::Invalid("BeginQuery of this query type"));
         }
         d.occlusion_set(heap)?;
-        if self.query.is_some() {
+        if self.query.is_some() || self.counted.is_some() {
             return Err(Error::Invalid("an occlusion query begun inside another"));
+        }
+        if kind == query::QUERY_OCCLUSION {
+            // Exact counts come from the occlusion counter, from the targets as they are now.
+            self.end_pass(d)?;
+            d.counter.begin(&mut d.backend, &mut d.passes)?;
+            self.counted = Some((heap, index));
+            return Ok(());
         }
         if self.pass_open && self.pass_heap == Some(heap) {
             d.backend.begin_query(index);
             self.query = Some((heap, index, QueryState::Running));
         } else {
             // The next pass counts in this heap's query set.
-            self.end_pass(d);
+            self.end_pass(d)?;
             self.query = Some((heap, index, QueryState::Waiting));
         }
         Ok(())
@@ -2498,8 +2612,17 @@ impl<B: Backend> Replay<B> {
         index: u32,
     ) -> Result<(), Error> {
         if kind == query::QUERY_TIMESTAMP {
-            self.end_pass(d);
+            self.end_pass(d)?;
             return d.timestamp(heap, index);
+        }
+        if kind == query::QUERY_OCCLUSION {
+            if self.counted != Some((heap, index)) {
+                return Err(Error::Invalid("EndQuery of a query not begun"));
+            }
+            self.end_pass(d)?;
+            self.counted = None;
+            let count = d.counter.end(&mut d.backend, &mut d.passes)?;
+            return d.write_count(heap, index, count);
         }
         match self.query.take() {
             Some((h, i, state)) if (h, i) == (heap, index) => match state {
@@ -2507,7 +2630,7 @@ impl<B: Backend> Replay<B> {
                 QueryState::Ended => {}
                 QueryState::Waiting => {
                     // No pass drew while it ran: an empty pass writes its zero.
-                    self.end_pass(d);
+                    self.end_pass(d)?;
                     let set = d.occlusion_set(heap)?;
                     d.backend.begin_pass(&PassDesc {
                         colors: Default::default(),
@@ -2574,28 +2697,25 @@ impl<B: Backend> Replay<B> {
         let Some(pid) = self.pipeline else {
             return Ok(());
         };
+        // The bases as `HelperValue::DrawBase` holds them: base vertex, first instance.
         let bases = match &range {
             DrawRange::Vertices {
                 first,
                 first_instance,
                 ..
-            } => *first != 0 || *first_instance != 0,
+            } => Some([*first, *first_instance]),
             DrawRange::Indexed {
                 base_vertex,
                 first_instance,
                 ..
-            } => *base_vertex != 0 || *first_instance != 0,
-            _ => false,
+            } => Some([*base_vertex as u32, *first_instance]),
+            _ => None,
         };
         let render = d.pipelines[pid.0 as usize]
             .render
             .as_ref()
             .ok_or(Error::Invalid("drawing with a compute pipeline state"))?;
-        if bases && render.reads_bases {
-            return Err(Error::NotImplemented(
-                "SV_VertexID or SV_InstanceID in a draw with a first vertex or instance",
-            ));
-        }
+        let base_block = render.reads_bases.then_some(render.base_block);
         if let (Some(_), DrawRange::Vertices { first_instance, .. })
         | (Some(_), DrawRange::Indexed { first_instance, .. }) = (record, &range)
             && *first_instance != 0
@@ -2621,10 +2741,19 @@ impl<B: Backend> Replay<B> {
             },
             (None, range) => range,
         };
+        let counted = match self.counted {
+            Some(_) => Some(self.prepare_counted(d, pid)?),
+            None => None,
+        };
         if !self.pass_open {
             self.settle_unbound(d)?;
         }
-        let sets = d.binding_sets(&self.graphics, pid)?;
+        let mut sets = d.binding_sets(&self.graphics, pid)?;
+        if let Some((size, at)) = base_block {
+            // Indirect draws reading the bases are read back and drawn directly (`indirect.rs`).
+            let bases = bases.ok_or(Error::Invalid("an indirect draw reading its bases"))?;
+            sets[HELPER_SET as usize] = Some(d.draw_base_set(bases, size, at)?);
+        }
         if d.aliased != 0 {
             self.note_draw(
                 d,
@@ -2634,7 +2763,7 @@ impl<B: Backend> Replay<B> {
                 ),
             );
             if d.alias_due() {
-                self.end_pass(d);
+                self.end_pass(d)?;
             }
             d.alias_settle()?;
         }
@@ -2643,116 +2772,6 @@ impl<B: Backend> Replay<B> {
             && self.pass_heap != Some(heap)
         {
             return Err(Error::NotImplemented("an occlusion query across passes"));
-        }
-        if !self.pass_open {
-            let occlusion = match self.query {
-                Some((heap, _, QueryState::Waiting)) => Some((heap, d.occlusion_set(heap)?)),
-                _ => None,
-            };
-            let mut views = Vec::with_capacity(self.colors.len());
-            let mut loads = Vec::with_capacity(self.colors.len());
-            for c in &self.colors {
-                let v = match c {
-                    Descriptor::RenderTarget(v) => v,
-                    // A null view: the slot has no target and its writes are dropped.
-                    Descriptor::Empty => {
-                        views.push(None);
-                        loads.push(LoadOp::Load);
-                        continue;
-                    }
-                    _ => {
-                        return Err(Error::Invalid(
-                            "a render target slot holds no render target view",
-                        ));
-                    }
-                };
-                views.push(Some(d.view(v)?));
-                let clear = self.clears.iter().position(|(k, _)| k == v);
-                loads.push(match clear {
-                    Some(i) => match self.clears.swap_remove(i).1 {
-                        ClearValue::Color(value) => LoadOp::Clear(value),
-                        ClearValue::DepthStencil { .. } => LoadOp::Load,
-                    },
-                    None => LoadOp::Load,
-                });
-            }
-            let depth = match self.depth {
-                None | Some(Descriptor::Empty) => None,
-                Some(Descriptor::DepthStencil { view: v, read_only }) => {
-                    let view = d.view(&v)?;
-                    let (has_depth, has_stencil) = aspects(dxgi(v.format)?);
-                    let (mut depth, mut stencil) = (None, None);
-                    if let Some(i) = self.clears.iter().position(|(k, _)| *k == v)
-                        && let (
-                            _,
-                            ClearValue::DepthStencil {
-                                depth: d,
-                                stencil: s,
-                            },
-                        ) = self.clears.swap_remove(i)
-                    {
-                        (depth, stencil) = (d, s);
-                    }
-                    Some((
-                        view,
-                        has_depth.then(|| aspect_ops(depth, read_only & 1 != 0)),
-                        has_stencil.then(|| aspect_ops(stencil, read_only & 2 != 0)),
-                    ))
-                }
-                Some(_) => {
-                    return Err(Error::Invalid(
-                        "the depth-stencil slot holds no depth-stencil view",
-                    ));
-                }
-            };
-            let mut pass = PassDesc {
-                colors: Default::default(),
-                depth: depth
-                    .as_ref()
-                    .map(|(view, depth, stencil)| DepthAttachment {
-                        view,
-                        depth: *depth,
-                        stencil: *stencil,
-                    }),
-                empty: None,
-                occlusion: occlusion.as_ref().map(|(_, set)| set),
-            };
-            for (i, (view, load)) in views.iter().zip(loads).enumerate() {
-                pass.colors[i] = view.as_ref().map(|view| ColorAttachment {
-                    view,
-                    depth_slice: 0,
-                    resolve: None,
-                    load,
-                    store: StoreOp::Store,
-                });
-            }
-            if views.iter().all(Option::is_none) && depth.is_none() {
-                // No targets: the pass covers the viewports, at the pipeline's sample count.
-                let end = |at: u32, size: u32| (f32::from_bits(at) + f32::from_bits(size)).ceil();
-                let (width, height) = self.viewports.iter().fold((1, 1), |(w, h), v| {
-                    (
-                        w.max(end(v.x, v.width) as u32),
-                        h.max(end(v.y, v.height) as u32),
-                    )
-                });
-                let samples = d.pipelines[pid.0 as usize]
-                    .render
-                    .as_ref()
-                    .map_or(1, |r| r.targets.samples);
-                pass.empty = Some(wcontainers_gpu::EmptyPass {
-                    width,
-                    height,
-                    samples,
-                });
-                self.empty_pass = true;
-            }
-            d.backend.begin_pass(&pass);
-            self.pass_open = true;
-            if let (Some((heap, _)), Some((_, index, state))) = (&occlusion, &mut self.query) {
-                d.backend.begin_query(*index);
-                *state = QueryState::Running;
-                self.pass_heap = Some(*heap);
-            }
         }
         let mut strides = [0; MAX_VERTEX_STREAMS];
         for (s, v) in strides.iter_mut().zip(&self.vertex_buffers) {
@@ -2837,39 +2856,279 @@ impl<B: Backend> Replay<B> {
             ));
         }
         let restart = p.strip_cut != 0;
-        let p = &d.pipelines[pid.0 as usize];
-        let r = p.render.as_ref().expect("a graphics pipeline");
-        let depth_stencil = match (&r.depth_stencil_bound, bound_depth) {
-            (Some(d), Some(_)) => d,
-            _ => &r.depth_stencil,
-        };
-        let call = DrawCall {
-            program: &p.program,
-            blend: &r.blend,
-            depth_stencil,
-            raster: &r.raster,
-            vertex_layout: &layout,
-            bindings: sets.each_ref().map(Option::as_ref),
-            vertex_buffers: &vertex_buffers,
-            index: index.as_ref().map(|(buffer, offset, format)| IndexBinding {
-                buffer,
-                offset: *offset,
-                format: *format,
-            }),
-            topology: self.topology,
-            restart,
-            // With no stage choosing a viewport (geometry shaders are refused, and
-            // `SV_ViewportArrayIndex` from the vertex stage is reported absent), Direct3D 12 draws
-            // through the first viewport and scissor.
-            viewports: &self.viewports[..self.viewports.len().min(1)],
-            scissors: &self.scissors[..self.scissors.len().min(1)],
-            blend_constant: self.blend_constant,
-            stencil_reference: [self.stencil_reference; 2],
-            immediates: &[],
-            range,
-        };
-        d.backend.draw(&call);
+        // The draw's call: built once for the occlusion counter, which keeps a counted draw before
+        // its pass opens, and once for the back end.
+        macro_rules! call {
+            () => {{
+                let p = &d.pipelines[pid.0 as usize];
+                let r = p.render.as_ref().expect("a graphics pipeline");
+                DrawCall {
+                    program: &p.program,
+                    blend: &r.blend,
+                    depth_stencil: match (&r.depth_stencil_bound, bound_depth) {
+                        (Some(d), Some(_)) => d,
+                        _ => &r.depth_stencil,
+                    },
+                    raster: &r.raster,
+                    vertex_layout: &layout,
+                    bindings: sets.each_ref().map(Option::as_ref),
+                    vertex_buffers: &vertex_buffers,
+                    index: index.as_ref().map(|(buffer, offset, format)| IndexBinding {
+                        buffer,
+                        offset: *offset,
+                        format: *format,
+                    }),
+                    topology: self.topology,
+                    restart,
+                    // With no stage choosing a viewport (geometry shaders are refused, and
+                    // `SV_ViewportArrayIndex` from the vertex stage is reported absent), Direct3D 12
+                    // draws through the first viewport and scissor.
+                    viewports: &self.viewports[..self.viewports.len().min(1)],
+                    scissors: &self.scissors[..self.scissors.len().min(1)],
+                    blend_constant: self.blend_constant,
+                    stencil_reference: [self.stencil_reference; 2],
+                    immediates: &[],
+                    range: same_range(&range),
+                }
+            }};
+        }
+        if let Some((writes, counting)) = &counted {
+            let r = d.pipelines[pid.0 as usize]
+                .render
+                .as_ref()
+                .expect("a graphics pipeline");
+            let counted = CountedDraw {
+                counting,
+                alpha_to_coverage: r.alpha_to_coverage,
+                writes_depth_stencil: *writes,
+                instances_step_by_one: r.instances_step_by_one,
+            };
+            d.counter
+                .draw(&mut d.backend, &mut d.passes, &call!(), &counted)?;
+        }
+        if !self.pass_open {
+            self.open_pass(d, pid)?;
+        }
+        d.backend.draw(&call!());
         Ok(())
+    }
+
+    /// A pass with no targets covers the viewports, at the pipeline's sample count.
+    fn empty_size(&self, d: &Device<B>, pid: PipelineId) -> EmptyPass {
+        let end = |at: u32, size: u32| (f32::from_bits(at) + f32::from_bits(size)).ceil();
+        let (width, height) = self.viewports.iter().fold((1, 1), |(w, h), v| {
+            (
+                w.max(end(v.x, v.width) as u32),
+                h.max(end(v.y, v.height) as u32),
+            )
+        });
+        let samples = d.pipelines[pid.0 as usize]
+            .render
+            .as_ref()
+            .map_or(1, |r| r.targets.samples);
+        EmptyPass {
+            width,
+            height,
+            samples,
+        }
+    }
+
+    /// Before a draw while a counted occlusion query runs: the bound targets given to the pass
+    /// tracker, where the occlusion counter reads them; before the first draw writing depth or
+    /// stencil since the last count, the pass ended and clears done, so the counter copies the
+    /// depth-stencil target as the draw begins from it. Gives whether the draw writes depth or
+    /// stencil, and its counting program.
+    fn prepare_counted(
+        &mut self,
+        d: &mut Device<B>,
+        pid: PipelineId,
+    ) -> Result<(bool, B::Program), Error> {
+        let counting = d.counting_program(pid)?;
+        let writes = matches!(self.depth, Some(Descriptor::DepthStencil { .. }))
+            && d.pipelines[pid.0 as usize]
+                .render
+                .as_ref()
+                .is_some_and(|r| r.writes_depth_stencil);
+        if writes && !self.counted_copy {
+            self.settle(d)?;
+            self.counted_copy = true;
+        }
+        if !self.counted_targets {
+            let targets = self.pass_targets(d, pid)?;
+            d.passes.set_targets(&mut d.backend, targets)?;
+            self.counted_targets = true;
+        }
+        Ok((writes, counting))
+    }
+
+    /// The bound targets as the pass tracker takes them.
+    fn pass_targets(&self, d: &mut Device<B>, pid: PipelineId) -> Result<PassTargets<B>, Error> {
+        let mut target = |v: &TargetView| -> Result<Target<B>, Error> {
+            let view = d.view(v)?;
+            let (texture, desc) = d.texture(v.resource)?;
+            let d3 = desc.dimension == TextureDimension::D3;
+            Ok(Target {
+                view,
+                texture: texture.clone(),
+                format: dxgi(v.format)?,
+                mip: v.mip,
+                layer: if d3 { 0 } else { v.first_layer },
+                depth_slice: 0,
+                width: (desc.width >> v.mip).max(1),
+                height: (desc.height >> v.mip).max(1),
+                samples: desc.samples,
+            })
+        };
+        let mut colors: [Option<ColorTarget<B>>; MAX_COLOR_TARGETS] = Default::default();
+        for (slot, c) in colors.iter_mut().zip(&self.colors) {
+            if let Descriptor::RenderTarget(v) = c {
+                *slot = Some(ColorTarget {
+                    target: target(v)?,
+                    resolve: None,
+                });
+            }
+        }
+        let depth = match &self.depth {
+            Some(Descriptor::DepthStencil { view, .. }) => Some(target(view)?),
+            _ => None,
+        };
+        let empty = (colors.iter().all(Option::is_none) && depth.is_none())
+            .then(|| self.empty_size(d, pid));
+        Ok(PassTargets {
+            colors,
+            depth,
+            empty,
+        })
+    }
+
+    /// Opens a pass on the bound targets, each taking a whole clear still waiting for it as its
+    /// load; with no targets the pass covers the viewports at the pipeline's sample count.
+    fn open_pass(&mut self, d: &mut Device<B>, pid: PipelineId) -> Result<(), Error> {
+        let occlusion = match self.query {
+            Some((heap, _, QueryState::Waiting)) => Some((heap, d.occlusion_set(heap)?)),
+            _ => None,
+        };
+        let mut views = Vec::with_capacity(self.colors.len());
+        let mut loads = Vec::with_capacity(self.colors.len());
+        for c in &self.colors {
+            let v = match c {
+                Descriptor::RenderTarget(v) => v,
+                // A null view: the slot has no target and its writes are dropped.
+                Descriptor::Empty => {
+                    views.push(None);
+                    loads.push(LoadOp::Load);
+                    continue;
+                }
+                _ => {
+                    return Err(Error::Invalid(
+                        "a render target slot holds no render target view",
+                    ));
+                }
+            };
+            views.push(Some(d.view(v)?));
+            let clear = self.clears.iter().position(|(k, _)| k == v);
+            loads.push(match clear {
+                Some(i) => match self.clears.swap_remove(i).1 {
+                    ClearValue::Color(value) => LoadOp::Clear(value),
+                    ClearValue::DepthStencil { .. } => LoadOp::Load,
+                },
+                None => LoadOp::Load,
+            });
+        }
+        let depth = match self.depth {
+            None | Some(Descriptor::Empty) => None,
+            Some(Descriptor::DepthStencil { view: v, read_only }) => {
+                let view = d.view(&v)?;
+                let (has_depth, has_stencil) = aspects(dxgi(v.format)?);
+                let (mut depth, mut stencil) = (None, None);
+                if let Some(i) = self.clears.iter().position(|(k, _)| *k == v)
+                    && let (
+                        _,
+                        ClearValue::DepthStencil {
+                            depth: d,
+                            stencil: s,
+                        },
+                    ) = self.clears.swap_remove(i)
+                {
+                    (depth, stencil) = (d, s);
+                }
+                Some((
+                    view,
+                    has_depth.then(|| aspect_ops(depth, read_only & 1 != 0)),
+                    has_stencil.then(|| aspect_ops(stencil, read_only & 2 != 0)),
+                ))
+            }
+            Some(_) => {
+                return Err(Error::Invalid(
+                    "the depth-stencil slot holds no depth-stencil view",
+                ));
+            }
+        };
+        let mut pass = PassDesc {
+            colors: Default::default(),
+            depth: depth
+                .as_ref()
+                .map(|(view, depth, stencil)| DepthAttachment {
+                    view,
+                    depth: *depth,
+                    stencil: *stencil,
+                }),
+            empty: None,
+            occlusion: occlusion.as_ref().map(|(_, set)| set),
+        };
+        for (i, (view, load)) in views.iter().zip(loads).enumerate() {
+            pass.colors[i] = view.as_ref().map(|view| ColorAttachment {
+                view,
+                depth_slice: 0,
+                resolve: None,
+                load,
+                store: StoreOp::Store,
+            });
+        }
+        if views.iter().all(Option::is_none) && depth.is_none() {
+            pass.empty = Some(self.empty_size(d, pid));
+            self.empty_pass = true;
+        }
+        d.backend.begin_pass(&pass);
+        self.pass_open = true;
+        if let (Some((heap, _)), Some((_, index, state))) = (&occlusion, &mut self.query) {
+            d.backend.begin_query(*index);
+            *state = QueryState::Running;
+            self.pass_heap = Some(*heap);
+        }
+        Ok(())
+    }
+}
+
+/// The same range again, for a second call.
+fn same_range<'a, B: Backend>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
+    match *r {
+        DrawRange::Vertices {
+            first,
+            count,
+            first_instance,
+            instances,
+        } => DrawRange::Vertices {
+            first,
+            count,
+            first_instance,
+            instances,
+        },
+        DrawRange::Indexed {
+            first,
+            count,
+            base_vertex,
+            first_instance,
+            instances,
+        } => DrawRange::Indexed {
+            first,
+            count,
+            base_vertex,
+            first_instance,
+            instances,
+        },
+        DrawRange::Indirect { args, offset } => DrawRange::Indirect { args, offset },
+        DrawRange::IndexedIndirect { args, offset } => DrawRange::IndexedIndirect { args, offset },
     }
 }
 
