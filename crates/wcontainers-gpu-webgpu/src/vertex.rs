@@ -125,13 +125,13 @@ fn widened(f: VertexFormat) -> Option<(wgpu::VertexFormat, u32, u32)> {
     Some(match f {
         Uint8x3 => (W::Uint8x4, 1, 1),
         Sint8x3 => (W::Sint8x4, 1, 1),
-        Unorm8x3 => (W::Unorm8x4, 1, 0xff),
-        Snorm8x3 => (W::Snorm8x4, 1, 0x7f),
+        Unorm8x3 => (W::Unorm8x4, 1, u8::MAX.into()),
+        Snorm8x3 => (W::Snorm8x4, 1, i8::MAX as u32),
         Uint16x3 => (W::Uint16x4, 2, 1),
         Sint16x3 => (W::Sint16x4, 2, 1),
-        Unorm16x3 => (W::Unorm16x4, 2, 0xffff),
-        Snorm16x3 => (W::Snorm16x4, 2, 0x7fff),
-        Float16x3 => (W::Float16x4, 2, 0x3c00),
+        Unorm16x3 => (W::Unorm16x4, 2, u16::MAX.into()),
+        Snorm16x3 => (W::Snorm16x4, 2, i16::MAX as u32),
+        Float16x3 => (W::Float16x4, 2, half::f16::ONE.to_bits().into()),
         Uint10_10_10_2 => (W::Uint16x4, 3, 0),
         Float11_11_10 => (W::Float16x4, 4, 0),
         _ => return None,
@@ -191,11 +191,11 @@ pub fn plan(desc: &VertexLayoutDesc) -> Option<Plan> {
                     offset: u64::from(size),
                     shader_location: a.location,
                 });
-                size += (format.size() as u32).next_multiple_of(4);
+                size += (format.size() as u32).next_multiple_of(wgpu::VERTEX_ALIGNMENT as u32);
                 span = span.max(a.offset + src);
             }
             Some(StreamPlan {
-                size: size.max(4),
+                size: size.max(wgpu::VERTEX_ALIGNMENT as u32),
                 src_stride: stream.stride,
                 span,
                 ops,
@@ -305,7 +305,7 @@ impl WebGpu {
         };
         let shadow = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: (count * u64::from(p.size)).max(4),
+            size: (count * u64::from(p.size)).max(wgpu::COPY_BUFFER_ALIGNMENT),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -316,7 +316,8 @@ impl WebGpu {
         let at = src.base.get() + offset;
         let limits = self.device.limits();
         let start = at & !(u64::from(limits.min_storage_buffer_offset_alignment) - 1);
-        let window = (raw.size() - start).min(limits.max_storage_buffer_binding_size & !3);
+        let window = (raw.size() - start)
+            .min(limits.max_storage_buffer_binding_size & !(wcontainers_gpu::STORAGE_WORD - 1));
         let reach = at - start + (count - 1) * stride + span;
         let groups = count.div_ceil(GROUP);
         let across = groups.min(u64::from(limits.max_compute_workgroups_per_dimension));

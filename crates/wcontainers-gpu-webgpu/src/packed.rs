@@ -295,7 +295,7 @@ pub(crate) fn widen(format: Format, packed: &[u8], out: &mut Vec<u8>) {
                     .as_chunks::<4>()
                     .0
                     .iter()
-                    .flat_map(|t| [t[0], t[1], t[2], 255]),
+                    .flat_map(|t| [t[0], t[1], t[2], u8::MAX]),
             );
         }
         Format::Rgbg8Unorm | Format::Grgb8Unorm => {
@@ -304,14 +304,14 @@ pub(crate) fn widen(format: Format, packed: &[u8], out: &mut Vec<u8>) {
                     Format::Rgbg8Unorm => *p,
                     _ => [p[1], p[0], p[3], p[2]],
                 };
-                out.extend([r, g0, b, 255, r, g1, b, 255]);
+                out.extend([r, g0, b, u8::MAX, r, g1, b, u8::MAX]);
             }
         }
         _ => {
             let f = fields(format);
             for t in packed.as_chunks::<2>().0 {
                 let v = u32::from(u16::from_le_bytes(*t));
-                let (mut bgra, mut at) = ([255u8; 4], 0);
+                let (mut bgra, mut at) = ([u8::MAX; 4], 0);
                 for (c, bits) in bgra.iter_mut().zip(f).filter(|(_, bits)| *bits > 0) {
                     let x = (v >> at) & ((1 << bits) - 1);
                     let (mut wide, mut filled) = (0, 0);
@@ -340,7 +340,7 @@ pub(crate) fn pack(format: Format, texels: &[u8], out: &mut Vec<u8>) {
     match format {
         Format::A8Unorm => out.extend(texels.iter().map(|t| t[3])),
         Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb => {
-            out.extend(texels.iter().flat_map(|t| [t[0], t[1], t[2], 255]));
+            out.extend(texels.iter().flat_map(|t| [t[0], t[1], t[2], u8::MAX]));
         }
         Format::Rgbg8Unorm | Format::Grgb8Unorm => {
             for pair in texels.chunks(2) {
@@ -357,7 +357,8 @@ pub(crate) fn pack(format: Format, texels: &[u8], out: &mut Vec<u8>) {
                 let (mut v, mut at) = (0u32, 0);
                 for (c, bits) in [t[2], t[1], t[0], t[3]].into_iter().zip(f) {
                     let max = (1 << bits) - 1;
-                    v |= ((u32::from(c) * max + 127) / 255) << at;
+                    let full = u32::from(u8::MAX);
+                    v |= ((u32::from(c) * max + full / 2) / full) << at;
                     at += bits;
                 }
                 out.extend((v as u16).to_le_bytes());

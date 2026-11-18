@@ -306,7 +306,7 @@ impl ProgramObj {
             })
             .max()
             .unwrap_or(0)
-            .next_multiple_of(4)
+            .next_multiple_of(wgpu::IMMEDIATE_DATA_ALIGNMENT)
     }
 
     /// The layout key of each bound set, kept to the textures the program samples through a
@@ -492,6 +492,9 @@ pub struct Fence {
     done: Arc<AtomicBool>,
     index: wgpu::SubmissionIndex,
 }
+
+/// WebGPU's largest sampler anisotropy: `maxAnisotropy` is clamped to it.
+const MAX_ANISOTROPY: u16 = 16;
 
 /// The start of the line the back end prints on standard error at each power of two frames
 /// presented: the frames, then every counter ([`Counters`]) and every slow path taken, each as
@@ -947,7 +950,7 @@ fn caps(
         max_dispatch: l.max_compute_workgroups_per_dimension,
         max_point_size: 1.0,
         max_line_width: 1.0,
-        max_anisotropy: 16,
+        max_anisotropy: MAX_ANISOTROPY,
         capture_buffers: 0,
         capture_components: 0,
     };
@@ -1286,7 +1289,7 @@ impl Backend for WebGpu {
             anisotropy_clamp: if [desc.min, desc.mag, desc.mip].contains(&Filter::Nearest) {
                 1
             } else {
-                desc.anisotropy.clamp(1, 16)
+                desc.anisotropy.clamp(1, MAX_ANISOTROPY)
             },
             border_color: None,
         });
