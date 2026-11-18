@@ -1,6 +1,6 @@
 //! The call census and frame capture, on when WC_OUT names a directory. Counts every call a program
-//! makes to the methods of its Direct3D 11 devices, immediate and deferred contexts, swap chains and
-//! DXGI factories, and writes the counts to <WC_OUT>\census.txt when the process ends. Devices,
+//! makes to the methods of its Direct3D 11 devices, immediate and deferred contexts, its Direct3D 12
+//! devices and command queues (not yet its command lists), its swap chains and DXGI factories, and writes the counts to <WC_OUT>\census.txt when the process ends. Devices,
 //! swap chains and factories have their method tables patched with counting thunks the first time
 //! an object using one is created through this library. Contexts are handed to the program wrapped
 //! instead, since Direct3D 11 rewrites entries of a context's table as it runs: each wrapper method
@@ -16,6 +16,7 @@ use std::sync::{Mutex, OnceLock};
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct3D11::*;
+use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::Memory::{PAGE_PROTECTION_FLAGS, PAGE_READWRITE, VirtualProtect};
@@ -61,13 +62,17 @@ pub enum Table {
     Deferred,
     SwapChain,
     Factory,
+    Device12,
+    Queue,
 }
 
 impl Table {
-    const ALL: [Table; 5] = [
+    const ALL: [Table; 7] = [
         Table::Device,
         Table::Immediate,
         Table::Deferred,
+        Table::Device12,
+        Table::Queue,
         Table::SwapChain,
         Table::Factory,
     ];
@@ -79,6 +84,8 @@ impl Table {
             Table::Deferred => "deferred-context",
             Table::SwapChain => "swap-chain",
             Table::Factory => "factory",
+            Table::Device12 => "d3d12-device",
+            Table::Queue => "command-queue",
         }
     }
 
@@ -117,6 +124,24 @@ impl Table {
                 (IDXGIFactory1::IID, "IDXGIFactory1"),
                 (IDXGIFactory::IID, "IDXGIFactory"),
             ],
+            Table::Device12 => &[
+                (ID3D12Device14::IID, "ID3D12Device14"),
+                (ID3D12Device13::IID, "ID3D12Device13"),
+                (ID3D12Device12::IID, "ID3D12Device12"),
+                (ID3D12Device11::IID, "ID3D12Device11"),
+                (ID3D12Device10::IID, "ID3D12Device10"),
+                (ID3D12Device9::IID, "ID3D12Device9"),
+                (ID3D12Device8::IID, "ID3D12Device8"),
+                (ID3D12Device7::IID, "ID3D12Device7"),
+                (ID3D12Device6::IID, "ID3D12Device6"),
+                (ID3D12Device5::IID, "ID3D12Device5"),
+                (ID3D12Device4::IID, "ID3D12Device4"),
+                (ID3D12Device3::IID, "ID3D12Device3"),
+                (ID3D12Device2::IID, "ID3D12Device2"),
+                (ID3D12Device1::IID, "ID3D12Device1"),
+                (ID3D12Device::IID, "ID3D12Device"),
+            ],
+            Table::Queue => &[(ID3D12CommandQueue::IID, "ID3D12CommandQueue")],
         }
     }
 }
@@ -432,6 +457,8 @@ fn typed(table: Table, name: &str) -> Option<usize> {
         (Table::Factory, "CreateSwapChainForComposition") => {
             create_swap_chain_for_composition as *const () as usize
         }
+        (Table::Device12, "CreateCommandQueue") => create_command_queue as *const () as usize,
+        (Table::Device12, "CreateCommandQueue1") => create_command_queue1 as *const () as usize,
         (Table::Device, "GetImmediateContext") => get_immediate_context::<0> as *const () as usize,
         (Table::Device, "GetImmediateContext1") => get_immediate_context::<1> as *const () as usize,
         (Table::Device, "GetImmediateContext2") => get_immediate_context::<2> as *const () as usize,
@@ -573,6 +600,48 @@ unsafe extern "system" fn create_swap_chain_for_composition(
     result
 }
 
+unsafe extern "system" fn create_command_queue(
+    this: *mut c_void,
+    desc: *const c_void,
+    riid: *const GUID,
+    out: *mut *mut c_void,
+) -> HRESULT {
+    type Original = unsafe extern "system" fn(
+        *mut c_void,
+        *const c_void,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT;
+    let original: Original = unsafe { std::mem::transmute(enter(this, "CreateCommandQueue")) };
+    let result = unsafe { original(this, desc, riid, out) };
+    if result.is_ok() && !out.is_null() {
+        unsafe { patch(Table::Queue, *out) };
+    }
+    result
+}
+
+unsafe extern "system" fn create_command_queue1(
+    this: *mut c_void,
+    desc: *const c_void,
+    creator: *const GUID,
+    riid: *const GUID,
+    out: *mut *mut c_void,
+) -> HRESULT {
+    type Original = unsafe extern "system" fn(
+        *mut c_void,
+        *const c_void,
+        *const GUID,
+        *const GUID,
+        *mut *mut c_void,
+    ) -> HRESULT;
+    let original: Original = unsafe { std::mem::transmute(enter(this, "CreateCommandQueue1")) };
+    let result = unsafe { original(this, desc, creator, riid, out) };
+    if result.is_ok() && !out.is_null() {
+        unsafe { patch(Table::Queue, *out) };
+    }
+    result
+}
+
 /// GetImmediateContext and its versions 1 to 3, which share one shape.
 unsafe extern "system" fn get_immediate_context<const VERSION: u8>(
     this: *mut c_void,
@@ -640,6 +709,23 @@ pub unsafe fn created(device: *mut c_void, context: *mut *mut c_void, chain: *mu
     }
 }
 
+/// Called for a Direct3D 12 device the program created through this library: patches the device and
+/// the DXGI factory's table (one made here: every factory of the process shares its class's table),
+/// so the swap chains the program makes on its queues are patched in turn.
+///
+/// # Safety
+/// `device` is a live device.
+pub unsafe fn created12(device: *mut c_void) {
+    if config().is_none() || device.is_null() {
+        return;
+    }
+    match unsafe { CreateDXGIFactory2::<IDXGIFactory2>(DXGI_CREATE_FACTORY_FLAGS(0)) } {
+        Ok(factory) => unsafe { patch(Table::Factory, factory.as_raw()) },
+        Err(error) => note(format!("factory not counted: {error}")),
+    }
+    unsafe { patch(Table::Device12, device) };
+}
+
 /// Counts a present and saves or ends at the frames WC_CAPTURE names.
 fn frame(chain: *mut c_void) {
     let frame = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -665,18 +751,208 @@ fn frame(chain: *mut c_void) {
 
 fn save(chain: *mut c_void, frame: u64, config: &Config) -> anyhow::Result<()> {
     let chain = unsafe { IDXGISwapChain::from_raw_borrowed(&chain) }.unwrap();
-    let back: ID3D11Texture2D = unsafe { chain.GetBuffer(0)? };
-    let mut desc = D3D11_TEXTURE2D_DESC::default();
-    unsafe { back.GetDesc(&mut desc) };
-    // Every format saved has 4 bytes a texel; 10-bit colour is saved at 16 bits a channel.
-    let (bgra, wide) = match desc.Format {
+    // A Direct3D 12 swap chain's device is the command queue it presents on.
+    let (width, height, format, mut pixels) =
+        match unsafe { chain.GetDevice::<ID3D12CommandQueue>() } {
+            Ok(queue) => read12(chain, &queue)?,
+            Err(_) => read11(chain)?,
+        };
+    let (bgra, wide) = layout(format)?;
+    let (pixels, depth) = if wide {
+        // Bits 0-9 red, 10-19 green, 20-29 blue, 30-31 alpha; widened by repeating the top bits.
+        let widen = |v: u32| ((v << 6) | (v >> 4)) as u16;
+        let wide: Vec<u8> = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|texel| {
+                let v = u32::from_le_bytes(*texel);
+                [
+                    widen(v & 0x3ff),
+                    widen((v >> 10) & 0x3ff),
+                    widen((v >> 20) & 0x3ff),
+                    (v >> 30) as u16 * 0x5555,
+                ]
+            })
+            .flat_map(u16::to_be_bytes)
+            .collect();
+        (wide, png::BitDepth::Sixteen)
+    } else {
+        for texel in pixels.as_chunks_mut::<4>().0 {
+            if bgra {
+                texel.swap(0, 2);
+            }
+            if format == DXGI_FORMAT_B8G8R8X8_UNORM {
+                texel[3] = 255;
+            }
+        }
+        (pixels, png::BitDepth::Eight)
+    };
+    std::fs::create_dir_all(&config.out)?;
+    let file = std::fs::File::create(config.out.join(format!("frame-{frame}.png")))?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(depth);
+    encoder.write_header()?.write_image_data(&pixels)?;
+    Ok(())
+}
+
+/// Whether a back buffer format `save` takes (each 4 bytes a texel) is blue first, and whether it
+/// has 10-bit colour, saved at 16 bits a channel.
+fn layout(format: DXGI_FORMAT) -> anyhow::Result<(bool, bool)> {
+    Ok(match format {
         DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => (false, false),
         DXGI_FORMAT_B8G8R8A8_UNORM
         | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB
         | DXGI_FORMAT_B8G8R8X8_UNORM => (true, false),
         DXGI_FORMAT_R10G10B10A2_UNORM => (false, true),
         other => anyhow::bail!("the back buffer's format {} is not one this saves", other.0),
+    })
+}
+
+/// A Direct3D 12 swap chain's current back buffer, copied on its own queue after the program's
+/// work and waited for.
+fn read12(
+    chain: &IDXGISwapChain,
+    queue: &ID3D12CommandQueue,
+) -> anyhow::Result<(u32, u32, DXGI_FORMAT, Vec<u8>)> {
+    use std::mem::{ManuallyDrop, transmute_copy};
+    let index = unsafe { chain.cast::<IDXGISwapChain3>()?.GetCurrentBackBufferIndex() };
+    let back: ID3D12Resource = unsafe { chain.GetBuffer(index)? };
+    let desc = unsafe { back.GetDesc() };
+    layout(desc.Format)?;
+    anyhow::ensure!(
+        desc.SampleDesc.Count == 1,
+        "the back buffer is multisampled"
+    );
+    let mut device: Option<ID3D12Device> = None;
+    unsafe { queue.GetDevice(&mut device)? };
+    let device = device.unwrap();
+    let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
+    let mut total = 0u64;
+    unsafe {
+        device.GetCopyableFootprints(
+            &desc,
+            0,
+            1,
+            0,
+            Some(&mut footprint),
+            None,
+            None,
+            Some(&mut total),
+        )
     };
+    let buffer = D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+        Width: total,
+        Height: 1,
+        DepthOrArraySize: 1,
+        MipLevels: 1,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+        ..Default::default()
+    };
+    let heap = D3D12_HEAP_PROPERTIES {
+        Type: D3D12_HEAP_TYPE_READBACK,
+        ..Default::default()
+    };
+    let mut readback: Option<ID3D12Resource> = None;
+    unsafe {
+        device.CreateCommittedResource(
+            &heap,
+            D3D12_HEAP_FLAG_NONE,
+            &buffer,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            None,
+            &mut readback,
+        )?
+    };
+    let readback = readback.unwrap();
+    let kind = unsafe { queue.GetDesc() }.Type;
+    let allocator: ID3D12CommandAllocator = unsafe { device.CreateCommandAllocator(kind)? };
+    let list: ID3D12GraphicsCommandList =
+        unsafe { device.CreateCommandList(0, kind, &allocator, None)? };
+    // The back buffer is in the present state when presented; it goes back to it after the copy.
+    let barrier = |before, after| D3D12_RESOURCE_BARRIER {
+        Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+        Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+        Anonymous: D3D12_RESOURCE_BARRIER_0 {
+            Transition: ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
+                pResource: unsafe { transmute_copy(&back) },
+                Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                StateBefore: before,
+                StateAfter: after,
+            }),
+        },
+    };
+    let to = D3D12_TEXTURE_COPY_LOCATION {
+        pResource: unsafe { transmute_copy(&readback) },
+        Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+            PlacedFootprint: footprint,
+        },
+    };
+    let from = D3D12_TEXTURE_COPY_LOCATION {
+        pResource: unsafe { transmute_copy(&back) },
+        Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+            SubresourceIndex: 0,
+        },
+    };
+    let fence: ID3D12Fence = unsafe { device.CreateFence(0, D3D12_FENCE_FLAG_NONE)? };
+    unsafe {
+        list.ResourceBarrier(&[barrier(
+            D3D12_RESOURCE_STATE_PRESENT,
+            D3D12_RESOURCE_STATE_COPY_SOURCE,
+        )]);
+        list.CopyTextureRegion(&to, 0, 0, 0, &from, None);
+        list.ResourceBarrier(&[barrier(
+            D3D12_RESOURCE_STATE_COPY_SOURCE,
+            D3D12_RESOURCE_STATE_PRESENT,
+        )]);
+        list.Close()?;
+        queue.ExecuteCommandLists(&[Some(list.cast()?)]);
+        queue.Signal(&fence, 1)?;
+        // Without an event the call returns once the fence has reached the value.
+        fence.SetEventOnCompletion(1, windows::Win32::Foundation::HANDLE::default())?;
+    }
+    let (width, height) = (desc.Width as u32, desc.Height);
+    let row = width as usize * 4;
+    let mut pixels = vec![0u8; row * height as usize];
+    unsafe {
+        let mut mapped = std::ptr::null_mut();
+        readback.Map(
+            0,
+            Some(&D3D12_RANGE {
+                Begin: 0,
+                End: total as usize,
+            }),
+            Some(&mut mapped),
+        )?;
+        let pitch = footprint.Footprint.RowPitch as usize;
+        for y in 0..height as usize {
+            let source = std::slice::from_raw_parts(
+                mapped
+                    .cast::<u8>()
+                    .add(footprint.Offset as usize + y * pitch),
+                row,
+            );
+            pixels[y * row..(y + 1) * row].copy_from_slice(source);
+        }
+        readback.Unmap(0, Some(&D3D12_RANGE::default()));
+    }
+    Ok((width, height, desc.Format, pixels))
+}
+
+/// A Direct3D 11 swap chain's back buffer, copied and read on its device's immediate context.
+fn read11(chain: &IDXGISwapChain) -> anyhow::Result<(u32, u32, DXGI_FORMAT, Vec<u8>)> {
+    let back: ID3D11Texture2D = unsafe { chain.GetBuffer(0)? };
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    unsafe { back.GetDesc(&mut desc) };
+    layout(desc.Format)?;
     anyhow::ensure!(
         desc.SampleDesc.Count == 1,
         "the back buffer is multisampled"
@@ -710,43 +986,7 @@ fn save(chain: *mut c_void, frame: u64, config: &Config) -> anyhow::Result<()> {
         }
         context.Unmap(&staging, 0);
     }
-    let (pixels, depth) = if wide {
-        // Bits 0-9 red, 10-19 green, 20-29 blue, 30-31 alpha; widened by repeating the top bits.
-        let widen = |v: u32| ((v << 6) | (v >> 4)) as u16;
-        let wide: Vec<u8> = pixels
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .flat_map(|texel| {
-                let v = u32::from_le_bytes(*texel);
-                [
-                    widen(v & 0x3ff),
-                    widen((v >> 10) & 0x3ff),
-                    widen((v >> 20) & 0x3ff),
-                    (v >> 30) as u16 * 0x5555,
-                ]
-            })
-            .flat_map(u16::to_be_bytes)
-            .collect();
-        (wide, png::BitDepth::Sixteen)
-    } else {
-        for texel in pixels.as_chunks_mut::<4>().0 {
-            if bgra {
-                texel.swap(0, 2);
-            }
-            if desc.Format == DXGI_FORMAT_B8G8R8X8_UNORM {
-                texel[3] = 255;
-            }
-        }
-        (pixels, png::BitDepth::Eight)
-    };
-    std::fs::create_dir_all(&config.out)?;
-    let file = std::fs::File::create(config.out.join(format!("frame-{frame}.png")))?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), desc.Width, desc.Height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(depth);
-    encoder.write_header()?.write_image_data(&pixels)?;
-    Ok(())
+    Ok((desc.Width, desc.Height, desc.Format, pixels))
 }
 
 /// Writes <WC_OUT>\census.txt once: frames presented, the tables counted, then one line per
@@ -780,6 +1020,18 @@ pub fn write() {
     }
     for note in NOTES.lock().unwrap().iter() {
         let _ = writeln!(text, "# {note}");
+    }
+    if patched.iter().any(|(table, _)| *table == Table::Device12) {
+        let _ = writeln!(
+            text,
+            "# Direct3D 12 command lists are not counted: patching their table from CreateCommandList crashed Godot"
+        );
+    }
+    for export in crate::UNFORWARDED {
+        let _ = writeln!(
+            text,
+            "# not forwarded, so absent from this library: {export}"
+        );
     }
     // Entries the runtime changed after they were patched: calls through them went uncounted.
     let thunks = (&raw const wc_census_thunks) as usize;
@@ -832,7 +1084,7 @@ pub fn write() {
     let mut exports: Vec<(String, u64)> = crate::export_counts();
     exports.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     for (name, count) in exports {
-        let _ = writeln!(text, "{}.dll {name} {count}", crate::LIBRARY);
+        let _ = writeln!(text, "{name} {count}");
     }
     let _ = std::fs::create_dir_all(&config.out)
         .and_then(|()| std::fs::write(config.out.join("census.txt"), text));

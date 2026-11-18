@@ -10,9 +10,11 @@ Direct3D reference library) are done and checked. R2 (keeping the owner's PC saf
 Direct3D 12 track waits for), first run, 2026-11-17: the three findings of R1's last check are
 fixed; the display driver resets are traced and the queue now protects the PC from them, failed
 logons are recorded as they happen, Chrome's wrapper comes back with every Chrome install, and
-every script keeps one SSH connection per branch (see "The owner's PC" below). Not done yet: the
-forwarding d3d12.dll (census and frame capture for Direct3D 12 programs), bgfx on Direct3D 12 and
-Microsoft's Direct3D 12 samples (see Next). R1's parts:
+every script keeps one SSH connection per branch (see "The owner's PC" below). Partly done: the
+forwarding library now also stands in for d3d12.dll (every Direct3D 12 scene passes through it) and
+counts a Direct3D 12 program's device, queue, factory and swap chain calls, but not yet its command
+lists, and it does not yet save Direct3D 12 frames; so bgfx on Direct3D 12, Godot's Direct3D 12
+census and Microsoft's Direct3D 12 samples are not in yet (see Next). R1's parts:
 - Jobs that present run on a hidden desktop ("wc-rig") in the session of the user logged in at the
   console (`gpu-job --desktop`, see How to run): windows and swap chains work there and nothing
   shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
@@ -367,6 +369,12 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   scene checks those. bgfx is built with
   BGFX_CONFIG_MULTITHREADED=0 (`programs build`, through MSVC's CL variable), so its examples draw
   on the thread that reads the clock and their frames follow it exactly.
+- The forwarding library also stands in for d3d12.dll (copy it under that name): `scenes --api d3d12
+  --dll d3d12.dll=%CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll` runs the Direct3D 12
+  scenes through it; with WC_OUT it counts a Direct3D 12 program's device, command queue, DXGI
+  factory and swap chain calls (not its command lists yet) and WC_D3D12 names a replacement behind
+  it. It does not save Direct3D 12 frames yet (Next), so `programs run` still runs Direct3D 12
+  programs without it.
 - The census (crates/wcontainers-graphics-test-forward/src/census.rs), on when WC_OUT names a
   directory: the typed D3D11CreateDevice and D3D11CreateDeviceAndSwapChain exports patch the method
   tables of the device, swap chain and DXGI factory with counting thunks (names read from the
@@ -1073,6 +1081,25 @@ tracks' jobs beside ours; Mac load average about 20):
 - Chrome: `setup-desktop` replaced the first wrapper build in C:\wc\chrome with gt-chrome ("put the
   wrapper in front of ...chrome.exe.real").
 
+Direct3D 12 through the forwarding library (R2 first run; the library is one DLL mirroring the
+exports of both d3d11.dll and d3d12.dll, copied under either name; see Loading a replacement):
+- `scenes --api d3d12 --build "cargo build -q -p wcontainers-graphics-test-forward" --dll
+  d3d12.dll=%CARGO_TARGET_DIR%\debug\wcontainers_graphics_test_forward.dll`: 116 passed, 0 failed (job
+  8 s), each scene loading d3d12.dll from its own directory. `loop` (the Direct3D 11 forwarding run)
+  and `programs run sdk-tutorial07 bgfx-01-cubes godot-platformer-2d-d3d12` pass as before.
+- bgfx-01-cubes with `--d3d12` and the library as d3d12.dll (WC_OUT and WC_CAPTURE set; trial,
+  not in the program list): 120 frames; census counted the factory (IDXGIFactory7), the device
+  (ID3D12Device8, the newest this Windows 10 runtime answers), the queue, the command list
+  (ID3D12GraphicsCommandList6) and the swap chain; no frame saved: "No such interface supported
+  (0x80004002)" from the Direct3D 12 readback (which call is not known yet).
+- Godot's 2D platformer on Direct3D 12 through it: runs with the library alone and with the
+  census of device, queue, factory and swap chain; crashes (access violation in the system
+  d3d12.dll at +0x122d7, inside d3d12core.dll) as soon as CreateCommandList and CreateCommandList1
+  are hooked to patch the command lists' table. Ruled out by trials: the IUnknown entries, either
+  half of the list's 80 entries, all of them (the crash stays with no entry patched), and the
+  QueryInterface calls made to find the list's interfaces. So command lists are not counted yet,
+  and census.txt says so.
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -1114,6 +1141,14 @@ Traps:
   wcontainers_graphics_test_forward.dll, copied as d3d11.dll only where a test wants it.
 - 64-bit only: the thunks are x86-64 code and build.rs reads the 64-bit System32 library; a 32-bit
   program would need an x86 build reading SysWOW64.
+
+Direct3D 12: build.rs mirrors d3d12.dll's exports too (ordinals 99
+to 117, which d3d11.dll's 1 to 51 do not overlap; ordinal 99 has no name and is forwarded by
+ordinal). D3D12DeviceRemovedExtendedData is data, which a thunk cannot forward, so the library
+lacks it (census.txt says so); a program importing it would not load. A replacement d3d12.dll goes
+behind it with WC_D3D12, as WC_D3D11 does for d3d11.dll. D3D12CreateDevice is typed: it patches the
+device's table and the DXGI factory class's table (from a factory it makes, as Direct3D 12 devices
+have no adapter to ask for the program's), and CreateCommandQueue(1) patch the queue's.
 
 ## Departures from the plan
 
@@ -1389,6 +1424,8 @@ its scripts ISC, LLVM Apache-2.0 with LLVM exceptions, mingw-w64 headers and run
 permissive and public-domain terms) and Wine 11.22's test sources (C:\wc\wine, 0.16 GB with the
 builds, LGPL-2.1, testing only, never in the repository or any crate); its download is in
 C:\wc\downloads (now 0.30 GB);
+In R2 the forwarding crate's windows dependency gained the feature Win32_Graphics_Direct3D12 and
+the rig crate's Win32_System_Environment (for gt-chrome); no crate was added.
 Real programs (built in C:\wc\programs, run for testing, never in a crate; licences read at the
 source on 2026-11-17): microsoft/Xbox-ATG-Samples at ff629a6e (MIT: one LICENSE at its root,
 GitHub's detection MIT, covering the samples, Kits (DirectXTK, ATGTK) and Media), added in R1's
@@ -1427,9 +1464,20 @@ under Microsoft's licence terms, Chrome for Testing under Google's terms.
 
 ## Next
 
-R1 is complete as far as this track can tell; its next step is the orchestrator's independent
-check. After that, R2 as the plan says. Open points left for later:
-- A forwarding dxgi.dll (or d3d12.dll) with the census, frame capture and frame clock, so that
-  Direct3D 12 programs get a census and Microsoft's Direct3D 12 samples (DirectX-Graphics-Samples,
-  MIT) can join the real programs (Known issues).
-- The 19 Wine tests that need a display nobody uses (Known issues).
+R2 is not complete. In order:
+- Save Direct3D 12 frames: find which call of census.rs `read12` gives E_NOINTERFACE with bgfx
+  (likely IDXGISwapChain::GetDevice asked for the queue; if so, keep the queue each
+  CreateSwapChain* hook is given, by the swap chain's identity).
+- Count Direct3D 12 command lists without the crash in Godot (see Measurements, Direct3D 12 through
+  the forwarding library); one route to try: patch the list's table from the queue's
+  ExecuteCommandLists instead of from CreateCommandList.
+- Then apply the saved change to programs.ps1 (scratch: graphics-rig/r2/programs-d3d12-forwarding.patch:
+  every program through the library as the library of its API, bgfx-01-cubes-d3d12 and
+  bgfx-38-bloom-d3d12, Godot without its movie writer), record their references over 10 runs and
+  their census (`programs run --record --census <programs>`).
+- Microsoft's Direct3D 12 samples: DirectX-Graphics-Samples (MIT) at 68a2b1e9, D3D12HelloWorld
+  (HelloTriangle, HelloTexture, ...). Their projects need the NuGet packages Microsoft.Direct3D.D3D12
+  1.618.3 (the Agility SDK, Microsoft's licence file, no acceptance required) and
+  Microsoft.Direct3D.DXC 1.8.2505.32 (LLVM licence), restored with nuget.exe (not installed yet;
+  record its size when added).
+- Open points left for later: the 19 Wine tests that need a display nobody uses (Known issues).
