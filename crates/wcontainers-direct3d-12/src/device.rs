@@ -28,7 +28,7 @@ use crate::list::{
     Command, CopyLocation, Descriptor, Rect, TargetView, VertexBufferView, ViewportF,
 };
 use crate::resource::{self, HeapType, ResourceDesc};
-use crate::root::{RootSignatureDesc, deserialize};
+use crate::root::{RootSignature, deserialize};
 use crate::state::{Blend, DepthStencil, InputElement, Raster, resolve_offsets, vertex_format};
 use pull::{Helpers, PulledKey, VertexProgram};
 
@@ -45,8 +45,6 @@ id!(
     ResourceId,
     /// A pipeline state object.
     PipelineId,
-    /// A root signature.
-    RootId,
     /// A fence.
     FenceId,
     /// A swap chain.
@@ -242,7 +240,7 @@ struct Render<B: Backend> {
 /// `D3D12_GRAPHICS_PIPELINE_STATE_DESC`, the parts this front reads.
 #[derive(Clone, Debug, Default)]
 pub struct GraphicsPipelineDesc<'a> {
-    pub root: Option<RootId>,
+    pub root: Option<RootSignature>,
     pub vs: &'a [u8],
     pub gs: &'a [u8],
     pub ps: &'a [u8],
@@ -309,7 +307,6 @@ pub struct Device<B: Backend> {
     tests_off: Option<B::DepthStencil>,
     resources: Slab<Resource<B>>,
     pipelines: Slab<Pipeline<B>>,
-    roots: Slab<Arc<RootSignatureDesc>>,
     fences: Slab<Fence<B>>,
     addresses: AddressMap<ResourceId>,
     heaps: Slab<Heap>,
@@ -372,7 +369,6 @@ impl<B: Backend> Device<B> {
             backend,
             resources: Slab::new(),
             pipelines: Slab::new(),
-            roots: Slab::new(),
             fences: Slab::new(),
             addresses: AddressMap::new(ADDRESS_BASE),
             heaps: Slab::new(),
@@ -855,16 +851,13 @@ impl<B: Backend> Device<B> {
 
     // ---- Root signatures and pipelines ----
 
-    /// `CreateRootSignature` from a serialized blob.
-    pub fn create_root_signature(&mut self, blob: &[u8]) -> Result<RootId, Error> {
+    /// `CreateRootSignature` from a serialized blob. Pipelines and recorded lists hold the
+    /// signature they name, so it outlives the program's last reference while they need it.
+    pub fn create_root_signature(&mut self, blob: &[u8]) -> Result<RootSignature, Error> {
         self.live()?;
         let desc = deserialize(blob).map_err(Error::Invalid)?;
         desc.validate().map_err(Error::Invalid)?;
-        Ok(RootId(self.roots.insert(Arc::new(desc)) as u32))
-    }
-
-    pub fn destroy_root_signature(&mut self, id: RootId) {
-        self.roots.try_remove(id.0 as usize);
+        Ok(Arc::new(desc))
     }
 
     /// `CreateGraphicsPipelineState`: the blocks and program are made now and the combination is
@@ -875,7 +868,7 @@ impl<B: Backend> Device<B> {
         desc: &GraphicsPipelineDesc<'_>,
     ) -> Result<PipelineId, Error> {
         self.live()?;
-        let root = self.pipeline_root(desc.root, &[desc.vs, desc.gs, desc.ps])?;
+        let root = self.pipeline_root(desc.root.as_ref(), &[desc.vs, desc.gs, desc.ps])?;
         let has_geometry = !desc.gs.is_empty();
         let staged = has_geometry || desc.stream_output.is_some();
         let vs_typed = formats::typed_key(desc.vs, self.texel_route());
@@ -1161,7 +1154,7 @@ impl<B: Backend> Device<B> {
     /// `CreateComputePipelineState`.
     pub fn create_compute_pipeline(
         &mut self,
-        root: Option<RootId>,
+        root: Option<&RootSignature>,
         cs: &[u8],
     ) -> Result<PipelineId, Error> {
         self.live()?;
@@ -1197,15 +1190,11 @@ impl<B: Backend> Device<B> {
     /// The root signature a pipeline is made with: the one given, else one a shader carries.
     fn pipeline_root(
         &self,
-        root: Option<RootId>,
+        root: Option<&RootSignature>,
         shaders: &[&[u8]],
-    ) -> Result<Arc<RootSignatureDesc>, Error> {
+    ) -> Result<RootSignature, Error> {
         if let Some(r) = root {
-            return self
-                .roots
-                .get(r.0 as usize)
-                .cloned()
-                .ok_or(Error::Invalid("no such root signature"));
+            return Ok(r.clone());
         }
         let code = shaders
             .iter()
@@ -2658,11 +2647,7 @@ impl<B: Backend> Replay<B> {
                 self.pipeline = Some(*p);
             }
             Command::RootSignature { compute, root } => {
-                let signature = root.and_then(|r| d.roots.get(r.0 as usize).cloned());
-                if root.is_some() && signature.is_none() {
-                    return Err(Error::Invalid("no such root signature"));
-                }
-                self.state(*compute).set_root(*root, signature.as_deref());
+                self.state(*compute).set_root(root.clone());
             }
             Command::RootArgument {
                 compute,

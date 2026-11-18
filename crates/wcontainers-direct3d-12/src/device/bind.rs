@@ -250,27 +250,27 @@ pub(super) fn check(root: &RootSignatureDesc, bindings: &[StageBinding]) -> Resu
 /// The arguments set for one bind point (graphics or compute) of a command list.
 #[derive(Clone, Debug, Default)]
 pub(super) struct RootState {
-    pub root: Option<RootId>,
+    pub root: Option<RootSignature>,
     pub arguments: Vec<Option<RootArgument>>,
     pub constants: Vec<Vec<u32>>,
 }
 
 impl RootState {
     /// `Set*RootSignature`: every argument is unset again.
-    pub fn set_root(&mut self, root: Option<RootId>, signature: Option<&RootSignatureDesc>) {
-        self.root = root;
-        let n = signature.map_or(0, |s| s.parameters.len());
+    pub fn set_root(&mut self, root: Option<RootSignature>) {
+        let n = root.as_ref().map_or(0, |s| s.parameters.len());
         self.arguments.clear();
         self.arguments.resize(n, None);
         self.constants.clear();
         self.constants.resize(n, Vec::new());
-        if let Some(s) = signature {
+        if let Some(s) = &root {
             for (c, p) in self.constants.iter_mut().zip(&s.parameters) {
                 if let RootParameterKind::Constants { count, .. } = p.kind {
                     c.resize(count as usize, 0);
                 }
             }
         }
+        self.root = root;
     }
 }
 
@@ -396,7 +396,7 @@ impl<B: Backend> Device<B> {
     /// leaves a draw or dispatch reading one not set since its root signature was set undefined;
     /// the replay skips it, with a warning.
     pub(super) fn arguments_set(&mut self, state: &RootState, pid: PipelineId) -> bool {
-        let Some(root) = state.root.and_then(|r| self.roots.get(r.0 as usize)) else {
+        let Some(root) = &state.root else {
             return true;
         };
         let set = self.pipelines[pid.0 as usize]
@@ -422,10 +422,10 @@ impl<B: Backend> Device<B> {
         state: &RootState,
         bindings: &[StageBinding],
     ) -> Result<Vec<(usize, Held<B>)>, Error> {
-        let root_id = state
+        let root = state
             .root
+            .clone()
             .ok_or(Error::Invalid("drawing with no root signature"))?;
-        let root = self.roots[root_id.0 as usize].clone();
         let mut held = Vec::with_capacity(bindings.len());
         self.bound_formats.clear();
         self.bound_helpers.clear();
