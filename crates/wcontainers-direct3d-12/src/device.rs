@@ -1065,14 +1065,6 @@ impl<B: Backend> Device<B> {
                 .transpose()?,
             samples: desc.samples.max(1),
         };
-        if ps
-            .as_ref()
-            .is_some_and(|ps| !outputs_fit_targets(ps, &colors))
-        {
-            return Err(Error::NotImplemented(
-                "a pixel shader output of another type than its render target's format",
-            ));
-        }
         let mut bindings = match &made {
             Some(m) => {
                 // Without a geometry stage the draw after the stream output binds the vertex
@@ -1148,6 +1140,15 @@ impl<B: Backend> Device<B> {
         ) || desc.raster.fill == 2;
         if draws_lines && desc.raster.antialiased_line && !desc.raster.multisample {
             return Err(Error::NotImplemented("alpha-antialiased lines"));
+        }
+        // After the description's own checks, which Direct3D 12 makes first.
+        if ps
+            .as_ref()
+            .is_some_and(|ps| !outputs_fit_targets(ps, &colors))
+        {
+            return Err(Error::NotImplemented(
+                "a pixel shader output of another type than its render target's format",
+            ));
         }
         let vs_shader = match made.as_ref().filter(|m| m.shader.is_some()) {
             Some(geometry::Made {
