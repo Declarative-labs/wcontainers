@@ -18,6 +18,9 @@ pub(crate) struct Mount {
     pub kind: &'static str,
     /// What the file system adds to its options (its `show_options`).
     pub options: &'static str,
+    /// Whether the file system itself is read-only (`SB_RDONLY`, as sysfs mounted in a container
+    /// without CAP_SYS_ADMIN), not only the mount.
+    pub read_only_super: bool,
 }
 
 /// The number the first mount of the container's namespace takes; the one it is mounted on is the
@@ -82,7 +85,8 @@ pub(crate) fn mountinfo(table: &[Mount]) -> String {
             String::from_utf8_lossy(&mount.point)
         );
         mount_options(&mut out, mount.fs.flags);
-        let _ = write!(out, " - {} {} rw", mount.kind, mount.source);
+        let super_flags = if mount.read_only_super { "ro" } else { "rw" };
+        let _ = write!(out, " - {} {} {super_flags}", mount.kind, mount.source);
         if !mount.options.is_empty() {
             out.push(',');
             out.push_str(mount.options);

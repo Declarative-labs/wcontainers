@@ -16,7 +16,7 @@ use crate::fs::{
     self, Content, Directory, FileSystem, Kind, New, Node, Numbers, Regular, Time, encode_device,
 };
 use crate::linux::general::*;
-use crate::linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RELATIME};
+use crate::linux_extra::{ST_NODEV, ST_NOEXEC, ST_NOSUID, ST_RDONLY, ST_RELATIME};
 use crate::loader::Image;
 use crate::process::{Pid, Process, SIGNALS, Thread, Tid, docker_limits};
 use crate::{Context, Errno, Kernel};
@@ -224,6 +224,7 @@ fn backend_mount(fs: FileSystem, path: &[u8]) -> Mount {
         source: "wcontainers",
         kind: "fuse",
         options: "user_id=0,group_id=0,default_permissions,allow_other",
+        read_only_super: false,
     }
 }
 
@@ -519,11 +520,12 @@ impl Kernel {
             let result = if starting.mounted {
                 self.start_first(cx, &starting).map(|()| true)
             } else {
-                let points = self
-                    .directories(pid, b"/dev")
-                    .and_then(|dev| Ok((dev, self.directories(pid, b"/proc")?)));
-                points.map(|(dev, proc)| {
-                    self.make_mounts(&dev, &proc);
+                let points = self.directories(pid, b"/dev").and_then(|dev| {
+                    let proc = self.directories(pid, b"/proc")?;
+                    Ok((dev, proc, self.directories(pid, b"/sys")?))
+                });
+                points.map(|(dev, proc, sys)| {
+                    self.make_mounts(&dev, &proc, &sys);
                     starting.mounted = true;
                     false
                 })
@@ -791,8 +793,9 @@ impl Kernel {
         self.files.backend = Some(client);
     }
 
-    /// The mounts and device files `docker run` sets up, on the directories `/dev` and `/proc`.
-    fn make_mounts(&mut self, dev_point: &Node, proc_point: &Node) {
+    /// The mounts and device files `docker run` sets up, on the directories `/dev`, `/proc` and
+    /// `/sys`.
+    fn make_mounts(&mut self, dev_point: &Node, proc_point: &Node, sys_point: &Node) {
         let now = self.boot;
         // tmpfs's default limits are half the machine's pages, in pages and in inodes
         // (`shmem_default_max_blocks`, `shmem_default_max_inodes`); Docker mounts `/dev` and
@@ -805,7 +808,7 @@ impl Kernel {
         // Mount points are held while mounted, as Linux holds their dentries.
         self.files
             .mount_points
-            .extend([dev_point.clone(), proc_point.clone()]);
+            .extend([dev_point.clone(), proc_point.clone(), sys_point.clone()]);
         let dev_space = self.new_space(docker_size, half);
         let dev = mount_tmpfs(
             &mut self.files.numbers,
@@ -932,6 +935,18 @@ impl Kernel {
         pts.borrow_mut().ino = 1;
         ptmx.borrow_mut().ino = 2;
 
+        // sysfs, read-only as in a container without CAP_SYS_ADMIN, its root numbered 1.
+        let sys = mount_tmpfs(
+            &mut self.files.numbers,
+            sys_point,
+            0o555,
+            now,
+            Kind::Sysfs,
+            ST_RDONLY | ST_NOSUID | ST_NODEV | ST_NOEXEC | ST_RELATIME,
+            None,
+        );
+        sys.borrow_mut().ino = 1;
+
         let view = fs::proc::View {
             processes: &self.processes,
             threads: &self.threads,
@@ -955,6 +970,7 @@ impl Kernel {
             source,
             kind,
             options,
+            read_only_super: false,
         };
         let root_fs = fs_of(&self.files.root);
         let root = if root_fs.kind == Kind::Fuse {
@@ -980,6 +996,10 @@ impl Kernel {
                 "devpts",
                 "gid=5,mode=620,ptmxmode=666",
             ),
+            Mount {
+                read_only_super: true,
+                ..mount(fs_of(&sys), "/sys", "sysfs", "sysfs", "")
+            },
             mount(mqueue_fs, "/dev/mqueue", "mqueue", "mqueue", ""),
             mount(fs_of(&shm), "/dev/shm", "shm", "tmpfs", "size=65536k"),
         ];

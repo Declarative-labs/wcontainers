@@ -163,6 +163,26 @@ pub(crate) fn xattr_space(name: &[u8], value: &[u8]) -> u64 {
     40 + (name.len() + value.len()) as u64
 }
 
+/// The names a default container's `/sys` holds on Linux (the reference's, in its order).
+const SYS_ENTRIES: [&[u8]; 9] = [
+    b"block",
+    b"bus",
+    b"class",
+    b"dev",
+    b"devices",
+    b"firmware",
+    b"fs",
+    b"kernel",
+    b"module",
+];
+
+/// Counts a lookup in `/sys` of a name Linux has there; detail: its index in [`SYS_ENTRIES`].
+fn sys_not_built(counters: &crate::counters::Counters, name: &[u8]) {
+    if let Some(index) = SYS_ENTRIES.iter().position(|entry| *entry == name) {
+        counters.note(crate::reason::SYS_ENTRY_NOT_BUILT, index as u64);
+    }
+}
+
 impl FileSystem {
     pub fn read_only(&self) -> bool {
         self.flags & crate::linux_extra::ST_RDONLY != 0
@@ -213,6 +233,8 @@ pub(crate) enum Kind {
     Sockfs,
     /// Namespaces, as `/proc/<pid>/ns` opens them.
     Nsfs,
+    /// The read-only sysfs at `/sys`, holding none of Linux's entries.
+    Sysfs,
 }
 
 impl Kind {
@@ -237,7 +259,8 @@ impl Kind {
             | Kind::Anon
             | Kind::Fuse
             | Kind::Sockfs
-            | Kind::Nsfs => i64::MAX as u64,
+            | Kind::Nsfs
+            | Kind::Sysfs => i64::MAX as u64,
             Kind::Devpts | Kind::Proc | Kind::Mqueue => i32::MAX as u64,
         }
     }
@@ -256,6 +279,7 @@ impl Kind {
             Kind::Fuse => FUSE_SUPER_MAGIC.into(),
             Kind::Sockfs => SOCKFS_MAGIC.into(),
             Kind::Nsfs => NSFS_MAGIC.into(),
+            Kind::Sysfs => SYSFS_MAGIC.into(),
         }
     }
 }
@@ -823,7 +847,7 @@ impl Inode {
     pub fn size(&self) -> u64 {
         match &self.content {
             Content::Regular(file) => file.size(),
-            Content::Directory(_) if self.fs.kind == Kind::Devpts => 0,
+            Content::Directory(_) if matches!(self.fs.kind, Kind::Devpts | Kind::Sysfs) => 0,
             Content::Directory(directory) => DIRENT_SIZE * (directory.len() as u64 + 2),
             Content::Symlink(target) => target.len() as u64,
             Content::Proc(entry) => entry.size(),
@@ -1382,9 +1406,11 @@ impl<'a> Walk<'a> {
                 return Err(Errno::ENOENT);
             }
         }
-        // The length limit is each file system's own; the process information tree has none, so a
-        // long name there is simply not found.
-        if name.len() > NAME_MAX as usize && !matches!(directory.borrow().content, Content::Proc(_))
+        // The length limit is each file system's own; the process information tree and sysfs have
+        // none, so a long name there is simply not found.
+        if name.len() > NAME_MAX as usize
+            && !matches!(directory.borrow().content, Content::Proc(_))
+            && directory.borrow().fs.kind != Kind::Sysfs
         {
             return Err(Errno::ENAMETOOLONG);
         }
@@ -1409,7 +1435,15 @@ impl<'a> Walk<'a> {
         } else {
             let inode = directory.borrow();
             match &inode.content {
-                Content::Directory(entries) => entries.get(name).ok_or(Errno::ENOENT)?,
+                Content::Directory(entries) => match entries.get(name) {
+                    Some(found) => found,
+                    None => {
+                        if inode.fs.kind == Kind::Sysfs {
+                            sys_not_built(self.proc.counters, name);
+                        }
+                        return Err(Errno::ENOENT);
+                    }
+                },
                 Content::Backend(_) if inode.is_directory() => {
                     drop(inode);
                     backend::lookup(directory, name)?

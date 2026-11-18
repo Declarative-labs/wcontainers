@@ -48,6 +48,10 @@ pub mod reason {
     /// A `/proc` entry Linux has and this kernel does not build was looked up; it answers ENOENT.
     /// Detail: the directory's index in Linux's list of entries, times 1024, plus the name's.
     pub const PROC_ENTRY_NOT_BUILT: &str = "proc entry not built";
+    /// A name Linux has in `/sys` was looked up there; sysfs here holds none of its entries, so it
+    /// answers ENOENT. Detail: the name's index in the reference's `/sys` (block, bus, class, dev,
+    /// devices, firmware, fs, kernel, module).
+    pub const SYS_ENTRY_NOT_BUILT: &str = "sys entry not built";
     /// A `/proc` file was made whose fields this kernel does not track all of (those show 0 or are
     /// left out). Detail: which file (0 `stat`, 1 `statm`, 2 `status`, 3 `mounts`, 4 `meminfo`).
     pub const PROC_FIELDS_NOT_TRACKED: &str = "proc fields not tracked";
@@ -174,6 +178,7 @@ pub mod reason {
         ADVICE_NOT_BUILT,
         DEVICE_NOT_BUILT,
         PROC_ENTRY_NOT_BUILT,
+        SYS_ENTRY_NOT_BUILT,
         SECCOMP_LISTENER_NOT_IMPLEMENTED,
         CROSS_PROCESS_NOT_BUILT,
         FAMILY_NOT_BUILT,

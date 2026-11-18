@@ -69,6 +69,9 @@ pub(super) fn encode(
         {
             Ok((FILEID_INO64_GEN, alloc::vec![ino[0], ino[1], 0]))
         }
+        // kernfs's root has generation 1 (measured), and sysfs encodes no handles of its own.
+        Kind::Sysfs if identifier => Ok((FILEID_INO64_GEN, alloc::vec![ino[0], ino[1], 1])),
+        Kind::Sysfs => Err(Errno::EOPNOTSUPP),
         Kind::Proc
         | Kind::Devpts
         | Kind::Pipe
