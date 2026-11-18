@@ -3396,7 +3396,7 @@ K6c, in this order:
    Run the 237 tests that differ in the whole comparison at fb0bc97 again at the newest commit
    (`grep` their ids from scratch k6c3/compare-5.txt, or `ltp compare` the committed
    ltp/ours-20260930-fb0bc97.tsv with the reference) into a second file, LTP_LIMIT 300, and
-   compare; then the timeouts with a long limit (item 5).
+   compare; then the timeouts with a long limit (item 6).
 2. A wrong answer of the most serious kind, found late in this run (ours-5 at fb0bc97):
    math float_power, float_iperb and float_trigo (120 threads each) end with glibc's "double
    free or corruption (out)" and SIGABRT on ours; the reference passes. Find the cause before
@@ -3412,7 +3412,11 @@ K6c, in this order:
    thread's registers would do it), and the translator must do the same (a boundary question
    for the orchestrator).
 3. Rerun the fixed-not-rerun tests listed under "K6c, third run" and confirm.
-4. Parts not built that tests reach, largest first: the cgroup2 mount at /sys/fs/cgroup (read
+4. Wrong answers found by the rerun: FUTEX_CMP_REQUEUE_PI must answer EDEADLK when requeueing
+   onto a PI futex would close a chain back to the caller (cve-2026-43499's ghostlock; see
+   `futex_requeue`'s `futex_proxy_trylock_atomic` and `rt_mutex_start_proxy_lock`'s deadlock
+   detection); the new syscalls wrong answers named under the whole comparison above.
+5. Parts not built that tests reach, largest first: the cgroup2 mount at /sys/fs/cgroup (read
    only, the container's root cgroup, with /proc/cgroups; the reference's files, modes and
    contents are in scratch k6c3/cgroup-reference.txt), which
    the 8 controllers tests reach; /proc/<pid>/mem (FOLL_FORCE: reads of PROT_NONE, writes into
@@ -3422,19 +3426,19 @@ K6c, in this order:
    page residency for mincore (mincore03, mlock201); system time (times03: time the kernel spends
    in a call could count as the thread's system time); keyctl and /proc/keys; IPV6_RTHDR;
    PROCMAP_QUERY; MSG_MORE on UDP; remap_file_pages; the madvise advices counted.
-5. The slow tests (46 timeouts): run them with a long limit (LTP_LIMIT 3600, 2 jobs) to show
+6. The slow tests (95 timeouts in the whole comparison): run them with a long limit (LTP_LIMIT 3600, 2 jobs) to show
    their verdicts; growfiles needs about 5000 s each at the measured 1400 messages a second, so
    show a sample and excuse the rest under section 15 (file access is slower until the cache)
    only with that evidence. Large reads on the backend run their chunks again on each wait
    (quadratic in chunks, like sendfile was): give read, write and copy_file_range rounds with
    `Client::checkpoint` as sendfile has.
-6. Settle the written gap list from section 15 only (the draft under "K6c, second run", and
+7. Settle the written gap list from section 15 only (the draft under "K6c, second run", and
    the causes named in this run's table), commit the results file of the last whole comparison
    under ltp/, and write the counters list (Not built, by counter). The system calls list is
    current (Done 256, Missing 6, Refused 65).
-7. Three fresh layer 1 seeds at the end (9191003 to 9191005 passed at adc5628c; fresh seeds
+8. Three fresh layer 1 seeds at the end (9191003 to 9191005 passed at adc5628c; fresh seeds
    start at 9191006).
-8. The whole suite passed at adc5628c; run it again after the next code changes.
+9. The whole suite passed at adc5628c; run it again after the next code changes.
 
 After K6b (fifth run), in this order (none of these holds K6b):
 1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
