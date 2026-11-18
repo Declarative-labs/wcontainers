@@ -88,6 +88,8 @@ for %%e in (cs_atomics cs_decrement cs_images cs_shared) do (
 "%DXC%" -nologo -T ps_6_0 -E ps_early -Gis -Fo ps_early.dxil early.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_mark /Fo ps_mark.dxbc early.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_mark -Gis -Fo ps_mark.dxil early.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_contend /Fo ps_contend.dxbc early.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_contend -Gis -Fo ps_contend.dxil early.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_patch /Fo vs_patch.dxbc tessellation.hlsl || exit /b 1
 for %%d in (tri quad) do for %%m in (integer pow2 odd even) do for %%o in (point cw ccw) do (
   "%FXC%" /nologo /T hs_5_0 /E hs_%%d_%%m_%%o /Fo hs_%%d_%%m_%%o.dxbc tessellation.hlsl || exit /b 1

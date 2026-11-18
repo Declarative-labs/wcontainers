@@ -54,6 +54,7 @@ hs_tri_pow2_point.dxbc	ok-wgsl glsl-write
 ps_cases.dxbc	ok-wgsl glsl-compile
 ps_clip.dxbc	ok
 ps_coarse.dxbc	ok
+ps_contend.dxbc	ok-wgsl glsl-write
 ps_depth.dxbc	ok
 ps_deriv.dxbc	ok-wgsl glsl-write
 ps_dual.dxbc	ok

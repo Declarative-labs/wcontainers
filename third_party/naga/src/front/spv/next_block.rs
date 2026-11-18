@@ -3632,7 +3632,7 @@ fn make_index_literal(
 }
 
 /// The private flag `OpIsHelperInvocationEXT` reads, made at its first use.
-fn helper_invocation_flag(
+pub fn helper_invocation_flag(
     module: &mut crate::Module,
     span: crate::Span,
 ) -> Handle<crate::GlobalVariable> {

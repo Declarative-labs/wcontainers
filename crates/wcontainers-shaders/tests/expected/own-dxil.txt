@@ -16,6 +16,7 @@ ps_array.dxil	ok
 ps_cases.dxil	ok
 ps_clip.dxil	ok
 ps_coarse.dxil	ok
+ps_contend.dxil	ok-wgsl glsl-write
 ps_deriv.dxil	ok-wgsl glsl-write
 ps_dual.dxil	ok
 ps_early.dxil	ok-wgsl glsl-write

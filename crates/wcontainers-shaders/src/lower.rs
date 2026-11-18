@@ -184,6 +184,7 @@ pub(crate) fn lower(ir: &Ir, variant: &VariantKey) -> Result<(Module, Reflection
         SourceStage::Hull => l.hull_entry_point()?,
         _ => l.entry_point()?,
     }
+    crate::dxil::helper_invocations(&mut l.module);
     Ok((l.module, l.reflection, stage))
 }
 
@@ -3295,7 +3296,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     }
 
     /// An atomic minimum (or maximum) of `value` into `pointer` in the other signedness than the
-    /// memory's scalar `s`, by a compare-exchange loop; gives the old value.
+    /// memory's scalar `s`, by a compare-exchange loop; gives the old value. Each try compares with
+    /// the value the last exchange gave, never with a plain load, which a cache may keep stale.
     fn exchange_loop(
         &mut self,
         b: &mut Block,
@@ -3329,9 +3331,18 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             Span::UNDEFINED,
         );
         let operand = self.e.bitcast(&mut self.f, b, value, s, other);
-        self.e.flush(&self.f, b);
+        let first = self.add(b, Expression::Load { pointer });
+        let var = self.add(b, Expression::LocalVariable(old));
+        self.stmt(
+            b,
+            Statement::Store {
+                pointer: var,
+                value: first,
+            },
+        );
         let mut body = Block::new();
-        let current = self.add(&mut body, Expression::Load { pointer });
+        let var = self.add(&mut body, Expression::LocalVariable(old));
+        let current = self.add(&mut body, Expression::Load { pointer: var });
         let a = self.e.bitcast(&mut self.f, &mut body, current, s, other);
         let fun = if min {
             MathFunction::Min
@@ -3371,12 +3382,18 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 result: Some(result),
             },
         );
-        let var = self.add(&mut body, Expression::LocalVariable(old));
+        let seen = self.add(
+            &mut body,
+            Expression::AccessIndex {
+                base: result,
+                index: 0,
+            },
+        );
         self.stmt(
             &mut body,
             Statement::Store {
                 pointer: var,
-                value: current,
+                value: seen,
             },
         );
         let exchanged = self.add(
@@ -3386,12 +3403,17 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 index: 1,
             },
         );
+        // A helper lane's exchange does nothing and gives no defined value: it leaves.
+        let flag = naga::front::spv::helper_invocation_flag(&mut self.l.module, Span::UNDEFINED);
+        let flag = self.add(&mut body, Expression::GlobalVariable(flag));
+        let helper = self.add(&mut body, Expression::Load { pointer: flag });
+        let leave = self.bin(&mut body, BinaryOperator::LogicalOr, exchanged, helper);
         self.e.flush(&self.f, &mut body);
         let mut accept = Block::new();
         accept.push(Statement::Break, Span::UNDEFINED);
         body.push(
             Statement::If {
-                condition: exchanged,
+                condition: leave,
                 accept,
                 reject: Block::new(),
             },
