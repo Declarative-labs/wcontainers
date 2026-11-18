@@ -39,8 +39,10 @@ made the tessellator compile under fxc, converted geometry shaders without a pos
 run-time offsets and DXIL helper lane queries; run 28 converted wave operations (WGSL's subgroups),
 DXIL gathers with run-time offsets and coherent storage accesses at workgroup scope, and gave the
 interface `STORAGE_OFFSET`; run 29 built `STORAGE_OFFSET` and `EARLY_TESTS`, numbered shader model
-5.1 DXBC by Direct3D 12's rule and fixed draw arguments dropping later helper members; what remains
-is under Next. Runs 21 to 29 merged origin/phase-2-graphics-webgpu,
+5.1 DXBC by Direct3D 12's rule and fixed draw arguments dropping later helper members; run 30
+ran geometry shaders and stream output after a domain stage, patches of more control points than
+the hull shader reads, and geometry shaders choosing layers and viewports; what remains is under
+Next. Runs 21 to 30 merged origin/phase-2-graphics-webgpu,
 -webgl, -direct3d-11, -direct3d-12 and -rig (run 28: one conflict in the interface's `slow.rs`,
 the same three slow paths in two orders, ours kept).
 
@@ -1148,6 +1150,42 @@ shaders under indirect draws, shader model 5.1 register spaces):
   with a run-time offset, which DXBC encodes only as an immediate, so the next run needs the
   front's failing shader to see which instruction it is.
 
+Run 30 (what the fronts wait on: the stage helper after a domain stage, layered geometry):
+- Merged origin/phase-2-graphics (its interface change removed `VIEW_SWIZZLE`, which nothing here
+  used) and -direct3d-11, without conflicts.
+- A geometry shader or stream output after a domain shader (Direct3D 12's six tessellation files
+  and Direct3D 11's test_quad_tessellation stopped there): `Stages::tessellated_with` and
+  `Stages::run_after_domain` (calls under "How the Direct3D fronts call"). The domain program runs
+  as compute (`stage::domain_program_for`: the drawn program with its patches and points moved to
+  the helper's own set) over every point the patches can make, writing a record per point. The
+  tessellator now starts its index list with a header (word 0 the index total, `tess::INDEX_HEADER`
+  words; the indexed indirect draw starts past it), so the stages after it read the primitives the
+  GPU made: the geometry program and the stream output program each have a listed mode
+  (`stage::word::LISTED`; stream output's `listed` word and binding 7) taking primitive totals and
+  record numbers from that list. The geometry program runs for every primitive the patches can
+  make; those past the list's total run no shader and close their slots, so the final draw needs no
+  count from the GPU. A geometry shader there reading `SV_PrimitiveID` is refused
+  (`GeometryPrimitiveIdAfterDomain`: the patch's number is not in the domain's records).
+- Patches of more control points than the hull shader declares (Direct3D 12's
+  hull_shader_control_point_phase: one declared, drawn with three): the hull program steps through
+  the draw's patches by `stage::word::PATCH_POINTS` and reads the first of each; fewer stays
+  `TopologyMismatch`.
+- Geometry shaders writing `SV_RenderTargetArrayIndex` or `SV_ViewportArrayIndex` convert (the
+  rig's geometry.gs_layers and raster.gs, own gs_layers; refused before): each record ends with a
+  slot holding both, and the pass-through draws only the vertices naming its run's layer and
+  viewport (`stage::PASSTHROUGH_HELPERS`; `Stages::selects`). The front draws the final draw once
+  per layer and viewport (`LayerSplit`, `MultiViewportSplit`). A strip whose vertices name
+  different layers is drawn per vertex, where Direct3D takes each primitive's from its first
+  vertex (Known gaps).
+- `DynamicOffset` (the Direct3D 12 track's gather and gather_c files): the six shaders of vkd3d's
+  test_gather and test_gather_c, taken from its d3d12.c, all convert with the default key
+  (scratch `run30/gather`). If the front still sees the refusal, it comes with a variant: the
+  front's key is needed.
+- New own shaders `gs_tess_point`, `gs_tess_line`, `gs_tess_tri` (tessellation.hlsl, fxc).
+- At the end of the run the build folders were deleted: the laptop's
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders` (6.2 GB) and the desktop's
+  `C:\wc\target\phase-2-graphics-shaders`. No build output was made in scratch.
+
 Next (in order):
 - The fronts (theirs), now possible: `VariantFlags::STORAGE_OFFSET` where a raw or structured view's
   offset is not a multiple of `min_storage_offset_alignment` (binding from the largest multiple of
@@ -1180,17 +1218,24 @@ Next (in order):
   quad (the switch puts lanes of one quad in different cases): sample with gradients taken before
   the switch if the drawn test shows it. The DXBC route (shader model 5.1 ranges) still refuses
   arrays. Then the Direct3D 12 front's resource_arrays test and Godot rerun.
-- Layer and viewport outputs of geometry shaders through the stage helper (`LayerSplit`, the
-  rig's 3 game geometry shaders and Wine's layered and multiple-viewport tests), and the DXIL
-  pixel shader's layer (naga's reader has no layer built-in).
+- The fronts (theirs, now possible since run 30): geometry shaders and stream output after a
+  domain shader through `Stages::tessellated_with` and `run_after_domain` (Direct3D 12's six
+  tessellation files, Direct3D 11's test_quad_tessellation), patches of more control points
+  (hull_shader_control_point_phase: drop the front's own check), and layered geometry through
+  `Stages::selects` with a run per layer and viewport (layered_rendering, test_layered_rendering,
+  test_multiple_viewports, the rig's geometry scene's gs_layers). Caution: such geometry shaders
+  converted to `Unsupported("RenderTargetArrayIndex")` before run 30 and convert now, and their
+  pass-through declares a helper block at set 3 binding 0; a front that does not check
+  `stages.selects()` and bind it per run fails at the final draw instead of refusing the shader.
+  Until a front draws the runs, it should refuse by name where `selects()` is true. The DXIL pixel
+  shader's layer (naga's reader has no layer built-in) is still open.
 - The fronts' routes (theirs, now possible): Direct3D 11's six Wine tests and atg-simplebezierpc,
   Direct3D 12's 13 tessellation files and vertex_id. Stream output from a vertex shader without a
   position has no drawn test here yet (the fronts' Wine tests will be the first).
-- Tessellation, the rest: geometry shaders and stream output after a domain shader (the domain
-  program through `vertex_as_compute`), DXIL hull and domain shaders (naga's SPIR-V reader: the
-  tessellation execution models), the hull shader's declared largest factor (the reflection says
-  64), indexed and instanced patch
-  draws (built, not drawn in a test).
+- Tessellation, the rest: DXIL hull and domain shaders (naga's SPIR-V reader: the tessellation
+  execution models), the hull shader's declared largest factor (the reflection says 64; the stage
+  helper sizes everything after the tessellator by it), indexed and instanced patch draws (built,
+  not drawn in a test), `SV_PrimitiveID` in a geometry shader after a domain shader.
 - Godot on Direct3D 12 (G5's real program): run 22's numbering is expected to remove
   `BindingsBeyondLimit` from its graphics shaders (not checked: Godot compiles its shaders at run
   time, so they are not in the corpus); run Godot (and bgfx 37-gpudrivenrendering, which waited on
@@ -1281,9 +1326,28 @@ Next (in order):
   3 `t.patches` at `DOMAIN_PATCHES_BINDING` and `t.points` at `DOMAIN_POINTS_BINDING` (read-only
   storage, `StageSet::VERTEX`, beside the domain shader's helper block if it has one); indices u32
   from `FinalDraw::buffer` at offset 0, topology `FinalDraw::topology`, range
-  `DrawRange::IndexedIndirect { args: &t.arguments, offset: 0 }`. `tests/tessellation_draw.rs`
-  (`scene_ours`) does exactly this. Geometry shaders and stream output after tessellation are not
-  built yet.
+  `DrawRange::IndexedIndirect { args: &t.arguments, offset: 0 }` (the arguments start past the
+  index list's header, so bind the buffer at offset 0). `tests/tessellation_draw.rs` (`scene_ours`)
+  does exactly this. Patches may have more control points than the hull shader declares (Direct3D
+  12 draws them; the hull shader reads the first of each patch); fewer is `TopologyMismatch`.
+- A geometry shader or stream output after a domain shader (since run 30): convert the domain
+  shader as above, the geometry shader as for geometry; `Stages::tessellated_with(backend, &vertex,
+  &hull, &domain, geometry, stream_output)`; per draw `stages.run_after_domain(backend, &draw,
+  &DomainSets { domain_sets, geometry_sets })`, where `draw.geometry_sets` are the hull shader's
+  and `domain_sets` the domain shader's own sets (its slots in set 0, its helper block in set 3,
+  `StageSet::COMPUTE`, without the patches and points: the helper binds those). With a geometry
+  shader the returned `FinalDraw` is drawn as after any geometry shader; without one it is the
+  tessellated draw above (drawn only when the stream is rasterized). A geometry shader there reading
+  `SV_PrimitiveID` is refused (`GeometryPrimitiveIdAfterDomain`). `tests/tessellation_draw.rs`
+  (`ours_staged`) does this.
+- A geometry shader writing `SV_RenderTargetArrayIndex` or `SV_ViewportArrayIndex` (since run 30):
+  `stages.selects()` is true. Run the stages once, then draw the `FinalDraw` once per layer of the
+  bound target views and per viewport (`LayerSplit`, `MultiViewportSplit`; count and warn), each
+  run into that layer's views with that viewport alone; the pass-through's helper constants are
+  `stage::PASSTHROUGH_HELPERS` (the run's layer and viewport, u32, a 16-byte uniform block at
+  `helper_binding(Vertex)` in set 3) and the pixel shader's `HelperValue::Layer`/`Viewport` are the
+  run's. Each run draws only the vertices that name it (others are placed outside the clip volume).
+  `tests/geometry_draw.rs` (`layered_geometry_draws_as_direct3d_11_does`) does this.
 - `Stages::destroy(backend)` releases its programs and buffers.
 - A vertex shader writing no `SV_Position` (feeding stream output, a geometry or a hull shader)
   converts: its program writes the position (0, 0, 0, -1), outside every clip volume, so drawn it
@@ -1431,6 +1495,22 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 30, 2026-11-18, counts only (laptop load 1 to 10, another track building; desktop shared
+through the queue, whose hazard group held our jobs for up to an hour), logs in scratch
+`graphics-shaders/run30`:
+- Laptop: `cargo test -p wcontainers-shaders` all pass; corpus with `--include-ignored` (corpus,
+  rig, rig DXIL, own, own DXIL, games): every verdict as recorded after recording rig's
+  geometry.gs_layers and raster.gs, own gs_layers and gs_tess_*, and 3 game geometry shaders
+  writing a layer, which now convert (their WGSL validates; not yet compiled in Chrome).
+- Desktop, RTX 3080 (draw1.log, draw3.log): `stream_output_after_the_domain_stage_matches_direct3d`
+  at seeds 1 and 2 (`WCONTAINERS_TESSELLATION_CASES=2`): 66 cases (tri, quad and isoline domains,
+  several partitionings and outputs, each streamed directly and through gs_tess_*, and 3-point
+  patches into a 1-point hull shader), 62 equal to real Direct3D 11 (each patch's primitives and the
+  written and made counts), 4 known (subnormal factors, Known gaps), 0 failed.
+  `layered_geometry_draws_as_direct3d_11_does`: 4 layers, 0 bytes apart. `geometry_draw` (4 seeds)
+  and the other tessellation tests (2 seeds) still pass after the geometry program's new binding
+  and the tessellator's index header.
 
 Run 29, 2026-11-18, counts only (laptop load about 0.2 to 5.6; desktop shared through the queue,
 whose hazard slot other tracks' long runs held for most of the run), logs in scratch
@@ -2382,6 +2462,17 @@ were already there.
   avoid them; the tessellation test on wgpu's Direct3D 12 is what catches a new one.
 - Tessellator output buffers are sized for every patch reaching factor 64 (about 180 KB a patch),
   since the counts are known only on the GPU; a draw of thousands of patches needs hundreds of MB.
+  After a domain stage (run 30) the domain records and the geometry output are sized the same way
+  (every point and primitive the patches can make), and the geometry program runs for each.
+- A geometry shader's strip whose vertices name different layers or viewports (run 30): each vertex
+  is drawn in its own run's layer, where Direct3D takes a primitive's layer from its first vertex.
+  Shaders that write one layer per strip (the usual form) are exact.
+- Run 30: a subnormal tessellation factor (1e-40 in the seeded tests) moved through a hull shader
+  keeps its bits on Direct3D and is flushed to zero by the hull program on wgpu's Direct3D 12 path,
+  so the patch is culled where Direct3D draws it. The isolated tessellator test feeds factors
+  directly and does not see it. Confirmed by the drawn test: each such case equals Direct3D
+  drawing the same factors flushed (4 of 66 cases at seeds 1 and 2), and the test counts them as
+  known. Real programs are not expected to write subnormal factors.
   To size by the counts instead (read back later, grown before the next draw) once draws run.
 - Inside a patch the GPU's tessellator gives the primitives in another order than the reference, and
   starts about two thirds of its triangles at another vertex (winding kept); ours follow the
