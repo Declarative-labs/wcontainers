@@ -978,9 +978,10 @@ impl Context {
             )),
             Some(v) => {
                 if size != 0 {
-                    let mut bytes = [0u8; 16];
-                    bytes[..8].copy_from_slice(&v[0].to_le_bytes());
-                    bytes[8..].copy_from_slice(&v[1].to_le_bytes());
+                    let mut bytes = [0u8; 88];
+                    for (b, w) in bytes.chunks_mut(8).zip(v) {
+                        b.copy_from_slice(&w.to_le_bytes());
+                    }
                     unsafe {
                         std::ptr::copy_nonoverlapping(bytes.as_ptr(), data.cast(), want as usize)
                     };

@@ -64,11 +64,16 @@ pub struct Device<B: Backend> {
     /// Pixel shaders converted for a variant, by id.
     pub(crate) variants: HashMap<(u64, StageVariant), Variant<B>>,
     /// Counting programs of counted occlusion queries, by the vertex shader's id and variant and the
-    /// pixel shader's id.
+    /// pixel shader's id; and the pixel counter's, by the vertex shader's id and variant and a
+    /// number no pixel shader has.
     pub(crate) counting: HashMap<(u64, StageVariant, u64), Kept<B, B::Program>>,
     /// Exact counts of counted occlusion queries, and the targets their draws drew on (the pass
     /// tracker holds them for the counter; the front opens and ends its own passes).
     pub(crate) counter: wcontainers_gpu::OcclusionCounter<B>,
+    /// Pixel shader invocations of pipeline statistics queries: the draws replayed with the depth
+    /// and stencil tests off (`tests_off`) through a program counting one per invocation.
+    pub(crate) pixel_counter: wcontainers_gpu::OcclusionCounter<B>,
+    pub(crate) tests_off: Option<Rc<DepthStencil<B>>>,
     pub(crate) passes: wcontainers_gpu::PassTracker<B>,
     /// The helper constants as last written. The front is the only writer of the back end's data
     /// ring, so the blocks stay as written until the front's next write.
@@ -206,6 +211,8 @@ impl<B: Backend> Device<B> {
             variants: HashMap::new(),
             counting: HashMap::new(),
             counter: Default::default(),
+            pixel_counter: Default::default(),
+            tests_off: None,
             passes: Default::default(),
             helper_blocks: None,
             ahead: crate::ahead::Ahead::new(),

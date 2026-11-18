@@ -6,7 +6,14 @@
 //! exactly through the interface's occlusion counter, likewise in stretches between the program's
 //! begins and ends. Timestamps, which the back ends do not write, are answered as Direct3D answers
 //! a timestamp counter that was not continuous: the disjoint query says so, and programs drop the
-//! stamps it covers.
+//! stamps it covers. Pipeline statistics are counted by the front from the work it issues (plan
+//! 4.12): input assembler, vertex shader and clipper counts from the draws' arguments, as a GPU
+//! without vertex reuse or clipping splits counts them, compute invocations from the dispatches,
+//! and pixel shader invocations by a second occlusion counter replaying the draws with the depth
+//! and stencil tests off through a program counting one per pixel (one per sample where the pixel
+//! shader runs per sample). Stream output statistics and overflow predicates answer zero and
+//! false: no stream output is served (geometry shaders with stream output are refused at creation
+//! and stream output targets cannot be bound), so none is ever written or needed.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -14,7 +21,7 @@ use std::rc::Rc;
 use wcontainers_gpu::{Backend, Object, QueryKind, ReadState, SlowPath};
 
 use crate::device::Device;
-use crate::error::{Error, Result, not_implemented};
+use crate::error::{Error, Result};
 use crate::object::Kept;
 
 /// `D3D11_QUERY`.
@@ -27,8 +34,31 @@ pub mod kind {
     pub const OCCLUSION_PREDICATE: u32 = 5;
     pub const SO_STATISTICS: u32 = 6;
     pub const SO_OVERFLOW_PREDICATE: u32 = 7;
-    pub const SO_STATISTICS_STREAM3: u32 = 15;
-    pub const SO_OVERFLOW_PREDICATE_STREAM3: u32 = 16;
+    pub const SO_STATISTICS_STREAM0: u32 = 8;
+    pub const SO_STATISTICS_STREAM3: u32 = 14;
+    pub const SO_OVERFLOW_PREDICATE_STREAM3: u32 = 15;
+}
+
+/// What `GetData` gives, as the words of its bytes: the largest answer is the pipeline
+/// statistics' eleven.
+pub type Answer = [u64; 11];
+
+/// The words of a short answer.
+fn short(words: &[u64]) -> Answer {
+    let mut a = [0; 11];
+    a[..words.len()].copy_from_slice(words);
+    a
+}
+
+/// `D3D11_QUERY_DATA_PIPELINE_STATISTICS`'s members, by word.
+pub mod statistic {
+    pub const IA_VERTICES: usize = 0;
+    pub const IA_PRIMITIVES: usize = 1;
+    pub const VS_INVOCATIONS: usize = 2;
+    pub const C_INVOCATIONS: usize = 5;
+    pub const C_PRIMITIVES: usize = 6;
+    pub const PS_INVOCATIONS: usize = 7;
+    pub const CS_INVOCATIONS: usize = 10;
 }
 
 /// Slots of one occlusion set: WebGPU's most.
@@ -47,6 +77,20 @@ pub fn data_size(kind: u32) -> Option<u32> {
     })
 }
 
+/// Whether `kind` is a stream output statistics query or overflow predicate.
+fn is_stream_output(kind: u32) -> bool {
+    (kind::SO_STATISTICS..=kind::SO_OVERFLOW_PREDICATE_STREAM3).contains(&kind)
+}
+
+/// Whether `kind` answers from the work's end alone, with no stretch of its own: events,
+/// timestamps, the disjoint query and stream output's queries.
+fn answered_at_end(kind: u32) -> bool {
+    matches!(
+        kind,
+        kind::EVENT | kind::TIMESTAMP | kind::TIMESTAMP_DISJOINT
+    ) || is_stream_output(kind)
+}
+
 /// An occlusion set, shared by the stretches counted into it.
 type Set<B> = Rc<Kept<B, <B as Backend>::QuerySet>>;
 
@@ -63,6 +107,8 @@ enum State<B: Backend> {
     Running(Vec<Part<B>>),
     /// A counted occlusion query begun and not yet ended: the samples its stretches counted.
     Counting(u64),
+    /// A pipeline statistics query begun and not yet ended: what it counted so far.
+    Statistics(Answer),
     /// Ended after `submits` submits; its stretches and, once asked for, their read backs.
     Ended {
         submits: u64,
@@ -70,7 +116,7 @@ enum State<B: Backend> {
         reads: Option<Vec<B::Readback>>,
     },
     /// The answer: the bytes `GetData` gives, as words.
-    Done([u64; 2]),
+    Done(Answer),
 }
 
 pub struct Query<B: Backend> {
@@ -94,6 +140,8 @@ pub(crate) struct Queries<B: Backend> {
     running: Vec<Rc<Query<B>>>,
     /// Counted occlusion queries begun and not ended.
     pub(crate) counted: Vec<Rc<Query<B>>>,
+    /// Pipeline statistics queries begun and not ended.
+    pub(crate) statistics: Vec<Rc<Query<B>>>,
     /// When the device was made: timestamps count nanoseconds from it.
     made: std::time::Instant,
     /// Whether the program made an occlusion predicate: from then on every pass counts into a set,
@@ -114,6 +162,7 @@ impl<B: Backend> Queries<B> {
         Queries {
             running: Vec::new(),
             counted: Vec::new(),
+            statistics: Vec::new(),
             made: std::time::Instant::now(),
             used: false,
             set: None,
@@ -130,11 +179,15 @@ impl<B: Backend> Device<B> {
         if data_size(kind).is_none() || misc & !1 != 0 {
             return Err(Error::InvalidArg("not a query Direct3D 11 has"));
         }
+        if kind >= kind::SO_STATISTICS_STREAM0 && self.feature_level() < crate::desc::level::L11_0 {
+            return Err(Error::InvalidArg(
+                "per-stream stream output queries need feature level 11_0",
+            ));
+        }
         match kind {
             kind::EVENT | kind::OCCLUSION | kind::TIMESTAMP | kind::TIMESTAMP_DISJOINT => {}
             kind::OCCLUSION_PREDICATE => self.queries.used = true,
-            kind::PIPELINE_STATISTICS => return not_implemented("pipeline statistics queries"),
-            _ => return not_implemented("stream output queries"),
+            _ => {}
         }
         Ok(Rc::new(Query {
             kind,
@@ -149,7 +202,7 @@ impl<B: Backend> Device<B> {
     pub fn begin_query(&mut self, q: &Rc<Query<B>>) {
         match q.kind {
             kind::EVENT | kind::TIMESTAMP => return,
-            kind::TIMESTAMP_DISJOINT => {
+            k if answered_at_end(k) => {
                 *q.state.borrow_mut() = State::Running(Vec::new());
                 return;
             }
@@ -163,6 +216,21 @@ impl<B: Backend> Device<B> {
                 }
                 *q.state.borrow_mut() = State::Counting(0);
                 let r = self.counter.begin(&mut self.backend, &mut self.passes);
+                let _ = self.gpu(r);
+                return;
+            }
+            kind::PIPELINE_STATISTICS => {
+                if let Err(e) = self.count_pixel_stretch() {
+                    self.lose(e);
+                    return;
+                }
+                if !self.queries.statistics.iter().any(|r| Rc::ptr_eq(r, q)) {
+                    self.queries.statistics.push(q.clone());
+                }
+                *q.state.borrow_mut() = State::Statistics([0; 11]);
+                let r = self
+                    .pixel_counter
+                    .begin(&mut self.backend, &mut self.passes);
                 let _ = self.gpu(r);
                 return;
             }
@@ -188,9 +256,28 @@ impl<B: Backend> Device<B> {
                 State::Counting(n) => n,
                 _ => 0,
             };
-            *q.state.borrow_mut() = State::Done([count, 0]);
+            *q.state.borrow_mut() = State::Done(short(&[count]));
             if was && !self.queries.counted.is_empty() {
                 let r = self.counter.begin(&mut self.backend, &mut self.passes);
+                let _ = self.gpu(r);
+            }
+            return;
+        }
+        if q.kind == kind::PIPELINE_STATISTICS {
+            let was = self.queries.statistics.iter().any(|r| Rc::ptr_eq(r, q));
+            if was && let Err(e) = self.count_pixel_stretch() {
+                self.lose(e);
+            }
+            self.queries.statistics.retain(|r| !Rc::ptr_eq(r, q));
+            let counts = match *q.state.borrow() {
+                State::Statistics(c) => c,
+                _ => [0; 11],
+            };
+            *q.state.borrow_mut() = State::Done(counts);
+            if was && !self.queries.statistics.is_empty() {
+                let r = self
+                    .pixel_counter
+                    .begin(&mut self.backend, &mut self.passes);
                 let _ = self.gpu(r);
             }
             return;
@@ -199,10 +286,7 @@ impl<B: Backend> Device<B> {
             // The time of the end, answered once the work before it is done.
             q.stamp.set(self.queries.made.elapsed().as_nanos() as u64);
         }
-        let parts = if matches!(
-            q.kind,
-            kind::EVENT | kind::TIMESTAMP | kind::TIMESTAMP_DISJOINT
-        ) {
+        let parts = if answered_at_end(q.kind) {
             Vec::new()
         } else {
             self.close_stretch(true);
@@ -222,19 +306,16 @@ impl<B: Backend> Device<B> {
     /// `GetData`: the answer once the GPU has it, as the words of its bytes, `None` before.
     /// `flush` submits what the answer waits on (Direct3D does unless
     /// `D3D11_ASYNC_GETDATA_DONOTFLUSH`).
-    pub fn query_data(&mut self, q: &Rc<Query<B>>, flush: bool) -> Result<Option<[u64; 2]>> {
+    pub fn query_data(&mut self, q: &Rc<Query<B>>, flush: bool) -> Result<Option<Answer>> {
         self.live()?;
         let submits = match &*q.state.borrow() {
-            State::Fresh | State::Running(_) | State::Counting(_) => {
+            State::Fresh | State::Running(_) | State::Counting(_) | State::Statistics(_) => {
                 return Err(Error::InvalidCall("a query not ended"));
             }
             State::Done(v) => return Ok(Some(*v)),
             State::Ended { submits, .. } => *submits,
         };
-        if matches!(
-            q.kind,
-            kind::EVENT | kind::TIMESTAMP | kind::TIMESTAMP_DISJOINT
-        ) {
+        if answered_at_end(q.kind) {
             if self.queries.submits == submits {
                 if !flush {
                     return Ok(None);
@@ -246,7 +327,7 @@ impl<B: Backend> Device<B> {
                 return Ok(None);
             }
             let answer = match q.kind {
-                kind::TIMESTAMP => [q.stamp.get(), 0],
+                kind::TIMESTAMP => short(&[q.stamp.get()]),
                 kind::TIMESTAMP_DISJOINT => {
                     static WARNED: std::sync::Once = std::sync::Once::new();
                     WARNED.call_once(|| {
@@ -254,9 +335,10 @@ impl<B: Backend> Device<B> {
                             "wcontainers direct3d 11: timestamps reported disjoint: the back end writes none"
                         )
                     });
-                    [NANOSECONDS, 1]
+                    short(&[NANOSECONDS, 1])
                 }
-                _ => [1, 0],
+                kind::EVENT => short(&[1]),
+                _ => short(&[]),
             };
             *q.state.borrow_mut() = State::Done(answer);
             return Ok(Some(answer));
@@ -301,13 +383,13 @@ impl<B: Backend> Device<B> {
             self.backend.finish_read(r, &mut bytes);
             any |= u64::from(u64::from_le_bytes(bytes) != 0);
         }
-        *q.state.borrow_mut() = State::Done([any, 0]);
-        Ok(Some([any, 0]))
+        *q.state.borrow_mut() = State::Done(short(&[any]));
+        Ok(Some(short(&[any])))
     }
 
     /// The answer of an ended query, waiting for the GPU where it is not there yet
     /// (`PredicationWait`); none for a query not ended.
-    pub(crate) fn wait_answer(&mut self, q: &Rc<Query<B>>) -> Result<Option<[u64; 2]>> {
+    pub(crate) fn wait_answer(&mut self, q: &Rc<Query<B>>) -> Result<Option<Answer>> {
         let mut waited = false;
         loop {
             match self.query_data(q, true) {
@@ -351,6 +433,30 @@ impl<B: Backend> Device<B> {
             }
         }
         Ok(())
+    }
+
+    /// Ends the pixel counter's stretch, if pipeline statistics queries run, adding its count to
+    /// each one's pixel shader invocations.
+    fn count_pixel_stretch(&mut self) -> Result<()> {
+        if self.queries.statistics.is_empty() {
+            return Ok(());
+        }
+        self.end_pass();
+        let n = self.pixel_counter.end(&mut self.backend, &mut self.passes);
+        let n = self.gpu(n)?;
+        self.add_statistics(&[(statistic::PS_INVOCATIONS, n)]);
+        Ok(())
+    }
+
+    /// Adds `counts` (member, count) to every running pipeline statistics query.
+    pub(crate) fn add_statistics(&mut self, counts: &[(usize, u64)]) {
+        for q in &self.queries.statistics {
+            if let State::Statistics(s) = &mut *q.state.borrow_mut() {
+                for &(i, n) in counts {
+                    s[i] += n;
+                }
+            }
+        }
     }
 
     /// The occlusion set a pass opening now counts into, if any predicate may run in it.

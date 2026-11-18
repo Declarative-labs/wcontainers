@@ -204,6 +204,14 @@ fn give<I: windows::core::Type<I, Default = Option<I>>>(out: OutRef<I>, object: 
     out.write(Some(object))
 }
 
+/// Whether queries of `kind` are predicates: occlusion and stream output overflow predicates.
+fn is_predicate(kind: D3D11_QUERY) -> bool {
+    kind == D3D11_QUERY_OCCLUSION_PREDICATE
+        || (D3D11_QUERY_SO_OVERFLOW_PREDICATE.0..=D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3.0)
+            .contains(&kind.0)
+            && (kind.0 - D3D11_QUERY_SO_OVERFLOW_PREDICATE.0) % 2 == 0
+}
+
 /// The interface identifiers of `ID3D10Device` and `ID3D10Device1`, as Direct3D 10's headers give
 /// them.
 const ID3D10_DEVICE: windows::core::GUID =
@@ -740,10 +748,7 @@ impl Device_Impl {
             .create_query(d.Query.0 as u32, d.MiscFlags)
             .map_err(hresult)?;
         // Predicates are queries too; `QueryInterface` gives them as `ID3D11Predicate`.
-        if matches!(
-            d.Query,
-            D3D11_QUERY_OCCLUSION_PREDICATE | D3D11_QUERY_SO_OVERFLOW_PREDICATE
-        ) {
+        if is_predicate(d.Query) {
             let p: ID3D11Predicate = Predicate::new(front, self.me()).into();
             return give(out, p.cast()?);
         }
@@ -756,11 +761,11 @@ impl Device_Impl {
         out: OutRef<ID3D11Predicate>,
     ) -> Result<()> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let predicate = d.Query == D3D11_QUERY_OCCLUSION_PREDICATE
-            || (D3D11_QUERY_SO_OVERFLOW_PREDICATE.0..=D3D11_QUERY_SO_OVERFLOW_PREDICATE_STREAM3.0)
-                .contains(&d.Query.0)
-                && (d.Query.0 - D3D11_QUERY_SO_OVERFLOW_PREDICATE.0) % 2 == 0;
-        if !predicate {
+        // The per-stream overflow predicates are predicates, but only made as queries.
+        if !matches!(
+            d.Query,
+            D3D11_QUERY_OCCLUSION_PREDICATE | D3D11_QUERY_SO_OVERFLOW_PREDICATE
+        ) {
             return Err(E_INVALIDARG.into());
         }
         let front = self
