@@ -21,9 +21,12 @@ Direct3D 12's: Microsoft's D3D12HelloTriangle and D3D12HelloConstBuffers, bgfx's
 ("Real program"). Godot's 3D platformer draws white, waiting on G6 ("inconsistent comparison
 sampling", since the shaders merge of run 30 took its `IsHelperInvocationEXT`).
 
-Latest results (run 30, 2026-11-18; scratch run30/): test files 171 of 198 (gather and gather_c
-newly, from the shaders merge); own cases 26 of 26 equal real Direct3D 12; shader runner 205 of
-302, the same 97 failing; the crates' 46 tests pass, and the interface's slow path tests.
+Latest results (run 30, 2026-11-18; scratch run30/, last at c9d8c7f run30/*2.log): test files
+171 of 198 (gather and gather_c newly, from the shaders merge), the same 27 failing in both of
+the run's full runs; own cases 27 of 27 equal real Direct3D 12 (new: no-scissors); shader runner
+205 of 302, the same 97 failing (at 418cba9); the crates' 46 tests and the interface's 2 slow
+path tests pass; lint clean; Microsoft's two samples, bgfx 37 and Godot's 2D platformer draw
+every compared frame as real Direct3D 12 does.
 
 What each run did (runs 1 to 16 on 2026-11-17, 17 to 27 on 2026-11-18; runs 17 on are the
 milestone "G5 to the pass bar"):
@@ -569,7 +572,11 @@ Run fewer checks than real, nothing failing (53):
   register-reservations-numeric, -profile, -resources and -space, rt-get-sample-info,
   sample-bias, sample-cmp, sample-grad, sample-level, sampler-offset, srv-byteaddressbuffer,
   srv-structuredbuffer, static-initializer, stencil, swizzle-constant-prop, texture-load-offset,
-  texture-load-typed, uav-counter, uav-load, uav-out-param. EVERY_CHECK_NOTE
+  texture-load-typed, uav-counter, uav-load, uav-out-param.
+  This cause is read from the runner's own lines (its model range and the files' `[require]`
+  blocks), not checked check by check: run30/every.cmd, which runs a file on both with every
+  check reported, stopped after the Direct3D 11 part on both when run outside the rig's launcher
+  (run30/every/), so it showed nothing about Direct3D 12.
 - 64-bit integers absent (section 9): bitwise; with float64 absent too: cast-64-bit.
 - Depth bounds absent: depth-bounds. Raster order views absent: rasteriser-ordered-views. The
   layer and viewport index from any stage absent: rt-array-index, vp-array-index.
@@ -1099,7 +1106,9 @@ Run 11's entries:
   µs on the same desktop at another load (its check.log), about twice; the spread is the
   desktop's load, the cost the boxed call per COM call (Departures). Test files 80 s (10:20:24
   to 10:21:44), shader runner 14.5 min (10:22:31 to 10:37:03; 6.5 min in run 29, 4.2 in run 28,
-  the files' printed times alike; cause not found).
+  the files' printed times alike; cause not found). At c9d8c7f (run30/check2.log, 12:05): 27 of
+  27 cases equal; fence events real 7, 1, 1, 7 µs, ours first 88 µs, mean 18 µs, 99th
+  percentile 48 µs, largest 88 µs. Microsoft's samples (run30/samples2.log) 2.7 and 2.5 s, equal.
 - Run 27 (2026-11-18, RTX 3080, desktop shared with other tracks, not `--alone`, load not
   taken; run27/check1.log after the merges, check2.log at 058f3e3): own program 25 of 25 cases
   equal both times; draw 0 of 4096 pixels beyond 1; features 253 of 872, outputs 22 of 110,
