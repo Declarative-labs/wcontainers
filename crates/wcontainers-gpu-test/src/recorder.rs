@@ -147,6 +147,9 @@ pub struct Recorder {
     /// Every rule of the interface a caller broke, and every call this back end could not carry out.
     /// Either loses the device.
     pub violations: Vec<String>,
+    /// Indexed draws dropped whole because a vertex they fetch lies past its stream's end, the
+    /// harshest outcome the interface allows them (`DrawRange`'s doc).
+    pub dropped_draws: u64,
     /// Every frame presented.
     pub shown: Vec<Frame>,
 }
@@ -270,6 +273,7 @@ impl Recorder {
             nested: 0,
             touched: Vec::new(),
             violations: Vec::new(),
+            dropped_draws: 0,
             shown: Vec::new(),
         }
     }

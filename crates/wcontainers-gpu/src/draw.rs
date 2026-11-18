@@ -155,6 +155,16 @@ pub struct IndexBinding<'a, B: Backend> {
 /// ([`crate::DrawBaseSource`]); the bases it writes are those of the API's draw, also when a route
 /// splits the draw into several. `first + count` and `first_instance + instances` fit in a `u32`, so
 /// every index the program sees does.
+///
+/// What a draw fetches. A direct draw reads its indices inside its index buffer and its instances
+/// inside their streams, and a draw without indices its vertices inside theirs (a stream runs from
+/// its binding's offset to its buffer's end); a call that breaks this is refused, as are fetches of a
+/// capture past a stream. A vertex an indexed draw fetches, and anything an indirect draw fetches, may
+/// lie past its stream's end: that fetch reads a value from anywhere in the buffer, zero, or
+/// (0, 0, 0, x) with x 0, 1 or the largest value, or the back end drops the whole draw (WebGPU allows
+/// each); an indirect draw whose indices reach past its index buffer draws nothing. A front whose API
+/// defines that fetch's value binds the variant that fetches its streams in the program
+/// ([`crate::VariantKey::pulled`]).
 #[derive(Debug)]
 pub enum DrawRange<'a, B: Backend> {
     Vertices {
