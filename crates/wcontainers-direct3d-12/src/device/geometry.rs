@@ -72,7 +72,7 @@ impl<B: Backend> Device<B> {
             VariantKey {
                 pulled,
                 draw_base: DrawBaseSource::Helpers,
-                ..VariantKey::default()
+                ..formats::typed_key(vs, self.texel_route())
             },
         )?;
         let shader = match gs.is_empty() {
@@ -253,6 +253,7 @@ impl<B: Backend> Replay<B> {
                 &Bases::Direct(bases),
                 &fetch.inputs,
                 StageSet::COMPUTE,
+                None,
             )?);
         }
         let geometry_sets = d.binding_sets(
@@ -264,16 +265,31 @@ impl<B: Backend> Replay<B> {
         )?;
         let pixel_sets = match has_geometry && rasterized {
             true => {
-                let sets = d.binding_sets(
+                let mut sets = d.binding_sets(
                     &self.graphics,
                     pid,
                     Some(bind::PIXEL),
                     &[],
                     StageSet::FRAGMENT,
                 )?;
-                // The pass-through program is made with the pixel program's first storage
+                // The pass-through program is made with the pixel program's first typed view
                 // formats only.
                 d.bound_program(pid, true)?;
+                if !d.through.is_empty() {
+                    return Err(Error::NotImplemented(
+                        "storage textures read through buffers behind a geometry shader",
+                    ));
+                }
+                let helpers = d.pipelines[pid.0 as usize].helpers.clone();
+                if helpers.size != 0 {
+                    let block = d.stage_block(&helpers, bind::PIXEL)?;
+                    let fragment = wcontainers_gpu::helper_binding(ShaderStage::Fragment);
+                    sets[HELPER_SET as usize] = Some(d.helper_blocks(
+                        &[(fragment, StageSet::FRAGMENT, block)],
+                        None,
+                        &[],
+                    )?);
+                }
                 Some(sets)
             }
             false => None,

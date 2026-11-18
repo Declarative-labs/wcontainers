@@ -17,8 +17,8 @@ pub(super) struct StageBinding {
     /// The back end's stages that run the program.
     stages: StageSet,
     /// The API stage: the `D3D12_SHADER_VISIBILITY` naming it, 0 for compute.
-    visibility: u32,
-    binding: ReflectedBinding,
+    pub(super) visibility: u32,
+    pub(super) binding: ReflectedBinding,
     /// Uniform blocks: the size the program declares.
     declared: u64,
     /// How the program reads the resource.
@@ -27,6 +27,11 @@ pub(super) struct StageBinding {
     shape: Option<null::Shape>,
     /// Textures read by comparison, which the back end samples only in depth formats.
     compared: bool,
+    /// A typed buffer read through a storage buffer (`HelperValue::TexelBufferView` names it).
+    texel: bool,
+    /// A storage texture the program reads through a buffer of its texels
+    /// (`HelperValue::TexelLayout` names it).
+    through: bool,
 }
 
 /// The null texture shapes `bindings` may read, and whether each is written.
@@ -114,6 +119,18 @@ pub(super) fn stage_bindings(
                     _ => {}
                 }
             }
+            let texel = c.reflection.helpers.iter().any(|h| {
+                h.value
+                    == HelperValue::TexelBufferView {
+                        set: b.set,
+                        binding: b.binding,
+                    }
+            });
+            let through = b.kind == SlotKind::Storage
+                && c.reflection
+                    .helpers
+                    .iter()
+                    .any(|h| h.value == HelperValue::TexelLayout { slot: b.register });
             StageBinding {
                 stages,
                 visibility,
@@ -122,6 +139,8 @@ pub(super) fn stage_bindings(
                 form,
                 shape,
                 compared,
+                texel,
+                through,
             }
         })
         .collect()
@@ -135,6 +154,14 @@ enum Source {
     /// A table's parameter and the descriptor's index from the table's start.
     Table(usize, u32),
     Static(usize),
+}
+
+/// The helper value giving a typed buffer binding's place and length.
+fn texel_value(b: &StageBinding) -> HelperValue {
+    HelperValue::TexelBufferView {
+        set: b.binding.set,
+        binding: b.binding.binding,
+    }
 }
 
 /// A root parameter's `D3D12_SHADER_VISIBILITY` covers the binding's stage.
@@ -223,32 +250,32 @@ pub(super) fn check(root: &RootSignatureDesc, bindings: &[StageBinding]) -> Resu
 /// The arguments set for one bind point (graphics or compute) of a command list.
 #[derive(Clone, Debug, Default)]
 pub(super) struct RootState {
-    pub root: Option<RootId>,
+    pub root: Option<RootSignature>,
     pub arguments: Vec<Option<RootArgument>>,
     pub constants: Vec<Vec<u32>>,
 }
 
 impl RootState {
     /// `Set*RootSignature`: every argument is unset again.
-    pub fn set_root(&mut self, root: Option<RootId>, signature: Option<&RootSignatureDesc>) {
-        self.root = root;
-        let n = signature.map_or(0, |s| s.parameters.len());
+    pub fn set_root(&mut self, root: Option<RootSignature>) {
+        let n = root.as_ref().map_or(0, |s| s.parameters.len());
         self.arguments.clear();
         self.arguments.resize(n, None);
         self.constants.clear();
         self.constants.resize(n, Vec::new());
-        if let Some(s) = signature {
+        if let Some(s) = &root {
             for (c, p) in self.constants.iter_mut().zip(&s.parameters) {
                 if let RootParameterKind::Constants { count, .. } = p.kind {
                     c.resize(count as usize, 0);
                 }
             }
         }
+        self.root = root;
     }
 }
 
 /// A resource of a binding set, held while the set is made.
-enum Held<B: Backend> {
+pub(super) enum Held<B: Backend> {
     Uniform(B::Buffer, u64, u64),
     Texture(B::TextureView),
     Sampler(B::Sampler),
@@ -369,7 +396,7 @@ impl<B: Backend> Device<B> {
     /// leaves a draw or dispatch reading one not set since its root signature was set undefined;
     /// the replay skips it, with a warning.
     pub(super) fn arguments_set(&mut self, state: &RootState, pid: PipelineId) -> bool {
-        let Some(root) = state.root.and_then(|r| self.roots.get(r.0 as usize)) else {
+        let Some(root) = &state.root else {
             return true;
         };
         let set = self.pipelines[pid.0 as usize]
@@ -395,12 +422,20 @@ impl<B: Backend> Device<B> {
         state: &RootState,
         bindings: &[StageBinding],
     ) -> Result<Vec<(usize, Held<B>)>, Error> {
-        let root_id = state
+        let root = state
             .root
+            .clone()
             .ok_or(Error::Invalid("drawing with no root signature"))?;
-        let root = self.roots[root_id.0 as usize].clone();
         let mut held = Vec::with_capacity(bindings.len());
-        self.bound_storage.clear();
+        self.bound_formats.clear();
+        self.bound_helpers.clear();
+        self.bound_sampling.clear();
+        self.bound_through.clear();
+        self.bound_clamps.clear();
+        self.bound_samplers.clear();
+        self.bound_unfiltered.clear();
+        // Views read through buffers before a binding failed.
+        self.through.clear();
         for (index, b) in bindings.iter().enumerate() {
             let source = locate(&root, b).ok_or(Error::Invalid(
                 "the bound root signature lacks a binding a shader reads",
@@ -452,25 +487,55 @@ impl<B: Backend> Device<B> {
                         (SlotKind::Uniform, Descriptor::ConstantBuffer { address, .. }) => {
                             self.constant_buffer(address, b.declared)?
                         }
+                        (SlotKind::Texture, Descriptor::ShaderResource(v)) if b.texel => {
+                            self.texel_view(&v, b, false)?
+                        }
                         (SlotKind::Texture, Descriptor::ShaderResource(v))
                             if b.form != Form::Plain =>
                         {
                             self.buffer_view(&v, false)?
                         }
                         (SlotKind::Texture, Descriptor::ShaderResource(v)) => {
-                            Held::Texture(self.shader_resource(&v, b.compared)?)
+                            let view = self.shader_resource(&v, b.compared)?;
+                            self.note_clamp(&v, b)?;
+                            self.note_filtering(&v, b)?;
+                            let components = dxgi(v.format)?.components();
+                            self.bound_helpers.push((
+                                b.visibility,
+                                HelperValue::TextureComponents {
+                                    texture: b.binding.register,
+                                },
+                                pull::words(&[components]),
+                            ));
+                            Held::Texture(view)
                         }
                         (SlotKind::Counter, Descriptor::UnorderedAccess(v)) => {
                             self.view_counter(&v)?
                         }
                         (SlotKind::Storage, Descriptor::UnorderedAccess(v)) => match b.form {
+                            Form::Buffer { writable } if b.texel => {
+                                self.texel_view(&v, b, writable)?
+                            }
+                            Form::Buffer { writable } if b.through => self.texels_through(
+                                &v,
+                                b,
+                                writable,
+                                SlowPath::AtomicsThroughBuffer,
+                            )?,
+                            Form::Image { writable } if !self.stores(v.format) => self
+                                .texels_through(
+                                    &v,
+                                    b,
+                                    writable,
+                                    SlowPath::StorageFormatThroughBuffer,
+                                )?,
                             Form::Buffer { writable } => self.buffer_view(&v, writable)?,
                             Form::Image { writable } => {
                                 self.note(v.resource, writable);
                                 let view = self.storage_texture(&v)?;
-                                self.bound_storage.push((
+                                self.bound_formats.push((
                                     b.visibility,
-                                    b.binding.register,
+                                    (true, b.binding.register),
                                     dxgi(v.format)?,
                                 ));
                                 Held::StorageTexture(view, writable)
@@ -478,7 +543,7 @@ impl<B: Backend> Device<B> {
                             Form::Plain => return Err(Error::Invalid("a storage binding")),
                         },
                         (SlotKind::Sampler, Descriptor::Sampler(v)) => {
-                            Held::Sampler(self.sampler(&v)?)
+                            Held::Sampler(self.sampler(&v, b)?)
                         }
                         (SlotKind::Sampler, Descriptor::Empty) => {
                             return Err(Error::Invalid("an empty sampler descriptor"));
@@ -489,7 +554,7 @@ impl<B: Backend> Device<B> {
                 }
                 (SlotKind::Sampler, Source::Static(i)) => {
                     let v = crate::state::static_sampler(&root.samplers[i]);
-                    Held::Sampler(self.sampler(&v)?)
+                    Held::Sampler(self.sampler(&v, b)?)
                 }
                 _ => return Err(Error::NotImplemented("this kind of root binding")),
             };
@@ -506,26 +571,51 @@ impl<B: Backend> Device<B> {
                 0,
                 b.declared.clamp(16, null::NULL_BYTES).next_multiple_of(16),
             ),
-            (_, Form::Buffer { writable }) => Held::Storage {
-                buffer: self.null_buffer(writable)?,
-                offset: 0,
-                size: null::NULL_BYTES,
-                writable,
-            },
+            (_, Form::Buffer { writable }) => {
+                if b.through {
+                    // A null view holds no texel.
+                    self.bound_helpers.push((
+                        b.visibility,
+                        HelperValue::TexelLayout {
+                            slot: b.binding.register,
+                        },
+                        pull::words(&[0; 5]),
+                    ));
+                }
+                if b.texel {
+                    // A null typed buffer holds no element; its format stays the program's.
+                    self.bound_helpers
+                        .push((b.visibility, texel_value(b), pull::words(&[0, 0])));
+                }
+                Held::Storage {
+                    buffer: self.null_buffer(writable)?,
+                    offset: 0,
+                    size: null::NULL_BYTES,
+                    writable,
+                }
+            }
             (_, Form::Image { writable }) => {
                 let shape = b
                     .shape
                     .ok_or(Error::NotImplemented("null views of this storage texture"))?;
                 // A null view's format is the program's own: its reads are zeros and its
                 // writes are dropped in any format.
-                self.bound_storage
-                    .push((b.visibility, b.binding.register, shape.format));
+                self.bound_formats
+                    .push((b.visibility, (true, b.binding.register), shape.format));
                 Held::StorageTexture(self.null_view(shape, writable)?, writable)
             }
             (_, Form::Plain) => {
                 let shape = b.shape.ok_or(Error::NotImplemented(
                     "null views of one-dimensional textures",
                 ))?;
+                // Every component of a null view reads zero.
+                self.bound_helpers.push((
+                    b.visibility,
+                    HelperValue::TextureComponents {
+                        texture: b.binding.register,
+                    },
+                    pull::words(&[0b1111]),
+                ));
                 Held::Texture(self.null_view(shape, false)?)
             }
         })
@@ -603,6 +693,53 @@ impl<B: Backend> Device<B> {
         self.storage_range(v.resource, offset, size, writable)
     }
 
+    /// A typed buffer view read through a storage buffer of its words: bound from its first
+    /// element rounded down to the storage alignment, its place in the bound range and its
+    /// element count in the program's helper block, its format noted for the program's variant.
+    fn texel_view(
+        &mut self,
+        v: &ResourceView,
+        b: &StageBinding,
+        writable: bool,
+    ) -> Result<Held<B>, Error> {
+        if v.flags & 1 != 0 || v.stride != 0 {
+            return Err(Error::Invalid("a raw or structured view of a typed buffer"));
+        }
+        let width = match self.resources.get(v.resource.0 as usize) {
+            Some(Resource {
+                storage: Storage::Buffer { .. },
+                desc,
+                ..
+            }) => desc.width,
+            _ => return Err(Error::Invalid("a buffer view of a texture")),
+        };
+        let format = dxgi(v.format)?;
+        let element = u64::from(format.block().2);
+        let offset = v.first_element * element;
+        let size = u64::from(v.count) * element;
+        if offset + size > width {
+            return Err(Error::Invalid("a buffer view past its buffer's end"));
+        }
+        let align = u64::from(self.backend.caps().limits.min_storage_offset_alignment);
+        let start = offset - offset % align;
+        let rest = offset - start;
+        let bound = (rest + size).max(4).min(width.next_multiple_of(4) - start);
+        self.backend
+            .slow_paths()
+            .hit(SlowPath::TexelBufferAsStorage);
+        self.bound_formats.push((
+            b.visibility,
+            (b.binding.kind != SlotKind::Texture, b.binding.register),
+            format,
+        ));
+        self.bound_helpers.push((
+            b.visibility,
+            texel_value(b),
+            pull::words(&[rest as u32, v.count]),
+        ));
+        self.storage_range(v.resource, start, bound, writable)
+    }
+
     /// A storage binding of bytes `offset..offset + size` of buffer `id`.
     fn storage_range(
         &mut self,
@@ -634,6 +771,100 @@ impl<B: Backend> Device<B> {
             offset,
             size: size.next_multiple_of(4),
             writable,
+        })
+    }
+
+    /// Notes a shader resource view's minimum level-of-detail clamp (`ResourceMinLODClamp`, in
+    /// the resource's levels) for the program's variant, with its `HelperValue::MinLod`: the
+    /// clamp in the view's levels and the view's level count.
+    fn note_clamp(&mut self, v: &ResourceView, b: &StageBinding) -> Result<(), Error> {
+        let clamp = f32::from_bits(v.min_lod) - v.mip as f32;
+        if clamp <= 0.0 {
+            return Ok(());
+        }
+        let texture = b.binding.register;
+        if !matches!(b.visibility, 0 | PIXEL) || texture >= 128 {
+            return Err(Error::NotImplemented(
+                "a minimum level-of-detail clamp in a vertex or geometry shader or past \
+                 texture register 127",
+            ));
+        }
+        let levels = match self.resources.get(v.resource.0 as usize) {
+            Some(Resource {
+                storage: Storage::Texture { desc, .. },
+                ..
+            }) if v.count == u32::MAX => desc.mip_levels.saturating_sub(v.mip),
+            _ => v.count,
+        };
+        self.bound_clamps.push((b.visibility, texture, clamp));
+        self.bound_helpers.push((
+            b.visibility,
+            HelperValue::MinLod { texture },
+            pull::words(&[clamp.to_bits(), levels]),
+        ));
+        Ok(())
+    }
+
+    /// Notes a texture the back end cannot filter in the view's format (a depth texture read as
+    /// its depth, or a float format without filtering), which the program then filters where a
+    /// filtering sampler samples it (`formats.rs`).
+    fn note_filtering(&mut self, v: &ResourceView, b: &StageBinding) -> Result<(), Error> {
+        if b.compared || !matches!(b.visibility, 0 | PIXEL) {
+            return Ok(());
+        }
+        let stored = match self.resources.get(v.resource.0 as usize) {
+            Some(Resource {
+                storage: Storage::Texture { desc, .. },
+                ..
+            }) => desc.format,
+            _ => return Ok(()),
+        };
+        let format = dxgi(v.format)?;
+        let filters = |f: Format| {
+            self.backend
+                .caps()
+                .formats
+                .get(f)
+                .contains(FormatUse::FILTER)
+        };
+        // A view reading a depth texture's depth reads a texture of the depth format.
+        let read = if stored.is_depth_stencil() {
+            stored
+        } else {
+            format
+        };
+        if !filters(read) {
+            self.bound_unfiltered
+                .push((b.visibility, b.binding.register));
+        }
+        Ok(())
+    }
+
+    /// The back end's sampler for `v` with its minimum level raised to `clamp`, for a merged
+    /// sampler of a clamped program.
+    pub(super) fn clamped_sampler(
+        &mut self,
+        v: &crate::list::SamplerView,
+        clamp: f32,
+    ) -> Result<B::Sampler, Error> {
+        let mut desc = crate::state::sampler(v, self.backend.caps())?;
+        desc.lod_range[0] = f32::from_bits(desc.lod_range[0]).max(clamp).to_bits();
+        if let Some(s) = self.samplers.get(&desc) {
+            return Ok(s.clone());
+        }
+        let s = self.backend.create_sampler(&desc)?;
+        self.samplers.insert(desc, s.clone());
+        Ok(s)
+    }
+
+    /// The back end stores into textures of DXGI format `value`.
+    fn stores(&self, value: u32) -> bool {
+        dxgi(value).is_ok_and(|f| {
+            self.backend
+                .caps()
+                .formats
+                .get(f)
+                .contains(FormatUse::STORAGE_WRITE)
         })
     }
 
@@ -693,9 +924,6 @@ impl<B: Backend> Device<B> {
             return Err(Error::NotImplemented(
                 "component mappings other than identity",
             ));
-        }
-        if v.min_lod != 0 {
-            return Err(Error::NotImplemented("a minimum level-of-detail clamp"));
         }
         let (texture_desc, mips) = match self.resources.get(v.resource.0 as usize) {
             Some(Resource {
@@ -759,9 +987,48 @@ impl<B: Backend> Device<B> {
         )
     }
 
-    /// The back end's sampler for a sampler descriptor, made once per description.
-    fn sampler(&mut self, v: &crate::list::SamplerView) -> Result<B::Sampler, Error> {
-        let desc = crate::state::sampler(v, self.backend.caps())?;
+    /// The back end's sampler for a sampler descriptor bound for `b`, made once per description;
+    /// what the program applies itself is noted for its variant, with its helper values.
+    fn sampler(
+        &mut self,
+        v: &crate::list::SamplerView,
+        b: &StageBinding,
+    ) -> Result<B::Sampler, Error> {
+        let caps = self.backend.caps();
+        let desc = crate::state::sampler(v, caps)?;
+        self.bound_samplers
+            .push((b.visibility, b.binding.register, *v));
+        let (bias, border) = crate::state::in_program(v, caps);
+        if bias || border {
+            if !matches!(b.visibility, 0 | PIXEL) {
+                return Err(Error::NotImplemented(
+                    "level-of-detail bias, border or mirror-once sampling in a vertex or \
+                     geometry shader",
+                ));
+            }
+            let sampler = b.binding.register;
+            if sampler >= 16 {
+                return Err(Error::NotImplemented(
+                    "sampling in the program through a sampler register past 15",
+                ));
+            }
+            self.bound_sampling
+                .push((b.visibility, sampler, bias, border));
+            let state = crate::state::sampler_state(v, &desc);
+            self.bound_helpers.extend([
+                (
+                    b.visibility,
+                    HelperValue::LodBias { sampler },
+                    pull::words(&[v.lod_bias]),
+                ),
+                (
+                    b.visibility,
+                    HelperValue::BorderColor { sampler },
+                    pull::words(&v.border),
+                ),
+                (b.visibility, HelperValue::SamplerState { sampler }, state),
+            ]);
+        }
         if let Some(s) = self.samplers.get(&desc) {
             return Ok(s.clone());
         }

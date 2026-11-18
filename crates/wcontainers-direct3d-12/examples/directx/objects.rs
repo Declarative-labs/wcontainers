@@ -18,7 +18,7 @@ use wcontainers_direct3d_12::state::{
 };
 use wcontainers_direct3d_12::{
     Error, FenceId, GraphicsPipelineDesc, HeapId, MemoryId, PipelineId, QueryHeapId, QueueId,
-    ResourceId, RootId, features,
+    ResourceId, features,
 };
 use wcontainers_directx_graphics_infrastructure::{
     AdapterDesc, dxgi_format, format_support, plane_count,
@@ -661,8 +661,8 @@ impl Device {
             return give(root, riid, out);
         }
         let copy = bytes.clone();
-        let id = gpu::call(move |d| d.create_root_signature(&copy)).map_err(hr)?;
-        let root: ID3D12RootSignature = RootSignature(id, Base::child()).into();
+        let signature = gpu::call(move |d| d.create_root_signature(&copy)).map_err(hr)?;
+        let root: ID3D12RootSignature = RootSignature(signature, Base::child()).into();
         made.push((bytes, root.downgrade()?));
         give(root, riid, out)
     }
@@ -680,7 +680,7 @@ impl Device {
         }
         let root = d.pRootSignature.as_ref().map(|r| {
             // SAFETY: root signatures come from this library.
-            unsafe { r.as_impl() }.0
+            unsafe { r.as_impl() }.0.clone()
         });
         // SAFETY: the API requires valid bytecode and input layout pointers.
         let (vs, gs, ps) = unsafe { (code(&d.VS), code(&d.GS), code(&d.PS)) };
@@ -880,11 +880,12 @@ impl Device {
         let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
         let root = d.pRootSignature.as_ref().map(|r| {
             // SAFETY: root signatures come from this library.
-            unsafe { r.as_impl() }.0
+            unsafe { r.as_impl() }.0.clone()
         });
         // SAFETY: the API requires valid bytecode.
         let cs = unsafe { code(&d.CS) };
-        let id = gpu::call(move |dev| dev.create_compute_pipeline(root, &cs)).map_err(hr)?;
+        let id =
+            gpu::call(move |dev| dev.create_compute_pipeline(root.as_ref(), &cs)).map_err(hr)?;
         give::<ID3D12PipelineState>(PipelineState(id, Base::child()).into(), riid, out)
     }
 
@@ -1816,7 +1817,10 @@ impl Device {
             }
             D3D12_FEATURE_FORMAT_SUPPORT => {
                 let d = unsafe { fill::<D3D12_FEATURE_DATA_FORMAT_SUPPORT>(data, size)? };
-                let s = format_support(&caps, d.Format.0 as u32);
+                let mut s = format_support(&caps, d.Format.0 as u32);
+                if features::typed_buffer(&caps, d.Format.0 as u32) {
+                    s.support1 |= features::SUPPORT1_TYPED_BUFFER;
+                }
                 d.Support1 = D3D12_FORMAT_SUPPORT1(s.support1 as i32);
                 d.Support2 = D3D12_FORMAT_SUPPORT2(s.support2 as i32);
                 if s.is_empty() {
@@ -2500,14 +2504,7 @@ impl Drop for Resource {
 }
 
 #[implement(ID3D12RootSignature)]
-pub struct RootSignature(pub RootId, Base);
-
-impl Drop for RootSignature {
-    fn drop(&mut self) {
-        let id = self.0;
-        gpu::call(move |d| d.destroy_root_signature(id));
-    }
-}
+pub struct RootSignature(pub wcontainers_direct3d_12::root::RootSignature, Base);
 
 /// A heap of `CreateHeap`: its description, the front's heap, and the program's references, which
 /// `abi.rs` counts apart from its placed resources' (`HeapHold`).
@@ -2953,7 +2950,7 @@ impl List {
     /// front does not do yet, which fail the list.
     fn root_signature(&self, compute: bool, root: Ref<ID3D12RootSignature>) {
         // SAFETY: root signatures come from this library.
-        let root = root.as_ref().map(|r| unsafe { r.as_impl() }.0);
+        let root = root.as_ref().map(|r| unsafe { r.as_impl() }.0.clone());
         self.record(Command::RootSignature { compute, root });
     }
 

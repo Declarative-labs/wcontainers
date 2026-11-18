@@ -1,7 +1,7 @@
 //! What a DXBC shader declares that a pipeline needs before converting it: its typed unordered
-//! access views of textures, whose formats the converted program takes from the bound views
-//! (`VariantKey::storage_formats`). Read from the program chunk's declarations, in the token
-//! format of Microsoft's `d3d11TokenizedProgramFormat.hpp`.
+//! access views and typed buffers, whose formats the converted program takes from the bound views
+//! (`VariantKey::storage_formats`, `VariantKey::texel_formats`). Read from the program chunk's
+//! declarations, in the token format of Microsoft's `d3d11TokenizedProgramFormat.hpp`.
 
 /// The kind of value a typed view's declaration reads and writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -11,6 +11,19 @@ pub enum Kind {
     Sint,
 }
 
+/// A typed view a shader declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypedView {
+    /// An unordered access view (a storage slot), else a shader resource view (a texture slot).
+    pub storage: bool,
+    /// A typed buffer, else a texture.
+    pub buffer: bool,
+    pub register: u32,
+    pub kind: Kind,
+}
+
+/// `D3D10_SB_OPCODE_DCL_RESOURCE`.
+const DCL_RESOURCE: u32 = 88;
 /// `D3D11_SB_OPCODE_DCL_UNORDERED_ACCESS_VIEW_TYPED`.
 const DCL_UAV_TYPED: u32 = 156;
 /// `D3D10_SB_OPCODE_CUSTOMDATA`, whose length is the word after its opcode.
@@ -18,9 +31,10 @@ const CUSTOMDATA: u32 = 53;
 /// `D3D10_SB_RESOURCE_DIMENSION_BUFFER`.
 const DIMENSION_BUFFER: u32 = 1;
 
-/// The typed texture views `code` declares, as (register, kind); `None` where `code` holds no
-/// DXBC program chunk or its tokens are malformed.
-pub fn typed_texture_views(code: &[u8]) -> Option<Vec<(u32, Kind)>> {
+/// The typed unordered access views and typed buffers `code` declares (shader resource views of
+/// textures left out); `None` where `code` holds no DXBC program chunk or its tokens are
+/// malformed.
+pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
     let tokens = program(code)?;
     let mut views = Vec::new();
     // Past the version and length words.
@@ -35,16 +49,29 @@ pub fn typed_texture_views(code: &[u8]) -> Option<Vec<(u32, Kind)>> {
             return None;
         }
         let instruction = tokens.get(at..at + length)?;
-        if opcode & 0x7ff == DCL_UAV_TYPED && (opcode >> 11) & 0x1f != DIMENSION_BUFFER {
-            views.push(typed_view(instruction)?);
+        let buffer = (opcode >> 11) & 0x1f == DIMENSION_BUFFER;
+        let storage = match opcode & 0x7ff {
+            DCL_UAV_TYPED => Some(true),
+            DCL_RESOURCE if buffer => Some(false),
+            _ => None,
+        };
+        if let Some(storage) = storage {
+            let (register, kind) = typed_view(instruction)?;
+            views.push(TypedView {
+                storage,
+                buffer,
+                register,
+                kind,
+            });
         }
         at += length;
     }
     Some(views)
 }
 
-/// One `dcl_uav_typed`: the opcode, its extended tokens, the operand with its indices (one in
-/// shader model 5.0; the identifier and the range's bounds in 5.1), then the return type token.
+/// One `dcl_uav_typed` or `dcl_resource`: the opcode, its extended tokens, the operand with its
+/// indices (one in shader model 5.0; the identifier and the range's bounds in 5.1), then the
+/// return type token.
 fn typed_view(instruction: &[u32]) -> Option<(u32, Kind)> {
     let mut at = 1;
     let mut extended = instruction[0] >> 31 != 0;
@@ -121,21 +148,62 @@ mod tests {
         code
     }
 
+    fn view(storage: bool, buffer: bool, register: u32, kind: Kind) -> TypedView {
+        TypedView {
+            storage,
+            buffer,
+            register,
+            kind,
+        }
+    }
+
     #[test]
-    fn typed_texture_views_are_read_from_declarations() {
-        // ps_5_0: dcl_uav_typed_texture2d (float,float,float,float) u1, then a 3D sint one at
-        // u3, a typed buffer at u2 (left out), and a custom data block in between.
+    fn typed_views_are_read_from_declarations() {
+        // ps_5_0: dcl_uav_typed_texture2d (float,float,float,float) u1, a custom data block, a
+        // typed buffer at u2, a 3D sint view at u3, a typed buffer at t4 (uint) and a 2D texture
+        // at t5 (left out).
         let tex2d = DCL_UAV_TYPED | (3 << 11) | (4 << 24);
         let tex3d = DCL_UAV_TYPED | (5 << 11) | (4 << 24);
         let buffer = DCL_UAV_TYPED | (1 << 11) | (4 << 24);
+        let srv_buffer = DCL_RESOURCE | (1 << 11) | (4 << 24);
+        let srv_texture = DCL_RESOURCE | (3 << 11) | (4 << 24);
         let operand = 0x0010_1000 | (30 << 12);
+        let srv = 0x0010_1000 | (7 << 12);
         let tokens = [
-            0x50, 0, tex2d, operand, 1, 0x5555, CUSTOMDATA, 3, 0, buffer, operand, 2, 0x4444,
-            tex3d, operand, 3, 0x3333,
+            0x50,
+            0,
+            tex2d,
+            operand,
+            1,
+            0x5555,
+            CUSTOMDATA,
+            3,
+            0,
+            buffer,
+            operand,
+            2,
+            0x4444,
+            tex3d,
+            operand,
+            3,
+            0x3333,
+            srv_buffer,
+            srv,
+            4,
+            0x4444,
+            srv_texture,
+            srv,
+            5,
+            0x5555,
         ];
         assert_eq!(
-            typed_texture_views(&container(&tokens)),
-            Some(vec![(1, Kind::Float), (3, Kind::Sint)])
+            typed_views(&container(&tokens)),
+            Some(vec![
+                view(true, false, 1, Kind::Float),
+                view(true, true, 2, Kind::Uint),
+                view(true, false, 3, Kind::Sint),
+                view(false, true, 4, Kind::Uint),
+            ])
         );
     }
 
@@ -146,8 +214,8 @@ mod tests {
         let decl = DCL_UAV_TYPED | (8 << 11) | (7 << 24);
         let tokens = [0x51, 0, decl, operand, 0, 4, 4, 0x4444, 0];
         assert_eq!(
-            typed_texture_views(&container(&tokens)),
-            Some(vec![(4, Kind::Uint)])
+            typed_views(&container(&tokens)),
+            Some(vec![view(true, false, 4, Kind::Uint)])
         );
     }
 }

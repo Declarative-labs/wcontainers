@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use crate::Error;
-use crate::device::{PipelineId, QueryHeapId, ResourceId, RootId};
+use crate::device::{PipelineId, QueryHeapId, ResourceId};
 
 /// A render target view as a descriptor holds it (`D3D12_RENDER_TARGET_VIEW_DESC` resolved against
 /// its resource): the program copies descriptors as bytes, so this is plain data.
@@ -276,7 +276,7 @@ pub enum Command {
     /// `SetGraphicsRootSignature` (`compute` false) or `SetComputeRootSignature`.
     RootSignature {
         compute: bool,
-        root: Option<RootId>,
+        root: Option<crate::root::RootSignature>,
     },
     RootArgument {
         compute: bool,

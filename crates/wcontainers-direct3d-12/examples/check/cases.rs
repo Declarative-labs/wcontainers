@@ -39,6 +39,12 @@ macro_rules! own {
         ))
     };
 }
+/// A full-screen triangle, and a sampling through `s0` of `t0` at a uv running past 0 and 1
+/// with a growing scale, in the cell `b0` names (the test rig's `samplers.hlsl`).
+const FULL_VS: &[u8] =
+    include_bytes!("../../../wcontainers-graphics-test/shaders/dxbc/common.vs_full.dxbc");
+const SAMPLE_PS: &[u8] =
+    include_bytes!("../../../wcontainers-graphics-test/shaders/dxbc/samplers.ps_sample.dxbc");
 const GEOMETRY_VS: &[u8] = own!("vs_geometry");
 const GEOMETRY_PS: &[u8] = own!("ps_geometry");
 const PAGE: u64 = 64 << 10;
@@ -68,6 +74,7 @@ pub const CASES: &[&str] = &[
     "custom-heap",
     "geometry",
     "timestamps",
+    "filter-depth",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -99,6 +106,7 @@ pub fn run(name: &str) -> Result<String> {
             "custom-heap" => custom_heap(&c),
             "geometry" => geometry(&c),
             "timestamps" => timestamps(&c),
+            "filter-depth" => filter_depth(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -2467,6 +2475,22 @@ unsafe fn timestamps(c: &Ctx) -> Result<String> {
             0,
         );
         c.run(&list)?;
+        // The same queries resolved into a default buffer, then copied to a readback one.
+        let resolved = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &buffer_desc(16, D3D12_RESOURCE_FLAG_NONE),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let through = readback(16)?;
+        let (_a3, again) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        again.ResolveQueryData(&direct_heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, &resolved, 0);
+        again.ResourceBarrier(&[transition(
+            &resolved,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_COPY_SOURCE,
+        )]);
+        again.CopyBufferRegion(&through, 0, &resolved, 0, 16);
+        c.run(&again)?;
 
         let fence: ID3D12Fence = c.device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
         let (_a2, copying) = c.list(D3D12_COMMAND_LIST_TYPE_COPY)?;
@@ -2492,18 +2516,250 @@ unsafe fn timestamps(c: &Ctx) -> Result<String> {
             ])
         };
         let (d, k) = (read(&direct_out)?, read(&copy_out)?);
+        let copied = read(&through)? == d;
         let gpu_seconds = (gpu1 - gpu0) as f64 / frequency as f64;
         let cpu_seconds = (cpu1 - cpu0) as f64 / qpc as f64;
         let ratio = gpu_seconds / cpu_seconds;
         Ok(format!(
             "frequency set {} copy frequency equal {} direct in order {} copy in order {} \
-             within calibrations {} clocks agree {}",
+             within calibrations {} clocks agree {} copied from a default buffer {}",
             frequency > 0,
             copy_frequency == frequency,
             d[0] <= d[1],
             k[0] <= k[1],
             gpu0 <= d[0] && d[1] <= gpu1 && gpu0 <= k[0] && k[1] <= gpu1,
             (0.9..1.1).contains(&ratio),
+            copied,
+        ))
+    }
+}
+
+/// A 4 by 4 depth texture of three depths (cleared by rectangles) sampled as `R32_FLOAT` through
+/// a linear clamping static sampler over a 64 by 64 target, against bilinear filtering worked
+/// out here: the largest difference in steps of the target's 8 bits, whether it is within 2,
+/// and how many shades the picture has. Real Direct3D filters in its texture units, ours in the
+/// program where the back end cannot filter depth.
+unsafe fn filter_depth(c: &Ctx) -> Result<String> {
+    unsafe {
+        let range = D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            NumDescriptors: 1,
+            ..Default::default()
+        };
+        let params = [
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_CBV,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Descriptor: D3D12_ROOT_DESCRIPTOR::default(),
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            },
+            D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                        NumDescriptorRanges: 1,
+                        pDescriptorRanges: &range,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            },
+        ];
+        let sampler = D3D12_STATIC_SAMPLER_DESC {
+            Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            MaxLOD: f32::MAX,
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
+            ..Default::default()
+        };
+        let mut blob = None;
+        D3D12SerializeRootSignature(
+            &D3D12_ROOT_SIGNATURE_DESC {
+                NumParameters: params.len() as u32,
+                pParameters: params.as_ptr(),
+                NumStaticSamplers: 1,
+                pStaticSamplers: &sampler,
+                Flags: D3D12_ROOT_SIGNATURE_FLAG_NONE,
+            },
+            D3D_ROOT_SIGNATURE_VERSION_1_0,
+            &mut blob,
+            None,
+        )?;
+        let blob = blob.unwrap();
+        let root: ID3D12RootSignature = c.device.CreateRootSignature(
+            0,
+            std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize()),
+        )?;
+        let mut blend = D3D12_BLEND_DESC::default();
+        blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8;
+        let code = |b: &[u8]| D3D12_SHADER_BYTECODE {
+            pShaderBytecode: b.as_ptr().cast(),
+            BytecodeLength: b.len(),
+        };
+        let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+            pRootSignature: transmute_copy(&root),
+            VS: code(FULL_VS),
+            PS: code(SAMPLE_PS),
+            BlendState: blend,
+            SampleMask: u32::MAX,
+            RasterizerState: D3D12_RASTERIZER_DESC {
+                FillMode: D3D12_FILL_MODE_SOLID,
+                CullMode: D3D12_CULL_MODE_NONE,
+                DepthClipEnable: true.into(),
+                ..Default::default()
+            },
+            PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+            NumRenderTargets: 1,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            ..Default::default()
+        };
+        desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        let pso: ID3D12PipelineState = c.device.CreateGraphicsPipelineState(&desc)?;
+
+        let depth = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                Width: 4,
+                Height: 4,
+                DepthOrArraySize: 1,
+                MipLevels: 1,
+                Format: DXGI_FORMAT_R32_TYPELESS,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Flags: D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+                ..Default::default()
+            },
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        )?;
+        let dsv_heap: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+                NumDescriptors: 1,
+                ..Default::default()
+            })?;
+        let dsv = dsv_heap.GetCPUDescriptorHandleForHeapStart();
+        c.device.CreateDepthStencilView(
+            &depth,
+            Some(&D3D12_DEPTH_STENCIL_VIEW_DESC {
+                Format: DXGI_FORMAT_D32_FLOAT,
+                ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2D,
+                ..Default::default()
+            }),
+            dsv,
+        );
+        let views: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                NumDescriptors: 1,
+                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                ..Default::default()
+            })?;
+        c.device.CreateShaderResourceView(
+            &depth,
+            Some(&D3D12_SHADER_RESOURCE_VIEW_DESC {
+                Format: DXGI_FORMAT_R32_FLOAT,
+                ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+                Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+                Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                    Texture2D: D3D12_TEX2D_SRV {
+                        MipLevels: 1,
+                        ..Default::default()
+                    },
+                },
+            }),
+            views.GetCPUDescriptorHandleForHeapStart(),
+        );
+        let mut cell = [0.0f32, 0.0, SIZE as f32, SIZE as f32]
+            .map(f32::to_le_bytes)
+            .concat();
+        cell.resize(256, 0);
+        let cell = c.upload(&cell)?;
+
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        // Texels: the top row 1.0, below it the left half 0.75 and the right half 0.25.
+        let rect = |l, t, r, b| RECT {
+            left: l,
+            top: t,
+            right: r,
+            bottom: b,
+        };
+        list.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 0.25, 0, None);
+        list.ClearDepthStencilView(
+            dsv,
+            D3D12_CLEAR_FLAG_DEPTH,
+            0.75,
+            0,
+            Some(&[rect(0, 1, 2, 4)]),
+        );
+        list.ClearDepthStencilView(
+            dsv,
+            D3D12_CLEAR_FLAG_DEPTH,
+            1.0,
+            0,
+            Some(&[rect(0, 0, 4, 1)]),
+        );
+        list.ResourceBarrier(&[transition(
+            &depth,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        )]);
+        let (target, _heap, _rtv) = c.target(&list)?;
+        list.SetDescriptorHeaps(&[Some(views.clone())]);
+        list.SetGraphicsRootSignature(&root);
+        list.SetGraphicsRootConstantBufferView(0, cell.GetGPUVirtualAddress());
+        list.SetGraphicsRootDescriptorTable(1, views.GetGPUDescriptorHandleForHeapStart());
+        list.SetPipelineState(&pso);
+        list.DrawInstanced(3, 1, 0, 0);
+        c.run(&list)?;
+        let pixels = c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
+
+        let texel = |x: i32, y: i32| -> f32 {
+            let (x, y) = (x.clamp(0, 3), y.clamp(0, 3));
+            match (x, y) {
+                (_, 0) => 1.0,
+                (0 | 1, _) => 0.75,
+                _ => 0.25,
+            }
+        };
+        let mut largest = 0;
+        let mut shades = std::collections::BTreeSet::new();
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let t = [
+                    ((x as f32 + 0.5) / SIZE as f32).clamp(0.0, 1.0),
+                    ((y as f32 + 0.5) / SIZE as f32).clamp(0.0, 1.0),
+                ];
+                let uv = [
+                    (t[0] - 0.33) * 3.0,
+                    (t[1] - 0.33) * (3.0 + 9.0 * t[1] * t[1]),
+                ];
+                let (u, v) = (
+                    uv[0].clamp(0.0, 1.0) * 4.0 - 0.5,
+                    uv[1].clamp(0.0, 1.0) * 4.0 - 0.5,
+                );
+                let (x0, y0) = (u.floor(), v.floor());
+                let (fx, fy) = (u - x0, v - y0);
+                let (x0, y0) = (x0 as i32, y0 as i32);
+                let value = (texel(x0, y0) * (1.0 - fx) + texel(x0 + 1, y0) * fx) * (1.0 - fy)
+                    + (texel(x0, y0 + 1) * (1.0 - fx) + texel(x0 + 1, y0 + 1) * fx) * fy;
+                let expected = (value * 255.0).round() as i32;
+                let red = pixels[((y * SIZE + x) * 4) as usize];
+                largest = largest.max((i32::from(red) - expected).abs());
+                shades.insert(red);
+            }
+        }
+        Ok(format!(
+            "within 2 steps of bilinear filtering {} more than 16 shades {}",
+            largest <= 2,
+            shades.len() > 16
         ))
     }
 }
