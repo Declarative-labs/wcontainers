@@ -29,9 +29,6 @@ pub const JDK: &str = "eclipse-temurin:21-jdk-alpine@sha256:82801f9dcdcbad5a0508
 pub const GO: &str =
     "golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59";
 
-/// The most turns between two saves of a runtime's run, so saves fall all through a long run.
-pub const SAVE_GAP: u64 = 20_000;
-
 /// Where a runtime's programs are kept in this crate.
 pub fn programs(runtime: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -172,14 +169,22 @@ pub fn reference(image: &str, directory: &Path, command: &[&str]) -> Outcome {
     }
 }
 
+/// How a run is saved and brought back: how many times, and the most turns between two saves
+/// (each test chooses it from its run's length, so the saves fall all through the run).
+#[derive(Clone, Copy, Debug)]
+pub struct Saves {
+    pub count: usize,
+    pub gap: u64,
+}
+
 /// Runs `command` on our kernel in a container of `image` with `directory` at `/wc`, the root on
-/// the file backend, under `seed` with `saves` saves.
+/// the file backend, under `seed` with `saves`.
 pub fn ours(
     image: &str,
     directory: &Path,
     command: &[&str],
     seed: u64,
-    saves: usize,
+    saves: Saves,
 ) -> driver::Run {
     let mut container_files = files(image).to_vec();
     container_files.extend(image::host_directory(directory, "wc"));
@@ -200,8 +205,8 @@ pub fn ours(
         address_space: SPACE_64_BIT,
     };
     let injections = driver::Injections {
-        saves,
-        save_gap: SAVE_GAP,
+        saves: saves.count,
+        save_gap: saves.gap,
         ..Default::default()
     };
     driver::run_injected(&container, seed, injections)
@@ -228,13 +233,13 @@ fn program_path(files: &[File], environment: &[&str], name: &str) -> String {
 }
 
 /// Runs `command` in the reference once and on our kernel under every seed of
-/// [`crate::schedule_seeds`] with `saves` saves each, checks that every run printed the same and
-/// ended the same way, and returns our runs.
+/// [`crate::schedule_seeds`] with `saves` each, checks that every run printed the same and ended
+/// the same way, and returns our runs.
 pub fn assert_same(
     image: &str,
     directory: &Path,
     command: &[&str],
-    saves: usize,
+    saves: Saves,
 ) -> Vec<driver::Run> {
     let theirs = reference(image, directory, command);
     let mut runs = Vec::new();

@@ -41,10 +41,20 @@ fn prepare() -> PathBuf {
     out
 }
 
+/// Two saves, at most `gap` turns apart: about a third of the run's turns (measured).
+fn saves(gap: u64) -> runtimes::Saves {
+    runtimes::Saves { count: 2, gap }
+}
+
 #[test]
 fn system_program_matches_reference() {
     let directory = directory();
-    let runs = runtimes::assert_same(PYTHON, &directory, &["python3", "/wc/system.py"], 2);
+    let runs = runtimes::assert_same(
+        PYTHON,
+        &directory,
+        &["python3", "/wc/system.py"],
+        saves(4_000),
+    );
     eprintln!("warned: {:?}", runtimes::warned(&runs));
 }
 
@@ -82,7 +92,7 @@ fn language_test_modules_match_reference() {
     let directory = directory();
     let mut command = vec!["python3", "/wc/suite.py"];
     command.extend_from_slice(LANGUAGE_MODULES);
-    let runs = runtimes::assert_same(PYTHON, &directory, &command, 2);
+    let runs = runtimes::assert_same(PYTHON, &directory, &command, saves(13_000));
     eprintln!("warned: {:?}", runtimes::warned(&runs));
 }
 
@@ -91,6 +101,6 @@ fn system_test_modules_match_reference() {
     let directory = directory();
     let mut command = vec!["python3", "/wc/suite.py"];
     command.extend_from_slice(SYSTEM_MODULES);
-    let runs = runtimes::assert_same(PYTHON, &directory, &command, 2);
+    let runs = runtimes::assert_same(PYTHON, &directory, &command, saves(60_000));
     eprintln!("warned: {:?}", runtimes::warned(&runs));
 }

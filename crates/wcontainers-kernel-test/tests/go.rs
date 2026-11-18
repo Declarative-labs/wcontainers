@@ -33,8 +33,13 @@ fn build() -> PathBuf {
     out
 }
 
+/// Two saves, at most `gap` turns apart: about a third of the run's turns (measured).
+fn saves(gap: u64) -> runtimes::Saves {
+    runtimes::Saves { count: 2, gap }
+}
+
 #[test]
 fn program_matches_reference() {
-    let runs = runtimes::assert_same(IMAGE, &directory(), &["/wc/program"], 2);
+    let runs = runtimes::assert_same(IMAGE, &directory(), &["/wc/program"], saves(2_000));
     eprintln!("warned: {:?}", runtimes::warned(&runs));
 }

@@ -30,15 +30,28 @@ fn compile() -> PathBuf {
     out
 }
 
+/// Two saves, at most `gap` turns apart: about a third of the run's turns (measured).
+fn saves(gap: u64) -> runtimes::Saves {
+    runtimes::Saves { count: 2, gap }
+}
+
 #[test]
 fn start_up_matches_reference() {
-    let runs = runtimes::assert_same(JAVA, &directory(), &["java", "-version"], 1);
+    let runs = runtimes::assert_same(
+        JAVA,
+        &directory(),
+        &["java", "-version"],
+        runtimes::Saves {
+            count: 1,
+            gap: 2_000,
+        },
+    );
     eprintln!("warned: {:?}", runtimes::warned(&runs));
 }
 
 #[test]
 fn threads_and_collections_match_reference() {
     let command = ["java", "-Xmx64m", "-XX:+UseG1GC", "-cp", "/wc", "Load"];
-    let runs = runtimes::assert_same(JAVA, &directory(), &command, 2);
+    let runs = runtimes::assert_same(JAVA, &directory(), &command, saves(8_000));
     eprintln!("warned: {:?}", runtimes::warned(&runs));
 }
