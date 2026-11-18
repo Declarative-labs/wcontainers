@@ -268,7 +268,12 @@ pub struct BufferSpan<B: Backend> {
     pub offset: u64,
     pub size: u64,
     pub counter: Option<Kept<B, B::Buffer>>,
+    pub texel: Option<TexelPlace>,
 }
+
+/// A typed buffer view's format, the byte of its first element in its bound range and its element
+/// count.
+pub type TexelPlace = (Format, u32, u32);
 
 pub struct Sampler<B: Backend> {
     pub desc: SamplerDesc,
@@ -349,13 +354,15 @@ pub struct Shader<B: Backend> {
     pub reads_samples: bool,
     /// Where the plain program reads its helper constants.
     pub helpers: Rc<crate::shader::Helpers>,
+    /// The typed views it declares, whose formats each draw converts it for.
+    pub typed: Vec<crate::shader::TypedView>,
 }
 
 /// What a draw binds for an empty texture or sampler slot its shader reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandIn {
-    /// A view of zeros of this dimension and kind.
-    Zeros(ViewDimension, FormatKind),
+    /// A view of zeros of this dimension and kind, multisampled or not.
+    Zeros(ViewDimension, FormatKind, bool),
     /// Direct3D's default sampler state.
     DefaultSampler,
     /// A buffer of zeros read as a structured or raw buffer.
