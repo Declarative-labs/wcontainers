@@ -4,82 +4,118 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 
 ## Where things stand
 
-- N0 (the plan) is written (run 1) and revised four times (runs 2 to 5, 2026-11-18) to settle the findings
-  of four independent checks. No code in the repository.
-- Next: the owner's decisions of plan section 10, and N1 (the floor on Hypervisor.framework). N1 and N2 need
-  nothing from other tracks (only decision 2's names; the suggested ones are used until the owner rules).
-  N3, the first real programs, needs decision 1 and its changes R1 and R3 (runtime track; the test crate's
-  half by the kernel track) and A1. N5 needs decisions 1, 10 and 12 (R2, R3, R4 only under option A). N7
-  needs R5.
-- The magic-number sweep the brief asks for: this track owns no crate yet (only docs/native.md and this
-  file), so there was nothing to sweep. The plan names `wcontainers_abi::PAGE_SIZE` as the one page size and
-  says every number it names is one named constant in code.
+- N0 (the plan) is done. At the start of N1 (2026-11-18) the plan was corrected for the last check's open
+  findings and the brief's newest rulings (commit 64e30e56; how, below).
+- N1 (the floor on Hypervisor.framework) is done: every case of its bar passes (20 of 20), measurements
+  below. Commits a1f1e82b (A1), 91fb63ff (the inside), 0c8ef62d (the monitor and the test), and the two
+  after them.
+- Next: N2 (the native ARM64 output, instruction by instruction), which needs no other track's work; its
+  changes in other tracks' crates are this track's by the orchestrator's leave (plan 6.2, G1). It also
+  measures E's cost with the add's placement free. N3 needs decision 1 (R1, R3). N6 needs K2 (below).
+- The owner's: decisions 1, 2 (names chosen so far are used), 7, 12, 14 (routing is built until then),
+  and 10's final choice, which N1's trial narrows: option C does not work on Hypervisor.framework (below),
+  so it is A or B.
 
-## What run 5 changed in the plan, finding by finding (fourth check)
+## What changed in the plan at the start of N1 (the last check's findings)
 
-- Commit point (blocking): section 4 restated. Before the commit point a sequence may write withheld
-  registers and relocate guest values (stand-in moves), never change one; the position map records where
-  each relocated value is, and the floor puts them back on both sides. The closed set of roll-forward
-  fix-ups now has: a constant into a destination built in place (`adr`, `adrp`, x30 of `blr x30`), slot to
-  guest address, the exclusive monitor (a load exclusive's record written whole, the value read again; a
-  store exclusive's status and forgotten monitor), and the float status second call. Stand-ins (3.3): t
-  where one withheld register is named, else a guest register saved first. Load exclusive (3.4): address in
-  t, one load the commit point, record after. Store exclusive: `casp` through four stand-ins, status
-  written last as the meaning does.
-- Saving (blocking): new R5 (runtime track, kernel track's test crate). The test crate's `fork` save cannot
-  carry a virtual machine (the check's forkvm.out and kvmfork.out), so `stopped` only decides and the back
-  end saves: the WebAssembly back end by the same fork moved into it, the native one by its image brought
-  back in the same machine. Plan 5.8, 6.2, 7.1, N7 and decision 1 updated.
-- Partial loads and stores (blocking): new Split route (3.4). Every ARM64 load or store of more than 16
-  bytes takes a page test (3 or 4 instructions, no flags) and, when it crosses, a probe of both pages before
-  the copied instruction. Measured below: on the M5 loads over 16 bytes also change registers before
-  faulting, which the check had not seen.
-- Host-model results (blocking): the x87 transcendentals are routed inside (`astro-float`, as the meanings).
-  The x87 pointer fields of every x87 save are written as the meaning writes them (`fnstenv`, `fstenv`,
-  `fnsave`, `fsave` added to the Float status route). `rcpps` and kin, undefined flags and loads and stores
-  outside Split are copied only on a host model whose new behaviour probe (5.8) matches the meanings. A host
-  that differs runs the WebAssembly back end. New decision 14 asks refuse (recommended), route always, or
-  route per host.
-- Speed bar (blocking): the system call half is now the back end's own share of `getppid` (per-call time
-  less the kernel's own share), with program, statistic and the same bootstrap rule (8, decision 6).
-- Unpredictable encodings (minor): routed by register fields with t in place of the colliding register
-  (3.4); the differential test draws register fields with every collision.
-- Virtual CPUs (minor): an idle container parks its stack and frees its virtual CPU. The pool grows to the
-  containers ready at once, up to the platform's limit, and past it "waited for a virtual CPU" is counted
-  (5.1, 6.1).
-- N11 bar (3) now waits for K3. The RIP-relative cost is stated and measured statically (3.4). The
-  slow-path list gained the stand-in, the Split test, the x87 transcendentals and the virtual CPU wait. The
-  count forms' range is now +5.1% to +17.2% (lines 115-118). The `flags_word_function` citation is fixed.
-- Found in this run, not by the check: `clrex` is not decoded as nothing. The forms decoder takes it first
-  as `ClearExclusive`, which forgets the monitor (arm64/decode.rs:13, decode_forms.rs:63,
-  memory.rs:357-360). The plan had it in the Nothing route; it is now the Exclusive route's.
+- The count is E only (plan 3.1, 4, 8, 9, 10): defined per instruction and its own address; the add's place
+  is free within a straight-line run and adds may merge, corrected by the position map; N2 measures E's
+  cost so placed and the speed bar uses it. New test: the count at every stop is identical across
+  look-aheads and across the two outputs (T2, N4, N6).
+- Replay across outputs needs K2: placement low first and the memory size given at start (plan 5.7, 6.2,
+  7.2, N6, N11). N6 and N11 now name K2.
+- Minor: CNTPCT_EL0 is the Trap route's; the exclusive route's 32-bit pair store (`cas x` with a stand-in),
+  the load pair into one register (read again from t) and untagging (fault address from the guest
+  instruction); the x86-64 call, return and jump sequences are left to N9, with what any of them must
+  meet; G1 names this track's changes in other tracks' crates for N2, and N4 names T1; decision 14's default
+  is routing (every load and store that can cross a page takes the Split test, x86-64's reciprocals and
+  undefined-flag forms go to the inside), counted "host-model result routed"; every bar includes the
+  literal check once it lands.
+- The owner's names: `Executor`, `System`, `LocalSystem` (`GuestMachine`, `TranslatorSettings` and
+  `TaskId` are not used in the plan's text yet). Section 10 lists which decisions the orchestrator settled.
+- The thread design agreed with the owner (plan 5.3): one virtual CPU per running thread, a table root per
+  thread, the kernel entered by one caller at a time, the four settings, and pages held elsewhere through
+  `page_request`, `page_give`, `page_take`, `page_copy`.
 
-## What run 4 changed (short)
+## N1: what was built
 
-Float status route (FPSR, FPCR, MXCSR and the x86 saves wrapped by two calls into the inside); Nothing route
-for the hint space, `prfm` and barriers; the virtual machine's own cost recomputed (+8.5% cycles with 4 KiB
-pages, +2.8% with 2 MiB blocks) and 2 MiB entries with counted splits; option C needs EL2 on
-Hypervisor.framework; instruction-cache maintenance after every code write; the stack-frame exemption
-named (decision 13); TPIDRRO_EL0 holds the ARM64 stop word; retranslation only for replay.
+- crates/wcontainers-inside (`no_std`; names are suggestions): `layout` (the guest-physical and virtual
+  layout, every number one constant derived from `PAGE_SIZE` where it can be), `link` (the start record,
+  the link page, the requests), `boot` (the boot map and boot registers the monitor applies), and, built
+  only for `aarch64-unknown-none`, `floor`: entry and vectors (`floor/entry.rs`), frames and translation
+  tables with page and block entries, split break before make, TLB invalidation (`floor/tables.rs`),
+  address spaces with per-process TTBR1 tops sharing the global entries, a table root and identifier per
+  view (per thread), the GIC through `arm-gic`, the virtual timer, code made visible (CTR_EL0's lines),
+  the stop word in TPIDRRO_EL0, the doorbell. `src/bin/floor-cases` is N1's test program (never shipped):
+  hand-written EL0 snippets, one report per case.
+- crates/wcontainers-hypervisor: the `Hypervisor`, `Machine`, `VirtualCpu` and `Stopper` traits (plan 5.9),
+  their Hypervisor.framework implementation over `applevisor` (`src/hvf.rs`, the only file that names the
+  platform), guest memory as one reservation with give-back by unmap, fresh mmap and map, the ELF loader
+  and boot. Its build script builds the inside for the bare-metal target with a nested cargo into its own
+  output directory and embeds the programs (`programs::FLOOR_CASES`).
+- tests/floor.rs (harness off): boots the cases, serves the link, makes 300 stops from another thread, and
+  checks every report; then the counter trial in a machine with EL2, recorded only.
 
-## What run 3 changed (short)
+## How to run
 
-x86-64 TF and AC (`popf` and `iretq` routed, single steps reported only at guest boundaries or a `rep`);
-read-only thread page split from the register page, and only our own host addresses jumped to; give-back
-by unmap, fresh mmap and map; milestones reordered so nothing before N3 needs a decision; store exclusive
-with nothing remembered makes `stadd` of zero; one rule for global entries and shared identifiers; decision
-10's options B and C; the 2^45 ceiling under the brief's ruling (decision 9); the finder carries the
-meanings; the speed bar in cycles with a bootstrap rule; the every-offset test by hardware step; two
-withheld x86-64 registers; `PAGE_SIZE` as the one constant.
+From the checkout, in the Nix shell:
+- the bar: `CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER=$PWD/crates/wcontainers-hypervisor/sign-and-run nix
+  develop -c cargo test -j 4 -p wcontainers-hypervisor --test floor` (the runner signs the binary ad hoc
+  with crates/wcontainers-hypervisor/hypervisor.entitlements and runs it; about half a second);
+- lint: `nix develop -c cargo clippy -j 4 -p wcontainers-inside -p wcontainers-hypervisor --all-targets --
+  -D warnings` and `nix develop -c cargo clippy -j 4 -p wcontainers-inside --target aarch64-unknown-none
+  --bins --lib -- -D warnings`.
 
-## What run 2 changed (short)
+## N1 measurements (M5 Max, macOS 27.2, the floor test; load 55 to 92 over the runs)
 
-ARM64 jump through a register (tag ignored, misaligned target faults in hardware, TBI0); x86 GS base and
-descriptor reads routed; routing proof as a static and a differential test; one commit point per host
-sequence with roll-back and roll-forward; runtime interface changes as decision 1; one virtual machine per
-host process (decision 12); load-time addresses; per-process mirror; LSE2 alignment tests; the probe refusing
-hosts short of the offer; the replay check against the thread's own stop word; the count property and its
-test; slow paths named; x86 `rep` finished by hardware; K3 for the other project.
+- Bar cases, each run: 20 of 20 pass (five runs after the last fix).
+- Doorbell round trip (EL1 `hvc` to the monitor and back, 1000 timed by the guest's counter): 897, 912 and
+  906 ns (three runs, load 72 to 86).
+- Virtual timer interrupt, deadline to the inside's handler (24 per run): median 41 ns in each of three
+  runs (the counter's resolution is 41.7 ns); maxima 291 ns, 13.6 µs, 2.19 ms (load 72 to 86).
+- An interrupt raised by `hv_gic_set_spi` from another host thread to the inside's handler, by the host's
+  clock against the guest's counter less the virtual timer offset (24 per run): medians 2.42, 4.13 and
+  3.25 µs; maxima 3.9, 46.5 and 14.4 µs.
+- Stopping the virtual CPU from another host thread with `hv_vcpus_exit` (300 stops per run, seeded waits
+  of 200 to 2000 µs, seed 0x9e3779b97f4a7c15), from the decision to `hv_vcpu_run` returning on the virtual
+  CPU's thread: medians 2.33, 2.21 and 2.46 µs; 90th percentiles 3.8, 3.5 and 3.7 µs; 99th 0.28, 0.02 and
+  0.32 ms; maxima 2.4, 0.75 and 1.9 ms (load 55 to 86; the tail is the host's scheduling under load). In
+  every run the pc was inside the spin loop at every stop and its count never went back.
+- Give-back: 64 MiB touched then given back lowered the footprint from 73.9 MB to 6.8 MB (67,141,680 bytes,
+  all of it); the range read zeros after.
+- Late code: 24 of 24 rounds ran the code the monitor wrote next to code that had run, after the maintenance.
+- Option C (decision 10), a machine with EL2, PMUVer set to 1 by the host (ID_AA64DFR0_EL1 0x10305106
+  reads back): the virtual CPU enters at EL1; PMCR_EL0 reads 0x41, N (event counters) 0; PMEVCNTR0_EL0
+  written 0xfff0bdc0 reads 0; the cycle counter counts and passes its 64-bit overflow with no overflow flag
+  and no interrupt (PMINTENSET_EL1 0x80000000 as written); only the 1 s timeout timer came. In at least
+  three runs. So C does not work here.
+
+## Asked of the kernel track (K2, needed before N6)
+
+1. The memory size the guest is told (MemTotal and the rest of /proc/meminfo, `sysinfo`, tmpfs limits)
+   comes from the container's start, as runtime.md section 8 asks ("the runtime gives it in Start"), not
+   from `cx.cpu.address_space().end` (kernel/container.rs:420; read at fs/proc.rs:1374-1380 and halved at
+   container.rs:803).
+2. Placement low first, in tiers, never depending on the ceiling (runtime.md section 8, lines 416-425), in
+   place of top-down from 128 MiB below `address_space().end` (kernel/memory.rs:254-260 and :407-430, the end
+   from loader.rs:503 and task.rs:726).
+With both, a process gets the same addresses and is told the same memory size under the WebAssembly back
+end (ceiling just under 4 GiB) and the native one (2^45), which replay across the outputs needs.
+
+## Licences of what N1 added (crates.io, 2026-11-18)
+
+applevisor 1.0.0 and applevisor-sys 1.0.0 MIT OR Apache-2.0; aarch64-paging 0.12.3 MIT OR Apache-2.0;
+aarch64-cpu 12.0.0 and tock-registers 0.12.0 MIT/Apache-2.0; arm-gic 0.11.0, arm-sysregs 0.5.2 and
+safe-mmio 0.4.0 MIT OR Apache-2.0; spin 0.10.1 MIT; object 0.37.3 Apache-2.0 OR MIT; libc MIT OR
+Apache-2.0; fastrand 2.5.0 Apache-2.0 OR MIT (test only).
+
+## Literals
+
+- The two new crates were written under the rule: every number is derived (from `PAGE_SIZE`, field offsets,
+  the crates' register fields) or one named constant. Marked: the register save and restore in
+  floor/entry.rs writes register n at x + n words, the numbers being the registers' own (a comment there).
+- The automatic check (phase-1-literals) has not landed (origin/phase-1-literals is still at 68013b31), so
+  no baseline was made.
 
 ## What N0 checked, and how
 
@@ -162,7 +198,8 @@ Experiments (under pyro-parked/wcontainers-scratch/native/experiments):
   dynasmrt 5.1.0 MPL-2.0 (rejected); vm-memory 0.18.0 Apache-2.0 OR BSD-3-Clause (not needed); gimli 0.34.0
   MIT OR Apache-2.0. None is a dependency yet.
 
-Not checked, and named in the plan as such: `hv_gic_set_spi` (N1), a guest performance counter's overflow
+Not checked at N0, and named in the plan as such (N1 has since checked `hv_gic_set_spi`, the instruction-cache
+maintenance, block entries and their split, and the PMU's overflow, above): `hv_gic_set_spi` (N1), a guest performance counter's overflow
 interrupt (decision 10 option C; N1 with EL2 enabled and PMUVer set, N8), 2 MiB entries and the contiguous
 bit in the floor (N1, N4), the instruction-cache maintenance sequence curing the late-write case (N1),
 `KVM_IRQFD`, the DR0 breakpoint after a `rep`, TF single step under KVM and its #DB cost, UMIP and PCID under
@@ -171,9 +208,9 @@ ARM64 doorbell (no KVM ARM64 machine at hand; N10), the store exclusive under in
 cost of a step to a pool thread (N5), `KVM_CAP_MAX_VCPUS` on the laptop (N8), the behaviour probe's time
 (N2, N9), the Split route's page test cost (N4).
 
-## How to run
+## How to run N0's experiments
 
-Nothing to run in the repository yet. The experiments: `python3 -I regs.py <ELF files>` (ARM64) and
+The experiments: `python3 -I regs.py <ELF files>` (ARM64) and
 `python3 -I regs86.py <ELF files>` (x86-64, on the laptop); in experiments/n0r2 and n0r3, `clang -O1 -o X X.c
 -framework Hypervisor && codesign -s - --entitlements hvf.entitlements -f X && ./X` for branch, step and
 idregs, and in n0r4 for tpidrro (`./tpidrro`, then `./tpidrro el2`); `python3 -I vmcost.py <summary json>`
@@ -182,11 +219,31 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
 
 ## Departures from the plan
 
+- N1, the build: the Nix shell links against the macOS 14.4 SDK, which does not declare Hypervisor.framework's
+  GIC calls and its EL2 settings (macOS 15). The monitor's build script tells the linker to leave those nine
+  calls to be found when the program loads (`-Wl,-U,_name`, list `LATER_CALLS` in
+  crates/wcontainers-hypervisor/build.rs); this reaches only that package's own binaries and tests. A
+  binary in another package that links the monitor needs the same, until the flake's SDK is 15 or later
+  (the flake is not this track's; for the orchestrator).
+- N1, boot: the monitor writes the boot map of the inside's half and the boot registers (computed by the
+  inside's `boot` module, so the facts stay in one place), and the inside starts at its link address with
+  its MMU on, instead of turning it on itself: no early position-independent code is needed.
+- N1, the interrupt controller: the floor sets up only the redistributors of virtual CPUs made so far
+  (those of virtual CPUs not yet made do not exist and trap to the host).
+- N1, two containers: no kernel or container exists yet, so each of the two processes has its own heap page
+  in the heap region; a container's heap shared by its processes comes with N3 and N5.
+- N1, block entries: the floor maps and splits them (break before make) and the test exercises both;
+  choosing them from the kernel's record comes with the native `Cpu` side.
+
 - The brief's addendum asks that our pages the guest can reach either fault as on Linux or be named and
   counted. The plan names them (plan 7.2) but does not count accesses to them: counting would need a check
   on every guest access. Decision 4 puts this to the owner.
 
 ## For the orchestrator
+
+- Decision 10: option C does not work on Hypervisor.framework on this M5 (no event counters; the cycle
+  counter's overflow raises nothing). By the plan's recommendation the choice is now A or B, the owner's.
+- The flake's macOS SDK (14.4) lacks Hypervisor.framework's GIC and EL2 calls; see Departures.
 
 - The plan asks changes of other tracks (plan section 6.2): R1, R2, R3, R5 of the runtime track (R3 and R5
   also the kernel track's test crate); R4 only under option A of decision 10; T1, T2, T3 of the translator
