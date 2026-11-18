@@ -919,12 +919,19 @@ fn place_elf(
                 },
             )?;
         }
-        if stop > file_pages_end {
+        // Zeroed memory past the file's pages; a segment with no file bytes is zeroed from its first
+        // page (`elf_load`).
+        let zeroed_start = if segment_file > 0 {
+            file_pages_end
+        } else {
+            start
+        };
+        if stop > zeroed_start {
             map.insert(
                 cx.cpu,
                 memory,
                 Mapping {
-                    start: file_pages_end,
+                    start: zeroed_start,
                     end: stop,
                     permissions,
                     allowed: Permissions::all(),
