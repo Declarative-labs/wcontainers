@@ -1548,6 +1548,11 @@ Run 16's entries:
 
 ## Installed on the desktop
 
+Run 25: nothing installed. The rig's build folder of this branch,
+C:\wc\target\phase-2-graphics-direct3d-12 (7.1 GB), was deleted at the end of the run, so the
+next run builds from clean. On the Mac a `cargo check` made target/ in this checkout (218 MB,
+it fails at the shaders crate's missing submodules); deleted. Logs stay in scratch run25.
+
 Run 24: nothing installed. The rig's build folder of this branch, C:\wc\target\phase-2-graphics-direct3d-12
 (20.0 GB), was deleted at the end of the run, so the next run builds from clean (about 8 minutes
 more). No build folder was made on the Mac.
