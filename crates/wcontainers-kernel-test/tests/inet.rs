@@ -173,3 +173,10 @@ fn tcp_disconnects_match_reference() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     assert_same_output(&out, "tcpdisconnect", &[]);
 }
+
+/// Socket ioctls' order of checks.
+#[test]
+fn socket_ioctl_checks_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "sockioctls", &[]);
+}

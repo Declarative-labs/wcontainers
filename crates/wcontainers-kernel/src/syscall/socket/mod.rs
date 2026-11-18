@@ -531,6 +531,12 @@ fn unix_kind(kind: u32, protocol: u32) -> Result<u32, Errno> {
     }
 }
 
+/// The size of `struct ifreq`, and of `struct rtentry` on ARM64 (`linux/route.h`, which
+/// linux-raw-sys does not carry: three socket addresses, then the flags, metrics, device name,
+/// mtu, window and irtt).
+const IFREQ_SIZE: u64 = size_of::<crate::linux::net::ifreq>() as u64;
+const RTENTRY_SIZE: u64 = 120;
+
 /// AF_ALG, which is not built: the reference's host (Docker Desktop's virtual machine, measured
 /// even in a privileged container) refuses to make such sockets with EPERM, at `socket`'s entry and
 /// where any socket is made, so the same is answered (counted).
@@ -4109,8 +4115,12 @@ pub(super) fn ioctl(
                 return put_int(kernel, cx, amount as i32);
             }
             // `unix_ioctl`: at the urgent byte, or at an emptied buffer with none past it or the
-            // urgent byte next. `tcp_ioctl`: the urgent byte, read or not, is next.
-            SIOCATMARK => {
+            // urgent byte next. `tcp_ioctl`: the urgent byte, read or not, is next. UDP has no
+            // urgent data and does not know it; a local socket other than a stream refuses it.
+            SIOCATMARK if family == AF_UNIX && kind != SOCK_STREAM => {
+                return Err(Errno::EOPNOTSUPP);
+            }
+            SIOCATMARK if kind == SOCK_STREAM => {
                 let own = socket.borrow();
                 let mut queue = own.queue.iter();
                 let mark = if family == AF_UNIX {
@@ -4156,7 +4166,25 @@ pub(super) fn ioctl(
         | SIOCGIFMAP | SIOCGIFINDEX | SIOCGIFTXQLEN => {
             interface_question(kernel, cx, tid, request, argument)
         }
-        // Requests that change the network need CAP_NET_ADMIN, which Docker does not give.
+        // Requests that change the network need CAP_NET_ADMIN, which Docker does not give; all
+        // but the ARP ones copy their structure in first (`get_user_ifreq`, `inet_ioctl`).
+        SIOCSIFFLAGS | SIOCSIFMETRIC | SIOCSIFMTU | SIOCSIFNAME | SIOCSIFHWADDR | SIOCSIFSLAVE
+        | SIOCADDMULTI | SIOCDELMULTI | SIOCSIFHWBROADCAST | SIOCSIFMAP | SIOCSIFTXQLEN
+        | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK | SIOCSIFDSTADDR | SIOCSIFPFLAGS
+        | SIOCSIFLINK | SIOCDIFADDR | SIOCADDRT | SIOCDELRT
+            if guest(kernel, cx, tid)
+                .read(
+                    argument,
+                    if matches!(request, SIOCADDRT | SIOCDELRT) {
+                        RTENTRY_SIZE
+                    } else {
+                        IFREQ_SIZE
+                    },
+                )
+                .is_err() =>
+        {
+            Err(Errno::EFAULT)
+        }
         SIOCSIFFLAGS | SIOCSIFMETRIC | SIOCSIFMTU | SIOCSIFNAME | SIOCSIFHWADDR | SIOCSIFSLAVE
         | SIOCADDMULTI | SIOCDELMULTI | SIOCSIFHWBROADCAST | SIOCSIFMAP | SIOCSIFTXQLEN
         | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK | SIOCSIFDSTADDR | SIOCSIFPFLAGS
