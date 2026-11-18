@@ -1182,6 +1182,9 @@ Run 30 (what the fronts wait on: the stage helper after a domain stage, layered 
   (scratch `run30/gather`). If the front still sees the refusal, it comes with a variant: the
   front's key is needed.
 - New own shaders `gs_tess_point`, `gs_tess_line`, `gs_tess_tri` (tessellation.hlsl, fxc).
+- At the end of the run the build folders were deleted: the laptop's
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders` (6.2 GB) and the desktop's
+  `C:\wc\target\phase-2-graphics-shaders`. No build output was made in scratch.
 
 Next (in order):
 - The fronts (theirs), now possible: `VariantFlags::STORAGE_OFFSET` where a raw or structured view's
