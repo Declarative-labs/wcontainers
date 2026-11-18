@@ -691,6 +691,40 @@ impl GeometryShader {
     }
 }
 
+/// A hull or domain shader: the stage's slots and its conversion.
+macro_rules! stage_shader {
+    ($name:ident, $imp:ident, $iface:ident, $vtbl:ident) => {
+        pub struct $name {
+            pub front: Locked<Rc<front::Shader<Chosen>>>,
+            pub(super) child: Child,
+        }
+
+        counted!($name => $imp { main: $iface, $vtbl });
+
+        impl $name {
+            pub fn new(front: Rc<front::Shader<Chosen>>, device: ID3D11Device) -> Self {
+                $name {
+                    front: Locked::new(front),
+                    child: Child::new(device),
+                }
+            }
+        }
+    };
+}
+
+stage_shader!(
+    HullShader,
+    HullShader_Impl,
+    ID3D11HullShader,
+    ID3D11HullShader_Vtbl
+);
+stage_shader!(
+    DomainShader,
+    DomainShader_Impl,
+    ID3D11DomainShader,
+    ID3D11DomainShader_Vtbl
+);
+
 pub struct ComputeShader {
     pub front: Locked<Rc<front::Shader<Chosen>>>,
     pub(super) child: Child,

@@ -28,17 +28,22 @@ use crate::object::*;
 use crate::shader::{Helpers, StageVariant};
 
 mod geometry;
+mod tessellation;
 mod through;
 pub(crate) use geometry::StageRun;
+pub(crate) use tessellation::TessRun;
 use through::Through;
 
 /// The shader stages whose slots this context keeps: vertex (set 0), pixel (set 1), compute (set 0
-/// of its own programs) and geometry (set 0 of the stage helper's compute programs).
+/// of its own programs), geometry and hull (set 0 of the stage helper's compute programs) and domain
+/// (set 0 of the program drawing the tessellated points).
 pub const VERTEX: usize = 0;
 pub const PIXEL: usize = 1;
 pub const COMPUTE: usize = 2;
 pub const GEOMETRY: usize = 3;
-const STAGES: usize = 4;
+pub const HULL: usize = 4;
+pub const DOMAIN: usize = 5;
+const STAGES: usize = 6;
 
 /// Unordered access slots of the pixel and compute stages at feature level 11_0.
 pub const UAV_SLOTS: usize = 8;
@@ -87,6 +92,8 @@ pub struct ContextState<B: Backend> {
     gs: Option<Rc<Geometry<B>>>,
     /// The geometry shader's stage, whose slots the geometry set binds.
     gs_stage: Option<Rc<Shader<B>>>,
+    hs: Option<Rc<Shader<B>>>,
+    ds: Option<Rc<Shader<B>>>,
     /// The stream output targets.
     so_targets: [Option<Rc<Buffer<B>>>; 4],
     /// The vertex stage's set is made for the stage helper's compute programs.
@@ -147,6 +154,8 @@ impl<B: Backend> ContextState<B> {
             cs: None,
             gs: None,
             gs_stage: None,
+            hs: None,
+            ds: None,
             so_targets: Default::default(),
             vertex_compute: false,
             through: Default::default(),
@@ -159,12 +168,10 @@ impl<B: Backend> ContextState<B> {
             constant_ranges: std::array::from_fn(|_| vec![None; 14]),
             resources: std::array::from_fn(|_| vec![None; 128]),
             samplers: std::array::from_fn(|_| vec![None; 16]),
-            uavs: [
-                Vec::new(),
-                vec![None; UAV_SLOTS],
-                vec![None; UAV_SLOTS],
-                Vec::new(),
-            ],
+            uavs: std::array::from_fn(|stage| match stage {
+                PIXEL | COMPUTE => vec![None; UAV_SLOTS],
+                _ => Vec::new(),
+            }),
             targets: vec![None; 8],
             depth: None,
             blend: None,
@@ -175,7 +182,7 @@ impl<B: Backend> ContextState<B> {
             raster: None,
             viewports: Vec::new(),
             scissors: Vec::new(),
-            sets: [None, None, None, None],
+            sets: Default::default(),
             sets_dirty: [true; STAGES],
             windows: Default::default(),
             pulled_set: 0,
@@ -415,6 +422,20 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    pub fn hs_set_shader(&mut self, shader: Option<Rc<Shader<B>>>) {
+        if !same(&self.ctx.hs, &shader) {
+            self.ctx.hs = shader;
+            self.ctx.sets_dirty[HULL] = true;
+        }
+    }
+
+    pub fn ds_set_shader(&mut self, shader: Option<Rc<Shader<B>>>) {
+        if !same(&self.ctx.ds, &shader) {
+            self.ctx.ds = shader;
+            self.ctx.sets_dirty[DOMAIN] = true;
+        }
+    }
+
     pub fn gs_set_shader(&mut self, shader: Option<Rc<Geometry<B>>>) {
         if !same(&self.ctx.gs, &shader) {
             self.ctx.gs_stage = shader
@@ -472,7 +493,7 @@ impl<B: Backend> Device<B> {
             if stage == COMPUTE {
                 self.unbind_written(&[COMPUTE]);
             } else {
-                self.unbind_written(&[VERTEX, PIXEL, COMPUTE, GEOMETRY]);
+                self.unbind_written(&[VERTEX, PIXEL, COMPUTE, GEOMETRY, HULL, DOMAIN]);
             }
         }
         for (i, v) in views.iter().enumerate() {
@@ -664,7 +685,7 @@ impl<B: Backend> Device<B> {
             self.ctx.targets = new;
             self.ctx.depth = depth;
             // Binding a subresource as a target unbinds its shader resource views, as in Direct3D.
-            self.unbind_written(&[VERTEX, PIXEL, COMPUTE, GEOMETRY]);
+            self.unbind_written(&[VERTEX, PIXEL, COMPUTE, GEOMETRY, HULL, DOMAIN]);
         }
         Ok(())
     }
@@ -1818,7 +1839,7 @@ impl<B: Backend> Device<B> {
     /// is made again.
     fn grow_constants(&mut self) -> Result<()> {
         let mut small = Vec::new();
-        for stage in [VERTEX, PIXEL, COMPUTE] {
+        for stage in 0..STAGES {
             let shader = self.stage_shader(stage);
             let Some(shader) = shader.as_ref().filter(|_| self.ctx.sets_dirty[stage]) else {
                 continue;
@@ -1915,7 +1936,7 @@ impl<B: Backend> Device<B> {
     /// Copies again the constant buffer windows bound shorter than their blocks whose buffers were
     /// written since.
     fn refresh_windows(&mut self) -> Result<()> {
-        for stage in [VERTEX, PIXEL, COMPUTE] {
+        for stage in 0..STAGES {
             if self.ctx.windows[stage].is_empty() {
                 continue;
             }
@@ -1933,6 +1954,8 @@ impl<B: Backend> Device<B> {
             VERTEX => &self.ctx.vs,
             PIXEL => &self.ctx.ps,
             GEOMETRY => &self.ctx.gs_stage,
+            HULL => &self.ctx.hs,
+            DOMAIN => &self.ctx.ds,
             _ => &self.ctx.cs,
         }
     }
@@ -2239,6 +2262,7 @@ impl<B: Backend> Device<B> {
         };
         let stages = match stage {
             VERTEX if !self.ctx.vertex_compute => StageSet::VERTEX,
+            DOMAIN => StageSet::VERTEX,
             PIXEL => StageSet::FRAGMENT,
             _ => StageSet::COMPUTE,
         };
@@ -3122,9 +3146,9 @@ impl<B: Backend> Device<B> {
                 .hit(SlowPath::DrawBaseFromArguments);
         }
         if vk.pulled != 0 {
-            self.backend
-                .slow_paths()
-                .hit(SlowPath::InstanceRateInShader);
+            for path in self.ctx.layout.iter().flat_map(|l| &l.pulled_paths) {
+                self.backend.slow_paths().hit(*path);
+            }
         }
         if vs
             .typed
@@ -3135,6 +3159,18 @@ impl<B: Backend> Device<B> {
             self.backend
                 .slow_paths()
                 .hit(SlowPath::TexelBufferAsStorage);
+        }
+        if self.ctx.hs.is_some() || self.ctx.ds.is_some() {
+            return self.draw_tessellated(
+                &vs,
+                vk,
+                ps.as_ref(),
+                pk,
+                masked.as_ref(),
+                range,
+                first_instance,
+                instances,
+            );
         }
         if let Some(gs) = self.ctx.gs.clone() {
             let drawn = self.draw_staged(

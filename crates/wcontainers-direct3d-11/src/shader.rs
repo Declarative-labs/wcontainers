@@ -204,6 +204,8 @@ pub struct SignatureElement {
     pub mask: u8,
     /// The geometry stream it is written to (outputs of `OSG5` and `OSG1`; 0 otherwise).
     pub stream: u32,
+    /// Its scalar type (`D3D_REGISTER_COMPONENT_TYPE`): 1 unsigned, 2 signed, 3 float.
+    pub component: u32,
 }
 
 /// The input signature (`ISGN`, or `ISG1` of shader model 5.1) of a DXBC container; empty where it
@@ -258,6 +260,7 @@ fn signature(bytecode: &[u8], tags: &[([u8; 4], usize, bool)]) -> Result<Vec<Sig
                 semantic: String::from_utf8_lossy(name).into_owned(),
                 index: word(base + 4)?,
                 system: word(base + 8)?,
+                component: word(base + 12)?,
                 register: word(base + 16)?,
                 mask: word(base + 20)? as u8,
                 stream: if streams { word(start)? } else { 0 },

@@ -17,7 +17,7 @@ use windows::core::{
 
 use wcontainers_direct3d_11::desc::{Box3, Viewport, map};
 use wcontainers_direct3d_11::object::Resource;
-use wcontainers_direct3d_11::{COMPUTE, GEOMETRY, PIXEL, UAV_SLOTS, VERTEX, format};
+use wcontainers_direct3d_11::{COMPUTE, DOMAIN, GEOMETRY, HULL, PIXEL, UAV_SLOTS, VERTEX, format};
 
 use super::counted::{Counted, Held};
 use super::*;
@@ -128,14 +128,15 @@ struct Bound {
     ps: Option<Held<PixelShader_Impl>>,
     cs: Option<Held<ComputeShader_Impl>>,
     gs: Option<Held<GeometryShader_Impl>>,
+    hs: Option<Held<HullShader_Impl>>,
+    ds: Option<Held<DomainShader_Impl>>,
     /// The stream output targets.
     so_targets: [Option<Held<Buffer_Impl>>; 4],
-    /// Per stage (vertex, pixel, compute, geometry, then the hull and domain stages, whose
-    /// constant buffers and samplers are kept for the getters alone), per slot.
+    /// Per stage (vertex, pixel, compute, geometry, hull, domain), per slot.
     constant_buffers: [Vec<Option<Held<Buffer_Impl>>>; 6],
     /// Per stage and slot, the constants bound (first, count); none for the whole buffer.
     constant_ranges: [Vec<Option<(u32, u32)>>; 6],
-    resources: [Vec<Option<Held<ShaderResourceView_Impl>>>; 4],
+    resources: [Vec<Option<Held<ShaderResourceView_Impl>>>; 6],
     samplers: [Vec<Option<Held<SamplerState_Impl>>>; 6],
     uavs: [Vec<Option<Held<UnorderedAccessView_Impl>>>; 3],
     layout: Option<Held<InputLayout_Impl>>,
@@ -160,6 +161,8 @@ impl Default for Bound {
             ps: None,
             cs: None,
             gs: None,
+            hs: None,
+            ds: None,
             so_targets: Default::default(),
             constant_buffers: Default::default(),
             constant_ranges: Default::default(),
@@ -181,15 +184,6 @@ impl Default for Bound {
         }
     }
 }
-
-/// The stages no shader can be made for (hull, domain): what is bound to them is kept for the
-/// getters, and no draw reads it.
-const HULL: usize = 4;
-const DOMAIN: usize = 5;
-
-/// Direct3D's slot counts of constant buffers and samplers.
-const CONSTANT_BUFFER_SLOTS: u32 = 14;
-const SAMPLER_SLOTS: u32 = 16;
 
 /// Stores `items` into `slots` from `start`, growing it as needed.
 fn store<T: Clone>(slots: &mut Vec<Option<T>>, start: u32, items: Vec<Option<T>>) {
@@ -438,6 +432,92 @@ impl Context {
         load(&self.bound.borrow().resources[GEOMETRY], start, n, out);
     }
 
+    pub(super) fn hs_set_shader(
+        &self,
+        shader: Ref<ID3D11HullShader>,
+        _c: *const Option<ID3D11ClassInstance>,
+        _n: u32,
+    ) {
+        let h = held_one::<_, HullShader>(&shader);
+        let s = h.as_ref().map(|s| (*s.front).clone());
+        self.run("HSSetShader", move |f| {
+            f.hs_set_shader(s.clone());
+            Ok(())
+        });
+        self.bound.borrow_mut().hs = h;
+    }
+
+    pub(super) fn hs_get_shader(
+        &self,
+        out: OutRef<ID3D11HullShader>,
+        _c: OutRef<ID3D11ClassInstance>,
+        count: *mut u32,
+    ) {
+        no_instances(count);
+        let _ = out.write(public(&self.bound.borrow().hs));
+    }
+
+    pub(super) fn ds_set_shader(
+        &self,
+        shader: Ref<ID3D11DomainShader>,
+        _c: *const Option<ID3D11ClassInstance>,
+        _n: u32,
+    ) {
+        let h = held_one::<_, DomainShader>(&shader);
+        let s = h.as_ref().map(|s| (*s.front).clone());
+        self.run("DSSetShader", move |f| {
+            f.ds_set_shader(s.clone());
+            Ok(())
+        });
+        self.bound.borrow_mut().ds = h;
+    }
+
+    pub(super) fn ds_get_shader(
+        &self,
+        out: OutRef<ID3D11DomainShader>,
+        _c: OutRef<ID3D11ClassInstance>,
+        count: *mut u32,
+    ) {
+        no_instances(count);
+        let _ = out.write(public(&self.bound.borrow().ds));
+    }
+
+    pub(super) fn hs_set_shader_resources(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11ShaderResourceView>,
+    ) {
+        self.set_shader_resources(HULL, start, n, list);
+    }
+
+    pub(super) fn hs_get_shader_resources(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11ShaderResourceView>,
+    ) {
+        load(&self.bound.borrow().resources[HULL], start, n, out);
+    }
+
+    pub(super) fn ds_set_shader_resources(
+        &self,
+        start: u32,
+        n: u32,
+        list: *const Option<ID3D11ShaderResourceView>,
+    ) {
+        self.set_shader_resources(DOMAIN, start, n, list);
+    }
+
+    pub(super) fn ds_get_shader_resources(
+        &self,
+        start: u32,
+        n: u32,
+        out: *mut Option<ID3D11ShaderResourceView>,
+    ) {
+        load(&self.bound.borrow().resources[DOMAIN], start, n, out);
+    }
+
     /// `SOSetTargets`: the slots past the buffers given are unbound; an offset of -1 appends where
     /// the buffer was filled to, and no offsets start each buffer from its beginning.
     pub(super) fn so_set_targets(
@@ -525,13 +605,9 @@ impl Context {
                 .collect()
         };
         let r = ranges.clone();
-        let kept = if stage >= HULL {
-            self.unused_stage("SetConstantBuffers", start, n, CONSTANT_BUFFER_SLOTS)
-        } else {
-            self.run("SetConstantBuffers", move |f| {
-                f.set_constant_ranges(stage, start, &b, &r)
-            })
-        };
+        let kept = self.run("SetConstantBuffers", move |f| {
+            f.set_constant_ranges(stage, start, &b, &r)
+        });
         if kept {
             let mut bound = self.bound.borrow_mut();
             store(&mut bound.constant_buffers[stage], start, h);
@@ -688,11 +764,7 @@ impl Context {
     ) {
         let h = held::<_, SamplerState>(list, n);
         let s = fronts(&h, |s| &*s.front);
-        let kept = if stage >= HULL {
-            self.unused_stage("SetSamplers", start, n, SAMPLER_SLOTS)
-        } else {
-            self.run("SetSamplers", move |f| f.set_samplers(stage, start, &s))
-        };
+        let kept = self.run("SetSamplers", move |f| f.set_samplers(stage, start, &s));
         if kept {
             store(&mut self.bound.borrow_mut().samplers[stage], start, h);
         }
@@ -738,7 +810,7 @@ impl Context {
                 .map(|t| (*t.front).clone())
                 .chain(depth.iter().map(|d| (*d.front).clone()))
                 .collect();
-            for stage in [VERTEX, PIXEL, COMPUTE, GEOMETRY] {
+            for stage in [VERTEX, PIXEL, COMPUTE, GEOMETRY, HULL, DOMAIN] {
                 let writer = if stage == COMPUTE { COMPUTE } else { PIXEL };
                 for h in resources[stage].iter_mut() {
                     let written = h.as_ref().is_some_and(|v| {
@@ -759,7 +831,7 @@ impl Context {
         {
             let front = self.front.borrow();
             let mut bound = self.bound.borrow_mut();
-            for stage in [VERTEX, PIXEL, COMPUTE, GEOMETRY] {
+            for stage in [VERTEX, PIXEL, COMPUTE, GEOMETRY, HULL, DOMAIN] {
                 for (slot, h) in bound.resources[stage].iter_mut().enumerate() {
                     if h.is_some() && !front.shader_resource_bound(stage, slot as u32) {
                         gone.push(h.take());
@@ -2168,26 +2240,6 @@ impl Context {
         load(&self.bound.borrow().samplers[DOMAIN], start, n, out);
     }
 
-    /// A binding call on a stage no shader can be made for: kept if it lies within the stage's
-    /// `slots`, otherwise invalid and dropped, as Direct3D drops it.
-    fn unused_stage(&self, what: &'static str, start: u32, n: u32, slots: u32) -> bool {
-        if start.checked_add(n).is_some_and(|end| end <= slots) {
-            return true;
-        }
-        self.run(what, |_| {
-            Err(wcontainers_direct3d_11::Error::InvalidArg(
-                "slots past the stage's last",
-            ))
-        });
-        false
-    }
-
-    pub(super) fn only_unbinding(&self, what: &'static str, binds: bool) {
-        if binds {
-            self.unserved(what);
-        }
-    }
-
     pub(super) fn get_type(&self) -> D3D11_DEVICE_CONTEXT_TYPE {
         if self.is_deferred() {
             D3D11_DEVICE_CONTEXT_DEFERRED
@@ -2308,11 +2360,15 @@ impl Context {
             let ps = b.ps.as_ref().map(|s| (*s.front).clone());
             let cs = b.cs.as_ref().map(|s| (*s.front).clone());
             let gs = b.gs.as_ref().map(|s| (*s.front).clone());
+            let hs = b.hs.as_ref().map(|s| (*s.front).clone());
+            let ds = b.ds.as_ref().map(|s| (*s.front).clone());
             self.run("VSSetShader", move |f| {
                 f.vs_set_shader(vs.clone());
                 f.ps_set_shader(ps.clone());
                 f.cs_set_shader(cs.clone());
                 f.gs_set_shader(gs.clone());
+                f.hs_set_shader(hs.clone());
+                f.ds_set_shader(ds.clone());
                 Ok(())
             });
             let targets = fronts(&b.so_targets, |t| &*t.front);
@@ -2341,7 +2397,7 @@ impl Context {
             self.run("OMSetRenderTargets", move |f| {
                 f.om_set_render_targets(&targets, depth.clone())
             });
-            for stage in [VERTEX, PIXEL, COMPUTE, GEOMETRY] {
+            for stage in [VERTEX, PIXEL, COMPUTE, GEOMETRY, HULL, DOMAIN] {
                 let buffers = fronts(&b.constant_buffers[stage], |c| &*c.front);
                 let ranges: Vec<_> = (0..buffers.len())
                     .map(|i| b.constant_ranges[stage].get(i).copied().flatten())
@@ -2385,24 +2441,10 @@ impl Context {
     }
 }
 
-/// Whether any of `count` items of a COM array argument is an object.
-pub(super) fn binds<T>(list: *const Option<T>, count: u32) -> bool {
-    items(list, count).iter().any(Option::is_some)
-}
-
-/// Writes `count` empty slots to the program's array `out` (a stage or feature nothing is bound to).
 /// The program's array behind an out parameter the windows crate types as one object.
 pub(super) fn out_array<T: Interface>(out: OutRef<T>) -> *mut Option<T> {
     // SAFETY: `OutRef` is a transparent pointer to the first element.
     unsafe { std::mem::transmute(out) }
-}
-
-pub(super) fn nothing_bound<T>(out: *mut Option<T>, count: u32) {
-    if !out.is_null() {
-        for i in 0..count as usize {
-            unsafe { out.add(i).write(None) };
-        }
-    }
 }
 
 /// The class instances of a bound shader: none.

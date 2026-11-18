@@ -174,6 +174,7 @@ mod tests {
             system: 0,
             mask,
             stream: 0,
+            component: 3,
         };
         vec![
             e("SV_Position", 0, 0, 0xf),

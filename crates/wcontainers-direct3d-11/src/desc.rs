@@ -380,4 +380,6 @@ pub mod topology {
     pub const LINESTRIP_ADJ: u32 = 11;
     pub const TRIANGLELIST_ADJ: u32 = 12;
     pub const TRIANGLESTRIP_ADJ: u32 = 13;
+    /// The first of the 32 patch list topologies, of one control point.
+    pub const PATCHLIST_1: u32 = 33;
 }

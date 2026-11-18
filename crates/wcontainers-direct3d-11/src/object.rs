@@ -339,9 +339,12 @@ pub struct InputLayout {
     pub id: u64,
     /// The elements the back end fetches.
     pub elements: Vec<LayoutElement>,
-    /// The elements of slots stepping by instances at a rate the back end cannot step by, which
-    /// the vertex program fetches (`InstanceRateInShader`).
+    /// The elements the vertex program fetches: of slots stepping by instances at a rate the back
+    /// end cannot step by, and of 8- and 16-bit integers the shader reads with the other
+    /// signedness, whose bits the back end's formats would not keep.
     pub pulled: Vec<LayoutElement>,
+    /// The slow paths a draw fetching `pulled` takes.
+    pub pulled_paths: Vec<wcontainers_gpu::SlowPath>,
     /// Every element, as the vertex stage fetches them behind a geometry shader or stream output.
     pub all: Vec<LayoutElement>,
     /// Per input slot: none (per vertex) or the instance step rate.

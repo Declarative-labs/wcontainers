@@ -7,7 +7,9 @@ use std::rc::Rc;
 use wcontainers_direct3d_11::desc::*;
 use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, View};
 use wcontainers_direct3d_11::record::Recorder;
-use wcontainers_direct3d_11::{Device, Error, GEOMETRY, PIXEL, Removal, VERTEX, shader};
+use wcontainers_direct3d_11::{
+    DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, shader,
+};
 use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
 
 type Dev = Device<Recorder>;
@@ -2306,6 +2308,93 @@ fn a_geometry_shader_runs_as_compute_before_the_draw_of_its_output() {
     let log = log_from(&dev, from);
     assert!(!log.iter().any(|l| l.starts_with("dispatch ")));
     assert!(log[find(&log, "draw ")].contains("PointList"));
+}
+
+#[test]
+fn hull_and_domain_shaders_run_as_compute_before_the_domain_programs_draw() {
+    let mut dev = device();
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(&mut dev, &rtv, None, 16.0);
+    let vsb = corpus("tessellation.vs");
+    let vs = dev.create_shader(&vsb, SourceStage::Vertex).unwrap();
+    let ps = dev
+        .create_shader(&corpus("tessellation.ps"), SourceStage::Pixel)
+        .unwrap();
+    // A hull shader's bytecode made as a domain shader is refused.
+    assert!(matches!(
+        dev.create_shader(&corpus("tessellation.hs_tri"), SourceStage::Domain),
+        Err(Error::InvalidArg(_))
+    ));
+    let hs = dev
+        .create_shader(&corpus("tessellation.hs_tri"), SourceStage::Hull)
+        .unwrap();
+    let ds = dev
+        .create_shader(&corpus("tessellation.ds_tri"), SourceStage::Domain)
+        .unwrap();
+    let mut colour = element("COLOR", RGBA32F, 12);
+    colour.semantic_index = 0;
+    let layout = dev
+        .create_input_layout(&[element("POSITION", RGB32F, 0), colour], &vsb)
+        .unwrap();
+    let vertices = immutable(&mut dev, &[0u8; 28 * 3], bind::VERTEX_BUFFER);
+    let constants = immutable(&mut dev, &[0u8; 32], bind::CONSTANT_BUFFER);
+    dev.vs_set_shader(Some(vs));
+    dev.ps_set_shader(Some(ps));
+    dev.ia_set_input_layout(Some(layout));
+    dev.ia_set_vertex_buffers(0, &[Some((vertices, 28, 0))])
+        .unwrap();
+    for stage in [HULL, DOMAIN] {
+        dev.set_constant_buffers(stage, 0, &[Some(constants.clone())])
+            .unwrap();
+    }
+    dev.hs_set_shader(Some(hs));
+    // Without a domain shader, or from a topology other than patches, Direct3D draws nothing.
+    dev.ia_set_primitive_topology(topology::PATCHLIST_1 + 2);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    dev.ds_set_shader(Some(ds));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(
+        !log.iter()
+            .any(|l| l.starts_with("dispatch ") || l.starts_with("draw ")),
+        "{log:#?}"
+    );
+    dev.ia_set_primitive_topology(topology::PATCHLIST_1 + 2);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none(), "{:?}", dev.removed);
+    let log = log_from(&dev, from);
+    // The vertex stage's dispatch, then the hull stage's and the tessellator's, then the domain
+    // program's indirect draw.
+    let vertex = find(&log, "dispatch ");
+    let draw = find(&log, "draw ");
+    assert!(
+        log[vertex + 1..draw]
+            .iter()
+            .any(|l| l.starts_with("dispatch ")),
+        "{log:#?}"
+    );
+    assert!(log[draw].contains("IndexedIndirect"), "{}", log[draw]);
+    assert_eq!(
+        dev.backend
+            .slow_paths()
+            .count(SlowPath::TessellationAsCompute),
+        1
+    );
+    // Without the hull and domain shaders a triangle list is drawn as usual.
+    dev.hs_set_shader(None);
+    dev.ds_set_shader(None);
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(!log.iter().any(|l| l.starts_with("dispatch ")));
+    assert!(log[find(&log, "draw ")].contains("TriangleList"));
 }
 
 #[test]

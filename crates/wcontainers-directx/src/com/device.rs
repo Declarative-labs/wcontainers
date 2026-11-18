@@ -821,20 +821,50 @@ impl Device_Impl {
         &self,
         bytecode: *const c_void,
         length: usize,
-        _linkage: Ref<ID3D11ClassLinkage>,
-        _out: OutRef<ID3D11HullShader>,
+        linkage: Ref<ID3D11ClassLinkage>,
+        out: OutRef<ID3D11HullShader>,
     ) -> Result<()> {
-        self.unserved_shader(bytecode, length, SourceStage::Hull, "hull shaders")
+        let shader = self.tessellation_shader(bytecode, length, linkage, SourceStage::Hull)?;
+        give(out, HullShader::new(shader, self.me()).into())
     }
 
     pub(super) fn create_domain_shader(
         &self,
         bytecode: *const c_void,
         length: usize,
-        _linkage: Ref<ID3D11ClassLinkage>,
-        _out: OutRef<ID3D11DomainShader>,
+        linkage: Ref<ID3D11ClassLinkage>,
+        out: OutRef<ID3D11DomainShader>,
     ) -> Result<()> {
-        self.unserved_shader(bytecode, length, SourceStage::Domain, "domain shaders")
+        let shader = self.tessellation_shader(bytecode, length, linkage, SourceStage::Domain)?;
+        give(out, DomainShader::new(shader, self.me()).into())
+    }
+
+    /// A hull or domain shader: drawn through the stage helper's compute programs, so absent
+    /// without the back end's.
+    fn tessellation_shader(
+        &self,
+        bytecode: *const c_void,
+        length: usize,
+        linkage: Ref<ID3D11ClassLinkage>,
+        stage: SourceStage,
+    ) -> Result<Rc<wcontainers_direct3d_11::object::Shader<Chosen>>> {
+        if !linkage.is_null() {
+            return Err(missing("class linkage"));
+        }
+        if !self.compute() {
+            let what = "hull and domain shaders without the back end's compute programs";
+            return Err(self
+                .unserved_shader(bytecode, length, stage, what)
+                .expect_err("refused"));
+        }
+        if bytecode.is_null() || self.front.borrow().feature_level() < 0xb000 {
+            return Err(E_INVALIDARG.into());
+        }
+        let code = unsafe { std::slice::from_raw_parts(bytecode.cast::<u8>(), length) };
+        self.front
+            .borrow_mut()
+            .create_shader(code, stage)
+            .map_err(hresult)
     }
 
     pub(super) fn create_pixel_shader(

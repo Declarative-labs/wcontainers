@@ -1635,10 +1635,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::HSSetShaderResources",
-            super::context::binds(ppshaderresourceviews, numviews),
-        )
+        self.hs_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn HSSetShader(
         &self,
@@ -1647,7 +1644,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numclassinstances: u32,
     ) {
         let _call = self.call();
-        self.only_unbinding("ID3D11DeviceContext::HSSetShader", !phullshader.is_null())
+        self.hs_set_shader(phullshader, ppclassinstances, numclassinstances)
     }
     fn HSSetSamplers(
         &self,
@@ -1674,10 +1671,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *const Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
-        self.only_unbinding(
-            "ID3D11DeviceContext::DSSetShaderResources",
-            super::context::binds(ppshaderresourceviews, numviews),
-        )
+        self.ds_set_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn DSSetShader(
         &self,
@@ -1686,7 +1680,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         numclassinstances: u32,
     ) {
         let _call = self.call();
-        self.only_unbinding("ID3D11DeviceContext::DSSetShader", !pdomainshader.is_null())
+        self.ds_set_shader(pdomainshader, ppclassinstances, numclassinstances)
     }
     fn DSSetSamplers(
         &self,
@@ -1976,7 +1970,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *mut Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppshaderresourceviews, numviews)
+        self.hs_get_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn HSGetShader(
         &self,
@@ -1985,8 +1979,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pnumclassinstances: *mut u32,
     ) {
         let _call = self.call();
-        super::context::no_instances(pnumclassinstances);
-        let _ = pphullshader.write(None);
+        self.hs_get_shader(pphullshader, ppclassinstances, pnumclassinstances)
     }
     fn HSGetSamplers(
         &self,
@@ -2013,7 +2006,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppshaderresourceviews: *mut Option<ID3D11ShaderResourceView>,
     ) {
         let _call = self.call();
-        super::context::nothing_bound(ppshaderresourceviews, numviews)
+        self.ds_get_shader_resources(startslot, numviews, ppshaderresourceviews)
     }
     fn DSGetShader(
         &self,
@@ -2022,8 +2015,7 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         pnumclassinstances: *mut u32,
     ) {
         let _call = self.call();
-        super::context::no_instances(pnumclassinstances);
-        let _ = ppdomainshader.write(None);
+        self.ds_get_shader(ppdomainshader, ppclassinstances, pnumclassinstances)
     }
     fn DSGetSamplers(
         &self,
@@ -4774,6 +4766,76 @@ impl ID3D11DeviceChild_Impl for GeometryShader_Impl {
 impl ID3D11ComputeShader_Impl for ComputeShader_Impl {}
 
 impl ID3D11DeviceChild_Impl for ComputeShader_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11HullShader_Impl for HullShader_Impl {}
+
+impl ID3D11DeviceChild_Impl for HullShader_Impl {
+    fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
+        let _lock = lock();
+        self.child.get_device(ppdevice)
+    }
+    fn GetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        pdatasize: *mut u32,
+        pdata: *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.get_private_data(guid, pdatasize, pdata)
+    }
+    fn SetPrivateData(
+        &self,
+        guid: *const windows::core::GUID,
+        datasize: u32,
+        pdata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data(guid, datasize, pdata)
+    }
+    fn SetPrivateDataInterface(
+        &self,
+        guid: *const windows::core::GUID,
+        pdata: windows::core::Ref<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.child.set_private_data_interface(guid, pdata)
+    }
+}
+
+impl ID3D11DomainShader_Impl for DomainShader_Impl {}
+
+impl ID3D11DeviceChild_Impl for DomainShader_Impl {
     fn GetDevice(&self, ppdevice: windows::core::OutRef<ID3D11Device>) {
         let _lock = lock();
         self.child.get_device(ppdevice)

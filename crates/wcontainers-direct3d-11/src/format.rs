@@ -357,6 +357,18 @@ pub fn vertex_format_read_as(format: VertexFormat, scalar: ScalarKind) -> Vertex
     formats[count]
 }
 
+/// The scalar type a vertex format is read as.
+pub fn vertex_scalar(f: VertexFormat) -> ScalarKind {
+    use VertexFormat::*;
+    match f {
+        Uint8x1 | Uint8x2 | Uint8x3 | Uint8x4 | Uint16x1 | Uint16x2 | Uint16x3 | Uint16x4
+        | Uint32x1 | Uint32x2 | Uint32x3 | Uint32x4 => ScalarKind::Uint,
+        Sint8x1 | Sint8x2 | Sint8x3 | Sint8x4 | Sint16x1 | Sint16x2 | Sint16x3 | Sint16x4
+        | Sint32x1 | Sint32x2 | Sint32x3 | Sint32x4 => ScalarKind::Sint,
+        _ => ScalarKind::Float,
+    }
+}
+
 /// Bytes one element of a vertex format takes.
 pub fn vertex_size(format: VertexFormat) -> u32 {
     use VertexFormat::*;
