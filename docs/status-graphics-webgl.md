@@ -1563,7 +1563,7 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   were deleted in run 13; angle\build.cmd makes the second again (about 4 m 30 s). The track's
   build directory C:\wc\target\phase-2-graphics-webgl (19.6 GB) was deleted at the end of run 15,
   as the runs are now asked to; the next build.cmd makes it again from nothing. C: had 407 GB free
-  after. Run 16 built it again from nothing and deleted it at its end.
+  after. Run 16 built it again from nothing and deleted it at its end. Run 17 did the same (C: had 441 GB free after).
 - C:\wc\tools\mozangle-0.7.1-patched (run 5): the mozangle crate's sources, unpacked and patched by
   angle\build.cmd. Its size was not measured.
 - Left by the independent check of the first run (not ours to remove without asking): the pictures
