@@ -263,13 +263,14 @@ impl TestHost {
     }
 
     /// A host whose clocks move only with the work run and the waits skipped, both from the seed,
-    /// so the kernel's choices repeat exactly for a seed.
-    pub fn repeatable(seed: u64) -> Self {
+    /// so the kernel's choices repeat exactly for a seed, with the wall clock reading `wall_start`
+    /// (the machine's clock when none) at the start.
+    pub fn repeatable(seed: u64, wall_start: Option<u64>) -> Self {
         let mut host = Self {
             virtual_now: Some(1_000_000_000),
             ..Self::new(seed)
         };
-        host.wall_base = wall_clock() - 1_000_000_000;
+        host.wall_base = wall_start.unwrap_or_else(wall_clock) - 1_000_000_000;
         host
     }
 }
@@ -481,6 +482,9 @@ pub struct Injections {
     /// How many notices the file backend sends unasked, of kinds and about nodes drawn from the
     /// seed, as a backend whose files changed underneath would.
     pub notices: usize,
+    /// The wall clock's reading at the start, given again to repeat a run whose guest reads it; the
+    /// machine's clock when none.
+    pub wall_start: Option<u64>,
 }
 
 impl Default for Injections {
@@ -491,6 +495,7 @@ impl Default for Injections {
             wall_step: 0,
             signal: None,
             notices: 0,
+            wall_start: None,
         }
     }
 }
@@ -582,7 +587,7 @@ pub fn run_prepared(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
     let mut cpu = back_end(seed, container.address_space);
-    let mut host = TestHost::repeatable(seed);
+    let mut host = TestHost::repeatable(seed, injections.wall_start);
     host.injecting = Some(Injecting::new(seed, injections));
     host.echo = echo;
     host.network.published = container.published.iter().copied().collect();

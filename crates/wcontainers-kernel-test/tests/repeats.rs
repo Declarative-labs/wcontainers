@@ -1,6 +1,8 @@
 //! A seeded run repeats exactly: threaded programs run again under the same seed give the same output,
 //! warnings, counters, CPU side warnings, turn count and files left. Each seed of `schedule_seeds` is run
-//! `REPEAT_RUNS` times (2 if unset), with saves at moments drawn from it for one program.
+//! `REPEAT_RUNS` times (2 if unset), with saves at moments drawn from it for one program. The runs of a
+//! seed are given the same wall clock reading at the start, an answer from outside that the seed does
+//! not decide (the futexes program's realtime deadlines branch on its nanoseconds).
 
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -62,8 +64,13 @@ fn repeats(name: &str, saves: usize) {
         .ok()
         .map_or(2, |runs| runs.parse().expect("REPEAT_RUNS is a number"));
     for seed in schedule_seeds() {
+        let wall_start = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is after 1970")
+            .as_nanos() as u64;
         let injections = driver::Injections {
             saves,
+            wall_start: Some(wall_start),
             ..Default::default()
         };
         let run = || driver::run_injected(&container, seed, injections).expect("an outcome");
