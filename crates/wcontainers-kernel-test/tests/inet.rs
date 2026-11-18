@@ -165,3 +165,11 @@ fn options_not_acted_on_are_counted() {
         ]
     );
 }
+
+/// A TCP disconnect lets go of what the program did not choose, and an accepted socket chose what
+/// its listener's program chose.
+#[test]
+fn tcp_disconnects_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "tcpdisconnect", &[]);
+}

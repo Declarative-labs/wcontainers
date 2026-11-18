@@ -1250,18 +1250,35 @@ fn disconnect_tcp(kernel: &mut Kernel, cx: &mut Context<'_>, socket: &SocketRef)
         State::Connected => reset_peer(kernel, cx, socket),
         State::Closed => {}
     }
-    let packets = {
+    let (packets, port) = {
         let mut own = socket.borrow_mut();
         own.state = State::Closed;
         own.peer = None;
         own.shutdown = 0;
         own.error = 0;
+        let family = own.family;
         let inet = own.inet.as_deref_mut().unwrap();
         inet.remote = None;
         inet.connecting = None;
         inet.done = false;
-        core::mem::take(&mut own.queue)
+        // Closing lets go of what the program did not choose (`inet_reset_saddr`, and
+        // `tcp_set_state`'s `inet_put_port`, which leaves the port shown); a socket already
+        // closed keeps it.
+        let mut port = None;
+        if state != State::Closed {
+            if !inet.address_chosen {
+                inet.local.address = if family == AF_INET { ANY4 } else { ANY6 };
+            }
+            if !inet.port_chosen && inet.held {
+                inet.held = false;
+                port = Some(inet.local.port);
+            }
+        }
+        (core::mem::take(&mut own.queue), port)
     };
+    if let Some(port) = port {
+        kernel.sockets.inet.let_go(Protocol::Tcp, port, socket);
+    }
     for packet in packets {
         super::drop_packet(kernel, cx, packet);
     }
@@ -1753,8 +1770,10 @@ pub(super) fn embryo(
             address,
             port: listening.local.port,
         };
-        inet.address_chosen = true;
-        inet.port_chosen = true;
+        // The listener's chosen address goes with it, its chosen port not (`inet_csk_clone_lock`
+        // clears SOCK_BINDPORT_LOCK).
+        inet.address_chosen = listening.address_chosen;
+        inet.port_chosen = false;
         inet.held = true;
         inet.remote = Some(remote);
         inet.v6only = listening.v6only;
