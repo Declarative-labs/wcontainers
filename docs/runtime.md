@@ -1,6 +1,6 @@
 # wcontainers: the runtime (joining the kernel to the translator)
 
-Status: plan, 2026-11-17; J1 to J3 built (2026-11-18); J4a next, J4b waits for the progress unit.
+Status: plan, 2026-11-17; J1 to J4a built (2026-11-18); J4b waits for the progress unit.
 
 Words used here:
 - **kernel**: crates/wcontainers-kernel, driven from outside through `wcontainers-abi`.
@@ -537,7 +537,10 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
   code instances (one instance per thread, translator plan 6). Code made at run time by one thread is
   instantiated in every thread of the process at once, with the same slot, so every thread's table holds the
   same piece in the same slot (contract.rs:10-11). A dropped thread's block and instances are kept and given
-  to the process's next new thread, so a program that starts and ends many threads does not grow its store.
+  to the process's next new thread, so a program that starts and ends many threads does not grow its store:
+  the instances import the block's address, so they are kept by block, with the thread's exact pieces and
+  how many of the process's translations they hold; at the new thread's first run the translations added
+  since are instantiated in them. A process brought back from a save makes its instances again.
 - **Progress** has one meaning on every back end, at every look-ahead and in both settings: a count of the
   guest's own instructions. Where the translator puts its stop checks changes with look-ahead, with the
   starts and with code made at run time, so a count of stop checks would differ between settings and back
@@ -551,14 +554,16 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
   count does not survive it: the kernel drops the thread and makes a new one for the new program
   (container.rs:718-728), whose block, count included, starts at zero (abi cpu.rs:91), so points of the new
   program are counted from its first instruction, the same on every back end. A fork child's thread is new
-  too and starts from zero. Who counts:
-  - the kernel's changes of pc, on every back end, by the loop, from J2: one at each
+  too and starts from zero. Who counts, once the owner rules on the unit (with J4b; none of the three is
+  built yet, and the orchestrator confirmed that the first two wait for the ruling too, since either alone
+  changes the stand-in's results):
+  - the kernel's changes of pc, on every back end, by the loop: one at each
     `Resume::FromRegisters` it applies to a thread that has run before, except the first run of each thread
     after `Kernel::restore` (a restore puts back a point, it does not move it). The loop is the one place
     that sees every resume, so every back end gets the same count for it. That a delivered signal and
     `rt_sigreturn` come as `FromRegisters` is the abi's promise (abi/exit.rs:47-55); a new thread (exec, a
     fork child, `clone`) has not run before, so its first `FromRegisters` is not counted;
-  - the guest's own transfers on the stand-in, from J2: Unicorn's block hook gives each block's address and
+  - the guest's own transfers on the stand-in: Unicorn's block hook gives each block's address and
     size (standin.rs:138-140). The last instruction of a block is at start + size - 4. A block is a counted
     transfer when its start is at or below the address of the last instruction of the block before it in the
     same turn. A block that Unicorn split for its own reasons (its size limit, a page boundary, a hook) starts
@@ -592,7 +597,12 @@ stopped whenever the kernel changes a table, as contract.rs:17-27 requires.
     next to run when none runs; the back end enters it at `run` and leaves it after. The stop hook then hands
     the kernel `Exit::Stop` with no progress. The shipped outside arms one timer thread with it at the
     slice's deadline on the host's monotonic clock; with no slice no timer is armed. Costs nothing between
-    checks.
+    checks. The kernel charges a thread for a free turn the time on the outside's monotonic clock from
+    handing it out to its return (kernel task.rs `account`), so the CPU side's own work in the turn
+    (instantiating a thread's instances when its block kept none, translating at run time) and the host's
+    preemption of the host thread show in the guest's CPU clocks, timers and `RLIMIT_CPU`. Charging only
+    the guest's own run needs the kernel to take the charge from the outside; asked of the kernel track
+    (status file).
   - The two kinds exist only because counting at every check costs a hook call per check. Once the
     translator emits the count with its limit word, they are one mechanism: every turn counts at full speed,
     a free turn is a counted turn with no limit, and raising the flag is storing a limit of 0. `Turn` then
@@ -1074,14 +1084,19 @@ Each bar is checkable by running the named command on this Mac with Docker.
   the back end has today (stop checks passed, warned "progress counted by stop checks" as the interim it
   is), and J4b, which waits for the guest-defined count (section 9) with the stand-in's count and the loop's
   count of the kernel's changes of pc.
-  - **J4a.** Many threads per process, futexes, timers, outside events raising the flag in free turns.
+  - **J4a.** Many threads per process, a dropped thread's block and instances given to the process's next
+    new thread (section 9), futexes, timers, and the stop flag raised from another host thread in free turns.
+    The shipped outside's one such source today is its slice timer; arrivals from a file backend, the
+    network (J5) and input (the kernel track's streams) raise it the same way once they exist.
     Bar: `threads`, `turns`, `timers`, `deadlines`, `cputime`, `cpulimit`, `clocks`, `lockwaits`,
     `rseqabort`, `priorities`, `schedattr` and `shell::runs_repeat_for_a_seed` pass with `--features
     runtime` at full, none and bounded; a seeded run repeats exactly at each look-ahead taken alone
-    (the kernel test crate's `repeats`: output, warnings, counters, the CPU side's warnings and the turn
-    count, with and without saves, `REPEAT_RUNS` times per seed); a test runs a threaded program through
-    the public surface in free turns and matches the reference (crates/wcontainers-wasmtime/tests/surface.rs
-    `a_threaded_program_matches_the_reference`, at the look-ahead `LOOK_AHEAD` names).
+    (the kernel test crate's `repeats`: output, warnings, counters, the CPU side's warnings, the turn
+    count and the files left, with and without saves, `REPEAT_RUNS` times per seed); a test runs a threaded
+    program through the public surface in free turns and matches the reference
+    (crates/wcontainers-wasmtime/tests/surface.rs `a_threaded_program_matches_the_reference`, at the
+    look-ahead `LOOK_AHEAD` names); a new thread given a dropped thread's block runs on its instances
+    (the back end's unit test `a_dropped_threads_instances_serve_the_next_thread`).
   - **J4b.** The same count at every exit for a seed across look-ahead settings and against the stand-in.
     Starts once the owner rules on the unit and the translator emits it.
 - **J5, files outside, sockets, network, and the whole suite.** The shipped outside's backend and network
