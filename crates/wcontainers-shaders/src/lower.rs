@@ -27,7 +27,7 @@ use wcontainers_gpu::{
     SystemValue, TexelBufferRoute, VariantKey, helper_binding,
 };
 
-use crate::variant::texel::TexelBuffer;
+use crate::variant::texel::{TexelBuffer, TexelPlace};
 
 mod geometry;
 
@@ -405,7 +405,7 @@ impl<'a> Lowering<'a> {
             }
             let dcl = match op.code {
                 code::LDS_ATOMIC => op.refs[0],
-                code::BUFFER_ATOMIC => self.ir.op(op.refs[0])?.refs[0],
+                code::BUFFER_ATOMIC | code::IMAGE_ATOMIC => self.ir.op(op.refs[0])?.refs[0],
                 _ => continue,
             };
             let sign = match op.lits.first() {
@@ -494,6 +494,13 @@ impl<'a> Lowering<'a> {
                         };
                         let space = AddressSpace::Storage { access };
                         self.resource_in(id, op, slot, ty, space, None, false)?;
+                    }
+                    _ if storage
+                        && op.lits.get(1).is_some_and(|&r| {
+                            r < 64 && self.variant.texels_through_buffer >> r & 1 != 0
+                        }) =>
+                    {
+                        self.texel_image(id, op, k)?
                     }
                     _ if storage => {
                         let (dim, arrayed, multi) = image_dim(k)?;
@@ -609,11 +616,7 @@ impl<'a> Lowering<'a> {
             && ir.ops.iter().any(|o| {
                 o.code == code::BUFFER_STORE && ir.op(o.refs[0]).is_ok_and(|d| d.refs[0] == id)
             });
-        let atomic = match self.atomic.get(&id) {
-            Some(_) => Some(declared),
-            None if written && TexelBuffer::narrow(layout.2) => Some(Scalar::U32),
-            None => None,
-        };
+        let atomic = self.texel_atomic(id, declared, written, layout.2);
         let ty = if texture {
             self.ty(TypeInner::Image {
                 dim: ImageDimension::D2,
@@ -650,7 +653,88 @@ impl<'a> Lowering<'a> {
             SourceStage::Pixel => ShaderStage::Fragment,
             _ => ShaderStage::Compute,
         };
-        let buffer = TexelBuffer::declared(var, layout, atomic, texture, stage, self.set, binding);
+        let place = if texture {
+            TexelPlace::Texture
+        } else {
+            TexelPlace::Words
+        };
+        let buffer = TexelBuffer::declared(var, layout, atomic, place, stage, self.set, binding);
+        self.texels.insert(id, buffer);
+        Ok(())
+    }
+
+    /// The scalar of a typed view's words where they are atomic: where an atomic operation uses them
+    /// (float bits exchanged as u32), or where elements narrower than a word are written.
+    fn texel_atomic(&self, id: u32, declared: Scalar, written: bool, size: u32) -> Option<Scalar> {
+        match self.atomic.get(&id) {
+            Some(_) if declared.kind == ScalarKind::Float => Some(Scalar::U32),
+            Some(_) => Some(declared),
+            None if written && TexelBuffer::narrow(size) => Some(Scalar::U32),
+            None => None,
+        }
+    }
+
+    /// A storage texture read and written through a buffer of its texels
+    /// (`VariantKey::texels_through_buffer`): its format from the variant (the bound view's), laid out
+    /// as `HelperValue::TexelLayout` says.
+    fn texel_image(&mut self, id: u32, op: &Op, k: u64) -> Result<()> {
+        let (_, arrayed, multi) = image_dim(k)?;
+        if multi {
+            return Err(unsupported("MultisampledStorage"));
+        }
+        if self.stage == SourceStage::Geometry {
+            return Err(unsupported("TexelsThroughBufferInGeometry"));
+        }
+        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let format = self
+            .variant
+            .storage_formats
+            .iter()
+            .find(|(slot, _)| *slot == register)
+            .ok_or(unsupported("StorageFormat"))?
+            .1;
+        let member = op
+            .ty
+            .basic()
+            .ok_or_else(|| malformed("storage image type".into()))?;
+        let declared = Self::scalar(member.scalar)?;
+        let layout = TexelBuffer::layout(format, declared.kind).map_err(|e| match e {
+            ConvertError::Unsupported("TypedBufferFormatAbsent") => {
+                unsupported("StorageFormatAbsent")
+            }
+            ConvertError::Unsupported("TypedBufferFormatKind") => unsupported("StorageFormatKind"),
+            e => e,
+        })?;
+        let ir = self.ir;
+        let written = ir.ops.iter().any(|o| {
+            o.code == code::IMAGE_STORE && ir.op(o.refs[0]).is_ok_and(|d| d.refs[0] == id)
+        });
+        let atomic = self.texel_atomic(id, declared, written, layout.2);
+        let words = TexelBuffer::words(&mut self.module, atomic);
+        let access = if op.lits.get(4).is_some_and(|f| f & 2 != 0) {
+            naga::StorageAccess::LOAD
+        } else {
+            naga::StorageAccess::LOAD | naga::StorageAccess::STORE
+        };
+        let space = AddressSpace::Storage { access };
+        self.resource_in(
+            id,
+            op,
+            SlotKind::Storage,
+            words,
+            space,
+            Some((k, arrayed)),
+            false,
+        )?;
+        let var = self.resources[&id].var;
+        let binding = self.module.global_variables[var].binding.unwrap().binding;
+        let stage = match self.stage {
+            SourceStage::Vertex => ShaderStage::Vertex,
+            SourceStage::Pixel => ShaderStage::Fragment,
+            _ => ShaderStage::Compute,
+        };
+        let place = TexelPlace::Image(register);
+        let buffer = TexelBuffer::declared(var, layout, atomic, place, stage, self.set, binding);
         self.texels.insert(id, buffer);
         Ok(())
     }
@@ -2698,7 +2782,48 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 self.add(b, Expression::ArrayLength(p))
             }
             c::IMAGE_SAMPLE | c::IMAGE_GATHER => self.sample(b, op)?,
+            c::IMAGE_LOAD if self.texel(r[0])?.is_some() => {
+                if op.flags & 8 != 0 {
+                    return Err(unsupported("SparseFeedback"));
+                }
+                let dcl = self.texel(r[0])?.unwrap();
+                let index = self.texel_at(b, dcl, r[2], r[3])?;
+                self.texel_load(b, dcl, index)?
+            }
             c::IMAGE_LOAD => self.image_load(b, op)?,
+            c::IMAGE_QUERY_SIZE if self.texel(r[0])?.is_some() => {
+                let dcl = self.texel(r[0])?.unwrap();
+                let (k, arrayed) = self.l.resources[&dcl].image.unwrap();
+                let l = &mut *self.l;
+                let function = l
+                    .texels
+                    .get_mut(&dcl)
+                    .unwrap()
+                    .size(&mut l.module, &mut l.reflection);
+                let v = self.add(b, Expression::CallResult(function));
+                self.stmt(
+                    b,
+                    Statement::Call {
+                        function,
+                        arguments: Vec::new(),
+                        result: Some(v),
+                    },
+                );
+                // Width, height and depth as the dimension has them; the layers apart.
+                let n = match k {
+                    kind::IMAGE_1D | kind::IMAGE_1D_ARRAY => 1,
+                    kind::IMAGE_3D => 3,
+                    _ => 2,
+                };
+                let size = self.e.swizzle(&mut self.f, b, v, 0, n)?;
+                let layers = if arrayed {
+                    self.add(b, Expression::AccessIndex { base: v, index: 2 })
+                } else {
+                    self.lit(b, Literal::U32(1))
+                };
+                self.define(b, id, Val::Tuple(vec![size, layers]));
+                return Ok(());
+            }
             c::IMAGE_QUERY_SIZE => {
                 let res = self.image(r[0])?;
                 let (k, arrayed) = res.image.unwrap();
@@ -2762,14 +2887,26 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             }
             c::IMAGE_COMPUTE_LOD => return Err(unsupported("CalculateLevelOfDetail")),
             c::IMAGE_STORE => {
+                self.l.side_effects = true;
+                if let Some(dcl) = self.texel(r[0])? {
+                    let index = self.texel_at(b, dcl, r[1], r[2])?;
+                    let s = self.l.texels[&dcl].scalar();
+                    let v = self.get_as(b, r[3], s)?;
+                    let n = self.basic_of(r[3])?.size;
+                    return self.texel_store(b, dcl, index, v, n);
+                }
                 self.image_store(b, op)?;
                 return Ok(());
             }
-            c::IMAGE_ATOMIC => return Err(unsupported("StorageImageAtomics")),
-            c::LDS_ATOMIC | c::BUFFER_ATOMIC | c::COUNTER_ATOMIC => match self.atomic(b, op)? {
-                Some(v) => v,
-                None => return Ok(()),
-            },
+            c::IMAGE_ATOMIC if self.texel(r[0])?.is_none() => {
+                return Err(unsupported("StorageImageAtomics"));
+            }
+            c::LDS_ATOMIC | c::BUFFER_ATOMIC | c::IMAGE_ATOMIC | c::COUNTER_ATOMIC => {
+                match self.atomic(b, op)? {
+                    Some(v) => v,
+                    None => return Ok(()),
+                }
+            }
             c::INTERPOLATE_AT_CENTROID | c::INTERPOLATE_AT_SAMPLE | c::INTERPOLATE_AT_OFFSET => {
                 return Err(unsupported("InterpolateAt"));
             }
@@ -2803,13 +2940,21 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             .first()
             .ok_or_else(|| malformed("atomic without its operation".into()))?;
         let typed = match op.code {
-            code::BUFFER_ATOMIC => self.texel(r[0])?,
+            code::BUFFER_ATOMIC | code::IMAGE_ATOMIC => self.texel(r[0])?,
             _ => None,
         };
+        // A storage texture's operands follow its layer and coordinate; a counter has none.
+        let operands = match op.code {
+            code::IMAGE_ATOMIC => r[3],
+            _ => r.get(2).copied().unwrap_or(0),
+        };
         let (pointer, s) = if let Some(dcl) = typed {
-            // A typed buffer's element: through its atomic function, by index.
+            // A typed view's element: through its atomic function, by index.
             self.l.side_effects = true;
-            let index = self.get_as(b, r[1], Scalar::U32)?;
+            let index = match op.code {
+                code::IMAGE_ATOMIC => self.texel_at(b, dcl, r[1], r[2])?,
+                _ => self.get_as(b, r[1], Scalar::U32)?,
+            };
             (index, self.l.texels[&dcl].scalar())
         } else if op.code == code::COUNTER_ATOMIC {
             let (res, _) = self.buffer(r[0])?;
@@ -2839,8 +2984,8 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             .map(|m| Lowering::scalar(m.scalar))
             .transpose()?;
         let operand = |me: &mut Self, b: &mut Block, k: u32| -> Result<Handle<Expression>> {
-            let v = me.get_as(b, r[2], s)?;
-            Ok(if me.basic_of(r[2])?.size == 1 {
+            let v = me.get_as(b, operands, s)?;
+            Ok(if me.basic_of(operands)?.size == 1 {
                 v
             } else {
                 me.add(b, Expression::AccessIndex { base: v, index: k })
@@ -2992,6 +3137,57 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
     fn texel(&self, desc: u32) -> Result<Option<u32>> {
         let dcl = self.l.ir.op(desc)?.refs[0];
         Ok(self.l.texels.contains_key(&dcl).then_some(dcl))
+    }
+
+    /// The index of a texel of storage texture `dcl` read through a buffer, from an image operation's
+    /// layer and coordinate operands; past every index where outside the view.
+    fn texel_at(
+        &mut self,
+        b: &mut Block,
+        dcl: u32,
+        layer: u32,
+        coord: u32,
+    ) -> Result<Handle<Expression>> {
+        let c = self.get_as(b, coord, Scalar::U32)?;
+        let n = self.basic_of(coord)?.size;
+        let mut xyz = Vec::new();
+        for i in 0..n.min(3) as u32 {
+            xyz.push(if n == 1 {
+                c
+            } else {
+                self.add(b, Expression::AccessIndex { base: c, index: i })
+            });
+        }
+        if layer != 0 {
+            xyz.push(self.get_as(b, layer, Scalar::U32)?);
+        }
+        while xyz.len() < 3 {
+            xyz.push(self.lit(b, Literal::U32(0)));
+        }
+        if xyz.len() > 3 {
+            return Err(malformed("storage texture coordinate".into()));
+        }
+        // A 1D array's layers are its rows' places in the layout.
+        let (k, _) = self.l.resources[&dcl].image.unwrap();
+        if k == kind::IMAGE_1D_ARRAY {
+            xyz.swap(1, 2);
+        }
+        let l = &mut *self.l;
+        let function = l
+            .texels
+            .get_mut(&dcl)
+            .unwrap()
+            .at(&mut l.module, &mut l.reflection);
+        let v = self.add(b, Expression::CallResult(function));
+        self.stmt(
+            b,
+            Statement::Call {
+                function,
+                arguments: xyz,
+                result: Some(v),
+            },
+        );
+        Ok(v)
     }
 
     /// Element `index` of typed buffer `dcl`, four components of its format's scalar.

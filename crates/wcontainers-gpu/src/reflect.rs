@@ -301,8 +301,10 @@ pub enum HelperValue {
     SampleMask,
     /// Where a packed storage slot's range starts in the packed buffer, in bytes (u32).
     PackedStorage { slot: u32 },
-    /// The texel layout of a storage view read through a buffer: row pitch in texels and rows per
-    /// layer, two u32.
+    /// The texel layout of a storage view read through a buffer: row pitch in texels, rows per layer
+    /// (or depth slice), then the view's width, height, and layers (or depth), five u32 in two
+    /// 16-byte rows. A texel outside the view reads zero and takes no writes; the view's first texel is
+    /// the buffer's first.
     TexelLayout { slot: u32 },
     /// A typed buffer view read through a storage buffer or a texture ([`TexelBufferRoute`]) at this
     /// binding: the byte offset of the view's first element in the bound range (in the buffer the

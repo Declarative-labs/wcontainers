@@ -157,3 +157,51 @@ fn typed_buffers_convert_for_every_format_through_storage() {
     k.texel_buffers = TexelBufferRoute::Texture;
     assert_eq!(refused(&k), "TypedBufferStorageAsTexture");
 }
+
+#[test]
+fn storage_textures_convert_through_buffers() {
+    let bytes = own("cs_through.dxbc");
+    let formats = [
+        (3, Format::R32Uint),
+        (4, Format::R32Float),
+        (5, Format::Rgba16Float),
+        (6, Format::Rg8Uint),
+    ];
+    let key = VariantKey {
+        texels_through_buffer: 0b111_1000,
+        storage_formats: formats.to_vec(),
+        ..Default::default()
+    };
+    let c = convert(Source::Dxbc(&bytes), &key, None).unwrap_or_else(|e| panic!("{e}"));
+    // Each texture's layout is in the helper constants; the bindings stay the slots'.
+    let mut layouts: Vec<u32> = c
+        .reflection
+        .helpers
+        .iter()
+        .filter_map(|h| match h.value {
+            HelperValue::TexelLayout { slot } => Some(slot),
+            _ => None,
+        })
+        .collect();
+    layouts.sort();
+    assert_eq!(layouts, [3, 4, 5, 6]);
+    for b in &c.reflection.bindings {
+        assert_eq!(b.binding, SlotKind::Storage.binding(b.register).unwrap());
+    }
+    reads_back("cs_through", &c.modules[0]);
+    // Without the variant, the atomics are refused; without a format, the texture is.
+    let plain = VariantKey {
+        storage_formats: formats.to_vec(),
+        ..Default::default()
+    };
+    assert!(matches!(
+        convert(Source::Dxbc(&bytes), &plain, None),
+        Err(ConvertError::Unsupported("StorageImageAtomics"))
+    ));
+    let mut k = key;
+    k.storage_formats.pop();
+    assert!(matches!(
+        convert(Source::Dxbc(&bytes), &k, None),
+        Err(ConvertError::Unsupported("StorageFormat"))
+    ));
+}
