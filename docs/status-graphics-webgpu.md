@@ -132,6 +132,18 @@ Run 18 = G2b run 8, 2026-11-18 (fixes from G2b's third independent check):
   both index formats. The three back end fixes' tests were run with the source fixes taken out:
   each failed (the 16-bit copies lost the device on wgpu's validation, the strips missed, the
   integer formats were declared resolvable on Vulkan).
+- Full runs at 39252f02 on the desktop (RTX 3080, shared with the other tracks through the GPU
+  queue; logs in scratch logs/run18-full.log and logs/run18-webcheck.log): natively, Vulkan 112
+  passed and 3 ignored (the known BC decoder difference, the wireframe on Vulkan, point filling
+  absent), Direct3D 12 113 passed and 2 ignored (the BC difference, 24-bit depth bias absent), 0
+  failed; the shared suite 39 of 39 on each API. web/check: the twelve pictures equal Direct3D 11's
+  at tolerance 0, the twists differ, the shared suite 39 of 39 in Chrome 157 on the RTX 3080
+  (Direct3D 12 underneath), and in Chrome: prepared strips 0 misses, BGRA vertices as they mean,
+  the 16-bit group copies kept the bits for `r16uint`, `r16float` and `r16sint` (Chrome has no
+  16-bit normalised textures), timestamps, converted formats, vertex formats, renames and query
+  sets as before.
+- Removed at the end: the desktop's build folder C:\wc\target\phase-2-graphics-webgpu (5.86 GB);
+  no scratch copy or Mac build output was made.
 
 Run 17 = G2b run 7, 2026-11-18 (fixes from G2b's second independent check):
 - Merged origin/phase-2-graphics-rig, -shaders, -direct3d-12, -direct3d-11 and -webgl (no
