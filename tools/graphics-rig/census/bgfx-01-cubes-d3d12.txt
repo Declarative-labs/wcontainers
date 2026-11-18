@@ -9,7 +9,7 @@
 # counted command-queue as ID3D12CommandQueue
 # counted swap-chain as IDXGISwapChain4
 # counted immediate-context and deferred-context through 0 wrapped contexts
-# of the counts below, made by Windows' own libraries (in the system directory): command-list Close 119, command-list Reset 119, command-queue ExecuteCommandLists 119
+# of the counts below, made by the graphics libraries, not the program: command-list Close 119, command-list Reset 119, command-queue ExecuteCommandLists 119
 # not forwarded, so absent from this library: d3d12.dll D3D12DeviceRemovedExtendedData (data)
 d3d12-device QueryInterface 3305
 d3d12-device CheckFeatureSupport 2471
@@ -46,7 +46,7 @@ d3d12-device GetNodeCount 1
 command-queue QueryInterface 957
 command-queue AddRef 956
 command-queue Release 949
-command-queue Wait 590
+command-queue Wait 591
 command-queue ExecuteCommandLists 476
 command-queue Signal 476
 command-queue GetDesc 2
