@@ -150,7 +150,17 @@ Proof of run 1 (the Mac, Apple M5; the i7-8750H's load 0.8 to 1.2 at the start o
   447,975 and 327,252. The x86 build holds iced's decoder (plan section 2 measured it alone at 226,971 raw,
   46,880 brotli) and fewer meanings than ARM64's so far; what the decoder adds to a complete x86 build is
   measured again when its meanings are complete. Clippy with `-D warnings` on both builds: clean.
-- RESULT_SUITE
+- Suite of what this track owns at 6ac366b (`WC_REFERENCE_X86_64=tom@192.168.2.240`), in two parts: `cargo
+  test` of the interface, ARM64, translator, test and x86 crates (scratch `x3/run1/suite.log`, from 07:47,
+  Mac load about 35 to 45) ran every target up to and including layer 1 and then stopped writing with no
+  result and no process left (the detached shell it ran in was gone; not seen why); the targets after layer 1
+  and the x86 crate's were then run alone (08:58 to 09:11, Mac load 16.9 to 44.9). All passed except the
+  known failure `bytes_in_no_form_stop_as_on_the_cpu_x86_64` (item 1 of "what comes next"): layer 1 8 of 9,
+  layer 2 1, layer 3 3, programs 16 (2 ignored), the x86 reference 6, smoke 6, the test guest 16, validity 7,
+  binaries 2, changes 3, checks 2, browser 1, decoding 5, lookaheads 1, no_std 1, the x86 tables 4, the
+  translator's 4 and ARM64's 3.
+- Clippy with `-D warnings` on the five crates (all targets) and the browser crate for both guests; `cargo
+  fmt --check`: clean.
 
 ## X2: what was left for later (carried into X3 above)
 
