@@ -17,5 +17,8 @@ fuse-abi = { version = "0.2.0", default-features = false, features = ["linux", "
 simple-dns = { version = "0.13.1", default-features = false, features = ["alloc"] }
 rangemap = { version = "1.8.0", default-features = false }
 
+[build-dependencies]
+flate2 = "1"
+
 [lints]
 workspace = true

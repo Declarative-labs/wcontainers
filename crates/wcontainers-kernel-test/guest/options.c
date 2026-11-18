@@ -44,6 +44,9 @@ static void owner(int fd) {
            own == 0 ? "0" : own == getpid() ? "self" : own == -getpgrp() ? "-group" : "other", r,
            ex.type,
            ex.pid == 0 ? "0" : ex.pid == getpid() ? "self" : ex.pid == getpgrp() ? "group" : "other");
+    unsigned ids[2] = {7, 7};
+    r = fcntl(fd, F_GETOWNER_UIDS, ids);
+    printf("owner uids %ld %u %u\n", r, ids[0], ids[1]);
 }
 
 int main(void) {
@@ -90,6 +93,7 @@ int main(void) {
     owner(fd);
     R(fcntl(fd, F_SETOWN_EX, (void *)8));
     R(fcntl(fd, F_GETOWN_EX, (void *)8));
+    R(fcntl(fd, F_GETOWNER_UIDS, (void *)8));
     R(fcntl(fd, F_SETSIG, 10));
     R(fcntl(fd, F_GETSIG));
     R(fcntl(copy, F_GETSIG));

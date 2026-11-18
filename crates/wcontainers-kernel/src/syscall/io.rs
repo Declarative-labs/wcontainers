@@ -2811,16 +2811,24 @@ fn fcntl_other(
         F_GET_SEALS if !path_only => super::memfd::get_seals(&descriptor.file.borrow()),
         _ if path_only => Err(Errno::EBADF),
         F_NOTIFY => super::dnotify::fcntl_notify(kernel, tid, fd, &descriptor.file, argument),
-        // Leases, the owner's ids (`CONFIG_CHECKPOINT_RESTORE`) and delegations are not built.
-        F_SETLEASE
-        | F_GETOWNER_UIDS
-        | crate::linux_extra::F_GETDELEG
-        | crate::linux_extra::F_SETDELEG => Err(kernel.counters.refuse(
-            cx.host,
-            reason::FCNTL_NOT_BUILT,
-            command.into(),
-            Errno::EINVAL,
-        )),
+        // `f_getowner_uids`: the user and effective user that named the owner, each put alone.
+        F_GETOWNER_UIDS => {
+            let owner = descriptor.file.borrow().owner.unwrap_or_default();
+            let mut guest = guest(kernel, cx, tid);
+            let first = guest.write(argument, &owner.uid.to_le_bytes());
+            let second = guest.write(argument.wrapping_add(4), &owner.euid.to_le_bytes());
+            first.and(second)?;
+            Ok(0)
+        }
+        // Leases and delegations are not built.
+        F_SETLEASE | crate::linux_extra::F_GETDELEG | crate::linux_extra::F_SETDELEG => {
+            Err(kernel.counters.refuse(
+                cx.host,
+                reason::FCNTL_NOT_BUILT,
+                command.into(),
+                Errno::EINVAL,
+            ))
+        }
         _ => Err(Errno::EINVAL),
     }
 }

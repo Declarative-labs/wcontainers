@@ -12,6 +12,10 @@ use wcontainers_abi::Permissions;
 use super::{Content, FileSystem, New, Node, Time, Walk, new_inode};
 use crate::Errno;
 use crate::linux::general::*;
+use crate::linux_extra::{
+    MQ_MSG_DEFAULT, MQ_MSG_MAX, MQ_MSGSIZE_DEFAULT, MQ_MSGSIZE_MAX, MQ_QUEUES_MAX, MSGMAX, MSGMNB,
+    MSGMNI, SEMMNI, SEMMNS, SEMMSL, SEMOPM, SHMALL, SHMMAX, SHMMNI,
+};
 use crate::memory::Backing;
 use crate::process::{Channel, Pid, Process, Thread, Tid};
 
@@ -138,6 +142,10 @@ pub(crate) enum NetFile {
     Udp6,
     Unix,
 }
+
+/// This kernel's configuration as Linux's `CONFIG_IKCONFIG_PROC` gives it, compressed by the
+/// build from `config` (the reference's with what is not built left out, made by `config.py`).
+const CONFIG_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/config.gz"));
 
 const NET_FILES: &[(&[u8], NetFile)] = &[
     (b"dev", NetFile::Dev),
@@ -281,6 +289,7 @@ pub(crate) enum Global {
 }
 
 pub(crate) const GLOBAL: &[(&str, Global)] = &[
+    ("config.gz", Global::File(0o444)),
     ("cpuinfo", Global::File(0o444)),
     ("filesystems", Global::File(0o444)),
     ("loadavg", Global::File(0o444)),
@@ -296,17 +305,36 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/dev/tty/ldisc_autoload", Global::File(0o644)),
     ("sys/dev/tty/legacy_tiocsti", Global::File(0o644)),
     ("sys/fs", Global::Directory),
+    ("sys/fs/dir-notify-enable", Global::File(0o644)),
+    ("sys/fs/mqueue", Global::Directory),
+    ("sys/fs/mqueue/msg_default", Global::File(0o644)),
+    ("sys/fs/mqueue/msg_max", Global::File(0o644)),
+    ("sys/fs/mqueue/msgsize_default", Global::File(0o644)),
+    ("sys/fs/mqueue/msgsize_max", Global::File(0o644)),
+    ("sys/fs/mqueue/queues_max", Global::File(0o644)),
     ("sys/fs/nr_open", Global::File(0o644)),
+    ("sys/fs/pipe-max-size", Global::File(0o644)),
     ("sys/kernel", Global::Directory),
     ("sys/kernel/cap_last_cap", Global::File(0o444)),
     ("sys/kernel/hostname", Global::File(0o644)),
+    ("sys/kernel/msgmax", Global::File(0o644)),
+    ("sys/kernel/msgmnb", Global::File(0o644)),
+    ("sys/kernel/msgmni", Global::File(0o644)),
     ("sys/kernel/ngroups_max", Global::File(0o444)),
     ("sys/kernel/osrelease", Global::File(0o444)),
     ("sys/kernel/ostype", Global::File(0o444)),
     ("sys/kernel/pid_max", Global::File(0o644)),
     ("sys/kernel/random", Global::Directory),
     ("sys/kernel/random/boot_id", Global::File(0o444)),
+    ("sys/kernel/random/entropy_avail", Global::File(0o444)),
+    ("sys/kernel/random/poolsize", Global::File(0o444)),
     ("sys/kernel/random/uuid", Global::File(0o444)),
+    ("sys/kernel/sem", Global::File(0o644)),
+    ("sys/kernel/shmall", Global::File(0o644)),
+    ("sys/kernel/shmmax", Global::File(0o644)),
+    ("sys/kernel/shmmni", Global::File(0o644)),
+    ("sys/kernel/tainted", Global::File(0o644)),
+    ("sys/kernel/version", Global::File(0o444)),
     ("sys/net", Global::Directory),
     ("sys/net/core", Global::Directory),
     ("sys/net/core/somaxconn", Global::File(0o644)),
@@ -387,6 +415,10 @@ const LINUX_ENTRIES: &[(&str, &str)] = &[
             "protected_fifos protected_hardlinks protected_regular protected_symlinks quota ",
             "suid_dumpable xfs",
         ),
+    ),
+    (
+        "sys/fs/mqueue",
+        "msg_default msg_max msgsize_default msgsize_max queues_max",
     ),
     (
         "sys/kernel",
@@ -568,6 +600,8 @@ impl Entry {
         match self {
             // Linux's `proc_fd_instantiate` gives descriptor links a size of 64 (measured too).
             Entry::Fd(..) => 64,
+            // `proc_set_size` gives the compressed configuration's.
+            Entry::Global(index) if GLOBAL[*index].0 == "config.gz" => CONFIG_GZ.len() as u64,
             _ => 0,
         }
     }
@@ -1341,6 +1375,7 @@ pub(crate) fn open_check(processes: &BTreeMap<Pid, Process>, entry: &Entry) -> R
 pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>, Errno> {
     let mut out = String::new();
     match entry {
+        Entry::Global(index) if GLOBAL[*index].0 == "config.gz" => return Ok(CONFIG_GZ.to_vec()),
         Entry::ProcessFile(task, file) => {
             let process = source.view.processes.get(&task.pid).ok_or(Errno::ESRCH)?;
             return process_file(source, process, *task, *file);
@@ -1409,7 +1444,56 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 }
                 // Line disciplines load as modules on demand; TIOCSTI is still built (measured).
                 "sys/dev/tty/ldisc_autoload" | "sys/dev/tty/legacy_tiocsti" => out.push_str("1\n"),
+                "sys/fs/dir-notify-enable" => out.push_str("1\n"),
+                "sys/fs/mqueue/msg_default" => {
+                    let _ = writeln!(out, "{MQ_MSG_DEFAULT}");
+                }
+                "sys/fs/mqueue/msg_max" => {
+                    let _ = writeln!(out, "{MQ_MSG_MAX}");
+                }
+                "sys/fs/mqueue/msgsize_default" => {
+                    let _ = writeln!(out, "{MQ_MSGSIZE_DEFAULT}");
+                }
+                "sys/fs/mqueue/msgsize_max" => {
+                    let _ = writeln!(out, "{MQ_MSGSIZE_MAX}");
+                }
+                "sys/fs/mqueue/queues_max" => {
+                    let _ = writeln!(out, "{MQ_QUEUES_MAX}");
+                }
                 "sys/fs/nr_open" => out.push_str("1048576\n"),
+                "sys/fs/pipe-max-size" => {
+                    let _ = writeln!(out, "{}", crate::pipe::MAX_SIZE);
+                }
+                "sys/kernel/msgmax" => {
+                    let _ = writeln!(out, "{MSGMAX}");
+                }
+                "sys/kernel/msgmnb" => {
+                    let _ = writeln!(out, "{MSGMNB}");
+                }
+                "sys/kernel/msgmni" => {
+                    let _ = writeln!(out, "{MSGMNI}");
+                }
+                "sys/kernel/sem" => {
+                    let _ = writeln!(out, "{SEMMSL}\t{SEMMNS}\t{SEMOPM}\t{SEMMNI}");
+                }
+                "sys/kernel/shmall" => {
+                    let _ = writeln!(out, "{SHMALL}");
+                }
+                "sys/kernel/shmmax" => {
+                    let _ = writeln!(out, "{SHMMAX}");
+                }
+                "sys/kernel/shmmni" => {
+                    let _ = writeln!(out, "{SHMMNI}");
+                }
+                // Nothing has tainted this kernel.
+                "sys/kernel/tainted" => out.push_str("0\n"),
+                "sys/kernel/version" => {
+                    let _ = writeln!(out, "{}", machine.version);
+                }
+                // The input pool's size in bits, which Linux 5.18 on always shows full.
+                "sys/kernel/random/entropy_avail" | "sys/kernel/random/poolsize" => {
+                    out.push_str("256\n")
+                }
                 // The cap `listen` puts on a backlog.
                 "sys/net/core/somaxconn" => out.push_str("4096\n"),
                 "sys/kernel/cap_last_cap" => {

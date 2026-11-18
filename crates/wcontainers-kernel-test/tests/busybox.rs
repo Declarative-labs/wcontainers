@@ -133,6 +133,20 @@ fn system() {
         &[
             "sh",
             "-c",
+            "zcat /proc/config.gz | grep -E \
+             '^CONFIG_(IKCONFIG_PROC|DNOTIFY|USER_NS|SECCOMP_FILTER|TMPFS_XATTR|CHECKPOINT_RESTORE)='",
+        ],
+        &[
+            "sh",
+            "-c",
+            "cd /proc/sys; for f in fs/dir-notify-enable fs/mqueue/* fs/pipe-max-size \
+             kernel/msgmax kernel/msgmnb kernel/msgmni kernel/sem kernel/shmall kernel/shmmax \
+             kernel/shmmni kernel/random/entropy_avail kernel/random/poolsize; \
+             do echo $f $(cat $f); done; echo 1 > kernel/shmmni; echo $?",
+        ],
+        &[
+            "sh",
+            "-c",
             "read x < /etc/hostname; echo \"$x\"; test -d /proc && echo yes",
         ],
         &["nice", "-n", "5", "nice"],
