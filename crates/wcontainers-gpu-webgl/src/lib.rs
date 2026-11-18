@@ -13,13 +13,14 @@ mod depth;
 mod format;
 mod host;
 pub mod platform;
+mod restart;
 mod shader;
 mod state;
 
 use glow::HasContext;
 use shader::{ProgramObj, ShaderObj, Slot};
 use state::GlValues;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
@@ -46,6 +47,8 @@ pub struct BufferObj {
     index: Option<glow::Buffer>,
     /// A range of one of the two GL buffers that a GPU write could not reach; the other holds it.
     stale: Cell<Option<Stale>>,
+    /// Where indices may be GL's restart value, for buffers that hold indices.
+    maxima: RefCell<restart::Maxima>,
 }
 
 /// A stale byte range of the index GL buffer (`index`) or of the data one.
@@ -2767,6 +2770,13 @@ fn f(bits: u32) -> f32 {
 /// The area a draw outside a pass (a capture) clips its scissor to.
 const NO_PASS: (u32, u32) = (i32::MAX as u32, i32::MAX as u32);
 
+/// The byte range of a buffer that a draw's indices `first..first + count` take.
+fn index_bytes(index: &IndexBinding<'_, WebGl>, first: u32, count: u32) -> Range<u64> {
+    let size = u64::from(index.format.size());
+    let start = index.offset + u64::from(first) * size;
+    start..start + u64::from(count) * size
+}
+
 /// A scissor clipped to a pass of `size`, as GL takes it.
 fn gl_rect(s: &ScissorRect, size: (u32, u32)) -> [i32; 4] {
     let (x, y) = (s.x.min(size.0), s.y.min(size.1));
@@ -2778,6 +2788,106 @@ fn gl_rect(s: &ScissorRect, size: (u32, u32)) -> [i32; 4] {
 impl WebGl {
     /// [`Backend::draw`], with the draw's instances starting `later` instances past its first
     /// instance: `instance_index` and the per-instance streams as the full draw has them there.
+    /// The bytes of a draw's indices, read back from the index GL buffer (waiting for the GPU).
+    fn read_indices(
+        &mut self,
+        index: &IndexBinding<'_, Self>,
+        first: u32,
+        count: u32,
+    ) -> Result<Vec<u8>, GpuError> {
+        let range = index_bytes(index, first, count);
+        if range.end > index.buffer.size {
+            return Err(GpuError::Invalid(
+                "indices past the end of the index buffer",
+            ));
+        }
+        let mut raw = vec![0u8; (range.end - range.start) as usize];
+        self.refresh(index.buffer, Some(true));
+        let gl_buffer = index.buffer.index.or(index.buffer.data);
+        // SAFETY: plain GL calls; the copy target takes buffers of either WebGL type, and the range
+        // was checked above.
+        let read = unsafe {
+            self.gl.bind_buffer(glow::COPY_READ_BUFFER, gl_buffer);
+            platform::get_buffer_sub_data(
+                &self.gl,
+                glow::COPY_READ_BUFFER,
+                range.start as i32,
+                &mut raw,
+            )
+        };
+        if !read {
+            return Err(self.read_failed());
+        }
+        Ok(raw)
+    }
+
+    /// An indexed draw that must not restart, whose indices may hold GL's restart value (which WebGL
+    /// cannot turn off): they are read back and, where one is there, drawn rewritten as 32-bit indices
+    /// from the index ring ([`SlowPath::RestartRewrite`]).
+    fn draw_unrestarted(&mut self, call: &DrawCall<'_, Self>) {
+        let (
+            Some(index),
+            DrawRange::Indexed {
+                first,
+                count,
+                base_vertex,
+                first_instance,
+                instances,
+            },
+        ) = (&call.index, &call.range)
+        else {
+            return self.draw_from(call, 0);
+        };
+        let (first, count, base_vertex) = (*first, *count, *base_vertex);
+        let (first_instance, instances) = (*first_instance, *instances);
+        self.slow.hit(SlowPath::RestartRewrite);
+        let Ok(bytes) = self.read_indices(index, first, count) else {
+            return self.invalid("indices past the end of the index buffer".into());
+        };
+        let start = index_bytes(index, first, count).start;
+        index.buffer.maxima.borrow_mut().wrote(start, &bytes);
+        let (widened, shift) = match restart::rewrite(&bytes, index.format) {
+            restart::Rewrite::Unneeded => return self.draw_from(call, 0),
+            restart::Rewrite::Widened(widened, shift) => (widened, shift),
+            restart::Rewrite::Unreachable => {
+                self.unbuilt(
+                    "a draw whose 32-bit indices hold both 0 and 2^32 - 1 without restart",
+                );
+                return;
+            }
+        };
+        let Ok(base_vertex) = i32::try_from(i64::from(base_vertex) + i64::from(shift)) else {
+            self.unbuilt(
+                "a draw without restart whose lowered 32-bit indices need a base vertex past \
+                 2^31 - 1",
+            );
+            return;
+        };
+        let mut offset = [0];
+        let ring = match self.write_buffer_ring(RingKind::Indices, &[&widened], 4, &mut offset) {
+            Ok(ring) => ring,
+            Err(_) => return self.fail(LossReason::OutOfMemory),
+        };
+        self.draw_from(
+            &DrawCall {
+                index: Some(IndexBinding {
+                    buffer: &ring,
+                    offset: offset[0],
+                    format: IndexFormat::U32,
+                }),
+                range: DrawRange::Indexed {
+                    first: 0,
+                    count,
+                    base_vertex,
+                    first_instance,
+                    instances,
+                },
+                ..*call
+            },
+            0,
+        );
+    }
+
     fn draw_from(&mut self, call: &DrawCall<'_, Self>, later: u32) {
         let (base_vertex, first_instance, instances) = match call.range {
             DrawRange::Vertices {
@@ -3107,6 +3217,7 @@ impl Backend for WebGl {
             data,
             index,
             stale: Cell::new(None),
+            maxima: RefCell::default(),
         })))
     }
 
@@ -3662,6 +3773,9 @@ impl Backend for WebGl {
             self.fail(LossReason::Error);
             return;
         }
+        if buffer.index.is_some() {
+            buffer.maxima.borrow_mut().wrote(offset, data);
+        }
         let gl = &self.gl;
         for raw in [buffer.data, buffer.index].into_iter().flatten() {
             // SAFETY: plain GL calls; the copy targets take buffers of either WebGL type.
@@ -3914,6 +4028,17 @@ impl Backend for WebGl {
     }
 
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
+        if !call.restart
+            && let (Some(index), DrawRange::Indexed { first, count, .. }) =
+                (&call.index, &call.range)
+            && index
+                .buffer
+                .maxima
+                .borrow()
+                .may_hold(index.format, index_bytes(index, *first, *count))
+        {
+            return self.draw_unrestarted(call);
+        }
         self.draw_from(call, 0);
     }
 
@@ -3994,6 +4119,16 @@ impl Backend for WebGl {
                 self.write_buffer(dst, dst_offset, &bytes, WriteMode::Ordered);
             }
             return;
+        }
+        if dst.index.is_some() {
+            let to = dst_offset..dst_offset + size;
+            // Only buffers holding indices are tracked.
+            let held =
+                src.index.is_none() || src.maxima.borrow().any(src_offset..src_offset + size);
+            match held {
+                true => dst.maxima.borrow_mut().unknown(to),
+                false => dst.maxima.borrow_mut().cleared(to),
+            }
         }
         if let Some(index) = missed {
             self.mark_stale(dst, index, dst_offset, dst_offset + size);
@@ -4250,6 +4385,7 @@ impl Backend for WebGl {
         }
         if dst.buffer.index.is_some() {
             let end = dst.offset + (layer_bytes * extent.depth_or_layers as usize) as u64;
+            dst.buffer.maxima.borrow_mut().unknown(dst.offset..end);
             self.mark_stale(dst.buffer, true, dst.offset, end);
         }
     }
@@ -4298,6 +4434,13 @@ impl Backend for WebGl {
                     );
                     done += n;
                 }
+            }
+        }
+        if buffer.index.is_some() {
+            let range = offset..offset + size;
+            match pattern.contains(&0xff) {
+                true => buffer.maxima.borrow_mut().unknown(range),
+                false => buffer.maxima.borrow_mut().cleared(range),
             }
         }
     }
@@ -4947,8 +5090,8 @@ impl Backend for WebGl {
     /// Draws `TRIANGLE_FAN` and `LINE_LOOP` as they are. GL's tables give the vertex the raster block's
     /// convention names, which is the one `provoking` names when the front's block follows its API, as
     /// the converted list of the default assumes too. Guest indices go into the index ring once; GL
-    /// restarts at the largest value always, and a front whose API turns restart off rewrites them, as
-    /// for every draw.
+    /// restarts at the largest value always, so where the call does not restart and one is there they
+    /// go widened to 32 bits ([`SlowPath::RestartRewrite`]).
     fn draw_fan_or_loop(
         &mut self,
         call: &DrawCall<'_, Self>,
@@ -4984,16 +5127,42 @@ impl Backend for WebGl {
                 if count == 0 {
                     return Ok(());
                 }
+                let widened;
+                let mut bytes = &indices[..count * width];
+                let (mut format, mut base_vertex) = (format, base_vertex);
+                if !call.restart {
+                    match restart::rewrite(bytes, format) {
+                        restart::Rewrite::Unneeded => {}
+                        restart::Rewrite::Widened(w, shift) => {
+                            self.slow.hit(SlowPath::RestartRewrite);
+                            widened = w;
+                            bytes = &widened;
+                            format = IndexFormat::U32;
+                            base_vertex = i32::try_from(i64::from(base_vertex) + i64::from(shift))
+                                .map_err(|_| {
+                                    self.unbuilt(
+                                        "a fan or loop without restart whose lowered 32-bit \
+                                         indices need a base vertex past 2^31 - 1",
+                                    )
+                                })?;
+                        }
+                        restart::Rewrite::Unreachable => {
+                            return Err(self.unbuilt(
+                                "a fan or loop whose 32-bit indices hold both 0 and 2^32 - 1 \
+                                 without restart",
+                            ));
+                        }
+                    }
+                }
                 let mut offset = [0];
                 let ring = self.write_buffer_ring(
                     RingKind::Indices,
-                    &[&indices[..count * width]],
-                    width as u32,
+                    &[bytes],
+                    format.size(),
                     &mut offset,
                 )?;
                 self.draw(&DrawCall {
                     topology,
-                    restart: true,
                     index: Some(IndexBinding {
                         buffer: &ring,
                         offset: offset[0],
@@ -5096,43 +5265,20 @@ impl Backend for WebGl {
                     return Err(GpuError::Invalid("an indexed draw with no index buffer"));
                 };
                 let size = index.format.size();
-                let start = index.offset + u64::from(*first) * u64::from(size);
-                let bytes = u64::from(*count) * u64::from(size);
-                if start + bytes > index.buffer.size {
-                    return Err(GpuError::Invalid(
-                        "indices past the end of the index buffer",
-                    ));
-                }
-                let mut raw = vec![0u8; bytes as usize];
-                self.refresh(index.buffer, Some(true));
-                let gl_buffer = index.buffer.index.or(index.buffer.data);
-                // SAFETY: plain GL calls; the copy target takes buffers of either WebGL type, and the
-                // range was checked above.
-                let read = unsafe {
-                    self.gl.bind_buffer(glow::COPY_READ_BUFFER, gl_buffer);
-                    platform::get_buffer_sub_data(
-                        &self.gl,
-                        glow::COPY_READ_BUFFER,
-                        start as i32,
-                        &mut raw,
-                    )
-                };
-                if !read {
-                    return Err(self.read_failed());
-                }
-                // GL restarts at the largest value always (a front whose API does not rewrites).
-                let restart = index.format.restart_value();
+                let raw = self.read_indices(index, *first, *count)?;
+                // Only strips that restart restart: GL's restart value is a vertex elsewhere.
+                let restart = call.restart.then(|| index.format.restart_value());
                 let mut negative = false;
                 let numbers = raw.chunks_exact(size as usize).map(|c| {
                     let mut word = [0; 4];
                     word[..c.len()].copy_from_slice(c);
                     let i = u32::from_le_bytes(word);
-                    if i == restart {
+                    if Some(i) == restart {
                         return None;
                     }
                     let v = i64::from(i) + i64::from(*base_vertex);
-                    negative |= v < 0;
-                    Some(v.max(0) as u32)
+                    negative |= !(0..=i64::from(i32::MAX)).contains(&v);
+                    Some(v.clamp(0, i64::from(i32::MAX)) as u32)
                 });
                 capture::list_order(
                     call.topology,
@@ -5142,7 +5288,8 @@ impl Backend for WebGl {
                 );
                 if negative {
                     return Err(self.unbuilt(
-                        "capture_vertices reaching below vertex 0 by a negative base vertex",
+                        "capture_vertices reaching below vertex 0 by a negative base vertex, or past \
+                         vertex 2^31 - 1",
                     ));
                 }
                 (*first_instance, *instances, list.len() as u32)
@@ -5285,6 +5432,7 @@ impl Backend for WebGl {
         for (n, t) in targets.iter().enumerate() {
             if t.buffer.index.is_some() {
                 let end = t.offset + vertices * stride(n);
+                t.buffer.maxima.borrow_mut().unknown(t.offset..end);
                 self.mark_stale(t.buffer, true, t.offset, end);
             }
         }
