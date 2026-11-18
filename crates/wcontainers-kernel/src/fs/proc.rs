@@ -819,6 +819,18 @@ pub(crate) fn ptrace_may_read(
     caller: Tid,
     target: Pid,
 ) -> bool {
+    ptrace_may_read_as(processes, threads, caller, target, false)
+}
+
+/// `ptrace_may_access` with PTRACE_MODE_READ, comparing the caller's real ids (REALCREDS) or its
+/// file system ids (FSCREDS) with the target's.
+pub(crate) fn ptrace_may_read_as(
+    processes: &BTreeMap<Pid, Process>,
+    threads: &BTreeMap<Tid, Thread>,
+    caller: Tid,
+    target: Pid,
+    real: bool,
+) -> bool {
     if threads[&caller].process == target {
         return true;
     }
@@ -830,8 +842,13 @@ pub(crate) fn ptrace_may_read(
         task_credentials(processes, threads, target),
     );
     let traces = c.has(CAP_SYS_PTRACE);
-    let same = [t.uid, t.euid, t.suid].iter().all(|id| *id == c.fsuid)
-        && [t.gid, t.egid, t.sgid].iter().all(|id| *id == c.fsgid);
+    let (uid, gid) = if real {
+        (c.uid, c.gid)
+    } else {
+        (c.fsuid, c.fsgid)
+    };
+    let same = [t.uid, t.euid, t.suid].iter().all(|id| *id == uid)
+        && [t.gid, t.egid, t.sgid].iter().all(|id| *id == gid);
     if !same && !traces {
         return false;
     }

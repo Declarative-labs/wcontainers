@@ -31,3 +31,10 @@ fn a_child_started_as_go_starts_one_matches_reference() {
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
     wcontainers_kernel_test::assert_same_output(&out, "spawnpipe", &[]);
 }
+
+/// get_robust_list's checks, another process's list among them.
+#[test]
+fn robust_lists_match_reference() {
+    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    wcontainers_kernel_test::assert_same_output(&out, "robustlist", &[]);
+}

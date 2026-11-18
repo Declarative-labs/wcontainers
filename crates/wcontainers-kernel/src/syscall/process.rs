@@ -853,6 +853,11 @@ pub(super) fn get_robust_list(
 ) -> Result<u64, Errno> {
     let target = if pid == 0 { tid } else { pid as i32 };
     let (list, _) = kernel.threads.get(&target).ok_or(Errno::ESRCH)?.robust_list;
+    let process = kernel.threads[&target].process;
+    if !crate::fs::proc::ptrace_may_read_as(&kernel.processes, &kernel.threads, tid, process, true)
+    {
+        return Err(Errno::EPERM);
+    }
     // The length is always the head's size, and is written first, as on Linux.
     let mut guest = guest(kernel, cx, tid);
     guest.put(length, &ROBUST_LIST_HEAD_SIZE.to_le_bytes())?;
