@@ -1184,6 +1184,13 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
     float_blits and the format extensions (the 25 known failures). Against WebGPU: natively 6 of 7
     and `every_comparison_is_a_test`, in Chrome 9 of 11 routes; the r32float one on both, the exact
     ties in Chrome only. The 6 unit tests of src pass; all scene and rig verdicts as expected.
+  - Final tree (all.cmd once more, out C:\wc\out\webgl\r16e): Chrome 84 passed and 1 not run of 85
+    with every extension; 78 passed and 7 not run without WEBGL_stencil_texturing, float_blits, the
+    format and the raster extensions; 58 passed, 1 not run and the 26 known failures without
+    EXT_clip_control, and the same without it and WEBGL_provoking_vertex. ANGLE 85 of 85 (5 only
+    refused), and 60 of 85 on both reduced routes (the 25 known). Against WebGPU natively 7 of 8
+    tests, in Chrome 9 of 11 routes, as above. Unit tests 6 of 6. Scene and rig verdicts as
+    expected. all.cmd exits 1 for the known failures only.
   - Seeded: `WEBGL_SEED=777`, `WEBGL_CASES=20`, the copy checks, `cube_faces_...` and
     `interpolated_bc...` (11 tests, seeds 777 to 796): ANGLE 11 of 11; Chrome 10 of 10 (the routing
     check not yet listed there). Run 15's failing seed 778 passes.
