@@ -1334,7 +1334,8 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         layer_count: 1,
     };
     // R24G8_TYPELESS: D24_UNORM_S8_UINT for depth, R24_UNORM_X8_TYPELESS and X24_TYPELESS_G8_UINT
-    // to read depth and stencil; a D format is for depth-stencil views only.
+    // to read depth and stencil; a D format is for depth-stencil views only. Stencil, which
+    // Direct3D reads in the second component, needs a view swizzle this back end lacks.
     let depth = dev
         .create_texture(
             &tex2d(4, 4, 44, bind::DEPTH_STENCIL | bind::SHADER_RESOURCE),
@@ -1344,13 +1345,15 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
     assert_eq!(depth.format, wcontainers_gpu::Format::Depth24PlusStencil8);
     dev.create_view(&depth, Some(&view(45)), bind::DEPTH_STENCIL)
         .unwrap();
-    for (format, stencil) in [(46, false), (47, true)] {
-        let from = dev.backend.log.len();
-        dev.create_view(&depth, Some(&view(format)), bind::SHADER_RESOURCE)
-            .unwrap();
-        let made = log_from(&dev, from).join("\n");
-        assert_eq!(made.ends_with(" stencil"), stencil, "{made}");
-    }
+    let from = dev.backend.log.len();
+    dev.create_view(&depth, Some(&view(46)), bind::SHADER_RESOURCE)
+        .unwrap();
+    let made = log_from(&dev, from).join("\n");
+    assert!(!made.ends_with(" stencil"), "{made}");
+    assert!(matches!(
+        dev.create_view(&depth, Some(&view(47)), bind::SHADER_RESOURCE),
+        Err(Error::NotImplemented(_))
+    ));
     for (format, kind) in [
         (45, bind::SHADER_RESOURCE),
         (46, bind::DEPTH_STENCIL),
@@ -1377,8 +1380,8 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         .unwrap();
     dev.create_view(&r32, Some(&view(41)), bind::SHADER_RESOURCE)
         .unwrap();
-    // R8G8B8A8_TYPELESS: UNORM and UNORM_SRGB views of the texture itself; a UINT view reads
-    // the bits through a twin texture of its format, which a target view cannot yet.
+    // R8G8B8A8_TYPELESS: UNORM and UNORM_SRGB views of the texture itself; UINT views read and
+    // draw the bits through a twin texture of their format.
     let colour = dev
         .create_texture(
             &tex2d(4, 4, 27, bind::RENDER_TARGET | bind::SHADER_RESOURCE),
@@ -1396,10 +1399,10 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         .unwrap();
     assert!(uint.twin.is_some());
     assert_eq!(uint.format, wcontainers_gpu::Format::Rgba8Uint);
-    assert!(matches!(
-        dev.create_view(&colour, Some(&view(30)), bind::RENDER_TARGET),
-        Err(Error::NotImplemented(_))
-    ));
+    let target = dev
+        .create_view(&colour, Some(&view(30)), bind::RENDER_TARGET)
+        .unwrap();
+    assert!(target.twin.is_some());
     assert!(matches!(
         dev.create_view(&colour, None, bind::SHADER_RESOURCE),
         Err(Error::InvalidArg(_))

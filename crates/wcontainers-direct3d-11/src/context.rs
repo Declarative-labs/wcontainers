@@ -767,6 +767,12 @@ impl<B: Backend> Device<B> {
             self.backend.end_pass();
             self.ctx.pass_open = false;
             self.queries.pass_set = None;
+            // Targets drawn on twins of their textures: what the pass drew copied out.
+            for t in self.ctx.targets.clone().iter().flatten() {
+                if t.twin.is_some() {
+                    self.copy_twin(t, false);
+                }
+            }
         }
         if !self.queries.counted.is_empty() {
             let r = self.counter.flush(&mut self.backend, &mut self.passes);
@@ -1126,15 +1132,23 @@ impl<B: Backend> Device<B> {
             let v = &c.view;
             let mips = v.desc.first_mip..v.desc.first_mip + 1;
             let layers = v.desc.first_layer..v.desc.first_layer + v.desc.layer_count;
-            if let Err(e) = self.backend.clear_texture(
-                &v.texture.gpu.handle,
-                &v.texture.gpu_desc,
-                v.format,
-                mips,
-                layers,
-                c.value,
-            ) {
+            // A view on a twin of its texture clears the twin, copied out after.
+            let twin_desc = wcontainers_gpu::TextureDesc {
+                format: v.format,
+                ..v.texture.gpu_desc
+            };
+            let (texture, desc) = match &v.twin {
+                Some(t) => (&t.handle, &twin_desc),
+                None => (&v.texture.gpu.handle, &v.texture.gpu_desc),
+            };
+            if let Err(e) = self
+                .backend
+                .clear_texture(texture, desc, v.format, mips, layers, c.value)
+            {
                 let _ = self.gpu::<()>(Err(e));
+            }
+            if v.twin.is_some() {
+                self.copy_twin(v, false);
             }
         }
     }
@@ -1161,6 +1175,13 @@ impl<B: Backend> Device<B> {
         };
         let targets = self.ctx.targets.clone();
         let depth = self.ctx.depth.clone();
+        // Targets on twins of their textures start from the texture's texels.
+        for t in targets.iter().flatten() {
+            if t.twin.is_some() && clear_of(t).is_none() {
+                self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+                self.copy_twin(t, true);
+            }
+        }
         let colors = std::array::from_fn(|i| {
             targets[i].as_ref().map(|v| ColorAttachment {
                 view: &v.gpu.handle,
