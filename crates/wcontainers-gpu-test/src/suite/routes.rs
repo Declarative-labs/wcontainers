@@ -621,3 +621,112 @@ pub fn missing_components_read_their_defaults<H: Host>() {
     }
     ok(&mut b);
 }
+
+/// Where the back end captures (`TRANSFORM_FEEDBACK`), a strip of two triangles captured outside a
+/// pass writes its location outputs, packed 32-bit and in location order, as the lists it draws
+/// (the odd triangle (1, 3, 2) with the first vertex provoking, (2, 1, 3) with the last):
+/// interleaved into one target, and one output per target where it has two.
+pub fn captures_write_location_outputs_packed_in_draw_order<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
+        return;
+    }
+    const CAPTURED: &str = "
+    struct V {
+        @builtin(position) p: vec4<f32>,
+        @location(0) at: vec2<f32>,
+        @location(1) @interpolate(flat) i: u32,
+    }
+    @vertex fn vs(@location(0) p: vec2<f32>, @builtin(vertex_index) i: u32) -> V {
+        return V(vec4<f32>(p, 0.5, 1.0), p, i);
+    }
+    ";
+    const CORNERS: [f32; 8] = [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
+    let first = b.caps().features.contains(Features::PROVOKING_VERTEX_FIRST);
+    let order: [u32; 6] = if first {
+        [0, 1, 2, 1, 3, 2]
+    } else {
+        [0, 1, 2, 2, 1, 3]
+    };
+    let vb = buffer(&mut b, 32, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    b.write_buffer(&vb, 0, &floats(&CORNERS), WriteMode::Discard);
+    let v = shader(&mut b, CAPTURED, "vs", ShaderStage::Vertex);
+    let p = b
+        .create_program(&Program::Render {
+            vertex: &v,
+            fragment: None,
+        })
+        .expect("create_program");
+    let rs = b
+        .create_raster(&RasterDesc {
+            fill: FillMode::Solid,
+            cull: CullMode::None,
+            front: FrontFace::CounterClockwise,
+            depth_bias: 0,
+            depth_bias_slope: 0,
+            depth_bias_clamp: 0,
+            depth_clip: true,
+            scissor: false,
+            line_width: 1.0f32.to_bits(),
+            provoking: if first {
+                ProvokingVertex::First
+            } else {
+                ProvokingVertex::Last
+            },
+            depth_minus_one: false,
+            sample_mask: !0,
+        })
+        .expect("create_raster");
+    let vl = positions(&mut b);
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let vp = viewport(2, 2);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let call = DrawCall {
+        program: &p,
+        blend: &bl,
+        depth_stencil: &ds,
+        raster: &rs,
+        vertex_layout: &vl,
+        bindings: [None; MAX_BINDING_SETS],
+        vertex_buffers: &streams,
+        index: None,
+        topology: Topology::TriangleStrip,
+        restart: false,
+        viewports: &vp,
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: once(4),
+    };
+    let (mut both, mut at, mut index) = (Vec::new(), Vec::new(), Vec::new());
+    for i in order {
+        let corner = floats(&CORNERS[i as usize * 2..][..2]);
+        both.extend(&corner);
+        both.extend(i.to_le_bytes());
+        at.extend(corner);
+        index.extend(i.to_le_bytes());
+    }
+    let usage = BufferUsage::CAPTURE | BufferUsage::COPY_SRC;
+    let one = buffer(&mut b, 72, usage);
+    let range = |buffer, size| BufferRange {
+        buffer,
+        offset: 0,
+        size,
+    };
+    b.capture_vertices(&call, &[range(&one, 72)], false)
+        .expect("capture_vertices");
+    assert_eq!(read_buffer(&mut b, &one, 0, 72), both);
+    if b.caps().limits.capture_buffers >= 2 {
+        let (ta, ti) = (buffer(&mut b, 48, usage), buffer(&mut b, 24, usage));
+        b.capture_vertices(&call, &[range(&ta, 48), range(&ti, 24)], false)
+            .expect("capture_vertices");
+        assert_eq!(read_buffer(&mut b, &ta, 0, 48), at);
+        assert_eq!(read_buffer(&mut b, &ti, 0, 24), index);
+    }
+    ok(&mut b);
+}

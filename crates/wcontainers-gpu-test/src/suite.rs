@@ -64,6 +64,7 @@ macro_rules! suite {
             vertices_pulled_from_storage_match_the_fetched_ones,
             constants_read_through_a_texture_lie_256_rows_to_a_texture_row,
             missing_components_read_their_defaults,
+            captures_write_location_outputs_packed_in_draw_order,
             present_shows_the_frame,
         );
     };
