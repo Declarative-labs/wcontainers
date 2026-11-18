@@ -2898,6 +2898,9 @@ impl ID3D11DeviceContext_Impl for Context_Impl {
         ppsamplers: *mut Option<ID3D11SamplerState>,
     ) {
         let _call = self.call();
+        if self.emulates10() {
+            return;
+        }
         self.ps_get_samplers(startslot, numsamplers, ppsamplers)
     }
     fn VSGetShader(

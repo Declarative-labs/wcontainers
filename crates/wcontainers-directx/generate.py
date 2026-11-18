@@ -139,12 +139,15 @@ dev10_same = {"GetDeviceRemovedReason", "SetExceptionMode", "GetExceptionMode", 
               "CheckFormatSupport", "CheckMultisampleQualityLevels"}
 dev10_missing = {"CreateCounter", "CheckCounterInfo", "CheckCounter", "OpenSharedResource"}
 # The immediate context's calls that do nothing while Direct3D 10's behaviour is active on it: all
-# but the getters and the swap itself.
+# but the swap itself and the getters, which read the default state then, except `PSGetSamplers`,
+# which writes nothing (as real Direct3D's does: Wine's test_device_context_state).
 CONTEXTS = ("ID3D11DeviceContext", "ID3D11DeviceContext1", "ID3D11DeviceContext2", "ID3D11DeviceContext3")
 
 
 def off(name, ret):
     """The early return of a context call made while it does nothing, or None for a call kept."""
+    if name == "PSGetSamplers":
+        return "return;"
     if "Get" in name or name == "SwapDeviceContextState":
         return None
     if ret.startswith("-> windows::core::Result"):
