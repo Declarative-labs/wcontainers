@@ -1,11 +1,14 @@
 //! What each DXGI format can be used for, as Direct3D 10 to 12 report it (`CheckFormatSupport`,
 //! `CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT)`, `CheckMultisampleQualityLevels`), answered
-//! from the back end's `Caps`. An ability is reported only where the back end has it natively;
-//! typed buffer views, stream output, tiling, video and the formats the back end lacks are absent.
+//! from the back end's `Caps`. An ability is reported where the back end has it natively or the
+//! fronts serve it by an exact route: sampling and gathering formats the back end cannot filter
+//! (`FilterInShader`) and views of another member of a typeless group (twin textures where the back
+//! end cannot reinterpret). Typed buffer views and stream output are the front's to add; tiling,
+//! video and the formats the back end lacks are absent.
 
 use wcontainers_gpu::{Caps, Features, Format, FormatUse};
 
-use crate::format::{BACK_BUFFER_FORMATS, dxgi_format, dxgi_vertex_format};
+use crate::format::{BACK_BUFFER_FORMATS, dxgi, dxgi_format, dxgi_vertex_format, typeless_group};
 
 /// `D3D11_FORMAT_SUPPORT` and `D3D12_FORMAT_SUPPORT1` bits (the same numbers).
 pub mod support1 {
@@ -74,15 +77,18 @@ enum Role {
 
 fn role(value: u32) -> Role {
     match value {
-        21 | 46 => Role::DepthView,
-        22 | 47 => Role::StencilView,
+        dxgi::R32_FLOAT_X8X24_TYPELESS | dxgi::R24_UNORM_X8_TYPELESS => Role::DepthView,
+        dxgi::X32_TYPELESS_G8X24_UINT | dxgi::X24_TYPELESS_G8_UINT => Role::StencilView,
         _ => Role::Whole,
     }
 }
 
+/// The sample counts above one Direct3D asks every format about.
+const SAMPLE_COUNTS: [u32; 4] = [2, 4, 8, 16];
+
 /// Whether a texture of `format` may have some sample count above one.
 fn multisampled(caps: &Caps, format: Format) -> bool {
-    [2, 4, 8, 16]
+    SAMPLE_COUNTS
         .into_iter()
         .any(|n| caps.formats.takes_samples(format, n))
 }
@@ -91,8 +97,8 @@ fn multisampled(caps: &Caps, format: Format) -> bool {
 pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     use support1::*;
     use support2::*;
-    // DXGI_FORMAT_UNKNOWN: buffers without a format.
-    if value == 0 {
+    // Buffers without a format.
+    if value == dxgi::UNKNOWN {
         return FormatSupport {
             support1: BUFFER,
             support2: 0,
@@ -102,7 +108,6 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         return FormatSupport::default();
     };
     let uses = caps.formats.get(format);
-    let reinterpret = caps.has(Features::FORMAT_REINTERPRET);
     let block = format.block().0 > 1;
     let depth = format.is_depth_stencil();
     let texture = uses.intersects(
@@ -123,7 +128,9 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     } else {
         TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MIP
     };
-    let cast = if reinterpret && texture {
+    // Views of another member of the group: natively where the back end reinterprets, otherwise
+    // through a twin texture of the view's format (`ReinterpretCopy`).
+    let cast = if texture && typeless_group(value).is_some() {
         CAST_WITHIN_BIT_LAYOUT
     } else {
         0
@@ -135,7 +142,9 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     }
     let has = |u: FormatUse| uses.contains(u);
     let sample = has(FormatUse::SAMPLE);
-    let filter = sample && has(FormatUse::FILTER);
+    // Formats the back end cannot filter are filtered in the program (`FilterInShader`); integer
+    // formats are not sampled.
+    let filter = sample && format.kind() == wcontainers_gpu::FormatKind::Float;
     // A multisampled texture exists only as a target, so only formats that are targets load samples.
     let target = has(FormatUse::RENDER) || has(FormatUse::DEPTH_STENCIL);
     let multisample_load =
@@ -147,22 +156,28 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     };
     match role(value) {
         Role::DepthView => {
+            // Filtered in the program where the back end cannot filter depth.
             bit(
                 sample,
-                shapes | SHADER_LOAD | SHADER_SAMPLE_COMPARISON | SHADER_GATHER_COMPARISON,
+                shapes
+                    | cast
+                    | SHADER_LOAD
+                    | SHADER_SAMPLE
+                    | SHADER_GATHER
+                    | SHADER_SAMPLE_COMPARISON
+                    | SHADER_GATHER_COMPARISON,
             );
-            bit(filter, SHADER_SAMPLE | SHADER_GATHER);
             bit(multisample_load, MULTISAMPLE_LOAD);
             return s;
         }
         Role::StencilView => {
-            bit(sample, shapes | SHADER_LOAD);
+            bit(sample, shapes | cast | SHADER_LOAD);
             bit(multisample_load, MULTISAMPLE_LOAD);
             return s;
         }
         Role::Whole if depth => {
             let target = has(FormatUse::DEPTH_STENCIL);
-            bit(target, shapes | DEPTH_STENCIL);
+            bit(target, shapes | cast | DEPTH_STENCIL);
             bit(
                 target && multisampled(caps, format),
                 MULTISAMPLE_RENDERTARGET,
@@ -175,13 +190,16 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     let storage_write = has(FormatUse::STORAGE_WRITE);
     bit(texture, shapes | cast);
     bit(dxgi_vertex_format(value).is_some(), IA_VERTEX_BUFFER);
-    bit(matches!(value, 42 | 57), IA_INDEX_BUFFER);
+    bit(
+        matches!(value, dxgi::R32_UINT | dxgi::R16_UINT),
+        IA_INDEX_BUFFER,
+    );
     bit(sample, SHADER_LOAD);
     bit(filter, SHADER_SAMPLE | SHADER_GATHER);
     // R32_FLOAT and R16_UNORM also view depth textures stored as D32_FLOAT and D16_UNORM.
     let depth_twin = match value {
-        41 => Some(Format::Depth32Float),
-        56 => Some(Format::Depth16Unorm),
+        dxgi::R32_FLOAT => Some(Format::Depth32Float),
+        dxgi::R16_UNORM => Some(Format::Depth16Unorm),
         _ => None,
     };
     bit(
@@ -205,7 +223,16 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     bit(multisample_load, MULTISAMPLE_LOAD);
     bit(BACK_BUFFER_FORMATS.contains(&value), DISPLAY);
     // The swap chain's buffers take views as their sRGB twins.
-    bit(matches!(value, 28 | 29 | 87 | 91), BACK_BUFFER_CAST);
+    bit(
+        matches!(
+            value,
+            dxgi::R8G8B8A8_UNORM
+                | dxgi::R8G8B8A8_UNORM_SRGB
+                | dxgi::B8G8R8A8_UNORM
+                | dxgi::B8G8R8A8_UNORM_SRGB
+        ),
+        BACK_BUFFER_CAST,
+    );
     bit(storage_write, TYPED_UNORDERED_ACCESS_VIEW);
     if storage_write {
         s.support2 |= UAV_TYPED_STORE;
@@ -215,7 +242,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     }
     if has(FormatUse::STORAGE_ATOMIC) {
         s.support2 |= match value {
-            42 | 43 => {
+            dxgi::R32_UINT | dxgi::R32_SINT => {
                 UAV_ATOMIC_ADD
                     | UAV_ATOMIC_BITWISE_OPS
                     | UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE
@@ -223,7 +250,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
                     | UAV_ATOMIC_SIGNED_MIN_OR_MAX
                     | UAV_ATOMIC_UNSIGNED_MIN_OR_MAX
             }
-            41 => UAV_ATOMIC_EXCHANGE,
+            dxgi::R32_FLOAT => UAV_ATOMIC_EXCHANGE,
             _ => 0,
         };
     }
@@ -257,10 +284,16 @@ pub fn takes_samples(caps: &Caps, value: u32, samples: u32) -> bool {
 /// with stencil and the two-plane video formats, one for the others; None for a value that is no
 /// format or that Direct3D 12 does not take (`R1_UNORM`).
 pub fn plane_count(value: u32) -> Option<u8> {
+    use dxgi::*;
     match value {
-        19..=22 | 44..=47 | 103 | 104 | 105 | 110 => Some(2),
-        66 => None,
-        0..=115 => Some(1),
+        R32G8X24_TYPELESS..=X32_TYPELESS_G8X24_UINT
+        | R24G8_TYPELESS..=X24_TYPELESS_G8_UINT
+        | NV12
+        | P010
+        | P016
+        | NV11 => Some(2),
+        R1_UNORM => None,
+        UNKNOWN..=B4G4R4A4_UNORM => Some(1),
         _ => None,
     }
 }

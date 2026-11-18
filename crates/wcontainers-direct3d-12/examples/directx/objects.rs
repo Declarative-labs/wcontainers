@@ -20,9 +20,7 @@ use wcontainers_direct3d_12::{
     Error, FenceId, GraphicsPipelineDesc, HeapId, MemoryId, PipelineId, QueryHeapId, QueueId,
     ResourceId, features,
 };
-use wcontainers_directx_graphics_infrastructure::{
-    AdapterDesc, dxgi_format, format_support, plane_count,
-};
+use wcontainers_directx_graphics_infrastructure::{AdapterDesc, dxgi_format, plane_count};
 use wcontainers_gpu::{Backend, Extent, Origin};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::*;
@@ -1889,10 +1887,7 @@ impl Device {
             }
             D3D12_FEATURE_FORMAT_SUPPORT => {
                 let d = unsafe { fill::<D3D12_FEATURE_DATA_FORMAT_SUPPORT>(data, size)? };
-                let mut s = format_support(&caps, d.Format.0 as u32);
-                if features::typed_buffer(&caps, d.Format.0 as u32) {
-                    s.support1 |= features::SUPPORT1_TYPED_BUFFER;
-                }
+                let s = features::format_support(&caps, d.Format.0 as u32);
                 d.Support1 = D3D12_FORMAT_SUPPORT1(s.support1 as i32);
                 d.Support2 = D3D12_FORMAT_SUPPORT2(s.support2 as i32);
                 if s.is_empty() {

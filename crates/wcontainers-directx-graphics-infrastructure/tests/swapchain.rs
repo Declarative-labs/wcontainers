@@ -218,10 +218,11 @@ fn outputs_offer_their_current_mode() {
 #[test]
 fn format_support_follows_the_back_ends_format_uses() {
     use support1::*;
+    use wcontainers_directx_graphics_infrastructure::dxgi;
     let caps = Recorder::new().caps().clone();
     // R8G8B8A8_UNORM: a vertex format; sampled, rendered, blended, multisampled, resolved and
     // shown; no storage.
-    let rgba = format_support(&caps, 28);
+    let rgba = format_support(&caps, dxgi::R8G8B8A8_UNORM);
     assert_eq!(
         rgba.support1,
         IA_VERTEX_BUFFER
@@ -230,6 +231,7 @@ fn format_support_follows_the_back_ends_format_uses() {
             | TEXTURE3D
             | TEXTURECUBE
             | MIP
+            | CAST_WITHIN_BIT_LAYOUT
             | SHADER_LOAD
             | SHADER_SAMPLE
             | SHADER_GATHER
@@ -241,13 +243,18 @@ fn format_support_follows_the_back_ends_format_uses() {
             | BACK_BUFFER_CAST
     );
     assert_eq!(rgba.support2, 0);
-    // The typeless group: shapes only, no casts without FORMAT_REINTERPRET.
+    // The typeless group: shapes and casts (through twins without FORMAT_REINTERPRET).
     assert_eq!(
-        format_support(&caps, 27).support1,
-        TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MIP
+        format_support(&caps, dxgi::R8G8B8A8_TYPELESS).support1,
+        TEXTURE1D | TEXTURE2D | TEXTURE3D | TEXTURECUBE | MIP | CAST_WITHIN_BIT_LAYOUT
+    );
+    // A format of no typeless group does not cast.
+    assert_eq!(
+        format_support(&caps, dxgi::R11G11B10_FLOAT).support1 & CAST_WITHIN_BIT_LAYOUT,
+        0
     );
     // R32_UINT: an index and vertex format, a target without blending, stored into but not loaded.
-    let r32 = format_support(&caps, 42);
+    let r32 = format_support(&caps, dxgi::R32_UINT);
     assert_eq!(
         r32.support1 & (IA_INDEX_BUFFER | IA_VERTEX_BUFFER | BLENDABLE | SHADER_SAMPLE),
         IA_INDEX_BUFFER | IA_VERTEX_BUFFER
@@ -267,34 +274,47 @@ fn format_support_follows_the_back_ends_format_uses() {
             generous.formats.samples[wcontainers_gpu::Format::Rgba8Unorm.index()];
     }
     assert_eq!(
-        format_support(&generous, 42).support1 & MULTISAMPLE_RESOLVE,
+        format_support(&generous, dxgi::R32_UINT).support1 & MULTISAMPLE_RESOLVE,
         0
     );
-    assert_eq!(format_support(&generous, 71).support1 & MULTISAMPLE_LOAD, 0);
+    assert_eq!(
+        format_support(&generous, dxgi::BC1_UNORM).support1 & MULTISAMPLE_LOAD,
+        0
+    );
     // R32_FLOAT views depth stored as D32_FLOAT, so it compares.
     assert_ne!(
-        format_support(&caps, 41).support1 & SHADER_SAMPLE_COMPARISON,
+        format_support(&caps, dxgi::R32_FLOAT).support1 & SHADER_SAMPLE_COMPARISON,
         0
     );
-    // D32_FLOAT is a depth target with no 3D shape; its R24 view of D24S8 loads and compares.
+    // D32_FLOAT is a depth target with no 3D shape; its R24 view of D24S8 loads, samples (filtered
+    // in the program where the back end cannot filter depth), gathers and compares.
     assert_eq!(
-        format_support(&caps, 40).support1,
-        TEXTURE1D | TEXTURE2D | TEXTURECUBE | MIP | DEPTH_STENCIL | MULTISAMPLE_RENDERTARGET
-    );
-    assert_eq!(
-        format_support(&caps, 46).support1,
+        format_support(&caps, dxgi::D32_FLOAT).support1,
         TEXTURE1D
             | TEXTURE2D
             | TEXTURECUBE
             | MIP
+            | CAST_WITHIN_BIT_LAYOUT
+            | DEPTH_STENCIL
+            | MULTISAMPLE_RENDERTARGET
+    );
+    assert_eq!(
+        format_support(&caps, dxgi::R24_UNORM_X8_TYPELESS).support1,
+        TEXTURE1D
+            | TEXTURE2D
+            | TEXTURECUBE
+            | MIP
+            | CAST_WITHIN_BIT_LAYOUT
             | SHADER_LOAD
+            | SHADER_SAMPLE
+            | SHADER_GATHER
             | SHADER_SAMPLE_COMPARISON
             | SHADER_GATHER_COMPARISON
     );
     // Formats the back end lacks or the interface does not hold are refused.
-    assert!(format_support(&caps, 65).is_empty());
-    assert!(format_support(&caps, 66).is_empty());
-    assert_eq!(format_support(&caps, 0).support1, BUFFER);
+    assert!(format_support(&caps, dxgi::A8_UNORM).is_empty());
+    assert!(format_support(&caps, dxgi::R1_UNORM).is_empty());
+    assert_eq!(format_support(&caps, dxgi::UNKNOWN).support1, BUFFER);
     // Sample counts: the recorder's are 1 and 4; depth views take one only.
     assert!(takes_samples(&caps, 28, 1) && takes_samples(&caps, 28, 4));
     assert!(!takes_samples(&caps, 28, 2) && !takes_samples(&caps, 65, 1));

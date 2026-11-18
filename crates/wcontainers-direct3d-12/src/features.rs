@@ -5,10 +5,18 @@
 //! sampler feedback, tiled resources, rasterizer ordered views, conservative rasterisation and 64-bit
 //! integers absent.
 
-use wcontainers_directx_graphics_infrastructure::{dxgi_vertex_format, takes_samples};
+use wcontainers_directx_graphics_infrastructure::{
+    FormatSupport, dxgi, dxgi_format, dxgi_vertex_format, format_support as shared_format_support,
+    support1, takes_samples,
+};
 use wcontainers_gpu::{Caps, Features, Format, FormatUse};
 
 pub const FEATURE_LEVEL_11_0: u32 = 0xb000;
+/// Feature level 11_0's sizes (`D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION`, which cube faces share,
+/// `D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION`, `D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION`).
+pub const LEVEL_11_0_TEXTURE_2D: u32 = 16384;
+pub const LEVEL_11_0_TEXTURE_3D: u32 = 2048;
+pub const LEVEL_11_0_TEXTURE_LAYERS: u32 = 2048;
 /// `D3D_SHADER_MODEL_6_0`.
 pub const SHADER_MODEL_6_0: u32 = 0x60;
 
@@ -17,10 +25,10 @@ pub const SHADER_MODEL_6_0: u32 = 0x60;
 /// depth targets).
 pub fn feature_level(caps: &Caps) -> Option<u32> {
     let l = &caps.limits;
-    let sizes = l.max_texture_2d >= 16384
-        && l.max_texture_cube >= 16384
-        && l.max_texture_3d >= 2048
-        && l.max_texture_layers >= 2048;
+    let sizes = l.max_texture_2d >= LEVEL_11_0_TEXTURE_2D
+        && l.max_texture_cube >= LEVEL_11_0_TEXTURE_2D
+        && l.max_texture_3d >= LEVEL_11_0_TEXTURE_3D
+        && l.max_texture_layers >= LEVEL_11_0_TEXTURE_LAYERS;
     let depth_stencil = caps
         .formats
         .get(Format::Depth32FloatStencil8)
@@ -37,7 +45,26 @@ pub fn feature_level(caps: &Caps) -> Option<u32> {
 
 /// `D3D12_FORMAT_SUPPORT1_BUFFER` and `D3D12_FORMAT_SUPPORT1_SHADER_LOAD`, which typed buffer
 /// views give: they are loaded.
-pub const SUPPORT1_TYPED_BUFFER: u32 = 0x1 | 0x100;
+pub const SUPPORT1_TYPED_BUFFER: u32 = support1::BUFFER | support1::SHADER_LOAD;
+
+/// `D3D12_FEATURE_FORMAT_SUPPORT` for DXGI format `value`: the shared answers, with typed buffer
+/// views and stream output, which this front serves through the program (`TexelBufferAsStorage`,
+/// `StreamOutAsCompute`): stream output into the formats of 32-bit components, as Direct3D lists.
+pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
+    let mut s = shared_format_support(caps, value);
+    if typed_buffer(caps, value) {
+        s.support1 |= SUPPORT1_TYPED_BUFFER;
+    }
+    let word = size_of::<u32>() as u32;
+    let streamed = match (dxgi_format(value), dxgi_vertex_format(value)) {
+        (Some((format, false)), Some((_, size))) => size == word * format.components(),
+        _ => false,
+    };
+    if streamed && caps.has(Features::COMPUTE) {
+        s.support1 |= support1::SO_BUFFER;
+    }
+    s
+}
 
 /// Typed buffer views of DXGI format `value` are read: through storage buffers, decoded in the
 /// program (`TexelBufferAsStorage`), for the formats that have a vertex fetch form.
@@ -194,10 +221,10 @@ pub const DEPTH_BOUNDS: bool = false;
 /// `CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS)` for a `DXGI_FORMAT` value, as
 /// Direct3D 12 answers: one quality level for one sample whatever the format; for more, one where a
 /// resource of the format may have that count and none otherwise; None (the call fails) for no
-/// samples, or for `R1_UNORM` (66), which Direct3D 12 takes for no resource.
+/// samples, or for `R1_UNORM`, which Direct3D 12 takes for no resource.
 pub fn quality_levels(caps: &Caps, format: u32, samples: u32) -> Option<u32> {
     match samples {
-        _ if format == 66 => None,
+        _ if format == dxgi::R1_UNORM => None,
         0 => None,
         1 => Some(1),
         _ => Some(u32::from(takes_samples(caps, format, samples))),
