@@ -310,6 +310,16 @@ fn set_schedule(
     change_schedule(kernel, tid, target, &request)
 }
 
+/// Linux's `check_same_owner`: the caller's effective user is the target's effective or real one.
+fn same_owner(kernel: &Kernel, tid: Tid, target: &Task) -> bool {
+    let target = match target {
+        Task::Thread(thread) => &kernel.threads[thread].credentials,
+        Task::Ended(pid) => &kernel.processes[pid].ended_leader.credentials,
+    };
+    let euid = kernel.credentials(tid).euid;
+    euid == target.euid || euid == target.uid
+}
+
 /// The time slice Linux's fair scheduler gives a thread by default (`sysctl_sched_base_slice`): 0.7 ms
 /// scaled by the logarithm of the CPU count, which is one here.
 const BASE_SLICE: u64 = 700_000;
@@ -412,7 +422,8 @@ fn change_schedule(
         || policy == SCHED_DEADLINE
         // Leaving the idle policy is raising the priority to the current nice value's.
         || (current.policy == SCHED_IDLE && policy != SCHED_IDLE && !allowed_nice(current.nice))
-        || (current.reset_on_fork && !reset_on_fork);
+        || (current.reset_on_fork && !reset_on_fork)
+        || !same_owner(kernel, tid, &target);
     if needs_power && !kernel.credentials(tid).has(CAP_SYS_NICE) {
         return Err(Errno::EPERM);
     }

@@ -187,5 +187,22 @@ int main(void) {
     show("mincore partial", mincore(area, 4097, vector));
     mprotect(area, 4096, PROT_NONE);
     show("mincore none", mincore(area, 4096, vector));
+    // Another user's scheduling is not changed without CAP_SYS_NICE (`check_same_owner`).
+    {
+        pid_t parent = getpid();
+        pid_t child = fork();
+        if (child == 0) {
+            struct sched_param keep = {.sched_priority = 0};
+            if (seteuid(65534)) _exit(1);
+            errno = 0;
+            printf("another user's setparam %d %s\n", sched_setparam(parent, &keep), strerror(errno));
+            errno = 0;
+            printf("another user's setscheduler %d %s\n", sched_setscheduler(parent, SCHED_OTHER, &keep), strerror(errno));
+            errno = 0;
+            printf("its own setparam %d %s\n", sched_setparam(0, &keep), strerror(errno));
+            _exit(0);
+        }
+        waitpid(child, NULL, 0);
+    }
     return 0;
 }
