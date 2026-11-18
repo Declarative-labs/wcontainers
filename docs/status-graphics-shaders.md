@@ -819,6 +819,9 @@ Run 22 (Direct3D 12's numbering, for Godot's graphics shaders and the games' reg
   both WGSL and GLSL ES, 1 WGSL only), `ps_spaces.dxil` and `ps_twospaces` convert; no other verdict
   changed in any corpus. Every written WGSL compiles in Chrome. `ps_twospaces` draws equal to real
   Direct3D 12 (DXIL) and 11 (DXBC) through both back ends.
+- At the end of run 22 the build folders were deleted again (laptop
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders`, 4.9 GB; desktop
+  `C:\wc\target\phase-2-graphics-shaders`); the next run builds from clean.
 
 Next (in order):
 - Godot on Direct3D 12 (G5's real program): run 22's numbering is expected to remove
