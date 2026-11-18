@@ -4,7 +4,9 @@
 //! they are drawn again into a counting target cleared to zero, each with its own depth-stencil and
 //! raster blocks, blending One plus One and a counting program from the front (the draw's fragment
 //! shader writing 1.0 at location 0, its storage writes removed), so each sample holds how many
-//! fragments passed every test there. The targets' sums add up to the count.
+//! fragments passed every test there. The targets' sums add up to the count: summed on the GPU into
+//! a buffer of the counter's where the back end computes and no pixel can reach the counting format's
+//! exact bound, otherwise read back and summed here.
 
 use crate::MAX_BINDING_SETS;
 use crate::backend::Backend;
@@ -16,15 +18,20 @@ use crate::error::GpuError;
 use crate::format::Format;
 use crate::passes::{PassTargets, PassTracker};
 use crate::resource::{
-    Extent, Origin, ReadSource, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    TextureViewDesc, ViewDimension,
+    BindingEntry, BindingResource, BufferDesc, BufferRange, BufferUsage, Extent, MapIntent, Origin,
+    ReadSource, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
+    ViewDimension, WriteMode,
 };
+use crate::shader::{Program, ShaderModule, ShaderStage};
 use crate::slow::SlowPath;
 use crate::state::{
     BlendComponent, BlendDesc, BlendFactor, BlendOp, ColorWrites, IndexFormat, RenderTargetBlend,
     Topology,
 };
+use crate::{DispatchCall, DispatchGroups, Object, StageSet};
 use crate::{Features, FormatUse, MAX_COLOR_TARGETS};
+use alloc::format;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -168,6 +175,51 @@ pub struct OcclusionCounter<B: Backend> {
     targets: Vec<Pooled<B>>,
     /// The One plus One blocks, without and with alpha to coverage.
     blends: [Option<B::Blend>; 2],
+    /// The summing programs for single-sampled and multisampled counting targets, and the buffer
+    /// they add the running query's count to (a u64), made at the first sum on the GPU.
+    summing: [Option<B::Program>; 2],
+    sum_buffer: Option<B::Buffer>,
+    /// Some of the running query's count is in the sum buffer.
+    on_gpu: bool,
+}
+
+/// The summing program: adds every sample of a counting target into a u64 as two words, each
+/// workgroup's part first in workgroup memory. Each sample holds an exact integer below 2^24.
+fn summing_source(multisampled: bool) -> String {
+    let (ty, samples, at) = match multisampled {
+        true => (
+            "texture_multisampled_2d<f32>",
+            "textureNumSamples(counts)",
+            "s",
+        ),
+        false => ("texture_2d<f32>", "1u", "0"),
+    };
+    format!(
+        "@group(0) @binding(0) var counts: {ty};
+@group(0) @binding(1) var<storage, read_write> sum: array<atomic<u32>, 2>;
+var<workgroup> part: array<atomic<u32>, 2>;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) i: u32) {{
+    if all(id.xy < textureDimensions(counts)) {{
+        var n = 0u;
+        for (var s = 0u; s < {samples}; s++) {{
+            n += u32(textureLoad(counts, id.xy, {at}).x);
+        }}
+        if n != 0u && atomicAdd(&part[0], n) > 0xffffffffu - n {{
+            atomicAdd(&part[1], 1u);
+        }}
+    }}
+    workgroupBarrier();
+    if i == 0u {{
+        let low = atomicLoad(&part[0]);
+        let carry = select(0u, 1u, low != 0u && atomicAdd(&sum[0], low) > 0xffffffffu - low);
+        let high = atomicLoad(&part[1]) + carry;
+        if high != 0u {{
+            atomicAdd(&sum[1], high);
+        }}
+    }}
+}}"
+    )
 }
 
 impl<B: Backend> Default for OcclusionCounter<B> {
@@ -182,6 +234,9 @@ impl<B: Backend> Default for OcclusionCounter<B> {
             saved: None,
             targets: Vec::new(),
             blends: [None, None],
+            summing: [None, None],
+            sum_buffer: None,
+            on_gpu: false,
         }
     }
 }
@@ -197,6 +252,7 @@ impl<B: Backend> OcclusionCounter<B> {
         self.segment = None;
         self.copied = false;
         self.sum = 0;
+        self.on_gpu = false;
         self.running = true;
         Ok(())
     }
@@ -315,16 +371,123 @@ impl<B: Backend> OcclusionCounter<B> {
         Ok(())
     }
 
-    /// Ends the running query and gives its exact count of samples that passed.
+    /// Ends the running query and gives its exact count of samples that passed, reading back what
+    /// was summed on the GPU.
     pub fn end(&mut self, b: &mut B, passes: &mut PassTracker<B>) -> Result<u64, GpuError> {
+        self.finish(b, passes)?;
+        Ok(self.sum + self.read_sum_buffer(b)?)
+    }
+
+    /// Ends the running query and writes its exact count of samples that passed into `dst` at
+    /// `offset` (a multiple of 4) as a u64, in order with the work recorded around it. Where every
+    /// count was summed on the GPU it is copied there and nothing waits; the default writes what
+    /// was read back, adding the GPU's part read back too.
+    pub fn end_into(
+        &mut self,
+        b: &mut B,
+        passes: &mut PassTracker<B>,
+        dst: &B::Buffer,
+        offset: u64,
+    ) -> Result<(), GpuError> {
+        self.finish(b, passes)?;
+        match (&self.sum_buffer, self.on_gpu && self.sum == 0) {
+            (Some(sum), true) => b.copy_buffer(sum, 0, dst, offset, 8),
+            _ => {
+                let count = self.sum + self.read_sum_buffer(b)?;
+                b.write_buffer(dst, offset, &count.to_le_bytes(), WriteMode::Ordered);
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, b: &mut B, passes: &mut PassTracker<B>) -> Result<(), GpuError> {
         if !self.running {
             return Err(GpuError::Invalid(
                 "a counted query ended that was not begun",
             ));
         }
         self.running = false;
-        self.flush(b, passes)?;
-        Ok(self.sum)
+        self.flush(b, passes)
+    }
+
+    /// What the running query summed on the GPU, read back now; zero where it summed nothing there.
+    fn read_sum_buffer(&mut self, b: &mut B) -> Result<u64, GpuError> {
+        let Some(sum) = self.sum_buffer.as_ref().filter(|_| self.on_gpu) else {
+            return Ok(0);
+        };
+        let mut bytes = [0u8; 8];
+        let src = ReadSource::Buffer {
+            buffer: sum,
+            offset: 0,
+            size: 8,
+        };
+        b.read_back_now(&src, &mut bytes)?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    /// Adds the counting target `t` into the sum buffer on the GPU.
+    fn sum_on_gpu(&mut self, b: &mut B, t: usize, samples: u32) -> Result<(), GpuError> {
+        let multisampled = samples > 1;
+        let which = usize::from(multisampled);
+        if self.summing[which].is_none() {
+            let module = ShaderModule::from_wgsl(
+                &summing_source(multisampled),
+                "main",
+                ShaderStage::Compute,
+            )?;
+            let shader = b.create_shader(&module)?;
+            let program = b.create_program(&Program::Compute(&shader));
+            b.destroy(Object::Shader(shader));
+            self.summing[which] = Some(program?);
+        }
+        if self.sum_buffer.is_none() {
+            self.sum_buffer = Some(b.create_buffer(&BufferDesc {
+                size: 8,
+                usage: BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                intent: MapIntent::Rarely,
+            })?);
+        }
+        let (Some(program), Some(sum)) = (&self.summing[which], &self.sum_buffer) else {
+            return Err(GpuError::Invalid("no summing program"));
+        };
+        if !self.on_gpu {
+            b.clear_buffer(sum, 0, 8, &[0]);
+            self.on_gpu = true;
+        }
+        let target = &self.targets[t];
+        let set = b.create_binding_set(&[
+            BindingEntry {
+                binding: 0,
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::Texture(&target.view),
+            },
+            BindingEntry {
+                binding: 1,
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: sum,
+                        offset: 0,
+                        size: 8,
+                    },
+                    writable: true,
+                },
+            },
+        ])?;
+        let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = Default::default();
+        bindings[0] = Some(&set);
+        let r = b.dispatch(&DispatchCall {
+            program,
+            bindings,
+            immediates: &[],
+            groups: DispatchGroups::Direct([
+                target.key.0.div_ceil(16),
+                target.key.1.div_ceil(16),
+                1,
+            ]),
+        });
+        b.destroy(Object::BindingSet(set));
+        r
     }
 
     fn copy_depth(&mut self, b: &mut B, passes: &mut PassTracker<B>) -> Result<(), GpuError> {
@@ -362,9 +525,11 @@ impl<B: Backend> OcclusionCounter<B> {
     }
 
     /// Counts `draws`, drawn on `targets` (on the depth copy where `copied`), by drawing them into a
-    /// counting target and summing it; where a pixel's sum over its samples reached the counting
-    /// format's exact bound, counts the two halves of the draws (or of the one draw's instances or
-    /// primitives) one after the other, from the depth the whole began with, and adds them.
+    /// counting target and summing it: on the GPU into the sum buffer where the back end computes
+    /// and no pixel's sum over its samples can reach the counting format's exact bound (giving
+    /// zero here), otherwise read back. Where a pixel's sum reached the bound, counts the two
+    /// halves of the draws (or of the one draw's instances or primitives) one after the other, from
+    /// the depth the whole began with, and adds them.
     fn count(
         &mut self,
         b: &mut B,
@@ -386,7 +551,20 @@ impl<B: Backend> OcclusionCounter<B> {
             (Format::R16Float, 2048.0)
         };
         let key = (size.0, size.1, format, size.2);
-        let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
+        // The summing program needs compute, 8 bytes of workgroup memory, 256 invocations a
+        // workgroup and, for multisampled targets, reading them.
+        let caps = b.caps();
+        let compute = caps.has(Features::COMPUTE)
+            && caps.limits.compute_workgroup_storage >= 8
+            && caps.limits.compute_invocations >= 256
+            && caps.limits.compute_size[0] >= 16
+            && caps.limits.compute_size[1] >= 16
+            && (size.2 == 1 || caps.has(Features::MULTISAMPLE_READ));
+        let on_gpu = compute && primitives(draws).saturating_mul(u64::from(size.2)) < bound as u64;
+        let usage = match compute {
+            true => TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::SAMPLE,
+            false => TextureUsage::RENDER | TextureUsage::COPY_SRC,
+        };
         let t = match self.targets.iter().position(|t| t.key == key) {
             Some(i) => i,
             None => {
@@ -554,6 +732,10 @@ impl<B: Backend> OcclusionCounter<B> {
             });
         }
         b.end_pass();
+        if on_gpu {
+            self.sum_on_gpu(b, t, size.2)?;
+            return Ok(0);
+        }
 
         // Sum the target, resolved first where it has several samples (the average times the count).
         let mut read = &self.targets[t];

@@ -2,13 +2,18 @@
 //! the work it issues. Input assembler, vertex shader and clipper counts come from each draw's
 //! arguments, as a GPU without vertex reuse or clipping splits counts them (indexed strips with a
 //! cut value read their indices back; indirect arguments are read back); compute invocations from
-//! each dispatch's groups; pixel shader invocations from the pixel counter, an occlusion counter
-//! replaying the draws with the depth and stencil tests off and a program counting each invocation.
+//! each dispatch's groups; pixel shader invocations by drawing each draw again in its pass with
+//! the depth and stencil tests off, no colour written and a program adding one a pixel (or a
+//! sample, for pixel shaders run once a sample) to a counter buffer on the GPU
+//! (`PixelInvocationsCounted`), which `EndQuery` copies into the value.
 //! Draws through geometry shaders or stream output are refused while a pipeline statistics query
 //! runs and no hull or domain shader is made, so those stages' counts are zero. Stream output
 //! statistics are the stage helper's counts of primitives written and needed, read back.
 
-use wcontainers_gpu::{DepthStencilDesc, Reflection, StageExtras, SystemValue};
+use wcontainers_gpu::{
+    BlendDesc, COUNTER_BINDING, ColorWrites, DepthStencilDesc, HELPER_SET, Reflection,
+    RenderTargetBlend, StageExtras, SystemValue,
+};
 
 use super::*;
 
@@ -21,19 +26,37 @@ const C_PRIMITIVES: usize = 6;
 const PS_INVOCATIONS: usize = 7;
 pub(super) const CS_INVOCATIONS: usize = 10;
 
-/// The pixel counter's programs: one count a pixel, the same on multisampled targets (the first
-/// covered sample counts), and one count a sample.
-const PER_PIXEL: &str = "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }";
-const PER_PIXEL_MASKED: &str = "
-struct Out { @location(0) count: vec4f, @builtin(sample_mask) mask: u32 }
-@fragment fn main(@builtin(sample_mask) covered: u32) -> Out {
-    return Out(vec4f(1.0), covered & (~covered + 1u));
-}";
-const PER_SAMPLE: &str = "
-@fragment fn main(@builtin(sample_index) i: u32) -> @location(0) vec4f { return vec4f(1.0); }";
+/// The counting program: one invocation adds one to the counter, a u64 as two words.
+fn counting_program(per_sample: bool) -> String {
+    let input = if per_sample {
+        "@builtin(sample_index) i: u32"
+    } else {
+        ""
+    };
+    format!(
+        "@group({HELPER_SET}) @binding({COUNTER_BINDING})
+var<storage, read_write> count: array<atomic<u32>, 2>;
+@fragment fn main({input}) {{
+    if atomicAdd(&count[0], 1u) == 0xffffffffu {{ atomicAdd(&count[1], 1u); }}
+}}"
+    )
+}
 
-/// The pixel counter's program and depth-stencil block for one draw.
-type PixelCounting<B> = (<B as Backend>::Program, <B as Backend>::DepthStencil);
+/// The counting draw's program, depth-stencil block (both tests off) and blend block (no
+/// colour written).
+pub(super) type PixelCounting<B> = (
+    <B as Backend>::Program,
+    <B as Backend>::DepthStencil,
+    <B as Backend>::Blend,
+);
+
+/// What every counting draw shares: the depth-stencil block with both tests off, the blend
+/// block writing no colour, and the counter buffer.
+pub(super) type Counting<B> = (
+    <B as Backend>::DepthStencil,
+    <B as Backend>::Blend,
+    <B as Backend>::Buffer,
+);
 
 /// A running pipeline statistics query: heap, index and the counts so far.
 pub(super) struct Running {
@@ -88,13 +111,9 @@ impl<B: Backend> Device<B> {
         if let Some(p) = &r.pixel_counting {
             return Ok(p.clone());
         }
-        let code = match (r.targets.samples > 1, r.per_sample) {
-            (false, _) => PER_PIXEL,
-            (true, false) => PER_PIXEL_MASKED,
-            (true, true) => PER_SAMPLE,
-        };
+        let code = counting_program(r.targets.samples > 1 && r.per_sample);
         let vertex = r.vertex.clone();
-        let fragment = ShaderModule::from_wgsl(code, "main", ShaderStage::Fragment)?;
+        let fragment = ShaderModule::from_wgsl(&code, "main", ShaderStage::Fragment)?;
         let vertex = self.backend.create_shader(&vertex)?;
         let fragment = match self.backend.create_shader(&fragment) {
             Ok(f) => f,
@@ -114,12 +133,13 @@ impl<B: Backend> Device<B> {
         Ok(program)
     }
 
-    /// The depth-stencil block with both tests off, made once.
-    fn tests_off(&mut self) -> Result<B::DepthStencil, Error> {
-        if let Some(d) = &self.tests_off {
-            return Ok(d.clone());
+    /// The counting draw's depth-stencil block (both tests off), blend block (no colour
+    /// written) and counter buffer, made once.
+    fn counting_blocks(&mut self) -> Result<Counting<B>, Error> {
+        if let Some(c) = &self.counting {
+            return Ok(c.clone());
         }
-        let d = self.backend.create_depth_stencil(&DepthStencilDesc {
+        let off = self.backend.create_depth_stencil(&DepthStencilDesc {
             depth_compare: None,
             depth_write: false,
             stencil: None,
@@ -127,14 +147,32 @@ impl<B: Backend> Device<B> {
             stencil_write_mask: [0xff; 2],
             depth_bounds: None,
         })?;
-        self.tests_off = Some(d.clone());
-        Ok(d)
+        let none = self.backend.create_blend(&BlendDesc {
+            targets: [RenderTargetBlend {
+                blend: None,
+                writes: ColorWrites::empty(),
+            }; MAX_COLOR_TARGETS],
+            same_for_all: true,
+            alpha_to_coverage: false,
+            logic_op: None,
+        })?;
+        let counter = self.backend.create_buffer(&BufferDesc {
+            size: 8,
+            usage: BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })?;
+        self.counting = Some((off, none, counter));
+        Ok(self.counting.clone().expect("made"))
+    }
+
+    /// The counter buffer the counting draws add to.
+    pub(super) fn pixel_counter(&mut self) -> Result<B::Buffer, Error> {
+        Ok(self.counting_blocks()?.2)
     }
 }
 
 impl<B: Backend> Replay<B> {
-    /// `BeginQuery` of pipeline statistics: the counts start at zero, the pixel counter from the
-    /// targets as they are now.
+    /// `BeginQuery` of pipeline statistics: the counts and the counter start at zero.
     pub(super) fn begin_statistics(
         &mut self,
         d: &mut Device<B>,
@@ -152,7 +190,8 @@ impl<B: Backend> Replay<B> {
             ));
         }
         self.end_pass(d)?;
-        d.pixels.begin(&mut d.backend, &mut d.passes)?;
+        let counter = d.pixel_counter()?;
+        d.backend.clear_buffer(&counter, 0, 8, &[0]);
         self.statistics = Some(Running {
             heap,
             index,
@@ -161,7 +200,8 @@ impl<B: Backend> Replay<B> {
         Ok(())
     }
 
-    /// `EndQuery` of pipeline statistics: the pixel counter's count added and the value written.
+    /// `EndQuery` of pipeline statistics: the value written, with the pixel shader invocations
+    /// copied from the counter.
     pub(super) fn end_statistics(
         &mut self,
         d: &mut Device<B>,
@@ -173,9 +213,10 @@ impl<B: Backend> Replay<B> {
             _ => return Err(Error::Invalid("EndQuery of a query not begun")),
         }
         self.end_pass(d)?;
-        let mut s = self.statistics.take().expect("a running query");
-        s.values[PS_INVOCATIONS] += d.pixels.end(&mut d.backend, &mut d.passes)?;
-        d.write_value(heap, index, &s.values)
+        let s = self.statistics.take().expect("a running query");
+        d.write_value(heap, index, &s.values)?;
+        let counter = d.pixel_counter()?;
+        d.copy_into_value(heap, index, PS_INVOCATIONS, &counter)
     }
 
     /// `BeginQuery` of stream output statistics.
@@ -215,14 +256,16 @@ impl<B: Backend> Replay<B> {
         d.write_value(heap, index, &q.3)
     }
 
-    /// Adds a direct draw of pipeline `pid` to the running statistics query, and gives the pixel
-    /// counter's program and depth-stencil block where the pipeline has a pixel shader (a draw
-    /// without one invokes none).
+    /// Adds a direct draw of pipeline `pid` to the running statistics query, and gives what its
+    /// counting draw is drawn with where the pipeline has a pixel shader (a draw without one
+    /// invokes none). `pulled` says the draw fetches streams in its vertex program, which the
+    /// counting program is not made with.
     pub(super) fn count_draw(
         &mut self,
         d: &mut Device<B>,
         pid: PipelineId,
         range: &DrawRange<'_, B>,
+        pulled: bool,
     ) -> Result<Option<PixelCounting<B>>, Error> {
         let restart = d.pipelines[pid.0 as usize]
             .render
@@ -272,10 +315,23 @@ impl<B: Backend> Replay<B> {
         if !pixel || vertices == 0 {
             return Ok(None);
         }
+        if pulled {
+            return Err(Error::NotImplemented(
+                "counting pixel shader invocations of a draw fetching its streams in the program",
+            ));
+        }
+        // The counting draw would be counted by a binary occlusion query running in the pass.
+        if self.query.is_some() {
+            return Err(Error::NotImplemented(
+                "counting pixel shader invocations inside a binary occlusion query",
+            ));
+        }
         let program = d.pixel_counting(pid)?;
-        let off = d.tests_off()?;
-        self.track_targets(d, pid)?;
-        Ok(Some((program, off)))
+        let (off, none, _) = d.counting_blocks()?;
+        d.backend
+            .slow_paths()
+            .hit(SlowPath::PixelInvocationsCounted);
+        Ok(Some((program, off, none)))
     }
 
     /// The vertices and primitives of an indexed strip of `count` indices from `first`, read back:

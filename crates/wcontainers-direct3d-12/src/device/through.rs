@@ -38,10 +38,10 @@ impl<B: Backend> Device<B> {
                 "storage textures read through a buffer in a vertex or geometry shader",
             ));
         }
-        let register = b.binding.register;
-        if register >= 64 {
+        let slot = b.binding.slot();
+        if slot >= 64 {
             return Err(Error::NotImplemented(
-                "a storage texture read through a buffer at a register past 63",
+                "a storage texture read through a buffer at a slot past 63",
             ));
         }
         let format = dxgi(v.format)?;
@@ -90,11 +90,11 @@ impl<B: Backend> Device<B> {
         self.backend.slow_paths().hit(why);
         self.note(v.resource, writable);
         self.bound_formats
-            .push((b.visibility, (true, register), format));
-        self.bound_through.push((b.visibility, register));
+            .push((b.visibility, (true, slot), format));
+        self.bound_through.push((b.visibility, slot));
         self.bound_helpers.push((
             b.visibility,
-            HelperValue::TexelLayout { slot: register },
+            HelperValue::TexelLayout { slot },
             pull::words(&[row_pitch / bytes, height, width, height, layers]),
         ));
         self.through.push(Through {
