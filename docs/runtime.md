@@ -1,6 +1,6 @@
 # wcontainers: the runtime (joining the kernel to the translator)
 
-Status: plan, 2026-11-17; J1 built (2026-11-18); J2 being built.
+Status: plan, 2026-11-17; J1 and J2 built (2026-11-18); J3 next.
 
 Words used here:
 - **kernel**: crates/wcontainers-kernel, driven from outside through `wcontainers-abi`.
@@ -1087,14 +1087,19 @@ under pyro-parked/wcontainers-scratch/runtime (outside the repository); the log 
 - The reference's address layout (`alpine:3.22`, ARM64, `/proc/self/maps`; load 41.28;
   ceiling/reference-maps.log): libraries near 0xffff_bc84_9000 and the stack at 0xffff_d4a3_b000, so the
   reference's processes use 48 bit addresses.
+- J2, through the runtime (release; the kernel tests' counted turns; status file, J2, with every log): a
+  `getppid` loop 163 to 228 ns an iteration, of which the loop's stop check 9 ns, against the reference's
+  140 to 335 ns in Docker's Linux VM; fork, exit and wait 339 and 740 µs in two runs (reference 179 to 980
+  µs); the back end's copy of J0's busybox sh layout 125 to 131 µs whole, and the parent's first writes to
+  its 446 written pages after it 221 to 237 µs against 11 µs with no copy (loads 42 to 65). On Linux
+  (Docker, linux/arm64) the back end's tests pass, the `pagemap` copy included, with a page `MADV_PAGEOUT`
+  left swapped out copied exactly.
 - From the brief, not measured here: unkernel's `getppid` 56 ns and fork 20 µs; the benchmark set's times
   native in the translator's runner (fib 5.8, sort 3.4, interpret 3.6, sieve 1.4, matrix 2.6, search 1.9).
 
 ## 19. Not yet measured
 
-- A system call and a fork end to end through the runtime (J2).
 - Where instantiation time goes, and fork with it brought down (J7).
-- Host-supplied memory, shared blocks and the `pagemap` fork copy on Linux (J2).
 - A lookup in a 64 bit array of slots and permission table, the wider form of section 8 (the translator
   and x86 tracks).
 - How many processes one runtime holds at a given ceiling in the wider form, and the cost of moving a

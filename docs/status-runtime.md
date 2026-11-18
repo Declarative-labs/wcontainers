@@ -4,6 +4,173 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 
 ## Where things stand
 
+- J0 (the plan) and J1 (first light: hello and busybox's single programs) are done; their record is below.
+- J2 run 1 (2026-11-18): the findings of J1 run 2's check are settled first (next section); then J2 is built:
+  the cache's disk level with the translator's build identity, fork with the exact copy
+  (`memory_duplicate`), `restored()` for the WebAssembly back end, layer 1 over the back end's memories,
+  and the fix that made signals from faults work (registers the kernel sets after an exit handed on after
+  the thread left were never written). J2's bar passes at full, none and bounded (below).
+- Not built in J2, by the brief: the stand-in's count of the guest's own transfers and, with it, the loop's
+  count of the kernel's changes of pc (the plan builds them together; both wait for the owner's ruling on
+  the progress unit). The kernel's clock method has not landed on origin/phase-1 (no new commits there
+  since 36d20013), so the clock hook still answers `Host::monotonic_nanoseconds`.
+- J2 is complete: every part of plan section 16's J2 that the brief lets be built now is built, its bar
+  passes at full, none and bounded, layer 1 passes 10,000 seeded sequences over the back end, the million
+  is one command (not run here; the orchestrator's), and system call and fork cost are measured with both
+  sides of the copy. One test the stand-in cannot run still fails with the runtime: align's unaligned
+  exclusive load, which the translator traps as Unicorn does (J2 section below); it stays ignored with the
+  stand-in's reason. The other, align's misaligned stack pointer, passes with the runtime.
+- Next: J3 (plan section 16).
+
+## J2 (run 1, 2026-11-18)
+
+Built (crates/wcontainers-wasmtime unless named):
+- The cache's disk level: `Compiler::new(Some(directory))`, one file per key (the translator's build identity
+  from build.rs over the sources of the translator, guest interface, ARM64 guest and abi crates and their
+  locked wasm-encoder; the back end; the guest; the host probe's answer; the offer; look-ahead and
+  optimisation; the memory widths; the code's hash; the starts), written whole by rename, loaded with
+  wasmtime's own compatibility check. `Translated::origin` says memory, disk (with its time) or made (with
+  translating and compiling times). Tested by tests/cache.rs.
+- `memory_duplicate`: the parent's written shared pages copied first, then every run of pages that may hold
+  data (a per-page bit) copied by memory.rs `copy_pages` (macOS `mach_vm_copy`; Linux `/proc/self/pagemap`
+  present or swapped pages with `memcpy`; other hosts `memcpy`), with the parent's per-page record, blocks
+  shown, permission table and slot entries of every code range; the child keeps the parent's translations at
+  the same slot bases. Tested by tests/fork.rs (exact, its own afterwards, the block still shared, the
+  child runs the parent's translation without translating) and memory.rs's unit test.
+- `restored()`: the same copy into a back end with a new compiler (its own pool) and nothing translated;
+  thread blocks copied. Tested by tests/fork.rs, also in a fork copy of the test process with rayon's
+  global pool started, where it compiles new code and runs it (this test hung for 120 s and failed with the
+  probe compiled outside the back end's pool, which was the bug).
+- Registers set by the kernel in answer to an exit handed on after the thread left (a fault's signal) are
+  written before the thread runs again (tests/faults.rs); before, sigframe and privatemap died at their
+  first handled fault.
+- The kernel test crate (its own commits): fa0b5bac gives the tests' back end a cache directory,
+  target/wc-kernel-test/translations, and reports each translation's origin; 0b6fefdb runs layer 1 over
+  the WebAssembly back end with the feature (layer1.rs's CPU type and the driver's `Back` and `back_end`
+  made crate-visible).
+
+The bar (scratch j2/bar.sh NAME full|none|bounded: the 21 listed tests with `--features runtime`, three at a
+time; this Mac, other tracks running):
+- full: 41 passed at 0b6fefdb, 70.1 s (load 48.8 at the start, 51.2 at the end; j2/full-2.log);
+- none: passed at 0b6fefdb, 226.0 s (load 58.3 at the start; j2/none-1.log);
+- bounded: passed at 116b8410 (code as 0b6fefdb, only tests and docs after), 116.5 s (load 88.1 to 81.3;
+  j2/bounded-2.log); N is drawn per run from its seed and `LOOK_AHEAD_SEED` 0.
+- Ignored in these tests, all as with the stand-in: align's two (known stand-in failures, Unicorn's
+  alignment checks) and memfd's huge pages (not built in the kernel). Run with `--ignored` and the
+  feature: align's misaligned stack pointer passes against the
+reference; align's unaligned exclusive load fails (ours exit 135, `SIGBUS`; the reference runs it): the
+translator raises an alignment trap for an unaligned exclusive load, as Unicorn does. That is the
+translator's code, not changed here; the test stays ignored with the stand-in's reason (j2/ignored-full.log,
+load 77.0).
+- Earlier runs, kept as evidence: j2/full-1.log (before the fixes: five failures, a cache file race,
+  the held registers, and procsignals' copies hanging on the probe); j2/bounded-1-stale-build.log
+  (procsignals hung: its test binaries were built while the source held, for the 120 s check above, the
+  probe outside the pool).
+
+The stand-in unchanged: the whole kernel test crate without the feature at 116b8410 (only this file
+changed), 550.9 s (load 61.8 to 41.2; j2/verdicts.log): 190 passed, 0 failed, 5 ignored, and its sorted
+verdict lines (j2/verdicts.txt) are identical to J1 run 2's (j1run2/verdicts.txt).
+
+Layer 1 over the back end (`LAYER1_CASES`, `LAYER1_SEED`; scratch j2/layer1.sh CASES SEED [BACKEND_CASES],
+one command; the long run is `j2/layer1.sh 1000000 <seed>`): 10,000 sequences with seed 2026111801, and 32 on the file
+backend and 32 on the cached backend, all match the reference: 3 passed in 177.3 s (commit 116b8410, only
+this file changed; load 65.5 at the start, 77.0 at the end; j2/layer1-10000-2026111801.log). Earlier: 500
+with seed 1 in 9.0 s (load 20.6). About 18 ms a sequence, so the million is expected (not measured) to take about five hours.
+
+Linux (Docker `rust:1.99-slim`, linux/arm64, kernel 7.0.14-linuxkit, 4 CPUs, swap 4 GB; the back end's
+tests at 0c084598; load 72.5 to 75.0; j2/linux/linux-check.log): all 13 pass: host-supplied memory, blocks
+of shared pages, the fork copy through `/proc/self/pagemap`, a back end brought back in a fork copy. In
+`copy_pages`'s test the page given `MADV_PAGEOUT` read "present 0, swapped 1" and was copied exactly.
+
+The CPU side's warnings per test (per test file, its runs summed; j2/warnings-full.log at full, made by
+j2/scripts/warnings.py --targets):
+Commit 116b8410 with only this file changed; 57.7 s, load 71.4 to 65.5. "progress" is runs of `run` (warned
+once each); "finished", "another thread", "the call waits", "new registers", "the outside asked" and "code
+changed under it" are the leaves of `run`. align has no runs (both its tests are ignored).
+- faults: 8 runs; jump through a register 1, finished 1, memory fault 4, progress 8
+- loader: 1 runs; finished 1, progress 1
+- loaderrors: 3 runs; stack loss 8, jump through a register 312, another thread 1, finished 3, loop not proven 8301, memory fault 4, progress 8, translated at run time 34
+- mapflags: 2 runs; jump through a register 3197, finished 2, loop not proven 8, progress 2, translated at run time 37
+- memfd: 1 runs; jump through a register 1079, finished 1, progress 1, translated at run time 17
+- memory: 12 runs; stack loss 570, engine stack nearly full 8, jump through a register 283, code changed under it 1, finished 5, left to an address 2016, loop not proven 316, memory fault 2035, progress 2040, translated at run time 83
+- orphans: 1 runs; stack loss 43, jump through a register 22, another thread 18, new registers 5, the call waits 1, finished 1, progress 25, translated at run time 53
+- privatemap: 1 runs; stack loss 10, first write to a shared page 1, jump through a register 220, another thread 4, finished 1, left to an address 2, memory fault 13, progress 18, translated at run time 33
+- processes: 3 runs; stack loss 1367, first write to a shared page 6, jump through a register 392, another thread 670, new registers 8, the call waits 6, finished 3, left to an address 1, loop not proven 506, memory fault 7, progress 694, translated at run time 203
+- procsignals: 8 runs; stack loss 1129, jump through a register 291, another thread 511, new registers 69, the call waits 41, finished 8, the outside asked 14, loop not proven 18853, progress 643, translated at run time 346
+- script: 8 runs; stack loss 7, jump through a register 812, finished 7, left to an address 1, loop not proven 3811, memory fault 35, progress 42, translated at run time 43
+- scriptline: 1 runs; jump through a register 701, finished 1, progress 1, translated at run time 9
+- sharedmap: 1 runs; first write to a shared page 7, jump through a register 943, loop not proven 312, memory fault 1, progress 1, translated at run time 45
+- shell: 38 runs; stack loss 6439, exact floating point requested 2, jump through a register 2028137, another thread 1699, new registers 119, the call waits 198, finished 38, left to an address 4, loop not proven 1109896, memory fault 570, progress 2624, translated at run time 2285
+- sigframe: 1 runs; stack loss 34, jump through a register 712, new registers 23, finished 1, left to an address 7, loop not proven 639, memory fault 5, progress 32, translated at run time 40
+- sysvshm: 1 runs; stack loss 20, first write to a shared page 4, jump through a register 1715, another thread 11, finished 1, left to an address 2, loop not proven 9, progress 12, translated at run time 94
+- terminal: 10 runs; stack loss 1028, exact floating point requested 2, jump through a register 9879, another thread 220, new registers 44, the call waits 94, finished 10, left to an address 1, loop not proven 16232, memory fault 146, progress 514, translated at run time 851
+- unknown: 2 runs; jump through a register 80, finished 2, loop not proven 32, progress 2, translated at run time 18
+- write: 2 runs; jump through a register 93, finished 2, progress 2, translated at run time 13
+- zombie: 1 runs; stack loss 25, jump through a register 519, another thread 12, finished 1, loop not proven 461, progress 13, translated at run time 47
+
+System call and fork cost (this Mac; release build; scratch j2/cost/: cost.c, runtime_cost.rs and
+copy_cost.rs, copied into the crates' tests/ for the run and removed; logs cost-1.log, cost-2.log, copy-1.log;
+commit 116b8410, only this file changed). Ours is the host's time of a whole run with N iterations less one
+with none, over N, median of 7 alternating pairs, on the kernel tests' outside: counted turns, so every stop
+check is a hook call (the plain loop below). The reference is the program's own clock, 5 runs, in Docker's
+Linux VM on this Mac. Measured:
+- `getppid` in a loop: ours 227.7 ns an iteration (min 153.3; load 64.8) and again 163.2 ns (min 152.9; load
+  42.7); the same loop with no call 9.2 ns and 8.8 ns, so the call itself about 155 to 218 ns. Reference
+  139.9 to 146.2 ns, again 151.2 to 334.7 ns. unkernel 56 ns (the brief's figure). J0 expected about 130 ns.
+- fork, the child's `_exit`, the parent's `waitpid`, with 448 heap pages written once before the loop: ours
+  338.8 µs (min 323.7; load 64.6) and again 739.7 µs (min 499.4; load 45.3); reference 178.8 to 212.4 µs,
+  again 238.8 to 980.0 µs. unkernel 20 µs. The two runs of ours differ twofold under this load.
+- both sides of the copy, on the back end alone (copy_cost.rs: a process laid out as J0's busybox sh case,
+  four ranges, 11,200 KB given access, 446 pages written; medians of 15, two runs; load 44.3 and 41.7):
+  `memory_duplicate` 125.1 and 131.0 µs (min 104.4 and 122.1), all of it: the new store, guest and state
+  memories, the per-page record's copy and `mach_vm_copy` of every page given access; the parent's first
+  writes to its 446 pages after it 220.5 and 236.5 µs, against 10.8 and 11.2 µs for the same writes with no
+  copy (each first write a fault the host settles, about 0.5 µs a page).
+- the same end to end in a program: fork then rewriting the 448 pages 421.5 µs (load 64.6), again 514.1 µs;
+  the rewrite alone 13.0 and 11.6 µs; reference 547.0 to 658.5 µs and 731.8 to 1056.3 µs, rewrite alone 3.5
+  to 4.5 and 4.0 to 5.1 µs. Under this load the end-to-end difference does not separate the first writes
+  from the fork's own variation; the back end's figures above do.
+- Expected only, not measured apart: most of ours' fork beyond the copy is instantiating the child's code
+  modules at its first run; J7 measures where it goes and brings it down.
+
+## Findings of J1 run 2's check, and how each was settled (J2 run 1)
+
+- Hand-rolled RELR and symbol counts: starts.rs now reads `RELR` with `object::read::elf::RelrIterator` and
+  counts symbols with `HashTable` / `GnuHashTable::symbol_table_length`, over the bytes from the table to the
+  end of its loaded segment's file part (ea2392dd). The hand-written decoder and its own test are gone.
+  The starts by source are unchanged: busybox `text` at full (j2/starts-check.log, load 37.5 to 35.3) gives
+  musl 1538 starts (symbols 1611, unwind 22, relocations 45) and busybox 559 (relocations 607), as in J1.
+- The exact slot's piece not timed: it is now counted "translated at run time" with its time (b6f2415a).
+  The run-time piece's time now starts at that piece, not at the hook's entry, so a whole range's first
+  translation in the same call is not counted into it.
+- Any overlapping notice marked code changed: a range now keeps the hash of the bytes it was last translated
+  from, carried across notices of the same range; it is "changed" only when its bytes at first use differ
+  from that hash, or when a notice for a different extent finds the old range's bytes changed (b6f2415a).
+  tests/code.rs: a permission-only notice leaves it unchanged; new bytes written between two notices, as a
+  program making code does, count once and run.
+- Warnings per test: J1's are now listed per test from run 2's log at a572aa76 (busybox, one test at a time,
+  j1run2/busybox-leaves.log; summed per test, j2/j1-warnings-per-test.txt):
+  - busybox::text, 50 runs: progress counted by stop checks 350, loop not proven 29,588, jump through a
+    register not recognised 41,316, continued after stack loss 230, translated at run time 423, memory fault
+    250, left run: the call waits 50, the container finished 50;
+  - busybox::files, 60 runs: progress 1489, loop not proven 38,754, jump through a register 3,681,846, stack
+    loss 2370, translated at run time 643, memory fault 300, the call waits 1129, finished 60;
+  - busybox::system, 66 runs: progress 593, loop not proven 47,364, jump through a register 144,070, stack
+    loss 499, translated at run time 682, memory fault 384, the call waits 137, another thread runs 6,
+    finished 66, left to an address 2;
+  - busybox::one_cpu, 1 run: progress 6, loop not proven 555, jump through a register 28, stack loss 1,
+    translated at run time 5, memory fault 5, finished 1.
+  J2's are in the J2 section, per test file.
+- Plan inaccuracies: section 14 now says wasmtime 50 brings its own object 0.40 and gimli 0.33 (two versions
+  of each in a build), and names `process.user.umask` (86f98584).
+- Build output left in scratch: j1/after/src/target and j1/baseline/src/target (1.6 GB each, the tests'
+  `target/wc-kernel-test` under the copies' sources) are deleted. Each run now deletes every target folder
+  under its scratch copies, `src/target` included.
+- busybox awk's "jump through a register not recognised" (information for J6 and J7): recorded here; the
+  check measured 26,679,107 in one awk run at full. Nothing changed in J2.
+
+## J1 record
+
 - J0 (the plan) is done: docs/runtime.md. J1 was built in run 1 (2026-11-17); run 2 (2026-11-18) fixed the
   findings of J1's independent check (below) and ran the bars again on the fixed, committed tree.
 - First light, 2026-11-17 23:2x: a program ran through both halves for the first time. The static hello
@@ -43,13 +210,10 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
     reference's own count differed ("sigqueue stopped after 3" where it gives 5, other tracks' containers
     sharing Docker's pending-signal limit), passes on the moved driver, and passes again at the merge commit
     when rerun alone (j1/baseline/userlimits-rerun.log, load 28.5). So no verdict changed with the driver.
-- J1 is complete: every part of plan section 16's J1 is built, its bars pass (hello at full, none and
+- J1 was complete: every part of plan section 16's J1 is built, its bars pass (hello at full, none and
   bounded; hello and busybox at full, and also at bounded and none), step 1's checks hold, and what it records
   is below. The scratch copies' build output (j1/baseline/target, j1/after/target, a zig cache) is deleted;
   their sources and logs stay.
-- Next is J2 (plan section 16): the stand-in's own count with the loop's count of the kernel's changes of
-  pc; the disk level of the cache with the build identity; fork with the exact copy (`memory_duplicate`)
-  and `restored()` for the WebAssembly back end; signals, job control, terminals; Linux checks; the J2 bar.
 
 - Run 2's bars, at a572aa76 with only this file uncommitted (scratch j1run2/bars.sh; this Mac, other tracks
   running): hello passes at full, none and bounded (N 60) (load 77.1 to 76.6); hello and busybox pass at full
@@ -129,14 +293,26 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 
 ## How to run
 
-The one build directory of this track is the checkout's own `target/` (CARGO_TARGET_DIR unset). Scratch is
-pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/`.
+The one build directory of this track is the checkout's own `target/` (CARGO_TARGET_DIR unset); the tests'
+translation cache is in it (target/wc-kernel-test/translations; delete it to make every translation again).
+Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/` and `j1run2/`, J2's in `j2/`.
+- J2's bar: scratch `j2/bar.sh NAME full|none|bounded [test arguments]` (log j2/NAME.log); by hand:
+  `LOOK_AHEAD=<l> nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --no-fail-fast
+  --test shell --test script ... --test unknown -- --test-threads 3` (the 21 tests of plan section 16 J2).
+- Layer 1 over the back end, one command: scratch `j2/layer1.sh CASES SEED [BACKEND_CASES]`, or
+  `LAYER1_CASES=<n> LAYER1_SEED=<s> nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features
+  runtime --test layer1 -- --test-threads 3`. The orchestrator's long run: `j2/layer1.sh 1000000 <seed>`.
+- The back end on Linux: scratch j2/linux/linux-check.log's header has the docker command (rust:1.99-slim,
+  the checkout mounted read-only, `RUSTUP_TOOLCHAIN=1.99.0-aarch64-unknown-linux-gnu`, `cargo test --locked
+  -p wcontainers-wasmtime`); its target and registry folders are deleted after the run.
+- Do not edit the crates while a bar runs: a later cargo invocation of the same run rebuilds from what is
+  on disk (that is how j2/bounded-1-stale-build.log hung).
 - The bar, first step: `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test
   hello -- --test-threads 3`, again with `LOOK_AHEAD=none` and with `LOOK_AHEAD=bounded` in front.
 - The bar: `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test hello --test
   busybox -- --test-threads 3` (full; the same with `LOOK_AHEAD=bounded` and `LOOK_AHEAD=none` also pass).
-- The back end's own tests (a counted turn under clock reads ends at its limit, and its leave is counted): `nix develop -c cargo test -j 4 -p wcontainers-runtime -p wcontainers-wasmtime --
-  --test-threads 3`.
+- The back end's own tests (turns, code notices, faults, the disk cache, fork and bringing back, the page
+  copy): `nix develop -c cargo test -j 4 -p wcontainers-runtime -p wcontainers-wasmtime -- --test-threads 3`.
 - Run 2's bars and verdicts, one command, logs beside it: scratch j1run2/bars.sh.
 - `LOOK_AHEAD` is `full` (also when unset), `none` or `bounded`; at `bounded` the container's N is drawn from
   1 to 64 from the run's seed and `LOOK_AHEAD_SEED` (0 if unset) and printed ("look-ahead bounded N"). hello
@@ -293,7 +469,6 @@ array of slots in microseconds.
   threads.
 - `Outside` has six methods, not five: `cpu_warning` carries the back end's slow paths apart from the
   kernel's `Host::warn` (plan section 5 corrected). `Execution` has `restored()` (finding of J0's check 4).
-- `restored()` of the WebAssembly back end panics naming J2: it is the fork copy's body, built there.
 - J1's step 1 was checked by the seeded runs before the commit was made, and by the whole-suite diff after it
   (the whole suite took 8 to 25 minutes at this load); the commit was pushed with first light, before the
   whole-suite diff ended, as the J1 task asked for a push as soon as hello passed.
@@ -308,6 +483,20 @@ array of slots in microseconds.
 - `zig cc` runs for the checks used a zig cache in scratch (`ZIG_GLOBAL_CACHE_DIR`), because every zig process
   on the machine waited on the shared cache's lock for over 30 minutes; it changes nothing built.
 
+- Not built in J2, by the brief: the stand-in's count of the guest's own transfers, and the loop's count of
+  the kernel's changes of pc that plan section 16 builds with it; both wait for the owner's ruling on the
+  progress unit.
+- The fork copy copies pages that show a block of shared pages with the rest, and copies the permission
+  table and the slot entries, where plan section 8 first said to skip the first and rebuild the others: after
+  the written pages' copies are made all of them hold exactly what the child needs, and the host's copy
+  shares pages instead of writing each (plan section 8 corrected).
+- The check that a copy made at a save compiles new code is the back end's own test (a fork copy of its test
+  process, rayon's global pool started first), not a kernel test: the kernel tests' copies find their
+  translations in the cache's directory and need not compile (plan section 16 J2 says so).
+- Layer 1 over the back end changed layer1.rs (its CPU type) as well as the driver; both are the kernel test
+  crate's planned change (plan section 14), made as its own commit (0b6fefdb).
+- J2's bar runs three tests at a time; the per-test warnings come from a separate run at full with
+  `--nocapture`, summed per test file because lines of tests running together interleave.
 
 ## Dependencies
 
@@ -321,4 +510,8 @@ Added in J1, licences read from each crate's manifest in the registry on 2026-11
   Apache-2.0) for the back end's pool; zerocopy (the workspace's).
 - wcontainers-kernel-test: wcontainers-runtime, and, behind the `runtime` feature, wcontainers-wasmtime and
   wcontainers-arm64. The crate stays GPL-2.0-only and unshipped; nothing shipped depends on it.
-- Not added yet: mach2 (the macOS fork copy, J2), tar (J3), oci-spec (J3).
+- Added in J2 (licences read from the registry's manifests on 2026-11-18): mach2 0.6.0 (BSD-2-Clause OR MIT
+  OR Apache-2.0), on macOS only, for `mach_vm_copy`; blake3 1.8.7 also as a build dependency of
+  wcontainers-wasmtime (the build identity); libc 0.2.191 (MIT OR Apache-2.0) as a dev-dependency only, for
+  the test that forks its process.
+- Not added yet: tar (J3), oci-spec (J3).
