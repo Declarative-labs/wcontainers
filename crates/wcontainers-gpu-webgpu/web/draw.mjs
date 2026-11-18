@@ -5,7 +5,7 @@
 // chrome-webgpu-<scene>.png into <out-dir>, or <out-dir>\<twist> for a twist other than none, and
 // the eight-viewport scene as chrome-webgpu-viewports.png and, moved to whole pixels,
 // chrome-webgpu-viewports-rounded.png, prints first-draw timings with and without prepare, and checks
-// timestamps.
+// timestamps and the formats held converted.
 // Fails unless WebGPU's adapter is a GPU (discrete or integrated, not a fallback).
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -79,6 +79,13 @@ try {
     console.log(`chrome timestamps: ${await page.evaluate(() => window.timestamps())}`);
   } catch (e) {
     console.log(`chrome timestamps failed: ${e.message}`);
+    failed = true;
+  }
+  // Formats held converted: copies exact, texels within their bounds of Direct3D's values.
+  try {
+    console.log(`chrome ${await page.evaluate(() => window.converted())}`);
+  } catch (e) {
+    console.log(`chrome converted formats failed: ${e.message}`);
     failed = true;
   }
 } finally {

@@ -9,7 +9,7 @@ use std::rc::{Rc, Weak};
 
 use wcontainers_gpu::{
     BindingEntry, BindingLayoutKey, BindingResource, BlendDesc, DepthStencilDesc, DispatchCall,
-    DispatchGroups, DrawCall, DrawRange, Features, FormatKind, FormatUse, GpuError, LoadOp,
+    DispatchGroups, DrawCall, DrawRange, Features, Format, FormatKind, FormatUse, GpuError, LoadOp,
     MAX_BINDING_SETS, MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc, SlowPath, StepMode,
     TargetLayout, VertexLayoutDesc,
 };
@@ -727,10 +727,15 @@ impl WebGpu {
                         alpha: blend_component(a),
                     }),
                 };
+                // 8-bit alpha is held as `rgba8unorm` whose colour stays zero.
+                let mut write_mask = convert::color_writes(t.writes);
+                if f == Format::A8Unorm {
+                    write_mask &= wgpu::ColorWrites::ALPHA;
+                }
                 targets.push(Some(wgpu::ColorTargetState {
                     format: convert::texture_format(f).unwrap_or(wgpu::TextureFormat::R8Unorm),
                     blend,
-                    write_mask: convert::color_writes(t.writes),
+                    write_mask,
                 }));
             }
         }
@@ -876,6 +881,13 @@ impl WebGpu {
                             // Loaded, then cleared by a draw once the pass is open.
                             by_draw.push((i, bits));
                             None
+                        } else if v.format == Format::A8Unorm {
+                            Some(wgpu::Color {
+                                r: 0.0,
+                                g: 0.0,
+                                b: 0.0,
+                                ..color_value(bits, kind)
+                            })
                         } else {
                             Some(color_value(bits, kind))
                         }
@@ -1391,6 +1403,7 @@ impl WebGpu {
         // (Dawn on Direct3D 12) averages the stored values whatever the views' format, so in the
         // browser the other twin is the listed loss `ResolveInStoredFormat`.
         let stored = src.texture.0.held;
+        let format = crate::packed::held(format).unwrap_or(format);
         let format = if cfg!(target_arch = "wasm32") && format != stored {
             self.slow.hit(SlowPath::ResolveInStoredFormat);
             stored

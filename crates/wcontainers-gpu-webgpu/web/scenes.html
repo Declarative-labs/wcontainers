@@ -3,7 +3,7 @@
 <title>WebGPU back end scenes</title>
 <script type="module">
 // The scenes example built for WebAssembly, as wasm-bindgen writes it into ./pkg.
-import init, { draw_scene, draw_viewports, prepare_timings, timestamps, adapter } from './pkg/scenes.js';
+import init, { draw_scene, draw_viewports, prepare_timings, timestamps, converted, adapter } from './pkg/scenes.js';
 const ready = init();
 
 const dataUrl = (png) => new Promise((resolve, reject) => {
@@ -29,6 +29,12 @@ window.prepareTimings = async (programs) => {
 window.timestamps = async () => {
   await ready;
   return await timestamps();
+};
+
+// The formats held converted: one line, or an error naming the failed check.
+window.converted = async () => {
+  await ready;
+  return await converted();
 };
 
 // One scene, drawn through the back end on this browser's WebGPU, as a PNG data URL.

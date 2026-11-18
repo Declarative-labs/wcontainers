@@ -13,8 +13,8 @@ pub fn srgb_twin(format: T) -> Option<T> {
         .or_else(|| (format.add_srgb_suffix() != format).then(|| format.add_srgb_suffix()))
 }
 
-/// The wgpu format a texture of `format` is made in; None for formats WebGPU does not hold, which
-/// the back end declares without bits.
+/// The wgpu format a texture of `format` is made in (converted formats in their wider one,
+/// packed.rs); None for formats WebGPU does not hold, which the back end declares without bits.
 pub fn texture_format(format: Format) -> Option<T> {
     use Format::*;
     Some(match format {
@@ -39,7 +39,7 @@ pub fn texture_format(format: Format) -> Option<T> {
         Rg16Uint => T::Rg16Uint,
         Rg16Sint => T::Rg16Sint,
         Rg16Float => T::Rg16Float,
-        Rgba8Unorm => T::Rgba8Unorm,
+        Rgba8Unorm | A8Unorm | B5g6r5Unorm | Bgr5a1Unorm | Bgra4Unorm => T::Rgba8Unorm,
         Rgba8UnormSrgb => T::Rgba8UnormSrgb,
         Rgba8Snorm => T::Rgba8Snorm,
         Rgba8Uint => T::Rgba8Uint,
@@ -93,8 +93,8 @@ pub fn texture_format(format: Format) -> Option<T> {
             block: wgpu::AstcBlock::B4x4,
             channel: wgpu::AstcChannel::UnormSrgb,
         },
-        Bgrx8Unorm | Bgrx8UnormSrgb | B5g6r5Unorm | Bgr5a1Unorm | Bgra4Unorm | Rgbg8Unorm
-        | Grgb8Unorm | Rgb32Uint | Rgb32Sint | Rgb32Float | A8Unorm => return None,
+        Bgrx8Unorm | Bgrx8UnormSrgb | Rgbg8Unorm | Grgb8Unorm | Rgb32Uint | Rgb32Sint
+        | Rgb32Float => return None,
     })
 }
 

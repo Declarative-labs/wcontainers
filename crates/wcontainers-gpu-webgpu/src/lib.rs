@@ -13,6 +13,7 @@ mod edge;
 mod fill;
 mod layout;
 mod memory;
+mod packed;
 mod probe;
 mod vertex;
 mod wait;
@@ -173,7 +174,8 @@ impl BufferObj {
 #[derive(Debug)]
 struct TextureObj {
     desc: TextureDesc,
-    /// The format the GPU texture holds: `desc.format`, or a BC format's decoded one.
+    /// The format the GPU texture holds: `desc.format`, a BC format's decoded one, or a converted
+    /// format's wider one.
     held: Format,
     /// A decoded BC texture's blocks (`BlockDecoded`), per level and layer.
     blocks: Option<RefCell<Vec<Vec<u8>>>>,
@@ -338,6 +340,8 @@ struct ReadbackObj {
     state: Arc<AtomicU8>,
     /// The serial of the encoder holding its copy.
     serial: u64,
+    /// The converted format the copied `rgba8unorm` rows are packed into when finished.
+    packed: Option<Format>,
     /// Bytes to skip at the start, bytes per packed row, bytes per copied row, and rows.
     skip: u64,
     row: u64,
@@ -643,6 +647,7 @@ fn caps(
         // read back as its decoded format is, nothing else.
         let decoded =
             blocks::decoded(format).filter(|_| !f.contains(wgpu::Features::TEXTURE_COMPRESSION_BC));
+        let converted = packed::held(format);
         let Some(raw) = convert::texture_format(decoded.unwrap_or(format)) else {
             continue;
         };
@@ -721,6 +726,23 @@ fn caps(
             formats.uses[i] = uses;
             formats.samples[i] = 1;
             continue;
+        }
+        // Converted formats (`FormatConverted`): 8-bit alpha is drawn into with only alpha written;
+        // the 16-bit packed ones are sampled only, since a draw would keep 8 bits a channel.
+        if converted.is_some() {
+            let drawn = format == Format::A8Unorm;
+            let mut kept = FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
+            *allowed &= wgpu::TextureUsages::TEXTURE_BINDING | copies;
+            if drawn {
+                kept |= FormatUse::RENDER | FormatUse::BLEND | FormatUse::RESOLVE;
+                *allowed |= u & wgpu::TextureUsages::RENDER_ATTACHMENT;
+            }
+            uses &= kept;
+            if !drawn {
+                formats.uses[i] = uses;
+                formats.samples[i] = 1;
+                continue;
+            }
         }
         formats.uses[i] = uses;
         let mut samples = 1u8;
@@ -977,6 +999,7 @@ impl Backend for WebGpu {
             .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
         let held = blocks::decoded(desc.format)
             .filter(|_| decode)
+            .or(packed::held(desc.format))
             .unwrap_or(desc.format);
         let format = convert::texture_format(held)
             .filter(|_| !self.caps.formats.get(desc.format).is_empty())
@@ -1003,6 +1026,14 @@ impl Backend for WebGpu {
         // format allows it.
         let copies = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
         let allowed = self.usages[desc.format.index()];
+        if packed::held(desc.format).is_some() {
+            if !allowed.contains(usage) {
+                return Err(GpuError::Invalid(
+                    "a use of a converted format this back end does not declare",
+                ));
+            }
+            self.slow.hit(wcontainers_gpu::SlowPath::FormatConverted);
+        }
         usage |= copies & allowed;
         // Depth and stencil copies and read backs WebGPU has no copy for are draws: from a bound
         // source into an attachment.
@@ -1035,7 +1066,8 @@ impl Backend for WebGpu {
         Ok(Texture(Rc::new(TextureObj {
             desc: *desc,
             held,
-            blocks: (held != desc.format).then(|| RefCell::new(blocks::zeroed(desc))),
+            blocks: (held != desc.format && packed::held(desc.format).is_none())
+                .then(|| RefCell::new(blocks::zeroed(desc))),
             raw: RefCell::new(raw),
             generation: Cell::new(0),
             used_in: Cell::new(0),
