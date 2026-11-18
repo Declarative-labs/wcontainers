@@ -14,7 +14,7 @@ mod image;
 mod spec;
 mod system;
 
-pub use container::{Container, Error, Executor, Machine, Runtime, RuntimeSettings};
+pub use container::{Container, Error, Executor, GuestMachine, Runtime, RuntimeSettings};
 pub use image::Image;
 pub use oci_spec;
 pub use spec::{base_spec, spec_from_json};

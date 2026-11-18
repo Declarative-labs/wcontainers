@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use serde_json::{Value, json};
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
-    Error, Image, LocalSystem, Machine, Runtime, RuntimeSettings, base_spec, spec_from_json,
+    Error, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, base_spec, spec_from_json,
 };
 use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorSettings};
 
@@ -54,7 +54,7 @@ fn make(value: Value) -> Result<(), Error> {
             &spec,
             &image,
             &translator_settings,
-            &Machine { offer: () },
+            &GuestMachine { offer: () },
             system,
         )
         .map(drop)

@@ -11,7 +11,8 @@ use std::process::ExitCode;
 
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::{
-    Ending, Executor, Image, LocalSystem, Machine, Runtime, RuntimeSettings, Warned, spec_from_json,
+    Ending, Executor, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, Warned,
+    spec_from_json,
 };
 use wcontainers_wasmtime::{CpuSide, LookAhead, Optimise, TranslatorSettings};
 
@@ -98,7 +99,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         &spec,
         &image,
         &translator_settings,
-        &Machine { offer: () },
+        &GuestMachine { offer: () },
         system,
     )?;
     let Ok(Ending::Finished { status }) = container.run();

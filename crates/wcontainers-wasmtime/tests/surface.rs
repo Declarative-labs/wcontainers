@@ -14,7 +14,7 @@ use serde_json::json;
 use wcontainers_arm64::Arm64;
 use wcontainers_runtime::oci_spec::runtime::Spec;
 use wcontainers_runtime::{
-    Container, Ending, Image, LocalSystem, Machine, Runtime, RuntimeSettings, Step, base_spec,
+    Container, Ending, GuestMachine, Image, LocalSystem, Runtime, RuntimeSettings, Step, base_spec,
 };
 use wcontainers_wasmtime::{BOUND, CpuSide, LookAhead, Optimise, Origin, TranslatorSettings};
 
@@ -182,7 +182,7 @@ fn container(
             spec,
             image,
             &translator_settings,
-            &Machine { offer: () },
+            &GuestMachine { offer: () },
             system,
         )
         .unwrap()
@@ -831,7 +831,7 @@ fn a_program_not_in_the_path_is_not_found() {
         &spec,
         &image,
         &translator_settings,
-        &Machine { offer: () },
+        &GuestMachine { offer: () },
         system,
     ) {
         Err(wcontainers_runtime::Error::NotFound(name)) => assert_eq!(name, "ls"),

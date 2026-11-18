@@ -38,7 +38,7 @@ pub trait Executor: Execution {
 
 /// What machine the container appears to run on: the same wherever it runs, since the guest sees it.
 #[derive(Clone, Debug, Default)]
-pub struct Machine<Offer> {
+pub struct GuestMachine<Offer> {
     /// The CPU features the guest is told it has.
     pub offer: Offer,
 }
@@ -98,7 +98,7 @@ impl<E: Executor> Runtime<E> {
         spec: &Spec,
         image: &Image,
         translator_settings: &E::TranslatorSettings,
-        machine: &Machine<E::Offer>,
+        machine: &GuestMachine<E::Offer>,
         mut system: S,
     ) -> Result<Container<E, S>, Error> {
         let accepted = spec::accept(spec)?;
