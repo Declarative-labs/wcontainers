@@ -1,7 +1,7 @@
 # Makes this kernel's configuration from the reference's: options whose features it does not
 # build are "not set", and the options that depend on them are left out, as Kconfig writes them.
 import re, sys
-off = {"AIO": [], "IP_SCTP": ["SCTP_"], "VSOCKETS": ["VSOCKETS_", "VIRTIO_VSOCKETS", "HYPERV_VSOCKETS"],
+off = {"IP_SCTP": ["SCTP_"], "VSOCKETS": ["VSOCKETS_", "VIRTIO_VSOCKETS", "HYPERV_VSOCKETS"],
        "CRYPTO_USER_API": ["CRYPTO_USER_API_"]}
 dependent = [p for subs in off.values() for p in subs]
 out = []

@@ -169,3 +169,14 @@ pub(super) fn write(
     }
     Ok(written)
 }
+
+/// `eventfd_signal`: the kernel counts one, as a completed request does for its descriptor.
+pub(super) fn signal(kernel: &mut Kernel, file: &FileRef) {
+    if let Some(counter) = of(&file.borrow()) {
+        {
+            let mut counter = counter.borrow_mut();
+            counter.count = counter.count.saturating_add(1).min(u64::MAX - 1);
+        }
+        kernel.wake_poll(channel(&counter), EPOLLIN);
+    }
+}

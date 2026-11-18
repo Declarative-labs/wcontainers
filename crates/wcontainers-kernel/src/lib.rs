@@ -147,6 +147,8 @@ pub struct Kernel {
     notices: Vec<(syscall::socket::SocketRef, alloc::vec::Vec<u8>)>,
     /// The open files and descriptors whose owners F_NOTIFY requests owe a signal, in order.
     dnotified: Vec<(alloc::rc::Weak<core::cell::RefCell<file::OpenFile>>, i32)>,
+    /// Every process's asynchronous I/O contexts.
+    aio: Vec<syscall::aio::Ring>,
     /// Parked threads whose wait ended, in line to run, whose calls are run again when their turn
     /// comes.
     woken: VecDeque<Tid>,
@@ -235,6 +237,7 @@ impl Kernel {
             released: Vec::new(),
             notices: Vec::new(),
             dnotified: Vec::new(),
+            aio: Vec::new(),
             woken: VecDeque::new(),
             signalled: VecDeque::new(),
             monotonic_offset: 0,

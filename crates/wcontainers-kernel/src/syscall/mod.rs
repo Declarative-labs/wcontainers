@@ -3,6 +3,7 @@
 //! Each implemented call is one typed Rust function. A call Linux has that is not built yet returns
 //! `ENOSYS`, is counted and warns. So does a number Linux does not have.
 
+pub(crate) mod aio;
 mod clone;
 pub(crate) mod dnotify;
 pub(crate) mod epoll;
@@ -126,6 +127,12 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_read, S(io::read)),
         (__NR_write, S(io::write)),
         (__NR_pread64, S(io::pread64)),
+        (__NR_io_setup, S(aio::io_setup)),
+        (__NR_io_destroy, S(aio::io_destroy)),
+        (__NR_io_submit, S(aio::io_submit)),
+        (__NR_io_cancel, S(aio::io_cancel)),
+        (__NR_io_getevents, S(aio::io_getevents)),
+        (__NR_io_pgetevents, S(aio::io_pgetevents)),
         (__NR_pwrite64, S(io::pwrite64)),
         (__NR_readv, S(io::readv)),
         (__NR_writev, S(io::writev)),

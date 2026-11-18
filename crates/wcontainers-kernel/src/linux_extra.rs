@@ -689,3 +689,22 @@ pub(crate) const UDP_GRO: u32 = 104;
 pub(crate) const RTCF_LOCAL: u32 = 0x8000_0000;
 pub(crate) const RTCF_BROADCAST: u32 = 0x1000_0000;
 pub(crate) const RTCF_MULTICAST: u32 = 0x2000_0000;
+
+/// Native asynchronous I/O (`linux/aio_abi.h`, not in linux-raw-sys): the request kinds, the
+/// flags of `struct iocb`, the key Linux writes into each request, and the ring's header
+/// (`struct aio_ring` in `fs/aio.c`: its magic, features and size). `struct iocb` and `struct
+/// io_event` are 64 and 32 bytes.
+pub(crate) const IOCB_CMD_PREAD: u16 = 0;
+pub(crate) const IOCB_CMD_PWRITE: u16 = 1;
+pub(crate) const IOCB_CMD_FSYNC: u16 = 2;
+pub(crate) const IOCB_CMD_FDSYNC: u16 = 3;
+pub(crate) const IOCB_CMD_POLL: u16 = 5;
+pub(crate) const IOCB_CMD_PREADV: u16 = 7;
+pub(crate) const IOCB_CMD_PWRITEV: u16 = 8;
+pub(crate) const IOCB_FLAG_RESFD: u32 = 1;
+pub(crate) const KIOCB_KEY: u32 = 0;
+pub(crate) const AIO_RING_MAGIC: u32 = 0xa10a10a1;
+pub(crate) const AIO_RING_COMPAT_FEATURES: u32 = 1;
+pub(crate) const AIO_RING_HEADER: u64 = 32;
+pub(crate) const IOCB_SIZE: u64 = 64;
+pub(crate) const IO_EVENT_SIZE: u64 = 32;
