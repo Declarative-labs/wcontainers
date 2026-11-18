@@ -25,22 +25,6 @@ pub struct Target {
     pub fields: &'static [&'static str],
 }
 
-/// x86-64's, until its `GuestTest` names it.
-pub const X86_64: Target = Target {
-    rust_target: "x86_64-unknown-linux-musl",
-    docker_platform: "linux/amd64",
-    reference_host: "WC_REFERENCE_X86_64",
-    remote_directory: "wcontainers-x86/reference",
-    fields: &[
-        "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
-        "r13", "r14", "r15", "rip", "rflags", "fs_base", "gs_base", "mxcsr", "fcw", "fsw", "ftw",
-        "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4",
-        "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14",
-        "xmm15", "ymmh0", "ymmh1", "ymmh2", "ymmh3", "ymmh4", "ymmh5", "ymmh6", "ymmh7", "ymmh8",
-        "ymmh9", "ymmh10", "ymmh11", "ymmh12", "ymmh13", "ymmh14", "ymmh15",
-    ],
-};
-
 /// The Docker image a local reference runs in, and the base of layer 3's compiler image: one release by its
 /// digest (a multi-platform index), so every run has the same environment.
 pub const IMAGE: &str =

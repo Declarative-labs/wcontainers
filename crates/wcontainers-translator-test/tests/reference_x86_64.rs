@@ -8,9 +8,12 @@
 //!
 //! Needs `WC_REFERENCE_X86_64` (such as `tom@192.168.2.240`) on a host that is not x86-64; it fails without it.
 
+use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE, fill};
 use wcontainers_translator_test::programs::{Ran, check_ordinary_programs};
-use wcontainers_translator_test::reference::{BlobRequest, CaseRan, Landed, Reference, X86_64};
+use wcontainers_translator_test::reference::{BlobRequest, CaseRan, Landed, Reference, Target};
+
+const X86_64: Target = <wcontainers_x86::X86_64 as GuestTest>::REFERENCE;
 
 const SIGILL: u32 = 4;
 const SIGTRAP: u32 = 5;

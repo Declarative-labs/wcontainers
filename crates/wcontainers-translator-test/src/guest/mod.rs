@@ -3,6 +3,7 @@
 //! over `G: GuestTest`; each CPU fills it in here, so test-only dependencies never reach the CPU crates.
 
 pub mod arm64;
+pub mod x86_64;
 
 use crate::layer2::{Model, Program};
 use crate::programs::Blob;

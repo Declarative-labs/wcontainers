@@ -18,6 +18,7 @@ use wcontainers_translator_test::layer1::{
     compare, compare_outcome, translated, translated_in_chrome,
 };
 use wcontainers_translator_test::reference::Reference;
+use wcontainers_x86::X86_64;
 
 fn setting(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -208,4 +209,9 @@ fn hand_cases_do_what_they_must_arm64() {
 #[test]
 fn bytes_in_no_form_stop_as_on_the_cpu_arm64() {
     bytes_in_no_form_stop_as_on_the_cpu::<Arm64>();
+}
+
+#[test]
+fn every_form_matches_the_cpu_x86_64() {
+    every_form_matches_the_cpu::<X86_64>();
 }
