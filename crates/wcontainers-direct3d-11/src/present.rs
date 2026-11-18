@@ -111,6 +111,7 @@ impl<B: Backend> Device<B> {
     pub fn present(&mut self, c: &mut Chain<B>, sync_interval: u32) -> Result<()> {
         self.live()?;
         self.settle();
+        self.report_ahead();
         c.chain
             .present(&mut self.backend, sync_interval)
             .map_err(|e| self.chain_lost(e))
