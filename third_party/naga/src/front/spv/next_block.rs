@@ -758,12 +758,12 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
                     let result_type_id = self.next()?;
                     let result_id = self.next()?;
                     let pointer_id = self.next()?;
-                    if inst.wc != 4 {
-                        inst.expect(5)?;
-                        let _memory_access = self.next()?;
+                    let pointer_type_id = self.lookup_expression.lookup(pointer_id)?.type_id;
+                    if inst.wc > 4 {
+                        self.parse_memory_access(inst.wc - 4, pointer_type_id, ctx.module)?;
                     }
-
                     let base_lexp = self.lookup_expression.lookup(pointer_id)?;
+
                     let base_handle = get_expr_handle!(pointer_id, base_lexp);
                     let type_lookup = self.lookup_type.lookup(base_lexp.type_id)?;
                     let handle = match ctx.module.types[type_lookup.handle].inner {
@@ -796,9 +796,9 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
 
                     let pointer_id = self.next()?;
                     let value_id = self.next()?;
-                    if inst.wc != 3 {
-                        inst.expect(4)?;
-                        let _memory_access = self.next()?;
+                    let pointer_type_id = self.lookup_expression.lookup(pointer_id)?.type_id;
+                    if inst.wc > 3 {
+                        self.parse_memory_access(inst.wc - 3, pointer_type_id, ctx.module)?;
                     }
                     let base_expr = self.lookup_expression.lookup(pointer_id)?;
                     let base_handle = get_expr_handle!(pointer_id, base_expr);
@@ -3172,6 +3172,36 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
         ctx.blocks.insert(block_id, block);
         let body = &mut ctx.bodies[body_idx];
         body.data.push(BodyFragment::BlockId(block_id));
+        Ok(())
+    }
+
+    /// Reads a load's or store's `words` words of memory operands, through a pointer of type
+    /// `pointer_type_id`. Alignment, volatility, hints and non-private access change nothing in the
+    /// IR. Availability and visibility at a scope are taken only on workgroup memory, which every
+    /// target keeps coherent within its workgroup; elsewhere they are refused.
+    fn parse_memory_access(
+        &mut self,
+        words: u16,
+        pointer_type_id: spirv::Word,
+        module: &crate::Module,
+    ) -> Result<(), Error> {
+        let mask = self.next()?;
+        let access = spirv::MemoryAccess::from_bits_retain(mask);
+        let scoped =
+            spirv::MemoryAccess::MAKE_POINTER_AVAILABLE | spirv::MemoryAccess::MAKE_POINTER_VISIBLE;
+        let workgroup = matches!(
+            module.types[self.lookup_type.lookup(pointer_type_id)?.handle].inner,
+            crate::TypeInner::Pointer {
+                space: crate::AddressSpace::WorkGroup,
+                ..
+            }
+        );
+        if access.intersects(scoped) && !workgroup {
+            return Err(Error::UnsupportedMemoryAccess(mask));
+        }
+        for _ in 1..words {
+            self.next()?;
+        }
         Ok(())
     }
 }
