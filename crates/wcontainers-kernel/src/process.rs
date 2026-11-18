@@ -157,27 +157,47 @@ pub(crate) struct Queued {
     pub timer: bool,
 }
 
-/// One queued signal in a user's count (Linux's `UCOUNT_RLIMIT_SIGPENDING`), which
-/// RLIMIT_SIGPENDING bounds: the count goes up when one is made or copied and down when it goes.
+/// A part of a user's count that something holds while it lives: one queued signal (Linux's
+/// `UCOUNT_RLIMIT_SIGPENDING`, which RLIMIT_SIGPENDING bounds) or a pipe's pages (`pipe_bufs`).
+/// The count goes up when one is made or copied and down when it goes.
 #[derive(Debug)]
-pub(crate) struct Charge(Rc<core::cell::Cell<u64>>);
+pub(crate) struct Charge {
+    count: Rc<core::cell::Cell<u64>>,
+    amount: u64,
+}
 
 impl Charge {
     pub fn new(count: &Rc<core::cell::Cell<u64>>) -> Self {
-        count.set(count.get() + 1);
-        Self(count.clone())
+        Self::of(count, 1)
+    }
+
+    pub fn of(count: &Rc<core::cell::Cell<u64>>, amount: u64) -> Self {
+        count.set(count.get() + amount);
+        Self {
+            count: count.clone(),
+            amount,
+        }
+    }
+
+    /// The count it is part of.
+    pub fn count(&self) -> &Rc<core::cell::Cell<u64>> {
+        &self.count
+    }
+
+    pub fn amount(&self) -> u64 {
+        self.amount
     }
 }
 
 impl Clone for Charge {
     fn clone(&self) -> Self {
-        Self::new(&self.0)
+        Self::of(&self.count, self.amount)
     }
 }
 
 impl Drop for Charge {
     fn drop(&mut self) {
-        self.0.set(self.0.get() - 1);
+        self.count.set(self.count.get() - self.amount);
     }
 }
 

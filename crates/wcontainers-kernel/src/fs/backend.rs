@@ -177,6 +177,8 @@ pub(crate) struct Client {
     state: RefCell<State>,
     /// The file system its inodes are on.
     pub fs: FileSystem,
+    /// The backend answered FLUSH with ENOSYS, so closes no longer ask (`fc->no_flush`).
+    no_flush: Cell<bool>,
 }
 
 /// An inode of the backend: its node number there, and what keeps its place in the tree.
@@ -313,6 +315,7 @@ impl Client {
             me: me.clone(),
             state: RefCell::default(),
             fs,
+            no_flush: Cell::new(false),
         });
         let init = fuse_init_in {
             major: FUSE_KERNEL_VERSION,
@@ -1574,10 +1577,18 @@ pub(crate) fn write_back(
     Ok(())
 }
 
-/// `fuse_flush`: a descriptor of the file closed. Directories have no flush
-/// (`fuse_dir_operations`).
+impl Handle {
+    /// Whether a close asks the backend to flush (`fuse_flush`): not for a directory (no flush in
+    /// `fuse_dir_operations`), nor a file the backend opened with FOPEN_NOFLUSH (there is no
+    /// writeback cache), nor once the backend has answered that it has no FLUSH.
+    fn flushes(&self) -> bool {
+        !self.directory && self.open_flags & FOPEN_NOFLUSH == 0 && !self.client.no_flush.get()
+    }
+}
+
+/// `fuse_flush`: a descriptor of the file closed.
 pub(crate) fn flush(handle: &Handle, owner: u64) -> Result<(), Errno> {
-    if handle.directory {
+    if !handle.flushes() {
         return Ok(());
     }
     let input = fuse_flush_in {
@@ -1590,15 +1601,18 @@ pub(crate) fn flush(handle: &Handle, owner: u64) -> Result<(), Errno> {
         .client
         .ask(fuse_opcode::FUSE_FLUSH, handle.nodeid, &[input.as_bytes()])
     {
-        // A backend without FLUSH has nothing to do (`fc->no_flush`).
-        Ok(_) | Err(Errno::ENOSYS) => Ok(()),
+        Ok(_) => Ok(()),
+        Err(Errno::ENOSYS) => {
+            handle.client.no_flush.set(true);
+            Ok(())
+        }
         Err(error) => Err(error),
     }
 }
 
 /// `fuse_flush` for a descriptor closed by anything but `close`, whose answer nothing waits for.
 pub(crate) fn flush_unwaited(handle: &Handle, owner: u64) {
-    if handle.directory {
+    if !handle.flushes() {
         return;
     }
     let input = fuse_flush_in {

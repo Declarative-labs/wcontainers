@@ -199,6 +199,8 @@ pub struct Kernel {
     files: Files,
     /// Each user's count of queued signals, by real user id.
     signal_users: BTreeMap<u32, Rc<core::cell::Cell<u64>>>,
+    /// Each user's count of pages its pipes may hold (`user_struct`'s `pipe_bufs`), by real user id.
+    pipe_users: BTreeMap<u32, Rc<core::cell::Cell<u64>>>,
     /// The container's System V IPC objects.
     ipc: syscall::ipc::Ipc,
     /// Every futex with waiters.
@@ -275,6 +277,7 @@ impl Kernel {
             poll_watches: Default::default(),
             sockets: Default::default(),
             signal_users: BTreeMap::new(),
+            pipe_users: BTreeMap::new(),
             files: Files {
                 numbers,
                 root,

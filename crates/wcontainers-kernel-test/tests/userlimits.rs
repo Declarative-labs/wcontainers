@@ -18,3 +18,9 @@ fn tasks_match_reference() {
     let ours = assert_same_output(&out, "userlimits", &["tasks"]);
     assert!(ours.warnings.is_empty(), "{:?}", ours.warnings);
 }
+
+#[test]
+fn pipe_pages_per_user_match_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    assert_same_output(&out, "pipeusers", &[]);
+}

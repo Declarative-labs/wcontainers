@@ -206,6 +206,15 @@ impl Kernel {
         self.threads[&tid].signal_mask & bit(signal) == 0 && self.dropped(pid, signal)
     }
 
+    /// The caller's count of pipe pages (by its real user id), and whether it is free of the limits
+    /// on them (`pipe_is_unprivileged_user`: neither CAP_SYS_RESOURCE nor CAP_SYS_ADMIN).
+    pub(crate) fn pipe_pages(&mut self, tid: Tid) -> (alloc::rc::Rc<core::cell::Cell<u64>>, bool) {
+        let credentials = self.credentials(tid);
+        let privileged = credentials.has(CAP_SYS_RESOURCE) || credentials.has(CAP_SYS_ADMIN);
+        let uid = credentials.uid;
+        (self.pipe_users.entry(uid).or_default().clone(), privileged)
+    }
+
     /// Linux's `posixtimer_init_sigqueue`: a place in the calling user's count for a new timer's
     /// signal, or none (EAGAIN) when the count is at the caller's RLIMIT_SIGPENDING.
     pub(crate) fn timer_charge(&mut self, tid: Tid) -> Option<crate::process::Charge> {

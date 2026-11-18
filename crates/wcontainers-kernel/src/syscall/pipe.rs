@@ -41,6 +41,7 @@ pub(super) fn pipe2(
     }
     let now = kernel.now(cx);
     let (uid, gid) = (kernel.credentials(tid).fsuid, kernel.credentials(tid).fsgid);
+    let (pipe_pages, privileged) = kernel.pipe_pages(tid);
     let ino = kernel.files.numbers.ino();
     let node = fs::new_inode(
         kernel.files.pipe_fs.clone(),
@@ -51,7 +52,7 @@ pub(super) fn pipe2(
             gid,
             rdev: 0,
             now,
-            content: Content::Pipe(Pipe::new(None)),
+            content: Content::Pipe(Pipe::counted(&pipe_pages, privileged)),
             parent: None,
             name: Vec::new(),
         },

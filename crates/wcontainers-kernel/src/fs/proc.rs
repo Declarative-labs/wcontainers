@@ -337,6 +337,8 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/fs/mqueue/queues_max", Global::File(0o644)),
     ("sys/fs/nr_open", Global::File(0o644)),
     ("sys/fs/pipe-max-size", Global::File(0o644)),
+    ("sys/fs/pipe-user-pages-hard", Global::File(0o644)),
+    ("sys/fs/pipe-user-pages-soft", Global::File(0o644)),
     ("sys/fs/protected_fifos", Global::File(0o644)),
     ("sys/fs/protected_hardlinks", Global::File(0o644)),
     ("sys/fs/protected_regular", Global::File(0o644)),
@@ -376,6 +378,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/kernel/random/entropy_avail", Global::File(0o444)),
     ("sys/kernel/random/poolsize", Global::File(0o444)),
     ("sys/kernel/random/uuid", Global::File(0o444)),
+    ("sys/kernel/sched_autogroup_enabled", Global::File(0o644)),
     ("sys/kernel/sem", Global::File(0o644)),
     ("sys/kernel/shmall", Global::File(0o644)),
     ("sys/kernel/shmmax", Global::File(0o644)),
@@ -1661,6 +1664,13 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 "sys/fs/pipe-max-size" => {
                     let _ = writeln!(out, "{}", crate::pipe::MAX_SIZE);
                 }
+                "sys/fs/pipe-user-pages-hard" => out.push_str("0\n"),
+                "sys/fs/pipe-user-pages-soft" => {
+                    let _ = writeln!(out, "{}", crate::pipe::USER_PAGES_SOFT);
+                }
+                // Built and on in the reference's kernel (CONFIG_SCHED_AUTOGROUP); the made-up
+                // machine's scheduler has no groups to switch, and a container cannot write it.
+                "sys/kernel/sched_autogroup_enabled" => out.push_str("1\n"),
                 "sys/kernel/msgmax" => {
                     let _ = writeln!(out, "{MSGMAX}");
                 }

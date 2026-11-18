@@ -2930,6 +2930,7 @@ fn fcntl_other(
         F_GETPIPE_SZ | F_SETPIPE_SZ if !path_only => {
             let node = descriptor.file.borrow().node.clone();
             let may_exceed = kernel.credentials(tid).has(CAP_SYS_RESOURCE);
+            let privileged = kernel.pipe_pages(tid).1;
             let mut inode = node.borrow_mut();
             let Content::Pipe(pipe) = &mut inode.content else {
                 return Err(Errno::EBADF);
@@ -2944,6 +2945,9 @@ fn fcntl_other(
                 return Err(Errno::EPERM);
             }
             let slots = (size / PAGE_SIZE) as usize;
+            if !pipe.account(slots, privileged) {
+                return Err(Errno::EPERM);
+            }
             if slots < pipe.occupancy() {
                 return Err(Errno::EBUSY);
             }

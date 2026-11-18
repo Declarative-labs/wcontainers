@@ -18,6 +18,12 @@ use crate::linux::general::*;
 /// (`pipe_max_size`).
 pub(crate) const DEFAULT_SLOTS: usize = 16;
 pub(crate) const MAX_SIZE: u64 = 1 << 20;
+/// The slots a new pipe gets once its user is past the soft limit (`PIPE_MIN_DEF_BUFFERS`).
+const MIN_SLOTS: usize = 2;
+/// The pages a user's pipes may hold before new ones are made small and none grows
+/// (`pipe-user-pages-soft`); the hard limit (`pipe-user-pages-hard`) is 0, none, and neither can be
+/// changed from a container, whose `/proc/sys` is read-only.
+pub(crate) const USER_PAGES_SOFT: u64 = crate::linux_extra::PIPE_DEF_BUFFERS * INR_OPEN_CUR as u64;
 
 /// One page of a pipe: the bytes written into it, and how many of them have been read.
 #[derive(Clone)]
@@ -50,6 +56,9 @@ pub(crate) struct Pipe {
     /// A named pipe's inode on the backend, whose attributes stay the backend's while its buffer
     /// is the kernel's (a FUSE inode keeps its inode operations under `pipefifo_fops`).
     pub backend: Option<alloc::rc::Rc<crate::fs::backend::Remote>>,
+    /// Its slots in its maker's count of pipe pages (`nr_accounted`); a named pipe's are not
+    /// counted.
+    pub accounted: Option<crate::process::Charge>,
 }
 
 impl Pipe {
@@ -74,7 +83,38 @@ impl Pipe {
             opened_writers: 0,
             held_by: None,
             backend: None,
+            accounted: None,
         }
+    }
+
+    /// An unnamed pipe whose slots count against its maker's pages (`alloc_pipe_info`): a user
+    /// past the soft limit, without CAP_SYS_RESOURCE or CAP_SYS_ADMIN, gets a small one.
+    pub fn counted(count: &alloc::rc::Rc<core::cell::Cell<u64>>, privileged: bool) -> Self {
+        let mut slots = DEFAULT_SLOTS;
+        if count.get() + slots as u64 > USER_PAGES_SOFT && !privileged {
+            slots = MIN_SLOTS;
+        }
+        Self {
+            capacity: slots,
+            accounted: Some(crate::process::Charge::of(count, slots as u64)),
+            ..Self::new(None)
+        }
+    }
+
+    /// Whether its maker may let it grow to `slots` (`pipe_set_size`): within the soft limit, or
+    /// with CAP_SYS_RESOURCE or CAP_SYS_ADMIN; then its count changes to the new slots.
+    pub fn account(&mut self, slots: usize, privileged: bool) -> bool {
+        let Some(old) = &self.accounted else {
+            return true;
+        };
+        let count = old.count().clone();
+        let total = count.get() - old.amount() + slots as u64;
+        if slots > self.capacity && total > USER_PAGES_SOFT && !privileged {
+            return false;
+        }
+        self.accounted = None;
+        self.accounted = Some(crate::process::Charge::of(&count, slots as u64));
+        true
     }
 
     /// Notes an open file of one of its ends, which has seen `seen_writers` writers opened.
