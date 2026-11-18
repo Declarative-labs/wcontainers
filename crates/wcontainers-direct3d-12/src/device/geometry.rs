@@ -254,6 +254,7 @@ impl<B: Backend> Replay<B> {
                 &fetch.inputs,
                 StageSet::COMPUTE,
                 None,
+                None,
             )?);
         }
         let geometry_sets = d.binding_sets(
@@ -288,6 +289,7 @@ impl<B: Backend> Replay<B> {
                         &[(fragment, StageSet::FRAGMENT, block)],
                         None,
                         &[],
+                        None,
                     )?);
                 }
                 Some(sets)

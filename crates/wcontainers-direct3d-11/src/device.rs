@@ -47,6 +47,8 @@ pub(crate) struct Linked<B: Backend> {
 /// A shader converted again as a variant, and where it reads its helper constants.
 pub(crate) struct Variant<B: Backend> {
     pub shader: Kept<B, B::Shader>,
+    /// The content key of its module.
+    pub key: [u8; 32],
     pub helpers: Rc<Helpers>,
 }
 
@@ -99,6 +101,8 @@ pub struct Device<B: Backend> {
     pub(crate) staged: HashMap<(u64, u64, u64, u64), crate::context::StageRun<B>>,
     /// The stage helper's filled sizes and primitive counts of a streaming draw.
     pub(crate) stream_filled: Option<Kept<B, B::Buffer>>,
+    /// What the program's start built from the cache's record.
+    pub(crate) warm: crate::cache::Warm<B>,
     /// Set once the device is removed; later work is dropped and the API reports the removal.
     pub removed: Option<Removal>,
 }
@@ -217,6 +221,7 @@ impl<B: Backend> Device<B> {
         let raster = backend
             .create_raster(&raster_block(&raster_desc, backend.caps()))
             .map_err(gpu_error)?;
+        let warm = crate::cache::Warm::start(&mut backend, &graveyard, &mut id);
         let defaults = Defaults {
             blend: Rc::new(Blend {
                 desc: blend_desc,
@@ -262,6 +267,7 @@ impl<B: Backend> Device<B> {
             },
             staged: HashMap::new(),
             stream_filled: None,
+            warm,
             removed: None,
         })
     }
@@ -1157,12 +1163,22 @@ impl<B: Backend> Device<B> {
                 _ => (dimension, v.first_layer, v.layer_count),
             }
         };
+        // Direct3D reads stencil in the second component; the interface's stencil views give it
+        // in the first.
+        if stencil
+            && kind == bind::SHADER_RESOURCE
+            && !self.backend.caps().has(Features::VIEW_SWIZZLE)
+        {
+            return not_implemented(
+                "stencil read through a view (Direct3D's second component needs a view swizzle)",
+            );
+        }
         self.live()?;
         self.bury();
         let twin = if !stencil && format::reinterprets(format, texture.format) {
-            if drawn {
+            if kind == bind::DEPTH_STENCIL {
                 return not_implemented(
-                    "a target view reinterpreting a typeless texture's bits as another format",
+                    "a depth view reinterpreting a typeless texture's bits as another format",
                 );
             }
             let gpu = self.backend.create_texture(&GpuTexture {
@@ -1493,6 +1509,7 @@ impl<B: Backend> Device<B> {
         let vertex = stage == wcontainers_gpu::SourceStage::Vertex;
         let shader = Rc::new(Shader {
             gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
+            key: module.key,
             reflection: converted.reflection,
             constant_sizes,
             stand_ins,
@@ -1572,6 +1589,7 @@ impl<B: Backend> Device<B> {
         let id = self.id();
         Ok(Rc::new(Shader {
             gpu: Kept::new(gpu, id, Object::Shader, &self.graveyard),
+            key: converted.modules[1].key,
             reflection: converted.reflection.clone(),
             constant_sizes: constant_sizes(&compute.module),
             stand_ins: stand_ins(&compute.module),
@@ -2002,7 +2020,8 @@ pub(crate) fn raster_block(d: &RasterizerDesc, caps: &Caps) -> RasterDesc {
         depth_bias: (d.depth_bias as f32).to_bits(),
         depth_bias_slope: d.slope_scaled_depth_bias.to_bits(),
         depth_bias_clamp: clamp.to_bits(),
-        depth_clip: d.depth_clip,
+        // Where the back end clips only, the programs clamp (`DepthClampInShader`).
+        depth_clip: d.depth_clip || !caps.has(Features::DEPTH_CLAMP),
         scissor: d.scissor,
         line_width: 1.0f32.to_bits(),
         provoking: ProvokingVertex::First,

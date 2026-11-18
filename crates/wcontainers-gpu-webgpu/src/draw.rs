@@ -41,6 +41,9 @@ pub struct Counters {
     pub staged_writes: u64,
     /// Staging rings made (the first, and each larger one a submit's staged bytes needed).
     pub staging_rings: u64,
+    /// Query rings made, which resolved query results are taken from as staged bytes are from
+    /// the staging ring.
+    pub query_rings: u64,
 }
 
 /// An immutable block, made once per distinct value.
@@ -252,6 +255,8 @@ pub struct PipelineKey {
     /// The pass draws into the back end's own attachment (a pass without attachments).
     own_target: bool,
     topology: wgpu::PrimitiveTopology,
+    /// A strip's index format, `uint32` for strips drawn without indices (it has no effect there);
+    /// `None` for lists.
     strip_index: Option<wgpu::IndexFormat>,
     layouts: [BindingLayoutKey; MAX_BINDING_SETS],
 }
@@ -1043,13 +1048,8 @@ impl WebGpu {
         if let Some(set) = &occlusion_set {
             set.0.settle();
         }
-        let mut rp = open(
-            self.encoder(),
-            &colors,
-            &depth,
-            occlusion_set.as_ref().map(|q| &q.0.raw),
-            false,
-        );
+        let first_page = occlusion_set.as_ref().map(|q| q.0.page(0));
+        let mut rp = open(self.encoder(), &colors, &depth, first_page.as_ref(), false);
         for (i, bits) in by_draw {
             self.clear_by_draw(&mut rp, &targets, i, bits);
         }
@@ -1120,7 +1120,7 @@ impl WebGpu {
     }
 
     /// Builds the pipeline of a combination before its first draw, as that draw would (plan 4.4).
-    /// Strip topologies are built for draws without indices, whose strips need no index format.
+    /// A strip's index format is not known ahead, so a strip is built for both.
     pub(crate) fn prepare_impl(&mut self, desc: &PrepareDesc<'_, Self>) {
         let Some(topology) = convert::topology(desc.topology) else {
             return;
@@ -1151,14 +1151,27 @@ impl WebGpu {
             strip_index: None,
             layouts: desc.program.0.own_keys(desc.layouts),
         };
-        if self.caches.pipelines.contains_key(&key) {
-            return;
-        }
-        match self.render_pipeline(&key, desc) {
-            Ok(p) => {
-                self.caches.pipelines.insert(key, p);
+        let strips: &[_] = match topology.is_strip() {
+            true => &[
+                Some(wgpu::IndexFormat::Uint16),
+                Some(wgpu::IndexFormat::Uint32),
+            ],
+            false => &[None],
+        };
+        for &strip_index in strips {
+            let key = PipelineKey { strip_index, ..key };
+            if self.caches.pipelines.contains_key(&key) {
+                continue;
             }
-            Err(why) => self.fail(why),
+            match self.render_pipeline(&key, desc) {
+                Ok(p) => {
+                    self.caches.pipelines.insert(key, p);
+                }
+                Err(why) => {
+                    self.fail(why);
+                    return;
+                }
+            }
         }
     }
 
@@ -1220,7 +1233,7 @@ impl WebGpu {
             targets: pass.targets,
             own_target: pass.own_target,
             topology,
-            strip_index: index_format.filter(|_| strip),
+            strip_index: strip.then(|| index_format.unwrap_or(wgpu::IndexFormat::Uint32)),
             layouts,
         };
         let rp = &mut pass.rp;

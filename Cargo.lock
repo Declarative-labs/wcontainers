@@ -1400,6 +1400,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
+name = "llvm-bitcode"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e81c545b8986967f5d96021ee724fc6a00630b177a22930c3843f2aac0fd19f8"
+dependencies = [
+ "bitflags 2.13.2",
+ "num_enum",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1585,6 +1595,28 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
+]
+
+[[package]]
+name = "num_enum"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d0bca838442ec211fa11de3a8b0e0e8f3a4522575b5c4c06ed722e005036f26"
+dependencies = [
+ "num_enum_derive",
+ "rustversion",
+]
+
+[[package]]
+name = "num_enum_derive"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3096,6 +3128,7 @@ dependencies = [
  "blake3",
  "half",
  "naga",
+ "serde",
  "wcontainers-directx-graphics-infrastructure",
  "wcontainers-gpu",
  "wcontainers-shaders",
@@ -3106,6 +3139,7 @@ name = "wcontainers-direct3d-12"
 version = "0.1.0"
 dependencies = [
  "half",
+ "llvm-bitcode",
  "md-5",
  "naga",
  "png",
@@ -3124,6 +3158,7 @@ dependencies = [
 name = "wcontainers-directx"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "cc",
  "parking_lot",
  "pollster",
@@ -3134,6 +3169,7 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-webgl",
  "wcontainers-gpu-webgpu",
+ "wcontainers-shaders",
  "wgpu",
  "windows",
  "windows-core",

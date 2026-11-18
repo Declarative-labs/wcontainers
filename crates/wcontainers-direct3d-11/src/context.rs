@@ -767,6 +767,12 @@ impl<B: Backend> Device<B> {
             self.backend.end_pass();
             self.ctx.pass_open = false;
             self.queries.pass_set = None;
+            // Targets drawn on twins of their textures: what the pass drew copied out.
+            for t in self.ctx.targets.clone().iter().flatten() {
+                if t.twin.is_some() {
+                    self.copy_twin(t, false);
+                }
+            }
         }
         if !self.queries.counted.is_empty() {
             let r = self.counter.flush(&mut self.backend, &mut self.passes);
@@ -1040,7 +1046,8 @@ impl<B: Backend> Device<B> {
             let d3 = t.desc.dimension == TexDim::D3;
             Target {
                 view: v.gpu.handle.clone(),
-                texture: t.gpu.handle.clone(),
+                // A view on a twin draws into the twin.
+                texture: v.twin.as_ref().map_or(&t.gpu.handle, |k| &k.handle).clone(),
                 format: v.format,
                 mip,
                 layer: if d3 { 0 } else { v.desc.first_layer },
@@ -1126,15 +1133,23 @@ impl<B: Backend> Device<B> {
             let v = &c.view;
             let mips = v.desc.first_mip..v.desc.first_mip + 1;
             let layers = v.desc.first_layer..v.desc.first_layer + v.desc.layer_count;
-            if let Err(e) = self.backend.clear_texture(
-                &v.texture.gpu.handle,
-                &v.texture.gpu_desc,
-                v.format,
-                mips,
-                layers,
-                c.value,
-            ) {
+            // A view on a twin of its texture clears the twin, copied out after.
+            let twin_desc = wcontainers_gpu::TextureDesc {
+                format: v.format,
+                ..v.texture.gpu_desc
+            };
+            let (texture, desc) = match &v.twin {
+                Some(t) => (&t.handle, &twin_desc),
+                None => (&v.texture.gpu.handle, &v.texture.gpu_desc),
+            };
+            if let Err(e) = self
+                .backend
+                .clear_texture(texture, desc, v.format, mips, layers, c.value)
+            {
                 let _ = self.gpu::<()>(Err(e));
+            }
+            if v.twin.is_some() {
+                self.copy_twin(v, false);
             }
         }
     }
@@ -1161,6 +1176,13 @@ impl<B: Backend> Device<B> {
         };
         let targets = self.ctx.targets.clone();
         let depth = self.ctx.depth.clone();
+        // Targets on twins of their textures start from the texture's texels.
+        for t in targets.iter().flatten() {
+            if t.twin.is_some() && clear_of(t).is_none() {
+                self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+                self.copy_twin(t, true);
+            }
+        }
         let colors = std::array::from_fn(|i| {
             targets[i].as_ref().map(|v| ColorAttachment {
                 view: &v.gpu.handle,
@@ -1418,19 +1440,43 @@ impl<B: Backend> Device<B> {
                 }),
         };
         let helpers = [vh.clone(), ph];
-        let program = self
-            .backend
-            .create_program(&Program::Render { vertex, fragment });
-        let program = self.gpu(program)?;
-        let id = self.id();
+        let keys = self.program_keys(vs, vk, ps, pk);
+        let kept = match self.warm.programs.remove(&keys) {
+            Some(warm) => warm,
+            None => {
+                let program = self
+                    .backend
+                    .create_program(&Program::Render { vertex, fragment });
+                let program = self.gpu(program)?;
+                let id = self.id();
+                Kept::new(program, id, Object::Program, &self.graveyard)
+            }
+        };
+        let program = kept.handle.clone();
         self.programs.insert(
             key,
             Linked {
-                program: Kept::new(program.clone(), id, Object::Program, &self.graveyard),
+                program: kept,
                 helpers: helpers.clone(),
             },
         );
         Ok((program, helpers))
+    }
+
+    /// The content keys of the modules the program of `vs` and `ps` as `vk` and `pk` is made of.
+    pub(crate) fn program_keys(
+        &self,
+        vs: &Rc<Shader<B>>,
+        vk: StageVariant,
+        ps: Option<&Rc<Shader<B>>>,
+        pk: StageVariant,
+    ) -> crate::cache::ModuleKeys {
+        let vertex = self
+            .interpolated
+            .get(&(vs.gpu.id, vk, ps.map_or(0, |p| p.gpu.id)))
+            .map_or(vs.key, |v| v.key);
+        let fragment = ps.map(|p| self.variants.get(&(p.gpu.id, pk)).map_or(p.key, |v| v.key));
+        (vertex, fragment)
     }
 
     /// Converts `vs` again where the pixel shader interpolates its outputs other than by perspective
@@ -1489,6 +1535,7 @@ impl<B: Backend> Device<B> {
         let id = self.id();
         Ok(Variant {
             shader: Kept::new(shader, id, Object::Shader, &self.graveyard),
+            key: module.key,
             helpers,
         })
     }
@@ -1730,28 +1777,7 @@ impl<B: Backend> Device<B> {
         if let Some(v) = self.layouts.get(&key) {
             return Ok(v.handle.clone());
         }
-        let mut desc = VertexLayoutDesc {
-            streams: [None; 32],
-            attributes: [None; 32],
-        };
-        if let Some(l) = &layout {
-            for (i, e) in l.elements.iter().enumerate() {
-                let slot = e.slot as usize;
-                desc.streams[slot] = Some(VertexStream {
-                    stride: strides[slot],
-                    step: match l.instance_steps[slot] {
-                        None => StepMode::Vertex,
-                        Some(rate) => StepMode::Instance(rate),
-                    },
-                });
-                desc.attributes[i] = Some(VertexAttribute {
-                    location: e.location,
-                    stream: e.slot as u8,
-                    offset: e.offset,
-                    format: e.format,
-                });
-            }
-        }
+        let desc = layout_desc(layout.as_deref(), strides);
         let gpu = self.backend.create_vertex_layout(&desc);
         let gpu = self.gpu(gpu)?;
         let id = self.id();
@@ -2086,8 +2112,10 @@ impl<B: Backend> Device<B> {
                 Ok(())
             }
             ShaderView::Buffer(span) => {
+                // Direct3D clears only float, unorm and snorm views with floats; on raw and
+                // structured views the call is dropped.
                 if float {
-                    return not_implemented("a float clear of a buffer view");
+                    return Ok(());
                 }
                 self.backend.clear_buffer(
                     &span.buffer.handle(),
@@ -2543,15 +2571,7 @@ impl<B: Backend> Device<B> {
         if let Some((_, k)) = r.masked.borrow().iter().find(|(m, _)| *m == key) {
             return Ok(k.handle.clone());
         }
-        let mut block = wcontainers_gpu::RasterDesc {
-            sample_mask: mask,
-            ..crate::device::raster_block(&r.desc, self.backend.caps())
-        };
-        if unbiased {
-            block.depth_bias = 0;
-            block.depth_bias_slope = 0;
-            block.depth_bias_clamp = 0;
-        }
+        let block = twin_block(&r.desc, self.backend.caps(), key);
         let gpu = self.backend.create_raster(&block);
         let gpu = self.gpu(gpu)?;
         let id = self.id();
@@ -2560,6 +2580,15 @@ impl<B: Backend> Device<B> {
             Kept::new(gpu.clone(), id, Object::Raster, &self.graveyard),
         ));
         Ok(gpu)
+    }
+
+    /// The raster block a draw uses: the bound state's, or its twin of `masked`'s sample mask and bias.
+    pub(crate) fn raster_desc(&self, masked: Option<(u32, bool)>) -> wcontainers_gpu::RasterDesc {
+        let r = self.ctx.raster.as_ref().unwrap_or(&self.defaults.raster);
+        match masked {
+            Some(key) => twin_block(&r.desc, self.backend.caps(), key),
+            None => crate::device::raster_block(&r.desc, self.backend.caps()),
+        }
     }
 
     /// `s` made comparing or not as `compares` says, kept on `s` from its first use.
@@ -2903,10 +2932,11 @@ impl<B: Backend> Device<B> {
             return not_implemented("a sample mask without the back end's (SampleMaskInShader)");
         }
         let depth_bias = self.bias_step()?.is_some();
-        let masked = if masks || depth_bias {
-            Some(self.raster_twin(if masks { mask } else { u32::MAX }, depth_bias)?)
-        } else {
-            None
+        let masked_key =
+            (masks || depth_bias).then_some((if masks { mask } else { u32::MAX }, depth_bias));
+        let masked = match masked_key {
+            Some((mask, unbiased)) => Some(self.raster_twin(mask, unbiased)?),
+            None => None,
         };
         let ps = self.ctx.ps.clone();
         let dual_source = ps.is_some()
@@ -3193,7 +3223,8 @@ impl<B: Backend> Device<B> {
             }
             _ => None,
         };
-        self.count_combination(&vs, ps.as_ref(), topology, samples);
+        let keys = self.program_keys(&vs, vk, ps.as_ref(), pk);
+        self.count_combination(&vs, ps.as_ref(), keys, masked_key, topology, samples);
         let alpha_to_coverage = self
             .ctx
             .blend
@@ -4102,4 +4133,50 @@ fn channel_values(format: Format, values: [u32; 4]) -> Result<[u32; 4]> {
 fn same_kind(view: FormatKind, declared: FormatKind) -> bool {
     let integer = |k| matches!(k, FormatKind::Uint | FormatKind::Sint);
     !(integer(view) || integer(declared)) || view == declared
+}
+
+/// The vertex layout block of input layout `layout` read at `strides`.
+pub(crate) fn layout_desc(layout: Option<&InputLayout>, strides: [u32; 32]) -> VertexLayoutDesc {
+    let mut desc = VertexLayoutDesc {
+        streams: [None; 32],
+        attributes: [None; 32],
+    };
+    if let Some(l) = &layout {
+        for (i, e) in l.elements.iter().enumerate() {
+            let slot = e.slot as usize;
+            desc.streams[slot] = Some(VertexStream {
+                stride: strides[slot],
+                step: match l.instance_steps[slot] {
+                    None => StepMode::Vertex,
+                    Some(rate) => StepMode::Instance(rate),
+                },
+            });
+            desc.attributes[i] = Some(VertexAttribute {
+                location: e.location,
+                stream: e.slot as u8,
+                offset: e.offset,
+                format: e.format,
+            });
+        }
+    }
+    desc
+}
+
+/// The raster block of `desc` with sample mask `key.0`, and without its depth bias where `key.1`
+/// (the pixel program adds it).
+fn twin_block(
+    desc: &crate::desc::RasterizerDesc,
+    caps: &wcontainers_gpu::Caps,
+    key: (u32, bool),
+) -> wcontainers_gpu::RasterDesc {
+    let mut block = wcontainers_gpu::RasterDesc {
+        sample_mask: key.0,
+        ..crate::device::raster_block(desc, caps)
+    };
+    if key.1 {
+        block.depth_bias = 0;
+        block.depth_bias_slope = 0;
+        block.depth_bias_clamp = 0;
+    }
+    block
 }

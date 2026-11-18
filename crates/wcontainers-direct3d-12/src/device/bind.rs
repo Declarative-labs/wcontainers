@@ -130,7 +130,7 @@ pub(super) fn stage_bindings(
                 && c.reflection
                     .helpers
                     .iter()
-                    .any(|h| h.value == HelperValue::TexelLayout { slot: b.register });
+                    .any(|h| h.value == HelperValue::TexelLayout { slot: b.slot() });
             StageBinding {
                 stages,
                 visibility,
@@ -503,7 +503,7 @@ impl<B: Backend> Device<B> {
                             self.bound_helpers.push((
                                 b.visibility,
                                 HelperValue::TextureComponents {
-                                    texture: b.binding.register,
+                                    texture: b.binding.slot(),
                                 },
                                 pull::words(&[components]),
                             ));
@@ -535,7 +535,7 @@ impl<B: Backend> Device<B> {
                                 let view = self.storage_texture(&v)?;
                                 self.bound_formats.push((
                                     b.visibility,
-                                    (true, b.binding.register),
+                                    (true, b.binding.slot()),
                                     dxgi(v.format)?,
                                 ));
                                 Held::StorageTexture(view, writable)
@@ -577,7 +577,7 @@ impl<B: Backend> Device<B> {
                     self.bound_helpers.push((
                         b.visibility,
                         HelperValue::TexelLayout {
-                            slot: b.binding.register,
+                            slot: b.binding.slot(),
                         },
                         pull::words(&[0; 5]),
                     ));
@@ -601,7 +601,7 @@ impl<B: Backend> Device<B> {
                 // A null view's format is the program's own: its reads are zeros and its
                 // writes are dropped in any format.
                 self.bound_formats
-                    .push((b.visibility, (true, b.binding.register), shape.format));
+                    .push((b.visibility, (true, b.binding.slot()), shape.format));
                 Held::StorageTexture(self.null_view(shape, writable)?, writable)
             }
             (_, Form::Plain) => {
@@ -612,7 +612,7 @@ impl<B: Backend> Device<B> {
                 self.bound_helpers.push((
                     b.visibility,
                     HelperValue::TextureComponents {
-                        texture: b.binding.register,
+                        texture: b.binding.slot(),
                     },
                     pull::words(&[0b1111]),
                 ));
@@ -729,7 +729,7 @@ impl<B: Backend> Device<B> {
             .hit(SlowPath::TexelBufferAsStorage);
         self.bound_formats.push((
             b.visibility,
-            (b.binding.kind != SlotKind::Texture, b.binding.register),
+            (b.binding.kind != SlotKind::Texture, b.binding.slot()),
             format,
         ));
         self.bound_helpers.push((
@@ -782,11 +782,11 @@ impl<B: Backend> Device<B> {
         if clamp <= 0.0 {
             return Ok(());
         }
-        let texture = b.binding.register;
+        let texture = b.binding.slot();
         if !matches!(b.visibility, 0 | PIXEL) || texture >= 128 {
             return Err(Error::NotImplemented(
                 "a minimum level-of-detail clamp in a vertex or geometry shader or past \
-                 texture register 127",
+                 texture slot 127",
             ));
         }
         let levels = match self.resources.get(v.resource.0 as usize) {
@@ -834,8 +834,7 @@ impl<B: Backend> Device<B> {
             format
         };
         if !filters(read) {
-            self.bound_unfiltered
-                .push((b.visibility, b.binding.register));
+            self.bound_unfiltered.push((b.visibility, b.binding.slot()));
         }
         Ok(())
     }
@@ -997,7 +996,7 @@ impl<B: Backend> Device<B> {
         let caps = self.backend.caps();
         let desc = crate::state::sampler(v, caps)?;
         self.bound_samplers
-            .push((b.visibility, b.binding.register, *v));
+            .push((b.visibility, b.binding.slot(), *v));
         let (bias, border) = crate::state::in_program(v, caps);
         if bias || border {
             if !matches!(b.visibility, 0 | PIXEL) {
@@ -1006,10 +1005,10 @@ impl<B: Backend> Device<B> {
                      geometry shader",
                 ));
             }
-            let sampler = b.binding.register;
+            let sampler = b.binding.slot();
             if sampler >= 16 {
                 return Err(Error::NotImplemented(
-                    "sampling in the program through a sampler register past 15",
+                    "sampling in the program through a sampler slot past 15",
                 ));
             }
             self.bound_sampling

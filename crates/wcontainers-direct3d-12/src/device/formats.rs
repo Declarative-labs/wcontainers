@@ -14,17 +14,18 @@
 //! converted again, at the first draw or dispatch binding them, and kept per pipeline.
 
 use super::*;
-use crate::dxbc::{Kind, typed_views};
+use crate::dxbc::{Kind, TypedView};
 use pull::Helpers;
 use wcontainers_gpu::Filter;
 
-/// A typed view's slot: a storage slot (else a texture slot) and its register.
+/// A typed view's slot: a storage slot (else a texture slot) and its place in its kind's range
+/// (`ReflectedBinding::slot`).
 pub(super) type Slot = (bool, u32);
 
 /// What a stage's program is made for: the typed views' formats by slot, the sampler
-/// registers whose bias (`lod_bias`) and addressing (`border_in_shader`) it applies, the
-/// storage registers it reads through buffers (`texels_through_buffer`), and the texture
-/// registers under a minimum level-of-detail clamp (`min_lod_clamped`) and filtered in the
+/// slots whose bias (`lod_bias`) and addressing (`border_in_shader`) it applies, the
+/// storage slots it reads through buffers (`texels_through_buffer`), and the texture
+/// slots under a minimum level-of-detail clamp (`min_lod_clamped`) and filtered in the
 /// program (`filter_in_shader`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Bound {
@@ -49,25 +50,32 @@ pub(super) struct Formats<B: Backend> {
     key: VariantKey,
     /// The formats the pipeline's own program was made with, by slot.
     made: Vec<(Slot, Format)>,
-    /// The texture and sampler registers the program samples together.
+    /// The texture and sampler slots the program samples together.
     pairs: Vec<(u32, u32)>,
     /// Programs made for other bindings.
     variants: Vec<Variant<B>>,
 }
 
+/// The typed views a DXBC or DXIL shader declares; none where its declarations cannot be read.
+fn typed_views(code: &[u8]) -> Vec<TypedView> {
+    crate::dxbc::typed_views(code)
+        .or_else(|| crate::dxil::typed_views(code))
+        .unwrap_or_default()
+}
+
 /// The key fields a shader's typed views are first converted with: their formats by slot, and
-/// `route` where it declares typed buffers. Default for DXIL and for shaders declaring none.
+/// `route` where it declares typed buffers. Default for shaders declaring none.
 pub(super) fn typed_key(code: &[u8], route: TexelBufferRoute) -> VariantKey {
     let mut key = VariantKey::default();
-    for v in typed_views(code).unwrap_or_default() {
+    for v in typed_views(code) {
         let format = match v.kind {
             Kind::Float => Format::R32Float,
             Kind::Uint => Format::R32Uint,
             Kind::Sint => Format::R32Sint,
         };
         match v.storage {
-            true => key.storage_formats.push((v.register, format)),
-            false => key.texel_formats.push((v.register, format)),
+            true => key.storage_formats.push((v.slot, format)),
+            false => key.texel_formats.push((v.slot, format)),
         }
         if v.buffer {
             key.texel_buffers = route;
@@ -78,13 +86,12 @@ pub(super) fn typed_key(code: &[u8], route: TexelBufferRoute) -> VariantKey {
     key
 }
 
-/// The registers of a shader's typed unordered access views of textures, one bit each.
+/// The slots of a shader's typed unordered access views of textures, one bit each.
 pub(super) fn typed_texture_slots(code: &[u8]) -> u64 {
     typed_views(code)
-        .unwrap_or_default()
         .iter()
-        .filter(|v| v.storage && !v.buffer && v.register < 64)
-        .fold(0, |m, v| m | (1 << v.register))
+        .filter(|v| v.storage && !v.buffer && v.slot < 64)
+        .fold(0, |m, v| m | (1 << v.slot))
 }
 
 /// The formats of `key` by slot, sorted.
@@ -143,10 +150,10 @@ impl<B: Backend> Device<B> {
             return Ok(None);
         };
         let (mut lod_bias, mut border) = (0u16, 0u16);
-        for &(visibility, register, bias, address) in &self.bound_sampling {
+        for &(visibility, sampler, bias, address) in &self.bound_sampling {
             if visibility == f.visibility {
-                lod_bias |= u16::from(bias) << register;
-                border |= u16::from(address) << register;
+                lod_bias |= u16::from(bias) << sampler;
+                border |= u16::from(address) << sampler;
             }
         }
         let mut formats = f.made.clone();
@@ -256,10 +263,10 @@ impl<B: Backend> Device<B> {
             filter_in_shader: filtered,
             ..f.key.clone()
         };
-        for &((storage, register), format) in &bound.formats {
+        for &((storage, slot), format) in &bound.formats {
             match storage {
-                true => key.storage_formats.push((register, format)),
-                false => key.texel_formats.push((register, format)),
+                true => key.storage_formats.push((slot, format)),
+                false => key.texel_formats.push((slot, format)),
             }
         }
         // A program made at the draw, as a state combination first met there.

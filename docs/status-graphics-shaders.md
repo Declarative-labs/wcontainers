@@ -27,8 +27,10 @@ programs), not yet drawn through `Stages`; run 21 (the first run of the G6 miles
 "run 1" series) converted DXIL's typed buffers and storage images without a format, which stopped
 Godot's Direct3D 12 compute shaders; run 22 numbered DXIL's resources by Direct3D 12's rule
 (register spaces and registers of any size), which stopped Godot's Direct3D 12 graphics shaders
-(`BindingsBeyondLimit`) and the games' `RegisterSpace`; what remains is under Next. Runs 21 and 22
-merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11, -direct3d-12 and -rig (no conflicts).
+(`BindingsBeyondLimit`) and the games' `RegisterSpace`; run 23 converted vertex shaders without a
+position and ran hull and domain shaders through `Stages`, drawn equal to real Direct3D 11; what
+remains is under Next. Runs 21 to 23 merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11,
+-direct3d-12 and -rig (no conflicts).
 
 Done:
 - naga carried in the tree with the GLSL writer changes G3 needs (below). Other tracks get it by
@@ -823,25 +825,60 @@ Run 22 (Direct3D 12's numbering, for Godot's graphics shaders and the games' reg
   `~/wcontainers-graphics/target/phase-2-graphics-shaders`, 4.9 GB; desktop
   `C:\wc\target\phase-2-graphics-shaders`); the next run builds from clean.
 
+Run 23 (what the Direct3D 11 and 12 tracks waited on: vertex shaders without a position, hull and
+domain shaders in `Stages`):
+- Merged origin/phase-2-graphics-webgpu, -webgl, -direct3d-11 and -direct3d-12 (no conflicts).
+- A vertex (or domain) program writing no `SV_Position` now converts on both routes
+  (`stage::clip_unpositioned`, run by `convert` before the variants): the entry point becomes a
+  function, and a new entry point adds the position (0, 0, 0, -1), outside every clip volume, so a
+  draw of it rasterises nothing and the stage helper's records carry it. Before, such programs
+  (stream output from the vertex stage, vertex shaders feeding hull or geometry shaders) were
+  `VertexWithoutPosition`. Verdicts that changed, every one to ok (WGSL and GLSL ES written):
+  corpus 6, own `vs_patch`, the rig's `tessellation.vs` (DXBC and DXIL). No other verdict changed.
+- `Stages::tessellated(backend, vertex, hull, domain)`, `InputTopology::PatchList(n)`: per draw the
+  vertex stage as compute writes the records, the hull program (one invocation per patch and
+  instance) writes the patch records into a buffer the helper owns (header plus `patch_words` per
+  patch, from `StageExtras::Hull`), the tessellator runs, and `FinalDraw::tessellated` (new,
+  `TessellatedDraw`) names the indexed indirect draw's arguments and the patches and points the
+  domain program reads (how a front draws it: "How the Direct3D fronts call `convert`"). The hull
+  stage's sets travel in `StageDraw::geometry_sets` (no new field, so the fronts' struct literals
+  still build). Counted as `SlowPath::TessellationAsCompute`. Geometry shaders and stream output
+  after tessellation are refused (no constructor takes them yet).
+- `Stages::destroy` and `Tessellator::destroy` release programs and buffers (asked by G5).
+- Tests (`tests/tessellation_draw.rs`, Windows, wgpu on Vulkan as the tessellator's test):
+  `tessellated_patches_draw_as_direct3d_11_does` draws the rig's tessellation scene's seven patches
+  (its real fxc shaders: a pass-through vertex shader with pulled inputs, hull shaders passing
+  control points with factors from a constant buffer, domain shaders that bend the surface) all
+  solid, against real Direct3D 11 drawing the same on the RTX 3080: the triangle (fractional odd)
+  and the four quad patches (odd, even, pow2, integer) equal texel for texel; the isoline patch
+  (lines) has every texel Direct3D drew, 36 texels only ours drew and 97 colours 1 or 2 steps apart
+  (each API's line rule: Vulkan's here). `rig_tessellation_scene_draws_as_direct3d_11_does` runs the
+  rig's scene itself (lines for six patches): no texel Direct3D drew is missed and the solid patch
+  is equal; per cell 133 to 390 texels differ (36 to 59 drawn only by ours at line ends, 0 to 32
+  more than 2 steps apart, not analysed further: where lines cross, which line's colour a texel
+  takes follows the line rule too, expected but not checked). The tessellator test still passes (4
+  seeds, 128 comparisons).
+- Fronts: `cargo check -p wcontainers-direct3d-11 -p wcontainers-direct3d-12 --all-targets` on the
+  desktop builds with these changes.
+- At the end of run 23 the build folders were deleted (laptop
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders`, 4.9 GB; desktop
+  `C:\wc\target\phase-2-graphics-shaders`); the next run builds from clean.
+
 Next (in order):
+- The fronts' routes (theirs, now possible): Direct3D 11's six Wine tests and atg-simplebezierpc,
+  Direct3D 12's 13 tessellation files and vertex_id. Stream output from a vertex shader without a
+  position has no drawn test here yet (the fronts' Wine tests will be the first).
+- Tessellation, the rest: geometry shaders and stream output after a domain shader (the domain
+  program through `vertex_as_compute`), DXIL hull and domain shaders (naga's SPIR-V reader: the
+  tessellation execution models), the hull shader's declared largest factor (the reflection says
+  64), fxc's failure on `tessellator.wgsl` (wgpu's Direct3D 12 path), indexed and instanced patch
+  draws (built, not drawn in a test).
 - Godot on Direct3D 12 (G5's real program): run 22's numbering is expected to remove
   `BindingsBeyondLimit` from its graphics shaders (not checked: Godot compiles its shaders at run
   time, so they are not in the corpus); run Godot through G5's front after merging and read its
   refusals. Then DXIL atomics on images and typed
   buffers: naga's reader needs `OpImageTexelPointer` into the same texel functions (typed buffers)
   and `texels_through_buffer` (images); naga's IR has no image atomic with a result.
-- Tessellation, the rest: `Stages` with hull and domain shaders (a constructor taking them, a patch
-  list topology, the hull dispatch into a patches buffer sized from `StageExtras::Hull`'s location
-  counts, the tessellator, and a `FinalDraw` that is an indexed indirect draw of the tessellator's
-  indices with the two buffers the front binds at `DOMAIN_PATCHES_BINDING` and
-  `DOMAIN_POINTS_BINDING`); then a drawn test of real shaders (a vertex shader with pulled inputs,
-  a hull shader passing control points and a patch constant, a displacing domain shader) against
-  real Direct3D 11's solid picture, and the domain program through `vertex_as_compute` for stream
-  output and geometry shaders after tessellation. Vertex shaders without a position (they feed a
-  hull shader; `vs_patch` is refused `VertexWithoutPosition`) for the stage helper. The hull
-  shader's declared largest factor (dxbc-spirv applies it in the program; the reflection says 64).
-  DXIL hull and domain shaders (naga's SPIR-V reader: the tessellation execution models). fxc's
-  failure on `tessellator.wgsl`.
 - Typed buffers from DXIL (naga's SPIR-V reader: `Dim::Buffer` images into the same functions), and
   in geometry shaders (the stage helper fills `TexelBufferView`); the corpora with formats (below).
 - Corpus: run 19 gave the corpus test one view format per kind (Run 19); shaders whose views mix
@@ -868,7 +905,7 @@ Next (in order):
 - Decoded textures and targets written in the program, early tests, line coverage, the primitive
   index from the stage helper, root signature layouts.
 - The stage helper of section 7, the rest: stream output from streams other than 0 and rasterized
-  together with streaming (a draw of the pass-through as well), hull and domain with a tessellator ported from Mesa's MIT code, geometry by
+  together with streaming (a draw of the pass-through as well), geometry by
   replay on WebGL 2, indexed strips into a geometry shader (a pass numbering primitives across
   restarts), triangle strips with adjacency, layer and viewport index outputs, clip distances
   through the stage, DXIL geometry shaders (naga's SPIR-V reader: the geometry execution model),
@@ -921,6 +958,25 @@ Next (in order):
   the pixel shader, `stages.vertex_layout()`, `buffer` as stream 0, indices (u32) from `buffer` at
   `index_offset` when given, its topology, restart on, `count` vertices or indices, one instance.
   `tests/geometry_draw.rs` does exactly this.
+- Hull and domain shaders (WebGPU, `Features::COMPUTE`): convert the pixel shader first, the domain
+  shader with `output_interpolation` from the pixel shader's inputs, the hull shader plain, the
+  vertex shader with every input pulled. `Stages::tessellated(backend, &vertex, &hull, &domain)`
+  once per triple. Per draw, outside the pass: `stages.run` as for geometry, with the hull shader's
+  sets (its slots in set 0, its helper block in set 3, `StageSet::COMPUTE`) as `geometry_sets` and
+  topology `InputTopology::PatchList(n)` (Direct3D's `n_CONTROL_POINT_PATCHLIST`). The returned
+  `FinalDraw` has `tessellated: Some(t)`: in the pass draw the domain program (`domain.modules[0]`)
+  with the pixel shader, a vertex layout with no streams, the domain shader's own sets, and in set
+  3 `t.patches` at `DOMAIN_PATCHES_BINDING` and `t.points` at `DOMAIN_POINTS_BINDING` (read-only
+  storage, `StageSet::VERTEX`, beside the domain shader's helper block if it has one); indices u32
+  from `FinalDraw::buffer` at offset 0, topology `FinalDraw::topology`, range
+  `DrawRange::IndexedIndirect { args: &t.arguments, offset: 0 }`. `tests/tessellation_draw.rs`
+  (`scene_ours`) does exactly this. Geometry shaders and stream output after tessellation are not
+  built yet.
+- `Stages::destroy(backend)` releases its programs and buffers.
+- A vertex shader writing no `SV_Position` (feeding stream output, a geometry or a hull shader)
+  converts: its program writes the position (0, 0, 0, -1), outside every clip volume, so drawn it
+  rasterises nothing (not checked against Direct3D drawing such a shader), and its records carry that
+  position. `reflection.outputs` lists no position for it.
 
 ```rust
 use wcontainers_shaders::{convert, Source, ConvertError};
@@ -1063,6 +1119,21 @@ let reflection = &converted.reflection;
   conversion.
 
 ## Measurements
+
+Run 23, 2026-11-18, counts only (laptop load 3 to 5; desktop shared through the queue), logs in
+scratch `graphics-shaders/run23`:
+- Laptop: `cargo clippy -p wcontainers-shaders -p wcontainers-gpu --all-targets -- -D warnings`
+  clean; `cargo test -p wcontainers-shaders -- --include-ignored --skip mutated` with the corpus,
+  the games and glslang: every test passes (corpus test 9 of 9, 278 s), verdicts as recorded
+  (test3.log).
+- Desktop: `cargo clippy -p wcontainers-shaders --all-targets -- -D warnings` clean;
+  `tessellation_draw` 3 of 3 (tess6.log; the tessellator at the default 4 seeds, 128
+  comparisons), `geometry_draw` 2 of 2 at 4 seeds (geom2.log); `cargo check -p
+  wcontainers-direct3d-11 -p wcontainers-direct3d-12 --all-targets` builds (fronts.log).
+- Chrome 157 on the RTX 3080 (chrome.log): every WGSL file compiles (corpus 177, games 469, games
+  DXIL 346, own 87, own DXIL 28, rig 75, rig DXIL 52), the 10 newly written programs as GLSL ES
+  too; the GLSL ES failures are the known classes only (bitfield operations, `textureGather`,
+  multisampled samplers: corpus 13, games 10, games DXIL 1, own 5, own DXIL 2, rig 2, rig DXIL 2).
 
 Run 22, 2026-11-18, counts only (laptop load 1 to 3; desktop shared through the queue), logs in
 scratch `graphics-shaders/run22`:
@@ -1668,6 +1739,9 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   256 cases): `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test clear_draw --no-run" -- "set WCONTAINERS_CLEAR_SEED=1&& set WCONTAINERS_CLEAR_CASES=256&& cargo test -j 3 -p wcontainers-shaders --test clear_draw -- --nocapture --test-threads 1"`.
 - The tessellator against the GPU's (Windows, one GPU job, about 12 s for 16 seeds):
   `tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test tessellation_draw --no-run" -- "set WCONTAINERS_TESSELLATION_SEED=1&& set WCONTAINERS_TESSELLATION_CASES=16&& cargo test -j 3 -p wcontainers-shaders --test tessellation_draw -- --nocapture --test-threads 1"`.
+  The same job runs the tessellated patches and the rig's tessellation scene against real
+  Direct3D 11 (about 1 s; with `WCONTAINERS_SHADERS_OUT` set the pictures are kept as raw RGBA
+  under `draw`, 256 by 128).
 - Compiling own shaders: `tests/own/compile.cmd` on the desktop (through `tools/graphics-rig/remote`);
   run 17 fetched the new files back as hex (`certutil -encodehex -f <file> <file>.hex 12`, then
   `type`) and decoded them here.
@@ -1757,6 +1831,10 @@ were already there.
 
 ## Departures from the plan
 
+- Vertex programs without a position (run 23): the plan is silent. They convert with the position
+  (0, 0, 0, -1) added, which every clip test rejects, so a direct draw of one rasterises nothing
+  instead of the conversion being refused; the stage helper's routes (stream output, hull and
+  geometry stages) never rasterise it.
 - Direct3D 12's numbering (run 22) is the program's own, not the root signature's: each kind's
   slots are the program's resources in (space, register) order, in the stage's set. The plan had
   sets by visibility and ranges in root signature order with the root signature's hash in the key.

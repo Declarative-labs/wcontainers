@@ -61,7 +61,7 @@ tessellation.hs_quad_odd.dxbc	ok-wgsl glsl-write
 tessellation.hs_quad_pow2.dxbc	ok-wgsl glsl-write
 tessellation.hs_tri.dxbc	ok-wgsl glsl-write
 tessellation.ps.dxbc	ok
-tessellation.vs.dxbc	unsupported VertexWithoutPosition
+tessellation.vs.dxbc	ok
 textures.ps_1d.dxbc	ok
 textures.ps_1d_array.dxbc	ok
 textures.ps_2d_array.dxbc	ok
