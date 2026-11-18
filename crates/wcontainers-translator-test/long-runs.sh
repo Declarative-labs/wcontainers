@@ -53,6 +53,9 @@ if [ ! -f "$tree/Cargo.toml" ]; then
 fi
 cd "$tree" || exit 1
 export CARGO_TARGET_DIR=$dir/target
+# zig's cache for the run alone: zig processes that rebuild the same entry of a shared cache at once can
+# deadlock on its manifest locks, and other jobs on the machine use the shared one (~/.cache/zig).
+export ZIG_GLOBAL_CACHE_DIR=$dir/zig-cache
 # A chunk's cases run on a pool of its jobs' threads, which the translator and wasmtime share; anything run
 # outside that pool keeps to the same number.
 export RAYON_NUM_THREADS=$jobs
