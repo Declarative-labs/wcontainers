@@ -57,8 +57,13 @@ pub(crate) fn back_end(seed: u64, _address_space: u64) -> Back {
     CpuSide::new(compiler, look_ahead(seed), Optimise::Speed, ())
 }
 
+/// Mixed into the run's seed for the look-ahead's draw, so that it is not the schedule's first draw.
+#[cfg(feature = "runtime")]
+const LOOK_AHEAD_STREAM: u64 = 0x1007_a4ead;
+
 /// The look-ahead `LOOK_AHEAD` names: `full` (also when unset), `none`, or `bounded`, whose N is drawn
-/// from 1 to 64 from the run's seed and `LOOK_AHEAD_SEED` (0 if unset), and printed.
+/// from 1 to the translator's default bound from the run's seed and `LOOK_AHEAD_SEED` (0 if unset),
+/// and printed.
 #[cfg(feature = "runtime")]
 fn look_ahead(seed: u64) -> wcontainers_wasmtime::LookAhead {
     use wcontainers_wasmtime::LookAhead;
@@ -69,7 +74,8 @@ fn look_ahead(seed: u64) -> wcontainers_wasmtime::LookAhead {
             let knob = std::env::var("LOOK_AHEAD_SEED").map_or(0, |seed| {
                 seed.parse().expect("LOOK_AHEAD_SEED is an unsigned number")
             });
-            let n = StdRng::seed_from_u64(seed ^ knob ^ 0x1007_a4ead).random_range(1..=64);
+            let n = StdRng::seed_from_u64(seed ^ knob ^ LOOK_AHEAD_STREAM)
+                .random_range(1..=wcontainers_wasmtime::BOUND);
             eprintln!("look-ahead bounded {n} (run seed {seed}, LOOK_AHEAD_SEED {knob})");
             LookAhead::Bounded(n)
         }
