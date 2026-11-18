@@ -301,10 +301,8 @@ pub struct Device<B: Backend> {
     /// The bound targets as the occlusion counter reads them, and the counter.
     passes: PassTracker<B>,
     counter: OcclusionCounter<B>,
-    /// The pixel counter of pipeline statistics queries, and the depth-stencil block with both
-    /// tests off that it draws with.
-    pixels: OcclusionCounter<B>,
-    tests_off: Option<B::DepthStencil>,
+    /// What pipeline statistics queries' counting draws are drawn with.
+    counting: Option<statistics::Counting<B>>,
     resources: Slab<Resource<B>>,
     pipelines: Slab<Pipeline<B>>,
     fences: Slab<Fence<B>>,
@@ -392,8 +390,7 @@ impl<B: Backend> Device<B> {
             programs: query::Programs::default(),
             passes: PassTracker::default(),
             counter: OcclusionCounter::default(),
-            pixels: OcclusionCounter::default(),
-            tests_off: None,
+            counting: None,
             nulls: null::Nulls::default(),
             messages: Vec::new(),
             bound_formats: Vec::new(),
@@ -2511,9 +2508,6 @@ impl<B: Backend> Replay<B> {
             d.counter.flush(&mut d.backend, &mut d.passes)?;
             self.counted_copy = false;
         }
-        if self.statistics.is_some() {
-            d.pixels.flush(&mut d.backend, &mut d.passes)?;
-        }
         self.counted_targets = false;
         Ok(())
     }
@@ -2564,9 +2558,7 @@ impl<B: Backend> Replay<B> {
         if self.counted.take().is_some() {
             d.counter.end(&mut d.backend, &mut d.passes)?;
         }
-        if self.statistics.take().is_some() {
-            d.pixels.end(&mut d.backend, &mut d.passes)?;
-        }
+        self.statistics = None;
         for b in self.scratch.drain(..) {
             d.backend.destroy(Object::Buffer(b));
         }
@@ -3111,8 +3103,12 @@ impl<B: Backend> Replay<B> {
             let block = d.stage_block(&helpers, 0)?;
             let merged = d.merged_samplers(&helpers, 0, StageSet::COMPUTE)?;
             let compute = wcontainers_gpu::helper_binding(ShaderStage::Compute);
-            sets[HELPER_SET as usize] =
-                Some(d.helper_blocks(&[(compute, StageSet::COMPUTE, block)], None, &merged)?);
+            sets[HELPER_SET as usize] = Some(d.helper_blocks(
+                &[(compute, StageSet::COMPUTE, block)],
+                None,
+                &merged,
+                None,
+            )?);
         }
         d.alias_settle()?;
         if !d.through.is_empty() {
@@ -3280,7 +3276,7 @@ impl<B: Backend> Replay<B> {
             None => None,
         };
         let pixel_counting = match self.statistics {
-            Some(_) => self.count_draw(d, pid, &range)?,
+            Some(_) => self.count_draw(d, pid, &range, variant.is_some())?,
             None => None,
         };
         if !self.pass_open {
@@ -3320,7 +3316,11 @@ impl<B: Backend> Replay<B> {
         d.vertex_formats(pid)?;
         let pipeline = &d.pipelines[pid.0 as usize];
         let pixel = bound.as_ref().map_or(&pipeline.helpers, |b| &b.1).clone();
-        if helpers.size != 0 || pixel.size != 0 {
+        let counter = match &pixel_counting {
+            Some(_) => Some(d.pixel_counter()?),
+            None => None,
+        };
+        if helpers.size != 0 || pixel.size != 0 || counter.is_some() {
             let source = match (bases, &range) {
                 (Some(b), _) => pull::Bases::Direct(b),
                 (None, DrawRange::Indirect { args, offset }) => pull::Bases::Arguments {
@@ -3341,6 +3341,7 @@ impl<B: Backend> Replay<B> {
                 &fetch.inputs,
                 StageSet::VERTEX,
                 Some(&pixel),
+                counter.as_ref(),
             )?);
         }
         if d.aliased != 0 {
@@ -3587,28 +3588,18 @@ impl<B: Backend> Replay<B> {
             d.counter
                 .draw(&mut d.backend, &mut d.passes, &call!(), &counted)?;
         }
-        if let Some((counting, off)) = &pixel_counting {
-            let r = d.pipelines[pid.0 as usize]
-                .render
-                .as_ref()
-                .expect("a graphics pipeline");
-            let counted = CountedDraw {
-                counting,
-                alpha_to_coverage: false,
-                writes_depth_stencil: false,
-                instances_step_by_one: r.instances_step_by_one,
-            };
-            let call = DrawCall {
-                depth_stencil: off,
-                ..call!()
-            };
-            d.pixels
-                .draw(&mut d.backend, &mut d.passes, &call, &counted)?;
-        }
         if !self.pass_open {
             self.open_pass(d, pid)?;
         }
         d.backend.draw(&call!());
+        if let Some((counting, off, none)) = &pixel_counting {
+            d.backend.draw(&DrawCall {
+                program: counting,
+                blend: none,
+                depth_stencil: off,
+                ..call!()
+            });
+        }
         self.scratch.extend(zeroed);
         if !d.through.is_empty() {
             self.end_pass(d)?;
@@ -3688,8 +3679,8 @@ impl<B: Backend> Replay<B> {
         Ok((writes, counting))
     }
 
-    /// Gives the bound targets to the pass tracker, where the occlusion and pixel counters read
-    /// them, once after each pass end.
+    /// Gives the bound targets to the pass tracker, where the occlusion counter reads them, once
+    /// after each pass end.
     fn track_targets(&mut self, d: &mut Device<B>, pid: PipelineId) -> Result<(), Error> {
         if !self.counted_targets {
             let targets = self.pass_targets(d, pid)?;
