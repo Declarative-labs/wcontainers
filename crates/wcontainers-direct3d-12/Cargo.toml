@@ -21,6 +21,7 @@ llvm-bitcode = "0.4.1"
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
 wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12", "metal", "vulkan", "webgpu", "naga-ir"] }
 pollster = "1.0.1"
+blake3 = { version = "1", default-features = false }
 png = "0.18.1"
 
 [target.'cfg(windows)'.dev-dependencies]
