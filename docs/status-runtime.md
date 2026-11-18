@@ -4,7 +4,7 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 
 ## Where things stand
 
-- J0 (the plan) is done: docs/runtime.md. J1 is being built (run 1 of J1, 2026-11-17).
+- J0 (the plan) is done: docs/runtime.md. J1 is done (run 1 of J1, 2026-11-17).
 - First light, 2026-11-17 23:2x: a program ran through both halves for the first time. The static hello
   passes against the reference with the kernel deciding and the translator's WebAssembly, run by wasmtime,
   running its instructions, at full, none and bounded look-ahead:
@@ -27,10 +27,28 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
     moves the driver onto `drive` (the stand-in implements `Execution`, `TestHost` implements `Outside`
     holding the driver's per-turn work); 2c219b7f adds the `runtime` feature and `LOOK_AHEAD`; later commits
     add `LOOK_AHEAD_SEED` and the back end's report on the standard error.
-- Not yet in J1 (next, in order): the whole-suite verdict diff of the driver move (step 1's check); hello and
-  busybox at bounded and none (running); the recorded figures of J1 (CPU warnings per command, run-time
-  pieces per command, second-container time); the whole suite of what this track owns before the milestone
-  is reported complete.
+- J1's step 1 checks, all held:
+  - seeded runs on the stand-in, at the merge commit b4de3ffa and on the moved driver (scratch
+    j1/standin-check/before.txt and after.txt): hello seeds 1 and 5, turns seed 1, the shell's four jobs seeds
+    7, 8 and 9 give the same output, exit status, kernel warnings, counters and turn counts (3, 3, 58, 591, 596,
+    582). The only difference is the count of root files of the hello and turns runs (664 against 524): the
+    program's directory is the container's /wc, and the merge commit's copy held 142 built test programs
+    against 2 in this checkout; the shell runs, whose root is the image, agree.
+  - the whole kernel test crate without the feature (`cargo test -p wcontainers-kernel-test --no-fail-fast --
+    --test-threads 3`): at b4de3ffa 189 passed, 1 failed, 5 ignored (load 63.6 at the end;
+    j1/baseline/verdicts-full.log); at 3c2c89a5, whose code without the feature is bdf240e1's, 190 passed, 0
+    failed, 5 ignored (load 94.6 at the start, 25.9 at the end; j1/after/verdicts-full.log). The sorted verdict
+    lines differ in one line: `queued_signals_match_reference`, FAILED at the merge commit because the
+    reference's own count differed ("sigqueue stopped after 3" where it gives 5, other tracks' containers
+    sharing Docker's pending-signal limit), passes on the moved driver, and passes again at the merge commit
+    when rerun alone (j1/baseline/userlimits-rerun.log, load 28.5). So no verdict changed with the driver.
+- J1 is complete: every part of plan section 16's J1 is built, its bars pass (hello at full, none and
+  bounded; hello and busybox at full, and also at bounded and none), step 1's checks hold, and what it records
+  is below. The scratch copies' build output (j1/baseline/target, j1/after/target, a zig cache) is deleted;
+  their sources and logs stay.
+- Next is J2 (plan section 16): the stand-in's own count with the loop's count of the kernel's changes of
+  pc; the disk level of the cache with the build identity; fork with the exact copy (`memory_duplicate`)
+  and `restored()` for the WebAssembly back end; signals, job control, terminals; Linux checks; the J2 bar.
 
 ## Findings of J0's last check, and how each was settled
 
@@ -74,6 +92,8 @@ pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `j1/`.
 - `LOOK_AHEAD` is `full` (also when unset), `none` or `bounded`; at `bounded` the container's N is drawn from
   1 to 64 from the run's seed and `LOOK_AHEAD_SEED` (0 if unset) and printed ("look-ahead bounded N"). hello
   and busybox run with seed 0, so `LOOK_AHEAD_SEED` is the knob that changes N for them.
+- If `zig cc` hangs (all of this machine's zig processes waited on the shared cache's lock for over 30
+  minutes on 2026-11-17), give the run a cache of its own: `ZIG_GLOBAL_CACHE_DIR=<scratch>/zig-cache`.
 - With the feature, each run prints the back end's report on the standard error ("cpu side: ..."): its
   translations, how many were made at run time, translating and compiling time, cache hits, the run's time,
   and per range its starts by source. `--nocapture` shows it.
@@ -123,6 +143,8 @@ Load is `sysctl vm.loadavg` at the start and end of each run; other tracks were 
 - busybox at bounded (N 60) and at none, three tests at a time (busybox-bounded-none-1.log): pass, 37.0 s
   (bounded; load 19.7) and 55.8 s (none; load 24.9 to 32.6). At none the first two runs, side by side, each
   made the whole of musl and busybox: 1.05 and 1.07 s translating, 18.7 and 19.5 s compiling.
+- hello and busybox at bounded with `LOOK_AHEAD_SEED=7` (N 13) and `31` (N 27): pass, 57.7 s and 48.1 s
+  (load 75.2 to 64.7; bounded-seed-7.log, bounded-seed-31.log).
 - Not measured, and why: what counting every stop check costs against full speed needs a turn that counts
   nothing, which comes with J3's free turns; making a per-process 4 GiB state memory alone (it is inside the
   4.6 ms of the fastest cache-hit run).
@@ -222,8 +244,11 @@ array of slots in microseconds.
 - `Outside` has six methods, not five: `cpu_warning` carries the back end's slow paths apart from the
   kernel's `Host::warn` (plan section 5 corrected). `Execution` has `restored()` (finding of J0's check 4).
 - `restored()` of the WebAssembly back end panics naming J2: it is the fork copy's body, built there.
-- J1's step 1 was checked by the seeded runs before the commit was made and by the whole-suite diff after it,
-  before the push of the milestone (the whole suite takes about 20 minutes at this load).
+- J1's step 1 was checked by the seeded runs before the commit was made, and by the whole-suite diff after it
+  (the whole suite took 8 to 25 minutes at this load); the commit was pushed with first light, before the
+  whole-suite diff ended, as the J1 task asked for a push as soon as hello passed.
+- `zig cc` runs for the checks used a zig cache in scratch (`ZIG_GLOBAL_CACHE_DIR`), because every zig process
+  on the machine waited on the shared cache's lock for over 30 minutes; it changes nothing built.
 
 
 ## Dependencies
