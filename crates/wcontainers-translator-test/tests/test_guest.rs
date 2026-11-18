@@ -1236,7 +1236,7 @@ fn instantiate<const F: bool>(
             .expect("code instance");
         for &offset in &module.pieces {
             if !exact {
-                let at = SLOTS_AT + 4 * (offset / Test::<F>::ALIGN) as usize;
+                let at = SLOTS_AT + contract::slot_entry::<Test<F>>(offset) as usize;
                 write_shared(&state, at, &slot.to_le_bytes());
             }
             slot += 1;

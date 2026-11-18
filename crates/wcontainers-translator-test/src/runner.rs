@@ -14,6 +14,7 @@ use wasmtime::{
 };
 use wcontainers_abi::{Access, CounterReading, Exit, PAGE_SIZE, Permissions, Syscall, Warning};
 use wcontainers_guest_cpu::{HookBody, HookType, MemoryFault};
+pub use wcontainers_translator::contract::thread_state_size;
 use wcontainers_translator::contract::{self, Reason};
 use wcontainers_translator::{
     LookAhead, Omit, Optimise, Translation, translate_in_modules, translate_omitting,
@@ -22,7 +23,7 @@ use zerocopy::{FromBytes, IntoBytes};
 
 /// Where the thread block sits in the state memory.
 const BLOCK_AT: u32 = 0;
-/// Where the permission table starts in the state memory.
+/// Where the permission table starts in the state memory, after the thread state.
 const PERMISSIONS_AT: u32 = 4096;
 
 /// What a system call does in this runner.
@@ -215,11 +216,6 @@ fn per_guest<G: 'static, T: Clone + Send + Sync + 'static>(make: impl FnOnce() -
         .clone()
 }
 
-/// Bytes of a guest's thread state: its block and the CPU's private bytes.
-pub fn thread_state_size<G: GuestTest>() -> usize {
-    G::BLOCK_SIZE + G::PRIVATE_BYTES
-}
-
 /// A block's values as the state both sides of a comparison hold.
 pub fn fields<G: GuestTest>(block: &G::Block) -> crate::guest::State {
     let mut thread = vec![0; thread_state_size::<G>()];
@@ -284,6 +280,12 @@ impl<G: GuestTest> Machine<G> {
     /// A machine with `memory_bytes` of guest memory, nothing allowed anywhere, and an array of slots of
     /// `slots` entries, for the instructions from guest address `table_base`.
     pub fn new(memory_bytes: u64, table_base: u64, slots: u32, syscalls: Syscalls) -> Self {
+        const {
+            assert!(
+                BLOCK_AT as usize + thread_state_size::<G>() <= PERMISSIONS_AT as usize,
+                "the thread state fits before the permission table"
+            )
+        };
         let engine = engine();
         // The table covers the whole memory, and one more byte, always zero, follows it.
         let permission_pages = memory_bytes.div_ceil(65536) * 65536 / PAGE_SIZE;
@@ -1192,8 +1194,9 @@ fn covered<G: GuestTest>(host: &Host<G>) -> Range<u64> {
 
 /// Where in the state memory the array holds the slot for an address, if it covers it.
 fn slot_entry<G: GuestTest>(host: &Host<G>, address: u64) -> Option<usize> {
-    (covered(host).contains(&address) && address.is_multiple_of(G::ALIGN))
-        .then(|| host.slots_at as usize + (address - host.table_base) as usize)
+    (covered(host).contains(&address) && address.is_multiple_of(G::ALIGN)).then(|| {
+        host.slots_at as usize + contract::slot_entry::<G>(address - host.table_base) as usize
+    })
 }
 
 /// The lookup table slot of the piece for an address, 0 for none.

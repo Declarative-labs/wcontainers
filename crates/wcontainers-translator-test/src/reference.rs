@@ -38,8 +38,10 @@ pub const X86_64: Target = Target {
     ],
 };
 
-/// The Docker image a local reference runs in.
-const IMAGE: &str = "alpine:latest";
+/// The Docker image a local reference runs in, and the base of layer 3's compiler image: one release by its
+/// digest (a multi-platform index), so every run has the same environment.
+pub const IMAGE: &str =
+    "alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6";
 /// Where the runner is kept on an SSH reference, under the login's home.
 const REMOTE_DIRECTORY: &str = "wcontainers-x86/reference";
 /// How many times an SSH reference is tried before the run fails: the machine drops off its network at times.
@@ -303,7 +305,8 @@ impl Reference {
 
     /// Send a request and read its result. A connection lost on the way (the network dropped, the
     /// container ended) is a transport failure, not the guest's: the runner is started again and the
-    /// request sent again, as each request stands alone.
+    /// request sent again, as each request stands alone. A failure of the runner itself fails the run with
+    /// its message.
     fn request(&mut self, record: &[u8]) -> Result<(u8, Vec<u8>), String> {
         let mut lost = 0;
         let result = loop {
@@ -322,8 +325,10 @@ impl Reference {
             let target = self.target;
             *self = Self::start(&target);
         };
+        let message = String::from_utf8_lossy(&result[1..]).into_owned();
         match result[0] {
-            RESULT_FAILED => Err(String::from_utf8_lossy(&result[1..]).into_owned()),
+            RESULT_FAILED => Err(message),
+            RESULT_RUNNER_FAILED => panic!("the reference runner failed: {message}"),
             status => Ok((status, result[1..].to_vec())),
         }
     }
@@ -332,6 +337,23 @@ impl Reference {
     pub fn cut(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    /// Check that a request the runner cannot read (a blob request cut short) fails with the runner's own
+    /// message, not as a lost connection, for the transport's own test.
+    pub fn check_runner_failure(target: &Target) {
+        let mut reference = Self::start(target);
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = reference.request(&[RECORD_BLOB, 0]);
+        }));
+        let message = *failed
+            .expect_err("a request the runner cannot read fails the run")
+            .downcast::<String>()
+            .expect("a message");
+        assert!(
+            message.starts_with("the reference runner failed: wcontainers-reference: "),
+            "{message}"
+        );
     }
 
     /// Run one instruction from `state` (its pc field is ignored: the instruction is at CODE) and the data

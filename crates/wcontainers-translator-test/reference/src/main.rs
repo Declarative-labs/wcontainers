@@ -746,6 +746,10 @@ fn serve() {
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     write_record(&mut output, &hello());
+    SERVER.store(
+        unsafe { libc::getpid() },
+        core::sync::atomic::Ordering::Relaxed,
+    );
     let mut child: Option<CaseChild> = None;
     while let Some(request) = read_record(&mut input) {
         let result = match request.first() {
@@ -772,11 +776,30 @@ fn serve() {
     }
 }
 
+/// The serving process once its hello is sent; 0 before.
+static SERVER: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
+
 fn main() {
-    // A failure of the runner itself ends with status 101 after this message on stderr; the harness fails
-    // the run on it.
+    // A failure of the runner itself ends with status 101 after this message on stderr and, from the serving
+    // process, as the request's result, so the harness reports it as the runner's failure and not a lost
+    // connection. Records are written whole and flushed, so none is cut short here.
     std::panic::set_hook(Box::new(|info| {
-        eprintln!("wcontainers-reference: {info}");
+        let message = format!("wcontainers-reference: {info}");
+        eprintln!("{message}");
+        if unsafe { libc::getpid() } == SERVER.load(core::sync::atomic::Ordering::Relaxed) {
+            let mut record = ((message.len() + 1) as u32).to_le_bytes().to_vec();
+            record.push(RESULT_RUNNER_FAILED);
+            record.extend_from_slice(message.as_bytes());
+            let mut at = 0;
+            while at < record.len() {
+                let wrote =
+                    unsafe { libc::write(1, record[at..].as_ptr().cast(), record.len() - at) };
+                if wrote <= 0 {
+                    break;
+                }
+                at += wrote as usize;
+            }
+        }
         unsafe { libc::_exit(101) };
     }));
     match std::env::args().nth(1).as_deref() {

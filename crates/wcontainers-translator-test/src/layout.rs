@@ -84,11 +84,13 @@ pub const RECORD_CASE: u8 = 0;
 pub const RECORD_BLOB: u8 = 1;
 /// An ordinary static executable, its bytes after the kind; its result is a blob's, with no stop record.
 pub const RECORD_PROGRAM: u8 = 2;
-/// A result starts with its status: the request ran, the runner failed, or the CPU's Linux refused to set up
-/// the case's starting state (for the last two a message follows).
+/// A result starts with its status: the request ran, the runner could not run it, the CPU's Linux refused to
+/// set up the case's starting state, or the runner itself failed and ends (for the last three a message
+/// follows).
 pub const RESULT_RAN: u8 = 0;
 pub const RESULT_FAILED: u8 = 1;
 pub const RESULT_REFUSED: u8 = 2;
+pub const RESULT_RUNNER_FAILED: u8 = 3;
 
 /// The data area's starting contents for a seed.
 pub fn fill(seed: u64, into: &mut [u8]) {

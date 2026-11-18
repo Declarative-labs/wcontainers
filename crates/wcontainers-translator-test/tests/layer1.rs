@@ -179,6 +179,12 @@ fn offered_features_are_the_ones_programs_are_told<G: GuestTest>() {
     assert_eq!(offered, told);
 }
 
+/// A request the runner cannot read fails the run with the runner's own message, not as a lost connection.
+#[test]
+fn the_reference_reports_its_own_failure_arm64() {
+    Reference::check_runner_failure(&Arm64::REFERENCE);
+}
+
 #[test]
 fn offered_features_are_the_ones_programs_are_told_arm64() {
     offered_features_are_the_ones_programs_are_told::<Arm64>();

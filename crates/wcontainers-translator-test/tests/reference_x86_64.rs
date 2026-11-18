@@ -4,7 +4,7 @@
 //! `int 3`, `int1`, the system call gates as SIGSYS, general protection, the stack fault, page faults, a divide
 //! error, an illegal instruction), the x87 state written and read back through TOP, vector registers with their
 //! upper halves, the thread pointers, a rep string instruction stepped to its end, two blobs and ordinary
-//! executables.
+//! executables, and the runner's own failure reported as its own.
 //!
 //! Needs `WC_REFERENCE_X86_64` (such as `tom@192.168.2.240`) on a host that is not x86-64; it fails without it.
 
@@ -781,4 +781,10 @@ fn the_x86_64_reference_comes_back_after_its_connection_is_lost() {
     assert_eq!(nop(&mut reference), before);
     reference.cut();
     assert_eq!(nop(&mut reference), before);
+}
+
+/// A request the runner cannot read fails the run with the runner's own message, not as a lost connection.
+#[test]
+fn the_x86_64_reference_reports_its_own_failure() {
+    Reference::check_runner_failure(&X86_64);
 }

@@ -2657,12 +2657,14 @@ gives. As built at X2 it serves one case a request (`case`) and records no resul
 recorded with every result when recorded results are built (proposed for X3, section 7.3).
 
 The browser's cdylib is built per guest (a cargo feature naming the guest, `arm64` or `x86_64`, chooses
-`type G`). Its `contract()` JSON gives what `runner.js` needs, all from `Guest`: `blockSize`,
-`privateBytes`, `threadStateSize`, `pcOffset`, `flagsWordOffset`, `stopFlagOffset`, `align` (one slot per
-`G::ALIGN` bytes), `syscall` (the block offsets of the number, the six arguments and the result, from
-`SYSCALL` and `BITS`), `codeChanges` (`announced` or `detected`), `traps` (each `TrapKind` with its number
-and signal), `hooks` (each of `HOOKS` with its index and body), and the probe module, beside today's
-translator numbers. ARM64's `registerFpsr`, `registerFpcr` and `floatTracking` go: the float hook's work is
+`type G`). Its `contract()` JSON gives what `runner.js` needs, beside today's translator numbers, all from
+`Guest` and the contract: `threadBlockSize`, `threadStateSize`, `pcOffset`, `flagsWordOffset`, `stopFlag`,
+`align` (one 4-byte slot per `G::ALIGN` bytes, `contract::slot_entry`), `maxLength`, `trapKinds` (the name
+of each `TrapKind`), `reasons`, `guestHooks` (each of `HOOKS` with its body, its line for `codeChanged`, its
+state words and its results), `hookParams` and the probe export. The page reads nothing else of the block:
+the system call's number and arguments come to it through the syscall hook's own parameters, and a trap's
+kind through the trap hook's, so the block offsets of the call and a table of trap numbers and signals are
+not part of it. ARM64's `registerFpsr`, `registerFpcr` and `floatTracking` go: the float hook's work is
 `cpu_hook` (section 3.4). The stand-in's five numbers come from `GuestTest::STAND_IN` through the page's
 settings, which the test crate's browser.rs writes.
 
@@ -2678,7 +2680,12 @@ so; it is never skipped silently.
 - **Transport**: one SSH connection kept open for a whole run (`ControlMaster`), the host named by
   `WC_REFERENCE_X86_64` (`tom@192.168.2.240` today). Cases and blobs go through stdin as length-prefixed
   binary records; results come back on stdout the same way, each with its own status, so ssh's own exit
-  status (255) and signals are never mistaken for a guest's. A new connection costs from about 0.24 s to
+  status (255) and signals are never mistaken for a guest's. The statuses are: ran, could not run (the
+  case's child died; the runner goes on), refused (Linux refused the starting state) and the runner itself
+  failed (a panic of the serving process, sent as the request's result before it ends with status 101), which
+  fails the run with the runner's message. A stream that ends with no result is a lost connection: the
+  runner is started again and the request sent again, up to five times. A local reference runs in Alpine
+  3.24.2, pinned by digest, as layer 3's gcc image does. A new connection costs from about 0.24 s to
   over 1 s with the machines loaded, and a new process on the machine about 1 ms (section 2), so
   connections are never made per case and a runner
   process runs many cases.

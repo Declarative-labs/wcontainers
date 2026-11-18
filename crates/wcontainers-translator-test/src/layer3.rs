@@ -6,6 +6,8 @@ use crate::guest::GuestTest;
 use crate::programs::{
     Blob, Ran, flatten, native, native_program, out_directory, source_directory, unique, zig,
 };
+use crate::reference;
+use sha2::Digest;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -57,7 +59,13 @@ fn csmith_include() -> PathBuf {
 /// The gcc image of the guest's platform, made if it is not there yet.
 fn gcc_image<G: GuestTest>() -> String {
     static MADE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-    let image = format!("wc-x86-gcc-{}", G::NAME);
+    let dockerfile = format!(
+        "FROM {}\nRUN apk add --no-cache gcc musl-dev\n",
+        reference::IMAGE
+    );
+    // Named by its recipe, so a change of the recipe makes a new image.
+    let recipe = format!("{:x}", sha2::Sha256::digest(&dockerfile));
+    let image = format!("wc-x86-gcc-{}-{}", G::NAME, &recipe[..12]);
     let mut made = MADE.lock().unwrap();
     if made.contains(&image) {
         return image;
@@ -87,7 +95,7 @@ fn gcc_image<G: GuestTest>() -> String {
             .stdin
             .take()
             .unwrap()
-            .write_all(b"FROM alpine:latest\nRUN apk add --no-cache gcc musl-dev\n")
+            .write_all(dockerfile.as_bytes())
             .unwrap();
         assert!(
             child.wait().unwrap().success(),

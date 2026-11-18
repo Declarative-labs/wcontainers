@@ -48,13 +48,15 @@ if [ -n "$(git status --porcelain -- crates Cargo.lock Cargo.toml flake.nix flak
 fi
 commit=$(git rev-parse HEAD)
 accepted=$( (echo "$accept"; git rev-list "$accept..HEAD") | sort)
-# The commit's own copy, built into one target directory shared by every copy.
+# The commit's own copy, built into a target directory of its own: copies from git archive carry the commit's
+# file times, so in a shared one cargo could take one commit's build for another's. A commit's target directory
+# may be removed once no run of that commit is left.
 tree=$dir/trees/${commit:0:12}
 if [ ! -f "$tree/Cargo.toml" ]; then
   rm -rf "$tree" && mkdir -p "$tree" && git archive HEAD | tar -x -C "$tree" || exit 1
 fi
 cd "$tree" || exit 1
-export CARGO_TARGET_DIR=$dir/target
+export CARGO_TARGET_DIR=$dir/target/${commit:0:12}
 # A chunk's cases run on a pool of its jobs' threads, which the translator and wasmtime share; anything run
 # outside that pool keeps to the same number.
 export RAYON_NUM_THREADS=$jobs

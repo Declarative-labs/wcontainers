@@ -123,6 +123,12 @@ pub const fn thread_state_size<G: Guest>() -> usize {
     G::BLOCK_SIZE + G::PRIVATE_BYTES
 }
 
+/// Where, in bytes from [`SLOTS`], the array holds the i32 slot for the code `offset` bytes past
+/// [`TABLE_BASE`] (a multiple of `Guest::ALIGN`): entry `offset / ALIGN`.
+pub const fn slot_entry<G: Guest>(offset: u64) -> u64 {
+    4 * (offset / G::ALIGN)
+}
+
 /// Permission table byte: the page may be read.
 pub const PAGE_READ: u8 = 1;
 /// Permission table byte: the page may be written.

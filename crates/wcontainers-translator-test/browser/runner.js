@@ -76,6 +76,9 @@ function run({
   const slots = cases
     ? 1
     : Math.ceil((moduleBytes.length ? codeBytes - codeStart : blob.length) / contract.align);
+  if (BLOCK_AT + contract.threadStateSize > PERMISSIONS_AT) {
+    throw new Error("the thread state does not fit before the permission table");
+  }
   const slotsAt = Math.ceil((PERMISSIONS_AT + permissionPages + 1) / 4) * 4;
   const statePages = Math.ceil((slotsAt + 4 * slots) / 65536);
   const state = new WebAssembly.Memory({ initial: statePages, maximum: statePages, shared: true });
