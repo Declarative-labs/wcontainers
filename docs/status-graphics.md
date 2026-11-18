@@ -44,6 +44,52 @@ branches into it at the start and end of every run, keeps the whole workspace bu
   check"): Vulkan's `robustBufferAccess` now has a route for shader access too; the interface
   states what a draw may fetch and a program may access past its range; the suite copies within
   3D and compressed subresources. No branch had anything new at the start (fetched first).
+- G1c, run 8 (2026-11-18): the five findings of G1c's seventh check settled (below, "G1c's seventh
+  check"): Vulkan's robust shader access now binds what the interface allows (ranges smaller than
+  the program's block), with a proposed `HelperValue::BufferRange`; a storage binding's size is a
+  multiple of four (interface rule, refused by the recorder); the recorder holds the attachment
+  rules before dropping a draw. No branch had anything new at the start (fetched first).
+
+## G1c's seventh check, and how each finding was settled (run 8)
+
+Sources (scratch `graphics/g1c8/dl`, Mesa's main branch through GitLab's API, all MIT:
+`nir_lower_explicit_io.c`, `nir_defines.h`, `nir_lower_io_to_scalar.c`,
+`nir_lower_mem_access_bit_sizes.c`; and the check's `check-g1c-7/dl` and `check-g1c-5/dl`:
+the WebGPU and WGSL specifications, Vulkan's `shaders.adoc`, the CTS's
+`vktRobustnessBufferAccessTests.cpp`).
+- Blocking, ranges smaller than the program's block: the check was right. Plan 15.4 now gives
+  the route in three NIR steps: index and offset (`nir_address_format_32bit_index_offset`), then
+  32-bit scalar accesses (`nir_lower_io_to_scalar`, `nir_lower_mem_access_bit_sizes`; Vulkan
+  allows wider accesses to be checked as separate 32-bit ones, checked), then
+  `nir_lower_robust_access`, its sizes read from a proposed `HelperValue::BufferRange` (15.7, the
+  descriptor's range as the API gave it; OpenGL's SSBO `length()` needs it too). Storage buffers
+  are declared as runtime-sized arrays of words (block four bytes) and bound as the range rounded
+  up to four bytes, the buffer's memory requirements so rounded (Vulkan lets out-of-range reads
+  and writes reach the memory bound to the buffer, checked). Uniform buffers bind the block's size
+  from the descriptor's offset where the buffer's memory holds it, else a copy grown to the block
+  (`ConstantBufferGrown`, the range copied on the GPU before the pass). Accesses past the program's
+  declared block are undefined in Vulkan even with the feature (checked) and not served. G8's and
+  G10's pass bars now name the CTS's 1, 3, 4 and 32 byte ranges against its 8192-byte blocks, and
+  G10's driver test over the recorder also sees none of those bindings refused.
+- The recorder's drop of an indexed draw past a stream now comes after the attachment rules: a
+  draw that also reads its own attachment is refused, not dropped. Rule test (new):
+  `an_indexed_draw_fetching_past_a_stream_still_reads_no_subresource_it_writes` (the check's own
+  input).
+- Storage binding sizes ("interface:" commit 227c7b99): `BindingResource::StorageBuffer`'s doc now
+  says the size is a multiple of four (WebGPU's bind group rule, checked); the recorder refuses
+  one that is not ("a storage binding whose size is not a multiple of four"), broken in the
+  existing rule test `buffer_bindings_are_aligned_inside_the_buffer_and_the_limits` (a six-byte uniform binding stays allowed:
+  WebGPU's rule is storage only). Plan 4.5: a front whose API's range is not so rounds it up within
+  the buffer. The Direct3D 12 front already rounds (`storage_range`), as does the Direct3D 11
+  front's typed views. No suite test: nothing a back end does changes.
+- Out-of-range loads reaching other buffers (same commit): `BindingResource`'s doc now says an
+  access past a binding reaches anywhere in the API buffer behind it, which a back end may share
+  among several of the device's buffers; plan 4.12 says the WebGPU back end's arena of small
+  uniform buffers is such a buffer, written by no program, so it is a read only.
+- Why `nir_lower_robust_access` and not `nir_lower_explicit_io`'s bounded format: 15.4 now quotes
+  the pass's comment and says why: the bounded format makes 64-bit global addresses
+  (`load_global_constant_bounded`), which the common form cannot hold. The vec4-from-a-4-byte-range
+  case is closed by the 32-bit split and the four-byte minimum binding.
 
 ## G1c's sixth check, and how each finding was settled (run 7)
 
@@ -345,6 +391,12 @@ G1c run 7's own (8431a623, one "interface:" commit): what a draw may fetch past 
 program may access past its binding (above, "G1c's sixth check"), with its rule test and suite
 test. No "interface:" commit came from the other branches.
 
+G1c run 8's own (227c7b99, one "interface:" commit): a storage binding's size is a multiple of
+four, and an access past a binding may reach other buffers sharing its API buffer (above, "G1c's
+seventh check"). Fits: a rule of the base and a doc. Rule test: the widened
+`buffer_bindings_are_aligned_inside_the_buffer_and_the_limits`. No suite test (no back-end
+behaviour changes). No "interface:" commit came from the other branches.
+
 ## The WebGPU track's request, decided
 
 - No index format in `PrepareDesc`. Direct3D 11, OpenGL and Vulkan bind index buffers at the draw,
@@ -390,6 +442,11 @@ test. No "interface:" commit came from the other branches.
   and the packed formats, which GL ES lacks or reads differently, and `rgba32float` targets (needs
   `EXT_color_buffer_float`; the test asks `RENDER | COPY_OUT` of it, so a missing extension fails it
   by name).
+- Every front (run 8): a storage binding's size must be a multiple of four (WebGPU refuses the
+  bind group otherwise); the recording back end now refuses one that is not, so your tests over it
+  find any. Direct3D 12 already rounds up; Direct3D 11's raw and structured views bind their
+  bytes as they are, so check that every such binding is a whole number of words. WebGPU: nothing
+  to do (you pass the size through, which the rule now keeps valid).
 - Direct3D 11: `format::components` now returns `Format::components`; it can go when convenient.
 - Direct3D 11 and 12: `Features::VIEW_SWIZZLE` is gone (no call used it); keep mapping in the
   program (`SwizzleInShader`). The mapping and the flag come together at G1d at the earliest (plan
@@ -409,7 +466,7 @@ test. No "interface:" commit came from the other branches.
 ## The rules and their tests
 
 Every rule a caller can break is refused by the recording back end and broken once in a test:
-`tests/rules.rs` (109), `tests/compute.rs`, `tests/recorder.rs`, `tests/helpers.rs` (the usage-scope
+`tests/rules.rs` (110), `tests/compute.rs`, `tests/recorder.rs`, `tests/helpers.rs` (the usage-scope
 rule, the pass tracker, the occlusion counter). The list of rules is the test names. An indexed
 draw fetching past a stream is not a broken rule: the recorder drops it whole and counts it
 (`dropped_draws`).
@@ -435,7 +492,7 @@ outside its bound range (which the interface allows; stopped so tests find each 
 
 ## Next
 
-- G1c's independent check, seventh round.
+- G1c's independent check, eighth round.
 - G1d (plan 15.8) once the owner has answered plan 15.9 (now also: wvk, Vulkan's slow features
   reported present, the copy into streams, the back end as its own module and the import call per
   interface call it costs, OpenGL and Vulkan as two modules, Xwayland with a GLX stand-in).
