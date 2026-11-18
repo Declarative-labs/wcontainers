@@ -24,8 +24,9 @@ new). Fixed what the independent check of G3b (check9) found:
   `half_floats_read_back_as_stored` now covers both. The front's formats scene through its WebGL 2
   build: every output passes but the two snorm targets, absent natively as declared (Measurements).
 - The shaders track's seed 14 of `tests/filter_draw.rs` (a WebGL 2 draw that lost ANGLE's device
-  in its run 15): rerun alone at today's code, it passes (details under "G3b: what the fronts
-  ask").
+  in its run 15): alone it passes at today's code, but 16 seeds in one process lose ANGLE's device
+  again (about case 4), with no driver reset. OPEN, cause not found (Known failures; details under
+  "G3b: what the fronts ask").
 - `submit` no longer calls `getError`, which in Chrome waits for the GPU process: GL errors are
   read after the back end has waited anyway (`wait_fence`, `read_texture_now`), and a lost context
   is seen at `submit` and `status` through `isContextLost` (no wait). A lost context's missing
@@ -49,6 +50,9 @@ new). Fixed what the independent check of G3b (check9) found:
 - New from the shared line: copies within one level of a 3D texture (one subresource) went
   through `copyTexSubImage3D` on the same texture, which ANGLE garbled; they now go through a
   buffer (`CopyWithinTexture`). Its two new suite tests run in Chrome too.
+- At the end the desktop's C:\wc\target\phase-2-graphics-webgl (16.8 GB: the debug, release,
+  WebAssembly, recording and Direct3D 11 WebGL 2 builds) and this checkout's own target (0.95 GB,
+  from `cargo check`) were deleted. Nothing was installed on the desktop.
 
 G3b run 2, 2026-11-18 (about 08:30 to 10:15 Pacific). Merged origin/phase-2-graphics (it held
 -shaders and -direct3d-11 already; -webgpu and -rig had nothing new). The open findings of G3's
@@ -229,10 +233,20 @@ Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-
   (the day's resets were 14:40 to 17:22, 19:35 and 20:37), so it removed ANGLE's device without a
   driver reset. Rerun alone at this run's code (seed 14, one case, `gpu-job --alone`, scratch
   g3b3/seed14-1.log): 48 comparisons, 0 failed, 32 known anisotropic failures, no device lost;
-  WebGL 2 included (dxbc and dxil routes, R32_FLOAT and RGBA8). The seeds 1 to 16 run in one
-  process: see Measurements, run G3b-3. Not reproduced, so its cause is not known; the 32
-  anisotropic differences are the shaders track's known failure (its tap footprint), not this
-  back end's.
+  WebGL 2 included (dxbc and dxil routes, R32_FLOAT and RGBA8). Then seeds 1 to 16 in one
+  process, as run 15 had them (`gpu-job --alone`, 14:10 to 14:14 desktop time, scratch
+  g3b3/seed1-16.log): ANGLE's device was removed again, this time around case 4 (anisotropy 1),
+  with the same message ("Failed to map D3D11 resource", removal reason 0x887A0005), and this back
+  end reported it ("wcontainers webgl: device lost (Error): GL error 0x502"; the test then
+  panicked on `DeviceLost`). No display reset and no Application or System event in that window,
+  and the queue was not held. So it is not seed 14's sampler state: a process that draws many
+  cases loses ANGLE's Direct3D 11 device at some point, without a driver reset. OPEN, cause not
+  found. Suspects, untested: the other devices of that process on the same GPU (wgpu's Direct3D
+  12 device, real Direct3D 11 and WARP for the references), or ANGLE's own resource handling
+  over many programs and textures. Next: the same seeds with only the WebGL 2 back end drawing
+  (needs a change to the shaders track's test, or a copy of it in this crate), and with ANGLE's
+  Direct3D debug layer. The 32 anisotropic differences are the shaders track's known failure
+  (its tap footprint), not this back end's.
 - (Run 3, from check9) A program past the uniform block limit (the constants scene): refused at
   `create_shader` with `Invalid` naming `Limits::uniform_buffers_per_stage`, so the front sees the
   broken rule when it makes the shader, not a lost device at the draw. The scene still needs the
@@ -1728,6 +1742,10 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Known failures
 
+- (G3b run 3) The shaders track's `tests/filter_draw.rs` over 16 seeds in one process loses
+  ANGLE's Direct3D 11 device without a driver reset (seed 14 in its run 15, about case 4 in this
+  run's; seed 14 alone passes). Cause not found; see "G3b: what the fronts ask".
+
 - (run 17) `decoded_on_the_host_equals_direct3d_11` (tests/bc_reference.rs): BC1 to BC5 decoded by
   bcdec_rs, the route of browsers without the BC extensions, are up to 13 8-bit steps from what the
   RTX 3080 samples under Direct3D 11, and fail the rig's rule by 44 pixels; WARP is as far from the
@@ -2146,7 +2164,11 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 
 ## Next
 
-G3b is done apart from the independent check (run 3 fixed check9's findings). In this order after it:
+G3b: every finding of check9 is fixed but one, which stays open: the device ANGLE loses in the
+shaders track's 16-seed filter run (Known failures). In this order:
+0. That loss: run the seeds with only the WebGL 2 back end in the process, then with ANGLE's
+   Direct3D debug layer, to tell whether this back end, ANGLE or another device of the process
+   causes it. Run it `gpu-job --alone`; it has not reset the display driver so far.
 1. Which texture's twin SimpleLightingPC refreshes every second frame (`CopyThroughBuffer` 291 of
    580 frames; likely an sRGB target view of its swap chain's buffer), and whether a draw or a blit
    can refresh it without the pixel buffer. It no longer waits (run 3), but it is a copy a frame.
