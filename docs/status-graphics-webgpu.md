@@ -5,10 +5,10 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 
 ## Where things stand
 
-G2 passed its independent check. G2b (what the fronts need from this back end): runs 1 and 2 are
-"Run 11" and "Run 12" below; every request found is built and tested or refused by name (list
-below), so G2b waits for its independent check. Earlier runs follow ("Run 5" to "Run 10" are G2
-runs 1 to 6; G2a runs 1 to 4 after them).
+G2 passed its independent check. G2b (what the fronts need from this back end): runs 1 to 3 are
+"Run 11" to "Run 13" below. G2b's independent check found nine problems; run 13 fixed them (list
+in "Run 13"). Every request found is built and tested or refused by name (list below). Earlier
+runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
 graphics branch), and where each stands:
@@ -52,6 +52,59 @@ graphics branch), and where each stands:
   `ExecuteIndirect` (a listed loss), multisampled array targets (absent in WebGPU).
 - Already done before G2b: vertex formats WebGPU lacks (run 9), combined depth-stencil copies
   (run 7).
+- `configure_surface` of a format the window lacks (Direct3D 12: `rgba16float`, which wgpu's Vulkan
+  windows on the desktop lack, removed the device): built (run 13). Such a window is presented
+  through an 8-bit format it shows as sRGB, by a draw (`PresentConverted`). tests/surface.rs (lost
+  the device on Vulkan before; on Direct3D 12 the window took `rgba16float` only as linear light).
+- Freeing the back end's tables when a program or block is destroyed (Direct3D 12: "its own tables
+  keep their entries"): built (run 13). tests/scenes.rs
+  `destroyed_programs_and_blocks_free_their_pipelines`.
+
+Run 13 = G2b run 3, 2026-11-17 (fixes from G2b's independent check):
+- Merged origin/phase-2-graphics, -webgl, -direct3d-12, -shaders and -rig (no conflicts;
+  -direct3d-11 had nothing new). The interface changes they brought (split passes keep their
+  stored aspects, format components, sampler codes, typed buffer layouts) needed nothing here. Read
+  the four front status files again: new asks of this back end are the surface format and the
+  table release above; the Direct3D 11 and WebGL tracks ask nothing new.
+- Queries carried across splits in a set with no spare slot of its own (the Direct3D 11 front's
+  sets have 4096, WebGPU's largest): a set's spare slots are now pages, page 0 being the set's
+  own slots past its queries and further pages WebGPU query sets of 4096 made when page 0 is full.
+  A pass part counts on one page; on a further page every query begun there takes a spare slot
+  too, and resolving replaces its own slot's count instead of adding to it. Slots given back are
+  reused only after the part that wrote them ends. tests/writes.rs
+  `queries_carry_across_splits_in_a_set_of_the_largest_size` (a set of 4096, three splits; lost
+  the device before).
+- Destroying a program forgets every pipeline and layout made with it; a block (deduplicated by
+  value) is forgotten once every creation of it is destroyed, a vertex layout with its shadow
+  plan. `WebGpu::held()` says how many pipelines and layouts are held.
+- The staging ring of 4.6: ordered writes, texture writes behind recorded work, pattern clears and
+  the query sums' lists are queued into regions of one buffer (256-byte aligned) and copied from
+  there, taken from its start again after each submit; a submit needing more makes one twice as
+  large. `Counters::staging_rings`. tests/writes.rs `ordered_writes_are_staged_in_one_ring` (8
+  writes in two frames make one ring; a 2 MiB write makes a second). Natively wgpu's
+  `write_buffer` still copies the bytes once into memory of its own; in the browser Chrome stages
+  them in its own ring.
+- Immediates, natively: `immediate_bytes` is the device's `max_immediate_size` where wgpu has
+  `IMMEDIATES` (256 on Vulkan, 128 on Direct3D 12, RTX 3080), each program's layout holds what its
+  stages declare (`var<immediate>`), and a draw or dispatch sets at most that. tests/scenes.rs
+  `immediates_reach_the_program`. In the browser 0 (Departures).
+- A lost surface is refused by name: the device is lost with the reason that the back end holds
+  no window to make a surface from (wgpu reports it only when the platform lost the swap chain).
+- Texture renaming runs in Chrome: the check moved into examples/scenes/renames.rs (tests/bindings.rs
+  calls it) and web/check runs it in the page.
+- The converted-format test takes `WEBGPU_SEED` (default 1) and `WEBGPU_CASES` (textures of 128
+  texels per format, default 4; web/check runs seed 1, 4 cases), and so does its comparison with
+  Direct3D 11 in tests/direct3d.rs. With 4 cases the check without a reference failed:
+  `Bgrx8UnormSrgb` filtered 1.506 steps from filtering `v / 255` decoded. Our texels equal real
+  Direct3D 11's in every load and filtered value on both APIs, and Direct3D's own filtered sRGB
+  texels are 1.507 steps from that rule, so the bound for sRGB filtering is now 2 steps (1.5 for
+  the others; measured by Direct3D at most 0.714).
+- tests/raster.rs runs under libtest-mimic: the wireframe picture on Vulkan is reported ignored as a
+  known failure with the count of pixels (was: a pass comparing only the solid cell).
+- examples/scenes/names.rs lists the shared line's 9 new suite tests.
+- Not changed: `PrepareDesc` still has no index format (adding a field breaks the Direct3D 11 and
+  12 fronts' and the suite crate's code, which this track does not touch); listed for the
+  interface track.
 
 Run 12 = G2b run 2, 2026-11-17:
 - Merged origin/phase-2-graphics, -webgl, -direct3d-12 and -shaders (no conflicts; -direct3d-11
@@ -536,8 +589,9 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   "30.0.2"` to make the device). It builds natively (Windows: Direct3D 12 and Vulkan; Mac: Metal)
   and for `wasm32-unknown-unknown` (the browser's WebGPU).
 - Make the wgpu instance with `desc.flags |= WebGpu::INSTANCE_FLAGS` (wgpu's
-  `AUTOMATIC_TIMESTAMP_NORMALIZATION`): without it, natively on a GPU whose clock does not tick in
-  nanoseconds (the RTX 3080 under Direct3D 12), `TIMESTAMPS` is declared absent.
+  `AUTOMATIC_TIMESTAMP_NORMALIZATION`): without it, natively on a GPU whose timestamp period is not
+  1 ns, `TIMESTAMPS` is declared absent. On the RTX 3080 the period is 1 ns on both of wgpu's APIs
+  with or without the flag (tests/timestamps.rs prints it), so there it changes nothing.
 - Make it from a wgpu adapter: ask for the device with `WebGpu::device_descriptor(&adapter)` (the
   features the back end uses where present, and the adapter's highest limits), then
   `WebGpu::new(&adapter, device, queue)`. `WebGpu` is the `B` of `Device<B: Backend>`. The whole
@@ -576,8 +630,9 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
 All from the checkout root on the Mac; nothing is built or run on the Mac but formatting and
 `cargo check -j 2`.
 - Tests on the RTX 3080 (tests/bindings.rs, blocks.rs, converted.rs, copies.rs, depth.rs,
-  direct3d.rs (Windows only), fitted.rs, prepare.rs, raster.rs, scenes.rs, vertices.rs, writes.rs and suite.rs, the
-  shared suite; they need a GPU, and the suite's present test a desktop, so
+  direct3d.rs (Windows only), fitted.rs, prepare.rs, pulled.rs, raster.rs, scenes.rs, surface.rs
+  (Windows only), timestamps.rs, vertices.rs, writes.rs and suite.rs, the shared suite; they need a
+  GPU, and the suite's present test and surface.rs a desktop, so
   `--desktop`; `WEBGPU_API=dx12|vulkan|metal` picks wgpu's API, default the platform's, Vulkan on
   the desktop), both APIs in one job:
   `tools/graphics-rig/gpu-job --desktop --build "cargo test --locked -j 3 -p wcontainers-gpu-webgpu
@@ -604,6 +659,9 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 - The suite's present test on this Mac: `--test present` in the command below (the window shows
   for a moment in the middle of the main screen; the session needs the screen recording
   permission, which this one has).
+- The converted formats with other texels: `set WEBGPU_SEED=<n>&& set WEBGPU_CASES=<textures per
+  format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test converted -- --nocapture`,
+  and against Direct3D 11 the same with `--test direct3d converted` (defaults seed 1, 4 textures).
 - The vertex conversion with other bytes: `set WEBGPU_SEED=<n>&& set WEBGPU_CASES=<vertices per
   format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test vertices -- --nocapture`.
 - On this Mac's GPU, one job only (never a build loop): copy the committed tree to scratch with
@@ -625,8 +683,9 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   to differ, draws the eight-viewport scene in Chrome (equal to `raster-viewports.png`, and
   differing with whole-pixel viewports), prints first-draw timings with and without `prepare` in
   Chrome (failing if the prepared draws built anything), checks timestamps, the converted formats
-  (examples/scenes/converted.rs) and the vertex formats read through shadows
-  (examples/scenes/vertices.rs, seed 188, 64 vertices each) in Chrome, then runs the shared suite
+  (examples/scenes/converted.rs, seed 1, 4 textures each), the vertex formats read through shadows
+  (examples/scenes/vertices.rs, seed 188, 64 vertices each) and texture renaming
+  (examples/scenes/renames.rs) in Chrome, then runs the shared suite
   in Chrome, one page per test (suite-chrome.txt). Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
   pictures and the suite's results are copied there. About 7 minutes cold, the job itself 15 s.
@@ -955,11 +1014,10 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 - Multisampled depth or stencil copies that WebGPU cannot make (between formats); part of a
   16-bit depth level written from a buffer.
-- A surface wgpu reports lost (the window's surface must be made again from the instance, which
-  the back end does not hold).
-- Immediates: `immediate_bytes` is 0, so fronts spill them.
-- A pass split more often within one query set's use than the set has spare slots (as many as
-  its queries, at most 4096 in all).
+- A surface wgpu reports lost marks the device lost by name (refused): only the host's hook holds
+  the window a surface is made from.
+- Immediates in the browser: `immediate_bytes` is 0 there (wgpu 30's browser back end has no
+  `setImmediates`), so fronts spill them.
 - A converted vertex stream reaching past the largest storage binding (128 MiB by default) or
   more than 2^22 workgroups.
 - Drawing into the 16-bit packed formats: declared without `RENDER` (8-bit storage would keep
@@ -967,22 +1025,20 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   and could not round a blend). Copies between a buffer and a converted texture pause the device
   thread while the bytes cross the host (a compute program packing on the GPU would not).
 - `OCCLUSION_COUNT`: absent for good (WebGPU's occlusion result is zero or not).
-- Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), and freeing
-  cached layouts and pipelines of destroyed programs (and the shadow plans of vertex layouts no
-  longer held).
+- Natively the staging ring's bytes are copied twice (into wgpu's own staging memory, then by
+  the GPU into the ring): wgpu 30 offers no mapped ring that needs no wait.
 - A buffer or texture renamed many times within one frame keeps that many spares in the pool until
   it is destroyed (bounded by what it made, not trimmed by age).
 - Arena slices of buffers dropped without `destroy` are not reused until the arena is replaced.
 
 ## Next (G2b)
 
-1. The independent check of G2b.
-2. Texture renaming in Chrome (move tests/bindings.rs `discarded_textures_are_renamed_from_the_pool`
-   and its helpers into the scenes example as vertices.rs was), immediates, making a lost surface again, the staging ring of 4.6, freeing layouts and
-   pipelines of destroyed programs, copies between a buffer and a converted texture on the GPU
-   (as before).
-3. Read the fronts' status files again after merging; Direct3D 12's timestamps case against real
-   Direct3D 12 and bgfx's examples are that track's next step.
+1. The independent check of G2b (again, after run 13's fixes).
+2. Copies between a buffer and a converted texture on the GPU; the instance-data measurement with
+   more streams a draw (Measurements, run 13); why the timestamp workload takes 1.3 and 1.5 times
+   Direct3D 11's time through wgpu natively (expected, not measured: naga's loop bounding and
+   bounds checks; Chrome's Dawn takes Direct3D's time).
+3. Read the fronts' status files again after merging.
 
 ## Departures from the plan
 
@@ -995,12 +1051,22 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   loads miss by up to 0.72 of an 8-bit step).
 
 - Timestamps need the host's wgpu instance made with `AUTOMATIC_TIMESTAMP_NORMALIZATION`
-  (`WebGpu::INSTANCE_FLAGS`) where the GPU's clock does not tick in nanoseconds; without it the
-  back end declares `TIMESTAMPS` absent rather than convert itself (wgpu has the conversion).
+  (`WebGpu::INSTANCE_FLAGS`) where the GPU's timestamp period is not 1 ns; without it the back end
+  declares `TIMESTAMPS` absent rather than convert itself (wgpu has the conversion). The RTX 3080's
+  period is 1 ns either way.
 - Wireframe on wgpu's Vulkan follows Vulkan's line rules: on the RTX 3080, 214 pixels of the rig's
   fill picture differ from Direct3D 11's (Direct3D 12: none). Declared anyway: Vulkan's line rules
-  govern line lists there too (expected, not measured), and only native testing runs on Vulkan; tests/raster.rs holds only the solid cell to Direct3D's picture
-  on Vulkan, as a known difference. Browsers have no polygon modes.
+  govern line lists there too (expected, not measured), and only native testing runs on Vulkan.
+  tests/raster.rs reports `wireframe_fill_matches_direct3d` there as ignored with that reason (a
+  known failure; it fails if the solid cell differs too). Browsers have no polygon modes.
+- Immediates are wgpu's (`var<immediate>` in the program, `set_immediates`), natively only: wgpu
+  30's browser back end has no `setImmediates`, so there `immediate_bytes` is 0 and fronts spill
+  them (`ImmediatesSpilled`). Plan 5.7's "else a ring buffer bound with a dynamic offset" is that
+  spill, which the interface gives the fronts; the back end does not do it a second time.
+- A window that does not show a format's values as sRGB is presented through an 8-bit format by
+  a draw (`PresentConverted`), as the interface says frames are shown: natively that is every
+  `rgba16float` window (wgpu's Direct3D 12 takes it only as linear light, its Vulkan not at all on
+  the desktop); in Chrome a `rgba16float` canvas takes sRGB values and is used as it is.
 
 - Plan 5.7 says formats WebGPU lacks are "converted on upload". For vertex formats that cannot
   be done: a buffer's bytes are written before any layout says how they are read, the same bytes
