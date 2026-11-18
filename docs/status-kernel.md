@@ -2495,6 +2495,16 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Known issues
 
+- K6b, first run: the whole-suite run at 076dfc4 (`--no-fail-fast`, 4 test threads, load about
+  20) did not finish. It found one crash (fixed in 54c7ff8: a thread's own /proc directory
+  listed coredump_filter, which Linux's `tid_base_stuff` lacks; proclist passes again), then
+  Docker's daemon went away (its socket was gone) with the machine's disk full, and every test
+  after that failed to reach Docker, a sixth layer 1 seed (6262606) among them. The test
+  backend had kept every image archive it unpacked (41 GB in target/wc-kernel-test, the large
+  runtime images most of it); they were removed, and a backend now removes its archive when it
+  ends. The 80 test binaries that ran before Docker went: 150 passed, the failures were the
+  crash above (fixed) and Docker's absence. The whole suite must be run again (Next).
+
 - K6b, first run: inotify on a backend root (tests/inotify.rs
   `inotify_matches_reference_on_backend_root`, ignored with its reason): after the fixes, events
   through an open file whose name was unlinked while another link names it still reach watches
@@ -2627,6 +2637,9 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K6b's next run, in this order:
+0. Run the whole suite at head once Docker is back (`nix develop -c cargo test --no-fail-fast
+   -p wcontainers-kernel -p wcontainers-kernel-test -- --test-threads 4`) and a fresh layer 1
+   seed at head (the three passing ones ran at e90a141, before 54c7ff8's /proc change).
 1. Python's system test modules (tests/python.rs `system_test_modules_match_reference`,
    ignored with its reason): every test matches but test_posix's test_unshare_setns, which needs
    /proc/self/ns/uts (/proc/<pid>/ns is not built; the test opens and reads the link, then
