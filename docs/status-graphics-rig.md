@@ -904,6 +904,12 @@ check:
   issues); `loop` passes (23 s end to end); `programs run` 21 of 21 pass; `wine-tests run` as
   above. `cargo tree --workspace -e all --target all` (2929 lines) names no Wine, vkd3d, Godot,
   Doom, bgfx or Xbox-ATG-Samples crate.
+- Check from a fresh clone of phase-2-graphics-rig at 5408650 (scratch, fresh-run9): `scenes
+  --api d3d11 --level 10_0 --build "cargo build -q -p wcontainers-graphics-test-forward" --dll
+  d3d11.dll=<forwarding library> draws targets textures stencil`: 14 passed, 0 failed, 7 absent
+  (draws-indirect and textures-bc67 need 11_0, the blended targets and the cube array 10_1);
+  `wine-tests run d3d11`: 166 counted, 0 FAIL (job 60 s); `programs run --dll
+  d3d11.dll=<forwarding library> atg-simplemsaa_pc bgfx-26-occlusion`: both pass.
 
 ## Loading a replacement Direct3D library
 
