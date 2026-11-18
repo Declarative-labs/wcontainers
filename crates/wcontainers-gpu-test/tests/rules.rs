@@ -4230,6 +4230,44 @@ fn draws_read_vertices_and_indices_inside_their_buffers() {
 }
 
 #[test]
+fn an_indexed_draw_fetching_past_a_stream_is_dropped_whole() {
+    // The 24 bytes of vertices hold vertices 0 to 2; vertex 3 starts at their end.
+    for (last, dropped) in [(2u16, 0), (3, 1)] {
+        let mut d = Drawing::new();
+        let indices: Vec<u8> = [0u16, 1, last, 0]
+            .iter()
+            .flat_map(|i| i.to_le_bytes())
+            .collect();
+        d.r.write_buffer(&d.spare, 0, &indices, WriteMode::Ordered);
+        let before = d.r.texture_bytes(d.target);
+        let p = d.program("plain");
+        d.begin();
+        d.draw_with(&p, None, Topology::TriangleList, false, |c, spare| {
+            c.index = Some(IndexBinding {
+                buffer: spare,
+                offset: 0,
+                format: IndexFormat::U16,
+            });
+            c.range = DrawRange::Indexed {
+                first: 0,
+                count: 3,
+                base_vertex: 0,
+                first_instance: 0,
+                instances: 1,
+            };
+        });
+        d.r.end_pass();
+        assert!(d.r.violations.is_empty(), "{:?}", d.r.violations);
+        assert_eq!(d.r.dropped_draws, dropped, "index {last}");
+        assert_eq!(
+            d.r.texture_bytes(d.target) == before,
+            dropped == 1,
+            "index {last}"
+        );
+    }
+}
+
+#[test]
 fn a_draw_names_its_viewport_scissor_streams_and_buffers() {
     let mut d = Drawing::new();
     let p = d.program("plain");

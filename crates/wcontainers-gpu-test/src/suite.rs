@@ -52,6 +52,7 @@ macro_rules! suite {
             linear_filtering_and_address_modes,
             instances_start_at_the_first_instance,
             indexed_strips_restart_and_add_the_base_vertex,
+            an_indexed_draw_past_a_streams_end_covers_only_what_its_stream_allows,
             a_stream_of_stride_zero_reads_its_first_element,
             comparison_samplers_compare_with_the_stored_depth,
             fragments_write_storage_buffers,
@@ -70,6 +71,7 @@ macro_rules! suite {
             captures_write_location_outputs_packed_in_draw_order,
             a_copy_within_one_subresource_moves_the_region,
             a_copy_within_one_depth_or_stencil_subresource_moves_the_region,
+            a_copy_within_one_3d_or_compressed_subresource_moves_the_region,
             every_vertex_format_reads_its_element,
             present_shows_the_frame,
         );

@@ -1216,6 +1216,93 @@ pub fn indexed_strips_restart_and_add_the_base_vertex<H: Host>() {
     ok(&mut b);
 }
 
+/// An indexed draw one of whose vertices lies past its stream's end, which the interface allows
+/// (`DrawRange`'s doc): that vertex reads a value from the buffer, zero or (0, 0, 0, x), or the
+/// whole draw is dropped. The stream's bytes are only 0x00, 0x80 and 0xbf, so any value read from
+/// it is at most a denormal above zero, and the draw covers no pixel centre right of x = 0 or above
+/// y = 0 whichever happens; a draw after it into the top right quarter lands, the device kept.
+pub fn an_indexed_draw_past_a_streams_end_covers_only_what_its_stream_allows<H: Host>() {
+    let mut b = H::make();
+    const N: u32 = 8;
+    let low_left = vertex_buffer(&mut b, &[-1.0, -1.0, -1.0, 0.0, 0.0, -1.0]);
+    let top_right = vertex_buffer(&mut b, &[0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+    let indices: Vec<u8> = [0u32, 1, 9].iter().flat_map(|i| i.to_le_bytes()).collect();
+    let ib = buffer(&mut b, 12, BufferUsage::INDEX | BufferUsage::COPY_DST);
+    b.write_buffer(&ib, 0, &indices, WriteMode::Discard);
+    let p = program(&mut b, CONSTANT, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let (t, v) = rgba8_target(&mut b, N);
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+    let streams = [Some(VertexBinding {
+        buffer: &low_left,
+        offset: 0,
+    })];
+    b.draw(&DrawCall {
+        index: Some(IndexBinding {
+            buffer: &ib,
+            offset: 0,
+            format: IndexFormat::U32,
+        }),
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleList,
+            DrawRange::Indexed {
+                first: 0,
+                count: 3,
+                base_vertex: 0,
+                first_instance: 0,
+                instances: 1,
+            },
+        )
+    });
+    let streams = [Some(VertexBinding {
+        buffer: &top_right,
+        offset: 0,
+    })];
+    b.draw(&call(
+        &p,
+        &bl,
+        &ds,
+        &rs,
+        &vl,
+        &streams,
+        &vp,
+        Topology::TriangleList,
+        DrawRange::Vertices {
+            first: 0,
+            count: 3,
+            first_instance: 0,
+            instances: 1,
+        },
+    ));
+    b.end_pass();
+    ok(&mut b);
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let at = |x: u32, y: u32| &got[((y * N + x) * 4) as usize..][..4];
+    // Pixel (4, 3)'s centre is at (0.125, 0.125), inside the second triangle.
+    assert_eq!(at(4, 3), ROUNDED_BYTES, "the draw after it is missing");
+    for y in 0..N {
+        for x in 0..N {
+            let low_left = x < N / 2 && y >= N / 2;
+            // The second triangle's pixels, and those whose centres lie on its long edge.
+            let second = x >= N / 2 && y < N / 2 && (x - N / 2) + (N / 2 - 1 - y) < N / 2;
+            if !low_left && !second {
+                assert_eq!(at(x, y), [0; 4], "pixel ({x}, {y}) drawn");
+            }
+        }
+    }
+}
+
 /// Fragment programs write storage buffers, where the back end declares
 /// [`Features::FRAGMENT_STORAGE_WRITE`]: each pixel's fragment writes a value made from its position
 /// into its own element, read back exactly.
