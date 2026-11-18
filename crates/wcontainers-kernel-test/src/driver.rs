@@ -81,7 +81,17 @@ impl From<std::convert::Infallible> for Failure {
 
 /// What the WebAssembly back end translated for a run, on the standard error.
 #[cfg(feature = "runtime")]
-fn report(cpu: &Back, took: Duration) {
+fn report(cpu: &Back, container: &Container<'_>, took: Duration) {
+    let counters: Vec<_> = cpu
+        .counters()
+        .iter()
+        .map(|c| format!("{} {}", c.reason, c.count))
+        .collect();
+    eprintln!(
+        "cpu side: run of {:?}: {}",
+        container.arguments,
+        counters.join(", ")
+    );
     let translated = cpu.translated();
     let at_run_time = translated.iter().filter(|t| t.at_run_time).count();
     let made: Vec<_> = translated.iter().filter_map(|t| t.made).collect();
@@ -554,7 +564,7 @@ pub fn run_prepared(
         Err(failure) => return Err(failure.into()),
     };
     #[cfg(feature = "runtime")]
-    report(&cpu, started.elapsed());
+    report(&cpu, container, started.elapsed());
     if let Some(error) = kernel.start_failure() {
         // Never in a copy: no save is made before the first program runs.
         return Err(Failure::Start(error));
