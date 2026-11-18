@@ -606,7 +606,9 @@ Next (in order):
   Storage textures in the corpora convert only with a format, so under the default key they are
   refused `StorageFormat` and not compiled in Chrome; give the corpus test the formats the rig's
   real programs bind, then compile them in Chrome.
-- Rerun the WebAssembly comparison (`wasm-run10.sh`) after run 17's lowering changes (not done).
+- The WebAssembly build's module differs from the native one for one game shader (Known gaps):
+  find which side orders the divide-modulo helper's operations by platform (dxbc-spirv's IR as
+  serialised, compared between the two builds, first) and make it deterministic.
 - Typed buffers (`TexelBufferRoute`), storage textures through a buffer (`texels_through_buffer`:
   read-write formats other than r32, texture atomics), storage packing; DXIL storage views (naga's
   SPIR-V reader: image buffers).
@@ -830,6 +832,15 @@ Run 17, 2026-11-17, counts only (the desktop shared with the other tracks, no ti
   `StorageFormat` (no format under the default key) where they were `StorageImage`; 10 geometry
   shaders and 13 shaders with atomics or counters now convert; 2 refused `AtomicSignedness`; 3 game
   geometry shaders now refused `RenderTargetArrayIndex`.
+- WebAssembly against native after run 17 (laptop, `run17/wasm.log`, scratch script
+  `wasm-run10.sh`): the corpus test passes under wasmtime (9 tests); written files equal byte for
+  byte in corpus, rig, rig DXIL, own, own DXIL and games DXIL; in games 3 differ, all from one shader
+  (`d599fbc7efa911be.dxbc`: its WGSL, its GLSL and its line in `cache.txt`, Known gaps).
+- The whole suite before the push (`run17/final-gpu.log`, one GPU job, about 100 s): `draw`,
+  `variant_draw`, `filter_draw` (396 comparisons, 32 anisotropic known failures), `pull_draw`,
+  `geometry_draw` (52 and 32 comparisons) and `compute_draw` (8 and 4 seeds) all pass; on the laptop
+  every test passes with the corpora and glslang (`run17/linux-all3.log`, then the corpus test
+  again after the records).
 - `tests/compute_draw.rs` (`run17/cd2.log`), seeds 1 to 4: atomics and counters 8 comparisons, 0
   words apart, counters equal (256, 256, 0; 0); storage textures 16 comparisons (4 formats), 0 words
   apart.
@@ -1467,6 +1478,14 @@ were already there.
   its CMake does for that file.
 
 ## Known gaps found so far
+
+- Conversion is not byte-identical between the WebAssembly and native builds for one game shader
+  (`d599fbc7efa911be.dxbc`, run 17): the helper function returning (x / y, x % y) loads its operands
+  for the modulo first natively and for the division first in WebAssembly, so the WGSL, GLSL and
+  module key differ (the meaning is the same). The same source key on both, so the difference arises
+  in conversion; the lowering iterates no hash map in an order that reaches the output (phis are
+  sorted), so dxbc-spirv's IR order on a 32-bit target is the first suspect. Run 10's comparison had
+  no difference; not investigated further in run 17.
 
 - WGSL has only the weak compare-exchange (`atomicCompareExchangeWeak`), which may fail without
   cause; Direct3D's does not. Where the browser's back end writes it as a strong one (Direct3D 12's
