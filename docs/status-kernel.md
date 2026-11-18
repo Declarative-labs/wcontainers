@@ -2906,10 +2906,7 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 
 ## Next
 
-After K6b (third run), in this order:
-0. Layer 1 seed 6262617 (above): find which file the sequence opens (dump the arena's path at
-   0x59) and why the reference refuses RWF_NOWAIT on it before the copy; fix, then three fresh
-   seeds from 6262619 on and the whole suite at the final kernel. Then K6b is complete.
+After K6b (fourth run), in this order (none of these holds K6b):
 1. inotify on a backend root (tests/inotify.rs, ignored with its reason): IN_EXCL_UNLINK needs
    to know that the name an open file was opened by was unlinked while another link names the
    inode (Linux's `d_unlinked` of that dentry); the kernel keeps no dentries for backend names.
@@ -2918,9 +2915,7 @@ After K6b (third run), in this order:
    with progress of its own (pipe writes) could wait there instead. Not seen in any run.
 3. A mapped backend file's block starts at the file's first page (Departures); start it at the
    lowest page mapped.
-4. Layer 1's reference runner and loopback datagrams to oneself under load (above): make the
-   runner wait for delivery after a send, so seeds do not fail on the reference's timing.
-5. The LTP comparison on ours for the 1532 added tests, and the K6a list below.
+4. The LTP comparison on ours for the 1532 added tests, and the K6a list below.
 
 K6a's next run (or K6b): the wrong answers of the first comparison (under "K6a, first run"),
 largest first by the tests they turn:
