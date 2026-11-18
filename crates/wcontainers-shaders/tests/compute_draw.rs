@@ -21,11 +21,13 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::Interface;
 
-/// One storage view: its bytes before the dispatch, whether it is a raw buffer, the count its
-/// counter starts at (none: no counter), and whether it is an append or consume view.
+/// One storage view: its buffer's bytes before the dispatch, the view's first element (4 bytes)
+/// in it, whether it is a raw buffer, the count its counter starts at (none: no counter), and
+/// whether it is an append or consume view.
 #[derive(Clone)]
 struct View {
     bytes: Vec<u8>,
+    first: u32,
     raw: bool,
     counter: Option<u32>,
     append: bool,
@@ -72,30 +74,35 @@ fn cases(seed: u64) -> Vec<Case> {
                     raw: true,
                     counter: None,
                     append: false,
+                    first: 0,
                 },
                 View {
                     bytes: words(&[i32::MAX as u32, i32::MIN as u32, 5, 0]),
                     raw: false,
                     counter: None,
                     append: false,
+                    first: 0,
                 },
                 View {
                     bytes: vec![0; 2048],
                     raw: false,
                     counter: Some(0),
                     append: false,
+                    first: 0,
                 },
                 View {
                     bytes: vec![0; 2048],
                     raw: false,
                     counter: Some(0),
                     append: true,
+                    first: 0,
                 },
                 View {
                     bytes: words(&consumed),
                     raw: false,
                     counter: Some(256),
                     append: true,
+                    first: 0,
                 },
             ],
             groups: 4,
@@ -107,6 +114,7 @@ fn cases(seed: u64) -> Vec<Case> {
                 raw: true,
                 counter: None,
                 append: false,
+                first: 0,
             }],
             groups: 2,
         },
@@ -117,10 +125,30 @@ fn cases(seed: u64) -> Vec<Case> {
                 raw: false,
                 counter: Some(32),
                 append: false,
+                first: 0,
             }],
             groups: 1,
         },
     ]
+}
+
+/// The cases with each view moved to a seeded first element past seeded words (a multiple of four
+/// for raw views, which Direct3D places at 16 bytes), so no view starts at a multiple of 256 bytes.
+fn offset_cases(seed: u64) -> Vec<Case> {
+    let mut next = rng(seed ^ 0x5eed);
+    let mut cases = cases(seed);
+    for v in cases.iter_mut().flat_map(|c| c.views.iter_mut()) {
+        let first = 1 + next() % 300;
+        v.first = if v.raw { first * 4 } else { first };
+        if v.first % 64 == 0 {
+            v.first += if v.raw { 4 } else { 1 };
+        }
+        let before: Vec<u32> = (0..v.first).map(|_| next()).collect();
+        let mut bytes = words(&before);
+        bytes.extend_from_slice(&v.bytes);
+        v.bytes = bytes;
+    }
+    cases
 }
 
 /// What a run leaves: each view's bytes and each counter's count.
@@ -169,8 +197,8 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Ran {
             ViewDimension: D3D11_UAV_DIMENSION_BUFFER,
             Anonymous: D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
                 Buffer: D3D11_BUFFER_UAV {
-                    FirstElement: 0,
-                    NumElements: v.bytes.len() as u32 / 4,
+                    FirstElement: v.first,
+                    NumElements: v.bytes.len() as u32 / 4 - v.first,
                     Flags: flags,
                 },
             },
@@ -228,7 +256,11 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Ran {
 /// The same through the WebGPU back end, from fxc's DXBC or dxc's DXIL (whose views are numbered
 /// from u0 without gaps, so a slot is the register on both routes).
 fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertError> {
-    let key = VariantKey::default();
+    let moved = case.views.iter().any(|v| v.first != 0);
+    let mut key = VariantKey::default();
+    if moved {
+        key.flags |= wcontainers_gpu::VariantFlags::STORAGE_OFFSET;
+    }
     let c = match dxil {
         true => convert(
             Source::Dxil(&bytecode(&format!("{}.dxil", case.shader))),
@@ -241,7 +273,37 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertEr
             None,
         )?,
     };
-    assert!(c.reflection.helpers.is_empty());
+    assert!(
+        c.reflection
+            .helpers
+            .iter()
+            .all(|h| matches!(h.value, HelperValue::StorageOffset { .. }))
+    );
+    // Each moved view binds from the largest multiple of the alignment and of the program's element
+    // below its start; the rest goes into the helper block.
+    let alignment = b.caps().limits.min_storage_offset_alignment as u64;
+    let start = |r: &wcontainers_gpu::ReflectedBinding| {
+        let first = 4 * case.views[r.register as usize].first as u64;
+        if r.kind != SlotKind::Storage || r.stride == 0 {
+            return (first, 0);
+        }
+        let step = lcm(alignment, r.stride as u64);
+        let base = first / step * step;
+        (base, first - base)
+    };
+    let mut helper_bytes = vec![0u8; c.reflection.helper_size as usize];
+    for h in &c.reflection.helpers {
+        if let HelperValue::StorageOffset { set, binding } = h.value {
+            let r = c
+                .reflection
+                .bindings
+                .iter()
+                .find(|r| r.set == set && r.binding == binding)
+                .unwrap();
+            let at = h.offset as usize;
+            helper_bytes[at..at + 4].copy_from_slice(&(start(r).1 as u32).to_le_bytes());
+        }
+    }
     let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
     let buffers: Vec<_> = case
         .views
@@ -260,11 +322,14 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertEr
         .map(|r| {
             let slot = r.register as usize;
             let range = match r.kind {
-                SlotKind::Storage => BufferRange {
-                    buffer: &buffers[slot],
-                    offset: 0,
-                    size: case.views[slot].bytes.len() as u64,
-                },
+                SlotKind::Storage => {
+                    let (base, _) = start(r);
+                    BufferRange {
+                        buffer: &buffers[slot],
+                        offset: base,
+                        size: case.views[slot].bytes.len() as u64 - base,
+                    }
+                }
                 SlotKind::Counter => BufferRange {
                     buffer: counters[slot].as_ref().unwrap(),
                     offset: 0,
@@ -283,11 +348,25 @@ fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertEr
         })
         .collect();
     let set = b.create_binding_set(&entries).unwrap();
+    let helper_buffer =
+        (!helper_bytes.is_empty()).then(|| buffer(b, &helper_bytes, BufferUsage::UNIFORM));
+    let helper_set = helper_buffer.as_ref().map(|h| {
+        b.create_binding_set(&[BindingEntry {
+            binding: helper_binding(ShaderStage::Compute),
+            stages: StageSet::COMPUTE,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: h,
+                offset: 0,
+                size: helper_bytes.len() as u64,
+            }),
+        }])
+        .unwrap()
+    });
     let shader = b.create_shader(&c.modules[0]).unwrap();
     let program = b.create_program(&Program::Compute(&shader)).unwrap();
     b.dispatch(&DispatchCall {
         program: &program,
-        bindings: [Some(&set), None, None, None],
+        bindings: [Some(&set), None, None, helper_set.as_ref()],
         immediates: &[],
         groups: DispatchGroups::Direct([case.groups, 1, 1]),
     })
@@ -331,23 +410,45 @@ fn ordered(case: &Case, ran: &mut Ran) {
     if case.shader != "cs_atomics" {
         return;
     }
-    let raw = &mut ran.views[0];
+    let raw = &mut ran.views[0][4 * case.views[0].first as usize..];
     let last = u32::from_le_bytes(raw[2592..2596].try_into().unwrap()) as usize;
     raw[2592..2596].fill(0);
     if 1024 + last < 2048 {
         raw[4 * (1024 + last)..4 * (1024 + last) + 4].copy_from_slice(&1u32.to_le_bytes());
     }
     let n = ran.counters[3].unwrap_or(0).min(512) as usize;
-    let mut appended: Vec<u32> = ran.views[3][..4 * n]
+    let appended_at = 4 * case.views[3].first as usize;
+    let mut appended: Vec<u32> = ran.views[3][appended_at..appended_at + 4 * n]
         .chunks(4)
         .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
         .collect();
     appended.sort_unstable();
-    ran.views[3][..4 * n].copy_from_slice(&words(&appended));
+    ran.views[3][appended_at..appended_at + 4 * n].copy_from_slice(&words(&appended));
+}
+
+fn lcm(a: u64, b: u64) -> u64 {
+    let gcd = |mut a: u64, mut b: u64| {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    };
+    a / gcd(a, b) * b
 }
 
 #[test]
 fn atomics_and_counters_match_direct3d() {
+    compare_compute(cases);
+}
+
+/// The same shaders with every view starting at a seeded element past the start of its buffer,
+/// read through `VariantFlags::STORAGE_OFFSET` (Direct3D's views at any first element).
+#[test]
+fn storage_views_at_any_first_element_match_direct3d() {
+    compare_compute(offset_cases);
+}
+
+fn compare_compute(cases: fn(u64) -> Vec<Case>) {
     let mut backend = webgpu();
     let gpu = d3d11::create(
         wcontainers_graphics_test::Driver::Hardware,
