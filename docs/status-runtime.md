@@ -4,41 +4,18 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 
 ## Where things stand
 
-- J0 (the plan) is written: docs/runtime.md. No crate is built yet.
-- Run 4 of J0 fixed what the third independent check found:
-  - address ceilings (the brief's late section): the container's address-space size is the guest's Linux
-    size, held by the kernel; each way of running has a ceiling, computed by the back end from the output's
-    memory widths and `G::ALIGN` (0xFF00_0000 for ARM64, 0x3FC0_0000 for x86 with today's contract);
-    placement low first, the highest address in use and a counted, warned failure at a crossing are asked of
-    the kernel track; the wider form (table and array in 64 bit memory) is asked of the translator track; the
-    memory widths are in the cache key; a ceiling per process comes with the move (plan sections 7, 8, 12,
-    17, 20). Measured: 2^47 bytes of address room per host process, and the reference's 48 bit layout;
-  - the base: the three translator commits after 84e9a937 named, and why the runtime does not need them;
-  - the fork copy's cost shown on both sides (the first writes after it), and the 2000-copy figure as means;
-  - the instructions-retired run's load as the one reading in its log (88.45);
-  - gimli for the unwind tables and rayon for the back end's own pool in the dependency list;
-  - J1 small: only what hello and busybox need; the stand-in's progress unit, shared blocks and the disk
-    cache moved to J2; J1's check of the move to `drive` covers `turns`, `shell::runs_repeat_for_a_seed` and
-    every verdict of the crate;
-  - the stand-in's counting rule compares with the transferring instruction and carries across turns; the
-    loop counts the kernel's changes of pc on every back end;
-  - translation and compiling run in the back end's own rayon pool, so a save's copy can translate;
-  - the clock hook's interim until the kernel's clock is public; standard input left to the kernel track
-    everywhere; the two kinds of turn named as becoming one; look-aheads named per milestone, bounded N
-    seeded.
-- Next is J1 (plan section 16). Its steps, in order:
-  1. Merge `origin/phase-2-x86` at 84e9a937 into this branch (the J1 task names the merge). A trial with
-     `git merge-tree --write-tree 36d20013 84e9a937` on 2026-11-17 gave no conflicts.
-  2. Create `crates/wcontainers-runtime` and `crates/wcontainers-wasmtime` with the parts plan section 16
-     lists for J1. `memory_duplicate` and the shared block calls answer `NotSupported` until J2.
-  3. Before changing the kernel test crate, save the verdict lines of `cargo test -p wcontainers-kernel-test
-     --no-fail-fast -- --test-threads 3` at the merge commit, and a seeded hello, `turns` and
-     `shell::runs_repeat_for_a_seed` run's output, counters and turn counts, in scratch.
-  4. In crates/wcontainers-kernel-test, as their own commits: the stand-in as `Execution`, `TestHost` as
-     `Outside`, the driver calling `drive` (checked against step 3: the `diff` is empty); then the `runtime`
-     feature and `LOOK_AHEAD`. Say so here, since the kernel track also edits that crate.
-  5. Bar: `cargo test -p wcontainers-kernel-test --features runtime --test hello -- --test-threads 3`, again
-     with `LOOK_AHEAD=none` and `LOOK_AHEAD=bounded`; then `--test hello --test busybox` at full.
+- J0 (the plan) is done: docs/runtime.md. J1 is being built (run 1 of J1, 2026-11-17).
+- First light, 2026-11-17 23:2x: a program ran through both halves for the first time. The static hello
+  passes against the reference with the kernel deciding and the translator's WebAssembly, run by wasmtime,
+  running its instructions, at full, none and bounded look-ahead:
+  `nix develop -c cargo test -j 4 -p wcontainers-kernel-test --features runtime --test hello -- --test-threads 3`
+  (and with `LOOK_AHEAD=none`, `LOOK_AHEAD=bounded` in front). Logs: scratch j1/hello-full-2.log,
+  hello-none.log, hello-bounded.log (load 17.1, 13.2, 13.4).
+- Done in J1 so far: the plan's carried findings fixed (see "Findings of J0's last check" below); the merge
+  of 84e9a937; crates/wcontainers-runtime (`Stepper::step`, `drive`, `Execution`, `Outside`, `Answer`,
+  `Turn`, `Carry`, `Step`, `Ending`); crates/wcontainers-wasmtime (`Compiler`, `CpuSide`); the kernel test
+  crate's driver on `drive` (commit bdf240e1) and its `runtime` feature with `LOOK_AHEAD` (commit 2c219b7f).
+- Next: busybox at full; the whole-suite verdict diff of the driver move; the recorded figures of J1.
 
 ## How to run
 
