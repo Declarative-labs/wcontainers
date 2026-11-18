@@ -86,6 +86,9 @@ pub const CLAMPED_SAMPLER_BINDING: u32 = 16;
 /// The binding in [`HELPER_SET`] of an indirect draw's argument buffer, bound read-only so the program
 /// reads the draw's bases from it ([`DrawBaseSource::Arguments`]).
 pub const DRAW_ARGUMENTS_BINDING: u32 = 11;
+/// The width in texels of the texture a constant buffer is read through
+/// ([`AddedBinding::ConstantsAsTexture`]): the buffer's 16-byte row r is texel (r % width, r / width).
+pub const CONSTANTS_TEXTURE_WIDTH: u32 = 256;
 
 /// The API stage a shader was written for. Geometry, hull and domain shaders become compute and vertex
 /// programs in the shaders crate's stage helper; the others become one program stage each.
@@ -123,12 +126,16 @@ pub struct ReflectedBinding {
 /// the stages of one draw, converted apart, never collide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum AddedBinding {
-    /// Vertex stream n, fetched in the program (a read-only storage buffer).
+    /// The vertex stream feeding the program's input at location n, fetched in the program (a
+    /// read-only storage buffer of u32 words, bound from the stream's offset rounded down to the
+    /// storage offset alignment). Each pulled input has its own, so a stream feeding two inputs is
+    /// bound twice.
     PulledStream(u32),
     /// The constant buffer in the stage's slot n (Direct3D 12: the root signature's constant buffer
     /// range n), read as a read-only storage buffer.
     ConstantsAsStorage(u32),
-    /// The same, read through a texture.
+    /// The same, read through a 2D RGBA32 unsigned integer texture the front copies the buffer into,
+    /// one 16-byte row per texel laid out as [`CONSTANTS_TEXTURE_WIDTH`] says.
     ConstantsAsTexture(u32),
     /// Root constants past the back end's immediate bytes, as a uniform buffer (Direct3D 12).
     SpilledImmediates,
@@ -274,9 +281,14 @@ pub enum HelperValue {
     /// Depth bias added in the program: constant units, slope scale, clamp, and the depth format's
     /// smallest step (four f32).
     DepthBias,
-    /// A vertex stream fetched in the program: byte offset of the first element, stride, and instance
-    /// step rate (zero for per-vertex), three u32.
-    PulledStream { stream: u32 },
+    /// How the program fetches its input at location `input` ([`VariantKey::pulled`]), four u32: the
+    /// byte offset of the input's first element in its binding (the stream's offset remainder plus the
+    /// attribute's offset), the stride, a divisor and a bias. The element read is the vertex index
+    /// when the divisor is zero, otherwise (instance index + bias) / divisor, the instance index
+    /// counting from zero as the common form's does from the first instance: a step rate n takes
+    /// divisor n and bias (n - 1) times the first instance, and a step rate of zero takes divisor one,
+    /// bias zero, stride zero and the first instance's element in the offset.
+    PulledStream { input: u32 },
     /// The sample mask the program writes (u32).
     SampleMask,
     /// Where a packed storage slot's range starts in the packed buffer, in bytes (u32).

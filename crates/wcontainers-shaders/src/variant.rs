@@ -17,6 +17,9 @@ use wcontainers_gpu::{
 
 use crate::ConvertError;
 
+mod constants;
+mod pull;
+
 type Result<T> = core::result::Result<T, ConvertError>;
 
 /// Applies every rewrite of `variant` this crate builds to a converted program.
@@ -28,6 +31,12 @@ pub(crate) fn apply(
 ) -> Result<()> {
     constants_as_storage(module, variant.constants_as_storage, reflection)?;
     let mut outlined = Outlined::default();
+    constants::constants_as_texture(
+        module,
+        variant.constants_as_texture,
+        reflection,
+        &mut outlined,
+    )?;
     if variant.draw_base == DrawBaseSource::Arguments {
         draw_arguments(module, reflection, &mut outlined)?;
     }
@@ -56,6 +65,10 @@ pub(crate) fn apply(
         texture_info(module, stage, reflection, &mut outlined)?;
     }
     outlined.finish(module);
+    if variant.constants_as_texture != 0 {
+        // Drops the pointers into the buffers' old variables, and the variables.
+        naga::compact::compact(module, naga::compact::KeepUnused::No);
+    }
     let flags = variant.flags;
     match stage {
         ShaderStage::Vertex => {
@@ -64,7 +77,8 @@ pub(crate) fn apply(
             let clip = flags.contains(VariantFlags::CLIP_DEPTH_REWRITE);
             let distances = flags.contains(VariantFlags::CLIP_DISTANCE);
             let clamp = flags.contains(VariantFlags::DEPTH_CLAMP);
-            if adjust || flip || clip || distances || clamp {
+            let pulls = !variant.pulled.is_empty();
+            if adjust || flip || clip || distances || clamp || pulls {
                 let viewport = adjust.then(|| {
                     let vec4 = vector(module, 4, Scalar::F32);
                     helper(
@@ -77,6 +91,7 @@ pub(crate) fn apply(
                     )
                 });
                 let mut w = Wrapped::new(module);
+                pull::pulled(module, &mut w, &variant.pulled, reflection)?;
                 let z = position(&mut w, viewport, flip, clip, clamp);
                 if distances || clamp {
                     linked_out(module, &mut w, variant.linked, distances, z)?;
@@ -315,6 +330,7 @@ fn helper_name(value: HelperValue) -> String {
         HelperValue::TextureLevels { texture } => format!("levels_{texture}"),
         HelperValue::TextureSamples { texture } => format!("samples_{texture}"),
         HelperValue::MinLod { texture } => format!("min_lod_{texture}"),
+        HelperValue::PulledStream { input } => format!("stream_{input}"),
         HelperValue::SampleMask => "sample_mask".into(),
         HelperValue::ViewportAdjust => "viewport".into(),
         other => format!("{other:?}").to_lowercase(),
@@ -344,6 +360,8 @@ struct Wrapped {
     /// The original result: one bound value, or a struct of them.
     original: Option<(Handle<Type>, bool)>,
     changed: bool,
+    /// Inputs the prologue computes instead: the argument's index and its value.
+    replaced: Vec<(u32, Handle<Expression>)>,
 }
 
 impl Wrapped {
@@ -421,6 +439,60 @@ impl Wrapped {
             outputs,
             original,
             changed: false,
+            replaced: Vec::new(),
+        }
+    }
+
+    /// The entry point's argument bound at `location` and its type. An input inside a struct is
+    /// refused: neither route makes one for a vertex program.
+    fn input_at(&self, module: &Module, location: u32) -> Result<Option<(u32, Handle<Type>)>> {
+        let at = |b: &Binding| matches!(b, Binding::Location { location: l, .. } if *l == location);
+        for (i, a) in self.f.arguments.iter().enumerate() {
+            if a.binding.as_ref().is_some_and(at) {
+                return Ok(Some((i as u32, a.ty)));
+            }
+            if let TypeInner::Struct { members, .. } = &module.types[a.ty].inner
+                && members.iter().any(|m| m.binding.as_ref().is_some_and(at))
+            {
+                return Err(ConvertError::Unsupported("PulledInputInStruct"));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Passes the wrapped program `value` for argument `argument`, which the entry point then no longer
+    /// takes.
+    fn replace(&mut self, argument: u32, value: Handle<Expression>) {
+        self.replaced.push((argument, value));
+    }
+
+    /// Makes the replaced inputs' values the call's arguments and drops them from the entry point.
+    fn drop_replaced(&mut self) {
+        if self.replaced.is_empty() {
+            return;
+        }
+        if let Statement::Call { arguments, .. } = &mut self.body[self.call_at] {
+            for &(i, value) in &self.replaced {
+                arguments[i as usize] = value;
+            }
+        }
+        let mut removed: Vec<u32> = self.replaced.iter().map(|r| r.0).collect();
+        removed.sort_unstable();
+        let types: Vec<_> = removed
+            .iter()
+            .map(|&i| self.f.arguments[i as usize].ty)
+            .collect();
+        for &i in removed.iter().rev() {
+            self.f.arguments.remove(i as usize);
+        }
+        for (_, e) in self.f.expressions.iter_mut() {
+            if let Expression::FunctionArgument(j) = *e {
+                *e = match removed.binary_search(&j) {
+                    // No longer read: the call takes the computed value.
+                    Ok(k) => Expression::ZeroValue(types[k]),
+                    Err(k) => Expression::FunctionArgument(j - k as u32),
+                };
+            }
         }
     }
 
@@ -462,6 +534,7 @@ impl Wrapped {
     }
 
     fn finish(mut self, module: &mut Module) {
+        self.drop_replaced();
         let prologue = core::mem::take(&mut self.prologue);
         self.body.splice(self.call_at..self.call_at, prologue);
         let f = &mut self.f;

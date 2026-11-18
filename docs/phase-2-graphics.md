@@ -1021,8 +1021,9 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   16); WebGPU's adapters give 8 vertex buffers and 16 to 30 attributes. Streams and attributes beyond the
   back end's limits are fetched by the vertex program from read-only storage buffers by vertex and
   instance index, with the format decoded in the program and bounds checked, so reads past the end give
-  zero as Direct3D says (`VertexPulledInShader`, `VariantKey::pulled`, offset and stride in the helper
-  constants). Exact. WebGL 2 binds a buffer per attribute and GLES 3.0 guarantees 16 attributes, which
+  zero as Direct3D says (`VertexPulledInShader`, `VariantKey::pulled`; each pulled input has its own
+  storage binding and its offset, stride and step in the helper constants, so the program does not
+  depend on how the inputs share streams). Exact. WebGL 2 binds a buffer per attribute and GLES 3.0 guarantees 16 attributes, which
   is 10_0's number, so it never needs this.
 - **Constant buffer slots and sizes.** Direct3D has 14 constant buffers per stage of up to 65536 bytes;
   the helper constants take one more uniform binding. WebGPU gives 12 uniform buffers per stage by
@@ -1030,8 +1031,8 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   buffers, which hold the same 16-byte rows (`ConstantsAsStorage`). Exact. WebGL 2 gives at least 12
   uniform blocks (16 here) of at least 16384 bytes (16384 here): a constant buffer beyond the block
   count, or bound with more bytes than a block holds, is copied on the GPU into a 32-bit RGBA integer
-  texture (`copy_buffer_to_texture`) when it changed since the last copy, and read with `texelFetch`
-  (`ConstantsAsTexture`). Exact. The texture takes a unit; a shader that then needs more units than the
+  texture (`copy_buffer_to_texture`) when it changed since the last copy, row r at texel (r % 256,
+  r / 256) (`CONSTANTS_TEXTURE_WIDTH`), and read with `texelFetch` (`ConstantsAsTexture`). Exact. The texture takes a unit; a shader that then needs more units than the
   back end has is refused (`BindingsBeyondLimit`).
 - **Values between stages.** Direct3D 11 passes 32 four-component registers from the vertex stage to
   the pixel stage (10_0: 16). WebGPU gives 16 by default and 28 here; WebGL 2 at least 15 vectors plus

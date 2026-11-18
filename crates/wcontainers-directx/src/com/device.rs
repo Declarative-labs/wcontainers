@@ -905,7 +905,7 @@ impl Device_Impl {
             return Err(E_INVALIDARG.into());
         }
         self.deferred_allowed()?;
-        let c: ID3D11DeviceContext1 = Context::deferred(self.front.clone(), self.me()).into();
+        let c = super::context::deferred_context(self.front.clone(), self.me());
         out.write(Some(c.into()))
     }
 
@@ -918,9 +918,10 @@ impl Device_Impl {
             return Err(E_INVALIDARG.into());
         }
         self.deferred_allowed()?;
-        out.write(Some(
-            Context::deferred(self.front.clone(), self.me()).into(),
-        ))
+        out.write(Some(super::context::deferred_context(
+            self.front.clone(),
+            self.me(),
+        )))
     }
 
     /// A device made single-threaded has no deferred contexts (`DXGI_ERROR_INVALID_CALL`).

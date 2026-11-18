@@ -133,8 +133,8 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         mirror_once_in_shader: _,
         lod_bias: _,
         constants_as_storage: _,
-        constants_as_texture,
-        pulled,
+        constants_as_texture: _,
+        pulled: _,
         storage_formats,
         texel_buffers,
         storage_packed,
@@ -163,8 +163,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     let asked = [
         (*filter_in_shader != 0, "FilterInShader"),
         (*border_in_shader != 0, "BorderInShader"),
-        (*constants_as_texture != 0, "ConstantsAsTexture"),
-        (!pulled.is_empty(), "VertexPulledInShader"),
         (!storage_formats.is_empty(), "StorageFormats"),
         (
             *texel_buffers != TexelBufferRoute::Native,

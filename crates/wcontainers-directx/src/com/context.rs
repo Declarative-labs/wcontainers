@@ -26,6 +26,58 @@ use super::*;
 const MAP_WITHOUT_INITIAL_DISCARD: windows::core::HRESULT =
     windows::core::HRESULT(0x887C_0004_u32 as i32);
 
+/// A deferred context, whose table refuses `ID3D11Multithread` as Direct3D's deferred contexts do.
+pub(super) fn deferred_context(front: Shared, device: ID3D11Device) -> ID3D11DeviceContext1 {
+    let c: ID3D11DeviceContext1 = Context::deferred(front, device).into();
+    // The object's table of ID3D11DeviceContext1 is ours to point elsewhere.
+    unsafe {
+        let table = c.as_raw() as *mut *const ID3D11DeviceContext1_Vtbl;
+        *table = deferred_table(*table);
+    }
+    c
+}
+
+type QueryInterface = unsafe extern "system" fn(
+    *mut c_void,
+    *const windows::core::GUID,
+    *mut *mut c_void,
+) -> windows::core::HRESULT;
+static QUERY_INTERFACE: std::sync::OnceLock<QueryInterface> = std::sync::OnceLock::new();
+
+/// The context's table with `QueryInterface` refusing `ID3D11Multithread`, made once.
+fn deferred_table(original: *const ID3D11DeviceContext1_Vtbl) -> *const ID3D11DeviceContext1_Vtbl {
+    struct Table(ID3D11DeviceContext1_Vtbl);
+    // SAFETY: a table of function pointers, never written after it is made.
+    unsafe impl Sync for Table {}
+    unsafe impl Send for Table {}
+    static PATCHED: std::sync::OnceLock<Table> = std::sync::OnceLock::new();
+    &PATCHED
+        .get_or_init(|| {
+            // SAFETY: the windows crate's table, copied bit for bit.
+            let mut table = unsafe { std::ptr::read(original) };
+            let unknown = &mut table.base__.base__.base__;
+            let _ = QUERY_INTERFACE.set(unknown.QueryInterface);
+            unknown.QueryInterface = query_deferred;
+            Table(table)
+        })
+        .0
+}
+
+unsafe extern "system" fn query_deferred(
+    this: *mut c_void,
+    iid: *const windows::core::GUID,
+    out: *mut *mut c_void,
+) -> windows::core::HRESULT {
+    if !iid.is_null() && unsafe { *iid } == ID3D11Multithread::IID {
+        if !out.is_null() {
+            unsafe { *out = std::ptr::null_mut() };
+        }
+        return windows::Win32::Foundation::E_NOINTERFACE;
+    }
+    let entry = QUERY_INTERFACE.get().expect("the table was patched");
+    unsafe { entry(this, iid, out) }
+}
+
 /// A call a deferred context recorded, run on the device's front when its command list is
 /// executed (as often as it is executed).
 pub type Command = Box<dyn Fn(&mut Front)>;
@@ -2055,13 +2107,14 @@ impl Context {
             return Err(DXGI_ERROR_INVALID_CALL.into());
         };
         let commands = std::mem::take(&mut *recorded.borrow_mut());
-        let list = CommandList::new(Rc::new(commands), self.child.device().clone());
         self.staged.borrow_mut().clear();
         self.after_list(restore.as_bool());
-        // Without an out pointer the recorded calls are dropped all the same.
+        // Without an out pointer the recorded calls are dropped all the same. A list is made only
+        // to be handed out: its device reference is given back by its last release.
         if out.is_null() {
             return Err(windows::Win32::Foundation::E_UNEXPECTED.into());
         }
+        let list = CommandList::new(Rc::new(commands), self.child.device().clone());
         out.write(Some(list.into()))
     }
 
