@@ -275,6 +275,9 @@ function Run-Program([string]$name, [string]$dir) {
     # is stopped with it).
     $lines = @(if (Test-Path $report) { Get-Content $report })
     $wrong = @(if ($ended -and -not $lines) { "gt-launch wrote no report of the libraries it loaded" })
+    # The forwarding library answers timestamp queries from the frame clock but still asks the
+    # implementation, and says when it gave an error.
+    $wrong += @(($stdout.Result + $stderr.Result) -split "`n" | Where-Object { $_ -match '^d3d11 forward: GetData of a timestamp query failed' } | ForEach-Object { $_.Trim() })
     foreach ($library in $(if ($lines) { $names })) {
         $from = @($lines | Where-Object { $_ -like "$library from *" } | ForEach-Object { ($_ -split ' from ', 2)[1] })
         if (-not $from -or $from -contains 'not loaded') {
