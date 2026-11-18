@@ -263,7 +263,8 @@ pub enum HelperValue {
     /// A sampler's border color (four f32, or four u32 for integer textures).
     BorderColor { sampler: u32 },
     /// A sampler's state, for programs that filter or address in the program: min, mag and mip filter
-    /// and the three address modes as u32 codes, anisotropy (u32), then the level range (two f32).
+    /// and the three address modes as u32 codes (the order of [`crate::Filter`]'s and
+    /// [`crate::AddressMode`]'s variants, from zero), anisotropy (u32), then the level range (two f32).
     SamplerState { sampler: u32 },
     /// The bound view's mip level count (u32), in programs made with [`VariantFlags::TEXTURE_INFO`].
     TextureLevels { texture: u32 },
