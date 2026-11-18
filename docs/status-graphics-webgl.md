@@ -116,8 +116,16 @@ Read after merging (status-graphics-direct3d-11.md at 66e54fa6, status-graphics-
   by name; `POLYGON_MODE_POINT` absent everywhere.
 - `TEXTURE_LEVEL_QUERY` (samplers scene, refused by the front by name): absent, GLSL ES 3.00 has no
   `textureQueryLevels`; fronts bind the `TEXTURE_INFO` variant (plan 4.11).
-- The constants scene ("device lost in the back end, not read"): run in this run, see
-  Measurements, run G3b-1.
+- The constants scene ("device lost in the back end, not read"): read in this run. The front's
+  pixel program declares more uniform blocks than `Limits::uniform_buffers_per_stage` (12 here,
+  Direct3D 11 has 14), and GL refuses the link ("FRAGMENT shader uniform block count exceeds
+  GL_MAX_FRAGMENT_UNIFORM_BUFFERS (12)"). The limit is declared; past it the front binds the
+  shaders track's `constants_as_texture` (`ConstantsAsTexture`), which the front does not use yet
+  (for the Direct3D 11 track). The back end now prints why it lost the device on the host's
+  error output once (`fail`), and two losses that had no message (a write past a buffer's end, an
+  indexed draw without indices) now name the broken rule.
+- The samplers scene: the front refuses it by name (`TEXTURE_LEVEL_QUERY`, below), as the log of
+  this run's scene shows; nothing of this back end runs.
 - An empty `viewports` (shaders track: the interface does not say what it means): the interface
   now says one viewport; this back end loses the device by the interface's rule (`Invalid`, "0
   viewports in one draw") for any other count.
@@ -906,8 +914,9 @@ R11G11B10 filter, render and blend; 32-bit float filter, render and blend (RGB32
 integers render (not RGB32), never filter or blend; depth formats are depth targets, and those
 without stencil also sample. Copy out (read back): R8, RG8 and RGBA8 normalised and RGBA8 sRGB,
 every colour-renderable 8, 16 and 32-bit integer format, and R32F, RG32F and RGBA32F (with
-EXT_color_buffer_float); not packed formats, depth or stencil (since G3b run 1 16-bit floats copy
-out too, through their integer twin). Since run 3, samples:
+EXT_color_buffer_float); not R11G11B10 or RGB9E5 from the GPU, depth or stencil (since G3b run 1
+16-bit floats copy out too, through their integer twin, and the 10-10-10-2 formats in their own
+packing, `UNSIGNED_INT_2_10_10_10_REV`, which GLES 3.0 reads back for them). Since run 3, samples:
 1, 2, 4 and 8 for the colour formats that render and are not integers, and for depth formats (as
 GL reports them on the RTX 3080); integer formats take one.
 No bits yet: the swizzled formats other than BGRA8 (BGRX8, B5G5R5A1, BGRA4), A8, Stencil8. Since
@@ -1247,6 +1256,17 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
     7 of 8, in Chrome 9 of 11 routes (the known two). BC reference 1 of 2 (the known decoded
     route). Unit tests 10 of 10. Scene and rig verdicts as expected. Clippy with warnings denied,
     native and wasm32: clean.
+- The Direct3D 11 front's scenes through its WebGL 2 build (the library built with
+  `--features webgl` over this back end on ANGLE, the rig's references; scenes command as in the
+  Direct3D 11 status, with `git submodule update --init --recursive -q` first in the build;
+  scratch g3b/d3d11-webgl5.log, at ddcb5223 plus the 10-10-10-2 read back): 65 outputs pass, 56
+  fail, 25 absent (feature levels 10_1 and 11_0). The front's run 18 had 43 passing. Now passing
+  that stopped before: mips (every rgba16f, rgba8 and srgb level, largest difference 0) and
+  targets (rgba16f, rgb10a2, r32ui, rgba8). Still stopping, none in this back end: constants (the
+  front past the uniform block limit, above), samplers (`TEXTURE_LEVEL_QUERY` refused by the
+  front), views (`TEXTURE_VIEWS`), raster (polygon mode, absent on mozangle), formats (`E_FAIL`
+  from the front's `CheckFormatSupport`, no back end message), geometry and streamout (no
+  geometry stage at 10_0).
 - Spread of the per-draw cost (G3's check, recorded here): one of the checker's two runs had
   WebGL 2 medians of 10,000 draws three to four times run 18's (6.2 ms against 1.7 to 1.8) while
   its fastest frames matched (1.6 ms); the CPU load just after was 24% against 5% in the run that
@@ -1824,7 +1844,10 @@ G3b, in this order:
    WebGPU track, which makes the same measurement, so both use one replay tool.
 2. `noperspective` inputs: the vertex stage writes the value times w and w beside it, the
    fragment stage divides; needs the pair of stages at link time.
-3. The Direct3D 11 front's WebGL 2 scenes still failing after this run (Measurements, G3b-1).
+3. Read the Direct3D 11 status again after its next runs: the constants scene (uniform block
+   limit), samplers (`TEXTURE_INFO`) and formats are the front's to move; rerun its WebGL 2
+   scenes then. The independent check can run two of them (mips and targets pass) with the
+   command under Measurements, run G3b-1.
 
 After G3b, from G3:
 What is left of G3's pass bar cannot be done in this crate:
