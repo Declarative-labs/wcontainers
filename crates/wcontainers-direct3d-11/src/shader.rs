@@ -100,12 +100,17 @@ pub struct TypedView {
 }
 
 impl TypedView {
-    /// The format the shader's plain program is converted with, the view's kind in 32 bits.
+    /// The format the shader's plain program is converted with, of the view's kind: one 32-bit
+    /// channel for unordered access (which WebGPU reads and writes in one view), four for a typed
+    /// buffer read, so that an empty slot reads zero in every component as Direct3D's does.
     pub fn placeholder(self) -> Format {
-        match self.kind {
-            FormatKind::Uint => Format::R32Uint,
-            FormatKind::Sint => Format::R32Sint,
-            _ => Format::R32Float,
+        match (self.kind, self.storage) {
+            (FormatKind::Uint, true) => Format::R32Uint,
+            (FormatKind::Sint, true) => Format::R32Sint,
+            (_, true) => Format::R32Float,
+            (FormatKind::Uint, false) => Format::Rgba32Uint,
+            (FormatKind::Sint, false) => Format::Rgba32Sint,
+            (_, false) => Format::Rgba32Float,
         }
     }
 }
@@ -606,7 +611,7 @@ mod tests {
         );
         let key = base_key(SourceStage::Compute, &views);
         assert_eq!(key.storage_formats, [(2, Format::R32Uint)]);
-        assert_eq!(key.texel_formats, [(1, Format::R32Float)]);
+        assert_eq!(key.texel_formats, [(1, Format::Rgba32Float)]);
         assert_eq!(key.texel_buffers, TexelBufferRoute::Storage);
         let bound = StageVariant::default().key(
             SourceStage::Compute,

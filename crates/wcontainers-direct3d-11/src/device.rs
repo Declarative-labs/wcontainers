@@ -714,11 +714,9 @@ impl<B: Backend> Device<B> {
                 "mip generation needs shader resource and render target bindings",
             ));
         }
-        if cube
-            && (!d.array_size.is_multiple_of(6) || d.width != d.height || d.dimension != TexDim::D2)
-        {
+        if cube && (d.array_size < 6 || d.width != d.height || d.dimension != TexDim::D2) {
             return Err(Error::InvalidArg(
-                "a cube texture needs square faces in sixes",
+                "a cube texture needs at least six square faces",
             ));
         }
         match d.usage {
@@ -792,7 +790,9 @@ impl<B: Backend> Device<B> {
         init: &[SubresourceData<'_>],
     ) -> Result<Rc<Texture<B>>> {
         let (format, mips) = self.check_texture(d, !init.is_empty())?;
-        let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
+        // The back end's cubes are whole: a cube texture of other layer counts is a 2D array
+        // whose cube views see its first sixes.
+        let cube = d.misc_flags & MISC_TEXTURECUBE != 0 && d.array_size.is_multiple_of(6);
         let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
         for (flag, u) in [
             (bind::SHADER_RESOURCE, TextureUsage::SAMPLE),
@@ -999,7 +999,7 @@ impl<B: Backend> Device<B> {
             dimension: match (t.dimension, arrayed) {
                 (TexDim::D2, false) if multisampled => ViewDim::Texture2DMS,
                 (TexDim::D2, true) if multisampled => ViewDim::Texture2DMSArray,
-                (TexDim::D2, _) if cube && t.array_size == 6 => ViewDim::TextureCube,
+                (TexDim::D2, _) if cube && t.array_size < 12 => ViewDim::TextureCube,
                 (TexDim::D2, _) if cube => ViewDim::TextureCubeArray,
                 (TexDim::D1, false) => ViewDim::Texture1D,
                 (TexDim::D1, true) => ViewDim::Texture1DArray,
@@ -1061,7 +1061,14 @@ impl<B: Backend> Device<B> {
             };
         }
         if v.layer_count == u32::MAX {
+            // A cube array sees the whole cubes left.
             v.layer_count = layers - v.first_layer.min(layers);
+            if v.dimension == ViewDim::TextureCubeArray {
+                v.layer_count -= v.layer_count % 6;
+            }
+        }
+        if v.dimension == ViewDim::TextureCube && desc.is_none() {
+            v.layer_count = 6;
         }
         if v.first_mip + v.mip_count > t.mip_levels
             || v.mip_count == 0
@@ -1089,7 +1096,7 @@ impl<B: Backend> Device<B> {
             ViewDim::TextureCube | ViewDim::TextureCubeArray
         );
         if cube
-            && (!texture.gpu_desc.cube
+            && (t.misc_flags & MISC_TEXTURECUBE == 0
                 || !v.layer_count.is_multiple_of(6)
                 || (v.dimension == ViewDim::TextureCube && v.layer_count != 6))
         {
@@ -1658,6 +1665,11 @@ pub(crate) fn resolvable(format: Format) -> bool {
 fn check_buffer(d: &BufferDesc, has_init: bool) -> Result<()> {
     if d.byte_width == 0 {
         return Err(Error::InvalidArg("a buffer needs a size"));
+    }
+    if d.misc_flags & (MISC_GENERATE_MIPS | MISC_TEXTURECUBE) != 0 {
+        return Err(Error::InvalidArg(
+            "mip generation and cubes are for textures",
+        ));
     }
     if d.bind_flags & bind::CONSTANT_BUFFER != 0 {
         if !d.byte_width.is_multiple_of(16) {

@@ -1977,9 +1977,10 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("a count written past the buffer"));
         }
         self.settle();
+        dst.writes.set(dst.writes.get() + 1);
         self.backend
             .copy_buffer(&c.handle, 0, &dst.handle(), u64::from(offset), 4);
-        Ok(())
+        self.buffer_written(dst)
     }
 
     /// `ClearUnorderedAccessViewUint` (`float` false) and `Float`: buffer views take the first value
@@ -2027,11 +2028,17 @@ impl<B: Backend> Device<B> {
                     );
                 }
                 let integer = matches!(v.format.kind(), FormatKind::Uint | FormatKind::Sint);
-                if integer == float {
+                if integer && float {
                     return not_implemented(
-                        "a clear of an unordered access view converting between float and integer",
+                        "a float clear of an unordered access view of an integer format",
                     );
                 }
+                // A uint clear of a view of floats writes each value's low bits as the channel's.
+                let values = if integer || float {
+                    values
+                } else {
+                    channel_values(v.format, values)?
+                };
                 let r = self.backend.clear_texture(
                     &v.texture.gpu.handle,
                     &v.texture.gpu_desc,
@@ -2532,12 +2539,8 @@ impl<B: Backend> Device<B> {
         bases: [u32; 2],
         args: Option<(&Rc<Buffer<B>>, u32, bool)>,
     ) -> Result<()> {
-        const MAX: usize = 256;
-        let mut blocks = [[0u8; MAX]; 2];
+        let mut blocks = helpers.each_ref().map(|h| vec![0u8; h.size as usize]);
         for (i, (h, stage)) in helpers.iter().zip([VERTEX, PIXEL]).enumerate() {
-            if h.size as usize > MAX {
-                return not_implemented("a helper block larger than 256 bytes");
-            }
             for slot in &h.values {
                 let mut words = [0u32; 9];
                 let n = match slot.value {
@@ -2640,10 +2643,7 @@ impl<B: Backend> Device<B> {
             }
         }
         let samplers: Vec<u64> = merged.iter().map(|m| m.3).collect();
-        let blocks = [
-            &blocks[0][..helpers[0].size as usize],
-            &blocks[1][..helpers[1].size as usize],
-        ];
+        let blocks = [&blocks[0][..], &blocks[1][..]];
         let arguments = args.map_or(0, |(b, ..)| b.gpu.borrow().id);
         if self.helper_blocks.as_ref().is_some_and(|h| {
             h.arguments == arguments
@@ -3871,4 +3871,31 @@ fn uint_element(format: Format, values: [u32; 4]) -> Result<Vec<u8>> {
         at += b;
     }
     Ok(element.to_le_bytes()[..bytes as usize].to_vec())
+}
+
+/// The f32 bits that hold, in each channel of a view of floats in `format`, the low bits of each of
+/// `values`, as `ClearUnorderedAccessViewUint` writes them.
+fn channel_values(format: Format, values: [u32; 4]) -> Result<[u32; 4]> {
+    use Format::*;
+    let unorm =
+        |v: u32, bits: u32| (f64::from(v & ((1 << bits) - 1)) / f64::from((1 << bits) - 1)) as f32;
+    let snorm = |v: u32, bits: u32| {
+        let shift = 32 - bits;
+        let v = ((v << shift) as i32) >> shift;
+        (f64::from(v) / f64::from((1 << (bits - 1)) - 1)).max(-1.0) as f32
+    };
+    let mut out = [0f32; 4];
+    for (c, (o, &v)) in out.iter_mut().zip(&values).enumerate() {
+        *o = match format {
+            R32Float | Rg32Float | Rgba32Float => f32::from_bits(v),
+            R16Float | Rg16Float | Rgba16Float => half::f16::from_bits(v as u16).to_f32(),
+            R8Unorm | Rg8Unorm | Rgba8Unorm => unorm(v, 8),
+            R16Unorm | Rg16Unorm | Rgba16Unorm => unorm(v, 16),
+            R8Snorm | Rg8Snorm | Rgba8Snorm => snorm(v, 8),
+            R16Snorm | Rg16Snorm | Rgba16Snorm => snorm(v, 16),
+            Rgb10a2Unorm => unorm(v, if c == 3 { 2 } else { 10 }),
+            _ => return not_implemented("a uint clear of a view of floats of this format"),
+        };
+    }
+    Ok(out.map(f32::to_bits))
 }
