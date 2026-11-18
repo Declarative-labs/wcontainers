@@ -27,14 +27,21 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   for the progress unit); standard input, output and the terminal (the kernel track builds them on the
   general stream the owner is settling; nothing of input is built here, and `process.terminal` and
   `process.consoleSize` stay refused by name).
-- The kernel test crate changed in J4a only in tests/repeats.rs: added in run 1 (5492ba0a), and in run 2 made
-  to compare the files a container left too (b001897c); each its own commit. The driver did not change.
+- The kernel test crate changed in J4a in tests/repeats.rs: added in run 1 (5492ba0a), and in run 2 made to
+  compare the files a container left too (b001897c); and in run 2 in the driver: `Injections::wall_start`, the
+  wall clock's reading at the start (the machine's clock when none), which repeats.rs gives every run of a
+  seed (87319389). Each its own commit.
 - J4a run 2 (2026-11-18): the five findings of J4a run 1's check are settled (their section below): a dropped
   thread's instances are now given to the next thread given its block (the blocking one). origin/phase-1 had
   nothing new to merge (still 2edbc451). The bar is run again (section "J4a run 2").
 - J4a is complete: its bar passes at full, none and bounded (below). Next: J5 (plan section 16).
 
 ## For the orchestrator
+
+- For the kernel track: threads.rs `priority_inheriting_futexes_match_reference` (guest/futexpi.c) compares our
+  output line by line with one fresh reference run, but the reference's order of the waiters' "woke" and
+  "unlock" lines varies from run to run on one CPU (three orders in 20 runs, J4a run 2; evidence under "J4a
+  run 2"). It failed once in J4a run 2's bar at full for that reason alone.
 
 - Disk: the kernel test crate's file backend helper (crates/wcontainers-kernel-test/src/backend.rs, the
   kernel track's code) writes one image tar of about 8.4 MB per backend into
@@ -101,6 +108,45 @@ the capability sets, the resource limits, no_new_privs, a seccomp filter, sysctl
 leave a default mount out), the domain name, and the per-process values (`oomScoreAdj`, `ioPriority`,
 `scheduler`, `execCPUAffinity`, `personality`, `timeOffsets`); and the address-space size and the memory
 size the guest is told (plan section 8), which `Machine` holds once the kernel takes them.
+
+## J4a run 2 (2026-11-18; this Mac, Apple M5 Max, 18 cores; other tracks running)
+
+- The bar at 1ebe8e4d (full) and f7777000 (none, bounded; the same code with repeats.rs comparing files):
+  full 34 passed (185.7 s with its build, load 62.9 to 39.5; scratch j4/run2-full.log), none 34 passed (152.5 s,
+  load 39.5 to 29.2; run2-none.log), bounded 33 passed and 1 failed (163.9 s, load 29.2 to 26.1;
+  run2-bounded.log): repeats.rs `futexes_repeat_for_a_seed`, seed 2 (bounded 4), the first run's CPU side
+  warnings differed from the second's.
+- The cause: the test host's repeatable wall clock started at the machine's clock (driver.rs
+  `TestHost::repeatable`), and the futexes program (guest/futexes.c:144-149) adds 20 ms to a
+  `CLOCK_REALTIME` reading and carries into the seconds when the nanoseconds pass a second. About one run in
+  fifty takes the carry; the output, kernel warnings, counters and turns are the same either way, but at
+  bounded look-ahead the other branch shows as different code translated at run time (main+0x968 to
+  main+0x9b0 of the program). Scratch j4run2/diffrun.py on the two failures (run2-bounded.log and
+  run2-flake-1.log, the second found by running repeats at bounded four times at f7777000) shows the same
+  place. Not caused by the instance reuse. Fixed in the driver (87319389): `Injections::wall_start`, which
+  repeats.rs reads once per seed and gives every run of it; the clock is an answer from outside, given again,
+  as the brief's logging and feeding back of answers would. Then repeats at bounded, 3 runs per seed, 8 times
+  (the first with the tests' translation cache emptied): all identical (scratch j4/run2-fixed-1.log to -8.log).
+- J4a's bar at 87319389, the code of every change of this run (scratch j4/bars.sh run2final --nocapture):
+  - full: 33 passed, 1 failed (239.8 s with its build, load 49.7 to 44.0; j4/run2final-full.log): threads.rs
+    `priority_inheriting_futexes_match_reference`, seed 1, where the order of the waiters' lines differed from
+    the reference's. Ours was the same run as in every passing run (its CPU side summary: another thread runs
+    17, stop checks 33, 96 translated at run time, as in run2-full.log and the reruns); the reference is run
+    again by every test and varies itself: `docker run --cpuset-cpus=0` of the same futexpi binary 20 times gave
+    three different orders of those lines, 9, 8 and 3 times (load 64.2 to 66.4; j4run2/futexpi-reference.log).
+    The test (the kernel track's) compares line by line with one reference run, so it fails whenever the
+    reference takes another order than ours. Not changed here; for the kernel track (heading "For the
+    orchestrator"). The same test passed in 15 more runs at full of this code: the threads file whole 5 times
+    (run2-threadsfile-full-1 to -5.log, 13 passed each), seed 1 alone 6 times and 4 times with the translation
+    cache emptied first (run2-futexpi-full-*.log, run2-futexpi-cold-full-*.log).
+  - none: 34 passed (322.0 s, load 44.0 to 39.0; run2final-none.log).
+  - bounded: 34 passed (376.2 s, load 39.0 to 46.9; run2final-bounded.log).
+- Repeats at full, 10 runs per seed, seeds 1 to 3 (f7777000): all identical (30.2 s, load 25.1 to 22.7;
+  j4/run2-repeats-full-10.log). Futexes seed 2 at bounded 10 times in one process: identical
+  (run2-futexes-b2-10.log).
+- The threaded program through the surface: full in the owned suite (j4/run2-owned-1.log: 121 passed, J4a run 1's
+  120 and the new unit test, 0 failed, load 29.2 to 76.0); none and bounded 50 pass (run2-threaded-none.log,
+  run2-threaded-bounded.log, load 22 to 25).
 
 ## Findings of J4a run 1's check, and how each was settled (J4a run 2)
 
@@ -1040,6 +1086,12 @@ run). Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `
   -- --test-threads 3 --nocapture` (`SCHEDULE_SEED`, `SCHEDULE_SEEDS` choose the seeds; leave out the feature
   for the stand-in); logged, scratch `j4/repeats.sh NAME LOOK|standin RUNS`.
 - The surface tests at a look-ahead: scratch `j4/surface.sh NAME full|none|bounded`.
+- Reusing a dropped thread's instances: `nix develop -c cargo test -j 4 -p wcontainers-wasmtime --lib --
+  --test-threads 3 a_dropped`. Resident size against thread count through the command line program: scratch
+  `j4run2/many.sh LOOK COUNT...` (copy `target/debug/wcontainers` into j4run2/cli first). The check's CPU clock
+  programs: `j4run2/cli/wcontainers --tar j4run2/with-progs4.tar --look-ahead <l> -- /wc/sleepcpu` (or
+  `/wc/cputhreads`). Repeats at bounded ROUNDS times, the first with the translation cache emptied: scratch
+  `j4run2/flake.sh PREFIX ROUNDS`.
 - J3's surface, refusals, back end and runtime tests (Docker with `alpine:3.22` for linux/arm64):
   `nix develop -c cargo test -j 4 -p wcontainers-runtime -p wcontainers-wasmtime -- --test-threads 3`
   (`--nocapture` prints the two cache runs' times and each refusal's reason). Logged: scratch
