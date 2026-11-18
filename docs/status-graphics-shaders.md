@@ -707,10 +707,10 @@ Run 19 (the built-in programs, the corpus with views):
 Next (in order):
 - Typed buffers from DXIL (naga's SPIR-V reader: `Dim::Buffer` images into the same functions), and
   in geometry shaders (the stage helper fills `TexelBufferView`); the corpora with formats (below).
-- Corpus records: run 17 updated them for geometry, atomics, counters and storage textures (below).
-  Storage textures in the corpora convert only with a format, so under the default key they are
-  refused `StorageFormat` and not compiled in Chrome; give the corpus test the formats the rig's
-  real programs bind, then compile them in Chrome.
+- Corpus: run 19 gave the corpus test one view format per kind (Run 19); shaders whose views mix
+  kinds are still refused `StorageFormatKind`/`TypedBufferFormatKind` there (10 games, 4 own, 1 rig).
+  To convert them too, the corpus needs each slot's kind: record the formats the rig's real
+  programs bind (an API trace) or read each declaration's type from the bytecode in the test.
 - The WebAssembly build's module differs from the native one for one game shader (Known gaps):
   find which side orders the divide-modulo helper's operations by platform (dxbc-spirv's IR as
   serialised, compared between the two builds, first) and make it deterministic.
@@ -742,8 +742,8 @@ Next (in order):
   clear by a copy from a filled buffer where `storage_clear_value` refuses. Its rectangles (Direct3D
   12) are boxes of the same program.
 - The real programs' shaders (every converted one compiles in Chrome since run 10): their named
-  failures worked down: render target array index 47, storage images 39 DXBC and 38 DXIL (no format), typed
-  buffers 21 and 19, register spaces 10.
+  failures worked down: render target array index 50, storage images and typed buffers from DXIL
+  (naga's SPIR-V reader), DXBC views of mixed kinds 9 (above), register spaces 10.
 - The cache in a front: G4 and G5 call `convert_cached` and `record_combination`; the browser host
   keeps the bytes in the origin private file system. Building ahead from `combinations` at start.
 - Older items, still open:
