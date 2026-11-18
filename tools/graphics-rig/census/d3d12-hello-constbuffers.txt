@@ -1,0 +1,72 @@
+# program D3D12HelloConstBuffers.exe
+# frames 120
+# counted factory as IDXGIFactory7
+# counted command-list as ID3D12GraphicsCommandList10
+# counted command-list as ID3D12GraphicsCommandList10
+# counted command-list as ID3D12GraphicsCommandList10
+# counted command-list as ID3D12GraphicsCommandList10
+# counted d3d12-device as ID3D12Device14
+# counted command-queue as ID3D12CommandQueue
+# counted swap-chain as IDXGISwapChain4
+# counted command-list as ID3D12GraphicsCommandList10
+# counted command-list as ID3D12GraphicsCommandList10
+# counted immediate-context and deferred-context through 0 wrapped contexts
+# not forwarded, so absent from this library: d3d12.dll D3D12DeviceRemovedExtendedData (data)
+d3d12-device Evict 119
+d3d12-device AddRef 49
+d3d12-device Release 31
+d3d12-device QueryInterface 28
+d3d12-device CheckFeatureSupport 5
+d3d12-device CreateCommandSignature 5
+d3d12-device CreateCommandAllocator 4
+d3d12-device CreatePlacedResource 3
+d3d12-device MakeResident 3
+d3d12-device CreateCommandList 2
+d3d12-device CreateDescriptorHeap 2
+d3d12-device CreateRenderTargetView 2
+d3d12-device GetCustomHeapProperties 2
+d3d12-device CreateCommandQueue 1
+d3d12-device CreateConstantBufferView 1
+d3d12-device CreateGraphicsPipelineState 1
+d3d12-device CreateHeap1 1
+d3d12-device CreateRootSignature 1
+d3d12-device GetDescriptorHandleIncrementSize 1
+d3d12-device GetPrivateData 1
+command-queue QueryInterface 720
+command-queue AddRef 719
+command-queue Release 713
+command-queue ExecuteCommandLists 239
+command-queue Signal 239
+command-queue Wait 235
+command-queue GetDesc 2
+command-queue GetDevice 1
+command-list ResourceBarrier 478
+command-list Close 476
+command-list Reset 476
+command-list QueryInterface 258
+command-list ClearRenderTargetView 239
+command-list OMSetRenderTargets 239
+command-list SetDescriptorHeaps 239
+command-list DrawInstanced 119
+command-list IASetPrimitiveTopology 119
+command-list IASetVertexBuffers 119
+command-list RSSetScissorRects 119
+command-list RSSetViewports 119
+command-list SetGraphicsRootDescriptorTable 119
+command-list SetGraphicsRootSignature 119
+command-list AddRef 26
+command-list Release 24
+command-list SetName 1
+command-list SetPrivateData 1
+swap-chain GetCurrentBackBufferIndex 359
+swap-chain Present 120
+swap-chain AddRef 3
+swap-chain Release 3
+swap-chain GetBuffer 2
+swap-chain QueryInterface 2
+factory AddRef 9
+factory Release 8
+factory CreateSwapChainForHwnd 1
+factory MakeWindowAssociation 1
+d3d12.dll D3D12CreateDevice 2
+d3d12.dll D3D12SerializeVersionedRootSignature 1

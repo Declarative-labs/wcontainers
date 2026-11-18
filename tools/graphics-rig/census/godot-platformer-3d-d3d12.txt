@@ -1,0 +1,107 @@
+# program Godot_v4.7.2-stable_win64.exe
+# frames 120
+# counted factory as IDXGIFactory7
+# counted command-list as ID3D12GraphicsCommandList6
+# counted command-list as ID3D12GraphicsCommandList6
+# counted command-list as ID3D12GraphicsCommandList6
+# counted command-list as ID3D12GraphicsCommandList6
+# counted d3d12-device as ID3D12Device8
+# counted command-queue as ID3D12CommandQueue
+# counted swap-chain as IDXGISwapChain4
+# counted immediate-context and deferred-context through 0 wrapped contexts
+# not forwarded, so absent from this library: d3d12.dll D3D12DeviceRemovedExtendedData (data)
+d3d12-device CheckFeatureSupport 6888
+d3d12-device AddRef 2531
+d3d12-device CreateShaderResourceView 1626
+d3d12-device Release 1429
+d3d12-device CreateCommittedResource 668
+d3d12-device CreateUnorderedAccessView 472
+d3d12-device CreateRootSignature 358
+d3d12-device QueryInterface 294
+d3d12-device CopyDescriptorsSimple 289
+d3d12-device CreatePipelineLibrary 262
+d3d12-device GetResourceAllocationInfo 143
+d3d12-device CreateRenderTargetView 142
+d3d12-device Evict 119
+d3d12-device CreateConstantBufferView 114
+d3d12-device EnqueueMakeResident 80
+d3d12-device CheckDriverMatchingIdentifier 63
+d3d12-device CreateSampler 51
+d3d12-device MakeResident 41
+d3d12-device CreateDepthStencilView 24
+d3d12-device CreateCommandAllocator 8
+d3d12-device GetDescriptorHandleIncrementSize 8
+d3d12-device CreateCommandList1 7
+d3d12-device CreateCommandList 6
+d3d12-device CreateCommandSignature 5
+d3d12-device CreateDescriptorHeap 5
+d3d12-device CreatePlacedResource 4
+d3d12-device CreateCommandQueue 3
+d3d12-device CreateQueryHeap 3
+d3d12-device GetDeviceRemovedReason 2
+d3d12-device CreateHeap1 1
+d3d12-device GetPrivateData 1
+command-queue AddRef 724
+command-queue QueryInterface 722
+command-queue Release 716
+command-queue Signal 374
+command-queue ExecuteCommandLists 372
+command-queue Wait 355
+command-queue GetDesc 2
+command-queue GetDevice 1
+command-queue GetTimestampFrequency 1
+command-list SetGraphicsRootDescriptorTable 33325
+command-list SetGraphicsRoot32BitConstants 25934
+command-list DrawIndexedInstanced 25653
+command-list IASetVertexBuffers 10057
+command-list ResourceBarrier 10025
+command-list IASetIndexBuffer 9408
+command-list SetComputeRootDescriptorTable 6124
+command-list CopyBufferRegion 3149
+command-list SetPipelineState 2932
+command-list Dispatch 2126
+command-list SetComputeRoot32BitConstants 2124
+command-list SetGraphicsRootSignature 1907
+command-list SetGraphicsRootShaderResourceView 1377
+command-list OMSetRenderTargets 1259
+command-list RSSetScissorRects 1259
+command-list RSSetViewports 1259
+command-list CopyTextureRegion 1152
+command-list SetComputeRootSignature 453
+command-list ClearRenderTargetView 391
+command-list Close 377
+command-list Reset 372
+command-list ClearUnorderedAccessViewUint 286
+command-list ClearDepthStencilView 285
+command-list DrawInstanced 281
+command-list SetDescriptorHeaps 240
+command-list IASetPrimitiveTopology 239
+command-list OMSetBlendFactor 239
+command-list OMSetDepthBounds 239
+command-list OMSetStencilRef 239
+command-list QueryInterface 134
+command-list ResolveSubresource 119
+command-list AddRef 27
+command-list Release 11
+command-list ClearUnorderedAccessViewFloat 3
+command-list DiscardResource 1
+command-list SetName 1
+command-list SetPrivateData 1
+swap-chain GetCurrentBackBufferIndex 358
+swap-chain Present 120
+swap-chain AddRef 3
+swap-chain GetBuffer 3
+swap-chain Release 3
+swap-chain QueryInterface 2
+swap-chain GetDesc1 1
+swap-chain SetColorSpace1 1
+factory AddRef 10
+factory Release 7
+factory IsCurrent 3
+factory CreateSwapChainForHwnd 1
+factory EnumAdapters1 1
+factory MakeWindowAssociation 1
+d3d12.dll D3D12CreateRootSignatureDeserializer 358
+d3d12.dll D3D12SerializeVersionedRootSignature 358
+d3d12.dll D3D12CreateDevice 1
+d3d12.dll D3D12GetInterface 1
