@@ -2368,14 +2368,7 @@ fn aspects(format: wcontainers_gpu::Format) -> (bool, bool) {
 
 /// Whether the DXBC container `code` holds a part named `fourcc`.
 fn container_has(code: &[u8], fourcc: [u8; 4]) -> bool {
-    let word = |at: usize| {
-        code.get(at..at + 4)
-            .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
-    };
-    (0..word(28)).any(|i| {
-        code.get(word(32 + i * 4)..)
-            .is_some_and(|p| p.starts_with(&fourcc))
-    })
+    crate::dxbc::chunk(code, fourcc).is_some()
 }
 
 /// The interface format of a DXGI format a view or target names.
