@@ -357,21 +357,128 @@ fn results(module: &ShaderModule) -> impl Iterator<Item = (naga::Binding, u32)> 
     })
 }
 
-/// The features a shader's outputs need: clip and cull distances, point sizes, and a second
-/// fragment output for blending.
+/// The entry point's input bindings.
+fn arguments(module: &ShaderModule) -> impl Iterator<Item = naga::Binding> + '_ {
+    let m = &module.module;
+    m.entry_points
+        .iter()
+        .filter(|e| e.name == module.entry_point)
+        .flat_map(|e| &e.function.arguments)
+        .flat_map(move |a| {
+            let fields = match &m.types[a.ty].inner {
+                naga::TypeInner::Struct { members, .. } if a.binding.is_none() => &members[..],
+                _ => &[],
+            };
+            a.binding
+                .clone()
+                .into_iter()
+                .chain(fields.iter().filter_map(|f| f.binding.clone()))
+        })
+}
+
+/// The features a shader needs that a back end may lack, read from its inputs and outputs, the
+/// globals its entry point uses, its types and its expressions. Storage that a fragment program only
+/// reads is named by `FRAGMENT_STORAGE_WRITE`, as binding sets name it: the interface has no bit of
+/// its own for it.
 pub fn needs(module: &ShaderModule) -> Features {
-    use naga::{Binding, BuiltIn};
-    results(module).fold(Features::empty(), |f, (b, _)| {
-        f | match b {
+    use naga::{
+        AddressSpace, Binding, BuiltIn, Expression, ImageClass, ImageQuery, Sampling, ScalarKind,
+        StorageAccess, TypeInner,
+    };
+    let m = &module.module;
+    let vertex = module.stage == ShaderStage::Vertex;
+    let storage = |access: StorageAccess| match (vertex, access.contains(StorageAccess::STORE)) {
+        (true, false) => Features::VERTEX_STORAGE_READ,
+        (true, true) => Features::VERTEX_STORAGE_WRITE,
+        (false, _) => Features::FRAGMENT_STORAGE_WRITE,
+    };
+    let mut f = Features::empty();
+    for b in results(module).map(|(b, _)| b).chain(arguments(module)) {
+        f |= match b {
             Binding::BuiltIn(BuiltIn::ClipDistances) => Features::CLIP_DISTANCE,
             Binding::BuiltIn(BuiltIn::CullDistance) => Features::CULL_DISTANCE,
             Binding::BuiltIn(BuiltIn::PointSize) => Features::POINT_SIZE,
+            Binding::BuiltIn(BuiltIn::SampleIndex | BuiltIn::SampleMask) => {
+                Features::SAMPLE_SHADING
+            }
+            Binding::BuiltIn(BuiltIn::PrimitiveIndex) => Features::PRIMITIVE_INDEX,
+            Binding::BuiltIn(
+                BuiltIn::NumSubgroups
+                | BuiltIn::SubgroupId
+                | BuiltIn::SubgroupSize
+                | BuiltIn::SubgroupInvocationId,
+            ) => Features::SUBGROUPS,
             Binding::Location {
                 blend_src: Some(1), ..
             } => Features::DUAL_SOURCE_BLEND,
+            Binding::Location {
+                sampling: Some(Sampling::Sample),
+                ..
+            } => Features::SAMPLE_SHADING,
             _ => Features::empty(),
+        };
+    }
+    let entry = m
+        .entry_points
+        .iter()
+        .position(|e| e.name == module.entry_point);
+    if let Some(i) = entry {
+        let used = module.info.get_entry_point(i);
+        for (h, var) in m.global_variables.iter() {
+            if used[h].is_empty() {
+                continue;
+            }
+            if let AddressSpace::Storage { access } = var.space {
+                f |= storage(access);
+            }
+            f |= match &m.types[var.ty].inner {
+                TypeInner::Image { class, .. } => match *class {
+                    ImageClass::Sampled { multi: true, .. } | ImageClass::Depth { multi: true } => {
+                        Features::MULTISAMPLE_READ
+                    }
+                    ImageClass::Storage { access, .. } => storage(access),
+                    _ => Features::empty(),
+                },
+                TypeInner::BindingArray { .. } => Features::RESOURCE_TABLES,
+                _ => Features::empty(),
+            };
         }
-    })
+    }
+    // Scalar widths, from the declared types and from each expression's type (naga keeps the
+    // types of most expressions out of the module's arena).
+    let width = |inner: &TypeInner| match *inner {
+        TypeInner::Scalar(s)
+        | TypeInner::Vector { scalar: s, .. }
+        | TypeInner::Matrix { scalar: s, .. }
+        | TypeInner::Atomic(s) => match (s.kind, s.width) {
+            (ScalarKind::Float, 2) => Features::SHADER_F16,
+            (ScalarKind::Float, 8) => Features::SHADER_F64,
+            (ScalarKind::Sint | ScalarKind::Uint, 8) => Features::SHADER_I64,
+            _ => Features::empty(),
+        },
+        _ => Features::empty(),
+    };
+    for (_, t) in m.types.iter() {
+        f |= width(&t.inner);
+    }
+    let functions = m.functions.iter().map(|(h, func)| (func, &module.info[h]));
+    let entry = entry.map(|i| (&m.entry_points[i].function, module.info.get_entry_point(i)));
+    for (func, info) in functions.chain(entry) {
+        for (h, e) in func.expressions.iter() {
+            f |= width(info[h].ty.inner_with(&m.types));
+            f |= match e {
+                Expression::ImageQuery {
+                    query: ImageQuery::NumLevels | ImageQuery::NumSamples,
+                    ..
+                } => Features::TEXTURE_LEVEL_QUERY,
+                Expression::SubgroupBallotResult | Expression::SubgroupOperationResult { .. } => {
+                    Features::SUBGROUPS
+                }
+                _ => Features::empty(),
+            };
+        }
+    }
+    f
 }
 
 /// Turns each `textureSize(t, l)` into a shift of the hidden uniform `t_size`, the size of the bound

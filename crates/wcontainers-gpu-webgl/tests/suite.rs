@@ -153,210 +153,236 @@ wcontainers_gpu_test::suite!(Angle);
 
 #[path = "../examples/common/checks.rs"]
 mod checks;
+
+/// Runs a check of checks.rs with the patterns' seed from `WEBGL_SEED` (default 0) and as many
+/// seeds from it as `WEBGL_CASES` says (default 1).
+fn sampled(check: fn()) {
+    let var = |name, default| std::env::var(name).map_or(default, |v| v.parse().expect(name));
+    checks::seeded(check, var("WEBGL_SEED", 0), var("WEBGL_CASES", 1));
+    let absent = checks::take_not_run();
+    if !absent.is_empty() {
+        println!("not run: {absent:?} absent");
+    }
+}
 #[path = "../examples/common/kit.rs"]
 mod kit;
 
 #[test]
 fn vertex_and_instance_numbers_include_the_bases() {
-    checks::vertex_and_instance_numbers_include_the_bases::<Angle>();
+    sampled(checks::vertex_and_instance_numbers_include_the_bases::<Angle>);
 }
 
 #[test]
 fn discard_then_no_overwrite_writes() {
-    checks::discard_then_no_overwrite_writes::<Angle>();
+    sampled(checks::discard_then_no_overwrite_writes::<Angle>);
 }
 
 #[test]
 fn depth_and_stencil_read_back() {
-    checks::depth_and_stencil_read_back::<Angle>();
+    sampled(checks::depth_and_stencil_read_back::<Angle>);
 }
 
 #[test]
 fn stencil_sampled_and_read_back() {
-    checks::stencil_sampled_and_read_back::<Angle>();
+    sampled(checks::stencil_sampled_and_read_back::<Angle>);
 }
 
 #[test]
 fn copies_within_a_typeless_group() {
-    checks::copies_within_a_typeless_group::<Angle>();
+    sampled(checks::copies_within_a_typeless_group::<Angle>);
+}
+
+#[test]
+fn cube_faces_copied_between_typeless_formats() {
+    sampled(checks::cube_faces_copied_between_typeless_formats::<Angle>);
+}
+
+#[test]
+fn copies_within_one_subresource() {
+    sampled(checks::copies_within_one_subresource::<Angle>);
 }
 
 #[test]
 fn depth_and_stencil_written_read_back_as_written() {
-    checks::depth_and_stencil_written_read_back_as_written::<Angle>();
+    sampled(checks::depth_and_stencil_written_read_back_as_written::<Angle>);
 }
 
 #[test]
 fn copies_between_depth_and_colour_formats() {
-    checks::copies_between_depth_and_colour_formats::<Angle>();
+    sampled(checks::copies_between_depth_and_colour_formats::<Angle>);
 }
 
 #[test]
 fn copies_between_index_and_data_buffers() {
-    checks::copies_between_index_and_data_buffers::<Angle>();
+    sampled(checks::copies_between_index_and_data_buffers::<Angle>);
 }
 
 #[test]
 fn loads_count_levels_from_the_view() {
-    checks::loads_count_levels_from_the_view::<Angle>();
+    sampled(checks::loads_count_levels_from_the_view::<Angle>);
 }
 
 #[test]
 fn fractional_viewports_are_refused() {
-    checks::fractional_viewports_are_refused::<Angle>();
+    sampled(checks::fractional_viewports_are_refused::<Angle>);
 }
 
 #[test]
 fn viewports_past_their_bounds_are_refused() {
-    checks::viewports_past_their_bounds_are_refused::<Angle>();
+    sampled(checks::viewports_past_their_bounds_are_refused::<Angle>);
 }
 
 #[test]
 fn immediates_reach_both_stages() {
-    checks::immediates_reach_both_stages::<Angle>();
+    sampled(checks::immediates_reach_both_stages::<Angle>);
 }
 
 #[test]
 fn packed_vertex_formats_are_converted() {
-    checks::packed_vertex_formats_are_converted::<Angle>();
+    sampled(checks::packed_vertex_formats_are_converted::<Angle>);
 }
 
 #[test]
 fn timestamps_and_their_disjoint_flag() {
-    checks::timestamps_and_their_disjoint_flag::<Angle>();
+    sampled(checks::timestamps_and_their_disjoint_flag::<Angle>);
 }
 
 #[test]
 fn multisampled_copies_resolve_as_their_source() {
-    checks::multisampled_copies_resolve_as_their_source::<Angle>();
+    sampled(checks::multisampled_copies_resolve_as_their_source::<Angle>);
 }
 
 #[test]
 fn fractional_depth_bias() {
-    checks::fractional_depth_bias::<Angle>();
+    sampled(checks::fractional_depth_bias::<Angle>);
 }
 
 #[test]
 fn constant_alpha_blends() {
-    checks::constant_alpha_blends::<Angle>();
+    sampled(checks::constant_alpha_blends::<Angle>);
 }
 
 #[test]
 fn vertices_captured_with_and_without_rasterising() {
-    checks::vertices_captured_with_and_without_rasterising::<Angle>();
+    sampled(checks::vertices_captured_with_and_without_rasterising::<Angle>);
 }
 
 #[test]
 fn block_compressed_and_shared_exponent_textures_read_back_as_written() {
-    checks::block_compressed_and_shared_exponent_textures_read_back_as_written::<Angle>();
+    sampled(checks::block_compressed_and_shared_exponent_textures_read_back_as_written::<Angle>);
 }
 
 #[test]
 fn fragment_depth_follows_the_clip_convention() {
-    checks::fragment_depth_follows_the_clip_convention::<Angle>();
+    sampled(checks::fragment_depth_follows_the_clip_convention::<Angle>);
 }
 
 #[test]
 fn captured_indices_drawn_both_ways() {
-    checks::captured_indices_drawn_both_ways::<Angle>();
+    sampled(checks::captured_indices_drawn_both_ways::<Angle>);
 }
 
 #[test]
 fn strips_fans_loops_and_indexed_draws_captured_in_list_order() {
-    checks::strips_fans_loops_and_indexed_draws_captured_in_list_order::<Angle>();
+    sampled(checks::strips_fans_loops_and_indexed_draws_captured_in_list_order::<Angle>);
 }
 
 #[test]
 fn absent_features_are_refused() {
-    checks::absent_features_are_refused::<Angle>();
+    sampled(checks::absent_features_are_refused::<Angle>);
 }
 
 #[test]
 fn copies_into_and_out_of_host_kept_textures() {
-    checks::copies_into_and_out_of_host_kept_textures::<Angle>();
+    sampled(checks::copies_into_and_out_of_host_kept_textures::<Angle>);
 }
 
 #[test]
 fn srgb_views_of_block_compressed_textures() {
-    checks::srgb_views_of_block_compressed_textures::<Angle>();
+    sampled(checks::srgb_views_of_block_compressed_textures::<Angle>);
 }
 
 #[test]
 fn bgra_textures_keep_their_byte_order() {
-    checks::bgra_textures_keep_their_byte_order::<Angle>();
+    sampled(checks::bgra_textures_keep_their_byte_order::<Angle>);
 }
 
 #[test]
 fn sampled_views_are_whole_textures_of_one_mip_range() {
-    checks::sampled_views_are_whole_textures_of_one_mip_range::<Angle>();
+    sampled(checks::sampled_views_are_whole_textures_of_one_mip_range::<Angle>);
 }
 
 #[test]
 fn generate_mipmap_equals_the_draws() {
-    checks::generate_mipmap_equals_the_draws::<Angle>();
+    sampled(checks::generate_mipmap_equals_the_draws::<Angle>);
 }
 
 #[test]
 fn sixteen_bit_normalised_formats_follow_their_extension() {
-    checks::sixteen_bit_normalised_formats_follow_their_extension::<Angle>();
+    sampled(checks::sixteen_bit_normalised_formats_follow_their_extension::<Angle>);
 }
 
 #[test]
 fn bgra_surfaces_present() {
-    checks::bgra_surfaces_present::<Angle>();
+    sampled(checks::bgra_surfaces_present::<Angle>);
 }
 
 #[test]
 fn signed_normalised_formats_follow_their_extension() {
-    checks::signed_normalised_formats_follow_their_extension::<Angle>();
+    sampled(checks::signed_normalised_formats_follow_their_extension::<Angle>);
 }
 
 #[test]
 fn levels_stay_as_written_while_others_are_read_and_drawn() {
-    checks::levels_stay_as_written_while_others_are_read_and_drawn::<Angle>();
+    sampled(checks::levels_stay_as_written_while_others_are_read_and_drawn::<Angle>);
 }
 
 #[test]
 fn passes_without_attachments_rasterise() {
-    checks::passes_without_attachments_rasterise::<Angle>();
+    sampled(checks::passes_without_attachments_rasterise::<Angle>);
 }
 
 #[test]
 fn independent_blends_per_target() {
-    checks::independent_blends_per_target::<Angle>();
+    sampled(checks::independent_blends_per_target::<Angle>);
 }
 
 #[test]
 fn second_source_blends() {
-    checks::second_source_blends::<Angle>();
+    sampled(checks::second_source_blends::<Angle>);
 }
 
 #[test]
 fn depth_clamped_to_the_viewport_range() {
-    checks::depth_clamped_to_the_viewport_range::<Angle>();
+    sampled(checks::depth_clamped_to_the_viewport_range::<Angle>);
 }
 
 #[test]
 fn depth_bias_clamped() {
-    checks::depth_bias_clamped::<Angle>();
+    sampled(checks::depth_bias_clamped::<Angle>);
 }
 
 #[test]
 fn polygons_filled_with_lines() {
-    checks::polygons_filled_with_lines::<Angle>();
+    sampled(checks::polygons_filled_with_lines::<Angle>);
 }
 
 #[test]
 fn mirror_once_addressing() {
-    checks::mirror_once_addressing::<Angle>();
+    sampled(checks::mirror_once_addressing::<Angle>);
 }
 
 #[test]
 fn clip_and_cull_distances() {
-    checks::clip_and_cull_distances::<Angle>();
+    sampled(checks::clip_and_cull_distances::<Angle>);
 }
 
 #[test]
 fn points_sized_by_the_program() {
-    checks::points_sized_by_the_program::<Angle>();
+    sampled(checks::points_sized_by_the_program::<Angle>);
+}
+
+#[test]
+fn broken_rules_lose_the_device() {
+    sampled(checks::broken_rules_lose_the_device::<Angle>);
 }

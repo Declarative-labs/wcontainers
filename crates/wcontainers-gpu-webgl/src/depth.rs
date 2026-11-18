@@ -26,6 +26,21 @@ void main() {
 }
 ";
 
+/// The direction from a cube's centre to the centre of texel `t` of face `at.z` (GL's face order
+/// and texel axes), for programs sampling a cube `src` towards a texel.
+pub const TOWARDS: &str = "vec3 towards(ivec2 t) {
+    vec2 c = (vec2(t) + 0.5) / float(textureSize(src, 0).x) * 2.0 - 1.0;
+    switch (at.z) {
+        case 0: return vec3(1.0, -c.y, -c.x);
+        case 1: return vec3(-1.0, -c.y, c.x);
+        case 2: return vec3(c.x, 1.0, c.y);
+        case 3: return vec3(c.x, -1.0, -c.y);
+        case 4: return vec3(c.x, -c.y, 1.0);
+        default: return vec3(-c.x, -c.y, -1.0);
+    }
+}
+";
+
 /// The shape of a source texture: 2D, 2D array (`at.z` the layer) or cube (`at.z` the face).
 #[derive(Clone, Copy, Debug)]
 pub enum Shape {
@@ -65,25 +80,17 @@ uniform highp {sampler} src;
 uniform ivec3 at;
 uniform uint scale;
 out highp uvec4 o;
-// The direction from a cube's centre to the centre of texel `t` of face `at.z` (GL's face order
-// and texel axes).
-vec3 towards(ivec2 t) {{
-    vec2 c = (vec2(t) + 0.5) / float(textureSize(src, 0).x) * 2.0 - 1.0;
-    switch (at.z) {{
-        case 0: return vec3(1.0, -c.y, -c.x);
-        case 1: return vec3(-1.0, -c.y, c.x);
-        case 2: return vec3(c.x, 1.0, c.y);
-        case 3: return vec3(c.x, -1.0, -c.y);
-        case 4: return vec3(c.x, -c.y, 1.0);
-        default: return vec3(-c.x, -c.y, -1.0);
-    }}
-}}
-void main() {{
+{towards}void main() {{
     ivec2 p = ivec2(gl_FragCoord.xy) + at.xy;
     {fetch}
     o = uvec4({value}, 0u, 0u, 0u);
 }}
 ",
+        towards = if matches!(shape, Shape::Cube) {
+            TOWARDS
+        } else {
+            ""
+        },
         fetch = if stencil {
             String::new()
         } else {

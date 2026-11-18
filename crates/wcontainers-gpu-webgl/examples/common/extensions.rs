@@ -142,7 +142,7 @@ struct Sources {
 pub fn independent_blends_per_target<H: Host>() {
     let mut b = H::make();
     if !b.caps().has(Features::INDEPENDENT_BLEND) {
-        return;
+        return super::not_run(Features::INDEPENDENT_BLEND);
     }
     let k = Kit::new(&mut b);
     let p = program_of(
@@ -202,7 +202,7 @@ pub fn independent_blends_per_target<H: Host>() {
 pub fn second_source_blends<H: Host>() {
     let mut b = H::make();
     if !b.caps().has(Features::DUAL_SOURCE_BLEND) {
-        return;
+        return super::not_run(Features::DUAL_SOURCE_BLEND);
     }
     let k = Kit::new(&mut b);
     let p = program_of(
@@ -319,7 +319,7 @@ fn stored_depth<B: Backend>(
 pub fn depth_clamped_to_the_viewport_range<H: Host>() {
     let mut b = H::make();
     if !b.caps().has(Features::DEPTH_CLAMP) {
-        return;
+        return super::not_run(Features::DEPTH_CLAMP);
     }
     let k = Kit::new(&mut b);
     let p = at_depth(&mut b);
@@ -340,7 +340,7 @@ pub fn depth_clamped_to_the_viewport_range<H: Host>() {
 pub fn depth_bias_clamped<H: Host>() {
     let mut b = H::make();
     if !b.caps().has(Features::DEPTH_BIAS_CLAMP) {
-        return;
+        return super::not_run(Features::DEPTH_BIAS_CLAMP);
     }
     let k = Kit::new(&mut b);
     let p = at_depth(&mut b);
@@ -380,7 +380,7 @@ const TRIANGLE: &str = "
 pub fn polygons_filled_with_lines<H: Host>() {
     let mut b = H::make();
     if !b.caps().has(Features::POLYGON_MODE) {
-        return;
+        return super::not_run(Features::POLYGON_MODE);
     }
     let k = Kit::new(&mut b);
     let p = kit::program(&mut b, TRIANGLE, "vs", "fs");
@@ -443,7 +443,7 @@ const MIRROR: &str = "
 pub fn mirror_once_addressing<H: Host>() {
     let mut b = H::make();
     if !b.caps().has(Features::MIRROR_ONCE) {
-        return;
+        return super::not_run(Features::MIRROR_ONCE);
     }
     let k = Kit::new(&mut b);
     let p = kit::program(&mut b, MIRROR, "vs", "fs");
@@ -614,7 +614,12 @@ pub fn clip_and_cull_distances<H: Host>() {
             "clipped after: {got:?}"
         );
     }
-    if b.caps().has(Features::CULL_DISTANCE) {
+    if !b.caps().has(Features::CLIP_DISTANCE) {
+        super::not_run(Features::CLIP_DISTANCE);
+    }
+    if !b.caps().has(Features::CULL_DISTANCE) {
+        super::not_run(Features::CULL_DISTANCE);
+    } else {
         let mut m = naga::front::wgsl::parse_str(CULLED).expect("the WGSL parses");
         // WGSL has no cull distances: the clip distance member becomes one.
         let out = m
@@ -658,7 +663,7 @@ struct Out {
 pub fn points_sized_by_the_program<H: Host>() {
     let mut b = H::make();
     if !b.caps().has(Features::POINT_SIZE) {
-        return;
+        return super::not_run(Features::POINT_SIZE);
     }
     assert!(b.caps().limits.max_point_size >= 6.0);
     let k = Kit::new(&mut b);
@@ -706,5 +711,36 @@ pub fn points_sized_by_the_program<H: Host>() {
                 "{drawn:?}"
             );
         }
+    }
+}
+
+/// Draws and clears that break the interface's rules lose the device instead of drawing something
+/// else: no viewport, two viewports, front and back stencil references that differ without
+/// `STENCIL_PER_FACE`, and a buffer clear whose pattern is not 1, 2, 4, 8 or 16 bytes long.
+pub fn broken_rules_lose_the_device<H: Host>() {
+    for case in 0..4 {
+        let mut b = H::make();
+        if case == 3 {
+            let buffer = super::buffer(&mut b, BufferUsage::VERTEX, &[0; 24]);
+            b.clear_buffer(&buffer, 0, 24, &[1, 2, 3]);
+        } else {
+            let k = Kit::new(&mut b);
+            let (_t, v) = rgba(&mut b, 8, 8);
+            let p = kit::program(&mut b, TRIANGLE, "vs", "fs");
+            let viewports = [kit::viewport(0.0, 0.0, 8.0, 8.0); 2];
+            let n = [0, 2, 1][case];
+            let mut call = kit::call(&k, &p, None, &viewports[..n], Topology::TriangleList, 3);
+            if case == 2 {
+                call.stencil_reference = [1, 2];
+            }
+            b.begin_pass(&kit::pass(&v, [0; 4], None));
+            b.draw(&call);
+            b.end_pass();
+        }
+        assert_eq!(
+            b.status(),
+            DeviceStatus::Lost(LossReason::Error),
+            "case {case}"
+        );
     }
 }
