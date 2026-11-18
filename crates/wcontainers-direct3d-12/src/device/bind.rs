@@ -478,7 +478,7 @@ impl<B: Backend> Device<B> {
                 "a constant buffer view past its buffer's end",
             ));
         }
-        self.upload(id);
+        self.upload(id)?;
         self.note(id, false);
         Ok(Held::Uniform(self.buffer(id)?.0.clone(), offset, size))
     }
@@ -538,7 +538,12 @@ impl<B: Backend> Device<B> {
         if offset + size > self.resources[id.0 as usize].desc.width.next_multiple_of(4) {
             return Err(Error::Invalid("a buffer view past its buffer's end"));
         }
-        self.upload(id);
+        if writable && self.resources[id.0 as usize].heap == HeapType::Shared {
+            return Err(Error::NotImplemented(
+                "unordered access buffers in a custom heap the CPU sees",
+            ));
+        }
+        self.upload(id)?;
         self.note(id, writable);
         Ok(Held::Storage {
             buffer: self.buffer(id)?.0.clone(),
@@ -672,13 +677,59 @@ impl<B: Backend> Device<B> {
         Ok(s)
     }
 
-    /// Writes an upload buffer's memory to the GPU, once per `ExecuteCommandLists`.
-    pub(super) fn upload(&mut self, id: ResourceId) {
-        if self.uploaded.contains(&id) {
-            return;
+    /// Writes an upload or shared buffer's memory to the GPU, once per `ExecuteCommandLists`. Of a
+    /// shared buffer, the bytes GPU work wrote and the program has not got yet are left out (the
+    /// GPU's copy is newer); those another buffer over the same memory got are waited for first.
+    pub(super) fn upload(&mut self, id: ResourceId) -> Result<(), Error> {
+        let Some(Resource {
+            heap,
+            storage: Storage::Buffer {
+                host: Some(host), ..
+            },
+            ..
+        }) = self.resources.get(id.0 as usize)
+        else {
+            return Ok(());
+        };
+        if !heap.uploads() || self.uploaded.contains(&id) {
+            return Ok(());
         }
-        if let Some(Resource {
-            heap: HeapType::Upload,
+        let mut skip = Vec::new();
+        if *heap == HeapType::Shared {
+            let (memory, at, len) = (host.memory.clone(), host.offset, host.len);
+            let mut wait = Vec::new();
+            for (i, r) in self.reads.iter().enumerate() {
+                let Some(Resource {
+                    storage: Storage::Buffer { host: Some(h), .. },
+                    ..
+                }) = self.resources.get(r.resource.0 as usize)
+                else {
+                    continue;
+                };
+                let start = h.offset + r.offset;
+                let (start, end) = (start.max(at), (start + r.size).min(at + len));
+                if !Rc::ptr_eq(&h.memory, &memory) || start >= end {
+                    continue;
+                }
+                if r.resource == id {
+                    skip.push((start - at, end - at));
+                } else if r.submission.is_some() {
+                    wait.push(i);
+                } else {
+                    return Err(Error::NotImplemented(
+                        "a shared buffer read after an overlapping one was written in the same submission",
+                    ));
+                }
+            }
+            if !wait.is_empty() {
+                self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+            }
+            for (k, i) in wait.into_iter().enumerate() {
+                self.finish_read(i - k);
+            }
+            skip.sort_unstable();
+        }
+        let Some(Resource {
             storage:
                 Storage::Buffer {
                     buffer,
@@ -686,11 +737,24 @@ impl<B: Backend> Device<B> {
                 },
             ..
         }) = self.resources.get_mut(id.0 as usize)
-        {
-            self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
-            self.backend
-                .write_buffer(buffer, 0, host.bytes(), WriteMode::NoOverwrite);
-            self.uploaded.push(id);
+        else {
+            return Ok(());
+        };
+        self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
+        let bytes = host.bytes();
+        let mut from = 0;
+        for (start, end) in skip.into_iter().chain([(bytes.len(), bytes.len())]) {
+            if start > from {
+                self.backend.write_buffer(
+                    buffer,
+                    from as u64,
+                    &bytes[from..start],
+                    WriteMode::NoOverwrite,
+                );
+            }
+            from = from.max(end);
         }
+        self.uploaded.push(id);
+        Ok(())
     }
 }

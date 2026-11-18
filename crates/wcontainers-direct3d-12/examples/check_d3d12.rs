@@ -184,6 +184,8 @@ fn compare_features(real: &str, ours: &str, verbose: bool) -> bool {
                 _ => rule == "info",
             },
             _ if rule == "info" => true,
+            // Ours answered what real refused.
+            _ if o == "ok" => false,
             // Ours refused what real answered.
             (Some(_), None) => true,
             _ if o == "notimpl" => true,
@@ -398,6 +400,59 @@ fn answers() -> windows::core::Result<String> {
         let r = unsafe { factory.CreateSwapChainForHwnd(&queue, window, &desc, None, None) };
         line(&format!("alpha_{name}"), code(r.map(drop)));
     }
+    // Each scaling, on a window whose client area differs from the buffers; the HDR metadata calls.
+    for (name, scaling) in [
+        ("none", DXGI_SCALING_NONE),
+        ("aspect", DXGI_SCALING_ASPECT_RATIO_STRETCH),
+        ("unknown", DXGI_SCALING(7)),
+    ] {
+        let desc = DXGI_SWAP_CHAIN_DESC1 {
+            Scaling: scaling,
+            ..chain_desc(DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_ALPHA_MODE_UNSPECIFIED)
+        };
+        match unsafe { factory.CreateSwapChainForHwnd(&queue, window, &desc, None, None) } {
+            Ok(chain) => {
+                line(&format!("scaling_{name}"), HRESULT(0));
+                line(&format!("scaling_{name}_present"), unsafe {
+                    chain.Present(0, DXGI_PRESENT(0))
+                });
+            }
+            Err(e) => line(&format!("scaling_{name}"), e.code()),
+        }
+    }
+    let desc = chain_desc(DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_ALPHA_MODE_UNSPECIFIED);
+    if let Ok(chain) = unsafe { factory.CreateSwapChainForHwnd(&queue, window, &desc, None, None) }
+        .and_then(|c| windows::core::Interface::cast::<IDXGISwapChain4>(&c))
+    {
+        let hdr10 = DXGI_HDR_METADATA_HDR10::default();
+        let size = std::mem::size_of_val(&hdr10) as u32;
+        let p: *const std::ffi::c_void = std::ptr::from_ref(&hdr10).cast();
+        for (name, kind, size, data) in [
+            ("none", DXGI_HDR_METADATA_TYPE_NONE, 0, None),
+            ("hdr10", DXGI_HDR_METADATA_TYPE_HDR10, size, Some(p)),
+            (
+                "hdr10_short",
+                DXGI_HDR_METADATA_TYPE_HDR10,
+                size - 2,
+                Some(p),
+            ),
+            ("hdr10_null", DXGI_HDR_METADATA_TYPE_HDR10, size, None),
+            ("unknown", DXGI_HDR_METADATA_TYPE(9), 0, None),
+        ] {
+            line(
+                &format!("hdr_metadata_{name}"),
+                // The raw call, to pass sizes the wrapper's slice cannot.
+                unsafe {
+                    (windows::core::Interface::vtable(&chain).SetHDRMetaData)(
+                        windows::core::Interface::as_raw(&chain),
+                        kind,
+                        size,
+                        data.unwrap_or(std::ptr::null()),
+                    )
+                },
+            );
+        }
+    }
     let desc = chain_desc(DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_ALPHA_MODE_UNSPECIFIED);
     match unsafe { factory.CreateSwapChainForHwnd(&queue, window, &desc, None, None) } {
         Ok(chain) => {
@@ -464,6 +519,55 @@ fn answers() -> windows::core::Result<String> {
             )
         };
         line(&format!("heap_flag_{:#x}", 1 << bit), code(result));
+    }
+    // Buffers in custom heaps the CPU sees, plain and for unordered access.
+    for (name, page, flags) in [
+        (
+            "write_back",
+            D3D12_CPU_PAGE_PROPERTY_WRITE_BACK,
+            D3D12_RESOURCE_FLAG_NONE,
+        ),
+        (
+            "write_combine",
+            D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE,
+            D3D12_RESOURCE_FLAG_NONE,
+        ),
+        (
+            "write_back_uav",
+            D3D12_CPU_PAGE_PROPERTY_WRITE_BACK,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        ),
+    ] {
+        let mut r: Option<ID3D12Resource> = None;
+        let result = unsafe {
+            device.CreateCommittedResource(
+                &D3D12_HEAP_PROPERTIES {
+                    Type: D3D12_HEAP_TYPE_CUSTOM,
+                    CPUPageProperty: page,
+                    MemoryPoolPreference: D3D12_MEMORY_POOL_L0,
+                    ..Default::default()
+                },
+                D3D12_HEAP_FLAG_NONE,
+                &D3D12_RESOURCE_DESC {
+                    Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                    Width: 65536,
+                    Height: 1,
+                    DepthOrArraySize: 1,
+                    MipLevels: 1,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                    Flags: flags,
+                    ..Default::default()
+                },
+                D3D12_RESOURCE_STATE_COMMON,
+                None,
+                &mut r,
+            )
+        };
+        line(&format!("custom_buffer_{name}"), code(result));
     }
     Ok(out)
 }

@@ -26,9 +26,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 impl<B: Backend> Device<B> {
     /// Writes the upload buffer at a GPU virtual address to the GPU, for vertex and index buffers
     /// that only arguments read back name.
-    fn upload_at(&mut self, address: u64) {
-        if let Some((id, _)) = self.addresses.find(address) {
-            self.upload(id);
+    fn upload_at(&mut self, address: u64) -> Result<(), Error> {
+        match self.addresses.find(address) {
+            Some((id, _)) => self.upload(id),
+            None => Ok(()),
         }
     }
 
@@ -50,6 +51,8 @@ impl<B: Backend> Device<B> {
         {
             return Ok(host.bytes()[offset as usize..(offset + size) as usize].to_vec());
         }
+        // A shared buffer's bytes reach the GPU before the work reading them.
+        self.upload(id)?;
         let buffer = self.buffer(id)?.0.clone();
         let scratch = self.scratch(size, BufferUsage::COPY_DST | BufferUsage::READ_BACK)?;
         self.backend
@@ -154,14 +157,14 @@ impl<B: Backend> Replay<B> {
         if !on_gpu {
             return self.read_back_indirect(d, s, max, args, args_offset, count, span);
         }
-        d.upload(args);
+        d.upload(args)?;
         let source = d.buffer(args)?.0.clone();
         let (buffer, offset, own) = match count {
             None => (source, args_offset, false),
             Some((c, count_offset)) => {
                 self.settle(d)?;
                 d.backend.slow_paths().hit(SlowPath::IndirectCountExpanded);
-                d.upload(c);
+                d.upload(c)?;
                 let counts = d.buffer(c)?.0.clone();
                 let counts_size = width(d, c)?.next_multiple_of(4);
                 let scratch = d.scratch(
@@ -265,7 +268,7 @@ impl<B: Backend> Replay<B> {
                     )?,
                     IndirectArgument::Dispatch => self.dispatch(d, [w(0), w(1), w(2)], None)?,
                     IndirectArgument::VertexBuffer { slot } => {
-                        d.upload_at(address());
+                        d.upload_at(address())?;
                         self.run(
                             d,
                             &Command::VertexBuffers {
@@ -279,7 +282,7 @@ impl<B: Backend> Replay<B> {
                         )?
                     }
                     IndirectArgument::IndexBuffer => {
-                        d.upload_at(address());
+                        d.upload_at(address())?;
                         self.run(
                             d,
                             &Command::IndexBuffer(Some(IndexBufferView {
