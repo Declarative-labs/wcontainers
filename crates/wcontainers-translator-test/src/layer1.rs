@@ -13,6 +13,11 @@ fn memory<G: GuestTest>() -> u64 {
     CODE + G::CODE_SPAN
 }
 
+/// The code region around the instruction, which holds the guest's filler.
+fn code_area<G: GuestTest>() -> std::ops::Range<u64> {
+    CODE - G::CODE_SPAN..CODE + G::CODE_SPAN
+}
+
 /// The data area, the code region and what each allows.
 fn regions<G: GuestTest>() -> [(std::ops::Range<u64>, Permissions); 3] {
     [
@@ -21,10 +26,7 @@ fn regions<G: GuestTest>() -> [(std::ops::Range<u64>, Permissions); 3] {
             Permissions::READ | Permissions::WRITE,
         ),
         (DATA + DATA_WRITABLE..DATA + DATA_BYTES, Permissions::READ),
-        (
-            CODE - G::CODE_SPAN..CODE + G::CODE_SPAN,
-            Permissions::READ | Permissions::EXECUTE,
-        ),
+        (code_area::<G>(), Permissions::READ | Permissions::EXECUTE),
     ]
 }
 
@@ -88,8 +90,11 @@ pub fn translated<G: GuestTest>(case: &Case) -> Outcome {
     }
     // Fresh memory is already zero.
     if G::FILLER != 0 {
-        let span = 2 * G::CODE_SPAN as usize;
-        machine.write(CODE - G::CODE_SPAN, &vec![G::FILLER; span]);
+        let area = code_area::<G>();
+        machine.write(
+            area.start,
+            &vec![G::FILLER; (area.end - area.start) as usize],
+        );
     }
     machine.write(DATA, &start_data(case));
     let code = case.code.code();
@@ -143,6 +148,7 @@ fn translated_in_one_page<G: GuestTest>(cases: &[Case]) -> Vec<Outcome> {
         CODE,
         memory::<G>(),
         &regions::<G>(),
+        code_area::<G>(),
         std::slice::from_ref(&(DATA..DATA + DATA_BYTES)),
         &states,
     )

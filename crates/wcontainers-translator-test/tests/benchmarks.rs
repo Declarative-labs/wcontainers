@@ -101,7 +101,7 @@ fn size<G: GuestTest>(blob: &Blob) {
             LookAhead::Full,
             optimise(),
             wcontainers_translator_test::runner::probe::<G>(),
-            G::DEFAULT_OFFER,
+            G::Offer::default(),
         )
         .unwrap();
         let translating = start.elapsed();

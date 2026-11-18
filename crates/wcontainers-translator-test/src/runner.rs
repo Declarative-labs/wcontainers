@@ -506,7 +506,7 @@ impl<G: GuestTest> Machine<G> {
             LookAhead::Full,
             host.optimise,
             host.facts,
-            G::DEFAULT_OFFER,
+            G::Offer::default(),
             module_bytes,
         )
         .expect("translate");
@@ -1239,7 +1239,7 @@ fn translate_load<G: GuestTest>(
         look_ahead,
         optimise,
         host.facts,
-        G::DEFAULT_OFFER,
+        G::Offer::default(),
         omit,
     )
     .expect("translate");

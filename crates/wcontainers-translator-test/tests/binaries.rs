@@ -65,7 +65,7 @@ fn translated<G: GuestTest>(binary: &Binary, optimise: Optimise) -> Translation 
         LookAhead::Full,
         optimise,
         probe::<G>(),
-        G::DEFAULT_OFFER,
+        G::Offer::default(),
     )
     .expect("translate")
 }

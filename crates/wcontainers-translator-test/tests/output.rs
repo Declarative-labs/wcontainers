@@ -87,7 +87,7 @@ fn bench<G: GuestTest>(out: &mut String) {
                         look_ahead,
                         optimise,
                         host,
-                        G::DEFAULT_OFFER,
+                        G::Offer::default(),
                     )
                     .unwrap();
                     lines(
@@ -128,7 +128,7 @@ fn binary<G: GuestTest>(out: &mut String, name: &str) {
                         look_ahead,
                         optimise,
                         host,
-                        G::DEFAULT_OFFER,
+                        G::Offer::default(),
                     )
                     .unwrap();
                     lines(

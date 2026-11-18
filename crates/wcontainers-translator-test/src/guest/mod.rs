@@ -32,8 +32,6 @@ pub trait GuestTest: Guest + Personality<Block: PartialEq + core::fmt::Debug> {
     /// One instruction as text for failure messages.
     fn disassemble(code: &[u8]) -> String;
 
-    /// What the CPU offers unless a test says otherwise.
-    const DEFAULT_OFFER: Self::Offer;
     /// Every answer the probe module can give, so a test can translate for hosts other than this one.
     const PROBE_ANSWERS: &'static [i32];
     /// The features the CPU offers, by name, and those a program is told of (decoded from what it reads,

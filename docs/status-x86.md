@@ -30,7 +30,8 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   test files (`programs.rs`, `benchmarks.rs`, `output.rs`, `binaries.rs`, `machine-code`) once over `G`
   (see "X2, run 4"). Run 5 (the same day) fixed what the independent check of X2 found (see "X2, run 5").
   Run 6 (2026-11-18) fixed what the second check of X2 found (see "X2, run 6"). Run 7 (the same day) fixed
-  what the third check found (see "X2, run 7").
+  what the third check found (see "X2, run 7"). Run 8 (the same day) fixed what the fourth found (see "X2,
+  run 8").
   Not built, proposed for X3: the recorded reference results and layer 1 batching of plan 7.3.
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
@@ -46,7 +47,7 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
 
 ## X2: what comes next
 
-1. The fourth independent check of X2.
+1. The fifth independent check of X2.
 2. Plan 7.3's recorded reference results and layer 1 batching, proposed for X3 (see "Departures"); build them
    at X2 only if the orchestrator rules so. The plan's text now says they are not built.
 3. For X3: `presented`, `REFERENCE_HAS` and layer 1's rule for an `Err` case (plan 7.2 "As built"). For X4:
@@ -1381,14 +1382,27 @@ X2 (each also written into the plan's text in the same commit):
 - ARM64's blobs go through the wire to one long-lived container per runner, not a container per blob.
 - `GuestTest` as built differs from plan 7.2's listing where building showed it must (plan 7.2, "As built
   at X2"): the names group is `REFERENCE: Target`; `Form` is `Clone`; `cases(form)` takes no offer
-  (`DEFAULT_OFFER` until X8); `no_form(seed)` gives whole cases; `hand_cases()` stands for `designed` and
+  (the offer's default until X8: the interface's `Offer` is `Default`, run 8); `no_form(seed)` gives whole cases; `hand_cases()` stands for `designed` and
   also holds the hand-made compared cases; `reconcile` stands for `may_differ` (a mask cannot say "equal to
   the start" or "the reference's stored bytes do not count"); `track`, `PC_FIELD`, `SP_FIELD`,
   `GENERAL_FIELDS` and `NAME` added.
 - ARM64's four hand-made layer 1 tests (alignment faults, vector registers, the step instructions' edges,
   designed answers) are one test, `hand_cases_do_what_they_must_arm64`, over the same 105 cases.
-- A Chrome instruction case carries `MAX_LENGTH` bytes, the instruction then the filler (ARM64: the 4-byte
-  word, as before).
+- A Chrome instruction case carries its length (a byte), then `MAX_LENGTH` bytes, the instruction then the
+  filler (ARM64: the 4-byte word, as before). The page translates the instruction's own bytes, its lookup
+  covers the instruction's address alone, and it fills the code area with the filler once a page from the
+  page's `fill` setting when the filler is not 0 (the plan had the fill sent with the settings but did not
+  say the page fills once, nor that the lookup and the translated bytes must match wasmtime's). So Chrome holds what wasmtime and the CPU hold (run 8; before it, x86 cases that fall through
+  would have run the padding's `int3`).
+- Layer 3's check that a blob's signal ending is the program's own runs the ordinary executable on the
+  guest's reference through the transport (a new wire record, `RECORD_PROGRAM`), not `docker run` on the
+  Mac, which for x86 would have been Docker's emulation (run 8). The program starts under the blob's name
+  with no environment (Docker's had its path and a shell's environment) and ends at the blob's 20-second
+  limit by SIGALRM, status 142 (was `timeout -s KILL`, 137); a blob that does not end in time is never
+  compared, so no comparison changes.
+- `GuestTest::DEFAULT_OFFER` is gone: the interface's `Offer` is `Default`, its default what the CPU claims
+  when the container asks for nothing more, and the tests and the browser glue use `G::Offer::default()`
+  (the browser glue passed ARM64's `()` itself; run 8).
 - The gcc image of layer 3 is per guest (`wc-x86-gcc-arm64`, built for the guest's Docker platform), so it no
   longer shares `wc-translator-gcc` with the translator track.
 - The browser translator exports `initial_block(pc, sp)` (plan 7.2 had the contract carry offsets), so the

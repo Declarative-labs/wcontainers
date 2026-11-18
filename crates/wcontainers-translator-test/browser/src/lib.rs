@@ -11,7 +11,9 @@ use wcontainers_arm64::Arm64 as G;
 compile_error!("name the guest with a feature: arm64");
 use wcontainers_guest_cpu::{GUEST_REASONS, Guest, HookBody, HookDone, HookType, Personality};
 use wcontainers_translator::contract;
-use wcontainers_translator::{LookAhead, Omit, Optimise, translate_in_modules, translate_omitting};
+use wcontainers_translator::{
+    Error, LookAhead, Omit, Optimise, Translation, translate_in_modules, translate_omitting,
+};
 
 thread_local! {
     static INPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -76,21 +78,17 @@ pub extern "C" fn translate(
     };
     let host = G::host_from_probe(probe);
     let code = code_start..code_end;
-    let result = INPUT.with_borrow(|blob| match module_bytes {
-        0 => translate_omitting::<G>(blob, code, &[start], look_ahead, optimise, host, (), omit),
-        _ => {
-            let module_bytes = module_bytes as usize;
-            translate_in_modules::<G>(
-                blob,
-                code,
-                &[start],
-                look_ahead,
-                optimise,
-                host,
-                (),
-                module_bytes,
-            )
-        }
+    let result = INPUT.with_borrow(|blob| {
+        translate_for::<G>(
+            blob,
+            code,
+            start,
+            look_ahead,
+            optimise,
+            host,
+            omit,
+            module_bytes,
+        )
     });
     match result {
         Ok(translation) => {
@@ -100,6 +98,44 @@ pub extern "C" fn translate(
             answer(first)
         }
         Err(_) => -1,
+    }
+}
+
+/// Translate for guest `C` as [`translate`] says, with what the CPU claims when the container asks for nothing
+/// more.
+#[allow(clippy::too_many_arguments)]
+fn translate_for<C: Guest>(
+    blob: &[u8],
+    code: core::ops::Range<u64>,
+    start: u64,
+    look_ahead: LookAhead,
+    optimise: Optimise,
+    host: C::Host,
+    omit: Omit,
+    module_bytes: u32,
+) -> Result<Translation, Error> {
+    let offer = C::Offer::default();
+    match module_bytes {
+        0 => translate_omitting::<C>(
+            blob,
+            code,
+            &[start],
+            look_ahead,
+            optimise,
+            host,
+            offer,
+            omit,
+        ),
+        _ => translate_in_modules::<C>(
+            blob,
+            code,
+            &[start],
+            look_ahead,
+            optimise,
+            host,
+            offer,
+            module_bytes as usize,
+        ),
     }
 }
 

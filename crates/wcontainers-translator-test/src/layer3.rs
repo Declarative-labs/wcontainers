@@ -3,7 +3,9 @@
 //! position independent code, run on Linux and through the translator at none and full.
 
 use crate::guest::GuestTest;
-use crate::programs::{Blob, Ran, flatten, native, out_directory, source_directory, unique, zig};
+use crate::programs::{
+    Blob, Ran, flatten, native, native_program, out_directory, source_directory, unique, zig,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -133,8 +135,8 @@ pub fn build<G: GuestTest>(
     blob
 }
 
-/// Build a C file as an ordinary static Linux executable and run it on Linux for at most 20 seconds, so a
-/// blob's fault can be told to be the program's own.
+/// Build a C file as an ordinary static Linux executable and run it on the reference, so a blob's fault can
+/// be told to be the program's own.
 pub fn ordinary<G: GuestTest>(
     source: &Path,
     compiler: Compiler,
@@ -142,26 +144,9 @@ pub fn ordinary<G: GuestTest>(
     position: Position,
 ) -> Ran {
     let (elf, ..) = compile::<G>(source, compiler, optimisation, position, false);
-    let output = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "--platform"])
-        .arg(G::REFERENCE.docker_platform)
-        .arg("--name")
-        .arg(crate::reference::container_name("ordinary"))
-        .arg("-v")
-        .arg(format!("{}:/o:ro", out_directory().display()))
-        .args(["alpine:latest", "sh", "-c"])
-        .arg(format!(
-            "timeout -s KILL 20 /o/{}",
-            elf.file_name().unwrap().to_str().unwrap()
-        ))
-        .output()
-        .expect("run docker");
+    let executable = std::fs::read(&elf).unwrap();
     std::fs::remove_file(&elf).unwrap();
-    Ran {
-        stdout: output.stdout,
-        stderr: output.stderr,
-        status: output.status.code().expect("an exit status"),
-    }
+    native_program::<G>(&executable)
 }
 
 /// Compile and link a C file, for a flat blob (with `flat.ld`) or as an ordinary executable. Gives the ELF
@@ -252,6 +237,6 @@ fn compile<G: GuestTest>(
 /// The native run, or `None` when the program does not end in time (Csmith's programs may not).
 pub fn native_in_time<G: GuestTest>(blob: &Blob) -> Option<Ran> {
     let ran = native::<G>(blob);
-    // The reference's own limit: SIGALRM, as Docker reports it.
+    // The reference's own limit: SIGALRM, as 128 plus its number.
     (ran.status != 128 + 14).then_some(ran)
 }

@@ -190,7 +190,8 @@ fn run_in_chrome<G: GuestTest>(
             .collect()
     };
     let stopped = &result["stopped"];
-    // Docker reports a process killed by a signal as 128 plus the signal's number.
+    // A process killed by a signal is reported as a shell does, 128 plus Linux's number of the signal each
+    // stop raises (the same numbers on every guest).
     let status = match stopped["kind"].as_str() {
         // Linux reports the low 8 bits of the status.
         Some("finished") => stopped["status"].as_i64().unwrap() as i32 & 0xff,
@@ -342,12 +343,15 @@ pub struct StateRun {
 }
 
 /// Run instruction cases one after another in one Chrome page at look-ahead none, each instruction at `code`
-/// in a memory of `memory_bytes` with these regions, ending at a system call or where control lands. Each
-/// instruction goes as the longest the guest has, the rest of it the code area's filler.
+/// in a memory of `memory_bytes` with these regions and `code_area` holding the guest's filler, ending at a
+/// system call or where control lands. The lookup covers the instruction's address only, and the translator
+/// is given the instruction's own bytes, as in wasmtime. Each instruction goes as its length, then as the
+/// longest the guest has, the rest of it the filler.
 pub fn cases<G: crate::guest::GuestTest>(
     code: u64,
     memory_bytes: u64,
     regions: &[(std::ops::Range<u64>, wcontainers_abi::Permissions)],
+    code_area: std::ops::Range<u64>,
     places: &[std::ops::Range<u64>],
     cases: &[StateCase],
 ) -> Vec<StateRun> {
@@ -364,6 +368,7 @@ pub fn cases<G: crate::guest::GuestTest>(
     std::fs::write(directory.join("stack.bin"), []).unwrap();
     let mut bytes = Vec::new();
     for case in cases {
+        bytes.push(case.code.length);
         bytes.extend(padded(&case.code));
         bytes.extend(&case.state);
         for place in &case.places {
@@ -384,6 +389,7 @@ pub fn cases<G: crate::guest::GuestTest>(
         "load": code,
         "memoryBytes": memory_bytes,
         "regions": regions,
+        "fill": [code_area.start, code_area.end, G::FILLER],
         "sp": 0,
         "lookAhead": 0,
         "repeat": 0,

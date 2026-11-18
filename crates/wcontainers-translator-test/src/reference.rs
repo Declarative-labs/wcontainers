@@ -388,8 +388,22 @@ impl Reference {
         record.extend_from_slice(&(blob.stdin.len() as u32).to_le_bytes());
         record.extend_from_slice(blob.stdin);
         record.extend_from_slice(blob.bytes);
-        let (status, result) = self.request(&record)?;
-        assert_eq!(status, RESULT_RAN, "a blob's result status");
+        self.ran(&record)
+    }
+
+    /// Run an ordinary static executable as Linux starts a program, under a blob's name with no other
+    /// arguments, no environment and empty input, for at most as long as a blob; its result has no stop.
+    /// `Err` is the runner's own failure.
+    pub fn program(&mut self, executable: &[u8]) -> Result<BlobRan, String> {
+        let mut record = vec![RECORD_PROGRAM];
+        record.extend_from_slice(executable);
+        self.ran(&record)
+    }
+
+    /// Send a blob's or a program's request and read its result.
+    fn ran(&mut self, record: &[u8]) -> Result<BlobRan, String> {
+        let (status, result) = self.request(record)?;
+        assert_eq!(status, RESULT_RAN, "a blob's or a program's result status");
         let mut result = Reader(&result);
         let status = result.u32() as i32;
         let seconds = f64::from_le_bytes(result.take(8).try_into().unwrap());

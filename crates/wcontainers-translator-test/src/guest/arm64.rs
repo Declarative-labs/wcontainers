@@ -122,7 +122,6 @@ impl GuestTest for Arm64 {
         format!("{:?}", decode(word(code)))
     }
 
-    const DEFAULT_OFFER: () = ();
     // Fused multiply-add fuses or not, times NaNs follow Arm's rules or not.
     const PROBE_ANSWERS: &'static [i32] = &[0, 1, 2, 3];
 

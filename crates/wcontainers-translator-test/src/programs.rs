@@ -97,6 +97,61 @@ pub(crate) fn zig(arguments: &[&str]) {
     assert!(status.success(), "zig {arguments:?} failed");
 }
 
+/// An ordinary static executable of a C program for zig's target `c_target` (such as "x86_64-linux-musl"),
+/// built at -O1 with the C library; `name` names its files while it is built.
+pub fn executable(c_target: &str, name: &str, source: &str) -> Vec<u8> {
+    let own = unique(name);
+    std::fs::create_dir_all(out_directory()).unwrap();
+    let (c, elf) = (
+        out_directory().join(format!("{own}.c")),
+        out_directory().join(format!("{own}.elf")),
+    );
+    std::fs::write(&c, source).unwrap();
+    let (c_path, elf_path) = (c.display().to_string(), elf.display().to_string());
+    zig(&[
+        "cc", "-target", c_target, "-O1", "-static", "-o", &elf_path, &c_path,
+    ]);
+    let bytes = std::fs::read(&elf).unwrap();
+    std::fs::remove_file(&c).unwrap();
+    std::fs::remove_file(&elf).unwrap();
+    bytes
+}
+
+/// Check that `run` runs ordinary executables for `c_target` as Linux starts a program: hello world's output
+/// (its name a blob's) and status, a write through a null pointer ended by SIGSEGV, and a loop that does not
+/// end ended by the time limit's SIGALRM.
+pub fn check_ordinary_programs(c_target: &str, mut run: impl FnMut(&[u8]) -> Ran) {
+    let hello = std::fs::read_to_string(source_directory().join("hello.c")).unwrap();
+    for (name, source, stdout, status) in [
+        (
+            "hello",
+            hello.as_str(),
+            &b"hello, world\n1 blob beef ! -1234567890123\n"[..],
+            3,
+        ),
+        (
+            "null",
+            "int main(void) { *(volatile int *)0 = 1; return 0; }",
+            b"",
+            128 + 11,
+        ),
+        (
+            "forever",
+            "int main(void) { volatile int n = 0; for (;;) n++; }",
+            b"",
+            128 + 14,
+        ),
+    ] {
+        let ran = run(&executable(c_target, name, source));
+        assert_eq!(
+            (ran.stdout.as_slice(), ran.status),
+            (stdout, status),
+            "{name} on the reference, stderr {:?}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+}
+
 /// What a program is built against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Library {
@@ -402,7 +457,7 @@ pub fn ran<G: GuestTest>(
     stopped: Stopped,
     registers: &G::Block,
 ) -> Ran {
-    // Docker reports a process killed by a signal as 128 plus the signal's number.
+    // A process killed by a signal is reported as a shell does, 128 plus the signal's number.
     let status = match stopped {
         // Linux reports the low 8 bits of the status.
         Stopped::Finished(status) => status & 0xff,
@@ -472,10 +527,27 @@ fn on_reference<G: GuestTest>(blob: &Blob, runs: u32) -> BlobRan {
         stdin: &[],
         runs,
     };
-    let ran = with_reference(&G::REFERENCE, |reference| reference.blob(&request))
-        .unwrap_or_else(|e| panic!("the reference runner failed: {e}"));
-    // The runner's own failure in the blob's child is no result of the guest's: it fails the case, never
-    // compares.
+    runner_did_not_fail(with_reference(&G::REFERENCE, |reference| {
+        reference.blob(&request)
+    }))
+}
+
+/// Run an ordinary static executable on the reference, as Linux starts a program.
+pub fn native_program<G: GuestTest>(executable: &[u8]) -> Ran {
+    let ran = runner_did_not_fail(with_reference(&G::REFERENCE, |reference| {
+        reference.program(executable)
+    }));
+    Ran {
+        stdout: ran.stdout,
+        stderr: ran.stderr,
+        status: ran.status,
+    }
+}
+
+/// The result of a blob or a program. The runner's own failure, in its child or before, is no result of
+/// the guest's: it fails the case, never compares.
+fn runner_did_not_fail(ran: Result<BlobRan, String>) -> BlobRan {
+    let ran = ran.unwrap_or_else(|e| panic!("the reference runner failed: {e}"));
     assert!(
         !(ran.status == RUNNER_FAILED
             && ran

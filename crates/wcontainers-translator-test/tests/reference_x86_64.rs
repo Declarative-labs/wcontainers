@@ -3,11 +3,13 @@
 //! among them every stop the runner reports (the trap flag's stop, a `mov ss` whose trap is held back, `int3`,
 //! `int 3`, `int1`, the system call gates as SIGSYS, general protection, the stack fault, page faults, a divide
 //! error, an illegal instruction), the x87 state written and read back through TOP, vector registers with their
-//! upper halves, the thread pointers, a rep string instruction stepped to its end, and two blobs.
+//! upper halves, the thread pointers, a rep string instruction stepped to its end, two blobs and ordinary
+//! executables.
 //!
 //! Needs `WC_REFERENCE_X86_64` (such as `tom@192.168.2.240`) on a host that is not x86-64; it fails without it.
 
 use wcontainers_translator_test::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE, fill};
+use wcontainers_translator_test::programs::{Ran, check_ordinary_programs};
 use wcontainers_translator_test::reference::{BlobRequest, CaseRan, Landed, Reference, X86_64};
 
 const SIGILL: u32 = 4;
@@ -743,6 +745,21 @@ fn the_x86_64_reference_runs_blobs() {
     assert_eq!(registers[16], LOAD + 1, "rip");
     assert_eq!(registers[0], 0, "rax");
     assert_eq!(registers[17] & 0xfff, 0x202, "rflags");
+}
+
+/// Ordinary executables built for x86-64 Linux run as Linux starts a program.
+#[test]
+fn the_x86_64_reference_runs_programs() {
+    let mut reference = Reference::start(&X86_64);
+    check_ordinary_programs("x86_64-linux-musl", |executable| {
+        let ran = reference.program(executable).expect("the runner");
+        assert!(ran.stop.is_none());
+        Ran {
+            stdout: ran.stdout,
+            stderr: ran.stderr,
+            status: ran.status,
+        }
+    });
 }
 
 /// A connection lost between requests or during one is started again and the request answered, as when

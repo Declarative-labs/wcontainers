@@ -24,8 +24,8 @@ use wcontainers_translator_test::layer3::{
 };
 use wcontainers_translator_test::mixed::mixed;
 use wcontainers_translator_test::programs::{
-    Blob, Ran, native, ran as outcome, reachable_memory, ready, translated_for,
-    translated_stopping_everywhere,
+    Blob, Ran, check_ordinary_programs, native, native_program, ran as outcome, reachable_memory,
+    ready, translated_for, translated_stopping_everywhere,
 };
 
 fn setting(name: &str, default: u64) -> u64 {
@@ -220,6 +220,16 @@ fn hand_picked_programs_match_linux<G: GuestTest>() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The reference runs ordinary executables, which tell a blob's signal ending to be the program's own.
+fn ordinary_executables_run_on_the_reference<G: GuestTest>() {
+    check_ordinary_programs(G::C_TARGET, native_program::<G>);
+}
+
+#[test]
+fn ordinary_executables_run_on_the_reference_arm64() {
+    ordinary_executables_run_on_the_reference::<Arm64>();
 }
 
 #[test]

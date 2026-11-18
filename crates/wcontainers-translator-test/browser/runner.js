@@ -34,6 +34,7 @@ function run({
   load,
   memoryBytes,
   regions,
+  fill,
   sp,
   stack,
   lookAhead,
@@ -69,9 +70,12 @@ function run({
   // start.
   const tableBase = BigInt(load + (codeStart ?? 0));
   // The array covers the whole blob, every page of it that may run code, so code the program writes runs;
-  // for modules translated ahead of time from an image, its code.
+  // for modules translated ahead of time from an image, its code; for instruction cases, the instruction's
+  // address only, so control that lands anywhere else stops there.
   const align = BigInt(contract.align);
-  const slots = Math.ceil((moduleBytes.length ? codeBytes - codeStart : blob.length) / contract.align);
+  const slots = cases
+    ? 1
+    : Math.ceil((moduleBytes.length ? codeBytes - codeStart : blob.length) / contract.align);
   const slotsAt = Math.ceil((PERMISSIONS_AT + permissionPages + 1) / 4) * 4;
   const statePages = Math.ceil((slotsAt + 4 * slots) / 65536);
   const state = new WebAssembly.Memory({ initial: statePages, maximum: statePages, shared: true });
@@ -446,13 +450,15 @@ function run({
   });
 
   for (const [start, end, permissions] of regions) setPermissions(start, end, permissions, pagePermissions);
+  // The code area of instruction cases holds the guest's filler around the instruction: [start, end, byte].
+  // Fresh memory is already 0, and writing it would only take memory.
+  if (fill && fill[2] !== 0) guest().fill(fill[2], fill[0], fill[1]);
   guest().set(blob, load);
   const loaded = { bytes: blob, load: BigInt(load), codeStart: 0n, codeEnd: BigInt(codeBytes) };
   programBreak = Math.ceil((load + blob.length) / pageSize) * pageSize;
   if (moduleBytes.length) return loadModules();
-  instantiateCode(loaded, 0n, lookAhead, omit, bound);
-
   if (cases) return runCases();
+  instantiateCode(loaded, 0n, lookAhead, omit, bound);
 
   // Code modules translated ahead of time, loaded only: how long making each module and its instance took.
   function loadModules() {
@@ -469,24 +475,27 @@ function run({
     return { compiling, instantiating };
   }
 
-  // Instruction cases, one after another in the same memory and instances: each is `codeBytes` of code put
-  // at the blob's place and translated there, the thread state, then the bytes of each of `areas`.
+  // Instruction cases, one after another in the same memory and instances: each is the instruction's length
+  // (a byte), then `codeBytes` of code (the instruction, then filler) put at the blob's place, of which the
+  // instruction alone is translated there, the thread state, then the bytes of each of `areas`.
   // Each gives how it stopped, the thread state after, and the bytes of the areas that changed, as
   // [offset into the areas, value].
   function runCases() {
     const stateSize = contract.threadStateSize;
     const placed = areas.reduce((sum, [, length]) => sum + length, 0);
-    const size = codeBytes + stateSize + placed;
+    const size = 1 + codeBytes + stateSize + placed;
+    const stateAt = 1 + codeBytes;
     const results = [];
     for (let i = 0; i < cases; i++) {
       const bytes = caseBytes.subarray(i * size, (i + 1) * size);
-      const code = bytes.slice(0, codeBytes);
+      const code = bytes.slice(1, stateAt);
       guest().set(code, load);
       loaded.bytes = code;
+      loaded.codeEnd = BigInt(bytes[0]);
       exactPieces.clear();
       instantiateCode(loaded, 0n, lookAhead, omit, bound);
-      new Uint8Array(state.buffer, BLOCK_AT, stateSize).set(bytes.subarray(codeBytes, codeBytes + stateSize));
-      let at = codeBytes + stateSize;
+      new Uint8Array(state.buffer, BLOCK_AT, stateSize).set(bytes.subarray(stateAt, stateAt + stateSize));
+      let at = stateAt + stateSize;
       for (const [address, length] of areas) {
         guest().set(bytes.subarray(at, at + length), address);
         at += length;
@@ -497,7 +506,7 @@ function run({
       thread.exports[contract.run]();
       const changed = [];
       let offset = 0;
-      at = codeBytes + stateSize;
+      at = stateAt + stateSize;
       for (const [address, length] of areas) {
         const now = guest().subarray(address, address + length);
         for (let j = 0; j < length; j++) if (now[j] !== bytes[at + j]) changed.push([offset + j, now[j]]);

@@ -188,7 +188,7 @@ fn cut_functions_and_split_translations_match_linux<G: GuestTest>() {
                 LookAhead::Full,
                 wcontainers_translator::Optimise::Speed,
                 wcontainers_translator_test::runner::probe::<G>(),
-                G::DEFAULT_OFFER,
+                G::Offer::default(),
                 module_bytes,
             )
             .unwrap()
@@ -435,7 +435,7 @@ fn measure<G: GuestTest>() {
                 LookAhead::None,
                 wcontainers_translator::Optimise::Speed,
                 wcontainers_translator_test::runner::probe::<G>(),
-                G::DEFAULT_OFFER,
+                G::Offer::default(),
             )
             .unwrap();
             let translating = start.elapsed();

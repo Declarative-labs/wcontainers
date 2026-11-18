@@ -14,6 +14,9 @@
 //! `initial_stack`, for real; its output and exit status are the program's. When a signal ends it, its
 //! signal, `si_code`, pc and general registers come back too. Timed blobs run that many times, each in a
 //! child, timed from just before the child is made until it has ended.
+//!
+//! A program is an ordinary static executable, run as Linux starts one in a child of its own; its output and
+//! exit status come back as a blob's.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -490,9 +493,9 @@ extern "C" fn blob_enter(_: libc::c_int, _: *mut libc::siginfo_t, context: *mut 
     };
 }
 
-/// A file in memory holding `bytes`, at its start.
-fn memory_file(name: &core::ffi::CStr, bytes: &[u8]) -> libc::c_int {
-    let fd = unsafe { libc::memfd_create(name.as_ptr(), 0) };
+/// A file in memory holding `bytes`, at its start, made with `memfd_create`'s `flags`.
+fn memory_file(name: &core::ffi::CStr, bytes: &[u8], flags: libc::c_uint) -> libc::c_int {
+    let fd = unsafe { libc::memfd_create(name.as_ptr(), flags) };
     assert!(fd >= 0, "memfd_create: {}", std::io::Error::last_os_error());
     let mut file = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) };
     file.write_all(bytes).unwrap();
@@ -511,14 +514,19 @@ struct BlobRequest<'a> {
     bytes: &'a [u8],
 }
 
-fn run_blob_child(blob: &BlobRequest, input: libc::c_int, out: [libc::c_int; 2]) -> ! {
+/// In a child: make `input` and `out` its standard input, output and error, and close every other file, so
+/// it sees only those, as a program Linux starts.
+fn standard_files(input: libc::c_int, out: [libc::c_int; 2]) {
     unsafe {
         libc::dup2(input, 0);
         libc::dup2(out[0], 1);
         libc::dup2(out[1], 2);
-        // The blob sees only its standard input, output and error, as a program Linux starts.
         libc::syscall(libc::SYS_close_range, 3, u32::MAX, 0);
     }
+}
+
+fn run_blob_child(blob: &BlobRequest, input: libc::c_int, out: [libc::c_int; 2]) -> ! {
+    standard_files(input, out);
     let length = (blob.bytes.len() as u64).next_multiple_of(PAGE);
     // One mapping for code and data, as a flat blob needs.
     map(
@@ -581,18 +589,6 @@ fn blob(request: &[u8]) -> Vec<u8> {
     let mut best = f64::INFINITY;
     let mut last = None;
     for _ in 0..runs {
-        use std::os::fd::AsRawFd;
-        let input = memory_file(c"stdin", &stdin);
-        // Output goes to pipes, as a program's output does when its caller reads it: a write from a buffer
-        // that faults part way fails on a pipe and is cut short on a file.
-        let [(stdout, stdout_end), (stderr, stderr_end)] = [pipe(), pipe()];
-        let readers = [stdout, stderr].map(|mut from| {
-            std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                from.read_to_end(&mut bytes).unwrap();
-                bytes
-            })
-        });
         let page = unsafe {
             libc::mmap(
                 core::ptr::null_mut(),
@@ -605,18 +601,15 @@ fn blob(request: &[u8]) -> Vec<u8> {
         };
         assert_ne!(page, libc::MAP_FAILED, "a shared page");
         unsafe { STOP_RECORD = page as *mut u64 };
-        let out = [stdout_end.as_raw_fd(), stderr_end.as_raw_fd()];
-        let start = std::time::Instant::now();
-        let child = match unsafe { libc::fork() } {
-            0 => run_blob_child(&blob, input, out),
-            -1 => return failed(&format!("fork: {}", std::io::Error::last_os_error())),
-            child => child,
+        let result = run_child(&stdin, |input, out| run_blob_child(&blob, input, out));
+        let (status, seconds, [stdout, stderr]) = match result {
+            Ok(result) => result,
+            Err(e) => {
+                unsafe { libc::munmap(page, PAGE as usize) };
+                return failed(&e);
+            }
         };
-        drop((stdout_end, stderr_end));
-        let status = wait(child);
-        best = best.min(start.elapsed().as_secs_f64());
-        unsafe { libc::close(input) };
-        let [stdout, stderr] = readers.map(|reader| reader.join().unwrap());
+        best = best.min(seconds);
         let record = unsafe { core::slice::from_raw_parts(page as *const u64, 2) };
         let length = if record[0] == 0 {
             0
@@ -627,15 +620,92 @@ fn blob(request: &[u8]) -> Vec<u8> {
         unsafe { libc::munmap(page, PAGE as usize) };
         last = Some((status, [stdout, stderr, stop]));
     }
-    let (status, [stdout, stderr, stop]) = last.unwrap();
+    let (status, output) = last.unwrap();
+    ran(status, best, output)
+}
+
+/// The result record of a blob or a program: its status, its time, its output and its stop record.
+fn ran(status: i32, seconds: f64, [stdout, stderr, stop]: [Vec<u8>; 3]) -> Vec<u8> {
     let mut result = vec![RESULT_RAN];
     result.extend_from_slice(&status.to_le_bytes());
-    result.extend_from_slice(&best.to_le_bytes());
+    result.extend_from_slice(&seconds.to_le_bytes());
     for bytes in [&stdout, &stderr, &stop] {
         result.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
         result.extend_from_slice(bytes);
     }
     result
+}
+
+/// Run `child` (given its standard input and output files) in a process of its own, with `stdin` as its
+/// input; gives its status as a shell does, the time from just before the process is made until it has
+/// ended, and its output and error.
+fn run_child(
+    stdin: &[u8],
+    child: impl FnOnce(libc::c_int, [libc::c_int; 2]),
+) -> Result<(i32, f64, [Vec<u8>; 2]), String> {
+    use std::os::fd::AsRawFd;
+    let input = memory_file(c"stdin", stdin, 0);
+    // Output goes to pipes, as a program's output does when its caller reads it: a write from a buffer that
+    // faults part way fails on a pipe and is cut short on a file.
+    let [(stdout, stdout_end), (stderr, stderr_end)] = [pipe(), pipe()];
+    let readers = [stdout, stderr].map(|mut from| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            from.read_to_end(&mut bytes).unwrap();
+            bytes
+        })
+    });
+    let out = [stdout_end.as_raw_fd(), stderr_end.as_raw_fd()];
+    let start = std::time::Instant::now();
+    let pid = unsafe { libc::fork() };
+    match pid {
+        0 => {
+            child(input, out);
+            unreachable!("the child returned")
+        }
+        -1 => {
+            unsafe { libc::close(input) };
+            return Err(format!("fork: {}", std::io::Error::last_os_error()));
+        }
+        _ => {}
+    }
+    drop((stdout_end, stderr_end));
+    let status = wait(pid);
+    let seconds = start.elapsed().as_secs_f64();
+    unsafe { libc::close(input) };
+    let [stdout, stderr] = readers.map(|reader| reader.join().unwrap());
+    Ok((status, seconds, [stdout, stderr]))
+}
+
+/// Run an ordinary static executable as Linux starts a program, with a blob's name and no other arguments,
+/// no environment and empty input, for at most `BLOB_SECONDS` (then SIGALRM ends it, as a blob); its result
+/// is a blob's with no stop record.
+fn program(executable: &[u8]) -> Vec<u8> {
+    let name = core::ffi::CStr::from_bytes_with_nul(BLOB_NAME).unwrap();
+    let arguments = [name.as_ptr(), core::ptr::null()];
+    let environment = [core::ptr::null()];
+    let result = run_child(&[], |input, out| {
+        standard_files(input, out);
+        // Closed as the program starts, so it sees no file of its own.
+        let file = memory_file(name, executable, libc::MFD_CLOEXEC);
+        unsafe {
+            // A program starts with no signal blocked and SIGPIPE's default action (Rust's runtime ignores
+            // it in the runner, and exec keeps what is ignored); the alarm carries over exec.
+            let mut none: libc::sigset_t = core::mem::zeroed();
+            libc::sigemptyset(&mut none);
+            libc::sigprocmask(libc::SIG_SETMASK, &none, core::ptr::null_mut());
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            libc::alarm(BLOB_SECONDS);
+            libc::fexecve(file, arguments.as_ptr(), environment.as_ptr());
+        }
+        panic!("fexecve: {}", std::io::Error::last_os_error())
+    });
+    match result {
+        Ok((status, seconds, [stdout, stderr])) => {
+            ran(status, seconds, [stdout, stderr, Vec::new()])
+        }
+        Err(e) => failed(&e),
+    }
 }
 
 /// The CPU's model, as `/proc/cpuinfo` names it.
@@ -695,6 +765,7 @@ fn serve() {
                 }
             }
             Some(&RECORD_BLOB) => blob(&request[1..]),
+            Some(&RECORD_PROGRAM) => program(&request[1..]),
             _ => failed("an unknown request"),
         };
         write_record(&mut output, &result);

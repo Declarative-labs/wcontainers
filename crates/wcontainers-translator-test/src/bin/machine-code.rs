@@ -39,7 +39,7 @@ fn write<G: GuestTest>(program: &str, optimisation: &str, out: &str, defines: &[
         LookAhead::Full,
         Optimise::Speed,
         wcontainers_translator_test::runner::probe::<G>(),
-        G::DEFAULT_OFFER,
+        G::Offer::default(),
         omit,
     )
     .expect("translation");

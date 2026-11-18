@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Whether layer 1 and layer 2 draw the same cases for each seed as at an earlier commit. Each side runs its own
 # tests/cases.rs (which writes the cases as text hashes, in the same form on both), then the lists are
-# compared with cmp. The earlier commit is built from its own copy and its lists are kept. Layer 1's cases in
+# compared with cmp. The earlier commit is built from its own copy into a target directory of its own (copies
+# made by git archive carry the commit's times, so cargo could take another commit's build for it), and its
+# lists are kept. Layer 1's cases in
 # no form and its hand-made cases are compared too when the earlier commit writes them.
 #
 # From the repository root:
@@ -28,7 +30,7 @@ mkdir -p "$before" "$now"
 status=0
 for seed in "$@"; do
   if [ ! -s "$before/layer2-$seed.txt" ]; then
-    (cd "$tree" && CARGO_TARGET_DIR=$dir/target WC_CASES_DIR=$before WC_CASES_SEED=$seed \
+    (cd "$tree" && CARGO_TARGET_DIR=$dir/target/${base:0:12} WC_CASES_DIR=$before WC_CASES_SEED=$seed \
       "${test_command[@]}" > "$dir/cases-before-$seed.log" 2>&1) \
       || { echo "seed $seed: the earlier commit failed, see $dir/cases-before-$seed.log"; status=1; continue; }
   fi

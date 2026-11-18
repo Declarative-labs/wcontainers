@@ -648,8 +648,9 @@ pub trait Guest: Personality {
 
     // --- what the container offers beyond the default claims ---
     /// A container setting that changes what the CPU claims, given with every translation: x86 the AVX
-    /// setting (`Offer { avx: bool }`), `()` for ARM64 and RV64GC.
-    type Offer: Copy + Eq + core::hash::Hash + core::fmt::Debug;
+    /// setting (`Offer { avx: bool }`), `()` for ARM64 and RV64GC. Its default is what the CPU claims when
+    /// the container asks for nothing more (AVX not claimed), which the tests and the browser glue use.
+    type Offer: Copy + Eq + core::hash::Hash + core::fmt::Debug + Default;
     /// Bytes of the offer for the cache key and the description section (0 for `()`).
     fn offer_key(offer: Self::Offer) -> u32;
 
@@ -2474,8 +2475,8 @@ As built at X2 (`src/guest/mod.rs`), where building it showed a signature must c
   variable and the field names, which are `FIELDS`' names), with `C_TARGET`, `GENERAL_ONLY` and `NAME` (the
   suffix of the per-guest tests' names) beside it.
 - `Form` is `Clone`, not `Copy` (ARM64's forms hold their names), and `forms()` gives only the forms layer 1
-  draws from (ARM64's covered ones). `cases(form)` takes no offer: it uses `DEFAULT_OFFER` until the AVX
-  setting (X8) needs a second one.
+  draws from (ARM64's covered ones). `cases(form)` takes no offer: it uses the offer's default
+  (`G::Offer::default()`, the interface's `Offer: Default`) until the AVX setting (X8) needs a second one.
 - `no_form(seed)` gives whole cases (the bytes and a plain starting state), since the harness cannot make a
   state; `hand_cases()` stands for `designed(offer)` and also holds the hand-made cases that are compared
   with the reference (`Designed { name, case, stop, fields, compared }`).
@@ -2597,10 +2598,14 @@ Both sides of a comparison hold the same code area. `FILLER` and `CODE_SPAN` are
 `Machine` and the harness read them there. The runner maps `CODE - CODE_SPAN .. CODE + CODE_SPAN` readable
 and executable, filled with `FILLER` (the parent fills it once; the children it forks share it). The
 translated side gives the same range the same permissions (today's `regions()`) and, before loading the
-case's instruction, writes `FILLER` over it, in wasmtime and in Chrome alike (in Chrome the page does the
-fill itself from a `filler` byte and the range given once with the page's settings, so nothing is sent per
-case), when `FILLER` is not 0: fresh memory is already 0, so ARM64 writes nothing and runs as
-today, and x86 writes 64 KiB per case. So an operand that reads the code area (an x86 rip-relative operand
+case's instruction, writes `FILLER` over it. In wasmtime it does so for each case when `FILLER` is not 0:
+fresh memory is already 0, so ARM64 writes nothing and runs as today, and x86 writes 64 KiB per case. In
+Chrome the page does the fill itself, once, from the range and the byte given with the page's settings
+(`fill`), when the byte is not 0, so nothing is sent per case (the code area is not writable, so no case
+changes it). On both, the lookup covers the instruction's address alone (one slot) and the translator is given the
+instruction's own bytes (in Chrome each case carries its length, then the instruction padded to
+`MAX_LENGTH` with `FILLER`), so control that lands anywhere else, CODE + L after an x86 instruction of
+length L among them, stops there as landed, as on the CPU. So an operand that reads the code area (an x86 rip-relative operand
 that reaches past the instruction, a base that points there) reads `int3` bytes on both sides, and layer
 1 draws such operands on purpose (section 7.4).
 
@@ -2622,7 +2627,12 @@ status, the best time and, when a signal ended it, its stop record. Cases run in
 runner that serves them until a case ends it; that case is reported as the runner's failure and the next
 case gets a new child (section 7.3's isolation, without a fork per batch). Each blob run is a child of its
 own. ARM64's blobs go through the same records (one long-lived container per runner, shared by the run),
-not a container per blob.
+not a container per blob. A program is an ordinary static executable's bytes; the runner runs it as Linux
+starts a program (from a memory file with `fexecve`, under a blob's name with no other arguments, no
+environment, empty input, no signal blocked or ignored, the blob's time limit by `alarm`), in a child of its
+own, and its result is a blob's with no stop record. Layer 3 uses it to tell a blob that Linux ends by a
+signal from a broken blob (the program built as an ordinary executable must end the same way), so that
+judgement too comes from the guest's real CPU through the transport, never from Docker's emulation.
 
 The transport is generic: `Reference::start(&G::REFERENCE)`, where `REFERENCE` is a `Target` value (the
 runner's Rust target, Docker's platform, the SSH host's variable and the field names; it stands for the
@@ -2725,7 +2735,8 @@ so; it is never skipped silently.
   installs one handler for SIGTRAP, SIGILL, SIGSEGV, SIGBUS and SIGFPE that writes them out and ends the
   child with that signal's status. Flat blobs make no system calls but the stand-in's, so they never
   install handlers of their own. The translated side reports the same from its stop (X6's trap-flag
-  blobs compare these, section 9). Docker is not used on the x86 machine.
+  blobs compare these, section 9). Ordinary executables (layer 3's check of a blob's signal ending) run the
+  same way, a child each, through `fexecve`. Docker is not used on the x86 machine.
 - **Recorded results** (not built at X2, proposed for X3 with batching): every reference result is stored under `target/reference/x86_64/` keyed by the
   reference CPU's model string, the runner's content hash and the case's hash, so a replay or a run while
   the machine is off uses the real CPU's recorded answer. A case with no recorded answer and no machine
