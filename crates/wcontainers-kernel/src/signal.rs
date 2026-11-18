@@ -1156,10 +1156,14 @@ impl Kernel {
             }
             let process = &self.processes[&pid];
             if !mapping.copies_on_write(address) || access != Access::Write {
-                let refreshed = process
-                    .map
-                    .borrow_mut()
-                    .refresh(cx.cpu, process.memory, address);
+                // The pages read around it, as far as the mapping reaches.
+                let around = crate::shared::readahead_pages(node) * wcontainers_abi::PAGE_SIZE;
+                let refreshed = process.map.borrow_mut().refresh(
+                    cx.cpu,
+                    process.memory,
+                    address.saturating_sub(around / 2).max(mapping.start),
+                    address.saturating_add(around),
+                );
                 if refreshed.is_ok() {
                     self.return_to_user(cx, tid, Resume::FromRegisters);
                     return;

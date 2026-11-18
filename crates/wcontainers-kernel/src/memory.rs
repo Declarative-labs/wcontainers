@@ -729,59 +729,32 @@ impl AddressMap {
         Ok(())
     }
 
-    /// Tells the CPU side again what the mapping holding `address` allows, once pages of its file
-    /// came that it showed with no access.
+    /// Tells the CPU side again what the pages of `[start, end)` in the mapping holding `start`
+    /// allow, once pages of its file came that it showed with no access.
     pub fn refresh(
         &mut self,
         cpu: &mut dyn Cpu,
         memory: MemoryId,
-        address: u64,
+        start: u64,
+        end: u64,
     ) -> Result<(), Errno> {
-        match self.find(address).cloned() {
-            Some(mapping) => self.apply_permissions(cpu, memory, &mapping),
+        match self.find(start).cloned() {
+            Some(mapping) => {
+                let (lo, hi) = (page_down(start), page_up(end));
+                apply_permissions_in(cpu, memory, &mapping, lo, hi)
+            }
             None => Ok(()),
         }
     }
 
-    /// Tells the CPU side what a mapping's pages allow: nothing wholly past a file's end, nothing
-    /// where a backend file's page is not read yet, so the first touch comes back to read it, and
-    /// no writing where a private file page is not copied yet, so the first write comes back to
-    /// copy it.
+    /// Tells the CPU side what a mapping's pages allow.
     fn apply_permissions(
         &mut self,
         cpu: &mut dyn Cpu,
         memory: MemoryId,
         mapping: &Mapping,
     ) -> Result<(), Errno> {
-        let split = match &mapping.backing {
-            Backing::File { file_end, .. } => (*file_end).clamp(mapping.start, mapping.end),
-            _ => mapping.end,
-        };
-        let full = cpu_permissions(mapping.permissions);
-        for (from, to, own) in mapping.runs() {
-            let to = to.min(split);
-            if from >= to {
-                break;
-            }
-            let permissions = if own { full } else { full - Permissions::WRITE };
-            cpu.set_permissions(memory, from, to - from, permissions)
-                .map_err(errno::from_cpu)?;
-        }
-        if mapping.end > split {
-            cpu.set_permissions(memory, split, mapping.end - split, Permissions::empty())
-                .map_err(errno::from_cpu)?;
-        }
-        if let Backing::File { node, offset, .. } = &mapping.backing {
-            let first = offset / PAGE_SIZE;
-            let address = |page: u64| mapping.start + (page - first) * PAGE_SIZE;
-            let last = first + (split - mapping.start) / PAGE_SIZE;
-            for run in crate::shared::unfilled(node, first..last) {
-                let from = address(run.start);
-                cpu.set_permissions(memory, from, address(run.end) - from, Permissions::empty())
-                    .map_err(errno::from_cpu)?;
-            }
-        }
-        Ok(())
+        apply_permissions_in(cpu, memory, mapping, mapping.start, mapping.end)
     }
 
     /// Zeroes the parts of a range that held something before, and marks it all as used.
@@ -1000,4 +973,52 @@ pub(crate) fn cpu_permissions(asked: Permissions) -> Permissions {
     } else {
         asked
     }
+}
+
+/// Tells the CPU side what a mapping's pages in `[lo, hi)` allow: nothing wholly past a file's
+/// end, nothing where a backend file's page is not read yet, so the first touch comes back to read
+/// it, and no writing where a private file page is not copied yet, so the first write comes back
+/// to copy it.
+fn apply_permissions_in(
+    cpu: &mut dyn Cpu,
+    memory: MemoryId,
+    mapping: &Mapping,
+    lo: u64,
+    hi: u64,
+) -> Result<(), Errno> {
+    let (lo, hi) = (lo.max(mapping.start), hi.min(mapping.end));
+    let mut set = |from: u64, to: u64, permissions: Permissions| {
+        let (from, to) = (from.max(lo), to.min(hi));
+        if from < to {
+            cpu.set_permissions(memory, from, to - from, permissions)
+                .map_err(errno::from_cpu)?;
+        }
+        Ok::<(), Errno>(())
+    };
+    let split = match &mapping.backing {
+        Backing::File { file_end, .. } => (*file_end).clamp(mapping.start, mapping.end),
+        _ => mapping.end,
+    };
+    let full = cpu_permissions(mapping.permissions);
+    for (from, to, own) in mapping.runs() {
+        let to = to.min(split);
+        if from >= to {
+            break;
+        }
+        set(from, to, if own { full } else { full - Permissions::WRITE })?;
+    }
+    if mapping.end > split {
+        set(split, mapping.end, Permissions::empty())?;
+    }
+    if let Backing::File { node, offset, .. } = &mapping.backing {
+        let first = offset / PAGE_SIZE;
+        let address = |page: u64| mapping.start + (page - first) * PAGE_SIZE;
+        let page = |address: u64| first + (address - mapping.start) / PAGE_SIZE;
+        if lo < split.min(hi) {
+            for run in crate::shared::unfilled(node, page(lo)..page(split.min(hi))) {
+                set(address(run.start), address(run.end), Permissions::empty())?;
+            }
+        }
+    }
+    Ok(())
 }

@@ -1184,15 +1184,20 @@ fn named_namespace(view: &View<'_>, task: &Task, namespace: Namespace) -> Result
 
 /// The nsfs inode of a namespace: one number for each, read-only and immutable (`__ns_get_path`).
 fn namespace_inode(view: &View<'_>, namespace: Namespace) -> Node {
+    namespace_node(view.nsfs.clone(), view.boot, namespace)
+}
+
+/// The nsfs inode of a namespace, on `nsfs`, made at `boot`.
+pub(crate) fn namespace_node(nsfs: FileSystem, boot: Time, namespace: Namespace) -> Node {
     let node = new_inode(
-        view.nsfs.clone(),
+        nsfs,
         namespace.ino(),
         New {
             mode: S_IFREG | 0o444,
             uid: 0,
             gid: 0,
             rdev: 0,
-            now: view.boot,
+            now: boot,
             content: Content::Namespace(namespace),
             parent: None,
             name: namespace.link(),

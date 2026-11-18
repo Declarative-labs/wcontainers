@@ -162,5 +162,27 @@ int main(void) {
     p("zombie open", open(path, O_RDONLY) >= 0 ? 0 : -1);
     waitpid(child, NULL, 0);
     p("reaped readlink", readlink(path, link, sizeof link));
+    // The user namespace that owns each (a new descriptor of /proc/self/ns/user, closed at exec),
+    // and each one's parent, which none here may reach.
+    struct stat user;
+    stat("/proc/self/ns/user", &user);
+    for (size_t i = 0; i < COUNT; i++) {
+        char path[64];
+        snprintf(path, sizeof path, "/proc/self/ns/%s", names[i]);
+        int ns = open(path, O_RDONLY);
+        int owner = ioctl(ns, 0xb701);
+        if (owner >= 0) {
+            struct stat st;
+            fstat(owner, &st);
+            printf("%s owner: the user namespace %d type %x fd flags %x file flags %o\n", names[i],
+                   st.st_ino == user.st_ino && st.st_dev == user.st_dev, ioctl(owner, 0xb703),
+                   fcntl(owner, F_GETFD), fcntl(owner, F_GETFL));
+            close(owner);
+        } else {
+            printf("%s owner: %s\n", names[i], strerror(errno));
+        }
+        printf("%s parent: %d %s\n", names[i], ioctl(ns, 0xb702), strerror(errno));
+        close(ns);
+    }
     return 0;
 }
