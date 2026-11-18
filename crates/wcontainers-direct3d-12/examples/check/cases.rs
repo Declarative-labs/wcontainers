@@ -71,6 +71,7 @@ pub const CASES: &[&str] = &[
     "vertex-pulled",
     "restart",
     "render-pass",
+    "ms-array",
     "custom-heap",
     "geometry",
     "timestamps",
@@ -103,6 +104,7 @@ pub fn run(name: &str) -> Result<String> {
             "vertex-pulled" => vertex_pulled(&c),
             "restart" => restart(&c),
             "render-pass" => render_pass(&c),
+            "ms-array" => ms_array(&c),
             "custom-heap" => custom_heap(&c),
             "geometry" => geometry(&c),
             "timestamps" => timestamps(&c),
@@ -1675,6 +1677,104 @@ unsafe fn render_pass(c: &Ctx) -> Result<String> {
             colours(&c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?),
             colours(&c.pixels(&resolved, D3D12_RESOURCE_STATE_RESOLVE_DEST)?)
         ))
+    }
+}
+
+/// A multisampled array of three layers: layer 0 cleared by a view of it alone, layers 1 and 2
+/// by one view of every layer from 1, a triangle drawn into layer 2, the array copied whole into
+/// another and each layer of the copy resolved.
+unsafe fn ms_array(c: &Ctx) -> Result<String> {
+    unsafe {
+        let layout = [
+            element(s!("POSITION"), DXGI_FORMAT_R32G32_FLOAT, 0, 0, None),
+            element(s!("COLOR"), DXGI_FORMAT_R32G32B32_FLOAT, 0, 8, None),
+        ];
+        let (root, pso) = c.pso_samples(false, &layout, 4)?;
+        let vertices = c.upload(&triangles())?;
+        let mut desc = target_desc();
+        desc.SampleDesc.Count = 4;
+        desc.DepthOrArraySize = 3;
+        let ms = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &desc,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+        )?;
+        let copy = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &desc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let resolved = (0..3)
+            .map(|_| {
+                c.committed(
+                    D3D12_HEAP_TYPE_DEFAULT,
+                    &target_desc(),
+                    D3D12_RESOURCE_STATE_RESOLVE_DEST,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let heap: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                NumDescriptors: 3,
+                ..Default::default()
+            })?;
+        let step = c
+            .device
+            .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
+            as usize;
+        let start = heap.GetCPUDescriptorHandleForHeapStart();
+        let rtv = |i: usize, first: u32, size: u32| {
+            let handle = D3D12_CPU_DESCRIPTOR_HANDLE {
+                ptr: start.ptr + i * step,
+            };
+            c.device.CreateRenderTargetView(
+                &ms,
+                Some(&D3D12_RENDER_TARGET_VIEW_DESC {
+                    Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    ViewDimension: D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY,
+                    Anonymous: D3D12_RENDER_TARGET_VIEW_DESC_0 {
+                        Texture2DMSArray: D3D12_TEX2DMS_ARRAY_RTV {
+                            FirstArraySlice: first,
+                            ArraySize: size,
+                        },
+                    },
+                }),
+                handle,
+            );
+            handle
+        };
+        let (first, rest, last) = (rtv(0, 0, 1), rtv(1, 1, u32::MAX), rtv(2, 2, 1));
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        list.ClearRenderTargetView(rest, &[0.2, 0.4, 0.6, 1.0], None);
+        list.ClearRenderTargetView(first, &[0.8, 0.1, 0.3, 1.0], None);
+        list.SetPipelineState(&pso);
+        list.SetGraphicsRootSignature(&root);
+        vertex_buffer(&list, &vertices);
+        list.OMSetRenderTargets(1, Some(&last), false, None);
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        viewport(&list, 0, 0, SIZE);
+        list.DrawInstanced(3, 1, 0, 0);
+        list.ResourceBarrier(&[transition(
+            &ms,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_COPY_SOURCE,
+        )]);
+        list.CopyResource(&copy, &ms);
+        list.ResourceBarrier(&[transition(
+            &copy,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
+        )]);
+        for (i, r) in resolved.iter().enumerate() {
+            list.ResolveSubresource(r, 0, &copy, i as u32, DXGI_FORMAT_R8G8B8A8_UNORM);
+        }
+        c.run(&list)?;
+        let mut out = Vec::new();
+        for r in &resolved {
+            out.push(colours(&c.pixels(r, D3D12_RESOURCE_STATE_RESOLVE_DEST)?));
+        }
+        Ok(out.join(" | "))
     }
 }
 
