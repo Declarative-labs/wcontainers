@@ -168,6 +168,9 @@ suite!(
     typed_buffers_through_a_texture_lie_2048_elements_to_a_row,
     captures_write_location_outputs_packed_in_draw_order,
     a_copy_within_one_subresource_moves_the_region,
+    a_copy_within_one_depth_or_stencil_subresource_moves_the_region,
+    the_occlusion_counter_counts_every_sample_that_passes,
+    every_vertex_format_reads_its_element,
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,
@@ -191,6 +194,11 @@ suite!(
     constant_alpha_blends,
     lists_draw_the_largest_index_as_a_vertex,
     signed_normalised_texels_drawn_then_copied,
+    signed_normalised_minimum_judged_by_whole_components,
+    half_floats_read_back_as_stored,
+    two_devices_on_one_thread_keep_their_own_objects,
+    bit_operations_equal_their_definition,
+    gathers_equal_their_footprints,
     vertices_captured_with_and_without_rasterising,
     captured_indices_drawn_both_ways,
     block_compressed_and_shared_exponent_textures_read_back_as_written,
@@ -244,16 +252,11 @@ pub fn suite_test(name: &str, off: &str, seed: u32, cases: u32) -> Result<(), Js
 /// Runs the chosen test. A plain export, which the page calls through `WebAssembly.promising` so the
 /// back end's waits can suspend it. A failing test panics: the page gets the message through
 /// `window.panicked` and the module traps.
-/// The features whose check did not run because the back end declares them absent, empty when
-/// every route of the chosen test ran.
+/// Why routes of the chosen test ran nothing (a feature absent, a format without the use), empty
+/// when every route ran.
 #[wasm_bindgen]
 pub fn suite_not_run() -> String {
-    let absent = checks::take_not_run();
-    if absent.is_empty() {
-        String::new()
-    } else {
-        format!("{absent:?} absent")
-    }
+    checks::take_not_run()
 }
 
 #[unsafe(no_mangle)]

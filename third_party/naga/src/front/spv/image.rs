@@ -35,7 +35,8 @@ impl super::BlockContext<'_> {
             }
             crate::Expression::FunctionArgument(i) => Ok(self.arguments[i as usize].ty),
             // An element of an array of images has the array's element type.
-            crate::Expression::Access { base, .. } | crate::Expression::AccessIndex { base, .. } => {
+            crate::Expression::Access { base, .. }
+            | crate::Expression::AccessIndex { base, .. } => {
                 let ty = self.get_image_expr_ty(base)?;
                 match self.module.types[ty].inner {
                     crate::TypeInner::BindingArray { base, .. } => Ok(base),
@@ -287,17 +288,20 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
 
         let image_ops = if words_left != 0 { self.next()? } else { 0 };
 
-        // Hints, and non-private access, which every storage access of the IR is; operands that
-        // change the texel's meaning or its visibility to other invocations are refused.
-        let kept = spirv::ImageOperands::NONTEMPORAL | spirv::ImageOperands::NON_PRIVATE_TEXEL;
+        // Hints, non-private access and availability at workgroup scope, which every storage access
+        // of the IR has; operands that change the texel's meaning or its visibility to other
+        // invocations are refused.
+        let kept = spirv::ImageOperands::NONTEMPORAL
+            | spirv::ImageOperands::NON_PRIVATE_TEXEL
+            | spirv::ImageOperands::MAKE_TEXEL_AVAILABLE;
         let ops = spirv::ImageOperands::from_bits_retain(image_ops);
         if !kept.contains(ops) {
             return Err(Error::UnsupportedImageWriteOperand(
                 ops.difference(kept).bits(),
             ));
         }
-        for _ in 1..words_left {
-            self.next()?;
+        if ops.contains(spirv::ImageOperands::MAKE_TEXEL_AVAILABLE) {
+            self.workgroup_scope(ctx.module, image_ops)?;
         }
 
         let image_lexp = self.lookup_expression.lookup(image_id)?;
@@ -425,8 +429,11 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                     offset = Some((offset_handle, offset_lexp.type_id));
                 }
                 // Every storage access of the IR is non-private in the Vulkan memory model's
-                // sense.
+                // sense, and visible at workgroup scope.
                 spirv::ImageOperands::NONTEMPORAL | spirv::ImageOperands::NON_PRIVATE_TEXEL => {}
+                spirv::ImageOperands::MAKE_TEXEL_VISIBLE => {
+                    self.workgroup_scope(ctx.module, bit)?;
+                }
                 other => {
                     return Err(Error::UnsupportedImageLoadOperand(other.bits()));
                 }
@@ -526,7 +533,7 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn parse_image_sample(
         &mut self,
-        mut words_left: u16,
+        words_left: u16,
         options: SamplingOptions,
         ctx: &mut super::BlockContext,
         emitter: &mut crate::proc::Emitter,
@@ -546,15 +553,11 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
         };
         let span = self.span_from_with_op(start);
 
-        let mut image_ops = if words_left != 0 {
-            words_left -= 1;
-            self.next()?
-        } else {
-            0
-        };
+        let mut image_ops = if words_left != 0 { self.next()? } else { 0 };
 
         let mut level = crate::SampleLevel::Auto;
         let mut offset = None;
+        let mut moved = None;
         while image_ops != 0 {
             let bit = 1 << image_ops.trailing_zeros();
             match spirv::ImageOperands::from_bits_truncate(bit) {
@@ -564,7 +567,6 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                     let bias_handle =
                         self.get_expr_handle(bias_expr, bias_lexp, ctx, emitter, block, body_idx);
                     level = crate::SampleLevel::Bias(bias_handle);
-                    words_left -= 1;
                 }
                 spirv::ImageOperands::LOD => {
                     let lod_expr = self.next()?;
@@ -601,7 +603,6 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                     } else {
                         crate::SampleLevel::Exact(lod_handle)
                     };
-                    words_left -= 1;
                 }
                 spirv::ImageOperands::GRAD => {
                     let grad_x_expr = self.next()?;
@@ -635,7 +636,6 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                             y: grad_y_handle,
                         }
                     };
-                    words_left -= 2;
                 }
                 spirv::ImageOperands::CONST_OFFSET => {
                     let offset_expr = self.next()?;
@@ -649,15 +649,24 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                         body_idx,
                     );
                     offset = Some(offset_handle);
-                    words_left -= 1;
                 }
-                other => {
-                    log::warn!("Unknown image sample operand {other:?}");
-                    for _ in 0..words_left {
-                        self.next()?;
-                    }
-                    break;
+                // A gather picks its four texels from level 0, so a run-time offset moves the
+                // coordinate by that many texels of level 0 (the IR's offset is a constant).
+                spirv::ImageOperands::OFFSET if options.gather => {
+                    let offset_expr = self.next()?;
+                    let offset_lexp = self.lookup_expression.lookup(offset_expr)?;
+                    let offset_handle = self.get_expr_handle(
+                        offset_expr,
+                        offset_lexp,
+                        ctx,
+                        emitter,
+                        block,
+                        body_idx,
+                    );
+                    moved = Some((offset_handle, offset_lexp.type_id));
                 }
+                // Skipping an operand (a run-time `Offset` among them) would change what is sampled.
+                other => return Err(Error::UnsupportedImageSampleOperand(other.bits())),
             }
             image_ops ^= bit;
         }
@@ -833,6 +842,20 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
                 _ => return Err(Error::InvalidImage(image_ty)),
             };
 
+        let coordinate = match moved {
+            Some((offset, offset_type_id)) => self.gather_offset_coordinate(
+                ctx,
+                emitter,
+                block,
+                si_lexp.image,
+                coordinate,
+                offset,
+                offset_type_id,
+                span,
+            )?,
+            None => coordinate,
+        };
+
         let expr = crate::Expression::ImageSample {
             image: si_lexp.image,
             sampler: si_lexp.sampler,
@@ -864,6 +887,77 @@ impl<I: Iterator<Item = u32>> super::Frontend<I> {
             },
         );
         Ok(())
+    }
+
+    /// The coordinate moved by a gather's run-time offset in texels of level 0. Direct3D takes each
+    /// component's low six bits, signed.
+    #[allow(clippy::too_many_arguments)]
+    fn gather_offset_coordinate(
+        &self,
+        ctx: &mut super::BlockContext,
+        emitter: &mut crate::proc::Emitter,
+        block: &mut crate::Block,
+        image: Handle<crate::Expression>,
+        coordinate: Handle<crate::Expression>,
+        offset: Handle<crate::Expression>,
+        offset_type_id: spirv::Word,
+        span: crate::Span,
+    ) -> Result<Handle<crate::Expression>, Error> {
+        use crate::{BinaryOperator as B, Expression as E};
+        let kind = self.int_kind(ctx, offset_type_id)?;
+        let offset = Self::retype_int(ctx, offset, kind, Some(crate::ScalarKind::Sint), span);
+        let size = match ctx.module.types[ctx.get_image_expr_ty(image)?].inner {
+            crate::TypeInner::Image { dim, .. } => match dim {
+                crate::ImageDimension::D2 => crate::VectorSize::Bi,
+                _ => return Err(Error::UnsupportedImageSampleOperand(0x10)),
+            },
+            _ => return Err(Error::InvalidOperand),
+        };
+        // Literals are never emitted.
+        block.extend(emitter.finish(ctx.expressions));
+        let six = ctx
+            .expressions
+            .append(E::Literal(crate::Literal::U32(26)), span);
+        let zero = ctx
+            .expressions
+            .append(E::Literal(crate::Literal::U32(0)), span);
+        emitter.start(ctx.expressions);
+        let mut add = |e: E| ctx.expressions.append(e, span);
+        let six = add(E::Splat { size, value: six });
+        let o = add(E::Binary {
+            op: B::ShiftLeft,
+            left: offset,
+            right: six,
+        });
+        let o = add(E::Binary {
+            op: B::ShiftRight,
+            left: o,
+            right: six,
+        });
+        let o = add(E::As {
+            expr: o,
+            kind: crate::ScalarKind::Float,
+            convert: Some(4),
+        });
+        let texels = add(E::ImageQuery {
+            image,
+            query: crate::ImageQuery::Size { level: Some(zero) },
+        });
+        let texels = add(E::As {
+            expr: texels,
+            kind: crate::ScalarKind::Float,
+            convert: Some(4),
+        });
+        let shift = add(E::Binary {
+            op: B::Divide,
+            left: o,
+            right: texels,
+        });
+        Ok(add(E::Binary {
+            op: B::Add,
+            left: coordinate,
+            right: shift,
+        }))
     }
 
     pub(super) fn parse_image_query_size(

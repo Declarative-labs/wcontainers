@@ -1500,6 +1500,15 @@ pub fn webgpu() -> wcontainers_gpu_webgpu::WebGpu {
 /// The WebGPU back end on wgpu's `backends`: Vulkan for what wgpu's Direct3D 12 path lacks (clip
 /// distances), as Chrome's WebGPU has it on Direct3D 12.
 pub fn webgpu_on(backends: wgpu::Backends) -> wcontainers_gpu_webgpu::WebGpu {
+    webgpu_with(backends, wgpu::Features::empty())
+}
+
+/// The WebGPU back end on wgpu's `backends`, its device made with `more` wgpu features than the back
+/// end asks for (those a test needs before the back end asks for them).
+pub fn webgpu_with(
+    backends: wgpu::Backends,
+    more: wgpu::Features,
+) -> wcontainers_gpu_webgpu::WebGpu {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = backends;
     let instance = wgpu::Instance::new(desc);
@@ -1511,10 +1520,10 @@ pub fn webgpu_on(backends: wgpu::Backends) -> wcontainers_gpu_webgpu::WebGpu {
     let info = adapter.get_info();
     assert_ne!(info.device_type, wgpu::DeviceType::Cpu, "{}", info.name);
     eprintln!("webgpu: {} ({:?})", info.name, info.backend);
-    let (device, queue) = pollster::block_on(
-        adapter.request_device(&wcontainers_gpu_webgpu::WebGpu::device_descriptor(&adapter)),
-    )
-    .unwrap();
+    let mut device_desc = wcontainers_gpu_webgpu::WebGpu::device_descriptor(&adapter);
+    assert!(adapter.features().contains(more), "{more:?}");
+    device_desc.required_features |= more;
+    let (device, queue) = pollster::block_on(adapter.request_device(&device_desc)).unwrap();
     wcontainers_gpu_webgpu::WebGpu::new(&adapter, device, queue)
 }
 

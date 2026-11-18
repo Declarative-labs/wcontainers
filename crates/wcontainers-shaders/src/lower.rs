@@ -59,10 +59,12 @@ pub(crate) fn output_modes(asked: &[(u32, Interpolation)], location: u32) -> u64
 }
 
 /// Turns off WGSL's derivative uniformity check for the module: Direct3D takes derivatives and
-/// implicit-level samples in any control flow, giving helper lanes their values.
+/// implicit-level samples in any control flow, giving helper lanes their values. Likewise WGSL's
+/// subgroup uniformity check where the module has subgroup operations: Direct3D's wave operations
+/// run over the lanes active where they are reached.
 pub(crate) fn derivatives_anywhere(module: &mut Module) {
     use naga::diagnostic_filter as d;
-    let filter = module.diagnostic_filters.append(
+    let mut filter = module.diagnostic_filters.append(
         d::DiagnosticFilterNode {
             inner: d::DiagnosticFilter {
                 new_severity: d::Severity::Off,
@@ -74,6 +76,21 @@ pub(crate) fn derivatives_anywhere(module: &mut Module) {
         },
         Span::UNDEFINED,
     );
+    if module.uses_subgroups() {
+        filter = module.diagnostic_filters.append(
+            d::DiagnosticFilterNode {
+                inner: d::DiagnosticFilter {
+                    new_severity: d::Severity::Off,
+                    // A rule of WGSL's that naga does not check, so it has no name of naga's own.
+                    triggering_rule: d::FilterableTriggeringRule::Unknown(
+                        "subgroup_uniformity".into(),
+                    ),
+                },
+                parent: Some(filter),
+            },
+            Span::UNDEFINED,
+        );
+    }
     module.diagnostic_filter_leaf = Some(filter);
 }
 
@@ -202,6 +219,9 @@ struct Lowering<'a> {
     tessellation: Option<hull::Tessellation>,
     /// Typed buffers read through storage buffers, by declaring id.
     texels: HashMap<u32, TexelBuffer>,
+    /// Under Direct3D 12's numbering (shader model 5.1), every resource's (kind rank, space,
+    /// register), sorted: a resource's slot is its place among its kind's.
+    spaces: Option<Vec<(u32, u32, u32)>>,
 }
 
 impl<'a> Lowering<'a> {
@@ -231,6 +251,20 @@ impl<'a> Lowering<'a> {
         };
         let mut module = Module::default();
         derivatives_anywhere(&mut module);
+        let spaces = ir.spaces.then(|| {
+            let mut order: Vec<_> = ir
+                .ops
+                .iter()
+                .filter_map(|op| {
+                    let kind = declared_kind(op)?;
+                    let [space, register] = [0, 1].map(|i| op.lits.get(i).map_or(0, |&l| l as u32));
+                    Some((rank(kind), space, register))
+                })
+                .collect();
+            order.sort_unstable();
+            order.dedup();
+            order
+        });
         Ok(Lowering {
             ir,
             variant,
@@ -271,7 +305,29 @@ impl<'a> Lowering<'a> {
                 }
             }),
             texels: HashMap::default(),
+            spaces,
         })
+    }
+
+    /// The slot of a resource of `kind` at `space` and `register`: the register under Direct3D 11's
+    /// numbering, which knows one space, and its place among its kind's in (space, register) order
+    /// under Direct3D 12's (6.4), as the DXIL route numbers them.
+    fn slot(&self, kind: SlotKind, space: u32, register: u32) -> Result<u32> {
+        let Some(order) = &self.spaces else {
+            return match space {
+                0 => Ok(register),
+                _ => Err(unsupported("RegisterSpace")),
+            };
+        };
+        let key = (rank(kind), space, register);
+        let first = order.partition_point(|o| o.0 < key.0);
+        Ok((order.partition_point(|o| *o < key) - first) as u32)
+    }
+
+    /// The slot of the resource declaration `op` of `kind`.
+    fn declared_slot(&self, kind: SlotKind, op: &Op) -> Result<u32> {
+        let [space, register] = [0, 1].map(|i| op.lits.get(i).map_or(0, |&l| l as u32));
+        self.slot(kind, space, register)
     }
 
     // Types.
@@ -550,7 +606,7 @@ impl<'a> Lowering<'a> {
                         self.resource_in(id, op, slot, ty, space, None, false)?;
                     }
                     _ if storage
-                        && op.lits.get(1).is_some_and(|&r| {
+                        && self.declared_slot(SlotKind::Storage, op).is_ok_and(|r| {
                             r < 64 && self.variant.texels_through_buffer >> r & 1 != 0
                         }) =>
                     {
@@ -647,7 +703,12 @@ impl<'a> Lowering<'a> {
         if self.stage == SourceStage::Geometry {
             return Err(unsupported("TypedBufferInGeometry"));
         }
-        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let kind = if storage {
+            SlotKind::Storage
+        } else {
+            SlotKind::Texture
+        };
+        let register = self.declared_slot(kind, op)?;
         let formats = if storage {
             &self.variant.storage_formats
         } else {
@@ -738,7 +799,7 @@ impl<'a> Lowering<'a> {
         if self.stage == SourceStage::Geometry {
             return Err(unsupported("TexelsThroughBufferInGeometry"));
         }
-        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let register = self.declared_slot(SlotKind::Storage, op)?;
         let format = self
             .variant
             .storage_formats
@@ -800,7 +861,7 @@ impl<'a> Lowering<'a> {
         dim: ImageDimension,
         arrayed: bool,
     ) -> Result<Handle<Type>> {
-        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let register = self.declared_slot(SlotKind::Storage, op)?;
         let format = self
             .variant
             .storage_formats
@@ -872,12 +933,8 @@ impl<'a> Lowering<'a> {
         if count != 1 {
             return Err(unsupported("ResourceArray"));
         }
-        // Direct3D 11's numbering knows one space; other spaces are numbered by a root signature.
-        if space_index != 0 {
-            return Err(unsupported("RegisterSpace"));
-        }
         let binding = slot
-            .binding(register)
+            .binding(self.slot(slot, space_index, register)?)
             .ok_or(unsupported("BindingsBeyondLimit"))?;
         let prefix = match slot {
             SlotKind::Uniform => "cb",
@@ -886,8 +943,12 @@ impl<'a> Lowering<'a> {
             SlotKind::Storage => "u",
             SlotKind::Counter => "c",
         };
+        let name = match space_index {
+            0 => format!("{prefix}{register}"),
+            _ => format!("{prefix}{register}_space{space_index}"),
+        };
         let var = self.global(
-            format!("{prefix}{register}"),
+            name,
             space,
             Some(ResourceBinding {
                 group: self.set,
@@ -914,6 +975,7 @@ impl<'a> Lowering<'a> {
             set: self.set,
             binding,
             added: None,
+            stride: 0,
         });
         Ok(())
     }
@@ -3877,11 +3939,14 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         let image = self.add(b, Expression::GlobalVariable(res.var));
         let sampler = self.add(b, Expression::GlobalVariable(sampler_res.var));
         let array_index = self.layer(b, r[2])?;
-        let coordinate = self.coords(b, k, r[3], true)?;
-        let offset = if r[4] != 0 {
-            Some(self.offset_constant(b, k, r[4])?)
-        } else {
+        let mut coordinate = self.coords(b, k, r[3], true)?;
+        let offset = if r[4] == 0 {
             None
+        } else if gather && self.l.ir.op(r[4])?.code != code::CONSTANT {
+            coordinate = self.offset_coordinate(b, image, coordinate, r[4])?;
+            None
+        } else {
+            Some(self.offset_constant(b, k, r[4])?)
         };
         let depth_ref_id = if gather { r[5] } else { r[10] };
         let depth_ref = if depth_ref_id != 0 {
@@ -3992,9 +4057,54 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         Ok(self.add(b, Expression::Constant(c)))
     }
 
+    /// A gather's offset given at run time (`gather4_po`), which the common form takes only as a
+    /// constant: the coordinate moved by the offset in texels of level 0, which picks the same four
+    /// texels. Direct3D takes each component's low six bits, signed.
+    fn offset_coordinate(
+        &mut self,
+        b: &mut Block,
+        image: Handle<Expression>,
+        coordinate: Handle<Expression>,
+        id: u32,
+    ) -> Result<Handle<Expression>> {
+        let o = self.get_as(b, id, Scalar::I32)?;
+        let o = self.e.swizzle(&mut self.f, b, o, 0, 2)?;
+        let six = self.splat_lit(b, Literal::U32(26), 2)?;
+        let o = self.bin(b, BinaryOperator::ShiftLeft, o, six);
+        let o = self.bin(b, BinaryOperator::ShiftRight, o, six);
+        let o = self.add(
+            b,
+            Expression::As {
+                expr: o,
+                kind: ScalarKind::Float,
+                convert: Some(4),
+            },
+        );
+        let zero = self.lit(b, Literal::U32(0));
+        let size = self.add(
+            b,
+            Expression::ImageQuery {
+                image,
+                query: ImageQuery::Size { level: Some(zero) },
+            },
+        );
+        let size = self.add(
+            b,
+            Expression::As {
+                expr: size,
+                kind: ScalarKind::Float,
+                convert: Some(4),
+            },
+        );
+        let shift = self.bin(b, BinaryOperator::Divide, o, size);
+        Ok(self.bin(b, BinaryOperator::Add, coordinate, shift))
+    }
+
     fn slot_of(&self, desc: u32) -> Result<u32> {
-        let dcl = self.l.ir.op(desc)?.refs[0];
-        Ok(self.l.ir.op(dcl)?.lits.get(1).copied().unwrap_or(0) as u32)
+        let dcl = self.l.ir.op(self.l.ir.op(desc)?.refs[0])?;
+        let kind =
+            declared_kind(dcl).ok_or_else(|| malformed("a descriptor of no resource".into()))?;
+        self.l.declared_slot(kind, dcl)
     }
 
     fn image_load(&mut self, b: &mut Block, op: &Op) -> Result<Handle<Expression>> {
@@ -4539,4 +4649,23 @@ impl Lowering<'_> {
 fn non_finite(ty: &Ty, lits: &[u64]) -> bool {
     ty.members.iter().all(|m| m.scalar == scalar::F32)
         && lits.iter().any(|&l| !f32::from_bits(l as u32).is_finite())
+}
+
+/// The kind of slot a resource declaration takes, if `op` is one.
+fn declared_kind(op: &Op) -> Option<SlotKind> {
+    Some(match op.code {
+        code::DCL_SAMPLER => SlotKind::Sampler,
+        code::DCL_CBV => SlotKind::Uniform,
+        code::DCL_SRV => SlotKind::Texture,
+        code::DCL_UAV => SlotKind::Storage,
+        _ => return None,
+    })
+}
+
+/// A kind's place in the numbering's order; a counter is numbered by its view.
+fn rank(kind: SlotKind) -> u32 {
+    match kind {
+        SlotKind::Counter => SlotKind::Storage as u32,
+        k => k as u32,
+    }
 }

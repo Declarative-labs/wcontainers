@@ -3,7 +3,7 @@
 //! (buffers written by a copy, a storage view and the CPU; identical textures at one offset), copy
 //! and compute queues waiting on each other and on a late CPU signal, binary occlusion resolved,
 //! read back and used by `SetPredication`, `ExecuteIndirect`, pipeline and stream output
-//! statistics, geometry shaders, and timestamps.
+//! statistics, geometry shaders, timestamps, and views a vertex shader reads in the program.
 
 use std::cell::Cell;
 use std::fmt::Write;
@@ -76,6 +76,7 @@ pub const CASES: &[&str] = &[
     "geometry",
     "timestamps",
     "filter-depth",
+    "vertex-views",
 ];
 
 /// Runs case `name` and returns its line of results.
@@ -109,6 +110,7 @@ pub fn run(name: &str) -> Result<String> {
             "geometry" => geometry(&c),
             "timestamps" => timestamps(&c),
             "filter-depth" => filter_depth(&c),
+            "vertex-views" => vertex_views(&c),
             _ => panic!("no case {name}"),
         }
     }
@@ -2861,5 +2863,321 @@ unsafe fn filter_depth(c: &Ctx) -> Result<String> {
             largest <= 2,
             shades.len() > 16
         ))
+    }
+}
+
+/// `source` compiled by the system's HLSL compiler for `target` (such as `vs_5_0`).
+unsafe fn compile(source: &str, target: windows::core::PCSTR) -> Result<Vec<u8>> {
+    unsafe {
+        use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
+        let mut code = None;
+        let mut errors = None;
+        let made = D3DCompile(
+            source.as_ptr().cast(),
+            source.len(),
+            None,
+            None,
+            None::<&ID3DInclude>,
+            s!("main"),
+            target,
+            0,
+            0,
+            &mut code,
+            Some(&mut errors),
+        );
+        if let Some(e) = &errors {
+            let text =
+                std::slice::from_raw_parts(e.GetBufferPointer().cast::<u8>(), e.GetBufferSize());
+            eprintln!("{}", String::from_utf8_lossy(text));
+        }
+        made?;
+        let code = code.unwrap();
+        Ok(
+            std::slice::from_raw_parts(code.GetBufferPointer().cast::<u8>(), code.GetBufferSize())
+                .to_vec(),
+        )
+    }
+}
+
+/// Points whose colours a vertex shader reads: typed buffers of `R32G32B32A32_FLOAT` and
+/// `R8G8B8A8_UNORM`, a texture through a view with a component mapping, and a texture through a
+/// sampler with a level-of-detail bias; drawn directly (rows 0 to 3), and the textures alone by
+/// `ExecuteIndirect` of two instances (rows 4 to 11), both from a first vertex `SV_VertexID`
+/// leaves out. Prints the colours of 4 by 13 pixels.
+unsafe fn vertex_views(c: &Ctx) -> Result<String> {
+    const VERTEX: &str = r"
+        Buffer<float4> wide : register(t0);
+        Buffer<float4> packed : register(t1);
+        Texture2D<float4> mapped : register(t2);
+        Texture2D<float4> plain : register(t3);
+        SamplerState point_sampler : register(s0);
+        SamplerState biased : register(s1);
+        struct O { float4 pos : SV_Position; float4 color : COLOR; };
+        O main(uint id : SV_VertexID, uint instance : SV_InstanceID)
+        {
+            O o;
+            uint i = id % 4, row = id / 4 + instance * 4;
+            o.pos = float4((i + 0.5) / 32.0 - 1.0, 1.0 - (row + 0.5) / 32.0, 0.0, 1.0);
+            float2 uv = float2((i + 0.5) / 4.0, 0.5);
+            switch (id / 4)
+            {
+                case 0: o.color = wide[i]; break;
+                case 1: o.color = packed[i]; break;
+                case 2: o.color = mapped.SampleLevel(point_sampler, uv, 0); break;
+                default: o.color = plain.SampleLevel(biased, uv, 0); break;
+            }
+            return o;
+        }";
+    const PIXEL: &str = r"
+        float4 main(float4 pos : SV_Position, float4 color : COLOR) : SV_Target
+        {
+            return color;
+        }";
+    unsafe {
+        let vs = compile(VERTEX, s!("vs_5_0"))?;
+        // Textures only, four rows lower: drawn by `ExecuteIndirect`.
+        let textures = VERTEX
+            .replace("wide[i]", "mapped.SampleLevel(point_sampler, uv, 1)")
+            .replace("packed[i]", "plain.SampleLevel(point_sampler, uv, 1)")
+            .replace("instance * 4", "instance * 4 + 4");
+        let vs_textures = compile(&textures, s!("vs_5_0"))?;
+        let ps = compile(PIXEL, s!("ps_5_0"))?;
+        let range = D3D12_DESCRIPTOR_RANGE {
+            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            NumDescriptors: 4,
+            ..Default::default()
+        };
+        let params = [D3D12_ROOT_PARAMETER {
+            ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+            Anonymous: D3D12_ROOT_PARAMETER_0 {
+                DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                    NumDescriptorRanges: 1,
+                    pDescriptorRanges: &range,
+                },
+            },
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
+        }];
+        let sampler = |register, bias| D3D12_STATIC_SAMPLER_DESC {
+            Filter: D3D12_FILTER_MIN_MAG_MIP_POINT,
+            AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            MipLODBias: bias,
+            MaxLOD: f32::MAX,
+            ShaderRegister: register,
+            ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
+            ..Default::default()
+        };
+        let samplers = [sampler(0, 0.0), sampler(1, 1.0)];
+        let mut blob = None;
+        D3D12SerializeRootSignature(
+            &D3D12_ROOT_SIGNATURE_DESC {
+                NumParameters: params.len() as u32,
+                pParameters: params.as_ptr(),
+                NumStaticSamplers: samplers.len() as u32,
+                pStaticSamplers: samplers.as_ptr(),
+                Flags: D3D12_ROOT_SIGNATURE_FLAG_NONE,
+            },
+            D3D_ROOT_SIGNATURE_VERSION_1_0,
+            &mut blob,
+            None,
+        )?;
+        let blob = blob.unwrap();
+        let root: ID3D12RootSignature = c.device.CreateRootSignature(
+            0,
+            std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize()),
+        )?;
+        let mut blend = D3D12_BLEND_DESC::default();
+        blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8;
+        let code = |b: &[u8]| D3D12_SHADER_BYTECODE {
+            pShaderBytecode: b.as_ptr().cast(),
+            BytecodeLength: b.len(),
+        };
+        let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+            pRootSignature: transmute_copy(&root),
+            VS: code(&vs),
+            PS: code(&ps),
+            BlendState: blend,
+            SampleMask: u32::MAX,
+            RasterizerState: D3D12_RASTERIZER_DESC {
+                FillMode: D3D12_FILL_MODE_SOLID,
+                CullMode: D3D12_CULL_MODE_NONE,
+                DepthClipEnable: true.into(),
+                ..Default::default()
+            },
+            PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT,
+            NumRenderTargets: 1,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            ..Default::default()
+        };
+        desc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        let pso: ID3D12PipelineState = c.device.CreateGraphicsPipelineState(&desc)?;
+        desc.VS = code(&vs_textures);
+        let pso_textures: ID3D12PipelineState = c.device.CreateGraphicsPipelineState(&desc)?;
+
+        let floats: Vec<u8> = [
+            [0.25f32, 0.5, 0.75, 1.0],
+            [1.0, 0.0, 0.5, 0.25],
+            [0.0, 1.0, 0.125, 0.5],
+            [0.5, 0.25, 1.0, 0.0],
+        ]
+        .iter()
+        .flatten()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+        let wide = c.upload(&floats)?;
+        let packed = c.upload(&u32s(&[0x8040_20ff, 0x11223344, 0xff00ff00, 0x7f80_c0e0]))?;
+        // Level 0: four texels; level 1: two, at the next 512-byte placement.
+        let mut texels = u32s(&[0xff0000ff, 0xff00ff00, 0xffff0000, 0x80402010]);
+        texels.resize(512, 0);
+        texels.extend(u32s(&[0xff808080, 0xff123456]));
+        let texels = c.upload(&texels)?;
+        let texture = c.committed(
+            D3D12_HEAP_TYPE_DEFAULT,
+            &D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                Width: 4,
+                Height: 1,
+                DepthOrArraySize: 1,
+                MipLevels: 2,
+                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                ..Default::default()
+            },
+            D3D12_RESOURCE_STATE_COPY_DEST,
+        )?;
+        let views: ID3D12DescriptorHeap =
+            c.device.CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                NumDescriptors: 4,
+                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+                ..Default::default()
+            })?;
+        let step = c
+            .device
+            .GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
+            as usize;
+        let at = |i: usize| D3D12_CPU_DESCRIPTOR_HANDLE {
+            ptr: views.GetCPUDescriptorHandleForHeapStart().ptr + i * step,
+        };
+        let buffer_view = |format| D3D12_SHADER_RESOURCE_VIEW_DESC {
+            Format: format,
+            ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
+            Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Buffer: D3D12_BUFFER_SRV {
+                    NumElements: 4,
+                    ..Default::default()
+                },
+            },
+        };
+        c.device.CreateShaderResourceView(
+            &wide,
+            Some(&buffer_view(DXGI_FORMAT_R32G32B32A32_FLOAT)),
+            at(0),
+        );
+        c.device.CreateShaderResourceView(
+            &packed,
+            Some(&buffer_view(DXGI_FORMAT_R8G8B8A8_UNORM)),
+            at(1),
+        );
+        // Blue, red, one, green: D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(2, 0, 5, 1).
+        let mapping = 2 | (5 << 6) | (1 << 9) | (1 << 12);
+        let texture_view = |mapping| D3D12_SHADER_RESOURCE_VIEW_DESC {
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
+            Shader4ComponentMapping: mapping,
+            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_SRV {
+                    MipLevels: u32::MAX,
+                    ..Default::default()
+                },
+            },
+        };
+        c.device
+            .CreateShaderResourceView(&texture, Some(&texture_view(mapping)), at(2));
+        c.device.CreateShaderResourceView(
+            &texture,
+            Some(&texture_view(D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING)),
+            at(3),
+        );
+        let (signature, args) = arguments(
+            c,
+            D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
+            16,
+            &u32s(&[16, 2, 5, 0]),
+        )?;
+
+        let (_a, list) = c.list(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
+        for level in 0..2u32 {
+            list.CopyTextureRegion(
+                &D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: transmute_copy(&texture),
+                    Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        SubresourceIndex: level,
+                    },
+                },
+                0,
+                0,
+                0,
+                &D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: transmute_copy(&texels),
+                    Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        PlacedFootprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT {
+                            Offset: u64::from(level) * 512,
+                            Footprint: D3D12_SUBRESOURCE_FOOTPRINT {
+                                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                                Width: 4 >> level,
+                                Height: 1,
+                                Depth: 1,
+                                RowPitch: 256,
+                            },
+                        },
+                    },
+                },
+                None,
+            );
+        }
+        list.ResourceBarrier(&[
+            transition(
+                &texture,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            ),
+            transition(
+                &args,
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
+            ),
+        ]);
+        let (target, _heap, _rtv) = c.target(&list)?;
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_POINTLIST);
+        list.SetDescriptorHeaps(&[Some(views.clone())]);
+        list.SetGraphicsRootSignature(&root);
+        list.SetGraphicsRootDescriptorTable(0, views.GetGPUDescriptorHandleForHeapStart());
+        list.SetPipelineState(&pso);
+        list.DrawInstanced(16, 1, 7, 0);
+        list.SetPipelineState(&pso_textures);
+        list.ExecuteIndirect(&signature, 1, &args, 0, None, 0);
+        c.run(&list)?;
+        let pixels = c.pixels(&target, D3D12_RESOURCE_STATE_RENDER_TARGET)?;
+        let mut line = String::new();
+        for row in 0..13usize {
+            let at = row * SIZE as usize * 4;
+            let colours: Vec<String> = pixels[at..at + 16]
+                .chunks(4)
+                .map(|p| format!("{:08x}", u32::from_le_bytes(p.try_into().unwrap())))
+                .collect();
+            write!(line, "row {row}: {} ", colours.join(" ")).unwrap();
+        }
+        Ok(line.trim_end().to_string())
     }
 }

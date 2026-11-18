@@ -35,8 +35,8 @@ if defined FAIL exit /b 1
 exit /b 0
 
 rem The suite on ANGLE with WEBGL_OFF, its output into %1; the summary, failures and the checks that
-rem passed having run only their refusal (their feature absent) are shown.
+rem passed with a route that ran nothing (its feature or format use absent) are shown.
 :angle
 cargo test -j 3 -p wcontainers-gpu-webgl --test suite -- --test-threads=1 --show-output > "%~1" 2>&1 || set FAIL=1
-findstr /c:"test result:" /c:"FAILED" /c:"panicked" /c:"not run, feature absent:" "%~1"
+findstr /c:"test result:" /c:"FAILED" /c:"panicked" /c:"not run:" "%~1"
 exit /b 0

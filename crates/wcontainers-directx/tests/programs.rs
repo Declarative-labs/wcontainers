@@ -1,8 +1,8 @@
 //! Our own Direct3D 11 programs (the examples `own_handled`, `own_refused`, `own_edges`,
 //! `own_depth_copy`, `own_swap_chain`, `own_volumes`, `own_queries`, `own_interfaces`,
-//! `own_indirect`, `own_min_lod`, `own_packed`, `own_nv12`, `own_cases` and `lifetimes`) run as ordinary
-//! programs, once beside the system's d3d11.dll and once with our forwarding d3d11.dll and library
-//! beside them, and what each printed compared.
+//! `own_indirect`, `own_min_lod`, `own_packed`, `own_nv12`, `own_yuy2`, `own_cases`,
+//! `own_level10` and `lifetimes`) run as ordinary programs, once beside the system's d3d11.dll and once with our
+//! forwarding d3d11.dll and library beside them, and what each printed compared.
 #![cfg(windows)]
 
 mod common;
@@ -14,10 +14,16 @@ use common::{fresh, place_libraries, profile};
 
 /// Runs example `name` from `dir` (copying it there) with `args`, returning its exit code and output.
 fn run_with(name: &str, dir: &Path, args: &[&str]) -> (i32, String) {
+    run_env(name, dir, args, &[])
+}
+
+/// As [`run_with`], with environment variables `env` set.
+fn run_env(name: &str, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, String) {
     let exe = dir.join(format!("{name}.exe"));
     std::fs::copy(profile().join(format!("examples/{name}.exe")), &exe).unwrap();
     let out = Command::new(&exe)
         .args(args)
+        .envs(env.iter().copied())
         .current_dir(dir)
         .output()
         .unwrap();
@@ -137,6 +143,18 @@ fn two_pixel_formats_sample_load_and_copy_as_direct3d_does() {
 }
 
 #[test]
+fn yuy2_pixel_pairs_view_write_copy_and_map_as_direct3d_does() {
+    let (code, want) = run("own_yuy2", &place("yuy2-system", false));
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run("own_yuy2", &place("yuy2-ours", true));
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
 fn nv12_planes_view_write_copy_and_map_as_direct3d_does() {
     let (code, want) = run("own_nv12", &place("nv12-system", false));
     assert_eq!(code, 0, "{want}");
@@ -171,6 +189,41 @@ fn case(name: &str) {
         }
     }
     assert_eq!(want.lines().count(), got.lines().count());
+}
+
+/// Runs one case of `own_level10` beside both libraries and compares what each printed, line by
+/// line. Built on WebGL 2, ours runs without OES_draw_buffers_indexed, as browsers may.
+fn level10(name: &str) {
+    let label = |side: &str| place(&format!("level10-{name}-{side}"), side == "ours");
+    let (code, want) = run_with("own_level10", &label("system"), &[name]);
+    assert_eq!(code, 0, "{want}");
+    let off: &[(&str, &str)] = if cfg!(feature = "webgl") {
+        &[("WEBGL_OFF", "OES_draw_buffers_indexed")]
+    } else {
+        &[]
+    };
+    let (code, got) = run_env("own_level10", &label("ours"), &[name], off);
+    assert_eq!(code, 0, "{got}");
+    for (w, g) in want.lines().zip(got.lines()) {
+        assert_eq!(w, g, "the first line that differs");
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
+}
+
+#[test]
+fn targets_blended_and_masked_each_their_own_way_at_10_0_as_direct3d_does() {
+    level10("targets");
+}
+
+#[test]
+fn view_sizes_and_level_counts_at_10_0_as_direct3d_does() {
+    level10("resinfo");
+}
+
+#[test]
+#[ignore = "known failure: an empty slot's size reads 1 by 1 (its stand-in's), where Direct3D gives 0"]
+fn an_empty_slots_size_and_level_count_at_10_0_as_direct3d_does() {
+    level10("resinfo_empty");
 }
 
 #[test]

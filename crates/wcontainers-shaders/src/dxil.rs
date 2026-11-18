@@ -229,6 +229,7 @@ pub(crate) fn lower(
             *access |= naga::StorageAccess::LOAD;
         }
     }
+    sample_mask_input(&mut module);
     unconverted(&module)?;
     if !module.overrides.is_empty() {
         // dxil-spirv's only specialisation constant here: the targets' sample count.
@@ -290,6 +291,7 @@ pub(crate) fn lower(
         let into = &mut reflection.outputs;
         stage_values(&module, r.ty, r.binding.as_ref(), pixel, &outputs, into);
     }
+    helper_invocations(&mut module);
     let slots = bindings(&mut module, &resources, set, &mut reflection)?;
     reflection.sampled_pairs = sampled_pairs(&module, &slots)?;
     draw_bases(&mut module, variant, &mut reflection)?;
@@ -371,6 +373,65 @@ fn pixel_extras(module: &Module, texel_atomics: bool) -> StageExtras {
     }
 }
 
+/// dxil-spirv declares the coverage input as SPIR-V's one-element array, which the reader keeps; the
+/// common form takes a u32. The entry point's argument becomes the u32, stored into element 0 of the
+/// reader's private copy.
+fn sample_mask_input(module: &mut Module) {
+    let u32_ty = module.types.insert(
+        Type {
+            name: None,
+            inner: TypeInner::Scalar(Scalar::U32),
+        },
+        Span::UNDEFINED,
+    );
+    let Some(ep) = module.entry_points.first_mut() else {
+        return;
+    };
+    let f = &mut ep.function;
+    let Some(index) = f.arguments.iter().position(|a| {
+        matches!(a.binding, Some(Binding::BuiltIn(BuiltIn::SampleMask)))
+            && matches!(module.types[a.ty].inner, TypeInner::Array { .. })
+    }) else {
+        return;
+    };
+    f.arguments[index].ty = u32_ty;
+    let argument = f
+        .expressions
+        .iter()
+        .find(|(_, e)| matches!(e, Expression::FunctionArgument(i) if *i as usize == index))
+        .map(|(h, _)| h);
+    let Some(argument) = argument else {
+        return;
+    };
+    let mut body = naga::Block::with_capacity(f.body.len());
+    for (s, span) in core::mem::take(&mut f.body).span_into_iter() {
+        match s {
+            Statement::Store { pointer, value } if value == argument => {
+                let element = f.expressions.append(
+                    Expression::AccessIndex {
+                        base: pointer,
+                        index: 0,
+                    },
+                    span,
+                );
+                body.push(
+                    Statement::Emit(Range::new_from_bounds(element, element)),
+                    span,
+                );
+                body.push(
+                    Statement::Store {
+                        pointer: element,
+                        value,
+                    },
+                    span,
+                );
+            }
+            s => body.push(s, span),
+        }
+    }
+    f.body = body;
+}
+
 /// Refuses by name what the reader's module has that the common form cannot take as it stands.
 fn unconverted(module: &Module) -> Result<(), ConvertError> {
     let ep = module
@@ -422,6 +483,24 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     }
     if builtins.iter().any(|(b, _)| *b == BuiltIn::PrimitiveIndex) {
         return Err(ConvertError::Unsupported("PrimitiveId"));
+    }
+    // WebGPU's subgroups serve pixel and compute programs only, and have no subgroup barrier.
+    if module.uses_subgroups() && ep.stage == naga::ShaderStage::Vertex {
+        return Err(ConvertError::Unsupported("SubgroupsInVertex"));
+    }
+    let functions = core::iter::once(&ep.function).chain(module.functions.iter().map(|(_, f)| f));
+    for f in functions {
+        let mut body = f.body.clone();
+        let mut barrier = false;
+        each_block(&mut body, &mut |b| {
+            barrier |= b.iter().any(|s| {
+                matches!(s, Statement::ControlBarrier(b) | Statement::MemoryBarrier(b)
+                    if b.contains(naga::Barrier::SUB_GROUP))
+            });
+        });
+        if barrier {
+            return Err(ConvertError::Unsupported("SubgroupBarrier"));
+        }
     }
     // dxil-spirv reads a component of a constant buffer picked at run time through a second view of
     // the buffer as scalars, 4 bytes apart; WebGPU's uniform arrays step by 16 bytes, and WGSL takes
@@ -486,6 +565,105 @@ fn each_block(block: &mut naga::Block, f: &mut impl FnMut(&mut naga::Block)) {
             _ => {}
         }
     }
+}
+
+/// Sets the flag naga's SPIR-V reader reads for `OpIsHelperInvocationEXT` (`IsHelperLane()` and the
+/// guards dxil-spirv puts around wave operations in pixel shaders). WGSL has no helper query, so a
+/// pixel program takes it from its coverage, which is zero in helper invocations, and sets it at each
+/// demotion (`Kill`, which WGSL's `discard` makes a helper). Elsewhere the flag stays false.
+fn helper_invocations(module: &mut Module) {
+    let Some((flag, _)) = module
+        .global_variables
+        .iter()
+        .find(|(_, v)| v.name.as_deref() == Some(naga::front::spv::HELPER_INVOCATION))
+    else {
+        return;
+    };
+    let demotions = |f: &mut Function| {
+        let pointer = f
+            .expressions
+            .append(Expression::GlobalVariable(flag), Span::UNDEFINED);
+        let yes = f
+            .expressions
+            .append(Expression::Literal(Literal::Bool(true)), Span::UNDEFINED);
+        each_block(&mut f.body, &mut |block| {
+            let mut out = naga::Block::with_capacity(block.len());
+            for (s, span) in core::mem::take(block).span_into_iter() {
+                if matches!(s, Statement::Kill) {
+                    out.push(
+                        Statement::Store {
+                            pointer,
+                            value: yes,
+                        },
+                        span,
+                    );
+                }
+                out.push(s, span);
+            }
+            *block = out;
+        });
+    };
+    for (_, f) in module.functions.iter_mut() {
+        demotions(f);
+    }
+    for ep in &mut module.entry_points {
+        demotions(&mut ep.function);
+    }
+    let ep = &mut module.entry_points[0];
+    if ep.stage != naga::ShaderStage::Fragment {
+        return;
+    }
+    let u32_ty = module.types.insert(
+        Type {
+            name: None,
+            inner: TypeInner::Scalar(Scalar::U32),
+        },
+        Span::UNDEFINED,
+    );
+    let f = &mut ep.function;
+    let index = match f
+        .arguments
+        .iter()
+        .position(|a| matches!(a.binding, Some(Binding::BuiltIn(BuiltIn::SampleMask))))
+    {
+        Some(i) => i,
+        None => {
+            f.arguments.push(FunctionArgument {
+                name: Some("coverage".into()),
+                ty: u32_ty,
+                binding: Some(Binding::BuiltIn(BuiltIn::SampleMask)),
+            });
+            f.arguments.len() - 1
+        }
+    };
+    let e = &mut f.expressions;
+    let coverage = e.append(Expression::FunctionArgument(index as u32), Span::UNDEFINED);
+    let zero = e.append(Expression::Literal(Literal::U32(0)), Span::UNDEFINED);
+    let helper = e.append(
+        Expression::Binary {
+            op: naga::BinaryOperator::Equal,
+            left: coverage,
+            right: zero,
+        },
+        Span::UNDEFINED,
+    );
+    let pointer = e.append(Expression::GlobalVariable(flag), Span::UNDEFINED);
+    let mut start = naga::Block::new();
+    start.push(
+        Statement::Emit(Range::new_from_bounds(helper, helper)),
+        Span::UNDEFINED,
+    );
+    start.push(
+        Statement::Store {
+            pointer,
+            value: helper,
+        },
+        Span::UNDEFINED,
+    );
+    for (s, span) in core::mem::take(&mut f.body).span_into_iter() {
+        start.push(s, span);
+    }
+    f.body = start;
 }
 
 /// An f32 to integer conversion: the integer's kind and the vector size.
@@ -1277,6 +1455,7 @@ fn bindings(
             set,
             binding: number,
             added: None,
+            stride: 0,
         });
         slots.push((handle, slot));
     }

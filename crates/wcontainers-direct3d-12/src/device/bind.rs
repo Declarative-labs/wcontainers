@@ -62,6 +62,17 @@ pub(super) const VERTEX: u32 = 1;
 pub(super) const GEOMETRY: u32 = 4;
 pub(super) const PIXEL: u32 = 5;
 
+/// Whether the program of binding `b`'s stage is converted again for what is bound to it:
+/// compute and pixel stages, and vertex stages drawn directly (run by the back end's vertex
+/// stage alone, not before a geometry or domain stage).
+fn reconverted(b: &StageBinding) -> bool {
+    match b.visibility {
+        0 | PIXEL => true,
+        VERTEX => b.stages == StageSet::VERTEX,
+        _ => false,
+    }
+}
+
 /// The bindings of a converted stage of the API's `visibility` (0 for compute), run by the back
 /// end's `stages`, with the sizes its uniform blocks declare. Bindings the conversion added for
 /// pulled vertex streams are left out: the draw binds them.
@@ -280,7 +291,7 @@ impl RootState {
 /// not the pipeline's own.
 pub(super) type BoundSets<B> = (
     [Option<<B as Backend>::BindingSet>; MAX_BINDING_SETS],
-    Option<(<B as Backend>::Program, Helpers)>,
+    Option<super::formats::BoundProgram<B>>,
 );
 
 /// A resource of a binding set, held while the set is made.
@@ -302,9 +313,9 @@ impl<B: Backend> Device<B> {
     /// of the API stages `only` (`D3D12_SHADER_VISIBILITY`s), or of every stage where it is
     /// empty. `extra` are
     /// read-only storage buffers (binding, buffer, offset, size) of the pulled vertex streams,
-    /// added to set 0 for the back end's stages `extra_stages`. With `program` (`Some` of
-    /// `bound_program`'s `vertex_variant`), also the pixel or compute program for what they
-    /// bind, whose added bindings they hold.
+    /// added to set 0 for the back end's stages `extra_stages`. With `program` (the vertex
+    /// program the draw starts from, `VertexKind::Own` for a dispatch), also the program for what
+    /// they bind (`bound_program`), whose added bindings they hold.
     pub(super) fn binding_sets(
         &mut self,
         state: &RootState,
@@ -312,7 +323,7 @@ impl<B: Backend> Device<B> {
         only: &[u32],
         extra: &[(u32, &B::Buffer, u64, u64)],
         extra_stages: StageSet,
-        program: Option<bool>,
+        program: Option<super::formats::VertexKind>,
     ) -> Result<BoundSets<B>, Error> {
         let mut sets: [Option<B::BindingSet>; MAX_BINDING_SETS] = Default::default();
         let mut bindings = std::mem::take(&mut self.pipelines[pid.0 as usize].bindings);
@@ -874,7 +885,7 @@ impl<B: Backend> Device<B> {
     /// its depth, or a float format without filtering), which the program then filters where a
     /// filtering sampler samples it (`formats.rs`).
     fn note_filtering(&mut self, v: &ResourceView, b: &StageBinding) -> Result<(), Error> {
-        if b.compared || !matches!(b.visibility, 0 | PIXEL) {
+        if b.compared || !reconverted(b) {
             return Ok(());
         }
         let stored = match self.resources.get(v.resource.0 as usize) {
@@ -985,7 +996,7 @@ impl<B: Backend> Device<B> {
 
     /// The texture view a shader resource view bound for `b` names. A component mapping other
     /// than what the format reads, and a multisampled array's layer count, are noted for the
-    /// program's variant (`formats.rs`); only pixel and compute programs are converted for them.
+    /// program's variant (`formats.rs`); the layer count for pixel and compute programs only.
     fn shader_resource(
         &mut self,
         v: &ResourceView,
@@ -1009,12 +1020,11 @@ impl<B: Backend> Device<B> {
             }) => (*desc, desc.mip_levels),
             _ => return Err(Error::NotImplemented("buffers read through views")),
         };
-        let reconverted = matches!(b.visibility, 0 | PIXEL);
         if let Some(map) = swizzle {
-            if !reconverted {
+            if !reconverted(b) {
                 return Err(Error::NotImplemented(
-                    "a component mapping or stencil view read in a vertex, geometry, hull or \
-                     domain shader",
+                    "a component mapping or stencil view read in a geometry, hull or domain \
+                     shader or a vertex shader before one",
                 ));
             }
             self.backend.slow_paths().hit(SlowPath::SwizzleInShader);
@@ -1069,7 +1079,7 @@ impl<B: Backend> Device<B> {
         if v.dimension != 7 {
             return self.texture_view(resource, desc);
         }
-        if layer_count != 1 && !reconverted {
+        if layer_count != 1 && !matches!(b.visibility, 0 | PIXEL) {
             return Err(Error::NotImplemented(
                 "a multisampled array of several layers read in a vertex, geometry, hull or \
                  domain shader",
@@ -1108,10 +1118,10 @@ impl<B: Backend> Device<B> {
             .push((b.visibility, b.binding.slot(), *v));
         let (bias, border) = crate::state::in_program(v, caps);
         if bias || border {
-            if !matches!(b.visibility, 0 | PIXEL) {
+            if !reconverted(b) {
                 return Err(Error::NotImplemented(
-                    "level-of-detail bias, border or mirror-once sampling in a vertex or \
-                     geometry shader",
+                    "level-of-detail bias, border or mirror-once sampling in a geometry, hull or \
+                     domain shader or a vertex shader before one",
                 ));
             }
             let sampler = b.binding.slot();

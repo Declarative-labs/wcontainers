@@ -77,10 +77,14 @@ pub enum Error {
     UnsupportedSignedness(spirv::Op),
     #[error("unsupported image load operand {0:#x}")]
     UnsupportedImageLoadOperand(u32),
+    #[error("unsupported image sample operand {0:#x}")]
+    UnsupportedImageSampleOperand(u32),
     #[error("unsupported image write operand {0:#x}")]
     UnsupportedImageWriteOperand(u32),
     #[error("unsupported memory access {0:#x} outside workgroup memory")]
     UnsupportedMemoryAccess(u32),
+    #[error("unsupported memory operand {mask:#x} at scope {scope}, wider than the workgroup")]
+    UnsupportedMemoryScope { mask: u32, scope: u32 },
     #[error("invalid parameter {0:?}")]
     InvalidParameter(spirv::Op),
     #[error("invalid operand count {1} for {0:?}")]

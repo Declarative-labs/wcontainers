@@ -108,6 +108,8 @@ pub struct Device<B: Backend> {
     pub(crate) tessellated: HashMap<(u64, u64, u64, u64, u64), crate::context::TessRun<B>>,
     /// The stage helper's filled sizes and primitive counts of a streaming draw.
     pub(crate) stream_filled: Option<Kept<B, B::Buffer>>,
+    /// Depth and stencil saved before a draw run once per group of targets, and its description.
+    pub(crate) split_depth: Option<(wcontainers_gpu::TextureDesc, Kept<B, B::Texture>)>,
     /// What the program's start built from the cache's record.
     pub(crate) warm: crate::cache::Warm<B>,
     /// Set once the device is removed; later work is dropped and the API reports the removal.
@@ -233,6 +235,7 @@ impl<B: Backend> Device<B> {
             blend: Rc::new(Blend {
                 desc: blend_desc,
                 gpu: Kept::new(blend, id(), Object::Blend, &graveyard),
+                groups: Vec::new(),
             }),
             depth_stencil: Rc::new(DepthStencil {
                 desc: ds_desc,
@@ -276,6 +279,7 @@ impl<B: Backend> Device<B> {
             staged: HashMap::new(),
             tessellated: HashMap::new(),
             stream_filled: None,
+            split_depth: None,
             warm,
             removed: None,
         })
@@ -304,10 +308,15 @@ impl<B: Backend> Device<B> {
             }
             return bits;
         }
-        if dxgi == format::NV12 {
-            // 2D textures of one level, through views of each plane's format.
+        if matches!(dxgi, format::NV12 | format::YUY2) {
+            // 2D textures of one level, through views of each plane's format (NV12) or of
+            // R8G8B8A8 (YUY2).
             let formats = &self.backend.caps().formats;
-            let uses = formats.get(Format::R8Unorm) & formats.get(Format::Rg8Unorm);
+            let uses = if dxgi == format::NV12 {
+                formats.get(Format::R8Unorm) & formats.get(Format::Rg8Unorm)
+            } else {
+                formats.get(Format::Rgba8Unorm)
+            };
             if uses.is_empty() {
                 return bits;
             }
@@ -318,7 +327,8 @@ impl<B: Backend> Device<B> {
                 (FormatUse::RENDER, RENDER_TARGET),
                 (FormatUse::COPY_OUT, CPU_LOCKABLE),
             ] {
-                if uses.contains(has) {
+                // Direct3D reports no target use of YUY2, though it takes target views of it.
+                if uses.contains(has) && !(dxgi == format::YUY2 && bit == RENDER_TARGET) {
                     bits |= bit;
                 }
             }
@@ -755,6 +765,20 @@ impl<B: Backend> Device<B> {
                 return not_implemented("NV12 textures of more than one level or with misc flags");
             }
         }
+        if d.format == format::YUY2 {
+            if d.dimension != TexDim::D2
+                || !d.width.is_multiple_of(2)
+                || d.sample_count > 1
+                || d.bind_flags & bind::DEPTH_STENCIL != 0
+            {
+                return Err(Error::InvalidArg(
+                    "a YUY2 texture is 2D, of one sample and of even width",
+                ));
+            }
+            if mips != 1 || d.misc_flags & !MISC_SHARED != 0 {
+                return not_implemented("YUY2 textures of more than one level or with misc flags");
+            }
+        }
         let drawn = bind::RENDER_TARGET | bind::UNORDERED_ACCESS;
         if d.bind_flags & drawn != 0
             && (d.bind_flags & bind::DEPTH_STENCIL != 0
@@ -800,6 +824,11 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg(
                 "a multisampled texture is 2D, of one level and default usage",
             ));
+        }
+        // The back ends' multisampled textures are one layer; holding an array as a texture per
+        // layer (plan 4.2) is not built here.
+        if d.sample_count > 1 && d.array_size > 1 {
+            return not_implemented("a multisampled texture of more than one layer");
         }
         if d.misc_flags
             & !(MISC_TEXTURECUBE
@@ -980,7 +1009,12 @@ impl<B: Backend> Device<B> {
         let gpu_desc = GpuTexture {
             dimension,
             format,
-            width: d.width,
+            // A YUY2 texel is a pixel pair.
+            width: if d.format == format::YUY2 {
+                d.width / 2
+            } else {
+                d.width
+            },
             height: d.height,
             depth_or_layers,
             mip_levels: mips,
@@ -1261,6 +1295,10 @@ impl<B: Backend> Device<B> {
             _ if texture.chroma.is_some() => {
                 format::view_format(v.format, format::R8_TYPELESS, texture.format)?
             }
+            // Direct3D also takes R8G8B8A8_SNORM target views of YUY2.
+            _ if t.format == format::YUY2 && kind == bind::RENDER_TARGET && v.format == 31 => {
+                (Format::Rgba8Snorm, false)
+            }
             _ => format::view_format(v.format, t.format, texture.format)?,
         };
         // Depth-stencil views take the D formats and only they; the others read depth through
@@ -1291,8 +1329,11 @@ impl<B: Backend> Device<B> {
                 _ => (ViewDimension::D2, v.first_layer, 1),
             }
         } else {
+            // A multisampled texture is one layer, which programs read as an array of one
+            // (`VariantKey::texture_layers`).
             let dimension = match v.dimension {
                 ViewDim::Texture1D | ViewDim::Texture2D | ViewDim::Texture2DMS => ViewDimension::D2,
+                ViewDim::Texture2DMSArray if multisampled => ViewDimension::D2,
                 ViewDim::Texture1DArray | ViewDim::Texture2DArray | ViewDim::Texture2DMSArray => {
                     ViewDimension::D2Array
                 }
@@ -1305,16 +1346,8 @@ impl<B: Backend> Device<B> {
                 _ => (dimension, v.first_layer, v.layer_count),
             }
         };
-        // Direct3D reads stencil in the second component; the interface's stencil views give it
-        // in the first.
-        if stencil
-            && kind == bind::SHADER_RESOURCE
-            && !self.backend.caps().has(Features::VIEW_SWIZZLE)
-        {
-            return not_implemented(
-                "stencil read through a view (Direct3D's second component needs a view swizzle)",
-            );
-        }
+        // Direct3D reads stencil in the second component and the interface's stencil views give it
+        // in the first: programs reading such a view move it (`StageVariant::stencil`).
         self.live()?;
         self.bury();
         // A storage view of some slices of a 3D level, which no back end's view sees, is made on
@@ -1616,18 +1649,63 @@ impl<B: Backend> Device<B> {
                 return Err(Error::InvalidArg("unknown blend operation"));
             }
         }
-        let block = blend_block(d);
-        if !block.same_for_all && !self.backend.caps().has(Features::INDEPENDENT_BLEND) {
-            return not_implemented("targets blended differently (TargetsSplit)");
+        // Below 10_1 the targets that blend share their factors and operations (Direct3D 10's
+        // blend), each with its own enable and write mask.
+        let shared = |t: &TargetBlend| (t.src, t.dst, t.op, t.src_alpha, t.dst_alpha, t.op_alpha);
+        let mut blending = d.targets.iter().filter(|t| t.enable).map(shared);
+        if d.independent
+            && self.feature_level() < level::L10_1
+            && blending
+                .next()
+                .is_some_and(|first| blending.any(|t| t != first))
+        {
+            return Err(Error::InvalidArg(
+                "blend factors or operations per target below feature level 10_1",
+            ));
         }
+        let block = blend_block(d);
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_blend(&block);
+        // Without the back end's per-target blends, a block per group of targets that agree,
+        // each drawn by a run of its own (`TargetsSplit`).
+        let mut groups = Vec::new();
+        if !block.same_for_all && !self.backend.caps().has(Features::INDEPENDENT_BLEND) {
+            let mut left = u8::MAX;
+            while left != 0 {
+                let first = left.trailing_zeros() as usize;
+                let members = (first..8)
+                    .filter(|&i| block.targets[i] == block.targets[first])
+                    .fold(0u8, |m, i| m | 1 << i);
+                left &= !members;
+                let desc = BlendDesc {
+                    independent: false,
+                    targets: [d.targets[first]; 8],
+                    ..*d
+                };
+                let gpu = self.backend.create_blend(&blend_block(&desc));
+                let gpu = self.gpu(gpu)?;
+                let id = self.id();
+                let group = Rc::new(Blend {
+                    desc,
+                    gpu: Kept::new(gpu, id, Object::Blend, &self.graveyard),
+                    groups: Vec::new(),
+                });
+                groups.push((members, group));
+            }
+        }
+        // Where the targets bound fall in one group, the draw takes that group's block; the
+        // state's own is then never drawn with, and is the first group's.
+        let own = match groups.first() {
+            Some((_, g)) => blend_block(&g.desc),
+            None => block,
+        };
+        let gpu = self.backend.create_blend(&own);
         let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Blend {
             desc: *d,
             gpu: Kept::new(gpu, id, Object::Blend, &self.graveyard),
+            groups,
         }))
     }
 
@@ -1692,7 +1770,10 @@ impl<B: Backend> Device<B> {
         {
             return not_implemented("typed buffers read through a texture (TexelBufferAsTexture)");
         }
-        let (mut converted, reads_samples) = shader::convert(bytecode, stage, &mut typed)?;
+        let layered = shader::multisampled_arrays(bytecode)?;
+        let texture_info = !self.backend.caps().has(Features::TEXTURE_LEVEL_QUERY);
+        let (mut converted, reads_samples) =
+            shader::convert(bytecode, stage, &mut typed, layered, texture_info)?;
         let samplers = shader::sampler_slots(&converted);
         let textures = shader::texture_slots(&converted);
         let mirror_filtered = shader::mirror_filtered_slots(&converted);
@@ -1725,6 +1806,7 @@ impl<B: Backend> Device<B> {
             reads_samples,
             helpers,
             typed,
+            layered,
         });
         if matches!(
             stage,
@@ -1765,9 +1847,11 @@ impl<B: Backend> Device<B> {
             None
         } else {
             let typed = shader::typed_views(bytecode)?;
-            let key = shader::base_key(SourceStage::Geometry, &typed);
+            let layered = shader::multisampled_arrays(bytecode)?;
+            let key = shader::base_key(SourceStage::Geometry, &typed, layered);
             let converted = shader::convert_geometry(bytecode, &key)?;
-            Some((self.geometry_stage(bytecode, &converted, typed)?, converted))
+            let stage = self.geometry_stage(bytecode, &converted, typed, layered)?;
+            Some((stage, converted))
         };
         let id = self.id();
         Ok(Rc::new(Geometry {
@@ -1785,6 +1869,7 @@ impl<B: Backend> Device<B> {
         bytecode: &[u8],
         converted: &wcontainers_shaders::Converted,
         typed: Vec<shader::TypedView>,
+        layered: u128,
     ) -> Result<Rc<Shader<B>>> {
         let compute = &converted.modules[0];
         self.live()?;
@@ -1805,6 +1890,7 @@ impl<B: Backend> Device<B> {
             reads_samples: false,
             helpers: Rc::new(shader::Helpers::of(converted)),
             typed,
+            layered,
         }))
     }
 

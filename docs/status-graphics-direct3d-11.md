@@ -1,10 +1,109 @@
 # Direct3D 11 front status
 
 Branch: phase-2-graphics-direct3d-11. Plan: docs/phase-2-graphics.md, milestone G4 (section 12).
-Runs so far: six on G4a, the first slice; then runs 1 to 18 of G4 as a whole (2026-11-17 and
-18; runs 13 to 18 are the orchestrator's second series on G4).
+Runs so far: six on G4a, the first slice; then runs 1 to 20 of G4 as a whole (2026-11-17 and
+18; runs 13 to 20 are the orchestrator's second series on G4).
 
 ## Where things stand
+
+G4 run 20 (2026-11-18, about 07:45 to 10:00 Pacific). Merged origin/phase-2-graphics,
+-shaders, -direct3d-12 and -webgl cleanly (-webgpu and -rig had nothing new); the merged tree
+linted with warnings denied and passed the front tests on the desktop before any change
+(logs/g4s8a-*).
+- Per-target blends without the back end's (`TargetsSplit`, plan 4.12; a listed case): a blend
+  state the back end cannot take whole is made as one block per group of targets that agree
+  (`Blend::groups`); a draw then runs once per group holding a bound target that writes
+  something, each run in a pass of only its group's targets, depth and stencil copied aside
+  before the first run and back before each later one where the draw writes them
+  (src/context/split.rs). Where every bound target is in one group the draw takes that group's
+  block and the pass as it is. Refused by name: such draws while queries run, with pixel
+  storage views or with stream output (no back end lacking per-target blends has the last two).
+  New example `own_level10` (feature level 10_0, as the WebGL 2 build reports), its `targets`
+  case in tests/programs.rs: identical to real Direct3D on both builds, the WebGL 2 one run
+  without OES_draw_buffers_indexed (`WEBGL_OFF`), the split taken (logs/g4s8g-split.log). New
+  front test `targets_blended_differently_without_the_back_ends_draw_once_per_group_from_saved_depth`.
+- Found by that case: below 10_1 real Direct3D refuses (`E_INVALIDARG`) blend factors or
+  operations that differ between targets that blend, and takes differing enables and write
+  masks (Direct3D 10's blend). Ours had taken both; it now answers as real Direct3D does.
+- `resinfo` on WebGL 2 (a listed case): `own_level10 resinfo`, a pixel shader asking a texture's
+  and an array's views (every level and layer: the WebGL 2 back end has no `TEXTURE_VIEWS`, so
+  views of some levels are refused by name there) for sizes, layers and level counts at three
+  levels: identical to real Direct3D on both builds. `resinfo_empty` adds an empty slot, where
+  real Direct3D answers 0 by 0 with 0 levels: identical on the WebGL 2 build (sizes from the
+  helpers), but on WebGPU the empty slot's stand-in answers 1 by 1, so that test is ignored as a
+  known failure (Known failures).
+- test_sample_attached_rtv's panic: the test releases its sampler once more than it holds, while
+  the context still binds it. A release when the program holds no reference now changes nothing
+  and answers 0xffffffff, as real Direct3D answers (own_interfaces prints both releases' answers;
+  identical to real Direct3D). Before, the count went below zero and the library aborted.
+- bgfx-26-occlusion, read: the frames differ in two places. Its overlay panel is one line
+  shorter, as the GPU memory line is missing where NVAPI is kept out (Departures, run 16; the
+  rig ignores the line but not the panel's last 7 rows), and its "Passing pixels count" reads 49
+  where real Direct3D reads 50 (a counted occlusion query one sample short; not read further).
+- From the merges: atg-simplebezierpc now matches real Direct3D on every compared frame (the
+  shaders crate's tessellator compiles under FXC; its 0xc0000409 of run 19 is gone), and so does
+  the rig's tessellation scene. That makes eleven of Microsoft's and the engines' programs and
+  four of bgfx's matching.
+- Results (see the Wine section and Measurements): Wine's d3d11 file 132 of 165 (128 at run
+  19); scenes through the whole library 123 pass, 14 fail, 4 absent (122, 16, 4); the WebGL 2
+  build's scenes 63 match, 61 fail, 23 absent (45, 80, 23); real programs as above.
+- At the end: lint of both builds clean with warnings denied, front 46 + cache 1 + unit 5,
+  library com 15 and programs 26 passing with 2 ignored (logs/g4s8d-lib.log, g4s8h-*).
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (16.3 GB, debug builds of
+  both back ends), scratch wincheck/target (990 MB, the Mac's check-only Windows build) and the
+  checkout's own target (555 MB, from `cargo check`) were deleted.
+
+G4 run 19 (2026-11-18, about 06:30 to 08:00 Pacific). Merged origin/phase-2-graphics-shaders and
+-direct3d-12 (one conflict, the slow path list in crates/wcontainers-gpu/src/slow.rs: both sides
+kept); the others had nothing new.
+- A display driver reset on the owner's PC, caused by this track's job: Wine's
+  test_atomic_instructions, which since the merge converts (the shaders crate's
+  `AtomicExchangeLoop`, a compare-exchange loop for a signed minimum or maximum on unsigned
+  memory) and ran on the GPU for the first time; the driver stopped responding and recovered at
+  07:03:58 desktop time. Cause recorded with `tools/graphics-rig/resets record`; the test stays
+  quarantined by the rig. The front now refuses any program taking `AtomicExchangeLoop` at
+  creation (`E_NOTIMPL`, named) until the loop is shown to end (Asked of the shaders track).
+- Stencil views (`X24_TYPELESS_G8_UINT`, `X32_TYPELESS_G8X24_UINT`) are made, and programs
+  reading one get the shaders crate's `VariantKey::swizzled` with the stencil moved to the
+  second component (`StageVariant::stencil`, `SwizzleInShader` counted). On the desktop the
+  stencil still reads 0: wgpu's Direct3D 12 path appears to give a stencil view's value in the
+  second component, not the first as WebGPU defines (test_depth_stencil_sampling reads 0 for
+  every stencil value; the views scene draws now and differs). Asked of the WebGPU track.
+- Multisampled arrays in programs (`Texture2DMSArray`, the shaders crate's `texture_layers`):
+  every program declaring one is converted with each such slot one layer (read from the
+  declarations, `shader::multisampled_arrays`), and multisampled views of multisampled textures
+  are 2D. A multisampled texture of more than one layer is refused at creation by name (WebGPU's
+  have one layer; a texture per layer, plan 4.2, is not built). bgfx's examples now run:
+  bgfx-01-cubes, -35-dynamic, -37-gpudrivenrendering and -38-bloom match real Direct3D on every
+  compared frame, -24-nbody runs to its last frame (no frame compared: real Direct3D differs from
+  run to run), -26-occlusion differs (about 6,500 pixels a frame; not read). That is a fifth
+  engine family matching.
+- `Reflection::slow_paths` (the programs' own slow paths) are counted at each draw or dispatch
+  through the program.
+- `resinfo` and `sampleinfo` where the back end cannot query levels (WebGL 2): every variant asks
+  for `TEXTURE_INFO` there, and the front writes `TextureLevels` (the view's level count) and
+  `TextureSamples` from the bound views (`TextureInfoInHelpers` counted; zero for an empty slot).
+  The rig's samplers scene now matches real Direct3D on the WebGL 2 build (its four outputs);
+  the WebGL 2 build's scenes: 45 match, 80 fail, 23 absent (43, 84, 21 at run 18;
+  logs/g4s7e-webgl.log).
+- YUY2 (a listed case): an `rgba8unorm` texture of half the width whose texels are pixel pairs;
+  views `R8G8B8A8_UNORM` and `_UINT` (shader views) and also `_SNORM` (target views, as real
+  Direct3D takes); boxes and places in pixels, dropped at an odd pixel; `CheckFormatSupport`
+  reports no target use, as real Direct3D does. New example `own_yuy2` (tests/programs.rs
+  `yuy2_pixel_pairs_view_write_copy_and_map_as_direct3d_does`): identical to real Direct3D line
+  by line. New front test `yuy2_is_a_half_width_texture_of_pixel_pairs_viewed_as_rgba8`.
+- Context states: the immediate context holds its state object by a library reference (Wine's
+  refcount checks after `SwapDeviceContextState`), and `RSGetViewports`/`RSGetScissorRects`
+  answer the bound count. test_device_context_state still stops at `ID3D10Device` (What comes
+  next 0).
+- Found, not read yet: test_sample_attached_rtv now gets past the stencil view and panics in the
+  library (a program reference count going below zero, counted.rs:67) after binding a stencil
+  view while a depth view of its texture is bound; atg-simplebezierpc now exits 0xc0000409 (was
+  0xe06d7363), its output not read.
+- Results: see the Wine section and Measurements. At the end of the run: lint of both builds,
+  front 45 + cache 1 + unit 5, library com 15 and programs 24 with 1 ignored, all passing.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (15.5 GB, debug builds of
+  both back ends) and the checkout's own target (594 MB, from `cargo check`) were deleted.
 
 G4 run 18 (2026-11-18, about 04:55 to 07:00 Pacific). Merged origin/phase-2-graphics-shaders and
 -direct3d-12 cleanly (the others had nothing new); the merged tree linted clean on the desktop.
@@ -210,7 +309,17 @@ and depth buffers larger than their targets.
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list):
-- d3d11: not passing. G4 run 18 (2026-11-18, our library copied in as d3d11.dll, RTX 3080
+- d3d11: not passing. G4 run 20 (2026-11-18, RTX 3080 through the queue's hazard group, not
+  alone, rigfix/wine.sh, at fbcd643's tree): 132 pass of the 165 run (33 fail;
+  logs/g4s8h-wine.log, gaps in logs/g4s8h-wine-gaps.txt). New: test_sample_attached_rtv (the
+  over-release), test_gather and test_gather_c (the shaders crate's run-time offsets),
+  test_stream_output_components (geometry shaders writing no position); none lost.
+- d3d11 at G4 run 19 (2026-11-18, RTX 3080 through the queue's hazard group, not
+  alone, rigfix/wine.sh, at 01a6bfe's tree): 128 pass of the 165 run (37 fail; logs/g4s7d-wine.log);
+  test_atomic_instructions is not run (quarantined after the reset above). The 37 are run 18's
+  list but for it; test_create_shader_resource_view, broken mid-run by the multisampled array
+  views, passes again.
+- d3d11 at G4 run 18 (2026-11-18, our library copied in as d3d11.dll, RTX 3080
   through the queue's hazard group, not alone, through scratch rigfix/wine.sh): full file at
   f5eed62's tree: 128 of the 166 the rig counts (38 fail; logs/g4s6g-wine.log; none lost). New
   since run 17: test_nv12.
@@ -219,12 +328,14 @@ Files passing (the bar: real Direct3D's verdict for every test, except the gap l
 - d3d10core: not run (needs a d3d10core.dll of ours and `ID3D10Device`). dxgi: the rig has no
   baseline of real Direct3D's verdicts for it.
 
-The gap list, G4 run 18 (the 38 failing tests of the full file at f5eed62, unchanged from run 17
-but for test_nv12, which passes; the first named
+The gap list, G4 run 20 (the 33 failing tests of the full file at fbcd643: run 18's 38 but
+test_nv12, test_sample_attached_rtv, test_gather, test_gather_c and test_stream_output_components,
+which pass; test_atomic_instructions is quarantined and not run, and is kept in part B; the
+first named
 refusal, skip or failed check of each, logs/g4s6g-wine-gaps.txt, read against Wine's d3d11.c in
 scratch winesrc/). A test is in part A only where the first thing it fails on is a feature
 absent on this stack; everything else is work, in part B, with whose it is. Nothing is excluded
-for convenience: each of the 38 failing tests is in exactly one place.
+for convenience: each of the 33 failing tests, and the quarantined one, is in exactly one place.
 A. Absent on this stack (gaps), 18 tests:
 - Logic operations (WebGPU has none, so 11_1 is not offered; Wine's helper then asks for WARP,
   which this library does not provide): test_create_shader, test_state_refcounting,
@@ -239,20 +350,22 @@ A. Absent on this stack (gaps), 18 tests:
   test_texture3d_interfaces (their keyed-mutex entries).
 - The 10_0/10_1 rasteriser's corner rule for a negative viewport origin (WebGPU rasterises as
   11_0): test_negative_viewports at levels 10_x.
-B. Work, named (not gaps), 20 tests:
-- Shaders track: `GeometryStreams` (test_so_statistics_query), `GeometryWithoutPosition`
-  (test_stream_output_components), stream output after a domain shader (test_quad_tessellation;
+B. Work, named (not gaps), 15 tests and the quarantined one:
+- Shaders track: test_atomic_instructions (quarantined after it reset the display driver; the
+  front refuses `AtomicExchangeLoop` programs until the loop is shown to end), `GeometryStreams`
+  (test_so_statistics_query), stream output after a domain shader (test_quad_tessellation;
   this front's hull and domain route is built, run 17), `RenderTargetArrayIndex` and
   `ViewportArrayIndex` from a geometry shader (test_layered_rendering,
   test_multiple_viewports), test_vs_input_relative_addressing's vertex shader (an invalid
-  module), `DynamicOffset` (test_gather, test_gather_c), `AtomicSignedness`
+  module), `AtomicSignedness`
   (test_atomic_instructions), `CullDistance` (test_combined_clip_and_cull_distances), early
   tests in the program with storage writes (`EarlyTestsInShader`: test_early_depth_stencil, which
   the front refuses by name since run 18, where it had drawn with late tests),
   constants read past the declared array (test_cb_relative_addressing), clip distances in the
   program (test_clip_distance).
-- WebGPU back end: a view swizzle for stencil views (test_depth_stencil_sampling,
-  test_sample_attached_rtv), `R32G32B32_*` textures (test_create_texture2d test 21, its only
+- WebGPU back end: stencil views read 0 in the first component on wgpu's Direct3D 12 path
+  (test_depth_stencil_sampling; run 19 moves the stencil in the program as the interface
+  defines). `R32G32B32_*` textures (test_create_texture2d test 21, its only
   failing check).
 - Interface and WebGPU back end: a vertex format reading `B8G8R8X8_UNORM` (its fourth byte read
   as one; WebGPU's `unorm8x4-bgra` reads it as alpha): test_vertex_formats runs 98 checks where
@@ -266,6 +379,11 @@ Wine's d3d10core file is not run (it needs a d3d10core.dll of ours and `ID3D10De
 
 ## Known failures
 
+- `an_empty_slots_size_and_level_count_at_10_0_as_direct3d_does` (programs.rs, `own_level10
+  resinfo_empty`, ignored with its reason): `GetDimensions` of an empty slot. Real Direct3D
+  answers 0 by 0 with 0 levels; on WebGPU ours answers the stand-in's 1 by 1 (the level count is
+  right). It passes on the WebGL 2 build. A fix needs the program to give 0 sizes for an empty
+  slot (the front could write it to the helpers as it writes the level count there; not built).
 - `early_depth_tests_with_storage_writes_as_direct3d_does` (programs.rs, `own_cases early`,
   ignored with its reason): `[earlydepthstencil]` with an `InterlockedAdd` per pixel, depth
   writes off and on. Before run 18 the front drew it with late tests (3 counts where Direct3D
@@ -274,7 +392,18 @@ Wine's d3d10core file is not run (it needs a d3d10core.dll of ours and `ID3D10De
 
 ## What comes next
 
-After G4 run 18, in order (the branch is pushed; everything on it built and passed on the desktop):
+After G4 run 20 (the branch is pushed; everything on it built and passed on the desktop). Done
+in run 20: test_sample_attached_rtv, `TargetsSplit` and `resinfo` on WebGL 2 with their tests,
+atg-simplebezierpc (from the merges). At the head of the list now:
+- `ID3D10Device` (item 0 below): the largest piece of this front's own left in Wine's file, and
+  Direct3D 10 programs need it. Real Direct3D answers `ID3D10Device` and `ID3D10Device1` from
+  the device once a context state has been made (Wine's line 7487), so it must be the whole
+  Direct3D 10 device (about 100 methods onto the device and context), not an answer alone.
+- bgfx-26-occlusion: the counted occlusion query one sample short (49 for 50); then whether the
+  rig should also ignore the overlay panel's last rows where NVAPI is kept out (rig track).
+- An empty slot's `resinfo` sizes on WebGPU (Known failures).
+- Multisampled textures of more than one layer as a texture per layer (refused by name now).
+Then, from run 18 (items 1 and 4's YUY2 are done; item 2's bgfx and bezier are done):
 0. Wine's d3d11 file: this front's named work left is `ID3D10Device` on the device with
    `CreateDeviceContextState` and `SwapDeviceContextState` (test_device_context_state; Wine's
    d3d10core file needs the same device behind a d3d10_1.dll of ours). Then the shaders track's
@@ -301,6 +430,8 @@ After G4 run 18, in order (the branch is pushed; everything on it built and pass
 7. The WebGL 2 cases: see Measurements for run 18's scenes through the WebGL 2 build.
 8. Compute shaders sampling a clamped texture or through a biased sampler (refused by name);
    track which copy of a twin is current instead of copying at every draw (measure first).
+9. `TargetsSplit` keeps queries, pixel storage views and stream output out by name (Departures,
+   run 20); keep them to the first run if a back end lacking per-target blends ever has them.
 
 ## How to run
 
@@ -312,7 +443,16 @@ After G4 run 18, in order (the branch is pushed; everything on it built and pass
   library tests, every scene through the whole library, Wine's d3d11 file and the WebGL 2 scenes.
   Real programs' logs are under graphics-rig/programs/phase-2-graphics-direct3d-11/<program>.
 
-All of it in one command (never run yet): the scratch script `resume.sh <label> [steps]` runs
+Everything of run 20 in one command: scratch `run-g4s8.sh <label> [steps]` (steps `lib
+webgllib scenes wine webgl programs`, default all; `webgllib` runs the `own_level10` tests on
+the WebGL 2 build without OES_draw_buffers_indexed); lint and front tests are resume.sh's
+`lint front`.
+
+Everything of run 19 in one command: scratch `run-g4s7.sh <label>` (resume.sh's lint, front and
+lib, then the scenes through the whole library, Wine's d3d11 file through rigfix, the WebGL 2
+scenes, the real programs and bgfx's examples with NVAPI kept out), logs in logs/<label>-*.log.
+
+The scratch script `resume.sh <label> [steps]` runs
 lint (both builds), the front tests, the library tests, every Direct3D 11 scene through our
 library, Wine's d3d11 file and every scene through the WebGL 2 build, in that order (steps `lint
 front lib scenes wine webgl`, default all), each step's output in scratch
@@ -443,6 +583,17 @@ checkout needs the shaders crate's submodules, so commands start with `git submo
 
 ## Tests
 
+At G4 run 20: front.rs 46 (new: the split test), tests/cache.rs 1, unit 5, com.rs 15,
+programs.rs 28 (new: `own_level10` targets, resinfo and resinfo_empty; resinfo_empty and the
+early tests case ignored as known failures; `own_interfaces` also prints an over-release); all
+others passing on the desktop, lint of both builds clean with warnings denied. On the WebGL 2
+build the three `own_level10` tests pass, the ignored one included (logs/g4s8f-webgllib.log).
+
+At G4 run 19: front.rs 45 (new: the YUY2 test; the depth view test now makes the stencil
+view), tests/cache.rs 1, unit 5 (new: multisampled array declarations, the stencil mapping),
+com.rs 15, programs.rs 25 (new: `own_yuy2`; the early tests case ignored as before); all others
+passing on the desktop, lint of both builds clean with warnings denied (logs/g4s7d-*, g4s7e-*).
+
 At G4 run 18: front.rs 44 (new: the NV12 test), tests/cache.rs 1, unit 3, com.rs 15,
 programs.rs 24 (new: `own_nv12` and eight `own_cases` tests; one, the early tests case,
 ignored as a known failure); all others passing on the desktop, lint of both builds clean with
@@ -530,6 +681,27 @@ clean with warnings denied. The library tests run without `WC_GPU_CACHE`, so wit
   clean.
 
 ## Departures from the plan
+
+- Run 20: `TargetsSplit` runs each group's draw in a pass of its own and ends it after the
+  last run, so a split draw costs a pass per group (counted as the slow path). Queries, pixel
+  storage views and stream output during such a draw are refused by name instead of kept to the
+  first run as plan 4.12 says (none is reachable on a back end without per-target blends today:
+  WebGL 2 has no storage in pixel shaders and no stream output; queries are).
+- Run 20: an over-release answers 0xffffffff and leaves the counts as they were (real Direct3D
+  answers so; what it does with the count after is not known).
+
+- Run 19: a multisampled texture of more than one layer is refused (`E_NOTIMPL`) instead of
+  held as a texture per layer (plan 4.2); every program's multisampled array slots are converted
+  as one layer.
+- Run 19: stencil views always move the stencil in the program (`SwizzleInShader`): the
+  interface has `Features::VIEW_SWIZZLE` but no swizzle in `TextureViewDesc`, so there is no view
+  route to take.
+- Run 19: programs taking `AtomicExchangeLoop` are refused at creation after one reset the
+  display driver (Where things stand); a valid request refused by name, not faked.
+- Run 19: YUY2 is held at half width (`Texture::mip_extent` is in texels; boxes and places are
+  turned from pixels at `UpdateSubresource` and `CopySubresourceRegion`). One level only (more
+  answer `E_NOTIMPL`; what Direct3D answers is not checked); its storage views (Direct3D's
+  documentation also lists `R32_UINT`) are not checked against real Direct3D.
 
 - Run 18: NV12 (plan 4.12) is two textures: the luma plane `r8unorm` (the texture itself) and
   the chroma plane `rg8unorm` at half size (`Texture::chroma`, a front texture of
@@ -738,6 +910,8 @@ clean with warnings denied. The library tests run without `WC_GPU_CACHE`, so wit
 
 ## Interface changes
 
+None in G4 run 19 (the merge's conflict in slow.rs was resolved by keeping both sides' entries).
+
 None in G4 runs 3 to 12.
 
 - c8a7be9 "interface: copied combined depth-stencil textures whole in copy_texture": the
@@ -750,6 +924,33 @@ None in G4 runs 3 to 12.
   the plan's text in section 7 (Direct3D 11's constant buffers).
 
 ## Measurements
+
+- 2026-11-18, G4 run 20, the desktop (i9-9900K, RTX 3080) through the queue's hazard group, not
+  alone (other tracks' hazard jobs one at a time beside ours; the WebGL 2 scenes waited 27
+  minutes behind another track's job), at fbcd643's tree: Wine's d3d11 file 132 of 165 run,
+  161.2 s (logs/g4s8h-wine.log). The rig's Direct3D 11 scenes through the whole library: 123
+  pass, 14 fail (raster and geometry stop, views differs), 4 absent (logs/g4s8h-scenes.log). The
+  WebGL 2 build: 63 match, 61 fail, 23 absent (logs/g4s8h-webgl.log; targets stops at a format
+  the back end lacks, not at its blends: its per-target part needs 10_1). Real programs through
+  the whole library, 120 frames each (logs/g4s8h-programs.log, g4s8h-bgfx.log): matching every
+  compared frame: sdk-tutorial02, 04 to 07 (0.9 to 1.0 s), chocolate-doom 3.3 s,
+  atg-simplelightingpc 3.2 s, atg-simpleinstancingpc 3.4 s, atg-simplebezierpc 9.9 s (new),
+  godot-platformer-2d-d3d11 13.8 s, godot-platformer-3d-d3d11 43.7 s, bgfx-01-cubes,
+  -35-dynamic, -37-gpudrivenrendering, -38-bloom; bgfx-24-nbody runs (not compared);
+  atg-simplecomputepc, atg-simplemsaa_pc and bgfx-26-occlusion differ as at run 19. Module size
+  and building-ahead hits not measured again (runs 16 and 18 below).
+
+- 2026-11-18, G4 run 19, the desktop (i9-9900K, RTX 3080) through the queue's hazard group, not
+  alone (other tracks' hazard jobs one at a time beside ours; Mac load average 32 at the run's
+  start), at 01a6bfe's tree: Wine's d3d11 file 128 of 165 run, 154 s (logs/g4s7d-wine.log).
+  The rig's Direct3D 11 scenes through the whole library: 122 pass, 16 fail, 4 absent (120, 19, 4
+  at run 18; logs/g4s7d-scenes.log). The WebGL 2 build: 43, 84, 21 as at run 18 (samplers still
+  stopped at the level query, fixed after: 45, 80, 23 at 3b3241c, logs/g4s7e-webgl.log). Real
+  programs through the whole library, 120 frames each (logs/g4s7d-programs.log, g4s7d-bgfx.log):
+  the ten of run 18 match as before; bgfx-01-cubes, -35-dynamic, -37-gpudrivenrendering and
+  -38-bloom match (new), -24-nbody runs (not compared), -26-occlusion differs;
+  atg-simplecomputepc and atg-simplemsaa_pc differ as before; atg-simplebezierpc exits
+  0xc0000409. Module size and building-ahead hits not measured again (run 18 and 16 above).
 
 - 2026-11-18, G4 run 18, the desktop (i9-9900K, RTX 3080) through the queue's hazard group, not
   alone (other tracks' hazard jobs one at a time beside ours; Mac load average 77 at the run's start, 47.05 at its end), at
@@ -967,6 +1168,13 @@ All on the desktop (Windows 10, i9-9900K, RTX 3080) through the queue, not alone
 - The rig's replacement check cannot see wcontainers_directx.dll behind the forwarder (above).
 
 ## Asked of other tracks
+
+- Shaders track (G4 run 19): the `AtomicExchangeLoop` program of Wine's test_atomic_instructions
+  reset the display driver on the RTX 3080 through this front (07:03:58 desktop time; the test is
+  quarantined); this front refuses such programs until the loop is shown to end.
+- WebGPU track (G4 run 19): a stencil view read in WGSL gives 0 in its first component on wgpu's
+  Direct3D 12 path (Wine's test_depth_stencil_sampling through this front: every stencil value
+  reads 0); WebGPU defines the stencil there.
 
 - Shaders track (G4 run 18): `VariantFlags::LINE_COVERAGE` (`AntialiasedLinesAsQuads`, plan
   4.12) for alpha-antialiased lines, a listed case; the front refuses such line draws until the

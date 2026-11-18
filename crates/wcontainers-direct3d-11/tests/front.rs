@@ -333,6 +333,87 @@ fn nv12_is_two_planes_viewed_apart_and_written_copied_and_mapped_as_joined_rows(
 }
 
 #[test]
+fn yuy2_is_a_half_width_texture_of_pixel_pairs_viewed_as_rgba8() {
+    const YUY2: u32 = 107;
+    let mut dev = device();
+    let bind = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
+    assert!(matches!(
+        dev.create_texture(&tex2d(7, 4, YUY2, bind), &[]),
+        Err(Error::InvalidArg(_))
+    ));
+    let (w, h) = (8u32, 4u32);
+    let bytes: Vec<u8> = (0..w * h * 2).map(|i| (i * 7 + 1) as u8).collect();
+    let init = [SubresourceData {
+        bytes: &bytes,
+        row_pitch: w * 2,
+        slice_pitch: 0,
+    }];
+    let texture = dev.create_texture(&tex2d(w, h, YUY2, bind), &init).unwrap();
+    assert_eq!(texture.desc.width, w);
+    assert_eq!(texture.gpu_desc.width, w / 2);
+    let view = |format| ViewDesc {
+        format,
+        dimension: ViewDim::Texture2D,
+        first_mip: 0,
+        mip_count: 1,
+        first_layer: 0,
+        layer_count: 1,
+        read_only: 0,
+    };
+    // R8G8B8A8_UNORM and _UINT only.
+    for desc in [None, Some(view(YUY2)), Some(view(29)), Some(view(31))] {
+        assert!(matches!(
+            dev.create_view(&texture, desc.as_ref(), bind::SHADER_RESOURCE),
+            Err(Error::InvalidArg(_))
+        ));
+    }
+    for format in [28, 30] {
+        dev.create_view(&texture, Some(&view(format)), bind::SHADER_RESOURCE)
+            .unwrap();
+    }
+    let mut staging_desc = tex2d(w, h, YUY2, 0);
+    staging_desc.usage = usage::STAGING;
+    staging_desc.cpu_access_flags = cpu::READ;
+    let staging = Resource::Texture(dev.create_texture(&staging_desc, &[]).unwrap());
+    let yuy2 = Resource::Texture(texture.clone());
+    let read = |dev: &mut Dev| {
+        dev.copy_resource(&staging, &yuy2).unwrap();
+        let mapped = dev.map(&staging, 0, map::READ, 0).unwrap();
+        assert_eq!(mapped.row_pitch, w * 2);
+        let got = unsafe { std::slice::from_raw_parts(mapped.data, bytes.len()) }.to_vec();
+        dev.unmap(&staging, 0);
+        got
+    };
+    assert_eq!(read(&mut dev), bytes);
+    // Boxes are in pixels: one at an odd pixel writes nothing, an even one its pairs.
+    let source = [0xa0u8; 4 * 2 * 2];
+    let odd = Box3 {
+        left: 1,
+        top: 2,
+        front: 0,
+        right: 5,
+        bottom: 4,
+        back: 1,
+    };
+    dev.update_subresource(&yuy2, 0, Some(&odd), &source, 8, 0)
+        .unwrap();
+    assert_eq!(read(&mut dev), bytes);
+    let even = Box3 {
+        left: 2,
+        right: 6,
+        ..odd
+    };
+    dev.update_subresource(&yuy2, 0, Some(&even), &source, 8, 0)
+        .unwrap();
+    let mut want = bytes.clone();
+    for y in 2..4 {
+        want[(y * w * 2 + 4) as usize..(y * w * 2 + 12) as usize].fill(0xa0);
+    }
+    assert_eq!(read(&mut dev), want);
+    assert!(dev.removed.is_none());
+}
+
+#[test]
 fn a_target_view_of_a_buffer_draws_into_a_row_of_its_elements_copied_into_the_buffer() {
     let mut dev = device();
     let buffer = dev
@@ -1593,8 +1674,8 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         read_only: 0,
     };
     // R24G8_TYPELESS: D24_UNORM_S8_UINT for depth, R24_UNORM_X8_TYPELESS and X24_TYPELESS_G8_UINT
-    // to read depth and stencil; a D format is for depth-stencil views only. Stencil, which
-    // Direct3D reads in the second component, needs a view swizzle this back end lacks.
+    // to read depth and stencil; a D format is for depth-stencil views only. Stencil is read
+    // through a stencil view, moved to the second component by the programs reading it.
     let depth = dev
         .create_texture(
             &tex2d(4, 4, 44, bind::DEPTH_STENCIL | bind::SHADER_RESOURCE),
@@ -1609,10 +1690,13 @@ fn typeless_textures_are_viewed_through_members_of_their_group() {
         .unwrap();
     let made = log_from(&dev, from).join("\n");
     assert!(!made.ends_with(" stencil"), "{made}");
-    assert!(matches!(
-        dev.create_view(&depth, Some(&view(47)), bind::SHADER_RESOURCE),
-        Err(Error::NotImplemented(_))
-    ));
+    let from = dev.backend.log.len();
+    let stencil = dev
+        .create_view(&depth, Some(&view(47)), bind::SHADER_RESOURCE)
+        .unwrap();
+    assert!(stencil.reads_stencil());
+    let made = log_from(&dev, from).join("\n");
+    assert!(made.ends_with(" stencil"), "{made}");
     for (format, kind) in [
         (45, bind::SHADER_RESOURCE),
         (46, bind::DEPTH_STENCIL),
@@ -2676,4 +2760,92 @@ fn a_view_reinterpreting_typeless_bits_reads_a_twin_copied_before_each_draw() {
     }
     assert_eq!(dev.backend.slow_paths().count(SlowPath::ReinterpretCopy), 2);
     assert!(dev.removed.is_none());
+}
+
+#[test]
+fn targets_blended_differently_without_the_back_ends_draw_once_per_group_from_saved_depth() {
+    let mut dev = device();
+    dev.backend.caps.features -= wcontainers_gpu::Features::INDEPENDENT_BLEND;
+    let elements = [
+        element("POSITION", RGB32F, 0),
+        element("COLOR", RGBA32F, 12),
+    ];
+    ready(&mut dev, "common.vs_color", "targets.ps", &elements, 28);
+    let mut views = Vec::new();
+    for _ in 0..3 {
+        let t = dev
+            .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+            .unwrap();
+        views.push(Some(
+            dev.create_view(&t, None, bind::RENDER_TARGET).unwrap(),
+        ));
+    }
+    let depth = dev
+        .create_texture(&tex2d(16, 16, D32F, bind::DEPTH_STENCIL), &[])
+        .unwrap();
+    let dsv = dev.create_view(&depth, None, bind::DEPTH_STENCIL).unwrap();
+    dev.om_set_render_targets(&views, Some(dsv)).unwrap();
+    let ds = dev
+        .create_depth_stencil_state(&DepthStencilDesc {
+            depth_enable: true,
+            depth_write: true,
+            depth_func: 2,
+            ..DepthStencilDesc::default_state()
+        })
+        .unwrap();
+    dev.om_set_depth_stencil_state(Some(ds), 0);
+    // Targets 0 and 2 blend alike, target 1 adds; target 3 is unbound.
+    let mut blend = BlendDesc::default_state();
+    blend.independent = true;
+    for t in [0, 2] {
+        blend.targets[t].enable = true;
+        blend.targets[t].src = 5;
+        blend.targets[t].dst = 6;
+    }
+    blend.targets[1].enable = true;
+    blend.targets[1].dst = 2;
+    let from = dev.backend.log.len();
+    let blend = dev.create_blend_state(&blend).unwrap();
+    let log = log_from(&dev, from);
+    assert!(
+        log.iter()
+            .all(|l| !l.starts_with("create_blend") || l.ends_with("same true")),
+        "{log:#?}"
+    );
+    dev.om_set_blend_state(Some(blend), None, u32::MAX);
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    // The runs' passes (the earlier target's pending clear runs as a pass of its own).
+    let run = |l: &String| l.starts_with("begin_pass") && l.contains(" depth view ");
+    let passes: Vec<_> = log.iter().filter(|l| run(l)).collect();
+    let draws = log.iter().filter(|l| l.starts_with("draw ")).count();
+    assert_eq!((passes.len(), draws), (2, 2), "{log:#?}");
+    // Each run draws only its group's targets.
+    assert!(
+        passes[0].contains(" color 0 ") && passes[0].contains(" color 2 "),
+        "{passes:#?}"
+    );
+    assert!(!passes[0].contains(" color 1 "), "{passes:#?}");
+    assert!(
+        passes[1].contains(" color 1 ") && !passes[1].contains(" color 0 "),
+        "{passes:#?}"
+    );
+    // Depth saved before the first run and put back before the second.
+    let copies: Vec<_> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with("copy_texture "))
+        .map(|(i, _)| i)
+        .collect();
+    let begins: Vec<_> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| run(l))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(copies.len(), 2, "{log:#?}");
+    assert!(copies[0] < begins[0] && begins[0] < copies[1] && copies[1] < begins[1]);
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::TargetsSplit), 1);
 }

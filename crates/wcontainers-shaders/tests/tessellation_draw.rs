@@ -322,9 +322,7 @@ fn compare(reference: &[Vertex], ours: &[Vertex], per: usize) -> Result<String, 
 
 #[test]
 fn tessellator_matches_direct3d() {
-    // On Vulkan: fxc, which wgpu's Direct3D 12 path compiles with here, fails on this program with
-    // an internal error ("argument pulled into unrelated predicate").
-    let mut backend = webgpu_on(wgpu::Backends::VULKAN);
+    let mut backend = webgpu();
     let mut tessellator = Tessellator::new(&mut backend).unwrap();
     let gpu = d3d11::create(
         wcontainers_graphics_test::Driver::Hardware,
@@ -852,7 +850,7 @@ fn tessellated_patches_draw_as_direct3d_11_does() {
     )
     .unwrap();
     let reference = direct3d_solid_scene(&gpu);
-    let mut backend = webgpu_on(wgpu::Backends::VULKAN);
+    let mut backend = webgpu();
     let ours = scene_ours(&mut backend, true);
     keep(
         "tessellation-solid-direct3d",
@@ -877,7 +875,7 @@ fn tessellated_patches_draw_as_direct3d_11_does() {
 
 /// The rig's tessellation scene as it is (the patches drawn as lines but the last) through the stage
 /// helper, against real Direct3D 11 running the scene itself. Lines drawn from filled polygons follow
-/// each API's line rule (Vulkan's here, the back end's), so this one asks only that every texel
+/// each API's line rule (the back end's), so this one asks only that every texel
 /// Direct3D drew is drawn, and that the solid patch is equal; the rest is printed.
 #[test]
 fn rig_tessellation_scene_draws_as_direct3d_11_does() {
@@ -893,8 +891,7 @@ fn rig_tessellation_scene_draws_as_direct3d_11_does() {
         panic!("the scene draws a picture");
     };
     let reference = picture.to_rgba8().into_raw();
-    // On Vulkan, as the tessellator's test, for the same reason.
-    let mut backend = webgpu_on(wgpu::Backends::VULKAN);
+    let mut backend = webgpu();
     let ours = scene_ours(&mut backend, false);
     keep(
         "tessellation-scene-direct3d",

@@ -99,6 +99,7 @@ pub fn convert(
         };
         stage::clip_unpositioned(&mut module)?;
         variant::apply(&mut module, stage, variant, &mut reflection)?;
+        variant::offset::strides(&module, &mut reflection);
         Ok((module, reflection, stage))
     })?;
     let info = validate(&module)?;
@@ -190,7 +191,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
     } = variant;
     let unbuilt_flags = [
         (VariantFlags::PROVOKING_LAST, "ProvokingRewrite"),
-        (VariantFlags::EARLY_TESTS, "EarlyTestsInShader"),
         (VariantFlags::LINE_COVERAGE, "AntialiasedLinesAsQuads"),
         (
             VariantFlags::PRIMITIVE_ID_FROM_STAGE,
@@ -218,10 +218,14 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
 /// The capabilities a module needs: WebGPU's core ones, plus the extensions it uses that a front asks
 /// for only where the back end has them (dual-source blending, `VariantFlags::DUAL_SOURCE`, clip
 /// distances, WebGPU's `clip_distances` and GLSL ES's EXT_clip_cull_distance, and storage views of
-/// 16-bit normalised formats, which a front binds only where the format has `STORAGE_WRITE`).
+/// 16-bit normalised formats, which a front binds only where the format has `STORAGE_WRITE`, and
+/// subgroup operations in pixel and compute programs, `Features::SUBGROUPS`).
 pub fn capabilities(module: &naga::Module) -> Capabilities {
     use naga::StorageFormat as S;
     let mut capabilities = WEBGPU_CAPABILITIES;
+    if module.uses_subgroups() {
+        capabilities |= Capabilities::SUBGROUP;
+    }
     for (_, global) in module.global_variables.iter() {
         if let naga::TypeInner::Image {
             class:

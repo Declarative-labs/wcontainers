@@ -109,6 +109,23 @@ void gs_points(point GsIn p[1], inout PointStream<GsOut> stream) {
     }
 }
 
+struct GsBare {
+    float4 colour : COLOR0;
+    nointerpolation uint4 ids : TEXCOORD0;
+};
+
+// As gs_points, feeding stream output only: it writes no position.
+[maxvertexcount(4)]
+void gs_unplaced(point GsIn p[1], inout PointStream<GsBare> stream) {
+    uint count = p[0].ids.x % 5;
+    for (uint i = 0; i < count; i++) {
+        GsBare o;
+        o.colour = p[0].colour * tint + float4(p[0].position.xy, float(i), 0.0);
+        o.ids = uint4(p[0].ids, i, 0);
+        stream.Append(o);
+    }
+}
+
 // Each triangle with adjacency becomes its own triangle (vertices 0, 2, 4), each vertex coloured by
 // the adjacent vertex after it.
 [maxvertexcount(3)]

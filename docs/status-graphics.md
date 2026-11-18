@@ -1,4 +1,4 @@
-# Graphics track status (interface, G1b)
+# Graphics track status (interface, G1c)
 
 Plan: `docs/phase-2-graphics.md`. Brief: `pyro-parked/wcontainers-scratch/orchestrator/brief-graphics.md`.
 This branch, phase-2-graphics, is the shared line: the interface track merges the other graphics
@@ -6,216 +6,306 @@ branches into it at the start and end of every run, keeps the whole workspace bu
 
 ## Where things stand
 
-- G0 (the plan and the interface crate), G1a (the recording back end and the first suite tests) and
-  G1 (the pass tracker, the occlusion counter, the combination tracker, the call stream and its
-  replay, the random sequences, every rule of section 4 checked and broken by a test) are done; G1
-  passed its tenth independent check. Their history, run by run and finding by finding, is in the
-  git log (and in this file's history up to f7e5dfe).
-- G1b, run 1 (2026-11-17), done and pushed:
-  - The four open findings of G1's tenth check settled (below).
-  - Every interface change the other tracks made since G1 began, and every entry under "Interface
-    changes" in their status files from then on, checked for the interface's style, given a rule
-    check and a test that breaks it where the change states a rule a back end or a caller can
-    break, and a suite test where it states something a back end does (list below).
-  - Start merges: webgl and direct3d-11 (fast-forwards: direct3d-11 already held webgl and this
-    line), then direct3d-12, shaders and rig; no conflict. The whole workspace checks after them.
-  - End merges: webgpu (with one interface commit, 04bd53bf, covered below), shaders and then
-    webgl, no conflict. The whole workspace checks after them. The direct3d-12 branch's newest work
-    (6 commits, up to 1345db29) was merged too, but `wcontainers-direct3d-12` then did not build:
-    its new `device/geometry.rs` is written against an older stage helper than the shaders branch
-    this line already holds (`StageDraw::stream_output`, `StageError::Declaration`, a fourth
-    argument, `vertex_layout()` now an `Option`). That merge was not pushed and was taken off
-    again, so the line builds; the direct3d-12 track should merge this line (or the shaders
-    branch), fix its geometry route, and it comes in at the next merge.
+- G0, G1a, G1 and G1b are done and passed their independent checks. Their history, run by run and
+  finding by finding, is in the git log and in this file's history (G1b's last state: f639e27d).
+- G1c, run 1 (2026-11-18), done and pushed:
+  - Start merges: webgpu and direct3d-11 (fast-forwards: they held the others' new work), then
+    direct3d-12 (a merge); webgl, shaders and rig had nothing more. No conflict. The whole workspace checks after them
+    (laptop, `cargo check --workspace --all-targets`, scratch `g1c/start-check.log`); pushed.
+  - The six findings of G1b's second check settled (below).
+  - Every "interface:" commit the other branches made since G1b (eleven) checked and covered
+    (below).
+  - The WebGPU track's standing request decided (below).
+  - Part 2: plan section 15, the second batch (OpenGL and Vulkan through Mesa on the interface,
+    the NIR route, the call channel and stand-ins, sound and input hooks, the interface changes
+    they need, milestones G1d and G7 to G12, and the owner's decisions).
+  - End merges: direct3d-11 and shaders (below, "End of run"); the rest had nothing new.
+- G1c, run 2 (2026-11-18): the fourteen findings of G1c's independent check settled (below, "G1c's
+  check"). Start merges: webgl (a merge) and direct3d-11 (a merge); the others had nothing new; no
+  conflict, no owned file changed; the whole workspace checks after them (laptop, scratch
+  `g1c2/start-check.log`); pushed (33790064).
+- G1c, run 3 (2026-11-18): the twelve findings of G1c's second check settled (below, "G1c's second
+  check"). Start merges: webgl, direct3d-12 and shaders (merges, no conflict); shaders brought one
+  "interface:" commit (b0df13af, covered below), which broke one owned unit test's struct literal
+  (`ReflectedBinding` gained `stride`), fixed in 003c5ac2. Webgpu, direct3d-11 and rig had nothing
+  new. End merges: direct3d-11 and shaders, no conflict (below, "End of run"). Pushed.
+- G1c, run 4 (2026-11-18): the eleven findings of G1c's third check settled, all in the plan's text
+  (below, "G1c's third check"). No branch had anything new at the start (fetched first); no code
+  changed this run.
+- G1c, run 5 (2026-11-18): the seven findings of G1c's fourth check settled (below, "G1c's fourth
+  check"): plan 15.4 now names each of Vulkan 1.1's 67 features present or absent with its route or
+  reason; the suite and the random sequences now copy within depth and stencil subresources of
+  every format (`Depth24Plus` added). No branch had anything new at the start (fetched first).
 
-- G1b, run 2 (2026-11-17):
-  - Start merges: webgpu, webgl and shaders (one interface commit, b500f7cc, covered below), no
-    conflict; direct3d-11 and rig had nothing new. direct3d-12 (its 6 commits up to a927ece4, the
-    merge left out at run 1's end) merged without conflict but again did not build against the
-    shaders branch's stage helper; this run fitted its geometry route in ed7216d9 (five lines:
-    `Stages::new` takes the geometry shader as an `Option` and a stream output declaration,
-    `vertex_layout` and `passthrough` give `Option`s, `StageDraw::stream_output` is `None`, and
-    `StageError::Declaration` is reported as `Invalid`). The whole workspace then checks, its
-    clippy is clean, and its CPU tests pass on the laptop (4 unit, 11 device, 9 front); its GPU
-    test (`tests/gpu.rs`) needs the desktop and was not run. Departure noted below.
-  - The seven findings of G1b's first check settled (below).
-  - End merges: shaders (one interface commit, 4e0f58c7), then direct3d-12, which had meanwhile
-    followed the stage helper's signature itself (c0b50ef0): its two files conflicted with
-    ed7216d9 and were taken whole from that branch, so the line's `wcontainers-direct3d-12` is
-    that branch's own. Then webgpu (one interface commit, 1b067358). webgl, direct3d-11 and rig
-    had nothing new. All three interface commits are covered below; the workspace checks after
-    them.
+## G1c's fourth check, and how each finding was settled (run 5)
 
-## G1b's first check, and how each finding was settled
+Claims were checked at their source first (downloads in scratch `graphics/g1c5/dl`: Mesa's
+`nir_lower_alpha.c` and `vk_nir_convert_ycbcr.c` through GitLab's API, the WebGPU specification,
+Vulkan's `textures.adoc` and `fragops.adoc`; `vk.xml` from the check's `check-g1c-4/dl`).
+- Blocking, Vulkan's features: 15.4 now lists all 67 (55 of `VkPhysicalDeviceFeatures`, 12 of 1.1's
+  six structures, counted in `vk.xml`) in five lists: 12 present natively, 6 natively or by the
+  Direct3D fronts' route, 4 by the shaders crate's program rewrites, 19 through counted slow paths,
+  26 absent, each absence with its reason (a script over the plan finds each name in exactly one
+  list). Decisions worth naming: `fullDrawIndexUint32` present (WebGPU's primitive assembly splits
+  only strips at the restart value, checked); `multiDrawIndirect` present (one indirect draw each,
+  as OpenGL 4.6's); `samplerAnisotropy` native, anisotropy 1 with a nearest filter (Vulkan leaves the
+  scheme to the implementation, checked); `shaderImageGatherExtended` and the formatless storage
+  features by the shaders crate's existing rewrites; arrays indexed at run time for sampled textures
+  only (the shaders crate's switch refuses buffers and storage views); `alphaToOne` present by a new
+  proposed slow path `AlphaToOneInShader` (Mesa's `nir_lower_alpha_to_coverage` and
+  `nir_lower_alpha_to_one`, MIT, checked; the OpenGL driver needs the same for
+  `GL_SAMPLE_ALPHA_TO_ONE`); absent: `depthBounds`, multisampled storage, `shaderInt16`, the four
+  16-bit storage features, `shaderResourceMinLod`, residency and sparse, `variableMultisampleRate`,
+  variable pointers, `protectedMemory`, and `samplerYcbcrConversion` (a scope choice; Mesa's
+  runtime has the route). 5.5 points to the lists; G10's pass bar says how they are checked
+  (`vulkaninfo` on the RTX 3080, and the driver over `Recorder::with_caps` for each
+  adapter-dependent feature); G8 takes the program rewrites; 15.7 now proposes four slow path
+  names; 15.9 names the absences.
+- `Depth24Plus` in the shared suite test: added, through the depth path that reads values (within
+  one step of 2^-24) rather than bytes. The fault "a copy within one `Depth24Plus` subresource
+  dropped by the recorder" is caught by that test (scratch `g1c5/faults.log`).
+- Random sequences: a new step, `DepthCopy`, makes a depth or stencil texture of its own (all six
+  depth and stencil formats the back end copies out, 1 or 2 layers and levels), writes one level
+  and layer with valid values, copies a region beside itself, and reads each aspect back; the test
+  now prints how many copies within one subresource were of depth or stencil.
+- Mesa's licence files: 15.2 now says Mesa enters as a git submodule at `third_party/mesa` (as
+  `dxbc-spirv` and `dxil-spirv` do) pointing at a fork of ours whose branch is the pinned release
+  plus the patch set, one commit per change, so no GPL or SGI file is copied into this repository
+  (Mesa's `licenses/` checked: Apache-2.0, BSL-1.0, GPL-1.0-or-later, GPL-2.0-only, MIT,
+  SGI-B-2.0). Where the fork is kept is added to 15.9.
+- 5.7 against 15.4: 5.7's absent list now says it is the back end's own `Caps`, and that a front may
+  still serve those features through counted slow paths, as Vulkan's are.
+- G1d's pass bar is now written out in 15.8 (no reference to G1b).
+- The WebGPU back end and the depth or stencil copy test: recorded under "Known failures".
 
-- The status said the webgpu back end still refused point filling under `POLYGON_MODE`; 8ad1317c
-  had already changed it. Both sentences are corrected.
-- The linking rule filled a flat value's unstated sampling as centre (a float) or none (an
-  integer), refusing `flat` against `flat, first`, which WGSL defines alike. It now takes a flat
-  value's as first and only perspective and linear values' as centre; `Program::Render`'s doc and
-  plan 4.2 state the defaults. Test: `fragment_inputs_are_vertex_outputs_of_their_type_and_interpolation`
-  (flat with and without `first` links; `flat, either`, and a smooth input against a flat output,
-  are refused).
-- The overlap rule test now takes copies apart only in rows, between levels and between slices of
-  a 3D texture, and refuses overlapping slice ranges.
-- `Format::components` is tested for every format: `components_are_the_channels_a_format_names`
-  (`wcontainers-gpu`), and the suite's `missing_components_read_their_defaults` takes
-  rgb9e5ufloat, bgra8, bgrx8, a8 and b5g6r5 where a back end samples them.
-- c00421e4's entry named the wrong rule test; it now names
-  `texture_writes_take_pitches_covering_the_region`.
-- The list now has 39b57ad4 and 9ba95585 (webgl, a slow path added and taken back), and
-  ba3c5737's rule test.
-- The direct3d-12 branch is on the line (above).
+## G1c's third check, and how each finding was settled (run 4)
 
-## G1's tenth check, and how each finding was settled
+Each claim about an outside project was checked again at its source before the fix (the check's
+downloads, scratch `graphics/check-g1c-3/dl`, and this run's, scratch `graphics/g1c4/dl`).
+- Blocking, wvk's version: 15.4 and 15.9 now say wvk reports Vulkan 1.3 by default without
+  `bufferDeviceAddress` (not a conformant 1.3) and 1.2 only under `WINK_VK_API_VERSION=1.2`
+  (`wvk_private.h` lines 38-39, `api_version()` in `wvk_physical_device.c`); the README's first line
+  still says 1.2. Also stated from the source: `VK_KHR_portability_subset` unless
+  `WINK_VK_NO_PORTABILITY`, and `timelineSemaphore = true`.
+- BC for Vulkan: `textureCompressionBC` is present on every adapter (natively, or `BlockDecoded`,
+  counted), so no adapter loses Vulkan for want of a compression family; ETC2 and ASTC where the
+  adapter has them.
+- Vertex bindings past WebGPU's 8: `VertexPulledInShader`, not `InstanceRateInShader`.
+- G11 and G12 made concrete (15.6's proofs and 15.8): where the guest programs run (the container on
+  the native host on the laptop; in Chrome at G13), how each host is proven on its own (cpal through
+  `snd-aloop`'s loopback; the AudioWorklet in an `OfflineAudioContext`; DOM events through the
+  DevTools protocol; the Gamepad mapping as a pure function on recorded events), the compositor
+  proven with Weston's demo clients (`weston-simple-shm`, `weston-eventdemo`), and what each needs
+  from the kernel track (ALSA devices with mapped pages; evdev; a Wayland socket with `SCM_RIGHTS`
+  and `memfd`s) and from the translator track. EGL and WSI Wayland surfaces are in G13's pass bar.
+- G8: a converted shader counts only if its outputs on seeded inputs equal those of the same NIR run
+  by llvmpipe or lavapipe (run by the recorder's interpreter, or by the WebGPU back end through the
+  queue for shaders past the interpreter's limits); the route is chosen by matching shaders.
+- GLX: 15.5 plans a GLX vendor library for glvnd of ours (from `glx.xml`, Apache-2.0, checked) and
+  the ICD's xlib and xcb surfaces, only if the owner takes Xwayland, tied to Wayland surfaces by
+  `xwayland_shell_v1` (checked: in wayland-protocols' staging set; smithay serves it in
+  `smithay::wayland::xwayland_shell`); absent otherwise. 15.6, G13 and 15.9 follow.
+- 15.7's dangling "Chrome 143 by 4.11": now cites the research (`webgl2-vs-webgpu`), which gives it.
+- 15.1's count: 15 variant flags (counted in `reflect.rs`).
+- Mesa on Windows: `install.rst` names MSVC (VS 2022 17.9 or later, SDK 20348 or later) and Clang
+  5.0 or later as known to work, not clang-cl; the Windows build now uses MSVC, the desktop's
+  version checked at G9's first step.
+- gex_wgpu's dates: it is still being worked on; the newest commit on any branch (2026-11-13,
+  `fr/tbo-align`, 4a3419242a) changes `gex_wgpu` itself.
+- Bytes between modules: 15.2 and section 10 now say the question already stands for the first
+  batch's shaders module and guest memory, settled by the same G9b measurement; 15.9 says the
+  back-end module trades the brief's "one ordinary call per operation" for an import call per
+  interface call that cannot be inlined, with the fallback.
 
-- A split of an explicit pass that discards: the tracker cannot know a part is the last when it
-  begins it, so it now refuses (`GpuError::Invalid`) to split a pass with a `Discard` store, and
-  `begin`'s docs and plan 4.7 say an explicit front (which knows its whole pass before it replays
-  it) begins a pass whose draws write storage with `Store` where its API discards. The next part
-  now keeps the pass's store ops and read-only aspects (it took `LOAD_STORE` before, losing a
-  read-only depth). Tests: `a_split_explicit_pass_keeps_its_depth_and_ops_between_parts` (the
-  check's picture, and the second part's logged ops) and `a_split_of_a_pass_that_discards_is_refused`
-  (`tests/helpers.rs`). Departure noted below.
-- Unchecked u32 sums: texture regions, layers, slices and view ranges are compared in u64; a draw
-  whose `first + count` or `first_instance + instances` passes a u32 is refused (the rule is now in
-  `DrawRange`'s docs); `read_queries`' range likewise. Tests: `regions_lie_inside_their_texture`,
-  `views_take_the_textures_format_or_its_twin` (extended) and `draw_ranges_end_within_a_u32`.
-- The suite's size in this file: rewritten (below).
-- The combination tracker gives its record out: `CombinationTracker::totals` (this run's draws per
-  vertex shader and tuple, with the cache's record taken in); plan 4.4 says so. Test: the end of
-  `the_combination_tracker_picks_the_tuples_drawn`.
+## G1c's second check, and how each finding was settled (run 3)
+
+- Blocking, 5.5 and 4.12 against 15.4: 5.5 no longer lists features of its own; it says Vulkan's
+  features and subgroup properties are reported as 15.4 lists them. 4.12 now says Vulkan's queries
+  without the precise bit take the native query and precise ones, where `occlusionQueryPrecise` is
+  reported, are counted. 15.4 says "5.5 points here". No place of 15 overrides 1 to 12 unlisted.
+- Blocking, the licence of gex_wgpu and wvk: corrected in 15.2, 15.4 and 15.9 from the check's
+  listing (its downloads, scratch `check-g1c-2/dl-wink`, read here): only the C sources (and
+  `src/wink`'s meson files) carry `SPDX-License-Identifier: MIT`; gex_wgpu's `meson.build`, its
+  `native/` scripts, README, CI lists and log, and wvk's README, CI lists, test scripts and shaders
+  carry none, and the repository declares none, so they are of unknown licence. Adopting gex_wgpu
+  would need its authors to license the build files or a build of ours written apart.
+- Which module holds Vulkan: two modules, `opengl.wasm` and `vulkan.wasm`, each loaded when its API
+  is first asked for (the brief), Mesa's shared code linked into both (size measured at G9b and G10).
+- Bytes between modules: 15.2 names the three ways (one shared memory with one allocator by the
+  tool conventions' dynamic linking; multi-memory; a copy per byte argument) and G9b's first step
+  settles which, measuring the cost per call and per byte.
+- Subgroups: 15.4 now serves 1.1's required subgroups as wvk does (checked in its
+  `wvk_physical_device.c`): `subgroupSize` 1 in every stage, the operations exact at that size, no
+  quads, lowered in NIR by the driver; no interface change.
+- `occlusionQueryPrecise`: present only where the back end has blendable `r32float`; elsewhere
+  false and the native query answers. wvk's conditions are stated (precise with
+  `float32-blendable` or native Vulkan, cull distance with `clip-distances`).
+- gex_wgpu's figures: 92.9% of the 111,069 GLES cases run (of 112,212), 98.6% of the 20,298 KHR-GL46
+  cases run (its own failure column gives 98.5%; the published share is kept as the floor), and
+  that its passes include warnings and flakes. G9's measure now counts Pass and Warn as passed and
+  a Flake as a failure.
+- The Mesa patch set: 15.2 lists the Mesa files changed besides the new directories, checked in
+  Mesa's main branch (scratch `g1c3/dl-mesa`, through GitLab's API): `meson.options`, the
+  top-level `meson.build`, `src/gallium/meson.build`, `src/meson.build`, `wgl.c`'s
+  `wgl_screen_create_by_name` and `libgl-gdi`'s meson file.
+- Plan 4.2: a depth or stencil region goes through a temporary texture only for formats WebGPU
+  cannot copy into from a buffer (the depth of `depth32float`, `depth24plus` and the combined
+  formats); `depth16unorm` and stencil go through a buffer as colour does.
+- 11-11-10 infinity and NaN: `every_vertex_format_reads_its_element` now also reads two elements of
+  all-ones exponents (R infinity, G NaN, B infinity; then R NaN, G infinity, B NaN); infinities must
+  be equal, NaNs NaN. Faults below.
+- `VIEW_SWIZZLE` removed (no call used it); `VariantKey::swizzled`'s doc says every front maps in
+  the program; plan 4.11 and 6.4 follow; 15.7 proposes the mapping and the capability together.
+- 15.7 names the helper-bindings-in-the-program's-last-set path `HelpersInProgramSet`; three names
+  are now proposed.
+- How the suites run in Chrome: G9b's first step settles it; the suites run in Chrome built for
+  WebAssembly with a platform layer of ours calling the modules' entry points (wasi-sdk, or
+  Emscripten for the test build only if dEQP's exceptions need it). Running them through the
+  stand-in and channel needs the translator and kernel, so that is a new milestone, G13 (the second
+  batch in the container); G9b no longer needs G7, and G10's browser half needs G9b's way.
+
+## Earlier checks
+
+G1c's first check (fourteen findings, run 2) and G1b's second check (six findings, run 1) were
+settled as this file at 5789b6c2 records; all stand, except where run 3 corrected them above.
 
 ## Interface changes
 
 Each entry: the change, whether it fits the interface's style, its rule check and test (recording
 back end, `crates/wcontainers-gpu-test/tests/` unless named) and its suite test (`src/suite*`, run
-by every back end through `suite!`).
+by every back end through `suite!`). Changes up to G1b, with their tests, are listed in this file at
+f639e27d; all are kept.
 
-Since G1 passed (from the other tracks, merged at this run's start, and 04bd53bf at its end):
-- 04bd53bf (webgpu) `copy_texture` between non-overlapping regions of one subresource, and
-  `SlowPath::CopyWithinTexture` where the API refuses it. Fits: a base rule stated, with a named
-  slow path. The recorder took any copy within a texture, overlapping ones too; it now refuses an
-  overlap. Rule test: `texture_copies_within_one_texture_do_not_overlap` (since run 2 it also
-  takes regions apart only in rows, in levels, and in slices of a 3D texture, and refuses two
-  overlapping slice ranges). Suite:
-  `a_copy_within_one_subresource_moves_the_region`.
-- 72dbc184 (webgl) `Features::POLYGON_MODE_POINT`, `POLYGON_MODE` narrowed to lines. Fits: a
-  capability. The recorder refused point filling as `POLYGON_MODE`; it now answers
-  `Absent(POLYGON_MODE_POINT)`. Rule test: `raster_blocks_need_the_features_they_use` (a case per
-  fill mode). Suite: `fill_modes_draw_edges_or_corners` (edges or corners where declared, the
-  right `Absent` where not). The WebGPU back end answers `Absent(POLYGON_MODE_POINT)` since
-  8ad1317c (on this line from run 1's end merge).
-- 360ee4b7 (shaders) `VariantKey::linked` (`LinkedValues`). Fits: a variant field, as 4.4's
-  rewrites are. It rests on a linking rule the interface never stated; now stated
-  (`Program::Render`, plan 4.2): every location the fragment shader reads, the vertex shader
-  writes, with the same type, interpolation and sampling (WebGPU's and GLSL ES's rule); it may
-  write more. Unstated ones are WGSL's defaults: a float perspective at the centre, a flat value
-  from the first vertex (run 2; the recorder had taken a flat value's as centre or none, refusing
-  `flat` against `flat, first`, which WebGPU links). Rule test:
-  `fragment_inputs_are_vertex_outputs_of_their_type_and_interpolation` (`tests/rules.rs`; flat
-  with and without `first` links, `flat, either` and a smooth input against a flat output do
-  not). Suite: `values_pass_between_programs_by_location` (outputs 0, 2 and 4, inputs
-  0 and 4: a back end linking by rank reads the wrong value).
-- b157c760 (shaders) `HelperValue::SamplerState` codes in the order of `Filter` and `AddressMode`.
-  Fits (a documented layout), but the order was implicit, and converted programs, and so the
-  cache, keep the codes: `Filter` and `AddressMode` now carry explicit numbers. Rule test:
-  `sampler_state_codes_keep_their_numbers` (`wcontainers-gpu` unit test). Suite: none; the codes
-  pass between a front and its converted program through a uniform buffer, and no back end sees
-  them.
-- dd6d9b29 (shaders) `HelperValue::PulledStream { input }`, four u32, and one binding per pulled
-  input. Fits: a helper layout. Back-end rules it leans on (storage binding offsets aligned, inside
-  the buffer) were already checked: `buffer_bindings_are_aligned_inside_the_buffer_and_the_limits`.
-  Suite: `vertices_pulled_from_storage_match_the_fetched_ones` (fetched and pulled pictures equal,
-  at step rates one and two from first instance 1, a binding from an unaligned stream offset
-  rounded down); runs where `VERTEX_STORAGE_READ`, which the recorder now declares (its programs
-  always could read storage).
-- c00421e4 (direct3d-12) `CONSTANTS_TEXTURE_WIDTH` and `ConstantsAsTexture`'s texture. Fits: a
-  constant both sides share. The front puts the constants there by `copy_buffer_to_texture`,
-  whose pitch rule was already checked: `texture_writes_take_pitches_covering_the_region` (the
-  recorder checks both writes and buffer-to-texture copies in one place). Suite:
-  `constants_read_through_a_texture_lie_256_rows_to_a_texture_row` (300 rows, read at rows 0, 1,
-  255, 256 and 299).
-- ba3c5737 (shaders) `HelperValue::TextureComponents`. Fits, but each front was to work the bits
-  out itself (direct3d-11 has its own `format::components`): the measure is now
-  `Format::components` in the interface, so fronts share one. Rule test (a table, which no call
-  breaks): `components_are_the_channels_a_format_names` (`wcontainers-gpu` unit test, run 2):
-  every format, enumerated by number, against the channels its name lists as DXGI's and WebGPU's
-  names do, so `a8unorm`, `bgrx8`, `b5g6r5`, `rgb9e5`, the two-pixel and the depth formats are
-  checked too. Suite: `missing_components_read_their_defaults` (a view of each format reads the
-  components `components` names and defaults for the rest: r8, rg8, rgba8, r16float, rg16float;
-  rg11b10ufloat, rgb9e5ufloat, bgra8, bgrx8, a8 and b5g6r5 where sampled, run 2; the recorder
-  samples none of the last five). For the direct3d-11 track: `format::components` can become
-  `Format::components`.
-- b500f7cc (shaders, merged at run 2's start) `HelperValue::TexelBufferView { set, binding }` and
-  `VariantKey::texel_formats`, for typed buffers read through storage buffers
-  (`TexelBufferRoute::Storage`). Fits: a helper layout and a variant field beside
-  `storage_formats`. What a back end does for it is bind a read-only storage buffer at a texture
-  slot's binding from an aligned offset; its rules (alignment, inside the buffer, the limits) were
-  already checked: `buffer_bindings_are_aligned_inside_the_buffer_and_the_limits`. Suite (new):
-  `typed_buffers_through_storage_read_their_views_place_and_length` (an rgba8unorm view of three
-  elements from byte 8 of a range bound at an aligned offset, at binding 33, read by a fragment
-  program with the fragment helper block; where `storage_buffers_per_stage` is not zero).
-- 4e0f58c7 (shaders, merged at run 2's end) `TEXEL_BUFFER_TEXTURE_WIDTH` (2048) and the texture
-  route's layout (`TexelBufferRoute::Texture`: element e from the buffer's start at texel
-  (e % 2048, e / 2048), the view's place and format from the same fields as the storage route).
-  Fits: a constant both sides share, as `CONSTANTS_TEXTURE_WIDTH`. The back end's part is the
-  copy into a 2048-wide texture; its rules were already checked:
-  `texture_writes_take_pitches_covering_the_region` and
-  `buffers_and_textures_stay_within_the_size_limits`. Suite (new):
-  `typed_buffers_through_a_texture_lie_2048_elements_to_a_row` (an r32uint buffer of 2100
-  elements in two copies, a view from byte 16 read at buffer elements 4, 5, 2047, 2048, 2099).
-- 1b067358 (webgpu, merged at run 2's end) `SlowPath::ResolveByDraw`: a resolve in the other
-  sRGB twin averaged by a draw loading every sample, where the API's resolve averages the stored
-  values (Chrome). Fits: a named slow path. Rule: `all_lists_every_reason_in_order`
-  (`wcontainers-gpu`). Suite: `resolves_average_in_the_format_named`.
-- 39b57ad4 and 9ba95585 (webgl): `SlowPath::SampledTargetCopied` added and taken back again; the
-  net change is nothing, so no test.
-- G1b run 2's own: 5224373 (the linking rule's unstated sampling; the components test). Run 1's
-  own (each an "interface:" commit): 017b511 (split ops kept, a discarding split
-  refused, `CombinationTracker::totals`, `DrawRange`'s u32 bound), 8423348 (the linking rule),
-  4ef381f (`Format::components`, the fixed sampler codes). Tests named above.
+Since G1b (from the other tracks, merged at this run's start):
+- 871a23bd (shaders) `HelperValue::TexelLayout` grows to five u32 (pitches, then the view's width,
+  height and layers; texels outside read zero). Fits: a helper layout. Back ends do nothing new; the
+  front writes it and converted programs read it, which the shaders crate's tests cover. No rule.
+- 4a72bce0 (shaders) `FRACTIONAL_VIEWPORT`'s doc: the scissor of a viewport drawn in the program is
+  cut to the pixels its API draws (Direct3D rounds each edge down). Fits: a doc of a front's rule;
+  no interface helper computes it, so the fronts' tests against real Direct3D cover it.
+- 9f79bb5a (shaders) `DOMAIN_PATCHES_BINDING` 13 and `DOMAIN_POINTS_BINDING` 14, and 3fc7fee0
+  (direct3d-12) `COUNTER_BINDING` 15: helper set bindings. Fits. Rule test (new, replacing the
+  narrower one): `helper_set_bindings_never_meet` (`wcontainers-gpu` unit test; every binding and
+  range of the helper set against every other).
+- 4a835192 (shaders) a hull shader's reflection gives its point and constant locations. Fits: data
+  of the reflection. No rule; no back-end behaviour.
+- 97fa85c1 (shaders) `ReflectedBinding::slot`, and per-slot fields named by it. Fits. Rule test
+  (new): `a_bindings_slot_is_its_place_in_its_kinds_range` (`wcontainers-gpu` unit test).
+- 3fc7fee0 `SlowPath::PixelInvocationsCounted`, c024aa3a (direct3d-12)
+  `SequentialBuffersCopied`, c6e80691 (direct3d-12) `SwizzleInShader` and `AtomicExchangeLoop`:
+  named slow paths. Rule: `all_lists_every_reason_in_order` (`wcontainers-gpu`).
+- 07985aaa (direct3d-12) the occlusion counter sums on the GPU where the back end computes, and
+  `end_into` writes a count into a front's buffer in order. Fits: a helper with a default (read
+  back) and a better route. The recorder computes with no workgroup memory, so it takes the default.
+  Test (new): `the_occlusion_counter_writes_its_count_into_a_buffer_in_order` (`tests/helpers.rs`:
+  the words beside it stay, a later write replaces it). Suite (new):
+  `the_occlusion_counter_counts_every_sample_that_passes` (37 by 21 pixels of a 40 by 24 target,
+  sizes no workgroup divides, one and four samples, through `end` and `end_into`; on WebGPU this
+  runs the summing program).
+- 02674dd7 (shaders) `HelperValue::Layer` and `Viewport`. Fits: helper values a front writes. No
+  back-end behaviour.
+- 4aaf34b2 (direct3d-12) `AddedBinding::TextureLayer` and `VariantKey::texture_layers`. Fits: an
+  added binding and a variant field. Back ends bind textures at added bindings as before; no new
+  rule.
+- c6e80691 (direct3d-12) `ViewComponent`, `VariantKey::swizzled`, `Reflection::slow_paths`, serde
+  on `SlowPath`. Fits as a variant field. Gap found: `Features::VIEW_SWIZZLE` has no call that uses
+  it (`TextureViewDesc` has no mapping), so fronts always apply mappings in the program. Proposed
+  in plan 15.7 (G1d); not changed now, since adding a field changes every front's and back end's
+  view code.
 
-Earlier since G1 began (merged in G1's runs, all kept; checked again here):
-- c8a7be9 (direct3d-11) `copy_texture` moves both aspects of a depth-stencil format. Rule:
-  `copies_of_depth_and_stencil_move_the_aspect_named`. Suite:
-  `copies_between_depth_stencil_textures_move_both_aspects`.
-- d37c5d9 (webgl) what `capture_vertices` writes. Rule: `captures_keep_to_their_rules`
-  (`tests/compute.rs`). Suite (new): `captures_write_location_outputs_packed_in_draw_order` (where
-  `TRANSFORM_FEEDBACK`).
-- 4b71023, ab4b7e9 (webgl) built-ins drawn in the back end's clip depth and provoking vertex. Rule
-  test (new): `built_ins_take_the_provoking_vertex_the_back_end_has` (`tests/fast_paths.rs`; the
-  minus-one depth route cannot run on the recorder, which lacks `CLIP_DEPTH_MINUS_ONE`). Suite: the
-  draw-made `clear_rects` and `generate_mips` tests run the built-ins on every back end.
-- 4e98cf5 (webgl) `generate_mips_by_draws`, the default made callable. Rule: none (no new rule).
-  Tests: `generate_mips_is_a_pass_per_level_and_layer`; suite
-  `generate_mips_averages_in_the_values_format`.
-- 1ffcab5 (shaders) `VariantKey::output_interpolation`. Rule: the linking rule above. Suite:
-  `values_are_interpolated_with_perspective`, `strips_take_flat_values_from_the_provoking_vertex`.
-- 3428d7c, a17eca9 (shaders) serde derives. No behaviour; round trips are the shaders crate's
-  cache tests.
-- 4f1894c (direct3d-12) `ShaderModule::from_wgsl`. A constructor; the new linking rule test builds
-  its shaders with it.
-- Named slow paths, each a listed name in the interface's style: `IntegerClearByDraw` (b999c16,
-  webgpu), `StencilWrittenByDraw` (3f5519a), `PresentConverted` (8f7db1b), `CaptureExpanded`
-  (3dbc7d5, webgl). Rule: `all_lists_every_reason_in_order` (`wcontainers-gpu`). Suites covering
-  what they serve: `clears_fill_exactly` (an `r32uint` clear past 2^24),
-  `copies_between_depth_stencil_textures_move_both_aspects`, `present_shows_the_frame`, the new
-  capture test.
-- 578a3fc (webgpu) a listed loss (float depth copied by a draw is clamped and flushed). No rule
-  (a loss); the suite copies only values every back end keeps.
-- G1's own changes in its runs (helpers, documentation of rules): each has the rule test named in
-  "The rules and their tests".
+G1c's own (eb13c84b, one "interface:" commit): copies within one depth or stencil subresource
+(above); `prepare` and `PrepareDesc` name no index format, by decision (below); `VertexFormat`'s
+doc and plan 4.12 and 5.7: every back end takes every vertex format, so no capability lists them
+(below); the two `wcontainers-gpu` rule tests above. Suite tests added for them:
+`a_copy_within_one_depth_or_stencil_subresource_moves_the_region`,
+`every_vertex_format_reads_its_element` (all 52 formats, one element read as a `vec4` of its number
+type into an `rgba32` target, normalised values within 2^-20; the recorder now reads the four packed
+formats it refused before: `Bgra8Unorm`, `Unorm10_10_10_2`, `Uint10_10_10_2`, `Float11_11_10`).
+
+G1c run 2 (two "interface:" commits, c1324007 and 4bbfe962): `CopyWithinTexture`'s warning text;
+`SlowPath`'s doc (numbers are kept, new reasons at the end) with the rule test
+`reasons_keep_their_numbers`; the slot rule test widened to every kind and slot, the ranges
+adjoining, and counters as many as storage slots. Suite: the copy within one depth or stencil
+subresource and the vertex format test widened (above), 1cfae99c. No new "interface:" commit came from the other branches since
+run 1 (the webgl and direct3d-11 merges touched no owned file).
+
+G1c run 3:
+- b0df13af (shaders) `VariantFlags::STORAGE_OFFSET`, `ReflectedBinding::stride`, and the rule that a
+  front binds a storage view from the largest offset below its start that is a multiple of both
+  `min_storage_offset_alignment` and the stride, the rest in `HelperValue::StorageOffset`. Fits: a
+  variant flag and data of the reflection. Back ends do nothing new (the bound offset is already
+  checked against the alignment by the recorder's existing rule); the program's add is the shaders
+  crate's, whose test `storage_bindings_give_their_stride_and_offsets_are_refused` holds the stride
+  and refuses the flag by name until it is built. No new rule or suite test: nothing a back end
+  does changes. The one owned test that builds a `ReflectedBinding` gained `stride: 0`.
+- G1c run 3's own "interface:" commit: `Features::VIEW_SWIZZLE` removed (no call used it, and a back
+  end declaring it would have lost mappings); `VariantKey::swizzled`'s doc. No caller used the flag
+  (checked across the workspace); bit 28 is left free. Plan 15.7 proposes the mapping and the flag
+  together. Suite: the vertex format test's infinity and NaN elements (1 test widened).
+
+G1c run 5 (from the shaders branch, merged at the end of the run):
+- cbe7814c (shaders) `CompareFn`'s numbers fixed at 1 to 8, as `HelperValue::EarlyTests`'s codes
+  (zero a test that is off), which converted programs and the cache keep; `EARLY_STENCIL_BINDING`'s
+  doc: for a format without stencil any single-sampled unsigned integer texture is bound there.
+  Fits: numbers of an enum and a doc of a front's rule. Rule test: the commit's own `wcontainers-gpu`
+  unit test holds the numbers (as `reasons_keep_their_numbers` holds `SlowPath`'s). No suite test:
+  back ends do nothing new (they match `CompareFn` by name; no use of its number was found outside
+  that test and the shaders crate). Plan 4.12's early tests now say both. Its slot test change
+  (`stride: 0`) was already on this line (003c5ac2); the merge met no conflict.
+- 62e28dfe (webgl) serde derived on the resource, pass and clear descriptors, so the webgl track's
+  recorded call streams can be saved and replayed. Fits: derives, as `SlowPath`'s serde was. No
+  rule and no suite test: no back-end behaviour changes (the workspace checks with it).
+
+## The WebGPU track's request, decided
+
+- No index format in `PrepareDesc`. Direct3D 11, OpenGL and Vulkan bind index buffers at the draw,
+  not with the state, so no front knows the format when it prepares (Direct3D 12's strip cut value
+  says nothing when restart is off). A back end whose pipeline holds strips' index format prepares a
+  strip for both, as the WebGPU back end already does; `prepare`'s doc and plan 4.3 say so.
+- No capability for the vertex formats a back end converts. Every back end takes every
+  `VertexFormat` and converts what its API lacks itself (WebGPU's shadow streams); fronts pull in the
+  program only for their own reasons (step rates, integers read with the other signedness). Nothing
+  a front would do differently was found, so no capability (rule: none without a real use).
+
+## For the other tracks
+
+- WebGPU: a copy within one subresource of a depth or stencil format must no longer lose the device.
+  `depth16unorm`, `stencil8` and a combined format's stencil aspect alone: through a buffer as
+  colour (WebGPU copies them into textures from buffers). The depth of `depth32float`, `depth24plus`
+  and the combined formats: copy the source region into a temporary texture of the same format (your
+  routes between textures: whole subresource natively, part by draws), then from it into the
+  destination, counted `CopyWithinTexture`. For `Depth24PlusStencil8` and `Depth32FloatStencil8` both aspects move by
+  one copy: copy the whole subresource into the temporary natively, then the region back by
+  `DepthWrittenByDraw` and `StencilWrittenByDraw` (G1c run 2 added these two formats to the test).
+  Run 5 added `Depth24Plus` alone to that test (its depth read as values within 2^-24).
+  The new suite tests `a_copy_within_one_depth_or_stencil_subresource_moves_the_region`,
+  `every_vertex_format_reads_its_element` and `the_occlusion_counter_counts_every_sample_that_passes`
+  (your summing program's first shared test) come in when you merge.
+- WebGL: the same three suite tests; `every_vertex_format_reads_its_element` asks for `Bgra8Unorm`
+  and the packed formats, which GL ES lacks or reads differently, and `rgba32float` targets (needs
+  `EXT_color_buffer_float`; the test asks `RENDER | COPY_OUT` of it, so a missing extension fails it
+  by name).
+- Direct3D 11: `format::components` now returns `Format::components`; it can go when convenient.
+- Direct3D 11 and 12: `Features::VIEW_SWIZZLE` is gone (no call used it); keep mapping in the
+  program (`SwizzleInShader`). The mapping and the flag come together at G1d at the earliest (plan
+  15.7). Direct3D 12: your branch
+  is contained in this line, so merging it brings this line's `SlowPath` order without a conflict;
+  discard any shader cache or log your branch recorded before 2a00617e, whose numbers for
+  `SequentialBuffersCopied`, `SwizzleInShader` and `AtomicExchangeLoop` were in the other order.
+- Shaders: `CONVERTER_VERSION` hashes this crate's Rust and the carried naga, not
+  `wcontainers-gpu`, yet the cache stores `SlowPath` and the reflection's types by number. The
+  numbers of `SlowPath` are now held by a test here; the other serialised types of the interface
+  (`VariantKey`, `Reflection`) are not, so consider putting the interface crate's sources into the
+  hash.
+- Every track: `every_vertex_format_reads_its_element` now reads at attribute offset 12 and holds
+  11-11-10 denormals, infinities and NaNs (run 3); a shadow-stream converter that drops the offset,
+  scales denormals wrongly or reads the all-ones exponent as a finite value now fails it.
 
 ## The rules and their tests
 
-Every rule a caller can break is refused by the recording back end (a violation that loses the
-device, or `GpuError` at creation) and broken once in a test; `tests/rules.rs` holds most, one or
-more tests per rule (108 now), `tests/compute.rs` the dispatch, capture and timestamp rules,
-`tests/recorder.rs` six more, `tests/helpers.rs` the usage-scope rule and the pass tracker. The
-list of rules and their tests is the test names themselves; this run added the linking rule, the
-u32 bounds, the point-fill capability, the discarding split and overlapping copies within a
-texture.
+Every rule a caller can break is refused by the recording back end and broken once in a test:
+`tests/rules.rs` (108), `tests/compute.rs`, `tests/recorder.rs`, `tests/helpers.rs` (the usage-scope
+rule, the pass tracker, the occlusion counter). The list of rules is the test names.
 
 Known unreachable guards (kept, no test): `sample_view`'s comparison without `compare`, storage
 writes from vertex programs, an attachment taken twice by a draw, a colour attachment without
@@ -229,29 +319,18 @@ pointers to a function's locals passed to another function.
 
 - `Recorder` keeps every object's bytes on the CPU, runs each call as it is recorded through an
   interpreter of naga's IR, checks the rules, logs every base call (`calls`) and replays them
-  (`replay`). It draws one or four samples. `Recorder::with_caps` takes capabilities away.
-- Suite: 39 tests (`src/suite.rs`, `src/suite/draws.rs`, `src/suite/routes.rs`), listed in the
-  `suite!` macro; `tests/recorder.rs` runs them with 6 rule tests (45). G1b run 2 added
-  `typed_buffers_through_storage_read_their_views_place_and_length` and
-  `typed_buffers_through_a_texture_lie_2048_elements_to_a_row`; run 1 added
-  `a_copy_within_one_subresource_moves_the_region`,
-  `fill_modes_draw_edges_or_corners`, `values_pass_between_programs_by_location`,
-  `vertices_pulled_from_storage_match_the_fetched_ones`,
-  `constants_read_through_a_texture_lie_256_rows_to_a_texture_row`,
-  `missing_components_read_their_defaults` and
-  `captures_write_location_outputs_packed_in_draw_order`. None has run on a GPU yet.
+  (`replay`). It draws one or four samples. `Recorder::with_caps` takes capabilities away. It reads
+  every vertex format (since G1c).
+- Suite: 42 tests (`src/suite.rs`, `src/suite/draws.rs`, `src/suite/routes.rs`), listed in the
+  `suite!` macro; `tests/recorder.rs` runs them with 6 rule tests (48). G1c added three (above).
+  None has run on a GPU from this track; the back-end tracks run them when they merge.
 
 ## Next
 
-- G1b's independent check.
-- The webgpu and webgl hosts take the new suite tests when they merge (none has run on a GPU yet);
-  webgl draws lines natively where WEBGL_polygon_mode is present and captures through transform
-  feedback.
-- Asked of the interface by webgpu (its status, "Gaps found for the interface track"):
-  `PrepareDesc` has no strip index format, so `prepare` cannot build an indexed strip's pipeline;
-  and no capability says which vertex formats a back end converts itself. Not G1b's; adding the
-  field changes both fronts' code.
-- Not G1b's: the occlusion counter's sum by a dispatch on WebGPU (G2; until then `ReadBackWait`).
+- G1c's independent check, fifth round.
+- G1d (plan 15.8) once the owner has answered plan 15.9 (now also: wvk, Vulkan's slow features
+  reported present, the copy into streams, the back end as its own module and the import call per
+  interface call it costs, OpenGL and Vulkan as two modules, Xwayland with a GLX stand-in).
 - More suite tests beyond the pass bars: every format's clear and read back against real
   Direct3D's bytes, mip levels, layered and 3D targets, fans and loops on back ends that draw lines.
 
@@ -268,120 +347,182 @@ pointers to a function's locals passed to another function.
   - `tools/graphics-rig/linux sh -c 'cargo check --workspace --all-targets'`
   - Random sequences, seed and count as knobs (defaults 0x5eed and 1000; the test prints both, the
     count run and what was drawn); a failing sequence is shrunk by proptest and printed:
-    `tools/graphics-rig/linux sh -c 'WCONTAINERS_GPU_SEED=0x61b0b1 WCONTAINERS_GPU_SEQUENCES=100000 cargo test --release -p wcontainers-gpu-test --test sequences -- --nocapture'`
-  - G1b's faults: copy scratch `g1b2/faults.py` and `g1b2/long.sh` to `~/wcontainers-graphics/g1b2`
-    on the laptop (after `tools/graphics-rig/linux true` sends the tree) and run
-    `nohup ./long.sh > long.out 2>&1 &` there (100,000 sequences at 0x2b1b5e and 0x5eed, then
-    every fault; run 1's are in `g1b`), or `python3 -I faults.py <tree> <work dir> <target dir>
-    [names]` (it copies the tree with fresh file times, changes one place, runs the tests named
-    with `--no-fail-fast` and prints CAUGHT, SURVIVED or BUILD FAILED). Earlier runs' fault and
-    sweep scripts are in scratch `g1r2` to `g1r11`; started detached they need
-    `export PATH=$HOME/.cargo/bin:$PATH` first.
+    `tools/graphics-rig/linux sh -c 'WCONTAINERS_GPU_SEED=0x3c1d0e WCONTAINERS_GPU_SEQUENCES=100000 cargo test --release -p wcontainers-gpu-test --test sequences -- --nocapture'`
+  - G1c's faults and long sequences: copy scratch `g1c/faults.py` and `g1c/long.sh` to
+    `~/wcontainers-graphics/g1c` on the laptop (after `tools/graphics-rig/linux true` sends the
+    tree) and run `nohup ./long.sh > long.out 2>&1 &` there (every fault, then 100,000 sequences at
+    0x5eed and 0x3c1d0e), or `python3 -I faults.py <tree> <work dir> <target dir> [names]` (it
+    copies the tree, changes one place, runs the tests named and prints CAUGHT, SURVIVED or BUILD
+    FAILED). Run 2's and 3's faults: scratch `g1c2/faults.py` and `g1c3/faults.py`, the same way, each fault
+    a list of changes.
+    Run 5's fault: scratch `g1c5/faults.py`, the same way. Earlier runs' scripts are in scratch
+    `g1r2` to `g1b2`.
 - A back end runs the suite with a test file holding a `Host` implementation and
   `wcontainers_gpu_test::suite!(MyHost);` (see `crates/wcontainers-gpu-test/tests/recorder.rs`).
 - On the Mac only formatting: `nix develop -c cargo fmt -p wcontainers-gpu -p wcontainers-gpu-test`.
 
 ## Measurements
 
-- G1b run 2, all on the Linux laptop (i7-8750H, 12 threads), nothing else of ours running:
-  - Random sequences on 40d0f54a (scratch `g1b2/sequences-100k.log`, `--release`, 4 jobs), each
-    100,000 cases asked and run, recorded with no rule broken and replayed identically: seed
-    0x2b1b5e (new): 5,202,456 calls, 15,144 multisampled passes, 21,297 depth-stencil passes,
-    31,810 indexed draws, 21,412 queries, 43,455 dispatches, 35,228 vertex captures, 113,656
-    timestamps; 72.7 s with the build, load 1.6 at the start. Seed 0x5eed: 5,223,851 calls (the
-    generator did not change), 62.9 s, load 1.3. The end merges after it changed no code the
-    sequences run (a constant and docs in `reflect.rs`, a suite test).
-  - Faults (scratch `g1b2/faults.log`, `g1b2/faults.py`, load 1.2): 9 of 9 caught, each by the
-    test written for it: a flat value sampled at the centre, a flat value's sampling left unfilled,
-    the overlap rule ignoring rows, ignoring the level, and taking a 3D texture's slices as
-    layers; `components` wrong for a8unorm, for bgrx8unorm's alpha and for depth32float-stencil8;
-    a storage binding's offset ignored (caught by the new typed-buffer suite test and the pulled
-    vertices one).
-  - End check after the end merges (scratch `g1b2/end-check.log`, load 1.9, repeated after the
-    last webgpu merge in `g1b2/end-check2.log`): the whole workspace
-    checks (`cargo check --workspace --all-targets`), the owned crates' clippy and docs are clean
-    with warnings denied, and their whole test set passes: 228 (interface 34, compute 8, fast
-    paths 14, helpers 18, suite on the recorder 45, rules 108, sequences 1 at the default 1,000).
+- G1c run 5, on the Linux laptop (i7-8750H, 12 threads, load 0.2 at the start; scratch
+  `g1c5/test1.log`): owned crates' clippy with warnings denied clean; 234 tests pass (interface 36,
+  compute 8, fast paths 14, helpers 19, suite on the recorder 48, rules 108, sequences 1 at the
+  default 1,000); random sequences at seed 0x5eed, 20,000 asked and run (`--release`, 13.1 s of
+  test): 1,206,788 calls, 24,004 copies within one subresource, 21,071 of them of depth or stencil,
+  2,831 multisampled passes, 3,992 depth-stencil passes, 8,031 dispatches, recorded with no rule
+  broken and replayed identically. Fault (scratch `g1c5/faults.log`, load 1.1): 1 of 1 caught.
+  End checks after the end merges (scratch `g1c5/end-check.log`, load 0.4, and
+  `g1c5/end-check2.log` after the second round of merges, load about 5): the whole workspace
+  checks; the owned crates' clippy and docs are clean with warnings denied; the same 234 tests
+  pass.
 
-- G1b run 1, all on the Linux laptop (i7-8750H, 12 threads), nothing else of ours running:
-  - Random sequences on c4a5d61 (scratch `g1b/sequences-100k.log`, `--release`, 4 jobs). Each seed
-    had 100,000 cases asked and run, recorded with no rule broken and replayed identically:
-    - seed 0x5eed: 5,223,851 calls (the generator did not change, so run 11's count), 79.4 s
-      with the build, load 0.2 at the start;
-    - seed 0x61b0b1 (new): 5,216,633 calls, 15,168 multisampled passes, 21,676 depth-stencil
-      passes, 32,341 indexed draws, 21,439 queries, 15,970 scissored draws, 7,499 no-overwrite
-      buffer writes and 8,919 no-overwrite texture writes without a wait, 14,291 discarding
-      texture writes, 42,941 dispatches, 35,156 vertex captures, 114,269 timestamps; 62.9 s,
-      load 1.0.
-  - Faults (scratch `g1b/faults.log`, load about 2): 15 of 15 caught, each by the test written
-    for it: a discarding split allowed, a split losing the pass's ops, `totals` dropping the
-    record, a region's x end, layer end and a view's level range wrapping, draw and instance
-    ranges unchecked, point filling refused under `POLYGON_MODE` (caught by the rule test and the
-    suite test), the linking check off or taking another location, the interpreter linking by
-    rank, `instance_index` without the first instance (caught by the pulled-vertices suite test and
-    `instances_start_at_the_first_instance`), `Format::components` wrong for `r8unorm`, and the
-    filter codes swapped. After the end merge, two more (`g1b/faults2.log`, load 1.0): an
-    overlapping copy within a texture allowed, and a copy within one texture dropping its texels;
-    2 of 2 caught, by `texture_copies_within_one_texture_do_not_overlap` and
-    `a_copy_within_one_subresource_moves_the_region`.
-  - End check after the end merges and the overlap rule (scratch `g1b/end-check.log`): the whole
-    workspace checks (`cargo check --workspace --all-targets`), the owned crates' docs build with
-    warnings denied, and 100,000 sequences again replay identically with no rule broken: seed
-    0x61b0b1, 5,216,633 calls, 114.5 s with the build, load 3.3 at the start (another track
-    building beside it); seed 0x5eed, 5,223,851 calls, 71.7 s, load 8.4. The owned crates' whole
-    test set on the final tree: 225 pass (interface 33, compute 8, fast paths 14, helpers 18,
-    suite on the recorder 43, rules 108, sequences 1 at the default 1,000 cases).
-- Earlier runs' measurements (G1 runs 1 to 11) are in this file's history up to f7e5dfe: the
-  last, run 11, ran 100,000 sequences at 0x5eed, 0xc0ffee and 0x7e11c5 (about 64 s each at 4 jobs)
-  and caught 7 of 7 faults.
+- G1c run 4: no code changed and no branch merged, so no test was run; the owned crates' code is
+  that of run 3's end check (`g1c3/end-check.log`).
+- G1c run 3, on the Linux laptop (i7-8750H, 12 threads):
+  - Owned crates' tests (scratch `g1c3/test1.log`, load 0.0 at the start and 10 at the end, another
+    track building; and `g1c3/end-check.log` after the end merges, load 5.0 to 4.5): 234 pass
+    (interface 36, compute 8, fast paths 14, helpers 19, suite on the recorder 48, rules 108,
+    sequences 1 at the default 1,000); clippy and docs with warnings denied clean; the whole
+    workspace checks.
+  - Faults (scratch `g1c3/faults.log`, 2 jobs, load 8.6 to 6.8): 2 of 2 caught, each by
+    `every_vertex_format_reads_its_element` only: the 11-11-10 infinity read as 65024 (the check's
+    fault, which survived before) and a NaN read as infinity.
+  - No random sequences: generator and recorder unchanged since run 1's 100,000 cases at each of
+    two seeds.
+- G1c run 2, on the Linux laptop (i7-8750H, 12 threads):
+  - Owned crates' tests (scratch `g1c2/test1.log`, load 1.8, and `g1c2/end-check.log`, load 2.9):
+    234 pass (interface 36, compute 8, fast paths 14, helpers 19, suite on the recorder 48, rules
+    108, sequences 1 at the default 1,000); clippy and docs with warnings denied clean; the whole
+    workspace checks.
+  - Faults (scratch `g1c2/faults.log` and `faults2.log`, load 4 to 6): 5 of 5 caught by the test
+    written for each: 11-bit denormals scaled by 2^-15 (the check's fault; the vertex format test),
+    the attribute offset ignored (that test and six others), a copy within one combined depth and
+    stencil subresource dropped (the depth or stencil copy test only, which before this run held
+    no combined format), two reasons swapped in `SlowPath` and `ALL` together
+    (`reasons_keep_their_numbers`; the older order test passes under it), the counter range one
+    slot wider (the slot test, after it was widened to check the ranges adjoin: its first form let
+    this fault through).
+  - No random sequences this run: the generator and recorder are unchanged since run 1's 100,000
+    cases at each of two seeds.
+- G1c, all on the Linux laptop (i7-8750H, 12 threads):
+  - Owned crates' tests after the changes (scratch `g1c/test1.log`, load 1.2): 233 pass (interface
+    35, compute 8, fast paths 14, helpers 19, suite on the recorder 48, rules 108, sequences 1 at
+    the default 1,000); clippy with warnings denied is clean.
+  - Faults (scratch `g1c/faults.log`, load 7 to 9: another track was building): 8 of 8 caught,
+    each by the test written for it: a depth copy within one texture dropped, BGRA vertices not
+    swapped, the packed alpha unscaled, the 10-bit float read with a 6-bit mantissa (the vertex
+    format test), `end_into` writing at offset 0 and writing a wrong count (the helpers test and the
+    suite test), a helper binding clash, `slot` off by one.
+  - Random sequences (scratch `g1c/seq-*.log`, `--release`, 4 jobs, on cf096f8b's recorder and
+    generator), each 100,000 cases asked and run, recorded with no rule broken and replayed
+    identically: seed 0x5eed, 5,240,534 calls, 16,243 copies within one subresource (new), 15,122
+    multisampled passes, 21,699 depth-stencil passes, 42,596 dispatches, 114,375 timestamps; 70.2 s
+    of test (33 s build before), load about 5 at the start; seed 0x3c1d0e (new), 5,219,789 calls,
+    16,032 copies within one subresource, 15,206 multisampled passes, 42,923 dispatches; 69.4 s,
+    load about 5.
+- G1b's and G1's measurements are in this file's history (f639e27d and earlier).
 
 ## The laptop's disk
 
-- G1b run 2 found 19 GB free. At its end it deleted its fault build and tree copy
-  (`g1b2/target`, `g1b2/work/tree`) and the loop's build (`target/phase-2-graphics`; the next run
-  rebuilds it). Logs are kept in `g1b2` there and in scratch `g1b2`.
+- G1c found 47 GB free of 122 GB at the start; `target/phase-2-graphics` was absent (deleted at
+  G1b's end) and was rebuilt. At the end this run deletes its fault build and tree copy
+  (`g1c/work`, `g1c/target`) and the loop's build (`target/phase-2-graphics`); logs stay in `g1c`
+  there and in scratch `g1c`. Left alone: the other tracks' folders and the `check-g1*` folders of
+  the checks.
+- G1c run 2: 47 GB free at the start; at the end deleted `g1c2/work` (the fault tree and its build)
+  and `target/phase-2-graphics` (7.2 GB); logs stay in `g1c2` there and in scratch `g1c2`. Not
+  ours, left alone: `target/phase-2-graphics-` (4.2 GB, of 2026-11-17, origin unknown) and
+  `target/phase-2-graphics-shaders`.
+- G1c run 3: 53 GB free at the start; at the end deleted `target/phase-2-graphics` (6.2 GB) and
+  `g1c3/work` (873 MB); 49 GB free after (another track's builds grew meanwhile). Logs in scratch
+  `g1c3`; `g1c3/faults.py` stays on the laptop.
 
-- This run found 7.6 GB free of 122 GB at the start. It deleted run 10's sweep build
-  (`g1r10/target`, 1.3 GB) at the start and its own fault build (`g1b/target`) and tree copy
-  (`g1b/work/tree`) at the end. Left alone: `target/phase-2-graphics` (our shared build, kept for
-  the next run), `target/phase-2-graphics-shaders` and the `check-g6a*` folders (the shaders
-  track's), `target/phase-2-graphics-` (owner unknown), and the `check-g1-*` folders of G1's checks.
+- G1c run 5: 46 GB free at the start; at the end deleted `target/phase-2-graphics` and
+  `g1c5/work` and `g1c5/target` (the fault's tree and build); `g1c5/faults.py` stays there, logs in
+  scratch `g1c5`.
 
 ## Dependencies added and their licences
 
 - None this run. In `wcontainers-gpu`: `naga` 30.0.2, `bitflags`, `blake3` 1, `half` 2, `serde`
   1.0.229 (MIT OR Apache-2.0; blake3 CC0-1.0 OR Apache-2.0; plan 3). In `wcontainers-gpu-test`:
   `proptest` 1.12.0 (MIT OR Apache-2.0).
+- Plan 15 names what the second batch would add (Mesa MIT with permissive files, bindgen, cpal,
+  smithay, test suites); none is added, and each licence is confirmed at its milestone.
 
 ## Departures from the plan
 
-- G1b run 2: ed7216d9 changed `crates/wcontainers-direct3d-12` (another track's crate), five lines
-  fitting its geometry route to the newer stage helper, so the line could hold that track's work
-  and build. At the end merge the track's own fix arrived and replaced it (both files taken from
-  its branch), so nothing of ed7216d9 is left in the tree.
+- G1c run 5: plan 15.2 had Mesa vendored as files under `third_party/mesa`; it is now a submodule
+  pointing at a fork of ours, because Mesa's tree holds GPL and SGI files the project may not copy.
 
-- G1b: plan 4.7 said the pass tracker ends a split part with `Store`. A part is begun before the
-  tracker knows it will be split, so a pass begun with `Discard` cannot keep its first part. The
-  tracker refuses such a split, and the explicit front (which knows its whole pass) begins a pass
-  whose draws write storage with `Store`. Plan 4.7 now says so. Direct3D 12 does not use the
-  tracker yet, so nothing changes for the other tracks today.
-- G1b: the pass bar asks for a rule test and a suite test per interface change. Some changes have
-  no back-end behaviour (the sampler codes, serde derives, `from_wgsl`, listed losses, slow path
-  names); each is listed above with the test that does guard it and the reason no suite test can.
-- G1 run 10: resource tables stay absent on the recording back end; the interface does not yet say
-  how a program reads a table. Their one stated rule is tested (`resource_tables_are_absent`).
-- G1 run 10: the recorder declares `compute_workgroup_storage` 0 (one invocation at a time).
-- G1 run 9: only one binding number rule is checked (paired textures at 32 to 159); the other
-  kinds' ranges are the fronts' numbering (plan 4.5).
-- G1 run 5: a one-statement fix in `crates/wcontainers-gpu-webgl/examples/webgl-scenes.rs` (7a0feba)
-  to keep the shared line building after the rig's and webgl's work met.
+- G1c run 4: Mesa's Windows build uses MSVC, not clang-cl (Mesa's `install.rst` names MSVC and
+  Clang, not clang-cl).
+- G1c run 3: plan 15 makes OpenGL and Vulkan two WebAssembly modules, each holding Mesa's shared
+  code (the brief's one module per API, at a size cost measured at G9b and G10), and adds G13 for
+  the stand-ins in the container in Chrome, which need the translator and kernel; G9b and G10 run
+  the conformance suites in Chrome built for WebAssembly against the modules directly.
+- G1c run 3: `Features::VIEW_SWIZZLE` removed from the interface (no call used it); plan 4.11 no
+  longer lists it among WebGPU's declarations.
+- G1c run 2: plan 15 departs from the brief in one place and from section 10 in another, each
+  named there and in 15.9: consumed arguments are copied into the call streams (the brief says
+  data is read in place; 15.1 gives why), and the back end becomes its own WebAssembly module that
+  every front module calls (section 10 had one module per front and back end; 15.2).
+- G1c: `crates/wcontainers-direct3d-11/src/format.rs` (another track's crate) changed: its
+  `components` returns `Format::components`, so the two tables cannot drift (G1b's check, finding
+  6). One function body; the track can drop the function.
+- G1c: the plan's second batch (section 15) departs from sections 4.8 and 10 where the first batch's
+  experience says so (15.1): the channel is second-batch work and the existing Windows libraries
+  move onto it at G7.
+- G1b: plan 4.7 said the pass tracker ends a split part with `Store`; it refuses to split a pass
+  begun with `Discard`, and the explicit front begins such a pass with `Store`. Plan 4.7 says so.
+- G1b: some interface changes have no back-end behaviour (helper layouts a front writes, slow path
+  names, serde derives); each is listed with the test that guards it and why no suite test can.
+- G1 run 10: resource tables stay absent on the recording back end; their one stated rule is tested
+  (`resource_tables_are_absent`). The recorder declares `compute_workgroup_storage` 0.
+- G1 run 9: only one binding number rule is checked (paired textures at 32 to 159).
+- G1 run 5: a one-statement fix in `crates/wcontainers-gpu-webgl/examples/webgl-scenes.rs` (7a0feba).
 - G1 run 1: a split pass names its resolve target in every part; the occlusion counter sums by
-  `read_back_now` on every back end; random sequences use proptest with a fixed ChaCha seed.
+  `read_back_now` where the back end does not compute (since 07985aaa); random sequences use
+  proptest with a fixed ChaCha seed.
 
 ## Known failures
+
+- On the WebGPU back end (the shared line's `crates/wcontainers-gpu-webgpu/src/memory.rs`, which
+  fails "a copy within one subresource of depth or stencil" by name),
+  `a_copy_within_one_depth_or_stencil_subresource_moves_the_region` fails once that track runs the
+  suite from this line, until it builds the route under "For the other tracks". Expected; the
+  WebGPU track's work.
 
 - The occlusion counter refuses (`GpuError::Invalid`) a single fan, strip with restart or indirect
   draw that brings a pixel's sum over its samples to its counting format's bound (2048 in
   `r16float`, only on back ends without blendable `r32float`); no test, as no route exists. The
   same for one primitive drawn as many instances where the first instance cannot be raised; tested
   (`the_occlusion_counter_splits_instances_only_where_each_reads_the_same`).
+
+## End of run
+
+- Run 5: direct3d-11 (its status only) and shaders (nine commits, one "interface:", covered under
+  "Interface changes") merged without conflict; then, fetched again, webgl (six commits, one
+  "interface:", covered) and shaders (its status) merged without conflict; webgpu, direct3d-12 and
+  rig had nothing new. End check after all of them below (`g1c5/end-check2.log`). A last fetch
+  brought two more webgl commits (its status file only), merged after the push (e96876ce).
+
+- Run 4: no branch had anything new at the end (fetched after the work); nothing to merge. No build
+  folder was made on the laptop or the desktop this run; scratch `g1c4/dl` holds two downloaded
+  protocol and registry files.
+- Run 3: direct3d-11 (four commits, no owned file) and shaders (its status only) merged without
+  conflict; the rest had nothing new. End check above (`g1c3/end-check.log`).
+- Run 2: no branch had anything new at the end (fetched after the work); nothing to merge. End
+  check above (`g1c2/end-check.log`).
+
+Run 1:
+
+- End merges: direct3d-11 conflicted in `crates/wcontainers-gpu/src/slow.rs` only: the line had
+  `SequentialBuffersCopied` before `SwizzleInShader` and `AtomicExchangeLoop`, the direct3d-11 and
+  shaders branches after them. `SlowPath` is `repr(u8)` and serialised in the shaders crate's cache
+  (`Reflection::slow_paths`), so one order must hold everywhere: the shaders and direct3d-11
+  branches' (the three last, in that order) is taken, with G1c's doc of `CopyWithinTexture` kept.
+  The direct3d-12 branch's last commit is contained in this line, so it meets no conflict when it
+  merges the line (corrected at run 2). Then shaders merged without conflict; the others
+  had nothing new. No other owned file changed in the end merges.
+- End check after them (scratch `g1c/end-check.log`, laptop, load 2.9): the whole workspace checks,
+  the owned crates' clippy and docs are clean with warnings denied, their 233 tests pass, and
+  `wcontainers-direct3d-11`'s 5 unit tests pass.

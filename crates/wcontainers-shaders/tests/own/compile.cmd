@@ -1,4 +1,4 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl, tessellation.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl and msarray.hlsl with
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, compute.hlsl, texels.hlsl, tessellation.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl and waves.hlsl (dxc only) with
 @rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry, the compute and the typed buffer shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
@@ -12,6 +12,8 @@ cd /d %~dp0
 "%FXC%" /nologo /T ps_5_0 /E ps_loop /Fo ps_loop.dxbc own.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_fullscreen /Fo vs_fullscreen.dxbc own.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_window /Fo ps_window.dxbc own.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_gatheroff /Fo ps_gatheroff.dxbc own.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_gatheroff -Gis -Fo ps_gatheroff.dxil own.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_shade /Fo vs_shade.dxbc more.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_flat /Fo ps_flat.dxbc more.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_shade /Fo ps_shade.dxbc more.hlsl || exit /b 1
@@ -38,6 +40,8 @@ for %%e in (ps_ftoi ps_table ps_deriv ps_coarse) do (
   "%FXC%" /nologo /T ps_5_0 /E %%e /Fo %%e.dxbc values.hlsl || exit /b 1
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil values.hlsl || exit /b 1
 )
+"%FXC%" /nologo /T ps_5_0 /E ps_helper /Fo ps_helper.dxbc values.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_6 -E ps_helper -Gis -Fo ps_helper.dxil values.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_carry /Fo vs_carry.dxbc values.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_carry -Gis -Fo vs_carry.dxil values.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_negate /Fo ps_negate.dxbc negate.hlsl || exit /b 1
@@ -62,7 +66,7 @@ for %%e in (ps_dual ps_levels ps_samples ps_ids ps_minlod ps_mingather ps_mirror
 "%DXC%" -nologo -T ps_6_0 -E ps_filter -Gis -Fo ps_filter.dxil filter.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_geometry /Fo vs_geometry.dxbc geometry.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_geometry /Fo ps_geometry.dxbc geometry.hlsl || exit /b 1
-for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_adjacent gs_line_adjacent) do (
+for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_unplaced gs_adjacent gs_line_adjacent) do (
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Gis -Fo %%e.dxil geometry.hlsl || exit /b 1
 )
@@ -76,6 +80,14 @@ for %%e in (cs_atomics cs_decrement cs_images cs_shared) do (
 "%DXC%" -nologo -T ps_6_0 -E ps_texels -Gis -Fo ps_texels.dxil texels.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_through /Fo cs_through.dxbc texels.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_through -Gis -Fo cs_through.dxil texels.hlsl || exit /b 1
+"%FXC%" /nologo /T vs_5_0 /E vs_texels /Fo vs_texels.dxbc texels.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_texels -Gis -Fo vs_texels.dxil texels.hlsl || exit /b 1
+"%FXC%" /nologo /T vs_5_0 /E vs_early /Fo vs_early.dxbc early.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_early -Gis -Fo vs_early.dxil early.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_early /Fo ps_early.dxbc early.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_early -Gis -Fo ps_early.dxil early.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_mark /Fo ps_mark.dxbc early.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_mark -Gis -Fo ps_mark.dxil early.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_patch /Fo vs_patch.dxbc tessellation.hlsl || exit /b 1
 for %%d in (tri quad) do for %%m in (integer pow2 odd even) do for %%o in (point cw ccw) do (
   "%FXC%" /nologo /T hs_5_0 /E hs_%%d_%%m_%%o /Fo hs_%%d_%%m_%%o.dxbc tessellation.hlsl || exit /b 1
@@ -95,4 +107,5 @@ for %%e in (ps_fill ps_msarray) do (
   "%FXC%" /nologo /T ps_5_0 /E %%e /Fo %%e.dxbc msarray.hlsl || exit /b 1
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil msarray.hlsl || exit /b 1
 )
+"%DXC%" -nologo -T ps_6_0 -E ps_wave -Gis -Fo ps_wave.dxil waves.hlsl || exit /b 1
 echo %FXC% %DXC%

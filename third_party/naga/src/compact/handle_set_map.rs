@@ -64,6 +64,23 @@ impl<T: 'static> HandleMap<T> {
         }
     }
 
+    /// A map sending each of the first `len` handles to itself.
+    pub fn identity(len: usize) -> Self {
+        Self {
+            new_index: (0..len as u32).map(Index::new).collect(),
+            as_keys: core::marker::PhantomData,
+        }
+    }
+
+    /// A map sending `order[i]` to index `i`.
+    pub fn from_order(order: &[Handle<T>]) -> Self {
+        let mut map = Self::with_capacity(order.len());
+        for (i, &old) in order.iter().enumerate() {
+            map.insert(old, Index::new(i as u32).unwrap());
+        }
+        map
+    }
+
     /// Return true if `old` is used in the compacted module.
     pub fn used(&self, old: Handle<T>) -> bool {
         self.new_index[old.index()].is_some()

@@ -77,7 +77,9 @@ pub const TARGET_COPY_BINDING: u32 = 1;
 /// The binding in [`HELPER_SET`] of the depth aspect of the pass's read-only depth-stencil attachment,
 /// read by a program that runs its early depth test itself ([`VariantFlags::EARLY_TESTS`]).
 pub const EARLY_DEPTH_BINDING: u32 = 9;
-/// The binding in [`HELPER_SET`] of the stencil aspect of that attachment.
+/// The binding in [`HELPER_SET`] of the stencil aspect of that attachment; for a format without
+/// stencil, any single-sampled unsigned integer texture, which the program reads only where the
+/// stencil test is on.
 pub const EARLY_STENCIL_BINDING: u32 = 10;
 /// The bindings in [`HELPER_SET`] of the merged samplers of a clamped program: pair n of
 /// [`Reflection::sampled_pairs`], when its texture slot is in [`VariantKey::min_lod_clamped`], samples
@@ -130,6 +132,9 @@ pub struct ReflectedBinding {
     /// For a binding the variant adds rather than one of the API's slots, what it holds; `space`,
     /// `register` and `count` then say nothing.
     pub added: Option<AddedBinding>,
+    /// For a storage buffer, the size in bytes of the program's element of it, the step a
+    /// [`HelperValue::StorageOffset`] comes in; zero otherwise.
+    pub stride: u32,
 }
 
 impl ReflectedBinding {
@@ -289,8 +294,9 @@ pub enum StageExtras {
 /// offset the reflection gives. Each exists only in programs whose variant needs it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum HelperValue {
-    /// The part of a storage binding's offset below [`crate::Limits::min_storage_offset_alignment`],
-    /// in bytes (u32), which the program adds to its addresses.
+    /// How far into a storage binding the view starts, in bytes (u32), which the program adds to its
+    /// addresses ([`VariantFlags::STORAGE_OFFSET`]): a whole number of the program's elements of that
+    /// buffer ([`ReflectedBinding::stride`]).
     StorageOffset { set: u32, binding: u32 },
     /// A sampler's level-of-detail bias (f32), added to every sampling through it.
     LodBias { sampler: u32 },
@@ -339,7 +345,8 @@ pub enum HelperValue {
     /// draw's blend constant (four f32).
     TargetCombine { target: u8 },
     /// The early tests the program runs itself: depth compare, front and back stencil compare (u32
-    /// codes, zero for a test that is off), stencil reference and read mask (u32), eight u32.
+    /// codes of [`crate::CompareFn`], zero for a test that is off), stencil reference and read mask
+    /// (u32), eight u32.
     EarlyTests,
     /// A texture's per-resource minimum level-of-detail clamp, in the view's level numbering (f32), and
     /// the view's level count (u32): loads and gathers of a level below the clamp's whole part, and every
@@ -450,6 +457,11 @@ bitflags! {
         /// The pixel shader reads its primitive index from a flat value the stage helper's draw passes,
         /// not from the built-in ([`crate::SlowPath::PrimitiveIdAsGeometry`]).
         const PRIMITIVE_ID_FROM_STAGE = 1 << 13;
+        /// Every storage buffer of the program's own slots (raw and structured views; not counters,
+        /// typed views or bindings a variant adds) is read from [`HelperValue::StorageOffset`] bytes
+        /// into its binding, which the front binds from below the view's start
+        /// ([`crate::BindingResource::StorageBuffer`]).
+        const STORAGE_OFFSET = 1 << 14;
     }
 }
 
@@ -591,8 +603,8 @@ pub struct VariantKey {
     pub texture_layers: Vec<(u32, u32)>,
     /// Texture slots whose bound view maps its components, by slot: component i of every value read
     /// through the slot (loads, samples, and gathers of component i) is the texel's component, or the
-    /// constant, the entry names ([`crate::SlowPath::SwizzleInShader`]), for back ends without
-    /// [`crate::Features::VIEW_SWIZZLE`] (Direct3D 12's component mappings, Direct3D's stencil views).
+    /// constant, the entry names ([`crate::SlowPath::SwizzleInShader`]); views carry no mapping, so
+    /// every front maps in the program (Direct3D 12's component mappings, Direct3D's stencil views).
     pub swizzled: Vec<(u32, [ViewComponent; 4])>,
     /// Where the program reads the draw's bases.
     pub draw_base: DrawBaseSource,
@@ -647,23 +659,78 @@ mod tests {
             AddressMode::MirrorOnce,
         ];
         assert_eq!(modes.map(|m| m as u32), [0, 1, 2, 3, 4]);
+        use crate::CompareFn as C;
+        let compares = [
+            C::Never,
+            C::Less,
+            C::Equal,
+            C::LessEqual,
+            C::Greater,
+            C::NotEqual,
+            C::GreaterEqual,
+            C::Always,
+        ];
+        assert_eq!(compares.map(|c| c as u32), [1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
     #[test]
-    fn helper_blocks_of_the_two_draw_stages_never_share_a_binding() {
-        let vertex = helper_binding(ShaderStage::Vertex);
-        let fragment = helper_binding(ShaderStage::Fragment);
-        assert_ne!(vertex, fragment);
-        let targets = TARGET_COPY_BINDING..TARGET_COPY_BINDING + crate::MAX_COLOR_TARGETS as u32;
-        let others = [
-            EARLY_DEPTH_BINDING,
-            EARLY_STENCIL_BINDING,
-            DRAW_ARGUMENTS_BINDING,
+    fn a_bindings_slot_is_its_place_in_its_kinds_range() {
+        let kinds = [
+            SlotKind::Uniform,
+            SlotKind::Sampler,
+            SlotKind::Texture,
+            SlotKind::Storage,
+            SlotKind::Counter,
         ];
-        for b in [vertex, fragment] {
-            assert!(!targets.contains(&b));
-            assert!(!others.contains(&b));
-            assert!(b < CLAMPED_SAMPLER_BINDING);
+        for kind in kinds {
+            for slot in 0..kind.slots() {
+                let b = ReflectedBinding {
+                    kind,
+                    space: 0,
+                    register: 0,
+                    count: 1,
+                    set: 1,
+                    binding: kind.binding(slot).unwrap(),
+                    added: None,
+                    stride: 0,
+                };
+                assert_eq!(b.slot(), slot, "{kind:?}");
+            }
+            assert_eq!(kind.binding(kind.slots()), None, "{kind:?}");
+        }
+        // The ranges follow one another, and a counter has the number of its storage slot.
+        for pair in kinds.windows(2) {
+            assert_eq!(
+                pair[0].first_binding() + pair[0].slots(),
+                pair[1].first_binding(),
+                "{pair:?}"
+            );
+        }
+        assert_eq!(SlotKind::Counter.slots(), SlotKind::Storage.slots());
+    }
+
+    /// Every binding of the helper set, each a single one or a range from its base (the clamped
+    /// samplers' open-ended), meets no other.
+    #[test]
+    fn helper_set_bindings_never_meet() {
+        let pairs = u32::MAX - CLAMPED_SAMPLER_BINDING;
+        let ranges = [
+            (helper_binding(ShaderStage::Vertex), 1),
+            (helper_binding(ShaderStage::Fragment), 1),
+            (TARGET_COPY_BINDING, crate::MAX_COLOR_TARGETS as u32),
+            (EARLY_DEPTH_BINDING, 1),
+            (EARLY_STENCIL_BINDING, 1),
+            (DRAW_ARGUMENTS_BINDING, 1),
+            (DOMAIN_PATCHES_BINDING, 1),
+            (DOMAIN_POINTS_BINDING, 1),
+            (COUNTER_BINDING, 1),
+            (CLAMPED_SAMPLER_BINDING, pairs),
+        ];
+        assert_eq!(helper_binding(ShaderStage::Compute), ranges[0].0);
+        for (i, &(a, n)) in ranges.iter().enumerate() {
+            for &(b, m) in &ranges[i + 1..] {
+                assert!(a + n <= b || b + m <= a, "{a}+{n} meets {b}+{m}");
+            }
         }
     }
 }

@@ -209,6 +209,15 @@ impl<B: Backend> Device<B> {
         fragment: Option<&ShaderModule>,
     ) -> Result<VertexProgram<B>, Error> {
         let vs = self.convert(vs, ShaderStage::Vertex, key)?;
+        self.program_of(&vs, fragment)
+    }
+
+    /// The vertex program of converted stage `vs` made with `fragment`.
+    pub(super) fn program_of(
+        &mut self,
+        vs: &Converted,
+        fragment: Option<&ShaderModule>,
+    ) -> Result<VertexProgram<B>, Error> {
         let vertex = self.backend.create_shader(&vs.modules[0])?;
         let fragment = match fragment.map(|f| self.backend.create_shader(f)).transpose() {
             Ok(f) => f,
@@ -236,7 +245,7 @@ impl<B: Backend> Device<B> {
             .collect();
         Ok(VertexProgram {
             program: program?,
-            helpers: Helpers::of(&vs),
+            helpers: Helpers::of(vs),
             streams,
         })
     }
