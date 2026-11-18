@@ -246,6 +246,7 @@ static TABLE: [Entry; LENGTH] = {
         (__NR_mprotect, S(memory::mprotect)),
         (__NR_madvise, S(memory::madvise)),
         (__NR_mremap, S(memory::mremap)),
+        (__NR_remap_file_pages, S(memory::remap_file_pages)),
         (__NR_msync, S(memory::msync)),
         (__NR_mlock, S(memory::mlock)),
         (__NR_mlock2, S(memory::mlock2)),

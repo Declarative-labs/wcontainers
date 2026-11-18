@@ -20,3 +20,15 @@ fn proc_permissions_match_reference() {
     assert!(differences.is_empty(), "{}", differences.join("\n"));
     assert_eq!(ours.outcome, theirs);
 }
+
+#[test]
+fn proc_mem_matches_reference() {
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    let program = guest::build("procmem", &[], &out);
+    let (ours, theirs) = run_both(&program, &[]);
+    assert_eq!(
+        String::from_utf8_lossy(&ours.outcome.stdout),
+        String::from_utf8_lossy(&theirs.stdout)
+    );
+    assert_eq!(ours.outcome, theirs);
+}

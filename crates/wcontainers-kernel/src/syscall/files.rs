@@ -544,6 +544,7 @@ pub(super) fn open(
         return Err(Errno::ENOTDIR);
     }
     let mut terminal = None;
+    let mut memory = None;
     if flags & O_PATH == 0 {
         if file_type == S_IFDIR && (accmode != O_RDONLY || flags & O_TRUNC != 0) {
             return Err(Errno::EISDIR);
@@ -620,6 +621,23 @@ pub(super) fn open(
         }
         if let Content::Proc(entry) = node.borrow().content {
             proc::open_check(&kernel.processes, &entry)?;
+            // `mem_open`: the memory of a process the opener may trace (PTRACE_MODE_ATTACH with
+            // its file system ids), held from now on.
+            if let proc::Entry::ProcessFile(task, proc::ProcessFile::Mem) = entry {
+                if !proc::ptrace_may_read_as(
+                    &kernel.processes,
+                    &kernel.threads,
+                    tid,
+                    task.pid,
+                    false,
+                ) {
+                    return Err(Errno::EACCES);
+                }
+                memory = kernel
+                    .processes
+                    .get(&task.pid)
+                    .map(|process| process.memory);
+            }
             if let proc::Entry::FdInfos(task) | proc::Entry::FdInfo(task, _) = entry
                 && !kernel.ptrace_may_read(tid, task.pid)
             {
@@ -724,6 +742,7 @@ pub(super) fn open(
     );
     file.borrow_mut().created = created;
     file.borrow_mut().backend = handle;
+    file.borrow_mut().memory = memory;
     // The name it was opened by, if it was not reached through a link. A backend directory's
     // last name walked is the one the backend answered for this inode.
     let named = !parent.name.is_empty()

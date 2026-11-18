@@ -47,6 +47,8 @@ pub(crate) struct OpenFile {
     pub position_holder: Option<crate::process::Tid>,
     /// The directory and name it was opened by, for its directory's inotify watches.
     pub dentry: Option<(alloc::rc::Weak<RefCell<crate::fs::Inode>>, Vec<u8>)>,
+    /// For `/proc/<pid>/mem`, the memory it was opened on (Linux's `private_data` mm).
+    pub memory: Option<wcontainers_abi::MemoryId>,
 }
 
 /// The state of a file on the shared anonymous inode.
@@ -114,6 +116,7 @@ impl OpenFile {
             backend: None,
             position_holder: None,
             dentry: None,
+            memory: None,
         }))
     }
 

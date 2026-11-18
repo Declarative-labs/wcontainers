@@ -787,7 +787,15 @@ fn vectored_unwatched(
     if writing.is_none() && super::timer::of(&file.borrow()).is_some() {
         return super::timer::read(kernel, cx, tid, file, parts);
     }
-    verify_area(offset.unwrap_or(file.borrow().offset), total)?;
+    let position = offset.unwrap_or(file.borrow().offset);
+    if is_address(file) {
+        // `rw_verify_area` for unsigned offsets: only a range that wraps past the top.
+        if (position as i64) < 0 && total >= position.wrapping_neg() {
+            return Err(Errno::EOVERFLOW);
+        }
+    } else {
+        verify_area(position, total)?;
+    }
     // The file size limit applies to the whole write at once.
     let mut parts = parts.to_vec();
     if let Some(append) = writing
@@ -917,6 +925,12 @@ pub(super) fn direct_on_backend(file: &FileRef) -> bool {
         .backend
         .as_ref()
         .is_some_and(|handle| handle.direct_io())
+}
+
+/// Whether a file is `/proc/<pid>/mem`, read and written at any position.
+fn is_address(file: &FileRef) -> bool {
+    matches!(file.borrow().node.borrow().content, Content::Proc(entry)
+        if entry.style() == Style::Address)
 }
 
 fn is_sysctl(file: &FileRef) -> bool {
@@ -1100,6 +1114,9 @@ fn read_at_unwatched(
     moves_bytes(file, false)?;
     if is_sysctl(file) {
         return read_sysctl(kernel, cx, tid, file, &[(buffer, count)], at);
+    }
+    if is_address(file) {
+        return super::memory::proc_mem(kernel, cx, tid, file, buffer, count, at, false);
     }
     if on_backend_regular(file) {
         return read_parts(kernel, cx, tid, file, &[(buffer, count)], at);
@@ -1382,6 +1399,9 @@ fn write_at_unwatched(
         Content::Proc(entry) => Some(*entry),
         _ => None,
     };
+    if entry.is_some_and(|entry| entry.style() == Style::Address) {
+        return super::memory::proc_mem(kernel, cx, tid, file, buffer, count, at, true);
+    }
     if let Some(entry) = entry {
         return write_proc(kernel, cx, tid, entry, buffer, count);
     }
@@ -1418,6 +1438,8 @@ fn write_proc(
     count: u64,
 ) -> Result<u64, Errno> {
     match entry.writing() {
+        // Taken in place before (`write_at_unwatched`).
+        Writing::Memory => Err(Errno::EINVAL),
         // `comm_write`: the first 15 bytes name the file's thread, up to a zero, and the whole count
         // is taken; only threads of the same process may name it.
         Writing::Comm => {
@@ -1955,6 +1977,17 @@ pub(super) fn lseek(
     if file.node.borrow().is_secret() || file.terminal.is_some() {
         return Err(Errno::ESPIPE);
     }
+    // `mem_lseek`: any position, the result not checked.
+    let address = matches!(file.node.borrow().content,
+        Content::Proc(entry) if entry.style() == Style::Address);
+    if address {
+        file.offset = match whence {
+            SEEK_SET => offset as u64,
+            SEEK_CUR => file.offset.wrapping_add(offset as u64),
+            _ => return Err(Errno::EINVAL),
+        };
+        return Ok(file.offset);
+    }
     let current = || {
         (file.offset as i64)
             .checked_add(offset)
@@ -2164,6 +2197,7 @@ pub(super) fn refresh_proc(
         }
     };
     let again = match entry.style() {
+        Style::Address => false,
         Style::Memory | Style::Sysctl => true,
         Style::Sequence => {
             let file = file.borrow();

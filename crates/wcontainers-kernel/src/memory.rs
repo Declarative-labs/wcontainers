@@ -389,6 +389,38 @@ impl AddressMap {
         at - address
     }
 
+    /// How many bytes from `address` on, up to `length`, a forced access reaches (`get_user_pages`
+    /// with `FOLL_FORCE`, as `/proc/<pid>/mem` and debuggers use): a page the mapping may read
+    /// (`VM_MAYREAD`), and for writing one it may write, or a private one it may be allowed to
+    /// write, whose page is then copied as on a write fault. Never secret memory, never wholly past
+    /// a file's end, never `[vvar]`, never growing a stack.
+    pub fn forced_reach(&self, address: u64, length: u64, write: bool) -> u64 {
+        let end = address.saturating_add(length);
+        let mut at = address;
+        while at < end {
+            let Some(mapping) = self.find(at) else { break };
+            let allowed = if write {
+                mapping.permissions.contains(Permissions::WRITE)
+                    || (!mapping.shared && mapping.allowed.contains(Permissions::WRITE))
+            } else {
+                (mapping.permissions | mapping.allowed).contains(Permissions::READ)
+            };
+            if !allowed
+                || mapping.is_secret()
+                || matches!(mapping.backing, Backing::Special("[vvar]"))
+            {
+                break;
+            }
+            let reach = match &mapping.backing {
+                Backing::File { file_end, .. } if at >= *file_end => break,
+                Backing::File { file_end, .. } => (*file_end).min(mapping.end),
+                _ => mapping.end,
+            };
+            at = reach.min(end);
+        }
+        at - address
+    }
+
     /// Whether every page of the range is mapped.
     pub fn fully_mapped(&self, start: u64, end: u64) -> bool {
         let mut at = start;

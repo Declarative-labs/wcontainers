@@ -125,6 +125,8 @@ pub(crate) enum ProcessFile {
     OomScoreAdj,
     TimerslackNs,
     Maps,
+    /// `mem`: the process's memory itself, read and written at the file's position.
+    Mem,
     Stat,
     Statm,
     Status,
@@ -268,6 +270,7 @@ const PROCESS_FILES: &[(&[u8], ProcessFile)] = &[
     (b"environ", ProcessFile::Environ),
     (b"limits", ProcessFile::Limits),
     (b"maps", ProcessFile::Maps),
+    (b"mem", ProcessFile::Mem),
     (b"mountinfo", ProcessFile::Mountinfo),
     (b"mounts", ProcessFile::Mounts),
     (b"oom_adj", ProcessFile::OomAdj),
@@ -578,6 +581,9 @@ pub(crate) enum Style {
     Memory,
     /// A sysctl: made at each read (`proc_sys_call_handler`); seeks as `default_llseek`.
     Sysctl,
+    /// `mem`: reads and writes the process's memory at the position, which any number may be
+    /// (`FOP_UNSIGNED_OFFSET`); seeks as `mem_lseek`.
+    Address,
     /// Linux's `seq_file`: made by a read from the start or from anywhere but where the last read
     /// stopped, and by a seek elsewhere, and kept between; no positioned writes (`seq_open` clears
     /// `FMODE_PWRITE`); seeks as `seq_lseek`.
@@ -599,6 +605,8 @@ pub(crate) enum Writing {
     Sysctl,
     /// `EIO`, as `pde_write` for an entry with no write of its own.
     Io,
+    /// `mem_write`: into the process's memory.
+    Memory,
     /// The file has no write (`FMODE_CAN_WRITE` unset): `EINVAL`.
     None,
 }
@@ -690,6 +698,7 @@ impl Entry {
                 _,
                 ProcessFile::Cmdline | ProcessFile::Environ | ProcessFile::Auxv,
             ) => Style::Memory,
+            Entry::ProcessFile(_, ProcessFile::Mem) => Style::Address,
             Entry::Global(index) if GLOBAL[*index].0.starts_with("sys/") => Style::Sysctl,
             _ => Style::Sequence,
         }
@@ -703,6 +712,7 @@ impl Entry {
             Entry::ProcessFile(_, ProcessFile::OomScoreAdj) => Writing::OomScoreAdj(false),
             Entry::ProcessFile(_, ProcessFile::OomAdj) => Writing::OomScoreAdj(true),
             Entry::ProcessFile(_, ProcessFile::TimerslackNs) => Writing::TimerslackNs,
+            Entry::ProcessFile(_, ProcessFile::Mem) => Writing::Memory,
             Entry::Global(_) if self.style() == Style::Sysctl => Writing::Sysctl,
             // `proc_reg_write` with no `proc_write` of the entry's own.
             Entry::Global(_) | Entry::NetFile(..) => Writing::Io,
@@ -746,6 +756,7 @@ impl Entry {
             ) => S_IFREG | 0o644,
             Entry::ProcessFile(_, ProcessFile::TimerslackNs) => S_IFREG | 0o666,
             Entry::ProcessFile(_, ProcessFile::Environ | ProcessFile::Auxv) => S_IFREG | 0o400,
+            Entry::ProcessFile(_, ProcessFile::Mem) => S_IFREG | 0o600,
             Entry::ProcessFile(..) => S_IFREG | 0o444,
             Entry::SelfLink
             | Entry::ThreadSelfLink
@@ -1509,7 +1520,9 @@ pub(crate) fn open_check(processes: &BTreeMap<Pid, Process>, entry: &Entry) -> R
         .is_some_and(|process| process.ended.is_some())
     {
         match file {
-            ProcessFile::Environ | ProcessFile::Auxv => return Err(Errno::ESRCH),
+            ProcessFile::Environ | ProcessFile::Auxv | ProcessFile::Mem => {
+                return Err(Errno::ESRCH);
+            }
             ProcessFile::Mounts | ProcessFile::Mountinfo => return Err(Errno::EINVAL),
             _ => {}
         }
@@ -1844,6 +1857,8 @@ fn process_file(
             return Ok((source.read_memory)(process, start, length));
         }
         ProcessFile::Auxv => return Ok(stack.auxiliary.clone()),
+        // Read and written in place (`crate::syscall::memory::proc_mem`), never made.
+        ProcessFile::Mem => return Ok(Vec::new()),
         ProcessFile::Comm => {
             let mut bytes = shown.name.clone();
             bytes.push(b'\n');

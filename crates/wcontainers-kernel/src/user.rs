@@ -88,6 +88,56 @@ impl Guest<'_> {
         there
     }
 
+    /// How many bytes from `address` on a forced access reaches ([`AddressMap::forced_reach`]),
+    /// none while backend pages in it are awaited.
+    fn forced_reach(&mut self, address: u64, length: u64, write: bool) -> u64 {
+        let reach = self.map.borrow().forced_reach(address, length, write);
+        if reach > 0 && !self.read_in(address, address + reach) {
+            return 0;
+        }
+        reach
+    }
+
+    /// The bytes from `address` on, up to `length`, that a forced read reaches.
+    pub fn forced_read(&mut self, address: u64, length: u64) -> Vec<u8> {
+        let reach = self.forced_reach(address, length, false);
+        let mut bytes = vec![0; reach as usize];
+        if self.cpu.read(self.memory, address, &mut bytes).is_err() {
+            return Vec::new();
+        }
+        bytes
+    }
+
+    /// Writes as much of `bytes` at `address` as a forced write reaches, a private file page
+    /// copied first, and tells the CPU side of code changed (`copy_to_user_page`'s cache flush).
+    pub fn forced_write(&mut self, address: u64, bytes: &[u8]) -> u64 {
+        let reach = self.forced_reach(address, bytes.len() as u64, true);
+        if reach == 0
+            || self.copy_on_write(address, reach).is_err()
+            || self
+                .cpu
+                .write(self.memory, address, &bytes[..reach as usize])
+                .is_err()
+        {
+            return 0;
+        }
+        let runs = {
+            let map = self.map.borrow();
+            map.iter()
+                .filter(|mapping| {
+                    mapping.start < address + reach
+                        && mapping.end > address
+                        && mapping.permissions.contains(Permissions::EXECUTE)
+                })
+                .map(|mapping| (mapping.start.max(address), mapping.end.min(address + reach)))
+                .collect::<Vec<_>>()
+        };
+        for (start, end) in runs {
+            self.cpu.code_changed(self.memory, start, end - start, &[]);
+        }
+        reach
+    }
+
     /// `copy_from_user` of the whole range, or `EFAULT`.
     pub fn read(&mut self, address: u64, length: u64) -> Result<Vec<u8>, Errno> {
         if length == 0 {

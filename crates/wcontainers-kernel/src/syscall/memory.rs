@@ -472,6 +472,91 @@ pub(super) fn do_mmap(
     Ok(start)
 }
 
+/// `remap_file_pages`, as Linux emulates it: the shared file mapping at `start` is mapped again
+/// over `[start, start + size)` from file page `pgoff`, with its own protection, and filled at once
+/// unless `MAP_NONBLOCK`. The range must lie in mappings of the same file with the same flags.
+pub(super) fn remap_file_pages(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    [start, size, prot, pgoff, flags, _]: Args,
+) -> Result<u64, Errno> {
+    if prot != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let start = page_down(start);
+    let size = page_down(size);
+    let end = start.checked_add(size).filter(|end| *end > start);
+    let end = end.ok_or(Errno::EINVAL)?;
+    pgoff.checked_add(size / PAGE_SIZE).ok_or(Errno::EINVAL)?;
+    let process = kernel.process_of(tid);
+    let map = process.map.borrow();
+    let first = map.find(start).filter(|mapping| mapping.shared);
+    let first = first.ok_or(Errno::EINVAL)?.clone();
+    let Backing::File { node, path, .. } = &first.backing else {
+        return Err(Errno::EINVAL);
+    };
+    let (node, path) = (node.clone(), path.clone());
+    let same = |mapping: &Mapping| {
+        matches!(&mapping.backing, Backing::File { node: other, .. } if alloc::rc::Rc::ptr_eq(other, &node))
+            && mapping.permissions == first.permissions
+            && mapping.allowed == first.allowed
+            && mapping.shared
+            && mapping.locked == first.locked
+            && mapping.grows_down == first.grows_down
+            && mapping.on_fork == first.on_fork
+    };
+    let mut reached = first.end;
+    while reached < end {
+        match map.find(reached) {
+            Some(next) if same(next) => reached = next.end,
+            _ => return Err(Errno::EINVAL),
+        }
+    }
+    drop(map);
+    // `file_mmap_ok`: the window lies within the largest file (`MAX_LFS_FILESIZE`).
+    const LARGEST_FILE: u64 = i64::MAX as u64;
+    if pgoff > LARGEST_FILE / PAGE_SIZE || size > LARGEST_FILE - pgoff * PAGE_SIZE {
+        return Err(Errno::EOVERFLOW);
+    }
+    let offset = pgoff * PAGE_SIZE;
+    if matches!(node.borrow().content, Content::Backend(_)) {
+        crate::fs::backend::getattr(&node, None)?;
+        let writer = first.allowed.contains(Permissions::WRITE);
+        crate::shared::backend_block(kernel, cx, &node, None, offset + size, writer)?;
+    }
+    let file_size = match &node.borrow().content {
+        Content::Regular(regular) => regular.size(),
+        Content::Backend(remote) => remote.size.get(),
+        _ => 0,
+    };
+    let file_pages = page_up(file_size).saturating_sub(offset);
+    let mapping = Mapping {
+        start,
+        end,
+        backing: Backing::File {
+            node,
+            path,
+            offset,
+            file_end: start + file_pages.min(size),
+            copied: alloc::collections::BTreeSet::new(),
+        },
+        ..first
+    };
+    let process = kernel.process_of(tid);
+    let memory = process.memory;
+    process
+        .map
+        .borrow_mut()
+        .insert(cx.cpu, memory, mapping.clone())?;
+    crate::shared::show(kernel, cx, memory, &mapping)?;
+    if flags as u32 & MAP_NONBLOCK == 0 || mapping.locked == Lock::Now {
+        populate(kernel, cx, tid, start, end, true);
+    }
+    crate::shared::release(kernel, cx);
+    Ok(0)
+}
+
 /// Linux's `__mm_populate` over `[start, end)`, mapping by mapping in order until a page cannot be
 /// brought in (then on at the next mapping if `ignore_errors`): a writable private file mapping is
 /// faulted in for writing, which copies its file pages. Which pages are in memory is not tracked
@@ -1749,6 +1834,76 @@ fn process_vm(
         }
     }
     Ok(copied)
+}
+
+/// `mem_rw`: reads or writes the memory `/proc/<pid>/mem` was opened on, from the position, a page's
+/// worth at a time through a kernel page, as `access_remote_vm` with FOLL_FORCE reaches it (the
+/// reference's PROC_MEM_ALWAYS_FORCE). Nothing moves once that memory is gone (its process ended or
+/// ran another program). Returns what moved, or EIO if nothing could, or EFAULT at a fault on the
+/// caller's side; the position moves to where it stopped.
+#[allow(clippy::too_many_arguments, reason = "a read or write's own arguments")]
+pub(super) fn proc_mem(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_>,
+    tid: Tid,
+    file: &crate::file::FileRef,
+    buffer: u64,
+    count: u64,
+    at: Option<u64>,
+    write: bool,
+) -> Result<u64, Errno> {
+    let (pid, memory, position) = {
+        let file = file.borrow();
+        let Content::Proc(crate::fs::proc::Entry::ProcessFile(task, _)) =
+            file.node.borrow().content
+        else {
+            return Err(Errno::EINVAL);
+        };
+        (task.pid, file.memory, at.unwrap_or(file.offset))
+    };
+    let live = kernel
+        .processes
+        .get(&pid)
+        .is_some_and(|process| process.ended.is_none() && Some(process.memory) == memory);
+    if !live {
+        return Ok(0);
+    }
+    let mut address = position;
+    let mut copied = 0;
+    let mut result = Ok(());
+    while copied < count {
+        let length = (count - copied).min(PAGE_SIZE);
+        let moved = if write {
+            let Ok(bytes) = super::guest(kernel, cx, tid).read(buffer + copied, length) else {
+                result = Err(Errno::EFAULT);
+                break;
+            };
+            process_guest(kernel, cx, pid).forced_write(address, &bytes)
+        } else {
+            let bytes = process_guest(kernel, cx, pid).forced_read(address, length);
+            if !bytes.is_empty()
+                && super::guest(kernel, cx, tid)
+                    .write(buffer + copied, &bytes)
+                    .is_err()
+            {
+                result = Err(Errno::EFAULT);
+                break;
+            }
+            bytes.len() as u64
+        };
+        if moved == 0 {
+            if copied == 0 {
+                result = Err(Errno::EIO);
+            }
+            break;
+        }
+        address = address.wrapping_add(moved);
+        copied += moved;
+    }
+    if at.is_none() {
+        file.borrow_mut().offset = address;
+    }
+    result.map(|()| copied)
 }
 
 /// A process's memory, as another process's call reaches it.
