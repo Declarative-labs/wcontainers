@@ -125,8 +125,10 @@ bitflags! {
         const BLOCK_COMPRESSION = 1 << 46;
         /// Viewports at fractions of a pixel, kept to sub-pixel precision. Without it a front with a
         /// fractional viewport sets the enclosing whole-pixel one and binds the program variant that
-        /// maps positions onto the fractional one, with the scissor cut to the pixels whose centres it
-        /// covers (slow path [`crate::SlowPath::ViewportInShader`]).
+        /// maps positions onto the fractional one, with the scissor cut to the pixels its API draws
+        /// (Direct3D's implicit scissor rounds each edge towards negative infinity; Vulkan's clip
+        /// volume holds the pixels whose centres it covers) (slow path
+        /// [`crate::SlowPath::ViewportInShader`]).
         const FRACTIONAL_VIEWPORT = 1 << 48;
         /// [`crate::Format::Depth24Plus`] and [`crate::Format::Depth24PlusStencil8`] are stored as 24-bit
         /// unsigned normalised depth, so a constant depth bias moves depth by that many steps of 2^-24,
