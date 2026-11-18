@@ -3,8 +3,8 @@
 //! devices, command queues and command lists, its swap chains and DXGI factories, and writes the
 //! counts to <WC_OUT>\census.txt when the process ends. Devices, queues, command lists, swap chains
 //! and factories have their method tables patched with counting thunks the first time an object
-//! using one is created through this library (command lists: one the library makes on each new
-//! Direct3D 12 device, and every list a queue is given to execute). Contexts are handed to the program wrapped
+//! using one is created through this library (command lists: one of each kind the library makes
+//! on each new Direct3D 12 device). Contexts are handed to the program wrapped
 //! instead, since Direct3D 11 rewrites entries of a context's table as it runs: each wrapper method
 //! counts and jumps through the context's own table as it is at that moment. WC_CAPTURE lists frame
 //! numbers (comma separated): the back buffer is saved as <WC_OUT>\frame-<n>.png before those
@@ -706,8 +706,9 @@ unsafe extern "system" fn create_command_queue1(
     result
 }
 
-/// ExecuteCommandLists: patches the table of any list whose table is not counted yet (a list of a
-/// kind the library did not make on the device), so its later recordings are counted.
+/// ExecuteCommandLists: counts the lists executed whose table is not counted (the Direct3D 12
+/// runtime's and DXGI's own lists, executed on the program's queue, or lists made in a way this
+/// library does not see), so the census says how many calls it may be missing.
 unsafe extern "system" fn execute_command_lists(
     this: *mut c_void,
     count: u32,
@@ -717,11 +718,22 @@ unsafe extern "system" fn execute_command_lists(
         unsafe { std::mem::transmute(enter(this, "ExecuteCommandLists")) };
     if !lists.is_null() {
         for k in 0..count as usize {
-            unsafe { patch(Table::List, *lists.add(k)) };
+            let list = unsafe { *lists.add(k) };
+            let table = if list.is_null() {
+                0
+            } else {
+                unsafe { *(list as *const usize) }
+            };
+            if !VTABLES.iter().any(|v| v.load(Ordering::Acquire) == table) {
+                OTHER_LISTS.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
     unsafe { original(this, count, lists) }
 }
+
+/// Command lists executed whose table is not counted.
+static OTHER_LISTS: AtomicU64 = AtomicU64::new(0);
 
 /// Patches the command list tables of `device` from lists made here, of each kind, before the
 /// program records any; the calls made doing so are taken back out.
@@ -1158,6 +1170,13 @@ pub fn write() {
         let _ = writeln!(
             text,
             "# {uncounted} method tables not counted: no room left"
+        );
+    }
+    let other = OTHER_LISTS.load(Ordering::Relaxed);
+    if other > 0 {
+        let _ = writeln!(
+            text,
+            "# {other} command lists executed with a table not counted (Windows' own, or made in a way not seen): their calls are not counted"
         );
     }
     for note in NOTES.lock().unwrap().iter() {
