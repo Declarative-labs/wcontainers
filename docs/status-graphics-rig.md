@@ -21,8 +21,8 @@ checked as tightly as Direct3D 11's. R1 waits for the orchestrator's check. Its 
   has there (How a picture passes). Each verdict is pass, FAIL or absent: absent when the device
   reports, through Direct3D's own queries, that it lacks what the output needs (a feature level,
   sample count, format ability or option); capability answers may be lower than the GPU's, never
-  higher. The Direct3D 11 scenes ask for every level from 11_1 down; 26 of 28 run from 10_0 (the
-  WebGL 2 route's level in the plan), with parts needing more marked absent.
+  higher. The Direct3D 11 scenes ask for every level from 11_1 down; 22 of 28 run at 10_0 (the
+  WebGL 2 route's level in the plan) and 2 more at 10_1, with parts needing more marked absent.
 - Part 2, conformance tests: Wine's d3d11, d3d10core, dxgi and d3d12 test files and vkd3d's
   d3d12, d3d12_invalid_usage, hlsl_d3d12 tests and shader runner (8 files), each test in its own
   process, chosen by name; 19 Wine tests that would change the owner's screen are never run
@@ -983,7 +983,7 @@ There is no plan document in this checkout; these depart from the task or brief 
   a back end cannot do is reported absent through the API's own capability mechanism, so the rig
   takes the device's answers as the authority on what to draw.
 - The Direct3D 11 scenes' shaders are compiled at the lowest shader model that takes them rather
-  than all at 5_0, so 26 of the 28 scenes run on the 10_0 device the plan gives the WebGL 2 route;
+  than all at 5_0, so 22 of the 28 scenes run on the 10_0 device the plan gives the WebGL 2 route;
   the corpus for the shader track now holds 4_0, 4_1 and 5_0 bytecode.
 - Texts hold only facts every correct implementation shares; values the implementation chooses
   (timestamps, helper pixel invocations, append order) are recorded as facts about them or sorted.
