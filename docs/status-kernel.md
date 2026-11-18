@@ -77,7 +77,8 @@ The Linux Test Project (layer 3):
 - The bar (reference, measured): 2694 tests in 26 groups; 1243 pass, 153 fail, 548 broken, 746
   skipped, 3 warning, 1 exit 255 (sched:trace_sched01). syscalls alone: 1552 tests, 973 pass,
   49 fail, 314 broken (177 of them "Failed to acquire device": no loop devices in a default
-  container), 213 skipped, 3 warning. Results: scratch ltp/reference-1.tsv (logs beside it).
+  container), 213 skipped, 3 warning. Results: crates/wcontainers-kernel-test/ltp/
+  reference-20260930.tsv (the bar; logs in scratch ltp/reference-1.tsv.logs).
   Run with 5 jobs, load 20 to 30; the tests' own times add to 11622 s.
 - First whole run on ours (scratch ltp/ours-1.tsv, compare-1.txt), mostly at 931c5a3 to
   e7b79ef (the tests that crashed or hung were run again after their fixes): 2310 of 2694
@@ -97,7 +98,8 @@ The Linux Test Project (layer 3):
     it holds overflowed; it wraps as Linux's unsigned difference does (tests/terminal.rs
     `extproc_reads_match_reference`, guest/ttyextproc.c).
 - The first comparison with every fix in (second whole run, all at 8a3d41f, 3 jobs, LTP_LIMIT
-  300, load 20 to 35; scratch ltp/ours-2.tsv and compare-2.txt): 2308 of 2694 verdicts match,
+  300, load 20 to 35; crates/wcontainers-kernel-test/ltp/ours-20260930-8a3d41f.tsv, logs and
+  compare-2.txt in scratch ltp/): 2308 of 2694 verdicts match,
   386 differ. By cause: no kernel crash, no hang, 18 slower than the time limit on the stand-in
   (fs growfiles, rwtest and iogen, cve-2011-0999, cve-2017-17052, mtest06_3, shm_test01 and
   others that take 30 s to 5 min natively), 79 a part not built, 289 wrong answers. By group:
