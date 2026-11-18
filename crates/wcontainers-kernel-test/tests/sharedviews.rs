@@ -20,10 +20,6 @@ fn a_store_across_a_rings_seam_matches_reference() {
 }
 
 #[test]
-#[cfg_attr(
-    feature = "runtime",
-    ignore = "known failure: the WebAssembly back end refuses a block's page shown next to itself (counted and warned as \"a block's page shown at neighbouring pages refused\"): one access across the two would need both copies of the page at once"
-)]
 fn a_ring_of_one_page_matches_reference() {
     assert_same_output(&out(), "sharedviews", &["ring1"]);
 }
