@@ -249,15 +249,11 @@ pub enum SlowPath {
     /// A captured draw the API's transform feedback cannot take (strips, fans, loops, indices) captured
     /// as points in list order, one draw per run of consecutive vertices, with indices read back first.
     CaptureExpanded,
-    /// A draw sampling levels of a 2D array texture it also draws into, given a copy of the levels it
-    /// reads: Direct3D 11 (WebGL 2 through ANGLE) takes an array view as every subresource from its
-    /// first to its last, unbinds it as overlapping the target, and the draw reads zeros.
-    SampledTargetCopied,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 100] = [
+    pub const ALL: [SlowPath; 99] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -357,7 +353,6 @@ impl SlowPath {
         SlowPath::StencilWrittenByDraw,
         SlowPath::PresentConverted,
         SlowPath::CaptureExpanded,
-        SlowPath::SampledTargetCopied,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -474,7 +469,6 @@ impl SlowPath {
             SlowPath::StencilWrittenByDraw => "stencil written by a draw per bit",
             SlowPath::PresentConverted => "surface format converted by a draw at present",
             SlowPath::CaptureExpanded => "captured draw expanded into points in list order",
-            SlowPath::SampledTargetCopied => "levels of an array it draws into sampled from a copy",
         }
     }
 }
