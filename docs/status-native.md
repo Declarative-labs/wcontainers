@@ -46,6 +46,16 @@ Not checked, and named in the plan as such: execute-only EL0 pages and `hv_gic_s
 Hypervisor.framework (N1's first tests), `KVM_IRQFD` and the KVM ARM64 doorbell (no KVM ARM64 machine at
 hand; N9), the store-exclusive behaviour under interrupts (N5).
 
+## Self-check before handing over
+
+Read the plan against the brief ruling by ruling and opened every cited line. Corrected on the way: the
+entry mirror's reach (slots are 16 bytes with an absolute jump, so the guest's addresses must be below 2^45,
+an owner's decision), a count limit with no position (cannot be honoured with no check at counted events:
+R4, an owner's decision), EL2 on Hypervisor.framework (offered on newer chips, not used), the floor's
+SCTLR, XCR0 and CR4 settings that keep native behaviour equal to what the WebAssembly output presents, and
+the other project's borrowed views of kernel state (closed to a host program when the kernel is inside;
+named for the owner).
+
 ## How to run
 
 Nothing to run in the repository yet. The experiments: `python3 -I regs.py <ELF files>` on the Mac; the KVM

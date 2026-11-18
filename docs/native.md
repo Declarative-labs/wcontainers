@@ -407,8 +407,9 @@ Documentation/virt/kvm/api.rst; not yet tried: no KVM ARM64 machine is at hand).
 To stop at (count N, pc P): the inside asks for P's piece again with a check at P (the translator's one
 operation, "translate from this address", with a stop point added to the request; the stop point is in the
 cache key, so such translations are kept apart), or patches the first host instruction of P's run into a
-branch to a check stub when P starts a run. The check is `sub s, c, #N` (or the x86 equivalent that keeps
-flags) and a branch on zero to the inside; elsewhere nothing changes. Since between two counted events pc
+branch to a check stub when P starts a run. The check compares the count with N without touching flags (ARM64: N
+moved into a withheld register, `sub` and `cbz`; x86-64: a form that keeps the guest's flags, chosen at
+N8) and branches to the inside when equal; elsewhere nothing changes. Since between two counted events pc
 only rises, P is reached with count N exactly once. Once there, the original piece comes back.
 
 **Across outputs.** Both outputs count the same events with the same function (section 4), on the guest's
