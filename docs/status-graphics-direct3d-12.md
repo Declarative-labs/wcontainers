@@ -657,7 +657,9 @@ debug builds, whole runs of 120 frames.
   texture both compared and sampled plainly; G6, "Asked of other tracks"); its other refusals
   are 3 `ResourceArray` and 2 `StorageFormatKind` compute shaders and one alpha-antialiased line
   pipeline, and `QueryVideoMemoryInfo` answers E_NOTIMPL 892 times. None of run 30's new
-  refusals appears in either platformer. BGFX37_RESULT
+  refusals appears in either platformer.
+  bgfx 37-gpudrivenrendering every frame within its allowance in both runs (728 to 904 pixels
+  beyond 8 of 20,480 allowed, the overlay's text; 2.6 and 2.5 s against real's 2.6 and 2.4 s).
 - Run 29 (at 83d4085, desktop shared, not `--alone`; run29/p1-*.log): Microsoft's two samples
   equal (2.6 and 2.5 s), bgfx 37 every frame within its allowance twice (803 to 852 pixels
   beyond 8 of 20480 allowed; 2.5 s twice against real's 2.4 s twice), Godot's 2D platformer
