@@ -16,7 +16,7 @@ some checks on real Direct3D are held to the rest. R1 waits for the orchestrator
 - Jobs that present run on a hidden desktop ("wc-rig") in the session of the user logged in at the
   console (`gpu-job --desktop`, see How to run): windows and swap chains work there and nothing
   shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
-- Part 1, scenes: 28 Direct3D 11 scenes (133 outputs) and 25 Direct3D 12 scenes (110 outputs).
+- Part 1, scenes: 28 Direct3D 11 scenes (139 outputs) and 25 Direct3D 12 scenes (116 outputs).
   Every Direct3D 11 scene of drawing ground has a Direct3D 12 twin drawn from the same tables
   (the ones without are under Departures). Each output is recorded on the RTX 3080 twice and on
   WARP with the debug layer; `scenes` checks them, through replacement libraries if given. A
@@ -24,8 +24,8 @@ some checks on real Direct3D are held to the rest. R1 waits for the orchestrator
   has there (How a picture passes). Each verdict is pass, FAIL or absent: absent when the device
   reports, through Direct3D's own queries, that it lacks what the output needs (a feature level,
   sample count, format ability or option); capability answers may be lower than the GPU's, never
-  higher. The Direct3D 11 scenes ask for every level from 11_1 down; 22 of 28 run at 10_0 (the
-  WebGL 2 route's level in the plan) and 2 more at 10_1, with parts needing more marked absent.
+  higher. The Direct3D 11 scenes ask for every level from 11_1 down; 24 of 28 run at 10_0 (the
+  WebGL 2 route's level in the plan) and 1 more at 10_1, with parts needing more marked absent.
 - Part 2, conformance tests: Wine's d3d11, d3d10core, dxgi and d3d12 test files and vkd3d's
   d3d12, d3d12_invalid_usage, hlsl_d3d12 tests and shader runner (8 files), each test in its own
   process, chosen by name; 19 Wine tests that would change the owner's screen are never run
@@ -979,7 +979,7 @@ There is no plan document in this checkout; these depart from the task or brief 
 - The forwarding DLL is a second crate, crates/wcontainers-graphics-test-forward, since a crate has one
   library and this one must be a cdylib with its own exports.
 - The references are drawn with the Direct3D debug layer on, and any error it reports fails the run.
-- The scenes' reference pictures are kept in the repository (244 outputs of both APIs) so a change
+- The scenes' reference pictures are kept in the repository (255 outputs of both APIs) so a change
   that affects every renderer alike is caught. The real programs' reference frames are not: they
   show the programs' own art (the fonts of bgfx's overlay, the Tool Kit samples' media, Freedoom,
   Godot's demo projects) under those projects' licences, so they stay on the desktop and in the scratch directory, and the repository
@@ -1075,7 +1075,7 @@ There is no plan document in this checkout; these depart from the task or brief 
   a back end cannot do is reported absent through the API's own capability mechanism, so the rig
   takes the device's answers as the authority on what to draw.
 - The Direct3D 11 scenes' shaders are compiled at the lowest shader model that takes them rather
-  than all at 5_0, so 22 of the 28 scenes run on the 10_0 device the plan gives the WebGL 2 route;
+  than all at 5_0, so 24 of the 28 scenes run on the 10_0 device (22 in the eighth run) the plan gives the WebGL 2 route;
   the corpus for the shader track now holds 4_0, 4_1 and 5_0 bytecode.
 - Texts hold only facts every correct implementation shares; values the implementation chooses
   (timestamps, helper pixel invocations, append order) are recorded as facts about them or sorted.
