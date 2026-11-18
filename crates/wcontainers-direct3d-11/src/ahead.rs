@@ -188,9 +188,11 @@ fn fits<B: Backend>(vs: &Shader<B>, layout: Option<&InputLayout>) -> bool {
         .filter(|i| i.system.is_none())
         .all(|i| {
             layout.is_some_and(|l| {
-                l.elements
-                    .iter()
-                    .any(|e| e.location == i.location && scalar(e.format) == i.scalar)
+                l.elements.iter().any(|e| {
+                    e.location == i.location
+                        && scalar(crate::format::vertex_format_read_as(e.format, i.scalar))
+                            == i.scalar
+                })
             })
         })
 }
@@ -278,7 +280,11 @@ impl<B: Backend> Device<B> {
                 crate::device::blend_block(&tuple.blend.desc),
                 crate::device::depth_stencil_block(&tuple.depth_stencil.desc),
                 self.raster_desc(masked),
-                crate::context::layout_desc(tuple.layout.as_deref(), tuple.strides),
+                crate::context::layout_desc(
+                    tuple.layout.as_deref(),
+                    tuple.strides,
+                    &vs.reflection.inputs,
+                ),
                 tuple.targets,
                 topology,
                 tuple.layouts,
@@ -327,7 +333,7 @@ impl<B: Backend> Device<B> {
             return;
         };
         for t in picked.into_iter().filter(|t| writes(&ps, &t.targets)) {
-            let Ok(vertex_layout) = self.vertex_layout_for(t.layout.clone(), t.strides) else {
+            let Ok(vertex_layout) = self.vertex_layout_for(t.layout.clone(), t.strides, &vs) else {
                 return;
             };
             self.backend.prepare(&PrepareDesc {

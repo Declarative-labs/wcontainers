@@ -1786,9 +1786,9 @@ impl<B: Backend> Device<B> {
         strides
     }
 
-    fn vertex_layout(&mut self) -> Result<B::VertexLayout> {
+    fn vertex_layout(&mut self, vs: &Shader<B>) -> Result<B::VertexLayout> {
         let strides = self.strides();
-        self.vertex_layout_for(self.ctx.layout.clone(), strides)
+        self.vertex_layout_for(self.ctx.layout.clone(), strides, vs)
     }
 
     /// The vertex layout block of an input layout read at `strides`, made at its first use.
@@ -1796,12 +1796,13 @@ impl<B: Backend> Device<B> {
         &mut self,
         layout: Option<Rc<InputLayout>>,
         strides: [u32; 32],
+        vs: &Shader<B>,
     ) -> Result<B::VertexLayout> {
-        let key = (layout.as_ref().map_or(0, |l| l.id), strides);
+        let key = (layout.as_ref().map_or(0, |l| l.id), strides, vs.gpu.id);
         if let Some(v) = self.layouts.get(&key) {
             return Ok(v.handle.clone());
         }
-        let desc = layout_desc(layout.as_deref(), strides);
+        let desc = layout_desc(layout.as_deref(), strides, &vs.reflection.inputs);
         let gpu = self.backend.create_vertex_layout(&desc);
         let gpu = self.gpu(gpu)?;
         let id = self.id();
@@ -3166,7 +3167,7 @@ impl<B: Backend> Device<B> {
                 );
             }
         }
-        let vertex_layout = self.vertex_layout()?;
+        let vertex_layout = self.vertex_layout(&vs)?;
         // Direct3D reads zeros from a slot the layout reads that has no buffer: the zero buffer, at
         // stride zero.
         let empty_streams = self.ctx.layout.as_ref().is_some_and(|l| {
@@ -3668,8 +3669,16 @@ impl<B: Backend> Device<B> {
                 "a resolve between subresources of two sizes",
             ));
         }
-        let (into, _) = format::view_format(format, d.desc.format, d.format)?;
-        format::view_format(format, s.desc.format, s.format)?;
+        // A swap chain's buffer is also viewed as its sRGB twin, as DXGI allows its targets.
+        let named = |t: &Texture<B>| {
+            if t.chain && format::srgb_twin(t.desc.format) == Some(format) {
+                format
+            } else {
+                t.desc.format
+            }
+        };
+        let (into, _) = format::view_format(format, named(d), d.format)?;
+        format::view_format(format, named(s), s.format)?;
         if !resolvable(into) {
             return Err(Error::InvalidArg(
                 "a resolve in a format that does not average",
@@ -4208,7 +4217,13 @@ fn same_kind(view: FormatKind, declared: FormatKind) -> bool {
 }
 
 /// The vertex layout block of input layout `layout` read at `strides`.
-pub(crate) fn layout_desc(layout: Option<&InputLayout>, strides: [u32; 32]) -> VertexLayoutDesc {
+/// The vertex layout block of input layout `layout` read at `strides` by a vertex program of
+/// `inputs` (32-bit elements typed as the program reads them).
+pub(crate) fn layout_desc(
+    layout: Option<&InputLayout>,
+    strides: [u32; 32],
+    inputs: &[wcontainers_gpu::StageValue],
+) -> VertexLayoutDesc {
     let mut desc = VertexLayoutDesc {
         streams: [None; 32],
         attributes: [None; 32],
@@ -4223,11 +4238,16 @@ pub(crate) fn layout_desc(layout: Option<&InputLayout>, strides: [u32; 32]) -> V
                     Some(rate) => StepMode::Instance(rate),
                 },
             });
+            let read = inputs
+                .iter()
+                .find(|i| i.system.is_none() && i.location == e.location);
             desc.attributes[i] = Some(VertexAttribute {
                 location: e.location,
                 stream: e.slot as u8,
                 offset: e.offset,
-                format: e.format,
+                format: read.map_or(e.format, |r| {
+                    format::vertex_format_read_as(e.format, r.scalar)
+                }),
             });
         }
     }

@@ -1,6 +1,6 @@
 //! DXGI formats (their numbers in `dxgiformat.h`) as the interface's formats.
 
-use wcontainers_gpu::{Format, IndexFormat, VertexFormat};
+use wcontainers_gpu::{Format, IndexFormat, ScalarKind, VertexFormat};
 
 use crate::error::{Error, Result, not_implemented};
 
@@ -335,6 +335,26 @@ pub fn vertex_format(dxgi: u32) -> Option<VertexFormat> {
         87 => Bgra8Unorm,
         _ => return None,
     })
+}
+
+/// A vertex format of 32-bit components as the 32-bit format of the same bits of the type the
+/// vertex program reads it as: Direct3D hands the shader the bits, which a back end's typed
+/// inputs take only as their own type. Other formats are kept.
+pub fn vertex_format_read_as(format: VertexFormat, scalar: ScalarKind) -> VertexFormat {
+    use VertexFormat::*;
+    let count = match format {
+        Float32x1 | Uint32x1 | Sint32x1 => 0,
+        Float32x2 | Uint32x2 | Sint32x2 => 1,
+        Float32x3 | Uint32x3 | Sint32x3 => 2,
+        Float32x4 | Uint32x4 | Sint32x4 => 3,
+        _ => return format,
+    };
+    let formats = match scalar {
+        ScalarKind::Uint => [Uint32x1, Uint32x2, Uint32x3, Uint32x4],
+        ScalarKind::Sint => [Sint32x1, Sint32x2, Sint32x3, Sint32x4],
+        ScalarKind::Float => [Float32x1, Float32x2, Float32x3, Float32x4],
+    };
+    formats[count]
 }
 
 /// Bytes one element of a vertex format takes.

@@ -52,6 +52,10 @@ pub(crate) struct Variant<B: Backend> {
     pub helpers: Rc<Helpers>,
 }
 
+/// A vertex layout block's key: its input layout (zero for none), the bound strides, and the
+/// vertex program whose input types it gives.
+pub(crate) type LayoutKey = (u64, [u32; 32], u64);
+
 /// A Direct3D 11 device and its immediate context on back end `B`.
 pub struct Device<B: Backend> {
     pub backend: B,
@@ -93,7 +97,7 @@ pub struct Device<B: Backend> {
     /// Combinations drawn and built ahead.
     pub(crate) ahead: crate::ahead::Ahead<B>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
-    pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
+    pub(crate) layouts: HashMap<LayoutKey, Kept<B, B::VertexLayout>>,
     /// What empty slots read.
     pub(crate) zeros: Zeros<B>,
     /// The stage helpers of geometry shaders and stream output, by the vertex shader's, input
@@ -580,7 +584,8 @@ impl<B: Backend> Device<B> {
         self.variants.retain(|(p, _), _| !ids.contains(p));
         self.counting
             .retain(|(v, _, p), _| !ids.contains(v) && !ids.contains(p));
-        self.layouts.retain(|(l, _), _| !ids.contains(l));
+        self.layouts
+            .retain(|(l, _, v), _| !ids.contains(l) && !ids.contains(v));
         self.bury_built();
     }
 
