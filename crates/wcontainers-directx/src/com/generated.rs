@@ -2092,6 +2092,58 @@ impl IDXGIObject_Impl for Output_Impl {
     }
 }
 
+impl IDXGIFactory6_Impl for Factory_Impl {
+    fn EnumAdapterByGpuPreference(
+        &self,
+        adapter: u32,
+        gpupreference: DXGI_GPU_PREFERENCE,
+        riid: *const windows::core::GUID,
+        ppvadapter: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.enum_adapter_by_gpu_preference(adapter, gpupreference, riid, ppvadapter)
+    }
+}
+
+impl IDXGIFactory5_Impl for Factory_Impl {
+    fn CheckFeatureSupport(
+        &self,
+        feature: DXGI_FEATURE,
+        pfeaturesupportdata: *mut core::ffi::c_void,
+        featuresupportdatasize: u32,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.check_feature_support(feature, pfeaturesupportdata, featuresupportdatasize)
+    }
+}
+
+impl IDXGIFactory4_Impl for Factory_Impl {
+    fn EnumAdapterByLuid(
+        &self,
+        adapterluid: &windows::Win32::Foundation::LUID,
+        riid: *const windows::core::GUID,
+        ppvadapter: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.enum_adapter_by_luid(adapterluid, riid, ppvadapter)
+    }
+    fn EnumWarpAdapter(
+        &self,
+        riid: *const windows::core::GUID,
+        ppvadapter: *mut *mut core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGIFactory4::EnumWarpAdapter"))
+    }
+}
+
+impl IDXGIFactory3_Impl for Factory_Impl {
+    fn GetCreationFlags(&self) -> DXGI_CREATE_FACTORY_FLAGS {
+        let _lock = lock();
+        self.get_creation_flags()
+    }
+}
+
 impl IDXGIFactory2_Impl for Factory_Impl {
     fn IsWindowedStereoEnabled(&self) -> windows::core::BOOL {
         let _lock = lock();
@@ -2254,6 +2306,92 @@ impl IDXGIObject_Impl for Factory_Impl {
     ) -> windows::core::Result<()> {
         let _lock = lock();
         self.get_parent(riid, ppparent)
+    }
+}
+
+impl IDXGISwapChain4_Impl for SwapChain_Impl {
+    fn SetHDRMetaData(
+        &self,
+        r#type: DXGI_HDR_METADATA_TYPE,
+        size: u32,
+        pmetadata: *const core::ffi::c_void,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.set_hdr_meta_data(r#type, size, pmetadata)
+    }
+}
+
+impl IDXGISwapChain3_Impl for SwapChain_Impl {
+    fn GetCurrentBackBufferIndex(&self) -> u32 {
+        let _lock = lock();
+        self.get_current_back_buffer_index()
+    }
+    fn CheckColorSpaceSupport(
+        &self,
+        colorspace: windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_TYPE,
+    ) -> windows::core::Result<u32> {
+        let _lock = lock();
+        self.check_color_space_support(colorspace)
+    }
+    fn SetColorSpace1(
+        &self,
+        colorspace: windows::Win32::Graphics::Dxgi::Common::DXGI_COLOR_SPACE_TYPE,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.set_color_space1(colorspace)
+    }
+    fn ResizeBuffers1(
+        &self,
+        buffercount: u32,
+        width: u32,
+        height: u32,
+        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+        swapchainflags: &DXGI_SWAP_CHAIN_FLAG,
+        pcreationnodemask: *const u32,
+        pppresentqueue: *const Option<windows::core::IUnknown>,
+    ) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.resize_buffers1(
+            buffercount,
+            width,
+            height,
+            format,
+            swapchainflags,
+            pcreationnodemask,
+            pppresentqueue,
+        )
+    }
+}
+
+impl IDXGISwapChain2_Impl for SwapChain_Impl {
+    fn SetSourceSize(&self, width: u32, height: u32) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain2::SetSourceSize"))
+    }
+    fn GetSourceSize(&self, pwidth: *mut u32, pheight: *mut u32) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain2::GetSourceSize"))
+    }
+    fn SetMaximumFrameLatency(&self, maxlatency: u32) -> windows::core::Result<()> {
+        let _lock = lock();
+        self.set_maximum_frame_latency(maxlatency)
+    }
+    fn GetMaximumFrameLatency(&self) -> windows::core::Result<u32> {
+        let _lock = lock();
+        self.get_maximum_frame_latency()
+    }
+    fn GetFrameLatencyWaitableObject(&self) -> windows::Win32::Foundation::HANDLE {
+        let _lock = lock();
+        missing_void("IDXGISwapChain2::GetFrameLatencyWaitableObject");
+        Default::default()
+    }
+    fn SetMatrixTransform(&self, pmatrix: *const DXGI_MATRIX_3X2_F) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain2::SetMatrixTransform"))
+    }
+    fn GetMatrixTransform(&self, pmatrix: *mut DXGI_MATRIX_3X2_F) -> windows::core::Result<()> {
+        let _lock = lock();
+        Err(missing("IDXGISwapChain2::GetMatrixTransform"))
     }
 }
 

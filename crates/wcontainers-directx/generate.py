@@ -31,8 +31,10 @@ structs = {
     + ["ID3D11Multithread", "ID3DUserDefinedAnnotation"],
     "Adapter": ["IDXGIAdapter1", "IDXGIAdapter", "IDXGIObject"],
     "Output": ["IDXGIOutput", "IDXGIObject"],
-    "Factory": ["IDXGIFactory2", "IDXGIFactory1", "IDXGIFactory", "IDXGIObject"],
-    "SwapChain": ["IDXGISwapChain1", "IDXGISwapChain", "IDXGIDeviceSubObject", "IDXGIObject"],
+    "Factory": ["IDXGIFactory6", "IDXGIFactory5", "IDXGIFactory4", "IDXGIFactory3", "IDXGIFactory2",
+                "IDXGIFactory1", "IDXGIFactory", "IDXGIObject"],
+    "SwapChain": ["IDXGISwapChain4", "IDXGISwapChain3", "IDXGISwapChain2", "IDXGISwapChain1",
+                  "IDXGISwapChain", "IDXGIDeviceSubObject", "IDXGIObject"],
     "Buffer": ["ID3D11Buffer", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
     + ["ID3D10Buffer"] + D3D10_RESOURCE,
     "Texture1D": ["ID3D11Texture1D", "ID3D11Resource"] + CHILD + DXGI_RESOURCE + DXGI_SURFACE
@@ -84,9 +86,16 @@ hand = {
     "IDXGIFactory": "EnumAdapters MakeWindowAssociation GetWindowAssociation CreateSwapChain",
     "IDXGIFactory1": "EnumAdapters1 IsCurrent",
     "IDXGIFactory2": "IsWindowedStereoEnabled CreateSwapChainForHwnd",
+    "IDXGIFactory3": "GetCreationFlags",
+    "IDXGIFactory4": "EnumAdapterByLuid",
+    "IDXGIFactory5": "CheckFeatureSupport",
+    "IDXGIFactory6": "EnumAdapterByGpuPreference",
     "IDXGIDeviceSubObject": "GetDevice",
     "IDXGISwapChain": "Present GetBuffer SetFullscreenState GetFullscreenState GetDesc ResizeBuffers GetLastPresentCount",
     "IDXGISwapChain1": "GetDesc1 GetHwnd Present1 SetRotation GetRotation",
+    "IDXGISwapChain2": "SetMaximumFrameLatency GetMaximumFrameLatency",
+    "IDXGISwapChain3": "GetCurrentBackBufferIndex CheckColorSpaceSupport SetColorSpace1 ResizeBuffers1",
+    "IDXGISwapChain4": "SetHDRMetaData",
     "ID3D11DeviceContext": "VSSetConstantBuffers PSSetShaderResources PSSetShader PSSetSamplers VSSetShader DrawIndexed Draw Map Unmap PSSetConstantBuffers IASetInputLayout IASetVertexBuffers IASetIndexBuffer DrawIndexedInstanced DrawInstanced IASetPrimitiveTopology VSSetShaderResources VSSetSamplers OMSetRenderTargets OMSetBlendState OMSetDepthStencilState RSSetState RSSetViewports RSSetScissorRects CopySubresourceRegion CopyResource UpdateSubresource ClearRenderTargetView ClearDepthStencilView GenerateMips Begin End GetData ClearState Flush GetType GetContextFlags VSGetShader PSGetShader VSGetConstantBuffers PSGetConstantBuffers VSGetShaderResources PSGetShaderResources VSGetSamplers PSGetSamplers IAGetInputLayout IAGetVertexBuffers IAGetIndexBuffer IAGetPrimitiveTopology OMGetRenderTargets OMGetBlendState OMGetDepthStencilState RSGetState RSGetViewports RSGetScissorRects CSSetShader CSGetShader CSSetConstantBuffers CSGetConstantBuffers CSSetShaderResources CSGetShaderResources CSSetSamplers CSGetSamplers CSSetUnorderedAccessViews CSGetUnorderedAccessViews DrawInstancedIndirect DrawIndexedInstancedIndirect Dispatch DispatchIndirect ClearUnorderedAccessViewUint ClearUnorderedAccessViewFloat CopyStructureCount OMSetRenderTargetsAndUnorderedAccessViews OMGetRenderTargetsAndUnorderedAccessViews ExecuteCommandList FinishCommandList ResolveSubresource SetResourceMinLOD GetResourceMinLOD",
     "ID3D11Resource": "GetType SetEvictionPriority GetEvictionPriority",
     "ID3D11View": "GetResource",
@@ -169,7 +178,7 @@ for struct, tlist in structs.items():
             sig = fix(sig)
             name = re.match(r"fn (\w+)\(", sig).group(1)
             end = sig.find(") ->") if ") ->" in sig else sig.rfind(")")
-            params = re.findall(r"(\w+): ", sig.split("(", 1)[1][: end - sig.index("(") - 1])
+            params = re.findall(r"((?:r#)?\w+): ", sig.split("(", 1)[1][: end - sig.index("(") - 1])
             params = [p for p in params if p != "self"]
             args = ", ".join(params)
             ret = sig[end + 1:].strip()
