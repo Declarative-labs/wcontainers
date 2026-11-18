@@ -149,6 +149,11 @@ impl<B: Backend> Device<B> {
         else {
             return Err(Error::Invalid("not a texture"));
         };
+        if desc.samples > 1 && desc.depth_or_layers > 1 {
+            return Err(Error::NotImplemented(
+                "a multisampled texture array viewed in a format it cannot be viewed as",
+            ));
+        }
         let uses = self.backend.caps().formats.get(view);
         let mut tdesc = *desc;
         tdesc.format = view;
@@ -166,6 +171,7 @@ impl<B: Backend> Device<B> {
             storage: Storage::Texture {
                 texture,
                 desc: tdesc,
+                layers: Vec::new(),
                 views: Vec::new(),
                 owned: true,
             },
@@ -298,15 +304,18 @@ impl<B: Backend> Device<B> {
                     );
                 }
             }
-            (
-                Storage::Texture {
-                    texture: a, desc, ..
-                },
-                Storage::Texture { texture: b, .. },
-            ) => {
-                let (a, b, desc) = (a.clone(), b.clone(), *desc);
+            (from @ Storage::Texture { desc, .. }, to @ Storage::Texture { .. }) => {
+                let desc = *desc;
                 let three_d = desc.dimension == wcontainers_gpu::TextureDimension::D3;
                 let layers = if three_d { 1 } else { desc.depth_or_layers };
+                let at = |s: &Storage<B>, layer| {
+                    s.layer(layer)
+                        .map(|(t, l)| (t.clone(), l))
+                        .ok_or(Error::Invalid("a texture's layer"))
+                };
+                let pairs = (0..layers)
+                    .map(|layer| Ok((at(from, layer)?, at(to, layer)?)))
+                    .collect::<Result<Vec<_>, Error>>()?;
                 for mip in 0..desc.mip_levels {
                     let extent = Extent {
                         width: (desc.width >> mip).max(1),
@@ -317,15 +326,16 @@ impl<B: Backend> Device<B> {
                             1
                         },
                     };
-                    for layer in 0..layers {
-                        let region = |texture| TextureRegion {
+                    for ((a, la), (b, lb)) in &pairs {
+                        let region = |texture, layer| TextureRegion {
                             texture,
                             mip,
                             layer,
                             origin: Origin::default(),
                             stencil: false,
                         };
-                        self.backend.copy_texture(&region(&a), &region(&b), extent);
+                        self.backend
+                            .copy_texture(&region(a, *la), &region(b, *lb), extent);
                     }
                 }
             }

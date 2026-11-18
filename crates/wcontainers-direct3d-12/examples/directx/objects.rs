@@ -3549,6 +3549,17 @@ impl List {
         }
     }
 
+    /// `DiscardResource`: the region's contents become undefined, which keeping them is; nothing
+    /// is recorded (WebGPU has no load that leaves a target undefined).
+    pub fn DiscardResource(&self, resource: Ref<ID3D12Resource>, _: *const D3D12_DISCARD_REGION) {
+        if id(&resource).is_none() {
+            self.rec
+                .lock()
+                .unwrap()
+                .fail(Error::Invalid("DiscardResource with no resource"));
+        }
+    }
+
     pub fn CopyBufferRegion(
         &self,
         dst: Ref<ID3D12Resource>,

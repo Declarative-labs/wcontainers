@@ -922,7 +922,17 @@ impl<B: Backend> Device<B> {
         v: &ResourceView,
         compared: bool,
     ) -> Result<B::TextureView, Error> {
-        if v.mapping != 0x1688 {
+        // The stencil views read their stencil in green, which `components` does not say.
+        let components = match v.format {
+            22 | 47 => 0b1111,
+            f => dxgi(f).map_or(0b1111, |f| f.components()),
+        };
+        if !reads_as_identity(v.mapping, components) {
+            self.messages.push(format!(
+                "a shader resource view's component mapping {:#x} of format {} reads other than \
+                 its texels' components",
+                v.mapping, v.format
+            ));
             return Err(Error::NotImplemented(
                 "component mappings other than identity",
             ));
@@ -1118,5 +1128,50 @@ impl<B: Backend> Device<B> {
         }
         self.uploaded.push(id);
         Ok(())
+    }
+}
+
+/// Whether `mapping` (`D3D12_SHADER_COMPONENT_MAPPING`, three bits a component) reads what the
+/// identity does from a view whose format has `components` (a bit each from red): a component
+/// the format lacks reads zero, one for alpha, so naming it or forcing that value is the same.
+fn reads_as_identity(mapping: u32, components: u32) -> bool {
+    #[derive(PartialEq)]
+    enum Read {
+        Texel(u32),
+        Zero,
+        One,
+    }
+    let read = |source: u32| match source {
+        0..=3 if components & (1 << source) != 0 => Some(Read::Texel(source)),
+        3 | 5 => Some(Read::One),
+        0..=2 | 4 => Some(Read::Zero),
+        _ => None,
+    };
+    (0..4).all(|i| {
+        let source = (mapping >> (3 * i)) & 7;
+        read(source).is_some_and(|r| Some(r) == read(i))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reads_as_identity;
+
+    #[test]
+    fn mappings_read_as_identity_only_where_each_component_reads_the_same() {
+        let map = |c: [u32; 4]| c[0] | c[1] << 3 | c[2] << 6 | c[3] << 9 | 1 << 12;
+        assert!(reads_as_identity(0x1688, 0b1111));
+        assert!(reads_as_identity(map([0, 1, 2, 3]), 0b0001));
+        // Red only: green and blue forced to zero and alpha to one read as the identity does.
+        assert!(reads_as_identity(map([0, 4, 4, 5]), 0b0001));
+        assert!(reads_as_identity(map([0, 2, 1, 3]), 0b0001));
+        assert!(!reads_as_identity(map([0, 0, 0, 0]), 0b0001));
+        assert!(!reads_as_identity(map([0, 4, 4, 5]), 0b1111));
+        assert!(!reads_as_identity(map([2, 1, 0, 3]), 0b1111));
+        assert!(
+            !reads_as_identity(map([0, 1, 2, 4]), 0b0111)
+                && reads_as_identity(map([0, 1, 2, 5]), 0b0111)
+        );
+        assert!(!reads_as_identity(map([0, 1, 2, 7]), 0b0111));
     }
 }
