@@ -71,6 +71,11 @@ pub mod reason {
     /// The guest read the counter on a back end brought back from a save, whose clock hook answers the
     /// system's monotonic clock without the kernel's offset until the kernel makes its clock public.
     pub const COUNTER_WITHOUT_KERNEL_OFFSET: &str = "counter read without the kernel's offset";
+    /// A new thread found every thread block of its process's state memory in use, so the kernel
+    /// is told the memory ran out; the detail is how many blocks a process has.
+    pub const THREAD_BLOCKS_USED_UP: &str = "no thread block left in the process";
+    /// The host refused the memories of a new process, so the kernel is told the memory ran out.
+    pub const PROCESS_MEMORY_REFUSED: &str = "the host refused a process's memories";
     /// The detail of a leave after an exit that is not a system call.
     pub const NOT_A_CALL: u64 = u64::MAX;
 }
@@ -507,8 +512,10 @@ impl Page {
     };
 }
 
-/// Pages one chunk of the records covers: 16 MiB of guest memory.
-const CHUNK: usize = 4096;
+/// Guest memory one chunk of the records covers.
+const CHUNK_BYTES: u64 = 16 << 20;
+/// Pages one chunk of the records covers.
+const CHUNK: usize = (CHUNK_BYTES / PAGE_SIZE) as usize;
 
 /// Every page's record, in chunks that copies of a process share until one of them changes it, so a
 /// fork copies what the process uses, not its whole address space. A chunk not there holds nothing.
@@ -1207,7 +1214,7 @@ where
     }
 
     /// A process with a new store and memories, all zeros, where every page allows nothing.
-    fn new_process(&self, id: MemoryId) -> Result<Process<G>, CpuError> {
+    fn new_process(&mut self, id: MemoryId) -> Result<Process<G>, CpuError> {
         let engine = self.compiler.engine.clone();
         let mut store = Store::new(
             &engine,
@@ -1236,14 +1243,19 @@ where
         store.limiter(|data| &mut data.limits);
         let layout = self.layout;
         let pages = layout.ceiling / memory::wasm_page();
-        let memory = Memory::new(&mut store, MemoryType::new64(pages, Some(pages)))
-            .map_err(|_| CpuError::OutOfMemory)?;
+        let memories =
+            Memory::new(&mut store, MemoryType::new64(pages, Some(pages))).and_then(|memory| {
+                SharedMemory::new(
+                    &engine,
+                    MemoryType::shared(layout.state_pages, layout.state_pages),
+                )
+                .map(|state| (memory, state))
+            });
+        let Ok((memory, state)) = memories else {
+            self.slow_path(reason::PROCESS_MEMORY_REFUSED, 0, 0);
+            return Err(CpuError::OutOfMemory);
+        };
         let base = memory.data_ptr(&store);
-        let state = SharedMemory::new(
-            &engine,
-            MemoryType::shared(layout.state_pages, layout.state_pages),
-        )
-        .map_err(|_| CpuError::OutOfMemory)?;
         let state_base = state.data().as_ptr() as *mut u8;
         let hooks = hooks::<G>(&mut store);
         let pages = layout.permission_pages as usize;
@@ -2662,7 +2674,10 @@ where
                 process.next_block += 1;
                 (process.next_block - 1) * bytes
             }
-            None => return Err(CpuError::OutOfMemory),
+            None => {
+                self.slow_path(reason::THREAD_BLOCKS_USED_UP, u64::from(blocks), 0);
+                return Err(CpuError::OutOfMemory);
+            }
         };
         self.block_bytes(memory, block_at, bytes as usize).fill(0);
         let id = ThreadId(self.fresh());
@@ -2802,6 +2817,29 @@ mod tests {
                 "nothing translated again"
             );
         }
+    }
+
+    /// A process whose thread blocks are all in use refuses a new thread as out of memory, counted
+    /// and warned with how many blocks a process has.
+    #[test]
+    fn a_thread_past_the_blocks_is_counted_and_warned() {
+        let mut cpu =
+            CpuSide::<Arm64>::new(Compiler::new(None), LookAhead::Full, Optimise::Speed, ());
+        let memory = cpu.memory_new().unwrap();
+        let blocks = cpu.layout.blocks();
+        for _ in 0..blocks {
+            cpu.thread_new(memory).expect("a block");
+        }
+        assert_eq!(cpu.thread_new(memory), Err(super::CpuError::OutOfMemory));
+        let counted = cpu
+            .counters()
+            .into_iter()
+            .find(|c| c.reason == super::reason::THREAD_BLOCKS_USED_UP)
+            .expect("counted");
+        assert_eq!(counted.count, 1);
+        assert!(cpu.unsent.iter().any(|w| {
+            w.reason == super::reason::THREAD_BLOCKS_USED_UP && w.detail == u64::from(blocks)
+        }));
     }
 
     /// A compiler copied into a fork of this process, where its pool's threads are not, is dropped

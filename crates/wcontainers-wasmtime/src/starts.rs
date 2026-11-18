@@ -7,6 +7,7 @@ use object::LittleEndian as LE;
 use object::elf;
 use object::pod::{Pod, from_bytes, slice_from_bytes};
 use object::read::elf::{GnuHashTable, HashTable, RelrIterator};
+use wcontainers_abi::PAGE_SIZE;
 
 type Elf = elf::FileHeader64<LE>;
 
@@ -27,8 +28,6 @@ pub trait Guest {
     fn read(&self, address: u64, into: &mut [u8]) -> bool;
     fn readable(&self, address: u64) -> bool;
 }
-
-const PAGE: u64 = wcontainers_abi::PAGE_SIZE;
 
 /// The most pages below a range searched for its image's header.
 const SEARCH_PAGES: u64 = 1 << 14;
@@ -65,13 +64,13 @@ pub fn image_starts(memory: &impl Guest, range: Range<u64>) -> Option<(Vec<u64>,
     }
     let base = loads
         .iter()
-        .filter(|p| p.p_offset.get(LE) < PAGE)
-        .map(|p| header_at.wrapping_sub(p.p_vaddr.get(LE) & !(PAGE - 1)))
+        .filter(|p| p.p_offset.get(LE) < PAGE_SIZE)
+        .map(|p| header_at.wrapping_sub(p.p_vaddr.get(LE) & !(PAGE_SIZE - 1)))
         .find(|base| {
-            let start = base.wrapping_add(text.p_vaddr.get(LE)) & !(PAGE - 1);
+            let start = base.wrapping_add(text.p_vaddr.get(LE)) & !(PAGE_SIZE - 1);
             let end = base
                 .wrapping_add(text.p_vaddr.get(LE) + text.p_memsz.get(LE))
-                .next_multiple_of(PAGE);
+                .next_multiple_of(PAGE_SIZE);
             start == range.start && end == range.end
         })?;
     let image = Image {
@@ -121,13 +120,13 @@ pub fn image_starts(memory: &impl Guest, range: Range<u64>) -> Option<(Vec<u64>,
 /// The address of the ELF header on the nearest readable page at or below `start` that holds one,
 /// past pages that are not mapped (segments aligned to more than a page leave gaps).
 fn find_header(memory: &impl Guest, start: u64) -> Option<u64> {
-    let mut page = start & !(PAGE - 1);
+    let mut page = start & !(PAGE_SIZE - 1);
     for _ in 0..SEARCH_PAGES {
         let mut magic = [0u8; 4];
         if memory.readable(page) && memory.read(page, &mut magic) && magic == elf::ELFMAG {
             return Some(page);
         }
-        page = page.checked_sub(PAGE)?;
+        page = page.checked_sub(PAGE_SIZE)?;
     }
     None
 }
