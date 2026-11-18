@@ -1,5 +1,6 @@
 //! What a DXIL shader declares that a pipeline needs before converting it: its typed unordered
-//! access views and typed buffers (as `dxbc::typed_views` reads them from DXBC). Read from the
+//! access views and typed buffers, and its multisampled array textures (as `dxbc` reads them from
+//! DXBC). Read from the
 //! module's resource list (`!dx.resources`) in the DXIL chunk's LLVM 3.7 bitcode, laid out as
 //! Microsoft's DirectXShaderCompiler documents in `DXIL.rst` ("Metadata", "Resources").
 
@@ -14,6 +15,8 @@ const METADATA: u32 = 15;
 
 /// `DXIL::ResourceKind::TypedBuffer`; the texture kinds lie below it.
 const TYPED_BUFFER: i64 = 10;
+/// `DXIL::ResourceKind::Texture2DMSArray`.
+const TEXTURE_2D_MS_ARRAY: i64 = 8;
 
 /// A module-level metadata entry, as far as the resource list needs.
 enum Md {
@@ -194,9 +197,9 @@ fn slot(all: &[(u32, u32)], place: (u32, u32)) -> u32 {
     all.partition_point(|&p| p < place) as u32
 }
 
-/// The typed unordered access views and typed buffers `code` declares (shader resource views of
-/// textures left out); `None` where `code` holds no DXIL chunk or its resource list is malformed.
-pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
+/// The module's resource list read from `code`'s DXIL chunk, with the node of its lists; `None`
+/// where `code` holds no DXIL chunk or its bitcode is malformed.
+fn resource_lists(code: &[u8]) -> Option<(Reader, Option<usize>)> {
     let program = chunk(code, *b"DXIL")?;
     // The program header (version, size), then the bitcode header (magic, version, the bitcode's
     // offset from that header, its size).
@@ -207,13 +210,49 @@ pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
     let bitcode = program.get(start..start + word(20)?)?;
     let mut reader = Reader::default();
     Bitcode::read(bitcode, &mut reader).ok()?;
+    let lists = reader.resources.as_ref().and_then(|r| r.first()).copied();
+    Some((reader, lists))
+}
+
+/// The typed unordered access views and typed buffers `code` declares (shader resource views of
+/// textures left out); `None` where `code` holds no DXIL chunk or its resource list is malformed.
+pub fn typed_views(code: &[u8]) -> Option<Vec<TypedView>> {
+    let (reader, list) = resource_lists(code)?;
     let mut views = Vec::new();
-    if let Some(&list) = reader.resources.as_ref().and_then(|r| r.first()) {
+    if let Some(list) = list {
         let lists = reader.node(Some(list))?;
         reader.views(*lists.first()?, false, &mut views)?;
         reader.views(*lists.get(1)?, true, &mut views)?;
     }
     Some(views)
+}
+
+/// The texture slots of the multisampled array textures (`Texture2DMSArray`) `code` declares;
+/// `None` where it holds no DXIL chunk or its resource list is malformed.
+pub fn multisampled_arrays(code: &[u8]) -> Option<Vec<u32>> {
+    let (reader, list) = resource_lists(code)?;
+    let Some(list) = list else {
+        return Some(Vec::new());
+    };
+    let resources = reader
+        .node(*reader.node(Some(list))?.first()?)
+        .unwrap_or_default();
+    let mut places = Vec::with_capacity(resources.len());
+    let mut arrays = Vec::new();
+    for &resource in resources {
+        let fields = reader.node(resource)?;
+        let integer = |at: usize| reader.integer(*fields.get(at)?);
+        let place = (
+            u32::try_from(integer(3)?).ok()?,
+            u32::try_from(integer(4)?).ok()?,
+        );
+        places.push(place);
+        if integer(6)? == TEXTURE_2D_MS_ARRAY {
+            arrays.push(place);
+        }
+    }
+    let all = sorted_places(&places);
+    Some(arrays.into_iter().map(|p| slot(&all, p)).collect())
 }
 
 #[cfg(test)]
@@ -266,6 +305,15 @@ mod tests {
                 view(true, false, 3, Kind::Sint),
             ]
         );
+    }
+
+    #[test]
+    fn multisampled_arrays_are_read_from_the_resource_list() {
+        // msarray.hlsl's ps_msarray: Texture2DMSArray<float4> t0.
+        let code = include_bytes!("../../wcontainers-shaders/tests/own/ps_msarray.dxil");
+        assert_eq!(multisampled_arrays(code), Some(vec![0]));
+        let code = include_bytes!("../../wcontainers-shaders/tests/own/cs_texels.dxil");
+        assert_eq!(multisampled_arrays(code), Some(vec![]));
     }
 
     #[test]
