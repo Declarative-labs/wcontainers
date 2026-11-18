@@ -719,8 +719,8 @@ fn a_program_finds_every_binding_it_reads() {
 fn fragment_inputs_are_vertex_outputs_of_their_type_and_interpolation() {
     const LINKED: &str = "
 struct V { @builtin(position) p: vec4<f32>, @location(0) a: vec4<f32>, @location(3) b: vec4<f32>,
-    @location(5) @interpolate(flat) n: u32 }
-@vertex fn vs() -> V { return V(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), 0u); }
+    @location(5) @interpolate(flat) n: u32, @location(7) @interpolate(flat) f: f32 }
+@vertex fn vs() -> V { return V(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), 0u, 0.0); }
 struct Gap { @location(0) a: vec4<f32>, @location(5) @interpolate(flat) n: u32 }
 @fragment fn gap(i: Gap) -> @location(0) vec4<f32> { return i.a; }
 @fragment fn past(@location(6) c: vec4<f32>) -> @location(0) vec4<f32> { return c; }
@@ -728,6 +728,10 @@ struct Gap { @location(0) a: vec4<f32>, @location(5) @interpolate(flat) n: u32 }
 @fragment fn linear(@location(3) @interpolate(linear) b: vec4<f32>) -> @location(0) vec4<f32> { return b; }
 @fragment fn centroid(@location(3) @interpolate(perspective, centroid) b: vec4<f32>) -> @location(0) vec4<f32> { return b; }
 @fragment fn stated(@location(3) @interpolate(perspective, center) b: vec4<f32>) -> @location(0) vec4<f32> { return b; }
+struct First { @location(5) @interpolate(flat, first) n: u32, @location(7) @interpolate(flat, first) f: f32 }
+@fragment fn first_vertex(i: First) -> @location(0) vec4<f32> { return vec4<f32>(f32(i.n), i.f, 0.0, 1.0); }
+@fragment fn either_vertex(@location(7) @interpolate(flat, either) f: f32) -> @location(0) vec4<f32> { return vec4<f32>(f); }
+@fragment fn perspective_in(@location(7) f: f32) -> @location(0) vec4<f32> { return vec4<f32>(f); }
 ";
     let mut r = Recorder::new();
     let shader = |r: &mut Recorder, entry, stage| {
@@ -743,16 +747,24 @@ struct Gap { @location(0) a: vec4<f32>, @location(5) @interpolate(flat) n: u32 }
         })
         .map(|_| ())
     };
-    // Reading fewer locations than are written, and stating the defaults, are allowed.
+    // Reading fewer locations than are written, and stating the defaults (flat values are sampled
+    // at the first vertex), are allowed.
     assert_eq!(program("gap"), Ok(()));
     assert_eq!(program("stated"), Ok(()));
+    assert_eq!(program("first_vertex"), Ok(()));
     assert_eq!(
         program("past"),
         Err(GpuError::Invalid(
             "a fragment input the vertex shader does not write"
         ))
     );
-    for entry in ["narrower", "linear", "centroid"] {
+    for entry in [
+        "narrower",
+        "linear",
+        "centroid",
+        "either_vertex",
+        "perspective_in",
+    ] {
         assert_eq!(
             program(entry),
             Err(GpuError::Invalid(
@@ -1201,16 +1213,19 @@ fn each_use_needs_its_usage_flag() {
     ));
 }
 
-/// A copy may go between regions of one subresource that do not overlap, and between layers.
+/// A copy may go between regions of one subresource that do not overlap (apart in columns, in rows,
+/// or in slices of a 3D texture), and between layers or levels; regions that meet in all of them
+/// overlap.
 #[test]
 fn texture_copies_within_one_texture_do_not_overlap() {
     let mut r = Recorder::new();
-    let t = shaped(&mut r, TextureDimension::D2, 4, 2, 1);
-    let at = |x, y, layer| TextureRegion {
-        texture: &t,
-        mip: 0,
+    let flat = shaped(&mut r, TextureDimension::D2, 4, 2, 2);
+    let volume = shaped(&mut r, TextureDimension::D3, 4, 4, 1);
+    let at = |texture, x, y, z, layer, mip| TextureRegion {
+        texture,
+        mip,
         layer,
-        origin: Origin { x, y, z: 0 },
+        origin: Origin { x, y, z },
         stencil: false,
     };
     let two = Extent {
@@ -1218,15 +1233,33 @@ fn texture_copies_within_one_texture_do_not_overlap() {
         height: 2,
         depth_or_layers: 1,
     };
-    r.copy_texture(&at(0, 0, 0), &at(2, 2, 0), two);
-    r.copy_texture(&at(0, 0, 0), &at(0, 0, 1), two);
-    r.copy_texture(&at(0, 0, 0), &at(2, 0, 0), two);
-    assert!(r.violations.is_empty());
-    r.copy_texture(&at(0, 0, 0), &at(1, 1, 0), two);
-    assert_eq!(
-        r.violations,
-        ["a copy between overlapping regions of one texture"]
+    let deep = Extent {
+        depth_or_layers: 2,
+        ..two
+    };
+    let from = at(&flat, 0, 0, 0, 0, 0);
+    r.copy_texture(&from, &at(&flat, 2, 2, 0, 0, 0), two);
+    r.copy_texture(&from, &at(&flat, 2, 0, 0, 0, 0), two);
+    r.copy_texture(&from, &at(&flat, 0, 2, 0, 0, 0), two);
+    r.copy_texture(&from, &at(&flat, 0, 0, 0, 1, 0), two);
+    r.copy_texture(&from, &at(&flat, 0, 0, 0, 0, 1), two);
+    r.copy_texture(
+        &at(&volume, 0, 0, 0, 0, 0),
+        &at(&volume, 0, 0, 2, 0, 0),
+        deep,
     );
+    assert!(r.violations.is_empty());
+    let overlap = "a copy between overlapping regions of one texture";
+    r.copy_texture(&from, &at(&flat, 1, 1, 0, 0, 0), two);
+    assert_eq!(r.violations, [overlap]);
+    let mut r = Recorder::new();
+    let volume = shaped(&mut r, TextureDimension::D3, 4, 4, 1);
+    r.copy_texture(
+        &at(&volume, 0, 0, 0, 0, 0),
+        &at(&volume, 0, 0, 1, 0, 0),
+        deep,
+    );
+    assert_eq!(r.violations, [overlap]);
 }
 
 #[test]
