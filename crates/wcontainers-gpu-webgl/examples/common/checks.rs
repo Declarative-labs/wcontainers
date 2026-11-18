@@ -1,8 +1,39 @@
 //! Checks of the WebGL 2 back end's own routes, beside the shared suite and run by the same hosts
 //! (tests/suite.rs on ANGLE, examples/browser.rs in Chrome): each panics on a wrong answer.
 
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use wcontainers_gpu::*;
 use wcontainers_gpu_test::Host;
+
+/// What every pattern of these checks is mixed with; 0 gives the patterns the checks were written
+/// with.
+static SEED: AtomicU32 = AtomicU32::new(0);
+
+/// Features whose check ran nothing here, the back end declaring them absent.
+static NOT_RUN: AtomicU64 = AtomicU64::new(0);
+
+/// Records that a check's route did not run because the back end declares `f` absent; its
+/// refusal is what `absent_features_are_refused` checks.
+fn not_run(f: Features) {
+    println!("not run: {f:?} absent");
+    NOT_RUN.fetch_or(f.bits(), Ordering::Relaxed);
+}
+
+/// The features `not_run` recorded since the last call, which hosts report apart from passes.
+pub fn take_not_run() -> Features {
+    Features::from_bits_truncate(NOT_RUN.swap(0, Ordering::Relaxed))
+}
+
+/// Runs `check` `cases` times, with the seeds from `seed` up, each printed first so a failure can be
+/// replayed alone.
+pub fn seeded(check: impl Fn(), seed: u32, cases: u32) {
+    for n in 0..cases {
+        let s = seed.wrapping_add(n);
+        println!("seed {s}");
+        SEED.store(s, Ordering::Relaxed);
+        check();
+    }
+}
 
 #[path = "extensions.rs"]
 mod extensions;
@@ -711,7 +742,7 @@ pub fn stencil_sampled_and_read_back<H: Host>() {
 /// Bytes of every value, from a fixed xorshift sequence: floats among them hit NaNs, infinities and
 /// denormals.
 fn pattern(len: usize, seed: u32) -> Vec<u8> {
-    let mut x = seed | 1;
+    let mut x = (seed ^ SEED.load(Ordering::Relaxed).wrapping_mul(0x9e37_79b9)) | 1;
     (0..len)
         .map(|_| {
             x ^= x << 13;
@@ -737,6 +768,9 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::Rg16Float, Format::Rg16Uint),
         (Format::Rg16Sint, Format::Rg16Uint),
         (Format::Rg16Uint, Format::Rg16Float),
+        (Format::R16Float, Format::R16Sint),
+        (Format::Rgba16Float, Format::Rgba16Uint),
+        (Format::Rgba16Sint, Format::Rgba16Float),
         (Format::R32Float, Format::R32Uint),
         (Format::R32Uint, Format::R32Float),
         (Format::R32Sint, Format::R32Uint),
@@ -751,14 +785,14 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         (Format::R16Unorm, Format::R16Uint),
         (Format::Rg16Sint, Format::Rg16Unorm),
         (Format::Rg16Unorm, Format::Rg16Sint),
+        (Format::Rgb32Float, Format::Rgb32Uint),
+        (Format::Rgb32Sint, Format::Rgb32Float),
     ];
-    let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for (i, (from, to)) in pairs.into_iter().enumerate() {
-        let caps = &b.caps().formats;
-        // A source that does not read back here (signed normalised without EXT_render_snorm) is not
-        // copied either.
-        if !caps.get(from).contains(FormatUse::COPY_OUT)
-            || !caps.get(to).contains(FormatUse::COPY_OUT)
+        // Formats absent here (16-bit normalised without EXT_texture_norm16) are not copied.
+        if !b.caps().formats.get(from).contains(FormatUse::SAMPLE)
+            || !b.caps().formats.get(to).contains(FormatUse::SAMPLE)
         {
             continue;
         }
@@ -768,7 +802,7 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         };
         let src = make(&mut b, from);
         let dst = make(&mut b, to);
-        let bytes = pattern(32 * texel, 0x9e37_79b9 ^ i as u32);
+        let bytes = typeless_bytes(from, 32, 0x9e37_79b9 ^ i as u32);
         let whole = Extent {
             width: 4,
             height: 4,
@@ -801,7 +835,7 @@ pub fn copies_within_a_typeless_group<H: Host>() {
             &layer_at(&dst, 0, 0, 2, false),
             part,
         );
-        let got = kit::read(&mut b, &dst, 0, 0, [4, 4, 2], texel, false);
+        let got = read_typeless(&mut b, &dst, to, [4, 4, 2]);
         let mut want = vec![0u8; 32 * texel];
         for layer in 0..2 {
             for y in 0..2 {
@@ -816,6 +850,264 @@ pub fn copies_within_a_typeless_group<H: Host>() {
         b.destroy(Object::Texture(src));
         b.destroy(Object::Texture(dst));
     }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// `texels` texels of `format` from `seed`; half floats begin with infinities, NaNs with payloads,
+/// denormals and signed zero, whose bits a copy must keep.
+fn typeless_bytes(format: Format, texels: usize, seed: u32) -> Vec<u8> {
+    let mut bytes = pattern(texels * format.block().2 as usize, seed);
+    if matches!(
+        format,
+        Format::R16Float | Format::Rg16Float | Format::Rgba16Float
+    ) {
+        let special: [u16; 8] = [
+            0x7c01, 0xfe01, 0x0001, 0x8000, 0x7c00, 0xfc00, 0x83ff, 0x7bff,
+        ];
+        for (at, h) in bytes.as_chunks_mut::<2>().0.iter_mut().zip(special) {
+            at.copy_from_slice(&h.to_le_bytes());
+        }
+    }
+    bytes
+}
+
+/// Reads back the first layers of `texture` (of `format`, mip 0): directly, or where the format
+/// does not read back (16-bit floats), through a copy into its unsigned integer twin.
+fn read_typeless<B: Backend>(
+    b: &mut B,
+    texture: &B::Texture,
+    format: Format,
+    size: [u32; 3],
+) -> Vec<u8> {
+    use crate::kit;
+    let texel = format.block().2 as usize;
+    if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+        return kit::read(b, texture, 0, 0, size, texel, false);
+    }
+    let twin = match format {
+        Format::R16Float => Format::R16Uint,
+        Format::Rg16Float => Format::Rg16Uint,
+        Format::Rgba16Float => Format::Rgba16Uint,
+        f => panic!("{f:?} has no twin to read through"),
+    };
+    let usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let t = kit::texture(b, TextureDimension::D2, twin, size, 1, usage, false);
+    let extent = Extent {
+        width: size[0],
+        height: size[1],
+        depth_or_layers: size[2],
+    };
+    b.copy_texture(
+        &layer_at(texture, 0, 0, 0, false),
+        &layer_at(&t, 0, 0, 0, false),
+        extent,
+    );
+    let got = kit::read(b, &t, 0, 0, size, texel, false);
+    b.destroy(Object::Texture(t));
+    got
+}
+
+/// A face of a cube copied whole, and a region of another face, into 2D textures of another format
+/// of the group keep every byte.
+pub fn cube_faces_copied_between_typeless_formats<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let pairs = [
+        (Format::R32Float, Format::R32Uint),
+        (Format::Rgba32Uint, Format::Rgba32Float),
+        (Format::Rg16Float, Format::Rg16Uint),
+        (Format::Rgba16Uint, Format::Rgba16Float),
+        (Format::R8Uint, Format::R8Sint),
+        (Format::Rg16Sint, Format::Rg16Uint),
+        (Format::Rgba8Unorm, Format::Rgba8Uint),
+        (Format::Rgba8Sint, Format::Rgba8Unorm),
+        (Format::Depth32Float, Format::R32Float),
+        (Format::Depth16Unorm, Format::R16Uint),
+    ];
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let face = Extent {
+        width: 4,
+        height: 4,
+        depth_or_layers: 1,
+    };
+    for (i, (from, to)) in pairs.into_iter().enumerate() {
+        let texel = from.block().2 as usize;
+        let cube = kit::texture(
+            &mut b,
+            TextureDimension::D2,
+            from,
+            [4, 4, 6],
+            1,
+            usage,
+            true,
+        );
+        let bytes = if from.is_depth_stencil() {
+            depth_values(from, 96, 0x2545_f491 ^ i as u32)
+        } else {
+            typeless_bytes(from, 96, 0x2545_f491 ^ i as u32)
+        };
+        b.write_texture(
+            &layer_at(&cube, 0, 0, 0, false),
+            Extent {
+                depth_or_layers: 6,
+                ..face
+            },
+            &bytes,
+            4 * texel as u32,
+            4,
+            WriteMode::Ordered,
+        );
+        let flat = kit::texture(&mut b, TextureDimension::D2, to, [4, 4, 2], 1, usage, false);
+        b.write_texture(
+            &layer_at(&flat, 0, 0, 0, false),
+            Extent {
+                depth_or_layers: 2,
+                ..face
+            },
+            &vec![0; 32 * texel],
+            4 * texel as u32,
+            4,
+            WriteMode::Ordered,
+        );
+        // Face 3 whole into layer 0; two by three texels of face 5 from (2, 1) to (1, 0) of layer 1.
+        b.copy_texture(
+            &layer_at(&cube, 3, 0, 0, false),
+            &layer_at(&flat, 0, 0, 0, false),
+            face,
+        );
+        b.copy_texture(
+            &layer_at(&cube, 5, 2, 1, false),
+            &layer_at(&flat, 1, 1, 0, false),
+            Extent {
+                width: 2,
+                height: 3,
+                depth_or_layers: 1,
+            },
+        );
+        let got = read_typeless(&mut b, &flat, to, [4, 4, 2]);
+        let mut want = vec![0u8; 32 * texel];
+        want[..16 * texel].copy_from_slice(&bytes[3 * 16 * texel..4 * 16 * texel]);
+        for y in 0..3 {
+            for x in 0..2 {
+                let s = (5 * 16 + (y + 1) * 4 + x + 2) * texel;
+                let d = (16 + y * 4 + x + 1) * texel;
+                want[d..d + texel].copy_from_slice(&bytes[s..s + texel]);
+            }
+        }
+        assert_eq!(
+            got,
+            want,
+            "{from:?} cube to {to:?} (device {:?})",
+            b.status()
+        );
+        b.destroy(Object::Texture(cube));
+        b.destroy(Object::Texture(flat));
+    }
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Copies between regions of one subresource that do not overlap (the interface allows them; GL
+/// refuses them as feedback loops), on every copy route: copyTexSubImage, the pixel pack buffer,
+/// the draw, the depth blit and the host copy; in a 2D texture, a layer of an array and a 3D slice.
+pub fn copies_within_one_subresource<H: Host>() {
+    use crate::kit;
+    let mut b = H::make();
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let cases = [
+        (Format::Rgba8Unorm, TextureDimension::D2, [8, 4, 1]),
+        (Format::R32Uint, TextureDimension::D2, [8, 4, 3]),
+        (Format::Rgba8Unorm, TextureDimension::D3, [8, 4, 2]),
+        (Format::R32Float, TextureDimension::D2, [8, 4, 2]),
+        (Format::R32Float, TextureDimension::D3, [8, 4, 3]),
+        (Format::Rg16Float, TextureDimension::D2, [8, 4, 1]),
+        (Format::Rgb32Float, TextureDimension::D2, [8, 4, 1]),
+        (Format::Depth32Float, TextureDimension::D2, [8, 4, 2]),
+        (Format::Depth24Plus, TextureDimension::D2, [8, 4, 1]),
+    ];
+    let before = b.slow_paths().count(SlowPath::CopyWithinTexture);
+    for (n, (format, dimension, size)) in cases.into_iter().enumerate() {
+        let texel = format.block().2 as usize;
+        let t = kit::texture(&mut b, dimension, format, size, 1, usage, false);
+        let count = (size[0] * size[1] * size[2]) as usize;
+        let bytes = if format.is_depth_stencil() {
+            depth_values(format, count, 0x7a3d_1c55 ^ n as u32)
+        } else {
+            typeless_bytes(format, count, 0x7a3d_1c55 ^ n as u32)
+        };
+        let all = Extent {
+            width: size[0],
+            height: size[1],
+            depth_or_layers: size[2],
+        };
+        let corner = TextureRegion {
+            texture: &t,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        b.write_texture(
+            &corner,
+            all,
+            &bytes,
+            size[0] * texel as u32,
+            size[1],
+            WriteMode::Ordered,
+        );
+        let read = |b: &mut H::Backend| {
+            if format == Format::Rg16Float {
+                read_typeless(b, &t, format, size)
+            } else {
+                kit::read(b, &t, 0, 0, size, texel, false)
+            }
+        };
+        assert_eq!(read(&mut b), bytes, "{format:?} {dimension:?} as written");
+        // Three by three texels from (0, 1) to (4, 0) of the last layer or slice.
+        let last = size[2] - 1;
+        let at = |x, y| match dimension {
+            TextureDimension::D3 => TextureRegion {
+                origin: Origin { x, y, z: last },
+                ..corner
+            },
+            _ => TextureRegion {
+                layer: last,
+                origin: Origin { x, y, z: 0 },
+                ..corner
+            },
+        };
+        b.copy_texture(
+            &at(0, 1),
+            &at(4, 0),
+            Extent {
+                width: 3,
+                height: 3,
+                depth_or_layers: 1,
+            },
+        );
+        let got = read(&mut b);
+        let mut want = bytes.clone();
+        let plane = (size[0] * size[1]) as usize * last as usize;
+        for y in 0..3 {
+            for x in 0..3 {
+                let s = (plane + (y + 1) * 8 + x) * texel;
+                let d = (plane + y * 8 + x + 4) * texel;
+                want[d..d + texel].copy_from_slice(&bytes[s..s + texel]);
+            }
+        }
+        assert_eq!(
+            got,
+            want,
+            "{format:?} {dimension:?} (device {:?})",
+            b.status()
+        );
+        b.destroy(Object::Texture(t));
+    }
+    // Every copy but that of the texture kept on the host, which reads the region before it writes.
+    assert_eq!(
+        b.slow_paths().count(SlowPath::CopyWithinTexture) - before,
+        cases.len() as u64 - 1,
+        "each copy through a texture counted"
+    );
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
 
@@ -3403,6 +3695,118 @@ pub fn absent_features_are_refused<H: Host>() {
     ] {
         let m = extensions::module_all(wgsl, entry, stage);
         by_caps(b.create_shader(&m).map(drop), f, entry);
+    }
+    // Shaders reading or writing what the caps may lack, refused when they are made.
+    const OUT: &str = "-> @location(0) vec4<f32>";
+    let fragment = |head: &str, args: &str, body: &str| {
+        format!("{head}\n@fragment fn fs({args}) {OUT} {{ {body} }}")
+    };
+    let wgsl_absent = [
+        (
+            fragment("", "@builtin(sample_index) s: u32", "return vec4<f32>(f32(s));"),
+            "sample_index",
+            Features::SAMPLE_SHADING,
+        ),
+        (
+            "struct O { @location(0) c: vec4<f32>, @builtin(sample_mask) m: u32 }\n\
+             @fragment fn fs(@builtin(sample_mask) m: u32) -> O { return O(vec4<f32>(1.0), m & 1u); }"
+                .into(),
+            "sample_mask",
+            Features::SAMPLE_SHADING,
+        ),
+        (
+            fragment(
+                "",
+                "@location(0) @interpolate(perspective, sample) v: vec4<f32>",
+                "return v;",
+            ),
+            "interpolated per sample",
+            Features::SAMPLE_SHADING,
+        ),
+        (
+            fragment(
+                "@group(0) @binding(0) var t: texture_multisampled_2d<f32>;",
+                "@builtin(position) p: vec4<f32>",
+                "return textureLoad(t, vec2<i32>(p.xy), 0);",
+            ),
+            "a multisampled texture",
+            Features::MULTISAMPLE_READ,
+        ),
+        (
+            fragment(
+                "@group(0) @binding(0) var t: texture_2d<f32>;",
+                "",
+                "return vec4<f32>(f32(textureNumLevels(t)));",
+            ),
+            "textureNumLevels",
+            Features::TEXTURE_LEVEL_QUERY,
+        ),
+        (
+            fragment(
+                "@group(0) @binding(0) var<storage, read_write> s: array<u32>;",
+                "",
+                "s[0] = 1u; return vec4<f32>(1.0);",
+            ),
+            "a storage buffer written",
+            Features::FRAGMENT_STORAGE_WRITE,
+        ),
+        (
+            fragment(
+                "@group(0) @binding(0) var<storage, read> s: array<vec4<f32>>;",
+                "",
+                "return s[0];",
+            ),
+            "a storage buffer read",
+            Features::FRAGMENT_STORAGE_WRITE,
+        ),
+        (
+            fragment(
+                "@group(0) @binding(0) var t: texture_storage_2d<r32uint, write>;",
+                "@builtin(position) p: vec4<f32>",
+                "textureStore(t, vec2<i32>(p.xy), vec4<u32>(1u)); return vec4<f32>(1.0);",
+            ),
+            "a storage texture",
+            Features::FRAGMENT_STORAGE_WRITE,
+        ),
+        (
+            fragment(
+                "enable f16;",
+                "@builtin(position) p: vec4<f32>",
+                "return vec4<f32>(f32(f16(p.x)));",
+            ),
+            "16-bit floats",
+            Features::SHADER_F16,
+        ),
+        (
+            fragment(
+                "enable primitive_index;",
+                "@builtin(primitive_index) i: u32",
+                "return vec4<f32>(f32(i));",
+            ),
+            "primitive_index",
+            Features::PRIMITIVE_INDEX,
+        ),
+    ];
+    for (wgsl, what, f) in wgsl_absent {
+        let m = extensions::module_all(&wgsl, "fs", ShaderStage::Fragment);
+        by_caps(b.create_shader(&m).map(drop), f, what);
+    }
+    for (wgsl, what, f) in [
+        (
+            "@group(0) @binding(0) var<storage, read> s: array<vec4<f32>>;\n\
+             @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> { return s[i]; }",
+            "a storage buffer read by a vertex program",
+            Features::VERTEX_STORAGE_READ,
+        ),
+        (
+            "@group(0) @binding(0) var<storage, read_write> s: array<vec4<f32>>;\n\
+             @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> { s[i] = vec4<f32>(1.0); return s[0]; }",
+            "a storage buffer written by a vertex program",
+            Features::VERTEX_STORAGE_WRITE,
+        ),
+    ] {
+        let m = extensions::module_all(wgsl, "vs", ShaderStage::Vertex);
+        by_caps(b.create_shader(&m).map(drop), f, what);
     }
     let buffer = buffer(
         &mut b,

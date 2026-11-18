@@ -38,6 +38,11 @@ try {
   const canvas = document.createElement('canvas');
   const gl = canvas.getContext('webgl2', { antialias: false, depth: false, stencil: false });
   await time('webgl2', new GlCost(gl));
+  // The adapter the WebGPU side asks for, which must be a GPU (Chrome names its type with
+  // --enable-webgpu-developer-features, which chrome.mjs gives).
+  const info = (await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })).info;
+  lines.push(`webgpu adapter: ${info.description} (${info.type}, ${info.backend})`);
+  if (!['discrete GPU', 'integrated GPU'].includes(info.type)) throw new Error(`WebGPU's adapter is of type ${info.type}, not a GPU`);
   await time('webgpu', await gpu_cost());
   window.done = { ok: true, lines };
 } catch (e) {

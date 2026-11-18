@@ -90,9 +90,10 @@ impl<B: Backend> Draw for B {
     }
 }
 
-/// A triangle inside its viewport, coloured by values interpolated across it. `place` maps clip
-/// position `c` to where the drawing's viewport puts it: `c` itself under the viewport, or the
-/// in-program viewport adjustment of `ViewportInShader` under a whole-target one.
+/// A triangle reaching past its viewport on every side but the bottom right, coloured by values
+/// interpolated across it. `place` maps clip position `c4` to where the drawing's viewport puts it:
+/// `c4` itself under the viewport, or the in-program adjustment of `ViewportInShader` under the
+/// enclosing whole-pixel one.
 fn fraction_program(place: &str) -> String {
     format!(
         "
@@ -101,7 +102,7 @@ struct V {{
     @location(0) c: vec4<f32>,
 }}
 @vertex fn vs(@builtin(vertex_index) i: u32) -> V {{
-    var p = array<vec2<f32>, 3>(vec2(-0.8, -0.7), vec2(0.9, -0.3), vec2(-0.2, 0.85));
+    var p = array<vec2<f32>, 3>(vec2(-1.6, -1.3), vec2(1.5, -0.6), vec2(-0.3, 1.7));
     var c = array<vec4<f32>, 3>(vec4(1.0, 0.0, 0.2, 1.0), vec4(0.0, 1.0, 0.4, 1.0), vec4(0.1, 0.3, 1.0, 1.0));
     let c4 = vec4<f32>(p[i], 0.5, 1.0);
     return V({place}, c[i]);
@@ -113,44 +114,73 @@ struct V {{
     )
 }
 
-/// A viewport at x 2.5, y 1.25, 11 by 12.5 pixels of a 16 by 16 target: natively where the back end
-/// has `FRACTIONAL_VIEWPORT`, otherwise through the program variant over the whole target
-/// (`ViewportInShader`, the adjustment G6's variant makes).
+/// A viewport at x 2.25, y 1.25, 11 by 12.5 pixels of a 16 by 16 target: natively where the back
+/// end has `FRACTIONAL_VIEWPORT`; otherwise as a front without it draws it (the interface's
+/// `FRACTIONAL_VIEWPORT` text): the enclosing whole-pixel viewport, the program variant mapping
+/// positions onto the fractional one (the adjustment of `HelperValue::ViewportAdjust`, written
+/// into the program here), and the scissor cut to the pixels whose centres it covers. The triangle
+/// is clipped at the viewport's edges, so the scissor decides those pixels.
 fn fraction<B: Backend>(b: &mut B) -> Parts {
     let k = Kit::new(b);
-    let (x, y, w, h) = (2.5f32, 1.25f32, 11.0f32, 12.5f32);
-    let n = 16.0f32;
+    let (x, y, w, h) = (2.25f32, 1.25f32, 11.0f32, 12.5f32);
     let native = b.caps().has(Features::FRACTIONAL_VIEWPORT);
+    let (x0, y0) = (x.floor(), y.floor());
+    let (ww, wh) = ((x + w).ceil() - x0, (y + h).ceil() - y0);
     let (program, vp) = if native {
         (fraction_program("c4"), kit::viewport(x, y, w, h))
     } else {
-        b.slow_paths().hit(SlowPath::ViewportInShader);
-        // Window x = x + (cx + 1) / 2 * w, written as a clip x over the whole target; y likewise
-        // from the top.
+        // Window x = x + (cx + 1) / 2 * w, written as a clip x of the whole-pixel viewport; y
+        // likewise from the top.
         let place = format!(
             "vec4<f32>(c4.x * {sx:.9} + c4.w * {ox:.9}, c4.y * {sy:.9} + c4.w * {oy:.9}, c4.z, c4.w)",
-            sx = w / n,
-            ox = (2.0 * x + w) / n - 1.0,
-            sy = h / n,
-            oy = 1.0 - (2.0 * y + h) / n,
+            sx = w / ww,
+            ox = (2.0 * (x - x0) + w) / ww - 1.0,
+            sy = h / wh,
+            oy = 1.0 - (2.0 * (y - y0) + h) / wh,
         );
-        (fraction_program(&place), kit::viewport(0.0, 0.0, n, n))
+        (fraction_program(&place), kit::viewport(x0, y0, ww, wh))
     };
+    // The pixels whose centres lie in the fractional viewport.
+    let first = |at: f32| (at - 0.5).ceil();
+    let cut = [ScissorRect {
+        x: first(x) as u32,
+        y: first(y) as u32,
+        width: (first(x + w) - first(x)) as u32,
+        height: (first(y + h) - first(y)) as u32,
+    }];
+    let scissored = b
+        .create_raster(&RasterDesc {
+            fill: FillMode::Solid,
+            cull: CullMode::None,
+            front: FrontFace::Clockwise,
+            depth_bias: 0,
+            depth_bias_slope: 0,
+            depth_bias_clamp: 0,
+            depth_clip: true,
+            scissor: true,
+            line_width: 1.0f32.to_bits(),
+            provoking: if b.caps().has(Features::PROVOKING_VERTEX_FIRST) {
+                ProvokingVertex::First
+            } else {
+                ProvokingVertex::Last
+            },
+            depth_minus_one: !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE),
+            sample_mask: u32::MAX,
+        })
+        .expect("create_raster");
     let program = kit::program(b, &program, "vs", "fs");
     let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
     let f = Format::Rgba8Unorm;
     let t = kit::texture(b, TextureDimension::D2, f, RGBA8, 1, usage, false);
     let v = kit::target(b, &t, f, 0, 0);
     let vps = [vp];
+    let mut call = kit::call(&k, &program, None, &vps, Topology::TriangleList, 3);
+    if !native {
+        call.raster = &scissored;
+        call.scissors = &cut;
+    }
     b.begin_pass(&kit::pass(&v, [0; 4], None));
-    b.draw(&kit::call(
-        &k,
-        &program,
-        None,
-        &vps,
-        Topology::TriangleList,
-        3,
-    ));
+    b.draw(&call);
     b.end_pass();
     let parts = vec![(
         format!("native {native}"),
