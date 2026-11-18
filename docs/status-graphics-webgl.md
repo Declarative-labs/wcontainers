@@ -24,6 +24,9 @@ check were fixed in run 1 (list below). Done in this run:
   `ReinterpretCopy`), per-target blends where OES_draw_buffers_indexed is absent (this back end
   declares `INDEPENDENT_BLEND` where the extension is: Chrome and mozangle both have it), and
   `resinfo` through `TEXTURE_INFO` (served by the front since its run 19).
+- At the end the desktop's C:\wc\target\phase-2-graphics-webgl (12.9 GB, the debug, release,
+  WebAssembly and recording builds) and this checkout's own target (4.2 GB, from `cargo check`)
+  were deleted.
 - Not run in this run: the Direct3D 11 front's WebGL 2 scenes (run 1's count stands, 65 outputs
   passing; command under "Measurements, run G3b-1").
 
