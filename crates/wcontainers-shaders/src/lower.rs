@@ -24,8 +24,10 @@ use naga::{FastHashMap as HashMap, FastHashSet as HashSet};
 use wcontainers_gpu::{
     DrawBaseSource, HelperSlot, HelperValue, Interpolation, ReflectedBinding, Reflection,
     ScalarKind as ValueKind, ShaderStage, SlotKind, SourceStage, StageExtras, StageValue,
-    SystemValue, VariantKey, helper_binding,
+    SystemValue, TexelBufferRoute, VariantKey, helper_binding,
 };
+
+use crate::variant::texel::TexelBuffer;
 
 mod geometry;
 
@@ -194,6 +196,8 @@ struct Lowering<'a> {
     side_effects: bool,
     /// What a geometry shader declares and the parts of its compute form made so far.
     geometry: Option<geometry::Geometry>,
+    /// Typed buffers read through storage buffers, by declaring id.
+    texels: HashMap<u32, TexelBuffer>,
 }
 
 impl<'a> Lowering<'a> {
@@ -255,6 +259,7 @@ impl<'a> Lowering<'a> {
             discards: false,
             side_effects: false,
             geometry: (stage == SourceStage::Geometry).then(geometry::Geometry::default),
+            texels: HashMap::default(),
         })
     }
 
@@ -477,7 +482,7 @@ impl<'a> Lowering<'a> {
                     SlotKind::Texture
                 };
                 match k {
-                    kind::BUFFER_TYPED => return Err(unsupported("TypedBuffer")),
+                    kind::BUFFER_TYPED => self.texel_buffer(id, op, storage)?,
                     kind::BUFFER_RAW | kind::BUFFER_STRUCTURED => {
                         let ty = self.declared_ty(id)?;
                         let ty = self.ir_ty_of(&ty, self.atomic.contains_key(&id))?;
@@ -566,6 +571,87 @@ impl<'a> Lowering<'a> {
             24..=26 => {}
             _ => return Err(malformed(format!("declaration {}", op.code))),
         }
+        Ok(())
+    }
+
+    /// A typed buffer, read through a storage buffer of words or a 2D texture by the variant's route:
+    /// its format from the variant (the bound view's), its words atomic where an atomic operation uses
+    /// them or where elements narrower than a word are written.
+    fn texel_buffer(&mut self, id: u32, op: &Op, storage: bool) -> Result<()> {
+        let texture = match self.variant.texel_buffers {
+            TexelBufferRoute::Native => return Err(unsupported("TypedBuffer")),
+            TexelBufferRoute::Storage => false,
+            TexelBufferRoute::Texture if !storage => true,
+            TexelBufferRoute::Texture => return Err(unsupported("TypedBufferStorageAsTexture")),
+        };
+        if self.stage == SourceStage::Geometry {
+            return Err(unsupported("TypedBufferInGeometry"));
+        }
+        let register = op.lits.get(1).copied().unwrap_or(0) as u32;
+        let formats = if storage {
+            &self.variant.storage_formats
+        } else {
+            &self.variant.texel_formats
+        };
+        let format = formats
+            .iter()
+            .find(|(slot, _)| *slot == register)
+            .ok_or(unsupported("TypedBufferFormat"))?
+            .1;
+        let member = op
+            .ty
+            .basic()
+            .ok_or_else(|| malformed("typed buffer type".into()))?;
+        let declared = Self::scalar(member.scalar)?;
+        let layout = TexelBuffer::layout(format, declared.kind)?;
+        let ir = self.ir;
+        let written = storage
+            && ir.ops.iter().any(|o| {
+                o.code == code::BUFFER_STORE && ir.op(o.refs[0]).is_ok_and(|d| d.refs[0] == id)
+            });
+        let atomic = match self.atomic.get(&id) {
+            Some(_) => Some(declared),
+            None if written && TexelBuffer::narrow(layout.2) => Some(Scalar::U32),
+            None => None,
+        };
+        let ty = if texture {
+            self.ty(TypeInner::Image {
+                dim: ImageDimension::D2,
+                arrayed: false,
+                class: ImageClass::Sampled {
+                    kind: declared.kind,
+                    multi: false,
+                },
+            })
+        } else {
+            TexelBuffer::words(&mut self.module, atomic)
+        };
+        let read_only = !storage || op.lits.get(4).is_some_and(|f| f & 2 != 0);
+        let access = if read_only {
+            naga::StorageAccess::LOAD
+        } else {
+            naga::StorageAccess::LOAD | naga::StorageAccess::STORE
+        };
+        let slot = if storage {
+            SlotKind::Storage
+        } else {
+            SlotKind::Texture
+        };
+        let space = if texture {
+            AddressSpace::Handle
+        } else {
+            AddressSpace::Storage { access }
+        };
+        self.resource_in(id, op, slot, ty, space, None, false)?;
+        let var = self.resources[&id].var;
+        let binding = self.module.global_variables[var].binding.unwrap().binding;
+        let stage = match self.stage {
+            SourceStage::Vertex => ShaderStage::Vertex,
+            SourceStage::Pixel => ShaderStage::Fragment,
+            _ => ShaderStage::Compute,
+        };
+        let buffer = TexelBuffer::declared(var, layout, atomic, texture, stage, self.set, binding);
+        self.texels.insert(id, buffer);
         Ok(())
     }
 
@@ -2554,17 +2640,59 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 self.store(b, var, &ty, r[1], r[2])?;
                 return Ok(());
             }
-            c::BUFFER_LOAD => {
-                let (res, ty) = self.buffer(r[0])?;
-                self.load(b, res.var, &ty, r[1], &op.ty)?
-            }
+            c::BUFFER_LOAD => match self.texel(r[0])? {
+                Some(dcl) => {
+                    if op.ty.members.len() > 1 {
+                        return Err(unsupported("SparseFeedback"));
+                    }
+                    let index = self.get_as(b, r[1], Scalar::U32)?;
+                    let want = op
+                        .ty
+                        .basic()
+                        .ok_or_else(|| malformed("typed load of an aggregate".into()))?;
+                    let mut v = self.texel_load(b, dcl, index)?;
+                    if want.size < 4 {
+                        v = self.e.swizzle(&mut self.f, b, v, 0, want.size)?;
+                    }
+                    let from = self.l.texels[&dcl].scalar();
+                    self.e
+                        .bitcast(&mut self.f, b, v, from, Lowering::scalar(want.scalar)?)
+                }
+                None => {
+                    let (res, ty) = self.buffer(r[0])?;
+                    self.load(b, res.var, &ty, r[1], &op.ty)?
+                }
+            },
             c::BUFFER_STORE => {
-                let (res, ty) = self.buffer(r[0])?;
                 self.l.side_effects = true;
+                if let Some(dcl) = self.texel(r[0])? {
+                    let index = self.get_as(b, r[1], Scalar::U32)?;
+                    let s = self.l.texels[&dcl].scalar();
+                    let v = self.get_as(b, r[2], s)?;
+                    let n = self.basic_of(r[2])?.size;
+                    return self.texel_store(b, dcl, index, v, n);
+                }
+                let (res, ty) = self.buffer(r[0])?;
                 self.store(b, res.var, &ty, r[1], r[2])?;
                 return Ok(());
             }
             c::BUFFER_QUERY_SIZE => {
+                if let Some(dcl) = self.texel(r[0])? {
+                    let l = &mut *self.l;
+                    let t = l.texels.get_mut(&dcl).unwrap();
+                    let function = t.length(&mut l.module, &mut l.reflection);
+                    let v = self.add(b, Expression::CallResult(function));
+                    self.stmt(
+                        b,
+                        Statement::Call {
+                            function,
+                            arguments: Vec::new(),
+                            result: Some(v),
+                        },
+                    );
+                    self.define(b, id, Val::Expr(v));
+                    return Ok(());
+                }
                 let (res, _) = self.buffer(r[0])?;
                 let p = self.add(b, Expression::GlobalVariable(res.var));
                 self.add(b, Expression::ArrayLength(p))
@@ -2674,7 +2802,16 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             .lits
             .first()
             .ok_or_else(|| malformed("atomic without its operation".into()))?;
-        let (pointer, s) = if op.code == code::COUNTER_ATOMIC {
+        let typed = match op.code {
+            code::BUFFER_ATOMIC => self.texel(r[0])?,
+            _ => None,
+        };
+        let (pointer, s) = if let Some(dcl) = typed {
+            // A typed buffer's element: through its atomic function, by index.
+            self.l.side_effects = true;
+            let index = self.get_as(b, r[1], Scalar::U32)?;
+            (index, self.l.texels[&dcl].scalar())
+        } else if op.code == code::COUNTER_ATOMIC {
             let (res, _) = self.buffer(r[0])?;
             self.l.side_effects = true;
             (
@@ -2712,12 +2849,21 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
         let (fun, value) = match what {
             // Load and store: atomic loads and stores in naga's form.
             0 => {
-                let v = self.add(b, Expression::Load { pointer });
+                let v = match typed {
+                    Some(dcl) => {
+                        let v = self.texel_load(b, dcl, pointer)?;
+                        self.add(b, Expression::AccessIndex { base: v, index: 0 })
+                    }
+                    None => self.add(b, Expression::Load { pointer }),
+                };
                 return Ok(Some(self.retyped(b, v, s, want)));
             }
             1 => {
                 let value = operand(self, b, 0)?;
-                self.stmt(b, Statement::Store { pointer, value });
+                match typed {
+                    Some(dcl) => self.texel_store(b, dcl, pointer, value, 1)?,
+                    None => self.stmt(b, Statement::Store { pointer, value }),
+                }
                 return Ok(None);
             }
             2 => (A::Exchange { compare: None }, operand(self, b, 0)?),
@@ -2754,6 +2900,25 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             _ => return Err(malformed(format!("atomic operation {what}"))),
         };
         let compared = matches!(fun, A::Exchange { compare: Some(_) });
+        if let Some(dcl) = typed {
+            let l = &mut *self.l;
+            let t = l.texels.get_mut(&dcl).unwrap();
+            let function = t.atomic(&mut l.module, &mut l.reflection, fun)?;
+            let mut arguments = vec![pointer, value];
+            if let A::Exchange { compare: Some(c) } = fun {
+                arguments.push(c);
+            }
+            let v = self.add(b, Expression::CallResult(function));
+            self.stmt(
+                b,
+                Statement::Call {
+                    function,
+                    arguments,
+                    result: Some(v),
+                },
+            );
+            return Ok(want.is_some().then(|| self.retyped(b, v, s, want)));
+        }
         // A compare-exchange always takes its result: naga's HLSL writer has no form without it.
         let result = (want.is_some() || compared).then(|| {
             let ty = if compared {
@@ -2821,6 +2986,80 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             .get(&dcl)
             .ok_or_else(|| malformed(format!("memory {dcl}")))?;
         Ok((var, self.l.declared_ty(dcl)?))
+    }
+
+    /// The declaration a descriptor loads, where it is a typed buffer.
+    fn texel(&self, desc: u32) -> Result<Option<u32>> {
+        let dcl = self.l.ir.op(desc)?.refs[0];
+        Ok(self.l.texels.contains_key(&dcl).then_some(dcl))
+    }
+
+    /// Element `index` of typed buffer `dcl`, four components of its format's scalar.
+    fn texel_load(
+        &mut self,
+        b: &mut Block,
+        dcl: u32,
+        index: Handle<Expression>,
+    ) -> Result<Handle<Expression>> {
+        let l = &mut *self.l;
+        let t = l.texels.get_mut(&dcl).unwrap();
+        let function = t.load(&mut l.module, &mut l.reflection);
+        let v = self.add(b, Expression::CallResult(function));
+        self.stmt(
+            b,
+            Statement::Call {
+                function,
+                arguments: vec![index],
+                result: Some(v),
+            },
+        );
+        Ok(v)
+    }
+
+    /// Writes `v` (`n` components of the format's scalar) to element `index` of typed buffer `dcl`.
+    fn texel_store(
+        &mut self,
+        b: &mut Block,
+        dcl: u32,
+        index: Handle<Expression>,
+        v: Handle<Expression>,
+        n: u8,
+    ) -> Result<()> {
+        let s = self.l.texels[&dcl].scalar();
+        let value = if n >= 4 {
+            v
+        } else {
+            let zero = self.lit(
+                b,
+                match s.kind {
+                    ScalarKind::Float => Literal::F32(0.0),
+                    ScalarKind::Sint => Literal::I32(0),
+                    _ => Literal::U32(0),
+                },
+            );
+            let mut components = Vec::new();
+            for i in 0..4 {
+                components.push(match (i < n as u32, n) {
+                    (true, 1) => v,
+                    (true, _) => self.add(b, Expression::AccessIndex { base: v, index: i }),
+                    (false, _) => zero,
+                });
+            }
+            let ty = self.l.vec_ty(4, s)?;
+            self.add(b, Expression::Compose { ty, components })
+        };
+        let l = &mut *self.l;
+        let t = l.texels.get_mut(&dcl).unwrap();
+        let function = t.store(&mut l.module, &mut l.reflection);
+        self.stmt(
+            b,
+            Statement::Call {
+                function,
+                arguments: vec![index, value],
+                result: None,
+            },
+        );
+        Ok(())
     }
 
     fn buffer(&self, desc: u32) -> Result<(Resource, Ty)> {

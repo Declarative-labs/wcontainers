@@ -7,11 +7,12 @@ use std::path::Path;
 use wcontainers_gpu::{
     AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc,
     BufferRange, BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall,
-    DrawRange, Extent, FillMode, Filter, Format, FrontFace, Interpolation, MapIntent, Origin,
-    PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc,
-    SlotKind, StageSet, StepMode, StoreOp, TextureDesc, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding,
-    VertexFormat, VertexLayoutDesc, VertexStream, ViewDimension, Viewport, WriteMode,
+    DrawRange, Extent, FillMode, Filter, Format, FrontFace, HelperValue, Interpolation, MapIntent,
+    Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend,
+    SamplerDesc, SlotKind, StageSet, StepMode, StoreOp, TEXEL_BUFFER_TEXTURE_WIDTH,
+    TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
+    Topology, VariantKey, VertexAttribute, VertexBinding, VertexFormat, VertexLayoutDesc,
+    VertexStream, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};
@@ -88,14 +89,63 @@ pub const CLEAR: [f32; 4] = [0.125, 0.25, 0.5, 1.0];
 
 pub fn dxgi(format: Format) -> DXGI_FORMAT {
     match format {
-        Format::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
-        Format::Rgba32Uint => DXGI_FORMAT_R32G32B32A32_UINT,
-        Format::Rgba32Float => DXGI_FORMAT_R32G32B32A32_FLOAT,
+        Format::R8Unorm => DXGI_FORMAT_R8_UNORM,
+        Format::R8Snorm => DXGI_FORMAT_R8_SNORM,
+        Format::R8Uint => DXGI_FORMAT_R8_UINT,
+        Format::R8Sint => DXGI_FORMAT_R8_SINT,
+        Format::R16Unorm => DXGI_FORMAT_R16_UNORM,
+        Format::R16Snorm => DXGI_FORMAT_R16_SNORM,
+        Format::R16Uint => DXGI_FORMAT_R16_UINT,
+        Format::R16Sint => DXGI_FORMAT_R16_SINT,
+        Format::R16Float => DXGI_FORMAT_R16_FLOAT,
+        Format::Rg8Unorm => DXGI_FORMAT_R8G8_UNORM,
+        Format::Rg8Snorm => DXGI_FORMAT_R8G8_SNORM,
+        Format::Rg8Uint => DXGI_FORMAT_R8G8_UINT,
+        Format::Rg8Sint => DXGI_FORMAT_R8G8_SINT,
+        Format::R32Uint => DXGI_FORMAT_R32_UINT,
+        Format::R32Sint => DXGI_FORMAT_R32_SINT,
         Format::R32Float => DXGI_FORMAT_R32_FLOAT,
+        Format::Rg16Unorm => DXGI_FORMAT_R16G16_UNORM,
+        Format::Rg16Snorm => DXGI_FORMAT_R16G16_SNORM,
+        Format::Rg16Uint => DXGI_FORMAT_R16G16_UINT,
+        Format::Rg16Sint => DXGI_FORMAT_R16G16_SINT,
+        Format::Rg16Float => DXGI_FORMAT_R16G16_FLOAT,
+        Format::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
+        Format::Rgba8Snorm => DXGI_FORMAT_R8G8B8A8_SNORM,
+        Format::Rgba8Uint => DXGI_FORMAT_R8G8B8A8_UINT,
+        Format::Rgba8Sint => DXGI_FORMAT_R8G8B8A8_SINT,
+        Format::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
+        Format::Rgb10a2Unorm => DXGI_FORMAT_R10G10B10A2_UNORM,
+        Format::Rgb10a2Uint => DXGI_FORMAT_R10G10B10A2_UINT,
+        Format::Rg11b10Float => DXGI_FORMAT_R11G11B10_FLOAT,
+        Format::Rg32Uint => DXGI_FORMAT_R32G32_UINT,
+        Format::Rg32Sint => DXGI_FORMAT_R32G32_SINT,
+        Format::Rg32Float => DXGI_FORMAT_R32G32_FLOAT,
+        Format::Rgba16Unorm => DXGI_FORMAT_R16G16B16A16_UNORM,
+        Format::Rgba16Snorm => DXGI_FORMAT_R16G16B16A16_SNORM,
+        Format::Rgba16Uint => DXGI_FORMAT_R16G16B16A16_UINT,
+        Format::Rgba16Sint => DXGI_FORMAT_R16G16B16A16_SINT,
+        Format::Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
+        Format::Rgb32Uint => DXGI_FORMAT_R32G32B32_UINT,
+        Format::Rgb32Sint => DXGI_FORMAT_R32G32B32_SINT,
+        Format::Rgb32Float => DXGI_FORMAT_R32G32B32_FLOAT,
+        Format::Rgba32Uint => DXGI_FORMAT_R32G32B32A32_UINT,
+        Format::Rgba32Sint => DXGI_FORMAT_R32G32B32A32_SINT,
+        Format::Rgba32Float => DXGI_FORMAT_R32G32B32A32_FLOAT,
         Format::Depth32Float => DXGI_FORMAT_D32_FLOAT,
         Format::Depth24PlusStencil8 => DXGI_FORMAT_D24_UNORM_S8_UINT,
-        f => panic!("no case draws into {f:?}"),
+        f => panic!("no case uses {f:?}"),
     }
+}
+
+/// A typed buffer the pixel program reads at texture slot n (its index): the view's format, the
+/// buffer's bytes, and the view's first element and length.
+#[derive(Clone)]
+pub struct TexelData {
+    pub format: Format,
+    pub bytes: Vec<u8>,
+    pub first: u32,
+    pub count: u32,
 }
 
 /// What a Direct3D 11 reference draw changes from the plain one.
@@ -123,6 +173,8 @@ pub struct Reference {
     pub depth_clip_off: bool,
     /// The sampler's address modes, where not clamping.
     pub address: Option<[D3D11_TEXTURE_ADDRESS_MODE; 3]>,
+    /// Typed buffers bound at the pixel shader's texture slots instead of the texture.
+    pub texel_buffers: Vec<TexelData>,
 }
 
 /// A draw's range with bases, direct or from an argument buffer; an indexed draw's indices are 0, 1,
@@ -220,6 +272,32 @@ pub fn direct3d_11(
         unsafe { gpu.context.SetResourceMinLOD(&resource, clamp) };
     }
     let view = gpu.srv(&texture.cast().unwrap(), None).unwrap();
+    let views: Vec<Option<ID3D11ShaderResourceView>> = if reference.texel_buffers.is_empty() {
+        vec![Some(view)]
+    } else {
+        reference
+            .texel_buffers
+            .iter()
+            .map(|t| {
+                let buffer = gpu.immutable(&t.bytes, D3D11_BIND_SHADER_RESOURCE).unwrap();
+                let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                    Format: dxgi(t.format),
+                    ViewDimension: D3D_SRV_DIMENSION_BUFFER,
+                    Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                        Buffer: D3D11_BUFFER_SRV {
+                            Anonymous1: D3D11_BUFFER_SRV_0 {
+                                FirstElement: t.first,
+                            },
+                            Anonymous2: D3D11_BUFFER_SRV_1 {
+                                NumElements: t.count,
+                            },
+                        },
+                    },
+                };
+                Some(gpu.srv(&buffer.cast().unwrap(), Some(&desc)).unwrap())
+            })
+            .collect()
+    };
     let address = reference
         .address
         .unwrap_or([D3D11_TEXTURE_ADDRESS_CLAMP; 3]);
@@ -278,7 +356,7 @@ pub fn direct3d_11(
         let c = &gpu.context;
         c.VSSetConstantBuffers(0, Some(&[Some(constants.clone())]));
         c.PSSetConstantBuffers(0, Some(&[Some(constants.clone())]));
-        c.PSSetShaderResources(0, Some(&[Some(view)]));
+        c.PSSetShaderResources(0, Some(&views));
         c.PSSetSamplers(0, Some(&[Some(sampler)]));
         c.RSSetState(&raster);
         c.OMSetBlendState(blend.as_ref(), Some(&[0.0; 4]), !0);
@@ -550,6 +628,9 @@ pub struct Setup {
     pub min_lod: Option<f32>,
     /// The sampler's address modes.
     pub address: [wcontainers_gpu::AddressMode; 3],
+    /// Typed buffers the pixel program reads at texture slots, by the route its key names; their
+    /// views' places and lengths are put in its helper block.
+    pub texel_buffers: Vec<TexelData>,
 }
 
 impl Setup {
@@ -569,6 +650,7 @@ impl Setup {
             bases: None,
             min_lod: None,
             address: [wcontainers_gpu::AddressMode::Clamp; 3],
+            texel_buffers: Vec::new(),
         }
     }
 }
@@ -738,6 +820,96 @@ pub fn ours<B: Backend + 'static>(
         .any(|r| matches!(r.added, Some(AddedBinding::ConstantsAsTexture(_))));
     let constants_texture = through_texture.then(|| constants_texture(b, &draw.constants));
 
+    // Typed buffers by the pixel key's route: a storage buffer of the bytes, or a texture of the
+    // view's format holding them, element e at texel (e % width, e / width).
+    let route = setup.ps_key.texel_buffers;
+    let texel_storage: Vec<_> = setup
+        .texel_buffers
+        .iter()
+        .map(|t| buffer(b, &t.bytes, BufferUsage::STORAGE))
+        .collect();
+    let texel_textures: Vec<_> = setup
+        .texel_buffers
+        .iter()
+        .filter(|_| route == TexelBufferRoute::Texture)
+        .map(|t| {
+            let size = t.format.block().2;
+            let elements = t.bytes.len() as u32 / size;
+            let width = elements.min(TEXEL_BUFFER_TEXTURE_WIDTH);
+            let height = elements.div_ceil(TEXEL_BUFFER_TEXTURE_WIDTH);
+            let mut texels = t.bytes.clone();
+            texels.resize((width * height * size) as usize, 0);
+            let texture = b
+                .create_texture(&TextureDesc {
+                    dimension: TextureDimension::D2,
+                    format: t.format,
+                    width,
+                    height,
+                    depth_or_layers: 1,
+                    mip_levels: 1,
+                    samples: 1,
+                    usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+                    cube: false,
+                    reinterpret: false,
+                })
+                .unwrap();
+            let view = b
+                .create_view(
+                    &texture,
+                    &TextureViewDesc {
+                        format: t.format,
+                        dimension: ViewDimension::D2,
+                        base_mip: 0,
+                        mip_count: 1,
+                        base_layer: 0,
+                        layer_count: 1,
+                        stencil: false,
+                    },
+                )
+                .unwrap();
+            b.write_texture(
+                &TextureRegion {
+                    texture: &texture,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin::default(),
+                    stencil: false,
+                },
+                Extent {
+                    width,
+                    height,
+                    depth_or_layers: 1,
+                },
+                &texels,
+                width * size,
+                height,
+                WriteMode::Ordered,
+            );
+            (texture, view)
+        })
+        .collect();
+    let mut pixel_helpers = setup.helpers[1].clone();
+    for h in &ps.reflection.helpers {
+        let HelperValue::TexelBufferView { set, binding } = h.value else {
+            continue;
+        };
+        let r = ps
+            .reflection
+            .bindings
+            .iter()
+            .find(|r| r.set == set && r.binding == binding)
+            .unwrap();
+        let t = &setup.texel_buffers[r.register as usize];
+        pixel_helpers.resize(
+            pixel_helpers.len().max(ps.reflection.helper_size as usize),
+            0,
+        );
+        let at = h.offset as usize;
+        let offset = t.first * t.format.block().2;
+        pixel_helpers[at..at + 4].copy_from_slice(&offset.to_le_bytes());
+        pixel_helpers[at + 4..at + 8].copy_from_slice(&t.count.to_le_bytes());
+    }
+
     // Each stage's slots, from its reflection: vertex slots in set 0, pixel slots in set 1.
     let mut sets: [Vec<BindingEntry<'_, B>>; 2] = [Vec::new(), Vec::new()];
     for (reflection, stages) in [
@@ -745,8 +917,21 @@ pub fn ours<B: Backend + 'static>(
         (&ps.reflection, StageSet::FRAGMENT),
     ] {
         for r in &reflection.bindings {
-            assert_eq!(r.register, 0, "{r:?}");
+            let texel = r.kind == SlotKind::Texture && !setup.texel_buffers.is_empty();
+            assert!(r.register == 0 || texel, "{r:?}");
+            let i = r.register as usize;
             let resource = match r.kind {
+                _ if texel && route == TexelBufferRoute::Storage => {
+                    BindingResource::StorageBuffer {
+                        range: BufferRange {
+                            buffer: &texel_storage[i],
+                            offset: 0,
+                            size: setup.texel_buffers[i].bytes.len() as u64,
+                        },
+                        writable: false,
+                    }
+                }
+                _ if texel => BindingResource::Texture(&texel_textures[i].1),
                 SlotKind::Texture
                     if matches!(r.added, Some(AddedBinding::ConstantsAsTexture(_))) =>
                 {
@@ -787,7 +972,7 @@ pub fn ours<B: Backend + 'static>(
             wcontainers_gpu::ShaderStage::Vertex,
         ),
         (
-            &setup.helpers[1],
+            &pixel_helpers,
             &ps.reflection,
             wcontainers_gpu::ShaderStage::Fragment,
         ),

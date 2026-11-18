@@ -520,7 +520,9 @@ Variants are chosen by fronts and made by the shaders crate. Every rewrite that 
 or on the back end's abilities (filtering in the program, border colours, mirror once, level-of-detail
 bias, storage formats from the bound view, constant buffers past the limits, vertex streams fetched in
 the program, how typed buffers are read (`TexelBufferRoute`: native where the back end has
-`TEXEL_BUFFERS`, which neither browser API has, storage on WebGPU, a texture on WebGL 2), storage slots
+`TEXEL_BUFFERS`, which neither browser API has, storage on WebGPU, a texture on WebGL 2 whose element e
+is texel (e % 2048, e / 2048), `TEXEL_BUFFER_TEXTURE_WIDTH`; by either, the format of each view at a
+texture slot is `texel_formats`), storage slots
 packed into one buffer, storage textures used with atomics read through a buffer, textures and targets stored as integers (`decoded`, `targets_in_shader`), blending or logic
 operations done in the program, the sample mask written by the program, clip depth, flipped depth
 ranges, depth bias, the counting variant, the interpolation the pixel program reads the vertex
@@ -2063,7 +2065,8 @@ against the same Rust from the start; back ends never read them.
   `AddressMode`, which converted programs and so the cache keep) and the components of a texture's
   format (`Format::components`) (for filtering and addressing in the program), texture level and sample
   counts where the back end's language cannot ask (`TEXTURE_INFO`), depth bias, pulled streams' offset, stride and step,
-  the sample mask, packed storage offsets, the texel layout of storage views read through a buffer,
+  the sample mask, packed storage offsets, the texel layout of storage views read through a buffer, where a typed buffer view read
+  through a storage buffer starts and how many elements it has,
   how each target combined in the program blends, the early tests a program runs itself, a texture's
   minimum level-of-detail clamp, the viewport adjustment, and the draw's bases or where an indirect
   draw's arguments are (`DrawBase`, `DrawArguments`) (`HelperValue`). Set 3 also holds the
