@@ -860,6 +860,9 @@ domain shaders in `Stages`):
   seeds, 128 comparisons).
 - Fronts: `cargo check -p wcontainers-direct3d-11 -p wcontainers-direct3d-12 --all-targets` on the
   desktop builds with these changes.
+- At the end of run 23 the build folders were deleted (laptop
+  `~/wcontainers-graphics/target/phase-2-graphics-shaders`, 4.9 GB; desktop
+  `C:\wc\target\phase-2-graphics-shaders`); the next run builds from clean.
 
 Next (in order):
 - The fronts' routes (theirs, now possible): Direct3D 11's six Wine tests and atg-simplebezierpc,
