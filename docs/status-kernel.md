@@ -47,6 +47,54 @@ K6a (first run): every finding of K5's check is fixed (below), and the Linux Tes
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
 
+## K6c, fourth run
+
+Built or fixed, each tested against the reference:
+- The stand-in's exclusive monitor was never cleared, so an STXR after a system call or after
+  another thread's turn could succeed. The stand-in now restores unicorn's CPU state as made
+  (monitor clear) before every turn, as an exception return clears it (`ClearExclusiveLocal`).
+  align `return_clears_exclusive_monitor_matches_reference` (reference: the store fails). Cost
+  measured: 200000 getppid turns 805 ms without, 874 ms with (best of 3, dev build, load 60).
+- The loader mapped nothing for a loadable segment with no file bytes (a bss-only segment);
+  Linux's `elf_load` maps it as zeroed memory from its first page. Found by the align test.
+- FUTEX_LOCK_PI and FUTEX_CMP_REQUEUE_PI answer EDEADLK when waiting would close a chain of
+  owners (`rt_mutex_adjust_prio_chain`, max_lock_depth 1024), and the requeue's top waiter may
+  not already own the lock. threads `priority_inheriting_futexes_match_reference` (an ABBA lock
+  and ghostlock's requeue chain). cve-2026-43499 now passes.
+- readv and writev of a backend file passed over an empty segment only if its address was good
+  (readv01). rootbackend `root_files_match_reference`.
+- socket: SOCK_RAW with protocol 0 is EPROTONOSUPPORT before the power check; family 0 is
+  EAFNOSUPPORT uncounted (socket01, socketpair01). Layer 1 now makes both (raw only with
+  protocol 0: other raw protocols make raw packets, section 15).
+- sched_setaffinity copies the mask in first (EFAULT before ESRCH) and refuses another user's
+  process without CAP_SYS_NICE (sched_setaffinity01). schedattr test.
+- /sys/kernel/mm/ksm as the reference has it: built, `run` 0, every count 0 (madvise02,
+  sys_ksm01). sysfs `huge_pages_match_reference`.
+- CPU time is split into the user's and the kernel's: the time from a thread's return to the
+  kernel until the kernel settles is its system time. The test host's repeatable clock passes
+  each turn's 0.5 to 1.5 us of kernel work after the kernel's first reading, so it shows as
+  system time (the draws from the seed are unchanged). times, getrusage (RUSAGE_CHILDREN now
+  answers the reaped children's times and largest memory; RUSAGE_THREAD the thread's own),
+  wait4's usage, /proc/<pid>/stat fields 14 to 17 and the core's prstatus show both;
+  ITIMER_VIRTUAL counts user time only. A reaped child's own largest memory now reaches its
+  parent's children's. cputime test (times03's pattern).
+- A root served from an image (LTP's) now has Docker's /etc/hostname, /etc/hosts and
+  /etc/resolv.conf, written as for a root in memory (getaddrinfo_01 found none). Committed
+  inside the CPU time commit by mistake.
+
+Found and not a kernel fault:
+- The math float tests' heap corruption did not come back: float_iperb passed 3 of 3 (seeds 2
+  to 4) at 914ec440, float_power and float_trigo passed at 294c1b40. The exclusive monitor was
+  the suspect; glibc here takes LSE atomics (AT_HWCAP has ATOMICS), so it is not shown to be the
+  cause.
+- dup03, dup06, dup205 pass in about 650 s (reference 3 s): every close of a backend file sends
+  FLUSH (Linux's `fuse_flush` per close), 1M of them at about 0.6 ms a round trip to the test
+  backend in Docker. creat05 makes 1M backend files and ran out 900 s. Section 15: file access
+  is slower until the cache.
+- copy_file_range03 compares a backend file's mtime across a 1.5 s sleep: the guest's clock is
+  the test host's repeatable one, which skips idle waits, while the backend stamps times with
+  its real clock (27 ms passed). A harness cause (two clocks), not the kernel's.
+
 ## K6c, third run
 
 Speed of the root on the backend (measured, load 25 to 45):
