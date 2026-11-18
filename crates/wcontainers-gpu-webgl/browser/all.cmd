@@ -2,7 +2,7 @@
 rem Every check of the back end on the desktop, as one GPU job after build.cmd: the scenes on ANGLE and in
 rem Chrome's WebGL 2 with every extension and with EXT_clip_control and WEBGL_provoking_vertex switched
 rem off, and the shared suite in Chrome and on ANGLE with every extension, without EXT_clip_control, and
-rem without both (and without the block compression extensions, EXT_texture_norm16, EXT_render_snorm and the
+rem without both (and without exact float blits, the block compression extensions, EXT_texture_norm16, EXT_render_snorm and the
 rem extensions of blending, raster state, addressing and clip distances; in Chrome also without
 rem WEBGL_stencil_texturing, which ANGLE natively lacks), and the drawings compared with the
 rem WebGPU back end natively and in Chrome.
@@ -19,14 +19,22 @@ set SUITE=node crates\wcontainers-gpu-webgl\browser\suite.mjs "%CARGO_TARGET_DIR
 %SUITE% "%OUT%\suite-chrome.txt" "%OUT%\suite-list.txt" || set FAIL=1
 %SUITE% "%OUT%\suite-chrome-noclip.txt" "%OUT%\suite-list.txt" "EXT_clip_control" || set FAIL=1
 %SUITE% "%OUT%\suite-chrome-neither.txt" "%OUT%\suite-list.txt" "EXT_clip_control WEBGL_provoking_vertex" || set FAIL=1
-%SUITE% "%OUT%\suite-chrome-nostencil.txt" "%OUT%\suite-list.txt" "WEBGL_stencil_texturing %FORMATS%" || set FAIL=1
+%SUITE% "%OUT%\suite-chrome-nostencil.txt" "%OUT%\suite-list.txt" "WEBGL_stencil_texturing float_blits %FORMATS%" || set FAIL=1
 node crates\wcontainers-gpu-webgl\browser\against.mjs "%CARGO_TARGET_DIR%\webgl-pkg" "%OUT%\against-chrome.txt" || set FAIL=1
 set WEBGL_OFF=
-cargo test -j 3 -p wcontainers-gpu-webgl --test suite -- --test-threads=1 || set FAIL=1
+call :angle "%OUT%\suite-angle.txt"
 set WEBGL_OFF=EXT_clip_control
-cargo test -j 3 -p wcontainers-gpu-webgl --test suite -- --test-threads=1 || set FAIL=1
-set WEBGL_OFF=EXT_clip_control WEBGL_provoking_vertex %FORMATS%
-cargo test -j 3 -p wcontainers-gpu-webgl --test suite -- --test-threads=1 || set FAIL=1
+call :angle "%OUT%\suite-angle-noclip.txt"
+set WEBGL_OFF=EXT_clip_control WEBGL_provoking_vertex float_blits %FORMATS%
+call :angle "%OUT%\suite-angle-neither.txt"
 set WEBGL_OFF=
 cargo test -j 3 -p wcontainers-gpu-webgl --test against_webgpu -- --test-threads=1 || set FAIL=1
 if defined FAIL exit /b 1
+exit /b 0
+
+rem The suite on ANGLE with WEBGL_OFF, its output into %1; the summary, failures and the checks that
+rem passed having run only their refusal (their feature absent) are shown.
+:angle
+cargo test -j 3 -p wcontainers-gpu-webgl --test suite -- --test-threads=1 --show-output > "%~1" 2>&1 || set FAIL=1
+findstr /c:"test result:" /c:"FAILED" /c:"panicked" /c:"not run, feature absent:" "%~1"
+exit /b 0

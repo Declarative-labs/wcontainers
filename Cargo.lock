@@ -3169,6 +3169,7 @@ dependencies = [
  "bcdec_rs",
  "getrandom 0.4.3",
  "glow 0.18.0",
+ "half",
  "js-sys",
  "khronos-egl",
  "naga",
