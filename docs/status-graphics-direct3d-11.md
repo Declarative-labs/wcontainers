@@ -55,6 +55,8 @@ kept); the others had nothing new.
   0xe06d7363), its output not read.
 - Results: see the Wine section and Measurements. At the end of the run: lint of both builds,
   front 45 + cache 1 + unit 5, library com 15 and programs 24 with 1 ignored, all passing.
+- At the end the desktop's C:\wc\target\phase-2-graphics-direct3d-11 (15.5 GB, debug builds of
+  both back ends) and the checkout's own target (594 MB, from `cargo check`) were deleted.
 
 G4 run 18 (2026-11-18, about 04:55 to 07:00 Pacific). Merged origin/phase-2-graphics-shaders and
 -direct3d-12 cleanly (the others had nothing new); the merged tree linted clean on the desktop.
