@@ -14,7 +14,7 @@ use wcontainers_gpu::{
 use crate::fill::{AspectRead, DepthSource};
 use crate::{
     Buffer, BufferObj, MAP_PENDING, MAP_READY, QuerySet, Readback, ReadbackObj, Stream, Texture,
-    TextureObj, WebGpu, convert, row_bytes,
+    TextureObj, WebGpu, convert, packed, row_bytes,
 };
 
 /// The most bytes of pattern a non-zero clear uploads.
@@ -512,8 +512,11 @@ impl WebGpu {
         rows_per_layer: u32,
         mode: WriteMode,
     ) {
-        if region.texture.0.blocks.is_some() {
+        let t = &region.texture.0;
+        if t.blocks.is_some() {
             self.write_blocks(region, extent, data, row_pitch, rows_per_layer, mode);
+        } else if t.held != t.desc.format {
+            self.write_packed(region, extent, data, row_pitch, rows_per_layer, mode);
         } else {
             self.write_texels(region, extent, data, row_pitch, rows_per_layer, mode);
         }
@@ -728,6 +731,11 @@ impl WebGpu {
             return;
         }
         let (s, d) = (&src.texture.0, &dst.texture.0);
+        let converted = |t: &crate::TextureObj| packed::held(t.desc.format).is_some();
+        if s.desc.format != d.desc.format && (converted(s) || converted(d)) {
+            self.copy_packed(src, dst, extent);
+            return;
+        }
         s.used_in.set(self.serial);
         d.used_in.set(self.serial);
         let (sf, df) = (s.held, d.held);
@@ -1016,6 +1024,10 @@ impl WebGpu {
             self.copy_buffer_blocks(buffer, region, extent, to_texture);
             return;
         }
+        if packed::held(region.texture.0.desc.format).is_some() {
+            self.copy_buffer_packed(buffer, region, extent, to_texture);
+            return;
+        }
         let t = &region.texture.0;
         let at_origin = |texture| TextureRegion {
             texture,
@@ -1215,6 +1227,7 @@ impl WebGpu {
     fn readback(
         &mut self,
         buffer: wgpu::Buffer,
+        packed: Option<Format>,
         skip: u64,
         row: u64,
         pitch: u64,
@@ -1223,6 +1236,7 @@ impl WebGpu {
         let rb = Readback(Rc::new(ReadbackObj {
             buffer: Some(buffer),
             host: Vec::new(),
+            packed,
             state: Arc::new(AtomicU8::new(MAP_PENDING)),
             serial: self.serial,
             skip,
@@ -1240,6 +1254,7 @@ impl WebGpu {
         Readback(Rc::new(ReadbackObj {
             buffer: None,
             host: bytes,
+            packed: None,
             state: Arc::new(AtomicU8::new(MAP_READY)),
             serial: self.serial,
             skip: 0,
@@ -1274,7 +1289,7 @@ impl WebGpu {
                     0,
                     end - start,
                 );
-                Ok(self.readback(target, offset - start, *size, *size, 1))
+                Ok(self.readback(target, None, offset - start, *size, *size, 1))
             }
             ReadSource::Texture { region, extent } => {
                 if region.texture.0.blocks.is_some() {
@@ -1302,6 +1317,15 @@ impl WebGpu {
                 };
                 let t = &region.texture.0;
                 t.used_in.set(self.serial);
+                let packed = packed::held(t.desc.format).map(|_| t.desc.format);
+                if let Some(f) = packed {
+                    if !region.origin.x.is_multiple_of(f.block().0) {
+                        return Err(GpuError::Invalid(
+                            "a read back of a two-pixel format starting inside a pair",
+                        ));
+                    }
+                    self.slow.hit(SlowPath::FormatConverted);
+                }
                 let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
                 let pitch = row.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
                 let layers = u64::from(extent.depth_or_layers);
@@ -1327,7 +1351,8 @@ impl WebGpu {
                     },
                     extent3d(*extent, region_format(t, region)),
                 );
-                Ok(self.readback(target, 0, row, pitch, rows * layers))
+                let rb = self.readback(target, packed, 0, row, pitch, rows * layers);
+                Ok(rb)
             }
         }
     }
@@ -1454,7 +1479,7 @@ impl WebGpu {
         let target = self.map_target(size);
         self.encoder()
             .copy_buffer_to_buffer(&resolve, 0, &target, 0, size);
-        Ok(self.readback(target, 0, size, size, 1))
+        Ok(self.readback(target, None, 0, size, size, 1))
     }
 
     pub(crate) fn resolve_queries_impl(
@@ -1492,11 +1517,15 @@ impl WebGpu {
             self.fail("finish_read of a read back that is not ready or failed");
             return;
         }
-        if (dst.len() as u64) < o.row * o.rows {
+        // A converted texture's rows arrive in its held format and are packed into its blocks.
+        let out_row = o
+            .packed
+            .map_or(o.row, |f| packed::packed_bytes(f, o.row / 4));
+        if (dst.len() as u64) < out_row * o.rows {
             self.fail(&format!(
                 "finish_read into {} bytes, fewer than the read back's {}",
                 dst.len(),
-                o.row * o.rows
+                out_row * o.rows
             ));
             return;
         }
@@ -1509,10 +1538,19 @@ impl WebGpu {
                 self.fail("a ready read back could not be mapped");
                 return;
             };
+            let mut texels = Vec::new();
             for r in 0..o.rows {
                 let from = (o.skip + r * o.pitch) as usize;
-                let to = (r * o.row) as usize;
-                dst[to..to + o.row as usize].copy_from_slice(&data[from..from + o.row as usize]);
+                let to = (r * out_row) as usize;
+                let row = &data[from..from + o.row as usize];
+                match o.packed {
+                    Some(format) => {
+                        texels.clear();
+                        packed::pack(format, row, &mut texels);
+                        dst[to..to + texels.len()].copy_from_slice(&texels);
+                    }
+                    None => dst[to..to + row.len()].copy_from_slice(row),
+                }
             }
         }
         buffer.unmap();

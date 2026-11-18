@@ -117,6 +117,7 @@ pub struct Fills {
     stencils: HashMap<wgpu::TextureFormat, StencilProgram>,
     reads: HashMap<AspectRead, DepthProgram>,
     presents: HashMap<wgpu::TextureFormat, DepthProgram>,
+    resolves: HashMap<wgpu::TextureFormat, DepthProgram>,
 }
 
 /// A view of one level and layer of `texture` in `aspect`, in that aspect's own format.
@@ -195,6 +196,20 @@ const PRESENT_WGSL: &str = "
 }
 ";
 
+/// The fragment stage of a resolve by draw: the average of every sample at the same place, read
+/// through a view in the format the resolve names.
+const RESOLVE_WGSL: &str = "
+@group(0) @binding(0) var samples: texture_multisampled_2d<f32>;
+@fragment fn average(@builtin(position) p: vec4f) -> @location(0) vec4f {
+    let n = textureNumSamples(samples);
+    var sum = vec4f(0.0);
+    for (var i = 0u; i < n; i++) {
+        sum += textureLoad(samples, vec2i(p.xy), i);
+    }
+    return sum / f32(n);
+}
+";
+
 /// A 16-byte uniform buffer holding `words`.
 fn uniform(device: &wgpu::Device, words: [u32; 4]) -> wgpu::Buffer {
     let b = device.create_buffer(&wgpu::BufferDescriptor {
@@ -263,58 +278,108 @@ impl WebGpu {
             .clone()
     }
 
+    /// A program drawing a whole target of `format` from one bound texture, the fragment stage
+    /// `entry` of `source`.
+    fn texel_program(
+        &mut self,
+        source: &str,
+        entry: &str,
+        multisampled: bool,
+        format: wgpu::TextureFormat,
+    ) -> DepthProgram {
+        let cover = self.cover();
+        let device = &self.device;
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[fragment_entry(
+                0,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled,
+                },
+            )],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &cover,
+                entry_point: Some("cover"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                targets: &[Some(format.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        DepthProgram { pipeline, layout }
+    }
+
+    /// Resolves `src` (multisampled, bound for sampling) into `dst`, both views in the format the
+    /// resolve names, by a draw averaging every sample (`ResolveByDraw`).
+    pub(crate) fn resolve_by_draw(
+        &mut self,
+        src: &wgpu::TextureView,
+        dst: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+    ) {
+        self.slow.hit(SlowPath::ResolveByDraw);
+        if !self.fills.resolves.contains_key(&format) {
+            let program = self.texel_program(RESOLVE_WGSL, "average", true, format);
+            self.fills.resolves.insert(format, program);
+        }
+        let program = &self.fills.resolves[&format];
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &program.layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(src),
+            }],
+        });
+        let pipeline = program.pipeline.clone();
+        let mut rp = self
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: dst,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: keep(),
+                })],
+                ..Default::default()
+            });
+        rp.set_pipeline(&pipeline);
+        rp.set_bind_group(0, &group, &[]);
+        rp.draw(0..3, 0..1);
+    }
+
     /// Draws `frame` into `window`, a texture of its size in the window's own format
     /// (`PresentConverted`), in the frame's encoder.
     pub(crate) fn present_by_draw(&mut self, frame: &wgpu::Texture, window: &wgpu::Texture) {
         self.slow.hit(SlowPath::PresentConverted);
         let format = window.format();
         if !self.fills.presents.contains_key(&format) {
-            let cover = self.cover();
-            let device = &self.device;
-            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[fragment_entry(
-                    0,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                )],
-            });
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&layout)],
-                immediate_size: 0,
-            });
-            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(PRESENT_WGSL.into()),
-            });
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: None,
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &cover,
-                    entry_point: Some("cover"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some("copy"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(format.into())],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-            self.fills
-                .presents
-                .insert(format, DepthProgram { pipeline, layout });
+            let program = self.texel_program(PRESENT_WGSL, "copy", false, format);
+            self.fills.presents.insert(format, program);
         }
         let program = &self.fills.presents[&format];
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {

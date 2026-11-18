@@ -5,12 +5,13 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 
 ## Where things stand
 
-G2 passed its independent check. G2b (what the fronts need from this back end) is in progress:
-run 1 is "Run 11" below. Earlier runs follow it ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs
-1 to 4 after them).
+G2 passed its independent check. G2b (what the fronts need from this back end): runs 1 and 2 are
+"Run 11" and "Run 12" below; every request found is built and tested or refused by name (list
+below), so G2b waits for its independent check. Earlier runs follow ("Run 5" to "Run 10" are G2
+runs 1 to 6; G2a runs 1 to 4 after them).
 
-What the fronts' status files ask of this back end (read at G2b run 1, after merging every graphics
-branch), and where each stands:
+What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
+graphics branch), and where each stands:
 - Timestamps (Direct3D 12: every real program tried stops there; Direct3D 11: so timestamps need not
   be reported disjoint): built. `TIMESTAMPS` where wgpu has `TIMESTAMP_QUERY` and resolves in
   nanoseconds; tests/timestamps.rs, tests/direct3d.rs (against Direct3D 11), and in Chrome by
@@ -31,13 +32,55 @@ branch), and where each stands:
 - `OCCLUSION_COUNT` "where the adapter counts samples exactly": refused, absent. WebGPU defines an
   occlusion result only as zero or not, wgpu's Direct3D 12 asks for binary occlusion and its Vulkan
   for imprecise counts; fronts count by `OcclusionCountReplay`.
-- Formats WebGPU lacks (`A8_UNORM`, `B5G6R5`, `B5G5R5A1`, `B4G4R4A4`; `FormatConverted`, asked by
-  both Direct3D fronts): NOT built yet; declared without any bits, so fronts report them absent.
-  The most useful thing left (Next).
+- Formats WebGPU lacks (`FormatConverted`; both Direct3D fronts ask for `A8_UNORM`, `B5G6R5`,
+  `B5G5R5A1`, `B4G4R4A4`, the Direct3D 11 front also for `B8G8R8X8`, the Direct3D 12 front for
+  the two-pixel formats): built (run 12, src/packed.rs). Held in an 8-bit RGBA format, widened on
+  the host at writes and packed again at read backs and copies out. `A8Unorm`, `Bgrx8Unorm` and
+  `Bgrx8UnormSrgb` are sampled, filtered, drawn into, blended and resolved (only their own
+  channels written); `B5g6r5Unorm`, `Bgr5a1Unorm`, `Bgra4Unorm`, `Rgbg8Unorm` and `Grgb8Unorm`
+  are sampled, filtered and copied, and declared without `RENDER` (a draw would keep 8 bits a
+  channel where Direct3D keeps 4, 5 or 6; the two-pixel formats are not render targets in
+  Direct3D either). None has storage bits. tests/converted.rs (natively, and in Chrome through
+  web/check) and tests/direct3d.rs `converted_formats_load_filter_and_draw_as_direct3d_does`:
+  every load and filtered texel equal to Direct3D 11's on the RTX 3080, A8 and BGRX drawn equal
+  byte for byte (BGRX's X apart: Departures).
+- Asked by the Direct3D 11 front, answered by the capability list: clip distances on wgpu's
+  Direct3D 12 path (wgpu has none there; `CLIP_DISTANCE` is declared where wgpu has it), logic
+  operations, min/max filtering, NV12 and video formats (WebGPU has none of them; declared
+  absent).
 - Asked of others, not this back end: the view swizzle (interface), vertices past the end in
   `ExecuteIndirect` (a listed loss), multisampled array targets (absent in WebGPU).
-- Already done before this run: vertex formats WebGPU lacks (run 9), combined depth-stencil copies
+- Already done before G2b: vertex formats WebGPU lacks (run 9), combined depth-stencil copies
   (run 7).
+
+Run 12 = G2b run 2, 2026-11-17:
+- Merged origin/phase-2-graphics, -webgl, -direct3d-12 and -shaders (no conflicts; -direct3d-11
+  and -rig had nothing new); the merges did not change the interface. Read the four front status
+  files again:
+  the new asks of this back end are `B8G8R8X8` (Direct3D 11) and the two-pixel formats (Direct3D
+  12's list, also plan 5.7's `BlockDecoded` pair), built here with the formats asked before.
+- Converted formats (src/packed.rs): `packed::held` names the format a texture is held in
+  (`rgba8unorm`, or `bgra8unorm` and its sRGB twin for BGRX); `TextureObj::held` carries it as for
+  decoded BC. Writes widen on the host (`write_packed`); a read back copies the held texels and
+  packs them in `finish_read` (no wait); a copy between a buffer and such a texture reads the
+  source back first and waits (`HostCopyReadBack`, as for decoded BC); a copy between a converted
+  format and another of the same block size goes through the host the same way; a copy between
+  two textures of one converted format is a plain GPU copy. Draws into A8 write only alpha and
+  into BGRX only colour; clears and don't-care loads keep A8's colour zero and BGRX's alpha one.
+  `FormatConverted` is counted when such a texture is made, written and read back.
+- Widening repeats each channel's bits (3 of 31 is 24), not the nearest byte to `v / 31` (25):
+  the first version took the nearest byte and the comparison with Direct3D 11 found loads one
+  8-bit step off on `B5G6R5` and `B5G5R5A1`; the RTX 3080's Direct3D loads them as repeated bits
+  (up to 0.72 of a step from `v / (2^n - 1)`). With repetition every load is equal.
+- The vertex conversion check moved into examples/scenes/vertices.rs (tests/vertices.rs calls it)
+  so that web/check runs it in Chrome too (G2 check finding: it had never run there). Texture
+  renaming still runs only natively (tests/bindings.rs).
+- Resolving in the other sRGB twin in the browser is now a draw loading every sample through the
+  twin and averaging them (`ResolveByDraw`, interface change below; src/fill.rs
+  `resolve_by_draw`), so it averages in linear light as natively, instead of the listed loss
+  `ResolveInStoredFormat`. Multisampled textures of a format with a twin are made sampleable in
+  the browser for it. The shared suite's `resolves_average_in_the_format_named` holds it to the
+  linear-light values when the loss is not counted.
 
 Run 11 = G2b run 1, 2026-11-17:
 - Merged origin/phase-2-graphics, -webgl, -direct3d-11, -direct3d-12, -shaders and -rig (no
@@ -512,6 +555,10 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   `wcontainers_gpu_webgpu::block_on` runs a future (the adapter and device requests) the same way.
 - Uniform-only buffers made with `MapIntent::Often` live in the uniform arena: give constant
   buffers rewritten per draw that intent and write them with `Discard`.
+- Formats WebGPU lacks are declared with what the back end does for them (`FormatConverted`,
+  src/packed.rs): `A8Unorm`, `Bgrx8Unorm(Srgb)` as targets too; the 16-bit packed and two-pixel
+  formats sampled and copied only. A copy between a buffer and one of them waits on the device
+  (the bytes go through the host); a read back does not.
 - Timestamps (`TIMESTAMPS`): `write_timestamp` outside a pass, `resolve_queries` gives nanoseconds,
   `timestamps_disjoint` is always false. Calibration against the CPU clock (Direct3D 12's
   `GetClockCalibration`) is made from base primitives, as examples/scenes/timestamps.rs `reading`
@@ -528,8 +575,8 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
 
 All from the checkout root on the Mac; nothing is built or run on the Mac but formatting and
 `cargo check -j 2`.
-- Tests on the RTX 3080 (tests/bindings.rs, blocks.rs, copies.rs, depth.rs, direct3d.rs (Windows
-  only), fitted.rs, prepare.rs, raster.rs, scenes.rs, vertices.rs, writes.rs and suite.rs, the
+- Tests on the RTX 3080 (tests/bindings.rs, blocks.rs, converted.rs, copies.rs, depth.rs,
+  direct3d.rs (Windows only), fitted.rs, prepare.rs, raster.rs, scenes.rs, vertices.rs, writes.rs and suite.rs, the
   shared suite; they need a GPU, and the suite's present test a desktop, so
   `--desktop`; `WEBGPU_API=dx12|vulkan|metal` picks wgpu's API, default the platform's, Vulkan on
   the desktop), both APIs in one job:
@@ -577,8 +624,10 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   draws both quads pictures with each twist natively on both APIs and in Chrome and requires them
   to differ, draws the eight-viewport scene in Chrome (equal to `raster-viewports.png`, and
   differing with whole-pixel viewports), prints first-draw timings with and without `prepare` in
-  Chrome (failing if the prepared draws built anything), then runs the shared suite in Chrome, one
-  page per test (suite-chrome.txt). Prints
+  Chrome (failing if the prepared draws built anything), checks timestamps, the converted formats
+  (examples/scenes/converted.rs) and the vertex formats read through shadows
+  (examples/scenes/vertices.rs, seed 188, 64 vertices each) in Chrome, then runs the shared suite
+  in Chrome, one page per test (suite-chrome.txt). Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
   pictures and the suite's results are copied there. About 7 minutes cold, the job itself 15 s.
 - The old one-step BC comparison (ignored): add `--ignored` to the test command (`--test blocks --
@@ -587,6 +636,29 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 12 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
+CPU load not sampled; Mac load average not sampled):
+- web/check at 2087451 (scratch g2b2/webcheck.log, pictures and suite-chrome.txt in g2b2/web):
+  Chrome's WebGPU on the RTX 3080 (D3D12 backend, discrete, not a fallback); the shared suite in
+  Chrome 30 passed, 0 failed, `resolves_average_in_the_format_named` now through `ResolveByDraw`
+  (no loss counted, linear-light values within one step); the twelve pictures equal to Direct3D
+  11's at tolerance 0 and the twisted ones differing; converted formats in Chrome as natively (the
+  same largest differences, FormatConverted 110); timestamps ordered, stretches 9.821 and 19.553
+  ms (ratio 1.99), GPU clock 302.671 ms apart where the page clock had 300.1 to 306.2 ms.
+- web/check again at 27411a30 (g2b2/webcheck2.log, g2b2/web2): the same, and the vertex formats read
+  through shadows in Chrome (seed 188, 64 vertices each, three frames) all as they mean.
+- All tests at 23d2b02's code after a clean build of this crate (scratch g2b2/native-full.log):
+  Vulkan 91 passed, 2 ignored (the old BC comparison; the depth bias picture); Direct3D 12 92
+  passed, 1 ignored. New: converted 1, direct3d 6 (with the converted comparison), the library's
+  2 unit tests of src/packed.rs. Clippy with warnings denied passes natively for this crate and
+  the interface, and for WebAssembly; the interface's 32 unit tests pass.
+- Converted formats against Direct3D 11 on the RTX 3080 (tests/direct3d.rs, both APIs, scratch
+  g2b2/converted8.log and converted7.log): A8, BGRX, BGRX sRGB, both two-pixel formats, B5G6R5,
+  B5G5R5A1, B4G4R4A4 loaded and filtered 0 steps from Direct3D's; Direct3D's own loads lie from
+  `v / (2^n - 1)` by 2.8e-3 (B5G6R5), 2.66e-3 (B5G5R5A1), 3.75e-3 (BGRX sRGB, against the sRGB
+  formula in f32), 0 for the rest. A8 and BGRX (both) drawn with blending: 0 bytes differ (BGRX's X
+  apart, which Direct3D keeps as written: 128 of 128).
 
 Run 11 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
 CPU load not sampled; Mac load average not sampled):
@@ -888,9 +960,10 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   its queries, at most 4096 in all).
 - A converted vertex stream reaching past the largest storage binding (128 MiB by default) or
   more than 2^22 workgroups.
-- Formats WebGPU lacks other than BC are declared without bits (no `FormatConverted` or
-  packed-pair `BlockDecoded` yet), though 5.7 has the back end convert them. Both Direct3D fronts
-  ask for `A8_UNORM`, `B5G6R5`, `B5G5R5A1` and `B4G4R4A4`.
+- Drawing into the 16-bit packed formats: declared without `RENDER` (8-bit storage would keep
+  more of a draw than Direct3D's 4, 5 or 6 bits; exact would need the program to round its output
+  and could not round a blend). Copies between a buffer and a converted texture pause the device
+  thread while the bytes cross the host (a compute program packing on the GPU would not).
 - `OCCLUSION_COUNT`: absent for good (WebGPU's occlusion result is zero or not).
 - Not yet as 4.6 says for speed: a staging ring (each staged write makes a buffer), and freeing
   cached layouts and pipelines of destroyed programs (and the shadow plans of vertex layouts no
@@ -901,18 +974,23 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Next (G2b)
 
-1. `FormatConverted` (plan 5.7, asked by both Direct3D fronts): `A8_UNORM` stored as `rgba8unorm`
-   (uploads as (0, 0, 0, a), draws into it with only alpha written, read backs and copies out take
-   the alpha), then `B5G6R5`, `B5G5R5A1`, `B4G4R4A4` stored as `rgba8unorm` (expanded on upload,
-   packed on read back; copies between a buffer and such a texture through the host,
-   `HostCopyReadBack`). Test each against real Direct3D 11 (sampling and drawing into it), then
-   declare its bits.
-2. The packed-pair formats (`BlockDecoded`), immediates, making a lost surface again, the staging
-   ring of 4.6, freeing layouts and pipelines of destroyed programs (as before).
+1. The independent check of G2b.
+2. Texture renaming in Chrome (move tests/bindings.rs `discarded_textures_are_renamed_from_the_pool`
+   and its helpers into the scenes example as vertices.rs was), immediates, making a lost surface again, the staging ring of 4.6, freeing layouts and
+   pipelines of destroyed programs, copies between a buffer and a converted texture on the GPU
+   (as before).
 3. Read the fronts' status files again after merging; Direct3D 12's timestamps case against real
    Direct3D 12 and bgfx's examples are that track's next step.
 
 ## Departures from the plan
+
+- BGRX (`Bgrx8Unorm`, `Bgrx8UnormSrgb`) is held as BGRA with alpha one, so its unused X byte reads
+  back as 255. The RTX 3080's Direct3D 11 keeps the X byte as written, from the host (128 of 128
+  texels in tests/direct3d.rs) and by draws (the blended alpha). Direct3D defines no value for it;
+  holding it as written would make sampled alpha read it, and WebGPU has no swizzle to read one.
+- The 16-bit packed formats are widened by repeating their bits, as the RTX 3080's Direct3D 11
+  loads them, not to the nearest 8-bit value of `v / (2^n - 1)` (Direct3D's rule, which its own
+  loads miss by up to 0.72 of an 8-bit step).
 
 - Timestamps need the host's wgpu instance made with `AUTOMATIC_TIMESTAMP_NORMALIZATION`
   (`WebGpu::INSTANCE_FLAGS`) where the GPU's clock does not tick in nanoseconds; without it the
@@ -981,6 +1059,10 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
   unshown frame, and DXGI answers it with a success code (`DXGI_STATUS_OCCLUDED`).
 
 ## Interface changes
+
+- 1b06735 `interface: named the slow path of a resolve averaged by a draw loading every sample`:
+  `SlowPath::ResolveByDraw`, and the plan's 4.2 sentence on resolving in the other twin (Chrome's
+  WebGPU resolve averages the stored values).
 
 - 04bd53b `interface: named the slow path of a copy between regions of one subresource made through
   a buffer`: `SlowPath::CopyWithinTexture`, a sentence in `copy_texture`'s doc (regions of one

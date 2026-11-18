@@ -205,7 +205,9 @@ Recording:
   stored format or its sRGB twin, because Direct3D 11's and 12's `ResolveSubresource` take one: a
   multisampled `R8G8B8A8_TYPELESS` target (one texture seen through sRGB and linear views) resolves in
   linear light as `UNORM_SRGB` and on the stored values as `UNORM`. WebGPU resolves natively through
-  views of both textures in that format (the twin is a view every back end makes); WebGL 2's
+  views of both textures in that format (the twin is a view every back end makes), and where its
+  resolve averages the stored values instead (Chrome's), by a draw loading every sample through the
+  twin (`ResolveByDraw`); WebGL 2's
   `blitFramebuffer` decodes and encodes by the renderbuffer's own format, and its multisampled
   renderbuffers can be read no other way, so a resolve in the other twin averages the stored values
   there (`ResolveInStoredFormat`, a listed loss, 4.12). A copy between a buffer and a texture takes

@@ -727,10 +727,15 @@ impl WebGpu {
                         alpha: blend_component(a),
                     }),
                 };
+                // Converted formats keep the channels they lack as they read.
+                let mut write_mask = convert::color_writes(t.writes);
+                if let Some(kept) = crate::packed::drawn(f) {
+                    write_mask &= kept;
+                }
                 targets.push(Some(wgpu::ColorTargetState {
                     format: convert::texture_format(f).unwrap_or(wgpu::TextureFormat::R8Unorm),
                     blend,
-                    write_mask: convert::color_writes(t.writes),
+                    write_mask,
                 }));
             }
         }
@@ -877,10 +882,12 @@ impl WebGpu {
                             by_draw.push((i, bits));
                             None
                         } else {
-                            Some(color_value(bits, kind))
+                            Some(crate::packed::clear(v.format, color_value(bits, kind)))
                         }
                     }
-                    LoadOp::DontCare => Some(wgpu::Color::TRANSPARENT),
+                    LoadOp::DontCare => {
+                        Some(crate::packed::clear(v.format, wgpu::Color::TRANSPARENT))
+                    }
                 },
             }));
         }
@@ -1389,14 +1396,10 @@ impl WebGpu {
         }
         // Both views in the resolve format, so an sRGB twin averages in linear light. Chrome
         // (Dawn on Direct3D 12) averages the stored values whatever the views' format, so in the
-        // browser the other twin is the listed loss `ResolveInStoredFormat`.
+        // browser a resolve in the other twin is a draw averaging the samples read through it.
         let stored = src.texture.0.held;
-        let format = if cfg!(target_arch = "wasm32") && format != stored {
-            self.slow.hit(SlowPath::ResolveInStoredFormat);
-            stored
-        } else {
-            format
-        };
+        let format = crate::packed::held(format).unwrap_or(format);
+        let by_draw = cfg!(target_arch = "wasm32") && format != stored;
         let Some(format) = convert::texture_format(format) else {
             self.fail("resolve in a format this back end does not hold");
             return;
@@ -1413,6 +1416,20 @@ impl WebGpu {
                 ..Default::default()
             })
         };
+        if by_draw {
+            if !src
+                .texture
+                .0
+                .raw()
+                .usage()
+                .contains(wgpu::TextureUsages::TEXTURE_BINDING)
+            {
+                self.fail("a resolve in the other sRGB twin of a texture that cannot be sampled");
+                return;
+            }
+            let (s, d) = (view(src), view(dst));
+            return self.resolve_by_draw(&s, &d, format);
+        }
         let colors = [Some(ColorRaw {
             view: view(src),
             resolve: Some(view(dst)),
