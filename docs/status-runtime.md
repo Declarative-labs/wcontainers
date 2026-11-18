@@ -6,7 +6,7 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
 
 - J0 (the plan), J1 (first light) and J2 (processes and the rest of the boundary) are done; their records are
   below.
-- J3 run 1 (2026-11-18): the six findings of J2 run 5's check are settled first (next section); origin/phase-1
+- J3 run 1 (2026-11-18): the six findings of J2 run 5's check are settled first (their section below); origin/phase-1
   (the kernel through K6b, 2edbc451) is merged (db247ebf), which needed one back end fix (fff0aa77); then J3
   is built: free turns, the library surface on the OCI runtime configuration, OCI images and plain tars, the
   shipped outside, and the command line program. J3's bar passes (below).
@@ -14,6 +14,9 @@ Plan: docs/runtime.md. Branch: phase-1-runtime. Brief: pyro-parked/wcontainers-s
   honour the fields refused today.
 - J3 is complete but for what waits on others: standard input (the kernel's interface), and the fields
   refused until the kernel takes them.
+- The kernel test crate changed in J3 only in the merge's settled conflicts (driver.rs, standin.rs, and
+  layer1.rs's call of the driver's `back_end`; db247ebf) and in one line each of driver.rs and standin.rs for
+  the free kind of `Turn` (5d86b31d, with the runtime crate, since neither builds alone).
 - Next: J4 (plan section 16), which starts once the translator emits the guest-defined progress count.
 
 ## For the orchestrator
