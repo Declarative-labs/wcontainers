@@ -304,6 +304,32 @@ impl<B: Backend> Device<B> {
             }
             return bits;
         }
+        if matches!(dxgi, format::NV12 | format::YUY2) {
+            // 2D textures of one level, through views of each plane's format (NV12) or of
+            // R8G8B8A8 (YUY2).
+            let formats = &self.backend.caps().formats;
+            let uses = if dxgi == format::NV12 {
+                formats.get(Format::R8Unorm) & formats.get(Format::Rg8Unorm)
+            } else {
+                formats.get(Format::Rgba8Unorm)
+            };
+            if uses.is_empty() {
+                return bits;
+            }
+            bits |= TEXTURE2D;
+            for (has, bit) in [
+                (FormatUse::SAMPLE, SHADER_LOAD),
+                (FormatUse::FILTER, SHADER_SAMPLE),
+                (FormatUse::RENDER, RENDER_TARGET),
+                (FormatUse::COPY_OUT, CPU_LOCKABLE),
+            ] {
+                // Direct3D reports no target use of YUY2, though it takes target views of it.
+                if uses.contains(has) && !(dxgi == format::YUY2 && bit == RENDER_TARGET) {
+                    bits |= bit;
+                }
+            }
+            return bits;
+        }
         let Some(f) = format::texture_format(dxgi) else {
             return bits;
         };
@@ -720,6 +746,35 @@ impl<B: Backend> Device<B> {
         if mips > full {
             return Err(Error::InvalidArg("more mip levels than the size has"));
         }
+        if d.format == format::NV12 {
+            if d.dimension != TexDim::D2
+                || !d.width.is_multiple_of(2)
+                || !d.height.is_multiple_of(2)
+                || d.sample_count > 1
+                || d.bind_flags & bind::DEPTH_STENCIL != 0
+            {
+                return Err(Error::InvalidArg(
+                    "an NV12 texture is 2D, of one sample and of even width and height",
+                ));
+            }
+            if mips != 1 || d.misc_flags & !MISC_SHARED != 0 {
+                return not_implemented("NV12 textures of more than one level or with misc flags");
+            }
+        }
+        if d.format == format::YUY2 {
+            if d.dimension != TexDim::D2
+                || !d.width.is_multiple_of(2)
+                || d.sample_count > 1
+                || d.bind_flags & bind::DEPTH_STENCIL != 0
+            {
+                return Err(Error::InvalidArg(
+                    "a YUY2 texture is 2D, of one sample and of even width",
+                ));
+            }
+            if mips != 1 || d.misc_flags & !MISC_SHARED != 0 {
+                return not_implemented("YUY2 textures of more than one level or with misc flags");
+            }
+        }
         let drawn = bind::RENDER_TARGET | bind::UNORDERED_ACCESS;
         if d.bind_flags & drawn != 0
             && (d.bind_flags & bind::DEPTH_STENCIL != 0
@@ -765,6 +820,11 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg(
                 "a multisampled texture is 2D, of one level and default usage",
             ));
+        }
+        // The back ends' multisampled textures are one layer; holding an array as a texture per
+        // layer (plan 4.2) is not built here.
+        if d.sample_count > 1 && d.array_size > 1 {
+            return not_implemented("a multisampled texture of more than one layer");
         }
         if d.misc_flags
             & !(MISC_TEXTURECUBE
@@ -850,6 +910,10 @@ impl<B: Backend> Device<B> {
                 needs |= n;
             }
         }
+        // A staging texture the CPU reads is read back from the GPU.
+        if d.usage == usage::STAGING && d.cpu_access_flags & cpu::READ != 0 {
+            needs |= FormatUse::COPY_OUT;
+        }
         if d.bind_flags & bind::UNORDERED_ACCESS != 0 && self.feature_level() < 0xb000 {
             return Err(Error::InvalidArg(
                 "unordered access needs feature level 11_0",
@@ -917,6 +981,23 @@ impl<B: Backend> Device<B> {
         }
         self.live()?;
         self.bury();
+        // NV12's chroma plane: a texture of its own the program sees only through views and
+        // through the joined rows of maps, copies and writes.
+        let chroma = if d.format == crate::format::NV12 {
+            let plane = TextureDesc {
+                format: crate::format::R8G8_TYPELESS,
+                width: d.width / 2,
+                height: d.height / 2,
+                mip_levels: 1,
+                usage: usage::DEFAULT,
+                cpu_access_flags: 0,
+                misc_flags: 0,
+                ..*d
+            };
+            Some(self.create_texture(&plane, &[])?)
+        } else {
+            None
+        };
         let (dimension, depth_or_layers) = match d.dimension {
             TexDim::D3 => (TextureDimension::D3, d.depth),
             TexDim::D1 | TexDim::D2 => (TextureDimension::D2, d.array_size),
@@ -924,7 +1005,12 @@ impl<B: Backend> Device<B> {
         let gpu_desc = GpuTexture {
             dimension,
             format,
-            width: d.width,
+            // A YUY2 texel is a pixel pair.
+            width: if d.format == format::YUY2 {
+                d.width / 2
+            } else {
+                d.width
+            },
             height: d.height,
             depth_or_layers,
             mip_levels: mips,
@@ -949,12 +1035,23 @@ impl<B: Backend> Device<B> {
             shadow: RefCell::new(Vec::new()),
             chain: false,
             min_lod: Cell::new(0.0),
+            chroma,
         };
         for (i, data) in init.iter().take(subresources).enumerate() {
             let (region, extent) = texture
                 .whole(i as u32)
                 .expect("a subresource of the texture");
             self.write_texels(format, &region, extent, data);
+            if let Some(chroma) = &texture.chroma {
+                let (region, extent) = chroma.whole(i as u32).expect("the luma's subresource");
+                // The chroma rows follow the luma's at the same pitch.
+                let at = (data.row_pitch * texture.desc.height) as usize;
+                let data = SubresourceData {
+                    bytes: &data.bytes[at..],
+                    ..*data
+                };
+                self.write_texels(chroma.format, &region, extent, &data);
+            }
         }
         if matches!(d.usage, usage::STAGING | usage::DYNAMIC) {
             let shadow = (0..subresources)
@@ -1070,6 +1167,19 @@ impl<B: Backend> Device<B> {
         desc: Option<&ViewDesc>,
         kind: u32,
     ) -> Result<Rc<View<B>>> {
+        if let Some(chroma) = &texture.chroma {
+            // A view of NV12 names one plane by its format; the luma plane is viewed as the
+            // members of R8's group, the chroma plane (a texture of R8G8's) as its own.
+            match format::nv12_plane(desc.map_or(format::UNKNOWN, |d| d.format)) {
+                Some(1) => return self.create_view(chroma, desc, kind),
+                Some(_) => {}
+                None => {
+                    return Err(Error::InvalidArg(
+                        "a view of an NV12 texture names one plane's format",
+                    ));
+                }
+            }
+        }
         let t = &texture.desc;
         if t.bind_flags & kind == 0 {
             return Err(Error::InvalidArg(
@@ -1178,6 +1288,13 @@ impl<B: Backend> Device<B> {
             Some(twin) if texture.chain && kind == bind::RENDER_TARGET && v.format == twin => {
                 (format::texture_format_of(twin)?, false)
             }
+            _ if texture.chroma.is_some() => {
+                format::view_format(v.format, format::R8_TYPELESS, texture.format)?
+            }
+            // Direct3D also takes R8G8B8A8_SNORM target views of YUY2.
+            _ if t.format == format::YUY2 && kind == bind::RENDER_TARGET && v.format == 31 => {
+                (Format::Rgba8Snorm, false)
+            }
             _ => format::view_format(v.format, t.format, texture.format)?,
         };
         // Depth-stencil views take the D formats and only they; the others read depth through
@@ -1208,8 +1325,11 @@ impl<B: Backend> Device<B> {
                 _ => (ViewDimension::D2, v.first_layer, 1),
             }
         } else {
+            // A multisampled texture is one layer, which programs read as an array of one
+            // (`VariantKey::texture_layers`).
             let dimension = match v.dimension {
                 ViewDim::Texture1D | ViewDim::Texture2D | ViewDim::Texture2DMS => ViewDimension::D2,
+                ViewDim::Texture2DMSArray if multisampled => ViewDimension::D2,
                 ViewDim::Texture1DArray | ViewDim::Texture2DArray | ViewDim::Texture2DMSArray => {
                     ViewDimension::D2Array
                 }
@@ -1222,16 +1342,8 @@ impl<B: Backend> Device<B> {
                 _ => (dimension, v.first_layer, v.layer_count),
             }
         };
-        // Direct3D reads stencil in the second component; the interface's stencil views give it
-        // in the first.
-        if stencil
-            && kind == bind::SHADER_RESOURCE
-            && !self.backend.caps().has(Features::VIEW_SWIZZLE)
-        {
-            return not_implemented(
-                "stencil read through a view (Direct3D's second component needs a view swizzle)",
-            );
-        }
+        // Direct3D reads stencil in the second component and the interface's stencil views give it
+        // in the first: programs reading such a view move it (`StageVariant::stencil`).
         self.live()?;
         self.bury();
         // A storage view of some slices of a 3D level, which no back end's view sees, is made on
@@ -1609,7 +1721,10 @@ impl<B: Backend> Device<B> {
         {
             return not_implemented("typed buffers read through a texture (TexelBufferAsTexture)");
         }
-        let (mut converted, reads_samples) = shader::convert(bytecode, stage, &mut typed)?;
+        let layered = shader::multisampled_arrays(bytecode)?;
+        let texture_info = !self.backend.caps().has(Features::TEXTURE_LEVEL_QUERY);
+        let (mut converted, reads_samples) =
+            shader::convert(bytecode, stage, &mut typed, layered, texture_info)?;
         let samplers = shader::sampler_slots(&converted);
         let textures = shader::texture_slots(&converted);
         let mirror_filtered = shader::mirror_filtered_slots(&converted);
@@ -1642,6 +1757,7 @@ impl<B: Backend> Device<B> {
             reads_samples,
             helpers,
             typed,
+            layered,
         });
         if matches!(
             stage,
@@ -1682,9 +1798,11 @@ impl<B: Backend> Device<B> {
             None
         } else {
             let typed = shader::typed_views(bytecode)?;
-            let key = shader::base_key(SourceStage::Geometry, &typed);
+            let layered = shader::multisampled_arrays(bytecode)?;
+            let key = shader::base_key(SourceStage::Geometry, &typed, layered);
             let converted = shader::convert_geometry(bytecode, &key)?;
-            Some((self.geometry_stage(bytecode, &converted, typed)?, converted))
+            let stage = self.geometry_stage(bytecode, &converted, typed, layered)?;
+            Some((stage, converted))
         };
         let id = self.id();
         Ok(Rc::new(Geometry {
@@ -1702,6 +1820,7 @@ impl<B: Backend> Device<B> {
         bytecode: &[u8],
         converted: &wcontainers_shaders::Converted,
         typed: Vec<shader::TypedView>,
+        layered: u128,
     ) -> Result<Rc<Shader<B>>> {
         let compute = &converted.modules[0];
         self.live()?;
@@ -1722,6 +1841,7 @@ impl<B: Backend> Device<B> {
             reads_samples: false,
             helpers: Rc::new(shader::Helpers::of(converted)),
             typed,
+            layered,
         }))
     }
 
