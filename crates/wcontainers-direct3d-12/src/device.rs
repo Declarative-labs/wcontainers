@@ -261,6 +261,10 @@ struct Render<B: Backend> {
     per_sample: bool,
     pixel_counting: Option<B::Program>,
     writes_depth_stencil: bool,
+    /// The pixel shader forces early depth and stencil tests, which change what it does (storage
+    /// writes, or a discard while depth or stencil is written), and the pipeline tests depth or
+    /// stencil: its draws while a depth-stencil view is bound need `EarlyTestsInShader`.
+    early_tests: bool,
     alpha_to_coverage: bool,
     /// Every per-instance element steps by one instance.
     instances_step_by_one: bool,
@@ -1061,6 +1065,14 @@ impl<B: Backend> Device<B> {
                 .transpose()?,
             samples: desc.samples.max(1),
         };
+        if ps
+            .as_ref()
+            .is_some_and(|ps| !outputs_fit_targets(ps, &colors))
+        {
+            return Err(Error::NotImplemented(
+                "a pixel shader output of another type than its render target's format",
+            ));
+        }
         let mut bindings = match &made {
             Some(m) => {
                 // Without a geometry stage the draw after the stream output binds the vertex
@@ -1220,6 +1232,7 @@ impl<B: Backend> Device<B> {
                 && (desc.depth_stencil.depth_enable && desc.depth_stencil.depth_write_all
                     || desc.depth_stencil.stencil_enable
                         && desc.depth_stencil.stencil_write_mask != 0),
+            early_tests: early_tests_matter(ps.as_ref(), &desc.depth_stencil),
             alpha_to_coverage: desc.blend.alpha_to_coverage,
             instances_step_by_one,
             geometry: made.map(|m| m.geometry),
@@ -2614,11 +2627,14 @@ impl<B: Backend> Replay<B> {
             vertex_buffers: [VertexBufferView::default(); MAX_VERTEX_STREAMS],
             index: None,
             viewports: Vec::new(),
+            // A list that never sets scissors draws unscissored, as real Direct3D 12 on the
+            // reference GPU does (Direct3D 12 leaves it undefined); the back end clips the
+            // rectangle to the pass.
             scissors: vec![ScissorRect {
                 x: 0,
                 y: 0,
-                width: 0,
-                height: 0,
+                width: u32::MAX,
+                height: u32::MAX,
             }],
             blend_constant: [0; 4],
             stencil_reference: 0,
@@ -3326,12 +3342,18 @@ impl<B: Backend> Replay<B> {
         let Some(pid) = self.pipeline else {
             return Ok(());
         };
-        let geometry = d.pipelines[pid.0 as usize]
+        let r = d.pipelines[pid.0 as usize]
             .render
             .as_ref()
-            .ok_or(Error::Invalid("drawing with a compute pipeline state"))?
-            .geometry
-            .is_some();
+            .ok_or(Error::Invalid("drawing with a compute pipeline state"))?;
+        let geometry = r.geometry.is_some();
+        // The back ends test depth and stencil after the pixel shader; the program testing them
+        // first (`VariantFlags::EARLY_TESTS`) is not built yet.
+        if r.early_tests && matches!(self.depth, Some(Descriptor::DepthStencil { .. })) {
+            return Err(Error::NotImplemented(
+                "early depth-stencil tests before a pixel shader's storage writes or discards",
+            ));
+        }
         if !d.arguments_set(&self.graphics, pid) {
             return Ok(());
         }
@@ -3378,6 +3400,8 @@ impl<B: Backend> Replay<B> {
             | DrawRange::Indexed { first_instance, .. } => Some(*first_instance),
             _ => None,
         };
+        // An `ExecuteIndirect` draw without indices, whose vertex count the front does not know.
+        let unknown_count = matches!(range, DrawRange::Indirect { .. });
         let range = match (record, range) {
             (Some((args, offset)), DrawRange::Indexed { .. }) => DrawRange::IndexedIndirect {
                 args,
@@ -3435,10 +3459,16 @@ impl<B: Backend> Replay<B> {
                 _ => reads[slot],
             };
         }
+        let fetches_vertices = inputs
+            .iter()
+            .any(|(e, _)| !e.per_instance && pulled[e.slot as usize].is_none());
         d.render_mut(pid).inputs = inputs;
         let fetch = fetch?;
         for why in pulled.iter().flatten() {
             d.backend.slow_paths().hit(*why);
+        }
+        if unknown_count && fetches_vertices {
+            d.backend.slow_paths().hit(SlowPath::IndirectFetchPastEnd);
         }
         let variant = if fetch.inputs.is_empty() {
             None
@@ -4449,6 +4479,46 @@ fn programs_slow_paths(programs: &[&Converted]) -> Vec<SlowPath> {
     all.sort_unstable();
     all.dedup();
     all
+}
+
+/// Whether a pipeline's pixel shader `ps` forces early depth and stencil tests in a way that
+/// changes its results while `ds` tests: its storage writes then happen only for fragments that
+/// pass, and a discard does not undo depth and stencil writes (plan 4.12).
+fn early_tests_matter(ps: Option<&Converted>, ds: &DepthStencil) -> bool {
+    let writes =
+        ds.depth_enable && ds.depth_write_all || ds.stencil_enable && ds.stencil_write_mask != 0;
+    (ds.depth_enable || ds.stencil_enable)
+        && ps.is_some_and(|ps| {
+            matches!(
+                ps.reflection.extras,
+                wcontainers_gpu::StageExtras::Pixel {
+                    early_tests: true,
+                    side_effects,
+                    discards,
+                    ..
+                } if side_effects || discards && writes
+            )
+        })
+}
+
+/// Whether each of the pixel shader's colour outputs is of the scalar kind of the target it
+/// writes: Direct3D 12 writes another kind's bits as they are, which the back ends' pipelines do
+/// not take.
+fn outputs_fit_targets(ps: &Converted, colors: &[Option<Format>]) -> bool {
+    ps.reflection.outputs.iter().all(|o| {
+        let Some(wcontainers_gpu::SystemValue::Target(t)) = o.system else {
+            return true;
+        };
+        let Some(Some(format)) = colors.get(usize::from(t)) else {
+            return true;
+        };
+        matches!(
+            (format.kind(), o.scalar),
+            (FormatKind::Float, wcontainers_gpu::ScalarKind::Float)
+                | (FormatKind::Uint, wcontainers_gpu::ScalarKind::Uint)
+                | (FormatKind::Sint, wcontainers_gpu::ScalarKind::Sint)
+        )
+    })
 }
 
 #[cfg(test)]
