@@ -3,7 +3,7 @@
 use std::path::Path;
 use wcontainers_gpu::{
     AddedBinding, DrawBaseSource, HelperSlot, HelperValue, Interpolation, LinkedValues, SlotKind,
-    VariantFlags, VariantKey,
+    VariantFlags, VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{ConvertError, Source, convert};
 
@@ -598,5 +598,40 @@ fn mirror_once_folds_the_coordinate_with_its_own_gradients() {
                 Err(ConvertError::Unsupported(reason))
             );
         }
+    }
+}
+
+/// Pulled vertex inputs leave the entry point, each read from its own added storage binding by the
+/// helper block's offset, stride, divisor and bias, on both routes.
+#[test]
+fn pulled_inputs_are_added_bindings_read_by_the_helpers() {
+    let key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Unorm16x2)],
+        ..Default::default()
+    };
+    for c in both(&own_pair("vs_transform"), &key) {
+        let added: Vec<_> = c
+            .reflection
+            .bindings
+            .iter()
+            .filter_map(|b| b.added)
+            .collect();
+        assert_eq!(
+            added,
+            [AddedBinding::PulledStream(0), AddedBinding::PulledStream(1)]
+        );
+        assert_eq!(
+            c.reflection.helpers,
+            [
+                slot(HelperValue::PulledStream { input: 0 }, 0),
+                slot(HelperValue::PulledStream { input: 1 }, 16)
+            ]
+        );
+        let text = wgsl(&c);
+        let main = &text[text.find("fn main(").unwrap()..];
+        let inputs = &main[..main.find("->").unwrap()];
+        assert!(!inputs.contains("@location"), "{text}");
+        assert!(inputs.contains("@builtin(instance_index)"), "{text}");
+        assert!(text.contains("arrayLength((&pulled_1_))"), "{text}");
     }
 }

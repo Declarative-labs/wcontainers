@@ -134,7 +134,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         lod_bias: _,
         constants_as_storage: _,
         constants_as_texture,
-        pulled,
+        pulled: _,
         storage_formats,
         texel_buffers,
         storage_packed,
@@ -164,7 +164,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         (*filter_in_shader != 0, "FilterInShader"),
         (*border_in_shader != 0, "BorderInShader"),
         (*constants_as_texture != 0, "ConstantsAsTexture"),
-        (!pulled.is_empty(), "VertexPulledInShader"),
         (!storage_formats.is_empty(), "StorageFormats"),
         (
             *texel_buffers != TexelBufferRoute::Native,
