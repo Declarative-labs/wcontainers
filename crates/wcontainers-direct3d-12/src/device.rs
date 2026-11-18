@@ -350,6 +350,9 @@ pub struct Device<B: Backend> {
     /// register, descriptor), from which a clamped program's merged samplers are made.
     bound_clamps: Vec<(u32, u32, f32)>,
     bound_samplers: Vec<(u32, u32, crate::list::SamplerView)>,
+    /// The textures the last binding sets made bind in a format the back end cannot filter: API
+    /// stage and register.
+    bound_unfiltered: Vec<(u32, u32)>,
     through: Vec<through::Through<B>>,
     /// The error that removed the device, if one did.
     removed: Option<Error>,
@@ -398,6 +401,7 @@ impl<B: Backend> Device<B> {
             bound_sampling: Vec::new(),
             bound_through: Vec::new(),
             bound_clamps: Vec::new(),
+            bound_unfiltered: Vec::new(),
             bound_samplers: Vec::new(),
             through: Vec::new(),
             removed: None,
@@ -1146,7 +1150,9 @@ impl<B: Backend> Device<B> {
             render: Some(render),
             bindings,
             group_threads: 0,
-            formats: ps_key.and_then(|k| formats::Formats::of(bind::PIXEL, desc.ps, &k)),
+            formats: ps.as_ref().zip(ps_key).and_then(|(c, k)| {
+                formats::Formats::of(bind::PIXEL, desc.ps, &k, &c.reflection.sampled_pairs)
+            }),
             helpers: ps.as_ref().map(Helpers::of).unwrap_or_default(),
         }) as u32))
     }
@@ -1182,7 +1188,7 @@ impl<B: Backend> Device<B> {
             render: None,
             bindings,
             group_threads,
-            formats: formats::Formats::of(0, code, &key),
+            formats: formats::Formats::of(0, code, &key, &cs.reflection.sampled_pairs),
             helpers: Helpers::of(&cs),
         }) as u32))
     }

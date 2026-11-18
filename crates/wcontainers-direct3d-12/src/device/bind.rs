@@ -433,6 +433,7 @@ impl<B: Backend> Device<B> {
         self.bound_through.clear();
         self.bound_clamps.clear();
         self.bound_samplers.clear();
+        self.bound_unfiltered.clear();
         // Views read through buffers before a binding failed.
         self.through.clear();
         for (index, b) in bindings.iter().enumerate() {
@@ -497,6 +498,7 @@ impl<B: Backend> Device<B> {
                         (SlotKind::Texture, Descriptor::ShaderResource(v)) => {
                             let view = self.shader_resource(&v, b.compared)?;
                             self.note_clamp(&v, b)?;
+                            self.note_filtering(&v, b)?;
                             let components = dxgi(v.format)?.components();
                             self.bound_helpers.push((
                                 b.visibility,
@@ -800,6 +802,41 @@ impl<B: Backend> Device<B> {
             HelperValue::MinLod { texture },
             pull::words(&[clamp.to_bits(), levels]),
         ));
+        Ok(())
+    }
+
+    /// Notes a texture the back end cannot filter in the view's format (a depth texture read as
+    /// its depth, or a float format without filtering), which the program then filters where a
+    /// filtering sampler samples it (`formats.rs`).
+    fn note_filtering(&mut self, v: &ResourceView, b: &StageBinding) -> Result<(), Error> {
+        if b.compared || !matches!(b.visibility, 0 | PIXEL) {
+            return Ok(());
+        }
+        let stored = match self.resources.get(v.resource.0 as usize) {
+            Some(Resource {
+                storage: Storage::Texture { desc, .. },
+                ..
+            }) => desc.format,
+            _ => return Ok(()),
+        };
+        let format = dxgi(v.format)?;
+        let filters = |f: Format| {
+            self.backend
+                .caps()
+                .formats
+                .get(f)
+                .contains(FormatUse::FILTER)
+        };
+        // A view reading a depth texture's depth reads a texture of the depth format.
+        let read = if stored.is_depth_stencil() {
+            stored
+        } else {
+            format
+        };
+        if !filters(read) {
+            self.bound_unfiltered
+                .push((b.visibility, b.binding.register));
+        }
         Ok(())
     }
 
