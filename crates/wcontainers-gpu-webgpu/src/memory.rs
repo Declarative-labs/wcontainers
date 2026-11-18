@@ -2,6 +2,7 @@
 //! section 4.6).
 
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -243,7 +244,8 @@ fn texel_copy<'a>(
     }
 }
 
-/// Adds 64-bit counts of spare query slots into resolved results, pair by pair.
+/// Adds 64-bit counts of spare query slots into resolved results, pair by pair; a pair whose
+/// slot has the top bit set replaces the result instead (a query not begun in its own slot).
 const QUERY_SUM_WGSL: &str = "
 @group(0) @binding(0) var<storage, read_write> sums: array<vec2<u32>>;
 @group(0) @binding(1) var<storage, read> spare: array<vec2<u32>>;
@@ -251,13 +253,40 @@ const QUERY_SUM_WGSL: &str = "
 @compute @workgroup_size(1) fn add() {
     for (var k = 0u; k < arrayLength(&pairs); k++) {
         let p = pairs[k];
-        let a = sums[p.x];
-        let b = spare[p.y];
+        let a = select(sums[p.x], vec2(0u), p.y >= 0x80000000u);
+        let b = spare[p.y & 0x7fffffffu];
         let low = a.x + b.x;
         sums[p.x] = vec2(low, a.y + b.y + select(0u, 1u, low < a.x));
     }
 }
 ";
+
+/// The staging ring's first size; it is made twice as large when a submit's staged bytes do not
+/// fit.
+const RING_SIZE: u64 = 1 << 20;
+
+/// Regions of the staging ring start at multiples of this, the largest offset alignment a copy or
+/// storage binding of them needs.
+const RING_ALIGN: u64 = 256;
+
+/// The staging ring: one buffer staged bytes are queued into and copied from in command order,
+/// taken again from its start after each submit (queued writes land after submitted work).
+#[derive(Debug)]
+pub struct Ring {
+    buffer: wgpu::Buffer,
+    used: u64,
+}
+
+impl Ring {
+    /// Starts again from the beginning, the submit having taken every region.
+    pub fn submitted(&mut self) {
+        self.used = 0;
+    }
+}
+
+/// Spare slots resolved per page start at multiples of this, as WebGPU aligns resolves to 256
+/// bytes.
+const PAGE_ALIGN: u32 = 32;
 
 /// WebGPU's size of a copy of `e` texels of `format`: whole blocks, as a level smaller than a block
 /// still holds one.
@@ -271,25 +300,43 @@ fn extent3d(e: Extent, format: Format) -> wgpu::Extent3d {
 }
 
 impl WebGpu {
-    /// A copy source holding `data` from byte `at`, padded to a multiple of four bytes; also
-    /// readable by the edge program.
-    fn staging_at(&self, at: u64, data: &[u8]) -> wgpu::Buffer {
-        let b = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: (at + data.len() as u64).next_multiple_of(4).max(4),
-            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: true,
+    /// A copy source holding `data` from byte `at` of a region of the staging ring, padded to a
+    /// multiple of four bytes, and where the region starts; also readable by the edge program.
+    /// The bytes are queued, so they land before the commands recorded until the next submit; the
+    /// browser stages queued bytes in a ring of its own, natively wgpu copies them once more.
+    fn staging_at(&mut self, at: u64, data: &[u8]) -> (wgpu::Buffer, u64) {
+        let size = (at + data.len() as u64).next_multiple_of(4).max(4);
+        let ring = match self.ring.take() {
+            Some(r) if r.used + size <= r.buffer.size() => r,
+            old => {
+                let least = old.map_or(RING_SIZE, |r| r.buffer.size() * 2);
+                self.counters.staging_rings += 1;
+                Ring {
+                    buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: None,
+                        size: least.max(size.next_multiple_of(RING_ALIGN)),
+                        usage: wgpu::BufferUsages::COPY_SRC
+                            | wgpu::BufferUsages::COPY_DST
+                            | wgpu::BufferUsages::STORAGE,
+                        mapped_at_creation: false,
+                    }),
+                    used: 0,
+                }
+            }
+        };
+        let base = ring.used;
+        let mut padded = vec![0; size as usize];
+        padded[at as usize..at as usize + data.len()].copy_from_slice(data);
+        self.queue.write_buffer(&ring.buffer, base, &padded);
+        let buffer = ring.buffer.clone();
+        self.ring = Some(Ring {
+            used: (base + size).next_multiple_of(RING_ALIGN),
+            ..ring
         });
-        b.slice(..)
-            .get_mapped_range_mut()
-            .expect("a buffer mapped at creation")
-            .slice(at as usize..at as usize + data.len())
-            .copy_from_slice(data);
-        b.unmap();
-        b
+        (buffer, base)
     }
 
-    fn staging(&self, data: &[u8]) -> wgpu::Buffer {
+    fn staging(&mut self, data: &[u8]) -> (wgpu::Buffer, u64) {
         self.staging_at(0, data)
     }
 
@@ -482,24 +529,31 @@ impl WebGpu {
             self.queue.write_buffer(&b.raw.borrow(), at, data);
             return;
         }
-        let staging = self.staging_at(at % 4, data);
+        let (staging, base) = self.staging_at(at % 4, data);
         self.counters.staged_writes += 1;
         b.lead_in.set(self.serial);
         let dst = b.raw.borrow().clone();
-        self.copy_bytes(Stream::Lead, &staging, at % 4, &dst, at, data.len() as u64);
+        self.copy_bytes(
+            Stream::Lead,
+            &staging,
+            base + at % 4,
+            &dst,
+            at,
+            data.len() as u64,
+        );
     }
 
     /// Writes through a staging buffer and a copy recorded in command order, splitting an open pass.
     fn staged_write(&mut self, b: &BufferObj, offset: u64, data: &[u8]) {
         let at = b.base.get() + offset;
         // The staged bytes sit in the same place of their word as their destination.
-        let staging = self.staging_at(at % 4, data);
+        let (staging, base) = self.staging_at(at % 4, data);
         self.counters.staged_writes += 1;
         b.used_in.set(self.serial);
         let dst = b.raw.borrow().clone();
         let size = data.len() as u64;
         self.split_pass(SlowPath::WriteSplitPass, |w| {
-            w.copy_bytes(Stream::Main, &staging, at % 4, &dst, at, size)
+            w.copy_bytes(Stream::Main, &staging, base + at % 4, &dst, at, size)
         });
     }
 
@@ -652,7 +706,7 @@ impl WebGpu {
                 packed[to as usize..(to + row) as usize].copy_from_slice(src);
             }
         }
-        let staging = self.staging(&packed);
+        let (staging, base) = self.staging(&packed);
         self.counters.staged_writes += 1;
         let tex = region.texture.clone();
         let (mip, layer, origin, stencil) =
@@ -662,7 +716,7 @@ impl WebGpu {
                 wgpu::TexelCopyBufferInfo {
                     buffer: &staging,
                     layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
+                        offset: base,
                         bytes_per_row: Some(pitch as u32),
                         rows_per_image: Some(rows as u32),
                     },
@@ -1206,11 +1260,11 @@ impl WebGpu {
             .take(block_size as usize)
             .collect();
         let at = offset % 4;
-        let staging = self.staging_at(at, &block);
+        let (staging, base) = self.staging_at(at, &block);
         let mut done = 0;
         while done < size {
             let n = block_size.min(size - done);
-            self.copy_bytes(Stream::Main, &staging, at, &raw, offset + done, n);
+            self.copy_bytes(Stream::Main, &staging, base + at, &raw, offset + done, n);
             done += n;
         }
     }
@@ -1373,13 +1427,30 @@ impl WebGpu {
             return Err(GpuError::Invalid("queries outside the set"));
         }
         // Queries carried across pass splits: (result, spare slot) pairs to add.
-        let pairs: Vec<u32> = set
-            .0
+        let obj = &set.0;
+        let spares0 = obj.raw.count() - obj.count;
+        let base = |page: usize, slot: u32| match page {
+            0 => slot - obj.count,
+            p => {
+                spares0.next_multiple_of(PAGE_ALIGN)
+                    + (p as u32 - 1) * wgpu::QUERY_SET_MAX_QUERIES
+                    + slot
+            }
+        };
+        let pairs: Vec<u32> = obj
             .segments
             .borrow()
             .iter()
             .filter(|(i, _)| (first..first + count).contains(*i))
-            .flat_map(|(i, slots)| slots.iter().flat_map(move |s| [i - first, s - set.0.count]))
+            .flat_map(|(i, s)| {
+                s.slots
+                    .iter()
+                    .enumerate()
+                    .flat_map(move |(k, &(page, slot))| {
+                        let replace = if k == 0 && !s.own { 1 << 31 } else { 0 };
+                        [i - first, base(page, slot) | replace]
+                    })
+            })
             .collect();
         let usage = wgpu::BufferUsages::QUERY_RESOLVE
             | wgpu::BufferUsages::COPY_SRC
@@ -1394,33 +1465,37 @@ impl WebGpu {
             usage,
             mapped_at_creation: false,
         });
-        let raw = set.0.raw.clone();
+        let raw = obj.raw.clone();
         self.encoder()
             .resolve_query_set(&raw, first..first + count, &resolve, 0);
         if !pairs.is_empty() {
-            self.add_segments(&raw, set.0.count, &resolve, &pairs);
+            let pages = obj.pages.borrow().clone();
+            self.add_segments(&raw, obj.count, &pages, &resolve, &pairs);
         }
         Ok(resolve)
     }
 
-    /// Adds the counts of the spare slots `pairs` names (result, slot past `count`) into the
-    /// resolved results.
+    /// Adds the counts of the spare slots `pairs` names (result, slot index across page 0's
+    /// spares past `count` and then `pages`) into the resolved results.
     fn add_segments(
         &mut self,
         raw: &wgpu::QuerySet,
         count: u32,
+        pages: &[wgpu::QuerySet],
         sums: &wgpu::Buffer,
         pairs: &[u32],
     ) {
-        let spare_count = raw.count() - count;
+        let spares0 = raw.count() - count;
+        let first_page = spares0.next_multiple_of(PAGE_ALIGN);
+        let spare_count = first_page + pages.len() as u32 * wgpu::QUERY_SET_MAX_QUERIES;
         let spare = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: u64::from(spare_count) * 8,
+            size: u64::from(spare_count.max(1)) * 8,
             usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
         let bytes: Vec<u8> = pairs.iter().flat_map(|w| w.to_le_bytes()).collect();
-        let list = self.staging(&bytes);
+        let (list, list_at) = self.staging(&bytes);
         let (pipeline, layout) = self.query_sum.get_or_insert_with(|| {
             let module = self
                 .device
@@ -1456,12 +1531,22 @@ impl WebGpu {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: list.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &list,
+                        offset: list_at,
+                        size: NonZeroU64::new(bytes.len() as u64),
+                    }),
                 },
             ],
         });
         let e = self.encoder();
-        e.resolve_query_set(raw, count..raw.count(), &spare, 0);
+        if spares0 > 0 {
+            e.resolve_query_set(raw, count..raw.count(), &spare, 0);
+        }
+        for (k, page) in pages.iter().enumerate() {
+            let at = first_page + k as u32 * wgpu::QUERY_SET_MAX_QUERIES;
+            e.resolve_query_set(page, 0..page.count(), &spare, u64::from(at) * 8);
+        }
         let mut cp = e.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
         cp.set_pipeline(&pipeline);
         cp.set_bind_group(0, &group, &[]);

@@ -492,11 +492,24 @@ pub fn load_bound(format: Format) -> f32 {
     }
 }
 
+/// How far a filtered texel may be from filtering `v / (2^n - 1)`: one and a half 8-bit steps,
+/// two for sRGB, whose decoding the RTX 3080's Direct3D 11 filters 1.507 steps from it
+/// (tests/direct3d.rs, seed 1, 4 textures).
+pub fn filter_bound(format: Format) -> f32 {
+    if format == Format::Bgrx8UnormSrgb {
+        2.0 / 255.0
+    } else {
+        1.5 / 255.0
+    }
+}
+
 /// Every check without a reference: what is declared, copies exact, texels loaded within
-/// [`load_bound`] of Direct3D's rule and filtered within one and a half 8-bit steps; 8-bit alpha drawn with its colour kept zero and its alpha within one step
+/// [`load_bound`] of Direct3D's rule and filtered within [`filter_bound`]; 8-bit alpha drawn with its colour kept zero and its alpha within one step
 /// of the blend, BGRX drawn with X kept one. One line of the largest differences.
-pub fn check(b: &mut B) -> Result<String> {
-    let mut line = String::from("converted formats:");
+/// Checks every converted format on `cases` textures of seeded texels each, the seeds counted
+/// from `seed`.
+pub fn check(b: &mut B, seed: u64, cases: u32) -> Result<String> {
+    let mut line = format!("converted formats (seed {seed}, {cases} textures each):");
     for format in FORMATS {
         let uses = b.caps().formats.get(format);
         let drawn = DRAWN.contains(&format);
@@ -509,18 +522,22 @@ pub fn check(b: &mut B) -> Result<String> {
         );
     }
     for (i, format) in FORMATS.into_iter().enumerate() {
-        let texels = texels(format, 1 + i as u64);
-        copies(b, format, &texels)?;
-        let (_, view) = upload(b, format, Some(&texels), TextureUsage::empty())?;
-        let (loaded, filter) = sampled(b, &view)?;
-        let want = expected(format, &texels);
-        let (l, f) = (largest(&loaded, &want), largest(&filter, &filtered(&want)));
+        let (mut l, mut f) = (0f32, 0f32);
+        for c in 0..u64::from(cases) {
+            let texels = texels(format, seed + c * FORMATS.len() as u64 + i as u64);
+            copies(b, format, &texels)?;
+            let (_, view) = upload(b, format, Some(&texels), TextureUsage::empty())?;
+            let (loaded, filter) = sampled(b, &view)?;
+            let want = expected(format, &texels);
+            l = l.max(largest(&loaded, &want));
+            f = f.max(largest(&filter, &filtered(&want)));
+        }
         ensure!(
             l <= load_bound(format),
             "{format:?}: loaded {l} from v / (2^n - 1)"
         );
         ensure!(
-            f <= 1.5 / 255.0,
+            f <= filter_bound(format),
             "{format:?}: filtered {f} from v / (2^n - 1)"
         );
         line += &format!(

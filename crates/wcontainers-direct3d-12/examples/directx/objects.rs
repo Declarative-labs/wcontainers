@@ -102,7 +102,7 @@ impl Factory {
             return Err(DXGI_ERROR_NOT_FOUND.into());
         }
         let desc = gpu::call(|d| AdapterDesc::from_caps(d.backend().caps()));
-        Ok(Adapter(desc).into())
+        Ok(IDXGIAdapter4::from(Adapter(desc)).into())
     }
 
     pub fn EnumAdapters(&self, adapter: u32) -> Result<IDXGIAdapter> {
@@ -221,10 +221,51 @@ pub fn adapter_luid() -> LUID {
     luid(wcontainers_directx_graphics_infrastructure::ADAPTER_LUID)
 }
 
-#[implement(IDXGIAdapter1)]
+/// DXGI 1.6's adapter, as Windows 10 gives every Direct3D 12 program: programs call its newer
+/// methods through the adapter `EnumAdapters` gives without asking for them. Video memory
+/// budgets and reservations answer E_NOTIMPL (no browser reports memory).
+#[implement(IDXGIAdapter4)]
 pub struct Adapter(AdapterDesc);
 
 impl Adapter {
+    /// The flags say only what is known: no preemption finer than a submission is promised, and
+    /// fences are Direct3D 12's (monitored) ones.
+    pub fn GetDesc3(&self) -> Result<DXGI_ADAPTER_DESC3> {
+        let d = self.GetDesc1()?;
+        Ok(DXGI_ADAPTER_DESC3 {
+            Description: d.Description,
+            VendorId: d.VendorId,
+            DeviceId: d.DeviceId,
+            SubSysId: d.SubSysId,
+            Revision: d.Revision,
+            DedicatedVideoMemory: d.DedicatedVideoMemory,
+            DedicatedSystemMemory: d.DedicatedSystemMemory,
+            SharedSystemMemory: d.SharedSystemMemory,
+            AdapterLuid: d.AdapterLuid,
+            Flags: DXGI_ADAPTER_FLAG3(d.Flags as i32) | DXGI_ADAPTER_FLAG3_SUPPORT_MONITORED_FENCES,
+            GraphicsPreemptionGranularity: DXGI_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY,
+            ComputePreemptionGranularity: DXGI_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY,
+        })
+    }
+
+    pub fn GetDesc2(&self) -> Result<DXGI_ADAPTER_DESC2> {
+        let d = self.GetDesc3()?;
+        Ok(DXGI_ADAPTER_DESC2 {
+            Description: d.Description,
+            VendorId: d.VendorId,
+            DeviceId: d.DeviceId,
+            SubSysId: d.SubSysId,
+            Revision: d.Revision,
+            DedicatedVideoMemory: d.DedicatedVideoMemory,
+            DedicatedSystemMemory: d.DedicatedSystemMemory,
+            SharedSystemMemory: d.SharedSystemMemory,
+            AdapterLuid: d.AdapterLuid,
+            Flags: (d.Flags & DXGI_ADAPTER_FLAG3_SOFTWARE).0 as u32,
+            GraphicsPreemptionGranularity: d.GraphicsPreemptionGranularity,
+            ComputePreemptionGranularity: d.ComputePreemptionGranularity,
+        })
+    }
+
     pub fn GetDesc1(&self) -> Result<DXGI_ADAPTER_DESC1> {
         let d = &self.0;
         Ok(DXGI_ADAPTER_DESC1 {

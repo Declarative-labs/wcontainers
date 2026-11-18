@@ -217,6 +217,12 @@ impl Blend {
         let used = if self.independent { targets.max(1) } else { 1 };
         for (i, t) in self.targets.iter().take(used).enumerate() {
             if t.logic_op_enable {
+                // Direct3D 12 takes one of blending and logic operations on a target.
+                if t.blend_enable {
+                    return Err(Error::Invalid(
+                        "blending and a logic operation on one target",
+                    ));
+                }
                 if !caps.has(Features::LOGIC_OP) {
                     return Err(Error::NotImplemented("logic operations without LOGIC_OP"));
                 }

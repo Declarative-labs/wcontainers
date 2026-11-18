@@ -39,6 +39,8 @@ pub struct Counters {
     pub slices: u64,
     /// Writes ordered through a staging buffer and a copy.
     pub staged_writes: u64,
+    /// Staging rings made (the first, and each larger one a submit's staged bytes needed).
+    pub staging_rings: u64,
 }
 
 /// An immutable block, made once per distinct value.
@@ -46,6 +48,8 @@ pub struct Counters {
 pub struct Block<D> {
     pub id: u64,
     pub desc: D,
+    /// How many creations gave it out and were not destroyed yet.
+    holders: Cell<u32>,
 }
 
 /// The blocks made so far, by value, so equal blocks are one block and one pipeline key.
@@ -69,11 +73,27 @@ impl<D: Hash + Eq + Copy> BlockTable<D> {
     /// The block equal to `desc`, made with `id` if none is alive; says whether it was made.
     pub fn get(&mut self, desc: &D, id: u64) -> (Rc<Block<D>>, bool) {
         if let Some(b) = self.0.get(desc).and_then(Weak::upgrade) {
+            b.holders.set(b.holders.get() + 1);
             return (b, false);
         }
-        let b = Rc::new(Block { id, desc: *desc });
+        let b = Rc::new(Block {
+            id,
+            desc: *desc,
+            holders: Cell::new(1),
+        });
         self.0.insert(*desc, Rc::downgrade(&b));
         (b, true)
+    }
+
+    /// Notes one destroy of `b`; once every creation is destroyed, forgets it and answers its id.
+    pub fn release(&mut self, b: &Block<D>) -> Option<u64> {
+        let n = b.holders.get().saturating_sub(1);
+        b.holders.set(n);
+        if n > 0 {
+            return None;
+        }
+        self.0.remove(&b.desc);
+        Some(b.id)
     }
 }
 
@@ -214,6 +234,8 @@ pub struct GroupLayout {
 pub struct ProgramLayout {
     raw: wgpu::PipelineLayout,
     groups: [Option<Rc<GroupLayout>>; MAX_BINDING_SETS],
+    /// The bytes of immediates the program declares; a draw sets no more than these.
+    immediates: usize,
 }
 
 /// Everything a render pipeline is built from (plan section 4.4).
@@ -254,11 +276,45 @@ pub struct Caches {
 }
 
 impl Caches {
+    /// Forgets the layouts and pipelines made with program or block `id`, destroyed.
+    pub fn forget(&mut self, id: u64) {
+        self.layouts.retain(|k, _| k.0 != id);
+        self.computes.retain(|k, _| k.0 != id);
+        self.pipelines.retain(|k, _| {
+            ![
+                k.program,
+                k.blend,
+                k.depth_stencil,
+                k.raster,
+                k.vertex_layout,
+            ]
+            .contains(&id)
+        });
+    }
+
+    /// How many pipelines and program layouts are held.
+    pub fn held(&self) -> (usize, usize) {
+        (
+            self.pipelines.len() + self.computes.len(),
+            self.layouts.len(),
+        )
+    }
+
     /// Forgets binding sets and bind groups nothing holds any more.
     pub fn prune(&mut self) {
         prune(&mut self.sets, &mut self.sets_alive);
         prune(&mut self.groups, &mut self.groups_alive);
     }
+}
+
+/// Immediates padded to whole words, as WebGPU sets them.
+fn words(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if bytes.len().is_multiple_of(4) {
+        return bytes.into();
+    }
+    let mut padded = bytes.to_vec();
+    padded.resize(bytes.len().next_multiple_of(4), 0);
+    padded.into()
 }
 
 /// Forgets entries nothing holds, once the table has doubled since it was last pruned, so each
@@ -298,6 +354,8 @@ pub struct Pass {
     colors: Vec<Option<ColorRaw>>,
     depth: Option<DepthRaw>,
     pub occlusion_set: Option<crate::QuerySet>,
+    /// The page of the query set this part counts in (0: the set's own).
+    pub page: usize,
     last: Last,
     /// The textures it draws or resolves into, which a write may not rename while it is open.
     pub attached: Vec<crate::Texture>,
@@ -512,9 +570,13 @@ impl WebGpu {
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
                 bind_group_layouts: &refs,
-                immediate_size: 0,
+                immediate_size: program.immediate_size(),
             });
-        let l = Rc::new(ProgramLayout { raw, groups: out });
+        let l = Rc::new(ProgramLayout {
+            raw,
+            groups: out,
+            immediates: program.immediate_size() as usize,
+        });
         self.caches.layouts.insert((program.id(), keys), l.clone());
         Ok(l)
     }
@@ -962,6 +1024,9 @@ impl WebGpu {
             }));
         }
         let occlusion_set = pass.occlusion.cloned();
+        if let Some(set) = &occlusion_set {
+            set.0.settle();
+        }
         let mut rp = open(
             self.encoder(),
             &colors,
@@ -983,6 +1048,7 @@ impl WebGpu {
             colors,
             depth,
             occlusion_set,
+            page: 0,
             last: Last::default(),
             attached,
         });
@@ -991,42 +1057,45 @@ impl WebGpu {
     /// Ends the open pass, records `between` outside it, and opens the pass again loading what it
     /// drew, counted as the slow path `why` that needs it.
     pub(crate) fn split_pass(&mut self, why: SlowPath, between: impl FnOnce(&mut WebGpu)) {
+        self.split_onto_page(why, between, false);
+    }
+
+    /// `split_pass`, also moving the next part to a page of its query set with a free slot
+    /// when `move_page` or a query runs.
+    pub(crate) fn split_onto_page(
+        &mut self,
+        why: SlowPath,
+        between: impl FnOnce(&mut WebGpu),
+        move_page: bool,
+    ) {
         let Some(mut pass) = self.pass.take() else {
             between(self);
             return;
         };
-        // A running query carries over: it ends here and goes on in a slot of its own in the
-        // next part, whose count resolving adds (`QueriesSegmented`).
-        let carried = match (pass.query_running, &pass.occlusion_set) {
-            (Some(index), Some(set)) => {
-                let Some(slot) = set.0.free.borrow_mut().pop() else {
-                    self.fail("a pass split more often than its query set has spare slots");
-                    self.pass = Some(pass);
-                    return;
-                };
-                pass.rp.end_occlusion_query();
-                set.0
-                    .segments
-                    .borrow_mut()
-                    .entry(index)
-                    .or_default()
-                    .push(slot);
-                self.slow.hit(SlowPath::QueriesSegmented);
-                Some(slot)
+        // A running query carries over: it ends here and goes on in a spare slot in the next
+        // part, whose count resolving adds (`QueriesSegmented`).
+        let mut carried = None;
+        if let Some(set) = &pass.occlusion_set {
+            set.0.settle();
+            let running = pass.query_running;
+            if running.is_some() || move_page {
+                let page = set.0.page_with_room(&self.device);
+                if let Some(index) = running {
+                    pass.rp.end_occlusion_query();
+                    let slot = set.0.take(page).expect("the page has room");
+                    set.0.carry(index, page, slot, false);
+                    self.slow.hit(SlowPath::QueriesSegmented);
+                    carried = Some(slot);
+                }
+                pass.page = page;
             }
-            _ => None,
-        };
+        }
         self.slow.hit(why);
         drop(pass.rp);
         between(self);
+        let raw = pass.occlusion_set.as_ref().map(|q| q.0.page(pass.page));
         let encoder = self.encoder.as_mut().expect("a pass implies an encoder");
-        pass.rp = open(
-            encoder,
-            &pass.colors,
-            &pass.depth,
-            pass.occlusion_set.as_ref().map(|q| &q.0.raw),
-            true,
-        );
+        pass.rp = open(encoder, &pass.colors, &pass.depth, raw.as_ref(), true);
         if let Some(slot) = carried {
             pass.rp.begin_occlusion_query(slot);
         }
@@ -1102,8 +1171,8 @@ impl WebGpu {
     ) -> Result<(), &'static str> {
         let topology =
             convert::topology(call.topology).ok_or("fans and loops go through draw_fan_or_loop")?;
-        if !call.immediates.is_empty() {
-            return Err("immediates are not built yet (limit 0)");
+        if call.immediates.len() > self.caps.limits.immediate_bytes as usize {
+            return Err("immediates past immediate_bytes");
         }
         if call.viewports.len() > 1 || call.scissors.len() > 1 {
             return Err(
@@ -1280,6 +1349,10 @@ impl WebGpu {
             rp.set_stencil_reference(u32::from(call.stencil_reference[0]));
             last.stencil_reference = Some(call.stencil_reference[0]);
         }
+        let n = call.immediates.len().min(layout.immediates);
+        if n > 0 {
+            rp.set_immediates(0, &words(&call.immediates[..n]));
+        }
         match &call.range {
             DrawRange::Vertices {
                 first,
@@ -1317,8 +1390,8 @@ impl WebGpu {
         if self.pass.is_some() {
             return Err(GpuError::Invalid("dispatch inside a pass"));
         }
-        if !call.immediates.is_empty() {
-            return Err(GpuError::Invalid("immediates are not built yet (limit 0)"));
+        if call.immediates.len() > self.caps.limits.immediate_bytes as usize {
+            return Err(GpuError::Invalid("immediates past immediate_bytes"));
         }
         let crate::ProgramObj::Compute { id, shader } = &*call.program.0 else {
             return Err(GpuError::Invalid("dispatch with a render program"));
@@ -1373,6 +1446,10 @@ impl WebGpu {
         cp.set_pipeline(&pipeline);
         for (i, g, offsets, count) in &groups {
             cp.set_bind_group(*i, &g.group.raw, &offsets[..*count]);
+        }
+        let n = call.immediates.len().min(layout.immediates);
+        if n > 0 {
+            cp.set_immediates(0, &words(&call.immediates[..n]));
         }
         match (&call.groups, indirect) {
             (_, Some((args, offset))) => cp.dispatch_workgroups_indirect(&args, offset),

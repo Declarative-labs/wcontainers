@@ -75,6 +75,7 @@ pub struct WebGpu {
     pool: memory::Pool<wgpu::Buffer>,
     texture_pool: memory::Pool<wgpu::Texture>,
     arena: Option<memory::Arena>,
+    ring: Option<memory::Ring>,
     edge: Option<edge::EdgeProgram>,
     /// The program adding the counts of queries carried across pass splits.
     query_sum: Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
@@ -277,6 +278,29 @@ impl ProgramObj {
         }
     }
 
+    /// The bytes of immediates its stages declare, in whole words: what its layout holds.
+    fn immediate_size(&self) -> u32 {
+        let stages: [Option<&Shader>; 2] = match self {
+            ProgramObj::Render {
+                vertex, fragment, ..
+            } => [Some(vertex), fragment.as_ref()],
+            ProgramObj::Compute { shader, .. } => [Some(shader), None],
+        };
+        stages
+            .into_iter()
+            .flatten()
+            .flat_map(|s| {
+                let m = &s.0.module;
+                m.global_variables
+                    .iter()
+                    .filter(|(_, g)| g.space == naga::AddressSpace::Immediate)
+                    .map(|(_, g)| m.types[g.ty].inner.size(m.to_ctx()))
+            })
+            .max()
+            .unwrap_or(0)
+            .next_multiple_of(4)
+    }
+
     /// The layout key of each bound set, kept to the textures the program samples through a
     /// sampler: the only bits its layout depends on.
     fn layout_keys(
@@ -316,19 +340,86 @@ impl ProgramObj {
 struct QuerySetObj {
     kind: QueryKind,
     count: u32,
-    /// `count` queries, then the spare slots occlusion queries carried across a split go on in.
+    /// `count` queries, then the spare slots occlusion queries carried across a split go on in:
+    /// page 0. Pass parts drawing on page 0 begin each query in its own slot.
     raw: wgpu::QuerySet,
-    /// The spare slots each query carried on in since it was last begun.
-    segments: RefCell<HashMap<u32, Vec<u32>>>,
-    free: RefCell<Vec<u32>>,
+    /// Further pages of spare slots, made when page 0 has none left; a pass part drawing on one
+    /// begins every query in a spare slot.
+    pages: RefCell<Vec<wgpu::QuerySet>>,
+    /// The parts of each query since it was last begun outside its own slot.
+    segments: RefCell<HashMap<u32, Segments>>,
+    /// Each page's free spare slots.
+    free: RefCell<Vec<Vec<u32>>>,
+    /// Slots given back in the open pass part, as (page, slot).
+    released: RefCell<Vec<(usize, u32)>>,
+}
+
+/// Where a query counted since it was last begun: its own slot (unless `own` is false) plus
+/// spare slots, as (page, slot).
+#[derive(Debug, Default)]
+struct Segments {
+    own: bool,
+    slots: Vec<(usize, u32)>,
 }
 
 impl QuerySetObj {
-    /// Gives back the spare slots of query `index`, begun again.
+    /// Gives back the spare slots of query `index`, begun again, once the pass part ends (a
+    /// slot is written once a pass).
     fn forget_segments(&self, index: u32) {
-        if let Some(slots) = self.segments.borrow_mut().remove(&index) {
-            self.free.borrow_mut().extend(slots);
+        if let Some(s) = self.segments.borrow_mut().remove(&index) {
+            self.released.borrow_mut().extend(s.slots);
         }
+    }
+
+    /// Frees the slots given back while the pass part that just ended was open.
+    fn settle(&self) {
+        let mut free = self.free.borrow_mut();
+        for (page, slot) in self.released.borrow_mut().drain(..) {
+            free[page].push(slot);
+        }
+    }
+
+    /// Takes a free spare slot of `page`.
+    fn take(&self, page: usize) -> Option<u32> {
+        self.free.borrow_mut()[page].pop()
+    }
+
+    /// The first page with a free spare slot, making a page of WebGPU's largest set if none has.
+    fn page_with_room(&self, device: &wgpu::Device) -> usize {
+        let mut free = self.free.borrow_mut();
+        if let Some(p) = free.iter().position(|f| !f.is_empty()) {
+            return p;
+        }
+        let n = wgpu::QUERY_SET_MAX_QUERIES;
+        self.pages
+            .borrow_mut()
+            .push(device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: None,
+                ty: wgpu::QueryType::Occlusion,
+                count: n,
+            }));
+        free.push((0..n).rev().collect());
+        free.len() - 1
+    }
+
+    /// The WebGPU query set of `page`.
+    fn page(&self, page: usize) -> wgpu::QuerySet {
+        match page {
+            0 => self.raw.clone(),
+            p => self.pages.borrow()[p - 1].clone(),
+        }
+    }
+
+    /// Records that query `index` goes on in `slot` of `page`; `first` when this begins it.
+    fn carry(&self, index: u32, page: usize, slot: u32, first: bool) {
+        let mut segments = self.segments.borrow_mut();
+        let s = segments.entry(index).or_default();
+        if first {
+            s.own = false;
+        } else if s.slots.is_empty() {
+            s.own = true;
+        }
+        s.slots.push((page, slot));
     }
 }
 
@@ -414,7 +505,8 @@ impl WebGpu {
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
             | wgpu::Features::TIMESTAMP_QUERY
             | wgpu::Features::POLYGON_MODE_LINE
-            | wgpu::Features::POLYGON_MODE_POINT;
+            | wgpu::Features::POLYGON_MODE_POINT
+            | wgpu::Features::IMMEDIATES;
         wgpu::DeviceDescriptor {
             label: None,
             required_features: adapter.features() & wanted,
@@ -481,6 +573,7 @@ impl WebGpu {
             pool: Default::default(),
             texture_pool: Default::default(),
             arena: None,
+            ring: None,
             edge: None,
             query_sum: None,
             vertices: Default::default(),
@@ -508,6 +601,11 @@ impl WebGpu {
     /// What the caches have made so far.
     pub fn counters(&self) -> &Counters {
         &self.counters
+    }
+
+    /// How many pipelines (render and compute) and program layouts the caches hold now.
+    pub fn held(&self) -> (usize, usize) {
+        self.caches.held()
     }
 
     fn id(&mut self) -> u64 {
@@ -780,7 +878,12 @@ fn caps(
         min_uniform_offset_alignment: l.min_uniform_buffer_offset_alignment,
         min_storage_offset_alignment: l.min_storage_buffer_offset_alignment,
         buffer_copy_alignment: wgpu::COPY_BUFFER_ALIGNMENT as u32,
-        immediate_bytes: 0,
+        // Where wgpu has them (natively); a pipeline layout of each program takes them all.
+        immediate_bytes: if device.features().contains(wgpu::Features::IMMEDIATES) {
+            l.max_immediate_size
+        } else {
+            0
+        },
         compute_workgroup_storage: l.max_compute_workgroup_storage_size,
         compute_invocations: l.max_compute_invocations_per_workgroup,
         compute_size: [
@@ -1325,7 +1428,8 @@ impl Backend for WebGpu {
             }
             QueryKind::Timestamp => return Err(GpuError::Absent(Features::TIMESTAMPS)),
         };
-        // Occlusion sets get as many spare slots again, within WebGPU's 4096 queries a set.
+        // Occlusion sets get as many spare slots again, within WebGPU's 4096 queries a set; more
+        // pages are made when they run out.
         let total = match kind {
             QueryKind::OcclusionAny => count
                 .saturating_mul(2)
@@ -1342,8 +1446,10 @@ impl Backend for WebGpu {
             kind,
             count,
             raw,
+            pages: Default::default(),
+            released: Default::default(),
             segments: Default::default(),
-            free: RefCell::new((count..total).rev().collect()),
+            free: RefCell::new(vec![(count..total).rev().collect()]),
         })))
     }
 
@@ -1370,15 +1476,32 @@ impl Backend for WebGpu {
                     t.0.raw().destroy();
                 }
             }
+            Object::Program(p) => self.caches.forget(p.0.id()),
+            Object::Blend(b) => {
+                if let Some(id) = self.blocks.blends.release(&b.0) {
+                    self.caches.forget(id);
+                }
+            }
+            Object::DepthStencil(b) => {
+                if let Some(id) = self.blocks.depth_stencils.release(&b.0) {
+                    self.caches.forget(id);
+                }
+            }
+            Object::Raster(b) => {
+                if let Some(id) = self.blocks.rasters.release(&b.0) {
+                    self.caches.forget(id);
+                }
+            }
+            Object::VertexLayout(b) => {
+                if let Some(id) = self.blocks.vertex_layouts.release(&b.0) {
+                    self.caches.forget(id);
+                    self.vertices.forget_layout(id);
+                }
+            }
             Object::QuerySet(_)
             | Object::TextureView(_)
             | Object::Sampler(_)
             | Object::Shader(_)
-            | Object::Program(_)
-            | Object::Blend(_)
-            | Object::DepthStencil(_)
-            | Object::Raster(_)
-            | Object::VertexLayout(_)
             | Object::BindingSet(_)
             | Object::Surface(_) => {}
             Object::ResourceTable(t) => match t {},
@@ -1422,10 +1545,25 @@ impl Backend for WebGpu {
     fn begin_query(&mut self, index: u32) {
         match &mut self.pass {
             Some(p) if p.occlusion && p.query_running.is_none() => {
-                if let Some(set) = &p.occlusion_set {
-                    set.0.forget_segments(index);
+                let set = p
+                    .occlusion_set
+                    .clone()
+                    .expect("an occlusion pass has its set");
+                set.0.forget_segments(index);
+                // A part on a further page begins every query in a spare slot of it.
+                if p.page != 0 && set.0.free.borrow()[p.page].is_empty() {
+                    self.split_onto_page(wcontainers_gpu::SlowPath::QueriesSegmented, |_| {}, true);
                 }
-                p.rp.begin_occlusion_query(index);
+                let Some(p) = self.pass.as_mut() else { return };
+                let slot = match p.page {
+                    0 => index,
+                    page => {
+                        let slot = set.0.take(page).expect("the page has room");
+                        set.0.carry(index, page, slot, true);
+                        slot
+                    }
+                };
+                p.rp.begin_occlusion_query(slot);
                 p.query_running = Some(index);
             }
             _ => self.fail("begin_query outside a pass with an occlusion set, or nested"),
@@ -1505,6 +1643,9 @@ impl Backend for WebGpu {
         let index = self.queue.submit(commands);
         if let Some(a) = &mut self.arena {
             a.submitted();
+        }
+        if let Some(r) = &mut self.ring {
+            r.submitted();
         }
         self.caches.prune();
         self.reclaim_spares();
@@ -1617,20 +1758,27 @@ impl Backend for WebGpu {
             return Err(GpuError::Invalid("surface format without PRESENT"));
         }
         let raw = convert::texture_format(format).ok_or(GpuError::Invalid("surface format"))?;
-        // A window lacking the format (a Metal layer has no `rgba8unorm`) takes the same channels in
-        // the other byte order, and frames are drawn into a stand-in of the format.
-        let taken = surface.0.raw.get_capabilities(&self.adapter).formats;
-        let shown = if taken.contains(&raw) {
+        // A window that does not show the format's values as sRGB (a Metal layer has no
+        // `rgba8unorm`; natively a `rgba16float` window takes linear light, or has no such format)
+        // is configured in an 8-bit format it shows so, the other byte order first, and frames are
+        // drawn into a stand-in of the format: shown as sRGB values clipped to zero to one either
+        // way.
+        let window = surface.0.raw.get_capabilities(&self.adapter);
+        let takes = |f: &wgpu::TextureFormat| {
+            window
+                .color_spaces(*f)
+                .contains(wgpu::SurfaceColorSpaces::SRGB)
+        };
+        let shown = if takes(&raw) {
             raw
         } else {
             use wgpu::TextureFormat as T;
-            let Some(other) = (match raw {
-                T::Rgba8Unorm => Some(T::Bgra8Unorm),
-                T::Bgra8Unorm => Some(T::Rgba8Unorm),
-                _ => None,
-            })
-            .filter(|f| taken.contains(f)) else {
-                self.fail("the window takes neither this surface format nor its other byte order");
+            let order = match raw {
+                T::Rgba8Unorm => [T::Bgra8Unorm, T::Rgba8Unorm],
+                _ => [T::Rgba8Unorm, T::Bgra8Unorm],
+            };
+            let Some(other) = order.into_iter().find(takes) else {
+                self.fail("the window takes no 8-bit unorm format to present in");
                 return Err(GpuError::DeviceLost);
             };
             other
@@ -1725,7 +1873,10 @@ impl Backend for WebGpu {
                 (view, config.width, config.height)
             }
             C::Lost => {
-                self.fail("the window's surface was lost; making it again is not built yet");
+                // The platform lost the window's swap chain (Vulkan's surface lost, a failed wait
+                // on Direct3D 12's frame latency object); only the host's hook holds the window to
+                // make a surface from again.
+                self.fail("the window's surface was lost; the back end holds no window to make it from");
                 return Err(GpuError::DeviceLost);
             }
             C::Validation => {

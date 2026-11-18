@@ -25,10 +25,19 @@ fn backends() -> wgpu::Backends {
     }
 }
 
+fn env(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
 #[test]
 fn converted_formats_copy_exactly_and_load_as_direct3d_says() {
     let (mut b, adapter) = pollster::block_on(draw::device(backends())).expect("a GPU adapter");
     eprintln!("adapter: {adapter}");
-    let line = converted::check(&mut b).unwrap();
+    let seed = env("WEBGPU_SEED", 1);
+    let cases = env("WEBGPU_CASES", 4) as u32;
+    let line = converted::check(&mut b, seed, cases).unwrap();
     eprintln!("{line}");
 }
