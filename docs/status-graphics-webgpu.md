@@ -5,10 +5,11 @@ Crate: crates/wcontainers-gpu-webgpu, on wgpu 30.0.2.
 
 ## Where things stand
 
-G2 passed its independent check. G2b (what the fronts need from this back end): runs 1 to 3 are
-"Run 11" to "Run 13" below. G2b's independent check found nine problems; run 13 fixed them (list
-in "Run 13"). Every request found is built and tested or refused by name (list below). Earlier
-runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
+G2 passed its independent check. G2b (what the fronts need from this back end): runs 1 to 4 are
+"Run 11" to "Run 14" below. G2b's independent check found nine problems; run 13 fixed them (list
+in "Run 13"). Run 14 measured instance data at more streams and made binding sets made again each
+frame find their bind groups. Every request found is built and tested or refused by name (list
+below). Earlier runs follow ("Run 5" to "Run 10" are G2 runs 1 to 6; G2a runs 1 to 4 after them).
 
 What the fronts' status files ask of this back end (read at G2b runs 1 and 2, after merging every
 graphics branch), and where each stands:
@@ -19,7 +20,10 @@ graphics branch), and where each stands:
 - Point filling under its own name: built. `POLYGON_MODE_POINT` where wgpu has it (Vulkan, not
   Direct3D 12 or browsers); wireframe `POLYGON_MODE` where wgpu has `POLYGON_MODE_LINE` (every
   native API; browsers have neither). tests/raster.rs.
-- Instance step rates in the program: measured, tests/pulled.rs (Measurements).
+- Instance step rates in the program: measured at 4, 8 and 16 streams a draw, natively and in
+  Chrome (examples/scenes/pulled.rs, tests/pulled.rs, web/check; Measurements, run 14). Fetching
+  costs no more than vertex buffers once bind groups are not made again each frame, which run 14
+  built.
 - `write_texture` of a block-compressed level smaller than a block (atg-simplemsaa_pc): built.
   Copy extents are rounded up to whole blocks. tests/blocks.rs
   `levels_smaller_than_a_block_take_their_texel_size`.
@@ -59,6 +63,25 @@ graphics branch), and where each stands:
 - Freeing the back end's tables when a program or block is destroyed (Direct3D 12: "its own tables
   keep their entries"): built (run 13). tests/scenes.rs
   `destroyed_programs_and_blocks_free_their_pipelines`.
+
+Run 14 = G2b run 4, 2026-11-17:
+- Merged origin/phase-2-graphics-webgl, -shaders and -direct3d-11 (no conflicts; the shared line,
+  -direct3d-12 and -rig had nothing new). The one interface change they brought (4a72bce0, the
+  scissor text of `FRACTIONAL_VIEWPORT`) needs nothing here: the bit is declared. Read the four
+  front status files' new text: nothing new is asked of this back end (the WebGL track compares
+  with it in Chrome; the shaders track's storage clears run on it).
+- The instance data measurement moved into examples/scenes/pulled.rs (tests/pulled.rs calls it,
+  web/check runs it in Chrome) and takes the streams a draw (`WEBGPU_STREAMS`, default 4, 8 and the
+  device's most up to 16, WebGPU's guaranteed attributes): stream 0 the quad, 1 where, 2 how large,
+  the rest colour parts. Three routes: vertex buffers, the program fetching with a binding set made
+  per draw (as the Direct3D 11 front makes sets when bindings change), and with sets kept. Each
+  stream's fetch is its own function reading its own helper words, as a front's variant.
+- Found by it: a front's sets made again each frame made their bind groups again each frame (5120
+  in 20 frames of 256 draws), since a bind group lived only while a set held it. Now the bind group
+  table holds each group until a pruning finds it neither held nor bound since the pruning before
+  (pruning runs at a submit once the table has doubled), so equal sets made the next frame find it.
+  The scene fails unless sets made per draw make as many bind groups as kept sets (256 in 20
+  frames; 5120 before).
 
 Run 13 = G2b run 3, 2026-11-17 (fixes from G2b's independent check):
 - Merged origin/phase-2-graphics, -webgl, -direct3d-12, -shaders and -rig (no conflicts;
@@ -607,6 +630,8 @@ Run 4, 2026-11-17 (fixes from the independent check of run 3; merged origin/phas
   JSPI, so the export that leads to them (and to `WebGpu::new`, which waits for the depth probe)
   must be marked `#[wasm_bindgen(jspi)]`, as `draw_scene` and `suite_test` in examples/scenes are;
   `wcontainers_gpu_webgpu::block_on` runs a future (the adapter and device requests) the same way.
+- Binding sets equal to ones of the frame before (made again when bindings change) find the bind
+  group made then; keeping a set still saves its lookup (Measurements, run 14).
 - Uniform-only buffers made with `MapIntent::Often` live in the uniform arena: give constant
   buffers rewritten per draw that intent and write them with `Discard`.
 - Formats WebGPU lacks are declared with what the back end does for them (`FormatConverted`,
@@ -662,6 +687,11 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
 - The converted formats with other texels: `set WEBGPU_SEED=<n>&& set WEBGPU_CASES=<textures per
   format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test converted -- --nocapture`,
   and against Direct3D 11 the same with `--test direct3d converted` (defaults seed 1, 4 textures).
+- Instance data fetched in the program against vertex buffers, timed:
+  `tools/graphics-rig/gpu-job --alone --build "cargo test --release --locked -j 3 -p
+  wcontainers-gpu-webgpu --test pulled --no-run" -- "set WEBGPU_API=vulkan&& cargo test --release
+  --locked -j 3 -p wcontainers-gpu-webgpu --test pulled -- --nocapture"` (`WEBGPU_STREAMS=4,8,16`,
+  `WEBGPU_FRAMES=20`).
 - The vertex conversion with other bytes: `set WEBGPU_SEED=<n>&& set WEBGPU_CASES=<vertices per
   format>&& cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test vertices -- --nocapture`.
 - On this Mac's GPU, one job only (never a build loop): copy the committed tree to scratch with
@@ -685,7 +715,8 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   Chrome (failing if the prepared draws built anything), checks timestamps, the converted formats
   (examples/scenes/converted.rs, seed 1, 4 textures each), the vertex formats read through shadows
   (examples/scenes/vertices.rs, seed 188, 64 vertices each) and texture renaming
-  (examples/scenes/renames.rs) in Chrome, then runs the shared suite
+  (examples/scenes/renames.rs) in Chrome, prints the instance data routes' timings in Chrome
+  (examples/scenes/pulled.rs, failing if their pictures differ), then runs the shared suite
   in Chrome, one page per test (suite-chrome.txt). Prints
   Chrome's WebGPU adapter and fails unless it is a GPU, not a fallback. With a directory, the
   pictures and the suite's results are copied there. About 7 minutes cold, the job itself 15 s.
@@ -695,6 +726,40 @@ All from the checkout root on the Mac; nothing is built or run on the Mac but fo
   depth-function]` (the example's binary).
 
 ## Measurements
+
+Run 14 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs
+except where alone, CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
+- Instance data, release build, `gpu-job --alone`, 256 draws of 16 instances, 20 frames a route,
+  median of the 19 after the first, CPU to record and submit a frame / GPU time of the pass.
+  Before the bind group change (scratch g2b4/pulled1.log), sets made per draw made 5120 bind
+  groups: Vulkan 4 streams 1.249 ms, 8 streams 1.667 ms, 16 streams 2.526 ms CPU; Direct3D 12
+  2.010, 2.082, 3.539 ms. After it (g2b4/pulled2.log), in ms CPU / GPU:
+  - Vulkan, 4 streams: vertex buffers 0.304 / 0.012, a set per draw 0.533 / 0.017, sets kept
+    0.282 / 0.017. 8 streams: 0.503 / 0.026, 0.721 / 0.024, 0.326 / 0.018. 16 streams: 0.898 /
+    0.038, 0.980 / 0.020, 0.476 / 0.020.
+  - Direct3D 12, 4 streams: 0.373 / 0.008, 0.604 / 0.007, 0.358 / 0.007. 8 streams: 0.552 / 0.011,
+    0.793 / 0.007, 0.433 / 0.007. 16 streams: 1.089 / 0.016, 1.106 / 0.008, 0.582 / 0.008.
+  - So fetching in the program with kept sets costs less CPU than vertex buffers at every count
+    (each vertex buffer is a call per draw); GPU time is a little more at 4 streams on Vulkan
+    (0.017 against 0.012 ms) and about half at 16 streams on this light scene; a set made per draw adds its lookup (about 0.2 to 0.25 ms a frame of 256 draws).
+    Storage usage itself costs nothing here: every buffer already has it.
+- In Chrome 157 (web/check, g2b4/webcheck1.log, not alone; `performance.now()` in 0.1 ms steps;
+  the device's most is 8 streams there): 4 streams vertex buffers 0.3 / 0.016, a set per draw
+  0.6 / 0.015, sets kept 0.2 / 0.015; 8 streams 0.3 / 0.029, 0.7 / 0.017, 0.2 / 0.019; 256 bind
+  groups made by each pulled route.
+- All tests at fded1660 after `cargo clean` of this crate and the suite crate (g2b4/full1.log):
+  Vulkan 104 passed, 0 failed, 3 ignored (the BC one-step comparison, 24-bit depth bias absent,
+  the wireframe known failure); Direct3D 12 106 passed, 0 failed, 1 ignored. The shared suite 39 of
+  39 on both; timestamps 2 of 2 on both. Clippy with warnings denied passes natively and for
+  WebAssembly.
+- web/check at the status commit after fded1660, after cleaning this crate, naga, the interface
+  and the suite crate on both targets (g2b4/webcheck1.log, pictures in g2b4/web): all twelve
+  pictures equal Direct3D 11's at tolerance 0, the twists differ as before, viewports equal (whole
+  pixels 2540 differ); Chrome's adapter the RTX 3080 (D3D12, discrete, not a fallback); timestamps
+  9.820 and 19.552 ms (ratio 1.99), GPU clock 302.636 ms apart with the page clock between 300.1
+  and 305.2 ms; prepared first draws built nothing; converted formats seed 1, 4 textures within
+  bounds; vertex formats seed 188, 64 each; texture renames pass; the instance data routes draw
+  alike; the suite in Chrome 39 passed, 0 failed.
 
 Run 13 (desktop: Windows 10, i9-9900K, RTX 3080, NVIDIA 621.01, shared with other tracks' jobs,
 CPU load not sampled; Mac load average near its 18 cores, not sampled exactly):
@@ -1066,9 +1131,8 @@ CPU load 0 % when sampled after the runs; Mac load average 27 to 39 (other track
 
 ## Next (G2b)
 
-1. The independent check of G2b (again, after run 13's fixes).
-2. Copies between a buffer and a converted texture on the GPU; the instance-data measurement with
-   more streams a draw (Measurements, run 13: only 4 a draw so far); why the timestamp workload takes 1.3 and 1.5 times
+1. The independent check of G2b (again, after run 13's fixes and run 14).
+2. Copies between a buffer and a converted texture on the GPU; why the timestamp workload takes 1.3 and 1.5 times
    Direct3D 11's time through wgpu natively (expected, not measured: naga's loop bounding and
    bounds checks; Chrome's Dawn takes Direct3D's time).
 3. Read the fronts' status files again after merging.
@@ -1228,7 +1292,7 @@ each Zlib OR Apache-2.0 OR MIT (their Cargo.toml files; most already in the lock
   (C:\wc\src\phase-2-graphics-webgpu\tools\graphics-rig\browser\node_modules), by the rig's
   install.ps1.
 - Build output C:\wc\target\phase-2-graphics-webgpu: removed whole at the end of run 13 (9.96 GB,
-  debug and release), so the next build is cold (about 3 minutes for the tests, 7 for web/check);
+  debug and release) and again at the end of run 14 (6.68 GB), so the next build is cold (about 3 minutes for the tests, 7 for web/check);
   pictures in C:\wc\out\phase-2-graphics-webgpu-webgpu. On the Mac the checkout's `target`
-  (1.2 GB of `cargo check` output) was removed at the end of run 13; scratch holds no build
-  output (logs and pictures only, 324 MB).
+  (1.2 GB of `cargo check` output) was removed at the end of run 13 and none was made in run 14;
+  scratch holds no build output (logs and pictures only, 328 MB).

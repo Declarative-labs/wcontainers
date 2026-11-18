@@ -1876,7 +1876,9 @@ impl Backend for WebGpu {
                 // The platform lost the window's swap chain (Vulkan's surface lost, a failed wait
                 // on Direct3D 12's frame latency object); only the host's hook holds the window to
                 // make a surface from again.
-                self.fail("the window's surface was lost; the back end holds no window to make it from");
+                self.fail(
+                    "the window's surface was lost; the back end holds no window to make it from",
+                );
                 return Err(GpuError::DeviceLost);
             }
             C::Validation => {
