@@ -13,6 +13,7 @@ use super::*;
 /// `D3D12_QUERY_HEAP_TYPE` values.
 const HEAP_OCCLUSION: u32 = 0;
 const HEAP_TIMESTAMP: u32 = 1;
+const HEAP_COPY_QUEUE_TIMESTAMP: u32 = 5;
 pub(super) const HEAP_PIPELINE_STATISTICS: u32 = 2;
 pub(super) const HEAP_SO_STATISTICS: u32 = 3;
 /// `D3D12_QUERY_TYPE` values.
@@ -174,13 +175,18 @@ impl<B: Backend> Device<B> {
                 self.backend
                     .create_query_set(QueryKind::OcclusionAny, count)?,
             ),
-            HEAP_TIMESTAMP if self.backend.caps().has(Features::TIMESTAMPS) => {
+            // Every queue's work runs in one submission order, so copy queues write timestamps
+            // as direct ones do.
+            HEAP_TIMESTAMP | HEAP_COPY_QUEUE_TIMESTAMP
+                if self.backend.caps().has(Features::TIMESTAMPS) =>
+            {
                 Some(self.backend.create_query_set(QueryKind::Timestamp, count)?)
             }
-            HEAP_TIMESTAMP => return Err(Error::NotImplemented("timestamps on this back end")),
+            HEAP_TIMESTAMP | HEAP_COPY_QUEUE_TIMESTAMP => {
+                return Err(Error::NotImplemented("timestamps on this back end"));
+            }
             HEAP_PIPELINE_STATISTICS | HEAP_SO_STATISTICS => None,
             4 => return Err(Error::NotImplemented("video decode statistics queries")),
-            5 => return Err(Error::NotImplemented("copy queue timestamps")),
             7 => return Err(Error::NotImplemented("mesh shader pipeline statistics")),
             _ => return Err(Error::Invalid("unknown query heap type")),
         };
@@ -330,7 +336,8 @@ impl<B: Backend> Device<B> {
             return Err(Error::Invalid("resolving queries past the heap's end"));
         }
         let written = match (h.kind, kind) {
-            (HEAP_OCCLUSION, QUERY_BINARY_OCCLUSION) | (HEAP_TIMESTAMP, QUERY_TIMESTAMP) => false,
+            (HEAP_OCCLUSION, QUERY_BINARY_OCCLUSION)
+            | (HEAP_TIMESTAMP | HEAP_COPY_QUEUE_TIMESTAMP, QUERY_TIMESTAMP) => false,
             (HEAP_OCCLUSION, QUERY_OCCLUSION)
             | (HEAP_PIPELINE_STATISTICS, QUERY_PIPELINE_STATISTICS) => true,
             (HEAP_SO_STATISTICS, k) if QUERY_SO_STATISTICS.contains(&k) => true,
@@ -416,13 +423,48 @@ impl<B: Backend> Device<B> {
     /// `EndQuery` of a timestamp.
     pub(super) fn timestamp(&mut self, heap: QueryHeapId, index: u32) -> Result<(), Error> {
         match self.query_heaps.get(heap.0 as usize) {
-            Some(h) if h.kind == HEAP_TIMESTAMP && index < h.count => {
+            Some(h)
+                if matches!(h.kind, HEAP_TIMESTAMP | HEAP_COPY_QUEUE_TIMESTAMP)
+                    && index < h.count =>
+            {
                 let set = h.set.clone().expect("a timestamp set");
                 self.backend.write_timestamp(&set, index)?;
                 Ok(())
             }
             _ => Err(Error::Invalid("a timestamp in a heap of another kind")),
         }
+    }
+
+    /// `GetClockCalibration`: a GPU timestamp and the CPU clock `now` read at about one moment.
+    /// The work submitted so far is let finish, `now` is read just before a lone timestamp is
+    /// submitted, and that timestamp is read back (`ReadBackWait`): the GPU's value is later by
+    /// the submission's latency.
+    pub fn clock_calibration<T>(&mut self, now: impl FnOnce() -> T) -> Result<(u64, T), Error> {
+        self.live()?;
+        let set = self.backend.create_query_set(QueryKind::Timestamp, 1)?;
+        let idle = self.backend.submit();
+        self.backend.wait_fence(&idle);
+        let read = self
+            .backend
+            .write_timestamp(&set, 0)
+            .and_then(|()| self.backend.read_queries(&set, 0, 1));
+        let read = match read {
+            Ok(r) => r,
+            Err(e) => {
+                self.backend.destroy(Object::QuerySet(set));
+                return Err(e.into());
+            }
+        };
+        let cpu = now();
+        self.backend.submit();
+        if self.backend.read_state(&read) == ReadState::Pending {
+            self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+            self.backend.wait_read(&read);
+        }
+        let mut bytes = [0u8; 8];
+        self.backend.finish_read(read, &mut bytes);
+        self.backend.destroy(Object::QuerySet(set));
+        Ok((u64::from_le_bytes(bytes), cpu))
     }
 
     /// `SetPredication(resource, offset, op)` before the commands in `covered`: the argument

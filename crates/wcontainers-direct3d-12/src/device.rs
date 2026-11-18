@@ -983,7 +983,12 @@ impl<B: Backend> Device<B> {
             return Err(Error::NotImplemented("alpha-antialiased lines"));
         }
         let vs_shader = match &made {
-            Some(m) => m.geometry.stages.as_ref().expect("made").passthrough(),
+            Some(m) => m
+                .geometry
+                .stages
+                .as_ref()
+                .and_then(wcontainers_shaders::stage::Stages::passthrough)
+                .expect("a geometry stage's pass-through"),
             None => &vs.modules[0],
         };
         let vs_shader = self.backend.create_shader(vs_shader)?;

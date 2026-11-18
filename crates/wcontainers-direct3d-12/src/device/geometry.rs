@@ -74,8 +74,12 @@ impl<B: Backend> Device<B> {
             2 => Topology::LineStrip,
             _ => Topology::TriangleStrip,
         };
-        let stages = Stages::new(&mut self.backend, &vertex, &shader).map_err(stage_error)?;
-        let layout = self.layout(stages.vertex_layout())?;
+        let stages =
+            Stages::new(&mut self.backend, &vertex, Some(&shader), None).map_err(stage_error)?;
+        let layout = stages
+            .vertex_layout()
+            .ok_or(Error::Invalid("a geometry stage drawing nothing"))?;
+        let layout = self.layout(layout)?;
         let streams = vertex
             .reflection
             .bindings
@@ -112,6 +116,7 @@ fn stage_error(e: StageError) -> Error {
         StageError::TopologyMismatch => {
             Error::Invalid("a topology that does not give the geometry shader's input")
         }
+        StageError::Declaration => Error::Invalid("a stream output declaration"),
     }
 }
 
@@ -262,6 +267,7 @@ impl<B: Backend> Replay<B> {
                     }),
                 topology,
                 range: same_range(&range),
+                stream_output: None,
             },
         );
         if let Some(g) = d.render_mut(pid).geometry.as_mut() {

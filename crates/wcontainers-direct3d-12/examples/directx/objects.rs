@@ -1674,13 +1674,24 @@ impl Device {
                     ),
                 };
             }
-            // Every field of these blocks is an ability the front does not have (plan section
-            // 9: view instancing, barycentrics, 16-bit shader operations, ray tracing, variable
-            // rate shading, mesh shaders, sampler feedback), and zero says absent.
+            // Copy queues write timestamps as direct ones do; the other fields are abilities
+            // the front does not have (view instancing, barycentrics, full casting, immediate
+            // writes reported by list type).
             D3D12_FEATURE_D3D12_OPTIONS3 => {
+                let timestamps = gpu::call(|d| {
+                    d.backend()
+                        .caps()
+                        .has(wcontainers_gpu::Features::TIMESTAMPS)
+                });
                 *unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS3>(data, size)? } =
-                    Default::default();
+                    D3D12_FEATURE_DATA_D3D12_OPTIONS3 {
+                        CopyQueueTimestampQueriesSupported: timestamps.into(),
+                        ..Default::default()
+                    };
             }
+            // Every field of these blocks is an ability the front does not have (plan section
+            // 9: 16-bit shader operations, ray tracing, variable rate shading, mesh shaders,
+            // sampler feedback), and zero says absent.
             D3D12_FEATURE_D3D12_OPTIONS4 => {
                 *unsafe { fill::<D3D12_FEATURE_DATA_D3D12_OPTIONS4>(data, size)? } =
                     Default::default();
@@ -1987,19 +1998,38 @@ impl Queue {
         }
     }
 
-    /// Answers E_FAIL as for a queue without timestamps, which is what the back ends here have.
-    pub fn GetClockCalibration(&self, _gpu: *mut u64, _cpu: *mut u64) -> Result<()> {
-        if gpu::call(|d| {
-            d.backend()
+    /// The GPU's timestamp and `QueryPerformanceCounter` at about one moment; E_FAIL as for a
+    /// queue without timestamps where the back end has none.
+    pub fn GetClockCalibration(&self, gpu: *mut u64, cpu: *mut u64) -> Result<()> {
+        if gpu.is_null() || cpu.is_null() {
+            return Err(E_INVALIDARG.into());
+        }
+        let (g, c) = gpu::call(|d| {
+            if !d
+                .backend()
                 .caps()
                 .has(wcontainers_gpu::Features::TIMESTAMPS)
-        }) {
-            return Err(windows::core::Error::new(
-                E_NOTIMPL,
-                "GetClockCalibration with timestamps",
-            ));
+            {
+                return Ok(None);
+            }
+            d.clock_calibration(|| {
+                let mut now = 0i64;
+                // SAFETY: writes the counter into a local.
+                let _ = unsafe {
+                    windows::Win32::System::Performance::QueryPerformanceCounter(&mut now)
+                };
+                now as u64
+            })
+            .map(Some)
+        })
+        .map_err(hr)?
+        .ok_or(windows::core::Error::from(E_FAIL))?;
+        // SAFETY: the caller's two out pointers, checked above.
+        unsafe {
+            *gpu = g;
+            *cpu = c;
         }
-        Err(E_FAIL.into())
+        Ok(())
     }
 
     pub fn Wait(&self, fence: Ref<ID3D12Fence>, value: u64) -> Result<()> {
