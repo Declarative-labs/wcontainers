@@ -351,3 +351,15 @@ fn unwind_starts(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::relr_places;
+
+    /// An address entry names its place; a bitmap entry names the words after it whose bits are set.
+    #[test]
+    fn relr_places_follow_the_encoding() {
+        let places: Vec<u64> = relr_places(&[0x1000, 0b1011, 0x2000, 1 | 1 << 63]).collect();
+        assert_eq!(places, [0x1000, 0x1008, 0x1018, 0x2000, 0x2008 + 62 * 8]);
+    }
+}
