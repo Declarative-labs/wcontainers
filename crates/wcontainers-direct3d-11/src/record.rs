@@ -311,8 +311,15 @@ impl Backend for Recorder {
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Id, GpuError> {
         let id = self.id();
         self.record(format!(
-            "create_raster {id} {:?} {:?} {:?} clip {} mask {:#x}",
-            desc.fill, desc.cull, desc.front, desc.depth_clip, desc.sample_mask
+            "create_raster {id} {:?} {:?} {:?} clip {} mask {:#x} bias {} {} {}",
+            desc.fill,
+            desc.cull,
+            desc.front,
+            desc.depth_clip,
+            desc.sample_mask,
+            f32::from_bits(desc.depth_bias),
+            f32::from_bits(desc.depth_bias_slope),
+            f32::from_bits(desc.depth_bias_clamp)
         ));
         Ok(id)
     }

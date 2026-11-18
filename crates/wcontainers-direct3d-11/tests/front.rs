@@ -1603,6 +1603,82 @@ fn a_sampler_with_a_level_of_detail_bias_is_read_through_a_program_that_adds_it(
     assert!(!set.contains(&format!(" {fragment}=uniform ")), "{set}");
 }
 
+/// The words of the helper block bound at `binding` in the first binding set of `log` holding one.
+fn helper_words(dev: &Dev, log: &[String], binding: u32) -> Vec<u32> {
+    let key = format!(" {binding}=uniform ");
+    let line = log
+        .iter()
+        .find(|l| l.starts_with("create_binding_set") && l.contains(&key))
+        .unwrap_or_else(|| panic!("no helper block in {log:#?}"));
+    let range = line.split(&key).nth(1).unwrap().split(' ').next().unwrap();
+    let (buffer, rest) = range.split_once('+').unwrap();
+    let (offset, size) = rest.split_once(':').unwrap();
+    let (offset, size): (usize, usize) = (offset.parse().unwrap(), size.parse().unwrap());
+    let bytes = dev.backend.buffer_bytes(buffer.parse().unwrap()).unwrap();
+    bytes[offset..offset + size]
+        .chunks(4)
+        .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+        .collect()
+}
+
+#[test]
+fn border_and_mirror_once_addressing_the_back_end_lacks_is_applied_in_the_program() {
+    let mut dev = device();
+    sampling(&mut dev, "samplers.ps_sample");
+    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    // Border in u, mirror-once in v, clamp in w: the program filters through the sampler, which
+    // is made clamping, reading its state, its border colour and the view's components.
+    let border = SamplerDesc {
+        address: [4, 5, 3],
+        border: [0.25, 0.5, 0.75, 1.0],
+        ..SamplerDesc::default_state()
+    };
+    let from = dev.backend.log.len();
+    let border = dev.create_sampler_state(&border).unwrap();
+    dev.set_samplers(PIXEL, 0, &[Some(border)]).unwrap();
+    dev.draw(3, 0);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    let made = &log[find(&log, "create_sampler")];
+    assert!(made.contains("[Clamp, Clamp, Clamp]"), "{made}");
+    let count = |what: &str| log.iter().filter(|l| l.starts_with(what)).count();
+    assert_eq!(count("create_shader"), 1, "{log:#?}");
+    let words = helper_words(&dev, &log, fragment);
+    let state = [1, 1, 1, 3, 4, 2, 1, 0, 32f32.to_bits()];
+    assert!(words.windows(9).any(|w| w == state), "{words:?}");
+    let colour = [0.25f32, 0.5, 0.75, 1.0].map(f32::to_bits);
+    assert!(words.windows(4).any(|w| w == colour), "{words:?}");
+    assert!(words.contains(&1), "R32_FLOAT has red alone: {words:?}");
+    assert!(dev.backend.slow_paths().count(SlowPath::BorderInShader) >= 2);
+
+    // Mirror-once alone samples natively through the clamping sampler, the program mirroring.
+    let mirror = SamplerDesc {
+        address: [5, 1, 1],
+        ..SamplerDesc::default_state()
+    };
+    let mirror = dev.create_sampler_state(&mirror).unwrap();
+    dev.set_samplers(PIXEL, 0, &[Some(mirror)]).unwrap();
+    let from = dev.backend.log.len();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    assert_eq!(
+        log.iter()
+            .filter(|l| l.starts_with("create_shader"))
+            .count(),
+        1,
+        "{log:#?}"
+    );
+    let words = helper_words(&dev, &log, fragment);
+    let state = [1, 1, 1, 4, 0, 0, 1, 0, 32f32.to_bits()];
+    assert!(words.windows(9).any(|w| w == state), "{words:?}");
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::MirrorOnceInShader),
+        1
+    );
+}
+
 #[test]
 fn a_texture_under_a_minimum_level_clamp_is_sampled_through_a_merged_sampler() {
     let mut dev = device();
@@ -1674,11 +1750,18 @@ fn dual_source_blending_draws_the_programs_second_output_where_the_back_end_blen
 }
 
 #[test]
-fn a_texture_the_back_end_cannot_filter_is_not_sampled_linearly() {
+fn a_texture_the_back_end_cannot_filter_is_filtered_in_the_program() {
     let mut dev = device();
     let uses = &mut dev.backend.caps.formats.uses[wcontainers_gpu::Format::R32Float.index()];
     uses.remove(wcontainers_gpu::FormatUse::FILTER);
     sampling(&mut dev, "samplers.ps_sample");
+    let draws = |dev: &Dev| {
+        dev.backend
+            .log
+            .iter()
+            .filter(|l| l.starts_with("draw "))
+            .count()
+    };
     // Point sampling needs no filtering.
     let point = SamplerDesc {
         filter: 0,
@@ -1688,27 +1771,21 @@ fn a_texture_the_back_end_cannot_filter_is_not_sampled_linearly() {
     dev.set_samplers(PIXEL, 0, &[Some(point)]).unwrap();
     dev.draw(3, 0);
     assert!(dev.removed.is_none());
-    assert_eq!(
-        dev.backend
-            .log
-            .iter()
-            .filter(|l| l.starts_with("draw "))
-            .count(),
-        1
-    );
-    // An empty slot reads Direct3D's default sampler, which filters linearly: the program would
-    // have to filter, which the converter does not build yet.
+    assert_eq!(draws(&dev), 1);
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::FilterInShader), 0);
+    // An empty slot reads Direct3D's default sampler, which filters linearly: the program
+    // filters from loads, reading the default sampler's state.
     dev.set_samplers(PIXEL, 0, &[None]).unwrap();
+    let from = dev.backend.log.len();
     dev.draw(3, 0);
-    assert!(dev.removed.is_some());
-    assert_eq!(
-        dev.backend
-            .log
-            .iter()
-            .filter(|l| l.starts_with("draw "))
-            .count(),
-        1
-    );
+    assert!(dev.removed.is_none());
+    assert_eq!(draws(&dev), 2);
+    let log = log_from(&dev, from);
+    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    let words = helper_words(&dev, &log, fragment);
+    let state = [1, 1, 1, 2, 2, 2, 1, 0, 32f32.to_bits()];
+    assert!(words.windows(9).any(|w| w == state), "{words:?}");
+    assert_eq!(dev.backend.slow_paths().count(SlowPath::FilterInShader), 1);
 }
 
 #[test]
@@ -1756,6 +1833,153 @@ fn a_pass_without_targets_is_as_large_as_the_viewports_it_draws_through() {
             "begin_pass empty 64x8 samples 1"
         ]
     );
+}
+
+#[test]
+fn a_depth_bias_clamp_the_back_end_lacks_is_added_by_the_pixel_program() {
+    const D24S8: u32 = 45;
+    let mut dev = device();
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    let depth = |dev: &mut Dev, format| {
+        let t = dev
+            .create_texture(&tex2d(16, 16, format, bind::DEPTH_STENCIL), &[])
+            .unwrap();
+        dev.create_view(&t, None, bind::DEPTH_STENCIL).unwrap()
+    };
+    let d24 = depth(&mut dev, D24S8);
+    begin(&mut dev, &rtv, Some(&d24), 16.0);
+    let v = dev
+        .create_shader(&corpus("common.vs_full"), SourceStage::Vertex)
+        .unwrap();
+    let p = dev
+        .create_shader(&corpus("constants.ps_window"), SourceStage::Pixel)
+        .unwrap();
+    dev.vs_set_shader(Some(v));
+    dev.ps_set_shader(Some(p));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let biased = RasterizerDesc {
+        depth_bias: 1000,
+        slope_scaled_depth_bias: 2.0,
+        depth_bias_clamp: 0.001,
+        ..RasterizerDesc::default_state()
+    };
+    let from = dev.backend.log.len();
+    let biased = dev.create_rasterizer_state(&biased).unwrap();
+    dev.rs_set_state(Some(biased));
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    // The draw takes a twin of the raster block without the bias; the program adds it from its
+    // helper block.
+    let rasters: Vec<&String> = log
+        .iter()
+        .filter(|l| l.starts_with("create_raster"))
+        .collect();
+    assert_eq!(rasters.len(), 2, "{rasters:?}");
+    // The state's own block leaves out the clamp the back end lacks.
+    assert!(rasters[0].ends_with("bias 1000 2 0"), "{}", rasters[0]);
+    assert!(rasters[1].ends_with("bias 0 0 0"), "{}", rasters[1]);
+    let count = |p: &str| log.iter().filter(|l| l.starts_with(p)).count();
+    assert_eq!(count("create_shader"), 1, "{log:#?}");
+    let fragment = wcontainers_gpu::helper_binding(wcontainers_gpu::ShaderStage::Fragment);
+    let words = helper_words(&dev, &log, fragment);
+    let values = [1000.0f32, 2.0, 0.001, 1.0 / 16_777_215.0].map(f32::to_bits);
+    assert!(words.windows(4).any(|w| w == values), "{words:?}");
+    assert_eq!(
+        dev.backend.slow_paths().count(SlowPath::DepthBiasInShader),
+        1
+    );
+    // Float depth's step varies with the depth: refused by name.
+    let d32 = depth(&mut dev, D32F);
+    dev.om_set_render_targets(&[Some(rtv.clone())], Some(d32))
+        .unwrap();
+    dev.draw(3, 0);
+    assert!(dev.removed.is_some());
+}
+
+#[test]
+fn a_constant_window_shorter_than_its_block_is_read_through_a_copy_zero_past_it() {
+    let mut dev = device();
+    let target = dev
+        .create_texture(&tex2d(16, 16, RGBA8, bind::RENDER_TARGET), &[])
+        .unwrap();
+    let rtv = dev.create_view(&target, None, bind::RENDER_TARGET).unwrap();
+    begin(&mut dev, &rtv, None, 16.0);
+    let v = dev
+        .create_shader(&corpus("common.vs_full"), SourceStage::Vertex)
+        .unwrap();
+    // A block of 64 constants (1024 bytes).
+    let p = dev
+        .create_shader(&corpus("constants.ps_window"), SourceStage::Pixel)
+        .unwrap();
+    dev.vs_set_shader(Some(v));
+    dev.ps_set_shader(Some(p));
+    dev.ia_set_primitive_topology(topology::TRIANGLELIST);
+    let big = BufferDesc {
+        byte_width: 4096 * 16,
+        usage: usage::DEFAULT,
+        bind_flags: bind::CONSTANT_BUFFER,
+        ..Default::default()
+    };
+    let big = dev.create_buffer(&big, Some(&[7; 4096 * 16])).unwrap();
+    let id = |line: &str| line.split(' ').nth(1).unwrap().to_owned();
+    // A whole block's window binds the buffer itself.
+    let from = dev.backend.log.len();
+    dev.set_constant_ranges(PIXEL, 0, &[Some(big.clone())], &[Some((256, 64))])
+        .unwrap();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert!(
+        !log.iter().any(|l| l.starts_with("copy_buffer")),
+        "{log:#?}"
+    );
+    // The last 16 constants: copied into a buffer of the block's size, zero past them, once while
+    // the buffer is not written.
+    let from = dev.backend.log.len();
+    dev.set_constant_ranges(PIXEL, 0, &[Some(big.clone())], &[Some((4080, 16))])
+        .unwrap();
+    dev.draw(3, 0);
+    dev.draw(3, 0);
+    assert!(dev.removed.is_none());
+    let log = log_from(&dev, from);
+    let made = &log[find(&log, "create_buffer")];
+    assert!(made.contains("size 1024 "), "{made}");
+    let copy = id(made);
+    let count = |log: &[String], p: &str| log.iter().filter(|l| l.starts_with(p)).count();
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with(&format!("clear_buffer {copy} at 0 1024 bytes"))),
+        "{log:#?}"
+    );
+    let copied = format!("+{} to {copy}+0 256 bytes", 4080 * 16);
+    assert_eq!(
+        log.iter().filter(|l| l.ends_with(&copied)).count(),
+        1,
+        "{log:#?}"
+    );
+    assert!(
+        log.iter().any(|l| l.starts_with("create_binding_set")
+            && l.contains(&format!("=uniform {copy}+0:1024"))),
+        "{log:#?}"
+    );
+    assert_eq!(count(&log, "draw "), 2, "{log:#?}");
+    // Written, it is copied again before the next draw, into the same copy.
+    let from = dev.backend.log.len();
+    let r = Resource::Buffer(big.clone());
+    dev.update_subresource(&r, 0, None, &[9; 4096 * 16], 0, 0)
+        .unwrap();
+    dev.draw(3, 0);
+    let log = log_from(&dev, from);
+    assert_eq!(
+        log.iter().filter(|l| l.ends_with(&copied)).count(),
+        1,
+        "{log:#?}"
+    );
+    assert_eq!(count(&log, "create_buffer"), 0, "{log:#?}");
+    assert_eq!(count(&log, "create_binding_set"), 0, "{log:#?}");
 }
 
 #[test]
@@ -1892,7 +2116,7 @@ fn a_sample_mask_draws_through_a_raster_block_made_with_it_once() {
         .filter(|l| l.starts_with("create_raster"))
         .collect();
     assert_eq!(made.len(), 1, "{made:?}");
-    assert!(made[0].ends_with("mask 0x5"), "{}", made[0]);
+    assert!(made[0].contains("mask 0x5 "), "{}", made[0]);
     let masked = made[0].split(' ').nth(1).unwrap().to_string();
     let drawn = rasters(&dev, from);
     assert_eq!(drawn.len(), 5);

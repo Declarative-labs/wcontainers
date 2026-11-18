@@ -1,5 +1,6 @@
 //! The immediate context: its state, passes opened at draws, draws, copies, writes and maps.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
@@ -37,6 +38,18 @@ const STAGES: usize = 3;
 pub const UAV_SLOTS: usize = 8;
 
 /// The binding set a stage's program reads its slots from.
+/// The bytes a constant buffer window of `(first, count)` 16-byte constants covers: offset and
+/// length, cut at the buffer's end.
+fn window_of<B: Backend>(c: &Buffer<B>, (first, count): (u32, u32)) -> (u64, u64) {
+    let offset = u64::from(first) * 16;
+    let length = (u64::from(count) * 16).min(c.size.get().saturating_sub(offset));
+    (offset, length)
+}
+
+/// A constant buffer window a stage reads through a copy: slot, buffer, offset, length and the
+/// block's size.
+type ConstantWindow<B> = (u32, Rc<Buffer<B>>, u64, u64, u64);
+
 fn set_of(stage: usize) -> u32 {
     if stage == PIXEL { 1 } else { 0 }
 }
@@ -89,6 +102,11 @@ pub struct ContextState<B: Backend> {
     scissors: Vec<ScissorRect>,
     pub(crate) sets: [Option<Kept<B, B::BindingSet>>; STAGES],
     sets_dirty: [bool; STAGES],
+    /// The constant buffer windows each stage's set reads through copies: slot, buffer, offset,
+    /// length and the block's size.
+    windows: [Vec<ConstantWindow<B>>; STAGES],
+    /// The input layout whose pulled streams the vertex stage's set binds (its id; zero for none).
+    pulled_set: u64,
     pass_open: bool,
     /// The size of the open pass when it has no attachments.
     empty_pass: Option<EmptyPass>,
@@ -131,6 +149,8 @@ impl<B: Backend> ContextState<B> {
             scissors: Vec::new(),
             sets: [None, None, None],
             sets_dirty: [true; STAGES],
+            windows: Default::default(),
+            pulled_set: 0,
             pass_open: false,
             empty_pass: None,
             clears: Vec::new(),
@@ -410,6 +430,10 @@ impl<B: Backend> Device<B> {
         start: u32,
         slots: &[Option<VertexSlot<B>>],
     ) -> Result<()> {
+        // The vertex stage's set binds the streams its program fetches.
+        if self.ctx.pulled_set != 0 {
+            self.ctx.sets_dirty[VERTEX] = true;
+        }
         put(&mut self.ctx.vertex_buffers, start, slots)
     }
 
@@ -1170,10 +1194,17 @@ impl<B: Backend> Device<B> {
         if self.removed.is_some() {
             return Ok(());
         }
-        let r = if self
-            .backend
-            .caps()
-            .has(Features::INDIRECT | Features::INDIRECT_FIRST_INSTANCE)
+        // Fetching in the program steps by the first instance, which only the arguments hold.
+        let pulls = self
+            .ctx
+            .layout
+            .as_ref()
+            .is_some_and(|l| !l.pulled.is_empty());
+        let r = if !pulls
+            && self
+                .backend
+                .caps()
+                .has(Features::INDIRECT | Features::INDIRECT_FIRST_INSTANCE)
         {
             self.try_draw(Range::Indirect { indexed, offset }, 0, 1, Some(args))
         } else {
@@ -1351,8 +1382,15 @@ impl<B: Backend> Device<B> {
         if interpolation.is_empty() && vk == StageVariant::default() {
             return Ok(());
         }
+        let pulled = match &self.ctx.layout {
+            Some(l) if vk.pulled == l.id => {
+                l.pulled.iter().map(|e| (e.location, e.format)).collect()
+            }
+            _ => Vec::new(),
+        };
         let variant = VariantKey {
             output_interpolation: interpolation,
+            pulled,
             ..vk.key(SourceStage::Vertex)
         };
         let v = self.convert_kept(&vs.bytecode, SourceStage::Vertex, &variant)?;
@@ -1382,30 +1420,108 @@ impl<B: Backend> Device<B> {
     /// What a draw asks of `stage`'s program `s`: the sampler slots it reads through a biased
     /// sampler, and the targets' `samples` where it reads them.
     fn stage_variant(&self, stage: usize, s: &Shader<B>, samples: u8) -> StageVariant {
-        let mut lod_bias = 0;
+        let caps = self.backend.caps();
+        let mut v = StageVariant {
+            samples: if s.reads_samples { samples } else { 0 },
+            ..StageVariant::default()
+        };
         if s.samplers != 0 {
             for (i, b) in self.ctx.samplers[stage].iter().enumerate().take(16) {
-                if s.samplers & (1 << i) != 0
-                    && b.as_ref().is_some_and(|b| b.desc.mip_lod_bias != 0.0)
+                let Some(b) = b.as_ref().filter(|_| s.samplers & (1 << i) != 0) else {
+                    continue;
+                };
+                if b.desc.mip_lod_bias != 0.0 {
+                    v.lod_bias |= 1 << i;
+                }
+                // The program filters through a border sampler, every address mode included, and
+                // mirrors once around plain samples.
+                let mirror = b.desc.address.contains(&5) && !caps.has(Features::MIRROR_ONCE);
+                if b.desc.address.contains(&4) && !caps.has(Features::BORDER_COLOR)
+                    || mirror && s.mirror_filtered & (1 << i) != 0
                 {
-                    lod_bias |= 1 << i;
+                    v.border_in_shader |= 1 << i;
+                } else if mirror {
+                    v.mirror_once_in_shader |= 1 << i;
                 }
             }
         }
-        let mut min_lod_clamped = 0;
         if s.textures != 0 {
             for i in 0..self.ctx.resources[stage].len().min(128) {
                 if s.textures & (1 << i) != 0 && self.min_lod_of(stage, i as u32).is_some() {
-                    min_lod_clamped |= 1 << i;
+                    v.min_lod_clamped |= 1 << i;
                 }
             }
         }
-        StageVariant {
-            lod_bias,
-            min_lod_clamped,
-            samples: if s.reads_samples { samples } else { 0 },
-            ..StageVariant::default()
+        // Textures of formats the back end cannot filter, sampled through a filtering sampler (an
+        // empty slot reads Direct3D's default, which filters linearly).
+        for &(t, smp) in &s.reflection.sampled_pairs {
+            let filters = match self.ctx.samplers[stage]
+                .get(smp as usize)
+                .and_then(Option::as_ref)
+            {
+                Some(b) => {
+                    b.made.compare.is_none()
+                        && [b.made.min, b.made.mag, b.made.mip].contains(&Filter::Linear)
+                }
+                None => true,
+            };
+            let unfiltered = match self.ctx.resources[stage]
+                .get(t as usize)
+                .and_then(Option::as_deref)
+            {
+                Some(ShaderView::Texture(view)) => {
+                    !caps.formats.get(view.format).contains(FormatUse::FILTER)
+                }
+                _ => false,
+            };
+            if t < 128 && filters && unfiltered {
+                v.filter_in_shader |= 1 << t;
+            }
         }
+        v
+    }
+
+    /// The smallest step of the bound depth target's format where the pixel program adds the depth
+    /// bias (`DepthBiasInShader`): where the back end lacks the bias clamp, or moves 24-bit depth it
+    /// stores as float by float steps. Refused for float depth, whose step varies with the depth.
+    fn bias_step(&self) -> Result<Option<f32>> {
+        let r = &self
+            .ctx
+            .raster
+            .as_ref()
+            .unwrap_or(&self.defaults.raster)
+            .desc;
+        let Some(depth) = &self.ctx.depth else {
+            return Ok(None);
+        };
+        if r.depth_bias == 0 && r.slope_scaled_depth_bias == 0.0 {
+            return Ok(None);
+        }
+        let caps = self.backend.caps();
+        let d24 = matches!(
+            depth.format,
+            Format::Depth24Plus | Format::Depth24PlusStencil8
+        );
+        let unclamped = r.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP);
+        let float_steps = r.depth_bias != 0 && d24 && !caps.has(Features::DEPTH24_UNORM);
+        if !unclamped && !float_steps {
+            return Ok(None);
+        }
+        let bits = match depth.format {
+            Format::Depth16Unorm => 16,
+            _ if d24 => 24,
+            _ => {
+                return not_implemented("a depth bias clamp on float depth without the back end's");
+            }
+        };
+        Ok(Some(1.0 / ((1u32 << bits) - 1) as f32))
+    }
+
+    /// The sampler bound to `stage`'s `slot`.
+    fn bound_sampler(&self, stage: usize, slot: u32) -> Option<&Sampler<B>> {
+        self.ctx.samplers[stage]
+            .get(slot as usize)
+            .and_then(Option::as_deref)
     }
 
     /// The minimum level-of-detail clamp of the texture view bound to `stage`'s `slot`, in the view's
@@ -1574,6 +1690,63 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
+    /// The copy of `c`'s window of `length` bytes at `offset` read by a block of `size` bytes: its
+    /// bytes past the window are zero; copied again where `c` was written since.
+    fn window(&mut self, c: &Buffer<B>, offset: u64, length: u64, size: u64) -> Result<B::Buffer> {
+        let source = (c.writes.get(), c.gpu.borrow().id);
+        let found = c
+            .windows
+            .borrow()
+            .iter()
+            .position(|w| (w.offset, w.length, w.size) == (offset, length, size));
+        let i = match found {
+            Some(i) => i,
+            None => {
+                self.settle();
+                let twin = self.backend.create_buffer(&gpu_buffer(&c.desc, size));
+                let twin = self.gpu(twin)?;
+                self.backend.clear_buffer(&twin, 0, size, &[0]);
+                let id = self.id();
+                let mut windows = c.windows.borrow_mut();
+                windows.push(Window {
+                    offset,
+                    length,
+                    size,
+                    copied: Cell::new(None),
+                    twin: Kept::new(twin, id, Object::Buffer, &self.graveyard),
+                });
+                windows.len() - 1
+            }
+        };
+        let windows = c.windows.borrow();
+        let w = &windows[i];
+        if w.copied.get() != Some(source) {
+            self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
+            self.settle();
+            if length > 0 {
+                self.backend
+                    .copy_buffer(&c.handle(), offset, &w.twin.handle, 0, length);
+            }
+            w.copied.set(Some(source));
+        }
+        Ok(w.twin.handle.clone())
+    }
+
+    /// Copies again the constant buffer windows bound shorter than their blocks whose buffers were
+    /// written since.
+    fn refresh_windows(&mut self) -> Result<()> {
+        for stage in [VERTEX, PIXEL, COMPUTE] {
+            if self.ctx.windows[stage].is_empty() {
+                continue;
+            }
+            let windows = self.ctx.windows[stage].clone();
+            for (_, c, offset, length, size) in &windows {
+                self.window(c, *offset, *length, *size)?;
+            }
+        }
+        Ok(())
+    }
+
     /// The shader bound to `stage`.
     fn stage_shader(&self, stage: usize) -> &Option<Rc<Shader<B>>> {
         match stage {
@@ -1608,10 +1781,11 @@ impl<B: Backend> Device<B> {
         };
         self.settle();
         self.grow_constants()?;
-        self.update_set(COMPUTE)?;
+        self.refresh_windows()?;
+        self.update_set(COMPUTE, &[])?;
         if self.stage_variant(COMPUTE, &cs, 1) != StageVariant::default() {
             return not_implemented(
-                "a compute shader sampling through a biased sampler or a clamped texture",
+                "a compute shader sampling in a way the back end's sampler lacks (a bias, a resource clamp, border or mirror-once addressing, an unfilterable format)",
             );
         }
         let key = (
@@ -1744,13 +1918,16 @@ impl<B: Backend> Device<B> {
     }
 
     /// Makes the binding set of `stage` from its slots and its shader's reflection, when it changed.
-    fn update_set(&mut self, stage: usize) -> Result<()> {
+    /// Makes `stage`'s binding set again where its bindings changed; `pulled` holds the binding of
+    /// each vertex input the program fetches itself, by location.
+    fn update_set(&mut self, stage: usize, pulled: &[(u32, u32)]) -> Result<()> {
         if !self.ctx.sets_dirty[stage] {
             return Ok(());
         }
         let set = set_of(stage);
         let shader = self.stage_shader(stage).clone();
-        let Some(shader) = shader.filter(|s| s.reflection.bindings.iter().any(|b| b.set == set))
+        let Some(shader) = shader
+            .filter(|s| !pulled.is_empty() || s.reflection.bindings.iter().any(|b| b.set == set))
         else {
             self.ctx.sets[stage] = None;
             self.ctx.sets_dirty[stage] = false;
@@ -1861,72 +2038,59 @@ impl<B: Backend> Device<B> {
                 twins.push((b.binding, self.sampler_twin(&s, compares)?));
             }
         }
-        // WebGPU and WebGL 2 filter only formats the back end says it filters; the others are
-        // filtered in the program, which the converter does not build yet.
-        for &(t, smp) in &shader.reflection.sampled_pairs {
-            let compares = wanted().any(|b| {
-                b.kind == SlotKind::Sampler
-                    && b.register == smp
-                    && !matches!(stand_in(b.binding), Some(StandIn::DefaultSampler))
-            });
-            // An empty slot reads Direct3D's default sampler, which filters linearly.
-            let linear = !compares
-                && self.ctx.samplers[stage]
-                    .get(smp as usize)
-                    .and_then(Option::as_ref)
-                    .is_none_or(|s| [s.made.min, s.made.mag, s.made.mip].contains(&Filter::Linear));
-            let unfiltered = match self.ctx.resources[stage]
-                .get(t as usize)
-                .and_then(Option::as_deref)
-            {
-                Some(ShaderView::Texture(v)) => !self
-                    .backend
-                    .caps()
-                    .formats
-                    .get(v.format)
-                    .contains(FormatUse::FILTER),
-                _ => false,
-            };
-            if linear && unfiltered {
-                return not_implemented(
-                    "a texture the back end cannot filter sampled linearly (FilterInShader)",
-                );
-            }
-        }
-        let mut cbs = Vec::new();
-        for (c, range) in self.ctx.constant_buffers[stage]
-            .iter()
-            .zip(&self.ctx.constant_ranges[stage])
-        {
-            let Some(c) = c else {
-                cbs.push(None);
-                continue;
-            };
-            let (offset, size) = match *range {
-                None => (0, c.size.get()),
-                // A range past the buffer's end is cut at it.
-                Some((first, count)) => {
-                    let offset = u64::from(first) * 16;
-                    let size = (u64::from(count) * 16).min(c.size.get().saturating_sub(offset));
-                    (offset, size)
-                }
-            };
-            cbs.push(Some((c.gpu.borrow(), offset, size)));
-        }
+        let zero_stream = if pulled.is_empty() {
+            None
+        } else {
+            Some(self.zero_storage()?)
+        };
+        // Windows shorter than their shader's block read through a copy of the block's size whose
+        // bytes past the window are zero.
+        let mut windows = Vec::new();
         for b in wanted().filter(|b| b.kind == SlotKind::Uniform) {
+            let slot = b.register as usize;
             let declared = shader
                 .constant_sizes
                 .iter()
                 .find(|(n, _)| *n == b.binding)
                 .map_or(0, |s| s.1);
-            if let Some(Some((_, _, size))) = cbs.get(b.register as usize)
-                && self.ctx.constant_ranges[stage][b.register as usize].is_some()
-                && *size < declared
-            {
-                return not_implemented(
-                    "a constant buffer range shorter than its shader declares, or empty",
-                );
+            if let (Some(Some(c)), Some(Some(range))) = (
+                self.ctx.constant_buffers[stage].get(slot),
+                self.ctx.constant_ranges[stage].get(slot),
+            ) {
+                let (offset, length) = window_of(c, *range);
+                if length < declared {
+                    windows.push((b.register, c.clone(), offset, length, declared));
+                }
             }
+        }
+        let mut copies = Vec::new();
+        for (register, c, offset, length, declared) in &windows {
+            copies.push((
+                *register,
+                self.window(c, *offset, *length, *declared)?,
+                *declared,
+            ));
+        }
+        self.ctx.windows[stage] = windows;
+        let mut cbs = Vec::new();
+        for (slot, (c, range)) in self.ctx.constant_buffers[stage]
+            .iter()
+            .zip(&self.ctx.constant_ranges[stage])
+            .enumerate()
+        {
+            let Some(c) = c else {
+                cbs.push(None);
+                continue;
+            };
+            if let Some((_, twin, size)) = copies.iter().find(|t| t.0 as usize == slot) {
+                cbs.push(Some((twin.clone(), 0, *size)));
+                continue;
+            }
+            let (offset, size) = match *range {
+                None => (0, c.size.get()),
+                Some(range) => window_of(c, range),
+            };
+            cbs.push(Some((c.handle(), offset, size)));
         }
         // The back-end buffers of the buffer views bound for unordered access.
         let spans: Vec<_> = self.ctx.uavs[stage]
@@ -1943,10 +2107,59 @@ impl<B: Backend> Device<B> {
                 _ => None,
             })
             .collect();
+        // The streams the vertex program fetches, each bound from its offset rounded down to the
+        // storage offset alignment to the buffer's end; an empty slot, or an offset past the end,
+        // reads the buffer of zeros.
+        let limits = &self.backend.caps().limits;
+        let align = u64::from(limits.min_storage_offset_alignment.max(4));
+        let largest = limits.max_storage_buffer_size & !3;
+        let streams: Vec<_> = pulled
+            .iter()
+            .map(|&(binding, location)| {
+                let bound = self
+                    .ctx
+                    .layout
+                    .as_ref()
+                    .and_then(|l| l.pulled.iter().find(|e| e.location == location))
+                    .and_then(|e| self.ctx.vertex_buffers[e.slot as usize].as_ref())
+                    .map(|(b, _, offset)| (b, u64::from(*offset) / align * align))
+                    .filter(|(b, start)| start + 4 <= b.size.get());
+                (
+                    binding,
+                    bound.map(|(b, start)| {
+                        let size = ((b.size.get() - start) & !3).min(largest);
+                        (b.gpu.borrow(), start, size)
+                    }),
+                )
+            })
+            .collect();
         let uavs = &self.ctx.uavs[stage];
         let views = &self.ctx.resources[stage];
         let samplers = &self.ctx.samplers[stage];
         let mut entries = Vec::new();
+        for (binding, bound) in &streams {
+            let range = match (bound, &zero_stream) {
+                (Some((b, offset, size)), _) => BufferRange {
+                    buffer: &b.handle,
+                    offset: *offset,
+                    size: *size,
+                },
+                (None, Some(zero)) => BufferRange {
+                    buffer: zero,
+                    offset: 0,
+                    size: ZERO_BYTES,
+                },
+                (None, None) => unreachable!("made with the streams"),
+            };
+            entries.push(BindingEntry {
+                binding: *binding,
+                stages,
+                resource: BindingResource::StorageBuffer {
+                    range,
+                    writable: false,
+                },
+            });
+        }
         for b in wanted() {
             let slot = b.register as usize;
             let resource = match b.kind {
@@ -1955,7 +2168,7 @@ impl<B: Backend> Device<B> {
                         .and_then(Option::as_ref)
                         .map(|(c, offset, size)| {
                             BindingResource::UniformBuffer(BufferRange {
-                                buffer: &c.handle,
+                                buffer: c,
                                 offset: *offset,
                                 size: *size,
                             })
@@ -2053,6 +2266,7 @@ impl<B: Backend> Device<B> {
         }
         let set = self.backend.create_binding_set(&entries);
         drop(entries);
+        drop(streams);
         drop(cbs);
         drop(spans);
         drop(srvs);
@@ -2065,23 +2279,32 @@ impl<B: Backend> Device<B> {
 
     /// The bound raster block made with sample mask `mask`, kept on its rasterizer state from its
     /// first use.
-    fn masked_raster(&mut self, mask: u32) -> Result<B::Raster> {
+    /// The bound raster block made with `mask` and, where the pixel program adds the depth bias,
+    /// without it; kept on the state from its first draw.
+    fn raster_twin(&mut self, mask: u32, unbiased: bool) -> Result<B::Raster> {
         let r = self
             .ctx
             .raster
             .clone()
             .unwrap_or_else(|| self.defaults.raster.clone());
-        if let Some((_, k)) = r.masked.borrow().iter().find(|(m, _)| *m == mask) {
+        let key = (mask, unbiased);
+        if let Some((_, k)) = r.masked.borrow().iter().find(|(m, _)| *m == key) {
             return Ok(k.handle.clone());
         }
-        let gpu = self.backend.create_raster(&wcontainers_gpu::RasterDesc {
+        let mut block = wcontainers_gpu::RasterDesc {
             sample_mask: mask,
-            ..crate::device::raster_block(&r.desc)
-        });
+            ..crate::device::raster_block(&r.desc, self.backend.caps())
+        };
+        if unbiased {
+            block.depth_bias = 0;
+            block.depth_bias_slope = 0;
+            block.depth_bias_clamp = 0;
+        }
+        let gpu = self.backend.create_raster(&block);
         let gpu = self.gpu(gpu)?;
         let id = self.id();
         r.masked.borrow_mut().push((
-            mask,
+            key,
             Kept::new(gpu.clone(), id, Object::Raster, &self.graveyard),
         ));
         Ok(gpu)
@@ -2111,6 +2334,50 @@ impl<B: Backend> Device<B> {
     /// Writes the helper constants of the draw's two program stages where they differ from the
     /// last written, and keeps the set binding them (with an indirect draw's arguments, for a vertex
     /// program that reads its bases from them).
+    /// How the vertex program fetches its input at `location` for a draw from `first_instance`:
+    /// the first element's byte offset in the stream's binding, the stride, a divisor and a bias.
+    fn pulled_stream(&self, location: u32, first_instance: u32) -> [u32; 4] {
+        let Some(e) = self
+            .ctx
+            .layout
+            .as_ref()
+            .and_then(|l| l.pulled.iter().find(|e| e.location == location))
+        else {
+            return [0; 4];
+        };
+        let align = self
+            .backend
+            .caps()
+            .limits
+            .min_storage_offset_alignment
+            .max(4);
+        let (stride, offset) = self.ctx.vertex_buffers[e.slot as usize]
+            .as_ref()
+            .map_or((0, 0), |(_, stride, offset)| (*stride, *offset));
+        let offset = offset % align + e.offset;
+        match self
+            .ctx
+            .layout
+            .as_ref()
+            .and_then(|l| l.instance_steps[e.slot as usize])
+        {
+            // Every instance reads the first instance's element.
+            Some(0) => [
+                offset.wrapping_add(first_instance.wrapping_mul(stride)),
+                0,
+                1,
+                0,
+            ],
+            Some(rate) => [
+                offset,
+                stride,
+                rate,
+                (rate - 1).wrapping_mul(first_instance),
+            ],
+            None => [offset, stride, 0, 0],
+        }
+    }
+
     fn write_helpers(
         &mut self,
         helpers: &[Rc<Helpers>; 2],
@@ -2124,29 +2391,80 @@ impl<B: Backend> Device<B> {
                 return not_implemented("a helper block larger than 256 bytes");
             }
             for slot in &h.values {
-                let words: [u32; 3] = match slot.value {
-                    HelperValue::DrawBase => [bases[0], bases[1], 0],
+                let mut words = [0u32; 9];
+                let n = match slot.value {
+                    HelperValue::DrawBase => {
+                        words[..3].copy_from_slice(&[bases[0], bases[1], 0]);
+                        3
+                    }
                     HelperValue::DrawArguments => {
                         let (_, offset, indexed) = args.expect("an indirect draw");
-                        [offset / 4, u32::from(indexed), 0]
+                        words[..3].copy_from_slice(&[offset / 4, u32::from(indexed), 0]);
+                        3
                     }
-                    HelperValue::LodBias { sampler } => {
-                        let bias = self.ctx.samplers[stage]
-                            .get(sampler as usize)
-                            .and_then(|s| s.as_ref())
-                            .map_or(0.0, |s| s.desc.mip_lod_bias);
-                        [bias.to_bits(), 0, 0]
+                    HelperValue::PulledStream { input } => {
+                        words[..4].copy_from_slice(&self.pulled_stream(input, bases[1]));
+                        4
+                    }
+                    HelperValue::LodBias { sampler: s } => {
+                        words[0] = self
+                            .bound_sampler(stage, s)
+                            .map_or(0.0, |s| s.desc.mip_lod_bias)
+                            .to_bits();
+                        1
+                    }
+                    HelperValue::SamplerState { sampler: s } => {
+                        words = match self.bound_sampler(stage, s) {
+                            Some(b) => crate::device::sampler_state(b),
+                            None => {
+                                self.default_sampler()?;
+                                crate::device::sampler_state(
+                                    self.zeros.sampler.as_ref().expect("made"),
+                                )
+                            }
+                        };
+                        9
+                    }
+                    HelperValue::BorderColor { sampler: s } => {
+                        let border = self
+                            .bound_sampler(stage, s)
+                            .map_or([0.0; 4], |s| s.desc.border);
+                        words[..4].copy_from_slice(&border.map(f32::to_bits));
+                        4
+                    }
+                    HelperValue::TextureComponents { texture } => {
+                        words[0] = match self.ctx.resources[stage]
+                            .get(texture as usize)
+                            .and_then(Option::as_deref)
+                        {
+                            Some(ShaderView::Texture(v)) => crate::format::components(v.format),
+                            _ => 0b1111,
+                        };
+                        1
+                    }
+                    HelperValue::DepthBias => {
+                        let r = &self
+                            .ctx
+                            .raster
+                            .as_ref()
+                            .unwrap_or(&self.defaults.raster)
+                            .desc;
+                        let step = self.bias_step()?.unwrap_or(0.0);
+                        let values = [
+                            r.depth_bias as f32,
+                            r.slope_scaled_depth_bias,
+                            r.depth_bias_clamp,
+                            step,
+                        ];
+                        words[..4].copy_from_slice(&values.map(f32::to_bits));
+                        4
                     }
                     HelperValue::MinLod { texture } => {
                         let (clamp, levels) = self.min_lod_of(stage, texture).unwrap_or((0.0, 1));
-                        [clamp.to_bits(), levels, 0]
+                        words[..2].copy_from_slice(&[clamp.to_bits(), levels]);
+                        2
                     }
                     _ => unreachable!("refused at conversion"),
-                };
-                let n = match slot.value {
-                    HelperValue::LodBias { .. } => 1,
-                    HelperValue::MinLod { .. } => 2,
-                    _ => 3,
                 };
                 for (k, w) in words[..n].iter().enumerate() {
                     let at = slot.offset as usize + 4 * k;
@@ -2289,13 +2607,13 @@ impl<B: Backend> Device<B> {
             .unwrap_or(1);
         let all = u32::MAX >> (32 - samples.min(32));
         let mask = self.ctx.sample_mask & all;
-        let masked = if samples > 1 && mask != all {
-            if !self.backend.caps().has(Features::SAMPLE_MASK) {
-                return not_implemented(
-                    "a sample mask without the back end's (SampleMaskInShader)",
-                );
-            }
-            Some(self.masked_raster(mask)?)
+        let masks = samples > 1 && mask != all;
+        if masks && !self.backend.caps().has(Features::SAMPLE_MASK) {
+            return not_implemented("a sample mask without the back end's (SampleMaskInShader)");
+        }
+        let depth_bias = self.bias_step()?.is_some();
+        let masked = if masks || depth_bias {
+            Some(self.raster_twin(if masks { mask } else { u32::MAX }, depth_bias)?)
         } else {
             None
         };
@@ -2311,28 +2629,72 @@ impl<B: Backend> Device<B> {
         }
         let target_samples = samples.min(u32::from(u8::MAX)) as u8;
         let indirect = matches!(range, Range::Indirect { .. });
+        let pulled = self
+            .ctx
+            .layout
+            .as_ref()
+            .filter(|l| !l.pulled.is_empty())
+            .map_or(0, |l| l.id);
         let vk = StageVariant {
             from_arguments: indirect && vs.helpers.size > 0,
+            pulled,
             ..self.stage_variant(VERTEX, &vs, target_samples)
         };
+        if depth_bias && ps.is_none() {
+            return not_implemented(
+                "a depth bias the back end cannot apply, without a pixel shader to apply it",
+            );
+        }
         let pk = ps
             .as_ref()
             .map_or(StageVariant::default(), |p| StageVariant {
                 dual_source,
+                depth_bias,
                 ..self.stage_variant(PIXEL, p, target_samples)
             });
+        if depth_bias {
+            self.backend.slow_paths().hit(SlowPath::DepthBiasInShader);
+        }
         if vk.lod_bias | pk.lod_bias != 0 {
             self.backend.slow_paths().hit(SlowPath::LodBiasInShader);
         }
         if vk.min_lod_clamped | pk.min_lod_clamped != 0 {
             self.backend.slow_paths().hit(SlowPath::MinLodClamp);
         }
+        if vk.border_in_shader | pk.border_in_shader != 0 {
+            self.backend.slow_paths().hit(SlowPath::BorderInShader);
+        }
+        if vk.mirror_once_in_shader | pk.mirror_once_in_shader != 0 {
+            self.backend.slow_paths().hit(SlowPath::MirrorOnceInShader);
+        }
+        if vk.filter_in_shader | pk.filter_in_shader != 0 {
+            self.backend.slow_paths().hit(SlowPath::FilterInShader);
+        }
         if vk.from_arguments {
             self.backend
                 .slow_paths()
                 .hit(SlowPath::DrawBaseFromArguments);
         }
+        if vk.pulled != 0 {
+            self.backend
+                .slow_paths()
+                .hit(SlowPath::InstanceRateInShader);
+        }
         let (program, helpers) = self.program(&vs, vk, ps.as_ref(), pk)?;
+        if !helpers[0].pulled.is_empty() {
+            let storage = vs
+                .reflection
+                .bindings
+                .iter()
+                .filter(|b| b.kind == SlotKind::Storage)
+                .count()
+                + helpers[0].pulled.len();
+            if storage > self.backend.caps().limits.storage_buffers_per_stage as usize {
+                return not_implemented(
+                    "more vertex inputs fetched in the program than the back end's storage bindings",
+                );
+            }
+        }
         let vertex_layout = self.vertex_layout()?;
         // Direct3D reads zeros from a slot the layout reads that has no buffer: the zero buffer, at
         // stride zero.
@@ -2347,8 +2709,13 @@ impl<B: Backend> Device<B> {
             None
         };
         self.grow_constants()?;
-        self.update_set(VERTEX)?;
-        self.update_set(PIXEL)?;
+        self.refresh_windows()?;
+        if vk.pulled != self.ctx.pulled_set {
+            self.ctx.sets_dirty[VERTEX] = true;
+        }
+        self.update_set(VERTEX, &helpers[0].pulled)?;
+        self.ctx.pulled_set = vk.pulled;
+        self.update_set(PIXEL, &[])?;
         // SV_VertexID and SV_InstanceID leave out the draw's bases, which the common form's indices
         // include: a vertex program reading them takes the bases from its helper constants or from
         // the indirect arguments; level-of-detail biases are helper constants too.
@@ -2440,20 +2807,11 @@ impl<B: Backend> Device<B> {
         {
             return not_implemented("lines drawn by the quadrilateral or alpha-antialiased rule");
         }
-        // The back ends bias triangles only, and move 24-bit depth by Direct3D's steps only where
-        // they store it as such.
-        if raster.depth_bias != 0 || raster.slope_scaled_depth_bias != 0.0 {
-            if !matches!(topology, Topology::TriangleList | Topology::TriangleStrip) {
-                return not_implemented("depth bias on lines and points");
-            }
-            if raster.depth_bias != 0
-                && self.ctx.depth.as_ref().is_some_and(|d| {
-                    matches!(d.format, Format::Depth24Plus | Format::Depth24PlusStencil8)
-                })
-                && !self.backend.caps().has(Features::DEPTH24_UNORM)
-            {
-                return not_implemented("a constant depth bias on 24-bit depth stored as float");
-            }
+        // The back ends bias triangles only.
+        if (raster.depth_bias != 0 || raster.slope_scaled_depth_bias != 0.0)
+            && !matches!(topology, Topology::TriangleList | Topology::TriangleStrip)
+        {
+            return not_implemented("depth bias on lines and points");
         }
         let nothing = matches!(
             gpu_range,
@@ -2656,6 +3014,7 @@ impl<B: Backend> Device<B> {
                     ));
                 }
                 self.settle();
+                d.writes.set(d.writes.get() + 1);
                 self.backend.copy_buffer(
                     &s.handle(),
                     0,
@@ -2721,6 +3080,7 @@ impl<B: Backend> Device<B> {
                     return Ok(());
                 }
                 self.settle();
+                d.writes.set(d.writes.get() + 1);
                 self.backend.copy_buffer(
                     &s.handle(),
                     u64::from(from),
@@ -2871,6 +3231,7 @@ impl<B: Backend> Device<B> {
                     return Ok(());
                 }
                 let bytes = &bytes[..(to - from) as usize];
+                b.writes.set(b.writes.get() + 1);
                 if from == 0 && to == b.desc.byte_width {
                     // A whole write discards; a grown buffer's bytes past the program's stay zero.
                     if b.grown.get() {
@@ -3189,6 +3550,7 @@ impl<B: Backend> Device<B> {
         self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
         match resource {
             Resource::Buffer(b) => {
+                b.writes.set(b.writes.get() + 1);
                 let mode = match kind {
                     map::WRITE_DISCARD => WriteMode::Discard,
                     map::WRITE_NO_OVERWRITE => WriteMode::NoOverwrite,

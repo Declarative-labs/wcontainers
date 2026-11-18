@@ -6,11 +6,11 @@ use std::rc::Rc;
 
 use wcontainers_gpu::{
     AddressMode, Backend, BlendComponent, BlendFactor, BlendOp, BorderColor,
-    BufferDesc as GpuBuffer, BufferUsage, ColorWrites, CompareFn, CullMode,
+    BufferDesc as GpuBuffer, BufferUsage, Caps, ColorWrites, CompareFn, CullMode,
     DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, Features, FillMode, Filter, Format,
     FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object,
     Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, SlowPath,
-    StageValue, StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension, TextureRegion,
+    StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension, TextureRegion,
     TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
 };
 
@@ -82,8 +82,6 @@ pub struct Device<B: Backend> {
     pub(crate) ahead: crate::ahead::Ahead<B>,
     /// Vertex layout blocks by (input layout id, stride of each slot it reads).
     pub(crate) layouts: HashMap<(u64, [u32; 32]), Kept<B, B::VertexLayout>>,
-    /// Vertex shaders' input signatures by the blake3 of their bytecode, for input layouts.
-    vertex_inputs: HashMap<[u8; 32], Vec<StageValue>>,
     /// What empty slots read.
     pub(crate) zeros: Zeros<B>,
     /// Set once the device is removed; later work is dropped and the API reports the removal.
@@ -123,7 +121,10 @@ pub enum Removal {
 /// A back-end error in the front's terms, where it does not remove a device.
 fn gpu_error(e: GpuError) -> Error {
     match e {
-        GpuError::Absent(_) => Error::NotImplemented("a feature the back end lacks"),
+        GpuError::Absent(f) => {
+            eprintln!("wcontainers direct3d 11: not implemented: the back end lacks {f:?}");
+            Error::NotImplemented("a feature the back end lacks")
+        }
         GpuError::OutOfMemory => Error::OutOfMemory,
         GpuError::DeviceLost => Error::DeviceRemoved,
         GpuError::Invalid(_) => Error::DeviceRemoved,
@@ -138,7 +139,25 @@ pub(crate) struct Defaults<B: Backend> {
 }
 
 /// The feature levels offered when a program asks for none, highest first (`D3D11CreateDevice`).
-const DEFAULT_LEVELS: [u32; 4] = [level::L11_0, level::L10_1, level::L10_0, 0x9300];
+const DEFAULT_LEVELS: [u32; 6] = [
+    level::L11_0,
+    level::L10_1,
+    level::L10_0,
+    level::L9_3,
+    level::L9_2,
+    level::L9_1,
+];
+
+/// Direct3D's largest textures at feature level `level`: the extent of 1D and 2D textures, of a
+/// cube's faces and of 3D textures, and the layers of an array (9_x has no arrays).
+fn level_texture_limits(level: u32) -> [u32; 4] {
+    match level {
+        level::L9_1 | level::L9_2 => [2048, 512, 256, 1],
+        level::L9_3 => [4096, 4096, 256, 1],
+        level::L10_0 | level::L10_1 => [8192, 8192, 2048, 512],
+        _ => [16384, 16384, 2048, 2048],
+    }
+}
 
 /// The highest feature level `backend` serves (plan section 9): 11_0 with compute, 10_0 without.
 pub fn top_level(caps: &wcontainers_gpu::Caps) -> u32 {
@@ -160,7 +179,7 @@ impl<B: Backend> Device<B> {
         };
         let level = *asked
             .iter()
-            .find(|&&l| l <= top && l >= level::L10_0)
+            .find(|&&l| l <= top && l >= level::L9_1)
             .ok_or(Error::Unsupported)?;
         let graveyard = Rc::new(RefCell::new(Graveyard {
             objects: Vec::new(),
@@ -181,7 +200,7 @@ impl<B: Backend> Device<B> {
             .create_depth_stencil(&depth_stencil_block(&ds_desc))
             .map_err(gpu_error)?;
         let raster = backend
-            .create_raster(&raster_block(&raster_desc))
+            .create_raster(&raster_block(&raster_desc, backend.caps()))
             .map_err(gpu_error)?;
         let defaults = Defaults {
             blend: Rc::new(Blend {
@@ -217,7 +236,6 @@ impl<B: Backend> Device<B> {
             helper_blocks: None,
             ahead: crate::ahead::Ahead::new(),
             layouts: HashMap::new(),
-            vertex_inputs: HashMap::new(),
             zeros: Zeros {
                 buffer: None,
                 storage: None,
@@ -547,9 +565,12 @@ impl<B: Backend> Device<B> {
 
     pub fn create_buffer(&mut self, d: &BufferDesc, init: Option<&[u8]>) -> Result<Rc<Buffer<B>>> {
         check_buffer(d, init.is_some())?;
-        if d.misc_flags & !(MISC_DRAWINDIRECT_ARGS | MISC_ALLOW_RAW_VIEWS | MISC_STRUCTURED) != 0 {
+        if d.misc_flags
+            & !(MISC_DRAWINDIRECT_ARGS | MISC_ALLOW_RAW_VIEWS | MISC_STRUCTURED | MISC_SHARED)
+            != 0
+        {
             return not_implemented(
-                "buffers with misc flags other than structured, raw and indirect",
+                "buffers with misc flags other than structured, raw, indirect and shared",
             );
         }
         self.live()?;
@@ -558,7 +579,14 @@ impl<B: Backend> Device<B> {
         // (padded with zeros past the program's bytes) never needs an edge merge.
         let granule = u64::from(self.backend.caps().limits.buffer_copy_alignment.max(1));
         let size = u64::from(d.byte_width).div_ceil(granule) * granule;
-        let gpu = self.backend.create_buffer(&gpu_buffer(d, size));
+        let mut desc = gpu_buffer(d, size);
+        // Vertex programs fetch the streams the back end cannot step by their rate.
+        if d.bind_flags & bind::VERTEX_BUFFER != 0
+            && !self.backend.caps().has(Features::INSTANCE_STEP_RATE)
+        {
+            desc.usage |= BufferUsage::STORAGE;
+        }
+        let gpu = self.backend.create_buffer(&desc);
         let gpu = self.gpu(gpu)?;
         if let Some(bytes) = init {
             let bytes = &bytes[..d.byte_width as usize];
@@ -589,6 +617,8 @@ impl<B: Backend> Device<B> {
             grown: Cell::new(false),
             shadow: RefCell::new(shadow),
             staged: RefCell::new(Staged::Current),
+            writes: Cell::new(0),
+            windows: RefCell::new(Vec::new()),
         }))
     }
 
@@ -599,9 +629,18 @@ impl<B: Backend> Device<B> {
         if d.width == 0 || d.height == 0 || d.depth == 0 || d.array_size == 0 {
             return Err(Error::InvalidArg("a texture needs a size"));
         }
+        let [extent, cube_extent, volume, level_layers] = level_texture_limits(self.level);
+        let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
         let (most, layers) = match d.dimension {
-            TexDim::D3 => (limits.max_texture_3d, 1),
-            _ => (limits.max_texture_2d, limits.max_texture_layers),
+            TexDim::D3 => (limits.max_texture_3d.min(volume), 1),
+            _ if cube => (
+                limits.max_texture_cube.min(cube_extent),
+                limits.max_texture_layers.min(level_layers.max(6)),
+            ),
+            _ => (
+                limits.max_texture_2d.min(extent),
+                limits.max_texture_layers.min(level_layers),
+            ),
         };
         if d.width > most || d.height > most || d.depth > most || d.array_size > layers {
             return Err(Error::InvalidArg(
@@ -648,10 +687,12 @@ impl<B: Backend> Device<B> {
                 "a multisampled texture is 2D, of one level and default usage",
             ));
         }
-        let cube = d.misc_flags & MISC_TEXTURECUBE != 0;
-        if d.misc_flags & !(MISC_TEXTURECUBE | MISC_GENERATE_MIPS | MISC_RESOURCE_CLAMP) != 0 {
+        if d.misc_flags
+            & !(MISC_TEXTURECUBE | MISC_GENERATE_MIPS | MISC_RESOURCE_CLAMP | MISC_SHARED)
+            != 0
+        {
             return not_implemented(
-                "textures with misc flags other than a cube, mip generation and a level clamp",
+                "textures with misc flags other than a cube, mip generation, a level clamp and shared",
             );
         }
         let both = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
@@ -670,6 +711,16 @@ impl<B: Backend> Device<B> {
         match d.usage {
             usage::IMMUTABLE if !has_init => {
                 return Err(Error::InvalidArg("an immutable texture needs initial data"));
+            }
+            usage::IMMUTABLE
+                if d.bind_flags == 0
+                    || d.bind_flags
+                        & (bind::RENDER_TARGET | bind::DEPTH_STENCIL | bind::UNORDERED_ACCESS)
+                        != 0 =>
+            {
+                return Err(Error::InvalidArg(
+                    "an immutable texture is only read, through a binding",
+                ));
             }
             usage::STAGING if d.bind_flags != 0 || d.cpu_access_flags == 0 => {
                 return Err(Error::InvalidArg(
@@ -1224,79 +1275,9 @@ impl<B: Backend> Device<B> {
     }
 
     pub fn create_sampler_state(&mut self, d: &SamplerDesc) -> Result<Rc<Sampler<B>>> {
-        let filter = |bit: u32| {
-            if d.filter & bit != 0 {
-                Filter::Linear
-            } else {
-                Filter::Nearest
-            }
-        };
-        if d.filter & !0xd5 != 0 {
-            return not_implemented("minimum and maximum filtering");
-        }
-        let anisotropic = d.filter & 0x40 != 0;
-        // Direct3D takes 0 as 1.
-        if anisotropic && d.max_anisotropy > 16 {
-            return Err(Error::InvalidArg("anisotropy above 16"));
-        }
-        let mut address = [AddressMode::Repeat; 3];
-        for (a, &mode) in address.iter_mut().zip(&d.address) {
-            *a = match mode {
-                1 => AddressMode::Repeat,
-                2 => AddressMode::Mirror,
-                3 => AddressMode::Clamp,
-                4 if self.backend.caps().has(Features::BORDER_COLOR) => AddressMode::Border,
-                5 if self.backend.caps().has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
-                4 | 5 => {
-                    return not_implemented("border and mirror-once addressing in the program");
-                }
-                _ => return Err(Error::InvalidArg("unknown address mode")),
-            };
-        }
-        let compare = if d.filter & 0x80 != 0 {
-            Some(compare_fn(d.comparison)?)
-        } else {
-            None
-        };
-        let border = match d.border {
-            [0.0, 0.0, 0.0, 0.0] => BorderColor::TransparentBlack,
-            [0.0, 0.0, 0.0, 1.0] => BorderColor::OpaqueBlack,
-            [1.0, 1.0, 1.0, 1.0] => BorderColor::OpaqueWhite,
-            c => BorderColor::Custom(c.map(f32::to_bits)),
-        };
+        let made = gpu_sampler(d, self.backend.caps())?;
         self.live()?;
         self.bury();
-        let made = GpuSampler {
-            min: if anisotropic {
-                Filter::Linear
-            } else {
-                filter(0x10)
-            },
-            mag: if anisotropic {
-                Filter::Linear
-            } else {
-                filter(0x4)
-            },
-            mip: if anisotropic {
-                Filter::Linear
-            } else {
-                filter(0x1)
-            },
-            address,
-            // WebGPU takes no minimum above the maximum: such a range holds every level at the
-            // minimum.
-            lod_range: [
-                d.min_lod.max(0.0).to_bits(),
-                d.max_lod.clamp(0.0, 32.0).max(d.min_lod.max(0.0)).to_bits(),
-            ],
-            anisotropy: if anisotropic {
-                d.max_anisotropy.max(1) as u16
-            } else {
-                1
-            },
-            compare,
-            border,
-        };
         let gpu = self.backend.create_sampler(&made);
         let gpu = self.gpu(gpu)?;
         let id = self.id();
@@ -1369,15 +1350,12 @@ impl<B: Backend> Device<B> {
         if d.fill == 2 && !caps.has(Features::POLYGON_MODE) {
             return not_implemented("wireframe without the back end's polygon mode");
         }
-        if d.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP) {
-            return not_implemented("a depth bias clamp without the back end's");
-        }
         if !d.depth_clip && !caps.has(Features::DEPTH_CLAMP) {
             return not_implemented("depth clamping without the back end's depth clamp");
         }
         self.live()?;
         self.bury();
-        let gpu = self.backend.create_raster(&raster_block(d));
+        let gpu = self.backend.create_raster(&raster_block(d, self.backend.caps()));
         let gpu = self.gpu(gpu)?;
         let id = self.id();
         Ok(Rc::new(Rasterizer {
@@ -1393,9 +1371,11 @@ impl<B: Backend> Device<B> {
         bytecode: &[u8],
         stage: wcontainers_gpu::SourceStage,
     ) -> Result<Rc<Shader<B>>> {
+        shader::check_model(bytecode, self.level)?;
         let (mut converted, reads_samples) = shader::convert(bytecode, stage)?;
         let samplers = shader::sampler_slots(&converted);
         let textures = shader::texture_slots(&converted);
+        let mirror_filtered = shader::mirror_filtered_slots(&converted);
         let helpers = Rc::new(shader::Helpers::of(&converted));
         let module = converted.modules.pop().expect("one module");
         if wcontainers_shaders::capabilities(&module.module)
@@ -1408,12 +1388,6 @@ impl<B: Backend> Device<B> {
         self.bury();
         let gpu = self.backend.create_shader(&module);
         let gpu = self.gpu(gpu)?;
-        if stage == wcontainers_gpu::SourceStage::Vertex {
-            self.vertex_inputs.insert(
-                *blake3::hash(bytecode).as_bytes(),
-                converted.reflection.inputs.clone(),
-            );
-        }
         let constant_sizes = constant_sizes(&module.module);
         let stand_ins = stand_ins(&module.module);
         let id = self.id();
@@ -1426,6 +1400,7 @@ impl<B: Backend> Device<B> {
             bytecode: bytecode.to_vec(),
             samplers,
             textures,
+            mirror_filtered,
             reads_samples,
             helpers,
         });
@@ -1448,21 +1423,14 @@ impl<B: Backend> Device<B> {
         if elements.len() > 32 {
             return Err(Error::InvalidArg("an input layout has at most 32 elements"));
         }
-        let key = *blake3::hash(vs_bytecode).as_bytes();
-        let inputs = match self.vertex_inputs.get(&key) {
-            Some(inputs) => inputs.clone(),
-            None => {
-                let inputs = shader::convert(vs_bytecode, wcontainers_gpu::SourceStage::Vertex)?
-                    .0
-                    .reflection
-                    .inputs;
-                self.vertex_inputs.insert(key, inputs.clone());
-                inputs
-            }
-        };
+        // Direct3D matches the elements against the bytecode's input signature, whatever its
+        // stage; each input the input assembler does not generate needs an element.
+        let inputs = shader::input_signature(vs_bytecode)?;
         let mut next_offset = [0u32; 32];
         let mut instance_steps = [None; 32];
         let mut resolved = Vec::new();
+        let mut pulled = Vec::new();
+        let steps_natively = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
         for e in elements {
             if e.slot >= 32 {
                 return Err(Error::InvalidArg("input slot past 31"));
@@ -1482,35 +1450,42 @@ impl<B: Backend> Device<B> {
             };
             next_offset[slot] = offset + format::vertex_size(vf);
             let step = e.per_instance.then_some(e.step_rate);
-            if step.is_some_and(|r| r != 1)
-                && !self.backend.caps().has(Features::INSTANCE_STEP_RATE)
-            {
-                return not_implemented(
-                    "instance step rates other than one without the back end's",
-                );
-            }
-            if resolved.iter().any(|r: &LayoutElement| r.slot == e.slot)
+            if resolved
+                .iter()
+                .chain(&pulled)
+                .any(|r: &LayoutElement| r.slot == e.slot)
                 && instance_steps[slot] != step
             {
                 return Err(Error::InvalidArg("elements of one slot step differently"));
             }
             instance_steps[slot] = step;
             let input = inputs.iter().find(|i| {
-                i.system.is_none()
+                !i.generated()
                     && i.semantic.eq_ignore_ascii_case(&e.semantic)
-                    && i.semantic_index == e.semantic_index
+                    && i.index == e.semantic_index
             });
             if let Some(input) = input {
-                resolved.push(LayoutElement {
-                    location: input.location,
+                let element = LayoutElement {
+                    location: input.register,
                     slot: e.slot,
                     offset,
                     format: vf,
-                });
+                };
+                // Rates other than one where the back end steps by one only are fetched in the
+                // vertex program.
+                if step.is_some_and(|r| r != 1) && !steps_natively {
+                    pulled.push(element);
+                } else {
+                    resolved.push(element);
+                }
             }
         }
-        for input in inputs.iter().filter(|i| i.system.is_none()) {
-            if !resolved.iter().any(|r| r.location == input.location) {
+        for input in inputs.iter().filter(|i| !i.generated()) {
+            if !resolved
+                .iter()
+                .chain(&pulled)
+                .any(|r| r.location == input.register)
+            {
                 return Err(Error::InvalidArg(
                     "the layout lacks an input the shader reads",
                 ));
@@ -1520,6 +1495,7 @@ impl<B: Backend> Device<B> {
         Ok(Rc::new(InputLayout {
             id,
             elements: resolved,
+            pulled,
             instance_steps,
         }))
     }
@@ -1670,6 +1646,15 @@ fn check_buffer(d: &BufferDesc, has_init: bool) -> Result<()> {
     if d.misc_flags & MISC_ALLOW_RAW_VIEWS != 0 && d.bind_flags & views == 0 {
         return Err(Error::InvalidArg("a raw buffer is bound for views"));
     }
+    // What the GPU does not write, it reads through a binding.
+    let written = bind::STREAM_OUTPUT | bind::RENDER_TARGET | bind::UNORDERED_ACCESS;
+    if matches!(d.usage, usage::IMMUTABLE | usage::DYNAMIC)
+        && (d.bind_flags == 0 || d.bind_flags & written != 0)
+    {
+        return Err(Error::InvalidArg(
+            "an immutable or dynamic buffer is only read, through a binding",
+        ));
+    }
     match d.usage {
         usage::DEFAULT if d.cpu_access_flags == 0 => Ok(()),
         usage::IMMUTABLE if !has_init => Err(Error::InvalidArg("an immutable buffer needs data")),
@@ -1805,7 +1790,14 @@ pub(crate) fn depth_stencil_block(d: &DepthStencilDesc) -> GpuDepthStencil {
     }
 }
 
-pub(crate) fn raster_block(d: &RasterizerDesc) -> RasterDesc {
+/// The back end's raster block for Direct3D's description. A bias clamp the back end lacks is left
+/// out: draws with depth to bias add the bias in the pixel program instead (`DepthBiasInShader`).
+pub(crate) fn raster_block(d: &RasterizerDesc, caps: &Caps) -> RasterDesc {
+    let clamp = if caps.has(Features::DEPTH_BIAS_CLAMP) {
+        d.depth_bias_clamp
+    } else {
+        0.0
+    };
     RasterDesc {
         fill: if d.fill == 2 {
             FillMode::Line
@@ -1824,7 +1816,7 @@ pub(crate) fn raster_block(d: &RasterizerDesc) -> RasterDesc {
         },
         depth_bias: (d.depth_bias as f32).to_bits(),
         depth_bias_slope: d.slope_scaled_depth_bias.to_bits(),
-        depth_bias_clamp: d.depth_bias_clamp.to_bits(),
+        depth_bias_clamp: clamp.to_bits(),
         depth_clip: d.depth_clip,
         scissor: d.scissor,
         line_width: 1.0f32.to_bits(),
@@ -1837,4 +1829,101 @@ pub(crate) fn raster_block(d: &RasterizerDesc) -> RasterDesc {
 /// Whether clear values of `format` are integers rather than floats.
 pub(crate) fn integer_format(format: Format) -> bool {
     matches!(format.kind(), FormatKind::Uint | FormatKind::Sint)
+}
+
+/// The back end's sampler for Direct3D's description. Border and mirror-once addressing the back end
+/// lacks clamp; the program applies them (`BorderInShader`, `MirrorOnceInShader`).
+fn gpu_sampler(d: &SamplerDesc, caps: &Caps) -> Result<GpuSampler> {
+    let filter = |bit: u32| {
+        if d.filter & bit != 0 {
+            Filter::Linear
+        } else {
+            Filter::Nearest
+        }
+    };
+    if d.filter & !0xd5 != 0 {
+        return not_implemented("minimum and maximum filtering");
+    }
+    let anisotropic = d.filter & 0x40 != 0;
+    // Direct3D takes 0 as 1.
+    if anisotropic && d.max_anisotropy > 16 {
+        return Err(Error::InvalidArg("anisotropy above 16"));
+    }
+    let mut address = [AddressMode::Repeat; 3];
+    for (a, &mode) in address.iter_mut().zip(&d.address) {
+        *a = match mode {
+            1 => AddressMode::Repeat,
+            2 => AddressMode::Mirror,
+            3 => AddressMode::Clamp,
+            4 if caps.has(Features::BORDER_COLOR) => AddressMode::Border,
+            5 if caps.has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
+            4 | 5 => AddressMode::Clamp,
+            _ => return Err(Error::InvalidArg("unknown address mode")),
+        };
+    }
+    let compare = if d.filter & 0x80 != 0 {
+        Some(compare_fn(d.comparison)?)
+    } else {
+        None
+    };
+    let border = match d.border {
+        [0.0, 0.0, 0.0, 0.0] => BorderColor::TransparentBlack,
+        [0.0, 0.0, 0.0, 1.0] => BorderColor::OpaqueBlack,
+        [1.0, 1.0, 1.0, 1.0] => BorderColor::OpaqueWhite,
+        c => BorderColor::Custom(c.map(f32::to_bits)),
+    };
+    Ok(GpuSampler {
+        min: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(0x10)
+        },
+        mag: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(0x4)
+        },
+        mip: if anisotropic {
+            Filter::Linear
+        } else {
+            filter(0x1)
+        },
+        address,
+        // WebGPU takes no minimum above the maximum: such a range holds every level at the
+        // minimum.
+        lod_range: [
+            d.min_lod.max(0.0).to_bits(),
+            d.max_lod.clamp(0.0, 32.0).max(d.min_lod.max(0.0)).to_bits(),
+        ],
+        anisotropy: if anisotropic {
+            d.max_anisotropy.max(1) as u16
+        } else {
+            1
+        },
+        compare,
+        border,
+    })
+}
+
+/// The sampler's state as programs that filter or address in the program read it
+/// (`HelperValue::SamplerState`): filters and address modes as codes in the order of the interface's
+/// enums, the anisotropy, then the level range.
+pub(crate) fn sampler_state(s: &Sampler<impl Backend>) -> [u32; 9] {
+    let m = &s.made;
+    let mut words = [0; 9];
+    for (w, f) in words.iter_mut().zip([m.min, m.mag, m.mip]) {
+        *w = f as u32;
+    }
+    for (w, &mode) in words[3..].iter_mut().zip(&s.desc.address) {
+        *w = match mode {
+            1 => AddressMode::Repeat,
+            2 => AddressMode::Mirror,
+            4 => AddressMode::Border,
+            5 => AddressMode::MirrorOnce,
+            _ => AddressMode::Clamp,
+        } as u32;
+    }
+    words[6] = u32::from(m.anisotropy);
+    words[7..].copy_from_slice(&m.lod_range);
+    words
 }

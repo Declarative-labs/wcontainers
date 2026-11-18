@@ -34,6 +34,21 @@ impl<B: Backend> Chain<B> {
     pub fn present_count(&self) -> u64 {
         self.chain.present_count()
     }
+
+    /// The buffer to draw this frame into (`GetCurrentBackBufferIndex`).
+    pub fn current_index(&self) -> u32 {
+        self.chain.current_index()
+    }
+
+    /// Frames queued before `Present` waits (`GetMaximumFrameLatency`).
+    pub fn max_latency(&self) -> u32 {
+        self.chain.max_latency()
+    }
+
+    /// `SetMaximumFrameLatency`: 1 to 16 frames.
+    pub fn set_max_latency(&mut self, frames: u32) -> Result<()> {
+        self.chain.set_max_latency(frames).map_err(chain_error)
+    }
 }
 
 fn chain_error(e: SwapChainError) -> Error {
@@ -111,6 +126,7 @@ impl<B: Backend> Device<B> {
     pub fn present(&mut self, c: &mut Chain<B>, sync_interval: u32) -> Result<()> {
         self.live()?;
         self.settle();
+        self.report_ahead();
         c.chain
             .present(&mut self.backend, sync_interval)
             .map_err(|e| self.chain_lost(e))
