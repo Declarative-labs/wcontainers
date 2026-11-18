@@ -1,6 +1,6 @@
 # wcontainers: the native back end
 
-Status: plan, 2026-11-18 (N0, third run: the second independent check's findings settled). Nothing of it
+Status: plan, 2026-11-18 (N0, fourth run: the third independent check's findings settled). Nothing of it
 is built.
 
 Words used here:
@@ -113,8 +113,13 @@ the compiler's choices).
 
 The place where a guest memory access is emitted is one function of the native emitter (`access`), which
 today copies the instruction as it is (or puts the alignment test of section 3.4 in front), because the
-virtual machine's page tables enforce the guest's permissions. An in-process form (guest memory rewritten)
-would change only that function (brief).
+virtual machine's page tables enforce the guest's permissions. Every route that emits a guest access emits it
+through `access`: copied loads and stores, the Aligned route's accesses, the Rebase route's literal loads,
+the Exclusive route's load, `cas`, `casp` and `stadd`, the Float status route's copied save and restore, and
+every x86-64 instruction re-encoded with a stand-in register (section 3.3), whose memory operand `access`
+emits. Only translated code's accesses to the thread's own pages of ours (section 3.3: the stand-in moves,
+the lookup cache) are not guest accesses and do not go through it. An in-process form (guest memory
+rewritten) would change only that function (brief).
 
 ### 3.2 Pieces, the code area and linking
 
@@ -152,8 +157,8 @@ would change only that function (brief).
   (section 5.3). A jump through xN is:
   `ubfx t, xN, #45, #11; cbnz t, bad; ubfiz t, xN, #2, #45; bfxil t, xN, #0, #2; eor t, t, #mask; br t`
   (t a withheld register, section 3.3; no memory read, no flags touched; assembled and run on this M5 for
-  aligned, misaligned, tagged and out-of-range targets, experiments/n0r2/mirror.out). Behaviour against the WebAssembly
-  output, which untags every branch target and traps a misaligned one (arm64/guest.rs:736-738,
+  aligned, misaligned, tagged and out-of-range targets, experiments/n0r2/mirror.out). Behaviour against the
+  WebAssembly output, which untags every branch target and traps a misaligned one (arm64/guest.rs:736-738,
   arm64/meaning.rs:543-557, tr/thread.rs:220-242):
   - Tag: the top byte (bits 56 to 63) is never looked at, so a tagged target lands where its untagged
     address does, as the WebAssembly output's `untag` and Linux's Top Byte Ignore make it. A target with bit
@@ -198,6 +203,20 @@ would change only that function (brief).
   0.7 µs (M5) to 6.2 µs (old Intel) (brief), and the translator, its threads and the disk cache need the
   standard library. Rejected: the translator built `no_std` inside the virtual machine (one virtual CPU to
   translate on, no disk cache, and a large change to the translator).
+- **Written code is made visible before it runs.** Every write of host code or of a slot, by the inside or
+  by the monitor into frames the inside gave, is followed, before any virtual CPU may run it, by the
+  inside's maintenance over the written range: on ARM64 `dc cvau` for each data cache line, `dsb ish`,
+  `ic ivau` for each instruction cache line, `dsb ish`, `isb` (line sizes from CTR_EL0 as the virtual CPU
+  reports it; `ic ialluis` in place of the lines for a range larger than a bound N4 measures), broadcast so
+  that every virtual CPU sees it; on x86-64 the exit that brings the answer back, a serializing return, on
+  the virtual CPU that asked, and an interprocessor interrupt to the others once more than one runs one
+  process. This covers every kind of write named here: loaded translations from the monitor, load-time
+  addresses (section 3.2, above), slots filled or emptied, linked exits, and replay's translations (section
+  5.7). Why: Hypervisor.framework does not make the guest's instruction cache coherent with the host's writes.
+  The independent check measured it (check-n0c/icache_late.out: code the host wrote into fresh guest memory
+  after the guest had run code a few lines away ran as the stale zeros, taken as `udf` at EL1, in 18 of 24
+  cases; 0 of 24 when written before the first run), and a stale `udf` in a slot would be taken for a missing
+  slot again and again.
 - **The cache.** As runtime.md section 7, with the back end in the key ("native, ARM64 on ARM64" or "native,
   x86-64 on x86-64"), the guest's offer, the withheld registers' choice and the inside's build identity.
   The emitted code relies on no host feature outside the offer except LSE on ARM64 (its own compare-and-swap,
@@ -209,14 +228,23 @@ would change only that function (brief).
 ### 3.3 Registers the translated code keeps for itself
 
 Translated code needs a few registers the guest cannot see: the count (section 4), a scratch register for
-jumps through a register and routed instructions, and a way to the thread's two pages of ours, both in the
-inside's half, next to each other, mapped only in the thread's own process (section 5.2):
-- the **thread page**, which the guest's level may read but not write: the stop word and the limit word
-  (sections 5.5, 5.7), x86-64's lookup cache and the guest's kept GS base. The inside writes it through its
-  own mapping of the frame. ARM64 has no stage 1 encoding for "EL0 reads, EL1 writes" (AP[2:1] = 11 is read
-  only at both levels; Arm Architecture Reference Manual, stage 1 data access permissions), and x86-64 with
-  CR0.WP set refuses a ring 0 write to a read-only page (Intel SDM volume 3, section 4.6), so on both the
-  inside writes through its own read-write mapping of every frame;
+jumps through a register and routed instructions, a place for the thread's stop word (section 5.7) that the
+guest's level reads and only the inside writes, and a way to the thread's pages of ours, in the inside's
+half, mapped only in the thread's own process (section 5.2):
+- the **stop word**. ARM64: the hardware register TPIDRRO_EL0, which EL0 can read and only EL1 can write.
+  The WebAssembly output answers every guest read of it with a fixed 0 (arm64/decode_forms.rs:246), so a
+  guest read is the Constant route (section 3.4) and the hardware register is free; the floor writes the
+  running thread's stop word into it at every switch. Measured under Hypervisor.framework on this M5
+  (experiments/n0r4/tpidrro.c, tpidrro.out, three values): an EL1 `msr tpidrro_el0` does not exit to the
+  host, an EL0 `mrs` reads the value, and an EL0 `msr` to it is undefined (ESR_EL1 EC 0) and leaves it
+  unchanged. x86-64 has no such register, so its stop word is in the thread page below.
+- the **thread page**, which the guest's level may read but not write: x86-64's stop word, lookup cache and
+  the guest's kept GS base; on ARM64 only option B's limit word (decision 10), so ARM64 has no thread page
+  under options A and C. The inside writes it through its own mapping of the frame. ARM64 has no stage 1
+  encoding for "EL0 reads, EL1 writes" (AP[2:1] = 11 is read only at both levels; Arm Architecture Reference
+  Manual, stage 1 data access permissions), and x86-64 with CR0.WP set refuses a ring 0 write to a read-only
+  page (Intel SDM volume 3, section 4.6), so on both the inside writes through its own read-write mapping of
+  every frame;
 - the **register page**, which the guest's level reads and writes: the guest's own values of the withheld
   registers and ARM64's exclusive monitor (section 3.4), which translated code writes as the guest runs.
   Nothing read from it is ever used as a host address or decides where host code goes (section 3.2); a
@@ -243,7 +271,7 @@ Every guest instruction that names a withheld register is re-emitted through a s
   reads or writes it is routed (section 3.4), and `gs:` operands are re-emitted against the kept base. The
   guest's FS base is the hardware's own (copied `fs:` operands, `rdfsbase` and `wrfsbase` as they are), loaded
   from the block when the thread runs and saved at every exit.
-- ARM64: three withheld registers (count, scratch, thread page), the shape the round 3 prototypes used
+- ARM64: three withheld registers (count, scratch, register page), the shape the round 3 prototypes used
   (costs-round-3/native-arm64/src/instrument3.py, x26 to x28). Which three is chosen by measurement, not
   now: compiled with three fewer registers clang lost little (geometric mean +0.3% instructions over the
   eight bench.c workloads, +2.7% on sort; summary-main-r0.txt line 114 and the sort row at line 55, "res3"),
@@ -259,7 +287,22 @@ Every guest instruction that names a withheld register is re-emitted through a s
 
 `Native::route(instruction)` gives one of these, per decoded form (each guest crate's table):
 - **Copy**: the bytes as they are (most instructions, and plain loads and stores, since the page tables check
-  them).
+  them). Only a form whose host instruction does exactly what its meaning does, for every input, may be
+  copied; the two tests at the end of this section prove it per form.
+- **Nothing**: a form the WebAssembly output decodes as doing nothing (`I::Nothing`, whose meaning is only
+  `e.next()`, arm64/meaning.rs:1425) is emitted as no instruction at all (only the count's add, if the count
+  definition puts one there). On ARM64 that is the whole hint space (arm64/decode.rs:403-405: pointer
+  signing and authentication hints, branch target marks, `wfe`, `wfi`, `sev`, `sevl`, `yield`, `chkfeat` and
+  any hint added later) and `prfm`, `prfum`, `dmb`, `dsb`, `isb`, `ssbb`, `pssbb` and `clrex`
+  (arm64/decode.rs:704-706). Why not copy: the M5 has FEAT_PAuth, FEAT_PAuth2 and FEAT_BTI (`sysctl
+  hw.optional.arm`), and the independent check measured a copied `xpaclri` at EL0 in the virtual machine,
+  with SCTLR_EL1.EnIA and EnIB clear, stripping x30's bits above the address size (check-n0c/pmu_fpsr.out
+  case H: 0x0000008000001000 became 0x1000, 0x0012340000002000 became 0x2000), where the WebAssembly output
+  leaves x30 alone; a copied `wfi` or `wfe` would idle the virtual CPU; a copied `clrex` would clear the
+  hardware's monitor, which the native output does not use, while the WebAssembly output's `clrex` leaves
+  its own monitor as it is, and so does the native output's (the Exclusive route below). The barriers change
+  nothing one guest thread can see; when the owner rules on parallel guest threads, their route is decided
+  with the WebAssembly output's.
 - **Aligned**: a copy with an alignment test in front: `and t, xN, #(size - 1); cbnz t, trap` (no flags
   touched), raising `TrapKind::Alignment` at the address as the WebAssembly output's `exact_address` does
   (arm64/memory.rs:36-47). For ARM64's atomic, exclusive and acquire/release forms (the LSE atomics, `cas`,
@@ -296,13 +339,45 @@ Every guest instruction that names a withheld register is re-emitted through a s
   (0x07c0_0000, arm64/instruction.rs:491); measured on this M5, the bits 0x3fbf07 outside that set stick when
   written (experiments/fp.c and sysregs.out: alternative handling, the trap enables, FZ16 and others), so a
   guest could switch on host behaviour the WebAssembly output does not have. The write is re-emitted with the
-  mask (one `and` on a scratch register).
+  mask (one `and` on a scratch register), inside the Float status route below.
+- **Float status**: every instruction that reads or writes the float exception flags or the float mode:
+  ARM64 `mrs` and `msr` of FPSR and `msr` of FPCR; x86-64 `ldmxcsr`, `vldmxcsr`, `stmxcsr`, `vstmxcsr`,
+  `fxsave`, `fxrstor`, `xsave`, `xsavec`, `xsaveopt` and `xrstor` (x86 plan lines 2008-2031). The WebAssembly
+  output keeps the cumulative exception flags only while they are kept: once the program has written them
+  (an FPSR write, arm64/meaning.rs:1480-1489; `ldmxcsr` or `vldmxcsr`), or while the mode is not the default
+  (FPCR not 0, the `float_slow` test, arm64/guest.rs:416-420; MXCSR's mode not 0x1F80). Otherwise a float
+  operation takes the fast path and adds no flags, and a read gives the flags as last written
+  (arm64/meaning.rs:1444-1457, the `ReadStatus` hook adding nothing, arm64/exact.rs:196-198; x86 plan lines
+  2024-2031), 0 for a fresh thread; a thread the kernel makes starts not kept (docs/status-translator.md
+  lines 2411-2413). ARM64's QC is the exception: saturating instructions always set it (arm64/simd.rs:89-95).
+  The hardware always accumulates: the independent check measured, at EL0 in the virtual machine with FPSR 0
+  and FPCR 0, `fdiv` of 1 by 3 then `mrs x0, fpsr` giving 0x10 (IXC) in 9 of 9 runs, where the WebAssembly
+  output gives 0 (check-n0c/pmu_fpsr.out case F). So natively the thread's float status is the block's,
+  with the same controls as the WebAssembly back end (Fpsr, Fpcr and FloatTracking; Mxcsr and
+  MxcsrTracking) and the same starting values, and the floor keeps it by one rule at every entry into the
+  inside: when tracking is on or the hardware's mode is not the default, the block takes the hardware's
+  flags; otherwise the block keeps its own (on ARM64 adding the hardware's QC). Every return to the guest's
+  level loads the hardware from the block. The route wraps the instruction in two calls into the inside: one
+  before it, which applies that rule and reloads the hardware, so the hardware holds exactly the guest's
+  flags; then the instruction copied (FPCR's with its mask; the memory forms through `access`); then one
+  after it, in which the block takes the hardware's whole status and tracking turns on after an FPSR write,
+  `ldmxcsr` or `vldmxcsr`, as the meanings turn it on (`fxrstor`, `xrstor` and FPCR writes do not). The copied
+  instruction is the commit point: an interrupt before it rolls back (the first call changed nothing the
+  guest sees), and after it rolls forward with the second call's work as the fix-up (section 4). Signal
+  frames, saves and the kernel's register reads take the float status from the block, which every entry
+  keeps current. Counted by kind, as the Kernel route is, and a read while not kept is counted by the inside
+  under the WebAssembly output's names ("exact floating point requested"; "MXCSR's exception flags read while
+  not kept"). Cost: two entries into the inside per such instruction, which programs make in their float
+  environment calls and, on x86-64, in glibc's lazy binding trampoline, once per lazily bound symbol (x86
+  plan lines 2017-2021). Rejected: copying them (a read would show flags the WebAssembly output does not
+  keep); a test of tracking in front of every float operation (a check on the hottest float path).
 - **Trap**: what the WebAssembly output turns into a trap (an instruction outside the offer, which the guest
   decoder does not decode; `udf`; `brk`; x86's `ud2`, `int3`, privileged instructions) is a call into the
   inside with the same `TrapKind` (gcpu/lib.rs:133-154). The offer is the translator's, never the host's:
   ARM64 offers FP, AdvSIMD, CRC32 and LSE (arm64/forms.rs:8), and this M5 has 55 features (`sysctl
-  hw.optional.arm`, SME and AFP among them), so an instruction the M5 runs but the offer does not include is
-  never copied.
+  hw.optional.arm`, SME and AFP among them). An instruction outside the offer is not decoded, so it is a
+  trap and never copied; the words the decoder does decode as doing nothing (the hint space, where the M5
+  gives pointer authentication and branch marks a meaning) are the Nothing route's, never copied either.
 - **Exclusive**: ARM64 load-exclusive and store-exclusive keep the WebAssembly output's monitor
   (`ExclusiveBytes`, `ExclusiveAddress`, the value; arm64/meaning.rs:35-41, kept at the offsets of
   arm64/guest.rs:408-411) in the register page: a load exclusive (after its alignment test) loads and
@@ -322,10 +397,13 @@ Every guest instruction that names a withheld register is re-emitted through a s
   exclusive would fail where the WebAssembly output's succeeds, and the retry would change the count.
   Expected from the architecture's rules; N6's replay test puts interrupts between the pair.
 
-Floating point is copied. The WebAssembly output's `Hook::Float` (arm64/float.rs:5-8, called at
-float.rs:216, :643, :700 and for the FPSR read at meaning.rs:1453) is its own way, in software, to give what
-the hardware gives natively for the presented FPCR modes and the exact FPSR flags; with FPCR masked to the
-presented bits the hardware computes what Arm defines, which is what the hook computes.
+Float arithmetic is copied. The WebAssembly output's `Hook::Float` (arm64/float.rs:5-8, called at
+float.rs:216, :643 and :700) is its own way, in software, to compute what the hardware computes natively for
+the presented FPCR modes; with FPCR masked to the presented bits the hardware computes what Arm defines,
+which is what the hook computes. The exception flags it raises are visible to the guest only through the
+Float status route above, which gives exactly the flags the WebAssembly output keeps. On x86-64 a float
+exception the guest has unmasked in MXCSR raises #XM in hardware, which the floor reports as the meaning's
+`TrapKind::FloatException` (gcpu/lib.rs:150; x86 plan line 2023).
 
 **x86-64's trap flag and alignment checking.** The WebAssembly output holds TF exactly and steps as the
 reference does (x86 plan lines 1463-1513: an instruction that starts with TF set stops right after it; `popf`
@@ -365,22 +443,33 @@ counted "alignment checking asked for, not provided" (x86 plan lines 1514-1520).
 - A static test (in each guest crate's tests, not shipped) runs every decoded form through `Guest::emit`
   with a recording emitter, which records the hooks the meaning calls (`hook`), the thread state it touches
   (`get_control`, `set_control`), and whether it calls `syscall`, `trap` or `raise_stop` (x86 plan lines
-  971-976). Each guest crate's `Native` gives every hook kind and every control a native class: held by the
-  hardware as presented (ARM64 `ThreadPointer`, `Fpsr`, `Fpcr` behind its mask, the `Float` hook; x86-64 the
-  FS base; DF, NT and ID read through `Rflags`), the WebAssembly output's own bookkeeping with nothing to
-  keep natively (ARM64 `FloatTracking`; x86-64 the step machine's `Step`, `StepAt`, `StepHeld`), kept by the
-  native output (the exclusive monitor; x86-64 the GS base), or answered by the inside (`Clock`,
-  `CodeChanged`; x86-64 any write of `Rflags` and any `raise_stop`, which are TF's and AC's). A form may
-  be Copy or Aligned only if everything it touches is of the first two classes; a form touching a kept or
-  answered one must be routed to the route that class names. A form added to a guest crate is then routed
-  or the test fails.
+  971-976), and the float hook's operation (the constant the meaning passes as the hook's first argument,
+  arm64/meaning.rs:1449). Each guest crate's `Native` gives every hook kind and every control, read and
+  written apart, a native class: held by the hardware as presented (ARM64 `ThreadPointer`; reads of `Fpcr`
+  and `FloatTracking`, which only choose the WebAssembly output's float path; writes of `Fpsr`, which are the
+  flags a float operation or a saturation adds and the hardware adds too; the `Float` hook for an
+  arithmetic operation; x86-64 the FS base; reads of `Mxcsr` and `MxcsrTracking` by arithmetic; DF, NT and
+  ID read through `Rflags`), the WebAssembly output's own bookkeeping with nothing to keep natively (x86-64
+  the step machine's `Step`, `StepAt`, `StepHeld`), kept by the native output (the exclusive monitor;
+  x86-64 the GS base; the float status: writes of `Fpcr`, `FloatTracking`, `Mxcsr` or `MxcsrTracking`, and
+  the `Float` hook with `ReadStatus`, which is what every read of the flags makes while they are not kept;
+  x86-64's classes are fixed against its meanings at X1, which tell its arithmetic's flag updates apart
+  from the status writes in the same way),
+  or answered by the inside (`Clock`, `CodeChanged`; x86-64 any write of `Rflags` and any `raise_stop`,
+  which are TF's and AC's). A form may be Copy or Aligned only if everything it touches is of the first two
+  classes; a form touching a kept or answered one must be routed to the route that class names; a form
+  whose meaning touches nothing at all (no register, flag, control, memory or hook) must be Nothing. A form
+  added to a guest crate is then routed or the test fails.
 - The static test cannot see a form whose meaning gives a fixed answer where the hardware gives another
   (`sgdt`, `lsl`, a CTR_EL0 read). So a differential test runs every decoded form natively, as routed, at the
   guest's level inside the virtual machine, and through the WebAssembly output, from the same seeded
   registers, flags and memory, and compares every register, flag, control, memory byte and trap. Seeded,
-  with the seed and the number of cases per form as arguments; N2 (ARM64) and N9 (x86-64) run it. For
-  x86-64 the seeded states include TF and AC set in the values `popf` and `iretq` take, and a stepped run
-  of each form compares the stops as well.
+  with the seed and the number of cases per form as arguments; N2 (ARM64) and N9 (x86-64) run it. Registers
+  are seeded over all 64 bits (so a stripped or changed high bit shows). Every form also runs after a float
+  operation that raises seeded flags, with tracking on and off and the mode default and not, so a float
+  status form shows any flag the hardware kept and the WebAssembly output did not. For x86-64 the seeded
+  states include TF and AC set in the values `popf` and `iretq` take, and a stepped run of each form
+  compares the stops as well.
 
 ### 3.5 Code a program writes itself
 
@@ -429,12 +518,22 @@ these names (suggested; the owner chooses names):
 - "single step through host instructions" (x86-64, a thread with TF set: every host instruction a ring 0
   exception, section 3.4);
 - "step handed to a virtual CPU": each `Container::step` a caller makes is one handoff to a pool thread and
-  back (section 6.1), where `Container::run` hands over only when the loop inside meets something for the
-  host;
-- "turn limited by a count" (only under option B of decision 10).
+  back (section 6.1), where `Container::run` hands over once and runs `drive` inside;
+- "turn limited by a count" (only under option B of decision 10);
+- "turn limited by a count alone" (until the owner rules on decision 10: such a turn is answered as
+  `Failure`, never run past its limit, section 5.5);
+- "address-space identifiers ran out" (a new generation and one whole invalidation, section 5.2);
+- "guest-physical space full" (a request for memory fails at the bound of section 5.1);
+- "address above the ceiling" (a request for an address at or above the native ceiling fails until moving
+  exists, section 6.2, K2);
+- "large entry split" (a 2 MiB entry broken into 4 KiB entries because one page of it changed, section 5.2);
+- "back end refused by the probe", with the missing feature (section 5.8);
+- the float status reads the WebAssembly output also counts ("exact floating point requested"; "MXCSR's
+  exception flags read while not kept"), under its names (section 3.4).
 Not slow paths, and still counted for the record: `bad` (a fault the guest made, reported as the
-WebAssembly output reports it), the routed Kernel instructions by kind. The routed store exclusive, the
-alignment tests and the FPCR mask are the native output's normal and only way for those forms.
+WebAssembly output reports it), the routed Kernel and Float status instructions by kind. The routed store
+exclusive, the alignment tests and the FPCR mask are the native output's normal and only way for those
+forms.
 
 ## 4. The progress count
 
@@ -477,6 +576,8 @@ comes after the commit, as in a call stub). The floor, at any interrupt or fault
      instruction has run; the target in t after a plain call has written x30 (the pc is then that target);
    - a store exclusive's status: 0 if the `cas` read the recorded value (in a withheld register), else 1,
      and 1 after the `stadd` of a store exclusive with nothing matching remembered;
+   - a float status write's second call (section 3.4): the block takes the hardware's status, and tracking
+     turns on where that instruction turns it on;
 4. sets the count to the register less the map's amount.
 So a stop is always at a guest instruction boundary with the count of events completed before it, and with
 the registers the guest has there, which is what the WebAssembly output reports for a thread stopped at
@@ -518,7 +619,15 @@ or a seeded sample whose size is an argument) must have the same registers.
 
 - ARM64: the inside runs at EL1, translated guest code at EL0. EL2 is not used: nothing inside is a
   hypervisor (Hypervisor.framework can offer EL2 to a guest on newer chips, `hv_vm_config_set_el2_enabled`
-  in Apple's documentation for macOS 15; KVM only with nested virtualization; neither is wanted).
+  in Apple's documentation for macOS 15; KVM only with nested virtualization). The one thing EL2 would bring
+  is a performance counter for decision 10's option C on Hypervisor.framework: with EL2 disabled every PMU
+  register access exits to the host and the virtual CPU reports no PMU (hv_vm_config.h, the discussion of
+  `hv_vm_config_set_el2_enabled`; the independent check measured PMUVer 0 and EC 0x18 exits for
+  `pmcr_el0`, `pmccntr_el0` and `pmuserenr_el0` at EL1, check-n0c/pmu_fpsr.out case P), and with EL2 enabled
+  the framework emulates PMU accesses only when ID_AA64DFR0_EL1.PMUVer is not 0 (same header). Measured here
+  (experiments/n0r4/tpidrro.out, case E, two runs): with EL2 enabled the virtual CPU still reports PMUVer 0,
+  and the host can set PMUVer to 1 to 9 with `hv_vcpu_set_sys_reg`, which reads back. Whether the emulated
+  counter counts EL0 instructions and raises an overflow interrupt is not known; N1 tries it (decision 10).
 - x86-64: the inside runs in ring 0, translated code in ring 3, in 64-bit mode with 4-level paging.
 - **One virtual machine per host process**, holding every container that process runs natively. Why:
   Hypervisor.framework allows one virtual machine per process (hv_vm.h: `hv_vm_create` "Creates a VM
@@ -556,12 +665,14 @@ holds:
   per container), the timer (ARM64 the virtual timer through the GIC; x86-64 the local APIC's TSC-deadline
   timer), the interrupt controller, and the link. What the guest's level is allowed is set as the WebAssembly
   output presents it:
-  - ARM64: TCR_EL1 with the granule of `PAGE_SIZE` (4 KiB) for both halves, TBI0 = 1 and TBI1 = 0 (Linux's Top Byte Ignore for
-    user addresses, which copied loads and stores need to match the WebAssembly output's `untag`; measured,
-    branch.out case E: a load through a tagged pointer works with TBI0 = 1 and faults with TBI0 = 0), A1 = 0
+  - ARM64: TCR_EL1 with the granule of `PAGE_SIZE` (4 KiB) for both halves, TBI0 = 1 and TBI1 = 0 (Linux's
+    Top Byte Ignore for user addresses, which copied loads and stores need to match the WebAssembly
+    output's `untag`; measured, branch.out case E: a load through a tagged pointer works with TBI0 = 1 and faults with TBI0 = 0), A1 = 0
     (the address-space identifier comes from TTBR0); SCTLR_EL1.A = 0 (unaligned plain accesses allowed), SA0
     as `Guest::SP_ALIGNMENT_CHECKED` says (gcpu/translate.rs:196), UCI set as Linux sets it, DZE set (`dc
-    zva` with the presented block size, which the probe requires of the host); MAIR_EL1, VBAR_EL1;
+    zva` with the presented block size, which the probe requires of the host), nTWI and nTWE clear (a `wfi`
+    or `wfe` at EL0 traps; none is ever emitted, section 3.4's Nothing route), the pointer authentication
+    enables and BT0 clear; MAIR_EL1, VBAR_EL1;
   - x86-64: GDT with Linux's user selectors, IDT, TSS, EFER; CR0 with WP set (read-only pages refuse ring 0
     writes too, section 3.3) and AM clear (no alignment-check exception at any level; the guest's AC is
     never set, section 3.4); CR4.TSD set so a stray `rdtsc` traps,
@@ -592,6 +703,26 @@ fault handled inside, 224 ns with the frame already backed, 584 ns when the insi
 (Hypervisor.framework, mac-tests.jsonl "guest_fault"); one page's permission changed through a system call
 inside, 558 ns with the invalidation Linux uses, against 323 ns for the host's own `mprotect` (same file,
 "guest_permission_change", "native_mprotect_16k").
+
+**Larger entries where the guest cannot tell.** Round 3 ran the eight bench.c workloads untranslated at EL0
+inside Hypervisor.framework against plain native runs. Over those eight (geometric mean of each workload's
+median ratio, computed from costs-round-3/virtual-machine/results/mac-summary-main.json and
+mac-summary-16k.json by experiments/n0r4/vmcost.py, vmcost.out), the cycles cost +8.5% with 4 KiB stage 1
+pages (instructions +0.9%; sieve +39.5%, walk +36.9%), +2.8% with 2 MiB blocks (instructions +0.7%; walk
+still +20.5%) and +2.9% with a 16 KiB granule: the difference is the TLB's reach. So the floor maps a 2 MiB
+aligned range of a process with one 2 MiB entry (ARM64 a level 2 block; x86-64 a 2 MiB page) whenever the
+kernel's record gives every page of it the same permissions and kind (private memory, no write lock),
+backed by a 2 MiB aligned run of guest-physical frames never used since the host last gave them fresh.
+Such a run reads as zeros and costs the host nothing until touched (section 5.2, memory from the host), so
+taking a whole block at the first touch zeroes nothing and holds no more host memory than the pages
+touched. A change that leaves the whole range alike (a fork write-protecting it all) keeps the block; one
+that reaches only part of it (a permission change, a copy-on-write copy, a tracking lock, an unmapping)
+first splits it into 4 KiB entries over the same frames (on ARM64 by break-before-make: the entry made
+invalid, its range invalidated, then the new table written), counted "large entry split". The guest cannot
+tell: permissions stay per 4 KiB page as the record says, and the kernel reports residency the same on
+every back end (every mapped page as in memory, kernel/counters.rs:41-44). N4 also measures ARM64's
+contiguous bit (16 entries as one) for ranges that cannot take a block. Rejected: 4 KiB entries only (+8.5%
+cycles before any translation, most of section 8's margin).
 
 A later 16 KiB guest mode (brief) changes `PAGE_SIZE` and nothing in this design's shape: on ARM64 the floor
 takes the granule from it (TCR_EL1 TG0 and TG1; the M5's virtual CPU offers both granules, ID_AA64MMFR0_EL1
@@ -649,8 +780,9 @@ maps another region (brief: leaving for more memory), up to the bound of section
 - **Leaving a translation** (code changed, section 3.5, or the range unmapped) happens in one process:
   that process's slots for the range are emptied (copying the mirror frame first if shared) and its count of
   holders of the translation drops.
-- **Threads** are register blocks plus the thread and register pages (section 3.3); a switch saves the
-  withheld registers and the count into the block and loads the next.
+- **Threads** are register blocks plus the register page and, where there is one, the thread page (section
+  3.3); a switch saves the withheld registers, the count and the float status (section 3.4) into the block
+  and loads the next, with its stop word (ARM64: into TPIDRRO_EL0).
 - **More than one virtual CPU for one container** is built only after the owner's ruling on parallel guest
   threads (the x86 memory ordering question is the same ruling). The pool of section 5.1 runs different
   containers at once from the start. The design allows it for one container: interprocessor interrupts
@@ -720,16 +852,22 @@ the turn handoff of section 5.1). Measured exit cost 0.7 µs on the M5 and 5.6 t
 
 ### 5.7 Replay to a logged position
 
-To stop a thread at (count N, pc P): the thread page of that thread gets N as its stop word (every other
-thread's holds a value no count reaches), and the inside asks for P's piece again with a check at P (the
-translator's one operation, "translate from this address", with a stop point added to the request; the
-stop point is in the cache key, so such translations are kept apart), or patches the first host instruction
-of P's run into a branch to a check stub when P starts a run. The check reads the stop word from the thread
-page, compares it with the count without touching flags (ARM64: `ldr`, `sub` and `cbz` on withheld
-registers; x86-64: a form that keeps the guest's flags, chosen at N9) and enters the inside when equal;
-elsewhere nothing changes. Since the patched code may be shared by other threads and processes, the check
-being against the running thread's own stop word is what makes only the target stop. By the property of
-section 4, P is reached with count N at most once. Once there, the original piece comes back.
+To stop a thread at (count N, pc P): that thread's stop word (section 3.3) becomes N (every other thread's
+holds a value no count reaches), and the inside asks for P's piece again with a check at P: the
+translator's one operation, "translate from this address", with a stop point added to the request (the
+stop point is in the cache key, so such translations are kept apart). The new translation is loaded into
+the target thread's process only (its slots, or its table on x86-64, are pointed at it, and the written code
+made visible as section 3.2 says); other processes keep the original. The check compares the stop word with
+the count without touching flags (ARM64: `mrs t, tpidrro_el0`, `sub t, t, c`, `cbz t, stop`, on withheld
+registers with no memory read; x86-64: a form that keeps the guest's flags against the thread page's word,
+chosen at N9) and enters the inside when equal; elsewhere nothing changes. Other threads of the same process
+run the same code, and the check being against the running thread's own stop word is what makes only the
+target stop. By the property of section 4, P is reached with count N at most once. Once there, the process's
+slots go back to the original translation. Rejected: patching the first host instruction of P's run into a
+branch to a check stub as a second way beside retranslation. It would save only the translation of one
+piece per replay target (bounded look-ahead, milliseconds, and found in the cache the next time), and it
+works only where P starts a run, so retranslation would still be needed for the rest: two mechanisms for one
+job.
 
 **Across outputs.** Both outputs count the same events with the same function (section 4), on the guest's
 own instructions, and report positions at guest instruction boundaries. So:
@@ -789,21 +927,23 @@ the virtual machine, the loop must run there too, or every system call would lea
 6.2 µs against 21 to 32 ns inside, brief). So the same `Stepper` runs inside, built `no_std`, with the native
 `Execution` and the outside's policy. On the host:
 - `Container::run` (rt/container.rs:157-162, which is `Stepper::drive`, rt/lib.rs:227-244: step again and
-  again, waiting in `idle` after `Step::Idle`) hands the virtual CPU one call that runs `Stepper::step` inside
-  again and again while it gives `Step::Ran`, so a switch between guest threads (a pipe between two
-  processes, say) never leaves the machine. The virtual CPU comes back only with `Idle`, `Finished` or
-  `Ended`, or when the host stops it; after `Idle` the host waits in the services (the waiting half of
-  `idle`) and hands the virtual CPU the next call. The loop is the same `Stepper::step`; only where its
-  repetition waits differs, as `drive` waits in `idle` today.
+  again, waiting in `idle` after `Step::Idle`) hands the virtual CPU one call that runs `Stepper::drive`
+  itself inside, so a switch between guest threads (a pipe between two processes, say) never leaves the
+  machine. The policy's `idle` (R3: its decision half) is a link request whose answer the monitor gives after
+  the services' waiting half has waited, on the virtual CPU's own host thread, and handed back what arrived;
+  `drive` then carries on. The virtual CPU comes back only when `drive` returns, with `Finished` or
+  `Ended`. A stop the host asks for (a save, the user's stop) is an interrupt that ends the turn, and the
+  policy's `stopped` ends the run as it does today (rt/lib.rs:216-219). So there is one driver, `drive`, and
+  one step, `Stepper::step`, on every back end; only the waiting half of `idle` is on the other side of the
+  link.
 - `Container::step` (rt/container.rs:145-150) keeps its meaning, one step, for a caller with its own event
-  loop: one handoff to a pool thread and back per step, including every `Step::Ran`. That is a pool-thread
-  handoff (measured at N5) plus a doorbell exit (0.7 µs on the M5, 5.6 to 6.2 µs on the Intel laptop, brief)
-  per step, where a system call answered inside costs 21 to 32 ns; counted "step handed to a virtual CPU"
-  (section 3.7), so a caller that steps natively is told to use `run` or accept it.
-- When nothing can run, the inside's loop gives `Step::Idle` (rt/lib.rs:175) and the virtual CPU leaves the
-  machine with it, so the host's caller gets `Idle` and waits as it likes, exactly as with the WebAssembly
-  back end; `Container::idle` then waits in the host services and hands what arrived to the policy at the
-  next step.
+  loop: one handoff to a pool thread and back per step, running `Stepper::step` once inside, including every
+  `Step::Ran`. That is a pool-thread handoff (measured at N5) plus a doorbell exit (0.7 µs on the M5, 5.6 to
+  6.2 µs on the Intel laptop, brief) per step, where a system call answered inside costs 21 to 32 ns; counted
+  "step handed to a virtual CPU" (section 3.7), so a caller that steps natively is told to use `run` or
+  accept it. When nothing can run, that step gives `Step::Idle` (rt/lib.rs:175) back to the caller, who waits
+  as it likes, exactly as with the WebAssembly back end; `Container::idle` then waits in the host services
+  and hands what arrived to the policy at the next step.
 
 ### 6.2 What changes, and who owns it
 
@@ -825,7 +965,7 @@ The changes:
 - **R2 (runtime track): the container steps a place the back end names.** `BackEnd` drops its `Execution`
   bound and its `stop_flag`, and names the place its loop runs: here (the kernel, the `Execution`, the policy
   and the `Stepper` as today's fields, rt/container.rs:137-163) or inside a virtual machine (a handle whose
-  `step` hands one step to the pool and whose `run` hands over the repetition of section 6.1). It gives a
+  `step` hands one step to the pool and whose `run` runs `Stepper::drive` inside, section 6.1). It gives a
   stop handle whose `raise` writes the flag word (WebAssembly) or
   raises an interrupt (native), in place of `Outside::stop_flag`. `step`, `idle` and `run` keep their
   meaning, `Step` is unchanged, and `back_end` stays.
@@ -906,6 +1046,8 @@ exception that comes back:
   mirror is the guest's misaligned target (`TrapKind::Alignment`); an instruction abort in the guest's half
   is `Exit::MemoryFault` with `Access::Execute`;
 - the timer or a raised interrupt is `Exit::Stop`;
+- a Float status call (section 3.4) is answered inside and carries on; an x86-64 #XM is the `Exit` of
+  `TrapKind::FloatException` (gcpu/lib.rs:150), as the meaning raises it;
 - a routed trap is the `Exit` of its `TrapKind`; a failed alignment test is `Exit::AlignmentFault`.
 Registers are exact at every exit (section 4), so `Exit::MemoryFaultWithoutRegisters` never happens here.
 `restored()` makes the same inside state over the saved memory with no loaded translations.
@@ -920,7 +1062,8 @@ Registers are exact at every exit (section 4), so `Exit::MemoryFaultWithoutRegis
   `access` function is where they would differ.
 - Windows Hypervisor Platform (not in the ruling).
 - Devices, firmware, a second operating system in the virtual machine: the inside is the only program.
-- Large guest pages: the guest has 4 KiB pages only (brief); the host may back memory as it likes.
+- Large guest pages: the guest has 4 KiB pages only (brief); the host may back memory as it likes, and the
+  floor's 2 MiB entries (section 5.2) are underneath, never pages the guest sees.
 - Features beyond the translator's offer, on any host (section 3.4), and native runs on a host lacking any
   feature of the offer (section 5.8).
 - 32-bit guests (AArch32, x86-32).
@@ -935,10 +1078,12 @@ Registers are exact at every exit (section 4), so `Exit::MemoryFaultWithoutRegis
 What of ours the guest's level can reach (the brief's addendum), by platform:
 - ARM64: the code area and the mirror are execute-only at EL0, so a guest load or store there faults, as on
   the WebAssembly output (check-n0/xo.out cases 2, 3 and 5; the floor reports it as a fault where nothing is
-  mapped). The inside's own memory and every container's heap are EL1-only. What differs: each guest
-  thread's thread page (read-only at EL0: a guest load there succeeds and a store faults, where Linux and
-  the WebAssembly output fault on both) and register page (readable and writable at EL0: both succeed),
-  mapped only in the thread's own process (section 5.2), because translated code at EL0 uses them.
+  mapped). The inside's own memory and every container's heap are EL1-only. The stop word is in
+  TPIDRRO_EL0, not in memory (section 3.3). What differs: each guest thread's register page (readable and
+  writable at EL0: a guest load or store there succeeds, where Linux and the WebAssembly output fault),
+  mapped only in the thread's own process (section 5.2), because translated code at EL0 uses it; and, only
+  under option B of decision 10, the thread page holding the limit word (read-only at EL0: a load succeeds
+  and a store faults).
 - x86-64: as on ARM64 for the inside's memory (supervisor-only), and for the thread and register pages
   (the thread page read-only at ring 3). What differs besides: the code area (with the x86-64 per-process
   tables), which is readable at ring 3 since x86-64 has no execute-only pages without protection keys,
@@ -947,16 +1092,26 @@ What a guest can do there, and no more: read our pages and its own translated co
 register page, which changes only its own withheld registers' values and its own exclusive monitor, as if
 it had written those registers. It cannot change where host code goes (only addresses the inside or the
 translator wrote are jumped to, section 3.2), cannot run a host instruction that was not emitted for a
-guest instruction's route, and cannot change its stop word, limit word or lookup cache (all in the
-read-only thread page), so replay and routing do not depend on the guest leaving these pages alone. In
+guest instruction's route, and cannot change its stop word, limit word or lookup cache (in TPIDRRO_EL0 or
+the read-only thread page), so replay and routing do not depend on the guest leaving these pages alone. In
 every case the address is in the inside's half (ARM64 bit 55 set; x86-64 the upper canonical half), which
 Linux never gives a user program; only a program that makes such an address on purpose sees it. It cannot
 be counted without a check on every guest access, which the ruling's speed forbids, so it is named here and
 carried on the kernel's written list of differences (decision 4). Replay across the two outputs rests on
 positions, the inputs logged and the shared count, none of which uses these pages; a program that reads them
 behaves differently on the two outputs from that access on, which the replay test reports as a mismatch at
-that position, never silently. N1 and N8 test that a store to the thread page faults and that one
-process cannot address another's pages.
+that position, never silently. N1 tests that EL0 cannot write TPIDRRO_EL0, N8 that a store to the thread
+page faults, and both that one process cannot address another's pages.
+
+A permission change to a running function's own stack frame. The translator's contract lets the WebAssembly
+output notice a change to a page of a running function's own frame, at or above the stack pointer, only at
+the next function entry, not at once (tr/contract.rs:20-22). The native output's page tables apply every
+change at once, as Linux does. So a program that changes the permissions of its own live frame (say with
+`mprotect` making it read-only) and then writes to it before the next call faults natively and on the
+reference, and not on the WebAssembly output. This is the WebAssembly output's difference from the
+reference; natively nothing can delay the change without a check on every access. Replay across the two
+outputs diverges at that access, and the replay test reports it as a mismatch there. Named here and on the
+kernel's written list; decision 13 asks whether the translator track closes it.
 
 Handled, and proven by tests rather than assumed:
 - **Store exclusive** (section 3.4): the differential test (N2) for its faults and status, N6 under
@@ -966,7 +1121,11 @@ Handled, and proven by tests rather than assumed:
 - **x86-64's trap flag and AC** (section 3.4): the differential test's stepped runs (N9).
 - **Floating point**: native ARM64 on ARM64 computes what Arm defines, which the WebAssembly output also
   produces (bit-exact not-a-numbers, translator plan); the native output never changes FPCR outside the
-  presented bits.
+  presented bits; the exception flags the guest can read (FPSR, MXCSR, saved state, signal frames) are the
+  ones the WebAssembly output keeps, by the Float status route (section 3.4), proven by the differential
+  test's float status cases (N2, N9).
+- **The hint space and the other forms decoded as nothing** (section 3.4's Nothing route): never copied,
+  checked by the static test's rule and the differential test's full-width registers (N2).
 - **A program reading the counter in a loop** sees the kernel's clock on both outputs.
 
 ## 8. Tests and the pass bar
@@ -998,9 +1157,13 @@ Handled, and proven by tests rather than assumed:
   of each run on performance cores recorded. Measured per run: cycles and instructions retired of the whole
   host process (macOS `proc_pid_rusage`'s `ri_cycles` and `ri_instructions`, which count the virtual CPU's
   thread, as round 3 measured them, costs-round-3/virtual-machine/src/arm64/hvfrun.c:286-287; on Linux the
-  same two counters from `perf_event_open`), and wall time for the record. The guest's own computing inside a
-  virtual machine was measured equal to plain native (round 3, 4 KiB pages: instructions 1.000 to 1.004,
-  mac-summary-main.json), so what the bar tests is the translation and the count. The bar is in cycles, not
+  same two counters from `perf_event_open`), and wall time for the record. Running inside a virtual machine
+  costs something before any translation: round 3's untranslated runs over the same eight workloads cost
+  +8.5% cycles with 4 KiB stage 1 pages and +2.8% with 2 MiB blocks (section 5.2, larger entries;
+  instructions +0.9% and +0.7%), so the bar's margin pays for the virtual machine as well as the
+  translation, and the floor uses larger entries to keep its share near the second figure. To know the
+  shares, the method also runs each workload untranslated at EL0 on the floor (a test program, as round 3
+  did; never shipped) and records its ratio beside the translated one's. The bar is in cycles, not
   wall time: under this Mac's load (55 to 141 in round 3) wall-time intervals spread tens of points
   (summary-main-r0.txt line 57: sort under En, wall +6.3% [-54.2 .. +916.8], cycles +7.2% [+4.4 .. +10.0]),
   so a wall-time bar could not be decided there. Proposed bar: the geometric mean, over the eight bench.c
@@ -1010,8 +1173,12 @@ Handled, and proven by tests rather than assumed:
   100 ns. Decision rule: a 95% interval for that geometric mean, by a seeded bootstrap over the pairs (the
   seed and the number of resamples are arguments); pass when its upper end is at or under the bar, fail when
   its lower end is over it; otherwise run again with twice the pairs, up to 60, and if still undecided, report
-  it undecided to the orchestrator with the figures, to be run on a quieter machine. The bar is the owner's
-  (decision 6); until the owner rules, the proposed one is the bar.
+  it undecided to the orchestrator with the figures, to be run on a quieter machine. Which count definition
+  the bar uses: the one the brief names when the bar is run; while it names none, every candidate that
+  passes section 4's property test (T, E, Hn and Mn, each through the one `counted` function), each against
+  its own measured cost plus 10 points, with the verdict recorded per candidate, and the bar is met when
+  every one of them meets its own. The bar is the owner's (decision 6); until the owner rules, the proposed
+  one is the bar.
 
 ## 9. Milestones
 
@@ -1026,22 +1193,28 @@ the ruling).
   interrupts land in the inside. Bar: one test binary (signed with the hypervisor entitlement) runs each case
   and checks its exception class, fault status, address and registers against the expected ones written in
   the test: execute-only code runs and refuses loads and stores; guest pages refuse execution; a misaligned
-  `br` gives EC 0x22 at the target; tagged loads and branches behave as TBI0 says; an EL0 store to a thread
-  page faults and a load from it works; two processes (of two containers, with different identifiers) do not
-  see each other's mirror, thread pages or heap, after switching back and forth with no invalidation; EL1
-  software step of EL0 gives EC 0x32 at each next instruction (as experiments/n0r3/step.out); a timer
-  interrupt and an `hv_gic_set_spi` interrupt each land; a second virtual CPU on another thread runs; memory
-  given back through the link lowers the process's footprint. Every case passes; the doorbell round trip and
-  an interrupt's arrival are measured and recorded, and so is whether a performance counter's overflow
-  interrupt for EL0 instructions reaches the inside and how late (decision 10's option C; recorded, not a
-  pass condition).
+  `br` gives EC 0x22 at the target; tagged loads and branches behave as TBI0 says; TPIDRRO_EL0 written at
+  EL1 is read at EL0 and an EL0 write to it is undefined (as experiments/n0r4/tpidrro.out); the register
+  page is readable and writable at EL0; two processes (of two containers, with different identifiers) do not
+  see each other's mirror, register pages or heap, after switching back and forth with no invalidation; a 2
+  MiB block reads and writes at EL0, and after a permission change to one of its pages only that page
+  refuses; code the monitor writes into a frame after the guest has run code next to it runs as written
+  after the inside's maintenance (section 3.2; the independent check's late-write case, which ran stale code
+  without it); EL1 software step of EL0 gives EC 0x32 at each next instruction (as
+  experiments/n0r3/step.out); a timer interrupt and an `hv_gic_set_spi` interrupt each land; a second
+  virtual CPU on another thread runs; memory given back through the link lowers the process's footprint.
+  Every case passes; the doorbell round trip and an interrupt's arrival are measured and recorded, and so
+  is decision 10's option C case, recorded and not a pass condition: in a machine with EL2 enabled and
+  PMUVer set by the host (section 5.1), whether the emulated counter counts EL0 instructions, whether its
+  overflow interrupt reaches the inside, and how late.
 - **N2, the native ARM64 output, instruction by instruction.** `Native` for ARM64, the small encoder, every
   route of section 3.4 at look-ahead none, the stand-in register for withheld ones, the position map, run at
   EL0 on N1's floor with no kernel: each case's state is set by the floor and read back by it. Needs nothing
   from other tracks. Bar: the static routing test passes for every ARM64 form; the differential test
   passes for every ARM64 form at 1000 seeded cases per form or more (seed and count recorded), against the
-  WebAssembly output under wasmtime on the same Mac; misaligned and tagged targets, misaligned atomics and the
-  store exclusive's faults are among its cases.
+  WebAssembly output under wasmtime on the same Mac; misaligned and tagged targets, misaligned atomics, the
+  store exclusive's faults, the hint space with full-width x30, and every float status form after a float
+  operation that raised flags (tracking on and off, FPCR default and not) are among its cases.
 - **N3, the first real programs.** The kernel and the `no_std` loop inside with the test crate's policy,
   translation on the host through the link, the count's adds from the shared `counted` (or, until T2, the
   same function in this track's code, moved at T2), one process at a time. Needs decision 1 and its changes
@@ -1054,9 +1227,12 @@ the ruling).
   answers give count limits) waits for decision 10 and N5.
 - **N4, linking and speed.** Bounded and full look-ahead, load-time addresses, linked exits, the entry
   mirror, the call stub, the cache with the native key and disk files; the dynamic register uses of section
-  3.3 counted and the three withheld registers chosen. Bar: N3's bar still passes at every look-ahead, and
-  the speed method of section 8 on the Mac meets the speed bar by its decision rule (decision 6, the
-  proposed one until ruled), every program's figures recorded.
+  3.3 counted and the three withheld registers chosen; 2 MiB entries and their splitting (section 5.2), with
+  the contiguous bit measured against 4 KiB entries for ranges that cannot take a block. Bar: N3's bar still
+  passes at every look-ahead, and the speed method of section 8 on the Mac meets the speed bar by its
+  decision rule (decision 6, the proposed one until ruled), for the count definition the brief names or,
+  while it names none, for every candidate as section 8 says, every program's figures recorded beside the
+  untranslated run's.
 - **N5, the execution side.** Needs decisions 1, 10 and 12 and the changes they bring (R2, R3, and R4 under
   option A), done by their owners or by this track if they agree. `Execution` and `BackEnd` for native,
   `run` and `step` as section 6.1 says, the pool of virtual CPUs, several containers in one process,
@@ -1065,8 +1241,11 @@ the ruling).
   WebAssembly back end's results (as section 8 says for each option); layer 1 passes over the native `Cpu`
   side; the every-offset test passes with no mismatch over the translator's benchmark programs and layer 2's
   busybox, its seed and case count recorded; the handoff cost of `step` is measured and recorded.
-- **N6, replay.** The replay check, the record and replay outside, store exclusive under interrupts. Bar: the
-  cross-output replay test both ways, at least 100 runs each way, no mismatch, the number of runs recorded.
+- **N6, replay.** The replay check, the record and replay outside, store exclusive under interrupts. Needs
+  the translator track's T2 (the WebAssembly output counting by the shared `counted`) and T3 (the stop point
+  in a translation request), for the WebAssembly side of the test and for this side's stop point; and N5.
+  Bar: the cross-output replay test both ways, at least 100 runs each way, no mismatch, the number of runs
+  recorded.
 - **N7, save and bring back.** Saving a container and bringing it back in another process's machine. Bar: the
   kernel tests that save (procsignals and the rest of layer 2's saving tests) pass with native saves, and a
   container saved in one process finishes in another with the output of an unsaved run.
@@ -1105,8 +1284,10 @@ the ruling).
 3. The translator split into a finder and two emitters behind features (T1), the native build still
    carrying the meanings and wasm-encoder for the finder's effects (section 3.1): agreed? Recommended: yes.
 4. Our pages the guest's level can reach, only at addresses Linux never gives a user program (section 7.2):
-   each thread's thread page (readable) and register page (readable and writable, its own withheld registers'
-   values and exclusive monitor), and x86-64's readable code area. Accept as a named difference on the
+   each thread's register page (readable and writable, its own withheld registers' values and exclusive
+   monitor); on x86-64 also the thread page (readable) and the readable code area, and on ARM64 the thread
+   page only under option B of decision 10 (otherwise the stop word is in TPIDRRO_EL0, section 3.3). Accept
+   as a named difference on the
    kernel's written list? Recommended: yes; nothing closes it without a check on every access, and nothing
    in it lets a guest steer host code or replay.
 5. Licences: `kvm-ioctls` (Apache-2.0 OR MIT), `kvm-bindings` (Apache-2.0), `applevisor` (MIT OR
@@ -1114,7 +1295,9 @@ the ruling).
    (MIT/Apache-2.0), `talc` (MIT), `iced-x86` (MIT). `dynasmrt` (MPL-2.0) rejected. Agreed?
 6. The speed bar of section 8: geometric mean cycles over the eight bench.c workloads within the chosen
    count definition's measured cycles cost plus 10 points, decided by the bootstrap rule there, and system
-   calls under 100 ns? Recommended: yes, to be revisited once the count definition is chosen.
+   calls under 100 ns? The margin pays for the virtual machine too (round 3: +2.8% cycles with 2 MiB
+   blocks, +8.5% with 4 KiB pages only, before any translation). Recommended: yes, with larger entries as
+   section 5.2 says, to be revisited once the count definition is chosen.
 7. A guest of the other architecture on a native host (section 11): which option? Recommended: option 1
    until another is asked for.
 8. Windows Hypervisor Platform: left out, as the ruling names only KVM and Hypervisor.framework? Recommended:
@@ -1144,19 +1327,31 @@ the ruling).
    every-offset and replay tests on check-free code.
    (C) No check: the floor arms an instruction counter's overflow interrupt for the guest's level short of
    the limit (every counted event retires at least one instruction, its add, so n minus the count retired
-   instructions cannot pass the limit; less a margin for the interrupt's lateness), then single-steps (section 4) to the exact count, as
-   record-and-replay debuggers do (an idea, nothing copied). Keeps one translation and the test outside.
-   Needs a guest performance counter with an overflow interrupt on both platforms, which nothing here has
-   tried: whether Hypervisor.framework gives a guest one is not known; KVM documents a virtual PMU
-   (Documentation/virt/kvm/api.rst). Costs a few interrupts and up to a margin's worth of steps per limited
-   turn, on test runs only.
-   Recommended: let N1 and N8 try C (one case each: an overflow interrupt for EL0 or ring 3 instructions
-   inside the virtual machine, and its lateness); take C if it works on both, else B with its costs as above.
+   instructions cannot pass the limit; less a margin for the interrupt's lateness), then single-steps
+   (section 4) to the exact count, as record-and-replay debuggers do (an idea, nothing copied). Keeps one
+   translation and the test outside.
+   Needs a guest performance counter with an overflow interrupt on both platforms. On Hypervisor.framework
+   that means a machine with EL2 enabled, which section 5.1 otherwise has no use for: with EL2 disabled, as
+   planned, every PMU access exits to the host and the virtual CPU reports no PMU; with EL2 enabled the
+   framework emulates the PMU only when PMUVer is set, which the host can do (hv_vm_config.h; measured,
+   section 5.1). Whether that emulated counter counts EL0 instructions and raises an overflow interrupt is
+   untried. KVM documents a virtual PMU (Documentation/virt/kvm/api.rst), untried on the laptop. Costs a few
+   interrupts and up to a margin's worth of steps per limited turn, on test runs only, and on
+   Hypervisor.framework the floor entering at EL2 and running at EL1 below it.
+   Recommended: let N1 and N8 try C (N1: EL2 enabled, PMUVer set by the host, an overflow interrupt after a
+   given number of EL0 instructions, and its lateness; N8: the same for ring 3 under KVM); take C if it works
+   on both, else B with its costs as above.
 11. The other project's borrowed views of kernel state: built into the inside, or copied out through the
    link, when the native back end is used? Recommended: built into the inside, as a policy is.
 12. One virtual machine per host process holding all its native containers (section 5.1), on KVM too, so one
    shape serves both platforms? Recommended: yes; Hypervisor.framework allows no other shape short of a
    process per container.
+13. The WebAssembly output's stack-frame exemption (tr/contract.rs:20-22; section 7.2): a permission change
+   to a running function's own frame is noticed there at the next function entry, natively and on the
+   reference at once. Keep it as a named difference between the outputs (and from the reference), or ask
+   the translator track to apply such a change at once? Recommended: keep it named for now, since it is the
+   translator's speed choice and only a program that changes its own live frame meets it; the replay test
+   reports it where it occurs.
 
 ## 11. A guest of the other architecture on a native host
 

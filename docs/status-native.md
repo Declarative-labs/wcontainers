@@ -4,8 +4,8 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
 
 ## Where things stand
 
-- N0 (the plan) is written (run 1) and revised twice (runs 2 and 3, 2026-11-18) to settle the findings of two
-  independent checks. No code in the repository.
+- N0 (the plan) is written (run 1) and revised three times (runs 2 to 4, 2026-11-18) to settle the findings
+  of three independent checks. No code in the repository.
 - Next: the owner's decisions of plan section 10, and N1 (the floor on Hypervisor.framework). N1 and N2 need
   nothing from other tracks (only decision 2's names; the suggested ones are used until the owner rules).
   N3, the first real programs, needs decision 1 and its changes R1 and R3 (runtime track; the test crate's
@@ -14,54 +14,54 @@ Plan: docs/native.md. Branch: phase-2-native. Brief: pyro-parked/wcontainers-scr
   file), so there was nothing to sweep. The plan names `wcontainers_abi::PAGE_SIZE` as the one page size and
   says every number it names is one named constant in code.
 
-## What run 3 changed in the plan, finding by finding
+## What run 4 changed in the plan, finding by finding (third check)
 
-- x86-64 TF and AC: `popf` and `iretq` routed to the inside (their meanings take TF, DF, NT, ID and leave AC
-  clear, counted as the x86 plan counts); the guest's TF is the hardware's TF in ring 3, set only by the
-  inside; the floor reports a single-step trap only at a guest boundary or at a `rep` (the reference's own
-  per-element step) and resumes elsewhere, counted "single step through host instructions"; CR0.AM clear,
-  CR0.WP set; the static test records `raise_stop` and classes `Rflags`; KVM's #DB and #AC intercepts
-  named as expected, measured at N8.
-- Guest-writable thread page: split into a thread page read-only at the guest's level (stop word, limit
-  word, x86 lookup cache, kept GS base; the inside writes through its own map) and a register page (withheld
-  registers' guest values, exclusive monitor). New rule in 3.2: only host addresses the translator or the
-  inside wrote are ever jumped to; none is read from guest-writable memory. 7.2 says what a guest can and
-  cannot do there; N1 and N8 test that a store to the thread page faults.
-- Memory give-back: now by unmap, fresh mmap and map again (14.7 to 16.6 ms per GiB, footprint 1030.7 to 6.2
-  MiB); `MADV_FREE_REUSABLE` rejected (freed nothing); KVM's MADV_DONTNEED named as unmeasured (N8).
-- Milestones reordered so nothing before N3 needs an owner's decision: N2 is now the native ARM64 output
-  proven instruction by instruction at EL0 (static and differential tests, no kernel); N3 runs the first
-  real programs and needs decision 1; its bar is every command of ktest busybox `text` and `files` with the
-  root in memory (turns with no limit), the backend half waiting for decision 10. Old N3 to N10 are now N4
-  to N11.
-- Store exclusive with nothing remembered: makes `stadd` of the zero register at the address (write
-  permission, no change) and writes status 1, as the WebAssembly output checks write permission first.
-- Heaps and identifiers: one rule for global entries (only the inside, its map of guest-physical memory, and
-  the code area); heaps, mirrors, thread and register pages are non-global per process; switching container
-  needs no invalidation; 16-bit ASIDs / 12-bit PCIDs across the machine with a counted rollover; per-page
-  invalidation by identifier after table changes.
-- Decision 10: B's costs stated (two translation modes, suites testing the check-carrying code, so the suites
-  also run with the shipped policy); option C added (counter overflow interrupt short of the limit, then
-  single step; no check), to be tried at N1 and N8; recommended C if it works on both, else B.
-- K2 replaced: the native ARM64 ceiling 2^45 under the container's 2^48 width, the brief's ruled route; it
-  gives the same addresses as other back ends once the kernel places low first (already asked by runtime.md
-  section 8); hints as well as fixed addresses above 2^45 named. Decision 9 now offers (a) this, (b) width
-  2^45 everywhere, (c) 2^48 with a table lookup; recommended (a).
-- Finder: the plan now says the native build carries the meanings and wasm-encoder (effects come from
-  `G::emit`), the native finder passes the `G::Host` value describing the hardware, and the count is decided
-  from `flow` alone, with T2's test running `counted` under every host value. Finder citation corrected to
-  full.rs:228-257 and :299-604.
-- Speed bar: in cycles (proc_pid_rusage ri_cycles, as round 3), geometric mean of median ratios within the
-  count's measured cycles cost (+5.1% Hn to +15.2% En) plus 10 points, decided by a seeded bootstrap 95%
-  interval, up to 60 pairs, else reported undecided.
-- Every-offset test: made by the hardware's single step from the inside's level (MDSCR_EL1.SS; TF on x86),
-  taking a real stop at the first visit of each host instruction; N1's bar includes the step case.
-- `Container::run` hands the virtual CPU a repetition of `Stepper::step` that leaves only on Idle, Finished,
-  Ended or a host stop; `step` stays one handoff per step, named "step handed to a virtual CPU".
-- x86-64 withheld registers: two (count, scratch), the pages through GS; stand-in rewriting with four moves;
-  static count over 5.3 million instructions; N9 measures against count-only.
-- `PAGE_SIZE` named in the rules; the 16 KiB mode on ARM64 by granule (both offered), on x86-64 by four
-  entries.
+- Float flags (blocking): new Float status route (plan 3.4). FPSR reads and writes and FPCR writes on ARM64;
+  `ldmxcsr`, `vldmxcsr`, `stmxcsr`, `vstmxcsr`, `fxsave`, `fxrstor`, `xsave`, `xsavec`, `xsaveopt`, `xrstor`
+  on x86-64. Each is wrapped in a call into the inside before and after. The floor keeps the block's float
+  status by one rule at every entry: the block takes the hardware's flags only while they are kept
+  (tracking on, or the mode not the default); otherwise it keeps its own, plus QC on ARM64. Every return
+  loads the hardware from the block. The second call is a roll-forward fix-up in section 4. The static
+  test's classes now split reads and writes and record the float hook's `ReadStatus`. The differential test
+  runs every form after a float operation that raised flags.
+- Hint space (blocking): new Nothing route for every `I::Nothing` form: the hint space, `prfm`, the
+  barriers and `clrex` (arm64/decode.rs:403-405, :704-706). Nothing is emitted for them. The Trap text is
+  corrected. A static rule says a meaning that touches nothing must be Nothing. Registers are seeded over
+  all 64 bits. nTWI, nTWE, the PAuth enables and BT0 are clear in SCTLR_EL1.
+- Speed claim (blocking): corrected. Round 3's untranslated runs over the eight workloads cost +8.5% cycles
+  with 4 KiB pages, +2.8% with 2 MiB blocks and +2.9% with a 16 KiB granule (recomputed here, vmcost.out).
+  The plan now maps 2 MiB entries wherever a whole aligned range is alike, splits them when only part
+  changes (counted), and measures the contiguous bit at N4. The speed method also records an untranslated
+  run on the floor. Decision 6 now says the bar's margin pays for the virtual machine.
+- Option C: plan 5.1 and decision 10 now say that on Hypervisor.framework it needs EL2 enabled. With EL2
+  disabled, PMU accesses exit to the host. With EL2 enabled, the virtual CPU still says PMUVer 0, but the
+  host can set it (measured). N1's case is named.
+- Instruction cache: a new rule in 3.2. Every write of code or slots is followed by dc cvau / ic ivau / dsb
+  / isb, by the inside, before anything runs it; this covers monitor-written frames, load-time addresses,
+  slots and replay's translations. N1 has a late-write case.
+- Stack-frame exemption: named in 7.2 (the WebAssembly output's difference from the reference), with new
+  decision 13.
+- `access`: 3.1 now says every route's guest access goes through it.
+- Replay: retranslation only; patching is rejected with its reason (5.7).
+- One driver: `Container::run` runs `Stepper::drive` itself inside. The policy's `idle` is a link request
+  that waits in the services (6.1, R2).
+- TPIDRRO_EL0 holds the ARM64 stop word, so the check is `mrs; sub; cbz`. ARM64 has no thread page except
+  under option B. 3.3, 5.3, 7.2, decision 4 and N1 are updated.
+- Slow-path list: added "turn limited by a count alone", "address-space identifiers ran out", "guest-physical
+  space full", "address above the ceiling", "large entry split", "back end refused by the probe", and the
+  float status reads under the WebAssembly output's names.
+- N6 now names T2 and T3. N4 and section 8 say which count definition the bar uses while none is chosen:
+  every candidate that passes the property test, each against its own cost plus 10 points.
+
+## What run 3 changed (short)
+
+x86-64 TF and AC (`popf` and `iretq` routed, single steps reported only at guest boundaries or a `rep`);
+read-only thread page split from the register page, and only our own host addresses jumped to; give-back
+by unmap, fresh mmap and map; milestones reordered so nothing before N3 needs a decision; store exclusive
+with nothing remembered makes `stadd` of zero; one rule for global entries and shared identifiers; decision
+10's options B and C; the 2^45 ceiling under the brief's ruling (decision 9); the finder carries the
+meanings; the speed bar in cycles with a bootstrap rule; the every-offset test by hardware step; two
+withheld x86-64 registers; `PAGE_SIZE` as the one constant.
 
 ## What run 2 changed (short)
 
@@ -115,7 +115,17 @@ Experiments (under pyro-parked/wcontainers-scratch/native/experiments):
 - Register naming in real x86-64 Linux code (run 3; regs86.py, regs86.out; run on the laptop under
   ~/native-plan/regs, load 2.3): 8 files, 5.3 million instructions: r11 15.4 per 1000, r10 18.7, r9 21.5, r8
   30.7, r13 40.1, r15 42.0, r14 50.1, r12 51.1, the legacy eight 55.7 to 210.9.
-- The independent checks' experiments the plan cites (check-n0/, check-n0b/): execute-only EL0 pages work and
+- TPIDRRO_EL0 and the PMU with EL2 (run 4; n0r4/tpidrro.c, copied from check-n0c/pmu_fpsr.c; tpidrro.out;
+  M5 Max, load 54 to 76). TPIDRRO_EL0, for three values: an EL1 `msr` does not exit to the host, an EL0
+  `mrs` reads the value, and an EL0 `msr` is undefined (ESR_EL1 0x2000000) and leaves it unchanged. With
+  `hv_vm_config_set_el2_enabled` true (two runs), the virtual CPU's ID_AA64DFR0_EL1 is 0x10305006 (PMUVer
+  0), and `hv_vcpu_set_sys_reg` sets PMUVer to 1 to 9, which reads back. The emulated PMU itself was not run.
+- Round 3's virtual machine cost over the eight bench.c workloads (run 4; n0r4/vmcost.py over
+  mac-summary-main.json and mac-summary-16k.json; vmcost.out). Geometric mean of median ratios: 4 KiB pages
+  cycles 1.0846 and instructions 1.0092; 2 MiB blocks 1.0279 and 1.0068; 16 KiB granule 1.0294 and 1.0055.
+  This agrees with the third check.
+- The independent checks' experiments the plan cites (check-n0/, check-n0b/, check-n0c/: pmu_fpsr.out cases
+  P, F and H; icache_late.out): execute-only EL0 pages work and
   refuse loads and stores (xo.out cases 1 to 5); misaligned LSE2 accesses complete at EL0 in the machine
   (case 6); a second `hv_vm_create` in one process returns HV_BUSY (twovm.out); `cas` and kin fault on a
   read-only page whatever the compare (casro.out).
@@ -127,7 +137,8 @@ Experiments (under pyro-parked/wcontainers-scratch/native/experiments):
   MIT OR Apache-2.0. None is a dependency yet.
 
 Not checked, and named in the plan as such: `hv_gic_set_spi` (N1), a guest performance counter's overflow
-interrupt (decision 10 option C; N1, N8), `KVM_IRQFD`, the DR0 breakpoint after a `rep`, TF single step
+interrupt (decision 10 option C; N1 with EL2 enabled and PMUVer set, N8), 2 MiB entries and the contiguous
+bit in the floor (N1, N4), the instruction-cache maintenance sequence curing the late-write case (N1), `KVM_IRQFD`, the DR0 breakpoint after a `rep`, TF single step
 under KVM and its #DB cost, UMIP and PCID under the laptop's KVM, MADV_DONTNEED give-back (N8), the KVM
 ARM64 doorbell (no KVM ARM64 machine at hand; N10), the store exclusive under interrupts (N6), the handoff
 cost of a step to a pool thread (N5).
@@ -137,7 +148,8 @@ cost of a step to a pool thread (N5).
 Nothing to run in the repository yet. The experiments: `python3 -I regs.py <ELF files>` (ARM64) and
 `python3 -I regs86.py <ELF files>` (x86-64, on the laptop); in experiments/n0r2 and n0r3, `clang -O1 -o X X.c
 -framework Hypervisor && codesign -s - --entitlements hvf.entitlements -f X && ./X` for branch, step and
-idregs; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1 -o mirror mirror.c &&
+idregs, and in n0r4 for tpidrro (`./tpidrro`, then `./tpidrro el2`); `python3 -I vmcost.py <summary json>`
+in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1 -o mirror mirror.c &&
 ./mirror` without the framework; the KVM runs as in kvm-laptop.out from ~/native-plan/vm on the laptop.
 
 ## Departures from the plan
@@ -150,6 +162,8 @@ None yet.
   kernel track's test crate); R4 only under option A of decision 10; T1, T2, T3 of the translator track; X1
   with the x86 track's meanings; K2 is now the low-first placement runtime.md section 8 already asks of the
   kernel track; K3 of the kernel track for the other project.
-- Twelve owner's decisions are in plan section 10; 1, 10 and 12 change interfaces or the ruling's letter.
+- Thirteen owner's decisions are in plan section 10; 1, 10 and 12 change interfaces or the ruling's letter;
+  13 asks whether the translator track closes its stack-frame exemption (tr/contract.rs:20-22), a place
+  where the WebAssembly output differs from the reference and from the native output.
 - The laptop keeps ~/native-plan (a Rust toolchain, the copied sources, and regs/ with the x86 count script)
   for later milestones; its build output was deleted.
