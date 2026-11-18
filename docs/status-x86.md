@@ -33,6 +33,12 @@ pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
   what the third check found (see "X2, run 7"). Run 8 (the same day) fixed what the fourth found (see "X2,
   run 8"). Run 9 (the same day) fixed what the fifth found (see "X2, run 9").
   Not built, proposed for X3: the recorded reference results and layer 1 batching of plan 7.3.
+- X3 (x86 at look-ahead none, integers): run 1 (2026-11-18) fixed the sixth X2 check's four findings, made
+  the description section format 4 (ARM64's output the same apart from it, shown), built `wcontainers-x86`
+  (decoder, block, base integer instructions, the SSE2 integer moves and logic a C library's start needs,
+  lazy flags, calls and returns, syscall, the 128-by-64 division, the claim table) and x86's layer 1, which
+  passes every form at 1,000 cases a form against the i7-8750H; hello world prints in wasmtime. Not complete:
+  see "X3: what comes next".
 
 Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0.5):
 - Suite: `WC_REFERENCE_X86_64=tom@192.168.2.240 nix develop -c cargo test -p wcontainers-guest-cpu -p
@@ -45,7 +51,108 @@ Proof at the end of run 1 (machine: the Mac, Apple M5; x86 machine load 0.1 to 0
   crate and the runner for both CPUs; `cargo fmt --check`: clean.
 - origin/phase-1-translator: fetched at the start and end, nothing new since 8b5e420 (merged).
 
-## X2: what comes next
+## X3: what comes next
+
+1. Layer 1's cases in no form fail on VEX and EVEX encodings the reference CPU counts differently from
+   `vex_length` (known failure, `bytes_in_no_form_stop_as_on_the_cpu_x86_64`; seeds 1 to 6 each fail on
+   one, for example `41 f2 4b 64 47 48 46 44 4d 62 b1 b0 ce 25 71 4d`, which the CPU runs as 15 bytes or
+   fewer, and `47 65 65 67 40 f0 4d 49 65 c5 b5 83 f0`, which it counts past 15). Build plan 5.2's sweep of
+   the VEX and EVEX maps (and the legacy maps' opcodes iced calls invalid) on the reference, keep its script
+   and output beside the crate's tests, a table from it and a test checking the table against the output;
+   then run 10,000 cases in no form.
+2. Chrome: the browser crate for x86 (its feature), x86's layer 1 sample in Chrome, hello world in Chrome,
+   and the browser runner's stand-in answering `arch_prctl` as the wasmtime one now does
+   (`GuestTest::stand_in_call`).
+3. Measure what the decoder adds to the browser build, and the long division's cost against native (plan 9).
+4. The designed-answers (hand-made) cases of x86: `int 0x80` and `sysenter` (general protection, counted),
+   the kernel-only group's faults decided against the reference, and the plan 7.4 exclusions.
+5. Plan 7.3's recorded reference results and layer 1 batching (still proposed, not ruled).
+6. For X4: the shared layer 2 model's operations are ARM64's; x86's `assemble`, `smoke`, `checks` panic
+   with the milestone that builds them. A cached FS base at full look-ahead must be reloaded after a system
+   call (the stand-in's `arch_prctl` writes it in the block).
+
+## X3, run 1 (2026-11-18)
+
+The sixth independent check of X2 found four smaller problems. What was done:
+- The status file's run 6 account and its proof sat inside run 7's section: run 6 has its own section now,
+  and "Cases actually run" has runs 7 and 9.
+- The x86 runner's step limit took ecx or rcx by looking for a 0x67 byte; it now reads iced's operand kinds
+  (`MemorySegESI`, `MemoryESEDI`), which say the address size of the decoded instruction.
+- The SSH runner's directory is now the target's own (`Target::remote_directory`: x86-64's
+  `wcontainers-x86/reference`, ARM64's `wcontainers-arm64/reference`); plan 7.2 says so.
+- RF in the reference's rflags at fault stops: x86's `reconcile` clears it (and the runner's own TF in r11
+  after `syscall`, which the CPU copies from rflags).
+
+What was built (all at look-ahead none):
+- The description section is format 4 (guest byte and offer key after the format byte; `runner.js` reads
+  it). Shown on ARM64: with each module's description section written back as format 3 (after checking
+  guest 1 and offer 0), `same-output.sh 072a2136 bench,busybox,musl,rg,git,python,java,go` from a worktree of
+  941bc688 gave "the same" for all eight sets (505, 34, 120, 34, 34, 34, 40, 28 modules; scratch
+  `x3/run1/format4-proof.log`, 06:00 to 06:23, Mac load 35.7 to 48.1). Node and Bun were not run (many GB).
+- The interface gains `Guest::may_vary` (the brief's "mark what depends on the host CPU"): x86 says true for
+  the instructions whose undefined flags are fixed to the reference's; ARM64 says true for every
+  instruction (not audited, so nothing is said to be the same on every CPU); the test guest false.
+  `Index::BitOffset` gains the operand's own index (`bt [rbx + rsi * 4], rcx`), which plan 3.2 lacked.
+- `wcontainers-x86`: `X86Block` (plan 5.9) in the `no_std` core; iced-x86 `no_std` + `decoder` behind
+  `translate`; the build script writes each `Code`'s claim group from iced's `instr_info` (4,936 bytes;
+  tested against iced for every `Code`); meanings for mov, movzx, movsx, movsxd, lea, xchg, the eight ALU
+  operations, inc, dec, neg, not, cbw to cqo, push, pop, call, ret, jmp, jcc, cmovcc, setcc, the shifts and
+  rotates, mul, imul (all forms), div, idiv (64-bit with the 128-by-64 long division), movs, stos, lods, cmps
+  and scas without rep, bt and its kin, clc, stc, cmc, cld, std, syscall, nop and the reserved NOPs, int3,
+  int1, int n, ud0 to ud2; and the SSE2 moves, logic, adds, compares, interleaves, shuffles, shifts by an
+  immediate and masks that musl's start and string routines reach (see "Departures"). Kernel-only `Code`s
+  give general protection and never-claimed ones illegal instruction (counted); AVX-setting ones warn
+  "an AVX instruction was reached while AVX is not offered".
+- `X86_64::memory_fault`: an access whose first or last byte is not canonical gives the stack fault through
+  rsp or rbp, else general protection; the kernel's half is a page fault (the plan said otherwise; fixed).
+- x86's `GuestTest`: forms are every legacy `Code` valid in 64-bit mode whose meaning is written, as the
+  translator's decoder gives it (654 forms); cases from iced's `OpCodeInfo` operand kinds, built with iced's
+  creators and `Encoder`, memory operands aimed at the data area or its edges, the last 64 bytes below 2^47 or
+  non-canonical (through every base register, rsp and rbp among them, `fs:` and `gs:`, rip-relative, 67),
+  half the dividends as compilers leave them; cases in no form (random invalid bytes, and prefix runs of 13 to
+  16 bytes before an instruction of a form or a VEX or EVEX start).
+- The stand-in answers x86's `arch_prctl(ARCH_SET_FS or GS)` (`GuestTest::stand_in_call`), as musl sets its
+  thread pointer that way. `match_linux_at` runs a program at chosen look-aheads; x86's hello world runs at
+  none (`hello_matches_linux_at_none_x86_64`).
+
+What the reference CPU does where Intel's manual leaves it open, found here (plan 5.1 says so):
+- OF after a shift or rotate is a count of one's, for every count, except `rol` and `ror` of a register by
+  an immediate above one, which keep OF (of memory they do not). AF is clear after the shifts and the logic
+  instructions. After `mul` and `imul`, ZF and AF are clear and SF and PF follow the low half. `bt` and its kin
+  change only CF; `div` and `idiv` change no flag. `shl` of 8 or 16 bits by more than the width leaves CF clear.
+  Gathered from layer 1's failures and a sweep of every shift and rotate at every width, counts 0 to 31,
+  register forms by cl and by an immediate (scratch `x3/run1/shifts.txt`, `shifts-imm.txt`, 1,120 and 640
+  cases, analysed by `scripts/shifts.py`, `shifts2.py`).
+- `cmps` reads [rdi] before [rsi]. A 67 prefix wraps a bit offset's address with the operand's, before the
+  segment base. An access that wraps past 2^64 is a page fault at its first byte.
+- Invalid encodings: iced stops early, so every invalid encoding now gets the CPU's length (plan 5.2 says
+  so), with an opcode made invalid by its mandatory prefix counted with its ModRM, and VEX and EVEX counted by
+  their fields; the last rule is not yet right for every VEX and EVEX encoding (item 1 of "what comes next").
+
+Proof of run 1 (the Mac, Apple M5; the i7-8750H's load 0.8 to 1.2 at the start of the long runs):
+- Layer 1, 542 forms (before bt and the SSE2 forms), 1,000 cases a form, seed 1, 6 at once
+  (`x3/run1/l1-1000.log`, 06:41 to 07:05, Mac load 55.8 to 54.6): 536 passed; the six failing were fixed
+  after it (a branch into the instruction's own bytes, which our side runs, now left out like a jump to
+  itself; a full-address operand drawn at random, which reached the reference runner's own memory, now aimed;
+  `push [m]` under 67 wrapping the stack address; `int 0x80`, now excluded as plan 7.4 says), each form then
+  passing 1,000 cases alone.
+- Layer 1 after those fixes, every form (bt and the SSE2 forms with them; 654 forms in the seed 7 run of the
+  same list, the passing run prints no count), 1,000 cases a form, seed 1, 6 at once, at e39a581
+  (`x3/run1/l1-1000b.log`, 07:07 to 07:46, 2,312 s, Mac load 69.4 to 34.6, x86 load 7.1 at the start from
+  another track's builds): passed, zero mismatches.
+- Bit tests at 512 cases a form and the division forms at 256, alone: passed. The x86 crate's table tests: 4
+  passed.
+- Hello world at -O0, -O1, -O2, -O3 and -Os (three distinct blobs), at none in wasmtime, against the i7-8750H
+  (`x3/run1/hello.log`): matches.
+- The browser crate builds for x86 (feature `x86_64`; the host answer is now worked out inside the generic
+  `translate_for`, as x86's is `()`). Sizes, release, `wasm-tools strip`, Apple gzip `-9 -n` and brotli `-q
+  11` (07:11, Mac load 64.4): x86 1,135,906 bytes raw, 298,876 gzip, 229,169 brotli; ARM64 2,345,937,
+  447,975 and 327,252. The x86 build holds iced's decoder (plan section 2 measured it alone at 226,971 raw,
+  46,880 brotli) and fewer meanings than ARM64's so far; what the decoder adds to a complete x86 build is
+  measured again when its meanings are complete. Clippy with `-D warnings` on both builds: clean.
+- RESULT_SUITE
+
+## X2: what was left for later (carried into X3 above)
 
 1. The sixth independent check of X2.
 2. Plan 7.3's recorded reference results and layer 1 batching, proposed for X3 (see "Departures"); build them
@@ -1207,6 +1314,14 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
 
 ## How to run
 
+- x86 (X3): layer 1 against the i7-8750H, `WC_REFERENCE_X86_64=tom@192.168.2.240 WC_LAYER1_CASES=1000
+  WC_LAYER1_JOBS=6 nix develop -c cargo test -p wcontainers-translator-test --test layer1
+  every_form_matches_the_cpu_x86_64` (`WC_LAYER1_FORMS`, `WC_LAYER1_SEED` as for ARM64); cases in no form,
+  `bytes_in_no_form_stop_as_on_the_cpu_x86_64`; hello world, `--test programs hello_matches_linux_at_none_x86_64`;
+  the crate's own tests, `nix develop -c cargo test -p wcontainers-x86`. The scratch tools of run 1 (shift
+  sweeps, a hello debugger, a module dump) are in scratch `x3/run1/scratch_*.rs`: copy one into the test
+  crate's `tests/` to run it.
+
 - X2's proofs: same cases, `WC_OUTPUT_ROOT=<scratch>/x2/same nix develop -c
   crates/wcontainers-translator-test/same-cases.sh d27cd70 1 2 3` (knobs `WC_CASES_LAYER1`, `WC_CASES_LAYER2`;
   layer 1's no-form and hand-made lists are compared only against commits from 995e949 on, which write them;
@@ -1338,6 +1453,13 @@ Repeated and widened on the reference first (scratch `run10/`: `tf.c`, `rf.c`, w
   twice: the first run did not pass its environment settings to `stepper6` and was discarded; in run 9,
   41 hand-written cases (`cases16.sh` 39, the two `xacquire` runs 2); in run 10, one run each of `tf`
   (8 trap-flag scenarios in 9 runs, 20 stops) and `rf` (8 signal frames), and 6 `stepper6` cases.
+- X3 run 1: x86 layer 1 at seed 1: 8 cases a form (542 forms), 16, 64 (542 forms), 1,000 (542 forms), 1,000
+  again (every form, about 654,000 cases); at seed 7: 32 cases (654 forms); single forms re-run at 256 to 1,000 while fixing
+  (rotates, divisions, bit tests, the six of the first 1,000 run); cases in no form at 500, 1,000 and 2,000
+  for seed 1 and 2,000 for seeds 2 to 6, each stopping at its first failure; the scratch sweeps of shifts and
+  rotates (1,120 and 640 cases, seed 12345); hello world once per fix and in the suite; the x86 reference's
+  tests once and in the suite; x86's 6 hand-made cases twice and in the suite; the suite's layer 1 at its
+  defaults (seed 1, 64 a form) for both guests.
 - X2 run 9: the x86 reference's tests (6, the runner failure test among them) once alone and in the suite;
   `same-cases.sh c1153e5 31337` (layer 1 1215 forms at 64 a form, layer 2 64 programs, 64 no-form cases, 105
   hand-made, both sides); the test guest's 16 tests twice (with the old slot sum, 10 failing, and with the
@@ -1394,7 +1516,11 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   crate (the test guest's validity test; it was the translator's until the test guest moved in run 3).
 
 - iced-x86 1.22.0: MIT. Since X2 a dependency of the reference runner when built for x86-64 (decoder and
-  `instr_info`, to tell rep string instructions and gathers); X3 adds it to the x86 crate.
+  `instr_info`, to tell rep string instructions and gathers). Since X3 a dependency of `wcontainers-x86`
+  (`no_std` and `decoder` only, behind `translate`; with `std` and `instr_info` as its build script's
+  dependency and its tests'), and of the test crate (`std`, `decoder`, `encoder`, `op_code_info`, `instr_info`,
+  `intel`: forms, cases, disassembly). It brings `lazy_static` (MIT/Apache-2.0) and `spin` (MIT) without
+  std.
 - `blake3` is since X2 a normal dependency of the test crate (the hashes in the lists compared between
   commits; it was also the reference runner's content hash until X2 run 7).
 - `sha2` 0.10.9 (MIT OR Apache-2.0): since X2 run 7 a normal dependency of the test crate (the reference
@@ -1418,6 +1544,24 @@ float hook's in runs 2, 3 and 5, translate time in runs 4, 5 and 6).
   (MIT), era2m_softfloat 0.2.1 (BSD-3-Clause-Clear). Nothing copied.
 
 ## Departures from the plan
+
+X3 (each also written into the plan's text where the plan is wrong):
+- Some SSE2 instructions (the moves, logic, adds, compares, interleaves, shuffles, shifts by an immediate and
+  masks on xmm registers, `simd.rs`) are built at X3, not X5: musl's start and string routines reach them, and
+  the X3 pass bar asks for hello world. They are layer 1 forms like any other and pass at 1,000 cases a form.
+- Flags as built (plan 5.1): no flags-word functions yet (`SHAPES` empty, `condition_direct` false), and the
+  shifts and rotates work their flags out at once into a packed word; the lazy `Shift` shape and direct
+  conditions come with X4's flags liveness.
+- Plan 5.4's canonical rule was wrong for the kernel's half: an access there is canonical and a page fault on
+  the reference. Plan 5.2's length rule ran only for 15-byte `INVALID`s; it now runs for every `INVALID`.
+  `Index::BitOffset` gained the operand's own index (plan 3.2).
+- `GuestTest` gains `stand_in_call` (the stand-in's CPU-own system calls: x86's `arch_prctl`), and
+  `Target` its runner's remote directory.
+- `told()`, `assemble`, `smoke`, `checks` and `changes` of x86's `GuestTest` panic naming the milestone that
+  builds them; no x86 test calls them yet.
+- The iced memory sizes and register numbers the meanings need are a small map in the crate (iced has them
+  only with `encoder` or `instr_info`, which the shipped decoder leaves out for size); a test checks the map
+  against iced's own answers.
 
 X1 (each also written into the plan's text in the same commit):
 - The kernel's side: the plan had the interface crate need std and the kernel never depend on a CPU crate,
@@ -1580,6 +1724,11 @@ X2 (each also written into the plan's text in the same commit):
   is named by the SHA-256 of its recipe, so a changed recipe makes a new image (plan 7.3, X2 run 9).
 
 ## Decisions taken in the plan that the owner may want to hear about
+
+- X3: ARM64's `may_vary` answers "may vary" for every instruction until its meanings are audited one by one;
+  a native output would copy no ARM64 instruction through until then.
+- X3: x86's undefined flags follow the i7-8750H (Coffee Lake); another CPU of the same architecture may
+  differ, which `may_vary` records for those instructions.
 
 - The AVX setting claims the whole x86-64-v3 level (AVX, AVX2, FMA, F16C, BMI2, XSAVE), not AVX alone.
 - CPUID claims vendor GenuineIntel with the reference CPU's family and model, and a brand string of our own.
