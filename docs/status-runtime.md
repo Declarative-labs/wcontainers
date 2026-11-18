@@ -81,7 +81,7 @@ The code of every run below is f685bfdf's back end with 2dcdad96's test (later c
   "present 0, swapped 1" (load 32.0 to 93.2; j2/linux/linux-check-5.log); its target, registry and image
   are deleted.
 - The stand-in: the whole kernel test crate without the feature, 540.1 s (load 60.2 to 69.0;
-  j2run3/verdicts.log, verdicts.txt): 193 passed, 1 failed, 5 ignored. Against run 2's verdict lines the
+  j2run3/verdicts.log, verdicts.txt): 191 passed, 1 failed, 5 ignored. Against run 2's verdict lines the
   differences are the two new counterclock tests (ok) and `threads_match_reference_on_backend_root`, which
   failed on the reference's side (its run gave "exec /wc/threads: no such file or directory", exit 255;
   ours matched the usual output) and passes when run again alone (load 55.6 to 49.2;
