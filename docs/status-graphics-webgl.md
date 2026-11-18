@@ -24,8 +24,9 @@ new). Fixed what the independent check of G3b (check9) found:
   `half_floats_read_back_as_stored` now covers both. The front's formats scene through its WebGL 2
   build: every output passes but the two snorm targets, absent natively as declared (Measurements).
 - The shaders track's seed 14 of `tests/filter_draw.rs` (a WebGL 2 draw that lost ANGLE's device
-  in its run 15): rerun alone at today's code, it passes (details under "G3b: what the fronts
-  ask").
+  in its run 15): alone it passes at today's code, but 16 seeds in one process lose ANGLE's device
+  again (about case 4), with no driver reset. OPEN, cause not found (Known failures; details under
+  "G3b: what the fronts ask").
 - `submit` no longer calls `getError`, which in Chrome waits for the GPU process: GL errors are
   read after the back end has waited anyway (`wait_fence`, `read_texture_now`), and a lost context
   is seen at `submit` and `status` through `isContextLost` (no wait). A lost context's missing
@@ -49,6 +50,9 @@ new). Fixed what the independent check of G3b (check9) found:
 - New from the shared line: copies within one level of a 3D texture (one subresource) went
   through `copyTexSubImage3D` on the same texture, which ANGLE garbled; they now go through a
   buffer (`CopyWithinTexture`). Its two new suite tests run in Chrome too.
+- At the end the desktop's C:\wc\target\phase-2-graphics-webgl (16.8 GB: the debug, release,
+  WebAssembly, recording and Direct3D 11 WebGL 2 builds) and this checkout's own target (0.95 GB,
+  from `cargo check`) were deleted. Nothing was installed on the desktop.
 
 G3b run 2, 2026-11-18 (about 08:30 to 10:15 Pacific). Merged origin/phase-2-graphics (it held
 -shaders and -direct3d-11 already; -webgpu and -rig had nothing new). The open findings of G3's
