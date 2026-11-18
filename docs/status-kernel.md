@@ -4,14 +4,102 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K6b (larger runtimes), first run: every finding of the K6a check is fixed or recorded (below),
-and Python, Node, a Go program and Java run from unmodified images on our kernel, compared with
-the reference under schedules and saves. See "K6b, first run" just below for what passes, what
-does not yet, how long each takes, and what is next.
+K6b (larger runtimes), second run: /proc/<pid>/ns and /proc/<pid>/mountinfo are built, the
+Python system test modules run with no test ignored, two whole-suite flakes (a guest program
+renamed under a starting container, the reference's per-user signal count shared with other
+containers) are fixed, and the runtimes' deliberate differences are written down as a gap list.
+See "K6b, second run" just below; "K6b, first run" holds what the runtimes run and take.
 
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
 "K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6b, second run
+
+Built, each tested against the reference:
+- /proc/<pid>/ns (tests/procns.rs `namespace_links_match_reference`, guest/procns.c): the
+  directory (0511) lists Linux's ten links in `ns_entries` order; each reads `type:[number]`
+  (the user and time namespaces are the machine's first, with Linux's fixed numbers; the others
+  are the container's own); following one gives an nsfs file (device 0:4, mode 0444, immutable,
+  so opening it for writing, truncating, chmod, chown and utimes are EPERM; read EINVAL, seek
+  ESPIPE, mmap ENODEV); `ptrace_may_access` is asked (EACCES); an ended process keeps only its
+  pid and user namespaces (ENOENT for the rest); `/proc/self/fd` shows `type:[number]`;
+  NS_GET_NSTYPE and NS_GET_OWNER_UID are built, NS_GET_USERNS and NS_GET_PARENT are counted
+  "ioctl request not built" (ENOTTY); name_to_handle_at gives nsfs's handle (type 0xf1).
+  setns and unshare stay EPERM (Docker's seccomp profile). Immutable inodes are now refused
+  writes and attribute changes in general (`inode_permission`, `notify_change`).
+- /proc/<pid>/mountinfo, and /proc/<pid>/mounts made from the same table (fs/mounts.rs): the
+  mounts the container makes, in Docker's order (root, /proc, /dev, /dev/pts, /dev/mqueue,
+  /dev/shm, the backend volumes, /proc/sys read-only), with their real devices and options
+  (tests/procns.rs `mount_tables_match_reference` and `..._on_backend_root`, guest/mountinfo.c:
+  every line agrees with stat and statvfs at its point, and the standard mounts' options, types,
+  sources and parents match the reference's lines). /proc/mounts now lists /dev/pts and
+  /proc/sys too. Docker's masks of /proc, /sys and /sys/fs/cgroup are not there (gap list
+  below; still counted "proc fields not tracked", detail 3).
+- O_TMPFILE (Python's tempfile asks for it): on tmpfs a file with no name is made and opened
+  (`shmem_tmpfile`), named `#` and its number for its descriptor's link (always shown deleted,
+  as its dentry never takes a name) and its directory's events; without O_EXCL one later link
+  may name it (`I_LINKABLE`, through /proc/self/fd with AT_SYMLINK_FOLLOW); /proc, devpts and
+  mqueue have none (EOPNOTSUPP). On the backend it is asked with FUSE_TMPFILE, which a backend
+  without it answers EOPNOTSUPP (the test server's case, as with Linux's FUSE and the same
+  server). tests/tmpfile.rs (guest/tmpfile.c, on /dev/shm in both), and guest/backendfiles.c.
+  ftruncate and fallocate now tell watches through the file, under the name it was opened by
+  (they told none for fallocate, and ftruncate only by the inode's current name).
+- Python's system test modules (tests/python.rs `system_test_modules_match_reference`) are no
+  longer ignored: test_posix's test_unshare_setns now opens /proc/self/ns/uts and gets EPERM from
+  unshare, as the reference. Its first run (seed 1, 620.9 s, load about 25) then differed only in
+  standard error: "reap_children() reaped child process 13" where ours said 8. A probe that
+  forks before each test (scratch k6b2/pyprobe) showed every process number off by exactly 5
+  from the start: in a Docker container the first program's first child is 7, as runc's init
+  (Go) made threads 2 to 6 in the container's namespace before it ran the program (measured
+  with a bare `python3 -c` fork). This is the container runtime, not the kernel; suite.py now
+  writes the suite's warnings with numbers as N (see Departures).
+
+Test fixes (the whole suite as a gate):
+- terminal `making_pairs` (reference found no /wc/tty): test binaries built the same guest
+  program and renamed it over the one a starting container was opening through Docker's shared
+  directory. A build whose bytes equal the program in place now leaves it there (guest.rs).
+- userlimits `queued_signals_match_reference` (reference stopped after 2, not 5): the queued
+  signal count is per user, and the reference's root is shared with every container on its
+  machine; the guest now switches to a user of its own (uid 61873) before queueing.
+- The previous run's local probe (tests/zprobe.rs, excluded from git) failed in whole-suite runs
+  for want of its variables; its tests are now ignored unless asked for.
+
+Whole-suite run at 2d90fbe (started by the previous run, scratch k6b/suite3.log, load about 20,
+26 minutes): every test binary passed but three: terminal `making_pairs` and userlimits
+`queued_signals_match_reference` (both fixed above, the reference's races), and the local
+probe (above). The runtime tests passed under the default three seeds there: python 634.6 s
+(system.py and the language modules; the system modules were still ignored), node 138.2 s,
+java 101.2 s, go 6.4 s (each binary's own time for all its tests and seeds).
+
+What each runtime hit that is counted, and where it stands (seed 1):
+- Python: "backend file read whole when mapped" (its shared libraries; a counted slow path),
+  "proc fields not tracked" (0: /proc/<pid>/stat), "call flag not built" (openat O_TMPFILE,
+  detail 0x38_0040_4000: tempfile tries it in /tmp; now built, and the backend is asked, which
+  the test server cannot do, so Python falls back as it does on such a server).
+- Node: "address above the address space" (V8's hints; plan section 15), "backend file read
+  whole when mapped" (node itself, 126 MB), "proc fields not tracked" (4: meminfo).
+- Go: "address above the address space" (arena hints; section 15), "proc entry not built" for
+  /proc/self/mountinfo (now built), "socket protocol not built" (MPTCP; gap list), "tcp room
+  modelled", "backend file read whole when mapped".
+- Java: "address above the address space", "backend file read whole when mapped", "backend pages
+  written whole", "page residency not tracked", "proc entry not built" (/proc/cgroups; gap
+  list), "proc fields not tracked".
+
+Gap list (plan section 15) as the runtimes meet it; each is how Linux answers without the
+feature, counted where the kernel sees it:
+- Network, "not Linux's network stack": MPTCP. `socket(AF_INET or AF_INET6, SOCK_STREAM,
+  IPPROTO_MPTCP)` is EPROTONOSUPPORT, as Linux without CONFIG_MPTCP, counted "socket protocol
+  not built" (detail 8590000390). Go's listeners ask for it first and fall back to TCP.
+- "/proc and /sys describe a made-up machine and hold a chosen subset": /proc/cgroups (counted
+  "proc entry not built"), Docker's masks of /proc, and /sys: nothing is mounted at /sys, so the
+  cgroup2 hierarchy at /sys/fs/cgroup is absent and mountinfo lists no cgroup2 mount. Java and
+  Go read mountinfo to find cgroup limits; finding none, they take the machine's (one CPU, its
+  memory), as the reference's unlimited default container gives them. A lookup under /sys finds
+  whatever the image has there and is not counted (see Next).
+- "The address space is small": mappings asked above it are placed lower, counted "address
+  above the address space" (Node, Go, Java); Java needs the 64 bit host's 16 GiB.
+- "More than one CPU": the runtimes see one CPU (Go's GOMAXPROCS, Java's processors).
 
 ## K6b, first run
 
@@ -1164,8 +1252,10 @@ Missing (14, each counted "system call not implemented" and ENOSYS), with what e
 - Inodes of `/proc` are made at each lookup. chown of a process's entries succeeds with no effect, as
   on Linux; utimensat on them succeeds with no effect (Linux keeps the times while the inode is
   cached). Entries outside the process directories keep their changes (above).
-- `/proc/mounts` does not list Docker's read-only and masked `/proc` mounts, `/dev/pts` or `/sys` (counted "proc fields not tracked", detail 3).
-- xattr space limits; huge page memory files; O_TMPFILE.
+- `/proc/<pid>/mounts` and `mountinfo` do not list Docker's masks of `/proc`, `/sys` or its
+  cgroup2 mount, or the files Docker binds over /etc/hostname, /etc/hosts and /etc/resolv.conf
+  (counted "proc fields not tracked", detail 3).
+- xattr space limits; huge page memory files.
 - Running a program does not move its access time (Linux's `kernel_read` of the program does).
 - An madvise range that reaches `[vvar]`: Linux's is VM_PFNMAP, so it is EINVAL there (measured);
   whether ours answers the same since the vDSO was built is not checked.
@@ -2022,6 +2112,16 @@ All on this shared Mac; noisy, not benchmarks.
 
 ## Departures from the plan
 
+- K6b, second run: the Python suite runner (runtimes/python/suite.py) replaces numbers in the
+  test suite's own warnings with N before printing them. The warnings name process numbers,
+  and in the reference every process number is 5 higher than ours from the first fork on,
+  because runc's init threads took 2 to 6 in the container's namespace. The kernel is not
+  made to skip numbers to copy runc, whose thread count is its own.
+- K6b, second run: nothing is mounted at /sys (Docker mounts sysfs there, read-only, with the
+  cgroup2 hierarchy at /sys/fs/cgroup), so a lookup there finds what the image holds and is
+  not counted; plan section 15 allows /sys to be a chosen subset, but its "counter and warning
+  where the event can be seen" is not met for /sys yet (Next).
+
 - K6a, first run: the Linux Test Project runs in an image of its own (Debian trixie with glibc
   and the suite at /opt/ltp), in the reference and on ours, not in alpine:3.22: glibc is what the
   suite is built for. Each test runs as the first process of a container of its own (`/bin/sh -c`
@@ -2346,8 +2446,7 @@ Every answer to something Linux has and this kernel does not build goes through 
 or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The names:
 - "system call not implemented": the Missing list above (detail: the call number).
 - "call flag not built": a flag or form of a built call (detail: call number times 2^32 plus the
-  flags): mmap MAP_HUGETLB (ENOMEM), memfd_create MFD_HUGETLB (ENOSYS), openat O_TMPFILE
-  (EOPNOTSUPP), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), NUMA
+  flags): mmap MAP_HUGETLB (ENOMEM), memfd_create MFD_HUGETLB (ENOSYS), openat2's restricted lookups (ENOSYS), rseq's time slice flag (EINVAL), NUMA
   futexes (EINVAL), pipe2's O_NOTIFICATION_PIPE (EINVAL),
   shmget's SHM_HUGETLB
   (ENOMEM).
@@ -2360,7 +2459,8 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   and PR_SET_VMA. Unknown options and those Linux has only for other architectures are a plain
   EINVAL, uncounted.
 - "line discipline not built": TIOCSETD with a discipline other than `n_tty` (detail: its number).
-- "ioctl request not built": the watch queue requests on pipes; TIOCCONS and TIOCSLCKTRMIOS for a
+- "ioctl request not built": nsfs's NS_GET_USERNS, NS_GET_PARENT and its other requests but
+  NS_GET_NSTYPE and NS_GET_OWNER_UID (ENOTTY); the watch queue requests on pipes; TIOCCONS and TIOCSLCKTRMIOS for a
   caller with the powers they need (Docker gives neither, so they answer EPERM as in the reference);
   pidfs's ten namespace requests once their checks pass (nsfs is not built; EOPNOTSUPP).
 - "madvise advice not built": MADV_COLLAPSE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE.
@@ -2637,31 +2737,18 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 ## Next
 
 K6b's next run, in this order:
-0. The whole-suite run at 2d90fbe (scratch k6b/suite3.log, load about 20): when this run ended
-   81 test binaries had finished, 171 passed, 7 ignored (known, with reasons), 1 failed:
-   terminal `making_pairs`, whose reference found no /wc/tty (the known race of test binaries
-   building guest programs into one shared directory, Known issues K2); the runtime tests were
-   still running. Read the rest of that log, or run it again
-   (scratch k6b/suite3.log;
-   `nix develop -c cargo test --no-fail-fast -p wcontainers-kernel -p wcontainers-kernel-test --
-   --test-threads 4`). Layer 1 seed 6262606 passed 20000 at 2d90fbe (346.4 s, load 19.9), the
-   one fresh seed with the last kernel change (54c7ff8) in; 6262603 to 6262605 ran at e90a141.
-1. Python's system test modules (tests/python.rs `system_test_modules_match_reference`,
-   ignored with its reason): every test matches but test_posix's test_unshare_setns, which needs
-   /proc/self/ns/uts (/proc/<pid>/ns is not built; the test opens and reads the link, then
-   unshare is EPERM in Docker). Build /proc/<pid>/ns (links named `type:[inode]`, opening one
-   gives an nsfs file that setns refuses with EPERM without CAP_SYS_ADMIN), then take the
-   ignore off. Seed 1 took 525 s (196692 turns, two saves, load about 25).
-2. Run every runtime test under the default three seeds (Go, Java and Node were started) and the
-   Python ones, and record their times.
-3. The rest of inotify on a backend root (tests/inotify.rs, ignored with its reason).
-4. /proc/self/mountinfo (Go reads it) and /proc/cgroups with the cgroup2 mount (Java reads
-   them; section 15's made-up /proc and /sys).
-5. MPTCP (`socket(AF_INET, SOCK_STREAM, IPPROTO_MPTCP)`, which Go tries for listeners) is
-   refused EPROTONOSUPPORT and counted ("socket protocol not built", 8590000390); decide whether
-   to build it as TCP's alias or list it.
-6. The LTP comparison on ours for the 1532 added tests (`ltp ours` on the whole suite continues
-   an unfinished results file) and the K6a list below.
+1. Read the whole-suite run and the layer 1 seeds this run started at 5671d96 if this file does
+   not record their end (scratch k6b2/suite.log, l1-6262609.log, l1-6262610.log, and
+   l1-6262611.log if it was started); the milestone needs three fresh seeds at the final kernel.
+2. /sys: mount an empty read-only sysfs at /sys as Docker does, whose lookups are counted ("sys
+   entry not built"), so section 15's /sys subset is counted where it can be seen; then the
+   cgroup2 mount (cpu.max, memory.max "max") can be weighed against the gap list.
+3. Reading only the pages a backend mapping touches: the backend reads a mapped file whole
+   (counted "backend file read whole when mapped"; Node's 126 MB binary, Java's lib/modules),
+   which keeps test_mmap's LargeMmapTests out of the Python run.
+4. inotify on a backend root (tests/inotify.rs, ignored with its reason).
+5. nsfs's NS_GET_USERNS and NS_GET_PARENT (counted).
+6. The LTP comparison on ours for the 1532 added tests, and the K6a list below.
 
 K6a's next run (or K6b): the wrong answers of the first comparison (under "K6a, first run"),
 largest first by the tests they turn:
