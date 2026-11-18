@@ -6,7 +6,9 @@ use alloc::vec::Vec;
 
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[repr(u8)]
 pub enum SlowPath {
     /// A triangle fan was drawn as a generated triangle list.
@@ -261,11 +263,17 @@ pub enum SlowPath {
     /// A blit swap chain's buffers past the first, which DXGI moves one place at each present,
     /// moved by copies.
     SequentialBuffersCopied,
+    /// A view's component mapping applied by the program to what it reads, where the back end's views
+    /// have none.
+    SwizzleInShader,
+    /// An atomic minimum or maximum of the other signedness than the memory's other operations, made
+    /// by a compare-exchange loop.
+    AtomicExchangeLoop,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 103] = [
+    pub const ALL: [SlowPath; 105] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -369,6 +377,8 @@ impl SlowPath {
         SlowPath::CopyWithinTexture,
         SlowPath::PixelInvocationsCounted,
         SlowPath::SequentialBuffersCopied,
+        SlowPath::SwizzleInShader,
+        SlowPath::AtomicExchangeLoop,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -491,6 +501,10 @@ impl SlowPath {
                 "pixel shader invocations counted by drawing again"
             }
             SlowPath::SequentialBuffersCopied => "swap chain buffers moved by copies at present",
+            SlowPath::SwizzleInShader => "view component mapping applied in the program",
+            SlowPath::AtomicExchangeLoop => {
+                "atomic minimum or maximum made by a compare-exchange loop"
+            }
         }
     }
 }

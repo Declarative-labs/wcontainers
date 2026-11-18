@@ -19,7 +19,9 @@ use crate::ConvertError;
 
 mod constants;
 mod filter;
+mod layers;
 pub(crate) mod pull;
+mod swizzle;
 pub(crate) mod texel;
 
 type Result<T> = core::result::Result<T, ConvertError>;
@@ -31,6 +33,11 @@ pub(crate) fn apply(
     variant: &VariantKey,
     reflection: &mut Reflection,
 ) -> Result<()> {
+    if !variant.swizzled.is_empty() {
+        let mut outlined = Outlined::default();
+        swizzle::swizzled(module, &variant.swizzled, reflection, &mut outlined)?;
+        outlined.finish(module);
+    }
     constants_as_storage(module, variant.constants_as_storage, reflection)?;
     let mut outlined = Outlined::default();
     constants::constants_as_texture(
@@ -76,6 +83,9 @@ pub(crate) fn apply(
         // Drops the pointers into the buffers' old variables, and the variables.
         naga::compact::compact(module, naga::compact::KeepUnused::No);
     }
+    let mut outlined = Outlined::default();
+    layers::split(module, &variant.texture_layers, reflection, &mut outlined)?;
+    outlined.finish(module);
     let flags = variant.flags;
     match stage {
         ShaderStage::Vertex => {

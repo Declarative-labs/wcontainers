@@ -1,4 +1,4 @@
-cs_atomics.dxil	spirv-reader AtomicSMin
+cs_atomics.dxil	ok-wgsl glsl-write
 cs_decrement.dxil	ok-wgsl glsl-write
 cs_images.dxil	unsupported StorageFormatKind
 cs_shared.dxil	ok-wgsl glsl-write
@@ -17,6 +17,7 @@ ps_clip.dxil	ok
 ps_coarse.dxil	ok
 ps_deriv.dxil	ok-wgsl glsl-write
 ps_dual.dxil	ok
+ps_fill.dxil	ok
 ps_filter.dxil	ok-wgsl glsl-compile
 ps_ftoi.dxil	ok
 ps_halves.dxil	ok-wgsl glsl-write
@@ -26,6 +27,7 @@ ps_levels.dxil	ok-wgsl glsl-write
 ps_mingather.dxil	ok-wgsl glsl-compile
 ps_minlod.dxil	ok
 ps_mirror.dxil	ok
+ps_msarray.dxil	unsupported MultisampledArrayTexture
 ps_negate.dxil	ok
 ps_offset.dxil	ok
 ps_pack.dxil	unsupported PackedStageValues

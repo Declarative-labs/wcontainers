@@ -69,6 +69,9 @@ void cs_atomics(uint t : SV_GroupIndex, uint3 group : SV_GroupID, uint3 id : SV_
     uint swapped;
     raw.InterlockedExchange(2592, id.x + 1, swapped);
     raw.Store(4096 + 4 * swapped, 1);
+    // Signed ones on the same unsigned words.
+    raw.InterlockedMin(2596, int(v));
+    raw.InterlockedMax(2600, int(v));
     InterlockedMin(signed_words[0], int(v));
     InterlockedMax(signed_words[1], int(v));
     InterlockedAdd(signed_words[2], -int(t));
