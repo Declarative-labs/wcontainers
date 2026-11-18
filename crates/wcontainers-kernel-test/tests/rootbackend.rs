@@ -15,6 +15,7 @@ fn directory() -> PathBuf {
             let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rootbackend");
             guest::build("rootfiles", &[], &out);
             guest::build("coredump", &[], &out);
+            guest::build("rootdirs", &[], &out);
             out
         })
         .clone()
@@ -43,4 +44,11 @@ fn root_files_match_reference() {
 fn core_dumps_match_reference() {
     let saves = runtimes::Saves { count: 1, gap: 40 };
     runtimes::assert_same(IMAGE, &directory(), &["/wc/coredump"], saves);
+}
+
+/// A directory rmdir refused for not being empty is still worked in, by several processes.
+#[test]
+fn directories_still_used_match_reference() {
+    let saves = runtimes::Saves { count: 0, gap: 40 };
+    runtimes::assert_same(IMAGE, &directory(), &["/wc/rootdirs"], saves);
 }

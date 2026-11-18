@@ -355,7 +355,7 @@ impl Client {
             if done { state.calls.remove(&tid) } else { None }
         };
         // What the call held goes once the connection is free to be told.
-        drop(ended);
+        self.let_go(ended);
     }
 
     /// A thread ended: its call's replies go, and it waits for no pages.
@@ -367,7 +367,22 @@ impl Client {
             }
             state.calls.remove(&tid)
         };
+        self.let_go(ended);
+    }
+
+    /// An ended call's inodes and handles go, and the lookups of its answers no inode took are
+    /// forgotten.
+    fn let_go(&self, ended: Option<Asked>) {
+        let Some(ended) = ended else {
+            return;
+        };
+        let named: Vec<u64> = ended.replies.iter().flat_map(reply_lookups).collect();
         drop(ended);
+        for nodeid in named {
+            if !self.holds(nodeid) && self.state.borrow().lookups.contains_key(&nodeid) {
+                self.forget(nodeid);
+            }
+        }
     }
 
     /// The handle the answer just taken gives, made once however often the call runs.
@@ -774,14 +789,20 @@ impl Client {
             .is_some_and(|node| node.strong_count() > 0)
     }
 
-    /// The kernel holds `nodeid` no more: the backend forgets the lookups it counted.
+    /// The kernel holds `nodeid` no more: the backend forgets the lookups it counted, except
+    /// those of answers a call has had and may take again in a later run, which wait for the call.
     fn forget(&self, nodeid: u64) {
         let count = {
             let mut state = self.state.borrow_mut();
             state.nodes.remove(&nodeid);
-            state.lookups.remove(&nodeid)
+            let counted = state.lookups.remove(&nodeid).unwrap_or(0);
+            let kept = recorded_lookups(&state, nodeid).min(counted);
+            if kept > 0 {
+                state.lookups.insert(nodeid, kept);
+            }
+            counted - kept
         };
-        if let Some(count) = count {
+        if count > 0 {
             let forget = fuse_forget_in { nlookup: count };
             self.tell(
                 fuse_opcode::FUSE_FORGET as u32,
@@ -959,6 +980,35 @@ impl Client {
 }
 
 /// Whether an answer to `opcode` is an entry the backend counts a lookup for.
+/// The node numbers an answer counts a lookup of, once each time it does.
+fn reply_lookups(reply: &Reply) -> Vec<u64> {
+    let Ok(body) = &reply.result else {
+        return Vec::new();
+    };
+    if reply.request.opcode == fuse_opcode::FUSE_READDIRPLUS as u32 {
+        return counted_entries(body)
+            .map(|(entry, _)| entry.nodeid)
+            .collect();
+    }
+    match fuse_entry_out::read_from_prefix(body) {
+        Ok((entry, _)) if gives_entry(reply.request.opcode) && entry.nodeid != 0 => {
+            alloc::vec![entry.nodeid]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// How many lookups of `nodeid` the answers calls have had count.
+fn recorded_lookups(state: &State, nodeid: u64) -> u64 {
+    state
+        .calls
+        .values()
+        .flat_map(|asked| &asked.replies)
+        .flat_map(reply_lookups)
+        .filter(|named| *named == nodeid)
+        .count() as u64
+}
+
 fn gives_entry(opcode: u32) -> bool {
     [
         fuse_opcode::FUSE_LOOKUP,
