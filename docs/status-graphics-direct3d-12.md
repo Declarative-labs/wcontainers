@@ -1451,3 +1451,8 @@ Run 28: nothing installed. Deleted at the end of the run: C:\wc\target\phase-2-g
 No build folder was made on the Mac or in scratch; the logs stay in scratch run28, and Godot
 4.7.2's `rendering_device_driver_d3d12.cpp` (MIT, read only, to find its heap flags) in
 scratch godot-src.
+Run 30: nothing installed. Deleted at the end of the run: C:\wc\target\phase-2-graphics-direct3d-12
+(7.4 GB; the next build there starts from clean) and the run's temporary files under
+C:\wc\out\phase-2-graphics-direct3d-12 (every\, two zip files). No build folder in scratch or
+the checkout; the logs stay in scratch run30, with vkd3d's shader test files and real Direct3D
+12's runner logs (LGPL test data, for testing only).
