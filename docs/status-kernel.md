@@ -4,7 +4,7 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
-K6b (larger runtimes), fourth run: the layer 1 differences of seeds 6262617 and 6262620 are
+K6b (larger runtimes), fourth run, complete: the layer 1 differences of seeds 6262617 and 6262620 are
 fixed (RWF_NOWAIT, listen on a named connected local socket), and the reference's layer 1
 runner waits for loopback packets to arrive after each call. See "K6b, fourth run" below.
 
@@ -54,6 +54,22 @@ at 1af8108, 6262617 passed (339.3 s, the RWF_NOWAIT fix), 6262619 passed (339.3 
 passed (338.6 s); 6262620 failed (listen, fixed at 6c90da3). At 6c90da3 (every fix of this
 run in), four side by side, load 52 at the start, 39 at the end: 6262620 passed (332.4 s), and
 the fresh seeds 6262622 (332.5 s), 6262623 (332.3 s) and 6262624 (332.0 s) passed.
+
+Whole suite at the final kernel (b80a0d8; later commits change only tests and this file; scratch
+k6b4/suite.log, a clean copy with its own build, `RUST_TEST_THREADS=4 cargo test --no-fail-fast
+-j 4 -p wcontainers-kernel -p wcontainers-kernel-test`, 42.5 minutes with the build, load 57 at
+the start, up to 120, 47 at the end): 213 passed, 6 ignored (the known ones, with their
+reasons), 1 failed: threads `clone_tables_match_reference`, the reference's known race (Known
+issues: the joiner is woken before the thread's undo list is undone; "now 4", ours 5). Its
+method is fixed: guest/clonetables.c now waits until the joined thread is gone from
+/proc/self/task, which Linux takes away only after `exit_sem`; the threads binary then passed
+whole (13 tests, load 36). The runtime tests passed under the default three seeds with saves:
+python 1611.0 s (3 tests), java 107.8 s, node 78.8 s, go 5.8 s (each binary's own time).
+
+K6b is complete: every runtime matches the reference under several seeds with saves, every fix
+is tested, the layer 1 seeds pass with every fix in, and the whole suite passed but for a
+reference race whose method is now fixed. What each runtime hits that is counted is under "K6b,
+third run" and the gap list under "K6b, second run"; this run changed none of it.
 
 ## K6b, third run
 
@@ -2803,6 +2819,9 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
   alone passed. Likely the same family as the K4 entry below (the reference's job control
   timing on several CPUs); not looked into further. A test that hangs in the reference waits
   for ever, as the reference runner has no time limit.
+
+- K6b, fourth run: the clone tables race below came again in the whole suite (load about 60 to
+  120); fixed in the test's method (it waits until the thread is gone from /proc).
 
 - K5, seventh run: threads `clone_tables_match_reference` (guest/clonetables.c) failed once in
   the whole suite at 8e896aa (load about 30, beside three layer 1 runs): the reference showed a
