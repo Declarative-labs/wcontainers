@@ -145,9 +145,15 @@ impl<B: Backend> Replay<B> {
                 Some(42) => strip_cut == 1,
                 _ => false,
             };
+        // The stage helper takes direct draws only.
+        let staged = d.pipelines[pid.0 as usize]
+            .render
+            .as_ref()
+            .is_some_and(|r| r.geometry.is_some());
         // A statistics query counts each command's arguments, which are read back for it.
         let on_gpu = s.call_only()
             && self.statistics.is_none()
+            && !staged
             && caps.has(Features::INDIRECT)
             && (count.is_none() || caps.has(Features::COMPUTE))
             && match call {

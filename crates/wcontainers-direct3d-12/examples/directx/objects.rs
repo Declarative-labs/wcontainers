@@ -675,15 +675,20 @@ impl Device {
     ) -> Result<()> {
         // SAFETY: the API requires a description.
         let d = unsafe { pdesc.as_ref() }.ok_or(E_INVALIDARG)?;
-        if !d.HS.pShaderBytecode.is_null() || !d.DS.pShaderBytecode.is_null() {
-            return Err(hr(Error::NotImplemented("hull and domain stages")));
-        }
         let root = d.pRootSignature.as_ref().map(|r| {
             // SAFETY: root signatures come from this library.
             unsafe { r.as_impl() }.0.clone()
         });
         // SAFETY: the API requires valid bytecode and input layout pointers.
-        let (vs, gs, ps) = unsafe { (code(&d.VS), code(&d.GS), code(&d.PS)) };
+        let (vs, hs, ds, gs, ps) = unsafe {
+            (
+                code(&d.VS),
+                code(&d.HS),
+                code(&d.DS),
+                code(&d.GS),
+                code(&d.PS),
+            )
+        };
         let elements = if d.InputLayout.NumElements == 0 {
             &[][..]
         } else {
@@ -774,6 +779,8 @@ impl Device {
             dev.create_graphics_pipeline(&GraphicsPipelineDesc {
                 root,
                 vs: &vs,
+                hs: &hs,
+                ds: &ds,
                 gs: &gs,
                 ps: &ps,
                 blend,
