@@ -3,7 +3,7 @@
 <title>WebGPU back end scenes</title>
 <script type="module">
 // The scenes example built for WebAssembly, as wasm-bindgen writes it into ./pkg.
-import init, { draw_scene, draw_viewports, prepare_timings, timestamps, converted, vertex_formats, texture_renames, query_sets, depth_group_copies, pulled_costs, adapter } from './pkg/scenes.js';
+import init, { draw_scene, draw_viewports, prepare_timings, timestamps, converted, vertex_formats, texture_renames, query_sets, depth_group_copies, pulled_costs, program_features, copy_gaps, adapter } from './pkg/scenes.js';
 const ready = init();
 
 const dataUrl = (png) => new Promise((resolve, reject) => {
@@ -55,6 +55,19 @@ window.depthGroupCopies = async () => {
   return await depth_group_copies();
 };
 
+// Texture reads into buffers keeping the bytes between rows: one line, or an error.
+window.copyGaps = async (seed) => {
+  await ready;
+  return await copy_gaps(BigInt(seed));
+};
+
+// Program features (subgroups, the primitive index) against the features the adapter offers:
+// one line each, or an error.
+window.programFeatures = async (offered) => {
+  await ready;
+  return await program_features(offered);
+};
+
 // Instance data fetched in the program against vertex buffers: one line per route, or an error.
 window.pulledCosts = async (frames) => {
   await ready;
@@ -84,6 +97,7 @@ window.adapterInfo = async () => {
     backend: i.backend,
     type: i.type,
     fallback: i.isFallbackAdapter ?? a.isFallbackAdapter ?? false,
+    features: [...a.features],
     backEnd: await adapter(),
   };
 };

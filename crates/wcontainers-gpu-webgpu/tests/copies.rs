@@ -1,6 +1,7 @@
 //! Copies WebGPU has no single command for, exact: between formats of one typeless group (through a
 //! buffer), and into depth (by draws), from a buffer at a pitch WebGPU refuses, from a write, and
-//! from a texture of the group, into part of the destination.
+//! from a texture of the group, into part of the destination; and texture reads into a buffer that
+//! leave the bytes between rows as they were.
 //!
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
 
@@ -14,6 +15,9 @@ mod draw;
 
 #[path = "../examples/scenes/depth16.rs"]
 mod depth16;
+
+#[path = "../examples/scenes/gaps.rs"]
+mod gaps;
 
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
@@ -1037,5 +1041,20 @@ fn volume_writes_with_padded_slices_keep_every_slice() {
     let want: Vec<u8> = [&data[0..16], &data[24..40]].concat();
     assert_eq!(got, want);
     assert_eq!(b.slow_paths().count(SlowPath::RowsRepacked), 1);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+}
+
+/// Texture reads into a buffer leave the bytes between rows and between layers as they were, at
+/// an offset off Direct3D 12's placement alignment too (wgpu's Direct3D 12 overwrote them there).
+/// `WEBGPU_SEED` picks the texels (default 1).
+#[test]
+fn texture_reads_into_a_buffer_keep_the_bytes_between_rows() {
+    let mut b = device();
+    let seed = std::env::var("WEBGPU_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let line = gaps::reads_keep_the_bytes_between_rows(&mut b, seed).unwrap();
+    eprintln!("seed {seed}: {line}; slow paths {:?}", b.slow_paths());
     assert_eq!(b.status(), DeviceStatus::Ok);
 }

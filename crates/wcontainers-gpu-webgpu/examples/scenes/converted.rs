@@ -10,8 +10,8 @@ use wcontainers_gpu::{
     AddressMode, Backend, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp,
     BorderColor, BufferDesc, BufferUsage, ColorAttachment, CopyBufferTexture, DeviceStatus,
     DrawCall, DrawRange, Extent, Filter, Format, FormatUse, LoadOp, MapIntent, Origin, PassDesc,
-    ReadSource, SamplerDesc, SlowPath, StageSet, StoreOp, TextureRegion, TextureUsage, Topology,
-    WriteMode,
+    ReadSource, SamplerDesc, SlowPath, StageSet, StoreOp, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, Topology, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -810,4 +810,87 @@ pub fn check(b: &mut B, seed: u64, cases: u32) -> Result<String> {
     );
     line += &format!(" FormatConverted {hits}");
     Ok(line)
+}
+
+/// Each three-channel format at the device's widest 2D texture, one row: seeded bytes copied from
+/// a buffer into it, from it into a second such texture, and from that into a buffer, every bit
+/// kept (the copies go through raw textures three times as wide, in runs the device can make).
+pub fn three_channels_at_widest(b: &mut B, seed: u64) -> Result<String> {
+    let width = b.caps().limits.max_texture_2d;
+    let extent = Extent {
+        width,
+        height: 1,
+        depth_or_layers: 1,
+    };
+    for (i, format) in THREE_CHANNEL.into_iter().enumerate() {
+        let row = row_bytes(format, width);
+        let mut rng = fastrand::Rng::with_seed(seed + i as u64);
+        let bytes: Vec<u8> = (0..row).map(|_| rng.u8(..)).collect();
+        let texture = |b: &mut B| {
+            b.create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width,
+                height: 1,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLE,
+                cube: false,
+                reinterpret: false,
+            })
+            .map_err(|e| anyhow!("{format:?} of width {width}: {e:?}"))
+        };
+        let (first, second) = (texture(b)?, texture(b)?);
+        let buffer = |b: &mut B| {
+            b.create_buffer(&BufferDesc {
+                size: row as u64,
+                usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                intent: MapIntent::Rarely,
+            })
+            .map_err(|e| anyhow!("{e:?}"))
+        };
+        let (from, to) = (buffer(b)?, buffer(b)?);
+        b.write_buffer(&from, 0, &bytes, WriteMode::Discard);
+        let at = |texture| TextureRegion {
+            texture,
+            mip: 0,
+            layer: 0,
+            origin: Origin::default(),
+            stencil: false,
+        };
+        let side = |buffer| CopyBufferTexture {
+            buffer,
+            offset: 0,
+            row_pitch: row as u32,
+            rows_per_layer: 1,
+        };
+        b.copy_buffer_to_texture(&side(&from), &at(&first), extent);
+        b.copy_texture(&at(&first), &at(&second), extent);
+        b.copy_texture_to_buffer(&at(&second), &side(&to), extent);
+        let rb = b
+            .read_back(&ReadSource::Buffer {
+                buffer: &to,
+                offset: 0,
+                size: row as u64,
+            })
+            .map_err(|e| anyhow!("{e:?}"))?;
+        b.submit();
+        b.wait_read(&rb);
+        let mut got = vec![0; row];
+        b.finish_read(rb, &mut got);
+        ensure!(
+            b.status() == DeviceStatus::Ok,
+            "{format:?} of width {width}: device {:?}",
+            b.status()
+        );
+        ensure!(
+            got == bytes,
+            "{format:?} of width {width}: the copies changed the bits (seed {seed})"
+        );
+    }
+    Ok(format!(
+        "three-channel formats at the widest 2D texture ({width} texels): every bit kept through \
+         buffer and texture copies (seed {seed})"
+    ))
 }

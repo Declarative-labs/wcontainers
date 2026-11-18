@@ -86,6 +86,10 @@ pub struct WebGpu {
     depth24: Depth24,
     /// Colour clears reach the API as floats, so integers past 2^24 cannot be cleared exactly.
     float_clears: bool,
+    /// Texture reads into a buffer at an offset off Direct3D 12's placement alignment overwrite
+    /// the bytes between their rows (wgpu's Direct3D 12 copies them through a buffer of its own
+    /// and then copies that whole, gaps included, where the driver lacks unrestricted pitches).
+    padded_reads: bool,
     /// Changed whenever a buffer a binding set names moves so that a bind group made with it may no
     /// longer be right; draws rebind nothing while it stays the same.
     bind_epoch: u64,
@@ -513,6 +517,7 @@ impl WebGpu {
             | wgpu::Features::POLYGON_MODE_LINE
             | wgpu::Features::POLYGON_MODE_POINT
             | wgpu::Features::SUBGROUP
+            | wgpu::Features::PRIMITIVE_INDEX
             | wgpu::Features::IMMEDIATES;
         wgpu::DeviceDescriptor {
             label: None,
@@ -559,6 +564,7 @@ impl WebGpu {
         }
         // wgpu's Direct3D 12 clears colour targets through 32-bit floats.
         let float_clears = adapter.get_info().backend == wgpu::Backend::Dx12;
+        let padded_reads = adapter.get_info().backend == wgpu::Backend::Dx12;
         WebGpu {
             adapter: adapter.clone(),
             device,
@@ -587,6 +593,7 @@ impl WebGpu {
             vertices: Default::default(),
             fills: Default::default(),
             float_clears,
+            padded_reads,
             bind_epoch: 0,
             windows: HashMap::new(),
             counters: Counters::default(),
@@ -721,6 +728,7 @@ fn caps(
         ),
         (wgpu::Features::SHADER_F16, Features::SHADER_F16),
         (wgpu::Features::SUBGROUP, Features::SUBGROUPS),
+        (wgpu::Features::PRIMITIVE_INDEX, Features::PRIMITIVE_INDEX),
         (wgpu::Features::POLYGON_MODE_LINE, Features::POLYGON_MODE),
         (
             wgpu::Features::POLYGON_MODE_POINT,

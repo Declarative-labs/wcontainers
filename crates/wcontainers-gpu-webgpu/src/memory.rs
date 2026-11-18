@@ -18,6 +18,10 @@ use crate::{
     TextureObj, WebGpu, convert, packed, row_bytes,
 };
 
+/// Direct3D 12's alignment of a texture's rows placed in a buffer
+/// (`D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT`).
+const DX12_PLACEMENT_ALIGNMENT: u64 = 512;
+
 /// The most bytes of pattern a non-zero clear uploads.
 const PATTERN_BLOCK: u64 = 64 * 1024;
 
@@ -1293,15 +1297,22 @@ impl WebGpu {
             }
         };
         let pitch = u64::from(buffer.row_pitch);
+        let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
+        let gaps = (rows > 1 && pitch > row)
+            || (extent.depth_or_layers > 1 && u64::from(buffer.rows_per_layer) > rows);
+        let gaps_kept = to_texture
+            || !self.padded_reads
+            || !gaps
+            || offset.is_multiple_of(DX12_PLACEMENT_ALIGNMENT);
         if pitch.is_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
-            && offset.is_multiple_of(4)
+            && offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+            && gaps_kept
         {
             copy(self, &raw, offset, pitch, u64::from(buffer.rows_per_layer));
             return;
         }
-        // The rows go through a buffer at a pitch WebGPU takes, one buffer copy per row.
+        // The rows go through a buffer at a pitch and place WebGPU takes, one buffer copy per row.
         self.slow.hit(SlowPath::RowsRepacked);
-        let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
         let api_pitch = row.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
         let layers = u64::from(extent.depth_or_layers);
         let temp = self.device.create_buffer(&wgpu::BufferDescriptor {

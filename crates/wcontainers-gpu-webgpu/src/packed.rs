@@ -57,22 +57,21 @@ pub(crate) fn clear(format: Format, c: wgpu::Color) -> wgpu::Color {
 /// The integer format holding a converted format's raw bytes on the GPU: one texel a block, or a
 /// 32-bit texel a channel of a three-channel 32-bit format.
 pub(crate) fn raw(format: Format) -> Format {
-    match format.block().2 {
-        1 => Format::R8Uint,
-        2 => Format::R16Uint,
-        _ => Format::R32Uint,
-    }
+    [Format::R8Uint, Format::R16Uint]
+        .into_iter()
+        .find(|r| r.block().2 == format.block().2)
+        .unwrap_or(Format::R32Uint)
 }
 
 /// Texels of [`raw`] a row of `width` texels of `format` takes.
 pub(crate) fn raw_width(format: Format, width: u32) -> u32 {
     let (bw, _, bytes) = format.block();
-    width.div_ceil(bw) * bytes.div_ceil(4)
+    width.div_ceil(bw) * bytes.div_ceil(Format::R32Uint.block().2)
 }
 
 /// Bytes of one texel of the format a converted `format` is held in.
 pub(crate) fn held_bytes(format: Format) -> u32 {
-    held(format).map_or(4, |f| f.block().2)
+    held(format).unwrap_or(Format::Rgba8Unorm).block().2
 }
 
 /// Whether `format` is a three-channel 32-bit format, held with a fourth channel.
@@ -486,10 +485,42 @@ impl WebGpu {
         self.convert_by_draw(t.desc.format, into, held, &staged.0.raw(), extent);
     }
 
-    /// A copy between a buffer and a converted texture, on the GPU: the buffer's bytes copied into
-    /// a texture of their own ([`raw`]) and widened into the texture by a draw, or the texture's
-    /// texels packed into one by a draw and copied out.
+    /// Texels of `format` one copy through a texture of raw blocks spans: as many as keep that
+    /// texture within the device's widest 2D texture, in whole blocks.
+    fn raw_run(&self, format: Format) -> u32 {
+        let bw = format.block().0;
+        self.device.limits().max_texture_dimension_2d / raw_width(format, bw) * bw
+    }
+
+    /// A copy between a buffer and a converted texture, on the GPU, in runs of columns as wide as
+    /// [`Self::raw_run`] allows: the buffer's bytes copied into a texture of their own ([`raw`])
+    /// and widened into the texture by a draw, or the texture's texels packed into one by a draw
+    /// and copied out.
     pub(crate) fn copy_buffer_packed(
+        &mut self,
+        buffer: &CopyBufferTexture<'_, Self>,
+        region: &TextureRegion<'_, Self>,
+        extent: Extent,
+        to_texture: bool,
+    ) {
+        let format = region.texture.0.desc.format;
+        let run = self.raw_run(format);
+        let mut x = 0;
+        while x < extent.width {
+            let width = run.min(extent.width - x);
+            let part = CopyBufferTexture {
+                buffer: buffer.buffer,
+                offset: buffer.offset + packed_bytes(format, u64::from(x)),
+                row_pitch: buffer.row_pitch,
+                rows_per_layer: buffer.rows_per_layer,
+            };
+            let at = moved(region, x);
+            self.copy_buffer_packed_run(&part, &at, Extent { width, ..extent }, to_texture);
+            x += width;
+        }
+    }
+
+    fn copy_buffer_packed_run(
         &mut self,
         buffer: &CopyBufferTexture<'_, Self>,
         region: &TextureRegion<'_, Self>,
@@ -534,6 +565,22 @@ impl WebGpu {
         if sf.block() != df.block() {
             return self.fail("a copy between a converted format and one of another texel size");
         }
+        let run = self.raw_run(sf);
+        let mut x = 0;
+        while x < extent.width {
+            let width = run.min(extent.width - x);
+            self.copy_packed_run(&moved(src, x), &moved(dst, x), Extent { width, ..extent });
+            x += width;
+        }
+    }
+
+    fn copy_packed_run(
+        &mut self,
+        src: &TextureRegion<'_, Self>,
+        dst: &TextureRegion<'_, Self>,
+        extent: Extent,
+    ) {
+        let (sf, df) = (src.texture.0.desc.format, dst.texture.0.desc.format);
         if extent.width == 0 || extent.height == 0 || extent.depth_or_layers == 0 {
             return;
         }
@@ -566,6 +613,20 @@ impl WebGpu {
         } else {
             self.copy_texture_impl(&at, dst, extent);
         }
+    }
+}
+
+/// `region` moved `x` texels to the right.
+fn moved<'a>(region: &TextureRegion<'a, WebGpu>, x: u32) -> TextureRegion<'a, WebGpu> {
+    TextureRegion {
+        texture: region.texture,
+        mip: region.mip,
+        layer: region.layer,
+        origin: Origin {
+            x: region.origin.x + x,
+            ..region.origin
+        },
+        stencil: region.stencil,
     }
 }
 
