@@ -241,29 +241,34 @@ fn check_mode(options: &Options) -> Result<bool> {
         let references = crate_dir().join("references").join(api);
         for scene in &scenes {
             let (failure, printed) = run_scene(&bin, api, scene, &options.driver, &dir, false)?;
-            if let Some(failure) = failure {
-                report(false, format!("{api} {scene}: {failure}"));
-                continue;
-            }
+            // Where the program loaded each replacement from, as it printed before drawing (a
+            // scene that failed may have printed it too).
             let printed = printed.to_lowercase();
             for ((name, _), loaded) in options.dlls.iter().zip(&mut loaded) {
                 let name = name.to_lowercase();
-                if !LIBRARIES.contains(&name.as_str())
-                    || printed.contains(&format!("{name} from not loaded"))
-                {
+                let prefix = format!("{name} from ");
+                let Some(from) = printed
+                    .split([',', '\n'])
+                    .find_map(|part| part.trim().strip_prefix(&prefix))
+                else {
+                    continue;
+                };
+                if !LIBRARIES.contains(&name.as_str()) || from == "not loaded" {
                     continue;
                 }
                 *loaded = true;
-                let want = format!("{name} from {}", bin.join(&name).display()).to_lowercase();
-                if !printed.contains(&want) {
+                if from != bin.join(&name).display().to_string().to_lowercase() {
                     report(
                         false,
                         format!(
-                            "{api} {scene}: did not load the replacement {name} from {}",
+                            "{api} {scene}: did not load the replacement {name} from {}: {from}",
                             bin.display()
                         ),
                     );
                 }
+            }
+            if let Some(failure) = failure {
+                report(false, format!("{api} {scene}: {failure}"));
             }
         }
         if !references.join(TOLERANCES).exists() {
@@ -273,7 +278,9 @@ fn check_mode(options: &Options) -> Result<bool> {
             );
             continue;
         }
-        let verdicts = check::check_dir(&references, &dir)?;
+        let verdicts = check::check_dir(&references, &dir, |f| {
+            f.ends_with(".png") || f.ends_with(".exr") || f.ends_with(".txt")
+        })?;
         for v in verdicts
             .iter()
             .filter(|v| scenes.iter().any(|s| of_scene(&v.file, s)))
@@ -375,7 +382,9 @@ fn frames(args: &[String]) -> Result<bool> {
         }
         [reference, run] => {
             let mut ok = true;
-            for v in check::check_dir(Path::new(reference), Path::new(run))? {
+            for v in check::check_dir(Path::new(reference), Path::new(run), |f| {
+                f.starts_with("frame-") && f.ends_with(".png")
+            })? {
                 println!(
                     "{} {}: {}",
                     if v.pass { "pass" } else { "FAIL" },
