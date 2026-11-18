@@ -7,10 +7,14 @@ use std::rc::Rc;
 
 use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL;
+use windows::Win32::Graphics::Direct3D10::{
+    ID3D10Device, ID3D10Device1, ID3D10Device1_Vtbl, ID3D10Multithread, ID3D10Multithread_Vtbl,
+};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
 use windows::Win32::Graphics::Dxgi::{
-    DXGI_OFFER_RESOURCE_PRIORITY, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice3, IDXGIResource,
+    DXGI_OFFER_RESOURCE_PRIORITY, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice3, IDXGIDevice3_Vtbl,
+    IDXGIResource,
 };
 use windows::core::{
     ComObjectInner, ComObjectInterface, GUID, IUnknownImpl, Interface, OutRef, Ref, Result,
@@ -24,8 +28,11 @@ use wcontainers_gpu::SourceStage;
 use super::counted::{Counted, Held};
 use super::*;
 
-#[implement(ID3D11Device3, IDXGIDevice3)]
+#[implement(ID3D11Device3, IDXGIDevice3, ID3D10Device1, ID3D10Multithread)]
 pub struct Device {
+    /// The immediate context's bindings and state object, kept for the device's life (dropped
+    /// first, while the front lives).
+    immediate_kept: Locked<Rc<super::context::Kept>>,
     pub front: Locked<Shared>,
     pub(super) private: Private,
     /// The immediate context while it lives, held without a reference (it holds one on the device).
@@ -35,6 +42,10 @@ pub struct Device {
     exception_mode: Cell<u32>,
     /// DXGI's limit of frames queued for presenting, as the program set it.
     frame_latency: Cell<u32>,
+    /// Direct3D 10's text filter size, as the program set it.
+    pub(super) text_filter: Cell<(u32, u32)>,
+    /// Whether a context state was made: Direct3D 10's device is offered from then on.
+    pub(super) offers_d3d10: Cell<bool>,
     /// The live state objects by description: Direct3D hands out the existing object for a
     /// description equal to a live one's.
     states: States,
@@ -128,6 +139,7 @@ pub fn create_device(
     let adapter = Adapter::new(wcontainers_gpu::Backend::caps(&front.backend));
     let level = front.feature_level();
     let device: ID3D11Device3 = Device {
+        immediate_kept: Locked::new(Rc::default()),
         front: Locked::new(Rc::new(RefCell::new(front))),
         private: Private::default(),
         context: Locked::new(Rc::new(Cell::new(std::ptr::null_mut()))),
@@ -135,13 +147,24 @@ pub fn create_device(
         flags,
         exception_mode: Cell::new(0),
         frame_latency: Cell::new(3),
+        text_filter: Cell::new((0, 0)),
+        offers_d3d10: Cell::new(false),
         states: States::default(),
     }
     .into();
-    // The object's table of ID3D11Device3 is ours to point elsewhere.
+    // The object's tables are ours to point elsewhere.
     unsafe {
         let table = device.as_raw() as *mut *const ID3D11Device3_Vtbl;
         *table = patched_table(*table);
+        gate::<IDXGIDevice3_Vtbl, 1>(device.cast::<IDXGIDevice3>()?.as_raw());
+        gate::<windows::core::IInspectable_Vtbl, 2>(
+            device.cast::<windows::core::IUnknown>()?.as_raw(),
+        );
+        gate::<ID3D10Multithread_Vtbl, 3>(device.cast::<ID3D10Multithread>()?.as_raw());
+        let device10 = device
+            .cast_object_ref::<Device>()?
+            .to_interface::<ID3D10Device1>();
+        gate::<ID3D10Device1_Vtbl, 4>(device10.as_raw());
     }
     let context = unsafe { device.GetImmediateContext() }?;
     Ok((device.into(), context, level))
@@ -168,6 +191,9 @@ fn patched_table(original: *const ID3D11Device3_Vtbl) -> *const ID3D11Device3_Vt
         .get_or_init(|| {
             // SAFETY: the windows crate's table, copied bit for bit.
             let mut table = unsafe { std::ptr::read(original) };
+            let unknown = &mut table.base__.base__.base__.base__;
+            let _ = QUERY_INTERFACE[0].set(unknown.QueryInterface);
+            unknown.QueryInterface = query_gated::<0>;
             let device = &mut table.base__.base__.base__;
             let _ = CHECK_QUALITY_LEVELS.set(device.CheckMultisampleQualityLevels);
             device.CheckMultisampleQualityLevels = check_quality_levels;
@@ -176,6 +202,59 @@ fn patched_table(original: *const ID3D11Device3_Vtbl) -> *const ID3D11Device3_Vt
             Table(table)
         })
         .0
+}
+
+/// Points interface pointer `p`'s table at a copy (made once, for table `N`) whose
+/// `QueryInterface` is gated (`query_gated`).
+///
+/// # Safety
+/// `p` is an interface pointer of the device, and `V` its table's type.
+unsafe fn gate<V: 'static, const N: usize>(p: *mut c_void) {
+    static TABLES: [std::sync::OnceLock<usize>; 5] = [const { std::sync::OnceLock::new() }; 5];
+    let slot = p as *mut *const V;
+    let copy = *TABLES[N].get_or_init(|| {
+        // SAFETY: the windows crate's table, copied bit for bit; every table starts with
+        // IUnknown's.
+        let mut table = unsafe { std::ptr::read(*slot) };
+        let unknown =
+            unsafe { &mut *(&mut table as *mut V).cast::<windows::core::IUnknown_Vtbl>() };
+        let _ = QUERY_INTERFACE[N].set(unknown.QueryInterface);
+        unknown.QueryInterface = query_gated::<N>;
+        Box::leak(Box::new(table)) as *const V as usize
+    });
+    unsafe { *slot = copy as *const V };
+}
+
+type QueryInterface = unsafe extern "system" fn(
+    *mut c_void,
+    *const windows::core::GUID,
+    *mut *mut c_void,
+) -> windows::core::HRESULT;
+/// The windows crate's `QueryInterface` entries of the device's tables.
+static QUERY_INTERFACE: [std::sync::OnceLock<QueryInterface>; 5] =
+    [const { std::sync::OnceLock::new() }; 5];
+
+/// `QueryInterface` answering `ID3D10Device` and `ID3D10Device1` only once a context state was
+/// made, as Direct3D's device does.
+unsafe extern "system" fn query_gated<const N: usize>(
+    this: *mut c_void,
+    iid: *const windows::core::GUID,
+    out: *mut *mut c_void,
+) -> windows::core::HRESULT {
+    let entry = QUERY_INTERFACE[N].get().expect("the table was patched");
+    if !iid.is_null() && [ID3D10Device::IID, ID3D10Device1::IID].contains(unsafe { &*iid }) {
+        let unknown = unsafe { windows::core::IUnknown::from_raw_borrowed(&this) };
+        let offered = unknown
+            .and_then(|u| u.cast_object_ref::<Device>().ok())
+            .is_some_and(|d| d.offers_d3d10.get());
+        if !offered {
+            if !out.is_null() {
+                unsafe { *out = std::ptr::null_mut() };
+            }
+            return windows::Win32::Foundation::E_NOINTERFACE;
+        }
+    }
+    unsafe { entry(this, iid, out) }
 }
 
 /// `CheckMultisampleQualityLevels`: `E_INVALIDARG` for a null out pointer, and the count zeroed
@@ -202,7 +281,7 @@ unsafe extern "system" fn check_quality_levels(
 /// Makes an object through the call `make` serving its Direct3D 11 interface `I` and hands it out
 /// as its 11.3 interface `J`, which every such object of ours offers. A null `out` asks only
 /// whether the call would succeed.
-fn as_one<I, J>(out: OutRef<J>, make: impl FnOnce(OutRef<I>) -> Result<()>) -> Result<()>
+pub(super) fn as_one<I, J>(out: OutRef<J>, make: impl FnOnce(OutRef<I>) -> Result<()>) -> Result<()>
 where
     I: Interface + windows::core::Type<I, Default = Option<I>>,
     J: Interface + windows::core::Type<J, Default = Option<J>>,
@@ -232,13 +311,6 @@ fn is_predicate(kind: D3D11_QUERY) -> bool {
             .contains(&kind.0)
             && (kind.0 - D3D11_QUERY_SO_OVERFLOW_PREDICATE.0) % 2 == 0
 }
-
-/// The interface identifiers of `ID3D10Device` and `ID3D10Device1`, as Direct3D 10's headers give
-/// them.
-const ID3D10_DEVICE: windows::core::GUID =
-    windows::core::GUID::from_u128(0x9b7e4c0f_342c_4106_a19f_4f2704f689f0);
-const ID3D10_DEVICE1: windows::core::GUID =
-    windows::core::GUID::from_u128(0x9b7e4c8f_342c_4106_a19f_4f2704f689f0);
 
 impl Device_Impl {
     fn me(&self) -> ID3D11Device {
@@ -1329,27 +1401,31 @@ impl Device_Impl {
             return Err(E_INVALIDARG.into());
         };
         let emulated = unsafe { emulated.as_ref() }.ok_or(E_INVALIDARG)?;
-        if [ID3D10_DEVICE, ID3D10_DEVICE1].contains(emulated) {
-            return Err(missing("context states emulating Direct3D 10"));
-        }
-        if ![ID3D11Device::IID, ID3D11Device1::IID].contains(emulated) {
+        let emulates10 = [ID3D10Device::IID, ID3D10Device1::IID].contains(emulated);
+        if !emulates10 && ![ID3D11Device::IID, ID3D11Device1::IID].contains(emulated) {
             return Err(E_INVALIDARG.into());
         }
         if let Some(c) = chosen {
             *c = level;
         }
+        self.offers_d3d10.set(true);
         give(
             out,
-            super::context::DeviceContextState::new(self.me()).into(),
+            super::context::DeviceContextState::new(self.me(), emulates10).into(),
         )
     }
 
     /// The immediate context, made at the first call.
-    fn immediate(&self) -> ID3D11DeviceContext3 {
+    pub(super) fn immediate(&self) -> ID3D11DeviceContext3 {
         let raw = self.context.get();
         if raw.is_null() {
-            let c: ID3D11DeviceContext3 =
-                Context::new(self.front.clone(), self.me(), self.context.clone()).into();
+            let c: ID3D11DeviceContext3 = Context::new(
+                self.front.clone(),
+                self.me(),
+                self.context.clone(),
+                (*self.immediate_kept).clone(),
+            )
+            .into();
             self.context.set(c.as_raw());
             c
         } else {

@@ -15,6 +15,14 @@ const FORWARDERS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "d3d10core",
+        &[
+            "D3D10CoreCreateDevice",
+            "D3D10CoreGetVersion",
+            "D3D10CoreRegisterLayers",
+        ],
+    ),
+    (
         "dxgi",
         &[
             "CreateDXGIFactory",

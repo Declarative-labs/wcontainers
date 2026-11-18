@@ -23,10 +23,11 @@ DXGI_SURFACE = ["IDXGISurface1", "IDXGISurface"]
 D3D10_CHILD = ["ID3D10DeviceChild"]
 D3D10_RESOURCE = ["ID3D10Resource"] + D3D10_CHILD
 D3D10_VIEW = ["ID3D10View"] + D3D10_CHILD
-for empty in ("ID3DDeviceContextState", "ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11ComputeShader", "ID3D11GeometryShader", "ID3D11HullShader", "ID3D11DomainShader", "ID3D11Predicate"):
+for empty in ("ID3D10InputLayout", "ID3D10VertexShader", "ID3D10PixelShader", "ID3D10GeometryShader", "ID3D10Predicate", "ID3DDeviceContextState", "ID3D11InputLayout", "ID3D11VertexShader", "ID3D11PixelShader", "ID3D11ComputeShader", "ID3D11GeometryShader", "ID3D11HullShader", "ID3D11DomainShader", "ID3D11Predicate"):
     traits[empty] = []
 structs = {
-    "Device": ["ID3D11Device3", "ID3D11Device2", "ID3D11Device1", "ID3D11Device", "IDXGIDevice3", "IDXGIDevice2", "IDXGIDevice1", "IDXGIDevice", "IDXGIObject"],
+    "Device": ["ID3D11Device3", "ID3D11Device2", "ID3D11Device1", "ID3D11Device", "IDXGIDevice3", "IDXGIDevice2", "IDXGIDevice1", "IDXGIDevice", "IDXGIObject",
+               "ID3D10Device1", "ID3D10Device", "ID3D10Multithread"],
     "Context": ["ID3D11DeviceContext3", "ID3D11DeviceContext2", "ID3D11DeviceContext1", "ID3D11DeviceContext"] + CHILD
     + ["ID3D11Multithread", "ID3DUserDefinedAnnotation"],
     "Adapter": ["IDXGIAdapter1", "IDXGIAdapter", "IDXGIObject"],
@@ -56,12 +57,14 @@ structs = {
     "DepthStencilState": ["ID3D11DepthStencilState"] + CHILD + ["ID3D10DepthStencilState"] + D3D10_CHILD,
     "RasterizerState": ["ID3D11RasterizerState2", "ID3D11RasterizerState1", "ID3D11RasterizerState"] + CHILD
     + ["ID3D10RasterizerState"] + D3D10_CHILD,
-    "InputLayout": ["ID3D11InputLayout"] + CHILD,
-    "Query": ["ID3D11Query1", "ID3D11Query", "ID3D11Asynchronous"] + CHILD,
-    "Predicate": ["ID3D11Predicate", "ID3D11Query", "ID3D11Asynchronous"] + CHILD,
-    "VertexShader": ["ID3D11VertexShader"] + CHILD,
-    "PixelShader": ["ID3D11PixelShader"] + CHILD,
-    "GeometryShader": ["ID3D11GeometryShader"] + CHILD,
+    "InputLayout": ["ID3D11InputLayout"] + CHILD + ["ID3D10InputLayout"] + D3D10_CHILD,
+    "Query": ["ID3D11Query1", "ID3D11Query", "ID3D11Asynchronous"] + CHILD
+    + ["ID3D10Query", "ID3D10Asynchronous"] + D3D10_CHILD,
+    "Predicate": ["ID3D11Predicate", "ID3D11Query", "ID3D11Asynchronous"] + CHILD
+    + ["ID3D10Predicate", "ID3D10Query", "ID3D10Asynchronous"] + D3D10_CHILD,
+    "VertexShader": ["ID3D11VertexShader"] + CHILD + ["ID3D10VertexShader"] + D3D10_CHILD,
+    "PixelShader": ["ID3D11PixelShader"] + CHILD + ["ID3D10PixelShader"] + D3D10_CHILD,
+    "GeometryShader": ["ID3D11GeometryShader"] + CHILD + ["ID3D10GeometryShader"] + D3D10_CHILD,
     "ComputeShader": ["ID3D11ComputeShader"] + CHILD,
     "HullShader": ["ID3D11HullShader"] + CHILD,
     "DomainShader": ["ID3D11DomainShader"] + CHILD,
@@ -120,7 +123,7 @@ for t in ["ID3D11Buffer", "ID3D11Texture1D", "ID3D11Texture2D", "ID3D11Texture3D
 private = {"GetPrivateData", "SetPrivateData", "SetPrivateDataInterface"}
 # Direct3D 10's calls served by a hand-written method named with a 10 after the call's name, and
 # those served by Direct3D 11's own.
-hand10 = {"GetDesc", "GetDesc1", "GetResource", "GetType", "GetDevice"}
+hand10 = {"GetDesc", "GetDesc1", "GetResource", "GetType", "GetDevice", "Map", "Unmap", "Begin", "End", "GetData", "GetDataSize"}
 same10 = {"GetEvictionPriority", "SetEvictionPriority"} | private
 # DXGI's calls on resources that Direct3D 11's own calls or the child's serve.
 on_resource = {
@@ -130,6 +133,30 @@ on_resource = {
     ("IDXGISurface", "GetDesc"): "self.get_desc_dxgi()",
     ("IDXGIResource", "GetEvictionPriority"): "Ok(DXGI_RESOURCE_PRIORITY(self.get_eviction_priority()))",
 }
+# Direct3D 10's device on the device: calls of the same form as Direct3D 11's served by those, the
+# counters and shared resources not served, every other by a method named with a 10 after it.
+dev10_same = {"GetDeviceRemovedReason", "SetExceptionMode", "GetExceptionMode", "GetCreationFlags",
+              "CheckFormatSupport", "CheckMultisampleQualityLevels"}
+dev10_missing = {"CreateCounter", "CheckCounterInfo", "CheckCounter", "OpenSharedResource"}
+# The immediate context's calls that do nothing while Direct3D 10's behaviour is active on it: all
+# but the swap itself and the getters, which read the default state then, except `PSGetSamplers`,
+# which writes nothing (as real Direct3D's does: Wine's test_device_context_state).
+CONTEXTS = ("ID3D11DeviceContext", "ID3D11DeviceContext1", "ID3D11DeviceContext2", "ID3D11DeviceContext3")
+
+
+def off(name, ret):
+    """The early return of a context call made while it does nothing, or None for a call kept."""
+    if name == "PSGetSamplers":
+        return "return;"
+    if "Get" in name or name == "SwapDeviceContextState":
+        return None
+    if ret.startswith("-> windows::core::Result"):
+        return "return Err(E_INVALIDARG.into());"
+    if ret == "-> windows::core::HRESULT":
+        return "return E_INVALIDARG;"
+    return "return;" if not ret else "return Default::default();"
+
+
 # Structs whose unserved void calls remove the device (the context, and the device itself).
 removes = {"Device", "Context"}
 
@@ -167,7 +194,7 @@ out = ["// Written by a generator from the windows crate's (0.62.2) trait defini
        "// under the library's lock.",
        "#![allow(non_snake_case, unused_variables, clippy::too_many_arguments)]", "",
        "use windows::Win32::Graphics::Direct3D10::*;", "use windows::Win32::Graphics::Direct3D11::*;",
-       "use windows::Win32::Graphics::Dxgi::*;", "",
+       "use windows::Win32::Foundation::E_INVALIDARG;", "use windows::Win32::Graphics::Dxgi::*;", "",
        "use super::*;", ""]
 for struct, tlist in structs.items():
     for t in tlist:
@@ -183,6 +210,13 @@ for struct, tlist in structs.items():
             unused = t.startswith("ID3D11DeviceContext") and unused_stage(name, params, f"{t}::{name}")
             if unused:
                 body = unused
+            elif struct == "Device" and t.startswith("ID3D10") and name not in dev10_missing:
+                if name in private:
+                    body = f"self.private.{snake(name)}({args})"
+                elif name in dev10_same:
+                    body = f"self.{snake(name)}({args})"
+                else:
+                    body = f"self.{snake(name)}10({args})"
             elif (t, name) == ("ID3D11DeviceContext2", "EndEvent"):
                 body = "let _ = self.end_event();"
             elif t == "ID3D11DeviceChild" or (t == "ID3D10DeviceChild" and name in private):
@@ -216,6 +250,9 @@ for struct, tlist in structs.items():
                 body = f"creating({last}, |{last}| {body})"
             out.append(f"    {sig} {{")
             out.append("        let _call = self.call();" if struct in removes else "        let _lock = lock();")
+            early = struct == "Context" and t in CONTEXTS and off(name, ret)
+            if early:
+                out.append(f"        if self.emulates10() {{ {early} }}")
             out.append(f"        {body}")
             out.append("    }")
         out.append("}")
