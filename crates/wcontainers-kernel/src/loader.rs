@@ -654,7 +654,10 @@ fn place(
     let vdso = place_vdso(cx, memory, &mut map).map_err(fatal)?;
 
     let credentials = &after.credentials;
+    // In `create_elf_tables`'s order: arm64's `ARCH_DLINFO` first.
     let auxiliary = [
+        (AT_SYSINFO_EHDR, vdso + crate::vdso::VVAR_PAGES * PAGE_SIZE),
+        (AT_MINSIGSTKSZ, crate::linux_extra::SIGNAL_MINSIGSTKSZ),
         (AT_HWCAP, HWCAP),
         (AT_PAGESZ, PAGE_SIZE),
         (AT_CLKTCK, CLOCK_TICKS),
@@ -669,8 +672,6 @@ fn place(
         (AT_GID, credentials.gid.into()),
         (AT_EGID, credentials.egid.into()),
         (AT_SECURE, after.secure.into()),
-        (AT_SYSINFO_EHDR, vdso + crate::vdso::VVAR_PAGES * PAGE_SIZE),
-        (AT_MINSIGSTKSZ, crate::linux_extra::SIGNAL_MINSIGSTKSZ),
     ];
     let (sp, starting_stack) = build_stack(
         cx,
