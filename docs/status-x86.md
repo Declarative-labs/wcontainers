@@ -92,7 +92,26 @@ The fifth independent check of X2 found one blocking problem and five smaller on
   (a `const` assertion in wasmtime's, a thrown error in `runner.js`). `runner::thread_state_size` duplicated
   the contract's and is now the contract's. Left as they are: the stand-in's error numbers (9, 14, 22, 38:
   the same on 64-bit ARM64 and x86-64 Linux), fds 1 and 2, the permission table's bytes. Still not read line
-  by line: `src/layer2.rs`, `src/binaries.rs`, the rest of `src/programs.rs` and `src/changes.rs`.
+  by line: `src/layer2.rs`, `src/binaries.rs`, the rest of `src/programs.rs` and `src/changes.rs` (a grep of
+  them for fixed sizes found only 64-bit pointer steps and Linux's signal numbers; layer 2's shared model is
+  ARM64's, item 3 of "what comes next").
+
+Proof of run 9 (the Mac, Apple M5):
+- origin/phase-1-translator: nothing new at the start (04:12); at the end (05:21) two commits, merged (layer
+  3's rule that a faulting program's output may differ as a blob and as an ordinary executable).
+- The x86 reference on the i7-8750H (`x2/run9/reference.log`, 04:15, x86 load 1.9): 6 passed, the new
+  failure test among them.
+- Same cases (`x2/run9/same-cases.log`, root scratch `x2/run9/same`, 04:20 to 04:22, Mac load 29.5 to 91.9):
+  against c1153e5, seed 31337, layer 1 (1215 forms), layer 2 (64), no-form (64) and hand-made (105) the same.
+- Clippy with `-D warnings` on the four crates (all targets), the browser crate (wasm32, `arm64`) and the runner
+  for both CPUs; `cargo fmt --check`: clean.
+- Suite at 7157b52 (`WC_REFERENCE_X86_64=tom@192.168.2.240`, scratch `x2/run9/suite.log`): 82 passed (run 8's 80
+  and the two runner failure tests), 0 failed, 11 ignored, 30 minutes 14 seconds, Mac load 58.3 at start and
+  34.7 at end, x86 load 3.6 at start (another track's builds) (run 8: 26 minutes 42 seconds at 30.0 to 86.0). A
+  first run of it was stopped by this session's 30-minute limit on background commands after 45 tests, none
+  failing (`x2/run9/suite-cut.log`).
+- After the merge: layer 3 (`x2/run9/layer3-merged.log`, 05:21 to 05:28, Mac load 29.2 to 23.2): 3 passed,
+  default case counts; its first run built the pinned gcc image.
 
 ## X2, run 8 (2026-11-18)
 
