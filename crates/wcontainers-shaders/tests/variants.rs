@@ -775,3 +775,50 @@ fn filtering_in_the_program_reads_texels_with_loads() {
         );
     }
 }
+
+/// A four-channel float storage texture both read and written (shader model 6's half writes) has
+/// no read-write storage form in WebGPU: plain, it is refused by name; through a buffer, it is
+/// read and written there.
+#[test]
+fn read_written_four_channel_storage_goes_through_a_buffer() {
+    let code = read("tests/own/ps_halves.dxil");
+    let mut key = VariantKey {
+        storage_formats: vec![(0, wcontainers_gpu::Format::Rgba32Float)],
+        ..VariantKey::default()
+    };
+    let refused = convert(Source::Dxil(&code), &key, None).map(|c| wgsl(&c));
+    assert!(
+        matches!(
+            refused,
+            Err(ConvertError::Unsupported("ReadWriteStorageFormat"))
+        ),
+        "{refused:?}"
+    );
+    key.texels_through_buffer = 1;
+    let text = wgsl(&convert(Source::Dxil(&code), &key, None).unwrap());
+    assert!(!text.contains("texture_storage"), "{text}");
+}
+
+/// An array of textures is one texture per element, at the registers Direct3D 12 gives the range,
+/// and an element picked at run time is chosen by a switch.
+#[test]
+fn texture_arrays_are_a_texture_per_element() {
+    let c = convert(
+        Source::Dxil(&read("tests/own/ps_array.dxil")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    let mut textures: Vec<_> = c
+        .reflection
+        .bindings
+        .iter()
+        .filter(|b| b.kind == SlotKind::Texture)
+        .map(|b| (b.register, b.slot()))
+        .collect();
+    textures.sort_unstable();
+    assert_eq!(textures, [(0, 0), (1, 1), (2, 2), (3, 3)]);
+    let text = wgsl(&c);
+    assert!(text.contains("switch"), "{text}");
+    assert_eq!(text.matches("texture_2d<f32>;").count(), 4, "{text}");
+}

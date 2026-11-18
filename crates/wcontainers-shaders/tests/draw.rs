@@ -234,7 +234,7 @@ const CASES: [Case; 23] = [
         grid: true,
         not_on_webgl: [None, None],
         known_on_webgl: None,
-        dxil: false,
+        dxil: true,
     },
     Case {
         vs: "vs_transform",

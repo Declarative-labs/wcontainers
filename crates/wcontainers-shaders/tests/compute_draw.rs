@@ -870,9 +870,11 @@ fn direct3d_texels(gpu: &Gpu, views: &[TexelView]) -> Vec<Vec<u8>> {
     out
 }
 
-/// The same through the WebGPU back end: each typed buffer bound as storage from its view's
-/// first byte rounded down to the storage offset alignment, its place and length in the helpers.
-fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView]) -> Vec<Vec<u8>> {
+/// The same through the WebGPU back end, from the fxc or the dxc build: each typed buffer bound as
+/// storage from its view's first byte rounded down to the storage offset alignment, its place and
+/// length in the helpers. The views' registers start at 0 and have no gaps, so Direct3D 12's slots
+/// (the DXIL route's) are the registers.
+fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView], dxil: bool) -> Vec<Vec<u8>> {
     let format_of = |kind| {
         views
             .iter()
@@ -886,7 +888,10 @@ fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView]) -> Vec<Vec<u8>> {
         storage_formats: format_of(SlotKind::Storage),
         ..Default::default()
     };
-    let c = convert(Source::Dxbc(&bytecode("cs_texels.dxbc")), &key, None).unwrap();
+    let c = match dxil {
+        true => convert(Source::Dxil(&bytecode("cs_texels.dxil")), &key, None).unwrap(),
+        false => convert(Source::Dxbc(&bytecode("cs_texels.dxbc")), &key, None).unwrap(),
+    };
     let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
     let buffers: Vec<_> = views.iter().map(|v| buffer(b, &v.bytes, usage)).collect();
     let results_len = (TEXEL_INVOCATIONS * 6 * 16) as u64;
@@ -1096,37 +1101,40 @@ fn typed_buffers_match_direct3d() {
         let views = texel_views(&gpu, seed);
         let formats: Vec<_> = views.iter().map(|v| v.format).collect();
         let reference = direct3d_texels(&gpu, &views);
-        let made = ours_texels(&mut backend, &views);
-        let results = &reference[2];
-        for (n, (a, o)) in reference.iter().zip(&made).enumerate() {
-            let name = ["u0", "u1", "results"][n];
-            if n == 0 {
-                let (apart, tolerated) = stored_apart(&views[4], results, a, o);
-                eprintln!(
-                    "seed {seed} {name} ({formats:?}): {apart} elements apart, {tolerated} \
+        for (dxil, build) in [(false, "dxbc"), (true, "dxil")] {
+            let made = ours_texels(&mut backend, &views, dxil);
+            let results = &reference[2];
+            for (n, (a, o)) in reference.iter().zip(&made).enumerate() {
+                let name = ["u0", "u1", "results"][n];
+                let name = format!("{build} {name}");
+                if n == 0 {
+                    let (apart, tolerated) = stored_apart(&views[4], results, a, o);
+                    eprintln!(
+                        "seed {seed} {name} ({formats:?}): {apart} elements apart, {tolerated} \
                      components within Direct3D's tolerance apart"
-                );
+                    );
+                    if apart > 0 {
+                        failures.push(format!("seed {seed} {name}"));
+                    }
+                    continue;
+                }
+                let mut apart = 0;
+                for (w, (x, y)) in a.chunks(4).zip(o.chunks(4)).enumerate() {
+                    if x != y {
+                        apart += 1;
+                        if apart <= 8 {
+                            eprintln!(
+                                "  {name} word {w}: direct3d {:#010x}, ours {:#010x}",
+                                u32::from_le_bytes(x.try_into().unwrap()),
+                                u32::from_le_bytes(y.try_into().unwrap())
+                            );
+                        }
+                    }
+                }
+                eprintln!("seed {seed} {name} ({formats:?}): {apart} words apart");
                 if apart > 0 {
                     failures.push(format!("seed {seed} {name}"));
                 }
-                continue;
-            }
-            let mut apart = 0;
-            for (w, (x, y)) in a.chunks(4).zip(o.chunks(4)).enumerate() {
-                if x != y {
-                    apart += 1;
-                    if apart <= 8 {
-                        eprintln!(
-                            "  {name} word {w}: direct3d {:#010x}, ours {:#010x}",
-                            u32::from_le_bytes(x.try_into().unwrap()),
-                            u32::from_le_bytes(y.try_into().unwrap())
-                        );
-                    }
-                }
-            }
-            eprintln!("seed {seed} {name} ({formats:?}): {apart} words apart");
-            if apart > 0 {
-                failures.push(format!("seed {seed} {name}"));
             }
         }
     }
