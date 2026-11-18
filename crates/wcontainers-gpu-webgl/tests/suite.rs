@@ -305,3 +305,43 @@ fn levels_stay_as_written_while_others_are_read_and_drawn() {
 fn passes_without_attachments_rasterise() {
     checks::passes_without_attachments_rasterise::<Angle>();
 }
+
+#[test]
+fn independent_blends_per_target() {
+    checks::independent_blends_per_target::<Angle>();
+}
+
+#[test]
+fn second_source_blends() {
+    checks::second_source_blends::<Angle>();
+}
+
+#[test]
+fn depth_clamped_to_the_viewport_range() {
+    checks::depth_clamped_to_the_viewport_range::<Angle>();
+}
+
+#[test]
+fn depth_bias_clamped() {
+    checks::depth_bias_clamped::<Angle>();
+}
+
+#[test]
+fn polygons_filled_with_lines() {
+    checks::polygons_filled_with_lines::<Angle>();
+}
+
+#[test]
+fn mirror_once_addressing() {
+    checks::mirror_once_addressing::<Angle>();
+}
+
+#[test]
+fn clip_and_cull_distances() {
+    checks::clip_and_cull_distances::<Angle>();
+}
+
+#[test]
+fn points_sized_by_the_program() {
+    checks::points_sized_by_the_program::<Angle>();
+}

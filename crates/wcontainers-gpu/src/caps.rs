@@ -26,7 +26,7 @@ bitflags! {
         const READ_BACK_NOW = 1 << 5;
         /// Triangle fans and line loops are drawn natively by [`crate::Backend::draw_fan_or_loop`].
         const FAN_AND_LOOP = 1 << 6;
-        /// [`crate::FillMode::Line`] and [`crate::FillMode::Point`].
+        /// [`crate::FillMode::Line`].
         const POLYGON_MODE = 1 << 7;
         /// The last vertex of a primitive may be the provoking one.
         const PROVOKING_VERTEX_LAST = 1 << 8;
@@ -166,6 +166,8 @@ bitflags! {
         /// with [`crate::GpuError::Absent`] of this bit, and fronts take
         /// [`crate::TexelBufferRoute::Storage`] or [`crate::TexelBufferRoute::Texture`].
         const TEXEL_BUFFERS = 1 << 55;
+        /// [`crate::FillMode::Point`]. WebGL's polygon mode draws lines only.
+        const POLYGON_MODE_POINT = 1 << 56;
     }
 }
 

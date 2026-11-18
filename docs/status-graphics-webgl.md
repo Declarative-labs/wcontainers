@@ -5,8 +5,13 @@ Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
 
-G3a is done. Since run 11 the shared suite (30 tests) and the back end's 30 checks pass in Chrome's
-WebGL 2 and natively on ANGLE with every extension (60 of 60 on both). What is still open:
+G3a is done. Since run 12 the shared suite (30 tests) and the back end's 38 checks pass in Chrome's
+WebGL 2 and natively on ANGLE with every extension (68 of 68 on both), and the extensions plan 4.11
+lists are built: per-target and second-source blending, polygon edges, depth clamp, bias clamp,
+mirror-once, and point sizes, with the rig's real Direct3D 11 pictures of wireframe, depth bias and
+depth clipping matched exactly in Chrome. What is still open:
+- `CLIP_DISTANCE` and `CULL_DISTANCE` are built but absent: in Chrome the distances clipped
+  nothing (see "Known failures").
 - Against the WebGPU back end, 5 of 6 comparisons pass. The one that fails is `r32float` filtered
   in the program here against WebGPU's hardware filter (one float step off in 5 of 16 values, from
   G1's in-shader filter); the same comparison route against route is byte-equal.
@@ -14,6 +19,10 @@ WebGL 2 and natively on ANGLE with every extension (60 of 60 on both). What is s
   blocks ask for what is absent, in Chrome and on ANGLE. G1 has to change that.
 - `TIMESTAMPS` is built but cannot run here: Chrome (every ANGLE back end) and mozangle give 0
   timestamp bits on the RTX 3080.
+
+Run 12 merged origin/phase-2-graphics-shaders and origin/phase-2-graphics-rig, built the
+extension routes above with a check each, compared the rig's three pictures, fixed 24-bit depth read
+backs of a depth of 1 (they read 0), and added `POLYGON_MODE_POINT` to the interface.
 
 Run 11 merged origin/phase-2-graphics (f7e5dfe), origin/phase-2-graphics-shaders and
 origin/phase-2-graphics-rig. Both of run 10's known failures are fixed. The Chrome one was not
@@ -554,6 +563,58 @@ Chrome and on ANGLE with every extension.
     (access violation) on textures without images; it now keeps the old size there. Natively the
     two level checks pass.
 
+- G3 run 12:
+  - Merged origin/phase-2-graphics-shaders (its two interface commits: the variant key's linked
+    values and numbered sampler state codes, neither used here) and origin/phase-2-graphics-rig.
+    origin/phase-2-graphics had nothing new.
+  - The extensions plan 4.11 lists for WebGL 2, each declared only where the context has it and
+    refused as absent where not (before: all absent):
+    - `INDEPENDENT_BLEND` (OES_draw_buffers_indexed): a blend block whose targets differ sets each
+      target's blending, equation, factors and write mask with the indexed calls. GL's values are
+      now kept per target (state.rs `GlTarget`); a block the same for every target sets them with
+      the calls for all targets, only where some target differs.
+    - `DUAL_SOURCE_BLEND` (WEBGL_blend_func_extended): the four second-source factors, and naga's
+      `layout(location = 0, index = 1)` output. A draw blending a second source into a pass of more
+      than one colour target loses the device naming it (GL blends a second source into one
+      target only).
+    - `POLYGON_MODE` (WEBGL_polygon_mode): `FillMode::Line` by `polygonModeWEBGL`; with a depth
+      bias, the line offset is on too, as Direct3D biases wireframe. Point filling is
+      `POLYGON_MODE_POINT`, new in the interface, never declared here (WebGL's polygon mode draws
+      lines only).
+    - `DEPTH_CLAMP` (EXT_depth_clamp), `DEPTH_BIAS_CLAMP` (EXT_polygon_offset_clamp,
+      `polygonOffsetClampEXT` when the clamp is not zero), `MIRROR_ONCE`
+      (EXT_texture_mirror_clamp_to_edge).
+    - `CLIP_DISTANCE` and `CULL_DISTANCE` (WEBGL_clip_cull_distance) are built but stay absent: see
+      "Known failures". naga writes `gl_ClipDistance` with the extension's directive (the shaders
+      track's change); the back end enables clip distances 0 to n - 1 for a program writing n when
+      the program changes, and none for its own draws.
+  - `POINT_SIZE`: programs writing `gl_PointSize` draw points of that size, up to
+    `ALIASED_POINT_SIZE_RANGE` (`max_point_size`); programs writing none still draw 1.
+  - `create_shader` refuses a module whose outputs need a feature the back end lacks (clip or cull
+    distances, a point size, a second fragment output) as `Absent` of it. Before, such a shader
+    failed to compile and the device was lost at the first draw.
+  - mozangle 0.7.1's Direct3D 11 renderer has OES_draw_buffers_indexed and EXT_blend_func_extended
+    but none of the others (read from its renderer11_utils.cpp), so natively only those two run;
+    Chrome 157 reports all of them on the RTX 3080.
+  - New checks (examples/common/extensions.rs, Chrome and ANGLE, each where its feature is
+    declared): `independent_blends_per_target`, `second_source_blends`,
+    `depth_clamped_to_the_viewport_range`, `depth_bias_clamped`, `polygons_filled_with_lines`,
+    `mirror_once_addressing`, `clip_and_cull_distances` (runs nowhere today),
+    `points_sized_by_the_program`. A unit test checks the clip distance count and the GLSL.
+    `absent_features_are_refused` now refuses each of them only where it is not declared, point
+    filling always, and the shaders above. all.cmd's reduced Chrome route and third ANGLE route
+    also switch the new extensions off.
+  - The rig's own Direct3D 11 pictures of wireframe filling (`raster-fill`), depth bias with a
+    clamp (`depth-bias`, `depth-bias_depth`) and depth clipping and clamping (`depth-clip`,
+    `depth-clip_depth`) are drawn through the back end with the rig's vertices, cells and states
+    (examples/common/rig.rs) by the scene runners in Chrome and on ANGLE, and compared with the
+    stored references within their recorded allowances. A picture whose feature the back end lacks
+    is skipped as absent.
+  - Found by `depth-bias_depth`: `DepthReadByDraw` read a 24-bit depth of 1 as 0. The fetch computed
+    `uint(d * 16777215.0 + 0.5)`, and a float cannot hold 16777215.5, so it rounded to 2^24, whose
+    low 24 bits are 0. The value is now kept at most 16777215. `depth_and_stencil_read_back` now
+    clears its middle to depth 1 (it used 0.75, which never reached the edge).
+
 ## How to run
 
 All from the checkout root on the Mac.
@@ -646,21 +707,22 @@ units), `TIMESTAMPS` (with EXT_disjoint_timer_query_webgl2 and timestamp bits ab
 on the RTX 3080, zero bits), `BLEND_CONSTANT_ALPHA` (GLES 3.0 core; mixed with the constant colour
 refused, as WebGL requires), `TRANSFORM_FEEDBACK` (since run 4; GLES 3.0 core), `BLOCK_COMPRESSION`
 (since run 4, with WEBGL_compressed_texture_s3tc and its sRGB twin, EXT_texture_compression_rgtc and
-EXT_texture_compression_bptc: all four in Chrome 157 and mozangle on the RTX 3080). Everything else is
-absent, including what WebGL 2 or Chrome's extensions have but this back end does not build yet:
-`POINT_SIZE` (WGSL has no point size; a front would need a program variant writing it),
-`OCCLUSION_COUNT`, `MULTISAMPLE_READ` and `SAMPLE_SHADING` (WebGL 2 has none of them), and by
-extension (all reported by Chrome on the RTX 3080)
-`POLYGON_MODE`, `CLIP_DISTANCE`,
-`CULL_DISTANCE`, `DEPTH_CLAMP`, `DUAL_SOURCE_BLEND`, `INDEPENDENT_BLEND`, `MIRROR_ONCE`,
-`DEPTH_BIAS_CLAMP`, `SAMPLE_SHADING`. The adapter is WebGL's renderer string
+EXT_texture_compression_bptc: all four in Chrome 157 and mozangle on the RTX 3080). Since run 12:
+`POINT_SIZE` (GLES 3.0 core), and by extension `INDEPENDENT_BLEND` (OES_draw_buffers_indexed),
+`DUAL_SOURCE_BLEND` (WEBGL_blend_func_extended), `POLYGON_MODE` (WEBGL_polygon_mode, lines),
+`DEPTH_CLAMP` (EXT_depth_clamp), `DEPTH_BIAS_CLAMP` (EXT_polygon_offset_clamp), `MIRROR_ONCE`
+(EXT_texture_mirror_clamp_to_edge). `CLIP_DISTANCE` and `CULL_DISTANCE` are built on
+WEBGL_clip_cull_distance but absent until they clip in Chrome (see "Known failures").
+Everything else is absent: `POLYGON_MODE_POINT` (WebGL draws polygon edges only), `OCCLUSION_COUNT`
+and `MULTISAMPLE_READ` (WebGL 2 has neither), and `SAMPLE_SHADING`, which OES_sample_variables and
+OES_shader_multisample_interpolation would give; not built yet. The adapter is WebGL's renderer string
 (unmasked in Chrome), PCI numbers 0 (WebGL gives none), software when it names SwiftShader,
 llvmpipe or Microsoft Basic Render Driver.
 
 Limits on the RTX 3080, Chrome 157 and ANGLE alike: 16384 2D and cube, 2048 3D and layers, 12
 uniform blocks per stage of 65536 bytes (the plan's 16384 was the Mac), 16 texture units per stage,
 16 attributes, stride 255 (WebGL's rule), 8 targets, 30 varying vectors, uniform offsets aligned to
-256, points 1 (the device's range is 1024, unused while `POINT_SIZE` is absent), lines 1 wide,
+256, points up to `ALIASED_POINT_SIZE_RANGE` (1024 before run 12, when it was unused), lines 1 wide,
 anisotropy 16, immediates 256 (plain uniforms, since run 11).
 
 Formats, from GLES 3.0's table with EXT_color_buffer_float, OES_texture_float_linear and
@@ -933,6 +995,27 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
     every extension and 40 of 60 on both reduced routes; against WebGPU 5 of 6. Every one of the 20
     failures on the reduced routes is `create_raster: Absent(CLIP_DEPTH_ZERO_ONE)` or
     `Absent(PROVOKING_VERTEX_FIRST)` from the suite's own raster blocks.
+- 2026-11-17, G3 run 12, same desktop (RTX 3080, driver 32.0.16.2101; desktop clock times; queued
+  jobs, not timed; CPU load 2% just after the last, 17:54). 30 suite tests and 38 checks (68).
+  - First job with the new routes (ending about 17:40): Chrome 64 of 68 with every extension:
+    `depth_clamped_...` and `depth_bias_clamped` (my programs' immediates needed naga's capability),
+    `mirror_once_addressing` (my sample points sat on texel edges, where mirroring the texel index
+    and mirroring the coordinate differ) and `clip_and_cull_distances` (see "Known failures").
+    `depth-bias_depth` failed in 5568 of 16384 pixels by 1: every cleared depth read 0 (the
+    `DepthReadByDraw` bug above). ANGLE 68 of 68.
+  - Final tree (job ending 17:53), lint clean on both targets in its build, the 6 unit tests of src
+    pass: Chrome 157.0.8103.78 68 of 68 with every extension and 68 of 68 without
+    WEBGL_stencil_texturing, the format extensions and the new extensions; 48 of 68 without
+    EXT_clip_control and 48 of 68 without it and WEBGL_provoking_vertex (the 20 known); ANGLE
+    (mozangle 0.7.1 with both patches) 68 of 68 with every extension and 48 of 68 on both reduced
+    routes; against WebGPU 5 of 6 (r32float against the hardware filter, as before). All scene
+    verdicts as expected on all four runs.
+  - The rig pictures in Chrome, with and without EXT_clip_control and WEBGL_provoking_vertex:
+    `raster-fill`, `depth-bias`, `depth-clip` and `depth-clip_depth` exactly equal to real Direct3D
+    11 (0 pixels differ); `depth-bias_depth` within its allowance (0 beyond 1.8e-7; 5332 pixels
+    differ, by at most 6.0e-8, one 24-bit step). On ANGLE all five are skipped (mozangle lacks the
+    extensions).
+
 - Per-draw cost, run 11 (Chrome 157.0.8103.78 headless, RTX 3080; `gpu-job --alone`; the same scene
   and method as run 3; each launch of Chrome lost one WebGL context while its GPU process started):
   - Run ending 17:17, CPU load 21% just after. WebGL 2: 10,000 draws, one set 4.9 ms (fastest
@@ -1007,6 +1090,14 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   (`depth_minus_one` false) and provoking vertex First, which the back end lacks on those routes and
   refuses as the interface says (`Absent(CLIP_DEPTH_ZERO_ONE)`, `Absent(PROVOKING_VERTEX_FIRST)`).
   The suite (G1's crate) should take both from the caps, as the built-in programs do.
+
+- `CLIP_DISTANCE` and `CULL_DISTANCE` (run 12): Chrome 157 on the RTX 3080 has
+  WEBGL_clip_cull_distance, but `clip_and_cull_distances` drew the whole triangle with two clip
+  distances written (x and y) and `CLIP_DISTANCE0` and `1` enabled; the device stayed whole. naga
+  writes `gl_ClipDistance = <array>;`; assigning each element instead changed nothing. Not found
+  why. Both features stay absent (fronts take `ClipDistanceInShader` and `CullDistanceAsGeometry`),
+  and the check runs only where the back end declares them, so it runs nowhere today. Next: read
+  ANGLE's translated HLSL in Chrome (`WEBGL_debug_shaders`) for the vertex program.
 
 - Fixed in run 11, both found in run 10:
   - In Chrome (ANGLE on Direct3D 11), invalidating one layer of a 2D array (a pass's `DontCare` load
@@ -1093,6 +1184,12 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   `VertexFormat` text puts it: WebGL 2 has no storage buffers, and a variant reads the guest's bytes
   in place. The first draw with a new layout key links a program (a stall the first time).
 
+- (run 12) A draw blending a second source into a pass of more than one colour target loses the
+  device naming it: the interface has no rule for it, GL refuses it, and Direct3D 11 leaves it
+  undefined.
+- (run 12) mozangle lacks every new extension but OES_draw_buffers_indexed and
+  EXT_blend_func_extended, so the others (and the rig pictures needing them) run only in Chrome.
+
 - The back end's WebAssembly imports `next_task` from a module `wcontainers-device` (JSPI, plan
   4.8): the plan has the device thread suspend through JSPI but names no import; the call channel
   (second batch) should supply the same one. Only query waits use it today; fence and pixel read
@@ -1155,6 +1252,12 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
 - 39b57ad4 and 9ba95585 (run 11): `SlowPath::SampledTargetCopied` added for a fix built on run 10's
   wrong guess, then taken back out in the next commit. The interface is as it was.
 
+- 72dbc184 (run 12) "interface: gave point filling a capability of its own, since webgl's polygon
+  mode draws lines only": `Features::POLYGON_MODE_POINT` (bit 56) for `FillMode::Point`;
+  `POLYGON_MODE` now covers `FillMode::Line` only. Plan 4.11's lists and 5.3's `glPolygonMode` text.
+  The recording back end and the WebGPU back end refuse both fill modes as `POLYGON_MODE`; they may
+  name `POLYGON_MODE_POINT` for points.
+
 - (run 6) "interface: named the slow path of captures expanded into points in list order":
   `SlowPath::CaptureExpanded`, for draws an API's transform feedback cannot capture as they are
   (GLES 3.0 takes only lists without indices), and the plan's 5.8 text for it.
@@ -1208,9 +1311,10 @@ What is left of G3's pass bar cannot be done in this crate:
 - `TIMESTAMPS` cannot run on the RTX 3080, which gives zero timestamp bits; a GPU or browser that
   gives some is needed to run that route.
 
-After that, in about this order (each refused honestly today, by device loss naming it):
-1. Draws and captures whose base vertex reaches below vertex 0.
+After that, in about this order (each refused honestly today):
+1. Draws and captures whose base vertex reaches below vertex 0 (device loss naming it).
 2. Copies from one- and two-channel signed normalised formats (and into them from formats read
-   wider than stored), through a buffer as plan 4.12 has them.
-3. `CLIP_DISTANCE` and `CULL_DISTANCE` with WEBGL_clip_cull_distance: the shaders track's naga now
-   writes the WebGL extension's directive (merged in run 11); the back end still leaves both absent.
+   wider than stored), through a buffer as plan 4.12 has them (device loss naming it).
+3. `CLIP_DISTANCE` and `CULL_DISTANCE` in Chrome (see "Known failures").
+4. `SAMPLE_SHADING` with OES_sample_variables and OES_shader_multisample_interpolation, where
+   Chrome has them (absent today).
