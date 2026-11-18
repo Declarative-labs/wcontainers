@@ -3,6 +3,7 @@
 //! around them (plan section 10).
 
 pub mod address;
+pub mod cache;
 pub mod device;
 pub mod dxbc;
 pub mod dxil;

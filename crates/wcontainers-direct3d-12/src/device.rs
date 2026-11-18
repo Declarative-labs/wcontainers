@@ -1316,7 +1316,7 @@ impl<B: Backend> Device<B> {
         if key.texels_through_buffer == 0
             && through != 0
             && let Err(ConvertError::Unsupported("StorageImageAtomics")) =
-                wcontainers_shaders::convert(source, key, None)
+                crate::cache::convert(source, key)
         {
             key.texels_through_buffer = through;
         }
@@ -1349,7 +1349,7 @@ impl<B: Backend> Device<B> {
         } else {
             Source::Dxbc(code)
         };
-        let converted = wcontainers_shaders::convert(source, &variant, None).map_err(|e| {
+        let converted = crate::cache::convert(source, &variant).map_err(|e| {
             let error = match e {
                 ConvertError::Rejected(_) => Error::Invalid("the shader bytecode was refused"),
                 ConvertError::Unsupported(_) | ConvertError::Reader(_) => {
