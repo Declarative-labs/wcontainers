@@ -20,39 +20,11 @@ pub fn image_name() -> String {
     format!("wc-kernel-ltp:{RELEASE}")
 }
 
-/// The groups (the suite's `runtest` files) of a whole run: those whose tests a default
-/// container can start. Each test says what it needs and skips itself when that is missing.
-/// Left out are the groups for hardware, other hosts or long stress: cpuhotplug, crashme, dio,
-/// dma_thread_diotest, hyperthreading, ima, kvm, ltp-aio*, net.*, net_stress.*, numa,
-/// power_management_tests, scsi_debug.part1, smack, staging, thermal, tpm_tools and tracing.
-pub const SUITE: &[&str] = &[
-    "syscalls",
-    "syscalls-ipc",
-    "can",
-    "capability",
-    "commands",
-    "containers",
-    "controllers",
-    "crypto",
-    "cve",
-    "fcntl-locktests",
-    "fs",
-    "fs_bind",
-    "fs_perms_simple",
-    "fs_readonly",
-    "hugetlb",
-    "input",
-    "kernel_misc",
-    "math",
-    "mm",
-    "nptl",
-    "pty",
-    "sched",
-    "smoketest",
-    "sysfs",
-    "uevent",
-    "watchqueue",
-];
+/// The groups (the suite's `runtest` files) a whole run leaves out: crashme, whose crash02
+/// forks without bound and would exhaust the process numbers of the reference's machine, which
+/// other containers share. Every other test says what it needs and skips itself when that is
+/// missing.
+pub const LEFT_OUT: &[&str] = &["crashme"];
 
 /// The environment of every test: a default container's, with the suite's programs on the path
 /// and its root and temporary directory named as its runners name them.
@@ -130,8 +102,14 @@ pub fn select(groups: &BTreeMap<String, String>, selection: &[String]) -> Vec<Te
             .unwrap_or_else(|| panic!("no runtest file {group}"));
         parse(group, text)
     };
+    let suite = || {
+        groups
+            .keys()
+            .filter(|group| !LEFT_OUT.contains(&group.as_str()))
+            .flat_map(|group| group_tests(group))
+    };
     if selection.is_empty() {
-        return SUITE.iter().flat_map(|group| group_tests(group)).collect();
+        return suite().collect();
     }
     let mut tests = Vec::new();
     for item in selection {
@@ -143,10 +121,7 @@ pub fn select(groups: &BTreeMap<String, String>, selection: &[String]) -> Vec<Te
                 .find(|test| test.name == name);
             tests.push(found.unwrap_or_else(|| panic!("no test {name} in {group}")));
         } else {
-            let found = SUITE
-                .iter()
-                .flat_map(|group| group_tests(group))
-                .find(|test| &test.name == item);
+            let found = suite().find(|test| &test.name == item);
             tests.push(found.unwrap_or_else(|| panic!("no test {item} in the suite")));
         }
     }
@@ -154,13 +129,15 @@ pub fn select(groups: &BTreeMap<String, String>, selection: &[String]) -> Vec<Te
 }
 
 /// The verdict a test's exit code gives, as the suite's own runners read it: the library ORs
-/// TFAIL (1), TBROK (2), TWARN (4) and TCONF (32) into it.
+/// TFAIL (1), TBROK (2), TWARN (4) and TCONF (32) into it. A code with other bits is not the
+/// library's and is kept as it is.
 pub fn verdict(exit_code: i32) -> String {
     match exit_code {
         0 => "pass".into(),
         32 => "skipped".into(),
         // `docker run`'s 128 plus a signal (Linux has 64).
         code if (129..=192).contains(&code) => format!("signal{}", code - 128),
+        code if code & !(1 | 2 | 4 | 32) != 0 => format!("exit{code}"),
         code if code & 2 != 0 => "broken".into(),
         code if code & 1 != 0 => "fail".into(),
         code if code & 4 != 0 => "warning".into(),
@@ -540,6 +517,13 @@ pub fn compare(reference: &[Line], ours: &[Line]) -> String {
     let mut matching = 0;
     let mut by_cause: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     let mut missing = Vec::new();
+    let our_ids: std::collections::BTreeSet<&str> =
+        ours.iter().map(|line| line.id.as_str()).collect();
+    let not_run: Vec<&str> = reference
+        .iter()
+        .map(|line| line.id.as_str())
+        .filter(|id| !our_ids.contains(id))
+        .collect();
     for line in ours {
         let Some(their) = theirs.get(line.id.as_str()) else {
             missing.push(line.id.clone());
@@ -573,8 +557,9 @@ pub fn compare(reference: &[Line], ours: &[Line]) -> String {
     }
     let differing: usize = by_cause.values().map(Vec::len).sum();
     let mut text = format!(
-        "{} tests compared: {matching} verdicts match, {differing} differ\n",
-        matching + differing
+        "{} tests compared: {matching} verdicts match, {differing} differ, {} not run\n",
+        matching + differing,
+        not_run.len()
     );
     for (cause, lines) in &by_cause {
         text += &format!("\n{cause}: {}\n", lines.len());
@@ -585,5 +570,105 @@ pub fn compare(reference: &[Line], ours: &[Line]) -> String {
     if !missing.is_empty() {
         text += &format!("\nnot in the reference's results: {}\n", missing.join(" "));
     }
+    if !not_run.is_empty() {
+        text += &format!("\nnot in our results: {}\n", not_run.join(" "));
+    }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(id: &str, verdict: &str, warnings: &str) -> Line {
+        Line {
+            id: id.into(),
+            verdict: verdict.into(),
+            exit_code: 0,
+            seconds: 1.0,
+            warnings: warnings.into(),
+        }
+    }
+
+    #[test]
+    fn runtest_lines_are_parsed() {
+        let text = "# a comment\n\nfirst first_bin -x\n  second\tsh -c 'a b'  \nalone\n";
+        let tests = parse("g", text);
+        assert_eq!(tests.len(), 2);
+        assert_eq!(tests[0].id(), "g:first");
+        assert_eq!(tests[0].command, "first_bin -x");
+        assert_eq!(tests[1].command, "sh -c 'a b'");
+    }
+
+    #[test]
+    fn exit_codes_give_the_library_verdicts() {
+        let cases = [
+            (0, "pass"),
+            (32, "skipped"),
+            (1, "fail"),
+            (2, "broken"),
+            (3, "broken"),
+            (34, "broken"),
+            (5, "fail"),
+            (33, "fail"),
+            (4, "warning"),
+            (36, "warning"),
+            (139, "signal11"),
+            (192, "signal64"),
+            (255, "exit255"),
+            (64, "exit64"),
+            (193, "exit193"),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(verdict(code), expected, "exit code {code}");
+        }
+    }
+
+    #[test]
+    fn results_lines_round_trip() {
+        let original = Line {
+            id: "syscalls:read01".into(),
+            verdict: "broken".into(),
+            exit_code: 2,
+            seconds: 3.5,
+            warnings: "proc entry not built (1 2); page residency not tracked (0)".into(),
+        };
+        let text = original.to_text();
+        assert_eq!(Line::from_text(&text), Some(original.clone()));
+        assert_eq!(Line::from_text("too\tfew\n"), None);
+        assert_eq!(
+            warned(&original),
+            [
+                ("proc entry not built".into(), "1".into()),
+                ("proc entry not built".into(), "2".into()),
+                ("page residency not tracked".into(), "0".into()),
+            ]
+        );
+        assert!(warned(&line("a", "pass", "-")).is_empty());
+    }
+
+    #[test]
+    fn comparison_groups_differences_and_lists_tests_missing_on_either_side() {
+        let reference = [
+            line("g:same", "pass", "-"),
+            line("g:wrong", "pass", "-"),
+            line("g:gap", "pass", "-"),
+            line("g:crashed", "pass", "-"),
+            line("g:unrun", "pass", "-"),
+        ];
+        let ours = [
+            line("g:same", "pass", "known (1)"),
+            line("g:wrong", "fail", "known (1)"),
+            line("g:gap", "broken", "new (7)"),
+            line("g:crashed", "crash", "-"),
+            line("g:extra", "pass", "-"),
+        ];
+        let text = compare(&reference, &ours);
+        assert!(text.starts_with("4 tests compared: 1 verdicts match, 3 differ, 1 not run\n"));
+        assert!(text.contains("a wrong answer: 1\n  g:wrong: reference pass, ours fail\n"));
+        assert!(text.contains("  g:gap: reference pass, ours broken [new (7)]\n"));
+        assert!(text.contains("a crash of the kernel: 1\n"));
+        assert!(text.contains("not in the reference's results: g:extra\n"));
+        assert!(text.contains("not in our results: g:unrun\n"));
+    }
 }
