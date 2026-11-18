@@ -117,7 +117,7 @@ run_chunk() {
     line=$(printf '%s\tfailing=%s\treplay=%s\tlog=%s' "$line" "$failing" "$replay" "$log")
   fi
   echo "$line" >> "$ledger"
-  echo "layer $layer chunk $name: $result, $cases cases, $mismatches mismatches, $seconds s"
+  echo "layer $layer chunk $name: $result, $cases cases, $mismatches mismatches, $seconds s, exit status $status"
   [[ "$cases" =~ ^[0-9]+$ ]] && ran=$cases
 }
 
