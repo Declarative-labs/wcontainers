@@ -1046,7 +1046,8 @@ impl<B: Backend> Device<B> {
             let d3 = t.desc.dimension == TexDim::D3;
             Target {
                 view: v.gpu.handle.clone(),
-                texture: t.gpu.handle.clone(),
+                // A view on a twin draws into the twin.
+                texture: v.twin.as_ref().map_or(&t.gpu.handle, |k| &k.handle).clone(),
                 format: v.format,
                 mip,
                 layer: if d3 { 0 } else { v.desc.first_layer },
