@@ -192,12 +192,34 @@ Run 20 = G2c run 2, 2026-11-18:
   the shared suite 42 of 42 in Chrome 157 on the RTX 3080 (D3D12, discrete, not a fallback),
   timestamps without developer features in steps of 65,536 ns (9.830 and 19.530 ms), the other
   Chrome checks as in run 19.
+- Then the shared line moved again (G1c run 7: what an indexed draw may fetch past a stream and
+  a program past its binding, two new suite tests) and -direct3d-12 and -shaders with it: merged
+  (one conflict, in the plan's text on fetches past a vertex buffer: both texts kept, the Direct3D
+  12 track's indirect draws sentence inside the shared line's paragraph). The new suite tests went
+  into examples/scenes/names.rs. Its newest asks of this back end are subgroups (built above) and
+  the two suite tests, which pass. Runs after it (logs/run20-full2.log, run20-clippy2.log,
+  run20-webcheck2.log, run20-plain.log, run20-webcheck3.log): lint clean; Vulkan 123 passed and
+  3 ignored, Direct3D 12 124 passed and 2 ignored, 0 failed; the shared suite 44 of 44 on each
+  API and 44 of 44 in Chrome. The first web/check after the merge failed at one step: Chrome
+  launched without developer features got no adapter ("no adapter"; the G2b check met the same
+  once). Run alone three times right after, it passed 3 of 3 (stretches 9.765 and 19.5 ms, every
+  value a multiple of 65,536 ns), and web/check again passed whole (pictures at tolerance 0, the
+  suite 44 of 44 in Chrome). The adapter miss is Chrome's, seen twice in about ten launches.
 - Frame time: the breakdowns of run 19 stand (Measurements); nothing in this run changes a
   frame's path but the device asking for subgroups. The two large costs are now placed: the
   bgfx copy is the Direct3D 12 front's `MappedUploadWhole` (asked of it under Next), the acquire
   spin is the display wait itself (Next).
-- Removed at the end: the desktop's C:\wc\target\phase-2-graphics-webgpu (5.96 GB) and the
-  checkout's own target on the Mac (505 MB of `cargo check`); no scratch copy was made.
+- A third merge of the shared line (G1c run 8: an interface doc change, a storage binding's size
+  a multiple of four and an access past a binding may reach buffers sharing its API buffer, as
+  this back end's arena does; no new suite test) took the shared line's plan text where it
+  conflicted (its wording of the same indirect draws sentence). Runs after it
+  (logs/run20-full3.log, run20-clippy3.log, run20-webcheck4.log): lint clean; Vulkan 123 passed
+  and 3 ignored, Direct3D 12 124 passed and 2 ignored, 0 failed, the suite 44 of 44 on each;
+  web/check passed whole (pictures at tolerance 0, the suite 44 of 44 in Chrome, timestamps in
+  65,536 ns steps).
+- Removed: the desktop's C:\wc\target\phase-2-graphics-webgpu three times (5.96, 8.53 and
+  8.53 GB) and the checkout's own target on the Mac three times (505, 508 and 508 MB of
+  `cargo check`); no scratch copy was made.
 
 Run 19 = G2c run 1, 2026-11-18:
 - Merged origin/phase-2-graphics-rig, -shaders, -direct3d-12 and -direct3d-11 (no conflicts; the
