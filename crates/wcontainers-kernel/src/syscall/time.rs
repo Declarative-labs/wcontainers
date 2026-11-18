@@ -25,10 +25,14 @@ pub(super) fn process_cpu_time(kernel: &Kernel, pid: Pid) -> u64 {
 /// A process's CPU time and the part of it in the kernel, its ended threads' included.
 pub(crate) fn process_times(kernel: &Kernel, pid: Pid) -> (u64, u64) {
     let process = &kernel.processes[&pid];
-    process.threads.iter().map(|thread| &kernel.threads[thread]).fold(
-        (process.ended_time, process.ended_system),
-        |(total, system), thread| (total + thread.runtime, system + thread.system),
-    )
+    process
+        .threads
+        .iter()
+        .map(|thread| &kernel.threads[thread])
+        .fold(
+            (process.ended_time, process.ended_system),
+            |(total, system), thread| (total + thread.runtime, system + thread.system),
+        )
 }
 
 /// A time in nanoseconds as a `timeval`.

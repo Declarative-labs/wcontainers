@@ -244,8 +244,12 @@ pub(crate) fn cpu_check(kernel: &mut Kernel, cx: &mut Context<'_>, tid: Tid) {
         .copied()
         .filter(|id| {
             let timer = &kernel.timers.all[id];
-            [Clock::Process(pid), Clock::ProcessUser(pid), Clock::Thread(tid)]
-                .contains(&timer.clock)
+            [
+                Clock::Process(pid),
+                Clock::ProcessUser(pid),
+                Clock::Thread(tid),
+            ]
+            .contains(&timer.clock)
                 && timer
                     .expires
                     .zip(now(kernel, timer.clock))
@@ -305,8 +309,12 @@ pub(crate) fn cpu_slice(kernel: &Kernel, tid: Tid) -> Option<u64> {
         .iter()
         .filter_map(|id| {
             let timer = &kernel.timers.all[id];
-            if ![Clock::Process(pid), Clock::ProcessUser(pid), Clock::Thread(tid)]
-                .contains(&timer.clock)
+            if ![
+                Clock::Process(pid),
+                Clock::ProcessUser(pid),
+                Clock::Thread(tid),
+            ]
+            .contains(&timer.clock)
             {
                 return None;
             }

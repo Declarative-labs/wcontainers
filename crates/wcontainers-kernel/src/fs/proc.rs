@@ -1903,9 +1903,7 @@ fn process_file(
                     .filter_map(|thread| source.view.threads.get(thread))
                     .fold(
                         (process.ended_time, process.ended_system),
-                        |(total, system), thread| {
-                            (total + thread.runtime, system + thread.system)
-                        },
+                        |(total, system), thread| (total + thread.runtime, system + thread.system),
                     )
             };
             let (children, children_system) = if task.own {
