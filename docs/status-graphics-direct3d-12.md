@@ -9,7 +9,7 @@ crates/wcontainers-direct3d-12.
 G5 is not complete: 21 test files wait on the shaders track (G6) and 3 on a view swizzle (G1
 and G6); see "Gap list" and "Next". A real Direct3D 12 program now draws matching frames (run
 21: four of bgfx's examples, run 25 a fifth, "Real program"). Run history (runs 1 to 20 on
-2026-11-17, runs 21 to 25 on 2026-11-18): runs 1 to 4 the
+2026-11-17, runs 21 to 26 on 2026-11-18): runs 1 to 4 the
 first slice; 5 Wine's and vkd3d's tests through ours, root signatures; 6 compute, UAVs, queue
 waits, occlusion, predication, heaps; 7 alias copies, `ExecuteIndirect`, the pass bar's cases;
 8 to 10 allocators, resolves, twin textures, null descriptors, custom heaps, bundles, newer
@@ -106,6 +106,41 @@ rewrites, render passes; 16 custom heap buffers, scaling-none swap chains, bgfx 
   clear_render_target_view newly pass, none lost); own cases 25 of 25 (new `ms-array`); shader
   runner 204 of 302 (the same 98); bgfx 37-gpudrivenrendering now draws every frame as real
   Direct3D 12 does; Godot's 3D platformer was tried for the first time ("Real program").
+- Run 26 (tenth run of the milestone): merged shaders (its status file only); webgpu, rig and
+  the shared line had nothing new, so no test file could change. Done meanwhile, owned here and
+  waiting on no one: the shader cache of plan section 8 in the front, every buffer of a
+  sequential blit swap chain (asked by the Direct3D 11 track for Wine's test_swapchain_flip;
+  interface `SlowPath::SequentialBuffersCopied`), DXGI 1.5 to 1.7's factory, `ID3D12Fence1` and
+  `ID3D12GraphicsCommandList6` (each below). Test files 164 of 198 twice, the same 34 failing
+  (run26/full1.log after the cache, full2.log at the run's last code commit 522eed5); own cases
+  25 of 25; shader runner 204 of 302, the same 98; the crates' 43 tests pass (run26/test2.log);
+  bgfx 37 and Microsoft's triangle still draw every frame as real Direct3D 12 does.
+- Shader cache (run 26, `src/cache.rs`): every conversion goes through the shaders crate's
+  `convert_cached` into one cache the process's devices share, so a shader and variant
+  converted for one pipeline is decoded, not converted again, for the next (and the trial
+  conversion `convert_stage` makes is not repeated). The Windows library opens the program's
+  cache file before the first device (`examples/directx/cache.rs`), in the directory
+  `WC_GPU_CACHE` names, under the Direct3D 11 library's name for it (`<exe stem>-<16 hex digits
+  of BLAKE3 of the lower-case full path>.wcgpu`), so a run decodes what earlier runs converted;
+  without the variable conversions are kept for the process only. No state combinations are
+  recorded: pipelines are built when created (`prepare`), as plan section 8 says Direct3D 12
+  allows. Refused conversions are not kept and are tried again. Test tests/cache.rs (its own
+  binary: the cache is the process's). Measured under "Real program".
+- Sequential blit swap chains (run 26, infrastructure crate): `DXGI_SWAP_EFFECT_SEQUENTIAL`
+  with several buffers gives out every buffer (`chain.buffer(i)`), as DXGI does; at each present,
+  after the copy into the surface, each buffer takes the next one's contents and the last the
+  first's, through a spare texture (n + 1 copies, `SequentialBuffersCopied`, counted and warned),
+  which is what Wine's test_swapchain_flip checks. Discard keeps buffer 0 only. Direct3D 12
+  takes flip models only, so this serves the Direct3D 11 front, which must refuse target views
+  of buffers past the first (real DXGI's E_INVALIDARG). Test
+  `sequential_blit_buffers_move_down_at_each_present`.
+- DXGI factory (run 26): `IDXGIFactory7`. `CheckFeatureSupport(PRESENT_ALLOW_TEARING)` answers
+  FALSE (the host shows whole frames), anything else or a wrong size `DXGI_ERROR_INVALID_CALL`
+  (as Wine's test_factory_check_feature_support expects of real DXGI);
+  `EnumAdapterByGpuPreference` gives the one adapter for every preference (E_INVALIDARG for an
+  unknown one); `RegisterAdaptersChangedEvent` hands out cookies whose event is never set (the
+  adapter list never changes). Microsoft's samples take the factory 6 route now and still draw
+  equal frames.
 - Multisampled texture arrays (run 25): the interface's multisampled textures have one layer
   (plan 4.1: a front holds such an array as a texture per layer), so `Storage::Texture` keeps
   the first layer's texture and `layers`, the others'. Views, render targets, clears, resolves,
@@ -368,9 +403,11 @@ rewrites, render passes; 16 custom heap buffers, scaling-none swap chains, bgfx 
   format than its own, an occlusion query across passes, video command lists, pipeline libraries (`DXGI_ERROR_UNSUPPORTED`), protected sessions, geometry shaders and stream output after a domain shader, state objects (ray
   tracing), depth bounds, programmable sample positions, view instancing, sampler feedback.
 - Newer interfaces (run 10): the device is `ID3D12Device8`, command lists
-  `ID3D12GraphicsCommandList2` (since run 15 `ID3D12GraphicsCommandList4`), resources
-  `ID3D12Resource2`; `ID3D12Device9` and later and `ID3D12GraphicsCommandList5` and later are not
-  offered (E_NOINTERFACE). Render passes (run 15, `objects.rs`): `BeginRenderPass` records
+  `ID3D12GraphicsCommandList2` (since run 15 `ID3D12GraphicsCommandList4`, since run 26
+  `ID3D12GraphicsCommandList6`, whose shading rate and mesh calls fail `Close` with E_NOTIMPL:
+  `CheckFeatureSupport` answers both absent), fences `ID3D12Fence1` (run 26; `GetCreationFlags`
+  gives the flags made with), resources `ID3D12Resource2`; `ID3D12Device9` and later and
+  `ID3D12GraphicsCommandList7` and later are not offered (E_NOINTERFACE). Render passes (run 15, `objects.rs`): `BeginRenderPass` records
   the targets and the clears of `CLEAR` beginning accesses; `EndRenderPass` records the resolves
   of `RESOLVE` ending accesses (whole subresources, averaged; part of one, other modes and
   depth-stencil resolves fail `Close` with E_NOTIMPL); discard and preserve accesses keep the
@@ -474,6 +511,10 @@ fails. Since the rig's run of 2026-11-17 19:11 (its commit 4ffedc6), tests that 
 checks on real Direct3D 12 are counted too, held to every other check, so the counted set is
 198 (it was 193).
 
+Run 26 (2026-11-18, desktop shared with other tracks; scratch run26/full1.log built at b1e311f
+plus the factory commit, run26/full2.log at 522eed5): 164 of 198 both times, the same 34 failing
+files as run 25 (nothing they wait on landed).
+
 Run 25 (2026-11-18, desktop shared with other tracks; scratch run25/full1.log built at
 84fedb3, the layer commit, after the merges; run25/full2.log at 33a913d, the run's last
 commit): 164 of 198. d3d12 (Wine) 10 of 10, vkd3d-d3d12 142 of 176, vkd3d-d3d12_invalid_usage
@@ -566,6 +607,9 @@ in its Direct3D 11 part before reaching Direct3D 12 (our dxgi.dll serves only Di
 299 (run12/runner1.log). Command: `E='%CARGO_TARGET_DIR%\debug\examples';
 tools/graphics-rig/wine-tests run --dll "wcontainers_d3d12.dll=$E\wcontainers_d3d12.dll" --dll
 "d3d12.dll=$E\d3d12.dll" vkd3d-shader_runner`.
+
+Run 26 (run26/runner1.log and runner2.log, at the cache and the run's last commit; job 04:49:55
+to 04:53:43): 204 of 302 both times, the same 98 failing files as run 25.
 
 Run 24 (run24/runner1.log, built at 78b8525, the tessellation commit, 234 s): 204 of 302, the
 same 98 failing files. The two tessellation files now get past their shader model 5 pipelines:
@@ -682,6 +726,20 @@ and mesh shader subobjects, which the stream reader refused. The 105 failing:
   file stops there (crash after the device is removed).
 
 ## Real program
+
+Run 26 (2026-11-18, desktop shared with other tracks, not `--alone`, debug builds; scratch
+run26/p2-*.log at 522eed5, warm2.log at 3c51004):
+- bgfx 37-gpudrivenrendering: every frame of both runs passes (865 to 936 pixels beyond 8, all
+  in the overlay's text, allowed 20480); 2.5 s twice against real 2.4 s twice.
+- Godot's 2D platformer as run 25 (8.1 s, every frame differs; the converter's refusals); its
+  3D platformer as run 25 (component mapping 0x1a88 refused, then 0xc0000005 at 6.4 s).
+- The shader cache (bin/warm26.sh: two runs from one output directory with `WC_GPU_CACHE` set
+  and the cache emptied first): Godot's 2D platformer's file was 334,080 bytes after the first
+  run and the same after the second (nothing converted again), Microsoft's triangle's 966 bytes
+  both times; the triangle drew equal frames both runs. Godot ran 8.2 s, then 7.9 s, single
+  runs, too few to say the cache changed its time. A first try (warm1.log) wrote two files per
+  program: the rig copies a program to a directory of the run's name, and the file is named by
+  the program's path.
 
 Run 25 (2026-11-18, desktop shared with other tracks, not `--alone`, debug builds; scratch
 run25/p1-*.log built at 84fedb3, the layer commit, and m1-*.log, m2-*.log after the
@@ -859,7 +917,7 @@ Command: `tools/graphics-rig/programs run --dll "wcontainers_d3d12.dll=%CARGO_TA
   crates/wcontainers-shaders/src/lower.rs and dxil.rs at origin/phase-2-graphics-shaders as of
   run 13), so the run would end as in run 10.
 
-## Gap list (the pass bar's written list, as of run 25)
+## Gap list (the pass bar's written list, as of run 26; unchanged since run 25)
 
 The final list may hold only gaps that are absent features: what the back end or browser lacks,
 reported absent as Direct3D 12 expects. Run 25's failing test files (34), by that rule:
@@ -960,8 +1018,7 @@ Not absent features, so not yet allowed on the list (others' work, then this fro
    `R32Float` layout. Likely the converter's (G6): a DXIL storage image the program reads keeps
    dxil-spirv's own `R32f` format. Rerun that one file after the fix (bin/debug23.sh).
 5. Turn this gap list into the final one as the G6 items land.
-6. Later: `ID3D12GraphicsCommandList5` and later, `ID3D12Fence1`; render pass resolves of part
-   of a subresource and of depth-stencil targets; the built-in storage clear for UAV clears of
+6. Later: render pass resolves of part of a subresource and of depth-stencil targets; the built-in storage clear for UAV clears of
    formats that do not render (`builtin::storage_clear`); recording without allocating per
    command, the call buffer of plan 4.8; moving `examples/directx` into
    `crates/wcontainers-directx`.
@@ -986,8 +1043,10 @@ A working example of all of it is this track's Windows library: `examples/direct
   Natively, `window` is a number given to `WebGpu::add_window` with a `wgpu::Surface` made from the
   HWND (`gpu.rs`, `State::add_window`: the Win32 handle needs `hinstance`, falling back to the
   program's module, and a Windows display handle).
-- Back buffers: `chain.buffer(i)` is a `B::Texture` (`chain.buffer_desc()` describes it); blit models
-  give buffer 0 only. Draw into `chain.buffer(chain.current_index())`.
+- Back buffers: `chain.buffer(i)` is a `B::Texture` (`chain.buffer_desc()` describes it); the
+  discard blit model gives buffer 0 only, the sequential one every buffer (since run 26: those
+  past the first are for reading, so refuse target views of them as DXGI does; their contents
+  move one buffer down at each present). Draw into `chain.buffer(chain.current_index())`.
 - `chain.present(&mut backend, sync_interval)`: end your open pass first. It records the copy,
   submits (your recorded work goes with it), shows the surface, rotates flip models, and waits while
   more than `max_latency()` frames are queued (`set_max_latency` for `SetMaximumFrameLatency`).
@@ -1006,8 +1065,8 @@ A working example of all of it is this track's Windows library: `examples/direct
 - Tests (one draws on the GPU): `tools/graphics-rig/gpu-job --build "cargo test -j 3 -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 --no-run" -- "cargo test
   -j 3 --no-fail-fast -p wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12"`
-  (41 tests: 9 infrastructure, 9 front, 11 device on the recorder, 1 on the GPU, 11 unit; run 25:
-  all pass, run25/test2.log). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
+  (43 tests: 10 infrastructure, 9 front, 11 device on the recorder, 1 cache, 1 on the GPU, 11
+  unit; run 26: all pass, run26/test2.log). Put `set CARGO_INCREMENTAL=0&& ` before both commands (see the note further down).
   `WEBGPU_API=dx12|vulkan` picks wgpu's path for the GPU test.
 - Lint: `tools/graphics-rig/remote "cargo clippy -j 3 --all-targets -p
   wcontainers-directx-graphics-infrastructure -p wcontainers-direct3d-12 -- -D warnings"`.
@@ -1061,9 +1120,11 @@ A working example of all of it is this track's Windows library: `examples/direct
   `Fresh` and kept the old library (clippy then checked nothing new). When a result looks stale,
   `tools/graphics-rig/remote "cargo clean -p wcontainers-direct3d-12 && ..."`.
 - One case of the own program: `check_d3d12 case <name>` (names in `examples/check/cases.rs`).
-- Everything at once (run 25): scratch `bin/full25.sh <n>` runs the crates' tests, every test
-  file, the own program and the shader runner into run25/*<n>.log; `bin/programs25.sh <n>` runs
-  Godot's two platformers and bgfx 37 (copy them to a new run's folder name first).
+- Everything at once (run 26): scratch `bin/full26.sh <n>` runs the crates' tests, every test
+  file, the own program and the shader runner into run26/*<n>.log; `bin/programs26.sh <n>` runs
+  Godot's two platformers and bgfx 37 (copy them to a new run's folder name first);
+  `bin/lt26.sh <name>` lints and runs the crates' tests; `bin/warm26.sh <log> <programs>` runs
+  programs twice with a cache file (Real program, run 26).
 - Seen in run 10: running a `remote` command (clippy) while a queued test build used the same
   source directory left the shaders library half-built (unresolved `wcs_dxil_constant_sizes` and
   `anon.*` symbols). Run one rig command of this branch at a time; the test command needs
@@ -1171,6 +1232,9 @@ Run 11's entries:
   commit 3fc7fee "interface: reserved a helper set binding for a front's own counter..."): the binding of a storage buffer a front's own counting program adds
   to, and the slow path of counting pixel shader invocations by drawing again. The plan's list
   of helper set bindings names it.
+- `SlowPath::SequentialBuffersCopied` (run 26, commit c024aa3 "interface: named the slow path
+  of a sequential blit swap chain's buffers moved by copies"; plan 4.9 says it): the swap chain
+  moving a sequential blit model's contents by copies at each present.
 - `ShaderModule::from_wgsl(source, entry, stage)` (run 5, commit "interface: made a shader module
   from one entry point of a wgsl module..."): parse, validate and key one entry point of a WGSL
   module, as the built-ins are keyed. The infrastructure crate's present copy uses it instead of a
@@ -1178,6 +1242,13 @@ Run 11's entries:
   it could call this (G1 owns helpers.rs, so this track did not change it).
 
 ## Measurements
+
+- Run 26 (2026-11-18, RTX 3080, desktop shared with other tracks, not `--alone`, load not
+  taken; run26/check1.log after the cache, check2.log at 522eed5): own program 25 of 25 cases
+  equal both times; draw 0 of 4096 pixels beyond 1; features 253 of 872, outputs 22 of 110,
+  answers 7 of 37 differ, none beyond real. Fence events, 2000 rounds: check1 real first 7 µs,
+  mean 1 µs, 99th percentile 2 µs, largest 95 µs, ours first 103 µs, mean 17 µs, 99th
+  percentile 19 µs, largest 103 µs; check2 real 7, 1, 1, 7 µs, ours 67, 20, 78, 162 µs.
 
 - Run 25 (2026-11-18, RTX 3080, desktop shared with other tracks, not `--alone`, load not
   taken; built at 33a913d's sources): own program 25 of 25 cases equal (run25/check3.log;
@@ -1542,11 +1613,19 @@ Run 16's entries:
   `num_enum_derive` 0.7.6 (BSD-3-Clause OR MIT OR Apache-2.0, read in their Cargo.toml);
   `bitflags` and `proc-macro-crate` were already in the workspace.
 - Windows library only (dev-dependencies): `windows` and `windows-core` 0.62.2 (MIT OR
-  Apache-2.0, as plan section 10 confirms).
+  Apache-2.0, as plan section 10 confirms); `blake3` 1 (1.8.7 in the lock; CC0-1.0 OR
+  Apache-2.0 OR Apache-2.0 WITH LLVM-exception, read in its Cargo.toml; already in the
+  workspace) for the cache file's name (run 26).
 - Test only: `wcontainers-gpu-webgpu`, `wgpu` 30.0.2 (MIT OR Apache-2.0), `pollster` (MIT OR
   Apache-2.0), `png` (MIT OR Apache-2.0), as the WebGPU track already uses them.
 
 ## Installed on the desktop
+
+Run 26: nothing installed. Deleted at the end of the run: the rig's build folder of this
+branch, C:\wc\target\phase-2-graphics-direct3d-12 (7.3 GB), and the cache measurement's
+folders under C:\wc\out\phase-2-graphics-direct3d-12 (gpu-cache, warm, warm-1, warm-2:
+program copies and their cache files; the results are in scratch run26/warm*.log). No build
+folder was made on the Mac.
 
 Run 25: nothing installed. The rig's build folder of this branch,
 C:\wc\target\phase-2-graphics-direct3d-12 (7.1 GB), was deleted at the end of the run, so the
