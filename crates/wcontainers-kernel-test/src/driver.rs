@@ -11,7 +11,7 @@ use wcontainers_abi::{
 use wcontainers_kernel::{Errno, FileRecord, Kernel, Start};
 use wcontainers_runtime::{Ending, Execution, Outside, Turn};
 
-use crate::standin::{StandIn, Unsupported};
+use crate::standin::Unsupported;
 use crate::{image, reference};
 
 /// Why a run on our kernel gave no outcome.
@@ -26,6 +26,79 @@ pub enum Failure {
 impl From<Unsupported> for Failure {
     fn from(unsupported: Unsupported) -> Self {
         Self::StandIn(unsupported)
+    }
+}
+
+/// What runs the guest's instructions behind the kernel: the stand-in CPU.
+#[cfg(not(feature = "runtime"))]
+type Back = crate::standin::StandIn;
+
+/// What runs the guest's instructions behind the kernel: the translator's WebAssembly.
+#[cfg(feature = "runtime")]
+type Back = wcontainers_wasmtime::CpuSide<wcontainers_arm64::Arm64>;
+
+#[cfg(not(feature = "runtime"))]
+fn back_end(_seed: u64) -> Back {
+    crate::standin::StandIn::new()
+}
+
+/// One compiler for the test process, so a second container finds the first one's translations.
+#[cfg(feature = "runtime")]
+fn back_end(seed: u64) -> Back {
+    use wcontainers_wasmtime::{Compiler, CpuSide, Optimise};
+    static COMPILER: std::sync::OnceLock<std::sync::Arc<Compiler<wcontainers_arm64::Arm64>>> =
+        std::sync::OnceLock::new();
+    let compiler = COMPILER.get_or_init(Compiler::new).clone();
+    CpuSide::new(compiler, look_ahead(seed), Optimise::Speed, ())
+}
+
+/// The look-ahead `LOOK_AHEAD` names: `full` (also when unset), `none`, or `bounded`, whose N is drawn
+/// from 1 to 64 from the run's seed and printed.
+#[cfg(feature = "runtime")]
+fn look_ahead(seed: u64) -> wcontainers_wasmtime::LookAhead {
+    use wcontainers_wasmtime::LookAhead;
+    match std::env::var("LOOK_AHEAD").as_deref() {
+        Err(_) | Ok("full") => LookAhead::Full,
+        Ok("none") => LookAhead::None,
+        Ok("bounded") => {
+            let n = StdRng::seed_from_u64(seed ^ 0x1007_a4ead).random_range(1..=64);
+            eprintln!("look-ahead bounded {n} (run seed {seed})");
+            LookAhead::Bounded(n)
+        }
+        Ok(other) => panic!("LOOK_AHEAD is full, none or bounded, not {other}"),
+    }
+}
+
+#[cfg(feature = "runtime")]
+impl From<std::convert::Infallible> for Failure {
+    fn from(never: std::convert::Infallible) -> Self {
+        match never {}
+    }
+}
+
+/// What the WebAssembly back end translated for a run, on the standard error.
+#[cfg(feature = "runtime")]
+fn report(cpu: &Back) {
+    let translated = cpu.translated();
+    let at_run_time = translated.iter().filter(|t| t.at_run_time).count();
+    let made: Vec<_> = translated.iter().filter_map(|t| t.made).collect();
+    let (translating, compiling) = made
+        .iter()
+        .fold((0, 0), |(t, c), (more_t, more_c)| (t + more_t, c + more_c));
+    eprintln!(
+        "cpu side: {} translations ({} at run time), {} made ({:.1} ms translating, {:.1} ms compiling), {} from the cache",
+        translated.len(),
+        at_run_time,
+        made.len(),
+        translating as f64 / 1e6,
+        compiling as f64 / 1e6,
+        translated.len() - made.len()
+    );
+    for t in translated.iter().filter(|t| !t.at_run_time) {
+        eprintln!(
+            "cpu side: range {:#x}+{:#x} at {:?}: {} starts {:?}, {} pieces, made {:?}",
+            t.start, t.length, t.look_ahead, t.starts, t.sources, t.pieces, t.made
+        );
     }
 }
 
@@ -431,7 +504,7 @@ pub fn run_prepared(
         groups,
         echo,
     } = prepared;
-    let mut cpu = StandIn::new();
+    let mut cpu = back_end(seed);
     let mut host = TestHost::repeatable(seed);
     host.injecting = Some(Injecting::new(seed, injections));
     host.echo = echo;
@@ -474,6 +547,8 @@ pub fn run_prepared(
         }
         Err(failure) => return Err(failure.into()),
     };
+    #[cfg(feature = "runtime")]
+    report(&cpu);
     if let Some(error) = kernel.start_failure() {
         // Never in a copy: no save is made before the first program runs.
         return Err(Failure::Start(error));
