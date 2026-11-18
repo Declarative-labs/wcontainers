@@ -103,23 +103,16 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         "filters",
         cells(gpu, dxbc!("samplers.ps_sample"), 4, 64, &filters, 0)?,
     ));
-    let mut options = D3D11_FEATURE_DATA_D3D11_OPTIONS1::default();
-    unsafe {
-        gpu.device.CheckFeatureSupport(
-            D3D11_FEATURE_D3D11_OPTIONS1,
-            (&mut options as *mut D3D11_FEATURE_DATA_D3D11_OPTIONS1).cast(),
-            size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS1>() as u32,
-        )?
-    };
-    let reducing = options.MinMaxFiltering.as_bool();
-    outputs.push(Output::text(
-        "reduction_support",
-        format!("minimum and maximum filtering {reducing}\n"),
-    ));
-    if reducing {
+    if gpu.options()?.1.MinMaxFiltering.as_bool() {
         outputs.push(Output::picture(
             "reduction",
             cells(gpu, dxbc!("samplers.ps_sample"), 4, 64, &reduction(), 0)?,
+        ));
+    } else {
+        outputs.push(Output::absent(
+            "reduction",
+            "minimum and maximum filtering (D3D11_FEATURE_D3D11_OPTIONS1 MinMaxFiltering)"
+                .to_owned(),
         ));
     }
 
@@ -134,10 +127,13 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         "address",
         cells(gpu, dxbc!("samplers.ps_sample"), 5, 48, &address, 0)?,
     ));
-    outputs.push(Output::picture(
-        "gather",
-        cells(gpu, dxbc!("samplers.ps_gather"), 5, 48, &address, 0)?,
-    ));
+    match gpu.lacks_level(D3D_FEATURE_LEVEL_10_1) {
+        Some(why) => outputs.push(Output::absent("gather", why)),
+        None => outputs.push(Output::picture(
+            "gather",
+            cells(gpu, dxbc!("samplers.ps_gather"), 5, 48, &address, 0)?,
+        )),
+    }
 
     // A depth texture holding a slope, compared with each function, point and linear filtered.
     let mut desc = tex2d(

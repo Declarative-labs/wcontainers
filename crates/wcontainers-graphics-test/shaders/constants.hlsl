@@ -1,5 +1,5 @@
 // Constant buffers: fourteen slots read at once, and one large buffer read through windows of it.
-// fxc: ps_5_0 ps_slots, ps_5_0 ps_window
+// fxc: ps_4_0 ps_slots, ps_4_0 ps_window
 // dxc: ps_6_0 ps_slots, ps_6_0 ps_window
 cbuffer B0 : register(b0) { float4 a0; };
 cbuffer B1 : register(b1) { float4 a1[16]; };

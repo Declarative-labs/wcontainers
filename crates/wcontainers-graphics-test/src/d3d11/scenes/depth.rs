@@ -3,6 +3,7 @@
 //! greater-equal and less-equal), and each depth format read back.
 
 use anyhow::Result;
+use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
@@ -128,33 +129,13 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
     outputs.push(Output::picture("clip", gpu.read(&target, 0, 0)?));
     outputs.push(Output::picture("clip_depth", gpu.read(&depth, 0, 0)?));
 
-    // Depth from the pixel shader.
-    let (target, rtv) = gpu.target(192, 64, DXGI_FORMAT_R8G8B8A8_UNORM)?;
-    let (depth, dsv) = gpu.depth(192, 64, DXGI_FORMAT_D32_FLOAT)?;
-    gpu.begin(&rtv, Some(&dsv), 192, 64);
-    unsafe {
-        c.RSSetState(&solid_state);
-        c.OMSetDepthStencilState(
-            &gpu.depth_stencil(&depth_test(D3D11_COMPARISON_LESS_EQUAL, true))?,
-            0,
-        );
+    // Depth from the pixel shader, the last two cells with conservative depth (shader model 5).
+    if let Some(why) = gpu.lacks_level(D3D_FEATURE_LEVEL_11_0) {
+        outputs.push(Output::absent("shader", why.clone()));
+        outputs.push(Output::absent("shader_depth", why));
+    } else {
+        shader_depth(gpu, &solid_state, &mut outputs)?;
     }
-    for (i, ps) in [
-        dxbc!("depth.ps_depth"),
-        dxbc!("depth.ps_greater"),
-        dxbc!("depth.ps_less"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        unsafe {
-            c.PSSetShader(&gpu.ps(ps)?, None);
-            c.RSSetViewports(Some(&[cell(i as u32, 3, 64.0)]));
-        }
-        draw_colored(gpu, &quad(-0.8, -0.8, 0.8, 0.8, 0.3, 0.6, YELLOW))?;
-    }
-    outputs.push(Output::picture("shader", gpu.read(&target, 0, 0)?));
-    outputs.push(Output::picture("shader_depth", gpu.read(&depth, 0, 0)?));
 
     // Each depth format, cleared with a stencil value, then a slope drawn into it without colour.
     colored_program(gpu)?;
@@ -181,4 +162,40 @@ pub fn run(gpu: &Gpu) -> Result<Vec<Output>> {
         ));
     }
     Ok(outputs)
+}
+
+/// Depth written by the pixel shader: plain, then conservatively greater and less.
+fn shader_depth(
+    gpu: &Gpu,
+    solid_state: &ID3D11RasterizerState,
+    outputs: &mut Vec<Output>,
+) -> Result<()> {
+    let c = &gpu.context;
+    let (target, rtv) = gpu.target(192, 64, DXGI_FORMAT_R8G8B8A8_UNORM)?;
+    let (depth, dsv) = gpu.depth(192, 64, DXGI_FORMAT_D32_FLOAT)?;
+    gpu.begin(&rtv, Some(&dsv), 192, 64);
+    unsafe {
+        c.RSSetState(solid_state);
+        c.OMSetDepthStencilState(
+            &gpu.depth_stencil(&depth_test(D3D11_COMPARISON_LESS_EQUAL, true))?,
+            0,
+        );
+    }
+    for (i, ps) in [
+        dxbc!("depth.ps_depth"),
+        dxbc!("depth.ps_greater"),
+        dxbc!("depth.ps_less"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        unsafe {
+            c.PSSetShader(&gpu.ps(ps)?, None);
+            c.RSSetViewports(Some(&[cell(i as u32, 3, 64.0)]));
+        }
+        draw_colored(gpu, &quad(-0.8, -0.8, 0.8, 0.8, 0.3, 0.6, YELLOW))?;
+    }
+    outputs.push(Output::picture("shader", gpu.read(&target, 0, 0)?));
+    outputs.push(Output::picture("shader_depth", gpu.read(&depth, 0, 0)?));
+    Ok(())
 }

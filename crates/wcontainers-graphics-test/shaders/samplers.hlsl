@@ -1,6 +1,6 @@
 // Sampling with a sampler per cell: a uv running past 0 and 1, and a scale growing down the cell so
 // the level of detail and the anisotropy change; and comparison sampling of a depth texture.
-// fxc: ps_5_0 ps_sample, ps_5_0 ps_compare, ps_5_0 ps_compare_zero, ps_5_0 ps_gather
+// fxc: ps_4_0 ps_sample, ps_4_0 ps_compare, ps_4_0 ps_compare_zero, ps_4_1 ps_gather
 // dxc: ps_6_0 ps_sample, ps_6_0 ps_compare, ps_6_0 ps_compare_zero, ps_6_0 ps_gather
 cbuffer Cell : register(b0) { float4 rect; }; // left, top, width, height in pixels
 struct FullOut { float4 pos : SV_Position; float2 uv : TEXCOORD; };

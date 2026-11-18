@@ -6,22 +6,23 @@ not in this checkout yet; this work follows the owner's brief (section "How it i
 ## Where things stand
 
 R0 (the Windows GPU machine set up, and the build, run and compare loop proven) is done and checked.
-R1 (the Direct3D reference library): the seventh run (2026-11-17) fixed the sixth check's
-findings (see "Seventh run" under Measurements): gt-launch now follows the processes a program
-starts, a program fails unless it loaded its API's library and dxgi.dll (and each replacement from
-beside it), Godot can no longer fall back to Vulkan or OpenGL, five of Microsoft's DirectX Tool Kit
-samples joined the programs, a device scene covers D3D11CreateDevice's parameters, and smaller
-fixes. One finding is left with its reason (Known issues: capability answers). R1 waits for the
-orchestrator's check. Its parts:
+R1 (the Direct3D reference library): the eighth run (2026-11-17) fixed the two findings the
+seventh left open (see "Eighth run" under Measurements): a device that reports less than the RTX
+3080 now gets "absent" for what it lacks, not FAIL, and the Direct3D 12 tessellation picture is
+checked as tightly as Direct3D 11's. R1 waits for the orchestrator's check. Its parts:
 - Jobs that present run on a hidden desktop ("wc-rig") in the session of the user logged in at the
   console (`gpu-job --desktop`, see How to run): windows and swap chains work there and nothing
   shows on the owner's screen. Session 0, where the queue runs, refuses every swap chain.
-- Part 1, scenes: 28 Direct3D 11 scenes (133 outputs) and 25 Direct3D 12 scenes (111 outputs).
+- Part 1, scenes: 28 Direct3D 11 scenes (133 outputs) and 25 Direct3D 12 scenes (110 outputs).
   Every Direct3D 11 scene of drawing ground has a Direct3D 12 twin drawn from the same tables
   (the ones without are under Departures). Each output is recorded on the RTX 3080 twice and on
   WARP with the debug layer; `scenes` checks them, through replacement libraries if given. A
   picture passes when, in every 16 by 16 tile, it has no more pixels beyond the tolerance than WARP
-  has there (How a picture passes).
+  has there (How a picture passes). Each verdict is pass, FAIL or absent: absent when the device
+  reports, through Direct3D's own queries, that it lacks what the output needs (a feature level,
+  sample count, format ability or option); capability answers may be lower than the GPU's, never
+  higher. The Direct3D 11 scenes ask for every level from 11_1 down; 22 of 28 run at 10_0 (the
+  WebGL 2 route's level in the plan) and 2 more at 10_1, with parts needing more marked absent.
 - Part 2, conformance tests: Wine's d3d11, d3d10core, dxgi and d3d12 test files and vkd3d's
   d3d12, d3d12_invalid_usage, hlsl_d3d12 tests and shader runner (8 files), each test in its own
   process, chosen by name; 19 Wine tests that would change the owner's screen are never run
@@ -37,7 +38,8 @@ orchestrator's check. Its parts:
   by the clock draw the same frames every run.
 
 The plan document, docs/phase-2-graphics.md, is on branch phase-2-graphics and not in this checkout;
-its sections 10 to 12 (one source two builds, testing, milestones G4 and G5) were read for this run.
+its sections 9 (feature levels: Direct3D 11 reports 11_0 on WebGPU and 10_0 on WebGL 2, Direct3D 12
+11_0 on WebGPU only) and 10 to 12 were read for the eighth run.
 
 ## How to run
 
@@ -88,17 +90,21 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   software adapter (DXGI's software flag: WARP or the Microsoft Basic Render Driver), and gt-wgpu
   when its adapter is a CPU one. With a directory, the pictures are also copied there.
 - `tools/graphics-rig/scenes [--build <command>] [--dll <name>=<path>]... [--api d3d11|d3d12]
-  [--driver hardware|warp] [<scene>...]`: one GPU job (on the hidden desktop) that builds the rig, copies gt-d3d11.exe and
+  [--driver hardware|warp] [--level <level>] [<scene>...]`: one GPU job (on the hidden desktop) that builds the rig, copies gt-d3d11.exe and
   gt-d3d12.exe into C:\wc\out\<branch>\scenes\bin with each `--dll` beside them under its name
   (paths on the desktop, relative to its checkout; `%CARGO_TARGET_DIR%` works), runs every scene (or
   the named ones) in its own process with a 120 s limit, and checks every output against
-  crates/wcontainers-graphics-test/references/<api>. Prints `pass` or `FAIL` and the numbers for each
-  output, a FAIL for a scene that crashed, hung or has no references, for a scene whose program
+  crates/wcontainers-graphics-test/references/<api>. Prints `pass`, `FAIL` or `absent` and the
+  numbers for each output (absent: the scene program wrote `<scene>[-<part>].absent` saying what
+  the device lacks, from the device's own answers; a note for a part with no reference is a FAIL), a FAIL for a scene that crashed, hung or has no references, for a scene whose program
   loaded d3d11.dll, d3d12.dll or dxgi.dll from anywhere but that directory when a replacement of
   that name was given (each program prints where it loaded all three from; a library it did not
   load is not held against it, and a replacement no scene loaded gets a note), and for a scene name
   that no scene program has; then whether the stored shader corpus matches the build, and a
-  count. Exits 1 on any FAIL. Pointing it at our own Direct3D, both APIs in one command:
+  count of each verdict. Exits 1 on any FAIL; absent is not a failure. `--level` (Direct3D 11
+  only) caps the feature level the programs ask for, so real Direct3D shows what a less capable
+  device gets: `scenes --api d3d11 --level 10_0` gives 103 pass, 30 absent and no FAIL on the GPU
+  and on WARP. Pointing it at our own Direct3D, both APIs in one command:
   `scenes --build "cargo build -p <crates>" --dll d3d11.dll=%CARGO_TARGET_DIR%\debug\<dll>
   --dll d3d12.dll=... --dll dxgi.dll=...`. Libraries of other names are only copied beside the
   programs. The scene programs do not ask for the debug layer when checking, so a replacement need
@@ -115,15 +121,25 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   a replacement passes when it is at least as close to the GPU as WARP is, everywhere in the
   picture (WARP's freedom in one cell allows nothing in another). tolerances.txt lists each
   picture's tolerance, its total allowance, WARP's raw numbers and the tiles that allow any
-  pixels (`tiles <index>:<pixels>`, index row by row). A failing picture's line names how many
+  pixels (`tiles <index>:<pixels>`, index row by row). A Direct3D 12 picture the GPU draws exactly
+  as its Direct3D 11 twin (same output name) takes the allowance of Direct3D 11's WARP picture
+  when that is closer (fewer pixels beyond, then a lower tolerance), marked `d3d11` in its line:
+  WARP draws the Direct3D 12 tessellation scene's isolines in wrong colours. A failing picture's line names how many
   tiles went beyond their allowance and the worst; "(allowed n)" is the total allowance, from
   WARP for scenes and from repeated runs for programs. An output a scene or program writes that has
-  no reference (a new part, a misnamed file) is a FAIL too. Texts (query counts, read-back bytes, answers to
-  capability questions) must match exactly and hold only facts every correct implementation
+  no reference (a new part, a misnamed file) is a FAIL too. Texts (`.txt`: query counts,
+  read-back bytes) must match exactly; capability answers (`.caps`: feature levels given for each
+  request, format support) are compared word by word, where a lower answer (a level, a number,
+  false or refused below true or a level) makes the output absent and a higher one or any other
+  change fails it. Both hold only facts every correct implementation
   shares (timestamps as "in order or disjoint"; pixel shader invocations as "at least the covered
   pixels").
 - Scenes are listed by `gt-d3d11 list` and `gt-d3d12 list`; a scene alone, on the desktop:
-  `gt-d3d11 <scene>... <hardware|warp> <dir> [--debug]` writes `<scene>[-<part>].<png|exr|txt>`.
+  `gt-d3d11 <scene>... <hardware|warp> <dir> [--debug] [--level <level>]` writes
+  `<scene>[-<part>].<png|exr|txt|caps|absent>`; with --debug, a failing call's debug layer
+  messages are printed with the error. The lowest level of each Direct3D 11 scene is in
+  src/d3d11/scenes/mod.rs (SCENES); parts needing more check `Gpu::lacks_level`,
+  `lacks_samples` or the device's options and write an absent note.
   The scene sources are crates/wcontainers-graphics-test/src/d3d11/scenes/*.rs and
   src/d3d12/*.rs; each file's first comment says what it covers. src/d3d12/states.rs,
   textures.rs, raster.rs and primitives.rs draw Direct3D 11's blend, depth, stencil, formats,
@@ -133,7 +149,11 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
 - Shaders: crates/wcontainers-graphics-test/shaders/*.hlsl, each naming its entry points in header
   lines `// fxc: <target> <entry>, ...` (DXBC for Direct3D 11) and `// dxc: ...` (DXIL, shader model
   6.0, for Direct3D 12). build.rs compiles them with the newest Windows SDK's fxc.exe and dxc.exe
-  (10.0.26100.0; dxc 1.9.2602.17) when building for Windows; the programs embed the bytecode. The
+  (10.0.26100.0; dxc 1.9.2602.17) when building for Windows; the programs embed the bytecode. Each
+  Direct3D 11 entry is compiled at the lowest model fxc takes it at (4_0 for 50, 4_1 for 5 that
+  read samples or gather or use cube arrays, 5_0 for compute, tessellation, conservative depth and
+  the instanced geometry shader: 22, 4_0_level_9_1 for the levels scene: 2), so the scenes run on 10_x
+  devices; the pictures were byte-identical to the shader model 5 ones. The
   corpus for the shader track is shaders/dxbc (79 files) and shaders/dxil (72 files), written by
   `scenes --record`; `scenes` says when it no longer matches the build.
 - `tools/graphics-rig/wine-tests build`: fetches llvm-mingw 20261104 (its download checked against
@@ -275,9 +295,9 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   (steps of a channel, or a float value). Prints pixel count, how many differ in any channel by more
   than the tolerance, the largest channel difference and the first differing pixel. Exit 0 when
   none differ beyond the tolerance, 1 when some do, 2 on error.
-- Tests: `cargo test -p wcontainers-graphics-test -p wcontainers-graphics-test-forward` (9 unit tests:
+- Tests: `cargo test -p wcontainers-graphics-test -p wcontainers-graphics-test-forward` (11 unit tests:
   comparison at each depth, NaN, counting per tile, the WARP allowance per tile, the allowance from
-  repeated runs) on the Mac or through `remote`; clippy with `-D warnings` on both machines,
+  repeated runs, outputs without references, absent notes and lower capability answers) on the Mac or through `remote`; clippy with `-D warnings` on both machines,
   since most of the code is Windows-only; `shellcheck -x tools/graphics-rig/*` (minus the .cmd) for
   the Mac scripts.
 - The Mac scripts share tools/graphics-rig/common.sh: every ssh and scp to the desktop goes through one
@@ -771,6 +791,43 @@ beside ours; Mac load average 20 to 40). It fixed the sixth check's findings:
 - Disk: C:\wc\programs\src\xbox-atg-samples 0.78 GB with its builds, C:\wc\programs 2.21 GB
   in all, 389.0 GB free on C: (474.8 GB at the third run; other tracks' builds share C:\wc\target).
 
+Eighth run (2026-11-17; desktop reachable throughout, owner at the console; Mac load average 23
+to 25). It fixed the two findings the seventh run left open:
+- Absent verdict: `scenes --api d3d11 --level 11_0` on the GPU: 133 pass, 0 absent (NVIDIA
+  answers minimum and maximum filtering at 11_0 too). At 10_0 with every shader still at model
+  5: 3 pass, 130 absent. After compiling each shader at the lowest model fxc takes and declaring
+  each scene's and part's level: 11_1 133 pass; 10_1 119 pass, 14 absent; 10_0 103 pass, 30
+  absent, on the GPU and on WARP; 9_3 3 pass (the levels scene), 130 absent; never a FAIL.
+- What real Direct3D refused or did differently below 11_0, found with these runs (the debug
+  layer's messages now come with a scene's error): indirect draw argument buffers need 11_0
+  (CreateBuffer E_INVALIDARG; draws is 11_0); blending set per target needs 10_1 (CreateBlendState
+  at 10_0; targets is 10_1); the standard sample patterns need 10_1 (CreateTexture2D; msaa is
+  10_1); a copy of BC1 blocks into R32G32_UINT left the destination untouched at 10_0, without
+  an error (bc_as_uint is 10_1); the eight fractional viewports drew 1326 of 32768 pixels
+  differently, by up to 229, at 10_0 and 10_1 (viewports is 11_0; that 10_x rounds viewport
+  corners is our reading, not checked further).
+- `scenes --record`, twice (jobs 47 s and 51 s): every picture byte-identical to the stored
+  ones, shader model 4 bytecode included; only the texts that became capability answers or rules
+  changed (levels-results.caps, levels-rules.txt, formats-support.caps; the reduction support
+  texts went, the reduction picture being absent when the device says so). 243 outputs.
+- Direct3D 12 tessellation: its allowance now comes from Direct3D 11's WARP picture: tolerance 4,
+  0 pixels beyond (before: 8, 464 pixels in 13 tiles). The GPU passes it; WARP's own Direct3D 12
+  picture now fails it (464 pixels beyond 4 in 13 tiles). No other Direct3D 12 picture had a
+  closer Direct3D 11 WARP.
+- Whole suite: fmt, clippy with warnings denied and the 11 unit tests through `remote`; shellcheck
+  of the Mac scripts; `scenes` 243 passed, 0 failed, 0 absent (18 s job); `loop` passes (31 s end
+  to end); `programs run` 21 of 21 pass (2 min 24 s job); `wine-tests run`, all eight files: 784
+  counted, 0 FAIL (7 min 49 s job).
+- Check from a fresh clone of phase-2-graphics-rig at 3dcb003 (scratch, fresh-run8): `scenes
+  --api d3d11 --level 10_0 --build "cargo build -q -p wcontainers-graphics-test-forward" --dll
+  d3d11.dll=<forwarding library> triangle levels formats msaa textures`: 33 passed, 0 failed, 11
+  absent (formats-support.caps absent: 2 lines lower than the GPU's at 10_0); with the cube array
+  part's level changed from 10_1 to 10_0 in that clone, `scenes --api d3d11 --level 10_0 textures`
+  failed (9 FAIL, exit 1: the scene stopped at the shader model 4.1 shader); `wine-tests run dxgi`
+  20 counted, 0 FAIL; `programs run --dll d3d11.dll=<forwarding library> atg-simplelightingpc`
+  passes; `cargo tree --workspace -e all --target all` (2926 lines) names no Wine, vkd3d, Godot,
+  Doom or Xbox-ATG-Samples crate.
+
 ## Loading a replacement Direct3D library
 
 How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
@@ -921,6 +978,13 @@ There is no plan document in this checkout; these depart from the task or brief 
 - The census forwarding library hands the program wrapped contexts instead of patching their table
   (see Measurements); devices, swap chains and factories are patched, and any entry the runtime
   changes afterwards is reported in census.txt.
+- A scene part a device lacks is reported absent, a third verdict that does not fail the run, and
+  capability answers are compared as "at most the GPU's" (eighth run); the brief's rule is that what
+  a back end cannot do is reported absent through the API's own capability mechanism, so the rig
+  takes the device's answers as the authority on what to draw.
+- The Direct3D 11 scenes' shaders are compiled at the lowest shader model that takes them rather
+  than all at 5_0, so 22 of the 28 scenes run on the 10_0 device the plan gives the WebGL 2 route;
+  the corpus for the shader track now holds 4_0, 4_1 and 5_0 bytecode.
 - Texts hold only facts every correct implementation shares; values the implementation chooses
   (timestamps, helper pixel invocations, append order) are recorded as facts about them or sorted.
 
@@ -928,11 +992,8 @@ There is no plan document in this checkout; these depart from the task or brief 
 
 - WARP's Direct3D 12 isolines take other colours than the GPU's (the isoline cell of the D3D12
   tessellation picture); its Direct3D 11 ones do not, and the GPU's D3D12 picture equals its D3D11
-  one exactly, so it is WARP's DXIL path. As the allowance comes from WARP, the D3D12
-  tessellation picture allows 464 pixels beyond 8 steps (D3D11's: none beyond 4), all in the
-  tiles of the isoline cell, loose enough that a replacement could get the isoline colours wrong
-  and still pass there. The D3D11 picture
-  still checks them tightly.
+  one exactly, so it is WARP's DXIL path. The D3D12 picture's allowance therefore comes from
+  Direct3D 11's WARP picture (How a picture passes); WARP itself now fails that D3D12 picture.
 
 - Jobs that present need someone logged in at the desktop's console (the owner normally is): the
   hidden desktop lives in that session. Without it, `gpu-job --desktop` fails after 30 s with a
@@ -966,7 +1027,8 @@ There is no plan document in this checkout; these depart from the task or brief 
   Direct3D 12 programs are Godot's, whose movie writer runs on fixed time; a Direct3D 12 program
   animated by the real clock could not be compared yet.
 - No Microsoft Direct3D 12 sample (DirectX-Graphics-Samples, Xbox-ATG-Samples' PC12 samples) is
-  among the programs: the rig has no way yet to save a Direct3D 12 program's frames, end it at a
+  among the programs (the milestone asks for Direct3D 11 programs and their census; this would be
+  more): the rig has no way yet to save a Direct3D 12 program's frames, end it at a
   frame or count its calls (the forwarding library is a d3d11.dll), and those samples neither save
   frames nor stop by themselves. So the Direct3D 12 programs are Godot's two demos alone, which
   save their own frames. Next step: a forwarding dxgi.dll (or d3d12.dll) with the same census,
@@ -974,14 +1036,17 @@ There is no plan document in this checkout; these depart from the task or brief 
   with the DirectX Tool Kit are in (five atg- programs); the Tool Kit's own sample repository
   (walbourn/directxtk-samples) is not, as its samples play sound with no way to turn it off, which
   would come out of the owner's speakers.
-- Capability answers are compared exactly (not done from the sixth check's findings): the levels,
-  formats-support and samplers-reduction_support texts hold the RTX 3080's answers, and the scene
-  programs create their device asking for 11_1 or 11_0. A front that honestly reports less (the
-  WebGL 2 route's lower feature level) gets FAIL there and on every scene, not "absent". Doing it
-  right needs each scene to declare the level and features it needs, the device asked for every
-  level, scenes needing more reported absent (a third verdict beside pass and FAIL), and the
-  capability texts compared as "at most what the GPU answers"; not done in this run for lack of
-  room, and best done once the plan fixes which level the WebGL 2 route reports.
+- Absent is decided from the device's own answers, so a front that reports less than it could
+  is not caught by the scenes (only shown, in the count of absent outputs and each line's reason);
+  what a front must report is the plan's (section 9) to check. Requirements are declared per scene
+  and part (the lowest level, sample counts, format abilities, options) and were checked on real
+  Direct3D asked for 9_3 to 11_1 on the GPU and 10_0 on WARP (no FAIL), but the RTX 3080 has every
+  optional ability at 11_x, so a missing option check (one that real hardware lacks only on other
+  adapters) would show as a FAIL on a front, not absent. The Direct3D 12 scenes cannot be capped
+  like that (a Direct3D 12 device is 11_0 and up, its options the adapter's); their declared needs
+  are sample counts, render-target support per format and reduction filtering.
+- Two Direct3D 11 scenes need 11_0 whole though parts of them would run lower: draws (one
+  picture, whose indirect draws need 11_0) and device (its answers are about 11_0 devices).
 - Wine's test_create_device is excluded (its child process goes fullscreen), so the device scene
   (D3D11CreateDevice and D3D11CreateDeviceAndSwapChain with out parameters left out, empty, unknown
   and repeated level lists, driver types with and without an adapter, an undefined flag, SDK
@@ -1075,12 +1140,9 @@ under Microsoft's licence terms, Chrome for Testing under Google's terms.
 
 ## Next
 
-R1 is complete as far as this track can tell but for the capability answers (Known issues); its
-next step is the orchestrator's independent check. After that, R2 as the plan says. Open points
-left for later:
-- Capability answers and an "absent" verdict for scenes (Known issues).
+R1 is complete as far as this track can tell; its next step is the orchestrator's independent
+check. After that, R2 as the plan says. Open points left for later:
 - A forwarding dxgi.dll (or d3d12.dll) with the census, frame capture and frame clock, so that
   Direct3D 12 programs get a census and Microsoft's Direct3D 12 samples (DirectX-Graphics-Samples,
-  MIT) and DirectXTK's samples can join the real programs (Known issues).
-- The D3D12 tessellation picture's loose allowance, and the 19 Wine tests that need a display
-  nobody uses (Known issues).
+  MIT) can join the real programs (Known issues).
+- The 19 Wine tests that need a display nobody uses (Known issues).

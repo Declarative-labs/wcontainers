@@ -5,7 +5,9 @@
 //! the channel tolerance is `largest` capped at 8 steps of an 8-bit channel (2056 of a 16-bit one,
 //! 1/128 of a float one), and the pixels allowed beyond it are those WARP has beyond it, counted in
 //! each 16 by 16 tile on its own, so that WARP's freedom in one part of a picture allows nothing in
-//! another. Texts must match exactly. A real program's frames have no WARP picture; their allowance
+//! another. Texts must match exactly. Capability answers (`.caps`) may report less than the GPU, line
+//! by line, but never more: a less capable implementation's part is then absent, not failed, as
+//! is a part the scene left out with a note (`.absent`) saying what the device lacks. A real program's frames have no WARP picture; their allowance
 //! comes from repeated runs on the GPU instead (`Allowance::from_repeats`); a program one of whose
 //! frames had more than a twentieth of its tiles changed from run to run has all its frames
 //! recorded as unrepeatable, and they are not compared.
@@ -17,6 +19,7 @@ use std::path::Path;
 use anyhow::Context;
 
 use crate::compare::{self, Depth, Difference, TILE};
+use crate::output::ABSENT;
 
 pub const TOLERANCES: &str = "tolerances.txt";
 
@@ -133,10 +136,15 @@ pub fn unrepeatable_line(file: &str) -> String {
     format!("{file} unrepeatable\n")
 }
 
-/// One line of a tolerance file for a text.
+/// One line of a tolerance file for a text or capability answers.
 pub fn text_line(file: &str, warp_same: bool) -> String {
     let warp = if warp_same { "same" } else { "differs" };
-    format!("{file} exact warp {warp}\n")
+    let rule = if file.ends_with(".caps") {
+        "at-most"
+    } else {
+        "exact"
+    };
+    format!("{file} {rule} warp {warp}\n")
 }
 
 /// Reads a tolerance file: each picture's allowance by file name, none for an unrepeatable frame.
@@ -149,7 +157,7 @@ pub fn read_tolerances(path: &Path) -> anyhow::Result<BTreeMap<String, Option<Al
         .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
     {
         let words: Vec<&str> = line.split_whitespace().collect();
-        if words.get(1) == Some(&"exact") {
+        if matches!(words.get(1), Some(&"exact" | &"at-most")) {
             continue;
         }
         if let [file, "unrepeatable"] = words[..] {
@@ -184,10 +192,35 @@ pub fn read_tolerances(path: &Path) -> anyhow::Result<BTreeMap<String, Option<Al
     Ok(allowances)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum State {
+    Pass,
+    Fail,
+    /// The implementation reports what the output needs as unsupported.
+    Absent,
+}
+
+impl State {
+    fn of(pass: bool) -> State {
+        if pass { State::Pass } else { State::Fail }
+    }
+}
+
 pub struct Verdict {
     pub file: String,
-    pub pass: bool,
+    pub state: State,
     pub detail: String,
+}
+
+/// The note of an absent part that covers `file`: its own (`<scene>-<part>.absent`) or its
+/// scene's (`<scene>.absent`).
+fn absent_note(run: &Path, file: &str) -> Option<String> {
+    let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
+    let scene = file.split(['-', '.']).next().unwrap_or(file);
+    [stem, scene]
+        .iter()
+        .find_map(|s| std::fs::read_to_string(run.join(format!("{s}.{ABSENT}"))).ok())
+        .map(|why| format!("needs {}", why.trim()))
 }
 
 /// Checks every reference in `reference` (except the tolerance file) against the file of the same
@@ -210,28 +243,33 @@ pub fn check_dir(
     let mut verdicts = Vec::new();
     for file in &files {
         let ours = run.join(file);
-        let (pass, detail) = if !ours.exists() {
-            (false, "missing".to_owned())
+        let (state, detail) = if !ours.exists() {
+            match absent_note(run, file) {
+                Some(why) => (State::Absent, why),
+                None => (State::Fail, "missing".to_owned()),
+            }
         } else if file.ends_with(".txt") {
             check_text(&reference.join(file), &ours)?
+        } else if file.ends_with(".caps") {
+            check_caps(&reference.join(file), &ours)?
         } else {
             match allowances
                 .get(file)
                 .with_context(|| format!("{file} has no line in {TOLERANCES}"))?
             {
                 None => (
-                    true,
+                    State::Pass,
                     "not compared: drew differently on each run of real Direct3D".to_owned(),
                 ),
                 Some(allowance) => match check_picture(&reference.join(file), &ours, allowance) {
-                    Ok(verdict) => verdict,
-                    Err(e) => (false, format!("{e:#}")),
+                    Ok((pass, detail)) => (State::of(pass), detail),
+                    Err(e) => (State::Fail, format!("{e:#}")),
                 },
             }
         };
         verdicts.push(Verdict {
             file: file.clone(),
-            pass,
+            state,
             detail,
         });
     }
@@ -241,9 +279,30 @@ pub fn check_dir(
     for file in extra {
         verdicts.push(Verdict {
             file,
-            pass: false,
+            state: State::Fail,
             detail: format!(
                 "written, but {} has no reference of it",
+                reference.display()
+            ),
+        });
+    }
+    // A note of absence must name a scene or part that has references.
+    let mut notes = names(run)?;
+    notes.retain(|f| {
+        f.strip_suffix(&format!(".{ABSENT}")).is_some_and(|stem| {
+            !files.iter().any(|r| {
+                r.rsplit_once('.').is_some_and(|(s, _)| s == stem)
+                    || r.split(['-', '.']).next() == Some(stem)
+            })
+        })
+    });
+    notes.sort();
+    for file in notes {
+        verdicts.push(Verdict {
+            file,
+            state: State::Fail,
+            detail: format!(
+                "a part reported absent that {} has no reference of",
                 reference.display()
             ),
         });
@@ -289,27 +348,96 @@ fn tiles_over(d: &Difference, allowance: &Allowance) -> Vec<(usize, u32, u32)> {
         .collect()
 }
 
-fn check_text(reference: &Path, ours: &Path) -> anyhow::Result<(bool, String)> {
+fn check_text(reference: &Path, ours: &Path) -> anyhow::Result<(State, String)> {
     let want = std::fs::read_to_string(reference)?;
     let got = std::fs::read_to_string(ours)?;
     if want == got {
-        return Ok((true, "same".to_owned()));
+        return Ok((State::Pass, "same".to_owned()));
     }
     if want.lines().eq(got.lines()) {
-        return Ok((false, "same lines, different line endings".to_owned()));
+        return Ok((State::Fail, "same lines, different line endings".to_owned()));
     }
-    let line = want
-        .lines()
+    let line = first_difference(&want, &got);
+    Ok((State::Fail, line_detail("", &want, &got, line)))
+}
+
+fn first_difference(want: &str, got: &str) -> usize {
+    want.lines()
         .zip(got.lines())
         .position(|(a, b)| a != b)
-        .unwrap_or(want.lines().count().min(got.lines().count()));
+        .unwrap_or(want.lines().count().min(got.lines().count()))
+}
+
+fn line_detail(what: &str, want: &str, got: &str, line: usize) -> String {
+    format!(
+        "line {}{what}: wanted `{}`, got `{}`",
+        line + 1,
+        want.lines().nth(line).unwrap_or("<end>"),
+        got.lines().nth(line).unwrap_or("<end>")
+    )
+}
+
+/// A capability answer's order: no, refused and false lowest, then numbers and feature levels
+/// (`11_0` above `10_1`); None for words that are not answers.
+fn rank(word: &str) -> Option<u64> {
+    match word {
+        "false" | "refused" => return Some(0),
+        "true" => return Some(1),
+        _ => {}
+    }
+    if let Some((major, minor)) = word.split_once('_') {
+        let (major, minor): (u64, u64) = (major.parse().ok()?, minor.parse().ok()?);
+        return Some(major << 8 | minor);
+    }
+    word.parse().ok()
+}
+
+/// Capability answers: each line as the GPU's, word by word, where an answer may be lower than the
+/// GPU's (absent) but not higher (fail).
+fn check_caps(reference: &Path, ours: &Path) -> anyhow::Result<(State, String)> {
+    let want = std::fs::read_to_string(reference)?;
+    let got = std::fs::read_to_string(ours)?;
+    if want.lines().eq(got.lines()) {
+        return Ok((State::Pass, "same".to_owned()));
+    }
+    let (mut first_less, mut less) = (None, 0);
+    for (i, (w, g)) in want.lines().zip(got.lines()).enumerate() {
+        let (ws, gs): (Vec<&str>, Vec<&str>) = (
+            w.split_whitespace().collect(),
+            g.split_whitespace().collect(),
+        );
+        let mut lower = false;
+        for k in 0..ws.len().max(gs.len()) {
+            let (a, b) = (ws.get(k).copied(), gs.get(k).copied());
+            if a == b {
+                continue;
+            }
+            match (a.and_then(rank), b.and_then(rank)) {
+                (Some(a), Some(b)) if b < a => lower = true,
+                (Some(_), Some(_)) => {
+                    return Ok((
+                        State::Fail,
+                        line_detail(", more than the GPU", &want, &got, i),
+                    ));
+                }
+                _ => return Ok((State::Fail, line_detail("", &want, &got, i))),
+            }
+        }
+        if lower {
+            less += 1;
+            first_less.get_or_insert(i);
+        }
+    }
+    if want.lines().count() != got.lines().count() {
+        let line = first_difference(&want, &got);
+        return Ok((State::Fail, line_detail("", &want, &got, line)));
+    }
+    let i = first_less.unwrap_or(0);
     Ok((
-        false,
+        State::Absent,
         format!(
-            "line {}: wanted `{}`, got `{}`",
-            line + 1,
-            want.lines().nth(line).unwrap_or("<end>"),
-            got.lines().nth(line).unwrap_or("<end>")
+            "{less} lines report less than the GPU, the first {}",
+            line_detail("", &want, &got, i)
         ),
     ))
 }
@@ -390,7 +518,60 @@ mod tests {
         std::fs::write(run.join("a-new.txt"), "unseen\n").unwrap();
         std::fs::write(run.join("a.log"), "not an output\n").unwrap();
         let verdicts = check_dir(&reference, &run, |f| f.ends_with(".txt")).unwrap();
-        let seen: Vec<(&str, bool)> = verdicts.iter().map(|v| (&*v.file, v.pass)).collect();
-        assert_eq!(seen, [("a-text.txt", true), ("a-new.txt", false)]);
+        let seen: Vec<(&str, State)> = verdicts.iter().map(|v| (&*v.file, v.state)).collect();
+        assert_eq!(
+            seen,
+            [("a-text.txt", State::Pass), ("a-new.txt", State::Fail)]
+        );
+    }
+
+    #[test]
+    fn absent_parts_and_lesser_answers() {
+        let root = Path::new(env!("OUT_DIR")).join("absent_parts_and_lesser_answers");
+        let (reference, run) = (root.join("reference"), root.join("run"));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in [&reference, &run] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let caps = "level 11_1\nr8 render target 1 blendable 1\nreduction true\n";
+        std::fs::write(reference.join("a-caps.caps"), caps).unwrap();
+        std::fs::write(reference.join("a-sums.txt"), "1\n").unwrap();
+        std::fs::write(reference.join("b-x.txt"), "1\n").unwrap();
+        std::fs::write(reference.join("b-y.txt"), "1\n").unwrap();
+        std::fs::write(reference.join(TOLERANCES), "").unwrap();
+        let lesser = "level 10_0\nr8 render target 1 blendable 0\nreduction true\n";
+        std::fs::write(run.join("a-caps.caps"), lesser).unwrap();
+        std::fs::write(run.join("a-sums.absent"), "needs sums\n").unwrap();
+        std::fs::write(run.join("b.absent"), "needs level 11_0\n").unwrap();
+        std::fs::write(run.join("c.absent"), "no such scene\n").unwrap();
+        let states = |run: &Path| -> Vec<(String, State)> {
+            check_dir(&reference, run, |f| {
+                f.ends_with(".txt") || f.ends_with(".caps")
+            })
+            .unwrap()
+            .into_iter()
+            .map(|v| (v.file, v.state))
+            .collect()
+        };
+        let want = [
+            ("a-caps.caps", State::Absent),
+            ("a-sums.txt", State::Absent),
+            ("b-x.txt", State::Absent),
+            ("b-y.txt", State::Absent),
+            ("c.absent", State::Fail),
+        ]
+        .map(|(f, s)| (f.to_owned(), s));
+        assert_eq!(states(&run), want);
+        // More than the GPU, or a changed word, fails.
+        for wrong in [
+            "level 12_0\n",
+            "level 11_1\nr8 render target 2 blendable 1\n",
+        ] {
+            let body = format!("{wrong}{}", &caps[wrong.len().min(caps.len())..]);
+            std::fs::write(run.join("a-caps.caps"), body).unwrap();
+            assert_eq!(states(&run)[0].1, State::Fail, "{wrong}");
+        }
+        std::fs::write(run.join("a-caps.caps"), caps.replace("r8", "r16")).unwrap();
+        assert_eq!(states(&run)[0].1, State::Fail);
     }
 }

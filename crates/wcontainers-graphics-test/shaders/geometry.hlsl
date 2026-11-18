@@ -1,6 +1,6 @@
 // Geometry shaders: points grown into quads, triangles with adjacency coloured by their neighbours,
 // several strips per input with primitive ids (and the system's ids without a geometry shader), and instancing into layers of an array target.
-// fxc: vs_5_0 vs, gs_5_0 gs_points, gs_5_0 gs_adjacency, gs_5_0 gs_strips, gs_5_0 gs_layers, ps_5_0 ps, ps_5_0 ps_primitive, ps_5_0 ps_id
+// fxc: vs_4_0 vs, gs_4_0 gs_points, gs_4_0 gs_adjacency, gs_4_0 gs_strips, gs_5_0 gs_layers, ps_4_0 ps, ps_4_0 ps_primitive, ps_4_0 ps_id
 // dxc: vs_6_0 vs, gs_6_0 gs_points, gs_6_0 gs_adjacency, gs_6_0 gs_strips, gs_6_0 gs_layers, ps_6_0 ps, ps_6_0 ps_primitive, ps_6_0 ps_id
 struct ColorIn { float3 pos : POSITION; float4 color : COLOR; };
 struct ColorOut { float4 pos : SV_Position; float4 color : COLOR; };

@@ -1,5 +1,5 @@
 // Shared by many scenes: coloured vertices, and a full-target triangle with texture coordinates.
-// fxc: vs_5_0 vs_color, ps_5_0 ps_color, vs_5_0 vs_full, vs_4_0_level_9_1 vs_color_9_1, ps_4_0_level_9_1 ps_color_9_1
+// fxc: vs_4_0 vs_color, ps_4_0 ps_color, vs_4_0 vs_full, vs_4_0_level_9_1 vs_color_9_1, ps_4_0_level_9_1 ps_color_9_1
 // dxc: vs_6_0 vs_color, ps_6_0 ps_color, vs_6_0 vs_full
 struct ColorIn { float3 pos : POSITION; float4 color : COLOR; };
 struct ColorOut { float4 pos : SV_Position; float4 color : COLOR; };
