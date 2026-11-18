@@ -11,8 +11,8 @@ use naga::{
 };
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource, HELPER_SET,
-    HelperSlot, HelperValue, Reflection, ShaderStage, SlotKind, StageExtras, VariantFlags,
-    VariantKey, helper_binding,
+    HelperSlot, HelperValue, LinkedValues, Reflection, ShaderStage, SlotKind, StageExtras,
+    VariantFlags, VariantKey, helper_binding,
 };
 
 use crate::ConvertError;
@@ -62,7 +62,9 @@ pub(crate) fn apply(
             let adjust = flags.contains(VariantFlags::VIEWPORT_ADJUST);
             let flip = flags.contains(VariantFlags::VIEWPORT_DEPTH_FLIP);
             let clip = flags.contains(VariantFlags::CLIP_DEPTH_REWRITE);
-            if adjust || flip || clip {
+            let distances = flags.contains(VariantFlags::CLIP_DISTANCE);
+            let clamp = flags.contains(VariantFlags::DEPTH_CLAMP);
+            if adjust || flip || clip || distances || clamp {
                 let viewport = adjust.then(|| {
                     let vec4 = vector(module, 4, Scalar::F32);
                     helper(
@@ -75,7 +77,10 @@ pub(crate) fn apply(
                     )
                 });
                 let mut w = Wrapped::new(module);
-                position(&mut w, viewport, flip, clip);
+                let z = position(&mut w, viewport, flip, clip, clamp);
+                if distances || clamp {
+                    linked_out(module, &mut w, variant.linked, distances, z)?;
+                }
                 w.finish(module);
             }
         }
@@ -84,11 +89,25 @@ pub(crate) fn apply(
             let mask = flags.contains(VariantFlags::SAMPLE_MASK);
             let dual = flags.contains(VariantFlags::DUAL_SOURCE);
             let bias = flags.contains(VariantFlags::DEPTH_BIAS);
-            if counting || mask || dual || bias {
+            let distances =
+                flags.contains(VariantFlags::CLIP_DISTANCE) && variant.linked.clip_distances > 0;
+            let clamp = flags.contains(VariantFlags::DEPTH_CLAMP);
+            if counting || mask || dual || bias || distances || clamp {
                 let bias = bias.then(|| {
                     let vec4 = vector(module, 4, Scalar::F32);
                     helper(module, reflection, stage, HelperValue::DepthBias, vec4, 16)
                 });
+                let range = clamp.then(|| {
+                    let vec2 = vector(module, 2, Scalar::F32);
+                    helper(module, reflection, stage, HelperValue::DepthRange, vec2, 8)
+                });
+                let per_sample = matches!(
+                    reflection.extras,
+                    StageExtras::Pixel {
+                        per_sample: true,
+                        ..
+                    }
+                );
                 let mask = mask.then(|| {
                     let u32_ty = scalar(module, Scalar::U32);
                     helper(
@@ -101,14 +120,34 @@ pub(crate) fn apply(
                     )
                 });
                 let mut w = Wrapped::new(module);
+                let linked = if distances || clamp {
+                    linked_in(module, &mut w, variant.linked, clamp)
+                } else {
+                    Vec::new()
+                };
+                let count = variant.linked.clip_distances as usize;
+                if distances {
+                    clipped(
+                        module,
+                        &mut w,
+                        &linked[..count],
+                        variant.samples,
+                        per_sample,
+                    )?;
+                    if let StageExtras::Pixel { discards, .. } = &mut reflection.extras {
+                        *discards = true;
+                    }
+                }
                 if dual {
                     dual_source(&mut w)?;
                 }
                 if let Some(mask) = mask {
+                    let mask = load_helper(&mut w.f, &mut w.body, mask);
                     sample_mask(module, &mut w, mask);
                 }
-                if let Some(bias) = bias {
-                    depth_bias(module, &mut w, bias);
+                if bias.is_some() || clamp {
+                    let clamp = range.map(|range| (linked[linked.len() - 1], range));
+                    depth(module, &mut w, bias, clamp);
                 }
                 if counting {
                     counted(module, &mut w);
@@ -201,6 +240,9 @@ fn load_helper(
 }
 
 // The helper block.
+
+/// A member of the stage's helper block: the block and the member's index.
+type HelperMember = (Handle<GlobalVariable>, u32);
 
 /// Gives the stage's helper block (made on first use) a member for `value` of type `ty`, `size` bytes,
 /// aligned as uniform blocks align it; returns the block and the member's index.
@@ -480,6 +522,29 @@ impl Wrapped {
             let binding = single.then(|| self.outputs[0].binding.clone());
             f.result = Some(FunctionResult { ty, binding });
         }
+        // The wrapped program's own result no longer leaves the stage: its members lose their
+        // bindings, so an output a rewrite replaced (clip distances) asks nothing of the language.
+        if self.changed
+            && let Some((ty, false)) = self.original
+            && let TypeInner::Struct { members, span } = &module.types[ty].inner
+        {
+            let unbound = Type {
+                name: module.types[ty].name.clone(),
+                inner: TypeInner::Struct {
+                    members: members
+                        .iter()
+                        .map(|m| StructMember {
+                            binding: None,
+                            ..m.clone()
+                        })
+                        .collect(),
+                    span: *span,
+                },
+            };
+            if module.types.get(&unbound).is_none() {
+                module.types.replace(ty, unbound);
+            }
+        }
         if value.is_none() {
             f.result = None;
         }
@@ -489,22 +554,29 @@ impl Wrapped {
     }
 }
 
-/// The last vertex stage's position: x and y mapped by the viewport adjustment, then z flipped for a
-/// swapped depth range, then rewritten for a clip depth of -1 to 1.
+/// The last vertex stage's position: x and y mapped by the viewport adjustment, z kept inside the
+/// clip volume when `clamp` (the unclamped z is returned), then flipped for a swapped depth range,
+/// then rewritten for a clip depth of -1 to 1.
 fn position(
     w: &mut Wrapped,
     viewport: Option<(Handle<GlobalVariable>, u32)>,
     flip: bool,
     clip: bool,
-) {
+    clamp: bool,
+) -> Option<Handle<Expression>> {
     use naga::BinaryOperator::{Add, Multiply, Subtract};
-    let Some(at) = w.output(|b| matches!(b, Binding::BuiltIn(BuiltIn::Position { .. }))) else {
-        return;
-    };
+    let at = w.output(|b| matches!(b, Binding::BuiltIn(BuiltIn::Position { .. })))?;
     let ty = w.outputs[at].ty;
     let (f, body) = (&mut w.f, &mut w.body);
     let p = w.outputs[at].value;
     let mut c: Vec<_> = (0..4).map(|i| index(f, body, p, i)).collect();
+    let unclamped = c[2];
+    if clamp {
+        // Direct3D's clip volume holds 0 <= z <= w; a point with w below 0 is outside it anyway.
+        let below = math(f, body, MathFunction::Min, [c[2], c[3]]);
+        let zero = f32_lit(f, 0.0);
+        c[2] = math(f, body, MathFunction::Max, [below, zero]);
+    }
     if let Some(helper) = viewport {
         // Clip x and y scaled, and offset by w, so x/w and y/w land as in the fractional viewport.
         let adjust = load_helper(f, body, helper);
@@ -525,6 +597,229 @@ fn position(
         c[2] = binary(f, body, Subtract, doubled, c[3]);
     }
     w.outputs[at].value = push(f, body, Expression::Compose { ty, components: c });
+    clamp.then_some(unclamped)
+}
+
+/// A perspective-correct four-component f32 value at `location`.
+fn linked_binding(location: u32) -> Binding {
+    Binding::Location {
+        location,
+        interpolation: Some(naga::Interpolation::Perspective),
+        sampling: Some(naga::Sampling::Center),
+        blend_src: None,
+        per_primitive: false,
+    }
+}
+
+/// The vertex program's added values (`VariantKey::linked`): its clip distances, taken from the
+/// built-in when `distances`, then the unclamped clip z.
+fn linked_out(
+    module: &mut Module,
+    w: &mut Wrapped,
+    linked: LinkedValues,
+    distances: bool,
+    z: Option<Handle<Expression>>,
+) -> Result<()> {
+    let mut values = Vec::new();
+    if distances && let Some(at) = w.output(|b| *b == Binding::BuiltIn(BuiltIn::ClipDistances)) {
+        let o = w.outputs.remove(at);
+        let TypeInner::Array {
+            size: naga::ArraySize::Constant(n),
+            ..
+        } = module.types[o.ty].inner
+        else {
+            return Err(ConvertError::Malformed(
+                "clip distances not an array".into(),
+            ));
+        };
+        for i in 0..n.get() {
+            values.push(index(&mut w.f, &mut w.body, o.value, i));
+        }
+        w.changed = true;
+    }
+    if values.len() != usize::from(if distances { linked.clip_distances } else { 0 }) {
+        return Err(ConvertError::Unsupported("LinkedClipDistanceCount"));
+    }
+    let taken = w.outputs.iter().any(
+        |o| matches!(o.binding, Binding::Location { location, .. } if location >= linked.location),
+    );
+    if taken {
+        return Err(ConvertError::Unsupported("LinkedLocationTaken"));
+    }
+    values.extend(z);
+    let vec4 = vector(module, 4, Scalar::F32);
+    let zero = f32_lit(&mut w.f, 0.0);
+    for (k, chunk) in values.chunks(4).enumerate() {
+        let mut components = chunk.to_vec();
+        components.resize(4, zero);
+        let value = push(
+            &mut w.f,
+            &mut w.body,
+            Expression::Compose {
+                ty: vec4,
+                components,
+            },
+        );
+        w.outputs.push(Output {
+            name: Some(format!("linked{k}")),
+            ty: vec4,
+            binding: linked_binding(linked.location + k as u32),
+            value,
+        });
+        w.changed = true;
+    }
+    Ok(())
+}
+
+/// The pixel program's added values, read as the vertex program writes them: its clip distances
+/// (`linked.clip_distances` of them), then the unclamped clip z when `clamp`, as scalars.
+fn linked_in(
+    module: &mut Module,
+    w: &mut Wrapped,
+    linked: LinkedValues,
+    clamp: bool,
+) -> Vec<Handle<Expression>> {
+    let count = usize::from(linked.clip_distances) + usize::from(clamp);
+    let vec4 = vector(module, 4, Scalar::F32);
+    let mut values = Vec::new();
+    for k in 0..count.div_ceil(4) as u32 {
+        let location = linked.location + k;
+        let v = w.input(
+            module,
+            |b| matches!(b, Binding::Location { location: l, .. } if *l == location),
+            linked_binding(location),
+            vec4,
+        );
+        for i in 0..4 {
+            if values.len() < count {
+                values.push(index(&mut w.f, &mut w.prologue, v, i));
+            }
+        }
+    }
+    values
+}
+
+/// Direct3D's standard positions of four samples, in sixteenths of a pixel from its centre.
+const FOUR_SAMPLES: [(f32, f32); 4] = [(-2.0, -6.0), (6.0, -2.0), (-6.0, 2.0), (2.0, 6.0)];
+
+/// Clipping by the clip distances `d`, before the program runs: one sample discards where any is
+/// negative at the pixel's centre; four take each distance over w (affine on the screen) to each
+/// sample from its derivatives, keep the samples where none is negative in the sample mask, and
+/// discard where none is kept.
+fn clipped(
+    module: &mut Module,
+    w: &mut Wrapped,
+    d: &[Handle<Expression>],
+    samples: u8,
+    per_sample: bool,
+) -> Result<()> {
+    use naga::BinaryOperator::{Add, Equal, GreaterEqual, InclusiveOr, Less, LogicalAnd, Multiply};
+    let mask = match samples {
+        0 => return Err(ConvertError::Unsupported("SampleCount")),
+        1 => None,
+        4 if per_sample => return Err(ConvertError::Unsupported("ClipDistancePerSample")),
+        4 => {
+            let vec4 = vector(module, 4, Scalar::F32);
+            let position = w.input(
+                module,
+                |b| matches!(b, Binding::BuiltIn(BuiltIn::Position { .. })),
+                Binding::BuiltIn(BuiltIn::Position { invariant: false }),
+                vec4,
+            );
+            let (f, body) = (&mut w.f, &mut w.prologue);
+            let inverse_w = index(f, body, position, 3);
+            let sloped: Vec<_> = d
+                .iter()
+                .map(|&d| {
+                    let q = binary(f, body, Multiply, d, inverse_w);
+                    let [dx, dy] = [naga::DerivativeAxis::X, naga::DerivativeAxis::Y].map(|axis| {
+                        push(
+                            f,
+                            body,
+                            Expression::Derivative {
+                                axis,
+                                ctrl: naga::DerivativeControl::None,
+                                expr: q,
+                            },
+                        )
+                    });
+                    (q, dx, dy)
+                })
+                .collect();
+            let zero = f32_lit(f, 0.0);
+            let mut mask = f
+                .expressions
+                .append(Expression::Literal(Literal::U32(0)), Span::UNDEFINED);
+            for (s, (x, y)) in FOUR_SAMPLES.iter().enumerate() {
+                let (x, y) = (f32_lit(f, x / 16.0), f32_lit(f, y / 16.0));
+                let mut kept = None;
+                for &(q, dx, dy) in &sloped {
+                    let along_x = binary(f, body, Multiply, dx, x);
+                    let along_y = binary(f, body, Multiply, dy, y);
+                    let moved = binary(f, body, Add, q, along_x);
+                    let at = binary(f, body, Add, moved, along_y);
+                    let inside = binary(f, body, GreaterEqual, at, zero);
+                    kept = Some(match kept {
+                        Some(k) => binary(f, body, LogicalAnd, k, inside),
+                        None => inside,
+                    });
+                }
+                let bit = f
+                    .expressions
+                    .append(Expression::Literal(Literal::U32(1 << s)), Span::UNDEFINED);
+                let none = f
+                    .expressions
+                    .append(Expression::Literal(Literal::U32(0)), Span::UNDEFINED);
+                let chosen = push(
+                    f,
+                    body,
+                    Expression::Select {
+                        condition: kept.expect("clip distances"),
+                        accept: bit,
+                        reject: none,
+                    },
+                );
+                mask = binary(f, body, InclusiveOr, mask, chosen);
+            }
+            Some(mask)
+        }
+        _ => return Err(ConvertError::Unsupported("ClipDistanceSamples")),
+    };
+    let (f, body) = (&mut w.f, &mut w.prologue);
+    let outside = match mask {
+        Some(mask) => {
+            let none = f
+                .expressions
+                .append(Expression::Literal(Literal::U32(0)), Span::UNDEFINED);
+            binary(f, body, Equal, mask, none)
+        }
+        None => {
+            let zero = f32_lit(f, 0.0);
+            let mut outside = None;
+            for &d in d {
+                let negative = binary(f, body, Less, d, zero);
+                outside = Some(match outside {
+                    Some(o) => binary(f, body, naga::BinaryOperator::LogicalOr, o, negative),
+                    None => negative,
+                });
+            }
+            outside.expect("clip distances")
+        }
+    };
+    let mut accept = Block::new();
+    accept.push(Statement::Kill, Span::UNDEFINED);
+    body.push(
+        Statement::If {
+            condition: outside,
+            accept,
+            reject: Block::new(),
+        },
+        Span::UNDEFINED,
+    );
+    if let Some(mask) = mask {
+        sample_mask(module, w, mask);
+    }
+    Ok(())
 }
 
 /// Target 0 and 1 become the two sources of dual-source blending at location 0; other targets are
@@ -555,9 +850,8 @@ fn dual_source(w: &mut Wrapped) -> Result<()> {
     Ok(())
 }
 
-/// The sample mask written from the helper block, combined with the one the program writes.
-fn sample_mask(module: &mut Module, w: &mut Wrapped, helper: (Handle<GlobalVariable>, u32)) {
-    let mask = load_helper(&mut w.f, &mut w.body, helper);
+/// The sample mask `mask` written, combined with the one the program writes.
+fn sample_mask(module: &mut Module, w: &mut Wrapped, mask: Handle<Expression>) {
     let is_mask = |b: &Binding| *b == Binding::BuiltIn(BuiltIn::SampleMask);
     match w.output(is_mask) {
         Some(at) => {
@@ -578,15 +872,30 @@ fn sample_mask(module: &mut Module, w: &mut Wrapped, helper: (Handle<GlobalVaria
     }
 }
 
-/// The fragment's depth written with Direct3D's depth bias added: constant units times the format's
-/// step plus the slope scale times the larger window depth slope, clamped as the bias clamp's sign
-/// says. A depth the program writes itself is kept, as the fixed function biases only the rasterised
-/// depth.
-fn depth_bias(module: &mut Module, w: &mut Wrapped, helper: (Handle<GlobalVariable>, u32)) {
-    use naga::BinaryOperator::{Add, Greater, Less, Multiply};
-    if w.output(|b| *b == Binding::BuiltIn(BuiltIn::FragDepth))
-        .is_some()
-    {
+/// The fragment's depth written by the program: with `clamp` (the unclamped clip z the vertex program
+/// passed, and the depth range in the helper block), the window depth made from it and clamped to the
+/// range; with `bias`, Direct3D's depth bias added before the clamp. A depth the program writes
+/// itself is only clamped, as the fixed function biases only the rasterised depth.
+fn depth(
+    module: &mut Module,
+    w: &mut Wrapped,
+    bias: Option<(Handle<GlobalVariable>, u32)>,
+    clamp: Option<(Handle<Expression>, HelperMember)>,
+) {
+    use naga::BinaryOperator::{Add, Multiply, Subtract};
+    let within = |f: &mut Function, body: &mut Block, z, range| {
+        let range = load_helper(f, body, range);
+        let [near, far] = [0, 1].map(|i| index(f, body, range, i));
+        let low = math(f, body, MathFunction::Min, [near, far]);
+        let high = math(f, body, MathFunction::Max, [near, far]);
+        let z = math(f, body, MathFunction::Max, [z, low]);
+        math(f, body, MathFunction::Min, [z, high])
+    };
+    if let Some(at) = w.output(|b| *b == Binding::BuiltIn(BuiltIn::FragDepth)) {
+        if let Some((_, range)) = clamp {
+            let own = w.outputs[at].value;
+            w.outputs[at].value = within(&mut w.f, &mut w.body, own, range);
+        }
         return;
     }
     let vec4 = vector(module, 4, Scalar::F32);
@@ -597,7 +906,44 @@ fn depth_bias(module: &mut Module, w: &mut Wrapped, helper: (Handle<GlobalVariab
         vec4,
     );
     let (f, body) = (&mut w.f, &mut w.prologue);
-    let z = index(f, body, position, 2);
+    let mut z = match clamp {
+        Some((unclamped, range)) => {
+            // z over w, affine on the screen, then the viewport's depth mapping.
+            let inverse_w = index(f, body, position, 3);
+            let z = binary(f, body, Multiply, unclamped, inverse_w);
+            let range = load_helper(f, body, range);
+            let [near, far] = [0, 1].map(|i| index(f, body, range, i));
+            let span = binary(f, body, Subtract, far, near);
+            let scaled = binary(f, body, Multiply, span, z);
+            binary(f, body, Add, near, scaled)
+        }
+        None => index(f, body, position, 2),
+    };
+    if let Some(bias) = bias {
+        z = biased(f, body, z, bias);
+    }
+    if let Some((_, range)) = clamp {
+        z = within(f, body, z, range);
+    }
+    let ty = scalar(module, Scalar::F32);
+    w.outputs.push(Output {
+        name: Some("depth".into()),
+        ty,
+        binding: Binding::BuiltIn(BuiltIn::FragDepth),
+        value: z,
+    });
+    w.changed = true;
+}
+
+/// The window depth `z` plus Direct3D's depth bias: constant units times the format's step plus the
+/// slope scale times the larger window depth slope, clamped as the bias clamp's sign says.
+fn biased(
+    f: &mut Function,
+    body: &mut Block,
+    z: Handle<Expression>,
+    helper: (Handle<GlobalVariable>, u32),
+) -> Handle<Expression> {
+    use naga::BinaryOperator::{Add, Greater, Less, Multiply};
     let bias = load_helper(f, body, helper);
     let [units, scale, clamp, step] = [0, 1, 2, 3].map(|i| index(f, body, bias, i));
     let slopes = [naga::DerivativeAxis::X, naga::DerivativeAxis::Y].map(|axis| {
@@ -641,15 +987,7 @@ fn depth_bias(module: &mut Module, w: &mut Wrapped, helper: (Handle<GlobalVariab
             reject: clamped,
         },
     );
-    let value = binary(f, body, Add, z, clamped);
-    let ty = scalar(module, Scalar::F32);
-    w.outputs.push(Output {
-        name: Some("depth".into()),
-        ty,
-        binding: Binding::BuiltIn(BuiltIn::FragDepth),
-        value,
-    });
-    w.changed = true;
+    binary(f, body, Add, z, clamped)
 }
 
 /// A math function of one or two arguments (the second ignored for one-argument functions).

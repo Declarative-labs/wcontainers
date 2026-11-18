@@ -144,6 +144,7 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         min_lod_clamped: _,
         draw_base: _,
         output_interpolation: _,
+        linked: _,
         samples: _,
         layout,
     } = variant;
@@ -151,8 +152,6 @@ fn unbuilt(variant: &VariantKey, root_signature: Option<&[u8]>) -> Result<(), Co
         (VariantFlags::PROVOKING_LAST, "ProvokingRewrite"),
         (VariantFlags::EARLY_TESTS, "EarlyTestsInShader"),
         (VariantFlags::LINE_COVERAGE, "AntialiasedLinesAsQuads"),
-        (VariantFlags::CLIP_DISTANCE, "ClipDistanceInShader"),
-        (VariantFlags::DEPTH_CLAMP, "DepthClampInShader"),
         (
             VariantFlags::PRIMITIVE_ID_FROM_STAGE,
             "PrimitiveIdAsGeometry",

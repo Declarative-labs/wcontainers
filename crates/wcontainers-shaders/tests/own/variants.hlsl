@@ -81,3 +81,11 @@ ClipOut vs_clip(float3 position : POSITION, float2 uv : TEXCOORD0, uint id : SV_
     o.clip = float2(position.x + position.y * 0.5 + 0.1, position.y + 0.3);
     return o;
 }
+
+// vs_transform with depth stretched past the clip volume on both sides: z/w runs from -0.2 to 1.15
+// across the grid, where vs_transform's runs from 0.4 to 0.67.
+VsOut vs_deep(float3 position : POSITION, float2 uv : TEXCOORD0, uint id : SV_VertexID) {
+    VsOut o = vs_transform(position, uv, id);
+    o.position.z = o.position.z * 5.0 - o.position.w * 2.2;
+    return o;
+}

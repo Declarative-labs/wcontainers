@@ -2,8 +2,8 @@
 
 use std::path::Path;
 use wcontainers_gpu::{
-    AddedBinding, DrawBaseSource, HelperSlot, HelperValue, Interpolation, SlotKind, VariantFlags,
-    VariantKey,
+    AddedBinding, DrawBaseSource, HelperSlot, HelperValue, Interpolation, LinkedValues, SlotKind,
+    VariantFlags, VariantKey,
 };
 use wcontainers_shaders::{ConvertError, Source, convert};
 
@@ -458,4 +458,105 @@ fn draw_bases_from_arguments_read_the_argument_buffer() {
         );
         assert!(text.contains("arguments_offset"), "{text}");
     }
+}
+
+/// Clip distances and depth clamping in the program, on both routes: the vertex program writes its
+/// distances and unclamped z at the linked location instead of the built-in, and the pixel program
+/// reads them there, discards (one sample) or clears samples (four), and writes the clamped depth.
+#[test]
+fn clip_distances_and_depth_clamp_pass_through_the_linked_location() {
+    let vs = own_pair("vs_clip");
+    let ps = own_pair("ps_textured");
+    let plain = both(&vs, &VariantKey::default());
+    let location = plain[0]
+        .reflection
+        .outputs
+        .iter()
+        .filter(|o| o.system.is_none())
+        .map(|o| o.location + 1)
+        .max()
+        .unwrap();
+    let flags = VariantFlags::CLIP_DISTANCE | VariantFlags::DEPTH_CLAMP;
+    let linked = LinkedValues {
+        location,
+        clip_distances: 2,
+    };
+    let key = VariantKey {
+        flags,
+        linked,
+        ..Default::default()
+    };
+    for c in both(&vs, &key) {
+        let text = wgsl(&c);
+        assert!(!text.contains("clip_distances"), "{text}");
+        assert!(text.contains(&format!("@location({location})")), "{text}");
+        assert_eq!(
+            wcontainers_shaders::capabilities(&c.modules[0].module),
+            wcontainers_shaders::WEBGPU_CAPABILITIES
+        );
+    }
+    for samples in [1, 4] {
+        let key = VariantKey {
+            flags,
+            linked,
+            samples,
+            ..Default::default()
+        };
+        for c in both(&ps, &key) {
+            assert_eq!(c.reflection.helpers, [slot(HelperValue::DepthRange, 0)]);
+            let text = wgsl(&c);
+            assert!(text.contains(&format!("@location({location})")), "{text}");
+            assert!(text.contains("discard"), "{text}");
+            assert!(text.contains("@builtin(frag_depth)"), "{text}");
+            assert_eq!(
+                text.contains("@builtin(sample_mask)"),
+                samples == 4,
+                "{text}"
+            );
+        }
+    }
+    let refused = |key: VariantKey, code: &[Vec<u8>; 2], name| {
+        for source in [Source::Dxbc(&code[0]), Source::Dxil(&code[1])] {
+            assert_eq!(
+                convert(source, &key, None).map(|_| ()),
+                Err(ConvertError::Unsupported(name))
+            );
+        }
+    };
+    let key = VariantKey {
+        flags: VariantFlags::CLIP_DISTANCE,
+        linked,
+        ..Default::default()
+    };
+    refused(key.clone(), &ps, "SampleCount");
+    refused(
+        VariantKey {
+            samples: 2,
+            ..key.clone()
+        },
+        &ps,
+        "ClipDistanceSamples",
+    );
+    refused(
+        VariantKey {
+            linked: LinkedValues {
+                location,
+                clip_distances: 1,
+            },
+            ..key.clone()
+        },
+        &vs,
+        "LinkedClipDistanceCount",
+    );
+    refused(
+        VariantKey {
+            linked: LinkedValues {
+                location: 0,
+                clip_distances: 2,
+            },
+            ..key
+        },
+        &vs,
+        "LinkedLocationTaken",
+    );
 }

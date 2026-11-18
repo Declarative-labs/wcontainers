@@ -117,6 +117,8 @@ pub struct Reference {
     pub bases: Option<Bases>,
     /// The sampled texture's per-resource minimum level-of-detail clamp (`SetResourceMinLOD`).
     pub min_lod: Option<f32>,
+    /// Depth clamped instead of clipped (the rasteriser's `DepthClipEnable` false).
+    pub depth_clip_off: bool,
 }
 
 /// A draw's range with bases, direct or from an argument buffer; an indexed draw's indices are 0, 1,
@@ -233,6 +235,7 @@ pub fn direct3d_11(
         raster.SlopeScaledDepthBias = slope;
         raster.DepthBiasClamp = clamp;
     }
+    raster.DepthClipEnable = (!reference.depth_clip_off).into();
     let raster = gpu.rasterizer(&raster).unwrap();
     let (target, rtv) = gpu.target(SIZE, SIZE, dxgi(format)).unwrap();
     let blend = reference.blend.map(|target| {

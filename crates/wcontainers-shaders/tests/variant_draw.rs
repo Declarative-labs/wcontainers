@@ -11,8 +11,8 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    BlendComponent, BlendFactor, BlendOp, DrawBaseSource, Format, HelperValue, ProvokingVertex,
-    VariantFlags, VariantKey, VertexFormat,
+    BlendComponent, BlendFactor, BlendOp, DrawBaseSource, Format, HelperValue, LinkedValues,
+    ProvokingVertex, VariantFlags, VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -59,6 +59,21 @@ fn helper_block(source: Source<'_>, key: &VariantKey, values: &[(HelperValue, &[
         block[at..at + bytes.len()].copy_from_slice(bytes);
     }
     block
+}
+
+/// The first location past every one the draw's two programs list, as a front links them for the
+/// values clip distances and depth clamping add.
+fn linked_location(draw: &Draw<'_>) -> u32 {
+    let vs = convert(draw.vs, &VariantKey::default(), None).unwrap();
+    let ps = convert(draw.ps, &VariantKey::default(), None).unwrap();
+    vs.reflection
+        .outputs
+        .iter()
+        .chain(&ps.reflection.inputs)
+        .filter(|v| v.system.is_none())
+        .map(|v| v.location + 1)
+        .max()
+        .unwrap_or(0)
 }
 
 fn floats(v: &[f32]) -> Vec<u8> {
@@ -558,6 +573,106 @@ fn variants_draw_as_the_native_feature_does() {
                 Format::Rgba8Unorm,
                 (0, 0),
             ));
+
+            // The distances passed as values and clipped by the pixel program, where the back end
+            // has none (WebGPU on wgpu's Direct3D 12 path, WebGL 2 without the extension): one sample
+            // against Direct3D 11, four against the native distances on Vulkan, resolved.
+            let linked = LinkedValues {
+                location: linked_location(&native),
+                clip_distances: 2,
+            };
+            let mut variant = native.clone();
+            for key in [&mut variant.setup.vs_key, &mut variant.setup.ps_key] {
+                key.flags = VariantFlags::CLIP_DISTANCE;
+                key.linked = linked;
+                key.samples = 1;
+            }
+            for (back_end, texels) in [
+                ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
+                ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
+            ] {
+                results.push(compare(
+                    format!("clip_distance {route} {back_end} against direct3d 11"),
+                    &reference,
+                    &texels,
+                    Format::Rgba8Unorm,
+                    (0, 0),
+                ));
+            }
+            let mut native4 = native.clone();
+            native4.setup.samples = 4;
+            let reference4 = ours(&mut vulkan, &native4, ProvokingVertex::First);
+            let mut variant4 = variant.clone();
+            variant4.setup.samples = 4;
+            variant4.setup.ps_key.samples = 4;
+            let texels = ours(&mut gpu, &variant4, ProvokingVertex::First);
+            results.push(compare(
+                format!("clip_distance {route} webgpu four samples against vulkan's native"),
+                &reference4,
+                &texels,
+                Format::Rgba8Unorm,
+                (0, 0),
+            ));
+        }
+
+        // Depth clamped instead of clipped, with depth reaching past both ends of the clip volume and
+        // a depth range of 0.25 to 0.75: against real Direct3D 11 with DepthClipEnable false, depth
+        // buffers compared as f32 steps. Clipping must change Direct3D's depth, or the case shows
+        // nothing.
+        {
+            let code = [
+                bytecode(&format!("vs_deep.{route}")),
+                bytecode(&format!("ps_textured.{route}")),
+            ];
+            let range = [0.25f32, 0.75];
+            let drawn = |clip_off| {
+                direct3d_11(
+                    &d3d,
+                    "vs_deep",
+                    "ps_textured",
+                    Format::Rgba8Unorm,
+                    [1.0, 0.75, 0.5, 1.5],
+                    true,
+                    &Reference {
+                        depth: Some(range),
+                        depth_clip_off: clip_off,
+                        ..Default::default()
+                    },
+                )
+                .0
+            };
+            let (reference, clipped) = (drawn(true), drawn(false));
+            let (changed, _) = differ(&clipped, &reference, Format::Depth32Float);
+            eprintln!("depth_clamp {route}: clipping changes {changed} of Direct3D's texels");
+            assert!(changed > 0);
+            let mut variant = grid_draw(&code, dxil, &grid);
+            variant.setup.depth = true;
+            variant.setup.viewport = [0.0, 0.0, SIZE as f32, SIZE as f32, range[0], range[1]];
+            let linked = LinkedValues {
+                location: linked_location(&variant),
+                clip_distances: 0,
+            };
+            for key in [&mut variant.setup.vs_key, &mut variant.setup.ps_key] {
+                key.flags = VariantFlags::DEPTH_CLAMP;
+                key.linked = linked;
+            }
+            variant.setup.helpers[1] = helper_block(
+                variant.ps,
+                &variant.setup.ps_key,
+                &[(HelperValue::DepthRange, &floats(&range))],
+            );
+            for (back_end, texels) in [
+                ("webgpu", ours(&mut gpu, &variant, ProvokingVertex::First)),
+                ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
+            ] {
+                results.push(compare(
+                    format!("depth_clamp {route} {back_end} against direct3d 11"),
+                    &reference,
+                    &texels,
+                    Format::Depth32Float,
+                    (SIZE as usize * SIZE as usize, 2),
+                ));
+            }
         }
 
         // The counting variant: blended One plus One into an rgba8unorm target (the grid's triangles do
