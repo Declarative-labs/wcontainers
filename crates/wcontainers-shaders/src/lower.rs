@@ -4002,6 +4002,15 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                         return Err(unsupported("SampleCompareLevel"));
                     }
                     SampleLevel::Zero
+                } else if res.depth {
+                    // WGSL samples a depth texture at whole levels only.
+                    let o = self.l.ir.op(lod)?;
+                    let v = f32::from_bits(o.lits.first().copied().unwrap_or_default() as u32);
+                    let whole = v as i32;
+                    if o.code != code::CONSTANT || whole as f32 != v || whole < 0 {
+                        return Err(unsupported("DepthSampleLevel"));
+                    }
+                    SampleLevel::Exact(self.lit(b, Literal::I32(whole)))
                 } else {
                     SampleLevel::Exact(self.get_as(b, lod, Scalar::F32)?)
                 }
@@ -4009,10 +4018,16 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
                 if depth_ref.is_some() {
                     return Err(unsupported("SampleCompareBias"));
                 }
+                if res.depth {
+                    return Err(unsupported("DepthSampleBias"));
+                }
                 SampleLevel::Bias(self.get_as(b, bias, Scalar::F32)?)
             } else if dx != 0 {
                 if depth_ref.is_some() {
                     return Err(unsupported("SampleCompareGradient"));
+                }
+                if res.depth {
+                    return Err(unsupported("DepthSampleGradient"));
                 }
                 let x = self.coords(b, k, dx, true)?;
                 let y = self.coords(b, k, dy, true)?;
