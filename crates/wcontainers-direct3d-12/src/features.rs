@@ -1,5 +1,6 @@
 //! What `D3D12CreateDevice` and `CheckFeatureSupport` answer, from the back end's `Caps` (plan
-//! section 9): feature level 11_0 on a back end with compute and the 11_0 sizes, resource binding
+//! section 9): feature level 11_0 on a back end with compute, storage writes in fragment programs
+//! and the 11_0 sizes, resource binding
 //! tier 3 only with big resource tables; ray tracing, mesh shaders, variable rate shading,
 //! sampler feedback, tiled resources, rasterizer ordered views, conservative rasterisation and 64-bit
 //! integers absent.
@@ -24,7 +25,9 @@ pub fn feature_level(caps: &Caps) -> Option<u32> {
         .formats
         .get(Format::Depth32FloatStencil8)
         .contains(FormatUse::DEPTH_STENCIL);
-    if !sizes || !depth_stencil || !caps.has(Features::COMPUTE) {
+    // 11_0 has compute shaders and unordered access views in pixel shaders.
+    let stages = caps.has(Features::COMPUTE | Features::FRAGMENT_STORAGE_WRITE);
+    if !sizes || !depth_stencil || !stages {
         return None;
     }
     // 11_1 also needs logic operations and target-independent rasterisation, which no `Caps`

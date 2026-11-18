@@ -410,6 +410,29 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// Copies the u64 at the start of `from` into field `field` of the value of query `index` of
+    /// `heap`, in order with the work recorded around it.
+    pub(super) fn copy_into_value(
+        &mut self,
+        heap: QueryHeapId,
+        index: u32,
+        field: usize,
+        from: &B::Buffer,
+    ) -> Result<(), Error> {
+        let h = self
+            .query_heaps
+            .get(heap.0 as usize)
+            .ok_or(Error::Invalid("no such query heap"))?;
+        match (&h.values, value_size(h.kind)) {
+            (Some(v), Some(size)) if index < h.count && (field as u64 + 1) * 8 <= size => {
+                let at = u64::from(index) * size + field as u64 * 8;
+                self.backend.copy_buffer(from, 0, &v.clone(), at, 8);
+                Ok(())
+            }
+            _ => Err(Error::Invalid("a query of another heap type")),
+        }
+    }
+
     /// The query set of an occlusion heap, for a pass to count in.
     pub(super) fn occlusion_set(&self, heap: QueryHeapId) -> Result<B::QuerySet, Error> {
         match self.query_heaps.get(heap.0 as usize) {

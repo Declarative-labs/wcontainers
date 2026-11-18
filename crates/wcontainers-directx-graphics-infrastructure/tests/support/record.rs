@@ -58,6 +58,7 @@ pub fn webgpu_like_caps() -> Caps {
             software: false,
         },
         features: Features::COMPUTE
+            | Features::FRAGMENT_STORAGE_WRITE
             | Features::INDEPENDENT_BLEND
             | Features::INDIRECT
             | Features::TIMESTAMPS

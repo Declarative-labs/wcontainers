@@ -255,11 +255,14 @@ pub enum SlowPath {
     /// A copy between regions of one subresource (as Vulkan and OpenGL allow) made through a
     /// temporary buffer, where the API copies only between different subresources.
     CopyWithinTexture,
+    /// Pixel shader invocations counted by drawing each draw again, with the depth and stencil tests
+    /// off, through a program adding to a counter, where the back end has no statistics queries.
+    PixelInvocationsCounted,
 }
 
 impl SlowPath {
     /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 101] = [
+    pub const ALL: [SlowPath; 102] = [
         SlowPath::FanConverted,
         SlowPath::LoopConverted,
         SlowPath::ReadBackWait,
@@ -361,6 +364,7 @@ impl SlowPath {
         SlowPath::PresentConverted,
         SlowPath::CaptureExpanded,
         SlowPath::CopyWithinTexture,
+        SlowPath::PixelInvocationsCounted,
     ];
 
     /// The fixed name the host's warning and counter hooks show.
@@ -479,6 +483,9 @@ impl SlowPath {
             SlowPath::PresentConverted => "surface format converted by a draw at present",
             SlowPath::CaptureExpanded => "captured draw expanded into points in list order",
             SlowPath::CopyWithinTexture => "copy within one subresource made through a buffer",
+            SlowPath::PixelInvocationsCounted => {
+                "pixel shader invocations counted by drawing again"
+            }
         }
     }
 }

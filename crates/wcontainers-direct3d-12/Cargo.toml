@@ -15,6 +15,7 @@ slab = "0.4"
 md-5 = { version = "0.11", default-features = false }
 half = { version = "2.7.1", default-features = false }
 naga = { workspace = true }
+llvm-bitcode = "0.4.1"
 
 [dev-dependencies]
 wcontainers-gpu-webgpu = { path = "../wcontainers-gpu-webgpu" }
