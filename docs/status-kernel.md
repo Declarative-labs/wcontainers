@@ -4,9 +4,139 @@ Plan: docs/phase-1-kernel.md. Branch: phase-1-kernel.
 
 ## Where things stand
 
+K6b (larger runtimes), first run: every finding of the K6a check is fixed or recorded (below),
+and Python, Node, a Go program and Java run from unmodified images on our kernel, compared with
+the reference under schedules and saves. See "K6b, first run" just below for what passes, what
+does not yet, how long each takes, and what is next.
+
 K6a (first run): every finding of K5's check is fixed (below), and the Linux Test Project runs in
 the reference and on our kernel, one command each for a test, a group and the whole suite. See
-"K6a, first run" just below for what exists, the bar, the first comparison and what is next.
+"K6a, first run" for what exists, the bar, the first comparison and what is next.
+
+## K6b, first run
+
+The K6a check's findings, each tested against the reference:
+- mmap of a socket checks RLIMIT_DATA and RLIMIT_AS before the protocol refuses it (ENOMEM
+  first, `mmap_region`); TCP's read-only rule comes after the limits too. Layer 1 seed 7272701
+  then found one more (fixed): a sequenced packet socket gives its pending error (ECONNRESET
+  after the peer closed with unread messages) to its next send first, as
+  `unix_seqpacket_sendmsg`; seed 7272701 then passed 30000 sequences (472.7 s, load 10.8 to 17).
+- TCP sendmsg reads its control messages only in ESTABLISHED or CLOSE_WAIT: shut for writing
+  (FIN_WAIT, SHUT_RDWR, LAST_ACK) it is EPIPE first.
+- SO_RCVLOWAT: negative is INT_MAX; TCP's is capped at half a set receive buffer, or at half of
+  tcp_rmem's largest (33554432, measured) and then grows the buffer to twice the mark with the
+  window clamp at the mark (`tcp_set_rcvlowat` at the starting scaling ratio); readers that now
+  have enough are woken (`tcp_data_ready`).
+- UDP's UDPLITE_SEND_CSCOV, UDPLITE_RECV_CSCOV and UDP_ENCAP read 0 as Linux's
+  `udp_lib_getsockopt`; setting the first two is ENOPROTOOPT (UDP-Lite's alone), UDP_ENCAP's set
+  stays counted. The status's earlier claim that every other option number was answered was
+  from hand-picked lists (guest/optreads.c), not a sweep; it is corrected under Not built.
+- Single routes are looked up in the route table (longest prefix): 127.255.255.255 is
+  RTN_BROADCAST with RTCF_BROADCAST, a group is RTCF_LOCAL only while eth0 is a member (the
+  all-hosts group always, `ip_check_mc_rcu`), and NETLINK_GET_STRICT_CHK checks questions as
+  `inet_rtm_valid_getroute_req` and `inet6_rtm_valid_getroute_req` do. The all-hosts group now
+  also reaches sockets on its port that take every group (it was dropped before).
+- mq_notify with SIGEV_THREAD is built: the cookie goes to the named netlink socket (EINVAL for
+  another socket, ENOTSOCK for a non-socket), marked NOTIFY_WOKENUP by the first message and
+  NOTIFY_REMOVED when the request is taken away (mq_notify(NULL), the owner's close), from port
+  0 with empty credentials; musl's own SIGEV_THREAD works (guest/posixmq.c). The attached
+  cookie is not charged to the socket's receive memory, as netlink here keeps none.
+- LTP harness: a verdict for an exit code with bits the library never sets is `exit<code>`
+  (trace_sched01's 255 now matches the bar's line); the comparison lists reference tests our
+  results lack ("not run"); unit tests for parse, verdict, results lines, warnings and the
+  comparison (`cargo test -p wcontainers-kernel-test --lib ltp`).
+- LTP suite: every runtest group but crashme (whose crash02 forks without bound on the shared
+  reference machine); see Departures. The reference run of the added groups was started in the
+  background (scratch k6b/reference-all.tsv, 3 jobs).
+- The LTP image: the release is checked against its sha256, Debian's packages come from
+  snapshot.debian.org at 20261117T210000Z and the runtime packages are pinned by version. A
+  rebuild gave the same /opt/ltp as the bar's image except testcases/bin/memtoy (one of 2877
+  files; it embeds its build time).
+- TCP_FASTOPEN_CONNECT is 0 or 1 and only while closed (EINVAL), found by the new counter test
+  (tests/inet.rs `options_not_acted_on_are_counted`, which checks the "not acted on" counts).
+- The K6a status said 177 of the 314 broken syscalls tests were "Failed to acquire device": 182
+  are (177 new-API tests and 5 legacy ones: linkat02, mknodat, rename11, renameat01,
+  umount2_01).
+- sigpick (threads `process_signal_takers_match_reference`): the K6a fix holds; 6 of 6 runs
+  alone passed (load about 15).
+
+The larger runtimes (layer 2, src/runtimes.rs, tests python.rs, node.rs, go.rs, java.rs):
+- Each image is pinned by digest and used unmodified: python:3.13-alpine, node:22-alpine,
+  eclipse-temurin:21-jre-alpine; the Go program is built by golang:1.25-alpine and runs on
+  alpine:3.22, the Java program is compiled by eclipse-temurin:21-jdk-alpine. The programs are
+  in crates/wcontainers-kernel-test/runtimes/. CPython's own `Lib/test` comes from the source
+  release the image was built from, checked against the image's own PYTHON_SHA256.
+- The reference runs the command in a default container of the image with the directory at
+  `/wc`; ours runs it with the image's files and the directory on the file backend (root on the
+  backend, files opened for the page cache), with Docker's environment order (PATH, HOSTNAME,
+  the image's others, HOME), on a host with 64 bit memories (16 GiB, Chrome's cap: the stand-in
+  now takes the address space per container, `standin::SPACE_64_BIT`; other tests keep 4 GiB).
+  Each seed of `SCHEDULE_SEEDS` (3 by default) runs with saves at moments up to 20000 turns
+  apart (`Injections::save_gap`).
+- One command: `nix develop -c cargo test -p wcontainers-kernel-test --test python --test node
+  --test go --test java` (`SCHEDULE_SEEDS`, 3 by default, and `SCHEDULE_SEED` choose the seeds).
+  Each seed's run has two saves (one for the start-ups) at moments at most a third of the run's
+  measured turns apart (`runtimes::Saves`), so they fall through the run.
+- Under the default three seeds with saves (head 688ff43, load 16 at the start, beside a layer 1
+  run and the Python runs): Go (seeds 1 to 3: 6.6, 4.8, 5.9 s; 5770, 5410, 5533 turns; two
+  saves each), Java start-up (27.5, 23.6, 22.3 s; one save each) and `Load` (53.3, 42.1, 37.4 s;
+  23959 to 24643 turns; two saves each), Node start-up (17.6, 18.3, 18.4 s) and `system.js`
+  (55.7, 43.5, 39.0 s; 19549 to 19806 turns; two saves each) all match the reference.
+- What each does and takes (seed 1 of the first runs, measured; load 15 to 30; turns are the
+  run's turns on the CPU side):
+  - Python `system.py` (subprocess, fork, pipes, threads with locks, queues, conditions, barriers
+    and timers, TCP and UDP over IPv4 and IPv6 on loopback, a socket pair, name lookup, the file
+    system: walk, copytree, symlinks, modes, sparse files, rmtree): matches; 28 to 30 s, 11469
+    turns.
+  - Python test suite, language modules (test_bool, list, dict, tuple, struct, functools,
+    collections, string, generators, with, contextlib, re; each test's outcome printed): matches
+    with two saves; 196 s, 39724 turns.
+  - Python test suite, system modules (test_posix, fileio, file, tempfile, shutil, glob, pty,
+    mmap, epoll): see below; 507 s and 194701 turns on the first run.
+  - Node start-up (`node -e`): matches; 17 to 19 s, 1942 turns. Node `system.js` (timers, child
+    processes with exec, spawn, fork with IPC and a killed child, four worker threads with a
+    SharedArrayBuffer and Atomics, file streams and pipeline, fs.watch, an HTTP server and
+    keep-alive client on loopback): matches with two saves; 42 to 47 s, 20587 turns.
+  - Go program (a ring of 1000 goroutines, 64 goroutines on a mutex, work over GOMAXPROCS 4
+    threads, a condition, timers and tickers; 50 TCP clients through the poller, 4 MiB over IPv6
+    with deadlines, UDP; SIGUSR1, SIGUSR2 and SIGCHLD through signal.Notify, a child through
+    os/exec with pidfds, an ignored SIGHUP, a nil dereference recovered through the SIGSEGV
+    handler, a killed child; a directory): matches; 4.6 s, 6392 turns.
+  - Java start-up (`java -version`): matches; 25 s, 6502 turns. Java `Load` (a fixed pool of 4
+    threads, synchronized, ReentrantLock, atomics, ConcurrentHashMap, wait and interrupt; four
+    threads allocating under G1 with a 64 MiB heap while others hold some, then System.gc; G1's
+    collections stop threads at safepoints through the protected polling page): matches with
+    two saves; 50 s, 24372 turns.
+- Kernel fixes these runs found, each with a test against the reference:
+  - Node's fs.watch on the backend root: inotify watches now hold their inodes (a backend inode
+    was dropped between lookups, so a watch never heard of a later lookup's events), and the
+    backend's open with O_CREAT, link, and attribute changes tell watches, under the name the
+    backend answered (guest/inotify.c on a backend root is now close; see Known issues).
+  - Go's os/exec read of a child's output never ended: the last writer of a pipe going woke no
+    edge-triggered epoll item (`pipe_release` wakes every waiter, keyless); tests/processes.rs
+    `a_child_started_as_go_starts_one_matches_reference` (guest/spawnpipe.c: clone with
+    CLONE_VM, CLONE_VFORK and CLONE_PIDFD, an edge-triggered epoll, waitid on the pidfd).
+  - Java on a 32 bit host's 4 GiB: HotSpot on ARM64 places its compressed class space at a
+    multiple of 4 GiB, which a 4 GiB address space has none of ("Could not allocate compressed
+    class space"). It runs on the 64 bit host's 16 GiB. Mappings asked above the address space
+    are now counted ("address above the address space", detail the address): Node and Java ask
+    many hints there, placed elsewhere.
+  - /proc/sys/net/core/somaxconn (4096; Go's net package reads it for listen) and
+    /proc/<pid>/coredump_filter (HotSpot reads and writes it; per process, kept by fork and exec,
+    written as `kstrtouint` reads a number in base 0; tests procwrite
+    `coredump_filter_matches_reference`, proclist lists /proc/sys/net and its core).
+- What each runtime hit that is counted (seed 1; all on the written lists):
+  - Python: "backend file read whole when mapped" (its shared libraries), "proc fields not
+    tracked" (0: /proc/<pid>/stat).
+  - Node: "address above the address space" (V8's random hints), "backend file read whole when
+    mapped" (node itself, 126 MB), "proc fields not tracked" (4: meminfo).
+  - Go: "address above the address space" (the runtime's arena hints from 0x4000000000 up),
+    "proc entry not built" (1049: /proc/self/mountinfo), "socket protocol not built"
+    (8590000390), "tcp room modelled", "backend file read whole when mapped".
+  - Java: "address above the address space", "backend file read whole when mapped" (lib/modules
+    and the class data archive), "backend pages written whole", "page residency not tracked",
+    "proc entry not built" (22: /proc/cgroups; 1066: coredump_filter, now built), "proc fields
+    not tracked" (4).
 
 K0 to K4 are done. K5 (sockets and network) is built: every part of its milestone exists and is
 tested against the reference. The eighth run fixed every finding of the seventh run's check (the
@@ -1891,8 +2021,29 @@ All on this shared Mac; noisy, not benchmarks.
   its runtest line), not one after another in one container under runltp or kirk, so no test
   sees another's leftovers and a kernel failure ends one test; the verdict is read from the exit
   code as kirk reads it. The suite's own timeouts are left at their defaults (no LTP_TIMEOUT_MUL).
-- K6a, first run: the whole suite is the groups a default container can start
-  (`ltp::SUITE`); those for hardware, other hosts or long stress are left out (named there).
+- K6a, first run (narrowed in K6b's first run): the whole suite is every runtest group but
+  crashme (`ltp::LEFT_OUT`): its crash02 forks without bound, and the reference's machine is
+  shared with other containers and tracks. Everything else runs and skips itself as the plan
+  says; the bar grew from 2694 to 4226 tests (1532 added, measured with 3 jobs at load 11 to 30:
+  865 skipped, 249 pass, 144 broken, 135 fail, 99 exit127 for programs the image lacks, 40
+  warning; their own times add to 6199 s). The bar as a whole: 1611 skipped, 1492 pass, 692
+  broken, 288 fail, 99 exit127, 43 warning, 1 exit255.
+- K6b, first run: the larger runtimes run on a host with 64 bit memories (16 GiB, Chrome's
+  cap), as wasmtime (the phase's host) offers; Java's HotSpot cannot start on a 32 bit host's
+  4 GiB (its compressed class space wants a base at a multiple of 4 GiB; plan section 15, the
+  address space is small). Other tests keep the 32 bit host's 4 GiB.
+- K6b, first run: the runtimes' root is on the file backend opened for the page cache
+  (`cached`), so files map shared as on the reference's overlay; with direct reads and writes a
+  shared mapping is ENODEV as Linux's FUSE answers in that mode, which failed every test_mmap
+  test.
+- K6b, first run: CPython's own test suite is not in the official image (it removes `test`); the
+  matching source release's `Lib/test` is added at /wc/lib, checked against the image's own
+  checksum, so the image stays unmodified. What the tests print themselves (process numbers
+  among it) is not compared, only each test's outcome.
+- K6b, first run: the Go and Java programs are built by their own images (golang, the JDK) into
+  the test's directory; the Go program runs on alpine:3.22. Programs print nothing that depends
+  on time or the number of CPUs (the guest is told it has one, section 15): Node's timer check
+  and Java's processor count were taken out for that reason.
 - K6a, first run: on ours the root is the kernel's in-memory file system, which tests see as
   tmpfs (`Using /tmp/LTP_... as tmpdir (tmpfs filesystem)`) where the reference's is overlayfs;
   tests that choose by file system type can choose differently.
@@ -2233,9 +2384,12 @@ or `refuse_flag` under one of `reason::NOT_BUILT`; the detail says which. The na
   multicast (IPV6_JOIN_GROUP and the rest), IPV6_RECVERR_RFC4884, IPV6_MINHOPCOUNT,
   IPV6_RECVORIGDSTADDR, IPV6_UNICAST_IF, IPV6_ADDR_PREFERENCES and the extension header
   options; SO_TIMESTAMPING with software send flags; and as send control messages (EINVAL)
-  IP_RETOPTS, IPv6 extension headers and per-send software send timestamps. Every other option
-  number Linux answers on a fresh or connected socket is answered as Linux answers it (tests
-  inet `option_reads_and_socket_corners_match_reference`, guest/optreads.c).
+  IP_RETOPTS, IPv6 extension headers and per-send software send timestamps. The option numbers
+  checked against the reference are hand-picked lists (tests inet
+  `option_reads_and_socket_corners_match_reference`, guest/optreads.c, and
+  `socket_edges_match_reference`, guest/sockedges.c), not a sweep of every number: the K6a
+  check's sweep (guest/zk9opts.c) found UDP's 10, 11 and 100 refused, which now read 0 as
+  Linux's.
 - "socket option not acted on": TCP_CORK, TCP_FASTOPEN_CONNECT, TCP_SAVE_SYN and TCP_TX_DELAY
   set on, SO_MAX_PACING_RATE set to a limit, and TCP's MSG_MORE: kept and read back, but bytes
   go to the peer at once where Linux holds or paces them (detail: level times 2^32 plus option,
@@ -2333,6 +2487,15 @@ guest).
 None open. (Answered: the alignment fault exit exists now; the machine description stays split.)
 
 ## Known issues
+
+- K6b, first run: inotify on a backend root (tests/inotify.rs
+  `inotify_matches_reference_on_backend_root`, ignored with its reason): after the fixes, events
+  through an open file whose name was unlinked while another link names it still reach watches
+  with IN_EXCL_UNLINK (guest/inotify.c's "writes after unlink"). Backend directories hold no
+  entries here, so whether a name still names the inode is judged by its link count.
+- K6b, first run: the Python system test modules on the page cache backend ran past 30 minutes
+  in a save's copy (the first run, with direct I/O, took 507 s) and were stopped; not yet
+  explained (Next, item 1).
 
 - K6a, first run (fixed): sigpick's reference race (below, from K3) came from musl's fork, which
   blocks every signal until it returns in the parent; a child that signalled at once could find
@@ -2454,6 +2617,25 @@ None open. (Answered: the alignment fault exit exists now; the machine descripti
 - The object crate is built with its `unaligned` feature, so headers are read from any byte offset.
 
 ## Next
+
+K6b's next run, in this order:
+1. Python's system test modules (tests/python.rs `system_test_modules_match_reference`): the
+   first run differed only in test_posix's test_unshare_setns (it needs /proc/self/ns/uts:
+   /proc/<pid>/ns is not built; the test opens and reads the link, then unshare is EPERM in
+   Docker) and test_mmap (fixed by the page cache backend); the second run (page cache backend)
+   took over 30 minutes and was stopped. Build /proc/<pid>/ns (links named `type:[inode]`,
+   opening one gives an nsfs file that setns refuses with EPERM without CAP_SYS_ADMIN) and find
+   where the second run spends its time (an echo probe was started; see Known issues).
+2. Run every runtime test under the default three seeds (Go, Java and Node were started) and the
+   Python ones, and record their times.
+3. The rest of inotify on a backend root (tests/inotify.rs, ignored with its reason).
+4. /proc/self/mountinfo (Go reads it) and /proc/cgroups with the cgroup2 mount (Java reads
+   them; section 15's made-up /proc and /sys).
+5. MPTCP (`socket(AF_INET, SOCK_STREAM, IPPROTO_MPTCP)`, which Go tries for listeners) is
+   refused EPROTONOSUPPORT and counted ("socket protocol not built", 8590000390); decide whether
+   to build it as TCP's alias or list it.
+6. The LTP comparison on ours for the 1532 added tests (`ltp ours` on the whole suite continues
+   an unfinished results file) and the K6a list below.
 
 K6a's next run (or K6b): the wrong answers of the first comparison (under "K6a, first run"),
 largest first by the tests they turn:
