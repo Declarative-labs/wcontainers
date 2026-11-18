@@ -45,24 +45,30 @@ pub fn image_starts(memory: &impl Guest, range: Range<u64>) -> Option<(Vec<u64>,
         .iter()
         .filter(|p| p.p_type.get(LE) == elf::PT_LOAD)
         .collect();
-    let first = loads.iter().find(|p| p.p_offset.get(LE) == 0)?;
-    let base = header_at.wrapping_sub(first.p_vaddr.get(LE) & !(PAGE - 1));
-    let image = Image {
-        base,
-        code: range.clone(),
-    };
-    // Accepted only if its one executable segment maps exactly onto the range.
+    // The header's page is the file's first page, which any segment starting in that page shows; the
+    // load offset is the one under which the image's one executable segment maps exactly onto the range.
     let mut executable = loads
         .iter()
         .filter(|p| p.p_flags.get(LE).0 & elf::PF_X.0 != 0);
     let text = executable.next()?;
-    let text_start = base.wrapping_add(text.p_vaddr.get(LE)) & !(PAGE - 1);
-    let text_end = base
-        .wrapping_add(text.p_vaddr.get(LE) + text.p_memsz.get(LE))
-        .next_multiple_of(PAGE);
-    if executable.next().is_some() || text_start != range.start || text_end != range.end {
+    if executable.next().is_some() {
         return None;
     }
+    let base = loads
+        .iter()
+        .filter(|p| p.p_offset.get(LE) < PAGE)
+        .map(|p| header_at.wrapping_sub(p.p_vaddr.get(LE) & !(PAGE - 1)))
+        .find(|base| {
+            let start = base.wrapping_add(text.p_vaddr.get(LE)) & !(PAGE - 1);
+            let end = base
+                .wrapping_add(text.p_vaddr.get(LE) + text.p_memsz.get(LE))
+                .next_multiple_of(PAGE);
+            start == range.start && end == range.end
+        })?;
+    let image = Image {
+        base,
+        code: range.clone(),
+    };
     let mut found = Found::default();
     found.add(
         &image,
@@ -102,15 +108,13 @@ pub fn image_starts(memory: &impl Guest, range: Range<u64>) -> Option<(Vec<u64>,
     Some((found.starts, found.sources))
 }
 
-/// The address of the ELF header on the nearest readable page at or below `start` that holds one.
+/// The address of the ELF header on the nearest readable page at or below `start` that holds one,
+/// past pages that are not mapped (segments aligned to more than a page leave gaps).
 fn find_header(memory: &impl Guest, start: u64) -> Option<u64> {
     let mut page = start & !(PAGE - 1);
     for _ in 0..SEARCH_PAGES {
-        if !memory.readable(page) {
-            return None;
-        }
         let mut magic = [0u8; 4];
-        if memory.read(page, &mut magic) && magic == elf::ELFMAG {
+        if memory.readable(page) && memory.read(page, &mut magic) && magic == elf::ELFMAG {
             return Some(page);
         }
         page = page.checked_sub(PAGE)?;
