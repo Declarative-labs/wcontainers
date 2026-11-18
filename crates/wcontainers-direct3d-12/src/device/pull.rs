@@ -394,6 +394,7 @@ fn put(block: &mut [u8], offset: u32, value: HelperValue, words: Words) -> Resul
         | HelperValue::TextureSamples { .. } => 1,
         HelperValue::TexelBufferView { .. } | HelperValue::MinLod { .. } => 2,
         HelperValue::DrawBase | HelperValue::DrawArguments => 3,
+        HelperValue::TexelLayout { .. } => 5,
         HelperValue::SamplerState { .. } => 9,
         _ => 4,
     };

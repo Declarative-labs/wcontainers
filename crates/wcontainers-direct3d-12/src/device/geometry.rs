@@ -275,6 +275,11 @@ impl<B: Backend> Replay<B> {
                 // The pass-through program is made with the pixel program's first typed view
                 // formats only.
                 d.bound_program(pid, true)?;
+                if !d.through.is_empty() {
+                    return Err(Error::NotImplemented(
+                        "storage textures read through buffers behind a geometry shader",
+                    ));
+                }
                 let helpers = d.pipelines[pid.0 as usize].helpers.clone();
                 if helpers.size != 0 {
                     let block = d.stage_block(&helpers, bind::PIXEL)?;

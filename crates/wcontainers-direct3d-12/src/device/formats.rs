@@ -18,13 +18,15 @@ use pull::Helpers;
 /// A typed view's slot: a storage slot (else a texture slot) and its register.
 pub(super) type Slot = (bool, u32);
 
-/// What a stage's program is made for: the typed views' formats by slot, and the sampler
-/// registers whose bias (`lod_bias`) and addressing (`border_in_shader`) it applies.
+/// What a stage's program is made for: the typed views' formats by slot, the sampler
+/// registers whose bias (`lod_bias`) and addressing (`border_in_shader`) it applies, and the
+/// storage registers it reads through buffers (`texels_through_buffer`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Bound {
     formats: Vec<(Slot, Format)>,
     lod_bias: u16,
     border: u16,
+    through: u64,
 }
 
 /// A program made for what is bound, with its helper layout; `None` where the conversion
@@ -65,6 +67,15 @@ pub(super) fn typed_key(code: &[u8], route: TexelBufferRoute) -> VariantKey {
     key.storage_formats.sort_by_key(|f| f.0);
     key.texel_formats.sort_by_key(|f| f.0);
     key
+}
+
+/// The registers of a shader's typed unordered access views of textures, one bit each.
+pub(super) fn typed_texture_slots(code: &[u8]) -> u64 {
+    typed_views(code)
+        .unwrap_or_default()
+        .iter()
+        .filter(|v| v.storage && !v.buffer && v.register < 64)
+        .fold(0, |m, v| m | (1 << v.register))
 }
 
 /// The formats of `key` by slot, sorted.
@@ -131,7 +142,16 @@ impl<B: Backend> Device<B> {
                 b.1 = format;
             }
         }
-        if formats == f.made && lod_bias == 0 && border == 0 {
+        let through = self
+            .bound_through
+            .iter()
+            .filter(|t| t.0 == f.visibility)
+            .fold(0u64, |m, t| m | (1 << t.1));
+        if formats == f.made
+            && lod_bias == 0
+            && border == 0
+            && through == f.key.texels_through_buffer
+        {
             return Ok(None);
         }
         if vertex_variant {
@@ -150,6 +170,7 @@ impl<B: Backend> Device<B> {
             formats,
             lod_bias,
             border,
+            through,
         };
         let refused = Error::NotImplemented("a program for the bound views and samplers");
         if let Some((_, p)) = f.variants.iter().find(|v| v.0 == bound) {
@@ -159,6 +180,7 @@ impl<B: Backend> Device<B> {
         let mut key = VariantKey {
             lod_bias,
             border_in_shader: border,
+            texels_through_buffer: through,
             ..f.key.clone()
         };
         for &((storage, register), format) in &bound.formats {

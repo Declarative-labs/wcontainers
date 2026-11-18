@@ -17,8 +17,8 @@ pub(super) struct StageBinding {
     /// The back end's stages that run the program.
     stages: StageSet,
     /// The API stage: the `D3D12_SHADER_VISIBILITY` naming it, 0 for compute.
-    visibility: u32,
-    binding: ReflectedBinding,
+    pub(super) visibility: u32,
+    pub(super) binding: ReflectedBinding,
     /// Uniform blocks: the size the program declares.
     declared: u64,
     /// How the program reads the resource.
@@ -29,6 +29,9 @@ pub(super) struct StageBinding {
     compared: bool,
     /// A typed buffer read through a storage buffer (`HelperValue::TexelBufferView` names it).
     texel: bool,
+    /// A storage texture the program reads through a buffer of its texels
+    /// (`HelperValue::TexelLayout` names it).
+    through: bool,
 }
 
 /// The null texture shapes `bindings` may read, and whether each is written.
@@ -123,6 +126,11 @@ pub(super) fn stage_bindings(
                         binding: b.binding,
                     }
             });
+            let through = b.kind == SlotKind::Storage
+                && c.reflection
+                    .helpers
+                    .iter()
+                    .any(|h| h.value == HelperValue::TexelLayout { slot: b.register });
             StageBinding {
                 stages,
                 visibility,
@@ -132,6 +140,7 @@ pub(super) fn stage_bindings(
                 shape,
                 compared,
                 texel,
+                through,
             }
         })
         .collect()
@@ -266,7 +275,7 @@ impl RootState {
 }
 
 /// A resource of a binding set, held while the set is made.
-enum Held<B: Backend> {
+pub(super) enum Held<B: Backend> {
     Uniform(B::Buffer, u64, u64),
     Texture(B::TextureView),
     Sampler(B::Sampler),
@@ -421,6 +430,9 @@ impl<B: Backend> Device<B> {
         self.bound_formats.clear();
         self.bound_helpers.clear();
         self.bound_sampling.clear();
+        self.bound_through.clear();
+        // Views read through buffers before a binding failed.
+        self.through.clear();
         for (index, b) in bindings.iter().enumerate() {
             let source = locate(&root, b).ok_or(Error::Invalid(
                 "the bound root signature lacks a binding a shader reads",
@@ -499,6 +511,19 @@ impl<B: Backend> Device<B> {
                             Form::Buffer { writable } if b.texel => {
                                 self.texel_view(&v, b, writable)?
                             }
+                            Form::Buffer { writable } if b.through => self.texels_through(
+                                &v,
+                                b,
+                                writable,
+                                SlowPath::AtomicsThroughBuffer,
+                            )?,
+                            Form::Image { writable } if !self.stores(v.format) => self
+                                .texels_through(
+                                    &v,
+                                    b,
+                                    writable,
+                                    SlowPath::StorageFormatThroughBuffer,
+                                )?,
                             Form::Buffer { writable } => self.buffer_view(&v, writable)?,
                             Form::Image { writable } => {
                                 self.note(v.resource, writable);
@@ -542,6 +567,16 @@ impl<B: Backend> Device<B> {
                 b.declared.clamp(16, null::NULL_BYTES).next_multiple_of(16),
             ),
             (_, Form::Buffer { writable }) => {
+                if b.through {
+                    // A null view holds no texel.
+                    self.bound_helpers.push((
+                        b.visibility,
+                        HelperValue::TexelLayout {
+                            slot: b.binding.register,
+                        },
+                        pull::words(&[0; 5]),
+                    ));
+                }
                 if b.texel {
                     // A null typed buffer holds no element; its format stays the program's.
                     self.bound_helpers
@@ -731,6 +766,17 @@ impl<B: Backend> Device<B> {
             offset,
             size: size.next_multiple_of(4),
             writable,
+        })
+    }
+
+    /// The back end stores into textures of DXGI format `value`.
+    fn stores(&self, value: u32) -> bool {
+        dxgi(value).is_ok_and(|f| {
+            self.backend
+                .caps()
+                .formats
+                .get(f)
+                .contains(FormatUse::STORAGE_WRITE)
         })
     }
 

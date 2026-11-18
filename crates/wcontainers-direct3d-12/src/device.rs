@@ -70,6 +70,7 @@ mod null;
 mod pull;
 mod query;
 mod statistics;
+mod through;
 
 /// Where GPU virtual addresses start, far from zero so a null address is never a buffer.
 const ADDRESS_BASE: u64 = 1 << 32;
@@ -344,6 +345,10 @@ pub struct Device<B: Backend> {
     /// stage, register, and whether it adds the bias and applies the addressing
     /// (`state::in_program`).
     bound_sampling: Vec<(u32, u32, bool, bool)>,
+    /// The storage textures the last binding sets made read through buffers: API stage and
+    /// register; and the copies around their draw or dispatch.
+    bound_through: Vec<(u32, u32)>,
+    through: Vec<through::Through<B>>,
     /// The error that removed the device, if one did.
     removed: Option<Error>,
 }
@@ -390,6 +395,8 @@ impl<B: Backend> Device<B> {
             bound_formats: Vec::new(),
             bound_helpers: Vec::new(),
             bound_sampling: Vec::new(),
+            bound_through: Vec::new(),
+            through: Vec::new(),
             removed: None,
         }
     }
@@ -870,7 +877,7 @@ impl<B: Backend> Device<B> {
         } else {
             // `GetRenderTargetSampleCount` reads the targets' sample count, and dual-source
             // blending the second output as the blend's second source.
-            let key = VariantKey {
+            let mut key = VariantKey {
                 flags: if desc.blend.dual_source() {
                     VariantFlags::DUAL_SOURCE
                 } else {
@@ -879,7 +886,7 @@ impl<B: Backend> Device<B> {
                 samples: desc.samples.clamp(1, 32) as u8,
                 ..formats::typed_key(desc.ps, self.texel_route())
             };
-            let converted = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
+            let converted = self.convert_stage(desc.ps, ShaderStage::Fragment, &mut key)?;
             Some((converted, key))
         };
         let (ps, ps_key) = match ps {
@@ -1155,9 +1162,9 @@ impl<B: Backend> Device<B> {
         if !self.backend.caps().has(Features::COMPUTE) {
             return Err(Error::NotImplemented("compute shaders on this back end"));
         }
-        let key = formats::typed_key(cs, self.texel_route());
+        let mut key = formats::typed_key(cs, self.texel_route());
         let code = cs;
-        let cs = self.convert(code, ShaderStage::Compute, key.clone())?;
+        let cs = self.convert_stage(code, ShaderStage::Compute, &mut key)?;
         let bindings = bind::stage_bindings(&cs, 0, StageSet::COMPUTE);
         bind::check(&root, &bindings)?;
         self.prepare_nulls(&bind::null_shapes(&bindings))?;
@@ -1215,6 +1222,30 @@ impl<B: Backend> Device<B> {
         Ok(converted)
     }
 
+    /// A pixel or compute shader in the common form with `key`; where the converter refuses
+    /// atomics on storage textures, with its typed texture views read through buffers
+    /// (`AtomicsThroughBuffer`), which `key` then says.
+    fn convert_stage(
+        &mut self,
+        code: &[u8],
+        stage: ShaderStage,
+        key: &mut VariantKey,
+    ) -> Result<Converted, Error> {
+        let source = match container_has(code, *b"DXIL") {
+            true => Source::Dxil(code),
+            false => Source::Dxbc(code),
+        };
+        let through = formats::typed_texture_slots(code);
+        if key.texels_through_buffer == 0
+            && through != 0
+            && let Err(ConvertError::Unsupported("StorageImageAtomics")) =
+                wcontainers_shaders::convert(source, key, None)
+        {
+            key.texels_through_buffer = through;
+        }
+        self.convert(code, stage, key.clone())
+    }
+
     /// A geometry shader in the common form: its compute form and the vertex program drawing
     /// its output.
     fn convert_geometry(&mut self, code: &[u8], variant: VariantKey) -> Result<Converted, Error> {
@@ -1262,6 +1293,7 @@ impl<B: Backend> Device<B> {
                     | HelperValue::BorderColor { .. }
                     | HelperValue::SamplerState { .. }
                     | HelperValue::TextureComponents { .. }
+                    | HelperValue::TexelLayout { .. }
             )
         }) {
             return Err(Error::NotImplemented(
@@ -3086,6 +3118,10 @@ impl<B: Backend> Replay<B> {
                 Some(d.helper_blocks(&[(compute, StageSet::COMPUTE, block)], None)?);
         }
         d.alias_settle()?;
+        if !d.through.is_empty() {
+            self.end_pass(d)?;
+            d.through_in()?;
+        }
         let call = DispatchCall {
             program: bound
                 .as_ref()
@@ -3101,6 +3137,7 @@ impl<B: Backend> Replay<B> {
             },
         };
         d.backend.dispatch(&call)?;
+        d.through_out(&mut self.scratch)?;
         Ok(())
     }
 
@@ -3321,6 +3358,15 @@ impl<B: Backend> Replay<B> {
                 self.end_pass(d)?;
             }
             d.alias_settle()?;
+        }
+        if !d.through.is_empty() {
+            if self.counted.is_some() || self.statistics.is_some() {
+                return Err(Error::NotImplemented(
+                    "a counted draw reading storage textures through buffers",
+                ));
+            }
+            self.end_pass(d)?;
+            d.through_in()?;
         }
         if let Some((heap, _, QueryState::Ended)) = self.query
             && !self.pass_open
@@ -3567,6 +3613,10 @@ impl<B: Backend> Replay<B> {
         }
         d.backend.draw(&call!());
         self.scratch.extend(zeroed);
+        if !d.through.is_empty() {
+            self.end_pass(d)?;
+            d.through_out(&mut self.scratch)?;
+        }
         Ok(())
     }
 
