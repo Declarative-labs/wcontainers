@@ -162,10 +162,21 @@ notice would translate what never runs and translate changing code again and aga
 range is translated once, when it is needed.
 
 **What is translated.** At first use of an address in a range announced by a notice, the whole announced
-range is translated at the container's look-ahead, with the notice's starts, the address reached, and the
-translator's own finding of functions. Every later address in that range with no piece (an unknown jump
-target, a resume after a stack loss) is translated at bounded look-ahead from that address, as the
-translator plan says. At look-ahead none, every piece is one instruction, as the reference.
+range is translated at the container's look-ahead, from its starts, and the translator finds what else it
+can (call targets, built addresses). The starts are:
+- the notice's own (the program's entry at exec, the vDSO's return path);
+- when the range is the code segment of an ELF image in memory, the starts that image's read-only parts
+  list: its entry, the functions of its dynamic symbol table, and every function in its unwind table index
+  (`PT_GNU_EH_FRAME`). The runtime finds the image by its ELF header on a readable page below the range,
+  and accepts it only if the header's executable `PT_LOAD` maps exactly onto the range. A shared library
+  mapped by the program's own loader brings no starts in its notice, and this is where its starts come
+  from, with no change to the kernel.
+The address first reached is not a start: the same bytes must always give the same starts, so that one
+cache entry serves every program that maps them. If the translation has no piece there, that address, like
+every later address with no piece (an unknown jump target, a resume after a stack loss), is translated at
+bounded look-ahead from it, as the translator plan says. At look-ahead none, every piece is one
+instruction, as the reference. How many pieces each program still needs at run time is measured from J1
+on (the translator's M5 found 3100 of busybox's 3520 pieces itself from 420 starts read from the file).
 
 **Code a program writes (Node, Java, any JIT).** A program must invalidate the instruction cache line
 (`ic ivau`) before running code it wrote, because the `CTR_EL0` we present says invalidation is needed
@@ -221,7 +232,8 @@ vDSO below the top), so the array must cover all of it. Decision: one state memo
 16 MiB for the permission table and thread blocks, then the array covering from 64 KiB to the end of the
 address space; and the address space ends at 0xFF00_0000 (4 GiB less 16 MiB), so both fit in 4 GiB. Untouched
 pages cost nothing. 16 MiB leaves room for about 18,000 threads in one process; past that `thread_new` answers
-"out of memory" and the guest's `clone` fails as Linux's does at its limit. A larger address space needs the
+`CpuError::OutOfMemory` and the guest's `clone` fails with the error the kernel gives for that, never a
+thread that does not run. A larger address space needs the
 array in its own 64 bit memory, which is the translator's contract to change; it is asked of the translator
 track and not needed for the pass bar.
 
@@ -315,7 +327,8 @@ which the kernel's `restore` gives every thread, kernel lib.rs:408-450); code is
 which for unchanged code is a cache hit. The kernel's clock carries on through its own offset, and the clock
 hook answers from that same clock (section 4).
 
-In the first form the kernel is Rust data in the runtime's own process, which cannot be copied to a file.
+In the first form the kernel is Rust data spread over the runtime's own heap, not one memory that can be
+copied to a file.
 So the first form supports exactly what the kernel's tests do today: a save made by copying the whole test
 process (driver.rs:494-524), brought back on a new CPU side made from the saved memories and threads. Saving
 to a file comes with the final form, where the kernel's memory is a WebAssembly memory (section 11).
@@ -399,15 +412,16 @@ Each bar is checkable by running the named command on this Mac with Docker.
 - **J1, first light: a static hello, then busybox's single programs.** Merge 84e9a937. Create
   `wcontainers-runtime` with: host-supplied memories and per-process stores and state memories; `memory_new`,
   `memory_drop`, `read`, `write`, `zero`, `set_permissions`, `code_changed`, the shared block calls,
-  `thread_new`, `thread_drop`, `registers`, `set_registers`; translation at first use with the in-memory
-  cache; the run loop with system calls and stops answered in the hooks; traps and faults to exits. Fork
+  `thread_new`, `thread_drop`, `registers`, `set_registers`; translation at first use, with the starts of
+  section 6 and the in-memory cache; the run loop with system calls and stops answered in the hooks; traps and faults to exits. Fork
   (`memory_duplicate`) answers `CpuError::NotSupported`, which the kernel counts (no program in this bar
   forks). Make the kernel test driver generic and add its `runtime` feature. Bar:
   `cargo test -p wcontainers-kernel-test --features runtime --test hello --test busybox -- --test-threads 3`
   passes, at full look-ahead, and `--test hello` also at none: the same output, exit status and files as the
   reference, and no warning the stand-in run does not give besides "translated at run time". The same tests
-  without the feature still pass. Record the time to translate and compile busybox and musl in the runtime
-  and the time of a second container in the same process (cache hit).
+  without the feature still pass. Record the time to translate and compile busybox and musl in the runtime,
+  the time of a second container in the same process (cache hit), and how many pieces each command needed
+  translated at run time.
 - **J2, processes.** Fork with the copy of section 7; exec; leaving `run` when a call waits or the kernel
   switches; signals and frames; job control and terminals. Linux checked for host-supplied memory and shared
   blocks. Bar: with `--features runtime`, the tests `shell`, `script`, `scriptline`, `processes`, `zombie`,
