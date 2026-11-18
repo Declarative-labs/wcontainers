@@ -1512,6 +1512,13 @@ None in G4 runs 3 to 12.
 
 ## Measurements
 
+- 2026-11-17, G4 run 13, the desktop (i9-9900K, RTX 3080) through the queue, not alone (other
+  tracks' jobs beside; Mac load average 57 to 65 at 22:42): Wine's d3d11 file 104 of 166 in
+  197.5 s. Real programs through the whole library, every compared frame identical to real
+  Direct3D's (largest difference 0): sdk-tutorial02, 04 to 07, chocolate-doom,
+  atg-simplelightingpc (3.2 s), atg-simpleinstancingpc (3.4 s), 120 frames each
+  (logs/g4s1e-programs.log). Building ahead and module size: not measured again this run.
+
 - 2026-11-17, G4 run 12 (RTX 3080, through the queue, not alone; desktop CPU load 2 % at 19:33,
   Mac load average 18 to 23): Wine's d3d11 file 90 of 162 in 169 s. Real programs through the
   forwarding d3d11.dll, dxgi.dll and wcontainers_directx.dll at d6d3441, every compared frame
