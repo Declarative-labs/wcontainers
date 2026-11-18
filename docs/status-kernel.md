@@ -138,12 +138,22 @@ suite run writing scratch x86/x3/run1/suite.log, a runtime-track layer 1 run, a 
 layer 3 run, which restarted); their test binaries already running went on.
 
 LTP comparison (layer 3), table at the end of this run:
-- The whole suite at fb0bc97 (TCP backend, before every other fix of this run) runs detached:
-  scratch k6c3/ours-5.tsv (output ours-5.out, start and load in ours-5.load: 07:58, load 26 to
-  50, 4 jobs, LTP_LIMIT 300). At 10:10 it had 1274 of 4226 tests (it is in ltp-aiodio.part3,
-  whose fsx tests each run out the 300 s). Comparison k6c3/compare-5-partial.txt:
-  - Tests matching: 1190 of 1274.
-  - Differing, 84, by cause:
+- The whole suite at fb0bc97 (TCP backend, before every other fix of this run) ended: 08:20 to
+  11:59, 4 jobs, LTP_LIMIT 300, load 30 to 90 (other tracks ran heavy jobs). Results committed as
+  crates/wcontainers-kernel-test/ltp/ours-20260930-fb0bc97.tsv; comparison in scratch
+  k6c3/compare-5.txt:
+  - Tests matching: 3989 of 4226 (the first run's whole comparison: 3756).
+  - Differing, 237: slower than the 300 s limit 95, a part not built 54 (the comparison's own
+    class, from the warnings), a wrong answer 88; by group syscalls 84, fs 26, cve 23,
+    ltp-aiodio part3 20 and part4 4, scsi_debug part1 16, sysfs 15, mm 13, crypto 8,
+    controllers 8, net.ipv6_lib 5, math 5, sched 3, syscalls-ipc 2, kernel_misc 2, net.sctp 1,
+    ltp-aiodio part2 1, dio 1. New since the first 1274 (below): syscalls timeouts 16 (creat05,
+    dup03, dup06, dup205, epoll_create03, fcntl12, fcntl36, fork09, inotify09, munmap04, open04,
+    rename14, sendmsg02, timerfd_settime02, and the _64 forms), the math float tests' heap
+    corruption (Next item 2), and wrong answers not yet looked at: openat03, readv01,
+    copy_file_range03, process_vm_readv02 and 03, process_vm_writev02, add_key05, getxattr05,
+    waitid10 (core dumps, built since), scsi_debug (16).
+  - The table of the first 1274 tests, with the causes:
     - Slower than 300 s, 46: fs 23 (growfiles gf01 to gf29, rwtest01 to 04, iogen01: about 14
       backend messages per iteration at about 1400 a second; the reference's gf01 makes 524289
       iterations in 11 s), ltp-aiodio part2 1 and part3 15 (fsx), cve 5 (races of many
